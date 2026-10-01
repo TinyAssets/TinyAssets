@@ -4393,7 +4393,7 @@
       if(!NATIVE && entry.searchParams.get("upgrade")==="1"){
         entry.searchParams.delete("upgrade");
         history.replaceState(null,"",entry.href);
-        if(PLAN.upgrade_url) await startSubscribe();
+        if(PLAN.upgrade_url && PLAN.billing_enabled !== false) await startSubscribe();
       }
     }catch(_e){ /* the plan chip is never load-bearing for chat */ }
   }
@@ -4408,6 +4408,7 @@
     return when.toLocaleDateString(undefined, {month:"short", day:"numeric"});
   }
 
+  const BILLING_OFF_NOTE = "Billing isn't set up on this server, so your plan can't be changed here.";
   function renderPlan(){
     const b = $("btn-plan");
     // Inside the Android shell the plan/checkout UI stays hidden: a digital
@@ -4415,6 +4416,10 @@
     // so the app is a consumption-only client of a plan bought on the web
     // (docs/ops/google-play-launch.md §8).
     if(!b || !PLAN || NATIVE) return;
+    // A server without billing (a contributor's clone, a self-hosted box) has
+    // nothing to sell, so a free user gets no chip rather than one that leads
+    // nowhere. A paid user keeps theirs: it is where they see their plan.
+    if(PLAN.billing_enabled === false && PLAN.tier !== "paid"){ b.hidden = true; return; }
     b.hidden = false;
     const ending = planEndsOn();
     if(PLAN.tier === "paid"){
@@ -4427,9 +4432,7 @@
       b.textContent = "Upgrade";
       b.title = "Subscribe for $20/month";
     }
-    if(!PLAN.billing_enabled){
-      b.title = "Billing is not configured on this deployment";
-    }
+    if(PLAN.billing_enabled === false) b.title = BILLING_OFF_NOTE;
   }
 
   // What the user is told for each refusal the checkout route can return. Keyed by
@@ -4489,6 +4492,8 @@
 
   function onPlanClick(){
     if(!PLAN) return;
+    // Cancelling goes through Stripe too: say so instead of offering it.
+    if(PLAN.billing_enabled === false){ appendMessage("system", BILLING_OFF_NOTE); return; }
     if(PLAN.tier !== "paid"){ startSubscribe(); return; }
     const ending = planEndsOn();
     // Already cancelled. Offering to cancel again invited the user to conclude the
