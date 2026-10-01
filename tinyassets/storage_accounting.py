@@ -533,6 +533,10 @@ ROOT_ENTRIES: dict[str, str] = {
         ".agent-sessions/<universe>/ (harness D1a)"
     ),
     ".universe-sidecars": "platform: per-universe daemon sockets (egress proxy)",
+    "steering.db": (
+        "platform: the owner's mid-turn messages, inside .agent-sessions/<universe>/ "
+        "(harness S2); emptied at every turn end"
+    ),
     ".auth.db": "platform: sessions (never gated)",
     ".hosted-model-auth.db": "platform: credential vault (never gated)",
     ".owner_devices.db": "platform: device registrations",

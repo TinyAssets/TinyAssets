@@ -478,11 +478,14 @@ def _engine_mcp_flags(config: ModelConfig, universe_dir: Path) -> list[str]:
     # holds internally — never surfaced to the LLM), not the prompt.
     route = read_engine_mcp_route(actor_id=actor_id, graph_id=graph_id, root=root)
     if route is not None:
+        from tinyassets.engine_steering import route_with_session, session_of
+
         mcp_config = {
             "mcpServers": {
                 "tinyassets": {
                     "type": "http",
-                    "url": route.url,
+                    # Names this launch's session for owner steering (S2).
+                    "url": route_with_session(route.url, session_of(config)),
                     "headers": {"Authorization": "Bearer " + route.secret},
                 }
             }

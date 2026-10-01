@@ -51,10 +51,12 @@ def _local_schema_references(value: Any) -> bool:
     return True
 
 
-def _make_client(route: EngineMcpRoute, timeout: float):
+def _make_client(route: EngineMcpRoute, timeout: float, session_key: str = ""):
     import httpx
     from fastmcp import Client
     from fastmcp.client.transports import StreamableHttpTransport
+
+    from tinyassets.engine_steering import route_with_session
 
     def private_http_client(**_ignored):
         # FastMCP forwards ambient request headers/auth and redirect defaults.
@@ -68,7 +70,10 @@ def _make_client(route: EngineMcpRoute, timeout: float):
         )
 
     return Client(
-        StreamableHttpTransport(route.url, httpx_client_factory=private_http_client),
+        StreamableHttpTransport(
+            route_with_session(route.url, session_key),
+            httpx_client_factory=private_http_client,
+        ),
         name="private-engine-tools",
         timeout=timeout,
         init_timeout=timeout,
@@ -184,6 +189,7 @@ async def open_engine_tools(
     graph_id: str,
     enabled_tools: Sequence[str],
     timeout: float = 60.0,
+    session_key: str = "",
 ) -> AsyncIterator[EngineToolSession]:
     """Use caller-verified identity; no caller-supplied URL, secret or transport."""
     if not isinstance(enabled_tools, Sequence) or isinstance(enabled_tools, (str, bytes)):
@@ -210,7 +216,7 @@ async def open_engine_tools(
     if route is None:
         raise EngineToolError("engine_tools_unavailable")
     try:
-        client = _make_client(route, timeout)
+        client = _make_client(route, timeout, session_key)
     except Exception:
         raise EngineToolError("engine_tools_unavailable") from None
     session = EngineToolSession(client, route, root, enabled)

@@ -63,6 +63,8 @@ _DECLS = (
     r"let interruptRequested=[^\n]*;", r"const STOP_REQUEST_MS=[^\n]*;",
     # The seat wait line (`universe_seats`).
     r"let seatWait=[^\n]*;", r"let seatLineShown=[^\n]*;",
+    # Lines steered into a running turn (harness S2).
+    r"let steeredLines=[^\n]*;",
 )
 _FUNCS = (
     "formatMessageTimestamp", "appendMessage", "setStatusLine",
@@ -86,7 +88,8 @@ _NEW_FUNCS = ("isQueuedBubble", "firstQueuedBubble", "markQueued", "unmarkQueued
               "readServerTurn", "serverTurnLive", "workingSince", "workingElapsed",
               "renderWorking", "pulseHeartbeat",
               "renderStop", "takeInterruptFlush", "flushAfterTurn",
-              "drainAfterStop", "takeBatch", "flushBatch")
+              "drainAfterStop", "takeBatch", "flushBatch",
+              "markSteered", "unmarkSteered", "steerOrQueue", "settleSteered")
 
 # A real tree. `insertBefore` and a detaching `remove` are the point: thread
 # order is what the ordering half of this bug is about.

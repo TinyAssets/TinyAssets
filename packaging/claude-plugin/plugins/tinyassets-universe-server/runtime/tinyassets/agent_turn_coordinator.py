@@ -13,6 +13,7 @@ import time
 from contextlib import AsyncExitStack
 from dataclasses import replace
 
+from tinyassets.engine_steering import session_of
 from tinyassets.engine_tool_client import EngineToolError, open_engine_tools
 from tinyassets.exceptions import (
     AllProvidersExhaustedError,
@@ -432,6 +433,7 @@ class AgentTurnCoordinator:
                             engine = await stack.enter_async_context(open_engine_tools(
                                 actor_id=actor_id, graph_id=graph_id,
                                 enabled_tools=granted_tools(self.config), timeout=timeout,
+                                session_key=session_of(self.config),
                             ))
                         config = replace(
                             self._remaining(turn_deadline),

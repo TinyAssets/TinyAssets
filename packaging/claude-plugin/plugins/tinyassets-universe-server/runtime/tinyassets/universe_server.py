@@ -3068,9 +3068,10 @@ def converse(
             )
     except TurnInterrupted as exc:
         # The owner stopped it: no provider failure to diagnose, log or cool.
-        return json.dumps(
-            _interrupted_turn_payload(uid, memory_universe_dir, memory_session, message, exc)
-        )
+        return json.dumps(_with_unsettled_steering(
+            _interrupted_turn_payload(uid, memory_universe_dir, memory_session, message, exc),
+            memory_universe_dir, memory_session,
+        ))
     except Exception as exc:  # noqa: BLE001 - surface honestly, never fake a reply
         # P0 #1582: a universe with no engine credential of its own cannot
         # speak at all, and "All providers exhausted" is a dead end for the
@@ -3096,20 +3097,25 @@ def converse(
             "history_saved": saved,
         }
         if held is not None:
-            return json.dumps({**held, **history})
+            return json.dumps(_with_unsettled_steering(
+                {**held, **history}, memory_universe_dir, memory_session,
+            ))
         _record_served_failure(uid, exc, ref=record.ref)
-        return json.dumps({
+        return json.dumps(_with_unsettled_steering({
             "error": _served_failure_notice(exc, record),
             **_served_failure_diagnosis(exc),
             **history,
-        })
+        }, memory_universe_dir, memory_session))
     execution = execution_receipt.projection()
+    delivered, undelivered = _settle_steering(memory_universe_dir, memory_session)
     try:
         from tinyassets.conversation_store import record_exchange
 
-        # Both sides in ONE transaction: never a founder-only half-turn.
+        # Both sides in ONE transaction: never a founder-only half-turn. The
+        # owner's messages the agent received while it worked sit between them.
         if record_exchange(
             memory_universe_dir, memory_session, message, str(reply), execution=execution,
+            interjections=[(item.text, item.created_at) for item in delivered],
         ):
             _announce_owner_message(memory_universe_dir)
         # Only now can the cursor name this turn. Settled -> the lesson is done and
@@ -3126,7 +3132,37 @@ def converse(
     payload = {"reply": reply, "universe_id": uid}
     if execution is not None:
         payload["execution"] = execution
+    if undelivered:
+        payload["steering_undelivered"] = [item.text for item in undelivered]
     return json.dumps(payload)
+
+
+def _settle_steering(universe_dir, memory_session):
+    """End of a served turn: the owner's mid-turn messages, ``(delivered, undelivered)``.
+
+    Never fails the turn: an unreadable queue settles as nothing, and its
+    messages stay queued for the next settle rather than being dropped.
+    """
+    from tinyassets import agent_steering
+
+    try:
+        return agent_steering.settle(universe_dir, f"thread:{memory_session}")
+    except Exception:  # noqa: BLE001 - the reply is already earned
+        logger.warning("converse: owner steering could not be settled", exc_info=True)
+        return [], []
+
+
+def _with_unsettled_steering(payload, universe_dir, memory_session):
+    """A turn that ended without a reply hands back EVERY mid-turn message.
+
+    Even one the agent received is returned to send again: the turn produced
+    no recorded answer to it, and a message said twice is better than one lost.
+    """
+    delivered, undelivered = _settle_steering(universe_dir, memory_session)
+    texts = [item.text for item in sorted((*delivered, *undelivered), key=lambda i: i.id)]
+    if texts:
+        payload = {**payload, "steering_undelivered": texts}
+    return payload
 
 
 _mcp_converse = _register_structured_tool(

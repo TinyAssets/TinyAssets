@@ -28,8 +28,11 @@ setQueueOwner("p-1"); setQueueScope("u-1");
 const posts=[];
 globalThis.authHeaders=()=>({});
 globalThis.refreshAccessToken=async()=>false;
-globalThis.fetch=(url,init)=>new Promise(resolve=>posts.push({url,
-  body:JSON.parse(init.body), resolve}));
+globalThis.fetch=(url,init)=>url==="/app/turn/steer"
+  // No running turn to steer on the server's side here: the line queues,
+  // which is the behaviour these Stop cases are about.
+  ? Promise.resolve({ok:true,status:200,json:async()=>({steered:false})})
+  : new Promise(resolve=>posts.push({url, body:JSON.parse(init.body), resolve}));
 const ok=()=>({ok:true,status:200,json:async()=>({interrupted:1,universe_id:"u-1"})});
 """
 

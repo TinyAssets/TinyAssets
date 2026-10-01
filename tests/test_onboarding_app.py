@@ -228,7 +228,7 @@ def test_route_is_apex_app_get(monkeypatch):
         "/app/billing/status", "/app/billing/checkout",
         "/app/billing/cancel", "/app/billing/webhook",
         "/app/account/delete", "/app/account/timezone", "/app/rules",
-        "/app/turn/interrupt",
+        "/app/turn/interrupt", "/app/turn/steer",
         "/app/connections", "/app/files",
         "/app/devices", "/app/notify", "/app/sw.js",
         # The owner door: every read the app renders, complete.
@@ -254,7 +254,7 @@ def test_route_is_apex_app_get(monkeypatch):
         "/app/serving/bind",
         "/app/billing/checkout", "/app/billing/cancel",
         "/app/billing/webhook", "/app/account/delete",
-        "/app/turn/interrupt",
+        "/app/turn/interrupt", "/app/turn/steer",
     ):
         assert "POST" in by_path[post_only].methods
         assert "GET" not in by_path[post_only].methods
@@ -1856,7 +1856,8 @@ def _run_app(tmp_path, scenario: dict) -> dict:
                     r"const renderedConsumerTurns=[^\n]*;",
                     r"const renderedConsumerFounders=[^\n]*;",
                     r"let Uploads=[^\n]*;",
-                    r"let interruptRequested=[^\n]*;")
+                    r"let interruptRequested=[^\n]*;",
+                    r"let steeredLines=[^\n]*;")
     )
     funcs = "\n".join(_js_function(html, f) for f in (
         "turnInputMethod", "rememberInflight", "forgetInflight", "readInflight", "renderConverse",
@@ -1878,6 +1879,8 @@ def _run_app(tmp_path, scenario: dict) -> dict:
         "saveQueue", "readSavedQueue", "stillSaved", "forgetSavedItem", "savedItem",
         "sameSavedLine",
         "restoreQueue", "claimedElsewhere", "offerSavedLine",
+        # Harness S2: a line typed mid-turn steers the running turn when it can.
+        "markSteered", "unmarkSteered", "steerOrQueue", "settleSteered",
     ))
     program = (_APP_SHIM
                .replace("__SCENARIO__", json.dumps(scenario))

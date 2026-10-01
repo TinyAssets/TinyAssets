@@ -449,8 +449,13 @@ def record_exchange(
     *,
     ts: float | None = None,
     execution: object = None,
+    interjections: "tuple[tuple[str, float], ...] | list[tuple[str, float]]" = (),
 ) -> bool:
     """Append a founder turn AND the universe's reply in ONE transaction.
+
+    ``interjections`` are the owner's messages that reached the agent while it
+    worked (harness S2 steering), as ``(text, sent_at)``. They are stored as
+    founder turns between the message and the reply, in the order sent.
 
     Two independent ``record_turn`` calls can leave a founder-only half-turn
     when the second write fails (Codex 2026-08-22 #2); here both rows commit
@@ -458,7 +463,8 @@ def record_exchange(
     returns False and logs on any failure, never raises.
     """
     return _record_pair(universe_dir, session_id, founder_text, universe_text,
-                        speaker="universe", ts=ts, execution=execution)
+                        speaker="universe", ts=ts, execution=execution,
+                        interjections=interjections)
 
 
 def record_failure(
@@ -479,7 +485,7 @@ def record_failure(
 
 def _record_pair(
     universe_dir, session_id, founder_text, universe_text, *, speaker, ts=None,
-    execution=None, failure=None,
+    execution=None, failure=None, interjections=(),
 ) -> bool:
     """The shared transaction and retry boundary for terminal pairs."""
     if not session_id or not isinstance(founder_text, str) or not founder_text.strip():
@@ -494,6 +500,13 @@ def _record_pair(
         )
         normalized_failure = normalize_turn_failure(failure)
         failure_json = json.dumps(normalized_failure) if normalized_failure is not None else ""
+        # Reads order by time, so the founder's message sits no later than the
+        # first interjection and every interjection no later than the reply.
+        between = [
+            (str(text), min(_when(sent_at), when)) for text, sent_at in interjections
+            if isinstance(text, str) and text.strip()
+        ]
+        founder_when = min([when, *(sent_at for _text, sent_at in between)])
         db_path = _db_path(universe_dir)
         lock = _lock_for(db_path)
     except Exception:  # noqa: BLE001 - memory is a bonus, never a blocker
@@ -511,10 +524,14 @@ def _record_pair(
                         (session_id,),
                     ).fetchone()
                     turn_no = int(row[0])
-                    rows = [
-                        (session_id, turn_no, "founder", founder_text, when),
-                        (session_id, turn_no + 1, speaker, universe_text, when),
+                    rows = [(session_id, turn_no, "founder", founder_text, founder_when)]
+                    rows += [
+                        (session_id, turn_no + 1 + index, "founder", text, sent_at)
+                        for index, (text, sent_at) in enumerate(between)
                     ]
+                    rows.append(
+                        (session_id, turn_no + 1 + len(between), speaker, universe_text, when)
+                    )
                     # Column names are fixed internal constants, never caller data.
                     # Text-only fallback preserves the speaker discriminator.
                     columns = "session_id, turn_no, speaker, content, ts, ext_id"
@@ -522,11 +539,11 @@ def _record_pair(
                     if _has_execution_column(conn):
                         columns += ", execution_json"
                         placeholders += ", ?"
-                        rows = [(*rows[0], ""), (*rows[1], execution_json)]
+                        rows = [(*row, "") for row in rows[:-1]] + [(*rows[-1], execution_json)]
                     if failure_column_sql(conn) == "failure_json":
                         columns += ", failure_json"
                         placeholders += ", ?"
-                        rows = [(*rows[0], ""), (*rows[1], failure_json)]
+                        rows = [(*row, "") for row in rows[:-1]] + [(*rows[-1], failure_json)]
                     conn.executemany(
                         f"INSERT INTO conversation_turns ({columns}) VALUES ({placeholders})", rows,
                     )

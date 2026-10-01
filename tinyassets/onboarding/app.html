@@ -234,6 +234,7 @@
     .rule-row{display:flex;justify-content:space-between;align-items:center;gap:.5rem;padding:.25rem 0}
     .rules-declare{display:flex;flex-wrap:wrap;gap:.4rem;margin:.5rem 0}
     .rules-declare input{min-width:7rem;flex:1}
+    .msg-steered-note{display:block;margin-top:.35rem;font-size:.72rem;opacity:.75}
     /* connect */
     .connect-body{padding:1.25rem;overflow-y:auto;max-width:46rem;margin:0 auto;width:100%}
     .provider-head{display:flex;align-items:baseline;gap:.5rem;margin-bottom:.35rem}
@@ -2813,6 +2814,7 @@
       : "";
     const error=new Error((live||(recorded?payload.failure_notice:payload.error))+caution);
     error.served=true;
+    error.steeringUndelivered=payload&&payload.steering_undelivered;
     error.failureRecorded=recorded;
     error.historySaved=recorded&&payload.history_saved===true;
     error.failureCode=recorded?failure.code:"";
@@ -3807,9 +3809,82 @@
     saveQueue();   // last: a failed save replaces the status line with why
   }
 
+  // ---- Steering a running turn (harness S2) ------------------------------
+  //
+  // A plain line typed while the universe works goes INTO the running turn: it
+  // reaches the agent with the result of its next tool call, the way Claude
+  // Code takes a message mid-task, instead of waiting for the whole turn to
+  // end. Anything that cannot share the turn (a relayed answer, an attachment,
+  // a chosen conversation, a Stop in progress, no running turn on this page)
+  // queues exactly as before. When the turn ends, any steered line the agent
+  // never received comes back from the server and is queued for the next turn,
+  // so nothing typed is lost.
+  let steeredLines=[];
+  function markSteered(el){
+    if(!el) return el;
+    const note=document.createElement("span");
+    note.className="msg-steered-note";
+    note.textContent="Sent to your universe while it works \u2014 it sees this at its next step.";
+    el.appendChild(note); el.steeredNote=note;
+    return el;
+  }
+  function unmarkSteered(el){
+    if(el&&el.steeredNote&&el.steeredNote.remove) el.steeredNote.remove();
+    if(el) el.steeredNote=null;
+  }
+  async function steerOrQueue(message, display, opts){
+    // Queued first, exactly as before, so the line is on screen and saved the
+    // moment it is sent; it then moves INTO the running turn if the server
+    // takes it.
+    const before=sendQueue.length;
+    queueTurn(message, display, opts);
+    const plain=!interruptPending && !!activeTurn && !opts.relay && !opts.echoed &&
+      !opts.consumerRequest && (!display || display===message);
+    const item=sendQueue.length>before ? sendQueue[sendQueue.length-1] : null;
+    // Folded into an identical queued line, or returned to the composer when
+    // the queue is full: nothing new to steer.
+    if(!plain || !item || item.message!==message) return;
+    const epoch=MCP._loginEpoch, owner=queueOwner, scope=queueScope;
+    let doc=null;
+    try{
+      const r=await fetch("/app/turn/steer",{method:"POST",credentials:"same-origin",
+        headers:Object.assign({"Content-Type":"application/json"},authHeaders()),
+        body:JSON.stringify({universe_id:scope,text:message})});
+      doc=r.ok?await r.json():null;
+    }catch(e){ doc=null; }
+    if(epoch!==MCP._loginEpoch||owner!==queueOwner||scope!==queueScope) return;
+    if(!doc||doc.steered!==true) return;
+    const at=sendQueue.indexOf(item);
+    // It already went out as the next turn's message.
+    if(at<0) return;
+    sendQueue.splice(at,1);
+    unmarkQueued(item.bubble); markSteered(item.bubble);
+    steeredLines.push({message, bubble:item.bubble, owner, scope, opts:item.opts});
+    setStatusLine("Your universe is thinking..."+(sendQueue.length?" "+sendQueue.length+" waiting":""));
+    saveQueue();
+  }
+  // The turn ended: steered lines the agent received stay as sent; the ones it
+  // never received are queued for the next turn, in the order typed.
+  function settleSteered(undelivered){
+    const pending=Array.isArray(undelivered)?undelivered.slice():[];
+    const lines=steeredLines; steeredLines=[];
+    lines.forEach(line=>{
+      unmarkSteered(line.bubble);
+      const at=pending.indexOf(line.message);
+      if(at<0) return;
+      pending.splice(at,1);
+      if(line.owner!==queueOwner||line.scope!==queueScope) return;
+      markQueued(line.bubble);
+      sendQueue.push({message:line.message, display:line.message, owner:line.owner,
+        scope:line.scope, bubble:line.bubble,
+        opts:Object.assign({}, line.opts, {echoed:true,sentAt:Date.now()}), ts:Date.now()});
+    });
+    if(lines.length) saveQueue();
+  }
+
   async function sendTurn(message, display, opts){
     opts=captureTurnOptions(opts);
-    if($("btn-send").disabled || interruptPending) return queueTurn(message, display, opts);
+    if($("btn-send").disabled || interruptPending) return steerOrQueue(message, display, opts);
     // `display` is what the founder sees in their bubble (compact when a file is
     // attached); `message` is the full text sent to the universe (file content
     // embedded verbatim). They differ only when an attachment rode along.
@@ -3848,11 +3923,17 @@
       const answer=await sendConversationRequest(message,display,sentAt,opts);
       if(!stillHere()) return;
       renderConverse(answer);
+      settleSteered(answer&&answer.steering_undelivered);
       delivered=true;setStatusLine("");
       if(typeof AppUI!=="undefined") AppUI.turnSettled();
       if(!opts.keepInflight) forgetInflight();
     }catch(err){
       if(!stillHere()) return;
+      // A turn that ended without a reply hands back every steered line. When
+      // the answer never arrived at all, every steered line is queued again:
+      // said twice is better than lost.
+      settleSteered(err&&Array.isArray(err.steeringUndelivered)
+        ? err.steeringUndelivered : steeredLines.map(line=>line.message));
       // Signing out clears the composer (it is account-scoped), so the text
       // cannot be "left in the box". What survives is the in-flight record on
       // disk, which the same account is offered again after signing in.

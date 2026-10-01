@@ -43,6 +43,7 @@ from fastmcp.server.middleware import Middleware
 
 from tinyassets.engine_conversation_attention import ConversationAttention
 from tinyassets.engine_read_views import compact_model_options, universe_status_view
+from tinyassets.engine_steering import OwnerSteering
 
 #: What a JSON-carrying argument (``write_graph payload_json``, ``run_graph
 #: inputs_json``) accepts on the wire: the JSON TEXT, or the value itself
@@ -420,6 +421,7 @@ class RefusalsAreErrors(Middleware):
 
 # First added is OUTERMOST: attention acknowledges only the final bounded
 # result, then the ceiling wraps the refusal flag.
+mcp.add_middleware(OwnerSteering())
 mcp.add_middleware(ConversationAttention())
 mcp.add_middleware(BoundedResults())
 mcp.add_middleware(RefusalsAreErrors())
