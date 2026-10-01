@@ -388,7 +388,9 @@ def test_account_deletion_names_the_session_and_steering_records(tmp_path):
     assert (tmp_path / "data" / RECORDS_DIR / "u-alpha" / "steering.db").exists()
     source = Path(account_deletion.__file__).read_text(encoding="utf-8")
     assert '"agent_session_records"' in source
-    assert "RECORDS_DIR / _home_dir(root, home).name" in source
+    # The removal itself is proven in test_account_deletion (#4216's block).
+    assert "parent = root / RECORDS_DIR" in source
+    assert "parent / _home_dir(root, home).name" in source
 
 
 # -- the page ------------------------------------------------------------------
