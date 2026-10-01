@@ -52,6 +52,8 @@ _DECLS = (
     r"let liveInflight=[^\n]*;",
     # The Stop control's state (a turn's cleanup reads it).
     r"let interruptRequested=[^\n]*;",
+    # Lines steered into a running turn (harness S2).
+    r"let steeredLines=[^\n]*;", r"let pendingSteers=[^\n]*;",
 )
 _FUNCS = (
     "turnInputMethod", "rememberInflight", "forgetInflight", "readInflight", "renderConverse",
@@ -76,7 +78,10 @@ _OPTIONAL_FUNCS = ("sameInflight", "forgetInflightIf", "noteHeldQueue",
                    # The Stop control: a turn's cleanup asks whether the queue
                    # goes out as one batch.
                    "takeInterruptFlush", "flushAfterTurn", "drainAfterStop",
-                   "takeBatch", "flushBatch")
+                   "takeBatch", "flushBatch",
+                   # Harness S2: steering a running turn, and settling it.
+                   "markSteered", "unmarkSteered", "steerOrQueue", "settleSteered",
+                   "adoptSteered")
 
 # The shim above stops at `__APP_FUNCTIONS__`; this test supplies the
 # collaborators `pollStatus` reaches that the send/restore scenarios never did.

@@ -123,6 +123,9 @@ let queuePersisted=true;
 // the harness that runs the page's own version); what matters at THIS boundary is
 // that the account switch drops it.
 let serverTurn=null;
+// Steering a running turn (harness S2): flushSendQueue holds while a steer
+// request is on the wire.
+let steeredLines=[], pendingSteers=0, steerHeldBatch=false, lastSettlement=null;
 const sendQueue=[];
 const renderedConsumerTurns=new Set();
 const renderedConsumerFounders=new Set();

@@ -1583,6 +1583,10 @@ const Voice = {conversationSettled:(d)=>log.push({voice:!!d}),
   turnStarted:(owner,scope)=>log.push({turnStarted:{owner,scope}})};
 function captureTurnOptions(o){ return Object.assign({modelChoice:null}, o||{}); }
 function queueTurn(){ log.push({queued:true}); }
+// Harness S2: a line typed mid-turn may steer the running turn; settling a
+// turn reconciles those lines. Collaborators here, as queueTurn is.
+function steerOrQueue(){ queueTurn(); }
+function settleSteered(){}
 function appendMessage(role,text){ log.push({append:role, text:text}); return {remove(){}}; }
 function appendFailureNotice(msg){ log.push({failure:msg}); }
 function offerResend(){ log.push({resend:true}); }
