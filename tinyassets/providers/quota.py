@@ -55,6 +55,9 @@ class QuotaTracker:
         # Absolute monotonic time when cooldown expires (0 = not in cooldown).
         self._cooldowns: dict[str, float] = {}
         self._daily_details: dict[str, str] = {}
+        # The failure class behind each cooldown, so a call the gate skips can
+        # say what it is waiting out rather than read as a spent allowance.
+        self._reasons: dict[str, str] = {}
 
         # Rate-limit windows keyed by provider name.
         self._rate_limits: dict[str, list[_RateWindow]] = {
@@ -83,12 +86,18 @@ class QuotaTracker:
             return False
         return self._rate_ok(provider)
 
-    def cooldown(self, provider: str, seconds: int, *, daily_detail: str = "") -> None:
+    def cooldown(
+        self, provider: str, seconds: int, *, daily_detail: str = "", reason: str = "",
+    ) -> None:
         """Mark *provider* as unavailable for *seconds* (sticky)."""
         expiry = time.monotonic() + seconds
         if self._cooldowns.get(provider, 0) > expiry and provider in self._daily_details:
             return
         self._cooldowns[provider] = expiry
+        if reason:
+            self._reasons[provider] = reason
+        else:
+            self._reasons.pop(provider, None)
         if daily_detail:
             self._daily_details[provider] = daily_detail
         else:
@@ -97,6 +106,10 @@ class QuotaTracker:
 
     def daily_detail(self, provider: str) -> str:
         return self._daily_details.get(provider, "") if self._in_cooldown(provider) else ""
+
+    def cooldown_reason(self, provider: str) -> str:
+        """The failure class behind *provider*'s current cooldown, or ``""``."""
+        return self._reasons.get(provider, "") if self._in_cooldown(provider) else ""
 
     def record_success(self, provider: str) -> None:
         """Record a successful call for rate-limit tracking."""
@@ -149,6 +162,7 @@ class QuotaTracker:
             # Cooldown expired -- clear it.
             self._cooldowns.pop(provider, None)
             self._daily_details.pop(provider, None)
+            self._reasons.pop(provider, None)
             logger.info("Provider %s cooldown expired", provider)
             return False
         return True

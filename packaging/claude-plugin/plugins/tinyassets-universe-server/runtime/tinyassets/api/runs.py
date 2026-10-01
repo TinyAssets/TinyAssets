@@ -540,7 +540,8 @@ _OWN_MODEL_ROUTES = (
     "target=model_options lists their authorized choices, and write_graph "
     "target=model_preferences operation=save sets the default and orders the "
     "fallbacks. A node pin is llm_policy.preferred.provider (plus optional "
-    "model_id) on the node, editable in the graph."
+    "model_id) on the node, editable in the graph; provider may be the access "
+    "method (api_key_http) when one source of it offers the model."
 )
 _PROVIDER_NOT_BOUND_ACTION = (
     "No provider authority is bound for this run - nothing was invoked. If "
@@ -557,11 +558,28 @@ _PROVIDER_NOT_BOUND_ACTION = (
 _WORK_MODEL_EXHAUSTED_ACTION = (
     "Every model in this run's order was exhausted or ineligible, so no further "
     "attempt was made; the error above names each exhausted model, its capacity "
-    "scope, and the classified failure and retry-after the run observed. Retry later, or "
+    "scope, and the classified failure and retry-after the run observed. Report "
+    "that cause, not a guess: provider_refused means the source will not serve "
+    "that model (retrying will not help; it is not a rate limit), \"cooling "
+    "down\" means an earlier failure is being waited out, and only "
+    "provider_rate_limited or provider_daily_quota is a rate limit. Retry later, or "
     "widen the order - an explicit choice with no fallbacks stays exhausted "
     "rather than silently moving to another source. " + _OWN_MODEL_ROUTES
     + " Changing what the universe serves elsewhere cannot rescue a pinned "
     "source, and nobody else needs to act."
+)
+
+
+# A node pin that names no single source of the universe. Nothing was invoked
+# and nothing is missing: the pin is the thing to edit (live 2026-10-01, a pin
+# naming the access method `api_key_http` was reported as an unavailable
+# provider, and the agent then told the owner they were rate-limited).
+MODEL_PIN_ACTION = (
+    "A node's llm_policy pin names no single source of this universe, so the run "
+    "was refused before any model was called - not a rate limit, not a missing "
+    "connection. The error lists the accepted provider refs and the pin shape: "
+    "edit the pin with write_graph operation=patch op=update_node, or clear it "
+    "with llm_policy null so the owner's model order applies."
 )
 
 
@@ -655,6 +673,9 @@ def _build_failure_taxonomy() -> list[tuple[type, str, str]]:
         "work_model_exhausted",
         _WORK_MODEL_EXHAUSTED_ACTION,
     ))
+    from tinyassets.providers.model_pins import ModelPinError
+
+    rows.append((ModelPinError, "permission_denied:provider_not_bound", MODEL_PIN_ACTION))
     rows.append((
         ProviderAuthorityHeldError,
         "permission_denied:provider_not_bound",
@@ -866,8 +887,12 @@ def _classify_run_outcome_error(error_str: str) -> tuple[str, str] | None:
     held = _held_attempt_annotation(error_str, _provider_chain_from_error(error_str))
     if held is not None:
         return held
+    from tinyassets.providers.model_pins import PIN_REFUSAL_MARKER
     from tinyassets.providers.owner_binding import AUTHORITY_HELD_DETAIL
 
+    if PIN_REFUSAL_MARKER in msg:
+        # A pin naming no single source: its own words list the accepted refs.
+        return ("permission_denied:provider_not_bound", MODEL_PIN_ACTION)
     if AUTHORITY_HELD_DETAIL.lower() in msg:
         # A held run whose universe DOES have a provider connected: the message
         # carries the refusal's own words after this lead-in. Keyed BEFORE the

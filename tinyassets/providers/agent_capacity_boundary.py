@@ -34,6 +34,15 @@ class CapacityBoundary:
     #: exhaustion is account-wide instead of assuming a source proved it.
     observed_scope: str = "account"
     daily_detail: str = ""
+    #: Seconds left on a cooldown the router skipped this source for, when
+    #: that cooldown carried no reported cause of its own. The run's error says
+    #: "cooling down" rather than an unexplained account-wide exhaustion, which
+    #: read as a spent allowance on a source whose daily allowance was fresh.
+    cooling_s: float | None = None
+    #: The router's own words for that skip, naming the earlier failure class.
+    cooling_detail: str = ""
+    #: The source's own scrubbed words for a model it refused.
+    refusal_detail: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -129,7 +138,59 @@ def capacity_boundary(
 
     daily = next((redacted_failure_detail(a.detail) for a in reversed(attempts)
                   if a.failure_class == "provider_daily_quota"), "")
+    cooling = [
+        a for a in attempts
+        if a.status == "skipped" and a.failure_class is None
+        and type(a.cooldown_remaining_s) in (int, float)
+    ]
     return CapacityBoundary(
         Exhaustion(scope, current), attempted, failures[-1] if failures else None,
         max(delays) if delays else None, observed, daily,
+        max(a.cooldown_remaining_s for a in cooling) if cooling else None,
+        redacted_failure_detail(cooling[-1].detail or "") if cooling else "",
+    )
+
+
+def refusal_boundary(
+    current: ModelRef, attempts: Any, *, execution_kind: str | None,
+) -> CapacityBoundary | None:
+    """MODEL-scoped evidence that the source refused ``current`` before generating.
+
+    ``None`` unless every attempt was that refusal, made on ``current``'s own
+    source by an inference request. A refusal is a fact about one model on one
+    source -- never the source's or the account's capacity -- so its exhaustion
+    is always ``model`` and siblings stay eligible. A native agent is refused
+    here: replaying it on another model needs the completion proof
+    ``capacity_boundary`` demands, since its tools may already have acted.
+    """
+    attempts = tuple(attempts) if type(attempts) in (tuple, list) else ()
+    if (execution_kind != "engine_inference" or type(current) is not ModelRef
+            or not uniform_pre_generation_failure(attempts, "provider_refused")
+            or any(type(item) is not ProviderAttemptDiagnostic
+                   or item.provider != current.connection_id
+                   or item.status != "failed" for item in attempts)):
+        return None
+    from tinyassets.providers.diagnostics import redacted_failure_detail
+
+    return CapacityBoundary(
+        Exhaustion("model", current), True, "provider_refused", None, "model",
+        refusal_detail=redacted_failure_detail(str(getattr(attempts[-1], "detail", "") or "")),
+    )
+
+
+def uniform_pre_generation_failure(attempts: Any, failure_class: str) -> bool:
+    """Whether EVERY attempt failed with ``failure_class`` and none may have acted.
+
+    The one test a conversation turn and a workflow run both apply before
+    stepping past a refusal: ``provider_refused`` (the source will not serve
+    THIS model, a model-scoped fact) or ``auth_invalid`` (the connection's
+    sign-in, an account-scoped one). A round that also hit capacity is the
+    capacity boundary's to read, and a round that may have committed an effect
+    is never replayed on another model.
+    """
+    attempts = tuple(attempts or ())
+    return bool(attempts) and all(
+        getattr(item, "failure_class", None) == failure_class
+        and getattr(item, "side_effect_state", "none") in ("", "none")
+        for item in attempts
     )
