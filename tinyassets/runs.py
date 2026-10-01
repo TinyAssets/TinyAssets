@@ -52,7 +52,7 @@ from tinyassets.graph_compiler import (
     seed_initial_state,
 )
 from tinyassets.principals import has_named_principal, named_principal
-from tinyassets.universe_paths import platform_path
+from tinyassets.universe_paths import STATE_DIR, is_migrated, platform_path
 
 logger = logging.getLogger(__name__)
 
@@ -102,9 +102,21 @@ RUNS_DB_FILENAME = ".runs.db"
 
 
 def runs_db_path(base_path: str | Path) -> Path:
-    """The DATA ROOT's runs database. A universe's own workspace ledger is
-    :func:`universe_runs_db_path`, never this."""
-    return Path(base_path) / RUNS_DB_FILENAME
+    """The runs database for ``base_path``, in whichever of its two scopes.
+
+    This module serves two stores through one ``base_path``: the DATA ROOT's
+    shared runs database, and a universe directory's own -- the workspace
+    pool's ledger, leases and outbox, which the pool reaches by passing the
+    universe directory. A migrated universe's copy is platform state under its
+    ``.runtime/state`` (change ``universe-runtime-state``); the migration
+    marker is the scope signal, because the migration refuses a data root and
+    so a data root never carries one. An unmigrated universe still has its
+    copy at the root until its first resolve moves it.
+    """
+    base = Path(base_path)
+    if is_migrated(base):
+        return base / STATE_DIR / RUNS_DB_FILENAME
+    return base / RUNS_DB_FILENAME
 
 
 def universe_runs_db_path(universe_base: str | Path) -> Path:

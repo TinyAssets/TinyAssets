@@ -32,6 +32,7 @@ from tinyassets.runtime.assigned_queue_consumer import (
     SUPERVISOR_HEARTBEAT_FILENAME,
     supervisor_heartbeat_filename,
 )
+from tinyassets.universe_paths import platform_path
 
 
 def _utc(offset_s: float = 0.0) -> datetime:
@@ -124,7 +125,7 @@ def _write_beat(universe: Path, *, age_s: float, phase: str = "polling",
         "phase": phase,
         "planned_sleep_s": planned_sleep_s,
     }
-    (universe / SUPERVISOR_HEARTBEAT_FILENAME).write_text(
+    platform_path(universe, SUPERVISOR_HEARTBEAT_FILENAME).write_text(
         json.dumps(beat), encoding="utf-8",
     )
 
