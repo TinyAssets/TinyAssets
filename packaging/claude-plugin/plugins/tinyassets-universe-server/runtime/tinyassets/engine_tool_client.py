@@ -11,6 +11,7 @@ import asyncio
 import math
 from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -51,13 +52,10 @@ def _local_schema_references(value: Any) -> bool:
     return True
 
 
-def _make_client(route: EngineMcpRoute, timeout: float, session_key: str = "",
-                 turn: str = ""):
+def _make_client(route: EngineMcpRoute, timeout: float):
     import httpx
     from fastmcp import Client
     from fastmcp.client.transports import StreamableHttpTransport
-
-    from tinyassets.engine_steering import route_with_session
 
     def private_http_client(**_ignored):
         # FastMCP forwards ambient request headers/auth and redirect defaults.
@@ -71,10 +69,7 @@ def _make_client(route: EngineMcpRoute, timeout: float, session_key: str = "",
         )
 
     return Client(
-        StreamableHttpTransport(
-            route_with_session(route.url, session_key, turn),
-            httpx_client_factory=private_http_client,
-        ),
+        StreamableHttpTransport(route.url, httpx_client_factory=private_http_client),
         name="private-engine-tools",
         timeout=timeout,
         init_timeout=timeout,
@@ -218,7 +213,12 @@ async def open_engine_tools(
     if route is None:
         raise EngineToolError("engine_tools_unavailable")
     try:
-        client = _make_client(route, timeout, session_key, turn)
+        # The session and live turn ride on the URL the client dials; the
+        # verified route itself, which the session checks against, is unchanged.
+        from tinyassets.engine_steering import route_with_session
+
+        dialled = replace(route, url=route_with_session(route.url, session_key, turn))
+        client = _make_client(dialled, timeout)
     except Exception:
         raise EngineToolError("engine_tools_unavailable") from None
     session = EngineToolSession(client, route, root, enabled)

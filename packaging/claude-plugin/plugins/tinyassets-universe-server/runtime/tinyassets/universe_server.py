@@ -3109,11 +3109,12 @@ def converse(
                 {**held, **history}, memory_universe_dir, memory_session, live_id,
             ))
         _record_served_failure(uid, exc, ref=record.ref)
-        return json.dumps(_with_unsettled_steering({
+        return json.dumps({
             "error": _served_failure_notice(exc, record),
             **_served_failure_diagnosis(exc),
             **history,
-        }, memory_universe_dir, memory_session, live_id))
+            **_unsettled_steering(memory_universe_dir, memory_session, live_id),
+        })
     execution = execution_receipt.projection()
     delivered, undelivered = _settle_steering(memory_universe_dir, memory_session, live_id)
     try:
@@ -3197,17 +3198,20 @@ def _settle_steering(universe_dir, memory_session, live_id):
         return [], []
 
 
-def _with_unsettled_steering(payload, universe_dir, memory_session, live_id):
+def _unsettled_steering(universe_dir, memory_session, live_id):
     """A turn that ended without a reply hands back EVERY mid-turn line.
 
     Even one the agent received is returned to send again: the turn produced
     no recorded answer to it, and a line said twice is better than one lost.
+    The fields to add to the reply: ``{"steering": ...}``, or nothing.
     """
     delivered, undelivered = _settle_steering(universe_dir, memory_session, live_id)
     every = sorted((*delivered, *undelivered), key=lambda item: item.id)
-    if every:
-        payload = {**payload, "steering": _steering_receipt([], every)}
-    return payload
+    return {"steering": _steering_receipt([], every)} if every else {}
+
+
+def _with_unsettled_steering(payload, universe_dir, memory_session, live_id):
+    return {**payload, **_unsettled_steering(universe_dir, memory_session, live_id)}
 
 
 _mcp_converse = _register_structured_tool(
