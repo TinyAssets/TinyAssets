@@ -437,8 +437,8 @@ def test_a_line_typed_mid_turn_goes_into_the_running_turn(tmp_path):
 
 
 def test_a_steered_line_the_agent_never_heard_goes_out_next(tmp_path):
-    out = _page_run(tmp_path, {"receipt": {"delivered": [],
-                                           "undelivered": [{"id": 7, "text": "also check the invoice"}]}})
+    unheard = [{"id": 7, "text": "also check the invoice"}]
+    out = _page_run(tmp_path, {"receipt": {"delivered": [], "undelivered": unheard}})
     assert out["sent"] == ["start the long job", "also check the invoice"]
 
 
