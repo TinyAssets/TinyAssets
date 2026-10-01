@@ -25,6 +25,10 @@ a message that arrives during a read is not in that payload.
 **Cost.** ``unread_count`` is cached against both stores' file signatures (size
 and mtime of each database and its WAL), so a tool call that changes nothing
 costs four ``stat`` calls. Only a call that returned a message body writes.
+A signature is only trusted once every file in it is older than
+``_RACY_GRACE_S``: the kernel stamps mtime from a coarse clock, so two writes in
+one tick at the same size look unchanged, and a count cached between them stayed
+stale (the unread badge stuck at 1 after the message was read).
 """
 from __future__ import annotations
 
@@ -32,6 +36,7 @@ import json
 import os
 import sqlite3
 import threading
+import time
 from contextlib import closing
 from pathlib import Path
 
@@ -47,6 +52,11 @@ _SCHEMA = """CREATE TABLE IF NOT EXISTS reads (
     session_id TEXT NOT NULL, message_id INTEGER NOT NULL,
     total INTEGER NOT NULL, ranges TEXT NOT NULL, complete INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY(session_id, message_id))"""
+
+#: A file modified this recently may be modified again within the same mtime
+#: tick (or a coarse filesystem's 1-2 s granularity) without its signature
+#: changing, so a count computed now is not cached.
+_RACY_GRACE_S = 2.0
 
 _cache_lock = threading.Lock()
 _cache: dict[tuple[str, str], tuple[tuple, int]] = {}
@@ -70,6 +80,16 @@ def _signature(path: Path):
         else:
             parts.append((stat.st_size, stat.st_mtime_ns))
     return tuple(parts)
+
+
+def _settled(signature, now_ns: int) -> bool:
+    """Every file in ``signature`` is older than the racy-write grace window."""
+    cutoff = now_ns - int(_RACY_GRACE_S * 1e9)
+    return all(
+        part is None or part[1] < cutoff
+        for file_signature in signature[:2]
+        for part in file_signature
+    )
 
 
 def _receipt(payload):
@@ -169,6 +189,7 @@ def unread_count(root, session_id, *, epoch: float = UNREAD_EPOCH) -> int | None
     if not transcript.exists():
         return 0  # no conversation yet: nothing was sent
     key = (str(transcript), session_id)
+    now_ns = time.time_ns()
     signature = (_signature(transcript), _signature(receipts), epoch)
     with _cache_lock:
         cached = _cache.get(key)
@@ -190,5 +211,8 @@ def unread_count(root, session_id, *, epoch: float = UNREAD_EPOCH) -> int | None
                     raise
     count = len(owner - read)
     with _cache_lock:
-        _cache[key] = (signature, count)
+        if _settled(signature, now_ns):
+            _cache[key] = (signature, count)
+        else:
+            _cache.pop(key, None)
     return count
