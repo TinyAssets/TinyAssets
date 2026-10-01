@@ -443,15 +443,24 @@ def _engine_mcp_flags(config: ModelConfig, universe_dir: Path) -> list[str]:
     import json as _json
     import sys as _sys
 
-    from tinyassets.engine_mcp_http import read_engine_mcp_route
-    from tinyassets.storage import data_dir
-
     # Config lives under the universe's platform-owned ``.runtime/``, which the
     # universe tool jail masks: the agent's own read/bash tools never see it.
     # HTTP config carries the private bearer; never put this config in the
     # prompt or logs. Overwritten each turn. The pre-harness location at the
     # universe root is removed so no stale bearer stays readable there.
-    config_path = universe_dir / ".runtime" / "engine-mcp-config.json"
+    # One config per session: the route names the launch's session and turn for
+    # owner steering (S2), so two sessions' launches must never share a file and
+    # read each other's route (gpt-6-astra on #4188).
+    from tinyassets.agent_sessions import digest as _session_digest
+    from tinyassets.engine_mcp_http import read_engine_mcp_route
+    from tinyassets.engine_steering import route_with_session, session_of, turn_of
+    from tinyassets.storage import data_dir
+
+    session_key = session_of(config)
+    config_path = universe_dir / ".runtime" / (
+        f"engine-mcp-config-{_session_digest(session_key)[:16]}.json"
+        if session_key else "engine-mcp-config.json"
+    )
     legacy_path = universe_dir / ".engine_mcp_config.json"
     server_env = {
         "TINYASSETS_ENGINE_ACTOR_ID": actor_id,
@@ -478,14 +487,12 @@ def _engine_mcp_flags(config: ModelConfig, universe_dir: Path) -> list[str]:
     # holds internally — never surfaced to the LLM), not the prompt.
     route = read_engine_mcp_route(actor_id=actor_id, graph_id=graph_id, root=root)
     if route is not None:
-        from tinyassets.engine_steering import route_with_session, session_of
-
         mcp_config = {
             "mcpServers": {
                 "tinyassets": {
                     "type": "http",
                     # Names this launch's session for owner steering (S2).
-                    "url": route_with_session(route.url, session_of(config)),
+                    "url": route_with_session(route.url, session_key, turn_of()),
                     "headers": {"Authorization": "Bearer " + route.secret},
                 }
             }

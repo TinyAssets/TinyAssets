@@ -3050,10 +3050,18 @@ def converse(
         turn_began_at = None
     from tinyassets.turn_interrupt import TurnInterrupted, interactive_turn
 
+    # Lines the owner sent into an earlier turn that its agent never received
+    # (harness S2 carryover): the page normally re-sends them as this message;
+    # any it did not (a closed or reloaded page) are folded in here.
+    message = _with_carryover(memory_universe_dir, memory_session, message)
+    live_id = ""
     try:
         # Registered under the VERIFIED caller and this universe, so the owner's
         # Stop from any of their surfaces reaches it and nobody else's can.
-        with interactive_turn(current_actor_id(), uid):
+        with interactive_turn(current_actor_id(), uid) as live_turn:
+            live_id = live_turn.live_id
+            _open_steering(memory_universe_dir, memory_session, uid, live_id,
+                           current_actor_id())
             reply = _converse_impl(
                 uid,
                 message,
@@ -3070,7 +3078,7 @@ def converse(
         # The owner stopped it: no provider failure to diagnose, log or cool.
         return json.dumps(_with_unsettled_steering(
             _interrupted_turn_payload(uid, memory_universe_dir, memory_session, message, exc),
-            memory_universe_dir, memory_session,
+            memory_universe_dir, memory_session, live_id,
         ))
     except Exception as exc:  # noqa: BLE001 - surface honestly, never fake a reply
         # P0 #1582: a universe with no engine credential of its own cannot
@@ -3098,16 +3106,16 @@ def converse(
         }
         if held is not None:
             return json.dumps(_with_unsettled_steering(
-                {**held, **history}, memory_universe_dir, memory_session,
+                {**held, **history}, memory_universe_dir, memory_session, live_id,
             ))
         _record_served_failure(uid, exc, ref=record.ref)
         return json.dumps(_with_unsettled_steering({
             "error": _served_failure_notice(exc, record),
             **_served_failure_diagnosis(exc),
             **history,
-        }, memory_universe_dir, memory_session))
+        }, memory_universe_dir, memory_session, live_id))
     execution = execution_receipt.projection()
-    delivered, undelivered = _settle_steering(memory_universe_dir, memory_session)
+    delivered, undelivered = _settle_steering(memory_universe_dir, memory_session, live_id)
     try:
         from tinyassets.conversation_store import record_exchange
 
@@ -3132,36 +3140,73 @@ def converse(
     payload = {"reply": reply, "universe_id": uid}
     if execution is not None:
         payload["execution"] = execution
-    if undelivered:
-        payload["steering_undelivered"] = [item.text for item in undelivered]
+    if delivered or undelivered:
+        payload["steering"] = _steering_receipt(delivered, undelivered)
     return json.dumps(payload)
 
 
-def _settle_steering(universe_dir, memory_session):
-    """End of a served turn: the owner's mid-turn messages, ``(delivered, undelivered)``.
+def _steering_receipt(delivered, undelivered):
+    """What the page needs to reconcile the lines it steered, by id."""
+    return {
+        "delivered": [item.id for item in delivered],
+        "undelivered": [{"id": item.id, "text": item.text} for item in undelivered],
+    }
 
-    Never fails the turn: an unreadable queue settles as nothing, and its
-    messages stay queued for the next settle rather than being dropped.
-    """
+
+def _open_steering(universe_dir, memory_session, universe_id, live_id, actor_id):
+    """This served turn may now be steered by its owner (harness S2)."""
+    from tinyassets import agent_steering
+    from tinyassets.turn_interrupt import live_ids
+
+    try:
+        agent_steering.open_turn(
+            universe_dir, f"thread:{memory_session}", live_id,
+            live_ids=live_ids(actor_id, universe_id),
+        )
+    except Exception:  # noqa: BLE001 - steering is never worth a failed turn
+        logger.warning("converse: owner steering could not be opened", exc_info=True)
+
+
+def _with_carryover(universe_dir, memory_session, message):
+    """``message`` with any carried-over line it does not already repeat, first."""
     from tinyassets import agent_steering
 
     try:
-        return agent_steering.settle(universe_dir, f"thread:{memory_session}")
+        folded = agent_steering.take_carryover(
+            universe_dir, f"thread:{memory_session}", message)
+    except Exception:  # noqa: BLE001
+        logger.warning("converse: owner steering carryover unreadable", exc_info=True)
+        return message
+    return "\n\n".join([*(item.text for item in folded), message]) if folded else message
+
+
+def _settle_steering(universe_dir, memory_session, live_id):
+    """End of a served turn: the owner's mid-turn messages, ``(delivered, undelivered)``.
+
+    Never fails the turn. Undelivered lines stay as carryover in the store, so
+    a page that never receives this answer loses nothing.
+    """
+    from tinyassets import agent_steering
+
+    if not live_id:
+        return [], []
+    try:
+        return agent_steering.settle(universe_dir, f"thread:{memory_session}", live_id)
     except Exception:  # noqa: BLE001 - the reply is already earned
         logger.warning("converse: owner steering could not be settled", exc_info=True)
         return [], []
 
 
-def _with_unsettled_steering(payload, universe_dir, memory_session):
-    """A turn that ended without a reply hands back EVERY mid-turn message.
+def _with_unsettled_steering(payload, universe_dir, memory_session, live_id):
+    """A turn that ended without a reply hands back EVERY mid-turn line.
 
     Even one the agent received is returned to send again: the turn produced
-    no recorded answer to it, and a message said twice is better than one lost.
+    no recorded answer to it, and a line said twice is better than one lost.
     """
-    delivered, undelivered = _settle_steering(universe_dir, memory_session)
-    texts = [item.text for item in sorted((*delivered, *undelivered), key=lambda i: i.id)]
-    if texts:
-        payload = {**payload, "steering_undelivered": texts}
+    delivered, undelivered = _settle_steering(universe_dir, memory_session, live_id)
+    every = sorted((*delivered, *undelivered), key=lambda item: item.id)
+    if every:
+        payload = {**payload, "steering": _steering_receipt([], every)}
     return payload
 
 

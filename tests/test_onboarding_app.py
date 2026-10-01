@@ -1857,7 +1857,8 @@ def _run_app(tmp_path, scenario: dict) -> dict:
                     r"const renderedConsumerFounders=[^\n]*;",
                     r"let Uploads=[^\n]*;",
                     r"let interruptRequested=[^\n]*;",
-                    r"let steeredLines=[^\n]*;")
+                    r"let steeredLines=[^\n]*;",
+                    r"let pendingSteers=[^\n]*;")
     )
     funcs = "\n".join(_js_function(html, f) for f in (
         "turnInputMethod", "rememberInflight", "forgetInflight", "readInflight", "renderConverse",
@@ -1880,7 +1881,7 @@ def _run_app(tmp_path, scenario: dict) -> dict:
         "sameSavedLine",
         "restoreQueue", "claimedElsewhere", "offerSavedLine",
         # Harness S2: a line typed mid-turn steers the running turn when it can.
-        "markSteered", "unmarkSteered", "steerOrQueue", "settleSteered",
+        "markSteered", "unmarkSteered", "steerOrQueue", "settleSteered", "adoptSteered",
     ))
     program = (_APP_SHIM
                .replace("__SCENARIO__", json.dumps(scenario))

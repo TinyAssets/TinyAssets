@@ -378,11 +378,12 @@ def _codex_engine_mcp_args(config: ModelConfig, proc_env: dict[str, str]) -> lis
     # no approver, so the prompt auto-cancels ("user cancelled MCP tool call").
     # Auto-approve this ONE trusted, enabled_tools-restricted server so its tools
     # actually execute (Codex diagnosis 2026-08-22; verified key parses on 0.146).
-    from tinyassets.engine_steering import route_with_session, session_of
+    from tinyassets.engine_steering import route_with_session, session_of, turn_of
 
-    # The route names this launch's session, so the engine steers only the
-    # owner's chat thread with a message sent mid-turn (harness S2).
-    url = route_with_session(route.url, session_of(config))
+    # The route names this launch's session and live turn, so the engine steers
+    # only the owner's chat thread, in this turn, with a message sent mid-turn
+    # (harness S2).
+    url = route_with_session(route.url, session_of(config), turn_of())
     server = (
         "mcp_servers.tinyassets={"
         f'url="{url}",bearer_token_env_var="{_ENGINE_MCP_BEARER_ENV}",'

@@ -6,20 +6,22 @@ the whole turn to end (design #4172, Appendix A.3). Before this, the app held a
 message sent mid-turn in the browser, marked "Queued -- your universe sees this
 when its current turn ends", and the agent never heard it until it was done.
 
-How a steering message travels, and why through this store:
+How a steering message travels:
 
-* The owner's app posts it while a turn of their thread is running. The daemon
-  checks the turn is live and records it here, keyed by the session it steers
-  (``thread:principal:<owner>``).
-* The universe's engine tools run in a separate per-universe process
-  (``engine_mcp_http``) that serves the chat turn and the universe's own agent
-  nodes alike. Each launch names its session in the engine route, so the engine
-  hands a pending message to the next tool result of THAT session only. A
-  background agent never takes a message meant for the owner's chat.
-* When the turn ends, the daemon settles the queue: messages the agent
-  received are recorded in the conversation in the order they were sent, and
-  any it never received go back to the app to send as the next message. None is
-  lost and none is said twice.
+* A served turn of the owner's thread OPENS itself here under its live id
+  (``turn_interrupt.LiveTurn.live_id``) and every launch names that id on its
+  engine route, beside the session (``engine_steering.route_with_session``).
+* The owner's app posts a line while the turn runs. It is admitted only while a
+  turn of that thread is open, and it is bound to that turn, in one transaction,
+  so a line can never land after the turn has settled and wait unseen.
+* The universe's engine tools run in a separate per-universe process that also
+  serves the universe's own agent nodes. It hands a bound line only to a tool
+  result of the same session AND the same turn, and within a per-result budget.
+* When the turn ends it settles: lines its agent received are returned to be
+  recorded between the message and the reply; lines it never received become
+  CARRYOVER, kept here until a later turn takes them, so a page that is closed
+  or reloaded before it re-sends them loses nothing. The next served turn folds
+  any carryover its own message does not already repeat into that message.
 
 The store sits beside the session records in the data root's
 ``.agent-sessions/<universe>/``, outside every universe folder, so no process
@@ -30,6 +32,7 @@ from __future__ import annotations
 
 import sqlite3
 import time
+from collections.abc import Iterable
 from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
@@ -38,16 +41,27 @@ from tinyassets import agent_sessions
 
 #: One message, at most. Longer text is refused, not cut.
 MAX_STEER_CHARS = 16_000
-#: Messages waiting for one session, at most. More is refused, not dropped.
+#: Messages waiting for one session (bound and carried over), at most.
 MAX_PENDING = 20
+#: Characters handed to one tool result. More waits for the next result; a
+#: single message larger than this still goes alone, never cut.
+DELIVERY_BUDGET_CHARS = 6_000
 
 _FILE = "steering.db"
-_SCHEMA = """CREATE TABLE IF NOT EXISTS steer (
+_SCHEMA = (
+    """CREATE TABLE IF NOT EXISTS steer (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     session_key TEXT NOT NULL,
+    live_id TEXT,
     text TEXT NOT NULL,
     created_at REAL NOT NULL,
-    delivered_at REAL)"""
+    delivered_at REAL)""",
+    """CREATE TABLE IF NOT EXISTS open_turns (
+    session_key TEXT NOT NULL,
+    live_id TEXT NOT NULL,
+    opened_at REAL NOT NULL,
+    PRIMARY KEY(session_key, live_id))""",
+)
 
 
 class SteeringRefused(ValueError):
@@ -66,7 +80,8 @@ def _connect(universe_dir: Path) -> sqlite3.Connection:
     path = agent_sessions._records_dir(Path(universe_dir)) / _FILE
     conn = sqlite3.connect(path, timeout=10.0, isolation_level=None)
     conn.execute("PRAGMA busy_timeout = 10000")
-    conn.execute(_SCHEMA)
+    for statement in _SCHEMA:
+        conn.execute(statement)
     return conn
 
 
@@ -77,8 +92,47 @@ def _key(session_key: str) -> str:
     return key
 
 
-def enqueue(universe_dir: Path, session_key: str, text: str) -> Steer:
-    """Queue ``text`` for the next tool result of ``session_key``."""
+def _row(row) -> Steer:
+    return Steer(int(row[0]), row[1], float(row[2]),
+                 float(row[3]) if row[3] is not None else None)
+
+
+def open_turn(universe_dir: Path, session_key: str, live_id: str,
+              *, live_ids: Iterable[str] = ()) -> None:
+    """A served turn of ``session_key`` starts and may be steered.
+
+    ``live_ids`` are the turns of this session still running in this process.
+    Any other turn left open (a process that died mid-turn) is closed, and its
+    unreceived lines become carryover rather than waiting for a settle that
+    can never come.
+    """
+    key, live = _key(session_key), str(live_id or "").strip()
+    if not live:
+        raise ValueError("a steered turn needs its live id")
+    keep = {str(item) for item in live_ids} | {live}
+    with closing(_connect(universe_dir)) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        stale = [row[0] for row in conn.execute(
+            "SELECT live_id FROM open_turns WHERE session_key = ?", (key,),
+        ) if row[0] not in keep]
+        for dead in stale:
+            conn.execute("DELETE FROM open_turns WHERE session_key = ? AND live_id = ?",
+                         (key, dead))
+            conn.execute("DELETE FROM steer WHERE session_key = ? AND live_id = ? "
+                         "AND delivered_at IS NOT NULL", (key, dead))
+            conn.execute("UPDATE steer SET live_id = NULL WHERE session_key = ? "
+                         "AND live_id = ?", (key, dead))
+        conn.execute("INSERT OR REPLACE INTO open_turns VALUES (?, ?, ?)",
+                     (key, live, time.time()))
+        conn.execute("COMMIT")
+
+
+def enqueue(universe_dir: Path, session_key: str, text: str) -> Steer | None:
+    """Queue ``text`` for the open turn of ``session_key``; ``None`` if none is open.
+
+    Admission and binding happen in one transaction with the turn's settle, so
+    a line is either bound to a turn that will settle it or refused.
+    """
     key = _key(session_key)
     body = str(text or "").strip()
     if not body:
@@ -88,6 +142,13 @@ def enqueue(universe_dir: Path, session_key: str, text: str) -> Steer:
     now = time.time()
     with closing(_connect(universe_dir)) as conn:
         conn.execute("BEGIN IMMEDIATE")
+        turn = conn.execute(
+            "SELECT live_id FROM open_turns WHERE session_key = ? "
+            "ORDER BY opened_at DESC LIMIT 1", (key,),
+        ).fetchone()
+        if turn is None:
+            conn.execute("ROLLBACK")
+            return None
         waiting = conn.execute(
             "SELECT COUNT(*) FROM steer WHERE session_key = ?", (key,),
         ).fetchone()[0]
@@ -95,59 +156,91 @@ def enqueue(universe_dir: Path, session_key: str, text: str) -> Steer:
             conn.execute("ROLLBACK")
             raise SteeringRefused(f"{MAX_PENDING} messages are already waiting")
         cursor = conn.execute(
-            "INSERT INTO steer (session_key, text, created_at) VALUES (?, ?, ?)",
-            (key, body, now),
+            "INSERT INTO steer (session_key, live_id, text, created_at) VALUES (?, ?, ?, ?)",
+            (key, turn[0], body, now),
         )
         conn.execute("COMMIT")
     return Steer(int(cursor.lastrowid), body, now)
 
 
-def take(universe_dir: Path, session_key: str) -> list[Steer]:
-    """The messages not yet delivered to ``session_key``, now marked delivered.
+def take(universe_dir: Path, session_key: str, live_id: str,
+         *, budget: int = DELIVERY_BUDGET_CHARS) -> list[Steer]:
+    """Lines bound to turn ``live_id`` not yet delivered, now marked delivered.
 
-    Called by the engine for a tool result it is about to return, so the agent
-    receives each message exactly once, in the order the owner sent them.
+    Called by the engine for a tool result it is about to return: each line is
+    handed over exactly once, in the order sent, at most ``budget`` characters
+    per result (one larger line goes alone).
     """
-    key = _key(session_key)
+    key, live = _key(session_key), str(live_id or "").strip()
+    if not live:
+        return []
     now = time.time()
     with closing(_connect(universe_dir)) as conn:
         conn.execute("BEGIN IMMEDIATE")
         rows = conn.execute(
-            "SELECT id, text, created_at FROM steer "
-            "WHERE session_key = ? AND delivered_at IS NULL ORDER BY id",
-            (key,),
+            "SELECT id, text, created_at FROM steer WHERE session_key = ? "
+            "AND live_id = ? AND delivered_at IS NULL ORDER BY id",
+            (key, live),
         ).fetchall()
-        if rows:
-            conn.executemany(
-                "UPDATE steer SET delivered_at = ? WHERE id = ?",
-                [(now, row[0]) for row in rows],
-            )
+        chosen, used = [], 0
+        for row in rows:
+            if chosen and used + len(row[1]) > budget:
+                break
+            chosen.append(row)
+            used += len(row[1])
+        if chosen:
+            conn.executemany("UPDATE steer SET delivered_at = ? WHERE id = ?",
+                             [(now, row[0]) for row in chosen])
         conn.execute("COMMIT")
-    return [Steer(int(row[0]), row[1], float(row[2]), now) for row in rows]
+    return [Steer(int(row[0]), row[1], float(row[2]), now) for row in chosen]
 
 
-def settle(universe_dir: Path, session_key: str) -> tuple[list[Steer], list[Steer]]:
-    """End of turn: ``(delivered, undelivered)``, and the queue emptied.
+def settle(universe_dir: Path, session_key: str, live_id: str
+           ) -> tuple[list[Steer], list[Steer]]:
+    """Turn ``live_id`` ends: ``(delivered, undelivered)``.
 
-    The caller records ``delivered`` in the conversation and hands
-    ``undelivered`` back to the owner's app to send as the next message.
+    The turn is closed to new lines in the same transaction. Delivered lines
+    are removed (the caller records them); undelivered ones stay as carryover
+    for a later turn and are also returned so the page can send them now.
+    """
+    key, live = _key(session_key), str(live_id or "").strip()
+    if not live:
+        return [], []
+    with closing(_connect(universe_dir)) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        conn.execute("DELETE FROM open_turns WHERE session_key = ? AND live_id = ?",
+                     (key, live))
+        rows = conn.execute(
+            "SELECT id, text, created_at, delivered_at FROM steer "
+            "WHERE session_key = ? AND live_id = ? ORDER BY id", (key, live),
+        ).fetchall()
+        conn.execute("DELETE FROM steer WHERE session_key = ? AND live_id = ? "
+                     "AND delivered_at IS NOT NULL", (key, live))
+        conn.execute("UPDATE steer SET live_id = NULL WHERE session_key = ? "
+                     "AND live_id = ?", (key, live))
+        conn.execute("COMMIT")
+    items = [_row(row) for row in rows]
+    return ([i for i in items if i.delivered_at is not None],
+            [i for i in items if i.delivered_at is None])
+
+
+def take_carryover(universe_dir: Path, session_key: str, message: str) -> list[Steer]:
+    """A new turn starts: carryover lines its own ``message`` does not repeat.
+
+    Every carryover line is removed: the ones the page already re-sent are in
+    ``message``, the rest are returned to be folded into it.
     """
     key = _key(session_key)
+    paragraphs = {part.strip() for part in str(message or "").split("\n\n")}
     with closing(_connect(universe_dir)) as conn:
         conn.execute("BEGIN IMMEDIATE")
         rows = conn.execute(
             "SELECT id, text, created_at, delivered_at FROM steer "
-            "WHERE session_key = ? ORDER BY id",
-            (key,),
+            "WHERE session_key = ? AND live_id IS NULL ORDER BY id", (key,),
         ).fetchall()
-        conn.execute("DELETE FROM steer WHERE session_key = ?", (key,))
+        conn.execute("DELETE FROM steer WHERE session_key = ? AND live_id IS NULL", (key,))
         conn.execute("COMMIT")
-    delivered, undelivered = [], []
-    for row in rows:
-        item = Steer(int(row[0]), row[1], float(row[2]),
-                     float(row[3]) if row[3] is not None else None)
-        (delivered if item.delivered_at is not None else undelivered).append(item)
-    return delivered, undelivered
+    return [_row(row) for row in rows if row[1].strip() not in paragraphs]
 
 
 def render(messages: list[Steer]) -> str:

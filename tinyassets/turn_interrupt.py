@@ -217,3 +217,13 @@ def live_count(actor_id: str, universe_id: str) -> int:
     """How many turns this caller is running in this universe (tests, status)."""
     with _LOCK:
         return len(_LIVE.get(_key(actor_id, universe_id), ()))
+
+
+def live_ids(actor_id: str, universe_id: str) -> set[str]:
+    """The live ids of every turn this caller is running in this universe.
+
+    Owner steering (``agent_steering.open_turn``) uses it to close a turn a
+    dead process left open, without touching one still running here.
+    """
+    with _LOCK:
+        return {live.live_id for live in _LIVE.get(_key(actor_id, universe_id), ())}

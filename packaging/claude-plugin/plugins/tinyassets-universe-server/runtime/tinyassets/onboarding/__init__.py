@@ -1494,6 +1494,10 @@ async def _handle_turn_steer(request: Any) -> Any:
         )
     except ValueError:
         return JSONResponse({"error": "invalid_universe"}, status_code=400, headers=_NO_STORE)
+    if queued is None:
+        # The turn settled between the check above and the queue: admission and
+        # settle share one transaction, so the line was refused, never stranded.
+        return JSONResponse({"steered": False, "universe_id": universe_id}, headers=_NO_STORE)
     return JSONResponse(
         {"steered": True, "universe_id": universe_id, "steer_id": queued.id},
         headers=_NO_STORE,

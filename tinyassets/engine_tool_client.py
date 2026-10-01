@@ -51,7 +51,8 @@ def _local_schema_references(value: Any) -> bool:
     return True
 
 
-def _make_client(route: EngineMcpRoute, timeout: float, session_key: str = ""):
+def _make_client(route: EngineMcpRoute, timeout: float, session_key: str = "",
+                 turn: str = ""):
     import httpx
     from fastmcp import Client
     from fastmcp.client.transports import StreamableHttpTransport
@@ -71,7 +72,7 @@ def _make_client(route: EngineMcpRoute, timeout: float, session_key: str = ""):
 
     return Client(
         StreamableHttpTransport(
-            route_with_session(route.url, session_key),
+            route_with_session(route.url, session_key, turn),
             httpx_client_factory=private_http_client,
         ),
         name="private-engine-tools",
@@ -190,6 +191,7 @@ async def open_engine_tools(
     enabled_tools: Sequence[str],
     timeout: float = 60.0,
     session_key: str = "",
+    turn: str = "",
 ) -> AsyncIterator[EngineToolSession]:
     """Use caller-verified identity; no caller-supplied URL, secret or transport."""
     if not isinstance(enabled_tools, Sequence) or isinstance(enabled_tools, (str, bytes)):
@@ -216,7 +218,7 @@ async def open_engine_tools(
     if route is None:
         raise EngineToolError("engine_tools_unavailable")
     try:
-        client = _make_client(route, timeout, session_key)
+        client = _make_client(route, timeout, session_key, turn)
     except Exception:
         raise EngineToolError("engine_tools_unavailable") from None
     session = EngineToolSession(client, route, root, enabled)
