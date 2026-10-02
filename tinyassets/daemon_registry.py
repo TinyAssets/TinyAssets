@@ -26,6 +26,7 @@ from tinyassets.platform_runtime_provenance import (
     resolve_process_cloud_admission,
 )
 from tinyassets.principals import has_named_principal, named_principal
+from tinyassets.sqlite_connection import ClosingConnection
 from tinyassets.storage import DB_FILENAME
 from tinyassets.storage.request_admissions import (
     OPERATOR_CAPABILITY,
@@ -105,7 +106,7 @@ def plan_stale_cloud_worker_runtime_retirement(
     if not database.is_file():
         return []
     uri = f"{database.resolve().as_uri()}?mode=ro"
-    with sqlite3.connect(uri, uri=True) as conn:
+    with sqlite3.connect(uri, uri=True, factory=ClosingConnection) as conn:
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA query_only = ON")
         has_task_store = conn.execute(

@@ -33,6 +33,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from tinyassets.sqlite_connection import ClosingConnection
+
 # ── Watch-window defaults (Task #22 Phase A) ─────────────────────────────────
 
 DEFAULT_WATCH_WINDOW_SECONDS = 86400  # 24h
@@ -134,7 +136,7 @@ class BranchVersion:
 def _connect(base_path: str | Path) -> sqlite3.Connection:
     from tinyassets.runs import runs_db_path
     path = runs_db_path(base_path)
-    conn = sqlite3.connect(str(path), timeout=30.0)
+    conn = sqlite3.connect(str(path), timeout=30.0, factory=ClosingConnection)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode = WAL")
     conn.execute("PRAGMA busy_timeout = 30000")

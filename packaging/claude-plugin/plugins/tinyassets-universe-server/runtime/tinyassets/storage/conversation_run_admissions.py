@@ -22,6 +22,7 @@ from pathlib import Path
 from tinyassets import conversation_store
 from tinyassets.conversation_failure import failure_notice, normalize_turn_failure, turn_failure
 from tinyassets.runs import _insert_run_in_transaction, initialize_runs_db, runs_db_path
+from tinyassets.sqlite_connection import ClosingConnection
 from tinyassets.storage import db_path
 from tinyassets.storage.current_home import check_current_home
 
@@ -97,7 +98,7 @@ def initialize(base):
     # Source authorization reads branch_versions.public; migrate that table
     # (column + one-time publication-mark backfill) before any admission.
     initialize_branch_versions_db(base)
-    with sqlite3.connect(runs_db_path(base), timeout=5) as conn:
+    with sqlite3.connect(runs_db_path(base), timeout=5, factory=ClosingConnection) as conn:
         conn.executescript(_SCHEMA)
 
 

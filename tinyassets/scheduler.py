@@ -29,6 +29,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
+from tinyassets.sqlite_connection import ClosingConnection
+
 logger = logging.getLogger(__name__)
 
 # ─── Cron parser ──────────────────────────────────────────────────────────────
@@ -671,7 +673,7 @@ def migrate_scheduler_schema(conn: sqlite3.Connection) -> None:
 
 def _connect(db_path: Path) -> sqlite3.Connection:
     db_path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(db_path), timeout=30.0)
+    conn = sqlite3.connect(str(db_path), timeout=30.0, factory=ClosingConnection)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode = WAL")
     conn.execute("PRAGMA busy_timeout = 30000")

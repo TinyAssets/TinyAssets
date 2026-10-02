@@ -6,6 +6,7 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
+from tinyassets.sqlite_connection import ClosingConnection
 from tinyassets.storage import DB_FILENAME
 
 
@@ -14,7 +15,9 @@ def _workflow_db_path(base_path: str | Path) -> Path:
 
 
 def _connect_readonly(db_path: Path) -> sqlite3.Connection:
-    conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=30.0)
+    conn = sqlite3.connect(
+        f"file:{db_path}?mode=ro", uri=True, timeout=30.0, factory=ClosingConnection,
+    )
     conn.row_factory = sqlite3.Row
     return conn
 

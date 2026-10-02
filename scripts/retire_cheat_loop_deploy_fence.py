@@ -20,7 +20,7 @@ import subprocess
 import sys
 import tempfile
 import time
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
@@ -249,7 +249,7 @@ def receipt_snapshot(path: Path) -> dict[str, Any]:
             "logical_digest": empty_digest,
         }
     try:
-        with _read_only_connection(path) as connection:
+        with closing(_read_only_connection(path)) as connection:
             quick_check = [
                 str(row[0]) for row in connection.execute("PRAGMA quick_check")
             ]
@@ -358,7 +358,7 @@ def inventory_queue_risk(volume_dir: Path) -> list[dict[str, str]]:
 
     for path in sorted(volume_dir.rglob(".tinyassets.db")):
         try:
-            with _read_only_connection(path) as connection:
+            with closing(_read_only_connection(path)) as connection:
                 tables = {
                     str(row[0])
                     for row in connection.execute(

@@ -31,6 +31,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Protocol
 
+from tinyassets.sqlite_connection import ClosingConnection
+
 GIB = 1024**3
 
 #: Defaults from design note ``workspace-node`` D4.
@@ -342,7 +344,7 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
 
 
 def _connect(db: Path) -> sqlite3.Connection:
-    conn = sqlite3.connect(str(db), timeout=30)
+    conn = sqlite3.connect(str(db), timeout=30, factory=ClosingConnection)
     conn.execute("PRAGMA busy_timeout = 30000")
     return conn
 

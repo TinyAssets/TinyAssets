@@ -17,6 +17,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from tinyassets.sqlite_connection import ClosingConnection
+
 SCHEMA_VERSION = 1
 DEFAULT_BRAIN_PACKET_CHARS = 1600
 
@@ -101,7 +103,7 @@ def daemon_brain_db_path(base_path: str | Path) -> Path:
 def _connect(base_path: str | Path) -> sqlite3.Connection:
     db_path = daemon_brain_db_path(base_path)
     db_path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(db_path), timeout=30.0)
+    conn = sqlite3.connect(str(db_path), timeout=30.0, factory=ClosingConnection)
     conn.row_factory = sqlite3.Row
     initialize_daemon_brain(conn)
     return conn

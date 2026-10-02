@@ -78,6 +78,8 @@ import time
 from pathlib import Path
 from typing import Any
 
+from tinyassets.sqlite_connection import ClosingConnection
+
 _DB_FILENAME = ".external_write_receipts.db"
 
 # Receipt lifecycle states.
@@ -107,7 +109,7 @@ def _connect(universe_dir: str | Path) -> sqlite3.Connection:
     """
     path = receipts_db_path(universe_dir)
     path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(path, timeout=30.0)
+    conn = sqlite3.connect(path, timeout=30.0, factory=ClosingConnection)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode = WAL")
     conn.execute("PRAGMA busy_timeout = 30000")

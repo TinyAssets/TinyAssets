@@ -15,6 +15,8 @@ import json
 import sqlite3
 from pathlib import Path
 
+from tinyassets.sqlite_connection import ClosingConnection
+
 _DB_FILENAME = ".subscription_state.db"
 
 TIER_FREE = "free"
@@ -60,7 +62,7 @@ def state_db_path(universe_dir: str | Path) -> Path:
 def _connect(universe_dir: str | Path) -> sqlite3.Connection:
     path = state_db_path(universe_dir)
     path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(path, timeout=30.0, isolation_level=None)
+    conn = sqlite3.connect(path, timeout=30.0, isolation_level=None, factory=ClosingConnection)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode = WAL")
     conn.execute("PRAGMA busy_timeout = 30000")

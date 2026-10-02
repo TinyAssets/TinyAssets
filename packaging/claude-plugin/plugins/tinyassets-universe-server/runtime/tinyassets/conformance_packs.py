@@ -15,6 +15,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from tinyassets.sqlite_connection import ClosingConnection
+
 RESEARCH_PUBLICATION_STANDARD_ID = "research-publication-v0"
 VALID_STATUSES = {
     "ready",
@@ -116,7 +118,7 @@ def _runs_db(base_path: str | Path) -> Path:
 
 
 def _connect(db_path: Path) -> sqlite3.Connection:
-    conn = sqlite3.connect(str(db_path), timeout=30.0)
+    conn = sqlite3.connect(str(db_path), timeout=30.0, factory=ClosingConnection)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode = WAL")
     conn.execute("PRAGMA busy_timeout = 30000")

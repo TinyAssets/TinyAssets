@@ -29,6 +29,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterable
 
 from tinyassets import __version__ as _tinyassets_version
+from tinyassets.sqlite_connection import ClosingConnection
 from tinyassets.storage.workspace_authority import (
     is_git_scope,
     normalize_git_host,
@@ -4282,7 +4283,7 @@ class ConnectionLedger:
                 )
 
     def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self._db_path, timeout=30.0)
+        connection = sqlite3.connect(self._db_path, timeout=30.0, factory=ClosingConnection)
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys = ON")
         connection.execute("PRAGMA busy_timeout = 30000")

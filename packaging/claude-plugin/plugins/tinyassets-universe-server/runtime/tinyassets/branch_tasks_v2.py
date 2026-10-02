@@ -27,6 +27,7 @@ from tinyassets.platform_runtime_provenance import (
     cached_process_is_cloud_admitted,
     resolve_process_cloud_admission,
 )
+from tinyassets.sqlite_connection import ClosingConnection
 from tinyassets.storage import DB_FILENAME
 from tinyassets.storage.automation_activations import (
     AutomationActivationExecutor,
@@ -260,7 +261,7 @@ class Epoch2BranchTaskAdapter:
         if not database.is_file():
             return []
         uri = f"{database.resolve().as_uri()}?mode=ro"
-        with sqlite3.connect(uri, uri=True) as conn:
+        with sqlite3.connect(uri, uri=True, factory=ClosingConnection) as conn:
             conn.row_factory = sqlite3.Row
             conn.execute("PRAGMA query_only = ON")
             rows = self._store._v2_integrity_cursor(
@@ -544,7 +545,7 @@ class Epoch2BranchTaskAdapter:
         if not database.is_file():
             return None
         uri = f"{database.resolve().as_uri()}?mode=ro"
-        with sqlite3.connect(uri, uri=True) as conn:
+        with sqlite3.connect(uri, uri=True, factory=ClosingConnection) as conn:
             conn.row_factory = sqlite3.Row
             conn.execute("PRAGMA query_only = ON")
             conn.execute("BEGIN")

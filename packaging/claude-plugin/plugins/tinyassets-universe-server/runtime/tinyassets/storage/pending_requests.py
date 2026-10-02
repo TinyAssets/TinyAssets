@@ -42,6 +42,8 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+from tinyassets.sqlite_connection import ClosingConnection
+
 logger = logging.getLogger(__name__)
 
 _DB_NAME = ".pending_requests.db"
@@ -268,7 +270,9 @@ def _migrate_itemless_keys(conn: sqlite3.Connection) -> int:
 
 
 def _db(universe_dir: Path) -> sqlite3.Connection:
-    conn = sqlite3.connect(str(Path(universe_dir) / _DB_NAME), timeout=10.0)
+    conn = sqlite3.connect(
+        str(Path(universe_dir) / _DB_NAME), timeout=10.0, factory=ClosingConnection,
+    )
     conn.executescript(_SCHEMA)
     _ensure_columns(conn)
     _migrate_itemless_keys(conn)

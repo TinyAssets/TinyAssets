@@ -19,6 +19,8 @@ import time
 import uuid
 from pathlib import Path
 
+from tinyassets.sqlite_connection import ClosingConnection
+
 _logger = logging.getLogger(__name__)
 
 # Counter incremented on every record_contribution_event failure recovered
@@ -88,7 +90,7 @@ def _connect(base_path: str | Path) -> sqlite3.Connection:
     from tinyassets.runs import runs_db_path
 
     path = runs_db_path(base_path)
-    conn = sqlite3.connect(str(path), timeout=30.0)
+    conn = sqlite3.connect(str(path), timeout=30.0, factory=ClosingConnection)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode = WAL")
     conn.execute("PRAGMA busy_timeout = 30000")

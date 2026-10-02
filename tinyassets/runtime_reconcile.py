@@ -20,6 +20,7 @@ from tinyassets.branch_tasks_v2 import (
 )
 from tinyassets.dispatcher import load_dispatcher_config, prefers_request_type
 from tinyassets.platform_runtime_provenance import require_process_cloud_admission
+from tinyassets.sqlite_connection import ClosingConnection
 from tinyassets.storage import DB_FILENAME, data_dir
 from tinyassets.storage.request_admissions import RequestAdmissionStore
 
@@ -73,7 +74,7 @@ class _LegacyCapacityMatcher:
         if not database.is_file():
             return {}
         uri = f"{database.resolve().as_uri()}?mode=ro"
-        with sqlite3.connect(uri, uri=True) as conn:
+        with sqlite3.connect(uri, uri=True, factory=ClosingConnection) as conn:
             conn.row_factory = sqlite3.Row
             conn.execute("PRAGMA query_only = ON")
             rows = conn.execute(
