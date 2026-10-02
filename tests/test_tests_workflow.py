@@ -453,7 +453,10 @@ def test_every_shard_count_declaration_agrees() -> None:
     exactly 1..N rather than merely N entries long.
     """
     d = _shard_count_declarations()
-    assert len(d["shard_arg"]) == 1 and len(d["expect"]) == 1 and len(d["name"]) == 1, d
+    # The shard step names the split once per branch (slice check, whole
+    # surface, affected selection); every occurrence must be the same N.
+    assert d["shard_arg"] and len(set(d["shard_arg"])) == 1, d
+    assert len(d["expect"]) == 1 and len(d["name"]) == 1, d
     n = int(d["shard_arg"][0])
     assert n >= 2, "a single shard is the old serial job with extra steps"
     assert d["matrix"] == list(range(1, n + 1)), d
@@ -473,7 +476,7 @@ def test_only_the_aggregate_carries_the_protection_context() -> None:
 def test_aggregate_waits_for_every_shard_and_reads_their_results() -> None:
     jobs = _load()["jobs"]
     shard, agg = jobs["required-tests-shard"], jobs["required-tests"]
-    assert agg.get("needs") in ("required-tests-shard", ["required-tests-shard"])
+    assert agg.get("needs") == ["select", "required-tests-shard"]
     # fail-fast would cancel sibling shards, turning one real failure into
     # "missing shards" and hiding what actually broke.
     assert shard["strategy"].get("fail-fast") is False
@@ -538,3 +541,36 @@ def test_affected_tests_select_then_run_their_slice_through_the_gate_script() ->
     assert len(n) == 1
     assert job["strategy"]["matrix"]["shard"] == list(range(1, int(n[0]) + 1))
     assert re.findall(r"/(\d+)$", str(job["name"])) == n
+
+
+# ---- the merge-group selection (lean-CI L1) -----------------------------------
+
+
+def test_only_a_merge_group_runs_less_than_the_whole_surface() -> None:
+    """docs/design-notes/2026-10-02-affected-only-merge-gate.md: the merge group
+    runs what its combined diff can affect; push, schedule and dispatch always
+    run everything, which is the post-merge run main-red.yml acts on."""
+    jobs = _load()["jobs"]
+    select = jobs["select"]
+    assert _expr(select.get("if", "")) == "github.event_name != 'pull_request'"
+    steps = {s.get("name"): s for s in select["steps"] if s.get("name")}
+    pick = steps["Select what the merge group can affect"]
+    assert _expr(pick["if"]) == "github.event_name == 'merge_group'"
+    assert pick["env"]["BASE_SHA"] == "${{ github.event.merge_group.base_sha }}"
+    assert '--changed-from changed.txt --out affected.txt' in pick["run"]
+    rest = steps["Every other event runs the whole surface"]
+    assert _expr(rest["if"]) == "github.event_name != 'merge_group'"
+    assert rest["run"].strip() == "echo ALL > affected.txt"
+    assert select["outputs"]["digest"] == "${{ steps.publish.outputs.digest }}"
+
+
+def test_shards_run_the_published_selection_and_the_aggregate_checks_its_digest() -> None:
+    jobs = _load()["jobs"]
+    shard = jobs["required-tests-shard"]
+    assert shard["needs"] == "select", "a failed select must skip the shards (fail closed)"
+    download = next(s for s in shard["steps"] if "download-artifact" in str(s.get("uses", "")))
+    assert download["with"]["name"] == "required-selection"
+    agg = jobs["required-tests"]
+    decide = next(s for s in agg["steps"] if "--aggregate" in str(s.get("run", "")))
+    assert decide["env"]["SELECTION"] == "${{ needs.select.outputs.digest }}"
+    assert '--selection "${SELECTION:-missing}"' in decide["run"]

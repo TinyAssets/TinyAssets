@@ -137,6 +137,66 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  # What the required shards run (2026-10-02, lean-CI lever L1;
+  # docs/design-notes/2026-10-02-affected-only-merge-gate.md). On a merge group:
+  # only the tests the GROUP'S combined diff can affect (scripts/affected_tests.py,
+  # the whole surface whenever it is unsure). On every other non-PR event --
+  # each push to main, the hourly schedule, a manual dispatch -- the whole
+  # surface, unconditionally: that post-merge run is what main-red.yml watches,
+  # re-running once and then reverting or alarming on a red required result.
+  #
+  # The selection is computed ONCE here and published with its digest; every
+  # shard runs that one file and the aggregate refuses a shard that reports any
+  # other digest. A failure in this job skips the shards, and the aggregate then
+  # fails closed on a non-success shard result.
+  select:
+    name: required-tests select
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      digest: ${{ steps.publish.outputs.digest }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install
+        if: github.event_name == 'merge_group'
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e '.[dev]'
+
+      - name: Select what the merge group can affect
+        if: github.event_name == 'merge_group'
+        env:
+          BASE_SHA: ${{ github.event.merge_group.base_sha }}
+        run: |
+          # Two-dot diff: the merge-group commit against the main it was built
+          # on is exactly what this group changes.
+          git fetch --no-tags --depth=1 origin "$BASE_SHA"
+          git diff --name-only "$BASE_SHA" HEAD > changed.txt
+          python scripts/affected_tests.py --changed-from changed.txt --out affected.txt
+          { echo "### Merge-group selection"; echo; echo '```'; head -c 60000 affected.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Every other event runs the whole surface
+        if: github.event_name != 'merge_group'
+        run: echo ALL > affected.txt
+
+      - id: publish
+        run: |
+          echo "digest=$(python -c 'import sys; sys.path.insert(0, "scripts"); from pathlib import Path; from ci_required_tests import selection_digest; print(selection_digest(Path("affected.txt")))')" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: required-selection
+          path: affected.txt
+          if-no-files-found: error
+
   # The required surface runs as SHARDS in parallel, then ONE aggregate job
   # (`required-tests`, below) decides the gate over the union. Measured before
   # the split: ~21,900 tests serially, 19-22 min on an idle runner (runs
@@ -165,6 +225,7 @@ jobs:
     # ~10-17 min of every PR's wall clock. The aggregate below still REPORTS on
     # the PR (it cannot be skipped), explicitly deferring to the queue.
     if: github.event_name != 'pull_request'
+    needs: select
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
@@ -177,18 +238,41 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: actions/download-artifact@v4
+        with:
+          name: required-selection
+
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
           cache: pip
           cache-dependency-path: pyproject.toml
 
+      # A merge group that owns no file in this shard writes its empty result
+      # here and skips the install and pytest: it frees the runner in seconds.
+      - name: Does this shard own any selected file?
+        id: slice
+        run: |
+          mkdir -p shard-out
+          if [ "$(cat affected.txt)" = "ALL" ]; then
+            echo "count=all" >> "$GITHUB_OUTPUT"
+          else
+            COUNT="$(python scripts/ci_required_tests.py \
+              --junit "shard-out/junit-shard-${{ matrix.shard }}.xml" \
+              --exclude-from .github/heavy-test-files.txt \
+              --affected affected.txt --profile affected \
+              --shard "${{ matrix.shard }}/6" --slice-count | tail -n 1)"
+            echo "count=${COUNT}" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Install
+        if: steps.slice.outputs.count != '0'
         run: |
           python -m pip install --upgrade pip
           pip install -e '.[dev]'
 
       - name: Run this shard of the required test surface
+        if: steps.slice.outputs.count != '0'
         env:
           # Keep the suite off the real repo tree and off any host state. The
           # conftest already forces mock providers and sqlite_only storage; this
@@ -205,10 +289,18 @@ jobs:
           # exclusion run reported was also failing in the same-tree full run.
           # NOT "on every main push" — app-performed merges raise no push
           # event. See the `schedule:` trigger comment.
-          python scripts/ci_required_tests.py \
-            --junit "shard-out/junit-shard-${{ matrix.shard }}.xml" \
-            --exclude-from .github/heavy-test-files.txt \
-            --shard "${{ matrix.shard }}/6" --profile shard
+          if [ "$(cat affected.txt)" = "ALL" ]; then
+            python scripts/ci_required_tests.py \
+              --junit "shard-out/junit-shard-${{ matrix.shard }}.xml" \
+              --exclude-from .github/heavy-test-files.txt \
+              --shard "${{ matrix.shard }}/6" --profile shard
+          else
+            python scripts/ci_required_tests.py \
+              --junit "shard-out/junit-shard-${{ matrix.shard }}.xml" \
+              --exclude-from .github/heavy-test-files.txt \
+              --affected affected.txt --profile affected \
+              --shard "${{ matrix.shard }}/6"
+          fi
 
       - name: Upload shard result
         # always(): a red shard's junit and manifest are what let the aggregate
@@ -282,7 +374,7 @@ jobs:
     # with the `gh api` protection update in
     # docs/decisions/ADR-003-required-test-aggregator.md.
     name: required-tests
-    needs: required-tests-shard
+    needs: [select, required-tests-shard]
     # `always()` is the ONE condition this job may carry, and it is required,
     # not optional. Without it a failed or cancelled shard makes GitHub SKIP
     # this job, and a skipped required check is accepted by branch protection
@@ -318,6 +410,7 @@ jobs:
         if: github.event_name != 'pull_request'
         env:
           SHARD_RESULT: ${{ needs.required-tests-shard.result }}
+          SELECTION: ${{ needs.select.outputs.digest }}
         run: |
           # The script fails on a shard job result other than success (even if
           # its files look complete) and on a MISSING, duplicated, truncated or
@@ -325,6 +418,7 @@ jobs:
           # No `|| true`, no `continue-on-error` — the exit code IS the gate.
           python scripts/ci_required_tests.py --aggregate shards/ \
             --expect-shards 6 --shard-job-result "$SHARD_RESULT" \
+            --selection "${SELECTION:-missing}" \
             --junit junit.xml --min-ran 10700
 
       - name: Upload junit

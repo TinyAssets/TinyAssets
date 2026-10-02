@@ -64,12 +64,30 @@ MIN_RAN_FLOORS = {
     # floor is checked again by `--aggregate`, but the union floor alone cannot
     # see one shard collapsing: 5 of 6 shards still clear it comfortably.
     "shard": 1000,
-    # The PR-time run of scripts/affected_tests.py's selection. Zero on
-    # purpose: a selection can honestly be one test or none (a docs-only
-    # change), and this run is advisory -- the merge-group shards above carry
-    # the floors that gate. Only reachable with --affected.
+    # A run of scripts/affected_tests.py's selection: the PR-time advisory run,
+    # and the merge-group shards when the group's diff selects less than the
+    # whole surface (docs/design-notes/2026-10-02-affected-only-merge-gate.md).
+    # Zero on purpose: a selection can honestly be one test or none (a
+    # docs-only change). What stops a vacuous AFFECTED gate is --aggregate:
+    # every shard must report the same selection digest the select job
+    # published, and a non-trivial selection that ran nothing fails.
     "affected": 0,
 }
+
+# --aggregate in affected mode: a selection of at least this many files that
+# ran zero tests is a collapse, not an honest no-op. Below it, zero can be
+# honest (a file holding only `slow` tests is deselected by `-m "not slow"`).
+AFFECTED_VACUITY_FILES = 5
+
+
+def selection_digest(path: Path | None) -> str:
+    """What a shard ran: ``ALL`` for the whole surface, else the selection's hash."""
+    if path is None:
+        return "ALL"
+    entries = path.read_text(encoding="utf-8").split()
+    if entries == ["ALL"]:
+        return "ALL"
+    return hashlib.sha256("\n".join(sorted(entries)).encode("utf-8")).hexdigest()
 
 
 # ---- sharding ---------------------------------------------------------------
@@ -417,7 +435,8 @@ def evaluate(
 
 
 def aggregate(
-    directory: Path, expected: int, junit_out: Path, min_ran: int, shard_job_result: str
+    directory: Path, expected: int, junit_out: Path, min_ran: int, shard_job_result: str,
+    selection: str = "ALL",
 ) -> int:
     """Merge shard results and decide the gate. Every shard must be accounted for.
 
@@ -437,6 +456,9 @@ def aggregate(
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
             index, total, code = int(data["shard"]), int(data["total"]), int(data["pytest_exit"])
+            # Manifests from before selections existed ran the whole surface.
+            ran_selection = str(data.get("selection", "ALL"))
+            selected = int(data.get("selected", -1))
         except (ValueError, KeyError, TypeError) as exc:
             problems.append(f"{path.name}: unreadable shard manifest ({exc!r})")
             continue
@@ -446,7 +468,16 @@ def aggregate(
         if index in manifests:
             problems.append(f"{path.name}: shard {index} reported twice")
             continue
-        manifests[index] = {"exit": code, "junit": path.with_suffix(".xml")}
+        if ran_selection != selection:
+            # Every shard must have run the ONE selection the select job
+            # published, or a shard could quietly run less than the gate claims.
+            problems.append(
+                f"{path.name}: shard {index} ran selection {ran_selection[:16]}, "
+                f"expected {selection[:16]}"
+            )
+            continue
+        manifests[index] = {"exit": code, "junit": path.with_suffix(".xml"),
+                            "selected": selected}
 
     missing = sorted(set(range(1, expected + 1)) - set(manifests))
     if missing:
@@ -494,13 +525,20 @@ def aggregate(
         return 1
 
     per_shard = ", ".join(f"{i}: exit {m['exit']}" for i, m in sorted(manifests.items()))
-    return evaluate(
-        failing,
-        ran,
-        min_ran,
-        [m["exit"] for m in manifests.values()],
-        f"### Required tests ({expected} shards; {per_shard})",
-    )
+    heading = f"### Required tests ({expected} shards; {per_shard})"
+    exits = [m["exit"] for m in manifests.values()]
+    if selection != "ALL":
+        selected_total = sum(max(m["selected"], 0) for m in manifests.values())
+        heading = (f"### Required tests - affected by this merge group "
+                   f"({selected_total} test files; {expected} shards; {per_shard})")
+        if selected_total >= AFFECTED_VACUITY_FILES and not ran:
+            summarise([heading, "", f"- {selected_total} test files were selected and "
+                       "zero tests ran: a collapsed run, not an honest no-op. Failing."])
+            return 1
+        # Exit 5 (nothing collected) is honest for a slice of only `slow` tests.
+        exits = [0 if code == 5 else code for code in exits]
+        min_ran = 0
+    return evaluate(failing, ran, min_ran, exits, heading)
 
 
 def _shard_label(args: argparse.Namespace) -> str:
@@ -641,6 +679,27 @@ def main() -> int:
         ),
     )
     ap.add_argument(
+        "--selection",
+        metavar="DIGEST",
+        default="ALL",
+        help=(
+            "With --aggregate: the selection digest the select job published "
+            "(selection_digest). ALL keeps the whole-surface floor; anything "
+            "else gates an affected-only merge group, and every shard must "
+            "report that same digest."
+        ),
+    )
+    ap.add_argument(
+        "--slice-count",
+        action="store_true",
+        help=(
+            "With --affected and --shard: print how many selected files this "
+            "shard owns and run nothing. When it is zero, also write this "
+            "shard's empty junit and manifest, so the workflow can skip the "
+            "install and pytest entirely."
+        ),
+    )
+    ap.add_argument(
         "--shard-job-result",
         metavar="RESULT",
         help=(
@@ -688,6 +747,9 @@ def main() -> int:
             f"in the same reviewed change if the suite legitimately shrank."
         )
 
+    if args.slice_count and not (args.affected and args.shard):
+        raise SystemExit("--slice-count needs --affected and --shard.")
+
     if args.emit_quarantine:
         failing, _ = collect_outcomes(Path(args.emit_quarantine))
         for nid in sorted(failing):
@@ -701,6 +763,7 @@ def main() -> int:
             Path(args.junit),
             args.min_ran,
             args.shard_job_result,
+            args.selection,
         )
 
     junit = Path(args.junit)
@@ -830,8 +893,32 @@ def main() -> int:
             )
         cmd += present
     selection = _read_selection(args) if args.affected else None
+    digest = selection_digest(Path(args.affected) if args.affected else None)
+
+    def write_manifest(code: int) -> None:
+        # Written BEFORE any verdict: the aggregate needs to know this shard ran,
+        # what it ran, and how pytest exited, even when its own verdict is red.
+        manifest.write_text(
+            json.dumps({"shard": args.shard[0], "total": args.shard[1], "pytest_exit": code,
+                        "selection": digest,
+                        "selected": -1 if selection is None else len(selection)}),
+            encoding="utf-8",
+        )
+
+    if args.slice_count:
+        count = -1 if selection is None else len(selection)
+        if count == 0:
+            ET.ElementTree(ET.Element("testsuites")).write(
+                junit, encoding="utf-8", xml_declaration=True)
+            write_manifest(0)
+        print(count)
+        return 0
     if selection is not None:
         if not selection:
+            if args.shard:
+                ET.ElementTree(ET.Element("testsuites")).write(
+                    junit, encoding="utf-8", xml_declaration=True)
+                write_manifest(0)
             summarise(
                 [
                     f"### Affected tests{_shard_label(args)}",
@@ -855,15 +942,7 @@ def main() -> int:
     proc = subprocess.run(cmd, cwd=REPO_ROOT, env=env)
     print(f"pytest exit code: {proc.returncode}", flush=True)
     if args.shard:
-        # Written unconditionally, BEFORE any verdict: the aggregate needs to
-        # know this shard ran and how pytest exited even when the junit is
-        # missing or this shard's own verdict is red.
-        manifest.write_text(
-            json.dumps(
-                {"shard": args.shard[0], "total": args.shard[1], "pytest_exit": proc.returncode}
-            ),
-            encoding="utf-8",
-        )
+        write_manifest(proc.returncode)
 
     # Exit 3 = INTERNALERROR (e.g. a crashed xdist worker). When that happens the
     # run is TRUNCATED: tests are silently dropped from the report, so a

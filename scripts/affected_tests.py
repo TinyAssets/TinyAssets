@@ -30,7 +30,9 @@ When unsure it selects EVERYTHING (output ``ALL``):
   tree, where nothing imports it any more.
 
 A test that walks a tree (``rglob``, ``os.walk``...) is also selected for any
-change under a top-level root it names as a string, e.g. ``"tinyassets"``.
+change under a top-level root it names as a string, e.g. ``"tinyassets"``, or
+under a top-level package it imports when it anchors the walk on a module's
+``__file__`` (``Path(storage_accounting.__file__).parent.rglob``).
 
 Over-selection is the safe direction throughout: it costs runner minutes,
 while under-selection only defers a failure to the queue, which runs anyway.
@@ -76,6 +78,12 @@ GENERIC_BASENAMES = {
 # names, including a bare top-level root like "tinyassets" or "mobile", which
 # is too common a string to match on for any other test.
 _WALKS = re.compile(r"\.rglob\(|\.glob\(|\.iterdir\(|os\.walk\(|os\.listdir\(|glob\.glob\(")
+# A walk anchored on an imported module's file: `Path(sa.__file__).parent`
+# names no root as a string. Missed once in the merge queue (2026-10-02):
+# test_storage_registry_complete scans every tinyassets/*.py from
+# storage_accounting.__file__, and a change adding a new on-disk name to
+# tinyassets/api/status.py did not select it.
+_MODULE_ANCHOR = re.compile(r"\w\.__file__")
 
 # `"docs" / "concerns"` (pathlib) reads as `"docs/concerns"` after this.
 _PATHLIB_JOIN = re.compile(r"""["']\s*/\s*["']""")
@@ -288,6 +296,10 @@ def select(
     closures = {t: graph.closure(t) for t in tests}
     texts = {t: _PATHLIB_JOIN.sub("/", graph.files[t]) for t in tests}
     walkers = [t for t in tests if _WALKS.search(texts[t])]
+    anchored = {
+        t: {f.split("/", 1)[0] for f in closures[t] if "/" in f and not is_test_file(f)}
+        for t in walkers if _MODULE_ANCHOR.search(texts[t])
+    }
     selected: set[str] = set()
     for rel in changed:
         if rel.endswith(".py") and not is_test_file(rel) and not (root / rel).exists():
@@ -305,6 +317,7 @@ def select(
         if "/" in rel:
             roots = (f'"{top}"', f"'{top}'", f'"{top}/', f"'{top}/")
             hit.update(t for t in walkers if any(r in texts[t] for r in roots))
+            hit.update(t for t, tops in anchored.items() if top in tops)
         source = rel.endswith(".py") and not rel.startswith("tests/")
         if not hit and source and (root / rel).exists():
             return None, [f"{rel}: Python file no test reaches statically"]
@@ -325,11 +338,17 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--base", help="git ref to diff against (merge-base ...HEAD)")
     ap.add_argument("--changed", nargs="*", help="explicit changed paths instead of --base")
+    ap.add_argument("--changed-from", metavar="FILE",
+                    help="a file of changed paths, one per line (a merge group's diff)")
     ap.add_argument("--out", help="write the selection here; ALL means the whole suite")
     args = ap.parse_args()
-    if (args.base is None) == (args.changed is None):
-        raise SystemExit("pass exactly one of --base or --changed")
-    changed = args.changed if args.changed is not None else changed_files(args.base)
+    if sum(x is not None for x in (args.base, args.changed, args.changed_from)) != 1:
+        raise SystemExit("pass exactly one of --base, --changed or --changed-from")
+    if args.changed_from is not None:
+        changed = [line for line in Path(args.changed_from).read_text(encoding="utf-8").splitlines()
+                   if line.strip()]
+    else:
+        changed = args.changed if args.changed is not None else changed_files(args.base)
     try:
         selected, reasons = select(changed)
     except RuntimeError as exc:

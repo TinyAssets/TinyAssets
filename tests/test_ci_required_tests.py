@@ -556,3 +556,106 @@ def test_an_untracked_test_file_does_not_reshuffle_the_packing(tmp_path, monkeyp
         assert gate._packed(6) == before
     finally:
         gate._packed.cache_clear()
+
+
+# ---- the affected-only merge-group gate (lean-CI L1) -------------------------
+
+
+def _sel_shard(dir_: Path, index: int, total: int, body: str | None, selection: str,
+               selected: int, exit_code: int = 0) -> None:
+    _shard(dir_, index, total, body, exit_code)
+    (dir_ / f"junit-shard-{index}.json").write_text(
+        json.dumps({"shard": index, "total": total, "pytest_exit": exit_code,
+                    "selection": selection, "selected": selected}), encoding="utf-8")
+
+
+def _agg_sel(shards: Path, selection: str, min_ran: int = 10_000) -> int:
+    return gate.aggregate(shards, 3, shards.parent / "junit.xml", min_ran, "success", selection)
+
+
+def test_selection_digest_is_all_or_an_order_free_hash(tmp_path):
+    a, b = tmp_path / "a.txt", tmp_path / "b.txt"
+    a.write_text("tests/test_x.py\ntests/test_y.py\n", encoding="utf-8")
+    b.write_text("tests/test_y.py\ntests/test_x.py\n", encoding="utf-8")
+    assert gate.selection_digest(a) == gate.selection_digest(b) != "ALL"
+    a.write_text("ALL\n", encoding="utf-8")
+    assert gate.selection_digest(a) == "ALL" == gate.selection_digest(None)
+
+
+def test_an_affected_group_passes_without_the_whole_surface_floor(shards):
+    _sel_shard(shards, 1, 3, _cases("test_a", 4), "d1", 1)
+    _sel_shard(shards, 2, 3, "", "d1", 0)
+    _sel_shard(shards, 3, 3, _cases("test_c", 2), "d1", 1)
+    assert _agg_sel(shards, "d1") == 0
+
+
+def test_an_affected_group_still_fails_on_a_new_failure(shards):
+    _sel_shard(shards, 1, 3, _cases("test_a", 4, fail=1), "d1", 1)
+    _sel_shard(shards, 2, 3, "", "d1", 0)
+    _sel_shard(shards, 3, 3, "", "d1", 0)
+    assert _agg_sel(shards, "d1") == 1
+
+
+def test_a_shard_that_ran_another_selection_fails_the_gate(shards, capsys):
+    _sel_shard(shards, 1, 3, _cases("test_a", 4), "d1", 1)
+    _sel_shard(shards, 2, 3, "", "OTHER", 0)
+    _sel_shard(shards, 3, 3, "", "d1", 0)
+    assert _agg_sel(shards, "d1") == 1
+    assert "ran selection" in capsys.readouterr().out
+
+
+def test_a_whole_surface_shard_cannot_satisfy_an_affected_gate_or_vice_versa(shards):
+    for i in (1, 2, 3):
+        _sel_shard(shards, i, 3, _cases(f"test_s{i}", 4), "ALL", -1)
+    assert _agg_sel(shards, "d1") == 1
+    # ...and an ALL gate keeps the whole-surface floor: 12 tests < 10,000.
+    assert _agg_sel(shards, "ALL") == 1
+    assert _agg_sel(shards, "ALL", min_ran=12) == 0
+
+
+def test_an_old_manifest_without_a_selection_counts_as_the_whole_surface(shards):
+    for i in (1, 2, 3):
+        _shard(shards, i, 3, _cases(f"test_s{i}", 4))
+    assert _agg_sel(shards, "ALL", min_ran=12) == 0
+    assert _agg_sel(shards, "d1") == 1
+
+
+def test_a_big_selection_that_ran_nothing_is_a_collapse(shards):
+    n = gate.AFFECTED_VACUITY_FILES
+    _sel_shard(shards, 1, 3, "", "d1", n)
+    _sel_shard(shards, 2, 3, "", "d1", 0)
+    _sel_shard(shards, 3, 3, "", "d1", 0)
+    assert _agg_sel(shards, "d1") == 1
+    (shards / "junit-shard-1.json").unlink()
+    _sel_shard(shards, 1, 3, "", "d1", n - 1)
+    assert _agg_sel(shards, "d1") == 0, "a few slow-only files can honestly run nothing"
+
+
+def test_slice_count_writes_the_empty_result_and_runs_nothing(tmp_path):
+    sel = tmp_path / "affected.txt"
+    sel.write_text("tests/test_no_such_file.py\n", encoding="utf-8")
+    junit = tmp_path / "j.xml"
+    proc = subprocess.run(
+        [sys.executable, str(_SCRIPT), "--affected", str(sel), "--profile", "affected",
+         "--shard", "1/6", "--junit", str(junit), "--slice-count"],
+        capture_output=True, text=True, timeout=60,
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert proc.stdout.strip().splitlines()[-1] == "0"
+    manifest = json.loads(junit.with_suffix(".json").read_text(encoding="utf-8"))
+    assert manifest == {"shard": 1, "total": 6, "pytest_exit": 0,
+                        "selection": gate.selection_digest(sel), "selected": 0}
+    assert gate.collect_outcomes(junit) == (set(), set())
+    assert "+ " not in proc.stdout
+
+
+def test_the_empty_slice_run_also_writes_its_manifest(tmp_path):
+    sel = tmp_path / "affected.txt"
+    sel.write_text("", encoding="utf-8")
+    junit = tmp_path / "j.xml"
+    subprocess.run(
+        [sys.executable, str(_SCRIPT), "--affected", str(sel), "--profile", "affected",
+         "--shard", "2/6", "--junit", str(junit)],
+        capture_output=True, text=True, timeout=60, check=True,
+    )
+    assert json.loads(junit.with_suffix(".json").read_text(encoding="utf-8"))["selected"] == 0

@@ -195,3 +195,46 @@ def test_every_full_suite_trigger_exists_in_the_repo():
     """A renamed trigger silently stops forcing the full run."""
     missing = [rel for rel in at.FULL_SUITE_TRIGGERS if not (at.REPO_ROOT / rel).is_file()]
     assert not missing, missing
+
+
+def test_changed_from_reads_a_merge_groups_diff_file(tmp_path):
+    """The merge-group select job passes its diff as a file (lean-CI L1)."""
+    import subprocess
+    import sys
+
+    changed = tmp_path / "changed.txt"
+    changed.write_text("docs/a note.md\n\nREADME.md\n", encoding="utf-8")
+    out = tmp_path / "affected.txt"
+    proc = subprocess.run(
+        [sys.executable, str(_SCRIPT), "--changed-from", str(changed), "--out", str(out)],
+        capture_output=True, text=True, timeout=300,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert "ALL" not in out.read_text(encoding="utf-8").split(), proc.stderr
+    both = subprocess.run(
+        [sys.executable, str(_SCRIPT), "--changed-from", str(changed), "--base", "HEAD"],
+        capture_output=True, text=True, timeout=60,
+    )
+    assert both.returncode != 0 and "exactly one" in both.stderr
+
+
+def test_a_walker_anchored_on_a_modules_file_is_selected_for_its_package(tmp_path):
+    """The one real miss in the 2026-10-02 sample: a test walking tinyassets/
+    from `storage_accounting.__file__` named no root as a string."""
+    root = _repo(
+        tmp_path,
+        {
+            "tinyassets/accounting.py": "",
+            "tinyassets/api/__init__.py": "",
+            "tinyassets/api/status.py": "PATH = '.deploy-pending.json'\n",
+            "tests/test_registry.py": (
+                "from pathlib import Path\nfrom tinyassets import accounting as sa\n"
+                "SOURCE = Path(sa.__file__).resolve().parent\n"
+                "def test_x():\n    list(SOURCE.rglob('*.py'))\n"
+            ),
+            "tests/test_unrelated.py": "import json\n",
+        },
+    )
+    selected, _ = at.select(["tinyassets/api/status.py"], root)
+    assert "tests/test_registry.py" in selected
+    assert "tests/test_unrelated.py" not in selected
