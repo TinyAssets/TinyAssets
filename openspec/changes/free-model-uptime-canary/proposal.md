@@ -4,11 +4,12 @@ The founder, 2026-10-02: "make sure the freemodel user is always prioritized to 
 
 ## What Changes
 
-- Run one real served `converse` turn hourly from the droplet through `https://tinyassets.io/mcp`, in a dedicated private canary account/home with its own connected free-model credential.
-- Automatically create a host-confined canary bearer on first deploy. Refuse every action outside exact own-home conversation/status shapes before dispatch; the bearer cannot connect credentials or perform writes through tools.
-- Offer a one-time owner-only browser link using the existing OpenRouter OAuth PKCE acquisition flow, with a narrowly scoped server-side bind to the canary home. Founder setup is clicks only.
-- Enforce one model request per scheduled turn, including skipping canary learning extraction, retries, fallbacks and tool continuations.
-- Record result, structured failure code, actual request count, latency and answering model in host state and journal; alarm on two consecutive failures through the existing watchdog channel.
+- Run one real served `converse` turn hourly (every three hours after two consecutive failures, until a pass) from the droplet through `https://tinyassets.io/mcp`, in a dedicated private canary account/home with its own connected free-model credential.
+- Automatically create a host-confined canary bearer in a separate root-only env file on first deploy. Refuse every action outside exact own-home conversation/status shapes before dispatch; the bearer cannot connect credentials or perform writes through tools.
+- Resolve the enrollment human through the identified founder home's `universe_owner.owner_of`, while the reserved account owns its admin/founder-home/usage and credential/grant records. Offer an explicit-button, one-time owner-only browser link using the existing OpenRouter OAuth PKCE acquisition flow, with a narrowly scoped server-side bind to the canary home. Founder setup is clicks only.
+- Reuse the real free-tier per-message budget from `fix/request-count-per-turn`: at most two rounds plus one alternative after failure (three requests), normally one request. Reuse its capped-source learning skip. Sustained-failure backoff bounds the planning worst case to about 30 requests/day.
+- Enforce own-home confinement at the shared permission boundary before public-read shortcuts and across persisted/background execution; define deletion cleanup and separate authorizer auditing for the cross-account bind.
+- Record result, structured failure code, actual request count, latency and answering model in host state and journal; alarm on two consecutive failures through a checked write to the local watchdog alarm log; external GitHub issue delivery is optional and permission-dependent. A stolen owner session is outside the PKCE threat model and could bind an attacker's source only while the canary has no connection; confirm binding in the owner's request rail.
 
 ## Capabilities
 
