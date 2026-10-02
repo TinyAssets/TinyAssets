@@ -426,6 +426,9 @@ def prepare_owned_model_plan(
     all_models, admitted, snapshots, source_policies = [], [], [], []
     interaction = Interaction(True, frozenset({"text"}), frozenset())
     ranking_sources = set()
+    from tinyassets.provider_authority import current as current_authority
+
+    config = current_authority(universe, config)
     allowed = None if config is None else config.allowed_providers
     for provider, chain in chains:
         member = next(m for m in chain[0].candidates if m.provider == provider)

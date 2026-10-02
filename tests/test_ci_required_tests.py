@@ -61,7 +61,7 @@ def test_parse_quarantine_splits_tolerated_and_flaky(tmp_path):
         "# a comment\n"
         "\n"
         "tests/test_a.py::test_one\n"
-        "flaky tests/test_b.py::test_two\n"
+        "flaky owner=dev expires=2026-10-15 tests/test_b.py::test_two\n"
         "tests/test_c.py::test_three  # trailing comment\n",
         encoding="utf-8",
     )
@@ -69,6 +69,40 @@ def test_parse_quarantine_splits_tolerated_and_flaky(tmp_path):
     assert tolerated == {"tests/test_a.py::test_one", "tests/test_c.py::test_three"}
     assert flaky == {"tests/test_b.py::test_two"}
     assert problems == []
+
+
+def test_a_flaky_entry_must_name_an_owner_and_an_expiry(tmp_path):
+    """A quarantined test still runs; the owner and date say who ends it and when."""
+    f = tmp_path / "q.txt"
+    f.write_text("flaky owner=dev tests/test_b.py::test_two\n", encoding="utf-8")
+    _, flaky, problems = gate.parse_quarantine(f)
+    assert flaky == {"tests/test_b.py::test_two"}
+    assert len(problems) == 1 and "owner= and expires=" in problems[0]
+
+
+def test_ledger_fields_lead_so_a_parameter_id_is_never_eaten():
+    """Fields come BEFORE the node id: a parameter id may end in ` owner=b]`,
+    but no node id starts with `owner=`."""
+    line = "flaky owner=a expires=2026-10-15 tests/t.py::t[x owner=b]  # c"
+    parsed = gate.split_ledger_line(line)
+    assert parsed == (True, "tests/t.py::t[x owner=b]", {"owner": "a", "expires": "2026-10-15"})
+    assert gate.split_ledger_line("tests/t.py::t[a b]") == (False, "tests/t.py::t[a b]", {})
+    assert gate.split_ledger_line("   # only a comment") is None
+
+
+def test_the_quarantine_is_capped(tmp_path, monkeypatch):
+    monkeypatch.setattr(gate, "MAX_QUARANTINE", 2)
+    f = tmp_path / "q.txt"
+    f.write_text("".join(f"tests/test_a.py::t{i}\n" for i in range(3)), encoding="utf-8")
+    assert any("the cap is 2" in p for p in gate.parse_quarantine(f)[2])
+
+
+def test_budgets_bound_skips_and_summed_seconds(monkeypatch):
+    monkeypatch.setattr(gate, "MAX_REQUIRED_SKIPPED", 2)
+    monkeypatch.setattr(gate, "MAX_TEST_SECONDS", 100)
+    assert gate.budget_failures({"a", "b"}, 100.0) == []
+    over = gate.budget_failures({"a", "b", "c"}, 100.5)
+    assert len(over) == 2 and "SKIPPED" in over[0] and "100s" in over[1]
 
 
 def test_parse_quarantine_reports_malformed_lines(tmp_path):
@@ -155,6 +189,17 @@ def test_repo_quarantine_file_is_wellformed():
     """The committed list must always parse — a malformed line fails the gate."""
     _, _, problems = gate.parse_quarantine(gate.QUARANTINE)
     assert problems == [], f"malformed quarantine entries: {problems}"
+
+
+def test_the_quarantine_cap_only_ratchets_down():
+    """Deleting ledger entries must lower MAX_QUARANTINE in the same change, so
+    the headroom never quietly grows back into room for new quarantines."""
+    tolerated, flaky, _ = gate.parse_quarantine(gate.QUARANTINE)
+    entries = len(tolerated) + len(flaky)
+    assert gate.MAX_QUARANTINE - entries <= gate.QUARANTINE_SLACK, (
+        f"{entries} ledger entries; lower MAX_QUARANTINE to at most "
+        f"{entries + gate.QUARANTINE_SLACK}"
+    )
 
 
 @pytest.mark.parametrize("attr", ["QUARANTINE", "REPO_ROOT"])

@@ -340,7 +340,7 @@ def test_a_turn_too_large_for_the_model_moves_to_an_accepted_model_that_fits(
 
     monkeypatch.setattr(router, "call", call)
     answer = universe_intelligence._call_writer(
-        "x" * 60_000, system="exact system",
+        "x" * 150_000, system="exact system",
         universe_context=agent.served.context, config=agent.config,
     )
     assert answer == "finished exact answer"
@@ -357,7 +357,7 @@ def test_a_turn_too_large_for_every_accepted_model_still_says_so(agent, monkeypa
     _order(agent, monkeypatch, ["lab/also-small:free"])
     with pytest.raises(PermissionError) as error:
         universe_intelligence._call_writer(
-            "x" * 60_000, system="exact system",
+            "x" * 150_000, system="exact system",
             universe_context=agent.served.context, config=agent.config,
         )
     assert not agent.wires

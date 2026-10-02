@@ -1,13 +1,4 @@
-"""Provider stub registration tests.
-
-Guards the boot-time registration block in
-``domains/fantasy_daemon/phases/_provider_stub.py`` so Gemini + Groq
-registration stays wired after future refactors.
-
-Prod was previously effectively zero-deep on provider fallback because
-Gemini + Groq were named in the router chain but never registered. This
-test file locks in the registration call pattern.
-"""
+"""The provider call module boots its fallback router with no credentials."""
 from __future__ import annotations
 
 import importlib
@@ -32,53 +23,10 @@ def reset_stub():
         yield
 
 
-class TestGeminiGroqRegistration:
-    def test_gemini_never_registered_from_a_host_key(
-        self, monkeypatch, reset_stub
-    ):
-        """Hard Rule 15: a host key plus the retired switch registers nothing."""
-        pytest.importorskip("google.genai")
-        monkeypatch.setenv("GEMINI_API_KEY", "test-key-gemini")
-        monkeypatch.setenv("TINYASSETS_ALLOW_API_KEY_PROVIDERS", "1")
-
-        stub = _reload_stub()
-
-        assert stub._real_router is not None
-        assert "gemini-free" not in stub._real_router.available_providers
-
-    def test_groq_never_registered_from_a_host_key(
-        self, monkeypatch, reset_stub
-    ):
-        pytest.importorskip("groq")
-        monkeypatch.setenv("GROQ_API_KEY", "test-key-groq")
-        monkeypatch.setenv("TINYASSETS_ALLOW_API_KEY_PROVIDERS", "1")
-
-        stub = _reload_stub()
-
-        assert stub._real_router is not None
-        assert "groq-free" not in stub._real_router.available_providers
-
-    def test_gemini_skipped_without_key(self, monkeypatch, reset_stub):
-        monkeypatch.delenv("GEMINI_API_KEY", raising=False)
-
-        stub = _reload_stub()
-
-        assert stub._real_router is not None
-        assert "gemini-free" not in stub._real_router.available_providers
-
-    def test_groq_skipped_without_key(self, monkeypatch, reset_stub):
-        monkeypatch.delenv("GROQ_API_KEY", raising=False)
-
-        stub = _reload_stub()
-
-        assert stub._real_router is not None
-        assert "groq-free" not in stub._real_router.available_providers
-
+class TestFallbackRouterBoot:
     def test_stub_importable_even_when_all_providers_fail(
         self, monkeypatch, reset_stub
     ):
-        monkeypatch.delenv("GEMINI_API_KEY", raising=False)
-        monkeypatch.delenv("GROQ_API_KEY", raising=False)
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
 
         stub = _reload_stub()

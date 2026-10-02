@@ -113,9 +113,6 @@ def configure(
 
         author_server.sync_universes_from_filesystem(base_path)
 
-    # Load persisted provider keys before any provider registration
-    _load_provider_keys()
-
     if daemon is not None:
         # Persist the universe the daemon was started on
         uid = _daemon_universe_id()
@@ -551,70 +548,6 @@ def _read_active_universe() -> str | None:
 
 
 # ---------------------------------------------------------------------------
-# Provider key persistence
-# ---------------------------------------------------------------------------
-
-_PROVIDER_KEYS_FILE = ".provider_keys.json"
-
-_ALLOWED_PROVIDER_ENV_VARS: frozenset[str] = frozenset({
-    "GEMINI_API_KEY",
-    "GROQ_API_KEY",
-    "XAI_API_KEY",
-})
-
-
-def _load_provider_keys() -> None:
-    """Load persisted provider API keys from disk into os.environ.
-
-    Called during ``configure()`` so that keys set via the API survive
-    restarts without manual ``export`` commands.
-
-    Only env vars in ``_ALLOWED_PROVIDER_ENV_VARS`` are accepted to
-    prevent a tampered JSON file from injecting arbitrary env vars.
-    """
-    if not _base_path:
-        return
-    keys_path = Path(_base_path) / _PROVIDER_KEYS_FILE
-    if not keys_path.exists():
-        return
-    try:
-        data = json.loads(keys_path.read_text(encoding="utf-8"))
-        for env_var, value in data.items():
-            if env_var not in _ALLOWED_PROVIDER_ENV_VARS:
-                logger.warning(
-                    "Ignoring unrecognized env var in provider keys: %s",
-                    env_var,
-                )
-                continue
-            if value and env_var not in os.environ:
-                os.environ[env_var] = value
-                logger.info("Loaded persisted key for %s", env_var)
-    except (OSError, json.JSONDecodeError):
-        logger.debug("Failed to load provider keys", exc_info=True)
-
-
-def _save_provider_key(env_var: str, value: str) -> None:
-    """Persist a single provider API key to disk.
-
-    Merges into the existing file so multiple keys can be stored.
-    """
-    if not _base_path:
-        return
-    keys_path = Path(_base_path) / _PROVIDER_KEYS_FILE
-    try:
-        data: dict[str, str] = {}
-        if keys_path.exists():
-            data = json.loads(keys_path.read_text(encoding="utf-8"))
-        data[env_var] = value
-        keys_path.write_text(
-            json.dumps(data, indent=2) + "\n", encoding="utf-8",
-        )
-        logger.info("Persisted key for %s", env_var)
-    except (OSError, json.JSONDecodeError):
-        logger.debug("Failed to save provider key", exc_info=True)
-
-
-# ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
 
@@ -674,9 +607,6 @@ def _get_provider_health() -> tuple[dict[str, Any], list[str]]:
 
     # Known providers with setup hints
     _SETUP_HINTS: dict[str, str] = {
-        "gemini-free": "Needs GEMINI_API_KEY env var",
-        "groq-free": "Needs GROQ_API_KEY env var",
-        "grok-free": "Needs XAI_API_KEY env var",
         "ollama-local": "Needs Ollama running locally",
         "claude-code": "Needs claude CLI subscription",
         "codex": "Needs codex CLI subscription",
@@ -684,9 +614,6 @@ def _get_provider_health() -> tuple[dict[str, Any], list[str]]:
     _FAMILIES: dict[str, str] = {
         "claude-code": "anthropic",
         "codex": "openai",
-        "gemini-free": "google",
-        "groq-free": "meta",
-        "grok-free": "xai",
         "ollama-local": "local",
     }
 
@@ -2096,81 +2023,6 @@ def delete_workspace_file(
     except OSError as e:
         raise HTTPException(status_code=500, detail=f"Failed to delete workspace file: {e}")
     return {"status": "ok", "filename": safe_name}
-
-
-# -- Provider configuration ------------------------------------------------
-
-
-class ProviderKeyBody(BaseModel):
-    provider: str = Field(..., description="Provider name (e.g. groq-free)")
-    api_key: str = Field(..., min_length=1, description="API key value")
-
-
-@app.post("/v1/config/providers")
-def configure_provider(
-    body: ProviderKeyBody,
-    _user: str = Depends(_require_auth),
-) -> dict[str, Any]:
-    """Set an API key for a provider and register it at runtime.
-
-    Sets the appropriate environment variable and attempts to register
-    the provider with the daemon's router.  No restart needed.
-    """
-    _ENV_MAP: dict[str, str] = {
-        "gemini-free": "GEMINI_API_KEY",
-        "groq-free": "GROQ_API_KEY",
-        "grok-free": "XAI_API_KEY",
-    }
-
-    env_var = _ENV_MAP.get(body.provider)
-    if not env_var:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                f"Provider '{body.provider}' does not accept API keys. "
-                f"Supported: {', '.join(sorted(_ENV_MAP))}"
-            ),
-        )
-
-    # Set the env var and persist to disk
-    os.environ[env_var] = body.api_key
-    _save_provider_key(env_var, body.api_key)
-    logger.info("Set %s for provider %s", env_var, body.provider)
-
-    # Try to register with the daemon's router
-    router = (
-        _daemon._router
-        if _daemon and hasattr(_daemon, "_router") and _daemon._router
-        else None
-    )
-    if router is None:
-        return {
-            "status": "ok",
-            "detail": f"{env_var} set. Provider will activate on next daemon start.",
-        }
-
-    try:
-        if body.provider == "gemini-free":
-            from fantasy_daemon.providers.gemini_provider import GeminiProvider
-            router.register(GeminiProvider())
-        elif body.provider == "groq-free":
-            from fantasy_daemon.providers.groq_provider import GroqProvider
-            router.register(GroqProvider())
-        elif body.provider == "grok-free":
-            from fantasy_daemon.providers.grok_provider import GrokProvider
-            router.register(GrokProvider())
-
-        return {
-            "status": "ok",
-            "provider": body.provider,
-            "registered": body.provider in router.available_providers,
-        }
-    except Exception as e:
-        return {
-            "status": "error",
-            "provider": body.provider,
-            "detail": str(e),
-        }
 
 
 # -- Multiplayer Author Server -----------------------------------------------

@@ -936,11 +936,26 @@ class CodexProvider(BaseProvider):
             # replied with persona-echo / "reauthentication" while hosted-mode
             # codex chatted + recalled memory correctly). Coding turns
             # (run_graph etc.) keep the read-only universe workspace.
+            sandbox_chat = getattr(config, "sandbox_chat", False)
             workspace_mount = (
                 JailMount("tmpfs", "/workspace")
-                if getattr(config, "sandbox_chat", False)
+                if sandbox_chat
                 else JailMount("ro-bind", "/workspace", universe_root)
             )
+            # The universe agent's own workspace (harness W2) is masked here as
+            # in every provider launch: what its agent writes there never
+            # reaches a provider's view (gpt-6-astra on #4194, round 2).
+            workspace_masks: tuple[JailMount, ...] = ()
+            if not sandbox_chat:
+                from tinyassets.providers.provider_jail import (
+                    AGENT_WORKSPACE_DIR,
+                    ensure_agent_workspace,
+                )
+
+                ensure_agent_workspace(universe_root)
+                workspace_masks = (
+                    JailMount("tmpfs", f"/workspace/{AGENT_WORKSPACE_DIR}"),
+                )
             # This adapter's own view of its universe inside the shared jail
             # (tinyassets.providers.provider_jail): narrower than the default,
             # never wider -- every bind below comes from inside universe_root.
@@ -948,6 +963,7 @@ class CodexProvider(BaseProvider):
                 universe_dir=universe_root,
                 mounts=(
                     workspace_mount,
+                    *workspace_masks,
                     JailMount(
                         "tmpfs", "/workspace/.runtime/provider-launch-credentials",
                     ),

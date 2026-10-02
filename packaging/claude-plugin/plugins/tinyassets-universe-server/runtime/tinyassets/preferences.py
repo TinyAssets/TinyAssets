@@ -24,9 +24,6 @@ logger = logging.getLogger(__name__)
 SUBSCRIPTION_PROVIDERS: list[str] = [
     "claude-code",
     "codex",
-    "gemini-free",
-    "groq-free",
-    "grok-free",
 ]
 
 # Providers that run locally with no external subscription.

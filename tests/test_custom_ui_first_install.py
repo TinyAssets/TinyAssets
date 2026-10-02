@@ -358,7 +358,8 @@ def test_an_unknown_operation_is_refused_by_name(homes) -> None:
                                          graph_id="u-alice", payload_json="{}"))
     assert refused["error"] == "unknown_app_ui_operation"
     assert refused["allowed_operations"] == [
-        "save", "activate", "use_default", "add_ui", "replace_ui", "edit_ui", "remove_ui"]
+        "save", "activate", "use_default", "add_ui", "replace_ui", "edit_ui", "remove_ui",
+        "put_asset", "remove_asset"]
 
 
 def test_the_route_the_handbook_names_works_on_the_engine_surface(tmp_path, monkeypatch) -> None:

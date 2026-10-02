@@ -20,7 +20,7 @@ The provider router (`tinyassets/providers/router.py`) SHALL define a fallback c
 - **AND** an unknown role name resolves to the `writer` chain
 
 ### Requirement: User-brought compute of any allowed access method
-The platform SHALL NOT enumerate a compiled provider set. A universe runs on compute the user brings, of any allowed access method — subscription (via CLI), API key (via HTTP), or another published standard — never on platform-supplied compute. This REPLACES the earlier "subscription-only by default" requirement: subscription is one access method, not the only one. "No host writer ever" is preserved — the compute is always the user's own. API-key providers are honored only when the credential is held under the custody owner's contract (no raw key in the control plane / JSON vault). The legacy fixed api-key providers (`gemini-free`, `groq-free`, `grok-free`) remain gated off unless `TINYASSETS_ALLOW_API_KEY_PROVIDERS` is truthy; primary subscription writers are `claude -p` / `codex exec` subprocesses, never API SDKs (project hard rule).
+The platform SHALL NOT enumerate a compiled provider set. A universe runs on compute the user brings, of any allowed access method — subscription (via CLI), API key (via HTTP), or another published standard — never on platform-supplied compute. This REPLACES the earlier "subscription-only by default" requirement: subscription is one access method, not the only one. "No host writer ever" is preserved — the compute is always the user's own. API-key providers are honored only when the credential is held under the custody owner's contract (no raw key in the control plane / JSON vault). There are no fixed built-in api-key providers; primary subscription writers are `claude -p` / `codex exec` subprocesses, never API SDKs (project hard rule).
 
 #### Scenario: an api-key provider serves a universe
 - **GIVEN** a universe whose owner has registered an `api_key_http` provider definition and deposited its credential through the custody owner's path
@@ -1063,3 +1063,26 @@ The system SHALL record a model that the owner's source refused during a served 
 #### Scenario: The mark expires
 - **WHEN** the mark's lifetime has passed
 - **THEN** the model is ordered as if it had never been refused
+
+### Requirement: A reply that fails in flight is retried within a bound, and a small window compacts
+The system SHALL request every engine-inference agent reply as a stream and SHALL judge it by inactivity, not total time: once the response headers arrive, a reply that keeps arriving SHALL NOT be cut for being slow (bounded only by an outer ceiling against a drip), and one that sends nothing for the source's inactivity window (default 120 seconds, per-source configurable) is `provider_stalled`, returned as far as it got. A non-streamed reply that outruns the whole-reply ceiling (`provider_reply_timeout`) SHALL NOT be retried or moved to another model. The system SHALL treat a 2xx agent reply that carries an in-band source error (`provider_reply_error`, with the source's own message and code as detail), that cannot be decoded (`provider_unreadable_reply`), or that stalled, as a failed step of an engine-inference round: the turn SHALL retry the same model once, then at most one other model in the owner's accepted order with only the failed model excluded (at most two such retries per turn), re-rendering only the journal's completed rounds so no tool is re-run; the connection SHALL NOT be cooled for such a failure; an unrecognized non-2xx status SHALL remain `provider_protocol_error` and SHALL NOT be retried. A failed turn's record SHALL state how many model requests the turn sent, and a stalled reply's partial text SHALL be kept in the owner's notice (never in a run record or log). When a turn no longer fits its model's window and no accepted model with a larger window exists, the turn SHALL render older tool results and call arguments clipped (each clip saying what it left out) and retry on the same model, while the journal keeps every round whole.
+
+#### Scenario: An upstream error after real work does not end the build
+- **WHEN** a source answers HTTP 200 with an error object in place of the reply after earlier tool rounds completed
+- **THEN** the same model is asked again with the completed rounds' results, no completed tool runs again, and the turn continues
+
+#### Scenario: The error persists
+- **WHEN** the same model and the remaining accepted models keep failing in flight past the bound
+- **THEN** the record is `code=provider_reply_error` (or `provider_unreadable_reply`), `stage=model_reply`, its detail is the source's own words, and the notice offers asking the turn to continue rather than saying a reply was unreadable
+
+#### Scenario: A slow reply is never abandoned
+- **WHEN** a streamed reply keeps arriving for longer than the old whole-reply ceiling
+- **THEN** it is read to the end and no second request is spent on it
+
+#### Scenario: A reply goes silent
+- **WHEN** a streamed reply sends nothing for the inactivity window
+- **THEN** the same model is asked again, and if the turn still ends the notice quotes what the model had written and how many requests the turn sent
+
+#### Scenario: The turn outgrows its only model
+- **WHEN** the next request would exceed the selected model's window and no accepted model is larger
+- **THEN** older tool results are sent clipped with a marker saying the tool can be called again for the whole result, and only when clipping no longer shrinks the request is the record `context_window_exceeded`

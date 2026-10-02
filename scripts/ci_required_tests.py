@@ -35,6 +35,7 @@ import functools
 import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
 import xml.etree.ElementTree as ET
@@ -70,6 +71,84 @@ MIN_RAN_FLOORS = {
     # the floors that gate. Only reachable with --affected.
     "affected": 0,
 }
+
+
+# ---- budgets ------------------------------------------------------------------
+#
+# The suite is budgeted by what it COSTS, never by how many tests it has: a
+# count budget invites deleting cheap, valuable tests (Linear grew its suite 4x
+# in 2026 and still cut PR wait, by cutting per-test cost). Each is a reviewed
+# constant here, like MIN_RAN_FLOOR, so raising one is a receipt-gated diff of
+# a gate file and lowering one is free. None of them reads a date: the merge
+# queue must never fail because of the calendar.
+#
+# Measured on merge-group runs 2026-10-01 (36926964890, 36924723282,
+# 36920148863, 36912072109): 126-127 tests skipped; the sum of per-test seconds
+# across the six shards 1,431-1,509, with one noisy-runner outlier at 1,856.
+# The seconds cap sits well above that noise so a slow runner never fails a
+# merge; it catches a change that makes the suite materially slower.
+MAX_REQUIRED_SKIPPED = 127
+MAX_TEST_SECONDS = 2400
+#: Entries in the quarantine ledger, flaky or not. A quarantine that only grows
+#: is how a red build gets normalised.
+MAX_QUARANTINE = 63
+#: How far MAX_QUARANTINE may sit above the ledger. Deleting entries means
+#: lowering the cap in the same PR (tests/test_ci_required_tests.py), so the
+#: cap only ratchets down unless a reviewed change raises it.
+QUARANTINE_SLACK = 8
+#: Leading `key=value` fields a ledger line may carry, BEFORE the node id; a
+#: `flaky` entry must carry owner= and expires= (the test still RUNS, it just
+#: does not block). Leading, never trailing: a parameter id may end in
+#: ` owner=b]`, but no node id starts with `owner=`.
+_LEDGER_FIELD = re.compile(r"^(owner|expires|issue)=(\S+)\s+")
+
+
+def split_ledger_line(raw: str) -> tuple[bool, str, dict[str, str]] | None:
+    """(is_flaky, node_id, fields) for one ledger line, or None for a blank or
+    comment line. The ONE parser: the gate, the hygiene gate, the inventory and
+    the quarantine oracle all read entries through it."""
+    line = raw.split("#", 1)[0].strip()
+    if not line:
+        return None
+    is_flaky = line.startswith("flaky ")
+    if is_flaky:
+        line = line[len("flaky ") :].lstrip()
+    fields: dict[str, str] = {}
+    while (hit := _LEDGER_FIELD.match(line)) is not None:
+        fields[hit.group(1)] = hit.group(2)
+        line = line[hit.end() :]
+    return is_flaky, line.strip(), fields
+
+
+def budget_failures(skipped: set[str], seconds: float) -> list[str]:
+    """What the union of the required shards spent over budget."""
+    out = []
+    if len(skipped) > MAX_REQUIRED_SKIPPED:
+        sample = ", ".join(sorted(skipped)[:5])
+        out.append(
+            f"{len(skipped)} tests were SKIPPED in the required run; the budget is "
+            f"{MAX_REQUIRED_SKIPPED}. A skip runs nowhere in this gate. Make the new case "
+            f"run here, remove a skip elsewhere, or raise MAX_REQUIRED_SKIPPED in a "
+            f"reviewed change. e.g. {sample}"
+        )
+    if seconds > MAX_TEST_SECONDS:
+        out.append(
+            f"the required tests took {seconds:.0f}s summed over all shards; the budget is "
+            f"{MAX_TEST_SECONDS}s. Find the slow additions (junit `time`) and cut their "
+            f"fixed cost, or raise MAX_TEST_SECONDS in a reviewed change."
+        )
+    return out
+
+
+def collect_cost(junit: Path) -> tuple[set[str], float]:
+    """(skipped node ids, summed seconds) from a junit xml."""
+    skipped: set[str] = set()
+    seconds = 0.0
+    for tc in ET.parse(junit).getroot().iter("testcase"):
+        seconds += float(tc.get("time") or 0)
+        if tc.find("skipped") is not None:
+            skipped.add(node_id(tc))
+    return skipped, seconds
 
 
 # ---- sharding ---------------------------------------------------------------
@@ -238,7 +317,8 @@ def parse_quarantine(path: Path) -> tuple[set[str], set[str], list[str]]:
     Line formats (blank lines and `#` comments ignored)::
 
         tests/test_x.py::test_y            # tolerated failure, ratcheted
-        flaky tests/test_x.py::test_z      # tolerated in BOTH directions
+        flaky owner=dev expires=2026-10-15 tests/test_x.py::test_z
+                                           # runs, never blocks, until it expires
 
     A plain entry is ratcheted: it must keep failing, or the line is stale and
     must be deleted. A `flaky` entry is exempt from that ratchet because it
@@ -252,17 +332,24 @@ def parse_quarantine(path: Path) -> tuple[set[str], set[str], list[str]]:
     flaky: set[str] = set()
     problems: list[str] = []
     for lineno, raw in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
-        line = raw.split("#", 1)[0].strip()
-        if not line:
+        parsed = split_ledger_line(raw)
+        if parsed is None:
             continue
-        is_flaky = False
-        if line.startswith("flaky "):
-            is_flaky = True
-            line = line[len("flaky ") :].strip()
+        is_flaky, line, fields = parsed
         if "::" not in line:
             problems.append(f"{path.name}:{lineno}: not a pytest node id: {line!r}")
             continue
+        if is_flaky and not ("owner" in fields and "expires" in fields):
+            problems.append(
+                f"{path.name}:{lineno}: a flaky quarantine entry needs owner= and expires= "
+                f"(it still runs; the owner and date say who ends it and when): {line!r}"
+            )
         (flaky if is_flaky else tolerated).add(line)
+    if len(tolerated) + len(flaky) > MAX_QUARANTINE:
+        problems.append(
+            f"{path.name}: {len(tolerated) + len(flaky)} entries; the cap is {MAX_QUARANTINE}. "
+            "Fix or delete entries before quarantining more."
+        )
     return tolerated, flaky, problems
 
 
@@ -454,6 +541,8 @@ def aggregate(
 
     failing: set[str] = set()
     ran: set[str] = set()
+    skipped: set[str] = set()
+    seconds = 0.0
     owner: dict[str, int] = {}
     merged = ET.Element("testsuites")
     for index, info in sorted(manifests.items()):
@@ -481,6 +570,9 @@ def aggregate(
             owner.setdefault(nid, index)
         failing |= shard_failing
         ran |= shard_ran
+        shard_skipped, shard_seconds = collect_cost(info["junit"])
+        skipped |= shard_skipped
+        seconds += shard_seconds
 
     # Written even when failing, so the `junit-required-tests` artifact (what
     # --emit-quarantine and duration measurements read) keeps its old shape.
@@ -494,13 +586,20 @@ def aggregate(
         return 1
 
     per_shard = ", ".join(f"{i}: exit {m['exit']}" for i, m in sorted(manifests.items()))
-    return evaluate(
+    verdict = evaluate(
         failing,
         ran,
         min_ran,
         [m["exit"] for m in manifests.values()],
         f"### Required tests ({expected} shards; {per_shard})",
     )
+    over = budget_failures(skipped, seconds)
+    summarise(
+        ["", f"- skipped: **{len(skipped)}** (budget {MAX_REQUIRED_SKIPPED}); "
+         f"summed test seconds: **{seconds:.0f}** (budget {MAX_TEST_SECONDS})"]
+        + [f"\n**FAILED - {o}**" for o in over]
+    )
+    return 1 if over else verdict
 
 
 def _shard_label(args: argparse.Namespace) -> str:

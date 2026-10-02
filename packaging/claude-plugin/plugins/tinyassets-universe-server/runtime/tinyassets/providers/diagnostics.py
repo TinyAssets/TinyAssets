@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import math
 import re
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from typing import Any, Literal
 
 from tinyassets.workspace_git import _REDACTED
@@ -130,10 +130,15 @@ class ProviderAttemptDiagnostic:
     # authorizes no replay, fallback, grant or cooldown.
     tool_phase: str | None = None
     last_progress_age_ms: float | None = None
+    # What a stalled streamed reply had written before it stopped: the owner's
+    # own model output, for the owner's notice ONLY. Never serialized (popped in
+    # ``to_dict``), never in ``repr``, never logged.
+    partial_text: str | None = field(default=None, repr=False, compare=False)
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize, dropping ``None`` fields for compactness."""
         d = asdict(self)
+        d.pop("partial_text", None)
         d["tool_phase"] = admitted_tool_phase(self.tool_phase)
         d["last_progress_age_ms"] = finite_progress_age_ms(self.last_progress_age_ms)
         return {k: v for k, v in d.items() if v is not None}
@@ -294,6 +299,9 @@ HELD_ATTEMPT_RUN_CLASSES: dict[str, str] = {
     "provider_idle_timeout": "timeout",
     "interactive_deadline": "timeout",
     "provider_protocol_error": "provider_error",
+    "provider_reply_error": "provider_error",
+    "provider_unreadable_reply": "provider_error",
+    "provider_stalled": "timeout",
     "provider_refused": "provider_error",
     "provider_reply_timeout": "timeout",
     "auth_invalid": "auth_invalid",

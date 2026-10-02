@@ -105,6 +105,12 @@ def test_native_selection_cannot_expand_explicit_allowlist(native, allowed):
     context = replace(native.context, config=replace(
         native.context.config, allowed_providers=allowed,
     ))
+    # The universe allowlist is authority: it lives in the platform record
+    # (tinyassets.provider_authority), which the router re-reads.
+    from tinyassets import provider_authority
+
+    current = provider_authority.authority_for(context.universe_dir, None)
+    provider_authority.write_record(context.universe_dir, {**current, "allowed_providers": allowed})
     with pytest.raises((ProviderAuthorityHeldError, AllProvidersExhaustedError)):
         _call(native, context)
     assert native.provider.calls == 0 and native.other.calls == 0

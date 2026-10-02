@@ -1,11 +1,13 @@
 """Provider-neutral config records are a projection, never launch authority."""
 
+import json
 from dataclasses import replace
 
 import pytest
 import yaml
 
-from tinyassets.config import write_provider_assignment_projection
+from tinyassets import provider_authority
+from tinyassets.config import load_universe_config, write_provider_assignment_projection
 from tinyassets.provider_assignment import load_provider_assignment
 from tinyassets.provider_assignment_manifest import AssignmentCandidate, ModelAccess
 from tinyassets.provider_serving_binding import resolve_serving_agent_binding
@@ -51,18 +53,23 @@ def test_unfamiliar_members_publish_sorted_nonsecret_projection(tmp_path):
     root, other = _member(), _member("another-source:green")
     _publish(tmp_path, assignment_candidates=(root, other))
     actual = yaml.safe_load(config.read_text(encoding="utf-8"))
+    # config.yaml keeps the preferences; authority is in the platform record
+    # (tinyassets.provider_authority, command-center-cutover E6).
     assert actual == {
         "user_option": {"keep": True},
-        "allowed_providers": [other.provider, root.provider],
         "preferred_writer": root.provider,
+        "engine_source": "requester_local",
+    }
+    record = json.loads(provider_authority.record_path(tmp_path).read_text(encoding="utf-8"))
+    assert record == {
+        "allowed_providers": [other.provider, root.provider],
         "engine_assignment_generation": 8,
         "engine_assignment_state": "ready",
-        "engine_source": "requester_local",
         "provider_authority_bindings": {
             other.provider: _binding(other), root.provider: _binding(root),
         },
     }
-    assert list(actual["provider_authority_bindings"]) == [other.provider, root.provider]
+    assert sorted(record["provider_authority_bindings"]) == [other.provider, root.provider]
     assert "private-custody" not in config.read_text(encoding="utf-8")
     assert "future-model" not in config.read_text(encoding="utf-8")
 
@@ -103,9 +110,9 @@ def test_invalid_projection_never_changes_existing_config(tmp_path, overrides):
 def test_legacy_single_source_contract_is_unchanged(tmp_path, provider):
     binding = {"binding_id": "legacy-binding", "legacy_extension": "preserved"}
     _publish(tmp_path, provider=provider, binding=binding, assignment_candidates=None)
-    actual = yaml.safe_load((tmp_path / "config.yaml").read_text(encoding="utf-8"))
-    assert actual["allowed_providers"] == [provider]
-    assert actual["provider_authority_bindings"] == {provider: binding}
+    loaded = load_universe_config(tmp_path)
+    assert loaded.allowed_providers == [provider]
+    assert loaded.provider_authority_bindings == {provider: binding}
 
 
 @pytest.mark.parametrize("content", ["- not-a-mapping\n", "invalid: [\n", ""])

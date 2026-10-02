@@ -406,6 +406,9 @@ def _approve_sink(
             "failure_class": "consent_is_person_only",
             "actionable_by": "user",
             "detail": (
+                ('The owner approves patch_intake in their app. Once approved, use '
+                 'write_graph target="patch_request" operation="send".')
+                if sink == "patch_intake" else
                 f'"{sink}" consent is answered by the command center\'s owner on the '
                 "request rail, not granted here. Ask for it there."
             ),

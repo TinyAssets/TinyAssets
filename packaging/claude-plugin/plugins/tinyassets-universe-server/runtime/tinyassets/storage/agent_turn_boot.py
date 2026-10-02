@@ -62,6 +62,8 @@ class BootTurns:
         self.started_at = when.astimezone(timezone.utc)
         self._lock = threading.Lock()
         self._claimed: set[tuple[str, str]] = set()
+        # Where each running turn is: (round, model id, round started at).
+        self._progress: dict[tuple[str, str], tuple[int, str, datetime]] = {}
 
     def claim(self, universe_id: str, turn_id: str) -> None:
         """This boot created that turn and is about to execute it."""
@@ -79,6 +81,26 @@ class BootTurns:
         """
         with self._lock:
             self._claimed.discard((universe_id, turn_id))
+            self._progress.pop((universe_id, turn_id), None)
+
+    def note_round(self, universe_id: str, turn_id: str, *, round: int, model: str,
+                   now: datetime | None = None) -> None:
+        """The turn just opened ``round`` on ``model``: what a waiting owner sees.
+
+        Display only, and in memory for the same reason ownership is: the journal
+        records no time per round, and a round's start is meaningless after the
+        restart that ends it. A 10-minute wait on one model request read exactly
+        like a hang (live 2026-10-02, turn c6ae56f9).
+        """
+        when = datetime.now(timezone.utc) if now is None else now
+        with self._lock:
+            if (universe_id, turn_id) in self._claimed:
+                self._progress[(universe_id, turn_id)] = (round, model, when)
+
+    def progress(self, universe_id: str, turn_id: str) -> tuple[int, str, datetime] | None:
+        """The last :meth:`note_round` for a turn this boot is running, or None."""
+        with self._lock:
+            return self._progress.get((universe_id, turn_id))
 
     def holds(self, universe_id: str, turn_id: str, *, created_at: str) -> bool:
         """Is that row a turn this boot is running?

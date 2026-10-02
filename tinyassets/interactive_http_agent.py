@@ -15,6 +15,13 @@ from tinyassets.storage.agent_turn_records import RoundInput, dump
 class ServedChatAgentAdapter:
     """Chat retains a current served request; this adapter grants no work authority."""
 
+    #: Every round admits afresh through ``router.call`` under the served
+    #: authority, so a failed round can be asked again of the SAME model. A
+    #: workflow node cannot: its failed round settles the one launch carrier it
+    #: holds (Codex, 2026-10-02), so the coordinator's same-model retries and
+    #: compaction are offered only to an adapter that says this.
+    relaunches_same_model = True
+
     def check(self, context, config):
         owner = check_served_agent_tool_authority(context)
         if (
@@ -82,12 +89,13 @@ class ServedChatAgentAdapter:
 class InteractiveHttpAgentTurn(AgentTurnCoordinator):
     """Compatibility entry point for the ordinary served-chat provider bridge."""
 
-    def __init__(self, *, router, prompt, system, universe_context, config):
+    def __init__(self, *, router, prompt, system, universe_context, config, adapter=None):
         from tinyassets.turn_interrupt import current
 
         # The served handler registered this turn under its verified caller;
         # only that caller's stop request can reach it (tinyassets/turn_interrupt).
         super().__init__(
-            adapter=ServedChatAgentAdapter(), router=router, prompt=prompt, system=system,
-            universe_context=universe_context, config=config, interrupt=current(),
+            adapter=adapter or ServedChatAgentAdapter(), router=router, prompt=prompt,
+            system=system, universe_context=universe_context, config=config,
+            interrupt=current(),
         )

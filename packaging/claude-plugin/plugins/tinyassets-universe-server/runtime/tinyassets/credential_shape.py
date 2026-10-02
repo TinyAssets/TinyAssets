@@ -70,6 +70,16 @@ word, which is the bug. Conversely an opaque identifier that is not secret -- a
 git sha, a UUID, a ULID, a 16-digit number -- is still refused, because by shape
 it is key material; the refusal says to put it in words, which is answerable.
 
+An ISO-8601 date-time IS taken out before a run is judged (2026-10-01): its
+``T`` glued two digit groups into a part that was neither a number nor a word,
+so every timestamp in a stored row read as key material. This is the one
+deliberate exception to "nothing the old pattern caught may be let through".
+Only a stamp that is delimited, matched atomically, made of ASCII digits and
+calendar-valid is taken out (``_ISO_STAMP_RE``, ``_valid_stamp``). A run long
+enough to be judged must leave only writing beside its stamps, or it is still
+refused. Several stamps in one token may all be taken out; each carries at most
+a stamp's digits.
+
 Screening the shapes above is what was asked for (founder, 2026-09-30: "keep
 refusing real secrets: sk-…, long high-entropy tokens, URLs with secret
 path/query segments").
@@ -211,6 +221,32 @@ _SEPARATOR_RE = re.compile(r"[-_./\\|'’:@+,;]+")
 #: so ``51ABCDEFSECRET`` cannot claim to be one.
 _SHORT_SUFFIXED_RE = re.compile(r"^[A-Za-z]{1,4}\d{1,4}$")
 
+#: An ISO-8601 date-time, extended (``2026-10-01T12:00:00.5+00:00``) or basic
+#: (``20261001T120000Z``), as written by every log line, board, file name and
+#: stored row. Its ``T`` glues a digit group to a digit group, so the part
+#: ``01T12`` was neither a number nor a word and the whole stamp read as an
+#: opaque run (2026-10-01: every timestamp in a published workflow row was
+#: "a credential"). Matched only DELIMITED -- never glued to a letter or digit,
+#: and atomically, so a stamp glued on the right cannot backtrack to a shorter
+#: stamp and shed the glued part -- and only with valid calendar and clock
+#: fields (`_valid_stamp`), so a key cannot claim to be one, and a key with a
+#: stamp glued to it is still judged whole. What one stamp can carry is
+#: digits: the fraction's nine plus the clock, no more than the fifteen-digit
+#: number `_MAX_DIGIT_RUN` already lets through.
+_ISO_STAMP_RE = re.compile(
+    # ASCII digits only (``\d`` would admit Arabic-Indic and other digits), and
+    # a boundary that is any Unicode letter or digit, so nothing glued on either
+    # side -- a stray non-ASCII digit included -- can be shed (gpt-6-astra).
+    r"(?<![^\W_])(?>"
+    r"(?:(?P<y>[0-9]{4})-(?P<mo>[0-9]{2})-(?P<d>[0-9]{2})[Tt ](?P<h>[0-9]{2})(?P<sep>[:-])"
+    r"(?P<mi>[0-9]{2})(?:(?P=sep)(?P<s>[0-9]{2}))?"
+    r"|(?P<by>[0-9]{4})(?P<bmo>[0-9]{2})(?P<bd>[0-9]{2})[Tt](?P<bh>[0-9]{2})(?P<bmi>[0-9]{2})"
+    r"(?P<bs>[0-9]{2})?)"
+    r"(?:[.,][0-9]{1,9})?"
+    r"(?:[Zz]|[+-](?P<oh>[0-9]{2})(?::?(?P<om>[0-9]{2}))?)?"
+    r")(?![^\W_])"
+)
+
 #: One CamelCase segment. A word's worth of letters, not a fragment.
 _CAMEL_SPLIT_RE = re.compile(r"[A-Z]?[a-z]+|[A-Z]+(?![a-z])")
 _MIN_CAMEL_SEGMENT_CHARS = 3
@@ -328,6 +364,16 @@ def _slot_shape(value: str) -> str | None:
 
 def _opaque_shape(token: str, *, minimum: int) -> str | None:
     """Judge one run: encoding, then word shape, then entropy."""
+    unstamped = _without_stamps(token)
+    if unstamped != token:
+        # Judge what is left once each delimited date-time is taken out. A run
+        # long enough to be judged stays judged: what remains must read as
+        # writing -- words, short numbers, ``v2`` -- or the run is refused, so a
+        # stamp cannot carry a short key under the length bar with it
+        # (``20261001T120000Z-Xq7Lm9RtAbC9``; gpt-6-astra).
+        if len(token) >= minimum and not _remainder_is_writing(unstamped):
+            return "opaque_high_entropy"
+        return _opaque_shape(unstamped, minimum=minimum)
     core = token.strip("._-")
     if not core:
         return None
@@ -354,6 +400,43 @@ def _opaque_shape(token: str, *, minimum: int) -> str | None:
     if _entropy_bits_per_char(core) < _MIN_ENTROPY_BITS:
         return None
     return "opaque_high_entropy"
+
+
+def _valid_stamp(match: re.Match[str]) -> bool:
+    """A real date (the calendar decides: no 31 February), hour 0-23, minute
+    0-59, second 0-60 (a leap second is written, so it is allowed), and an
+    offset of at most 14 hours and 59 minutes."""
+    import datetime
+
+    g = match.groupdict()
+
+    def num(*keys: str) -> int | None:
+        value = next((g[k] for k in keys if g.get(k) is not None), None)
+        return int(value) if value is not None else None
+
+    try:
+        datetime.date(num("y", "by") or 0, num("mo", "bmo") or 0, num("d", "bd") or 0)
+    except ValueError:
+        return False
+    hour, minute, second = num("h", "bh"), num("mi", "bmi"), num("s", "bs")
+    offset_h, offset_m = num("oh"), num("om")
+    return (hour is not None and hour <= 23 and minute is not None and minute <= 59
+            and (second is None or second <= 60)
+            and (offset_h is None or offset_h <= 14)
+            and (offset_m is None or offset_m <= 59))
+
+
+def _remainder_is_writing(remainder: str) -> bool:
+    """Every part left beside the taken-out stamps reads as writing."""
+    parts = [p for p in _SEPARATOR_RE.split(remainder.strip("._-")) if p]
+    letters = "".join(c for c in remainder if c.isascii() and c.isalpha())
+    mixed = bool(letters) and any(c.isdigit() for c in remainder)
+    return all(_part_is_word(part, mixed=mixed) for part in parts)
+
+
+def _without_stamps(token: str) -> str:
+    """``token`` with every valid, delimited ISO-8601 date-time replaced by ``-``."""
+    return _ISO_STAMP_RE.sub(lambda m: "-" if _valid_stamp(m) else m.group(0), token)
 
 
 def _word_shaped(core: str) -> bool:

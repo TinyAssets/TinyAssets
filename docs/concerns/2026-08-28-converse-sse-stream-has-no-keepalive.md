@@ -50,7 +50,7 @@ cut a minutes-long turn. That premise is **false**:
    `https://tinyassets.io/mcp`. Until one exists, the 2026-08-28 "200 whose
    body ends mid-frame" symptom has no established cause: a deploy recreating
    the container under the open response is one candidate
-   (`docs/concerns/2026-08-29-a-deploy-kills-in-flight-turns-silently.md`),
+   (the resolved 2026-08-29 deploy-kills-turns concern (resolved 2026-10-02 by the deploy wait; uptime-and-alarms spec)),
    an intermediary is another; PR #2640 recorded three separate observations
    (a 503 mid-deploy, a cold-load failure, a cut stream) and said
    contemporaneous wire evidence was still required.
@@ -69,7 +69,7 @@ discriminator this file asked for.
 06:59:22Z–07:02:01Z and the daemon's `StartedAt` is **07:01:37Z**. The turn in
 flight died with it; the client said *"That didn't get through — the reply was
 cut off in transit."* This is
-`2026-08-29-a-deploy-kills-in-flight-turns-silently.md`, third recorded
+the resolved 2026-08-29 deploy-kills-turns concern, third recorded
 occurrence, now with a container timestamp attached.
 
 **Cut 2, ~07:04Z — NOT a deploy.** The next message was sent after the daemon

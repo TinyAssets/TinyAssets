@@ -1,8 +1,12 @@
 name: DR drill
 
 # Scripted disaster-recovery test — provision a fresh Droplet, restore from
-# backup, probe for parity, then destroy. Manual dispatch only — never
-# auto-runs. Run quarterly or after major compose/bootstrap changes.
+# backup, probe for parity, then destroy. Runs WEEKLY on a schedule, restoring
+# from the OFF-REGION backup store (target-architecture S1a.5; the
+# uptime-and-alarms "restore drill runs weekly from off-region copies"
+# requirement). A drill that reads the primary's own tarball proves nothing
+# about losing the primary, so `backup_origin: primary` is a manual-dispatch
+# diagnostic only. The scheduled drill never touches the primary host.
 #
 # Docs: docs/ops/dr-drill-runbook.md
 #
@@ -10,8 +14,11 @@ name: DR drill
 #   DIGITALOCEAN_TOKEN   — DO API token with image:read plus SSH-key and
 #                          Droplet create/read/delete permissions
 #   DO_SSH_KEY           — private key PEM (authorized on new Droplet via cloud-init)
-#   DO_DROPLET_HOST      — primary Droplet IP (for backup transfer)
-#   DO_SSH_USER          — SSH user on both Droplets
+#   OFFREGION_BACKUP_REMOTE        — rclone remote:path of the off-region store
+#                                    holding tinyassets-data-*.tar.gz (origin offregion)
+#   OFFREGION_BACKUP_RCLONE_CONFIG — rclone.conf contents with a READ-ONLY
+#                                    credential for that remote (origin offregion)
+#   DO_DROPLET_HOST, DO_SSH_USER   — primary Droplet, origin `primary` only
 #
 # Exit codes / outcomes:
 #   success  — parity check passed; drill Droplet destroyed; log appended
@@ -19,15 +26,27 @@ name: DR drill
 #              dr-failed issue opened
 
 on:
+  schedule:
+    # Weekly, Sunday 06:17 UTC (off the hour so it does not queue behind every
+    # other scheduled workflow). Always restores from the off-region store.
+    - cron: '17 6 * * 0'
   workflow_dispatch:
     inputs:
+      backup_origin:
+        description: 'Where the backup comes from: offregion (the drill) or primary (diagnostic only; proves nothing about losing the primary)'
+        required: false
+        default: 'offregion'
+        type: choice
+        options:
+          - offregion
+          - primary
       drill_droplet_size:
         description: 'DO Droplet size slug (default: s-2vcpu-2gb — 1GB OOMs on apt+docker)'
         required: false
         default: 's-2vcpu-2gb'
         type: string
       backup_source:
-        description: 'Backup tarball path on primary (default: latest in /var/backups/tinyassets/)'
+        description: 'Backup tarball: a tinyassets-data-*.tar.gz name in the off-region store, or a path on the primary (default: the newest)'
         required: false
         default: ''
         type: string
@@ -53,6 +72,11 @@ concurrency:
 env:
   DO_SSH_USER: ${{ secrets.DO_SSH_USER }}
   DO_DROPLET_HOST: ${{ secrets.DO_DROPLET_HOST }}
+  # A scheduled run has NO inputs: dispatch defaults do not apply to it, so
+  # every input the drill job reads needs its default spelled out here
+  # (Codex on #4271: an empty size reached the Droplet create payload).
+  BACKUP_ORIGIN: ${{ inputs.backup_origin || 'offregion' }}
+  DRILL_DROPLET_SIZE: ${{ inputs.drill_droplet_size || 's-2vcpu-2gb' }}
   CANARY_URL: https://tinyassets.io/mcp
   DRILL_REGION: nyc3
 
@@ -182,24 +206,48 @@ jobs:
   drill:
     if: inputs.cleanup_droplet_id == ''
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # 45, not 30: the off-region origin downloads the full tarball (about 4 GB)
+    # to the runner and uploads it to the drill Droplet.
+    timeout-minutes: 45
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          # The off-region origin walks back up to 100 commits for a built image
+          # (build-image is path-filtered, so many commits publish nothing).
+          fetch-depth: 100
 
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
       - name: Verify secrets present
+        env:
+          OFFREGION_BACKUP_REMOTE: ${{ secrets.OFFREGION_BACKUP_REMOTE }}
+          OFFREGION_BACKUP_RCLONE_CONFIG: ${{ secrets.OFFREGION_BACKUP_RCLONE_CONFIG }}
         run: |
           missing=()
           [ -z "${{ secrets.DIGITALOCEAN_TOKEN }}" ] && missing+=("DIGITALOCEAN_TOKEN")
           [ -z "${{ secrets.DO_SSH_KEY }}" ] && missing+=("DO_SSH_KEY")
-          [ -z "$DO_DROPLET_HOST" ] && missing+=("DO_DROPLET_HOST")
-          [ -z "$DO_SSH_USER" ] && missing+=("DO_SSH_USER")
+          case "${BACKUP_ORIGIN}" in
+            offregion)
+              [ -z "${OFFREGION_BACKUP_REMOTE}" ] && missing+=("OFFREGION_BACKUP_REMOTE")
+              [ -z "${OFFREGION_BACKUP_RCLONE_CONFIG}" ] && missing+=("OFFREGION_BACKUP_RCLONE_CONFIG")
+              ;;
+            primary)
+              [ -z "$DO_DROPLET_HOST" ] && missing+=("DO_DROPLET_HOST")
+              [ -z "$DO_SSH_USER" ] && missing+=("DO_SSH_USER")
+              ;;
+            *)
+              echo "::error::backup_origin must be offregion or primary"
+              exit 1
+              ;;
+          esac
           if [ ${#missing[@]} -gt 0 ]; then
             echo "::error::Missing required secrets: ${missing[*]}"
+            if [ "${BACKUP_ORIGIN}" = "offregion" ]; then
+              echo "::error::The off-region backup store is not configured (target-architecture S1a.3). Until it is, the weekly drill is red on purpose: there is no off-region copy to restore."
+            fi
             exit 1
           fi
 
@@ -210,8 +258,10 @@ jobs:
           mkdir -p ~/.ssh
           echo "$SSH_KEY" > ~/.ssh/do_deploy
           chmod 600 ~/.ssh/do_deploy
-          # Add primary Droplet to known_hosts.
-          ssh-keyscan -t ed25519,rsa "$DO_DROPLET_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+          # The primary is contacted only by the diagnostic `primary` origin.
+          if [ "${BACKUP_ORIGIN}" = "primary" ]; then
+            ssh-keyscan -t ed25519,rsa "$DO_DROPLET_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+          fi
 
       # Extract the public key from the private key so we can register it with
       # the DO API and add it to the drill Droplet's authorized_keys.
@@ -221,30 +271,74 @@ jobs:
           pub=$(ssh-keygen -y -f ~/.ssh/do_deploy)
           echo "pub=${pub}" >> "$GITHUB_OUTPUT"
 
-      - name: Validate selected backup on primary
+      - name: Validate selected backup
         id: backup
         env:
           BACKUP_SOURCE: ${{ inputs.backup_source }}
+          OFFREGION_BACKUP_REMOTE: ${{ secrets.OFFREGION_BACKUP_REMOTE }}
+          OFFREGION_BACKUP_RCLONE_CONFIG: ${{ secrets.OFFREGION_BACKUP_RCLONE_CONFIG }}
         run: |
           set -euo pipefail
-          if [ -n "${BACKUP_SOURCE}" ]; then
-            candidate="${BACKUP_SOURCE}"
-          else
-            candidate=$(ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
-                "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-                "find /var/backups/tinyassets -maxdepth 1 -type f \
-                 -name 'tinyassets-data-*.tar.gz' -printf '%T@ %p\n' \
-                 | sort -nr | head -1 | cut -d' ' -f2-")
-            if [ -z "${candidate}" ]; then
-              echo "::error::No backup found on primary at /var/backups/tinyassets/"
+          grammar='^tinyassets-data-[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}-[0-9]{2}-[0-9]{2}Z\.tar\.gz$'
+          if [ "${BACKUP_ORIGIN}" = "offregion" ]; then
+            # The drill: fetch from the off-region store onto the runner. Nothing
+            # here reads the primary host.
+            sudo apt-get install -y --no-install-recommends rclone >/dev/null
+            rclone_conf="${RUNNER_TEMP}/rclone.conf"
+            # Removed on EVERY exit, not just success (Codex on #4271).
+            trap 'rm -f "${rclone_conf}"' EXIT
+            ( umask 077; printf '%s\n' "${OFFREGION_BACKUP_RCLONE_CONFIG}" > "${rclone_conf}" )
+            backup_root="${RUNNER_TEMP}/offregion-backups"
+            mkdir -p "${backup_root}"
+            if [ -n "${BACKUP_SOURCE}" ]; then
+              name="${BACKUP_SOURCE}"
+            else
+              # Timestamped names sort chronologically.
+              name=$(rclone --config "${rclone_conf}" lsf --files-only \
+                     --include 'tinyassets-data-*.tar.gz' "${OFFREGION_BACKUP_REMOTE}" \
+                     | LC_ALL=C sort | tail -1)
+            fi
+            if [ -z "${name}" ]; then
+              echo "::error::No tinyassets-data-*.tar.gz in the off-region store"
               exit 1
+            fi
+            # Refuse a crafted listing name BEFORE it reaches rclone or a path.
+            if [[ ! "${name}" =~ ${grammar} ]]; then
+              echo "::error::off-region backup name does not match the archive grammar"
+              exit 1
+            fi
+            rclone --config "${rclone_conf}" copyto \
+                "${OFFREGION_BACKUP_REMOTE%/}/${name}" "${backup_root}/${name}"
+            rm -f "${rclone_conf}"
+            candidate="${backup_root}/${name}"
+          else
+            backup_root="/var/backups/tinyassets"
+            if [ -n "${BACKUP_SOURCE}" ]; then
+              candidate="${BACKUP_SOURCE}"
+            else
+              candidate=$(ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+                  "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+                  "find /var/backups/tinyassets -maxdepth 1 -type f \
+                   -name 'tinyassets-data-*.tar.gz' -printf '%T@ %p\n' \
+                   | sort -nr | head -1 | cut -d' ' -f2-")
+              if [ -z "${candidate}" ]; then
+                echo "::error::No backup found on primary at /var/backups/tinyassets/"
+                exit 1
+              fi
             fi
           fi
 
+          # One validator for both origins: on the runner for off-region, over
+          # ssh on the primary for the diagnostic origin. The archive root is an
+          # argument so the containment check binds to the right directory.
           backup_meta=$(
-            ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
-                "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-                "python3 - $(printf '%q' "${candidate}")" <<'PY'
+            if [ "${BACKUP_ORIGIN}" = "offregion" ]; then
+              python3 - "${candidate}" "${backup_root}"
+            else
+              ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+                  "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+                  "python3 - $(printf '%q' "${candidate}") $(printf '%q' "${backup_root}")"
+            fi <<'PY'
           import base64
           import hashlib
           import json
@@ -255,7 +349,7 @@ jobs:
           import sys
           import tarfile
 
-          backup_root = Path("/var/backups/tinyassets").resolve(strict=True)
+          backup_root = Path(sys.argv[2]).resolve(strict=True)
           selected = Path(sys.argv[1])
           if not selected.is_absolute() or selected.is_symlink():
               raise SystemExit("selected backup must be absolute and not a symlink")
@@ -274,7 +368,7 @@ jobs:
           ):
               raise SystemExit(
                   "selected backup must be a readable tinyassets-data-*.tar.gz "
-                  "regular file under /var/backups/tinyassets"
+                  "regular file directly under the backup root"
               )
 
           archive_hash = hashlib.sha256()
@@ -334,22 +428,46 @@ jobs:
           ):
               print(f"{key}={metadata[key]}")
           PY
+          echo "origin=${BACKUP_ORIGIN}" >> "$GITHUB_OUTPUT"
           echo "Validated backup: $(python3 -c \
             'import base64,json,sys; print(base64.b64decode(json.loads(sys.argv[1])["tarball_b64"]).decode())' \
             "${backup_meta}")"
 
       - name: Resolve immutable production daemon image
         id: runtime-image
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          # Read one nonsecret assignment, never the primary environment.
-          # The final assignment wins, matching systemd/Compose env semantics.
-          raw_runtime_image=$(
-            ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
-                "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-                "sudo grep -E '^TINYASSETS_IMAGE=' /etc/tinyassets/env 2>/dev/null \
-                 | tail -1 | cut -d= -f2-"
-          )
+          if [ "${BACKUP_ORIGIN}" = "offregion" ]; then
+            # The primary may be gone in a real disaster, so the drill resolves
+            # the image from GHCR: the newest of the last 100 commits on this ref
+            # that has a published build, pinned to its immutable digest.
+            # Honest scope: this restores the backup into RECENTLY PUBLISHED code,
+            # not the image that wrote it. Backups do not record their image yet;
+            # when they do, the drill should prefer that.
+            echo "${GH_TOKEN}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin >/dev/null 2>&1 || true
+            raw_runtime_image=""
+            for commit in $(git rev-list --max-count=100 HEAD); do
+              tag="${commit:0:12}"
+              if docker manifest inspect "ghcr.io/tinyassets/tinyassets-daemon:${tag}" >/dev/null 2>&1; then
+                digest=$(docker buildx imagetools inspect "ghcr.io/tinyassets/tinyassets-daemon:${tag}" \
+                         | awk '/^Digest:/ && !seen {print $2; seen=1}')
+                raw_runtime_image="ghcr.io/tinyassets/tinyassets-daemon@${digest}"
+                echo "Drill image built from ${commit}"
+                break
+              fi
+            done
+          else
+            # Read one nonsecret assignment, never the primary environment.
+            # The final assignment wins, matching systemd/Compose env semantics.
+            raw_runtime_image=$(
+              ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+                  "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+                  "sudo grep -E '^TINYASSETS_IMAGE=' /etc/tinyassets/env 2>/dev/null \
+                   | tail -1 | cut -d= -f2-"
+            )
+          fi
           runtime_image=$(
             python3 - "${raw_runtime_image}" <<'PY'
           import re
@@ -378,7 +496,7 @@ jobs:
         id: droplet
         env:
           DO_TOKEN: ${{ secrets.DIGITALOCEAN_TOKEN }}
-          DRILL_SIZE: ${{ inputs.drill_droplet_size }}
+          DRILL_SIZE: ${{ env.DRILL_DROPLET_SIZE }}
           PUB_KEY: ${{ steps.pubkey.outputs.pub }}
         run: |
           set -euo pipefail
@@ -566,14 +684,23 @@ jobs:
             'import base64,os; print(base64.b64decode(os.environ["TARBALL_B64"]).decode())')
           quoted_backup_path=$(printf '%q' "${BACKUP_PATH}")
           quoted_destination=$(printf '%q' "/var/backups/tinyassets/${TARBALL}")
-          # Stream backup from primary directly to drill via SSH pipe.
-          ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
-              "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-              "cat ${quoted_backup_path}" \
-              | ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
-                    "root@${DRILL_IP}" \
-                    "mkdir -p /var/backups/tinyassets && \
-                     cat > ${quoted_destination}"
+          if [ "${BACKUP_ORIGIN}" = "offregion" ]; then
+            # The runner already holds the verified off-region copy.
+            ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+                "root@${DRILL_IP}" "mkdir -p /var/backups/tinyassets"
+            ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+                "root@${DRILL_IP}" "cat > ${quoted_destination}" < "${BACKUP_PATH}"
+            rm -f "${BACKUP_PATH}"
+          else
+            # Stream backup from primary directly to drill via SSH pipe.
+            ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+                "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+                "cat ${quoted_backup_path}" \
+                | ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+                      "root@${DRILL_IP}" \
+                      "mkdir -p /var/backups/tinyassets && \
+                       cat > ${quoted_destination}"
+          fi
           destination_sha256=$(ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
             "root@${DRILL_IP}" \
             "sha256sum ${quoted_destination}" | awk '{print $1}')
@@ -896,14 +1023,14 @@ jobs:
             echo ""
             echo "## ${now} — PASS"
             echo ""
-            echo "- **Backup source:** \`$(basename "${backup_path}")\`"
+            echo "- **Backup source:** \`$(basename "${backup_path}")\` (origin: ${BACKUP_ORIGIN})"
             echo "- **Archive SHA-256:** \`${archive_sha256}\`"
             echo "- **Representative member path (base64 UTF-8):** \`${sample_path_b64}\`"
             echo "- **Representative member SHA-256:** \`${sample_sha256}\`"
             echo "- **Drill Droplet:** ID \`${DROPLET_ID}\`, IP \`${DRILL_IP}\`"
             echo "- **Base Image:** \`${DRILL_IMAGE}\`"
             echo "- **Runtime Image:** \`${RUNTIME_IMAGE}\`"
-            echo "- **Size:** \`${{ inputs.drill_droplet_size }}\`"
+            echo "- **Size:** \`${DRILL_DROPLET_SIZE}\`"
             echo "- **Probe:** green (MCP status via SSH port-forward to localhost:8001)"
             echo "- **Cleanup:** Droplet DELETE confirmed before PASS publication"
             echo "- **Run:** ${run_url}"

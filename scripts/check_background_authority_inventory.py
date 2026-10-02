@@ -155,6 +155,19 @@ EXPECTED_SENSITIVE_CALL_SITES: tuple[CallSite, ...] = (
         "DaemonController._run_graph",
         "compiled.stream",
     ),
+    # Reviewed 2026-10-02 (S7, change `control-plane-agent-loop`): the thin
+    # loop's box tools READ the output of a box execution through
+    # `BoxProvider.stream`, the box contract's output read (target architecture
+    # D2). It starts nothing: the execution was started by `start_exec` on a
+    # handle bound to the turn's own owner and command center, and runs no
+    # branch. Registered for both the canonical module and its plugin mirror.
+    CallSite("tinyassets/agent_loop/box_tools.py", "BoxExecutor._collect", "self.stream"),
+    CallSite(
+        "packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/"
+        "tinyassets/agent_loop/box_tools.py",
+        "BoxExecutor._collect",
+        "self.stream",
+    ),
     CallSite(
         "packaging/claude-plugin/plugins/tinyassets-universe-server/"
         "runtime/tinyassets/api/market.py",

@@ -32,14 +32,14 @@
     // button does nothing. The frame's `form-action 'none'` still refuses every
     // real submission, so no form can navigate or send anything anywhere.
     SANDBOX:"allow-scripts allow-forms",
-    // Per-UI bounds only. There is NO bound on the library as a whole -- neither
-    // a count of UIs nor a byte total. A 4 MiB library ceiling used to refuse an
-    // install once the stored library was full; those bytes are the command center's
-    // tier storage now, one of the two limits an account has (founder 2026-09-30).
-    // Sizes are UTF-8 BYTES, because that is what the server validates: counting
-    // UTF-16 units let multi-byte bundles pass here and fail at write time
-    // (Codex, 2026-09-26).
-    MAX_MARKUP:32768,MAX_STYLE:16384,MAX_SCRIPT:32768,MAX_BUNDLE_BYTES:49152,
+    // Per-UI bounds only, the same numbers the server enforces
+    // (custom_agents.APP_UI_MAX_*). There is NO bound on the library as a whole --
+    // neither a count of UIs nor a byte total: those bytes are the command center's
+    // tier storage, one of the two limits an account has (founder 2026-09-30).
+    // The 49,152-byte bundle bound these replace made a game impossible
+    // (founder's village, 2026-10-02). Sizes are UTF-8 BYTES, because that is
+    // what the server validates (Codex, 2026-09-26).
+    MAX_TEXT_BYTES:1048576,MAX_ASSET_FILES:500,MAX_ASSET_BYTES:16777216,MAX_UI_ASSET_BYTES:134217728,
     MAX_NAME:120,MAX_MESSAGE:8192,MAX_READ_TURNS:50,
     MAX_LIST_RUNS:50,MAX_OUTPUT_CHUNK:8192,MAX_ID:200,MAX_PATH:1024,MAX_FILE_CHUNK:65536,
     // The first page of a whole-list read; see readWhole.
@@ -52,6 +52,17 @@
     ROLE:"app_experience",TURN_KIND:"tinyassets.turn-graph.v1",
     ID_RE:/^[a-z0-9][a-z0-9-]{0,63}$/,
     FIELDS:["kind","markup","name","script","style","ui_id","version"],
+    // Carried verbatim when present: the asset manifest the server checked,
+    // shared libraries by name, and whether `script` is a module.
+    OPTIONAL:["assets","libraries","script_type"],
+    SHA256_RE:/^[0-9a-f]{64}$/,
+    ASSET_PATH_RE:/^[A-Za-z0-9][A-Za-z0-9._-]*(\/[A-Za-z0-9][A-Za-z0-9._-]*)*$/,
+    ASSET_FETCH:"/app/api/ui-asset",
+    // The vendored libraries and their SHA-384 pins, the same table as
+    // tinyassets/onboarding/ui_libraries.json (a test holds them equal). A
+    // library whose bytes do not match is refused, never posted to the frame.
+    LIBRARIES:Object.freeze({"howler":{format:"global",sha384:"sha384-SSf4pKRrGaeWL8bdA89QvGkhZo5WvIVCGwKVzfX7z+9sSaIHtE/AkOLehofI4JVY",requires:[]},"phaser":{format:"global",sha384:"sha384-AvQiDMZAVLda3VtAoU5MCfBz8pzXhteb2CiUJeKBmPlWzpXj1uJ96Km11+YuFNu/",requires:[]},"pixi.js":{format:"global",sha384:"sha384-sQhAUuZTvdanRcBHbVCTasnEWH28GGEK87FJGPj/JaqwL/15KWQwKe7whTHdCkwm",requires:[]},"three":{format:"module",sha384:"sha384-IDC7sAMAIMB/TZ6dgKKPPAKZ2bXXXP8+FBMBC8cU319eBhKITx+PaalhfDkDNH28",requires:[]},"three/addons/controls/OrbitControls.js":{format:"module",sha384:"sha384-aJoe4qqS/DgF2jh9njAuvA6QIveJYoCuYOfYjdFY8P3eawzmc9bEQ40jq2TvOyuP",requires:["three"]},"three/addons/loaders/GLTFLoader.js":{format:"module",sha384:"sha384-x79xjCNsFlRByL5E+VmRg4w6ppPmAVfP11fg7GzEVJ0wT+wuVfARjjZNLsq7iUmq",requires:["three", "three/addons/utils/BufferGeometryUtils.js"]},"three/addons/utils/BufferGeometryUtils.js":{format:"module",sha384:"sha384-wOjwauvHlJO7K6APr7FmMGH2nupQa3Ndzas9bJZhsAMOK055efJud8ns4aYmASKv",requires:["three"]}}),
+    libCache:new Map(),
 
     epoch:0,home:"",principal:"",enabled:false,busy:false,
     library:[],unreadable:"",selection:null,active:null,frame:null,listener:null,
@@ -75,10 +86,10 @@
       if(!component||typeof component!=="object"||Array.isArray(component))
         return this.unsupported("UI component is not an object");
       const keys=Object.keys(component).sort();
-      const extra=keys.filter(k=>!this.FIELDS.includes(k));
+      const extra=keys.filter(k=>!this.FIELDS.includes(k)&&!this.OPTIONAL.includes(k));
       if(extra.length) return this.unsupported("UI component carries fields this app does not render: "+extra.join(", "));
-      if(keys.length!==this.FIELDS.length)
-        return this.unsupported("UI component is missing "+this.FIELDS.filter(k=>!keys.includes(k)).join(", "));
+      const missing=this.FIELDS.filter(k=>!keys.includes(k));
+      if(missing.length) return this.unsupported("UI component is missing "+missing.join(", "));
       if(component.kind!==this.KIND) return this.unsupported("not a "+this.KIND+" component");
       if(component.version!==this.VERSION)
         return this.unsupported("UI version "+String(component.version)+" is not supported; this app renders version 1");
@@ -86,17 +97,44 @@
         return this.unsupported("ui_id must be lowercase letters, digits or dashes");
       if(!this.text(component.name,this.MAX_NAME)||!component.name.trim())
         return this.unsupported("name must be a non-empty string of at most "+this.MAX_NAME+" characters");
-      if(!this.text(component.markup,this.MAX_MARKUP))
-        return this.unsupported("markup must be a string of at most "+this.MAX_MARKUP+" characters");
-      if(!this.text(component.style,this.MAX_STYLE))
-        return this.unsupported("style must be a string of at most "+this.MAX_STYLE+" characters");
-      if(!this.text(component.script,this.MAX_SCRIPT))
-        return this.unsupported("script must be a string of at most "+this.MAX_SCRIPT+" characters");
+      for(const field of ["markup","style","script"])
+        if(typeof component[field]!=="string") return this.unsupported(field+" must be a string");
       const size=this.bytes(JSON.stringify(component));
-      if(size>this.MAX_BUNDLE_BYTES)
-        return this.unsupported("this UI is "+size+" bytes; the limit is "+this.MAX_BUNDLE_BYTES);
-      return {ok:true,bundle:{kind:this.KIND,version:this.VERSION,ui_id:component.ui_id,
-        name:component.name.trim(),markup:component.markup,style:component.style,script:component.script}};
+      if(size>this.MAX_TEXT_BYTES)
+        return this.unsupported("this UI is "+size+" bytes of text; the limit is "+this.MAX_TEXT_BYTES);
+      if("script_type" in component&&component.script_type!=="classic"&&component.script_type!=="module")
+        return this.unsupported("script_type must be classic or module");
+      if("libraries" in component){
+        const libs=component.libraries;
+        if(!Array.isArray(libs)) return this.unsupported("libraries must be a list");
+        for(const name of libs)
+          if(typeof name!=="string"||!Object.prototype.hasOwnProperty.call(this.LIBRARIES,name))
+            return this.unsupported("library "+String(name)+" is not one this app provides");
+        if(new Set(libs).size!==libs.length) return this.unsupported("a library is listed twice");
+      }
+      if("assets" in component){
+        const assets=component.assets;
+        if(!assets||typeof assets!=="object"||Array.isArray(assets)) return this.unsupported("assets must be an object");
+        const paths=Object.keys(assets);
+        if(paths.length>this.MAX_ASSET_FILES) return this.unsupported("this UI has more than "+this.MAX_ASSET_FILES+" assets");
+        let total=0;
+        for(const path of paths){
+          const ref=assets[path];
+          if(path.length>200||!this.ASSET_PATH_RE.test(path)) return this.unsupported("asset path "+path+" is not a bundle path");
+          if(!ref||typeof ref!=="object"||!this.SHA256_RE.test(String(ref.sha256))||!Number.isInteger(ref.size)||
+             ref.size<0||ref.size>this.MAX_ASSET_BYTES||typeof ref.media_type!=="string"||!ref.media_type)
+            return this.unsupported("asset "+path+" is not a stored blob");
+          total+=ref.size;
+        }
+        if(total>this.MAX_UI_ASSET_BYTES) return this.unsupported("this UI's assets exceed "+this.MAX_UI_ASSET_BYTES+" bytes");
+      }
+      const bundle={kind:this.KIND,version:this.VERSION,ui_id:component.ui_id,
+        name:component.name.trim(),markup:component.markup,style:component.style,script:component.script};
+      // Optional fields pass through as stored, so a library rebuilt from parsed
+      // entries (install) never strips another UI's assets.
+      for(const field of this.OPTIONAL)
+        if(field in component) bundle[field]=JSON.parse(JSON.stringify(component[field]));
+      return {ok:true,bundle};
     },
     // The library is a LIST of any length, ordered as stored, with no
     // user-chosen keys; each entry names itself by `ui_id`.
@@ -297,11 +335,96 @@
       if(message.type!=="call"||typeof message.id!=="string"||typeof message.action!=="string") return;
       this.serve(message.id,message.action,message.params);
     },
+    // The frame owns no network, so the bytes a UI loads are fetched HERE, with
+    // the viewer's bearer, checked against their pins, and posted in; the frame
+    // turns them into blob: URLs of its own. Fenced to the frame that asked: a
+    // remount while bytes download drops them.
     deliver(){
       if(!this.frame||!this.active||this.ready) return;
       this.ready=true;
-      this.post({ta_ui:this.PROTOCOL,type:"bundle",bundle:{
-        markup:this.active.markup,style:this.active.style,script:this.active.script}});
+      const entry=this.active;
+      const bundle={markup:entry.markup,style:entry.style,script:entry.script};
+      if(entry.script_type==="module") bundle.script_type="module";
+      // Nothing to fetch: handed over at once, exactly as before files existed.
+      if(!(entry.libraries||[]).length&&!Object.keys(entry.assets||{}).length){
+        this.post({ta_ui:this.PROTOCOL,type:"bundle",bundle});
+        return;
+      }
+      return this.deliverWithFiles(entry,bundle);
+    },
+    async deliverWithFiles(entry,bundle){
+      const gen=this.frameGen,epoch=this.epoch,home=this.home;
+      let files=[],libraries=[];
+      try{
+        libraries=await this.libraryBytes(entry.libraries||[]);
+        files=await this.assetBytes(entry.assets||{},home);
+      }catch(err){
+        if(gen!==this.frameGen||!this.fence(epoch,home)) return;
+        if(err&&err.authRequired){ sessionExpired(); return; }
+        this.status(entry.name+" could not load its files ("+(err&&err.message||"unknown error")+").");
+        this.paint();
+        return;
+      }
+      if(gen!==this.frameGen||!this.fence(epoch,home)||!this.frame) return;
+      this.post({ta_ui:this.PROTOCOL,type:"bundle",bundle:Object.assign(bundle,{files,libraries})});
+    },
+    async fetchBytes(body){
+      try{ await ensureFreshToken(); }catch(_err){ /* the request reports it */ }
+      const headers={"Content-Type":"application/json"};
+      const tk=token(); if(tk) headers["Authorization"]="Bearer "+tk;
+      const resp=await fetch(this.ASSET_FETCH,{method:"POST",headers,credentials:"same-origin",
+        cache:"no-store",body:JSON.stringify(body)});
+      if(resp.status===401){ const e=new Error("authentication_required"); e.authRequired=true; throw e; }
+      if(!resp.ok){
+        let doc=null; try{ doc=await resp.json(); }catch(_e){ doc=null; }
+        throw new Error((doc&&typeof doc.error==="string"&&doc.error)||("answered "+resp.status));
+      }
+      return await resp.arrayBuffer();
+    },
+    async digest(algorithm,bytes){
+      return new Uint8Array(await crypto.subtle.digest(algorithm,bytes));
+    },
+    // Every library named, after what it requires, each verified against its
+    // SHA-384 pin. Libraries are public code, so a verified copy is kept for
+    // the page's life.
+    async libraryBytes(names){
+      const ordered=[],visit=name=>{
+        if(ordered.includes(name)) return;
+        const pin=this.LIBRARIES[name];
+        if(!pin) throw new Error("library "+name+" is not one this app provides");
+        for(const dep of pin.requires) visit(dep);
+        ordered.push(name);
+      };
+      for(const name of names) visit(name);
+      const out=[];
+      for(const name of ordered){
+        let bytes=this.libCache.get(name);
+        if(!bytes){
+          bytes=await this.fetchBytes({library:name});
+          const got="sha384-"+btoa(String.fromCharCode(...await this.digest("SHA-384",bytes)));
+          if(got!==this.LIBRARIES[name].sha384) throw new Error("library "+name+" failed its integrity check");
+          this.libCache.set(name,bytes);
+        }
+        out.push({name,format:this.LIBRARIES[name].format,bytes});
+      }
+      return out;
+    },
+    // The viewer's own blobs, a few at a time, each checked against the hash
+    // its manifest names before the frame sees it.
+    async assetBytes(assets,home){
+      const paths=Object.keys(assets),out=new Array(paths.length);
+      let next=0;
+      const hex=bytes=>Array.from(bytes,b=>b.toString(16).padStart(2,"0")).join("");
+      const worker=async()=>{
+        while(next<paths.length){
+          const i=next++,path=paths[i],ref=assets[path];
+          const bytes=await this.fetchBytes({graph_id:home,sha256:ref.sha256});
+          if(hex(await this.digest("SHA-256",bytes))!==ref.sha256) throw new Error("asset "+path+" failed its integrity check");
+          out[i]={path,media_type:ref.media_type,bytes};
+        }
+      };
+      await Promise.all(Array.from({length:Math.min(4,paths.length)},worker));
+      return out;
     },
     post(payload){
       const frame=this.frame&&this.frame.contentWindow;
@@ -905,6 +1028,10 @@
     publishPayload(bundle,description){
       const parsed=this.parseBundle(bundle);
       if(!parsed.ok) return parsed;
+      // Its files live in this viewer's private UI storage; a published copy
+      // could not load them (the server's publish refuses them for the same reason).
+      if(parsed.bundle.assets&&Object.keys(parsed.bundle.assets).length)
+        return this.unsupported("a UI that loads its own files cannot be published yet");
       return {ok:true,payload:{schema_version:1,name:parsed.bundle.name,
         description:String(description||""),tags:[this.KIND],
         components:{ui:JSON.parse(JSON.stringify(parsed.bundle))}}};

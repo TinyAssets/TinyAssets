@@ -233,9 +233,12 @@ def test_route_is_apex_app_get(monkeypatch):
         "/app/devices", "/app/notify", "/app/sw.js",
         # The owner door: every read the app renders, complete.
         "/app/api/read", "/app/api/status",
+        # The bytes a custom UI loads, fetched by the app for its sealed frame.
+        "/app/api/ui-asset",
     }
     assert by_path["/app/files"].methods == {"POST"}
     assert by_path["/app/api/read"].methods == {"POST"}
+    assert by_path["/app/api/ui-asset"].methods == {"POST"}
     # The owner's clock is a WRITE from their client, never a readable setting.
     assert by_path["/app/account/timezone"].methods == {"POST"}
     assert "GET" in by_path["/app"].methods

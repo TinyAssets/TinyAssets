@@ -152,12 +152,27 @@ for(const [over,needle] of [
  [{name:'  '},/name must be a non-empty string/],
  [{markup:{}},/markup must be a string/],
  [{script:null},/script must be a string/],
- [{markup:'x'.repeat(u.MAX_MARKUP+1)},/markup must be a string/],
+ [{markup:'x'.repeat(u.MAX_TEXT_BYTES+1)},/bytes of text; the limit is/],
+ [{assets:[]},/assets must be an object/],
+ [{assets:{'../x.png':{sha256:'a'.repeat(64),size:1,media_type:'image/png'}}},/is not a bundle path/],
+ [{assets:{'x.png':{sha256:'nothex',size:1,media_type:'image/png'}}},/is not a stored blob/],
+ [{libraries:['jquery']},/library jquery is not one this app provides/],
+ [{libraries:['three','three']},/listed twice/],
+ [{script_type:'wasm'},/script_type must be classic or module/],
 ]){ const r=u.parseBundle(bundleOf(over)); assert(!r.ok,JSON.stringify(over)); assert(needle.test(r.reason),r.reason); }
 assert(!u.parseBundle({...bundleOf(),ui_id:undefined}).ok);
-// A field-legal bundle that still busts the whole-bundle budget.
-const fat=bundleOf({markup:'m'.repeat(u.MAX_MARKUP),style:'s'.repeat(u.MAX_STYLE),script:'j'.repeat(u.MAX_SCRIPT)});
-assert(!u.parseBundle(fat).ok);
+// Past the old 49,152-byte bound is fine now: a game's script is 200 KB.
+assert(u.parseBundle(bundleOf({script:'j'.repeat(200000)})).ok);
+// The optional fields pass through as stored, so an install that rebuilds the
+// library from parsed entries never strips another UI's assets.
+const rich=bundleOf({libraries:['three'],script_type:'module',
+ assets:{'img/a.png':{sha256:'a'.repeat(64),size:3,media_type:'image/png'}}});
+const richParsed=u.parseBundle(rich);
+assert(richParsed.ok,richParsed.reason);
+assert.deepEqual(richParsed.bundle.assets,rich.assets);
+assert.deepEqual(richParsed.bundle.libraries,['three']);
+assert.equal(richParsed.bundle.script_type,'module');
+assert(!u.publishPayload(rich,'').ok,'a UI with its own files is not published without them');
 
 assert.deepEqual(u.readLibrary(null).entries,[]);
 assert(!u.readLibrary({ui_library:{}}).ok);
@@ -443,9 +458,10 @@ assert(/cannot be read/.test($('ui-status').textContent),$('ui-status').textCont
 // ---- size is measured in UTF-8 bytes, not UTF-16 units (Codex P2) ------
 // Characters that cost three bytes each. A character-counting limit accepts
 // this; the server, which caps bytes, would not.
-const cjk=bundleOf({ui_id:'cjk',markup:'漢'.repeat(20000)});
-assert.equal(cjk.markup.length,20000);
-assert(u.bytes(cjk.markup)>3*19000,'the fixture really is multi-byte');
+const cjkChars=Math.ceil(u.MAX_TEXT_BYTES/3)+16;
+const cjk=bundleOf({ui_id:'cjk',markup:'漢'.repeat(cjkChars)});
+assert(cjk.markup.length<u.MAX_TEXT_BYTES,'under the bound in characters');
+assert(u.bytes(cjk.markup)>u.MAX_TEXT_BYTES,'the fixture really is over it in bytes');
 const cjkRead=u.parseBundle(cjk);
 assert(!cjkRead.ok,'a bundle over the BYTE limit is refused');
 assert(/bytes/.test(cjkRead.reason),cjkRead.reason);
@@ -462,7 +478,7 @@ assert.equal(appUi.ui_library.length,41);
 // MAX_LIBRARY_BYTES refusal ("remove one first") is gone: those bytes are the
 // universe's storage, which is one of an account's two limits, not a UI quota
 // (founder, 2026-09-30).
-const heavy=i=>bundleOf({ui_id:'heavy-'+i,markup:'x'.repeat(u.MAX_MARKUP)});
+const heavy=i=>bundleOf({ui_id:'heavy-'+i,markup:'x'.repeat(32768)});
 const nearFull=[];
 while(u.bytes(JSON.stringify(nearFull))<=4194304) nearFull.push(heavy(nearFull.length));
 assert(nearFull.length>=50,'past the old ceiling: '+nearFull.length+' max-size UIs');

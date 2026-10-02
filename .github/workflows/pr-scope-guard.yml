@@ -119,6 +119,33 @@ jobs:
           echo "diff key: ${KEY:-<none>}"
           echo "key=${KEY}" >> "$GITHUB_OUTPUT"
 
+      # PR-relative test hygiene: removing, skipping or loosening an existing
+      # test needs a stated reason and its own PR; a new skip needs an owner
+      # and an end; a new test may not touch the network, real paths or sleep.
+      # The trusted base copy of the script reads both trees as text
+      # (`git show` + ast.parse); no PR code runs. Nothing here fails on a
+      # date of main -- the weekly inventory (quarantine-oracle.yml) reports
+      # expiry, and expired markers block only a PR that touches their file.
+      - name: Test hygiene (what this PR changes)
+        if: github.event_name == 'pull_request_target'
+        env:
+          HEAD_OID: ${{ github.event.pull_request.head.sha }}
+          BASE_OID: ${{ github.event.pull_request.base.sha }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ ! -f scripts/test_hygiene_gate.py ]; then
+            echo "::notice::base predates scripts/test_hygiene_gate.py; nothing to check"
+            exit 0
+          fi
+          git cat-file -e "${HEAD_OID}^{commit}" \
+            || git fetch --no-tags --filter=blob:none origin "${HEAD_OID}"
+          printf '%s' "${PR_BODY:-}" > "$RUNNER_TEMP/pr-body-hygiene.md"
+          python scripts/test_hygiene_gate.py \
+            --base "${BASE_OID}" --head "${HEAD_OID}" \
+            --body "$RUNNER_TEMP/pr-body-hygiene.md"
+
       # Under pull_request_target, only the trusted base SHA above is checked out.
       # The PR head is never executed with this workflow's token. The file list
       # below comes from the API.

@@ -342,6 +342,39 @@ def test_the_cursor_cannot_jump_past_a_turn_that_is_still_owed(turn):
     ) == latest
 
 
+def test_a_concurrent_turns_unlearned_exchange_is_never_claimed(turn):
+    """Codex (execution-owner-lease B2 shape review, finding 7): turns A and B both
+    begin at cursor 0. B records its exchange first and has NOT settled (its
+    extraction is still running, or failed). A records after it and settles. A
+    settle "through the latest row" would claim B's unlearned exchange; naming A's
+    own rows refuses, because B's exchange sits between the cursor and A's."""
+    universe_dir = turn.universe_dir
+    began_at = 0
+    b = conversation_store.record_exchange_turns(universe_dir, SESSION, "B asks", "B answer")
+    a = conversation_store.record_exchange_turns(universe_dir, SESSION, "A asks", "A answer")
+    assert b == (1, 2) and a == (3, 4)
+
+    settled = conversation_store.settle_learned_cursor(
+        universe_dir, SESSION, from_turn=began_at, first_turn=a[0], through_turn=a[1],
+    )
+
+    assert settled == 0, "A's settlement claimed B's unlearned exchange"
+    # B settling its own exchange, immediately after the cursor, still advances.
+    assert conversation_store.settle_learned_cursor(
+        universe_dir, SESSION, from_turn=began_at, first_turn=b[0], through_turn=b[1],
+    ) == 2
+
+
+def test_record_exchange_turns_reports_its_rows_including_interjections(turn):
+    universe_dir = turn.universe_dir
+    rows = conversation_store.record_exchange_turns(
+        universe_dir, SESSION, "message", "reply", interjections=[("also this", 1.0)],
+    )
+    assert rows == (1, 3)
+    assert conversation_store.latest_turn_no(universe_dir, SESSION) == 3
+    assert conversation_store.record_exchange_turns(universe_dir, SESSION, " ", "x") is None
+
+
 def test_an_existing_conversation_is_not_re_extracted(turn):
     """Starting the cursor at the latest turn: months of history is not a spend surprise."""
     universe_dir = turn.universe_dir
@@ -447,3 +480,31 @@ def test_the_prompt_block_does_not_vary_by_anything(turn):
     assert all(first in system for system in told)
     for banned in ("plan", "tier", "free", "paid", "premium"):
         assert banned not in first.lower()
+
+
+def test_the_served_turn_settles_only_its_own_rows(tmp_path, monkeypatch):
+    """End to end through the served converse handler: while turn A runs, another
+    turn's exchange lands first and is not settled. A's settlement must not claim
+    it -- the handler names A's exact rows, not "the latest row"."""
+    import json as _json
+
+    import tinyassets.universe_intelligence as ui
+    import tinyassets.universe_server as us
+    from tests.test_converse_handle import _founder_auth
+
+    _founder_auth(monkeypatch, base=tmp_path)
+    universe_dir = tmp_path / "u-x"
+    session = "principal:founder-1"
+
+    def run(uid, msg, **kwargs):
+        # Another turn of the same thread records first, unlearned.
+        universe_dir.mkdir(parents=True, exist_ok=True)
+        conversation_store.record_exchange(universe_dir, session, "B asks", "B answer")
+        kwargs["learning_observer"](True)  # A's own lesson WAS settled
+        return "A answer"
+
+    monkeypatch.setattr(ui, "converse", run)
+    assert _json.loads(us.converse(message="A asks", graph_id="u-x"))["reply"] == "A answer"
+    assert conversation_store.latest_turn_no(universe_dir, session) == 4
+    assert conversation_store.learned_cursor(universe_dir, session) == 0, (
+        "A's settlement claimed B's unlearned exchange")

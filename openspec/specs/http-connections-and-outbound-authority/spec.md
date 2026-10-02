@@ -16,12 +16,7 @@ archives.
 ## Requirements
 
 ### Requirement: A capability URL's secret is a path segment in the vault
-
-An `http` connection MAY declare `auth_scheme: "url_secret"`, whose credential
-is a path segment rather than a header. Its endpoints SHALL each carry exactly
-one reserved placeholder — `{secret}` for a single segment or `{secret+}` for
-the final tail of one or more segments — and the vault SHALL hold the segment
-text alone.
+ An `http` connection MAY declare `auth_scheme: "url_secret"`, whose credential is a path segment rather than a header. Its endpoints SHALL each carry exactly one reserved placeholder — `{secret}` for a single segment or `{secret+}` for the final tail of one or more segments — and the vault SHALL hold the segment text alone.
 
 The reserved placeholder SHALL NOT accept a caller-declared value pattern. The
 platform SHALL declare it as the anchored literal token, so a stored
@@ -183,12 +178,7 @@ for an outage.
 - **THEN** the node's packet holds `{secret}`
 
 ### Requirement: A literal secret in a path template is refused when authored
-
-Every authoring door for an endpoint allowlist — the pending-request ask, the
-deposit, and the extension — SHALL refuse a fixed (non-placeholder) path
-segment that reads as a credential or an opaque identifier, and SHALL name both
-repairs: the `url_secret` scheme with `{secret}` for a credential, and a
-`{param}` with a `param_patterns` regex for a public identifier.
+ Every authoring door for an endpoint allowlist — the pending-request ask, the deposit, and the extension — SHALL refuse a fixed (non-placeholder) path segment that reads as a credential or an opaque identifier, and SHALL name both repairs: the `url_secret` scheme with `{secret}` for a credential, and a `{param}` with a `param_patterns` regex for a public identifier.
 
 Reading a **stored** template SHALL NOT apply this check, so a connection
 deposited before it existed stays readable and removable.

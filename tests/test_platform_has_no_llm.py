@@ -35,13 +35,9 @@ _ALL_BUILTIN = sorted({name for chain in FALLBACK_CHAINS.values() for name in ch
 def _builtin_executor_classes() -> dict[str, type]:
     from tinyassets.providers.claude_provider import ClaudeProvider
     from tinyassets.providers.codex_provider import CodexProvider
-    from tinyassets.providers.gemini_provider import GeminiProvider
-    from tinyassets.providers.grok_provider import GrokProvider
-    from tinyassets.providers.groq_provider import GroqProvider
     from tinyassets.providers.ollama_provider import OllamaProvider
 
-    classes = (ClaudeProvider, CodexProvider, GeminiProvider, GrokProvider,
-               GroqProvider, OllamaProvider)
+    classes = (ClaudeProvider, CodexProvider, OllamaProvider)
     return {cls.name: cls for cls in classes}
 
 
@@ -162,7 +158,7 @@ def test_host_writer_pin_and_host_login_cannot_serve_an_unbound_call(monkeypatch
     health.assert_not_called()
 
 
-@pytest.mark.parametrize("host_provider", ["gemini-free", "groq-free", "grok-free", "ollama-local"])
+@pytest.mark.parametrize("host_provider", ["ollama-local"])
 def test_owner_authority_cannot_launch_a_host_credential_provider(
     host_provider, tmp_path, monkeypatch,
 ):
@@ -192,7 +188,7 @@ def test_exactly_the_host_credential_executors_declare_it():
         name for name, cls in _builtin_executor_classes().items()
         if is_host_credential_provider(cls)
     )
-    assert host_only == ["gemini-free", "grok-free", "groq-free", "ollama-local"]
+    assert host_only == ["ollama-local"]
 
 
 def test_owner_authority_without_a_universe_dir_cannot_fall_to_host_env():

@@ -65,6 +65,7 @@ def agent(served, monkeypatch):
         capacity_failures={},
         failure_bodies={},
         on_capacity=None,
+        tool_call=("read_graph", ' {"target": "status"} '),
         config=ModelConfig(
             engine_mcp_enabled=True,
             engine_mcp_actor_id="owner",
@@ -129,8 +130,8 @@ def agent(served, monkeypatch):
                         "id": "same-wire-id",
                         "type": "function",
                         "function": {
-                            "name": "read_graph",
-                            "arguments": ' {"target": "status"} ',
+                            "name": state.tool_call[0],
+                            "arguments": state.tool_call[1],
                         },
                     }
                 ]

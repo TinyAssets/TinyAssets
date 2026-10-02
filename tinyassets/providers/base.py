@@ -91,6 +91,9 @@ FailureClass = Literal[
     "provider_idle_timeout",
     "interactive_deadline",
     "provider_protocol_error",
+    "provider_reply_error",
+    "provider_unreadable_reply",
+    "provider_stalled",
     "provider_refused",
     "provider_reply_timeout",
 ]
@@ -482,17 +485,6 @@ def api_key_providers_enabled() -> bool:
     their universe as their own open provider.
     """
     return False
-
-
-def require_api_key_provider_opt_in(provider_name: str) -> None:
-    """Refuse a built-in provider whose only credential is the host's API key."""
-    from tinyassets.exceptions import ProviderUnavailableError
-
-    raise ProviderUnavailableError(
-        f"{provider_name} can only use an API key from the host's environment, "
-        "and the platform holds no model credential (Hard Rule 15). Connect "
-        "this source to your command center as your own provider instead."
-    )
 
 
 # Legacy denylist retained for regression assertions. Universe-scoped children

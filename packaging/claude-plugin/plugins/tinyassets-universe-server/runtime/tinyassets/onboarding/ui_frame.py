@@ -12,10 +12,14 @@ The containment is the document's own policy, and it holds whatever the code doe
   bundle's ``<form>`` fires its ``submit`` event for the bundle's own handler;
   without it the browser drops the submit silently. ``form-action 'none'``
   below still refuses every actual submission.
-* ``connect-src 'none'`` plus ``default-src 'none'``, ``form-action 'none'`` and a
-  ``data:``-only ``img-src``: the bundle has no network of its own and no image
-  URL to exfiltrate through. Every capability it has arrives over ``postMessage``
-  and nothing else.
+* ``default-src 'none'``, ``form-action 'none'``, and every source limited to
+  ``data:`` and ``blob:``: the bundle has no network of its own and no URL to
+  exfiltrate through. No source names a host, ``'self'`` or a scheme that leaves
+  the browser. Every capability it has arrives over ``postMessage`` and nothing
+  else -- its asset and library BYTES included: the authenticated parent fetches
+  them and posts them in, and this document turns each into a ``blob:`` URL of its
+  own opaque origin. ``connect-src blob: data:`` exists so a loader that
+  ``fetch``es its asset (GLTFLoader, Pixi, Phaser, Howler) can read that blob.
 * ``frame-src`` inherits ``'none'``, so it cannot nest a frame to shop for a
   weaker context; ``frame-ancestors 'self'`` keeps this document from being
   embedded off-origin.
@@ -27,7 +31,11 @@ unauthenticated means no cookie or token path terminates inside the sandbox.
 
 ``script-src 'unsafe-inline'`` is required and is not a weakening: the whole point
 of this document is to execute a bundle's script, and it does so in an origin that
-owns nothing. The app's own page keeps its nonce-only policy.
+owns nothing. ``'unsafe-eval'`` and ``'wasm-unsafe-eval'`` add nothing to that --
+code that can already run any script gains no reach by compiling more -- and Pixi
+v8 refuses to start without the first (real Chromium, 2026-10-02); WebAssembly
+engines need the second. Reach is what the source lists govern, and none of them
+names a network. The app's own page keeps its nonce-only policy.
 """
 
 from __future__ import annotations
@@ -64,9 +72,11 @@ html,body{margin:0;padding:0;height:100%;font:15px/1.5 system-ui,sans-serif;colo
   // is enforced by JS semantics rather than by policy support.
   //
   // There is no route back to a pristine realm: this document's own CSP leaves
-  // `frame-src` and `worker-src` falling back to `default-src 'none'`, and no
-  // `allow-popups` means `window.open` is blocked, so a nested frame, a worker
-  // and a popup are all unavailable as sources of a fresh constructor.
+  // `frame-src` falling back to `default-src 'none'`, and no `allow-popups`
+  // means `window.open` is blocked, so a nested frame and a popup are
+  // unavailable as sources of a fresh constructor. A worker (from a blob: URL,
+  // for a game's physics or pathfinding) is a fresh realm, but a worker scope has
+  // no RTCPeerConnection at all, and its network is this same policy.
   try {
     for (var i = 0, gone = ["RTCPeerConnection", "webkitRTCPeerConnection",
                             "mozRTCPeerConnection", "RTCDataChannel",
@@ -105,29 +115,95 @@ html,body{margin:0;padding:0;height:100%;font:15px/1.5 system-ui,sans-serif;colo
     });
   }
 
+  // Bundle path -> blob: URL, minted here from bytes the parent posted. A blob:
+  // URL belongs to this document's opaque origin and names no server.
+  var assetUrls = Object.create(null);
+  function asset(path) {
+    path = String(path);
+    return Object.prototype.hasOwnProperty.call(assetUrls, path) ? assetUrls[path] : null;
+  }
+  function blobUrl(bytes, type) {
+    return URL.createObjectURL(new Blob([bytes], {type: String(type || "application/octet-stream")}));
+  }
+  // `ta-asset:<path>` in markup or style becomes that asset's blob: URL at render
+  // time; the stored text is never rewritten. An unknown path is left as written
+  // and simply fails to load, visibly.
+  function withAssets(text) {
+    return String(text || "").replace(/ta-asset:([A-Za-z0-9][A-Za-z0-9._/-]*)/g, function (whole, path) {
+      return asset(path) || whole;
+    });
+  }
+  function loadScript(src) {
+    return new Promise(function (resolve, reject) {
+      var node = document.createElement("script");
+      node.src = src;
+      node.onload = resolve;
+      node.onerror = function () { reject(new Error("a library failed to load")); };
+      document.head.appendChild(node);
+    });
+  }
+
   function start(bundle) {
     if (started) { return; }
     started = true;
     var root = document.getElementById("ta-ui-root");
+    var imports = Object.create(null), globals = [];
     try {
+      var files = Array.isArray(bundle.files) ? bundle.files : [];
+      for (var f = 0; f < files.length; f++) {
+        var file = files[f];
+        if (!file || typeof file.path !== "string" || !(file.bytes instanceof ArrayBuffer)) { continue; }
+        var url = blobUrl(file.bytes, file.media_type);
+        assetUrls[file.path] = url;
+        if (/[.]m?js$/.test(file.path)) {
+          // A blob: URL is not hierarchical, so a module asset imports a sibling
+          // as "@ui/<path>"; the bundle's own script may also use "./<path>".
+          imports["@ui/" + file.path] = url;
+          imports["./" + file.path] = url;
+        }
+      }
+      var libraries = Array.isArray(bundle.libraries) ? bundle.libraries : [];
+      for (var l = 0; l < libraries.length; l++) {
+        var lib = libraries[l];
+        if (!lib || typeof lib.name !== "string" || !(lib.bytes instanceof ArrayBuffer)) { continue; }
+        var libUrl = blobUrl(lib.bytes, "text/javascript");
+        if (lib.format === "module") { imports[lib.name] = libUrl; } else { globals.push(libUrl); }
+      }
+      // The import map goes in before any module can run; this bootstrap is a
+      // classic script, so nothing the bundle does can precede it.
+      if (Object.keys(imports).length) {
+        var map = document.createElement("script");
+        map.type = "importmap";
+        map.textContent = JSON.stringify({imports: imports});
+        document.head.appendChild(map);
+      }
       if (bundle.style) {
         var style = document.createElement("style");
-        style.textContent = String(bundle.style);
+        style.textContent = withAssets(bundle.style);
         document.head.appendChild(style);
       }
       // Markup is assigned, never parsed for scripts: a <script> tag inside
       // innerHTML does not execute, so the only script that runs is the one the
       // bundle declared. Inline handlers in markup do run — inside this origin,
       // which owns nothing, that is the bundle's own business.
-      root.innerHTML = String(bundle.markup || "");
+      root.innerHTML = withAssets(bundle.markup);
+    } catch (err) {
+      fault("This UI failed while starting: " + ((err && err.message) || "unknown error"));
+      return;
+    }
+    // Global libraries load in order, then the bundle's own script.
+    globals.reduce(function (chain, src) {
+      return chain.then(function () { return loadScript(src); });
+    }, Promise.resolve()).then(function () {
       if (bundle.script) {
         var script = document.createElement("script");
+        if (bundle.script_type === "module") { script.type = "module"; }
         script.textContent = String(bundle.script);
         document.body.appendChild(script);
       }
-    } catch (err) {
+    }).catch(function (err) {
       fault("This UI failed while starting: " + ((err && err.message) || "unknown error"));
-    }
+    });
   }
 
   window.addEventListener("message", function (event) {
@@ -154,6 +230,7 @@ html,body{margin:0;padding:0;height:100%;font:15px/1.5 system-ui,sans-serif;colo
   window.tinyassets = Object.freeze({
     protocol: PROTOCOL,
     call: call,
+    asset: asset,
     whoami: function () { return call("whoami", {}); },
     listAgents: function () { return call("list_agents", {}); },
     sendMessage: function (text, agent) { return call("send_message", {text: text, agent: agent || ""}); },
@@ -182,11 +259,13 @@ html,body{margin:0;padding:0;height:100%;font:15px/1.5 system-ui,sans-serif;colo
 FRAME_CSP = (
     "sandbox allow-scripts allow-forms; "
     "default-src 'none'; "
-    "script-src 'unsafe-inline'; "
-    "style-src 'unsafe-inline'; "
-    "img-src data:; "
-    "font-src data:; "
-    "connect-src 'none'; "
+    "script-src 'unsafe-inline' 'unsafe-eval' 'wasm-unsafe-eval' blob:; "
+    "style-src 'unsafe-inline' blob:; "
+    "img-src data: blob:; "
+    "font-src data: blob:; "
+    "media-src data: blob:; "
+    "connect-src data: blob:; "
+    "worker-src blob:; "
     "form-action 'none'; "
     "base-uri 'none'; "
     "frame-ancestors 'self'"

@@ -110,8 +110,7 @@ No new gate, workflow or proposal is introduced beyond what is listed here.
   behaviour (restart, concurrent cloud workers, per-universe authority) and may
   pass at baseline. Add focused unit tests for the preflight
   with no real API calls. Run `python scripts/linux_oracle.py` on the new tests
-  (they touch process/network syscalls Windows skips) and
-  `python scripts/skip_census.py`.
+  (they touch process/network syscalls Windows skips).
 - [x] 10. Get the cross-family review verdict, merge, then prove deployment:
   `python scripts/deployed_sha.py --assert-contains <sha>` and
   `python scripts/mcp_public_canary.py --url https://tinyassets.io/mcp

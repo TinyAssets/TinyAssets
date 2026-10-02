@@ -32,9 +32,64 @@ during a long tool call.
    behind, or switch the dashboard ingress per deploy (dashboard-configured today, so not automatable
    without the API).
 3. Drain the old colour with no deadline, so long turns finish. That also closes the remaining half of
-   `docs/concerns/2026-08-29-a-deploy-kills-in-flight-turns-silently.md`.
+   the resolved 2026-08-29 deploy-kills-turns concern (resolved 2026-10-02 by the deploy wait; uptime-and-alarms spec).
 
 ## How to resolve
 
 Ship it, then show a production deploy with a probe running against `https://tinyassets.io/mcp` that
 records zero non-401 answers. Delete this file then.
+
+## Carried from the resolved 2026-08-29 concern: why a longer drain never saved the reply
+
+That concern was resolved on 2026-10-02: deploys now wait for in-flight work (uptime-and-alarms "A Deploy Waits For In-Flight Work Before It Swaps The Daemon"). Its live proof was deploy run 36979226551 and turn c5264d0a, which completed. The measurement below still governs any drain-based design, so it lives here now.
+
+### PR #4039 review: SIGTERM closes the MCP reply before the turn finishes
+
+**Re-verified:** 2026-09-26, local Windows/Python 3.14 development test;
+FastMCP 3.2.0, MCP 1.28.0, uvicorn 0.49.0, sse-starlette 3.4.5.
+This is dependency-level evidence, not a production observation.
+
+**Source (verbatim review finding):** A larger Docker stop grace can preserve
+worker execution, but does not by itself preserve the served MCP reply.
+
+`tinyassets/universe_server.py:4173` builds the default SSE-response HTTP app.
+FastMCP awaits the synchronous tool in an AnyIO worker thread; the MCP session
+runner belongs to the lifespan task group. The worker calls the synchronous
+converse implementation (`universe_server.py:2866`), the writer
+(`universe_intelligence.py:1359,1051`), and `asyncio.run(turn.run())`
+(`providers/call.py:116`). The coordinator awaits inference and tools
+(`agent_turn_coordinator.py:279,356`); it does not detach these operations.
+However, sse-starlette patches uvicorn's exit handler and cancels SSE responses
+on shutdown. MCP creates EventSourceResponse without a shutdown-grace override.
+
+Commands, from the repository root:
+
+```
+python -u docs/audits/2026-09-26-pr4039-drain-repro.py
+python -u docs/audits/2026-09-26-pr4039-drain-repro.py --disable-sse-exit
+python -u docs/audits/2026-09-26-pr4039-drain-repro.py --short-timeout
+```
+
+The first run disconnected after 0.477s with an incomplete chunked response,
+before a two-second tool finished, despite a five-second server grace. The
+worker finished at 1.983s. Disabling automatic SSE termination preserved the
+result at 1.993s. With a 0.25s uvicorn timeout, the worker/lifespan still ran until
+1.981s: uvicorn's request timeout does not bound lifespan shutdown or kill a
+synchronous worker. Thus the PR's 290 < 300 comparison is not proof of clean
+process exit. The Docker grace remains useful, but the HTTP-lifetime claim is
+false. Preserve the reply across SIGTERM and test this transport boundary before
+claiming served turns drain successfully.
+
+There is also a first-rollout caveat: Compose v5.1.3
+`pkg/compose/convergence.go:621-622` stops the OLD container using the optional CLI
+timeout; `cmd/compose/create.go:147-152` returns nil unless `--timeout` was set.
+`pkg/compose/create.go:222` writes stop_grace_period into the NEW container's
+StopTimeout. `deploy/deploy_fail_safe.sh:329` supplies no timeout override. An old
+container created without the setting still gets its old/default stop timeout
+during the first rollout. Later recreates use the stored 300s value.
+
+Primary dependency sources:
+[SSE shutdown](https://github.com/sysid/sse-starlette/blob/v3.4.5/sse_starlette/sse.py),
+[Compose recreate](https://github.com/docker/compose/blob/v5.1.3/pkg/compose/convergence.go#L621),
+[Compose creation](https://github.com/docker/compose/blob/v5.1.3/pkg/compose/create.go#L222).
+

@@ -111,7 +111,7 @@ def test_the_chapter_states_the_limits_that_cause_refusals() -> None:
         assert found, name
         return int(found.group(1))
 
-    for name in ("MAX_MARKUP", "MAX_STYLE", "MAX_SCRIPT", "MAX_BUNDLE_BYTES"):
+    for name in ("MAX_TEXT_BYTES", "MAX_ASSET_BYTES", "MAX_UI_ASSET_BYTES", "MAX_ASSET_FILES"):
         assert str(constant(name)) in text, name
     # The library has no bound at all -- not a count and not a byte total -- so
     # the handbook must say so rather than quote a ceiling that no longer exists.
@@ -141,8 +141,15 @@ def test_the_chapter_does_not_promise_a_capability_the_bridge_lacks() -> None:
     assert allowlist, "the controller must still declare a frozen allowlist"
     available = set(re.findall(r":\"([A-Za-z_]+)\"", allowlist.group(1)))
 
+    # Frame-local helpers are not bridge actions: they are defined on the
+    # frame's own `tinyassets` object and never reach the parent.
+    from tinyassets.onboarding.ui_frame import BOOTSTRAP_HTML
+
+    local = {name for name in ("asset",) if f"    {name}: {name}," in BOOTSTRAP_HTML}
+    assert local == {"asset"}, "the frame must still define tinyassets.asset"
+
     assert promised, "the chapter must show the calls a UI can make"
-    assert promised <= available, promised - available
+    assert promised <= available | local, promised - available - local
 
     # The honest limit on addressing a named agent.
     assert "refused" in text and "selected" in text

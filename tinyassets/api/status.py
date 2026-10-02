@@ -25,6 +25,7 @@ import logging
 import os
 import re
 import sqlite3
+import time
 from pathlib import Path
 from typing import Any
 
@@ -110,6 +111,19 @@ def _universe_active_turn(udir: Path) -> dict[str, Any] | None:
     except Exception as exc:  # noqa: BLE001 - an unreadable journal is reported, not guessed
         _LOGGER.warning("agent turn activity unreadable: %s", type(exc).__name__)
         return {"state": "unreadable", "reason": type(exc).__name__}
+
+
+def _reader_owns(uid: str) -> bool:
+    """Is the verified caller the universe's owning account? False on any doubt."""
+    from tinyassets.api import permissions
+    from tinyassets.api.helpers import _base_path
+    from tinyassets.universe_owner import owner_of
+
+    try:
+        actor = permissions.current_actor_id()
+        return bool(actor) and owner_of(_base_path(), uid) == actor
+    except Exception:  # noqa: BLE001 - an unreadable owner withholds, never shows
+        return False
 
 
 def _policy_hash(payload: dict[str, Any]) -> str:
@@ -330,6 +344,39 @@ def _load_release_state() -> dict[str, Any]:
     return out
 
 
+def _load_deploy_pending(now: float | None = None) -> dict[str, Any]:
+    """Whether a deploy is waiting for in-flight work to finish before it swaps.
+
+    ``deploy-prod`` refuses to recreate the daemon while a turn is running
+    (``scripts/turns_in_flight.py``) and refreshes ``.deploy-pending.json`` in the
+    data root while it waits. Surfaced so whoever is watching a long turn can see
+    that an update is queued behind it, rather than wondering why a merge has not
+    shipped. Read-only and best-effort, like the release receipt.
+
+    A marker past its ``expires_at`` is a deploy job that died mid-wait, not a
+    waiting deploy: it reads as not pending, with the reason, rather than saying
+    "update pending" forever. An unreadable one says so; it never reads as pending.
+    """
+    path = _base_path() / ".deploy-pending.json"
+    try:
+        if not path.is_file():
+            return {"pending": False}
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:  # noqa: BLE001 - status probe must survive bad I/O
+        return {"pending": False, "warning": f"deploy_pending_read_failed: {type(exc).__name__}"}
+    if not isinstance(payload, dict):
+        return {"pending": False, "warning": "deploy_pending_marker_not_object"}
+    expires = _parse_iso_to_epoch(str(payload.get("expires_at") or ""))
+    moment = time.time() if now is None else now
+    if expires is None or expires < moment:
+        return {"pending": False, "warning": "deploy_pending_marker_expired"}
+    out: dict[str, Any] = {"pending": True}
+    for field in ("target", "waiting_since", "deadline", "in_flight", "observed_at", "run_url"):
+        if field in payload:
+            out[field] = payload[field]
+    return out
+
+
 def _active_host_snapshot(
     served_llm_type: str = "",
 ) -> tuple[dict[str, object], bool, list[str], str]:
@@ -374,12 +421,6 @@ def _active_host_snapshot(
         endpoint_hint = "claude"
     elif api_key_enabled and os.environ.get("OPENAI_API_KEY") and _shutil.which("codex"):
         endpoint_hint = "codex"
-    elif api_key_enabled and os.environ.get("XAI_API_KEY"):
-        endpoint_hint = "xai"
-    elif api_key_enabled and os.environ.get("GEMINI_API_KEY"):
-        endpoint_hint = "gemini"
-    elif api_key_enabled and os.environ.get("GROQ_API_KEY"):
-        endpoint_hint = "groq"
     else:
         endpoint_hint = "unset"
 
@@ -1312,6 +1353,7 @@ def get_status(
             "schema_version": _STATUS_SCHEMA_VERSION,
             "active_host": active_host,
             "release_state": _load_release_state(),
+            "deploy_pending": _load_deploy_pending(),
             # Present on every status shape the probes can meet, universe or
             # not: the activity probe reads these instead of inspecting a
             # universe. Both, because `last_activity_at` goes stale for a quiet
@@ -1744,6 +1786,7 @@ def get_status(
         "auto_ship_health": auto_ship_health,
         "open_brain": open_brain,
         "release_state": release_state,
+        "deploy_pending": _load_deploy_pending(),
         # Platform-wide, names no universe: the uptime probes read these
         # instead of inspecting a universe, which the canary principal may not
         # do (service-principal boundary D4).
@@ -1788,7 +1831,13 @@ def get_status(
     # PRESENT and null when the universe is idle, so a client can tell "idle"
     # from "this build does not report it".
     if universe_exists and permissions.universe_access_allows(uid, write=True):
-        response["active_turn"] = _universe_active_turn(udir)
+        active = _universe_active_turn(udir)
+        # The step and its wait are for every reader above; the MODEL id is the
+        # owning account's own selector, which can be private (an account-bearing
+        # id the reply's "Answered by" never shows) -- so only its owner sees it.
+        if isinstance(active, dict) and "model" in active and not _reader_owns(uid):
+            active = {key: value for key, value in active.items() if key != "model"}
+        response["active_turn"] = active
 
     # persona — the universe brain speaking as itself. Its self-understanding
     # comes from its learned self-model (an OKF bundle the brain authors about

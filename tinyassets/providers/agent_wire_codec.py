@@ -16,11 +16,13 @@ from typing import Any
 from tinyassets.providers.agent_chat_codec import (
     AgentReply,
     _bad,
+    _structure,
     build_portable_agent_body,
     decode_agent_message,
     validate_reply_context,
 )
 from tinyassets.providers.discovery_catalogue import Pointer
+from tinyassets.providers.protocol_encoders import ProtocolDecodeError
 
 _REQUEST_FIELDS = frozenset({
     "model", "messages", "tools", "tool_choice", "temperature", "max_tokens",
@@ -92,17 +94,22 @@ class AgentWireShape:
         """Reject envelope failures before canonical validation exposes tools."""
         validate_reply_context(source_ref, requested_model, tool_names)
         root = dict(self.response_fields)
-        if (not isinstance(response_body, dict)
-                or root["error"].read(response_body, malformed=_MALFORMED) is not None):
+        if not isinstance(response_body, dict):
             raise _bad("response unavailable")
+        error = root["error"].read(response_body, malformed=_MALFORMED)
+        if error is not None:
+            raise _in_band(_bad("response unavailable"), error)
         choices = root["choices"].read(response_body)
         if (not isinstance(choices, list) or len(choices) != 1
                 or not isinstance(choices[0], dict)):
             raise _bad("exactly one choice required")
         choice = choices[0]
         fields = dict(self.choice_fields)
-        if fields["error"].read(choice, malformed=_MALFORMED) is not None:
-            raise _bad("choice unavailable")
+        error = fields["error"].read(choice, malformed=_MALFORMED)
+        if error is not None:
+            raise _in_band(_bad("choice unavailable"), error)
+        if fields["finish"].read(choice) == "error":
+            raise _in_band(_bad("choice unavailable"), "finish_reason error")
         return decode_agent_message(
             fields["message"].read(choice), finish=fields["finish"].read(choice),
             receipt=root["model"].read(response_body),
@@ -110,6 +117,43 @@ class AgentWireShape:
             output_tokens=root["output_tokens"].read(response_body),
             source_ref=source_ref, requested_model=requested_model, tool_names=tool_names,
         )
+
+
+def source_words(error: Any) -> str:
+    """What an in-band error object says, as one line: message and code only.
+
+    The OpenAI-compatible ``{"message", "code"}`` object, read generically (no
+    vendor's extra fields); anything else reports its JSON shape, never values.
+    Untrusted transport text, returned WHOLE: the caller scrubs it and only
+    then clips, since clipping first can cut a secret's closing quote off and
+    let its head through the scrubber (Codex, 2026-10-02).
+    """
+    if error is _MALFORMED:
+        return "malformed error field"
+    if isinstance(error, str):
+        words = error
+    elif isinstance(error, dict):
+        message = error.get("message")
+        code = error.get("code")
+        words = message if isinstance(message, str) and message.strip() else _structure(error)
+        if type(code) in (int, str) and str(code).strip():
+            words += f" (code {code})"
+    else:
+        words = _structure(error)
+    return words
+
+
+def _in_band(exc: ProtocolDecodeError, error: Any) -> ProtocolDecodeError:
+    """Mark a decode refusal as the source REPORTING an error, with its words.
+
+    An HTTP 200 whose body (or whose one choice) carries an error is the source
+    telling us generation failed upstream -- OpenRouter does this when the model
+    behind it errors mid-reply -- not a reply in a shape we cannot read. Same
+    exception type and message as before (the frozen differential pins both);
+    the attribute is what lets the provider classify it.
+    """
+    exc.source_error = source_words(error)
+    return exc
 
 
 @cache

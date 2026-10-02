@@ -484,10 +484,14 @@ def _adapter_safe_proxy_error(exc: BaseException) -> str:
 
 def _send_message(channel: Any, value: object) -> None:
     try:
+        # UTF-8 as UTF-8: ``\uXXXX`` escaping made non-ASCII text up to six
+        # times larger, so a reply under its body cap could still overflow the
+        # frame (Codex, 2026-10-02). Quote and backslash escaping still double.
         payload = json.dumps(
             value,
             sort_keys=True,
             separators=(",", ":"),
+            ensure_ascii=False,
         ).encode("utf-8")
     except (TypeError, ValueError) as exc:
         raise ProxyRequestError(
@@ -1135,11 +1139,15 @@ class CredentialBlindBroker:
             raise ProxyRequestError("outbound request failed: credential unavailable")
         # The request may ASK for a longer budget; whether it gets one is read
         # from the connection's own capabilities, never from the request.
-        requested_budget = None
-        if isinstance(request, dict) and _REPLY_BUDGET_FIELD in request:
+        requested_budget = requested_idle = None
+        if isinstance(request, dict) and (
+            _REPLY_BUDGET_FIELD in request or _REPLY_IDLE_FIELD in request
+        ):
             request = dict(request)
-            requested_budget = request.pop(_REPLY_BUDGET_FIELD)
+            requested_budget = request.pop(_REPLY_BUDGET_FIELD, None)
+            requested_idle = request.pop(_REPLY_IDLE_FIELD, None)
         reply_budget_s = self._inference_budget_s(resource, verb, requested_budget)
+        reply_stream = self._inference_stream(reply_budget_s, requested_budget, requested_idle)
         if resource.connection_type == "http":
             try:
                 headers = self._ledger.get_connection_capability(
@@ -1175,7 +1183,7 @@ class CredentialBlindBroker:
             wire_credential = bundle.access_token
             secrets_held = bundle.secret_values()
         response = self._send(resource, grant_id, verb, request, wire_credential,
-                              revalidate_authority, reply_budget_s)
+                              revalidate_authority, reply_budget_s, reply_stream)
         if oauth and isinstance(response, dict) and response.get("status") == 401:
             # The service rejected the token before doing anything: refresh
             # once (unless another holder already did) and send once more.
@@ -1185,8 +1193,12 @@ class CredentialBlindBroker:
                 wire_credential = bundle.access_token
                 secrets_held = tuple(dict.fromkeys((*secrets_held, *bundle.secret_values())))
                 response = self._send(resource, grant_id, verb, request, wire_credential,
-                                      revalidate_authority, reply_budget_s)
-        if any(_contains_secret(response, secret) for secret in secrets_held if secret):
+                                      revalidate_authority, reply_budget_s, reply_stream)
+        joined = _streamed_text(response)
+        if any(
+            _contains_secret(response, secret) or (joined and secret in joined)
+            for secret in secrets_held if secret
+        ):
             self._record_error(
                 resource,
                 grant_id,
@@ -1245,9 +1257,33 @@ class CredentialBlindBroker:
         # Clamp before converting: float() of an enormous int overflows.
         return float(min(requested, INFERENCE_MAX_SECONDS)) if eligible else None
 
+    @staticmethod
+    def _inference_stream(
+        reply_budget_s: float | None, requested_budget: object, requested_idle: object,
+    ) -> tuple[float, float] | None:
+        """``(idle seconds, total seconds)`` for a streamed reply, or None.
+
+        Only where the longer budget was already granted (a model source, a
+        POST), so the request can never buy more than that connection allows.
+        The total is the caller's own remaining turn, clamped to
+        ``INFERENCE_STREAM_MAX_SECONDS``; the idle window is clamped to
+        ``[INFERENCE_IDLE_MIN_SECONDS, INFERENCE_MAX_SECONDS]``.
+        """
+        if (
+            reply_budget_s is None
+            or type(requested_idle) not in (int, float)
+            or (type(requested_idle) is float and not math.isfinite(requested_idle))
+            or requested_idle <= 0
+        ):
+            return None
+        idle = float(min(max(requested_idle, INFERENCE_IDLE_MIN_SECONDS), INFERENCE_MAX_SECONDS))
+        total = float(min(requested_budget, INFERENCE_STREAM_MAX_SECONDS))
+        return idle, max(total, reply_budget_s)
+
     def _send(
         self, resource: ConnectionResource, grant_id: str, verb: str, request: object,
         credential: str, revalidate_authority: Any, reply_budget_s: float | None = None,
+        reply_stream: tuple[float, float] | None = None,
     ) -> Any:
         try:
             return self._network_request(
@@ -1262,6 +1298,7 @@ class CredentialBlindBroker:
                 request=request,
                 **({"revalidate_authority": revalidate_authority} if revalidate_authority else {}),
                 **({"reply_budget_s": reply_budget_s} if reply_budget_s is not None else {}),
+                **({"reply_stream": reply_stream} if reply_stream is not None else {}),
             )
         except AmbiguousProxyOutcome:
             self._record_error(
@@ -1557,6 +1594,25 @@ _INFERENCE_CAPABILITIES = ("model_use", "model_discovery")
 #: The request field an inference caller uses to ask for that budget. Removed
 #: by the broker before the request reaches the network driver.
 _REPLY_BUDGET_FIELD = "reply_budget_s"
+#: A STREAMED model reply is judged by whether it is still arriving, not by how
+#: long it takes (founder, 2026-10-02: "if the model response is just slow
+#: your skipping it and then that call is used up for the user" -- on a capped
+#: free tier every abandoned reply costs one of the day's requests). The caller
+#: asks with this field; once the response headers are in, each read may wait
+#: this long for the next bytes, and a reply that keeps arriving runs on. The
+#: header phase keeps ``INFERENCE_MAX_SECONDS``, so a source that ignores
+#: ``stream`` and answers all at once behaves exactly as before.
+_REPLY_IDLE_FIELD = "reply_idle_s"
+#: Bounds on that inactivity window: never shorter than a source's usual
+#: keep-alive gap, never longer than the old whole-reply ceiling.
+INFERENCE_IDLE_MIN_SECONDS = 30.0
+#: The outer bound on a streamed reply that keeps arriving: a slow drip must
+#: still end some day (the deadline socket's reason to exist). Six hours, the
+#: same horizon after which a working turn's row reads as stale.
+INFERENCE_STREAM_MAX_SECONDS = 6 * 3600.0
+#: Body cap for a streamed reply: event framing multiplies a reply's size, and
+#: this still fits ``_MAX_PROXY_FRAME_BYTES`` when JSON escaping doubles it.
+INFERENCE_STREAM_MAX_BODY_BYTES = 7 * 1024 * 1024
 _SSRF_READ_CHUNK = 65536
 # RESIDUALS owed before this driver is ACTIVATED (it is dark; activation is
 # gated behind the endpoint-allowlist slice):
@@ -2990,6 +3046,20 @@ class _TotalDeadlineExceeded(Exception):
     """The request exceeded its monotonic wall-clock budget."""
 
 
+def _is_timeout(exc: BaseException) -> bool:
+    """A per-read timeout anywhere on the exception chain (not the total)."""
+    seen: set[int] = set()
+    cur: BaseException | None = exc
+    while cur is not None and id(cur) not in seen:
+        seen.add(id(cur))
+        if isinstance(cur, _TotalDeadlineExceeded):
+            return False
+        if isinstance(cur, TimeoutError) or isinstance(getattr(cur, "reason", None), TimeoutError):
+            return True
+        cur = cur.__cause__ or cur.__context__
+    return False
+
+
 def _looks_like_deadline_breach(exc: BaseException, deadline: float) -> bool:
     """True if a request failure is really a total-deadline breach.
 
@@ -3033,12 +3103,23 @@ class _DeadlineSocket:
     deadline inside the stdlib parser too, not only in the body loop.
     """
 
-    __slots__ = ("_deadline", "_per_op_timeout", "_sock")
+    __slots__ = ("_deadline", "_per_op_timeout", "_sock", "bound_by_total")
 
     def __init__(self, sock: Any, *, deadline: float, per_op_timeout: float | None) -> None:
         self._sock = sock
         self._deadline = deadline
         self._per_op_timeout = per_op_timeout
+        #: Whether the LAST armed read was limited by the total deadline rather
+        #: than the per-read window: a timeout then is the deadline, not a stall.
+        self.bound_by_total = True
+
+    def set_per_op_timeout(self, seconds: float) -> None:
+        """Change the per-read window from here on (the total is unchanged)."""
+        self._per_op_timeout = seconds
+
+    def set_deadline(self, deadline: float) -> None:
+        """Move the absolute deadline (a streamed reply, once its headers are in)."""
+        self._deadline = deadline
 
     def _arm(self) -> None:
         remaining = self._deadline - time.monotonic()
@@ -3047,6 +3128,7 @@ class _DeadlineSocket:
         budget = remaining
         if self._per_op_timeout is not None and self._per_op_timeout > 0:
             budget = min(self._per_op_timeout, remaining)
+        self.bound_by_total = budget >= remaining
         try:
             self._sock.settimeout(max(0.001, budget))
         except OSError:
@@ -3113,12 +3195,14 @@ class _PinnedHTTPSConnection(http.client.HTTPSConnection):
         pinned_address: str,
         open_socket: Callable[..., socket.socket],
         deadline: float,
+        sockets: list | None = None,
         **kwargs: Any,
     ) -> None:
         super().__init__(host, **kwargs)
         self._pinned_address = pinned_address
         self._open_socket = open_socket
         self._deadline = deadline
+        self._sockets = sockets
 
     def connect(self) -> None:  # noqa: D102 - overrides http.client
         # Bound the TCP connect by the remaining TOTAL budget, not just the per-op
@@ -3163,6 +3247,8 @@ class _PinnedHTTPSConnection(http.client.HTTPSConnection):
             deadline=self._deadline,
             per_op_timeout=self.timeout,
         )
+        if self._sockets is not None:
+            self._sockets.append(self.sock)
 
 
 class _PinnedHTTPSHandler(urllib.request.HTTPSHandler):
@@ -3175,11 +3261,13 @@ class _PinnedHTTPSHandler(urllib.request.HTTPSHandler):
         pinned_address: str,
         open_socket: Callable[..., socket.socket],
         deadline: float,
+        sockets: list | None = None,
     ) -> None:
         super().__init__(context=context)
         self._pinned_address = pinned_address
         self._open_socket = open_socket
         self._deadline = deadline
+        self._sockets = sockets
 
     def https_open(self, req: Any) -> Any:
         return self.do_open(self._make_connection, req)
@@ -3198,19 +3286,24 @@ class _PinnedHTTPSHandler(urllib.request.HTTPSHandler):
             pinned_address=self._pinned_address,
             open_socket=self._open_socket,
             deadline=self._deadline,
+            sockets=self._sockets,
         )
 
 
-def _read_capped_body(response: Any, max_body_bytes: int) -> bytes | None:
+def _read_capped_body(
+    response: Any, max_body_bytes: int, chunks: list[bytes] | None = None,
+) -> bytes | None:
     """Read the body in bounded chunks, enforcing only the size cap.
 
     The wall-clock deadline is enforced at the socket layer (``_DeadlineSocket``),
     which raises ``_TotalDeadlineExceeded`` from inside ``read1``'s recv if the
     budget is spent — so this loop only needs the size cap. ``read1`` returns
     after at most one underlying recv, so a huge body is cut at the cap without
-    being fully read. Returns the bytes, or None on a size-bound violation.
+    being fully read. Returns the bytes, or None on a size-bound violation. ``chunks``, when
+    given, receives each piece as it arrives, so a caller can keep a body that
+    stopped arriving part-way.
     """
-    chunks: list[bytes] = []
+    chunks = [] if chunks is None else chunks
     total = 0
     while True:
         piece = response.read1(min(_SSRF_READ_CHUNK, max_body_bytes + 1 - total))
@@ -3324,8 +3417,16 @@ def _execute_pinned_https_request(
     max_header_bytes: int,
     absolute_deadline: float | None = None,
     hop_metadata: _HttpHopMetadata | None = None,
+    body_idle_timeout: float | None = None,
 ) -> dict[str, Any]:
-    """Fire ONE request: no ambient proxies, no redirects, bounded response."""
+    """Fire ONE request: no ambient proxies, no redirects, bounded response.
+
+    With ``body_idle_timeout``, a response whose headers arrived is read with
+    that per-read window instead of ``timeout``, and a body that STOPS arriving
+    is returned as far as it got with ``"stalled": True`` -- the partial reply
+    is the owner's work and is not thrown away. The total deadline still ends a
+    drip, and still raises.
+    """
     deadline = (
         time.monotonic() + max_total_seconds
         if absolute_deadline is None else absolute_deadline
@@ -3333,6 +3434,14 @@ def _execute_pinned_https_request(
     remaining = (
         max_total_seconds if absolute_deadline is None else _remaining_redirect_seconds(deadline)
     )
+    # A streamed reply's long total starts only once its headers are in: until
+    # then the ordinary inference budget is the deadline, so a header drip
+    # cannot hold the worker for the stream's hours (Codex, 2026-10-02).
+    stream_deadline = None
+    if body_idle_timeout is not None and absolute_deadline is None:
+        stream_deadline = deadline
+        deadline = min(deadline, time.monotonic() + timeout)
+        remaining = max(deadline - time.monotonic(), 0.001)
     url = _canonical_request_url(canonical)
     request = urllib.request.Request(url, data=body, method=method, headers=headers)
 
@@ -3342,12 +3451,14 @@ def _execute_pinned_https_request(
     opener.add_handler(urllib.request.ProxyHandler({}))
     # No HTTPRedirectHandler and no HTTPErrorProcessor are added, so a 3xx is
     # returned as-is (never auto-followed) and non-2xx does not raise (D3.4).
+    sockets: list[_DeadlineSocket] = []
     opener.add_handler(
         _PinnedHTTPSHandler(
             context=ssl_context,
             pinned_address=pinned_address,
             open_socket=open_socket,
             deadline=deadline,
+            sockets=sockets,
         )
     )
 
@@ -3388,6 +3499,13 @@ def _execute_pinned_https_request(
     sanitized: dict[str, Any] | None = None
     bound_violation: str | None = None
     read_deadline_exceeded = False
+    if body_idle_timeout is not None:
+        if stream_deadline is not None:
+            deadline = stream_deadline
+        for wrapped in sockets:
+            wrapped.set_deadline(deadline)
+            wrapped.set_per_op_timeout(body_idle_timeout)
+    received: list[bytes] = []
     try:
         status = int(response.status)
         reason = str(getattr(response, "reason", "") or "")
@@ -3407,7 +3525,7 @@ def _execute_pinned_https_request(
             if not declared_ok:
                 bound_violation = "outbound response exceeds the size bound"
             else:
-                body_bytes = _read_capped_body(response, max_body_bytes)
+                body_bytes = _read_capped_body(response, max_body_bytes, received)
                 if body_bytes is None:
                     bound_violation = "outbound response exceeds the size bound"
                 else:
@@ -3436,7 +3554,24 @@ def _execute_pinned_https_request(
         # as a TimeoutError from the tightened socket timeout — label it as the
         # deadline (fail-closed) rather than a generic destination failure, exactly
         # as the header-phase handler does.
-        if _looks_like_deadline_breach(exc, deadline):
+        if (
+            # The socket knows which bound armed the read that timed out; a
+            # clock comparison here raced the deadline it was meant to exclude.
+            body_idle_timeout is not None and _is_timeout(exc) and bound_violation is None
+            and sockets and not any(wrapped.bound_by_total for wrapped in sockets)
+        ):
+            # Inactivity, not the total: the stream stopped arriving. What did
+            # arrive is returned, marked, for the caller to keep.
+            sanitized = {
+                "status": int(response.status),
+                "reason": str(getattr(response, "reason", "") or ""),
+                "headers": {
+                    str(name).lower(): str(value) for name, value in response.getheaders()
+                },
+                "body": b"".join(received).decode("utf-8", errors="replace"),
+                "stalled": True,
+            }
+        elif _looks_like_deadline_breach(exc, deadline):
             read_deadline_exceeded = True
         else:
             sanitized = None
@@ -3615,6 +3750,7 @@ class _SsrfHardenedHttpDriver:
         access_mode: str = ACCESS_EXACT,
         revalidate_authority: Callable[[float], None] | None = None,
         reply_budget_s: float | None = None,
+        reply_stream: tuple[float, float] | None = None,
     ) -> dict[str, Any]:
         if not isinstance(bundle, ConnectionSecretBundle):
             raise SsrfValidationError("a typed connection secret bundle is required")
@@ -3730,12 +3866,21 @@ class _SsrfHardenedHttpDriver:
             ssl_context=self._ssl_context,
             open_socket=self._open_socket,
             # The broker decided ``reply_budget_s`` (and only for inference);
-            # the redirect chain above never takes it.
+            # the redirect chain above never takes it. A streamed reply keeps
+            # that budget for its headers, then waits per read, not in total.
             timeout=self._timeout if reply_budget_s is None else reply_budget_s,
             max_total_seconds=(
-                self._max_total_seconds if reply_budget_s is None else reply_budget_s
+                self._max_total_seconds if reply_budget_s is None
+                else reply_budget_s if reply_stream is None else reply_stream[1]
             ),
-            max_body_bytes=self._max_body_bytes,
+            body_idle_timeout=None if reply_stream is None else reply_stream[0],
+            # Event framing costs ~150-250 bytes per token, so a long streamed
+            # reply outgrows the ordinary cap; the larger one still fits one
+            # proxy frame once JSON-escaped.
+            max_body_bytes=(
+                self._max_body_bytes if reply_stream is None
+                else max(self._max_body_bytes, INFERENCE_STREAM_MAX_BODY_BYTES)
+            ),
             max_header_count=self._max_header_count,
             max_header_bytes=self._max_header_bytes,
         )
@@ -3970,6 +4115,7 @@ class _TrustedNetworkDriver:
         access_mode = kwargs.pop("access_mode", ACCESS_EXACT)
         revalidate_authority = kwargs.pop("revalidate_authority", None)
         reply_budget_s = kwargs.pop("reply_budget_s", None)
+        reply_stream = kwargs.pop("reply_stream", None)
         if connection_type == "http":
             return self._dispatch_http(
                 auth_scheme=auth_scheme,
@@ -3980,6 +4126,7 @@ class _TrustedNetworkDriver:
                 request=kwargs.get("request"),
                 revalidate_authority=revalidate_authority,
                 reply_budget_s=reply_budget_s,
+                reply_stream=reply_stream,
             )
         if connection_type == "":
             # Legacy untyped connections route ONLY to the gated test fixture —
@@ -4002,6 +4149,7 @@ class _TrustedNetworkDriver:
         access_mode: str = ACCESS_EXACT,
         revalidate_authority: Callable[[float], None] | None = None,
         reply_budget_s: float | None = None,
+        reply_stream: tuple[float, float] | None = None,
     ) -> Any:
         if not self._allow_http:
             # Fail closed until a deployment enables the general http path.
@@ -4035,6 +4183,7 @@ class _TrustedNetworkDriver:
             access_mode=access_mode,
             **({"revalidate_authority": revalidate_authority} if revalidate_authority else {}),
             **({"reply_budget_s": reply_budget_s} if reply_budget_s is not None else {}),
+            **({"reply_stream": reply_stream} if reply_stream is not None else {}),
         )
 
 
@@ -4072,6 +4221,42 @@ def _build_credential_broker_dispatch(
 _TRUSTED_DISPATCH_FACTORIES = {
     "credential_broker_v1": _build_credential_broker_dispatch,
 }
+
+
+def _streamed_text(response: object) -> str:
+    """Every string a streamed reply's deltas carry, joined in arrival order.
+
+    An event stream hands a reply over in pieces, and the caller rejoins them;
+    a credential split across two deltas passes a substring scan of the raw
+    body and reappears whole once rejoined (Codex, 2026-10-02). Scanning the
+    rejoined text closes that. Best effort, like the scan it extends.
+    """
+    body = response.get("body") if isinstance(response, dict) else None
+    if not isinstance(body, str) or "data:" not in body:
+        return ""
+    pieces: list[str] = []
+
+    def collect(value: object) -> None:
+        if isinstance(value, str):
+            pieces.append(value)
+        elif isinstance(value, dict):
+            for item in value.values():
+                collect(item)
+        elif isinstance(value, list):
+            for item in value:
+                collect(item)
+
+    for line in body.splitlines():
+        if not line.startswith("data:"):
+            continue
+        try:
+            chunk = json.loads(line[5:].strip())
+        except ValueError:
+            continue
+        for choice in (chunk.get("choices") or []) if isinstance(chunk, dict) else ():
+            if isinstance(choice, dict):
+                collect(choice.get("delta"))
+    return "".join(pieces)
 
 
 def _contains_secret(value: object, secret: str) -> bool:

@@ -173,7 +173,11 @@ def _effective_universe_provider_ceiling(
     use only providers the universe itself selected, never the process-global
     fallback chain. Missing/empty selection holds before provider access.
     """
+    from tinyassets.provider_authority import current
+
+    universe_dir = universe_context.universe_dir if universe_context is not None else None
     if carrier_armed or universe_context is None:
+        resolved_config = current(universe_dir, resolved_config)
         return (
             resolved_config.allowed_providers
             if resolved_config is not None
@@ -185,6 +189,7 @@ def _effective_universe_provider_ceiling(
     requester_config = universe_context.config
     if requester_config is None:
         raise ProviderAuthorityHeldError(_CONNECT_PROVIDER_MESSAGE)
+    requester_config = current(universe_dir, requester_config)
     if requester_config.allowed_providers is not None:
         ceiling = [
             str(provider).strip()
@@ -236,9 +241,9 @@ def _default_config(resolved: "UniverseConfig | None" = None) -> ModelConfig:
 # only by the provider its owner's authority names. Status surfaces still use
 # this as the catalogue of executor names the host could register.
 FALLBACK_CHAINS: dict[str, list[str]] = {
-    "writer": ["claude-code", "codex", "gemini-free", "groq-free", "grok-free", "ollama-local"],
-    "judge": ["codex", "gemini-free", "groq-free", "grok-free", "ollama-local"],
-    "extract": ["codex", "gemini-free", "groq-free", "ollama-local"],
+    "writer": ["claude-code", "codex", "ollama-local"],
+    "judge": ["codex", "ollama-local"],
+    "extract": ["codex", "ollama-local"],
     "embed": ["ollama-local"],
 }
 
@@ -847,7 +852,11 @@ class ProviderRouter:
             raise PermissionError("native agent cannot use HTTP inference facts")
         if _agent_execution_kind == "engine_inference" and cfg.agent_request is None:
             raise PermissionError("engine inference requires its structured request")
-        from tinyassets.providers.agent_inference import input_size, output_for_settlement
+        from tinyassets.providers.agent_inference import (
+            context_tokens,
+            input_size,
+            output_for_settlement,
+        )
 
         if cfg.agent_request is not None and (
             cfg.selected_model is None or not cfg.engine_mcp_enabled
@@ -885,7 +894,7 @@ class ProviderRouter:
                     # The chosen output limit is itself part of the encoded
                     # agent request. Measure with that field present; otherwise
                     # adding it can overflow an exactly filled context afterward.
-                    required_input = input_size(
+                    required_input = context_tokens(
                         prompt, system, replace(cfg, max_tokens=output_limit),
                     )
                     output_limit = min(
@@ -917,7 +926,7 @@ class ProviderRouter:
             if cfg.max_tokens is None:
                 output_limit = invocation_carrier.max_tokens
                 if cfg.selected_model is not None:
-                    required_input = input_size(
+                    required_input = context_tokens(
                         prompt, system, replace(cfg, max_tokens=output_limit),
                     )
                     output_limit = min(
@@ -957,9 +966,10 @@ class ProviderRouter:
                 cfg.max_tokens,
             ) > invocation_carrier.max_cost_microunits:
                 raise PermissionError("selected model exceeds this workflow cost allowance")
-            # Match the existing conservative input reservation measure. The
-            # selected catalogue's context limit is not a permission to truncate.
-            required_context = input_size(prompt, system, cfg)
+            # A conservative TOKEN estimate against the window (the reservation
+            # below keeps the byte measure). The selected catalogue's context
+            # limit is not a permission to truncate.
+            required_context = context_tokens(prompt, system, cfg)
             if (
                 cfg.max_tokens is None
                 or required_context + cfg.max_tokens > cfg.selected_model.context_tokens
@@ -1357,7 +1367,6 @@ class ProviderRouter:
                         output_tokens=resp.output_tokens,
                         cost_microunits=resp.cost_microunits,
                     )
-                self._quota.record_success(provider_name)
                 if served_authority is not None:
                     from tinyassets.providers.source_health import SOURCE_HEALTH, source_key
 
@@ -1534,7 +1543,13 @@ class ProviderRouter:
                 ))
                 continue
             except ProviderProtocolError as exc:
-                if self._cool(cfg, provider_name, COOLDOWN_OTHER):
+                # An agent round's unreadable or in-band-error reply is about one
+                # MODEL's answer, not the connection: cooling it skipped every
+                # sibling model on the same key (live 2026-10-02, the free-only
+                # account's whole OpenRouter pool), and made the owner's very next
+                # "continue" a cooldown refusal. The turn coordinator bounds its
+                # own retries (``AgentTurnCoordinator._next_after_bad_reply``).
+                if cfg.agent_request is None and self._cool(cfg, provider_name, COOLDOWN_OTHER):
                     logger.warning(
                         "Provider %s protocol error, cooldown %ds",
                         provider_name, COOLDOWN_OTHER,
@@ -1545,6 +1560,7 @@ class ProviderRouter:
                     detail=redacted_failure_detail(str(exc)),
                     failure_class=exc.failure_class,
                     side_effect_state=_side_effect_from(exc),
+                    partial_text=getattr(exc, "partial_text", None) or None,
                     **_tool_wait_evidence(exc),
                 ))
                 continue

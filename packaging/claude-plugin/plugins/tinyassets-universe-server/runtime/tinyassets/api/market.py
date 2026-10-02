@@ -405,7 +405,7 @@ def normalize_patch_request_incentive(
     }
 
 
-# â”€â”€ Escrow MCP handlers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── Escrow MCP handlers ────────────────────────────────────────────────────────
 
 
 def _escrow_host_user() -> str:
@@ -723,7 +723,7 @@ _ESCROW_ACTIONS: dict[str, Any] = {
     "escrow_withdraw": _action_escrow_withdraw,
 }
 
-# â”€â”€ Outcome event MCP actions â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── Outcome event MCP actions ─────────────────────────────────────────────
 
 
 def _outcome_db_path(base_path: "Path") -> "Path":
@@ -976,7 +976,7 @@ _OUTCOME_ACTIONS: dict[str, Any] = {
     "get_outcome": _action_get_outcome,
 }
 
-# â”€â”€ Attribution chain â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── Attribution chain ──────────────────────────────────────────────────────
 
 def _attribution_connect(base_path: "Path") -> Any:
     import sqlite3 as _sqlite3
@@ -1175,9 +1175,9 @@ _ATTRIBUTION_ACTIONS: dict[str, Any] = {
     "get_provenance": _action_get_provenance,
 }
 
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ═══════════════════════════════════════════════════════════════════════════
 # TOOL 3 — Goals (first-class shared primitive above Branches)
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ═══════════════════════════════════════════════════════════════════════════
 # Phase 5 per docs/specs/community_branches_phase5.md. A Goal is the
 # intent a Branch serves — "produce a research paper", "plan a
 # wedding". Many Branches bind to one Goal. 8 actions: propose,
@@ -1447,7 +1447,7 @@ def _action_goal_bind(kwargs: dict[str, Any]) -> str:
     if gid and goal is not None:
         commit_msg = f"goals.bind: {branch['name']} → {goal['name']}"
     else:
-        commit_msg = f"goals.bind: {branch['name']} âˆ… (unbind)"
+        commit_msg = f"goals.bind: {branch['name']} ∅ (unbind)"
     try:
         _storage_backend().save_branch_and_commit(
             branch_obj,
@@ -1608,7 +1608,7 @@ def _action_goal_get(kwargs: dict[str, Any]) -> str:
     if protocol:
         lines.append(f"**Branch protocol** ({len(protocol)} step(s)):")
         for step in protocol[:12]:
-            marker = " â† current" if step == current_protocol_step else ""
+            marker = " ← current" if step == current_protocol_step else ""
             lines.append(
                 f"- {step.get('order')}. `{step.get('branch_def_id')}` · "
                 f"{step.get('source_label') or step.get('step_id')}"
@@ -1769,7 +1769,7 @@ def _action_goal_get_protocol(kwargs: dict[str, Any]) -> str:
     if protocol:
         lines = [f"**Branch protocol for Goal '{goal['name']}':**", ""]
         for step in protocol:
-            marker = " â† current" if step == current_step else ""
+            marker = " ← current" if step == current_step else ""
             lines.append(
                 f"- {step.get('order')}. `{step.get('branch_def_id')}` · "
                 f"{step.get('source_label') or step.get('step_id')} · "
@@ -2821,9 +2821,9 @@ def goals(
 
     return _dispatch_goal_action(canonical_action, handler, goal_kwargs)
 
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ═══════════════════════════════════════════════════════════════════════════
 # TOOL 3b — Outcome Gates (Phase 6.1)
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ═══════════════════════════════════════════════════════════════════════════
 #
 # Flag-gated by GATES_ENABLED=1. Phase 6.1 ships schema + three actions
 # (define_ladder / get_ladder / claim) write-through SQLite only. Git

@@ -8,7 +8,7 @@ ModelConfig       -- per-call configuration
 BaseProvider      -- ABC for implementing new providers
 
 Provider implementations are imported on demand to avoid hard
-dependencies on optional packages (google-genai, groq).
+dependencies on optional packages.
 """
 
 from tinyassets.providers.base import (

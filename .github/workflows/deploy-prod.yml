@@ -30,6 +30,11 @@ on:
         description: 'Image tag to deploy (default = build head / current main short-SHA)'
         required: false
         type: string
+      rotate_request_idempotency_hmac:
+        description: 'Replace the host request-idempotency HMAC key with the GitHub secret. Use only after rotating a key that was exposed; normal deploys install it set-once and fail closed on a mismatch.'
+        required: false
+        type: boolean
+        default: false
 
 concurrency:
   # One deploy at a time; never cancel an in-flight deploy mid-swap.
@@ -57,6 +62,9 @@ permissions:
   contents: read
   packages: read
   issues: write
+  # Read-only: "Wait for in-flight turns" looks for queued host-mutating runs
+  # it must yield to.
+  actions: read
 
 jobs:
   deploy:
@@ -65,7 +73,8 @@ jobs:
       github.event_name == 'workflow_dispatch' ||
       (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success')
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # 15 min of deploy work plus up to 55 for "Wait for in-flight turns".
+    timeout-minutes: 70
     env:
       DO_DROPLET_HOST: ${{ secrets.DO_DROPLET_HOST }}
       DO_SSH_USER: ${{ secrets.DO_SSH_USER }}
@@ -149,6 +158,23 @@ jobs:
           : "${DO_SSH_USER:?DO_SSH_USER secret missing}"
           [ -n "${{ secrets.DO_SSH_KEY }}" ] || { echo "::error::DO_SSH_KEY secret missing"; exit 1; }
 
+      # Both daemon HMAC keys are validated on the runner BEFORE anything touches
+      # the host. PR #2442 dropped these steps along with the installs below; prod
+      # kept working only because /etc/tinyassets/{request-idempotency,agent-
+      # interchange}.env survived from 2026-08-10, so a rebuilt host would boot
+      # without them (tinyassets-daemon.service's ExecStartPre refuses) and a
+      # rotation had no path at all (docs/concerns, 2026-10-01 triage).
+      - name: Validate agent interchange HMAC prerequisite
+        env:
+          TINYASSETS_AGENT_INTERCHANGE_HMAC_KEY: ${{ secrets.TINYASSETS_AGENT_INTERCHANGE_HMAC_KEY }}
+        run: python scripts/validate_agent_interchange_hmac.py
+
+      - name: Validate request idempotency HMAC prerequisite
+        env:
+          TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY: ${{ secrets.TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY }}
+          TINYASSETS_AGENT_INTERCHANGE_HMAC_KEY: ${{ secrets.TINYASSETS_AGENT_INTERCHANGE_HMAC_KEY }}
+        run: python scripts/validate_request_idempotency_hmac.py
+
       - name: Install SSH key
         env:
           SSH_KEY: ${{ secrets.DO_SSH_KEY }}
@@ -177,6 +203,92 @@ jobs:
           esac
           echo "prev_image=${prev}" >> "$GITHUB_OUTPUT"
           echo "current prod image (running, digest): ${prev:-<none>}"
+
+      # Daemon-only request-admission key, in its own root:tinyassets 640 file
+      # that only the daemon service mounts (compose env_file). set-once on every
+      # deploy: an absent key is installed, the identical key is a no-op, and a
+      # DIFFERENT host key fails the deploy closed (helper exit 5) before any
+      # swap -- GitHub and the host must never silently disagree about the key
+      # that signs request admissions. Replacing it is `set`, manual dispatch only
+      # (rotate_request_idempotency_hmac=true). The fail-safe deploy below then
+      # recreates the daemon, its only consumer, because the env_file contents
+      # are part of the service config compose hashes.
+      - name: Install daemon-only request idempotency HMAC secret
+        env:
+          TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY: ${{ secrets.TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY }}
+          REQUEST_HMAC_INSTALL_MODE: ${{ github.event_name == 'workflow_dispatch' && inputs.rotate_request_idempotency_hmac && 'set' || 'set-once' }}
+        run: |
+          set -euo pipefail
+          case "${REQUEST_HMAC_INSTALL_MODE}" in
+            set-once|set) ;;
+            *)
+              echo "::error::invalid request HMAC install mode"
+              exit 1
+              ;;
+          esac
+          if [ "${REQUEST_HMAC_INSTALL_MODE}" = "set" ] && [ "${GITHUB_EVENT_NAME}" != "workflow_dispatch" ]; then
+            echo "::error::request HMAC rotation is manual-dispatch only"
+            exit 1
+          fi
+          scp -i ~/.ssh/do_deploy -o BatchMode=yes \
+              deploy/install-tinyassets-env.sh \
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}:/tmp/install-tinyassets-env.sh"
+          if [ "${REQUEST_HMAC_INSTALL_MODE}" = "set" ]; then
+            # Rotating while the shared env still carries a copy would leave the
+            # old key live there; refuse first.
+            if ! ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+                "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+                "sudo env TINYASSETS_ENV_FILE=/etc/tinyassets/env bash /tmp/install-tinyassets-env.sh assert-absent TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY"; then
+              echo "::error::rotation prerequisite failed: shared env exposes request admission authority"
+              exit 1
+            fi
+          fi
+          printf '%s' "${TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY}" | \
+              ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+              "sudo env TINYASSETS_ENV_FILE=/etc/tinyassets/request-idempotency.env TINYASSETS_LEGACY_ENV_FILE=/etc/tinyassets/no-request-idempotency-legacy bash /tmp/install-tinyassets-env.sh '${REQUEST_HMAC_INSTALL_MODE}' TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY"
+
+      - name: Install daemon-only agent interchange HMAC secret
+        env:
+          TINYASSETS_AGENT_INTERCHANGE_HMAC_KEY: ${{ secrets.TINYASSETS_AGENT_INTERCHANGE_HMAC_KEY }}
+        run: |
+          set -euo pipefail
+          printf '%s' "${TINYASSETS_AGENT_INTERCHANGE_HMAC_KEY}" | \
+              ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+              "sudo env TINYASSETS_ENV_FILE=/etc/tinyassets/agent-interchange.env TINYASSETS_LEGACY_ENV_FILE=/etc/tinyassets/no-agent-interchange-legacy bash /tmp/install-tinyassets-env.sh set TINYASSETS_AGENT_INTERCHANGE_HMAC_KEY"
+
+      # The two installed keys must be valid and DISTINCT on the host itself,
+      # not just in GitHub: the daemon reads the files, not the secrets.
+      - name: Validate installed host HMAC pair
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+              "sudo python3 -" < scripts/validate_host_runtime_hmac_pair.py
+
+      # The shared /etc/tinyassets/env is mounted by more than the daemon, so it
+      # must never carry request-admission minting authority. Also strips the
+      # stale overrides the pre-#2442 scrub removed (BUG-002 wiki path, the
+      # stdio-only TINYASSETS_UNIVERSE, retired WORKFLOW_* names). The retired
+      # platform-credential names are NOT listed: repo gates forbid any workflow
+      # from naming them at all (tests/test_no_platform_*). All absent on
+      # prod as of 2026-10-01, so this is a guard, not a migration. BACKUP_DEST,
+      # LOG_DEST and BACKUP_GH_REPO are host-owned and deliberately not touched
+      # (deploy/backup.sh still reads BACKUP_GH_REPO; the pre-#2442 list deleted it).
+      - name: Scrub stale cloud env overrides
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+              "sudo bash -s -- delete TINYASSETS_WIKI_PATH TINYASSETS_UNIVERSE TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY WORKFLOW_IMAGE WORKFLOW_DATA_DIR WORKFLOW_MCP_CANARY_URL WORKFLOW_ALLOW_API_KEY_PROVIDERS WORKFLOW_NODE_ENQUEUE_ENABLED WORKFLOW_SOUL_LOOP_DISPATCH WORKFLOW_BUG_INVESTIGATION_BACKFILL WORKFLOW_BUG_INVESTIGATION_BRANCH_DEF_ID WORKFLOW_BUG_INVESTIGATION_GOAL_ID" \
+              < deploy/install-tinyassets-env.sh
+          ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+              "sudo env TINYASSETS_ENV_FILE=/etc/tinyassets/env bash /tmp/install-tinyassets-env.sh assert-absent TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY" || {
+            echo "::error::shared env still contains request admission minting authority"
+            exit 1
+          }
 
       - name: Sync runtime deploy files
         # compose.yml, the vector configs and the systemd unit are part of the
@@ -331,6 +443,41 @@ jobs:
           REMOTE
           echo "prepared=true" >> "$GITHUB_OUTPUT"
           echo "expected-instance state installed before candidate startup"
+
+      # A deploy recreates the daemon, and that kills every turn running in it:
+      # on 2026-10-02 it cut the founder's live village turn twice. So the swap
+      # waits until no work is in flight, polling every TURN_POLL_S and
+      # proceeding anyway at TURN_WAIT_CAP_S; deploy/wait_for_turns.sh has the
+      # rules (what counts, when it proceeds, the race it cannot close).
+      #
+      # Deliberately OUTSIDE deploy_fail_safe.sh: that script holds the
+      # host-mutation flock, and holding it for up to 45 min would stop the
+      # watchdogs restarting a daemon that falls over mid-wait.
+      #
+      # Coalescing comes from the concurrency group above: GitHub keeps ONE
+      # pending run per group, and a newer one replaces it. Merges landing during
+      # a long turn therefore queue as a single deploy of the newest sha behind
+      # this one, not twenty swaps. release-reconcile treats this in-progress run
+      # as covering its sha and dispatches nothing extra for it.
+      #
+      # The same group makes the other host-mutating workflows (p0-outage-triage,
+      # restart-daemon, install-host-services, apply-daemon-env) queue behind a
+      # waiting deploy. A P0 repair must not sit 45 min behind a polite wait, so
+      # the wait YIELDS -- proceeds to the swap now -- as soon as any of them is
+      # queued (YIELD_WORKFLOWS).
+      - name: Wait for in-flight turns
+        id: turns
+        # The cap (which includes the prefetch) + one worst-case poll + cleanup.
+        timeout-minutes: 55
+        env:
+          TARGET_REVISION: ${{ steps.tag.outputs.revision }}
+          IMAGE_REF: ${{ steps.tag.outputs.image_ref }}
+          TURN_WAIT_CAP_S: '2700'
+          TURN_POLL_S: '15'
+          RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          YIELD_WORKFLOWS: p0-outage-triage.yml restart-daemon.yml install-host-services.yml apply-daemon-env.yml
+        run: bash deploy/wait_for_turns.sh
 
       - name: Run fail-safe deploy on the droplet
         id: deploy
@@ -522,6 +669,7 @@ jobs:
             echo "## Fail-safe deploy"
             echo "- image: \`${{ steps.tag.outputs.image_ref }}\`"
             echo "- revision: \`${{ steps.tag.outputs.revision }}\`"
+            echo "- waited for in-flight turns: \`${{ steps.turns.outputs.outcome }}\` after \`${{ steps.turns.outputs.waited_s }}s\` (\`${{ steps.turns.outputs.polls }}\` polls)"
             echo "- deploy rc: \`${{ steps.deploy.outputs.rc }}\` result: \`${{ steps.deploy.outputs.result }}\`"
             echo "- deployed image: \`${{ steps.deploy.outputs.deployed_image }}\`"
             echo "- public canary: \`${{ steps.canary.outcome }}\`"

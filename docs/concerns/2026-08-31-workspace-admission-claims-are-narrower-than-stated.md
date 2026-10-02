@@ -80,7 +80,7 @@ This matters more than the others because it interacts with #1: a re-dispatch
 reuses the same `run_id` and therefore passes the reentrant lock. It also
 interacts with a known live behaviour — every merge auto-deploys and recreates
 the container, killing in-flight turns
-([[deploy-kills-in-flight-turns]] / `2026-08-29-a-deploy-kills-in-flight-turns-silently.md`),
+([[deploy-kills-in-flight-turns]] / the resolved 2026-08-29 deploy-kills-turns concern),
 so the crash window is not hypothetical here.
 
 **Not verified.** Needs a kill-at-the-right-moment test, which the Linux oracle

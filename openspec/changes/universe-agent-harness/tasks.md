@@ -1,3 +1,45 @@
+## 0. Status tracker (the one place; owner: dots-research, updated 2026-10-02)
+
+The goal is one composed experience in the founder's own account: an always-on
+agent (ChatGPT dots) with pi's four tools and customization, Claude Code's
+act → verify → iterate feel, and OpenClaw-style configurability. It is judged
+by the founder's real conversation, not by tests.
+
+Status words: **live** (merged and deployed), **queued** (stamped, in the merge
+queue), **review** (PR open, not stamped), **building** (draft or in progress),
+**not started**.
+
+| Slice | What it gives the founder | State | PRs |
+|---|---|---|---|
+| S1 sessions + tone | One continuing session per thread; result-first voice | live | #4173, #3972 (tool jail) |
+| C0/C1 naming | "Command center" everywhere, public MCP names | live | #4189, #4261, #4264 |
+| W own workspace | The agent owns `/u` (its workspace), wiki and brain; git + rg | W1, W3 live; **W2 queued** | #4185, #4198, #4194 |
+| S3a egress | bash reaches the internet through a checking proxy | live | #4174 |
+| S2 steering | A message sent mid-turn reaches the running turn | live; **never-lost fix queued** | #4188, #4290 |
+| S4 journal + live line | The owner sees each tool step live; custom UIs read `read_live` | **queued** | #4190 |
+| D1 rules, auto-review, hand-backs | Custom Rules (do / if pre-approved / ask first / hand off), seeded hand-backs, auto-review on the agent's own model | live; per-agent keys **queued** | #4193, #4199, #4200, #4228 |
+| D2 activities | Several things at once with no chat open; survives deploys; waiting on you | design live; code **building** (store, Activities branch, dispatcher, `/app/live`) | #4211, #4220, #4221 |
+| D3 proactive research + proposals | Idle research on a cadence; output is proposals the owner approves | **not started** (trigger owned by S8b) | — |
+| D4 onboarding, profile, push | Name + one responsibility; profile page; push on done/waiting | push live; onboarding/profile **not started** | #4138 |
+| D5 computer | Browser broker, live view, take over; the agent sees what it built | **building** (ui-capabilities) | #4306 image read, #4316 UI preview, #4314 headless shell |
+| D6 four tools + `ta` | Exactly read/write/edit/bash, breadth behind `ta search` | tools live (S1); `ta` **not started** | #3972 |
+| D7 memory | Memory items, Harness tab, history, Undo | **not started** | — |
+| D8 roster | Talk to any agent; per-agent rules/visibility | converse-by-agent **building** (agent-chat); design live | #4287, #4227 |
+| D9 sharing | Publish / install a whole command center | **building** (cc-package) | #4315 |
+| D10 everywhere | Starter template for every new account; old surface deleted | **not started** | — |
+| D11 export | A runnable, publish-ready local folder | design live; build **not started** | #4218 |
+| S7 thin loop | The Claude-Code-style agent loop the founder's agent should run on | **review** / building | #4282, #4292 |
+| S6 broker | The sealed box's request broker | **review** | #4299 |
+| S4-box sealed boxes | Each command center in its own box | PR1 auto-merging; PR2 **building** | #4274, #4319 |
+| S8a owner lease | Per-command-center owner, fenced turn journal | **building** / review | #4308, #4313 |
+| S8b scheduler | One owner tick; triggers; decayed proactive cadence | **building** | #4276 |
+| Friction fixes | One-call patch request | **building** | (harness-patch-request, PR to open) |
+
+**Next integration step.** Once S7 (#4282/#4292), S6 (#4299) and the box tools
+land, the founder's account is switched (per account) onto the thin loop, the
+four tools and the sealed box. It is judged in his live conversation: does it
+act, verify visually, iterate, stay always on, and run long?
+
 ## 1. Design
 
 - [x] 1.1 Research the four reference harnesses and ChatGPT dots from current sources, and audit tiny's code paths, production turns and files (design.md §1-3). The first version was approved 2026-10-01, with the gpt-6-astra ADAPT folded in.

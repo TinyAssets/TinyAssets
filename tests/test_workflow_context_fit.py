@@ -93,7 +93,8 @@ def test_a_node_too_large_for_its_model_answers_on_one_that_fits(
         ),
     ))
 
-    _three_models(monkeypatch, {SMALL: 600, ALSO_SMALL: 700, LARGE: 1_048_576})
+    # Token windows: the fit check estimates tokens at 3 request bytes each.
+    _three_models(monkeypatch, {SMALL: 200, ALSO_SMALL: 230, LARGE: 1_048_576})
     routed = []
     real_call = ProviderRouter.call
 

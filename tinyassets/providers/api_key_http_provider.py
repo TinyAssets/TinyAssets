@@ -45,8 +45,11 @@ from tinyassets.exceptions import (
     ProviderOverloadedError,
     ProviderProtocolError,
     ProviderRateLimitedError,
+    ProviderReplyError,
     ProviderReplyTimeoutError,
+    ProviderStalledError,
     ProviderUnavailableError,
+    ProviderUnreadableReplyError,
 )
 from tinyassets.providers.base import BaseProvider, ModelConfig, ProviderResponse
 from tinyassets.providers.definition import ProviderDefinition
@@ -54,6 +57,12 @@ from tinyassets.providers.protocol_encoders import ENCODERS, ProtocolDecodeError
 from tinyassets.providers.wire_dialects import same_dialect
 
 _LOG = logging.getLogger(__name__)
+
+#: Seconds a STREAMED agent reply may go without new bytes before it counts as
+#: stalled. A reply that keeps arriving is never cut for being slow (founder,
+#: 2026-10-02): on a capped free tier an abandoned reply is one of the day's
+#: requests gone. A source may declare its own ``reply_idle_s`` in its preset.
+DEFAULT_REPLY_IDLE_S = 120.0
 
 #: HTTP's own words for "not this model, not for you": forbidden, not found,
 #: gone. Standard status semantics, not a vendor's error envelope.
@@ -338,6 +347,9 @@ class ApiKeyHttpProvider(BaseProvider):
         # broker applies it from the connection's auth_scheme (x-api-key for Claude).
         from tinyassets.providers.protocol_encoders import static_headers_for
 
+        # An agent body already asks to stream (``AgentInferenceRequest.encode``):
+        # every agent wire is chat_messages, whose servers stream on request, and
+        # the decoder folds events and plain JSON alike.
         wire_request: dict[str, Any] = {"url": f"https://{host}{path}", "body": body}
         # Ask for as long as the turn itself may still run. The broker grants it
         # only because this connection is a model source, and never beyond its
@@ -345,6 +357,11 @@ class ApiKeyHttpProvider(BaseProvider):
         reply_budget = _reply_budget_s(config)
         if reply_budget is not None:
             wire_request["reply_budget_s"] = reply_budget
+            if agent_request is not None:
+                from tinyassets.providers.free_sources import source_for_host
+
+                idle = source_for_host(host).get("reply_idle_s", DEFAULT_REPLY_IDLE_S)
+                wire_request["reply_idle_s"] = float(idle)
         static_headers = static_headers_for(self._definition.protocol)
         if static_headers:
             wire_request["headers"] = static_headers
@@ -373,9 +390,15 @@ class ApiKeyHttpProvider(BaseProvider):
                 f"compute grant resolution failed: {exc}"
             ) from exc
         except OutboundDeadlineExceeded:
+            from tinyassets.storage.outbound_connections import INFERENCE_MAX_SECONDS
+
+            # The budget that actually ended it: the broker grants at most its
+            # own ceiling, so the turn's remaining time (live 2026-10-02:
+            # "2591705s") is not the number the owner should read.
             raise ProviderReplyTimeoutError(
                 "the model did not finish answering within its reply budget"
-                + (f" ({int(reply_budget)}s)" if reply_budget is not None else "")
+                + (f" ({int(min(reply_budget, INFERENCE_MAX_SECONDS))}s)"
+                   if reply_budget is not None else "")
             ) from None
         except ConnectionAuthorizationError as exc:
             # A refresh that failed is a connection/auth failure (the class
@@ -464,9 +487,25 @@ class ApiKeyHttpProvider(BaseProvider):
                 or f"compute provider returned HTTP {status}"
             )
 
+        # A 2xx we cannot read, on an agent round, is the model's slip rather
+        # than the source refusing the request: the turn may retry it.
+        unreadable = (
+            ProviderUnreadableReplyError if agent_request is not None else ProviderProtocolError
+        )
         body_str = result.get("body")
+        if agent_request is not None and result.get("stalled") is True:
+            from tinyassets.providers.agent_chat_codec import partial_stream_text
+
+            partial = partial_stream_text(body_str) if isinstance(body_str, str) else ""
+            idle = wire_request.get("reply_idle_s")
+            raise ProviderStalledError(
+                "the model stopped sending partway through its reply"
+                + (f" (nothing for {int(idle)}s" if idle else " (")
+                + f", {len(partial)} characters of text received)",
+                partial_text=partial,
+            )
         if not isinstance(body_str, str) or not body_str:
-            raise ProviderProtocolError("compute response had an empty body")
+            raise unreadable("compute response had an empty body")
         try:
             if agent_request is not None:
                 from tinyassets.providers.agent_chat_codec import (
@@ -485,7 +524,7 @@ class ApiKeyHttpProvider(BaseProvider):
             else:
                 parsed = json.loads(body_str)
         except (TypeError, ValueError) as exc:
-            raise ProviderProtocolError(f"compute response was not JSON: {exc}") from exc
+            raise unreadable(f"compute response was not JSON: {exc}") from exc
         agent_reply = None
         cost = None
         try:
@@ -496,6 +535,15 @@ class ApiKeyHttpProvider(BaseProvider):
                         item["function"]["name"] for item in agent_request.tools()
                     ),
                 )
+                if (agent_reply.stop == "truncated" and agent_reply.text is None
+                        and not agent_reply.tool_requests):
+                    # "Succeeded with nothing": a cold start, or a reasoning
+                    # model that spent its whole output on thinking. Nothing to
+                    # keep, and the next attempt usually answers.
+                    raise ProviderUnreadableReplyError(
+                        "the model stopped at its output limit before replying "
+                        "(finish_reason length, no content)"
+                    )
                 text = agent_reply.text or ""
                 in_tok, out_tok = agent_reply.input_tokens, agent_reply.output_tokens
             else:
@@ -503,7 +551,17 @@ class ApiKeyHttpProvider(BaseProvider):
             if selection is not None and contract.usage_decoder is not None:
                 cost = contract.usage_decoder(body_str)
         except ProtocolDecodeError as exc:
-            raise ProviderProtocolError(str(exc)) from exc
+            words = getattr(exc, "source_error", None)
+            if isinstance(words, str):
+                # The source said generation failed; keep its own words.
+                from tinyassets.providers.diagnostics import redacted_failure_detail
+
+                # Only the agent wire codec marks one, so this is an agent round.
+                raise ProviderReplyError(
+                    "the model's source reported an error instead of a reply: "
+                    + (redacted_failure_detail(words) or "no detail given")
+                ) from exc
+            raise unreadable(str(exc)) from exc
 
         return ProviderResponse(
             text=text,

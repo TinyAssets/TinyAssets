@@ -12,7 +12,7 @@ import json
 import math
 import re
 from collections.abc import Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Literal
 
 from mcp.types import CallToolResult, Tool
@@ -447,6 +447,29 @@ def fold_chat_stream(body: str) -> dict[str, Any]:
     return folded
 
 
+def partial_stream_text(body: str) -> str:
+    """The assistant text a CUT event stream had delivered, best effort.
+
+    For the owner's notice when a stream stopped arriving: only ``content``
+    deltas, in order, skipping any line that does not parse. Never a tool call
+    -- a half-received call is not an action and is not offered as one.
+    """
+    pieces: list[str] = []
+    for line in body.splitlines() if isinstance(body, str) else ():
+        if not line.startswith("data:"):
+            continue
+        try:
+            chunk = json.loads(line[5:].strip())
+        except ValueError:
+            continue
+        for choice in (chunk.get("choices") or []) if isinstance(chunk, dict) else ():
+            delta = choice.get("delta") if isinstance(choice, dict) else None
+            piece = delta.get("content") if isinstance(delta, dict) else None
+            if isinstance(piece, str):
+                pieces.append(piece)
+    return "".join(pieces)
+
+
 def _fold_tool_deltas(
     deltas: Any, calls: dict[int, dict[str, Any]], order: list[int],
 ) -> None:
@@ -681,6 +704,101 @@ def project_completed_history(
             }
         result.extend(messages)
     return result
+
+
+#: ``(rounds kept whole at the end, result characters, argument-string
+#: characters)`` per compaction level; index 0 is level 1. Older rounds only,
+#: until level 3 trims the last round too.
+COMPACTION_LEVELS = ((2, 4000, 2000), (1, 1000, 300), (0, 400, 200))
+
+
+def _clip(text: str, limit: int, what: str) -> str:
+    if len(text) <= limit:
+        return text
+    head, tail = text[: limit * 2 // 3], text[len(text) - limit // 3:]
+    return (f"{head}\n[... {len(text) - len(head) - len(tail)} characters of {what} "
+            f"omitted here to fit the model's context window ...]\n{tail}")
+
+
+def _clip_strings(value: Any, limit: int) -> Any:
+    if isinstance(value, str):
+        return _clip(value, limit, "this earlier call's argument (it ran with them in full)")
+    if isinstance(value, dict):
+        return {key: _clip_strings(item, limit) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_clip_strings(item, limit) for item in value]
+    return value
+
+
+def _compact_round(captured: CapturedToolRound, results: int, arguments: int):
+    reply, outcomes = captured.round.reply, captured.round.outcomes
+    clipped = {
+        request.call_id: _dump(_clip_strings(request.arguments(), arguments))
+        for request in reply.tool_requests
+    }
+    assistant = _object(reply.continuation_json)
+    # Older reasoning is the model's scratch work for a step already taken.
+    for name in ("reasoning", "reasoning_details"):
+        assistant.pop(name, None)
+    for call in assistant.get("tool_calls") or ():
+        call["function"]["arguments"] = clipped[call["id"]]
+    compact_reply = replace(
+        reply, continuation_json=_dump(assistant),
+        tool_requests=tuple(
+            ToolRequest(item.call_id, item.name, clipped[item.call_id])
+            for item in reply.tool_requests
+        ),
+    )
+    compact_outcomes = []
+    for outcome in outcomes:
+        result = _object(outcome.result_json)
+        text = "\n".join(block["text"] for block in result["content"])
+        if result["structuredContent"] is not None:
+            text = (text + "\n" if text else "") + _dump(result["structuredContent"])
+        if len(outcome.result_json) > results:
+            outcome = ToolOutcome(outcome.call_id, _dump({
+                "content": [{"type": "text", "text": _clip(
+                    text, results,
+                    "this earlier tool result (unchanged on record; call the tool again "
+                    "to read it whole)",
+                )}],
+                "structuredContent": None, "isError": outcome.is_error,
+            }), outcome.is_error)
+        compact_outcomes.append(outcome)
+    return CapturedToolRound(
+        round=ToolRound(compact_reply, tuple(compact_outcomes)),
+        tools=_object(captured.tools_json)["tools"],
+    )
+
+
+def compact_history(
+    history: Sequence[CapturedToolRound], level: int,
+) -> tuple[CapturedToolRound, ...]:
+    """The same completed rounds, rendered shorter for a small context window.
+
+    Level 0 is the history unchanged. Each higher level clips older tool
+    results and older call arguments harder, every clip saying what it left
+    out. Only what the model is SHOWN changes: the journal keeps every round
+    whole, and a clipped round still validates as a complete, correlated batch.
+    """
+    history = tuple(history)
+    if level <= 0 or not history:
+        return history
+    keep, results, arguments = COMPACTION_LEVELS[min(level, len(COMPACTION_LEVELS)) - 1]
+    cut = len(history) - keep
+    return tuple(
+        _compact_round(captured, results, arguments) if position < cut else captured
+        for position, captured in enumerate(history)
+    )
+
+
+def history_size(history: Sequence[CapturedToolRound]) -> int:
+    """Characters a history renders as: replies plus results."""
+    return sum(
+        len(captured.round.reply.continuation_json)
+        + sum(len(outcome.result_json) for outcome in captured.round.outcomes)
+        for captured in history
+    )
 
 
 def encode_openai_chat_agent(**kwargs) -> tuple[str, dict[str, Any]]:

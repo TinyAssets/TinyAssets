@@ -64,6 +64,42 @@ RUN apt-get update && \
     && rm -f /tmp/nodesource-repo.gpg.key \
     && rm -rf /var/lib/apt/lists/*
 
+# SQLite >= 3.51.3, built from the pinned sqlite.org amalgamation. Debian
+# trixie ships 3.46.1, which predates the WAL-reset corruption fix in 3.51.3;
+# Litestream replicates the WAL, so the floor comes first (target-architecture
+# S1a.1, docs/concerns/2026-10-02-sqlite-predates-wal-reset-fix.md). The
+# compile options mirror the Debian build the platform already ran on
+# (`pragma compile_options` on prod, 2026-10-02), so behaviour is unchanged:
+# FTS3/4/5 (daemon_brain uses fts5), RTREE, recursive triggers on by default,
+# MAX_VARIABLE_NUMBER=250000, and the rest. Bump all three ARGs together; the
+# SHA-256 is of the tarball sqlite.org lists (its SHA3-256 was checked too).
+ARG SQLITE_AUTOCONF_YEAR=2026
+ARG SQLITE_AUTOCONF_VERSION=3530400
+ARG SQLITE_AUTOCONF_SHA256=0e9483900e92cd5de8fd48d16bf9200145a61f7fd5be542a5ac81d8a9516eb9c
+RUN set -eu; \
+    curl --proto '=https' --tlsv1.2 -fsSL \
+        "https://sqlite.org/${SQLITE_AUTOCONF_YEAR}/sqlite-autoconf-${SQLITE_AUTOCONF_VERSION}.tar.gz" \
+        -o /tmp/sqlite.tar.gz; \
+    echo "${SQLITE_AUTOCONF_SHA256}  /tmp/sqlite.tar.gz" | sha256sum -c -; \
+    mkdir /tmp/sqlite-src; \
+    tar -xzf /tmp/sqlite.tar.gz -C /tmp/sqlite-src --strip-components=1; \
+    cd /tmp/sqlite-src; \
+    CFLAGS="-O2 -DSQLITE_ENABLE_COLUMN_METADATA -DSQLITE_ENABLE_DBSTAT_VTAB \
+      -DSQLITE_ENABLE_DBPAGE_VTAB -DSQLITE_ENABLE_FTS3 -DSQLITE_ENABLE_FTS3_PARENTHESIS \
+      -DSQLITE_ENABLE_FTS3_TOKENIZER -DSQLITE_ENABLE_FTS4 -DSQLITE_ENABLE_FTS5 \
+      -DSQLITE_ENABLE_RTREE -DSQLITE_ENABLE_MATH_FUNCTIONS -DSQLITE_ENABLE_UNLOCK_NOTIFY \
+      -DSQLITE_ENABLE_UPDATE_DELETE_LIMIT -DSQLITE_ENABLE_PREUPDATE_HOOK \
+      -DSQLITE_ENABLE_SESSION -DSQLITE_ENABLE_STMTVTAB -DSQLITE_SECURE_DELETE \
+      -DSQLITE_SOUNDEX -DSQLITE_MAX_VARIABLE_NUMBER=250000 \
+      -DSQLITE_LIKE_DOESNT_MATCH_BLOBS -DSQLITE_ALLOW_ROWID_IN_VIEW \
+      -DSQLITE_DEFAULT_RECURSIVE_TRIGGERS=1 -DSQLITE_USE_URI=1 \
+      -DSQLITE_ENABLE_LOAD_EXTENSION -DSQLITE_MAX_DEFAULT_PAGE_SIZE=32768 \
+      -DSQLITE_MAX_SCHEMA_RETRY=25" \
+      ./configure --prefix=/opt/sqlite --disable-static; \
+    make -j"$(nproc)"; \
+    make install; \
+    rm -rf /tmp/sqlite-src /tmp/sqlite.tar.gz
+
 # Install rust toolchain for lancedb wheels that lack pre-built linux
 # binaries. Pinned to known-good rustup + toolchain versions; bump when
 # lancedb upgrades.
@@ -141,7 +177,7 @@ RUN gcc -static -O2 -Wall -Wextra -Werror -o /tmp/ta-op /tmp/ta_op.c \
 # final image free of pip metadata + build tools.
 RUN python -m venv /opt/venv && \
     /opt/venv/bin/pip install --no-cache-dir --upgrade pip && \
-    /opt/venv/bin/pip install --no-cache-dir -e ".[mcp,gemini,groq,grok]"
+    /opt/venv/bin/pip install --no-cache-dir -e ".[mcp]"
 
 # ---------- Stage 2: final ----------
 
@@ -231,6 +267,18 @@ RUN chmod 0755 /usr/local/bin/codex && \
 # OUTSIDE /app and /data, both of which are chowned to uid 1001 further down.
 # A binary that root may one day exec must not live in a tree its target
 # user can write. Not setuid, not setgid: it grants nothing, it retires.
+# The pinned SQLite (see the builder). /usr/local/lib precedes the Debian lib
+# directory in the loader's search order, so after ldconfig Python's _sqlite3
+# loads this libsqlite3.so.0. The build FAILS here if it does not, which is the
+# point: a silent fall-back to 3.46.1 would replicate a WAL the fix is for.
+COPY --from=builder /opt/sqlite/lib/ /tmp/sqlite-lib/
+RUN set -eu; \
+    cp -a /tmp/sqlite-lib/libsqlite3.so* /usr/local/lib/; \
+    rm -rf /tmp/sqlite-lib; \
+    ldconfig; \
+    python3 -c "import sqlite3, sys; v = sqlite3.sqlite_version_info; print('sqlite', sqlite3.sqlite_version); sys.exit(0 if v >= (3, 51, 3) else 1)"; \
+    python3 -c "import sqlite3; sqlite3.connect(':memory:').execute('create virtual table t using fts5(x)')"
+
 COPY --from=builder /tmp/ta-op /usr/local/libexec/ta-op
 RUN chown root:root /usr/local/libexec/ta-op \
     && chmod 0555 /usr/local/libexec/ta-op \

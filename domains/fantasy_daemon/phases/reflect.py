@@ -339,8 +339,6 @@ def _get_file_model(filepath: Path) -> str:
 # other canon sources, it can fix it.
 _MODEL_TIERS: dict[str, int] = {
     "ollama-local": 1,
-    "groq-free": 2,
-    "gemini-free": 2,
     "codex": 3,
     "claude-code": 4,
     "user": 5,  # Human-directed edits (via API/MCP)

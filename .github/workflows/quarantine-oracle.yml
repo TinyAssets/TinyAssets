@@ -19,8 +19,18 @@ name: Quarantine oracle
 # It is REPORT-ONLY and deliberately not required. It answers "what does this
 # entry do on Linux?", which is a question, not a gate. `required-tests` remains
 # the gate.
+#
+# Weekly it also runs the test inventory (scripts/test_inventory.py) against
+# the latest CI junit and rewrites ONE issue, "Test suite inventory": expired or
+# soon-expiring skips, ledger lines that pass or name deleted tests, dead
+# imports, and what CI never executes. Dates are reported here and never
+# enforced at merge time, so a calendar day cannot block an unrelated PR. An
+# issue, not a docs/concerns file: a commit or PR authored by GITHUB_TOKEN
+# triggers no workflows here, so it could never pass the required checks.
 
 on:
+  schedule:
+    - cron: '23 6 * * 1'
   workflow_dispatch:
     inputs:
       filter:
@@ -30,6 +40,9 @@ on:
 
 permissions:
   contents: read
+  # The weekly inventory reads other runs' junit and rewrites one issue.
+  actions: read
+  issues: write
 
 concurrency:
   group: quarantine-oracle-${{ github.ref }}
@@ -47,6 +60,9 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          # The inventory dates every skip by git blame.
+          fetch-depth: 0
 
       - uses: actions/setup-python@v5
         with:
@@ -79,6 +95,57 @@ jobs:
             --run \
             --filter "$FILTER" \
             --summary "$GITHUB_STEP_SUMMARY"
+
+      - name: Weekly test inventory
+        if: ${{ !cancelled() && (github.event_name == 'schedule' || inputs.filter == '') }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          mkdir -p inv/junit
+          # Evidence comes from MAIN only: the latest scheduled run carries
+          # heavy-tests, the latest push run the six required shards. A
+          # merge-group run may test a tree that never landed.
+          pick() {
+            gh run list -R "$REPO" --workflow tests.yml --branch main --event "$1" \
+              --status completed --limit 1 --json databaseId,headSha,conclusion \
+              -q '.[0] | "\(.databaseId) \(.headSha) \(.conclusion)"'
+          }
+          read -r heavy heavy_sha heavy_end <<< "$(pick schedule)" || true
+          read -r push push_sha push_end <<< "$(pick push)" || true
+          evidence=""
+          if [ -n "${heavy:-}" ] && gh run download "$heavy" -R "$REPO" \
+              -n junit-heavy-tests -D inv/junit/heavy; then
+            evidence="heavy-tests run ${heavy} at ${heavy_sha} (${heavy_end})"
+          else
+            evidence="heavy-tests junit MISSING"
+          fi
+          if [ -n "${push:-}" ] && gh run download "$push" -R "$REPO" \
+              -p 'junit-required-shard-*' -D inv/junit/required; then
+            evidence="${evidence}; required shards run ${push} at ${push_sha} (${push_end})"
+          else
+            evidence="${evidence}; required-shard junit MISSING"
+          fi
+          echo "$evidence"
+          python scripts/test_inventory.py --junit-dir inv/junit \
+            --json inv/inventory.json --markdown inv/inventory.md
+          {
+            echo "Rewritten weekly by quarantine-oracle.yml (run ${GITHUB_RUN_ID}, tree ${GITHUB_SHA})."
+            echo "CI evidence: ${evidence}. \"PASSES in CI\" below is from those runs,"
+            echo "which may trail this tree; confirm before deleting a ledger line."
+            echo
+            head -c 60000 inv/inventory.md
+          } > inv/issue.md
+          title="Test suite inventory"
+          number="$(gh issue list -R "$REPO" --state open --search "\"$title\" in:title" \
+            --json number,title -q ".[] | select(.title == \"$title\") | .number" | head -1)"
+          if [ -n "$number" ]; then
+            gh issue edit "$number" -R "$REPO" --body-file inv/issue.md
+          else
+            gh issue create -R "$REPO" --title "$title" --body-file inv/issue.md
+          fi
+          cat inv/inventory.md >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload junit
         if: always()

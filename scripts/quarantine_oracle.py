@@ -70,13 +70,14 @@ def _force_utf8_stdio() -> None:
 
 
 def read_ledger() -> list[str]:
+    """Ledger node ids, through the gate's own parser (a `flaky` prefix or
+    owner=/expires= fields are not part of the id)."""
     if not LEDGER.is_file():
         return []
-    return [
-        line.strip()
-        for line in LEDGER.read_text(encoding="utf-8").splitlines()
-        if line.strip() and not line.strip().startswith("#")
-    ]
+    from ci_required_tests import split_ledger_line
+
+    parsed = (split_ledger_line(raw) for raw in LEDGER.read_text(encoding="utf-8").splitlines())
+    return [entry[1] for entry in parsed if entry is not None]
 
 
 def read_heavy() -> set[str]:

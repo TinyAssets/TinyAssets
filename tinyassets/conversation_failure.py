@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 
 STAGES = ("before_send", "connection", "model_request", "model_reply", "tool", "platform")
 EFFECTS = ("none", "some", "unknown")
@@ -95,6 +95,25 @@ _CLASS_WORDS = {
         "the connected model replied in a format this command center could not read; "
         "try again, or choose another model"
     ),
+    "provider_reply_error": (
+        "your model's provider reported an error partway through its reply (its "
+        "own words are below), and trying it again and your other accepted "
+        "models did not get past it. Whatever the turn finished before that "
+        "stands, so asking it to continue usually works; choosing another "
+        "model also helps"
+    ),
+    "provider_unreadable_reply": (
+        "the connected model sent a reply this command center could not read, "
+        "and trying it again and your other accepted models did not get past "
+        "it. Whatever the turn finished before that stands, so asking it to "
+        "continue usually works; choosing another model also helps"
+    ),
+    "provider_stalled": (
+        "your model stopped sending partway through its reply, and asking it "
+        "again did not get past it. A slow reply is never cut off; this one went "
+        "silent. Whatever the turn finished before that stands, so asking it to "
+        "continue usually works; choosing another model also helps"
+    ),
     "provider_reply_timeout": (
         "your model took longer to answer than this command center waits for one "
         "reply, so that request was ended and whatever the turn finished before "
@@ -148,6 +167,9 @@ STAGE_OF_CLASS = {
     "provider_idle_timeout": "model_reply",
     "interactive_deadline": "model_reply",
     "provider_protocol_error": "model_reply",
+    "provider_reply_error": "model_reply",
+    "provider_unreadable_reply": "model_reply",
+    "provider_stalled": "model_reply",
     "provider_refused": "model_request",
     "provider_reply_timeout": "model_request",
     "platform_fault": "platform",
@@ -163,8 +185,13 @@ _EFFECT_WORDS = {
 }
 
 DETAIL_LIMIT = 200
+#: The owner's own model output a stalled reply had written, kept in their
+#: notice rather than lost; bounded so the whole record stays readable.
+PARTIAL_LIMIT = 1500
 _REF = re.compile(r"[A-Za-z0-9_.:-]{1,64}\Z")
-_OPTIONAL = frozenset({"stage", "effects", "provider_detail", "ref", "retry_after_s"})
+_OPTIONAL = frozenset({
+    "stage", "effects", "provider_detail", "ref", "retry_after_s", "requests", "partial_text",
+})
 _REQUIRED = frozenset({"version", "kind", "code"})
 
 #: A wait longer than this is not a wait, it is a different answer ("reconnect",
@@ -196,25 +223,72 @@ class TurnFailure:
     guess and never a deadline we invent for a class that has no window; absent
     stays absent. Live 2026-09-25 the gate that refused the turn knew it had 120
     seconds left and the founder was told "we could not identify why"."""
+    requests: int | None = None
+    """Model requests the turn sent, failed ones included, from its own ledger.
+    On a free tier each counts toward the daily allowance (founder, 2026-10-02:
+    a retry is not free, so say what it cost)."""
+    partial_text: str = ""
+    """What a stalled reply had written before it stopped, bounded."""
 
 
 def failure_code(value: object) -> str:
     return value if isinstance(value, str) and value in FAILURE_CODES else "unknown"
 
 
-def clean_detail(value: object) -> str:
+def clean_detail(value: object, limit: int = DETAIL_LIMIT) -> str:
     """One bounded, printable line; callers scrub secrets before this."""
     if not isinstance(value, str):
         return ""
     line = " ".join("".join(ch if ch.isprintable() else " " for ch in value).split())
-    return line if len(line) <= DETAIL_LIMIT else line[: DETAIL_LIMIT - 3] + "..."
+    return line if len(line) <= limit else line[: limit - 3] + "..."
+
+
+def _request_count(value: object) -> int | None:
+    return value if type(value) is int and 0 < value <= 10_000 else None
+
+
+def clean_partial(value: object) -> str:
+    """The tail of a partial reply -- the most recent words -- on one line.
+
+    Bounded as STORED JSON, not as characters: ``\\uXXXX`` escapes make a
+    non-ASCII reply six times longer, and a record past ``read_turn_failure``'s
+    4096 would be dropped whole.
+    """
+    line = clean_detail(value, limit=10**9)
+    while len(json.dumps(line)) > PARTIAL_LIMIT + 2:
+        keep = max(len(line) * PARTIAL_LIMIT // len(json.dumps(line)) - 3, 1)
+        line = "..." + line[-keep:]
+    return line
+
+
+#: ``read_turn_failure`` drops a stored record longer than this, so a record is
+#: never built longer: the partial text gives way first.
+RECORD_LIMIT = 4096
 
 
 def turn_failure(
     code: object, *, stage: object = None, effects: object = "unknown",
     provider_detail: object = "", ref: object = "", retry_after_s: object = None,
+    requests: object = None, partial_text: object = "",
 ) -> TurnFailure:
     """Build a record; any field outside its closed set degrades, never raises."""
+    record = _turn_failure(
+        code, stage=stage, effects=effects, provider_detail=provider_detail, ref=ref,
+        retry_after_s=retry_after_s, requests=requests, partial_text=partial_text,
+    )
+    # Measured as the store writes it (``json.dumps`` of the normalized record).
+    while record.partial_text and len(json.dumps(normalize_turn_failure(record))) > RECORD_LIMIT:
+        text = record.partial_text
+        record = replace(record, partial_text=(
+            "" if len(text) <= 64 else "..." + text[len(text) // 4 + 3:]
+        ))
+    return record
+
+
+def _turn_failure(
+    code: object, *, stage: object, effects: object, provider_detail: object,
+    ref: object, retry_after_s: object, requests: object, partial_text: object,
+) -> TurnFailure:
     return TurnFailure(
         version=1, kind="turn_failed", code=failure_code(code),
         stage=stage if stage in STAGES else None,
@@ -224,6 +298,8 @@ def turn_failure(
         provider_detail=clean_detail(provider_detail),
         ref=ref if isinstance(ref, str) and _REF.fullmatch(ref) else "",
         retry_after_s=wait_seconds(retry_after_s),
+        requests=_request_count(requests),
+        partial_text=clean_partial(partial_text),
     )
 
 
@@ -263,6 +339,14 @@ def failure_notice(value: object) -> str:
     ]
     if failure.retry_after_s is not None and failure.code != "provider_daily_quota":
         parts.append(_wait_words(failure.retry_after_s))
+    if failure.requests is not None and failure.code != "interrupted":
+        unit = "request" if failure.requests == 1 else "requests"
+        parts.append(
+            f"This turn sent {failure.requests} {unit} to your model; on a free tier "
+            "each one counts toward its daily limit."
+        )
+    if failure.partial_text:
+        parts.append(f'Before it stopped, your model had written: "{failure.partial_text}"')
     if failure.provider_detail:
         parts.append(f'Detail: "{failure.provider_detail}"')
     if failure.ref:
@@ -313,6 +397,12 @@ def normalize_turn_failure(value: object) -> dict | None:
         wait = wait_seconds(value["retry_after_s"])
         if wait is not None:
             result["retry_after_s"] = wait
+    # Both degrade like the wait: dropped alone, never costing the record.
+    if _request_count(value.get("requests")) is not None:
+        result["requests"] = value["requests"]
+    partial = value.get("partial_text")
+    if isinstance(partial, str) and partial and clean_partial(partial) == partial:
+        result["partial_text"] = partial
     return result
 
 

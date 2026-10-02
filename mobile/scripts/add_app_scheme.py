@@ -8,7 +8,9 @@ in CI (and locally) to:
 2. install the LocalCallback plugin (mobile/native/android/LocalCallbackPlugin.java)
    and register it in MainActivity, so the app can catch a provider's
    http://localhost:PORT/auth/callback redirect — the same browser sign-in a
-   desktop CLI completes, with no per-account "device code" setting needed.
+   desktop CLI completes, with no per-account "device code" setting needed;
+3. give the back gesture a policy (MainActivity.installBackPolicy), because the
+   plugin default swallows it on the opening screen.
 
 Idempotent.
 """
@@ -96,8 +98,11 @@ import android.content.Context;
 import android.content.Intent;
 import android.net.Uri;
 import android.os.Bundle;
+import android.os.SystemClock;
 import android.webkit.WebView;
+import android.widget.Toast;
 
+import androidx.activity.OnBackPressedCallback;
 import androidx.core.app.RemoteInput;
 
 import com.getcapacitor.BridgeActivity;
@@ -186,6 +191,45 @@ public class MainActivity extends BridgeActivity {
             + (itemId != null ? "&item=" + Uri.encode(itemId) : "");
     }
 
+    // The back gesture. @capacitor/app installs an always-enabled
+    // OnBackPressedCallback that walks WebView history and, at the first entry,
+    // does NOTHING -- so on the opening screen the gesture is swallowed and the
+    // app cannot be left by going back at all. This callback is added after the
+    // bridge is built, and the dispatcher calls the most recently added enabled
+    // callback first, so ours decides: walk history while there is history, then
+    // ask once before leaving. The confirmation is the point -- an edge-swipe is
+    // easy to trigger by accident while typing, and the thing behind it is a
+    // conversation in progress.
+    private static final long EXIT_CONFIRM_WINDOW_MS = 2500L;
+    private long exitConfirmAt;
+
+    private void installBackPolicy() {
+        getOnBackPressedDispatcher().addCallback(this, new OnBackPressedCallback(true) {
+            @Override
+            public void handleOnBackPressed() {
+                WebView webView = bridge == null ? null : bridge.getWebView();
+                if (webView != null && webView.canGoBack()) {
+                    exitConfirmAt = 0L;
+                    webView.goBack();
+                    return;
+                }
+                long now = SystemClock.elapsedRealtime();
+                if (exitConfirmAt != 0L && now - exitConfirmAt <= EXIT_CONFIRM_WINDOW_MS) {
+                    exitConfirmAt = 0L;
+                    // Leave the way Home does, without tearing down the
+                    // signed-in WebView: coming back resumes the conversation
+                    // instead of reloading the app over the network.
+                    moveTaskToBack(true);
+                    return;
+                }
+                exitConfirmAt = now;
+                Toast.makeText(
+                    MainActivity.this, "Press back again to leave TinyAssets", Toast.LENGTH_SHORT
+                ).show();
+            }
+        });
+    }
+
     @Override
     public void onCreate(Bundle savedInstanceState) {
         // Local (non-npm) plugins: the loopback OAuth catcher and the inline
@@ -211,6 +255,7 @@ public class MainActivity extends BridgeActivity {
             voiceChromeClient = new VoiceWebChromeClient(bridge, this);
             bridge.getWebView().setWebChromeClient(voiceChromeClient);
         }
+        installBackPolicy();
     }
 
     @Override

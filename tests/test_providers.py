@@ -8,10 +8,8 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
-import sys
 import threading
 import time
-import types
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -130,9 +128,6 @@ def _make_providers(**overrides: FakeProvider) -> dict[str, FakeProvider]:
     defaults = {
         "claude-code": FakeProvider("claude-code", "anthropic", "claude-resp"),
         "codex": FakeProvider("codex", "openai", "codex-resp"),
-        "gemini-free": FakeProvider("gemini-free", "google", "gemini-resp"),
-        "groq-free": FakeProvider("groq-free", "meta", "groq-resp"),
-        "grok-free": FakeProvider("grok-free", "xai", "grok-resp"),
         "ollama-local": FakeProvider("ollama-local", "local", "ollama-resp"),
     }
     defaults.update(overrides)
@@ -160,25 +155,6 @@ class TestQuotaTracker:
         qt._cooldowns["claude-code"] = time.monotonic() - 1
         assert qt.available("claude-code") is True
 
-    def test_rate_limit_gemini(self):
-        qt = QuotaTracker()
-        # Record 10 calls for gemini (hits per-minute limit).
-        for _ in range(10):
-            qt.record_success("gemini-free")
-        assert qt.available("gemini-free") is False
-
-    def test_rate_limit_does_not_affect_claude(self):
-        qt = QuotaTracker()
-        for _ in range(100):
-            qt.record_success("claude-code")
-        assert qt.available("claude-code") is True
-
-    def test_cooldown_then_record_success(self):
-        qt = QuotaTracker()
-        qt.cooldown("groq-free", 10)
-        assert qt.available("groq-free") is False
-        # Success recording should still work (for post-cooldown tracking).
-        qt.record_success("groq-free")
 
 
 # =====================================================================
@@ -554,12 +530,7 @@ class TestProviderRegistration:
         chain, excluded = router.effective_chain(FALLBACK_CHAINS["writer"])
 
         assert chain == ["codex", "ollama-local"]
-        assert [attempt.provider for attempt in excluded] == [
-            "claude-code",
-            "gemini-free",
-            "groq-free",
-            "grok-free",
-        ]
+        assert [attempt.provider for attempt in excluded] == ["claude-code"]
         assert {attempt.skip_class for attempt in excluded} == {"not_in_registry"}
 
 
@@ -976,206 +947,6 @@ class TestOllamaProvider:
 
 
 # =====================================================================
-# GeminiProvider (google-genai SDK mock)
-# =====================================================================
-
-
-@pytest.fixture
-def _host_key_gate_bypassed(monkeypatch):
-    """Exercise a host-key provider's response handling in isolation.
-
-    In production these providers can never be constructed: the platform holds
-    no model credential (Hard Rule 15), so ``require_api_key_provider_opt_in``
-    always refuses (``test_host_key_providers_refuse_even_with_the_old_switch``).
-    These tests only pin the parsing/error mapping of the code that remains.
-    """
-    import tinyassets.providers.gemini_provider as gemini_mod
-    import tinyassets.providers.grok_provider as grok_mod
-
-    monkeypatch.setattr(gemini_mod, "require_api_key_provider_opt_in", lambda _name: None)
-    monkeypatch.setattr(grok_mod, "require_api_key_provider_opt_in", lambda _name: None)
-
-
-@pytest.mark.parametrize(
-    "module_name, class_name, key",
-    [
-        ("tinyassets.providers.gemini_provider", "GeminiProvider", "GEMINI_API_KEY"),
-        ("tinyassets.providers.groq_provider", "GroqProvider", "GROQ_API_KEY"),
-        ("tinyassets.providers.grok_provider", "GrokProvider", "XAI_API_KEY"),
-    ],
-)
-def test_host_key_providers_refuse_even_with_the_old_switch(module_name, class_name, key):
-    """The platform has no LLM (Hard Rule 15): a key in the host environment,
-    plus the retired TINYASSETS_ALLOW_API_KEY_PROVIDERS=1, still constructs nothing."""
-    import importlib
-
-    provider_cls = getattr(importlib.import_module(module_name), class_name)
-    with patch.dict(
-        "os.environ",
-        {key: "host-key", "TINYASSETS_ALLOW_API_KEY_PROVIDERS": "1"},
-        clear=True,
-    ):
-        with pytest.raises(ProviderUnavailableError, match="host's environment"):
-            provider_cls()
-
-
-@pytest.mark.usefixtures("_host_key_gate_bypassed")
-class TestGeminiProvider:
-    @pytest.mark.asyncio
-    async def test_sync_sdk_call_yields_event_loop(self):
-        release = threading.Event()
-        started = threading.Event()
-
-        class _FakeModels:
-            def generate_content(self, **kwargs):
-                started.set()
-                release.wait(timeout=0.2)
-                return types.SimpleNamespace(text="gemini output")
-
-        class _FakeClient:
-            def __init__(self, api_key: str) -> None:
-                self.api_key = api_key
-                self.models = _FakeModels()
-
-        fake_genai = types.ModuleType("google.genai")
-        fake_genai.Client = _FakeClient
-        fake_types = types.ModuleType("google.genai.types")
-        fake_types.GenerateContentConfig = MagicMock
-        fake_genai.types = fake_types
-        fake_google = types.ModuleType("google")
-        fake_google.genai = fake_genai
-
-        with (
-            patch.dict(
-                "os.environ",
-                {
-                    "GEMINI_API_KEY": "test-key",
-                },
-            ),
-            patch.dict(
-                sys.modules,
-                {
-                    "google": fake_google,
-                    "google.genai": fake_genai,
-                    "google.genai.types": fake_types,
-                },
-            ),
-        ):
-            from tinyassets.providers.gemini_provider import GeminiProvider
-
-            provider = GeminiProvider()
-            task = asyncio.create_task(
-                provider.complete("prompt", "system", ModelConfig())
-            )
-            await asyncio.sleep(0.02)
-            assert started.is_set()
-            assert not task.done()
-            release.set()
-            resp = await task
-
-        assert resp.text == "gemini output"
-        assert resp.provider == "gemini-free"
-
-
-# =====================================================================
-# GrokProvider (OpenAI SDK mock)
-# =====================================================================
-
-
-@pytest.mark.usefixtures("_host_key_gate_bypassed")
-class TestGrokProvider:
-    @pytest.mark.asyncio
-    async def test_success(self):
-        mock_choice = MagicMock()
-        mock_choice.message.content = "grok output"
-        mock_response = MagicMock()
-        mock_response.choices = [mock_choice]
-
-        mock_client = MagicMock()
-        mock_client.chat.completions.create.return_value = mock_response
-
-        fake_openai = MagicMock()
-        fake_openai.OpenAI.return_value = mock_client
-
-        with (
-            patch.dict(
-                "os.environ",
-                {"XAI_API_KEY": "test-key"},
-            ),
-            patch.dict(sys.modules, {"openai": fake_openai}),
-        ):
-            from tinyassets.providers.grok_provider import GrokProvider
-
-            provider = GrokProvider()
-            resp = await provider.complete("prompt", "system", ModelConfig())
-
-        assert resp.text == "grok output"
-        assert resp.provider == "grok-free"
-        assert resp.family == "xai"
-        assert resp.model == "grok-4.1-fast"
-
-    @pytest.mark.asyncio
-    async def test_rate_limit_raises_unavailable(self):
-        mock_client = MagicMock()
-        mock_client.chat.completions.create.side_effect = Exception(
-            "Error code: 429 - Rate limit exceeded"
-        )
-
-        fake_openai = MagicMock()
-        fake_openai.OpenAI.return_value = mock_client
-
-        with (
-            patch.dict(
-                "os.environ",
-                {"XAI_API_KEY": "test-key"},
-            ),
-            patch.dict(sys.modules, {"openai": fake_openai}),
-        ):
-            from tinyassets.providers.grok_provider import GrokProvider
-
-            provider = GrokProvider()
-            with pytest.raises(ProviderUnavailableError):
-                await provider.complete("prompt", "system", ModelConfig())
-
-    @pytest.mark.asyncio
-    async def test_generic_error_raises_provider_error(self):
-        mock_client = MagicMock()
-        mock_client.chat.completions.create.side_effect = Exception(
-            "Internal server error"
-        )
-
-        fake_openai = MagicMock()
-        fake_openai.OpenAI.return_value = mock_client
-
-        with (
-            patch.dict(
-                "os.environ",
-                {"XAI_API_KEY": "test-key"},
-            ),
-            patch.dict(sys.modules, {"openai": fake_openai}),
-        ):
-            from tinyassets.providers.grok_provider import GrokProvider
-
-            provider = GrokProvider()
-            with pytest.raises(ProviderError):
-                await provider.complete("prompt", "system", ModelConfig())
-
-    def test_missing_api_key_raises_unavailable(self):
-        with (
-            patch.dict(
-                "os.environ",
-                {},
-                clear=True,
-            ),
-            patch.dict(sys.modules, {"openai": MagicMock()}),
-        ):
-            from tinyassets.providers.grok_provider import GrokProvider
-
-            with pytest.raises(ProviderUnavailableError, match="XAI_API_KEY"):
-                GrokProvider()
-
-
-# =====================================================================
 # Fallback chain definitions
 # =====================================================================
 
@@ -1204,11 +975,6 @@ class TestFallbackChainDefinitions:
     def test_ollama_is_last_in_judge_chain(self):
         """Ollama is last in judge chains (text-parsed, not JSON)."""
         assert FALLBACK_CHAINS["judge"][-1] == "ollama-local"
-
-    def test_grok_in_writer_and_judge_chains(self):
-        """Grok appears in writer and judge chains for diversity."""
-        assert "grok-free" in FALLBACK_CHAINS["writer"]
-        assert "grok-free" in FALLBACK_CHAINS["judge"]
 
 
 class TestCarrierSettlementWithUnknownUsage:

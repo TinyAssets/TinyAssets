@@ -564,13 +564,14 @@ def test_the_agent_cannot_grant_itself_the_intake_consent(world, monkeypatch):
         "channel_type": patch_intake.PATCH_INTAKE_SINK,
         "destination": intake["receiver_id"],
     })
-    assert "cannot be self-approved" in json.dumps(refused), refused
+    assert "owner approves patch_intake in their app" in refused["error"], refused
+    assert 'target="patch_request" operation="send"' in refused["error"]
     # ...and under the other spelling `_approve_sink` reads first.
     also = _source_channel("approve", {
         "sink": patch_intake.PATCH_INTAKE_SINK,
         "destination": intake["receiver_id"],
     })
-    assert "cannot be self-approved" in json.dumps(also), also
+    assert also == refused
     assert not _grants(base), "no grant may exist without the owner's tap"
     assert _seeded(_rail())["request_id"] == row["request_id"], "still waiting"
 
@@ -587,6 +588,7 @@ def test_the_write_itself_refuses_the_person_only_sink(world, monkeypatch):
         {"destination": "a" * 32},
     ))
     assert refused["error"] == "consent_is_person_only"
+    assert 'target="patch_request" operation="send"' in refused["detail"]
     assert not _grants(base)
 
 
@@ -751,8 +753,8 @@ def test_the_rail_tells_a_granted_universe_how_to_send(world, monkeypatch):
 
     view = _rail()["patch_intake"]
     assert view["granted"] is True
-    assert "deliver_output" in view["how"]
-    assert "output_link" in view["how"]
+    assert 'target="patch_request"' in view["how"]
+    assert 'operation="send"' in view["how"]
     assert "No credential" in view["how"]
 
 

@@ -475,9 +475,15 @@ def refresh(seat_id: str, *, db: Path | None = None, now: float | None = None) -
         return cur.rowcount == 1
 
 
-def _release_once(seat_id: str, db: Path) -> bool | None:
-    """One release attempt: True released (or its depth given back), False no
-    such seat of ours, None the store could not be written -- try again."""
+#: ``_release_once`` gave back one level of a LENT seat; the row, and the
+#: parent's claim on it, remain. Truthy, so callers reading "released" still do.
+_DEPTH_RETURNED = "depth_returned"
+
+
+def _release_once(seat_id: str, db: Path) -> bool | str | None:
+    """One release attempt: True released, ``_DEPTH_RETURNED`` a lent seat's
+    depth given back (the parent still holds it), False no such seat of ours,
+    None the store could not be written -- try again."""
     try:
         holder = _holder(db.parent)
         with _txn(db) as conn:
@@ -491,6 +497,7 @@ def _release_once(seat_id: str, db: Path) -> bool | None:
                 conn.execute(
                     "UPDATE account_seats SET depth = depth - 1 WHERE seat_id = ?", (seat_id,)
                 )
+                return _DEPTH_RETURNED
             else:
                 conn.execute("DELETE FROM account_seats WHERE seat_id = ?", (seat_id,))
             return True
@@ -512,13 +519,29 @@ def release(seat_id: str, *, db: Path | None = None) -> bool:
         return False
     db = db or ledger_path()
     outcome = _release_once(seat_id, db)
-    with _held_lock:
-        _held.pop(seat_id, None)
     if outcome is None:
+        # Still registered: whether this was the last level or a nested loan is
+        # unknown until the store answers, and only the retry learns which.
         _log.warning("seat %s could not be released yet; retrying until it is", seat_id)
         _queue_retry(seat_id, db)
         return False
-    return outcome
+    _settle_registration(seat_id, outcome)
+    return bool(outcome)
+
+
+def _settle_registration(seat_id: str, outcome: bool | str) -> None:
+    """Stop refreshing a seat once a release has actually removed it.
+
+    A nested call returning its loan (``_DEPTH_RETURNED``) leaves the row -- the
+    seat id is the PARENT's and the parent is still working. Dropping it from
+    the refresh set there let the parent's lease lapse under a live provider
+    call, so anything trusting the lease (a deploy's in-flight check, a
+    sibling's reaper) read it as finished.
+    """
+    if outcome is _DEPTH_RETURNED:
+        return
+    with _held_lock:
+        _held.pop(seat_id, None)
 
 
 def abandon(ticket: int | None, *, db: Path | None = None) -> bool:
@@ -655,7 +678,13 @@ def _retry_pending_releases() -> None:
     with _held_lock:
         pending = list(_pending_releases)
         _pending_releases.clear()
-    failed = [(seat_id, db) for seat_id, db in pending if _release_once(seat_id, db) is None]
+    failed = []
+    for seat_id, db in pending:
+        outcome = _release_once(seat_id, db)
+        if outcome is None:
+            failed.append((seat_id, db))
+        else:
+            _settle_registration(seat_id, outcome)
     if failed:
         with _held_lock:
             _pending_releases.extend(failed)

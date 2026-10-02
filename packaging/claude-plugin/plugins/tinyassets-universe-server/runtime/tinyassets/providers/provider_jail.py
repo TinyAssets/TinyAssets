@@ -238,6 +238,29 @@ def _covered(path: str, roots: Iterable[str]) -> bool:
     return any(path == root or path.startswith(root.rstrip("/") + "/") for root in roots)
 
 
+#: The universe agent's own workspace, inside the universe: its tool jail's
+#: ``/u`` (harness W2). Hidden, so every provider launch masks it.
+AGENT_WORKSPACE_DIR = ".agent-workspace"
+
+
+def ensure_agent_workspace(universe_dir: Path) -> Path:
+    """The universe's agent workspace, created if absent, never a link.
+
+    Created BEFORE any launch is built, provider or tool: a provider launch
+    then always finds it present and masks it, so a process in a workflow's
+    jail can never create the name first (as a link to another universe)
+    for the tool jail to bind as ``/u`` (gpt-6-astra on #4194).
+    """
+    path = Path(universe_dir) / AGENT_WORKSPACE_DIR
+    try:
+        path.mkdir(mode=0o755)
+    except FileExistsError:
+        pass
+    if path.is_symlink() or not path.is_dir():
+        raise _refuse(f"the universe's {AGENT_WORKSPACE_DIR} is not a plain directory")
+    return path
+
+
 def default_view(
     universe_dir: Path,
     *,
@@ -246,6 +269,8 @@ def default_view(
 ) -> UniverseView:
     """The universe read-write at its own path, other launch snapshots masked."""
     root = universe_dir.resolve(strict=False)
+    if root.is_dir():
+        ensure_agent_workspace(root)
     mounts = [JailMount("bind", str(root), root)]
     launch_root = root / _LAUNCH_CREDENTIALS
     if launch_root.is_dir():

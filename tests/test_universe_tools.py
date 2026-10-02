@@ -120,12 +120,15 @@ def test_tool_jail_argv_has_no_network_no_env_and_only_the_universe_at_u(
     assert "--share-net" not in argv
     for flag in ("--unshare-all", "--clearenv", "--die-with-parent", "--new-session"):
         assert flag in argv, flag
-    # /u is a tmpfs of binds, then made READ-ONLY; only agent-owned paths are rw.
-    tmpfs_at = argv.index("--tmpfs", argv.index("--tmpfs") + 1)
-    remount_at = argv.index("--remount-ro")
-    assert argv[tmpfs_at + 1] == "/u" and argv[remount_at + 1] == "/u"
-    assert all(tmpfs_at < argv.index(dest) < remount_at for _src, dest in (
+    # /u is the agent's OWN workspace, bound read-write as a whole (harness W2);
+    # the visible root entries are bound over it, agent-owned ones read-write.
+    workspace = str(universe.resolve() / universe_tools.WORKSPACE_DIR)
+    assert ("--bind", workspace, "/u") == tuple(argv[argv.index(workspace) - 1:
+                                                     argv.index(workspace) + 2])
+    workspace_at = argv.index(workspace)
+    assert all(workspace_at < argv.index(dest) for _src, dest in (
         _pairs(argv, "--bind-try") + _pairs(argv, "--ro-bind-try")))
+    assert "--remount-ro" not in argv
     assert root not in argv, "the root itself is never bound"
     rw = dict((dest, src) for src, dest in _pairs(argv, "--bind-try"))
     assert rw["/u/identity.md"] == str(universe.resolve() / "identity.md")
@@ -164,8 +167,11 @@ def test_the_owners_credentials_and_authority_state_are_absent_from_the_jail(
     monkeypatch.setattr(provider_jail, "BWRAP_RESOLVER", lambda: "/usr/bin/bwrap")
     argv = universe_tools.tool_jail_argv(universe, ["/bin/true"])
 
+    workspace = str(universe.resolve() / universe_tools.WORKSPACE_DIR)
     for arg in argv:
-        assert "/." not in arg, f"a hidden root entry reached the jail argv: {arg}"
+        # The one hidden name allowed is the agent's own workspace, as /u's source.
+        assert "/." not in arg or arg == workspace, (
+            f"a hidden root entry reached the jail argv: {arg}")
     ro = {dest for _src, dest in _pairs(argv, "--ro-bind-try")}
     assert {"/u/soul.md", "/u/config.yaml"} <= ro
     rw = {dest for _src, dest in _pairs(argv, "--bind-try")}

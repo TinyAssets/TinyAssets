@@ -1,0 +1,169 @@
+name: Box KVM validation
+
+# target-architecture slice S0 (openspec/changes/target-architecture/design.md):
+# does Firecracker run acceptably under DigitalOcean's nested KVM? Creates ONE
+# throwaway droplet, runs scripts/box_bench/kvm_validation.sh on it (Firecracker
+# v1.17 + gVisor: boot, snapshot/restore, wake, exec latency, nesting overhead,
+# packing), and ALWAYS destroys it. Manual dispatch only; founder-approved spend
+# (~$0.14 per run at s-4vcpu-8gb for <= 40 min).
+#
+# Least privilege: an EPHEMERAL SSH key generated in this run (never the
+# production deploy key), registered for this run and deleted at the end. The
+# only secret used is DIGITALOCEAN_TOKEN. Nothing here touches the production
+# droplet.
+
+on:
+  workflow_dispatch:
+    inputs:
+      droplet_size:
+        description: 'DO size slug (default matches production: s-4vcpu-8gb)'
+        required: false
+        default: 's-4vcpu-8gb'
+        type: string
+      pack:
+        description: 'Boxes awake at once for the packing measurement'
+        required: false
+        default: '10'
+        type: string
+      mem_mib:
+        description: 'Memory ceiling per microVM, MiB'
+        required: false
+        default: '512'
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: box-kvm-validation
+  cancel-in-progress: false
+
+env:
+  REGION: sfo3
+  TAG: box-kvm-validation
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check required secret
+        run: |
+          if [ -z "${{ secrets.DIGITALOCEAN_TOKEN }}" ]; then
+            echo "::error::DIGITALOCEAN_TOKEN is not set"
+            exit 1
+          fi
+
+      - name: Ephemeral SSH key
+        id: key
+        run: |
+          mkdir -p ~/.ssh
+          ssh-keygen -q -t ed25519 -N '' -C "box-kvm-validation-${GITHUB_RUN_ID}" -f ~/.ssh/bench
+          echo "pub=$(cat ~/.ssh/bench.pub)" >> "$GITHUB_OUTPUT"
+
+      - name: Provision throwaway droplet
+        id: droplet
+        env:
+          DO_TOKEN: ${{ secrets.DIGITALOCEAN_TOKEN }}
+          SIZE: ${{ inputs.droplet_size }}
+          PUB_KEY: ${{ steps.key.outputs.pub }}
+        run: |
+          set -euo pipefail
+          image_slug=$(python3 scripts/select_do_image.py --region "${REGION}")
+          key_payload=$(python3 -c 'import json,sys; print(json.dumps({"name": sys.argv[1], "public_key": sys.argv[2]}))' \
+            "box-kvm-validation-${GITHUB_RUN_ID}" "${PUB_KEY}")
+          key_response=$(python3 scripts/do_api_request.py --method POST \
+            --url "https://api.digitalocean.com/v2/account/keys" --data "${key_payload}")
+          key_id=$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["ssh_key"]["id"])' "${key_response}")
+          echo "key_id=${key_id}" >> "$GITHUB_OUTPUT"
+          payload=$(python3 -c 'import json,sys; print(json.dumps({"name": "tinyassets-box-kvm-validation", "region": sys.argv[1], "size": sys.argv[2], "image": sys.argv[3], "ssh_keys": [int(sys.argv[4])], "tags": [sys.argv[5], "tinyassets"]}))' \
+            "${REGION}" "${SIZE}" "${image_slug}" "${key_id}" "${TAG}")
+          response=$(python3 scripts/do_api_request.py --method POST \
+            --url "https://api.digitalocean.com/v2/droplets" --data "${payload}")
+          droplet_id=$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["droplet"]["id"])' "${response}")
+          echo "droplet_id=${droplet_id}" >> "$GITHUB_OUTPUT"
+          echo "Droplet ${droplet_id} (${SIZE}, ${image_slug}, ${REGION})"
+
+      - name: Wait for SSH
+        id: ip
+        env:
+          DO_TOKEN: ${{ secrets.DIGITALOCEAN_TOKEN }}
+          DROPLET_ID: ${{ steps.droplet.outputs.droplet_id }}
+        run: |
+          set -euo pipefail
+          ip=""
+          for _ in $(seq 1 40); do
+            response=$(python3 scripts/do_api_request.py --method GET \
+              --url "https://api.digitalocean.com/v2/droplets/${DROPLET_ID}")
+            ip=$(python3 -c 'import json,sys; d=json.loads(sys.argv[1])["droplet"]; print(next((n["ip_address"] for n in d.get("networks",{}).get("v4",[]) if n.get("type")=="public"), ""))' "${response}")
+            [ -n "$ip" ] && break
+            sleep 5
+          done
+          [ -n "$ip" ] || { echo "::error::droplet never got an IP"; exit 1; }
+          for _ in $(seq 1 60); do
+            if ssh -i ~/.ssh/bench -o StrictHostKeyChecking=accept-new -o BatchMode=yes \
+                 -o ConnectTimeout=5 "root@${ip}" true 2>/dev/null; then
+              echo "ip=${ip}" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "::error::SSH never came up"
+          exit 1
+
+      - name: Run measurements
+        timeout-minutes: 30
+        env:
+          IP: ${{ steps.ip.outputs.ip }}
+          PACK: ${{ inputs.pack }}
+          MEM_MIB: ${{ inputs.mem_mib }}
+        run: |
+          set -euo pipefail
+          scp -i ~/.ssh/bench -o BatchMode=yes scripts/box_bench/kvm_validation.sh \
+            scripts/box_bench/fc_bench.py scripts/box_bench/gv_bench.py "root@${IP}:/root/"
+          ssh -i ~/.ssh/bench -o BatchMode=yes "root@${IP}" \
+            "bash /root/kvm_validation.sh '${PACK}' '${MEM_MIB}'" > results.json
+          python3 -m json.tool results.json | tee results.pretty.json
+          {
+            echo '## Box KVM validation (target-architecture S0)'
+            echo '```json'
+            cat results.pretty.json
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: box-kvm-validation-${{ github.run_id }}
+          path: results*.json
+          if-no-files-found: warn
+
+      - name: Destroy droplet and key (always)
+        if: always()
+        env:
+          DO_TOKEN: ${{ secrets.DIGITALOCEAN_TOKEN }}
+          DROPLET_ID: ${{ steps.droplet.outputs.droplet_id }}
+          KEY_ID: ${{ steps.droplet.outputs.key_id }}
+        run: |
+          set -uo pipefail
+          status=0
+          if [ -n "${DROPLET_ID}" ]; then
+            response=$(python3 scripts/do_api_request.py --method GET \
+              --url "https://api.digitalocean.com/v2/droplets/${DROPLET_ID}") || status=1
+            if python3 -c 'import json,sys; t=set(json.loads(sys.argv[1])["droplet"].get("tags",[])); sys.exit(0 if {"box-kvm-validation","tinyassets"} <= t else 1)' "${response}"; then
+              python3 scripts/do_api_request.py --method DELETE \
+                --url "https://api.digitalocean.com/v2/droplets/${DROPLET_ID}" || status=1
+              echo "Destroyed droplet ${DROPLET_ID}"
+            else
+              echo "::error::droplet ${DROPLET_ID} lacks the validation tags; refusing to delete it"
+              status=1
+            fi
+          fi
+          if [ -n "${KEY_ID}" ]; then
+            python3 scripts/do_api_request.py --method DELETE \
+              --url "https://api.digitalocean.com/v2/account/keys/${KEY_ID}" || status=1
+          fi
+          exit $status

@@ -98,6 +98,10 @@ _VOLATILE_BRANCH_FIELDS = frozenset({"visibility", "published", "updated_at"})
 #: (``AppUI.FIELDS`` in onboarding/app_ui.js). A stored component may carry
 #: anything else; none of it is published.
 UI_PORTABLE_FIELDS = ("kind", "version", "ui_id", "name", "markup", "style", "script")
+#: Optional fields that publish as they are: library names from the public
+#: allowlist and the script type. ``assets`` is NOT one: its bytes live in the
+#: publisher's private UI storage and a published copy could not load them.
+UI_PORTABLE_OPTIONAL_FIELDS = ("libraries", "script_type")
 
 _CHANGED = (
     "something in this ask changed after you were shown it, so nothing was "
@@ -116,6 +120,14 @@ def export_ui_component(component: dict[str, Any]) -> dict[str, Any]:
     missing = [k for k in UI_PORTABLE_FIELDS if k not in exported]
     if missing:
         raise ValueError(f"that UI is missing {', '.join(missing)} and cannot be published")
+    if component.get("assets"):
+        # Refused by name rather than published without them: a copy whose
+        # textures and scripts are missing is a broken UI under the author's name.
+        raise ValueError(
+            "that UI loads its own files (assets), and publishing a UI with files is "
+            "not supported yet; it stays private"
+        )
+    exported.update({k: component[k] for k in UI_PORTABLE_OPTIONAL_FIELDS if k in component})
     return json.loads(json.dumps(exported))
 
 

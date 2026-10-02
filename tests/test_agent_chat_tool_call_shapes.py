@@ -93,8 +93,12 @@ VARIANTS = {
 FINAL = _body({"content": "finished exact answer"}, finish="stop")
 
 
-def _wire(agent, monkeypatch, first):
-    """Replace only the remote bytes; every local layer stays real."""
+def _wire(agent, monkeypatch, first, *, times=1):
+    """Replace only the remote bytes; every local layer stays real.
+
+    ``first`` answers the first ``times`` requests, ``FINAL`` the rest: a turn
+    retries an unreadable reply, so a persistent one must be sent persistently.
+    """
     class Proxy:
         def close(self):
             pass
@@ -102,7 +106,7 @@ def _wire(agent, monkeypatch, first):
         def request(self, verb, document):
             assert agent.latest().state == "inference_started"
             agent.wires.append((verb, document))
-            return {"status": 200, "body": first if len(agent.wires) == 1 else FINAL}
+            return {"status": 200, "body": first if len(agent.wires) <= times else FINAL}
 
     monkeypatch.setattr(ApiKeyHttpProvider, "_resolve_proxy", lambda *a, **k: Proxy())
 
@@ -183,16 +187,27 @@ def test_streamed_blank_arguments_are_not_defaulted_even_when_complete(ending):
         codec.fold_chat_stream(body)
 
 
+CUT_WRITE = _cut(
+    _delta({"tool_calls": [{"index": 0, "id": "cut-1", "type": "function",
+                            "function": {"name": "write_graph"}}]}),
+)
+
+
 def test_a_cut_off_stream_runs_no_tool_through_the_real_path(agent, monkeypatch):
-    _wire(agent, monkeypatch, _cut(
-        _delta({"tool_calls": [{"index": 0, "id": "cut-1", "type": "function",
-                                "function": {"name": "write_graph"}}]}),
-    ))
+    _wire(agent, monkeypatch, CUT_WRITE, times=99)
     with pytest.raises(Exception) as caught:
         run(agent)
-    assert agent.tools == []  # engine.call never ran
+    assert agent.tools == []  # engine.call never ran, on any retry
     details = " ".join(str(a.detail) for a in caught.value.attempts)
     assert "event stream incomplete" in details
+
+
+def test_a_cut_off_stream_once_is_retried_and_its_half_call_never_runs(agent, monkeypatch):
+    """A stream cut mid-call is a slip: the retry answers, the cut call stays unrun."""
+    _wire(agent, monkeypatch, CUT_WRITE)
+    assert run(agent) == "finished exact answer"
+    assert agent.tools == []
+    assert [r.state for r in agent.latest().rounds] == ["failed", "received"]
 
 
 def test_a_complete_stream_ending_at_done_without_finish_still_runs():
@@ -224,7 +239,7 @@ UNKNOWN = _body({"content": "private content 7a1e", "tool_calls": [
 def test_an_unsupported_shape_fails_loudly_with_structure_only(agent, monkeypatch, caplog):
     import tinyassets.universe_server as us
 
-    _wire(agent, monkeypatch, UNKNOWN)
+    _wire(agent, monkeypatch, UNKNOWN, times=99)
     with pytest.raises(Exception) as caught:
         run(agent)
     exc = caught.value
@@ -235,7 +250,7 @@ def test_an_unsupported_shape_fails_loudly_with_structure_only(agent, monkeypatc
 
     record = us._served_failure_record(exc)
     assert (record.code, record.stage, record.effects) == (
-        "provider_protocol_error", "model_reply", "none",
+        "provider_unreadable_reply", "model_reply", "none",
     )
     assert record.ref == agent.latest().turn_id
     with caplog.at_level(logging.WARNING, logger="universe_server"):
@@ -262,13 +277,13 @@ def test_structure_reports_key_names_and_types_never_values():
 def test_protocol_error_notice_names_the_format_and_does_not_cry_actions(agent, monkeypatch):
     import tinyassets.universe_server as us
 
-    _wire(agent, monkeypatch, UNKNOWN)
+    _wire(agent, monkeypatch, UNKNOWN, times=99)
     with pytest.raises(Exception) as caught:
         run(agent)
     notice = us._served_failure_notice(caught.value)
     assert "could not identify why" not in notice
-    assert "replied in a format this command center could not read" in notice
-    assert "try again, or choose another model" in notice
+    assert "sent a reply this command center could not read" in notice
+    assert "asking it to continue usually works" in notice
     assert "Nothing ran." in notice
     assert "Actions may already have occurred" not in notice
     assert "may already have occurred" not in notice.lower()

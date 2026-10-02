@@ -90,7 +90,13 @@ universe, whatever started the turn -- a typed message, an answered request, a
 queued line, another window, another device, or the connector -- and SHALL NOT
 depend on the current page having sent anything. `get_status` SHALL carry, gated
 on write access to the universe, whether a turn is progressing, since when, and
-its journal state, and no prompt, model or owner. A row past the cap the
+its journal state, and no prompt or owner; once the running turn has opened a
+round it SHALL also carry that step's number, the model id the step is asking
+(the same id those readers see on every reply's "Answered by" line) and how long
+it has waited. While a step waits on its model the indicator SHALL say which step,
+which model and for how long, and after a long wait SHALL offer the owner another
+model for their next message -- the owner's choice, never an automatic switch
+that abandons a reply still coming. A row past the cap the
 coordinator already enforces SHALL be reported as stale and SHALL NOT be painted
 as activity; a read that failed SHALL be reported as unreadable rather than as
 idle. A message queued behind an in-flight turn SHALL render in the order the
@@ -104,6 +110,11 @@ has for the step that died -- preserving what ran and what is merely uncertain,
 never claiming a killed turn completed. A boot owns a turn it created and has not
 finished, or one created after the boot began; ownership is process state and
 SHALL NOT be inferred from age alone.
+
+#### Scenario: A step waits a long time on its model
+- **WHEN** the running turn's step has waited minutes on one model request
+- **THEN** the indicator reads like "step 4 · waiting on qwen3.8 for 7 min"
+- **AND** after three minutes a "Try another model" action opens the model menu for the next message, and the request in flight is not stopped by it
 
 #### Scenario: A turn this page did not start
 - **WHEN** a turn is running for the universe and this page sent nothing
@@ -138,17 +149,7 @@ SHALL NOT be inferred from age alone.
 - **AND** age alone never makes a live turn eligible for settlement
 
 ### Requirement: The app reads its owner's data through the owner door, complete
-
-Every read the app renders (the request rail, restore-access, bindings, the model
-picker, status, conversation history and message expansion, and the reads a
-custom UI bundle makes through the bridge) SHALL go through the owner door:
-`POST /app/api/read` (the `read_graph` arguments) and `POST /app/api/status`
-(the `get_status` arguments). The owner door SHALL be authenticated by the same
-bearer middleware as every other `/app` route, SHALL execute each read under the
-request identity through the same domain function and owner gate the connector
-uses, and SHALL return the complete document. The owner door SHALL contain no
-size, limit or truncation logic and SHALL NOT import the model-context ceiling or
-projection modules. Actions (`converse`, `write_graph`) MAY stay on the connector.
+ Every read the app renders (the request rail, restore-access, bindings, the model picker, status, conversation history and message expansion, and the reads a custom UI bundle makes through the bridge) SHALL go through the owner door: `POST /app/api/read` (the `read_graph` arguments) and `POST /app/api/status` (the `get_status` arguments). The owner door SHALL be authenticated by the same bearer middleware as every other `/app` route, SHALL execute each read under the request identity through the same domain function and owner gate the connector uses, and SHALL return the complete document. The owner door SHALL contain no size, limit or truncation logic and SHALL NOT import the model-context ceiling or projection modules. Actions (`converse`, `write_graph`) MAY stay on the connector.
 
 The phone app (Capacitor, `server.url` = the live `/app`) and the desktop app
 (Electron over the live SPA) load the same page and therefore the same doors.

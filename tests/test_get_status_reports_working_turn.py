@@ -6,8 +6,11 @@ send -- or a tab that just reloaded -- that a turn is running (founder,
 2026-09-26).
 
 The field is gated the way the conversation peek is (write access to the
-universe) and carries no prompt, model or owner: only that a turn is progressing,
-since when, and its journal state.
+universe) and carries no prompt or owner: that a turn is progressing, since
+when, its journal state, and -- once the running turn has opened a round -- the
+step number, the model id that step is waiting on, and for how long. The model
+is the one the same readers already see on every reply's "Answered by" line; a
+10-minute wait on one model request read exactly like a hang (live 2026-10-02).
 """
 
 from __future__ import annotations
@@ -112,3 +115,68 @@ def test_a_reader_without_write_access_is_not_told(founder_home, monkeypatch):
     assert "active_turn" not in payload, (
         "activity is gated like the conversation peek: a reader the universe has "
         "not granted write access is told nothing about it")
+
+
+def test_a_running_turn_says_which_step_and_model_it_waits_on(founder_home, monkeypatch):
+    """Turn c6ae56f9 waited ~10 minutes on one qwen request with no way to tell."""
+    from tinyassets.api import status
+    from tinyassets.storage.agent_turn_boot import BOOT
+
+    monkeypatch.setattr(status, "_reader_owns", lambda _uid: True)
+
+    turn_id = _start_turn(founder_home, state="inference_started", age_s=900.0)
+    BOOT.claim(founder_home.name, turn_id)
+    BOOT.note_round(founder_home.name, turn_id, round=4, model="qwen/qwen3.8-27b:free",
+                    now=datetime.now(timezone.utc) - timedelta(seconds=420))
+    try:
+        row = json.loads(get_status())["active_turn"]
+        assert row["round"] == 4 and row["model"] == "qwen/qwen3.8-27b:free"
+        assert 419 <= row["round_age_s"] <= 423
+        assert "summarise the run" not in json.dumps(row)
+    finally:
+        BOOT.release(founder_home.name, turn_id)
+    # Released with the turn: a finished turn leaves no step behind.
+    assert BOOT.progress(founder_home.name, turn_id) is None
+
+
+def test_a_round_is_not_noted_for_a_turn_this_boot_is_not_running():
+    from tinyassets.storage.agent_turn_boot import BootTurns
+
+    boot = BootTurns()
+    boot.note_round("u-x", "t-1", round=1, model="m")
+    assert boot.progress("u-x", "t-1") is None
+
+
+def test_a_co_admin_sees_the_step_but_never_the_owners_model_id(founder_home, monkeypatch):
+    """Codex: the requested selector can be an account-bearing private id that the
+    reply's "Answered by" never shows; only the owning account reads it."""
+    from tinyassets.api import status
+    from tinyassets.storage.agent_turn_boot import BOOT
+
+    monkeypatch.setattr(status, "_reader_owns", lambda _uid: False)
+    turn_id = _start_turn(founder_home, state="inference_started", age_s=60.0)
+    BOOT.claim(founder_home.name, turn_id)
+    BOOT.note_round(founder_home.name, turn_id, round=2, model="owner-alice@example.com-private-9")
+    try:
+        row = json.loads(get_status())["active_turn"]
+        assert row["round"] == 2 and "round_age_s" in row
+        assert "model" not in row and "private-9" not in json.dumps(row)
+    finally:
+        BOOT.release(founder_home.name, turn_id)
+
+
+def test_ownership_is_read_from_the_one_owner_resolver(monkeypatch):
+    from tinyassets import universe_owner
+    from tinyassets.api import permissions, status
+
+    monkeypatch.setattr(permissions, "current_actor_id", lambda: "user_a")
+    monkeypatch.setattr(universe_owner, "owner_of", lambda _root, _uid: "user_a")
+    assert status._reader_owns("u-1") is True
+    monkeypatch.setattr(universe_owner, "owner_of", lambda _root, _uid: "user_b")
+    assert status._reader_owns("u-1") is False
+
+    def broken(_root, _uid):
+        raise OSError("unreadable")
+
+    monkeypatch.setattr(universe_owner, "owner_of", broken)
+    assert status._reader_owns("u-1") is False

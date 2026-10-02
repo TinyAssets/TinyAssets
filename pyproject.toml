@@ -116,15 +116,6 @@ dev = [
     "httpx>=0.24",
     "fastapi>=0.115",
 ]
-gemini = [
-    "google-genai>=1.0",
-]
-grok = [
-    "openai>=1.0",
-]
-groq = [
-    "groq>=0.9",
-]
 api = [
     "fastapi>=0.115",
     "uvicorn[standard]>=0.30",
@@ -164,4 +155,5 @@ testpaths = ["tests"]
 markers = [
     "slow: stress/race tests; opt-in via `pytest -m slow`",
     "real_jail: needs a real bubblewrap jail; run by .github/workflows/linux-jail-proof.yml, which fails on any skip",
+    "real_browser: drives a real Chromium through Playwright; skips only when Playwright's browser is not installed",
 ]

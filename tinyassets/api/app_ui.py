@@ -26,6 +26,8 @@ from tinyassets.custom_agents import (
     app_ui_index,
     change_app_ui_entry,
     get_app_ui,
+    put_app_ui_asset,
+    read_app_ui_asset,
     save_app_ui,
 )
 from tinyassets.storage_accounting import StorageRefused
@@ -130,10 +132,14 @@ def change_app_ui(
     if actor is None:
         return {"error": "authentication_required", "resource": "app_ui"}
     try:
-        outcome = change_app_ui_entry(
-            _base_path(), owner_user_id=actor, universe_id=uid,
-            operation=op, payload=_payload(payload) if payload not in (None, "") else {},
-        )
+        document = _payload(payload) if payload not in (None, "") else {}
+        if op == "put_asset":
+            outcome = _put_asset(actor, uid, document)
+        else:
+            outcome = change_app_ui_entry(
+                _base_path(), owner_user_id=actor, universe_id=uid,
+                operation=op, payload=document,
+            )
     except AgentNotFoundError as exc:
         return {"error": "app_ui_not_found", "detail": str(exc)}
     except AgentConflictError as exc:
@@ -145,7 +151,76 @@ def change_app_ui(
     return {"status": "saved", "operation": op, **outcome}
 
 
-__all__ = ["INDEX", "change_app_ui", "read_app_ui", "write_app_ui"]
+_PUT_SOURCES = ("text", "base64", "from_file")
+
+
+def _put_asset(actor: str, uid: str, payload: dict[str, Any]) -> dict[str, Any]:
+    """``put_asset``: bytes from exactly one source, then one targeted change.
+
+    ``from_file`` is a file the command center's agents already wrote under
+    ``/u``, read through the owner's own gate, so an image rendered by code in
+    the agent's box becomes an asset without passing through the model.
+    """
+    import base64
+    import binascii
+
+    from tinyassets.api.universe_file_reads import read_whole_file
+
+    unknown = sorted(set(payload) - {"ui_id", "path", "expected_etag", *_PUT_SOURCES})
+    if unknown:
+        raise AgentValidationError(f"put_asset field {unknown[0]!r} is not recognised")
+    given = [source for source in _PUT_SOURCES if source in payload]
+    if len(given) != 1:
+        raise AgentValidationError(
+            "put_asset needs exactly one of text, base64 or from_file"
+        )
+    source, value = given[0], payload[given[0]]
+    if not isinstance(value, str):
+        raise AgentValidationError(f"put_asset {source} must be a string")
+    if source == "text":
+        data = value.encode("utf-8")
+    elif source == "base64":
+        try:
+            data = base64.b64decode(value, validate=True)
+        except (binascii.Error, ValueError):
+            raise AgentValidationError("put_asset base64 is not valid base64") from None
+    else:
+        data = read_whole_file(universe_id=uid, path=value)
+        if data is None:
+            raise AgentNotFoundError(
+                f"no file {value!r} in this command center's folder (/u) that you can read"
+            )
+    ui_id, path = payload.get("ui_id"), payload.get("path")
+    if not isinstance(ui_id, str) or not ui_id.strip():
+        raise AgentValidationError("ui_id is required")
+    etag = payload.get("expected_etag") or ""
+    return put_app_ui_asset(
+        _base_path(), owner_user_id=actor, universe_id=uid, ui_id=ui_id.strip(),
+        path=path if isinstance(path, str) else "", data=data,
+        expected_etag=etag if isinstance(etag, str) else "",
+    )
+
+
+def read_app_ui_asset_bytes(*, universe_id: str, sha256: str) -> bytes | dict:
+    """One of the caller's own UI blobs for the app to hand its frame.
+
+    The same universe gate as reading the row; the blob is keyed by the caller,
+    so the hash reaches only bytes the caller stored.
+    """
+    uid = _binding_universe(universe_id)
+    denial = _binding_access(uid, write=False)
+    if denial is not None:
+        return denial
+    actor = _authenticated_actor()
+    if actor is None:
+        return {"error": "authentication_required", "resource": "app_ui"}
+    found = read_app_ui_asset(_base_path(), owner_user_id=actor, sha256=sha256)
+    if found is None:
+        return {"error": "app_ui_asset_not_found"}
+    return found
+
+
+__all__ = ["INDEX", "change_app_ui", "read_app_ui", "read_app_ui_asset_bytes", "write_app_ui"]
 
 
 def _visible_refusal(refused, viewer=None):

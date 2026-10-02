@@ -102,9 +102,13 @@ def make_interactive_agent_turn(*, prompt, system, universe_context, config):
     if _force_mock or _real_router is None:
         raise ProviderAuthorityHeldError("interactive agent requires a real provider router")
     _register_open_providers_for(universe_context)
+    from tinyassets.agent_loop.served_chat import ThinLoopChatAdapter, thin_loop_selected
+
+    # Only the thin loop names an adapter; unselected, the call is today's.
+    thin = {"adapter": ThinLoopChatAdapter()} if thin_loop_selected() else {}
     return InteractiveHttpAgentTurn(
         router=_real_router, prompt=prompt, system=system,
-        universe_context=universe_context, config=config,
+        universe_context=universe_context, config=config, **thin,
     )
 
 
@@ -255,27 +259,6 @@ def _build_fallback_router() -> "Optional[ProviderRouter]":
         logger.info("Registered OllamaProvider")
     except Exception:
         logger.debug("OllamaProvider not available")
-
-    try:
-        from tinyassets.providers.gemini_provider import GeminiProvider
-        router.register(GeminiProvider())
-        logger.info("Registered GeminiProvider")
-    except Exception:
-        logger.debug("GeminiProvider not available")
-
-    try:
-        from tinyassets.providers.groq_provider import GroqProvider
-        router.register(GroqProvider())
-        logger.info("Registered GroqProvider")
-    except Exception:
-        logger.debug("GroqProvider not available")
-
-    try:
-        from tinyassets.providers.grok_provider import GrokProvider
-        router.register(GrokProvider())
-        logger.info("Registered GrokProvider")
-    except Exception:
-        logger.debug("GrokProvider not available")
 
     logger.info(
         "ProviderRouter ready with providers: %s",

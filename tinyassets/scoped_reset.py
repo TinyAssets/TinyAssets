@@ -942,6 +942,9 @@ def _assert_home_filesystem_identity(
         )
 
 
+_AGENT_WORKSPACE_DIR = ".agent-workspace"
+
+
 def _walk_home_without_following(home: Path) -> tuple[str, ...]:
     blockers: list[str] = []
     pending = [home]
@@ -976,6 +979,12 @@ def _walk_home_without_following(home: Path) -> tuple[str, ...]:
                     f"home-local audit or receipt store requires archival: "
                     f"{path.relative_to(home)}"
                 )
+                continue
+            if (current == home and entry.name == _AGENT_WORKSPACE_DIR
+                    and entry.is_dir(follow_symlinks=False)):
+                # The agent's own workspace (harness W2) is owner content of any
+                # shape; it goes with the home (stage_then_remove_home, which
+                # never follows a link), so it is not classified file by file.
                 continue
             if entry.is_dir(follow_symlinks=False):
                 if normalized_name in _HOME_OPERATIONAL_DIRECTORIES:

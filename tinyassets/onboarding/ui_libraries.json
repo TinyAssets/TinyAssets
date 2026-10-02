@@ -1,0 +1,82 @@
+{
+  "version": 1,
+  "libraries": {
+    "three": {
+      "version": "0.170.0",
+      "format": "module",
+      "file": "three-0.170.0.module.min.js",
+      "license": "MIT",
+      "license_file": "LICENSE-three.txt",
+      "requires": [],
+      "size": 691648,
+      "sha384": "sha384-IDC7sAMAIMB/TZ6dgKKPPAKZ2bXXXP8+FBMBC8cU319eBhKITx+PaalhfDkDNH28"
+    },
+    "three/addons/controls/OrbitControls.js": {
+      "version": "0.170.0",
+      "format": "module",
+      "file": "three-0.170.0-OrbitControls.js",
+      "license": "MIT",
+      "license_file": "LICENSE-three.txt",
+      "requires": [
+        "three"
+      ],
+      "size": 32134,
+      "sha384": "sha384-aJoe4qqS/DgF2jh9njAuvA6QIveJYoCuYOfYjdFY8P3eawzmc9bEQ40jq2TvOyuP"
+    },
+    "three/addons/loaders/GLTFLoader.js": {
+      "version": "0.170.0",
+      "format": "module",
+      "file": "three-0.170.0-GLTFLoader.js",
+      "license": "MIT",
+      "license_file": "LICENSE-three.txt",
+      "requires": [
+        "three",
+        "three/addons/utils/BufferGeometryUtils.js"
+      ],
+      "size": 110283,
+      "sha384": "sha384-x79xjCNsFlRByL5E+VmRg4w6ppPmAVfP11fg7GzEVJ0wT+wuVfARjjZNLsq7iUmq"
+    },
+    "three/addons/utils/BufferGeometryUtils.js": {
+      "version": "0.170.0",
+      "format": "module",
+      "file": "three-0.170.0-BufferGeometryUtils.js",
+      "license": "MIT",
+      "license_file": "LICENSE-three.txt",
+      "requires": [
+        "three"
+      ],
+      "size": 31768,
+      "sha384": "sha384-wOjwauvHlJO7K6APr7FmMGH2nupQa3Ndzas9bJZhsAMOK055efJud8ns4aYmASKv"
+    },
+    "pixi.js": {
+      "version": "8.22.0",
+      "format": "global",
+      "file": "pixi-8.22.0.min.js",
+      "license": "MIT",
+      "license_file": "LICENSE-pixi.txt",
+      "requires": [],
+      "size": 840663,
+      "sha384": "sha384-sQhAUuZTvdanRcBHbVCTasnEWH28GGEK87FJGPj/JaqwL/15KWQwKe7whTHdCkwm"
+    },
+    "phaser": {
+      "version": "3.90.0",
+      "format": "global",
+      "file": "phaser-3.90.0.min.js",
+      "license": "MIT",
+      "license_file": "LICENSE-phaser.txt",
+      "requires": [],
+      "size": 1196122,
+      "sha384": "sha384-AvQiDMZAVLda3VtAoU5MCfBz8pzXhteb2CiUJeKBmPlWzpXj1uJ96Km11+YuFNu/"
+    },
+    "howler": {
+      "version": "2.2.4",
+      "format": "global",
+      "file": "howler-2.2.4.min.js",
+      "license": "MIT",
+      "license_file": "LICENSE-howler.txt",
+      "requires": [],
+      "size": 36173,
+      "sha384": "sha384-SSf4pKRrGaeWL8bdA89QvGkhZo5WvIVCGwKVzfX7z+9sSaIHtE/AkOLehofI4JVY"
+    }
+  }
+}

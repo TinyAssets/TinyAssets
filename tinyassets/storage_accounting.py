@@ -203,16 +203,23 @@ def _project_memory(base: Path, account_id: str) -> int:
 
 
 def _ui_library(base: Path, account_id: str) -> int:
-    """A person's app-UI library, per universe they saved one in."""
+    """A person's app-UI library, per universe they saved one in, plus the asset
+    bytes their UIs load (one blob per hash, however many UIs share it)."""
     from tinyassets import custom_agents
 
-    return _sum_sql(
+    rows = _sum_sql(
         custom_agents.db_path(base),
         "SELECT SUM(length(CAST(ui_library_json AS BLOB)) "
         "+ COALESCE(length(CAST(ui_selection_json AS BLOB)), 0)) "
         "FROM universe_app_ui WHERE owner_user_id = ?",
         (account_id,),
     )
+    assets = _sum_sql(
+        custom_agents.db_path(base),
+        "SELECT SUM(size_bytes) FROM universe_app_ui_asset WHERE owner_user_id = ?",
+        (account_id,),
+    )
+    return rows + assets
 
 
 def _owned_daemon_ids(base: Path, account_id: str) -> list[str]:
@@ -518,6 +525,7 @@ ROOT_ENTRIES: dict[str, str] = {
     "scratch": "platform: shared scratch pool, never charged (storage-permanent-vs-scratch)",
     ".workspace-staging": "platform: transient checkout staging, swept by liveness",
     ".consumer_liveness": "platform: process liveness locks",
+    ".deploy-pending.json": "platform: a waiting deploy's expiring status marker",
     ".runtime": "platform: provider runtime",
     ".universe_seats.db": "platform: seat leases",
     ".account_seats.db": "platform: per-account seat leases",
@@ -577,6 +585,8 @@ UNIVERSE_ENTRIES: frozenset[str] = frozenset({
     ".subscription_state.db", ".pending_requests.db", ".usage_ledger.db",
     ".wiki_write_back_destination_markers.db", ".authoring.db", ".lock",
     ".effector_consents.db", ".external_write_receipts.db", ".idempotency.db",
+    # The agent's own workspace (harness W2): user bytes, counted by the walk.
+    ".agent-workspace",
 })
 
 #: Names the code creates that are NOT under the data root at all (a git repo,

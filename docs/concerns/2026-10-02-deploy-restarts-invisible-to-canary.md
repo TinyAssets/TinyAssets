@@ -11,7 +11,7 @@ summary: 81 daemon restarts in 4 days (p50 8 s, max 191 s, 14.8 min total, ~99.7
 **Verified:** 2026-10-02 from production logs (read-only) and `gh run list`.
 **Severity:** P2. This is an availability loss plus a measurement blind spot.
 The loss of in-flight turns is tracked separately in
-`2026-08-29-a-deploy-kills-in-flight-turns-silently.md`.
+the resolved 2026-08-29 deploy-kills-turns concern.
 
 ## Source (verbatim)
 

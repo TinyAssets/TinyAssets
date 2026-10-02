@@ -291,8 +291,8 @@ def test_spawn_writes_per_provider_log_name(mgr, monkeypatch) -> None:
         return FakeLog()
 
     monkeypatch.setattr("builtins.open", tracking_open, raising=False)
-    mgr.start_daemon_for("grok-free")
-    assert any(p.name == "daemon.grok-free.log" for p in opened)
+    mgr.start_daemon_for("codex")
+    assert any(p.name == "daemon.codex.log" for p in opened)
     # Restore not strictly needed; pytest unwinds monkeypatch at test end.
     _ = real_open
 
