@@ -368,7 +368,7 @@ class TrayApp:
 
         # Phase H: Pause All Tiers emergency switch
         if self._on_pause_all_tiers is not None:
-            label = "â–¶ Resume All Tiers" if emergency_off else "â¸ Pause All Tiers"
+            label = "▶ Resume All Tiers" if emergency_off else "⏸ Pause All Tiers"
             items.append(MenuItem(label, self._handle_pause_all_tiers))
 
         # Default runtime controls (show window, pause/resume)

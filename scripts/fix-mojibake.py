@@ -26,6 +26,7 @@ Used by:
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 from pathlib import Path
 
@@ -69,6 +70,33 @@ MOJIBAKE_MAP: dict[str, str] = {
     "â„¢": "™",   # trademark
     "â€¦": "…",   # horizontal ellipsis
 }
+
+
+# Anything the table does not list: a UTF-8 lead-byte character followed by
+# the right number of continuation characters, whose cp1252 bytes decode as
+# valid UTF-8 (box drawing, arrows, symbols...). The decode requirement keeps
+# real Latin-1 text (``café``) out.
+_GENERIC = re.compile("[\u00e0-\u00ef][^\x00-\x7f]{2}|[\u00c2-\u00df][^\x00-\x7f]")
+
+
+def _cp1252_byte(ch: str) -> int | None:
+    try:
+        return ch.encode("cp1252")[0]
+    except UnicodeEncodeError:
+        # The five bytes cp1252 leaves undefined come back as their latin-1
+        # code points (``\x90`` in a mangled ``═``).
+        return ord(ch) if ord(ch) < 256 else None
+
+
+def _generic_fix(run: str) -> str | None:
+    """The intended character for a mojibake ``run``, or None if it is not one."""
+    raw = [_cp1252_byte(c) for c in run]
+    if None in raw:
+        return None
+    try:
+        return bytes(raw).decode("utf-8")
+    except UnicodeDecodeError:
+        return None
 
 
 def _replacement_order(table: dict[str, str]) -> list[tuple[str, str]]:
@@ -129,6 +157,14 @@ def scan_file(path: Path) -> list[Finding]:
                     for c in range(idx, idx + len(key)):
                         claimed_cols.add(c)
                 col = idx + len(key)
+        for match in _GENERIC.finditer(line):
+            fix = _generic_fix(match.group(0))
+            if fix is None or match.start() in claimed_cols:
+                continue
+            findings.append(Finding(
+                path=path, line=line_no, column=match.start() + 1,
+                mojibake=match.group(0), fix=fix,
+            ))
     return findings
 
 
@@ -145,6 +181,16 @@ def fix_file(path: Path) -> int:
         if key in updated:
             change_count += updated.count(key)
             updated = updated.replace(key, fix)
+
+    def _generic(match: re.Match[str]) -> str:
+        nonlocal change_count
+        fix = _generic_fix(match.group(0))
+        if fix is None:
+            return match.group(0)
+        change_count += 1
+        return fix
+
+    updated = _GENERIC.sub(_generic, updated)
 
     if change_count:
         path.write_text(updated, encoding="utf-8")

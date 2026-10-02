@@ -351,3 +351,26 @@ def test_autofix_then_commit_passes(tmp_path):
         f"stderr={result.stderr!r}"
     )
     assert doc.read_text(encoding="utf-8") == f"needs {EM_DASH} repair\n"
+
+
+def test_scan_finds_mojibake_the_table_does_not_list(fix_mojibake, tmp_path):
+    """Box drawing and arrows (``─``, ``═``, ``←``) reached main through the
+    table's gaps (tinyassets/api/market.py, 2026-10-01)."""
+    mangled = "\u2500\u2550\u2190\u2205".encode("utf-8").decode("cp1252", errors="replace")
+    # cp1252 leaves 0x90 undefined; a real mangle carries it as U+0090.
+    mangled = "".join(
+        chr(b) if ch == "\ufffd" else ch
+        for ch, b in zip(mangled, "\u2500\u2550\u2190\u2205".encode("utf-8"))
+    )
+    target = tmp_path / "banner.py"
+    target.write_text(f"# {mangled} section\n", encoding="utf-8")
+    fixes = [f.fix for f in fix_mojibake.scan_file(target)]
+    assert fixes == ["\u2500", "\u2550", "\u2190", "\u2205"]
+    assert fix_mojibake.fix_file(target) == 4
+    assert target.read_text(encoding="utf-8") == "# \u2500\u2550\u2190\u2205 section\n"
+
+
+def test_scan_leaves_real_latin1_text_alone(fix_mojibake, tmp_path):
+    target = tmp_path / "words.md"
+    target.write_text("café naïve résumé Ångström — fine\n", encoding="utf-8")
+    assert fix_mojibake.scan_file(target) == []
