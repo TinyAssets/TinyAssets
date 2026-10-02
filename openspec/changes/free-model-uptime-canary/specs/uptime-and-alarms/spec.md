@@ -7,7 +7,7 @@ The system SHALL run one hourly UTC served canary turn, backing off to one every
 - **WHEN** the connected canary's next eligible slot starts under its current cadence
 - **THEN** the host submits one real `converse` request with `message="Reply with the single word: ok"` and `graph_id` equal to its reserved home
 - **AND** the request traverses public TLS, edge authentication, ordinary serving admission and the connected provider
-- **AND** pass requires terminal reply text `ok` after whitespace stripping, no terminal structured failure, one to three actual model requests within the shared free-tier recovery budget and an identified answering free model
+- **AND** pass requires terminal reply text `ok` after whitespace stripping, no terminal structured failure, one to three actual model requests derived from the fixed tool-free prompt and #4303 bad-reply recovery, with no learning calls and an identified answering free model
 - **AND** localhost, redirected endpoints, stub replies, paid models and other accounts' credentials cannot satisfy the sample
 
 #### Scenario: Duplicate invocation or interrupted host
@@ -67,6 +67,12 @@ The system SHALL compare the configured canary bearer in constant time and refus
 - **AND** another owned public universe remains inaccessible for both reads and effects
 - **AND** missing or inconsistent persisted authority context fails closed; HTTP filtering or a request ContextVar alone is insufficient
 
+#### Scenario: Canary learning is always skipped
+- **WHEN** a canary-principal turn reaches post-reply learning extraction or deferred learning, including persisted, resumed or background continuation
+- **THEN** the system SHALL skip both learning paths before a learning model request, regardless of source type or pooled remaining budget, including 10 or higher
+- **AND** the canary account being the founder of its own home does not bypass this principal-scoped restriction
+- **AND** activation requires the restriction to be available and verified
+
 ### Requirement: Owner Click Enrollment Grants Only One Canary Bind
 The system SHALL provide an owner-only one-time PKCE enrollment flow that connects the acquired OpenRouter key only to the reserved canary home without granting the human session or runtime bearer general authority over that home.
 
@@ -113,26 +119,31 @@ The system SHALL provide an owner-only one-time PKCE enrollment flow that connec
 - **AND** the blast radius is the canary home and results from an attacker-controlled free model, not other homes
 - **AND** an existing connection prevents enrollment and successful binding is confirmed in the owner's own request rail
 
-### Requirement: Canary Uses The Shared Free Tier Recovery Budget
-The system SHALL exercise the SAME bounded recovery as real free-tier users, supplied by PR branch `fix/request-count-per-turn`: at most two rounds plus at most one alternative after failure, with at most three inference requests per message on a free/daily-capped source. Activation SHALL depend on that shared policy being available.
+### Requirement: Canary Uses The Shared Bounded Bad Reply Recovery
+The system SHALL use #4303's merged bad-reply policy (`tinyassets/agent_turn_coordinator.py:861`, `MAX_BAD_REPLY_RETRIES = 2`; `_next_after_bad_reply` at `:865`): retry the same model once, then at most one other accepted model. For the fixed prompt with no tool authority and no learning calls, this yields at most 1 initial request + 2 retries = 3 requests. Agents have no general per-turn or per-message cap: they run as long as the task needs, bounded only by the real remaining budget pooled across all of the command center's sources.
 
 #### Scenario: Normal reply and learning policy
 - **WHEN** the fixed prompt obtains a normal reply
-- **THEN** it normally costs one inference request
-- **AND** learning extraction and deferred learning for capped messages are skipped by the same platform source policy from `fix/request-count-per-turn`, without a canary-specific learning skip
+- **THEN** it costs one inference request with no tool rounds because the prompt is fixed and the principal has no tool authority
+- **AND** the principal-scoped learning skip prevents both post-reply extraction and deferred learning; the ordinary platform skip only below 10 pooled remaining requests is insufficient for this founder-owned canary home
 
 #### Scenario: Recovery after failure
-- **WHEN** a provider failure allows recovery under the shared free-tier policy
-- **THEN** the same bounded recovery applies to the canary, with at most one eligible free alternative and three requests total across persisted/background continuation
+- **WHEN** a bad-reply failure is eligible for #4303's merged recovery policy
+- **THEN** the canary retries the same model once, then at most one other accepted free model, with at most 1 + 2 = 3 requests total and retry state preserved across persisted/background continuation
 - **AND** no paid/shared/borrowed credential, tool authority or separate canary no-retry policy is introduced
-- **AND** a terminal `ok` with authoritative accounting inside that budget can pass after recovery
+- **AND** a terminal `ok` with authoritative accounting inside that derived range can pass after recovery
+
+#### Scenario: Canary home exhausts its pooled remaining budget
+- **WHEN** the canary home's real remaining budget pooled across all its command center's sources runs out
+- **THEN** the platform's pooled-budget exhaustion stop (`fix/request-count-per-turn`) returns a status reply, not a 429
+- **AND** that status does not pass the canary's terminal model reply check
 
 #### Scenario: Sustained failures reduce sampling frequency
 - **WHEN** two consecutive samples fail
 - **THEN** the runner alarms and persists a next eligible run three hours later, continuing at three-hour intervals until a pass
 - **AND** intervening timer ticks skip without inference or resetting the failure streak
 - **AND** the first pass restores hourly admission, without an immediate extra sample
-- **AND** planning records that hourly worst case is 24 x 3 = 72 requests, exceeding 50, while sustained-failure backoff is about 30 requests/day (two initial failures plus up to eight three-hour probes, all at three requests)
+- **AND** planning records that hourly worst case is 24 x 3 = 72 requests, exceeding 50, while sustained-failure backoff is about 30 requests/day (two initial failures plus up to eight three-hour probes, each at 1 initial request + 2 bad-reply retries = 3 requests, with no tool rounds or learning calls: (2 + 8) x 3 = 30)
 - **AND** this failure-regime estimate is not claimed as a universal rolling-day bound for intermittent passes
 
 ### Requirement: Canary Evidence Is Durable And Truthful
