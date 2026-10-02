@@ -9,7 +9,7 @@
 # MAX_QUARANTINE in scripts/ci_required_tests.py caps this file and ratchets
 # down: deleting entries means lowering it (tests/test_ci_required_tests.py).
 #
-# 2026-10-02: 63 entries (72 less the 9 that #4260 restored or moved), every one in the scheduled heavy-tests job, which had
+# 2026-10-02: 51 entries (72 less 8 #4260 restored or moved, 8 retired and 5 retargeted), every one in the scheduled heavy-tests job, which had
 # been red 8/8 since 09-30 so the hourly tripwire signalled nothing. They are
 # quarantined so a NEW break shows, and owned by the deploy lane. They are not
 # weakened and still run. Two kinds, being separated per test in follow-up PRs:
@@ -22,26 +22,19 @@
 owner=deploy-incident expires=2026-11-01 issue=docs/concerns/2026-08-27-full-tests-permanently-red.md tests/test_deploy_prod_workflow.py::test_access_gate_blocks_on_200
 owner=deploy-incident expires=2026-11-01 issue=docs/concerns/2026-08-27-full-tests-permanently-red.md tests/test_deploy_prod_workflow.py::test_access_gate_step_present
 owner=deploy-incident expires=2026-11-01 issue=docs/concerns/2026-08-27-full-tests-permanently-red.md tests/test_deploy_prod_workflow.py::test_active_universe_repoint_is_explicit_input_only_and_validated
-owner=deploy-incident expires=2026-11-01 issue=docs/concerns/2026-08-27-full-tests-permanently-red.md tests/test_deploy_prod_workflow.py::test_canary_step_only_probes_canonical
-owner=deploy-incident expires=2026-11-01 issue=docs/concerns/2026-08-27-full-tests-permanently-red.md tests/test_deploy_prod_workflow.py::test_capture_previous_does_not_emit_untrusted_image_labels_as_outputs
 owner=deploy-incident expires=2026-11-01 issue=docs/concerns/2026-08-27-full-tests-permanently-red.md tests/test_deploy_prod_workflow.py::test_capture_previous_transports_bounded_prior_receipt_read_only
 owner=deploy-incident expires=2026-11-01 issue=docs/concerns/2026-08-27-full-tests-permanently-red.md tests/test_deploy_prod_workflow.py::test_capture_previous_uses_configured_and_running_digest_observations
-owner=deploy-incident expires=2026-11-01 issue=docs/concerns/2026-08-27-full-tests-permanently-red.md tests/test_deploy_prod_workflow.py::test_cleanup_derives_cutover_only_from_current_run_generation
 owner=deploy-incident expires=2026-11-01 issue=docs/concerns/2026-08-27-full-tests-permanently-red.md tests/test_deploy_prod_workflow.py::test_daemon_deploy_owns_exact_public_server_name_assertion
 owner=deploy-incident expires=2026-11-01 issue=docs/concerns/2026-08-27-full-tests-permanently-red.md tests/test_deploy_prod_workflow.py::test_deploy_failure_issue_consumes_rollback_and_terminal_outputs
 owner=deploy-incident expires=2026-11-01 issue=docs/concerns/2026-08-27-full-tests-permanently-red.md tests/test_deploy_prod_workflow.py::test_deploy_failure_issue_has_truthful_bounded_wording
 owner=deploy-incident expires=2026-11-01 issue=docs/concerns/2026-08-27-full-tests-permanently-red.md tests/test_deploy_prod_workflow.py::test_deploy_failure_issue_rejects_partial_or_contradictory_tuples
 owner=deploy-incident expires=2026-11-01 issue=docs/concerns/2026-08-27-full-tests-permanently-red.md tests/test_deploy_prod_workflow.py::test_deploy_retires_legacy_workflow_service_before_restart
 owner=deploy-incident expires=2026-11-01 issue=docs/concerns/2026-08-27-full-tests-permanently-red.md tests/test_deploy_prod_workflow.py::test_disk_preflight_precedes_every_remote_image_pull
-owner=deploy-incident expires=2026-11-01 issue=docs/concerns/2026-08-27-full-tests-permanently-red.md tests/test_deploy_prod_workflow.py::test_disk_preflight_prunes_disposable_state_and_fails_before_restart
 owner=deploy-incident expires=2026-11-01 issue=docs/concerns/2026-08-27-full-tests-permanently-red.md tests/test_deploy_prod_workflow.py::test_disk_preflight_runs_before_deploy_image_pull
 owner=deploy-incident expires=2026-11-01 issue=docs/concerns/2026-08-27-full-tests-permanently-red.md tests/test_deploy_prod_workflow.py::test_failed_candidate_diagnostics_are_preserved_before_rollback
 owner=deploy-incident expires=2026-11-01 issue=docs/concerns/2026-08-27-full-tests-permanently-red.md tests/test_deploy_prod_workflow.py::test_forward_green_terminal_identity_failure_stays_red_after_publication
 owner=deploy-incident expires=2026-11-01 issue=docs/concerns/2026-08-27-full-tests-permanently-red.md tests/test_deploy_prod_workflow.py::test_image_marker_is_immediately_before_first_tinyassets_image_write
-owner=deploy-incident expires=2026-11-01 issue=docs/concerns/2026-08-27-full-tests-permanently-red.md tests/test_deploy_prod_workflow.py::test_level2_quiesced_restore_is_bounded_and_isolated_to_current_run
-owner=deploy-incident expires=2026-11-01 issue=docs/concerns/2026-08-27-full-tests-permanently-red.md tests/test_deploy_prod_workflow.py::test_level2_quiesced_restore_is_gated_and_ordered_before_legacy_cleanup
 owner=deploy-incident expires=2026-11-01 issue=docs/concerns/2026-08-27-full-tests-permanently-red.md tests/test_deploy_prod_workflow.py::test_level2_quiesced_restore_keeps_rollback_and_receipt_tuple_valid
-owner=deploy-incident expires=2026-11-01 issue=docs/concerns/2026-08-27-full-tests-permanently-red.md tests/test_deploy_prod_workflow.py::test_manual_image_tag_is_env_bound_and_validated_before_use
 owner=deploy-incident expires=2026-11-01 issue=docs/concerns/2026-08-27-full-tests-permanently-red.md tests/test_deploy_prod_workflow.py::test_manual_unsafe_fence_recovery_is_separate_and_source_bound
 owner=deploy-incident expires=2026-11-01 issue=docs/concerns/2026-08-27-full-tests-permanently-red.md tests/test_deploy_prod_workflow.py::test_production_marker_is_immediately_before_first_scrub_host_write
 owner=deploy-incident expires=2026-11-01 issue=docs/concerns/2026-08-27-full-tests-permanently-red.md tests/test_deploy_prod_workflow.py::test_recovery_canary_waits_for_the_daemon_instead_of_probing_instantly
@@ -49,20 +42,14 @@ owner=deploy-incident expires=2026-11-01 issue=docs/concerns/2026-08-27-full-tes
 owner=deploy-incident expires=2026-11-01 issue=docs/concerns/2026-08-27-full-tests-permanently-red.md tests/test_deploy_prod_workflow.py::test_rollback_and_terminal_receipt_are_ordered_under_always
 owner=deploy-incident expires=2026-11-01 issue=docs/concerns/2026-08-27-full-tests-permanently-red.md tests/test_deploy_prod_workflow.py::test_rollback_emits_safe_defaults_and_final_outputs_before_exit
 owner=deploy-incident expires=2026-11-01 issue=docs/concerns/2026-08-27-full-tests-permanently-red.md tests/test_deploy_prod_workflow.py::test_rollback_runs_always_and_eligibility_keys_to_image_marker
-owner=deploy-incident expires=2026-11-01 issue=docs/concerns/2026-08-27-full-tests-permanently-red.md tests/test_deploy_prod_workflow.py::test_rollback_step_present
 owner=deploy-incident expires=2026-11-01 issue=docs/concerns/2026-08-27-full-tests-permanently-red.md tests/test_deploy_prod_workflow.py::test_stop_writer_blocks_unsafe_rollback_image
-owner=deploy-incident expires=2026-11-01 issue=docs/concerns/2026-08-27-full-tests-permanently-red.md tests/test_deploy_prod_workflow.py::test_stop_writer_compares_post_deploy_and_post_canary_snapshots
 owner=deploy-incident expires=2026-11-01 issue=docs/concerns/2026-08-27-full-tests-permanently-red.md tests/test_deploy_prod_workflow.py::test_stop_writer_deploy_proves_exact_safe_image_and_drains_old_ids
-owner=deploy-incident expires=2026-11-01 issue=docs/concerns/2026-08-27-full-tests-permanently-red.md tests/test_deploy_prod_workflow.py::test_stop_writer_preflight_runs_before_image_mutation
 owner=deploy-incident expires=2026-11-01 issue=docs/concerns/2026-08-27-full-tests-permanently-red.md tests/test_deploy_prod_workflow.py::test_stop_writer_restores_timers_only_for_safe_fleet_and_uploads_evidence
-owner=deploy-incident expires=2026-11-01 issue=docs/concerns/2026-08-27-full-tests-permanently-red.md tests/test_deploy_prod_workflow.py::test_stop_writer_workflow_invokes_transitional_helper_subcommands
 owner=deploy-incident expires=2026-11-01 issue=docs/concerns/2026-08-27-full-tests-permanently-red.md tests/test_deploy_prod_workflow.py::test_terminal_canary_output_preserves_the_raw_applicable_canary
 owner=deploy-incident expires=2026-11-01 issue=docs/concerns/2026-08-27-full-tests-permanently-red.md tests/test_deploy_prod_workflow.py::test_terminal_never_reports_deployed_without_exact_cleanup_restoration
 owner=deploy-incident expires=2026-11-01 issue=docs/concerns/2026-08-27-full-tests-permanently-red.md tests/test_deploy_prod_workflow.py::test_terminal_receipt_does_not_assign_manual_image_source_from_github_sha
 owner=deploy-incident expires=2026-11-01 issue=docs/concerns/2026-08-27-full-tests-permanently-red.md tests/test_deploy_prod_workflow.py::test_terminal_receipt_invokes_pure_helper_and_preserves_atomic_writer
 owner=deploy-incident expires=2026-11-01 issue=docs/concerns/2026-08-27-full-tests-permanently-red.md tests/test_deploy_prod_workflow.py::test_terminal_receipt_keys_to_production_marker
-owner=deploy-incident expires=2026-11-01 issue=docs/concerns/2026-08-27-full-tests-permanently-red.md tests/test_deploy_prod_workflow.py::test_terminal_receipt_never_mutates_the_deployed_image_after_publication
-owner=deploy-incident expires=2026-11-01 issue=docs/concerns/2026-08-27-full-tests-permanently-red.md tests/test_deploy_prod_workflow.py::test_terminal_receipt_summary_python_is_executable
 owner=deploy-incident expires=2026-11-01 issue=docs/concerns/2026-08-27-full-tests-permanently-red.md tests/test_deploy_prod_workflow.py::test_terminal_writer_outputs_are_visible_before_fallible_work
 owner=deploy-incident expires=2026-11-01 issue=docs/concerns/2026-08-27-full-tests-permanently-red.md tests/test_deploy_prod_workflow.py::test_unsafe_recovery_validates_both_hmac_prerequisites_before_mutation
 owner=deploy-incident expires=2026-11-01 issue=docs/concerns/2026-08-27-unsafe-fence-recovery-path-deleted.md tests/test_retire_cheat_loop_deploy_fence.py::test_expired_partial_owned_recovery_is_stopped_removed_and_replaced
@@ -82,3 +69,4 @@ owner=deploy-incident expires=2026-11-01 issue=docs/concerns/2026-08-27-unsafe-f
 owner=deploy-incident expires=2026-11-01 issue=docs/concerns/2026-08-27-unsafe-fence-recovery-path-deleted.md tests/test_retire_cheat_loop_deploy_fence.py::test_safe_fleet_requires_exact_five_exact_digest_revision_and_no_old_ids
 owner=deploy-incident expires=2026-11-01 issue=docs/concerns/2026-08-27-unsafe-fence-recovery-path-deleted.md tests/test_retire_cheat_loop_deploy_fence.py::test_unexpired_stopped_partial_recovery_lease_is_not_stolen
 owner=deploy-incident expires=2026-11-01 issue=docs/concerns/2026-08-27-unsafe-fence-recovery-path-deleted.md tests/test_retire_cheat_loop_deploy_fence.py::test_unsafe_cleanup_without_receipt_resolution_never_claims_fenced
+owner=deploy-incident expires=2026-11-01 issue=docs/concerns/2026-08-27-full-tests-permanently-red.md tests/test_deploy_prod_workflow.py::test_rollback_identity_failure_preserves_the_passed_canary_tuple

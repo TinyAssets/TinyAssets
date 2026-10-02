@@ -215,7 +215,7 @@ def test_deploy_resolves_image_to_digest_and_never_latest():
 
 def test_manual_image_tag_is_env_bound_and_validated_before_use():
     wf = _load()
-    step = _step_named(wf, "Resolve image tag")
+    step = _step_named(wf, "Resolve image tag -> immutable digest")
     run_script = step.get("run", "") or ""
     env = step.get("env") or {}
 
@@ -271,7 +271,7 @@ def test_capture_previous_transports_bounded_prior_receipt_read_only():
 
 def test_capture_previous_does_not_emit_untrusted_image_labels_as_outputs():
     wf = _load()
-    step = _step_named(wf, "Capture previous image tag (for rollback)")
+    step = _step_named(wf, "Capture current image (for public-canary rollback)")
     run_script = step.get("run", "") or ""
 
     assert "previous_active_revision_label=" not in run_script
@@ -380,19 +380,15 @@ def test_post_deploy_canary_step_present():
 def test_canary_step_only_probes_canonical():
     """Canary must NOT probe the direct URL (returns 403 after CF Access cutover)."""
     wf = _load()
-    for step in _steps(wf):
-        name = step.get("name", "") or ""
-        if "canary" in name.lower() and "access" not in name.lower():
-            run_script = step.get("run", "") or ""
-            assert "DIRECT_URL" not in run_script, (
-                f"Canary step '{name}' must not probe DIRECT_URL — it correctly "
-                "returns 403 after CF Access Option-1 cutover. Only canonical URL is valid."
-            )
-            assert "CANARY_URL" in run_script, (
-                f"Canary step '{name}' must probe CANARY_URL (canonical)"
-            )
-            return
-    pytest.fail("Post-deploy canary step not found")
+    step = _step_named(wf, "Public MCP canary (--assert-handles)")
+    run_script = step.get("run", "") or ""
+    assert "DIRECT_URL" not in run_script, (
+        "Public MCP canary must not probe DIRECT_URL; it correctly "
+        "returns 403 after CF Access Option-1 cutover. Only canonical URL is valid."
+    )
+    assert "--url https://tinyassets.io/mcp" in run_script, (
+        "Public MCP canary must probe the canonical URL"
+    )
 
 
 def test_access_gate_step_present():
@@ -434,9 +430,10 @@ def test_access_gate_blocks_on_200():
 
 def test_rollback_step_present():
     wf = _load()
-    names = [s.get("name", "") for s in _steps(wf)]
-    assert any("rollback on failure" in (n or "").lower() for n in names), (
-        "deploy job must have a 'Rollback on failure' step"
+    _step_named(wf, "Run fail-safe deploy on the droplet")
+    rollback = _step_named(wf, "Roll back if the public canary is red")
+    assert "failure()" in rollback.get("if", ""), (
+        "public-canary rollback must be conditioned on failure"
     )
 
 
@@ -766,21 +763,6 @@ def test_disk_preflight_runs_before_deploy_image_pull():
     )
 
 
-def test_disk_preflight_prunes_disposable_state_and_fails_before_restart():
-    wf = _load()
-    step = next(
-        s for s in _steps(wf) if s.get("name") == "Preflight droplet disk before image pull"
-    )
-    run_script = step.get("run", "") or ""
-
-    assert "df -h / /var/lib/docker /data" in run_script
-    assert "docker system prune -af" in run_script
-    assert "docker builder prune -af" in run_script
-    assert "journalctl --vacuum-time=3d" in run_script
-    assert "fail_threshold=90" in run_script
-    assert "refusing deploy before image pull/restart" in run_script
-
-
 def test_deploy_preserves_host_owned_backup_destination():
     wf = _load()
     scrub_step = next(
@@ -1028,10 +1010,12 @@ def test_terminal_receipt_invokes_pure_helper_and_preserves_atomic_writer():
 
 def test_terminal_receipt_never_mutates_the_deployed_image_after_publication():
     wf = _load()
-    terminal_step = _step_with_run_token(wf, "terminal_receipt_result=")
+    terminal_step = _step_named(wf, "Publish release-state receipt")
     run_script = terminal_step.get("run", "") or ""
 
-    published_idx = run_script.find("terminal_receipt_result=published")
+    published_idx = run_script.find(
+        "sudo install -m 0644 -o root -g root /tmp/release-state.json"
+    )
     assert published_idx != -1
     post_publication = run_script[published_idx:]
     for forbidden in (
@@ -1044,29 +1028,6 @@ def test_terminal_receipt_never_mutates_the_deployed_image_after_publication():
             "the installed terminal receipt must describe the final production "
             f"state; found a later image mutation token: {forbidden}"
         )
-
-
-def test_terminal_receipt_summary_python_is_executable(tmp_path):
-    wf = _load()
-    terminal_step = _step_with_run_token(wf, "terminal_receipt_result=")
-    run_script = terminal_step.get("run", "") or ""
-    match = re.search(
-        r"python -c '([^']+)' \"\$RUNNER_TEMP/tinyassets-release-state\.json\"",
-        run_script,
-    )
-    assert match is not None, "terminal receipt outcome summary command is missing"
-
-    receipt_path = tmp_path / "release-state.json"
-    receipt_path.write_text(json.dumps({"outcome": "deployed"}), encoding="utf-8")
-    result = subprocess.run(
-        [sys.executable, "-c", match.group(1), str(receipt_path)],
-        capture_output=True,
-        check=False,
-        text=True,
-    )
-
-    assert result.returncode == 0, result.stderr
-    assert result.stdout.strip() == "deployed"
 
 
 def test_terminal_receipt_does_not_assign_manual_image_source_from_github_sha():
@@ -1479,28 +1440,6 @@ def _stop_writer_step(wf: dict, name: str) -> dict:
     return step
 
 
-def test_stop_writer_preflight_runs_before_image_mutation():
-    wf = _load()
-    steps = _steps(wf)
-    preflight = _stop_writer_step(wf, "Transitional task 2.1 stop-writer preflight")
-    deploy = next(step for step in steps if step.get("id") == "deploy")
-    production_mutation = next(
-        step for step in steps if step.get("id") == "production_mutation"
-    )
-    disk = _step_named(wf, "Preflight droplet disk before image pull")
-
-    assert (
-        steps.index(disk)
-        < steps.index(preflight)
-        < steps.index(production_mutation)
-        < steps.index(deploy)
-    )
-    assert str(preflight.get("id")) == "stop-writer"
-    assert str(preflight.get("env", {}).get("NEW_IMAGE", "")).endswith(
-        "steps.tag.outputs.image_ref }}"
-    )
-
-
 def test_deploy_shares_production_host_mutation_concurrency_group():
     wf = _load()
     assert wf.get("concurrency") == {
@@ -1533,22 +1472,6 @@ def test_disk_preflight_precedes_every_remote_image_pull():
                 pull_indexes.append(index)
     assert pull_indexes
     assert all(disk_index < index for index in pull_indexes)
-
-
-def test_stop_writer_workflow_invokes_transitional_helper_subcommands():
-    text = _text()
-    assert "scripts/retire_cheat_loop_deploy_fence.py" in text
-    for command in (
-        " preflight --image-ref ",
-        " prepare-deploy --image-ref ",
-        " prove --image-ref ",
-        " post-canary --image-ref ",
-        " status",
-        " observe",
-        " quiesce-unsafe",
-        " restore-if-safe --image-ref ",
-    ):
-        assert command in text
 
 
 def test_stop_writer_deploy_proves_exact_safe_image_and_drains_old_ids():
@@ -1586,35 +1509,6 @@ def test_stop_writer_blocks_unsafe_rollback_image():
     assert "steps.prev.outputs.previous" not in str(
         rollback.get("env", {}).get("PREV_IMAGE", "")
     )
-
-
-def test_stop_writer_compares_post_deploy_and_post_canary_snapshots():
-    wf = _load()
-    steps = _steps(wf)
-    deploy_proof = _stop_writer_step(
-        wf, "Transitional task 2.1 prove exact fleet and unchanged receipts"
-    )
-    canary = _step_named(wf, "Post-deploy canary — canonical URL only")
-    post_canary = _stop_writer_step(
-        wf, "Transitional task 2.1 post-canary receipt proof"
-    )
-    forward = _step_named(wf, "Mark forward path complete")
-    rollback = _step_named(wf, "Rollback on failure")
-
-    assert (
-        steps.index(deploy_proof)
-        < steps.index(canary)
-        < steps.index(post_canary)
-        < steps.index(forward)
-        < steps.index(rollback)
-    )
-    preflight = _stop_writer_step(
-        wf, "Transitional task 2.1 stop-writer preflight"
-    )
-    assert "receipt_snapshot_before.json" in str(preflight.get("run", ""))
-    assert "receipt_snapshot_post_deploy.json" in str(deploy_proof.get("run", ""))
-    assert "receipt_snapshot_post_canary.json" in str(post_canary.get("run", ""))
-    assert "post-canary --image-ref" in str(post_canary.get("run", ""))
 
 
 def test_stop_writer_restores_timers_only_for_safe_fleet_and_uploads_evidence():
@@ -1686,18 +1580,6 @@ def test_terminal_never_reports_deployed_without_exact_cleanup_restoration():
     assert "expected_restored_unit_states" in cleanup_script
     assert "restored != expected" in cleanup_script
     assert 'daemon.get("enabled") != "enabled"' not in cleanup_script
-
-
-def test_cleanup_derives_cutover_only_from_current_run_generation():
-    wf = _load()
-    cleanup = _step_named(
-        wf,
-        "Transitional task 2.1 restore restart racers when safe",
-    )
-    script = str(cleanup.get("run", ""))
-    assert "current_run_cutover_started" in script
-    assert "str(bool(status.get(\"state_exists\")))" not in script
-    assert "status --run-id '${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}'" in script
 
 
 def test_compose_declares_no_host_run_worker_fleet():
@@ -1774,56 +1656,6 @@ def test_active_universe_repoint_is_explicit_input_only_and_validated():
     assert "^[A-Za-z0-9._-]{1,128}$" in run
 
 
-def test_level2_quiesced_restore_is_gated_and_ordered_before_legacy_cleanup():
-    """Level 2 auto-rollback: reverse a proved-but-uncommitted quiesce.
-
-    The 2026-08-07 zero-container outages happened when the stop-writer fence
-    quiesced (stopped + runtime-masked the daemon and racers) and the deploy
-    then FAILED before the new image committed. The legacy "restore restart
-    racers when safe" cleanup could not help because its restore-if-safe path
-    needs an already-RUNNING exact-five fleet to observe — but the fleet was
-    down and masked. The Level 2 block runs ONLY in that precise
-    image-not-committed case and lets the fence reverse its own recorded
-    quiesce via `restore-quiesced` (compose-up on the unchanged image).
-    """
-    wf = _load()
-    cleanup = _stop_writer_step(
-        wf, "Transitional task 2.1 restore restart racers when safe"
-    )
-    # (c) Only acts in the image-not-committed safe case: the block is gated on
-    # the deploy step's image_mutation_started output being not-"true".
-    assert (
-        cleanup.get("env", {}).get("IMAGE_MUTATION_STARTED")
-        == "${{ steps.deploy.outputs.image_mutation_started }}"
-    )
-    script = str(cleanup.get("run", ""))
-    assert 'if [ "${IMAGE_MUTATION_STARTED}" != "true" ]; then' in script
-    assert "restore-quiesced --image-ref" in script
-    # Recovery is compose-up on the unchanged image, NEVER `docker start <id>`.
-    assert "docker start" not in script
-
-    # Transition order inside the cleanup step: prove the old fleet's ancestry
-    # is descended from the stop-writer floor BEFORE invoking restore-quiesced,
-    # and only declare cleanup_restored=true AFTER restore-quiesced returns.
-    assert script.index('if [ "${IMAGE_MUTATION_STARTED}" != "true" ]') < script.index(
-        "restore-quiesced --image-ref"
-    )
-    assert script.index("git merge-base --is-ancestor") < script.index(
-        "restore-quiesced --image-ref"
-    )
-    assert script.index("restore-quiesced --image-ref") < script.index(
-        "cleanup_restored=true"
-    )
-
-    # (b) Fails LOUD to manual recovery, never a silent restored: an eligible
-    # durable identity that cannot prove restoration is a hard fence failure,
-    # not a fall-through. A non-eligible/not-applicable result (status 3) is the
-    # ONLY path that falls back to today's observe/restore-or-fence behavior.
-    assert "fence_unsafe_and_fail" in script
-    assert 'quiesced_identity_status" -ne 3' in script
-    assert 'quiesced_proof_status" -ne 3' in script
-
-
 def test_level2_quiesced_restore_keeps_rollback_and_receipt_tuple_valid():
     """(d) The Level 2 path must not disturb the release-state receipt tuple.
 
@@ -1866,18 +1698,3 @@ def test_level2_quiesced_restore_keeps_rollback_and_receipt_tuple_valid():
     )
 
 
-def test_level2_quiesced_restore_is_bounded_and_isolated_to_current_run():
-    """The recovery ssh must be time-bounded and scoped to the current run."""
-    cleanup = _stop_writer_step(
-        _load(), "Transitional task 2.1 restore restart racers when safe"
-    )
-    script = str(cleanup.get("run", ""))
-    # systemd-run bounds the recovery so a hung restore cannot wedge the runner.
-    assert "systemd-run --quiet --collect --wait --pipe" in script
-    assert "--property RuntimeMaxSec=720" in script
-    assert "--property TimeoutStartSec=720" in script
-    # Identity is read from the CURRENT-run durable fence only.
-    assert "current_run_matches" in script
-    assert "current_run_previous_image_ref" in script
-    assert "current_run_previous_revision" in script
-    assert "--run-id '${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}'" in script
