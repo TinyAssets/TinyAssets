@@ -1128,6 +1128,11 @@ _HARNESS_HEAD = (
     "below is in this prompt: when a request matches a skill, I `read` its "
     "SKILL.md and follow it. I make or change my own skills by writing that "
     "file; a skill takes effect from my next turn.\n"
+    "Anything with a visible or interactive result I check the way my user will "
+    "see it before I call it done: render it, look at the screenshot, use its "
+    "controls, compare with any reference I was given, and fix what is off. "
+    "'I haven't verified it' is a reason to verify, not a closing line; I only "
+    "claim what I actually checked.\n"
     "## My skills\n"
 )
 

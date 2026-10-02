@@ -224,8 +224,6 @@ def test_an_entry_gone_before_the_launch_is_skipped_not_refused(tmp_path, monkey
 
 
 def test_the_jail_loads_a_filter_refusing_links_and_special_files(tmp_path, monkeypatch):
-    import struct
-
     universe = _universe(tmp_path)
     monkeypatch.setattr(provider_jail, "BWRAP_RESOLVER", lambda: "/usr/bin/bwrap")
     argv = universe_tools.tool_jail_argv(universe, ["/bin/true"], seccomp_fd=7)
@@ -543,6 +541,16 @@ def test_a_skill_file_symlinked_elsewhere_is_never_read_into_the_prompt(tmp_path
 
 
 # ── untrusted universe files: the shared safe reader and skill parse ─────────
+
+
+def test_resident_harness_requires_visual_verification_within_budget(tmp_path):
+    prompt = universe_tools.harness_prompt(tmp_path)
+    assert "before I call it done: render it, look at the screenshot" in prompt
+    assert "use its controls, compare with any reference I was given, and fix what is off" in prompt
+    assert "'I haven't verified it' is a reason to verify, not a closing line" in prompt
+    assert "I only claim what I actually checked" in prompt
+    # Keep the base resident harness within 500 estimated tokens (chars / 4).
+    assert len(prompt) <= 2_000
 
 
 def test_skill_description_never_hands_frontmatter_to_a_yaml_loader():
