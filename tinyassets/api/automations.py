@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import json
 import logging
+import sqlite3
 from datetime import datetime, timedelta, timezone
 from datetime import time as dt_time
 from pathlib import Path
@@ -319,6 +320,31 @@ def _recent_reasons(base: Path, universe_id: str) -> dict[str, str]:
         return {}
 
 
+def _legacy_control_reasons(base: Path, universe_id: str) -> dict[str, str]:
+    """Recorded dispositions outlive transient refusal freshness, when known."""
+    from tinyassets.storage import db_path
+
+    uri = f"{db_path(base).resolve().as_uri()}?mode=ro"
+    try:
+        with sqlite3.connect(uri, uri=True) as conn:
+            return dict(conn.execute(
+                """
+                SELECT c.automation_id, r.reason
+                FROM cloud_automation_controls AS c
+                JOIN assigned_queue_refusals AS r
+                  ON r.universe_id = c.universe_id
+                 AND r.branch_task_id = 'automation:' || c.automation_id
+                WHERE c.universe_id = ? AND c.desired_state IN ('stopped', 'paused')
+                  AND julianday(r.observed_at) >= julianday(c.updated_at)
+                """,
+                (universe_id,),
+            ))
+    except sqlite3.OperationalError as exc:
+        if "no such table" not in str(exc).lower():
+            logger.warning("legacy automation reason lookup failed", exc_info=True)
+        return {}
+
+
 def _legacy_rows(base: Path, universe_id: str) -> list[dict[str, Any]]:
     """The retired fleet-era control rows, flagged and read-only.
 
@@ -346,17 +372,24 @@ def _legacy_rows(base: Path, universe_id: str) -> list[dict[str, Any]]:
             exc_info=True,
         )
         return []
+    reasons = _legacy_control_reasons(base, universe_id)
     return [
         {
             "automation_id": control.automation_id,
+            "universe_id": control.universe_id,
             "legacy": True,
             "status": "retired_fleet_era",
-            # The consumer stopped it with this reason (plan C1). Carried on
-            # the row so it outlives the refusal ledger's freshness window.
+            # Layer disposition, not evidence of this control's stop cause.
             "detail": RETIRED_FLEET_CONTROL_REASON,
             "desired_state": getattr(
                 control.desired_state, "value", control.desired_state
             ),
+            **({"stopped_because": reasons.get(control.automation_id)
+                or "Stop reason was not recorded."}
+               if control.desired_state.value == "stopped" else {}),
+            **({"pause_reason": reasons.get(control.automation_id)
+                or "Pause reason was not recorded."}
+               if control.desired_state.value == "paused" else {}),
         }
         for control in controls
     ]

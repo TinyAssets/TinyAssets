@@ -461,7 +461,7 @@
         throw new Error("those automations belong to another command center; this UI's access ended");
       const automations=[];
       for(const a of doc.automations){
-        // A retired fleet-era row names no command center and runs nothing: skip it.
+        // Every row, including a legacy control, must name this command center.
         if(!a||typeof a!=="object"||a.universe_id!==this.home) continue;
         const t=(a.trigger&&typeof a.trigger==="object")?a.trigger:{};
         automations.push({automation_id:String(a.automation_id||""),name:String(a.name||""),
@@ -469,6 +469,8 @@
           trigger:{kind:String(t.kind||""),interval_seconds:Number.isFinite(t.interval_seconds)?t.interval_seconds:null,
             cron:String(t.cron_expr||""),event:String(t.event_type||"")},
           state:String(a.desired_state||""),paused_because:String(a.pause_reason||""),
+          ...(a.stopped_because?{stopped_because:String(a.stopped_because)}:{}),
+          ...(a.legacy===true?{legacy:true,status:String(a.status||"")}:{}),
           last_run_id:String(a.last_run_id||""),last_result:String(a.last_reason||""),
           last_finished_at:a.last_finished_at||null,next_due_at:a.next_due_at||null,
           consecutive_failures:Number.isInteger(a.consecutive_failures)?a.consecutive_failures:0});

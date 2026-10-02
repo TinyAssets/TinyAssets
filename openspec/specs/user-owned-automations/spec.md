@@ -61,6 +61,23 @@ and continue with the others; it SHALL NOT abort the pump.
 - **WHEN** the owner's admin ACL on the universe was revoked before a run came due
 - **THEN** a refusal is recorded, the automation is paused with that reason, and other universes' runs proceed
 
+### Requirement: Stopped legacy controls explain their recorded disposition
+The automation list SHALL expose a stopped legacy control's recorded reason as
+`stopped_because`, without expiring it with transient refusal freshness. Paused
+controls SHALL expose their recorded `pause_reason`. Missing evidence SHALL be
+reported as an unknown reason, never inferred owner intent. The owner app SHALL
+retain these universe-scoped legacy rows and their picked reasons.
+
+#### Scenario: Retirement remains explainable after the freshness window
+- **GIVEN** a stopped legacy control with a retirement refusal recorded after its state change
+- **WHEN** the agent or owner app lists automations after the refusal freshness window
+- **THEN** the recorded reason remains visible and the control's state is unchanged
+
+#### Scenario: No matching stop evidence
+- **GIVEN** a stopped legacy control with no refusal for that universe and automation at or after its state change
+- **WHEN** automations are listed
+- **THEN** the stop reason is explicitly unknown
+
 ### Requirement: Nothing executes outside a user's universe
 The daemon SHALL run no host-owned worker, no platform actor, and no automation whose owner is
 not a user principal with an admin ACL on its universe.
