@@ -134,6 +134,7 @@ the LEASE, and the barrier mints the credential streams then carry:
 | Frame | From | Content |
 |---|---|---|
 | `OPEN` | caller | `stream`, `op_id`, `(G, token)`, principal/cc (owner) or box handle (box), `grant_id`, `connection_id`, `verb`, and `request`: today's request document unchanged (`url`, `headers`, `header_name`, `body` as str, dict or list with today's serialization and content-type rules, `reply_budget_s`); plus `idle_s` and initial `credit` |
+| `ADMITTED` | broker | the stream passed authorization and the fence, and its operation is durably `may_have_sent`; sent before the first byte goes upstream. This is a caller's **launch-commit point**: the thin loop releases its provider-assignment admission on it (`control-plane-agent-loop` PR 2 shape) |
 | `HEAD` | broker | `status`, `reason`, sanitized `headers`, `redirect_count`. Sent only after the redirect chain and the OAuth refresh-once are settled |
 | `DATA` | broker | response bytes, at most `MAX_DATA_FRAME` (64 KiB) per frame and never beyond granted credit |
 | `CREDIT` | caller | grant n more bytes; outstanding credit is capped at `MAX_WINDOW` (256 KiB); zero initial credit is legal, and a client replenishes as it consumes |

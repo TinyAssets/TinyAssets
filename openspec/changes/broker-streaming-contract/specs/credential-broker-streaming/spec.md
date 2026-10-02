@@ -14,6 +14,11 @@ and SHALL report the operation's `side_effect_state` as the transmission
 requirement defines it, never `none` for an operation it cannot establish
 sent nothing.
 
+#### Scenario: admission is acknowledged before anything is sent
+- **WHEN** a stream passes authorization and the fence
+- **THEN** the broker durably records its operation as possibly sent and
+  acknowledges admission to the caller before writing the first byte upstream
+
 #### Scenario: a revoked grant refuses the next stream
 - **WHEN** a grant is revoked while its owner's earlier stream is still open
 - **THEN** the next stream opened on that grant is refused before any network
