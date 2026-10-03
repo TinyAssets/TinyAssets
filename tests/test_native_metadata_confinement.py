@@ -137,3 +137,29 @@ def test_metadata_launch_errors_are_sanitized(tmp_path, monkeypatch, error_type)
         ))
     assert error.value.__cause__ is None
     assert error.value.__suppress_context__
+
+
+@pytest.mark.parametrize("loop", ["snapshot", "parent", "owner"])
+def test_metadata_symlink_loops_refuse_without_leaking_private_path(tmp_path, monkeypatch, loop):
+    universe = tmp_path / "private-owner-marker"
+    own = snapshot(universe)
+    own.rmdir()
+    if loop == "snapshot":
+        own.symlink_to(own.name, target_is_directory=True)
+    elif loop == "parent":
+        own.parent.rmdir()
+        own.parent.symlink_to(own.parent.name, target_is_directory=True)
+    else:
+        own.parent.rmdir()
+        own.parent.parent.rmdir()
+        universe.rmdir()
+        universe.symlink_to(universe.name, target_is_directory=True)
+    spawn = AsyncMock(side_effect=AssertionError("must refuse before process creation"))
+    monkeypatch.setattr(transport, "aspawn_owned", spawn)
+    with pytest.raises(ProviderError, match="^native model discovery unavailable$") as error:
+        asyncio.run(transport.read_native_catalogue(
+            ["synthetic"], protocol=CodexProvider.native_discovery_protocol,
+            env={}, cwd=str(own), universe_dir=universe,
+        ))
+    spawn.assert_not_awaited()
+    assert error.value.__cause__ is None and error.value.__suppress_context__

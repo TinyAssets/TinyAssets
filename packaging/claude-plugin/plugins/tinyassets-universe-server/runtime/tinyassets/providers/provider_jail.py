@@ -310,11 +310,17 @@ def metadata_view(universe_dir: Path, snapshot_dir: Path, env: Mapping[str, str]
     here prevent a missing, redirected or broad snapshot from becoming a bind.
     Ordinary universe content and sibling launch snapshots are never mounted.
     """
-    root = Path(universe_dir).resolve(strict=True)
     snapshot = Path(os.path.abspath(snapshot_dir))
+    try:
+        root = Path(universe_dir).resolve(strict=True)
+        resolved_snapshot = snapshot.resolve(strict=True)
+    except (OSError, RuntimeError):
+        # pathlib uses RuntimeError for symlink loops on supported Python
+        # versions. Never expose the private path carried by that exception.
+        raise _refuse("metadata requires its exact launch snapshot") from None
     launch_root = root / _LAUNCH_CREDENTIALS
     if (not root.is_dir() or snapshot.parent != launch_root
-            or snapshot.resolve(strict=True) != snapshot or not snapshot.is_dir()):
+            or resolved_snapshot != snapshot or not snapshot.is_dir()):
         raise _refuse("metadata requires its exact launch snapshot")
     # HOME and scratch directories contain no persistent owner state. Preserve
     # an auth directory only when it names the exact snapshot mounted below.
