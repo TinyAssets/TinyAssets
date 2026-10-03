@@ -766,6 +766,7 @@ class CodexProvider(BaseProvider):
     native_credential_service = name
     native_command_resolver = staticmethod(lambda: _resolve_codex_cmd())
     native_process_options = staticmethod(_no_window_kwargs)
+    native_install_mounts = staticmethod(_codex_sandbox_mounts)
     native_metadata_arguments = ("app-server",)
     from tinyassets.providers.native_jsonrpc_discovery import NativeJsonRpcProtocol
 

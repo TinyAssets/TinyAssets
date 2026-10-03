@@ -2,7 +2,7 @@
 
 ## 1. Confined metadata transport
 - [x] 1.1 Bind the exact snapshot view and owner at the shared owned-process spawn, with no unconfined fallback or engine route.
-- [ ] 1.2 Preserve registered protocol limits, install mounts and owned-family cleanup; regenerate runtime mirrors.
+- [x] 1.2 Preserve registered protocol limits, install mounts and owned-family cleanup; regenerate runtime mirrors.
 
 ## 2. Verification
 - [x] 2.1 Prove missing/foreign/redirected snapshot and unavailable-jail refusal before spawn; preserve protocol/custody/cleanup regressions.

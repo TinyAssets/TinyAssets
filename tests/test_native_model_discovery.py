@@ -221,6 +221,19 @@ def test_native_registration_uses_owned_environment_and_direct_metadata_only(tmp
     assert reader.call_args.kwargs["env"] == {"OWNED": "yes"}
     assert reader.call_args.kwargs["cwd"] == str(snapshot)
     assert reader.call_args.kwargs["protocol"] is PROTOCOL
+    # The generic jail cannot discover native vendor binaries behind a wrapper.
+    # The provider's registered mount resolver must reach metadata as well.
+    mounts = reader.call_args.kwargs["install_mounts"]
+    assert callable(mounts)
+    vendor = tmp_path / "vendor"
+    vendor.mkdir()
+    with (
+        patch("tinyassets.providers.codex_provider._resolved_codex_executable",
+              return_value=(tmp_path / "wrapper", vendor / "codex")) as executable,
+        patch("tinyassets.providers.codex_provider._codex_binary_tree", return_value=vendor),
+    ):
+        assert mounts() == (vendor, tmp_path)
+    executable.assert_called_once_with(["executor"])
 
 
 def test_new_executor_can_describe_other_metadata_methods_and_fields(tmp_path):
