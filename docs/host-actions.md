@@ -12,6 +12,16 @@ whose next step is *"the founder logs into Cloudflare."*
 
 ---
 
+## Creator revenue share: decide F1–F14 and get counsel on the token questions (2026-10-01)
+
+**Why:** `openspec/changes/creator-revenue-share/` designs paying creators a share of
+paid subscriptions in TINY. Phase A (attribution, shadow dollar ledger, metrics, no
+money) waits only on your approval and the parameter answers in design §10. Mainnet
+payout waits on counsel's answers to design §9: securities and token-promotion optics,
+money transmission, creator tax reporting, Stripe, Google Play and Apple policy,
+jurisdictions, privacy, unclaimed balances. Nothing pays out until you sign each
+monthly batch yourself.
+
 ## Decide: do pre-#4287 automations get grandfathered, or does every recurring job hold? (2026-10-03)
 
 Talking to a custom agent works, but its turns still pick up **main's** rules,
