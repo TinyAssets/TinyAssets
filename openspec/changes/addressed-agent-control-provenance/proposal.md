@@ -44,13 +44,20 @@ permission, policy behaviour or setting" and that was not accurate (design revie
   authentication capability and a new stored secret shape (`design.md` §3, F2);
 - a launch-binding table plus addressed-agent snapshot columns on runs, turns,
   the journal, pending requests and automations (new storage shape);
-- a new durable automation state (`held`) with `held_reason` and
-  `reconfirmation_required`, which is new policy behaviour for existing rows;
-- a public `write_graph` payload field (`confirm_agent_provenance`) and new read
-  projection fields, which is a public MCP surface delta.
+and nothing else. Both items are approved (founder, 2026-10-03; `design.md`
+§10b) and both are internal.
 
-Each is listed in the founder-decision row below, because storage shape,
-authority and public surface are the things a wrong guess makes expensive.
+CUT by the same answer, having been in an earlier draft of this list: the durable
+`held` automation state with `held_reason`/`reconfirmation_required`, and the
+public `write_graph` `confirm_agent_provenance` payload field with its read
+projection fields. They existed only to carry EXISTING recurring definitions
+across the change, and the founder is clearing those through their own surface,
+so there is nothing to migrate (`design.md` §10a).
+
+**So this change has NO public MCP surface delta.** Those four fields were the
+whole of it: it needs no live-connector spec delta and no canary
+`--assert-handles` run (Hard Rule 11). Storage shape and authority still change,
+which is why they were specced before code.
 Existing connection consent, authored-branch checks and owner/home authority
 remain required.
 Activities/manifest work reuse their existing execution subject and lease lineage;

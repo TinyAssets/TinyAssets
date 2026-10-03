@@ -447,3 +447,58 @@ AGREE and need no change. The rest is folded here:
 This disposition closes the design gate only. No implementation, activation or
 deployment is granted, and the §6 held items (NativeD2 yield, cross-worker
 ordering) stay held unless a slice needs them.
+
+## 10. Founder decisions (2026-10-03)
+
+The two questions this design could not answer for itself were put to the
+founder as one `docs/host-actions.md` row. Both are answered, and the row is
+deleted; this section is where the answers live now.
+
+**(a) Grandfathering: not needed, because the definitions are being CLEARED.**
+The existing recurring automations are stale and the founder wants them gone,
+cleared through their own surface. So the answer is not "hold everything" and
+not "trust the #4287 merge time" -- it is that **there is nothing to migrate**.
+Build no migration and no grandfathering for them.
+
+**(b) The hard-to-reverse shape: approved.** The per-launch transport credential
+with its server-side digest, the snapshot columns on runs, turns, the journal,
+pending requests and automations, and the launch-binding table.
+
+### What (a) REMOVES from the shape (b) approved
+
+F3 and its reconfirmation door exist for exactly one job: carrying EXISTING
+recurring definitions that have no snapshot across the change. With those
+definitions cleared, that job does not exist, and the machinery built for it
+should not be built:
+
+- the durable `held` automation state, `held_reason=agent_provenance_unverified`
+  and `reconfirmation_required` projection fields;
+- the `write_graph target="automation" operation="resume"` extension carrying
+  `payload_json={"confirm_agent_provenance": true, ...}`;
+- the owner-only reconfirmation transaction, the activation-fence advance it
+  performs, and the preview/count of affected definitions before rollout.
+
+**This is what removes the public MCP surface delta from the change.** The
+confirmation payload field and the three read fields were the whole of it, so
+with them gone the change needs no live-connector spec delta and no canary
+`--assert-handles` run (Hard Rule 11), and nothing here is a public-surface
+change at all. The remaining approved items -- credential, snapshot columns,
+launch-binding table -- are internal.
+
+It also retires the ordering constraint this design records under finding 3: the
+hold must not activate before audience separation, because its only exit is a
+door the design cannot yet tell from an engine call. With no hold, there is no
+such sequencing requirement, and task 4's audience separation is needed on its
+own merits rather than as a precondition for task 9.
+
+### What (a) does NOT remove
+
+A snapshot is still required on every automation created from now on, including
+one a custom agent creates for its owner: the column stays, and so does the
+refusal for an agent-aware request that arrives without a snapshot (§6, first
+paragraph). What goes is only the migration of definitions authored before this
+change -- and a definition created in the window between the clearing and this
+change shipping is covered by the same refusal, not by a hold.
+
+The clearing itself is the founder's, through their own surface. It is not a
+step in this change, and no agent performs it.
