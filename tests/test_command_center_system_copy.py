@@ -294,3 +294,89 @@ def test_copied_legacy_workflow_runs_with_recipients_own_provider(home):
     follow = next(row for row in AutomationStore(home).list(universe_id=BOB_UNIVERSE)
                   if row.name == "scribe follows")
     assert follow.desired_state == STATE_PAUSED
+
+
+@pytest.mark.parametrize("invalid", [
+    {"overlap": "not-a-policy"},
+    {"trigger": {"kind": "cron", "cron_expr": "not-cron"}},
+    {"trigger": {"kind": "event", "event_type": "unknown"}},
+    {"trigger": {"kind": "event", "event_type": "run_completed",
+                 "event_filter": {"unexpected": "value"}}},
+])
+def test_permanently_invalid_automation_refuses_before_recipient_mutation(home, invalid):
+    from copy import deepcopy
+
+    from tinyassets.custom_agents import publish_definition
+
+    original = _legacy(home)
+    components = deepcopy(get_definition(home, original)["components"])
+    # Put the failure last: a valid earlier automation must not be installed either.
+    components["automation-2"].update(invalid)
+    bad = publish_definition(home, author_id=OWNER, payload={
+        "schema_version": 1, "name": "Invalid schedule", "description": "",
+        "tags": ["tinyassets.system.v1"], "components": components})
+    definition_id = bad["agent_definition_id"]
+    before_ui = get_app_ui(home, owner_user_id=BOB, universe_id=BOB_UNIVERSE)
+    before_files = _bob_files(home)
+    with _as(BOB):
+        catalogue = read_packages(universe_id=BOB_UNIVERSE)
+        preview = try_package(universe_id=BOB_UNIVERSE,
+                              payload={"agent_definition_id": definition_id})
+    # Exercise the actual confirmation too on the vulnerable implementation,
+    # so the regression reports its partial copies rather than only a bad card.
+    result = (_answer(BOB, BOB_UNIVERSE, preview["request_id"])
+              if "request_id" in preview else preview)
+    assert _bobs_branches(home) == [], result
+    assert get_app_ui(home, owner_user_id=BOB, universe_id=BOB_UNIVERSE) == before_ui
+    assert AutomationStore(home).list(universe_id=BOB_UNIVERSE) == []
+    assert _bob_files(home) == before_files
+    card = next(c for c in catalogue["systems"] if c["agent_definition_id"] == definition_id)
+    assert not card["available"] and card["unavailable_reason"]
+    assert "request_id" not in preview and "error" in preview
+
+
+@pytest.mark.parametrize("after_preview", [False, True])
+def test_withdrawn_second_workflow_refuses_before_snapshot_or_copy(home, monkeypatch,
+                                                                  after_preview):
+    from tinyassets import branch_versions, universe_server
+
+    definition_id = _legacy(home)
+    source = get_definition(home, definition_id)
+    second = source["components"]["workflow-2"]["published_version_id"]
+    ask = _preview(definition_id) if after_preview else None
+    with _as(OWNER):
+        withdrawn = json.loads(universe_server.write_graph(
+            target="branch", operation="patch", branch_id=SCRIBE,
+            changes_json=json.dumps([{"op": "set_visibility", "visibility": "private"}]),
+        ))
+    assert "error" not in withdrawn, withdrawn
+    assert branch_versions.branch_version_is_public(home, second)
+    reads = []
+    real_read = branch_versions.get_branch_version
+
+    def observed_read(base, version_id):
+        reads.append(version_id)
+        return real_read(base, version_id)
+
+    monkeypatch.setattr(branch_versions, "get_branch_version", observed_read)
+    before_ui = get_app_ui(home, owner_user_id=BOB, universe_id=BOB_UNIVERSE)
+    before_files = _bob_files(home)
+    if ask:
+        result = _answer(BOB, BOB_UNIVERSE, ask["request_id"])
+    else:
+        with _as(BOB):
+            preview = try_package(universe_id=BOB_UNIVERSE,
+                                  payload={"agent_definition_id": definition_id})
+        result = (_answer(BOB, BOB_UNIVERSE, preview["request_id"])
+                  if "request_id" in preview else preview)
+    assert _bobs_branches(home) == [], result
+    assert second not in reads, "withdrawn snapshot was read during preflight"
+    assert "error" in result
+    if after_preview:
+        assert "no longer public" in json.dumps(result)
+    assert get_app_ui(home, owner_user_id=BOB, universe_id=BOB_UNIVERSE) == before_ui
+    assert AutomationStore(home).list(universe_id=BOB_UNIVERSE) == []
+    assert _bob_files(home) == before_files
+    with _as(BOB):
+        [card] = list_systems()
+    assert not card["available"] and "no longer public" in card["unavailable_reason"]

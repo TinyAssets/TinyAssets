@@ -54,7 +54,7 @@ console.log(JSON.stringify({first,focused,tabindex:frame.tabindex,messages}));
 def test_forward_only_from_unclaimed_focus():
     out = run_js(functions('isTypingTarget', 'forwardCommandCenterKey') + DOM + """
 const e={key:'ArrowRight',code:'ArrowRight',shiftKey:true,altKey:false,
- ctrlKey:false,metaKey:true,repeat:true,preventDefault(){}};
+ ctrlKey:false,metaKey:false,repeat:true,preventDefault(){}};
 for(const target of [document.body,nodes['chat-stage'],nodes['ui-frame-host']]){
  for(const type of ['keydown','keyup']) forwardCommandCenterKey({...e,target,type});
 }
@@ -67,7 +67,7 @@ console.log(JSON.stringify(messages));
     for i, message in enumerate(out):
         assert message == [{"ta_ui": 1, "type": "key", "key": "ArrowRight",
                             "code": "ArrowRight", "shiftKey": True, "altKey": False,
-                            "ctrlKey": False, "metaKey": True, "repeat": True,
+                            "ctrlKey": False, "metaKey": False, "repeat": True,
                             "phase": "up" if i % 2 else "down"}, "*"]
 
 

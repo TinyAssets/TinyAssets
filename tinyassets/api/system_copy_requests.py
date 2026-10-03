@@ -12,9 +12,21 @@ SYSTEM_TAG = "tinyassets.system.v1"
 def _source(definition_id: str) -> tuple[dict, dict]:
     from tinyassets.api.helpers import _base_path
     from tinyassets.api.publish_requests import AUTOMATION_SPEC_KIND, BRANCH_REF_KIND, UI_KIND
-    from tinyassets.branch_versions import branch_version_is_public, get_branch_version
+    from tinyassets.automations import (
+        OVERLAP_POLICIES,
+        OVERLAP_QUEUE,
+        AutomationUnavailable,
+        _validated_event,
+        _validated_trigger,
+    )
+    from tinyassets.branch_versions import (
+        branch_version_def_id,
+        branch_version_is_public,
+        version_readable_by,
+    )
     from tinyassets.command_center_packages import PACKAGE_TAG
     from tinyassets.custom_agents import app_ui_renderability, app_ui_workflow_refs, get_definition
+    from tinyassets.daemon_server import get_branch_definition
 
     base = _base_path()
     definition = get_definition(base, definition_id)
@@ -41,12 +53,19 @@ def _source(definition_id: str) -> tuple[dict, dict]:
         version_id = component.get("published_version_id")
         if not isinstance(version_id, str) or not version_id:
             raise ValueError("a required workflow version is missing or invalid")
-        if not branch_version_is_public(base, version_id):
+        # Metadata only: a retained publication mark does not make a version
+        # public after its parent branch is withdrawn. Use the shared read rule
+        # as a public reader, even when the publisher is browsing their own card.
+        source_id = branch_version_def_id(base, version_id)
+        try:
+            branch = get_branch_definition(base, branch_def_id=source_id) if source_id else {}
+        except KeyError:
+            branch = {}
+        if not version_readable_by(
+            None, author=branch.get("author"), visibility=branch.get("visibility"),
+            public=branch_version_is_public(base, version_id),
+        ):
             raise ValueError("a required workflow version is missing or no longer public")
-        version = get_branch_version(base, version_id)
-        if version is None:
-            raise ValueError("a required workflow version is missing or no longer public")
-        source_id = version.branch_def_id
         source_keys.setdefault(source_id, []).append(key)
         workflows.append({"key": key, "name": str(component.get("name") or key),
                           "version_id": version_id})
@@ -94,9 +113,24 @@ def _source(definition_id: str) -> tuple[dict, dict]:
         if "branch_def_id" in event_filter:
             event_filter["branch_def_id"] = resolve(event_filter["branch_def_id"])
         trigger["event_filter"] = event_filter
+        # Match registration semantics before any workflow/UI is materialised.
+        # These shared validators are pure; registration itself would mutate the
+        # recipient and must remain behind confirmation.
+        overlap = component.get("overlap", "").strip() or OVERLAP_QUEUE
+        try:
+            if overlap not in OVERLAP_POLICIES:
+                raise AutomationUnavailable("overlap_invalid")
+            if kind == "event":
+                trigger["event_type"], trigger["event_filter"] = _validated_event(
+                    trigger["event_type"], event_filter)
+            else:
+                _validated_trigger(trigger.get("interval_seconds", 0) if kind == "interval"
+                                   else 0, trigger.get("cron_expr", "") if kind == "cron" else "")
+        except AutomationUnavailable as exc:
+            raise ValueError(f"an automation configuration is invalid ({exc.reason})") from None
         automations.append({"key": key, "name": str(component.get("name") or key),
                             "workflow": resolve(component.get("workflow", "")),
-                            "trigger": trigger, "overlap": component.get("overlap") or ""})
+                            "trigger": trigger, "overlap": overlap})
     return definition, {"ui": ui, "workflows": workflows, "automations": automations}
 
 
