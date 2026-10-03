@@ -1,6 +1,8 @@
 # Exact ordinary receipts: revised design gate
 
 Baseline: main `8a8ec275`; proposed protocol, not current runtime behavior.
+Current positive-identity candidate: positive-identity.md. Sections 7–8 retain
+rejected-candidate review history and MUST NOT be implemented as written.
 The four first-review findings are accepted and addressed below. Runtime work
 remains gated on independent review and deletion/privacy coordination.
 
@@ -62,7 +64,7 @@ or possibly exposed to inference, never proof of completed delivery or zero effe
 | claim / take_carryover | preparation transaction retains exact rows as claimed; returns stable identities; no deletion/text matching |
 | open_turn | root must be STARTED; link existing live_id separately; stale keyed roots freeze/hold custody, never delete/requeue |
 | enqueue | while root/open input frontier is current and open, commit immutable bound row before acknowledging it |
-| take | validate STARTED/exact scoped live binding/open frontier plus original issuing process liveness (section 7); commit claimed -> attempted before returning exact input to model |
+| take | validate STARTED/exact scoped live binding/open frontier plus inherited positive issuer/epoch observation (positive-identity.md); commit claimed -> attempted before returning exact input to model |
 | settle | atomically freeze frontier, retain all claimed/attempted rows and exact states |
 | stale cleanup / legacy APIs | exclude receipt-owned rows from destructive legacy paths; freeze without granting new execution |
 

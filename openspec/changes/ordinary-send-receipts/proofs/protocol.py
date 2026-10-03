@@ -167,7 +167,11 @@ class Model:
             row = self.receipt(c, key, scope)
             if row["digest"] != digest({"body": body, "ids": list(ids)}):
                 raise Held("payload conflict")
-            if row["phase"] != "prepared" or row["boot"] != self.boot:
+            if (
+                row["phase"] != "prepared"
+                or row["boot"] != self.boot
+                or row["issuer"] != self.issuer
+            ):
                 return False
             if self.rows(key) != json.loads(row["inputs"]):
                 raise Held("custody changed")
@@ -183,7 +187,11 @@ class Model:
 
     def running(self, c, key, scope, *, delivery=False):
         row = self.receipt(c, key, scope)
-        current = self.issuer_alive(row["issuer"]) if delivery else row["boot"] == self.boot
+        current = (
+            self.issuer_alive(row["issuer"])
+            if delivery
+            else row["boot"] == self.boot and row["issuer"] == self.issuer
+        )
         if row["phase"] != "started" or not current:
             raise Held("stale/non-running writer")
         return row

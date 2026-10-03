@@ -161,3 +161,19 @@ Implementation gate remains BLOCKED. Section 8 names exact additional helper/
 mirror/test files for possible scope expansion; a positive identity contract is
 not yet approved. Parent coordination required before runtime work. No live calls,
 credentials, authority/lease changes or PR attempts on this structural branch.
+
+
+## Inherited positive identity candidate — pending exact-head design review
+
+Parent assigned a separate positive interface without changing owner_state.
+Independent read-only assessment found inherited self-pidfd PLUS a uniquely owned
+CLOEXEC epoch channel viable under current trusted-launch/no-handover assumptions,
+but required additional engine_mcp_http launcher, engine_mcp_server bootstrap and
+explicit universe_server lifecycle ownership. No design approval was implied.
+
+positive-identity.md now defines that concrete candidate, exact added files and
+hard lifecycle dependency. The new synthetic model/tests exercise actual original
+serving -> engine inheritance, positive delivery, death/retirement/exec, cleanup
+contention/errors, descriptor lifetime and no-second-start. No runtime file edits.
+Budget-specific universe_intelligence/served_model_plan ownership is reserved to
+the request-economy lane pending parent reconciliation.

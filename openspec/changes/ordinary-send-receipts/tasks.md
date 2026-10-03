@@ -4,7 +4,7 @@
 - [x] Record independent initial ADAPT review and accept all four P1 findings.
 - [x] Specify server-issued preparation, retained custody, lifecycle and routing.
 - [x] Add executable separate-store concurrency/crash/isolation/erasure design model.
-- [ ] Resolve positive original-issuer proof P1 with coordinated helper scope; pass design gate and lifecycle coordination (review.md).
+- [ ] Review inherited positive-identity contract/proofs; coordinate launcher/bootstrap lifecycle and deletion scope before runtime work.
 ## Implementation and proof (blocked by design gate)
 - [ ] Implement preparation/admission and internal journal linkage on current main.
 - [ ] Implement retained input custody and exact terminal/history projection.
