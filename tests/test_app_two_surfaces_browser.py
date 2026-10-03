@@ -142,6 +142,11 @@ def test_default_bundle_build_focuses_composer_at_prompt_end_without_sending(app
         build = frame.get_by_role("button", name="Build one with your agent", exact=True)
         expect(build).to_be_visible()
         expect(frame.locator("#try-one")).to_be_hidden()
+        # Mounting the command center starts the chat as a bubble. Open it
+        # through the owner control before entering the draft under test.
+        expect(page.locator("#chat-cloud-bubble")).to_be_visible()
+        page.click("#chat-cloud-bubble")
+        expect(page.locator("#composer-input")).to_be_visible()
         page.fill("#composer-input", "draft before Build")
         page.click("#btn-cloud-shrink")
         expect(page.locator("#chat-cloud-bubble")).to_be_visible()
