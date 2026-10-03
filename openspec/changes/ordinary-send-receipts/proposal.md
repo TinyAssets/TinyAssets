@@ -1,32 +1,35 @@
 # Exact ordinary-send recovery
 
-Design gate, not an implementation or merge approval. Owner: mobile recovery lane,
-branch `fix/ordinary-send-receipts`, main baseline `8a8ec27532902cd4b61b9886ef194919dcf93e2e`.
-The observational repair remains frozen at `cf5ff2a5` on its own branch.
+Design gate only. Mobile recovery owns this branch; main baseline is
+`8a8ec27532902cd4b61b9886ef194919dcf93e2e`. Observational patch `cf5ff2a5` stays frozen.
 
 ## Why
 
-An ordinary phone send can be accepted and complete after its reply stream is
-lost. Text/history matching cannot prove which request completed. Reposting can
-repeat providers or external effects. The app needs a durable exact receipt whose
-read never starts work, and identical-key POSTs must never grant a second start.
+A phone send can finish after losing its reply stream. History/text matching
+cannot identify that request; reposting can duplicate providers or effects.
+Recovery needs an exact, read-only receipt and at most one dispatch per receipt.
 
-## Scope
+## Bounded change
 
-Versioned ordinary request key on `converse`; receipt admission before consumption
-of any queued inputs; internal journal correlation; terminal envelope and exact
-history projection; owner-only `/app/turn/receipt`; corresponding browser recovery.
-Existing custom-consumer request keys, authority, provider/effect review and Stop
-identities remain independent. No new credential, privilege, setting or authority
-DB. No automatic replay, even after a read reports no receipt.
+Use server-issued, non-executable preparation receipts followed by one
+prepared-to-started admission transition. Retain exact queued/steered input
+custody across existing claim/take_carryover/enqueue/take/settle/open_turn paths.
+Persist an exact terminal and idempotent history projection. Add owner-only
+prepare/receipt endpoints and browser recovery by persisted receipt ID.
+An ordinary identity is resolved before dynamic consumer selection. Missing,
+erased or uncertain identities never authorize execution or consumer conversion.
 
-## Integration dependencies
+The parent assigned custody and narrowly necessary lifecycle design to this lane.
+Account deletion changes require independent security/privacy review AND parent
+coordination before implementation. No runtime files or live schema are changed
+in this design gate. The executable three-store model is synthetic evidence only.
 
-Held #4308 at `cedc4f6dff8849051042de08eafba425141138fe` owns the journal's
-transaction fence. Do not edit that branch, duplicate its lease machinery, or
-silently omit fences because main lacks them. The structural implementation must
-be based on the coordinator-approved fenced baseline, or wait for that dependency.
-Queue/carryover durability and reset/deletion coverage require coordination with
-the integration lead; foreground provider/effect-review code is excluded.
-Placement owns preference routes. This lane adds only a separate receipt handler
-and one registration, preserving all preference and shared handler bodies.
+## Baseline and boundaries
+
+Use current main's existing author transaction, current-home/deletion checks,
+maintenance barrier and journal identities. Preserve the single-writer,
+no-handover operating restriction. This proposal does not depend on held #4308,
+change that branch, add lease machinery, or claim cross-store fencing/atomicity.
+BOOT identity adds a conservative stale-preparation restriction; it grants no
+execution authority. Foreground/effect-review plumbing and placement are excluded.
+No provider calls, new credentials/settings/privileges, replay, or watchdog removal.

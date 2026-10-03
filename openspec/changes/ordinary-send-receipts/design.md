@@ -1,156 +1,192 @@
-# Ordinary receipts: security/concurrency design gate
+# Exact ordinary receipts: revised design gate
 
-Reviewed source baselines: main `8a8ec275`; held #4308 `cedc4f6d` (read by Git
-object only). These are proposed interfaces, not existing runtime capabilities.
+Baseline: main `8a8ec275`; proposed protocol, not current runtime behavior.
+The four first-review findings are accepted and addressed below. Runtime work
+remains gated on independent review and deletion/privacy coordination.
 
-## Admission and state
+## 1. Separate preparation from execution
 
-At `universe_server.converse`, parse optional `ordinary_request` containing exactly
-version 1 and canonical UUIDv4 request_key. Refuse simultaneous ordinary and
-consumer envelopes before either route can dispatch. Resolve owner, current home,
-ACL and addressed agent using existing authenticated doors. Select the ordinary
-route before reserving. Consumer negotiation must never dispatch an ordinary
-request or reinterpret its key as a consumer key.
+`POST /app/turn/prepare` is authenticated owner-only storage work. Validate current
+home, addressed agent, ACL, deletion/reset barrier and caller payload. Reject
+mixed consumer/ordinary envelopes. A fresh preparation may select the existing
+consumer negotiation path without creating an ordinary receipt or running work.
+An ordinary preparation allocates a NEW server ID, retaining original message,
+input method, normalized model choice, owner/home/agent, explicit queued IDs,
+digest version and immutable payload digest. The caller cannot choose/reissue ID.
+The ID is a non-secret identifier, never a bearer capability. Use the existing
+canonical digest helper; never hash refreshed history/prompts as caller intent.
 
-Reserve before `_with_carryover`, `interactive_turn`, `_open_steering`, subscription
-refresh, provider work or tools. The canonical input binds unmodified message,
-input method, normalized model choice and resolved owner/home/agent. Live context,
-current history, generated prompts and consumed carryover are separate snapshots,
-not recomputed parts of the caller's digest. Use existing canonical digest helper.
+Preparation commits three bounded steps: (1) author row PREPARING; (2) exact input
+custody in steering; (3) immutable custody snapshot/digest attached in author row,
+then PREPARED. No step consumes input for inference, runs tools, or dispatches.
+Concurrent claims cannot steal each other's rows. Missing IDs/conflicts hold the
+preparation; no partial claim or text substitution. A crash after either early
+commit preserves inputs and leaves the receipt non-executable. No implicit repair
+of PREPARING to executable state. Lost prepare responses may leave held drafts;
+owner-scoped pending records may expose their exact receipt binding for recovery.
+That is observation only; browser must not silently prepare/send a replacement.
 
-Add receipt tables/methods to `storage.agent_turn_journal.AgentTurnJournal` in the
-EXISTING authority database. Do not add a second DB or a new unfenced SQL writer.
-Primary scoped uniqueness is (owner, universe, agent, key_hash). A server receipt
-ID identifies the row; store digest version, intent digest, original input, phase,
-exact terminal envelope, owner generation and exact associated journal IDs.
-Existing key+digest returns observation, not permission. Changed digest rejects.
-Only the insertion winner in the current live request continues. Nothing obtains
-a dispatch right by reopening a row, reading status, expiry or process takeover.
+The app persists returned receipt ID AND pinned payload/destination before sending
+`converse(ordinary_request={version:1, receipt_id:...}, ...)`. Storage failure means
+no converse. Any supplied ordinary envelope is looked up in exact owner/home/agent
+scope BEFORE dynamic consumer negotiation, carryover, interactive_turn, open_turn,
+subscription refresh or provider/effect work. Missing/malformed/conflicting keys
+fail closed; they never become unkeyed sends or consumer_request_required. An
+existing ordinary preparation stays ordinary even if a consumer was selected
+later, or is held if policy no longer permits it. It is never converted/rekeyed.
 
-Use #4308 `_transaction(universe)` and `check_fence` INSIDE its BEGIN IMMEDIATE,
-plus existing current-home, deletion/reset and owner checks. Admission must fail
-before any work when reservation is unavailable. Do not do provider calls or
-cross-database callbacks inside the author writer. No optional-import fence
-fallback, no generation-zero fresh receipts, no clock/TTL ownership takeover.
+Under existing author BEGIN IMMEDIATE and scope/deletion guards, verify immutable
+payload, attached custody and current issuing BOOT, then CAS PREPARED -> STARTED.
+Only that live invocation receives one dispatch permission. All other phases
+return observation/held. The first insertion does NOT dispatch; this explicitly
+replaces the earlier insertion-winner design. Commit STARTED before provider input
+exposure. Crash immediately after it means unknown, never a second winner. The
+original message is retained in the receipt; initial carryover must additionally
+commit its attempt transition before being included in the first provider input.
 
-Phases: accepted, running, completed, failed, unknown/held. Only committed terminal
-payload is complete/failed; journal failure is not proof of zero effects. A missing
-row, missing schema, unreadable store, lost generation or crash gap is unknown to
-the reader. Existing acceptance without a terminal can remain held forever; no
-retry may convert that into a new start. Successful identical-key POST is also
-observation-only. A genuinely never-admitted first POST can reserve normally.
+Manual resend of the identical ID cannot repeat a STARTED operation. Repeated text
+with a new server ID represents a separate explicit user intent. No automatic
+POST replay or automatic new preparation for an uncertain send. Legacy unkeyed
+clients keep their existing behavior but cannot claim receipt-owned input rows.
 
-## Internal journal link
+## 2. Durable input custody throughout existing steering paths
 
-`universe_intelligence.converse` carries an internal non-authorizing receipt ref
-in the authenticated `UniverseContext`; `ServedChatAgentAdapter.create_turn`
-passes it to `AgentTurnJournal.create`. The journal insert and receipt link commit
-atomically in the same fenced author transaction, checking exact owner/home/agent.
-Preserve journal turn IDs, generations, native/HTTP semantics and all existing
-provider checks. The reference is neither a bearer capability nor model input.
+Extend the EXISTING steering rows with immutable original ID/text and exact
+owner/home/agent/receipt binding plus a custody state. Do not create another
+execution-authority database. States: queued -> claimed -> attempted;
+closure freezes them as closed_claimed / closed_attempted. Attempted means exposed
+or possibly exposed to inference, never proof of completed delivery or zero effects.
 
-`_call_writer` has a non-coordinator `call_provider` route too. Its root receipt
-still gates dispatch; do not fabricate a journal ID or use newest-row matching.
-When no exact child terminal proves the full root outcome, preserve unknown.
-No edits to foreground_run_provider, agent_review, provider dispatch authority or
-effect review are planned. The root terminal covers the entire handler, including
-its existing learning and steering settlement, not just a model's last token.
+| Existing operation | Keyed behavior required before exposing/deleting anything |
+|---|---|
+| claim / take_carryover | preparation transaction retains exact rows as claimed; returns stable identities; no deletion/text matching |
+| open_turn | root must be STARTED; link existing live_id separately; stale keyed roots freeze/hold custody, never delete/requeue |
+| enqueue | while root/open input frontier is current and open, commit immutable bound row before acknowledging it |
+| take | validate STARTED/current BOOT/open frontier; commit claimed -> attempted before returning exact input to model |
+| settle | atomically freeze frontier, retain all claimed/attempted rows and exact states |
+| stale cleanup / legacy APIs | exclude receipt-owned rows from destructive legacy paths; freeze without granting new execution |
 
-## Cross-database input invariant — required dependency
+Initial carryover is part of the first take/attempt transition, not merely read
+from the preparation snapshot. Account/home/agent changes cannot retarget it.
+No insertion is permitted after frontier freeze. Snapshot all receipt-bound inputs
+after freeze, including late enqueues, with exact IDs/text/state. Unknown roots
+retain their attempted and unattempted inputs; neither becomes automatic carryover.
+Only after exact terminal + durable history acknowledgement may cleanup delete
+closed_attempted rows or release demonstrably untouched closed_claimed rows.
+Cleanup uses terminal snapshot IDs and matching receipt/state, never current text.
+Immutable snapshots survive cleanup; original user data follows ordinary retention.
 
-Today `agent_steering.take_carryover` deletes rows before execution; `claim` deletes
-before the browser POST; `settle` deletes delivered rows before conversation save.
-Reservation alone does NOT fix the gap. Author DB, steering DB and conversation
-DB are separate; attaching WAL databases does not establish crash atomicity.
+## 3. Transactions, journal link, and terminal
 
-Proposed integration-lead queue change: retain immutable input custody in the
-existing steering DB, bound to exact server receipt/session and original steer
-IDs. A steering transaction moves/copies claimed rows into receipt-bound custody
-before deleting/reclassifying live rows. Commit custody first; then attach its
-immutable digest/reference to the root receipt. No provider starts until that
-attachment is committed. A crash anywhere leaves recoverable custody and held
-request, never requeues unknown-delivery inputs. Do not automatically take custody
-from an older request. Explicit settlement retains delivered/undelivered identity
-until terminal publication confirms which was handled.
+Retain current main's single-writer/no-handover assumptions. Lock order is existing
+maintenance barrier -> author BEGIN IMMEDIATE -> ONE steering OR history writer;
+never acquire author from inside a subordinate write or hold both sub-writers.
+Hold the author guard across each small subordinate mutation so deletion/current
+home changes serialize against it; release all SQL writers before providers.
+Cross-store commits are intentionally separate; each gap holds input or allows
+only idempotent projection. Do not claim atomicity from attached WAL databases.
+Audit/refactor every affected legacy entrypoint to respect this lock order; use
+transaction-aware internal helpers, not recursive writer connections.
 
-Browser-side `claim` cannot delete inputs before it has a durable root request
-binding. It must carry the pinned request key and exact IDs, atomically record
-custody locally in the steering transaction, and return the stable claim. Identical
-claim/key is observational; different keys cannot claim the same held IDs.
-The queued-send body must be digest-bound to its claimed IDs, not matched by text.
-Fresh root admission with mismatched or missing custody holds/refuses before work.
+Add receipt methods/tables to the existing authority DB and link receipt to exact
+child journal IDs in the same author transaction as AgentTurnJournal.create.
+Pass an internal non-authorizing reference through UniverseContext and the served
+adapter; preserve existing IDs/Stop identity/checks. Do not expose it to the model.
+The raw call_provider fallback is gated by the same root admission; it must not
+invent a child ID or infer completion from a newest journal row. No changes to
+foreground_run_provider, agent_review, provider dispatch authority or effect review.
 
-This ownership/protocol expansion is NOT yet granted to this lane. It is a design
-P1 until the integration lead assigns the queue change and the reviewer accepts
-the complete protocol. Do not implement a receipts-only shortcut and claim all
-pending/steered inputs are crash-safe. Existing process-local live_id stays intact;
-receipt identity is linked separately, not substituted for Stop/steering identity.
+After all existing work settles and the input frontier freezes, commit a full
+root terminal envelope with immutable input snapshot and success/failure certainty.
+Use current BOOT and scope checks. Child completion alone is not root completion.
+Failure to save the terminal keeps recovery unknown even if a direct response
+contains earned output. Failure/effects certainty uses existing normalized fields;
+no invented notSent. Terminal publication cannot re-enter provider work.
 
-## Exact terminal and history
+Project completed/failure founder/interjection/reply rows in one conversation
+transaction, with UNIQUE receipt marker + terminal digest + exact row IDs. Same
+projection is no-op, changed digest refuses. Then acknowledge projected in author
+state. If history commits and acknowledgement crashes, repeat only projection.
+Cleanup follows that acknowledgement. Terminal reads NEVER repair history or state.
+Terminal snapshot remains the recovery source when optional projection is delayed.
 
-After all existing work settles, write the full response envelope to the root
-receipt under its original generation before reporting durable terminal success.
-Never synthesize a fresh provider response after a terminal-write failure. Direct
-response may still convey earned output, but recovery remains unknown if the
-terminal could not commit. Genuine failures carry existing normalized effects
-certainty, not an invented notSent classification.
+## 4. Missing history, initialization, reset and privacy
 
-`conversation_store.record_exchange_turns` / `_record_pair` gain an exact projection
-identity. One conversation transaction inserts the complete founder/interjection/
-reply pair and a unique projection marker binding receipt ID + terminal digest to
-exact row IDs. Repeating the same projection is a no-op; changed digest refuses.
-Then mark the receipt projected in a separate fenced author transaction. Crash
-between these commits can repeat only this idempotent projection, never execution.
-Run projection from terminal-writer/reconciler paths, not the read endpoint. Held
-terminals retain their envelope even if optional history storage is unavailable.
-`record_failure` follows the same exact projection mechanism. Text/time are never
-used to locate, delete or settle a request.
+Only explicit startup/migration establishes the receipt schema in the existing
+author DB; prepare/converse/read do not call creating journal connection helpers.
+Validate migration/version readiness before prepare/start; missing/partial schema
+fails closed. Strict reads use validated existing DB_FILENAME paths and mode=ro,
+not db_path() (which migrates legacy names) or connection() (which creates schema).
+A caller-supplied ID is LOOKUP ONLY in every schema state; converse never inserts it.
+Thus deleting/resetting the entire receipt table cannot turn an old ID into a fresh
+admission even after legitimate reinitialization. New preparation always issues a
+fresh ID and cannot resume an old record. No permanent content tombstone is needed.
 
-## Read endpoint and client
+Bind PREPARED to existing boot-scoped BOOT.boot_id. A restored PREPARED snapshot
+from a previous process cannot dispatch. BOOT is an additional refusal check, not
+authority, leader election, or provider-work permission. No TTL takeover. Restoring
+any database snapshot/reset that could roll back STARTED to PREPARED requires
+quiescing the writer and retiring that process/boot before serving again. In-place
+rollback while the same process serves is unsupported and must fail the maintenance
+gate. STARTED old-boot work remains unknown; only verified terminal projection can
+be repaired without executing. Existing no-handover restriction stays intact.
 
-Add `_handle_turn_receipt` plus one route in onboarding/__init__.py. Require the
-existing owner app identity, same-origin JSON, current-home and addressed-agent
-resolution. Arguments: universe_id, agent_id, request_key. Ignore/reject supplied
-owner. Use non-creating read-only connections; no migrations, claim, execution,
-projection repair or event emission. Return only this exact scope/key's receipt
-and committed terminal envelope; absence and inaccessible scope disclose no data.
-A receipt is never authority for another operation. No list-all receipt endpoint.
+Receipt/custody/projection content is ordinary owner data with existing retention:
+conversation history is retained until existing explicit session/account deletion.
+Do not extend retention to solve replay. Session deletion/reset must remove matching
+intent, terminal and custody copies along with conversation content, or refuse via
+existing active-work reset rules pending coordinated handling. Do not introduce an
+indefinite account-deletion blocker for uncertain receipts. Deleting receipts is
+safe for replay protection: their IDs will remain lookup-only and unknown forever.
 
-App persists UUID and pinned payload/destination before send; storage failure
-means no send. Store per-key entries so multiple sends/tabs cannot erase each other.
-Same-page foreground, online and reload reads reconcile exact IDs. Coalesce reads,
-fence late results on login epoch/owner/home/agent, and settle only that key. Legacy
-unkeyed records remain explicitly unconfirmed; remove text-matching completion in
-restoreInflight/finishActiveTurn. No new automatic POST retries. Manual same-key
-resend cannot rerun acceptance, while changed payload requires a new explicit intent.
+Account deletion must first use existing tombstone/guard ordering to prevent writes,
+then erase ALL SQL-visible owner content/receipt metadata, including former-home
+copies. Inventory new tables in existing root satellite scanning and exact owner
+classification. Inventory private .agent-sessions steering databases for exact
+owner rows across validated homes; never delete another owner's shared directory.
+Delete child projection/custody/open-receipt markers as well as payloads. Preserve
+existing staged/quarantined path handling and deletion retry behavior. No new
+content tombstones, retention exemption, privileges or credentials. Tests must
+show concurrent writers refused after tombstone and another owner's data unchanged.
+The model tests SQL-visible erasure, not forensic erasure, backup policy, or actual
+account-deletion code. These lifecycle edits REQUIRE independent security/privacy
+review and explicit parent coordination before any runtime implementation.
 
-## Retention, reset and deletion
+## 5. Owner-only recovery and app behavior
 
-Raw intent/terminal is owner data; preserve upload bytes and ordinary deletion
-scope. Existing account_deletion and scoped_reset must inventory the new tables,
-block resets of active/unknown receipt/custody links and delete dependent rows in
-verified owner scope. Terminal detail compaction must retain a scoped tombstone
-that prevents an old key becoming a fresh execution. No arbitrary TTL eviction.
-This integration-lead scope must be assigned before implementation can be complete.
+Add narrow prepare and receipt handlers/registrations without editing placement
+handler bodies. Existing app authentication/same-origin conventions apply. Receipt
+read requires current owner/home/addressed-agent; reject supplied owner. Do not
+reuse mutating agent-binding resolution on the read path. Expose only exact scoped
+receipt/envelope; missing/inaccessible stays unknown. No list-all endpoint, repair,
+claim, dispatch, migration, event emission, or consumer selection side effect.
 
-## Required proof and unresolved gates
+App stores per-ID entries so independent tabs/sends cannot overwrite each other.
+Foreground/online/reload reads coalesce and fence late responses by login epoch,
+owner, home, agent AND receipt. Settle only exact terminal identity. Auth/offline
+failures preserve unknown; legacy records cannot be settled by history text.
+Queued/steered IDs and existing live_id remain separate, linked identities.
+Watchdogs remain active. No actual Android background acceptance is claimed.
 
-- Racing identical POSTs: one reservation, provider/effect execution once; same
-  key changed payload rejects, repeated text/new keys remain separate intents.
-- Crash injection before/after reserve, custody, child journal link, inference,
-  external effect, steering settlement, terminal commit and history projection.
-  Every gap is either a proven terminal or held; no uncertain work is reissued.
-- Author/steering/conversation transactions never create cyclic lock order;
-  no provider runs under a SQL writer; double projection creates exactly one pair.
-- Owner/home/agent/key substitution, deletion/reset race, stale generation and
-  late UI answers disclose no other thread and cannot mutate its receipts.
-- Before-admission loss, lost completed reply, genuine provider failure,
-  truncated/silent stream, auth renewal, offline/online, same-page/reload,
-  multiple pending sends and surfaces, old/new client and consumer interoperability.
-- Repeat fenced mutation proofs against exact coordinated #4308 baseline; no
-  modified held branch and no new unlisted writer. Native fallback is covered.
+## 6. Evidence and bounded implementation surface
 
-Gate remains OPEN: independent design review; fenced baseline/dependency choice;
-integration-lead custody/reset ownership and a fully specified custody transition
-contract. No implementation is authorized by a conditional design approval while
-one of these correctness dependencies remains unresolved.
+`proofs/protocol.py` is a stdlib unittest model using three separate SQLite files,
+real concurrent writers and committed crash gaps. It exercises the revised
+protocol, not production routing, auth, migrations, providers, devices or erasure.
+Model acceptance is necessary design evidence, never runtime integration proof.
+
+After gate approval, proposed production surface is: app.html; universe_server
+ordinary admission/route ordering; universe_intelligence context propagation;
+served adapter plus agent_turn_journal receipt/link methods; agent_steering custody
+APIs; conversation_store exact projection; narrow onboarding prepare/receipt routes;
+existing schema/maintenance/reset inventory; separately coordinated account_deletion
+owner inventory and private-store erasure. Add focused synthetic/browser tests and
+mutation tables for data-loss/cross-owner guards. No #4308 dependency or new writer
+outside the existing authority/steering/conversation stores.
+
+Required production proof includes each admission/custody/projection crash gap,
+initial carryover before exposure, legacy/new consumer coexistence, missing schema,
+restored snapshots, scope changes, tombstone races, duplicate provider/effect count,
+truncated/silent stream, genuine failure, offline/auth recovery, same-page/reload
+and multiple surfaces. Exact-head implementation review and protected CI follow;
+parent owns integration/deploy, then real Android acceptance remains required.

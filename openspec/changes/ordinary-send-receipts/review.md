@@ -1,11 +1,12 @@
-# Independent design review — ADAPT
+# Initial independent design review — ADAPT
 
 Reviewed exact design: `21ddb02f24ced1cdbb8bb2e6290ad5e4fdcfa7cb`.
 Main baseline: `8a8ec275`. Held #4308: `cedc4f6dff8849051042de08eafba425141138fe`,
 inspected by Git object only. Independent same-family reviewer
 `mobile_exact_head_review`; cross-family review remains outstanding.
 
-Implementation gate does not pass. The author agrees with all four P1 findings.
+This is the historical first-round result, not a verdict on the revised design.
+The initial implementation gate did not pass. The author agreed with all four P1 findings.
 No runtime/schema code was written; this record preserves the failed gate rather
 than implying that documenting an invariant implements or proves it.
 
@@ -65,3 +66,33 @@ multiple owners. The parent must assign the custody/reset changes and approve th
 fenced baseline/dependency before this lane can implement a coherent patch.
 The observational branch remains frozen at `cf5ff2a5`. No further PR creation
 attempt is permitted from this lane after its two timeouts.
+
+
+## Revised submission — pending independent review
+
+The parent subsequently assigned custody and narrowly necessary lifecycle design
+to this lane and instructed use of current main, without a #4308 dependency.
+The earlier dependency statement above is superseded. No runtime files changed.
+
+- Custody: retains exact rows through all six steering APIs and stale cleanup;
+  attempted inputs freeze rather than delete/requeue; history acknowledgement
+  alone enables exact cleanup.
+- Admission: server-issued PREPARING/PREPARED receipts are non-executable;
+  one guarded PREPARED -> STARTED transition admits the live winner.
+- Schema/reset: supplied IDs are always lookup-only, even after erasure and
+  reinitialization. Current-boot restriction rejects restored old preparations.
+  Content erasure needs no persistent content-bearing replay tombstone.
+- Routing: any ordinary envelope resolves before dynamic consumer negotiation;
+  accepted/missing ordinary IDs cannot be converted into fresh consumer requests.
+
+Executable evidence: `python openspec/changes/ordinary-send-receipts/proofs/protocol.py`
+passes 19 unittest cases using three actual separate SQLite files in temporary
+roots. Includes concurrent start, claim conflict, preparation/admission/delivery/
+projection crash gaps, enqueue/freeze and enqueue/tombstone races, owner/home/agent
+isolation, missing schema, explicit reset, old boot, read-only and owner erasure.
+Ruff and diff whitespace checks pass; OpenSpec check-change reports ALLOWED.
+This is a design model, not production/provider/Android proof. Production path
+validation, migration inventory and private former-home directory deletion remain
+implementation obligations. Account-deletion changes need independent privacy
+review and parent coordination before implementation. Cross-family review remains
+unavailable in this environment; independent same-family review is requested.

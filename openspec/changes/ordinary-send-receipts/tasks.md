@@ -1,14 +1,14 @@
 ## Design and coordination
-- [x] Reproduce the phone failure hermetically and preserve the observational patch.
-- [x] Inspect actual held #4308 fences and steering/history transaction semantics.
-- [x] Write exact receipt, custody, projection and read contract before schema code.
-- [x] Obtain independent security/concurrency design review (ADAPT at 21ddb02f; review.md).
-- [ ] Resolve the four P1 findings and pass the design gate before implementation.
-- [ ] Obtain coordinated fenced baseline plus queue/reset/deletion ownership.
+- [x] Reproduce the phone failure hermetically and freeze observational repair.
+- [x] Inspect actual steering/history/journal/deletion semantics on main.
+- [x] Record independent initial ADAPT review and accept all four P1 findings.
+- [x] Specify server-issued preparation, retained custody, lifecycle and routing.
+- [x] Add executable separate-store concurrency/crash/isolation/erasure design model.
+- [ ] Pass independent revised design and security/privacy gate; coordinate deletion scope with parent.
 ## Implementation and proof (blocked by design gate)
-- [ ] Implement fenced receipt admission and internal journal linkage.
-- [ ] Implement coordinated durable input custody and exact terminal/history projection.
-- [ ] Add strictly read-only scoped receipt endpoint and exact client recovery.
-- [ ] Prove concurrency/crash/isolation and consumer/legacy compatibility synthetically.
+- [ ] Implement preparation/admission and internal journal linkage on current main.
+- [ ] Implement retained input custody and exact terminal/history projection.
+- [ ] Implement scoped read-only receipt endpoint and exact client recovery.
+- [ ] Prove crash/isolation/lifecycle and legacy/consumer compatibility synthetically.
 - [ ] Obtain exact-head implementation review and protected/browser CI.
-- [ ] Hand off separate draft patch for serialized integration and Android acceptance.
+- [ ] Hand off for serialized integration/deployment and actual Android acceptance.
