@@ -586,6 +586,7 @@ ROOT_ENTRIES: dict[str, str] = {
     ".active_universe": "platform: legacy default-universe pointer",
     ".run_recovery.lock": "platform: lock",
     ".run_recovery.lock.pid": "platform: lock",
+    ".ui-preview.lock": "platform: lock (one custom-UI render per host)",
     ".scoped-reset.barrier": "platform: operator reset barrier",
     ".scoped-reset-journal": "platform: operator reset journal",
     ".scoped-reset-staging": "platform: operator reset staging",

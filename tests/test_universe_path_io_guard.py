@@ -391,6 +391,15 @@ PINNED: dict[str, list[str]] = {
     "tinyassets/universe_intelligence.py": [
         "read_operating_instructions: os.open()",
     ],
+    "tinyassets/ui_preview.py": [
+        # The host-wide render slot's flock holder at the DATA ROOT
+        # (.ui-preview.lock): no jail binds the data root, and flock needs the
+        # descriptor to outlive the open, which the universe_files writers do
+        # not hand back. Opened O_NOFOLLOW.
+        "_host_slot: os.open()",
+        # Linux /proc, not a data path at all: reaping the render's strays.
+        "_proc_snapshot: open()",
+    ],
     "tinyassets/universe_tools.py": [
         # Direct-child removals in the validated, provider-masked workspace.
         "_clear_link_mountpoint: .unlink()",

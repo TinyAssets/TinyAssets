@@ -186,6 +186,9 @@ _PINNED_READ_TARGETS = frozenset({
     # The founder's own UI library and choice (their row only, keyed by who
     # they are): what the interfaces chapter reads before it edits a library.
     "app_ui",
+    # A headless render of ONE of those UIs: screenshot into /u/previews, plus a
+    # report (fps, errors, refused bridge calls). Interfaces chapter.
+    "app_ui_preview",
     # What you have asked your user for and what came back. Read-only and
     # carries no credential material — the answer to a credential ask goes to
     # the vault, never into this read.
@@ -665,6 +668,20 @@ def read_graph(
                 field_name=field_name, output_offset=output_offset,
                 output_max_chars=output_max_chars,
             ))
+        if normalized == "app_ui_preview":
+            from tinyassets.api.app_ui import preview_app_ui
+
+            preview_token = _bind_founder_identity(("write",))
+            try:
+                report = preview_app_ui(universe_id=_GRAPH_ID, ui_id=query)
+            finally:
+                _current_identity.reset(preview_token)
+            if "error" in report:
+                return json.dumps(report)
+            # Console lines, errors and URLs are what the UI's code produced --
+            # possibly someone else's code, installed by remix. Data, never
+            # instructions.
+            return _untrusted("app_ui_preview", json.dumps(report))
         if normalized == "access":
             from tinyassets.api.agent_access import read_access
             from tinyassets.engine_read_views import CEILING_HEADROOM_BYTES, project_access
@@ -2144,6 +2161,14 @@ _WRITE_GRAPH_INTERFACES_CHAPTER = """\
     their agents is refused, never sent to another. Arranging,
     spacing and choosing which conversation design answers are all things a UI
     I build can do; the app has no separate design or layout screen.
+
+    **Seeing it.** ``read_graph target="app_ui_preview" query="<ui_id>"`` renders
+    that UI in a headless browser exactly as the app would (its assets and
+    libraries, no network, reads answering empty, actions refused as a preview)
+    and returns ``fps``, ``uncaught_errors``, ``console``, ``bridge_calls`` and
+    ``screenshot`` -- a PNG in /u that I look at with ``read``. I check it after
+    building or changing a UI, before telling the person it is ready. One render
+    at a time; ``ui_preview_busy`` means try again shortly.
 
     **Switching to it.** I switch it with ``activate`` / ``use_default`` above; the
     person can also use "Switch command center" in the app, and the choice is remembered.

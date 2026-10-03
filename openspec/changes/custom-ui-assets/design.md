@@ -131,24 +131,33 @@ it would silently drop them and publish a broken UI). The blob store exposes
 `read_app_ui_asset` / `store_app_ui_asset` for the cc-package lane to copy bytes
 into and out of packages.
 
-### D6 (spec only, next). Visual self-check
+### D6. Visual self-check
 
-The agent gets a `render_ui` verb on the harness `browse` broker
-(universe-agent-harness §4.3), not a parallel browser. The broker opens a fresh
-context with no profile, no cookies and **no network except the platform origin**
-(route interception refuses every other request), loads the real `/app/ui-frame`,
-and plays the parent's part: posts the owner's own component, assets and
-libraries, and answers bridge calls from a read-only snapshot (live reads of the
-owner's own data, `sendMessage`/`emit`/`setConversationDesign` refused as
-"preview"). It returns a PNG screenshot written to the workspace, the console
-errors and uncaught exceptions, and frames per second over a short window
-(`requestAnimationFrame` count). Placement follows the target-architecture box
-(#4263): the broker's Chromium runs outside the agent's box, in the per-box
-memory budget. Headless Chromium for one page is about 150-300 MB resident;
-the broker starts it per call and exits it after, so it costs memory only while
-rendering (capacity is memory, not CPU). Until the broker exists, the same
-contract can run in the daemon as a short-lived Playwright subprocess with the
-same network refusal; that is the build step for this decision.
+Shipped as two pieces (lead decision, 2026-10-02):
+
+- **Eyes for every image.** The harness `read` shows an image file to the model
+  (pi's read behaviour), bounded by one shared rule (`tinyassets/tool_images.py`,
+  PR #4306) that the thin agent loop's box `read` uses too.
+- **The render.** `read_graph target="app_ui_preview" query=<ui_id>` renders one
+  of the caller's own UIs in a short-lived headless Chromium subprocess
+  (`tinyassets/ui_preview.py`). The shipped `/app/ui-frame` runs under its shipped
+  headers and gets the stored component, assets and pinned libraries exactly as
+  the app delivers them. Every other request is refused and reported. A stand-in
+  parent answers the bridge read-only: `whoami` returns the command center's id,
+  reads come back empty, and actions are refused as "preview". The PNG goes to
+  `/u/previews/<ui_id>.png` through an exclusive temp file plus `os.replace`, so a
+  planted link is replaced, never written through. The report gives fps, uncaught
+  errors, console errors and warnings, bridge calls, blocked requests and missing
+  assets.
+- **Capacity.** One render per process. A second concurrent request gets
+  `ui_preview_busy`, never a queue. Measured cost: about 150 MB unique memory and
+  20 s cold per render. A host without Playwright's Chromium answers
+  `ui_preview_unavailable`. The daemon image gains chromium-headless-shell in a
+  separate infra PR.
+- **Interim placement.** The renderer belongs inside the command center's box in
+  the target architecture (#4263), as part of the sealed-box image rather than
+  the shared daemon image. Until then it runs in the daemon as a subprocess,
+  under the same request allowlist.
 
 ### D7 (spec only). Art generation
 
