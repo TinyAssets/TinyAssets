@@ -248,6 +248,7 @@
       this.enabled=false; this.home=""; this.principal="";
       this.library=[]; this.broken=[]; this.unreadable=""; this.selection=null; this.busy=false;
       this.platformDefault=null; this.defaultMounted=false;
+      this.sharedCatalogue=null;this.sharedState="";this.sharedRequest=(this.sharedRequest||0)+1;
       this.revision=0;
       this.conversation=null; this.conversationNote=""; this.previousTurn=null; this.selecting=false; this.ambiguous=false;
       $("btn-ui-switch").hidden=true;
@@ -759,10 +760,22 @@
     // The server scopes each of these to the named command center, so a run id from
     // anywhere else reads as not found rather than being returned.
     async listTryablePackages(){
-      const doc=await Owner.read({target:"command_center_packages",graph_id:this.home});
+      const epoch=this.epoch,home=this.home;
+      const doc=await Owner.read({target:"command_center_packages",graph_id:home});
+      if(!this.fence(epoch,home)) throw new Error("your session changed");
       if(!doc||doc.error||!Array.isArray(doc.packages)||doc.packages.length>12||
-        typeof doc.build_prompt!=="string"||doc.build_prompt.length>this.MAX_MESSAGE||
-        doc.can_try!==(doc.packages.length>=1)) throw new Error("command-center packages are unavailable");
+        typeof doc.build_prompt!=="string"||doc.build_prompt.length>this.MAX_MESSAGE)
+        throw new Error("shared command centers are unavailable");
+      const systems=doc.systems===undefined?[]:doc.systems;
+      if(!Array.isArray(systems)||systems.length>12||systems.some(p=>!p||
+        p.publication_kind!=="system"||!this.text(p.agent_definition_id,this.MAX_ID)||
+        !p.agent_definition_id||typeof p.name!=="string"||typeof p.description!=="string"||
+        typeof p.author_id!=="string"||typeof p.available!=="boolean"||
+        typeof p.unavailable_reason!=="string"||
+        !Number.isInteger(p.workflow_count)||p.workflow_count<0||
+        !Number.isInteger(p.automation_count)||p.automation_count<0)||
+        doc.can_try!==(doc.packages.length>=1||systems.some(p=>p.available)))
+        throw new Error("shared command centers are unavailable");
       const packages=doc.packages.map(p=>{
         if(!p||!this.text(p.agent_definition_id,this.MAX_ID)||!p.agent_definition_id||
           typeof p.name!=="string"||typeof p.description!=="string"||typeof p.author_id!=="string"||
@@ -775,7 +788,11 @@
           author_id:p.author_id,version:p.version,size:p.size,file_count:p.file_count,
           needs:{model:p.needs.model,connections:p.needs.connections.slice()}};
       });
-      return {packages,build_prompt:doc.build_prompt,can_try:doc.can_try};
+      return {packages,systems:systems.map(p=>({agent_definition_id:p.agent_definition_id,
+        publication_kind:"system",name:p.name,description:p.description,author_id:p.author_id,
+        workflow_count:p.workflow_count,automation_count:p.automation_count,
+        available:p.available,unavailable_reason:p.unavailable_reason})),
+        build_prompt:doc.build_prompt,can_try:doc.can_try};
     },
     async tryPackage(args){
       const id=args.agent_definition_id;
@@ -1330,13 +1347,18 @@
       const list=$("ui-list");
       if(!list) return;
       list.replaceChildren();
+      const navigation=document.createElement("li");
+      navigation.appendChild(this.button("Build your own",()=>this.buildOwn(),false));
+      navigation.appendChild(this.button("Try someone else's",()=>this.browseShared(),false));
+      list.appendChild(navigation);
+      this.line(list,"Your command centers");
       const row=document.createElement("li");
       // Disabled only while a save is in flight. It used to also require
       // something to BE active, which disabled the way back at exactly the
       // moment it is needed -- nothing mounted (gpt-6-astra on #4358).
       // chooseDefault works from no bundle: it unmounts, then mounts the
       // platform's blank command center.
-      row.appendChild(this.button("Default chat",()=>this.chooseDefault(),this.busy));
+      row.appendChild(this.button("Blank command center",()=>this.chooseDefault(),this.busy));
       list.appendChild(row);
       for(const bundle of this.library){
         const item=document.createElement("li"),current=!!(this.active&&this.active.ui_id===bundle.ui_id);
@@ -1356,8 +1378,61 @@
         this.line(list,"Ask your agent to fix the ones above; your other UIs and installing are unaffected.","muted");
       if(!this.library.length&&!this.broken.length)
         this.line(list,"No custom UI installed. Ask your agent to build one.","muted");
+      this.sharedNode=document.createElement("li");list.appendChild(this.sharedNode);
+      this.paintShared();
       $("btn-ui-refresh").disabled=this.busy;
       this.paintConversation();
+    },
+    buildOwn(){
+      if(!this.enabled) return;
+      try{$("ui-dialog").close();
+        this.prefillChat({text:"Help me design my own command center: ask me what I want it to do, then build it."});
+      }catch(error){this.status(error.message||"The chat is not available.");}
+    },
+    async browseShared(){
+      if(!this.enabled) return;
+      const epoch=this.epoch,home=this.home,request=(this.sharedRequest||0)+1;
+      this.sharedRequest=request;this.sharedState="Loading shared command centers…";
+      this.sharedCatalogue=null;this.paintShared();
+      try{
+        const doc=await this.listTryablePackages();
+        if(!this.fence(epoch,home)||request!==this.sharedRequest) return;
+        this.sharedCatalogue=doc;
+        this.sharedState=doc.packages.length||doc.systems.length?"":
+          "No shared command centers are available yet. You can build your own.";
+      }catch(error){
+        if(!this.fence(epoch,home)||request!==this.sharedRequest) return;
+        this.sharedState="Shared command centers could not be loaded. Try again.";
+      }
+      this.paintShared();
+    },
+    paintShared(){
+      const panel=this.sharedNode;if(!panel) return;
+      panel.replaceChildren();this.line(panel,"Shared command centers");
+      if(this.sharedState)this.line(panel,this.sharedState,"muted");
+      const doc=this.sharedCatalogue;if(!doc) return;
+      for(const item of [...doc.packages,...doc.systems]){
+        const system=item.publication_kind==="system";
+        const card=document.createElement("article");
+        this.line(card,item.name+" — "+item.author_id);
+        this.line(card,system?"Public system · Components only; no files · "+
+          item.workflow_count+" workflows · "+item.automation_count+" paused automations":
+          "File package · Version "+item.version+" · "+item.size);
+        if(system&&!item.available)this.line(card,item.unavailable_reason,"muted");
+        card.appendChild(this.button(system?"Preview component copy":"Preview package install",
+          ()=>this.previewShared(item.agent_definition_id),this.trying||(system&&!item.available)));
+        panel.appendChild(card);
+      }
+    },
+    async previewShared(id){
+      if(!this.enabled) return;
+      const epoch=this.epoch,home=this.home;
+      try{
+        await this.tryPackage({agent_definition_id:id});
+        if(!this.fence(epoch,home))return;
+        this.status("Open the chat to review and confirm the copy. Nothing installs before you confirm.");
+      }catch(error){if(this.fence(epoch,home))this.status(error.message||"The copy could not be requested.");}
+      if(this.fence(epoch,home))this.paintShared();
     },
     // Trusted recovery, outside any custom UI: what answers this person's
     // messages, and the way back to the default without the UI's help.

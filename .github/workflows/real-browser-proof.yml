@@ -46,6 +46,7 @@ on:
       - "tests/test_owner_ui_prefs_browser.py"
       - "tests/test_app_phone_conversation_browser.py"
       - "tests/test_app_two_surfaces_browser.py"
+      - "tests/test_command_center_system_browser.py"
       - "tests/test_custom_ui_real_browser.py"
       - "tests/test_connect_free_ai_real_browser.py"
   workflow_dispatch:

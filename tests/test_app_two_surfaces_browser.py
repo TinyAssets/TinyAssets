@@ -142,9 +142,13 @@ def test_default_bundle_build_focuses_composer_at_prompt_end_without_sending(app
             if(!AppUI.mountDefault())throw new Error('default did not mount');
         }""", {"bundle": PLATFORM_DEFAULT_UI, "prompt": BUILD_PROMPT})
         frame = page.frame_locator("#ui-frame")
-        build = frame.get_by_role("button", name="Build one with your agent", exact=True)
+        build = frame.get_by_role("button", name="Build your own", exact=True)
         expect(build).to_be_visible()
-        expect(frame.locator("#try-one")).to_be_hidden()
+        expect(frame.locator("#try-one")).to_be_visible()
+        frame.locator("#try-one").click()
+        expect(frame.locator("#packages")).to_have_text(
+            "No shared command centers are available yet. You can build your own.")
+        expect(frame.locator("#dismiss")).to_have_count(0)
         # Mounting the command center starts the chat as a bubble. Open it
         # through the owner control before entering the draft under test.
         expect(page.locator("#chat-cloud-bubble")).to_be_visible()
@@ -654,6 +658,81 @@ def test_clicking_the_composer_while_the_ui_holds_focus_gives_the_chat_the_keys(
     page.keyboard.type("typed after the click")
     assert page.input_value("#composer-input") == "typed after the click"
     context.close()
+
+
+@pytest.mark.parametrize("width", [390, 1280])
+def test_shared_system_preview_and_permanent_trusted_switcher(app_url, browser, width):
+    from playwright.sync_api import expect
+
+    from tinyassets.command_center_picker import BUILD_PROMPT, PLATFORM_DEFAULT_UI
+
+    page = browser.new_page(viewport={"width": width, "height": 850})
+    try:
+        _enter_chat(page, app_url)
+        page.evaluate("""({bundle,prompt})=>{
+            window.copyAsks=[];
+            const own={kind:AppUI.KIND,version:1,ui_id:'own',name:'My own',
+                markup:'<p>My own screen</p>',style:'',script:''};
+            window.testRow={universe_id:'home-1',revision:1,ui_library:[own],
+                ui_selection:null,platform_default:bundle};
+            const catalogue={packages:[],systems:[{agent_definition_id:'public-village',
+                publication_kind:'system',name:'Fantasy Village',description:'Shared village',
+                author_id:'publisher',workflow_count:2,automation_count:2,
+                available:true,unavailable_reason:''}],build_prompt:prompt,can_try:true};
+            fetchMe=async()=>({principal_id:'owner-1',universe_id:'home-1',setup:'connected'});
+            Owner.read=async args=>{
+                if(args.target==='command_center_packages')return structuredClone(catalogue);
+                if(args.target==='app_ui')return {app_ui:structuredClone(window.testRow)};
+                if(args.target==='agent_bindings')return {bindings:[]};
+                throw Error('unexpected read '+args.target);
+            };
+            MCP.callTool=async(tool,args)=>{
+                if(tool!=='write_graph')throw Error('unexpected tool');
+                if(args.operation==='try_package'){
+                    window.copyAsks.push(args);return {request_id:'copy-1',title:'Copy Village'};
+                }
+                if(args.target==='app_ui'){
+                    Object.assign(window.testRow,JSON.parse(args.payload_json));
+                    window.testRow.revision++;
+                    return {status:'saved',app_ui:structuredClone(window.testRow)};
+                }
+                throw Error('unexpected write');
+            };
+            AppUI.enabled=true;AppUI.home='home-1';AppUI.principal='owner-1';
+            document.getElementById('btn-ui-switch').hidden=false;
+            AppUI.adopt(window.testRow);
+        }""", {"bundle": PLATFORM_DEFAULT_UI, "prompt": BUILD_PROMPT})
+        frame = page.frame_locator("#ui-frame")
+        frame.get_by_role("button", name="Try someone else's", exact=True).click()
+        expect(frame.locator("#packages")).to_contain_text("Public system")
+        expect(frame.locator("#packages")).to_contain_text("Components only; no files")
+        frame.get_by_role("button", name="Preview copy", exact=True).click()
+        expect(frame.locator("#message")).to_contain_text("preview and confirm")
+        assert len(page.evaluate("window.copyAsks")) == 1
+        page.evaluate("AppUI.open()")
+        menu = page.locator("#ui-dialog")
+        for label in ("Build your own", "Try someone else's", "Blank command center"):
+            expect(menu.get_by_role("button", name=label, exact=True)).to_be_enabled()
+        menu.get_by_role("button", name="Use My own", exact=True).click()
+        expect(page.frame_locator("#ui-frame").get_by_text("My own screen")).to_be_visible()
+        page.evaluate("AppUI.load()")
+        assert page.evaluate("AppUI.active.ui_id") == "own"
+        page.evaluate("AppUI.open()")
+        menu.get_by_role("button", name="Try someone else's", exact=True).click()
+        expect(menu).to_contain_text("Fantasy Village")
+        menu.get_by_role("button", name="Preview component copy", exact=True).click()
+        expect(page.locator("#ui-status")).to_contain_text("Nothing installs before you confirm")
+        assert len(page.evaluate("window.copyAsks")) == 2
+        menu.get_by_role("button", name="Blank command center", exact=True).click()
+        expect(page.frame_locator("#ui-frame").get_by_role(
+            "button", name="Build your own", exact=True)).to_be_visible()
+        page.evaluate("AppUI.open()")
+        menu.get_by_role("button", name="Build your own", exact=True).click()
+        expect(menu).not_to_be_visible()
+        expect(page.locator("#composer-input")).to_have_value(BUILD_PROMPT)
+        expect(page.locator("#composer-input")).to_be_focused()
+    finally:
+        page.close()
 
 
 # All data and frames are local fixtures. Observe browser cancellation/selection,

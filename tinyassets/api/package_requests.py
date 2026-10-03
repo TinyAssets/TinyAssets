@@ -186,6 +186,17 @@ def _plan(uid: str, action: dict[str, Any]) -> dict[str, Any]:
 
 def capture_action(uid: str, action: dict[str, Any]) -> dict[str, Any]:
     """Quarantine: verify and plan now; nothing touches the command center."""
+    from tinyassets.api.helpers import _base_path
+    from tinyassets.api.system_copy_requests import SYSTEM_TAG
+    from tinyassets.command_center_packages import PACKAGE_TAG
+    from tinyassets.custom_agents import get_definition
+
+    definition = get_definition(_base_path(), action["agent_definition_id"])
+    tags = (definition or {}).get("tags") or []
+    if SYSTEM_TAG in tags and PACKAGE_TAG not in tags:
+        from tinyassets.api.system_copy_requests import capture_action as capture_system
+
+        return capture_system(action)
     plan = _plan(uid, action)
     return {**action, "snapshot_digest": plan["digest"], "plan": plan}
 
@@ -193,6 +204,10 @@ def capture_action(uid: str, action: dict[str, Any]) -> dict[str, Any]:
 def tab_text(action: dict[str, Any]) -> tuple[str, str, str]:
     """``(kind, title, body)``, written from the pinned plan only."""
     plan = action["plan"]
+    if plan.get("publication_kind") == "system":
+        from tinyassets.api.system_copy_requests import tab_text as system_tab
+
+        return system_tab(action)
     placement = plan["placement"]
     lines = [f"Package: {_shown(plan['name'], 120)} (version {plan['version']}, "
              f"{plan['size']}), published by {_shown(plan['author'], 80)}"]
@@ -257,6 +272,10 @@ def execute_action(uid: str, pinned: dict[str, Any]) -> dict[str, Any]:
         raise PermissionError("an authenticated owner is required")
     action = pinned["record"]["action"]
     plan = action["plan"]
+    if plan.get("publication_kind") == "system":
+        from tinyassets.api.system_copy_requests import execute_action as copy_system
+
+        return copy_system(uid, pinned)
     if pinned["state"] == "activated":
         return {**pinned["progress"], "already_installed": True}
     if pinned["state"] == "pinned" and _plan(uid, action)["digest"] != pinned["digest"]:

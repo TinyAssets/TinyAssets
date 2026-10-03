@@ -19,11 +19,10 @@ PLATFORM_DEFAULT_UI = {
     "markup": """<main id="offer">
 <h1>Your command center is empty</h1>
 <p>Build a space that works for you, or start with one someone has shared.</p>
-<button id="build">Build one with your agent</button>
-<button id="try-one" hidden>Try one</button>
+<button id="build">Build your own</button>
+<button id="try-one">Try someone else's</button>
 <section id="packages" hidden aria-label="Published command centers"></section>
 <p id="message" role="status"></p>
-<a id="dismiss" href="#">No thanks</a>
 </main>""",
     "style": """*{box-sizing:border-box}html,body{margin:0;min-height:100%;}
 body{min-height:100vh;display:grid;place-items:center;background:#101419;
@@ -37,14 +36,15 @@ margin:12px 0}h2{margin:0;font-size:20px}[hidden]{display:none!important}""",
     "script": """(async()=>{
 const el=id=>document.getElementById(id),message=el('message');
 const say=error=>{message.textContent=error.message||String(error);};
-el('dismiss').onclick=event=>{event.preventDefault();el('offer').hidden=true;};
+el('try-one').onclick=()=>{el('packages').hidden=false;};
 el('build').onclick=async()=>{
   try{await tinyassets.call('chat.prefill',{text:BUILD_PROMPT});}catch(error){say(error);}
 };
 try{
   const doc=await tinyassets.call('packages.list_tryable',{});
-  el('try-one').hidden=!doc.can_try;
-  el('try-one').onclick=()=>{el('packages').hidden=false;};
+  if(!doc.packages.length&&!(doc.systems||[]).length)
+    el('packages').textContent='No shared command centers are available yet. '+
+      'You can build your own.';
   if(doc.can_try)for(const p of doc.packages){
     const card=document.createElement('article'),name=document.createElement('h2');
     name.textContent=p.name;card.appendChild(name);
@@ -61,6 +61,26 @@ try{
       }catch(error){say(error);}finally{button.disabled=false;}
     };
     card.appendChild(button);el('packages').appendChild(card);
+  }
+  for(const p of doc.systems||[]){
+    const card=document.createElement('article'),name=document.createElement('h2');
+    name.textContent=p.name;card.appendChild(name);
+    const detail=document.createElement('p');
+    detail.textContent=p.author_id+' · Public system · Components only; no files · '+
+      p.workflow_count+' workflows · '+p.automation_count+' paused automations';
+    card.appendChild(detail);
+    const button=document.createElement('button');button.textContent='Preview copy';
+    button.disabled=!p.available;
+    button.onclick=async()=>{
+      button.disabled=true;
+      try{await tinyassets.call('packages.try',{agent_definition_id:p.agent_definition_id});
+        message.textContent='Open the chat to preview and confirm the component copy.';
+      }catch(error){say(error);}finally{button.disabled=!p.available;}
+    };
+    card.appendChild(button);
+    if(!p.available){const why=document.createElement('p');
+      why.textContent=p.unavailable_reason;card.appendChild(why);}
+    el('packages').appendChild(card);
   }
 }catch(error){say(error);}
 })();""".replace("BUILD_PROMPT", json.dumps(BUILD_PROMPT)),
@@ -122,4 +142,12 @@ def read_packages(*, universe_id: str = "") -> dict:
     if denial is not None:
         return denial
     packages = working_packages()
-    return {"packages": packages, "build_prompt": BUILD_PROMPT, "can_try": len(packages) >= 1}
+    systems = working_systems()
+    return {"packages": packages, "systems": systems, "build_prompt": BUILD_PROMPT,
+            "can_try": bool(packages or any(row["available"] for row in systems))}
+
+
+def working_systems() -> list[dict]:
+    from tinyassets.api.system_copy_requests import list_systems
+
+    return list_systems()
