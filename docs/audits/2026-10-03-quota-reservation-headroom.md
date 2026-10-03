@@ -102,3 +102,28 @@ endpoint, reservation identifiers, raw paths, or credentials. Existing
 `visible_record` keeps its fixed generic response for every nonowner; test
 explicit owner, other owner, unauthenticated, and inferred authenticated viewers.
 The independent exact-head reviewer agreed with these constraints before code.
+
+## Verification and integration handoff
+
+- Baseline: 61 focused tests passed; temp-only exact-2-GiB starvation reproduced.
+- Final source: 110 tests passed across storage accounting, slice gates, write
+  gates, registry completeness, jail budget and reservation-headroom tests;
+  Ruff and diff whitespace checks passed.
+- Independent exact-source review of `f59e87c59f9d4a85228c04b2e85c715b387d04c0`:
+  AGREE, no new floor/correctness/privacy findings. Reviewer independently ran
+  the 22 headroom cases and then 30 accounting cases after the diagnostic change.
+  This is same-family review; no cross-family review is claimed.
+- Runtime packaging copies of the two changed modules are synchronized exactly;
+  no provider-jail or owned-process source or mirror is edited.
+- Local real-jail verification is blocked by bubblewrap's read-only UID-map
+  failure. The Linux oracle was attempted, but Docker could not resolve
+  `deb.debian.org` (also with host networking); no skip is treated as a pass.
+- Draft PR: https://github.com/TinyAssets/TinyAssets/pull/4403. Hosted affected
+  tests are running. `linux-jail-proof` skips drafts by policy; integration must
+  dispatch it for the final head without changing the queue. Keep this PR draft.
+
+Integration owner: `01a10149-49ab-7403-8295-a337a0e7102c`. This slice is ready for
+code review/integration after hosted proof and any required cross-family review;
+it is not merged, deployed, or production-verified. The lifecycle limits above
+remain explicit follow-ups. No queue, production settings, credentials, user
+workflows, or user data were changed.

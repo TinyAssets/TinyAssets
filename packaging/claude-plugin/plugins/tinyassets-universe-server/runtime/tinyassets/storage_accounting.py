@@ -820,46 +820,63 @@ def reserve_fitted(
     cap: int,
     credit: int = 0,
     minimum: int = MIN_WORKSPACE_BYTES,
+    headroom: int = 0,
 ) -> tuple[Reservation, int]:
     """Reserve a write whose size is unknown up front, sized to what FITS.
 
     Returns ``(reservation, bound)``: the caller must not let the write exceed
-    ``bound`` = min(``cap``, headroom + ``credit``). ``credit`` is bytes the
+    ``bound`` = min(``cap``, max(0, available - ``headroom``) + ``credit``).
+    ``credit`` is bytes the
     write replaces and that are already owed deletion (a published workspace
     generation this checkout supersedes), so a re-checkout of the same repo
-    fits the quota it already occupies. Raises `StorageRefused` when the bound
+    fits the quota it already occupies. ``headroom`` leaves capacity for other
+    write paths; it is subtracted before fitting, in the admission transaction.
+    With ``minimum=0`` a launch can receive a zero-growth reservation.
+    Raises `StorageRefused` when the bound
     is below ``minimum`` -- before any bytes move. (account-storage-quota D6:
     a fixed 4 GiB reservation refused every permanent workspace on a 2 GiB
     free account, empty or not.) No account: the cap, ungated.
     """
+    if store not in STORES:
+        raise KeyError(f"unregistered store {store!r}")
+    cap, minimum, headroom = int(cap), int(minimum), int(headroom)
+    if min(cap, minimum, headroom) < 0:
+        raise ValueError("cap, minimum and headroom must be >= 0")
+    credit = max(0, int(credit))
     base = Path(base_path)
     account = named_principal(account_id or "")
     if not account:
         return Reservation(base, None, None, 0), int(cap)
     quota, tier = _quota(base, account)
     pairs = _scopes(base, account)
+    if (scope_id, store) not in pairs:
+        raise ValueError(f"{store}/{scope_id} is not part of this account's storage")
     try:
         stale = _stale_pairs(base, pairs)
         if stale:
             _measure_many(base, stale)
-        conn = _connect(base)
-        try:
+        with _txn(base) as conn:
             current = _usage_in(conn, account, pairs, quota, tier)
-        finally:
-            conn.close()
+            bound = min(cap, max(0, quota - current.used_bytes - headroom) + credit)
+            # Replaced bytes remain measured until discard. Only the increment
+            # is pending; a concurrent launch fits what remains under this lock.
+            incremental = max(0, bound - credit)
+            if bound < minimum or current.used_bytes + incremental > quota:
+                universes = len({
+                    scope for scope, st in pairs if STORES[st].scope == SCOPE_UNIVERSE
+                })
+                raise StorageRefused(
+                    refusal_record(current, minimum, universes=universes), account,
+                )
+            cursor = conn.execute(
+                "INSERT INTO pending (account_id, scope_id, store, bytes, state, created_at) "
+                "VALUES (?, ?, ?, ?, 'reserved', ?)",
+                (account, scope_id, store, incremental, time.time()),
+            )
+            reservation = Reservation(base, int(cursor.lastrowid), account, incremental)
     except sqlite3.Error:
         _log.exception("storage ledger unavailable for a fitted reservation")
         raise StorageRefused(_unavailable_record(minimum)) from None
-    bound = min(int(cap), quota - current.used_bytes + max(0, int(credit)))
-    if bound < minimum:
-        universes = len({scope for scope, st in pairs if STORES[st].scope == SCOPE_UNIVERSE})
-        raise StorageRefused(refusal_record(current, minimum, universes=universes), account)
-    # The replaced bytes are still measured until their discard lands, so only
-    # the part beyond them is new pending.
-    reservation = reserve(
-        base, account_id=account, scope_id=scope_id, store=store,
-        nbytes=max(0, bound - max(0, int(credit))),
-    )
     return reservation, bound
 
 
@@ -949,6 +966,11 @@ class Usage:
     used_bytes: int
     quota_bytes: int
     tier: str
+    #: Accounting components, not disjoint physical bytes: a measurement may
+    #: conservatively overlap pending writes until they are reconciled.
+    measured_bytes: int
+    reserved_bytes: int
+    committed_bytes: int
     #: (scope_id, store, bytes), largest first -- the account's OWN consumers.
     breakdown: tuple[tuple[str, str, int], ...]
     #: Pairs that have never been measured successfully.
@@ -966,11 +988,12 @@ def _usage_in(conn: sqlite3.Connection, account_id: str, pairs, quota: int, tier
         ).fetchone()
         if row is not None:
             rows[(scope_id, store)] = (int(row[0]), float(row[1]))
-    pending = int(
-        conn.execute(
-            "SELECT COALESCE(SUM(bytes), 0) FROM pending WHERE account_id = ?", (account_id,)
-        ).fetchone()[0]
-    )
+    pending = dict(conn.execute(
+        "SELECT state, SUM(bytes) FROM pending WHERE account_id = ? GROUP BY state",
+        (account_id,),
+    ).fetchall())
+    reserved = int(pending.get("reserved", 0))
+    committed = int(pending.get("committed", 0))
     measured = sum(size for size, _ in rows.values())
     breakdown = tuple(sorted(
         ((scope, store, size) for (scope, store), (size, _) in rows.items() if size),
@@ -978,9 +1001,12 @@ def _usage_in(conn: sqlite3.Connection, account_id: str, pairs, quota: int, tier
     ))
     return Usage(
         account_id=account_id,
-        used_bytes=measured + pending,
+        used_bytes=measured + reserved + committed,
         quota_bytes=quota,
         tier=tier,
+        measured_bytes=measured,
+        reserved_bytes=reserved,
+        committed_bytes=committed,
         breakdown=breakdown,
         unmeasured=tuple(pair for pair in pairs if pair not in rows),
         oldest_measured_at=min((at for _, at in rows.values()), default=None),
@@ -1047,8 +1073,9 @@ class StorageRefused(Exception):
 
 _OTHER_ACCOUNT_FULL = {
     "error": (
-        "This command center's owner is out of cloud storage, so this write was not "
-        "accepted. The owner can free space or upgrade."
+        "This write does not fit the command center owner's cloud storage allocation. "
+        "Active calls may be reserving space. The owner can retry after calls finish, "
+        "free space or upgrade."
     ),
     "failure_class": FAILURE_QUOTA,
     "actionable_by": "owner",
@@ -1079,11 +1106,16 @@ def refusal_record(usage_: Usage, requested: int, *, universes: int) -> dict:
 
     across = f" across {universes} command centers" if universes > 1 else ""
     message = (
-        f"Your account is using {_human(usage_.used_bytes)} of its "
-        f"{_human(usage_.quota_bytes)} of cloud storage{across}, and this write needs "
-        f"{_human(requested)}. Delete files, pages, run outputs or workspaces to free "
-        "space"
+        f"Your account has {_human(usage_.used_bytes)} accounted against its "
+        f"{_human(usage_.quota_bytes)} of cloud storage{across}: "
+        f"{_human(usage_.measured_bytes)} measured, "
+        f"{_human(usage_.reserved_bytes)} reserved for in-flight writes, and "
+        f"{_human(usage_.committed_bytes)} committed pending remeasurement. "
+        f"This write needs {_human(requested)}. "
     )
+    if usage_.reserved_bytes:
+        message += "Reservations may clear when active calls finish; retry then. "
+    message += "Delete files, pages, run outputs or workspaces to free space"
     link = upgrade_sentence(usage_.tier, what="storage")
     message = f"{message}, or {link[0].lower()}{link[1:]}" if link else f"{message}."
     return {
@@ -1091,6 +1123,9 @@ def refusal_record(usage_: Usage, requested: int, *, universes: int) -> dict:
         "failure_class": FAILURE_QUOTA,
         "actionable_by": "user",
         "used_bytes": usage_.used_bytes,
+        "measured_bytes": usage_.measured_bytes,
+        "reserved_bytes": usage_.reserved_bytes,
+        "committed_bytes": usage_.committed_bytes,
         "quota_bytes": usage_.quota_bytes,
         "requested_bytes": requested,
         "tier": usage_.tier,
