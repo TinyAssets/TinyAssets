@@ -920,6 +920,12 @@ class _ForegroundRunProviderSession:
                 receipt, claim = _receipt_record(receipt_row), _claim_record(claim_row)
                 reservation = _reservation_record(reservation_row)
                 now = store._now()
+                completed_states = {"launch_started", "succeeded"}
+                if self._review_purpose() is not None:
+                    # _call_once enters this fence only after a successful text
+                    # response. Missing usage consumes the FULL reservation as
+                    # indeterminate; it is not a free call or renewed budget.
+                    completed_states.add("indeterminate")
                 if not all((
                     receipt == self._receipt, claim == self._claim,
                     receipt.state is ProviderWorkReceiptState.ACTIVE,
@@ -934,7 +940,7 @@ class _ForegroundRunProviderSession:
                     reservation.selection == carrier._reservation.selection,
                     reservation.operation == carrier.operation == RUN_GRAPH_OPERATION,
                     reservation.role == carrier.role == "writer",
-                    reservation.state.value in {"launch_started", "succeeded"},
+                    reservation.state.value in completed_states,
                 )):
                     raise PermissionError("work agent receipt, claim or invocation changed")
                 if receipt.authority_scope == "manifest":
@@ -1191,7 +1197,7 @@ class _ForegroundRunProviderSession:
                     or system != SAFETY_REQUIREMENTS or config is not None
                     or policy is not None or kwargs):
                 raise PermissionError("effect review cannot substitute its text-only purpose")
-            config = ModelConfig()
+            config = ModelConfig(text_only=True)
         elif self._branch_snapshot is not None and not _prompt_nodes(self._branch_snapshot):
             raise _held_authority_error(
                 PermissionError("foreground provider attempt has no prompt node")
@@ -1503,6 +1509,10 @@ class _ForegroundRunProviderSession:
             self._cool_abandoned_sources(boundaries, keeping=served)
 
     def _call_once(self, role, prompt, system, config, policy, kwargs):
+        if self._review_purpose() is not None and (
+            type(config) is not ModelConfig or config.text_only is not True
+        ):
+            raise PermissionError("effect review cannot drop its text-only restriction")
         with self._authorize_attempt(
             role=role,
             prompt=prompt,
@@ -1510,7 +1520,7 @@ class _ForegroundRunProviderSession:
             policy=policy,
         ) as (carrier, snapshot_dir, provider):
             from tinyassets.config import load_universe_config
-            from tinyassets.providers.base import ModelConfig, UniverseContext
+            from tinyassets.providers.base import UniverseContext
 
             call_config = config
             if snapshot_dir is not None:
