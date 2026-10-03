@@ -96,3 +96,33 @@ validation, migration inventory and private former-home directory deletion remai
 implementation obligations. Account-deletion changes need independent privacy
 review and parent coordination before implementation. Cross-family review remains
 unavailable in this environment; independent same-family review is requested.
+
+## Revised independent review — ADAPT
+
+Reviewed exact `e55431cec4917784cef5edf4b365c1557042bf04` independently by
+`mobile_exact_head_review` (same family). Reviewer reran all 19 model tests.
+Original four P1s are closed at design level, not runtime implementation level.
+Deletion/privacy direction is accepted with no additional design finding; actual
+lifecycle changes still require parent coordination and production verification.
+
+### New P1: actual steering delivery crosses process boundaries
+
+AGREE. `engine_steering._take` calls `agent_steering.take` in the separately
+supervised engine process (`engine_mcp_http._EngineServer`). Each process creates
+its own BOOT.boot_id. The model's `running` equality to the serving boot therefore
+rejects legitimate engine delivery if translated literally. Copying a receipt's
+boot ID into the call does not prove the issuing serving process remains current.
+
+Before implementation, specify either delivery through the admitting process or
+an exact current-incarnation observation contract under existing single-writer
+assumptions. Keep existing engine serving-owner/scope checks; supplied receipt or
+boot IDs must never grant authority. Add a model with distinct serving/engine
+identities: valid delivery succeeds, serving retirement refuses stale delivery,
+and neither path grants another start. Explicitly include the engine boundary in
+the coordinated implementation surface. Do not silently drop the guard or invent
+an unreviewed authority writer, route, capability or provider/effect modification.
+
+This is a substantive process/security extension beyond the submitted surface.
+Hand off this finding for parent coordination; no runtime changes, new credentials,
+live migrations, or additional PR attempts have occurred. Revised implementation
+gate remains BLOCKED. The observational repair stays frozen at `cf5ff2a5`.

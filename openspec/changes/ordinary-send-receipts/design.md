@@ -190,3 +190,14 @@ restored snapshots, scope changes, tombstone races, duplicate provider/effect co
 truncated/silent stream, genuine failure, offline/auth recovery, same-page/reload
 and multiple surfaces. Exact-head implementation review and protected CI follow;
 parent owns integration/deploy, then real Android acceptance remains required.
+
+## 7. Independent review outcome: implementation blocked
+
+Review of `e55431ce` closed the four original P1s and accepted the privacy direction,
+but found a cross-process P1. The current-BOOT test in section 2/model assumes the
+steering caller is the serving process. Actual engine_steering._take runs in a
+separate engine process with its own BOOT identity. The implementation must NOT
+copy this equality literally or trust a supplied boot ID as current authority.
+The engine delivery/serving-incarnation contract and its bounded file scope need
+parent coordination and a distinct-process retirement proof before this gate can
+pass. See review.md for exact finding; no runtime implementation is approved.

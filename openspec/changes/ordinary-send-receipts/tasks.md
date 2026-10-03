@@ -4,7 +4,7 @@
 - [x] Record independent initial ADAPT review and accept all four P1 findings.
 - [x] Specify server-issued preparation, retained custody, lifecycle and routing.
 - [x] Add executable separate-store concurrency/crash/isolation/erasure design model.
-- [ ] Pass independent revised design and security/privacy gate; coordinate deletion scope with parent.
+- [ ] Resolve cross-process serving/engine incarnation P1; pass revised gate and coordinate lifecycle scope (review.md).
 ## Implementation and proof (blocked by design gate)
 - [ ] Implement preparation/admission and internal journal linkage on current main.
 - [ ] Implement retained input custody and exact terminal/history projection.
