@@ -138,7 +138,7 @@ def onboarding_enabled() -> bool:
     return os.environ.get("TINYASSETS_ONBOARDING_APP", "").strip().lower() in _TRUTHY
 
 
-def app_config() -> dict[str, Any]:
+def app_config(build: str | None = None) -> dict[str, Any]:
     """Public config injected into the served page.
 
     Derived from the SAME env the connector uses to advertise its Protected
@@ -158,7 +158,7 @@ def app_config() -> dict[str, Any]:
         # The deployed build, so the page can notice a newer deploy and reload
         # itself (the desktop app loads this page once at startup and otherwise
         # keeps showing the form it started with).
-        "build": build_sha(),
+        "build": build_sha() if build is None else build,
         "issuer": issuer,
         "authorization_endpoint": f"{issuer}/oauth2/authorize" if issuer else "",
         "token_endpoint": f"{issuer}/oauth2/token" if issuer else "",
@@ -217,7 +217,7 @@ def _csp(nonce: str, issuer: str, resource: str = "") -> str:
     )
 
 
-def render_app_html() -> tuple[str, str]:
+def render_app_html(build: str | None = None) -> tuple[str, str]:
     """Return (html, csp) for one request: config + a fresh per-request nonce.
 
     The config JSON is escaped so no value can break out of the ``<script>``
@@ -226,7 +226,7 @@ def render_app_html() -> tuple[str, str]:
     import json
 
     nonce = secrets.token_urlsafe(16)
-    cfg = app_config()
+    cfg = app_config() if build is None else app_config(build=build)
     blob = json.dumps(cfg).replace("<", "\\u003c").replace("\u2028", "").replace("\u2029", "")
     html = (
         _HTML_PATH.read_text("utf-8")
@@ -284,11 +284,18 @@ def build_sha() -> str:
 
 async def _handle_app(request: Any) -> Any:
     """Serve the onboarding SPA (GET/HEAD), or 404 when the dark flag is off."""
-    from starlette.responses import HTMLResponse, PlainTextResponse
+    from starlette.responses import PlainTextResponse
 
     if not onboarding_enabled():
         return PlainTextResponse("Not Found", status_code=404)
-    html, csp = render_app_html()
+    return app_response()
+
+
+def app_response(build: str | None = None) -> Any:
+    """Shared shell response for the owner and stateless frontend."""
+    from starlette.responses import HTMLResponse
+
+    html, csp = render_app_html() if build is None else render_app_html(build=build)
     return HTMLResponse(
         html,
         headers={
@@ -297,7 +304,7 @@ async def _handle_app(request: Any) -> Any:
             "X-Content-Type-Options": "nosniff",
             "Cache-Control": "no-store",
             # Same value the page embeds; a HEAD probe compares the two.
-            "X-TinyAssets-Build": build_sha(),
+            "X-TinyAssets-Build": build_sha() if build is None else build,
         },
     )
 
