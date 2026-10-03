@@ -273,6 +273,14 @@ def main(argv: list[str] | None = None) -> int:
     if not base.is_dir():
         print(f"data root does not exist: {base}", file=sys.stderr)
         return 2
+    # Never read a half-migrated root: the layout guard (storage_layout.py).
+    from tinyassets.storage_layout import LayoutRefused, require_layout
+
+    try:
+        require_layout(base)
+    except LayoutRefused as exc:
+        print(f"layout refused: {exc}", file=sys.stderr)
+        return 3
     try:
         report = inventory(base)
     except Exception as exc:  # noqa: BLE001 - unknown is not safe

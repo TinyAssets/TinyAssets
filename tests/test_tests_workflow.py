@@ -73,6 +73,34 @@ def _load() -> dict:
     return yaml.safe_load(_WORKFLOW.read_text(encoding="utf-8"))
 
 
+def test_required_shards_install_the_browser_before_running_tests():
+    steps = _load()["jobs"]["required-tests-shard"]["steps"]
+    install = next(i for i, s in enumerate(steps)
+                   if "playwright install --with-deps chromium" in s.get("run", ""))
+    execute = next(i for i, s in enumerate(steps)
+                   if "ci_required_tests.py" in s.get("run", ""))
+    assert install < execute
+    assert "'.[dev,browser]'" in steps[install]["run"]
+    assert "if" not in steps[install]
+    assert not steps[install].get("continue-on-error", False)
+
+
+def test_required_aggregate_rejects_missing_or_skipped_browser_proofs():
+    steps = _load()["jobs"]["required-tests"]["steps"]
+    aggregate = next(i for i, s in enumerate(steps)
+                     if "--aggregate shards/" in s.get("run", ""))
+    proof = next(i for i, s in enumerate(steps)
+                 if "ci_assert_junit_case.py" in s.get("run", ""))
+    step = steps[proof]
+    assert aggregate < proof
+    assert step["if"] == "github.event_name != 'pull_request'"
+    assert "--junit junit.xml" in step["run"]
+    assert "--marker real_browser" in step["run"]
+    assert "'.[dev,browser]'" in step["run"]
+    assert not step.get("continue-on-error", False)
+    assert "|| true" not in step["run"]
+
+
 def _triggers(wf: dict) -> dict:
     # PyYAML parses a bare `on:` key as the boolean True.
     return wf[True] if True in wf else wf["on"]
@@ -510,3 +538,36 @@ def test_shards_run_the_reviewed_runner_with_the_shard_floor() -> None:
     assert "ci_required_tests.py" in run
     assert "--profile shard" in run
     assert "--min-ran" not in run, "the per-shard floor comes from --profile shard"
+
+
+# ---- PR-time affected tests ----------------------------------------------------
+
+
+def test_affected_tests_run_on_the_pr_only_and_never_carry_a_required_name() -> None:
+    """The PR slice is advisory: the merge-group shards stay the gate."""
+    job = _load()["jobs"]["affected-tests"]
+    assert _expr(job.get("if", "")) == "github.event_name == 'pull_request'"
+    assert not str(job["name"]).startswith("required-tests")
+    assert job["strategy"].get("fail-fast") is False
+    checkout = next(s for s in job["steps"] if "actions/checkout" in str(s.get("uses", "")))
+    # HEAD^1 of the pull_request merge commit is the base tip; depth 1 has no parent.
+    assert checkout["with"]["fetch-depth"] == 2
+
+
+def test_affected_tests_select_then_run_their_slice_through_the_gate_script() -> None:
+    job = _load()["jobs"]["affected-tests"]
+    run = "\n".join(s.get("run", "") for s in job["steps"])
+    assert "scripts/affected_tests.py --base HEAD^1 --out affected.txt" in run
+    assert "--affected affected.txt" in run
+    assert "--profile affected" in run
+    # Same exclusion as the required shards: the heavy list is red at baseline.
+    assert "--exclude-from .github/heavy-test-files.txt" in run
+    n = re.findall(r'--shard\s+"\$\{\{ matrix\.shard \}\}/(\d+)"', run)
+    assert len(n) == 1
+    assert job["strategy"]["matrix"]["shard"] == list(range(1, int(n[0]) + 1))
+    assert re.findall(r"/(\d+)$", str(job["name"])) == n
+    # The same split as the queue's shards: a different split co-locates
+    # different neighbours, and an order-dependent test then reds the PR job
+    # on a failure the queue never produces.
+    required = _load()["jobs"]["required-tests-shard"]["strategy"]["matrix"]["shard"]
+    assert job["strategy"]["matrix"]["shard"] == required

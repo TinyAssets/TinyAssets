@@ -273,7 +273,7 @@ export function sanitizePublicPlaygroundResponse(name, args, payload) {
       "read_graph graphs",
       requestedLimit,
     );
-    return { universes, count: universes.length };
+    return { command_centers: universes, count: universes.length };
   }
 
   const inventory = splitPageInventory(payload);
@@ -369,7 +369,7 @@ function assertNoIncompleteCollectionMetadata(result, source) {
  */
 export function requirePublicUniverseCollection(payload, source, requestLimit) {
   const result = requireObjectResult(payload, source);
-  const universes = requireCollection(result, "universes", source);
+  const universes = requireCollection(result, "command_centers", source);
   if (
     !Number.isInteger(result.count) ||
     result.count !== universes.length ||

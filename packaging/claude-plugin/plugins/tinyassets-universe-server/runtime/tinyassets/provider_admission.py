@@ -316,7 +316,7 @@ def _refuse(limit: int) -> ProviderBusy:
         _refused += 1
     _log.warning("provider admission: all %d slots busy; refusing", limit)
     return ProviderBusy(
-        f"All {limit} provider slots are busy right now. Your universe is "
+        f"All {limit} provider slots are busy right now. Your command center is "
         "working on other turns — try again in a moment."
     )
 

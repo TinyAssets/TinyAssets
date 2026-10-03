@@ -163,7 +163,7 @@ def _render_links(urls):
 def test_an_agent_field_link_is_labelled_as_the_universes_suggestion():
     [parts] = _render_links(["https://tinyassets.io/settings"])
     note, link = parts
-    assert note["text"] == "Suggested by your universe:", \
+    assert note["text"] == "Suggested by your agent:", \
         "an agent-chosen link was presented without saying who chose it"
     assert "rtab-suggest" in note["cls"]
     # The HOST ALONE was the bug: "Get it from tinyassets.io" over /settings read
@@ -205,7 +205,7 @@ def test_a_third_party_link_shows_its_real_host_and_path():
 ])
 def test_a_link_that_is_not_plain_https_is_shown_but_not_clickable(bad):
     [parts] = _render_links([bad])
-    assert parts[0]["text"] == "Suggested by your universe:"
+    assert parts[0]["text"] == "Suggested by your agent:"
     assert [p["tag"] for p in parts] == ["span", "span"], \
         f"{bad!r} was rendered as a clickable link"
     assert "not a usable https link" in parts[1]["text"]

@@ -21,7 +21,6 @@
 # (12991 tests / 34.0 min). Regenerate after a big suite change.
 tests/test_api.py
 tests/test_api_edge_cases.py
-tests/test_background_authority_inventory.py
 tests/test_branch_authoring_actions.py
 tests/test_branch_evaluation_iteration.py
 tests/test_branch_runner.py

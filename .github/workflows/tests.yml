@@ -186,7 +186,8 @@ jobs:
       - name: Install
         run: |
           python -m pip install --upgrade pip
-          pip install -e '.[dev]'
+          pip install -e '.[dev,browser]'
+          python -m playwright install --with-deps chromium
 
       - name: Run this shard of the required test surface
         env:
@@ -220,6 +221,65 @@ jobs:
           path: shard-out/
           if-no-files-found: warn
           overwrite: true
+
+  # PR-time slice of the suite (2026-10-01). With the shards queue-only, a PR
+  # met the Linux suite for the first time AFTER it was stamped and queued, so
+  # every test failure surfaced as a queue drop (14 PRs were dropped ~30 times
+  # in one day). This runs the tests the change can affect -- import graph
+  # plus path mentions, the whole suite when unsure (scripts/affected_tests.py)
+  # -- on the PR, before anyone stamps it.
+  #
+  # NOT required and NOT a substitute: the merge-group shards above stay the
+  # authoritative gate over the whole suite. A miss here only defers a failure
+  # to the queue, which is where every failure surfaced before this job.
+  affected-tests:
+    name: affected-tests ${{ matrix.shard }}/6
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        # The SAME split as required-tests-shard, so each selected file runs
+        # beside the same neighbours it will meet in the merge queue. A 4-way
+        # split once co-located a test that leaves state behind with seven it
+        # breaks (test_phase7_h2_goals_cutover, test_onboarding_model_connect),
+        # turning this job red on failures the queue never sees. Pinned equal
+        # to the required matrix by test_tests_workflow.
+        shard: [1, 2, 3, 4, 5, 6]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The pull_request checkout is the merge commit; HEAD^1 is the base
+          # tip, so HEAD^1..HEAD is exactly what merging this PR changes.
+          fetch-depth: 2
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e '.[dev]'
+
+      - name: Select the tests this change can affect
+        run: |
+          python scripts/affected_tests.py --base HEAD^1 --out affected.txt
+          { echo "### Selection"; echo; echo '```'; head -c 60000 affected.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Run this shard of the selection
+        env:
+          TINYASSETS_DATA_DIR: ${{ runner.temp }}/ta-data-affected
+        run: |
+          mkdir -p "$TINYASSETS_DATA_DIR"
+          python scripts/ci_required_tests.py \
+            --junit "junit-affected-${{ matrix.shard }}.xml" \
+            --exclude-from .github/heavy-test-files.txt \
+            --affected affected.txt \
+            --shard "${{ matrix.shard }}/6" --profile affected
 
   required-tests:
     # This exact string is the branch-protection context. Renaming the job
@@ -273,6 +333,15 @@ jobs:
           python scripts/ci_required_tests.py --aggregate shards/ \
             --expect-shards 6 --shard-job-result "$SHARD_RESULT" \
             --junit junit.xml --min-ran 10700
+
+      - name: Require every browser proof in the shard union
+        if: github.event_name != 'pull_request'
+        run: |
+          # Collection discovers the current marker set. The report must show
+          # each case passed; an unavailable browser must never become a skip.
+          pip install -e '.[dev,browser]'
+          python scripts/ci_assert_junit_case.py --junit junit.xml \
+            --marker real_browser --label required-browser-proof
 
       - name: Upload junit
         if: always()

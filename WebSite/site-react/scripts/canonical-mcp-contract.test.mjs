@@ -95,10 +95,10 @@ test("public Playground execution contract accepts only bounded discovery reads"
 
   for (const [tool, args] of [
     ["get_status", {}],
-    ["get_status", { universe_id: "private-universe" }],
+    ["get_status", { command_center_id: "private-universe" }],
     ["read_graph", { target: "goals", limit: 100 }],
     ["read_graph", { target: "graphs", limit: 101 }],
-    ["read_graph", { target: "graphs", limit: 100, universe_id: "private" }],
+    ["read_graph", { target: "graphs", limit: 100, command_center_id: "private" }],
     ["read_page", { page: "pages/plans/private-coordination" }],
     ["read_page", { query: "private coordination" }],
     ["read_page", { category: "plans" }],
@@ -248,7 +248,7 @@ test("public Playground responses are validated and reduced to public discovery 
       "read_graph",
       { target: "graphs", limit: 100 },
       {
-        universes: [
+        command_centers: [
           {
             id: "public-one",
             visibility: "public",
@@ -269,7 +269,7 @@ test("public Playground responses are validated and reduced to public discovery 
       },
     ),
     {
-      universes: [
+      command_centers: [
         {
           id: "public-one",
           visibility: "public",
@@ -335,9 +335,9 @@ test("public Playground responses are validated and reduced to public discovery 
       sanitizePublicPlaygroundResponse(
         "read_graph",
         { target: "graphs", limit: 100 },
-        { universes: "not-an-array" },
+        { command_centers: "not-an-array" },
       ),
-    /universes array/i,
+    /command_centers array/i,
   );
   assert.throws(
     () =>
@@ -361,7 +361,7 @@ test("public Playground responses are validated and reduced to public discovery 
         "read_graph",
         { target: "graphs", limit: 100 },
         {
-          universes: [{ id: "private-one", visibility: "private" }],
+          command_centers: [{ id: "private-one", visibility: "private" }],
           count: 1,
         },
       ),
@@ -372,12 +372,12 @@ test("public Playground responses are validated and reduced to public discovery 
       "read_graph",
       { target: "graphs", limit: 2 },
       {
-        universes: [{ id: "metadata-one", visibility: "metadata_only" }],
+        command_centers: [{ id: "metadata-one", visibility: "metadata_only" }],
         count: 1,
       },
     ),
     {
-      universes: [{ id: "metadata-one", visibility: "metadata_only" }],
+      command_centers: [{ id: "metadata-one", visibility: "metadata_only" }],
       count: 1,
     },
   );
@@ -387,7 +387,7 @@ test("public Playground responses are validated and reduced to public discovery 
         "read_graph",
         { target: "graphs", limit: 1 },
         {
-          universes: [
+          command_centers: [
             { id: "public-one", visibility: "public" },
             { id: "public-two", visibility: "public" },
           ],
@@ -410,7 +410,7 @@ test("public Playground responses are validated and reduced to public discovery 
           "read_graph",
           { target: "graphs", limit: 100 },
           {
-            universes: [{ id: "public-one", visibility: "public" }],
+            command_centers: [{ id: "public-one", visibility: "public" }],
             count: 1,
             ...incomplete,
           },
@@ -718,8 +718,8 @@ test("canonical collection reads reject structured errors and missing arrays", (
     /read_graph goals returned an error/,
   );
   assert.throws(
-    () => requireCollection({}, "universes", "read_graph graphs"),
-    /universes array/,
+    () => requireCollection({}, "command_centers", "read_graph graphs"),
+    /command_centers array/,
   );
   assert.throws(
     () => requireObjectResult({ error: "unavailable" }, "get_status"),
@@ -789,8 +789,8 @@ test("canonical collection reads reject structured errors and missing arrays", (
 test("snapshot collections fail closed when an unpageable request fills its cap", () => {
   assert.deepEqual(
     requireCompleteCollection(
-      { universes: [{ id: "u-1" }], count: 1 },
-      "universes",
+      { command_centers: [{ id: "u-1" }], count: 1 },
+      "command_centers",
       "read_graph graphs",
       100,
     ),
@@ -800,30 +800,30 @@ test("snapshot collections fail closed when an unpageable request fills its cap"
     () =>
       requireCompleteCollection(
         {
-          universes: Array.from({ length: 100 }, (_, index) => ({
+          command_centers: Array.from({ length: 100 }, (_, index) => ({
             id: `u-${index}`,
           })),
           count: 100,
         },
-        "universes",
+        "command_centers",
         "read_graph graphs",
         100,
       ),
     /cannot prove completeness.*limit of 100/i,
   );
   for (const inconsistent of [
-    { universes: [{ id: "u-1" }], count: 2 },
-    { universes: [{ id: "u-1" }], count: "1" },
-    { universes: [{ id: "u-1" }], count: 1, total_matches: 2 },
-    { universes: [{ id: "u-1" }], count: 1, total: 2 },
-    { universes: [{ id: "u-1" }], count: 1, truncated_count: 1 },
-    { universes: [{ id: "u-1" }], count: 1, has_more: true },
+    { command_centers: [{ id: "u-1" }], count: 2 },
+    { command_centers: [{ id: "u-1" }], count: "1" },
+    { command_centers: [{ id: "u-1" }], count: 1, total_matches: 2 },
+    { command_centers: [{ id: "u-1" }], count: 1, total: 2 },
+    { command_centers: [{ id: "u-1" }], count: 1, truncated_count: 1 },
+    { command_centers: [{ id: "u-1" }], count: 1, has_more: true },
   ]) {
     assert.throws(
       () =>
         requireCompleteCollection(
           inconsistent,
-          "universes",
+          "command_centers",
           "read_graph graphs",
           100,
         ),

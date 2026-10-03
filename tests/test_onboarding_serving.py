@@ -585,7 +585,7 @@ def test_collaborator_tampered_binding_is_reset_not_adopted(tmp_path):
     assert again["agent_binding_id"] != bid
     served = _serving_binding(tmp_path)
     assert served["agent_binding_id"] == again["agent_binding_id"]
-    assert served["configuration"].get("name") == "Your universe"
+    assert served["configuration"].get("name") == "Your agent"
     assert "instructions" not in served["configuration"]
     # and the tampered one is no longer serving
     statuses = {
@@ -614,7 +614,7 @@ def test_drifted_config_on_platform_definition_is_reset_at_exact_revision(tmp_pa
         binding_id=bid,
         expected_revision=int(cur["revision"]),
         updated_by="collab",
-        payload={"schema_version": 1, "name": "Your universe", "role": "writer", "persona": "evil"},
+        payload={"schema_version": 1, "name": "Your agent", "role": "writer", "persona": "evil"},
     )
     again = sv.ensure_founder_serving(
         base_path=tmp_path,
@@ -625,4 +625,34 @@ def test_drifted_config_on_platform_definition_is_reset_at_exact_revision(tmp_pa
     )
     assert again["status"] == "serving" and again["agent_binding_id"] == bid
     cfg = _serving_binding(tmp_path)["configuration"]
-    assert "persona" not in cfg and cfg["name"] == "Your universe"
+    assert "persona" not in cfg and cfg["name"] == "Your agent"
+
+
+def test_a_binding_on_the_retired_default_definition_is_used_as_is(tmp_path):
+    """The rename republished the default agent under a new id (the old one is
+    immutable). A pre-rename binding is still the founder's platform binding:
+    used untouched, provider_ref intact, never silently replaced by a second
+    binding; the cutover migration re-points it (gpt-6-astra, C1)."""
+    from tinyassets.custom_agents import create_binding, publish_definition
+
+    _seed(tmp_path)
+    retired = publish_definition(
+        tmp_path,
+        author_id=sv.RETIRED_PLATFORM_DEFINITION_AUTHOR,
+        payload={
+            "schema_version": 1, "name": "Your universe",
+            "description": "The default voice of a founder's own universe.",
+            "tags": ["platform", "default"],
+            "components": {"identity": {"kind": "soul", "config": {}}},
+        },
+        idempotency_key="universe-default-v1",
+    )
+    legacy = create_binding(
+        tmp_path, universe_id="u-owner",
+        definition_id=retired["agent_definition_id"], created_by="owner-1",
+        payload=dict(sv.RETIRED_BINDING_PAYLOAD),
+    )
+    found = sv._platform_binding(tmp_path, universe_id="u-owner", owner="owner-1")
+    assert found["agent_binding_id"] == legacy["agent_binding_id"]
+    assert found["revision"] == legacy["revision"]
+    assert found["agent_definition_id"] == retired["agent_definition_id"]

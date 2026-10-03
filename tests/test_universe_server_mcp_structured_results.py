@@ -28,7 +28,7 @@ def test_direct_wrappers_keep_json_string_contract() -> None:
 
     assert isinstance(status_raw, str)
     assert isinstance(wiki_raw, str)
-    assert json.loads(status_raw)["schema_version"] == 2
+    assert json.loads(status_raw)["schema_version"] == 3
     assert "promoted" in json.loads(wiki_raw)
 
 
@@ -43,12 +43,12 @@ def test_mcp_tool_result_has_structured_content_and_text_content() -> None:
     from tinyassets import universe_server as us
 
     async def _call_status():
-        return await us.mcp.call_tool("get_status", {"universe_id": ""})
+        return await us.mcp.call_tool("get_status", {"command_center_id": ""})
 
     result = asyncio.run(_call_status())
 
     assert isinstance(result.structured_content, dict)
-    assert result.structured_content["schema_version"] == 2
+    assert result.structured_content["schema_version"] == 3
     assert result.content
     assert result.content[0].type == "text"
     text = result.content[0].text
@@ -56,7 +56,7 @@ def test_mcp_tool_result_has_structured_content_and_text_content() -> None:
     assert "schema_version" in text
     if "[truncated:" not in text:
         # Small payloads stay fully faithful and parseable.
-        assert json.loads(text)["schema_version"] == 2
+        assert json.loads(text)["schema_version"] == 3
     else:
         # Oversized payloads carry real leading data + a pointer to the rest.
         assert "structuredContent" in text

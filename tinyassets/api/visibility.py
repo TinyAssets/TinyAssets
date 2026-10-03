@@ -150,7 +150,7 @@ def _read_rules(universe_id: str) -> dict[str, Any] | object:
         return _MISSING
     except Exception:
         logger.warning(
-            "visibility: failing closed on rules-read error for universe %r",
+            "visibility: failing closed on rules-read error for command center %r",
             uid,
             exc_info=True,
         )
@@ -194,7 +194,7 @@ def universe_visibility(universe_id: str) -> VisibilityLevel:
     level = parse_level(declared)  # blank / whitespace / unrecognized -> None.
     if level is None:
         logger.warning(
-            "visibility: undeclared-or-unrecognized level %r for universe %r "
+            "visibility: undeclared-or-unrecognized level %r for command center %r "
             "-> failing closed",
             declared,
             universe_id,
@@ -230,7 +230,7 @@ def _reader_has_grant(universe_id: str) -> bool:
         rows = list_universe_acl(_base_path(), universe_id=universe_id)
     except Exception:
         logger.warning(
-            "visibility: ACL read failed for universe %r -> no grant assumed",
+            "visibility: ACL read failed for command center %r -> no grant assumed",
             universe_id,
             exc_info=True,
         )
@@ -495,7 +495,7 @@ def _discover_universe_ids() -> list[str]:
         # be owned, so nothing is declared or gated on. The previous fallback
         # (predicate unavailable -> accept every non-dotted directory) would
         # re-open the leak exactly when the authority could not be consulted.
-        logger.exception("ownership lookup failed while discovering universe ids")
+        logger.exception("ownership lookup failed while discovering command center ids")
         return []
     return [
         child.name

@@ -104,7 +104,7 @@ def test_read_pinned_universe_soul_reports_version_hash(us):
     assert context["purpose"] == "A civic-memory workflow checks every source."
     assert context["version_id"] == "soul_versions/0001.md"
     assert context["identity_boundary"] == (
-        "Universe soul guides this context only; it does not change "
+        "Command center soul guides this context only; it does not change "
         "the actor identity or user memory scope."
     )
 
@@ -145,7 +145,7 @@ def test_create_universe_without_premise_still_has_thin_soul(us):
     # premise/loop-populated thin soul. soul.md is OKF-shaped (frontmatter
     # type) and, with no premise, carries no ## Purpose / loop line.
     assert soul_md.startswith("---\ntype: Universe Soul")
-    assert "# Universe Soul" in soul_md
+    assert "# Command Center Soul" in soul_md
     assert "## Purpose" not in soul_md
     assert "Loop branch:" not in soul_md
     # The linked OKF baseline exists; the removed junk files do not.

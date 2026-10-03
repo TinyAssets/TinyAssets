@@ -208,7 +208,7 @@ def test_enqueue_refuses_without_trusted_universe(monkeypatch):
     b = _branch(ENQUEUE_ONE, ["enqueue_branch_run"])
     with pytest.raises(CompilerError) as exc:
         _run(b, thread="enq-nouni", context=_ctx(universe_id=""))
-    assert "trusted universe" in str(exc.value)
+    assert "trusted command center" in str(exc.value)
     assert captured == []
 
 
@@ -219,7 +219,7 @@ def test_enqueue_refuses_foreign_universe(monkeypatch):
     b = _branch(ENQUEUE_FOREIGN_UNIVERSE, ["enqueue_branch_run"])
     with pytest.raises(CompilerError) as exc:
         _run(b, thread="enq-foreign")
-    assert "cannot target universe" in str(exc.value)
+    assert "cannot target command center" in str(exc.value)
     assert captured == []
 
 

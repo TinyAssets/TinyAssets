@@ -71,7 +71,7 @@ def test_a_provider_launch_with_no_owning_universe_is_refused_before_spawn(no_sp
         with provider_launch_scope(None):
             await owned_process.aspawn_owned([sys.executable, "-c", "pass"])
 
-    with pytest.raises(ProviderConfinementError, match="no owning universe"):
+    with pytest.raises(ProviderConfinementError, match="no owning command center"):
         asyncio.run(drive())
     assert no_spawn == []
 
@@ -112,7 +112,7 @@ def test_a_view_cannot_bind_anything_outside_its_universe(tmp_path):
         universe_dir=universe,
         mounts=(JailMount("ro-bind", "/workspace", other),),
     )
-    with pytest.raises(ProviderConfinementError, match="inside its own universe"):
+    with pytest.raises(ProviderConfinementError, match="inside its own command center"):
         jail_argv(["cli"], view, bwrap_path="bwrap")
 
 
@@ -129,7 +129,7 @@ def test_a_view_for_another_universe_than_the_call_is_refused(tmp_path, no_spawn
     other = _universe(tmp_path, "u-bravo")
     view = UniverseView(universe_dir=other, mounts=())
     with provider_launch_scope(universe):
-        with pytest.raises(ProviderConfinementError, match="different universe"):
+        with pytest.raises(ProviderConfinementError, match="different command center"):
             confine_launch(["cli"], view=view)
 
 
@@ -140,8 +140,10 @@ def test_default_view_binds_the_universe_masks_launches_and_rebinds_its_own(tmp_
     view = default_view(universe, credential_dir=own, cwd=str(universe / "sub"))
     argv = jail_argv(["cli", "-p"], view, bwrap_path="/usr/bin/bwrap")
 
-    for flag in ("--die-with-parent", "--new-session", "--unshare-all", "--share-net"):
+    for flag in ("--die-with-parent", "--new-session", "--unshare-all"):
         assert flag in argv, flag
+    # No host network, ever: a way out is only an egress socket a caller binds.
+    assert "--share-net" not in argv
     assert argv[argv.index("--proc") + 1] == "/proc"
     bind_u = argv.index(str(universe))
     mask = argv.index(str(universe / ".runtime" / "provider-launch-credentials"))
@@ -161,10 +163,28 @@ def test_default_view_binds_the_universe_masks_launches_and_rebinds_its_own(tmp_
 
 
 @posix_paths
+def test_a_credential_dir_at_the_universe_root_is_not_rebound_over_the_masks(tmp_path):
+    """A rebind of the universe root after the masks would re-expose every hidden
+    entry (gpt-6-astra refute). The rebind is only for a snapshot under .runtime,
+    so a credential_dir that is the root itself (or outside .runtime) is ignored."""
+    universe = _universe(tmp_path).resolve()
+    (universe / ".credential-vault.json").write_text("secret", encoding="utf-8")
+    view = default_view(universe, credential_dir=universe)
+    argv = jail_argv(["cli"], view, bwrap_path="/usr/bin/bwrap")
+    # Exactly one bind of the root (the initial read-write bind), none after it.
+    root_binds = [i for i, a in enumerate(argv) if a == str(universe) and argv[i - 1] == "--bind"]
+    assert len(root_binds) == 1, argv
+    # The vault mask still stands (nothing rebound the root over it).
+    vault = argv.index(f"{universe}/.credential-vault.json")
+    assert argv[vault - 2] == "--ro-bind" and argv[vault - 1] == "/dev/null"
+    assert vault > root_binds[0]
+
+
+@posix_paths
 def test_an_install_path_reaching_universe_data_is_refused(tmp_path):
     universe = _universe(tmp_path).resolve()
     view = default_view(universe)
-    with pytest.raises(ProviderConfinementError, match="overlaps universe data"):
+    with pytest.raises(ProviderConfinementError, match="overlaps command center data"):
         jail_argv(["cli"], view, bwrap_path="/usr/bin/bwrap", install_paths=[universe.parent])
 
 
@@ -261,3 +281,169 @@ def test_powershell_is_on_the_one_host_reach_floor():
 
     assert "PowerShell" in HOST_REACH_TOOLS
     assert "PowerShell" in _ENGINE_DISALLOWED_TOOLS
+
+
+# --- the network, filter and limits every provider launch gets -------------
+
+
+def _sidecar(universe: Path, name: str) -> Path:
+    directory = universe.parent / provider_jail.UNIVERSE_SIDECARS_DIR / universe.name
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / name
+    path.touch()
+    return path
+
+
+@pytest.fixture
+def wired(tmp_path, monkeypatch):
+    """A universe whose proxy (and engine relay) are stand-in sidecar files."""
+    from tinyassets import universe_egress
+
+    universe = _universe(tmp_path).resolve()
+    egress = _sidecar(universe, "egress-1.sock")
+    engine = _sidecar(universe, "engine-1-abc.sock")
+    relays: list = []
+
+    def _relay(universe_dir, *, actor_id, graph_id):
+        relays.append((Path(universe_dir), actor_id, graph_id))
+        return engine, 8791
+
+    monkeypatch.setattr(provider_jail, "BWRAP_RESOLVER", lambda: "/usr/bin/bwrap")
+    monkeypatch.setattr(universe_egress, "ensure_proxy", lambda universe_dir: egress)
+    monkeypatch.setattr(universe_egress, "ensure_engine_relay", _relay)
+    monkeypatch.setattr(provider_jail.shutil, "which",
+                        lambda name, path=None: f"/usr/bin/{name}")
+    return universe, egress, engine, relays
+
+
+def _bind_of(argv: list[str], dest: str) -> str | None:
+    for i, arg in enumerate(argv[:-2]):
+        if arg == "--bind" and argv[i + 2] == dest:
+            return argv[i + 1]
+    return None
+
+
+@posix_paths
+def test_a_provider_launch_has_no_host_network_only_its_universe_proxy(wired):
+    from tinyassets import universe_egress
+
+    universe, egress, _engine, relays = wired
+    with provider_launch_scope(universe):
+        launch = confine_launch(["cli", "-p"], env={"HTTPS_PROXY": "http://elsewhere:1"})
+    try:
+        argv = launch.argv
+        outer = argv[: argv.index("--")]
+        assert "--share-net" not in argv
+        assert _bind_of(outer, universe_egress.JAIL_SOCKET) == str(egress)
+        # No engine route was granted, so no relay was asked for or bound.
+        assert relays == [] and _bind_of(outer, universe_egress.JAIL_ENGINE_SOCKET) is None
+        # The proxy environment is set by the jail and overrides the provider's.
+        setenv = {outer[i + 1]: outer[i + 2] for i, a in enumerate(outer) if a == "--setenv"}
+        for name, value in universe_egress.PROXY_ENV:
+            assert setenv[name] == value, name
+        # Inside: limits first, then the forwarder, then the command itself.
+        inner = argv[argv.index("--") + 1:]
+        assert inner[0] == "/usr/bin/prlimit"
+        assert {a.split("=")[0] for a in inner[1:inner.index("--")]} == {
+            "--nproc", "--nofile", "--fsize", "--core"}
+        forwarder = inner[inner.index("--") + 1:]
+        assert forwarder[:5] == ["/usr/bin/python3", "-I", "-S", "-c", universe_egress.FORWARDER]
+        assert forwarder[5:] == [f"3128={universe_egress.JAIL_SOCKET}", "--", "cli", "-p"]
+    finally:
+        launch.close()
+
+
+@posix_paths
+def test_the_seccomp_filter_is_handed_to_the_jail_and_released(wired):
+    universe, *_ = wired
+    with provider_launch_scope(universe):
+        launch = confine_launch(["cli"])
+    (fd,) = launch.pass_fds
+    assert launch.argv[launch.argv.index("--seccomp") + 1] == str(fd)
+    from tinyassets.providers.jail_seccomp import deny_program
+
+    assert os.read(fd, 1 << 16) == deny_program(nested_sandbox=True)
+    launch.close()
+    with pytest.raises(OSError):
+        os.fstat(fd)
+
+
+@posix_paths
+def test_an_engine_route_binds_only_the_relay_to_that_route(wired):
+    from tinyassets import universe_egress
+
+    universe, _egress, engine, relays = wired
+    with provider_launch_scope(universe, engine_route=("user_1", "u-alpha")):
+        launch = confine_launch(["cli"])
+    launch.close()
+    assert relays == [(universe, "user_1", "u-alpha")]
+    assert _bind_of(launch.argv, universe_egress.JAIL_ENGINE_SOCKET) == str(engine)
+    assert f"8791={universe_egress.JAIL_ENGINE_SOCKET}" in launch.argv
+
+
+@posix_paths
+def test_no_proxy_means_no_launch_never_an_unfiltered_one(wired, monkeypatch, no_spawn):
+    from tinyassets import universe_egress
+
+    universe, *_ = wired
+    monkeypatch.setattr(universe_egress, "ensure_proxy", lambda universe_dir: None)
+
+    async def drive():
+        with provider_launch_scope(universe):
+            await owned_process.aspawn_owned(["cli"])
+
+    with pytest.raises(ProviderConfinementError, match="egress proxy"):
+        asyncio.run(drive())
+    assert no_spawn == []
+
+
+@posix_paths
+def test_a_host_without_prlimit_refuses_rather_than_running_unlimited(wired, monkeypatch):
+    universe, *_ = wired
+    monkeypatch.setattr(provider_jail.shutil, "which",
+                        lambda name, path=None: None if name == "prlimit" else f"/usr/bin/{name}")
+    with provider_launch_scope(universe):
+        with pytest.raises(ProviderConfinementError, match="prlimit is not installed"):
+            confine_launch(["cli"])
+
+
+@posix_paths
+def test_the_spawn_point_passes_the_filter_and_closes_its_copy(wired, monkeypatch):
+    universe, *_ = wired
+    seen: dict = {}
+
+    async def _spawn(argv, *, extra_fds=(), **kwargs):
+        seen["fds"] = extra_fds
+        seen["open_during_spawn"] = [_is_open(fd) for fd in extra_fds]
+        raise RuntimeError("spawn failed after the jail was built")
+
+    monkeypatch.setattr(owned_process, "_aspawn_anchored", _spawn)
+
+    async def drive():
+        with provider_launch_scope(universe):
+            await owned_process.aspawn_owned(["cli"])
+
+    with pytest.raises(RuntimeError, match="spawn failed"):
+        asyncio.run(drive())
+    assert seen["open_during_spawn"] == [True]
+    assert [_is_open(fd) for fd in seen["fds"]] == [False], "the filter fd leaked"
+
+
+def _is_open(fd: int) -> bool:
+    try:
+        os.fstat(fd)
+    except OSError:
+        return False
+    return True
+
+
+def test_the_router_grants_an_engine_route_only_when_the_call_wires_one():
+    from tinyassets.providers.router import _engine_route
+
+    assert _engine_route(ModelConfig()) is None
+    assert _engine_route(ModelConfig(engine_mcp_enabled=True, engine_mcp_actor_id="a")) is None
+    assert _engine_route(ModelConfig(
+        engine_mcp_actor_id="a", engine_mcp_graph_id="g")) is None
+    assert _engine_route(ModelConfig(
+        engine_mcp_enabled=True, engine_mcp_actor_id=" a ", engine_mcp_graph_id="g",
+    )) == ("a", "g")

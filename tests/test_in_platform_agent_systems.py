@@ -87,11 +87,11 @@ def _read(target: str, query: str, *, actor: str = OWNER, universe: str = UNIVER
 
 
 def test_the_owner_lists_and_pages_their_own_files(home: Path) -> None:
-    listing = _read("universe_files", "notes")
+    listing = _read("command_center_files", "notes")
     assert listing["universe_id"] == UNIVERSE
     assert {(e["name"], e["kind"]) for e in listing["entries"]} == {
         ("board.md", "file"), ("blob.bin", "file")}
-    root = _read("universe_files", "/u")
+    root = _read("command_center_files", "/u")
     assert {"name": "notes", "kind": "dir"} in root["entries"]
 
     whole = (home / UNIVERSE / "notes" / "board.md").read_bytes().decode()
@@ -99,14 +99,16 @@ def test_the_owner_lists_and_pages_their_own_files(home: Path) -> None:
     # every chunk decodes: the pages concatenate to the file exactly.
     pieces, offset = [], 0
     while offset is not None:
-        page = _read("universe_file", "/u/notes/board.md", file_offset=offset, file_max_bytes=3)
+        page = _read(
+            "command_center_file", "/u/notes/board.md", file_offset=offset, file_max_bytes=3,
+        )
         assert page["encoding"] == "text", page
         pieces.append(page["text"])
         offset = page["next_offset"]
     assert "".join(pieces) == whole
     assert page["eof"] is True
 
-    blob = _read("universe_file", "notes/blob.bin")
+    blob = _read("command_center_file", "notes/blob.bin")
     assert blob["encoding"] == "base64" and blob["size_bytes"] == 256
 
 
@@ -120,16 +122,16 @@ def test_the_owner_lists_and_pages_their_own_files(home: Path) -> None:
     (None, UNIVERSE, "notes/board.md"),
 ])
 def test_every_refusal_is_the_same_not_found(home: Path, actor, universe, query) -> None:
-    for target in ("universe_file", "universe_files"):
+    for target in ("command_center_file", "command_center_files"):
         out = _read(target, query, actor=actor, universe=universe)
-        assert out == {"error": "not_found", "resource": "universe_file"}, (target, out)
+        assert out == {"error": "not_found", "resource": "command_center_file"}, (target, out)
 
 
 def test_a_reader_without_admin_is_refused(home: Path) -> None:
     from tinyassets.daemon_server import grant_universe_access
 
     grant_universe_access(home, universe_id=UNIVERSE, actor_id=BOB, permission="write")
-    assert _read("universe_file", "notes/board.md", actor=BOB)["error"] == "not_found"
+    assert _read("command_center_file", "notes/board.md", actor=BOB)["error"] == "not_found"
 
 
 def test_a_link_in_the_folder_is_never_followed(home: Path) -> None:
@@ -138,8 +140,8 @@ def test_a_link_in_the_folder_is_never_followed(home: Path) -> None:
         os.symlink(home / BOB_UNIVERSE / "secret.md", link)
     except (OSError, NotImplementedError):
         pytest.skip("this host cannot create a symlink")
-    assert _read("universe_file", "notes/stolen.md")["error"] == "not_found"
-    names = [e["name"] for e in _read("universe_files", "notes")["entries"]]
+    assert _read("command_center_file", "notes/stolen.md")["error"] == "not_found"
+    names = [e["name"] for e in _read("command_center_files", "notes")["entries"]]
     assert "stolen.md" not in names
 
 
@@ -168,9 +170,9 @@ def test_a_universe_root_that_is_a_link_is_refused(home: Path) -> None:
     root = home / UNIVERSE
     shutil.rmtree(root)
     _link_dir(root, home / BOB_UNIVERSE)
-    for target, query in (("universe_file", "secret.md"), ("universe_files", "")):
+    for target, query in (("command_center_file", "secret.md"), ("command_center_files", "")):
         out = _read(target, query)
-        assert out == {"error": "not_found", "resource": "universe_file"}, (target, out)
+        assert out == {"error": "not_found", "resource": "command_center_file"}, (target, out)
         assert "BOB ONLY" not in json.dumps(out)
 
 
@@ -194,7 +196,7 @@ def test_a_directory_swapped_for_a_link_after_listing_discloses_nothing(
         return names
 
     monkeypatch.setattr(os, "listdir", listdir_then_swap)
-    listing = _read("universe_files", "notes")
+    listing = _read("command_center_files", "notes")
     sizes = {e["name"]: e.get("size_bytes") for e in listing["entries"]}
     assert sizes.get("board.md") != 777, listing
     assert "secret.md" not in sizes
@@ -211,9 +213,9 @@ def test_a_directory_junction_is_never_followed(home: Path) -> None:
                           capture_output=True, text=True)
     if made.returncode != 0:
         pytest.skip("this host cannot create a junction")
-    assert _read("universe_file", "notes/elsewhere/secret.md")["error"] == "not_found"
-    assert _read("universe_files", "notes/elsewhere")["error"] == "not_found"
-    names = [e["name"] for e in _read("universe_files", "notes")["entries"]]
+    assert _read("command_center_file", "notes/elsewhere/secret.md")["error"] == "not_found"
+    assert _read("command_center_files", "notes/elsewhere")["error"] == "not_found"
+    names = [e["name"] for e in _read("command_center_files", "notes")["entries"]]
     assert "elsewhere" not in names
 
 
@@ -345,7 +347,7 @@ def test_the_tab_is_the_platforms_account_of_what_goes_public(home: Path) -> Non
     out = _ask_publish(home, automation_ids=[beat.automation_id])
     assert out.get("request_id"), out
     assert out["kind"] == "Publish"
-    assert out["title"] == 'Publish "Village" for anyone to copy?'
+    assert out["title"] == 'Publish workflow and screen bundle "Village" for anyone to copy?'
     body = out["body"]
     for needle in ("Automation demo", "The screen \"Village\"", "scout heartbeat",
                    "every 300 seconds", "its inputs stay private",

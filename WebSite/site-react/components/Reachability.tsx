@@ -7,7 +7,7 @@ import styles from "./Reachability.module.css";
 
 /**
  * Reachability of the public endpoint from this browser, read through the
- * public projection only (the public universe list). Server reachability and
+ * public projection only (the public command center list). Server reachability and
  * workflow activity are kept as distinct readings, and a failed read is shown
  * as a failed read, never dressed up as anything else.
  */
@@ -58,14 +58,14 @@ export function Reachability() {
               <dd className="ok">reachable</dd>
             </div>
             <div>
-              <dt>public universes</dt>
+              <dt>public command centers</dt>
               <dd>{vitals.universeCount ?? 0}</dd>
             </div>
             <div>
               <dt>activity</dt>
               <dd>
                 {vitals.workflowActive
-                  ? `a public universe moved ${vitals.lastMovedAt ? fmtRel(vitals.lastMovedAt) : "recently"}`
+                  ? `a public command center moved ${vitals.lastMovedAt ? fmtRel(vitals.lastMovedAt) : "recently"}`
                   : vitals.lastMovedAt
                     ? `quiet; last public movement ${fmtRel(vitals.lastMovedAt)}`
                     : "quiet; no public movement recorded"}

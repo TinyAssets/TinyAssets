@@ -52,6 +52,9 @@ _TREE_EXCLUDES: tuple[str, ...] = (
     "*.pyc",
     ".pytest_cache",
     "*.tmp",
+    # Vendored custom-UI libraries are served only by the hosted app; the
+    # bundle runs no app. Same rule as the plugin mirror (build_plugin.py).
+    "ui_libraries",
 )
 
 

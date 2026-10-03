@@ -767,7 +767,9 @@ const window={location:{pathname:'/app',search:'',assign:u=>navigations.push(u)}
 const history={replaceState:(a,b,u)=>{window.location.pathname=u;window.location.search='';}};
 const NATIVE=false,token=()=>'t',authHeaders=()=>({}),ensureFreshToken=async()=>{};
 const randToken=()=> 'v'.repeat(43),challengeFor=async()=> 'c'.repeat(43);
-const appendMessage=()=>{},refreshRail=async()=>{},sendTurn=()=>{},frameTitle=r=>r.title;
+const turns=[];
+const appendMessage=()=>{},refreshRail=async()=>{},frameTitle=r=>r.title;
+const sendTurn=(...args)=>turns.push(args);
 let historyLoaded=true;
 const fetch=async(url,o)=>{posts.push({url,body:JSON.parse(o.body)});
  return {ok:true,json:async()=>({flow:'f'.repeat(43),expires_in:600,
@@ -817,6 +819,25 @@ console.log(JSON.stringify({first:first.textContent,folded:b.box.children[1].tag
     assert out["saved"]["flow"] == "f" * 43 and out["saved"]["verifier"] == "v" * 43
     assert out["plainFirst"] == "label"  # no offer: the key ask is untouched
     assert out["onlyAcceptHidden"] is True and out["keyAcceptHidden"] is False
+
+
+@pytest.mark.parametrize("origin,source,turn_count", [("platform", True, 0), ("agent", False, 1)])
+def test_rail_sign_in_uses_server_provenance_for_relay(origin, source, turn_count):
+    out = _run_rail("""
+const req={request_id:'r1',title:'Connect source',origin:__ORIGIN__,action:{type:'connect',
+  oauth:{authorize_url:'https://auth.tasklark.io/authorize'}}};
+const b=body([]);ConnectOAuth.decorate(req,b.box,b.row,b.note);
+await b.box.children[1].onclick();
+const saved=JSON.parse(storage.get('ta_connect_oauth'));
+window.location.pathname='/app/model-callback/connect';
+window.location.search='?code=abc&state='+saved.flow;
+ConnectOAuth.pending=ConnectOAuth.takeCallback();
+ConnectOAuth.post=async()=>({status:'answered',signed_in:true});
+await ConnectOAuth.finish();
+console.log(JSON.stringify({saved,turns}));
+""".replace("__ORIGIN__", json.dumps(origin)))
+    assert out["saved"]["source"] is source
+    assert len(out["turns"]) == turn_count
 
 
 def test_the_callback_is_taken_before_account_sign_in_and_only_once():

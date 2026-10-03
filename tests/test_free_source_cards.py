@@ -3,6 +3,7 @@
 import json
 import shutil
 import subprocess
+from pathlib import Path
 from urllib.parse import urlsplit
 
 import pytest
@@ -30,6 +31,29 @@ def test_card_urls_and_generic_model_discovery(source, base, help_url):
     assert [m["id"] for m in models] == [card["models"][0]]
     with pytest.raises(ValueError, match="no supported"):
         discovered_agent_models(card, {"data": [{"id": "unknown-paid-model"}]})
+
+
+def test_every_preset_exposes_only_verified_daily_cap_numbers():
+    from tinyassets.providers import free_sources
+
+    presets = json.loads(Path(free_sources.__file__).with_name(
+        "free_source_presets.json").read_text(encoding="utf-8"))
+    cards = {row["id"]: row for row in source_cards() + free_sources.sign_in_cards()}
+    available = [row for row in presets if row.get("available", True)]
+    assert set(cards) == {row["id"] for row in available}
+    for preset in presets:
+        cap = preset["daily_cap"]
+        assert set(cap) == {"requests_per_day", "tokens_per_minute", "reset_timezone", "source_url"}
+        assert urlsplit(cap["source_url"]).scheme == "https"
+        assert urlsplit(cap["source_url"]).netloc
+        if preset.get("available", True):
+            assert cards[preset["id"]]["daily_cap"] == cap
+        else:
+            assert preset["id"] not in cards
+        assert (cap["requests_per_day"], cap["tokens_per_minute"]) == (
+            (1000, 8000) if preset["id"] == "groq" else (None, None))
+        assert cap["reset_timezone"] == (
+            "America/Los_Angeles" if preset["id"] == "google_ai_studio" else None)
 
 
 def test_cards_do_not_promise_cerebras_is_permanently_free():
@@ -117,7 +141,7 @@ FreeSourceCards.render(cards);
     assert observed["count"] == 4 and observed["preserved"] and observed["cleared"]
     assert observed["type"] == "password" and observed["value"] == ""
     assert observed["sent"] == {"op": "deposit_key", "p": {
-        "preset_id": "google_ai_studio", "key": "private-own-key"}}
+        "preset_id": "groq", "key": "private-own-key"}}
     assert observed["refreshed"] == 1 and "Confirm model access" in observed["status"]
 
 
@@ -138,3 +162,19 @@ def test_authenticated_card_ingress_reuses_same_origin_gate(rig, monkeypatch):
     assert response.status_code == 200, response.text
     assert response.json()["status"] == "confirmation_required"
     assert "my-private-key" not in response.text
+
+
+def test_key_cards_are_ordered_by_daily_allowance_and_one_reader_serves_caps():
+    """Lead 2026-10-02: Groq (largest daily count) and Gemini first; HF is not a key card."""
+    from tinyassets.providers.free_sources import daily_cap_for_host
+
+    assert [c["id"] for c in source_cards()] == ["groq", "google_ai_studio", "mistral", "cerebras"]
+    assert daily_cap_for_host("openrouter.ai") == {
+        "requests_per_day": 50, "credit_requests_per_day": 1000, "reset_timezone": "UTC",
+        "credit_amount": "$10",
+        "name": "OpenRouter", "credit_url": "https://openrouter.ai/settings/credits"}
+    assert daily_cap_for_host("api.groq.com") == {
+        "requests_per_day": 1000, "credit_requests_per_day": None, "reset_timezone": None,
+        "name": "Groq", "credit_url": "https://console.groq.com/settings/billing"}
+    assert daily_cap_for_host("router.huggingface.co")["requests_per_day"] is None
+    assert daily_cap_for_host("unknown.example") is None

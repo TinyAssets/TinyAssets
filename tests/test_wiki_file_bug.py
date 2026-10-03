@@ -4,11 +4,11 @@ Covers `_wiki_file_bug` helper, `_next_bug_id` allocator, `_slugify_title`
 filesystem-safe slug, `_render_bug_markdown` frontmatter shape, and the
 end-to-end `wiki(action="file_bug", ...)` dispatch.
 
-Pre-staged while Task #3 awaits deploy + severity-rubric reconcile.
-Until patch (e) lands, the symbols below do not exist in
-`tinyassets.universe_server`. A module-level `importorskip` keeps the full
-pytest suite green (collection skips cleanly) — the guard goes away the
-moment the symbols exist.
+The module used to skip itself unless these symbols existed on
+`tinyassets.universe_server`. They moved to `tinyassets.api.wiki`, so the
+guard read "not landed yet" for months while all of this went unexecuted.
+The imports below now fail loudly instead: a missing symbol is a red test,
+never a skipped module.
 """
 
 from __future__ import annotations
@@ -19,28 +19,13 @@ from unittest.mock import patch
 
 import pytest
 
-import tinyassets.universe_server as _us
-
-_required = (
-    "_wiki_file_bug",
-    "_next_bug_id",
-    "_slugify_title",
-    "_render_bug_markdown",
-)
-_missing = [name for name in _required if not hasattr(_us, name)]
-if _missing:
-    pytest.skip(
-        f"wiki file_bug patches not landed yet (missing: {', '.join(_missing)})",
-        allow_module_level=True,
-    )
-
-from tinyassets.api.wiki import (  # noqa: E402
+from tinyassets.api.wiki import (
     _next_bug_id,
     _render_bug_markdown,
     _slugify_title,
     _wiki_file_bug,
 )
-from tinyassets.universe_server import wiki  # noqa: E402
+from tinyassets.universe_server import wiki
 
 
 @pytest.fixture
@@ -100,8 +85,10 @@ class TestSlugifyTitle:
 
     def test_truncates_at_word_boundary(self):
         title = "Wiki slug generation truncates mid word instead of at word boundary"
+        # The 55-char cut lands inside "word"; the slug backs off to the last
+        # whole word ("at") rather than keeping the fragment "w".
         assert _slugify_title(title, max_len=55) == (
-            "wiki-slug-generation-truncates-mid-word-instead-of"
+            "wiki-slug-generation-truncates-mid-word-instead-of-at"
         )
 
     def test_long_first_token_falls_back_to_hard_cut(self):
@@ -215,24 +202,25 @@ class TestFileBugCollisionRetry:
         (wiki_dir / "pages" / "bugs" / "BUG-001-seed.md").write_text(
             "x", encoding="utf-8"
         )
-        real_open = open
+        from tinyassets.api import wiki as wiki_mod
+
+        real_write = wiki_mod.write_data_path
         first_call = {"fired": False}
 
-        def fake_open(path, mode="r", *args, **kwargs):
-            p = Path(path) if not isinstance(path, Path) else path
+        def fake_write(path, data, *args, mode="replace", **kwargs):
+            p = Path(path)
             if (
-                mode == "x"
+                mode == "exclusive"
                 and "bug-002" in p.name.lower()
                 and not first_call["fired"]
             ):
+                # A concurrent filer took the id between the scan and the create.
                 first_call["fired"] = True
-                real_open(path, "w", *args, **kwargs).close()
+                real_write(path, "", *args, **kwargs)
                 raise FileExistsError(path)
-            return real_open(path, mode, *args, **kwargs)
+            return real_write(path, data, *args, mode=mode, **kwargs)
 
-        with patch(
-            "tinyassets.api.wiki.open", side_effect=fake_open, create=True
-        ):
+        with patch("tinyassets.api.wiki.write_data_path", side_effect=fake_write):
             out = json.loads(
                 _wiki_file_bug(
                     component="x", severity="minor", title="racy"

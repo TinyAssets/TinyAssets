@@ -95,6 +95,14 @@ fantasy_daemon = "domains.fantasy_daemon.skill:FantasyAuthorDomain"
 research_probe = "domains.research_probe.skill:ResearchProbeDomain"
 
 [project.optional-dependencies]
+# Real-browser proofs (tests marked real_browser); installed by
+# .github/workflows/real-browser-proof.yml. Also the custom-UI preview's
+# headless browser in the daemon image (tinyassets/ui_preview.py, Dockerfile).
+# Pinned so its browser cache key holds, and because the exact Playwright
+# version decides which Chromium build the image downloads.
+browser = [
+    "playwright==1.58.0",
+]
 desktop = [
     "Pillow>=10.0",
     "pystray>=0.19",
@@ -115,15 +123,6 @@ dev = [
     "pytest-cov>=5.0",
     "httpx>=0.24",
     "fastapi>=0.115",
-]
-gemini = [
-    "google-genai>=1.0",
-]
-grok = [
-    "openai>=1.0",
-]
-groq = [
-    "groq>=0.9",
 ]
 api = [
     "fastapi>=0.115",
@@ -164,4 +163,5 @@ testpaths = ["tests"]
 markers = [
     "slow: stress/race tests; opt-in via `pytest -m slow`",
     "real_jail: needs a real bubblewrap jail; run by .github/workflows/linux-jail-proof.yml, which fails on any skip",
+    "real_browser: needs a real Chromium; run by .github/workflows/real-browser-proof.yml, which fails on any skip",
 ]

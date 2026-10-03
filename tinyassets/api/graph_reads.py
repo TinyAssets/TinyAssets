@@ -32,6 +32,7 @@ from tinyassets.api.extensions import _extensions_impl
 from tinyassets.api.market import goals as _goals_impl
 from tinyassets.api.status import get_status as _get_status_impl
 from tinyassets.api.universe import _universe_impl
+from tinyassets.command_center_names import internal_value
 
 #: Targets that list rows and so take a page size. The dispatch has no default
 #: for it: a caller that lists names its page.
@@ -79,7 +80,7 @@ def read_graph(
     docstring is the public tool contract). ``limit`` has no default here; see
     ``PAGED_TARGETS``.
     """
-    normalized = (target or "status").strip().lower()
+    normalized = str(internal_value((target or "status").strip().lower()))
     if normalized in PAGED_TARGETS and limit is None:
         # No default page. A page size nobody asked for is a silent cut of the
         # owner's own rows; the caller names the page it wants (the connector
@@ -117,6 +118,7 @@ def read_graph(
         # graph_id is VERIFIED rather than ignored -- require_founder_home
         # refuses a universe that is not this caller's current home with admin,
         # so a foreign id can never return this caller's bytes under its label.
+        from tinyassets import addressed_agents
         from tinyassets.api.helpers import _base_path, _request_universe
         from tinyassets.api.permissions import current_actor_id, is_authenticated_request
         from tinyassets.conversation_retrieval import read_conversation_page
@@ -126,11 +128,18 @@ def read_graph(
             return json.dumps({"error": "not_found"})
         actor = current_actor_id()
         try:
-            root = require_founder_home(_base_path(), _request_universe(graph_id), actor)
+            base, uid = _base_path(), _request_universe(graph_id)
+            root = require_founder_home(base, uid, actor)
+            agent = addressed_agents.resolve(
+                base, universe_id=uid, owner=actor, agent_id=agent_binding_id,
+            )
+            session = addressed_agents.memory_session(actor, agent.agent_id if agent else "main")
             payload = read_conversation_page(
-                root, f"principal:{actor}", field_name=field_name,
+                root, session, field_name=field_name,
                 offset=output_offset, max_chars=output_max_chars,
             )
+        except addressed_agents.AgentNotAddressable as exc:
+            return json.dumps({"error": str(exc), "agent_not_found": True})
         except PermissionError:
             # Same envelope an absent thread gets: a refusal here must not
             # confirm another account's home exists.
@@ -298,6 +307,10 @@ def read_graph(
             count=min(file_max_bytes, universe_file_reads.MAX_READ_BYTES)
             if isinstance(file_max_bytes, int) else file_max_bytes,
         ))
+    if normalized == "command_center_packages":
+        from tinyassets.command_center_picker import read_packages
+
+        return json.dumps(read_packages(universe_id=graph_id))
     if normalized == "app_ui":
         # The caller's own UI library + choice; keyed by the authenticated caller.
         from tinyassets.api.app_ui import read_app_ui
@@ -349,8 +362,9 @@ def read_graph(
             "agent_bindings",
             "agent_binding",
             "app_ui",
-            "universe_file",
-            "universe_files",
+            "command_center_packages",
+            "command_center_file",
+            "command_center_files",
             "receiver",
             "receivers",
             "output_links",

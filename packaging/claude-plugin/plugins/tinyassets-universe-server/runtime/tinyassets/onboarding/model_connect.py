@@ -3,7 +3,8 @@
 Two flows share it: the bundled first-power preset (``begin``/``exchange``/
 ``resume``/``deposit_key``) and signing in to answer ANY pending ``connect``
 request whose provider offers OAuth (``oauth_begin``/``oauth_exchange``,
-``connection_oauth.flow``).
+``connection_oauth.flow``). ``source_sign_in`` raises the platform's own such
+request for an installed sign-in source card, so the card is one tap.
 """
 
 import json
@@ -49,6 +50,7 @@ async def handle_model_connect(request):
               "exchange": {"flow", "code", "code_verifier"}, "resume": {"preset_id"},
               "deposit_key": {"preset_id", "key"},
               "oauth_begin": {"request_id", "code_challenge"},
+              "source_sign_in": {"preset_id"},
               "oauth_exchange": {"flow", "code", "code_verifier"}}
     # RFC 9207 ``iss`` rides the exchange when the provider returned one.
     optional = {"oauth_exchange": {"iss"}}.get(operation, set())
@@ -131,21 +133,53 @@ async def handle_model_connect(request):
                                  request_id=data["request_id"],
                                  challenge=data["code_challenge"], public_resource=resource)
 
-    def oauth_exchange():
-        from tinyassets.connection_oauth import flow as sign_in
+    def source_sign_in():
+        from tinyassets.onboarding.source_connect import raise_sign_in_ask
+        from tinyassets.providers.free_sources import sign_in_preset
 
         with identity_context(identity):
-            _, home = scope()
-            return sign_in.complete(owner=identity.user_id, universe_id=home,
+            # Only installed data names endpoints; reject unknown ids before
+            # creating even an inert home.
+            preset = sign_in_preset(data["preset_id"])
+            if preset is None:
+                raise hosted.HostedAuthError("unknown_model_connection", 404)
+            _, home = scope(create=True)
+            return {"status": "sign_in_required",
+                    "request": raise_sign_in_ask(uid=home, preset=preset,
+                                                 public_resource=resource)}
+
+    def oauth_exchange():
+        from tinyassets.connection_oauth import flow as sign_in
+        from tinyassets.onboarding.source_connect import offer_signed_in_source
+
+        with identity_context(identity):
+            base, home = scope()
+            done = sign_in.complete(owner=identity.user_id, universe_id=home,
                                     handle=data["flow"], code=data["code"],
                                     verifier=data["code_verifier"],
                                     iss=data.get("iss", ""))
+            # A source card's sign-in on a command center that already runs on
+            # something: the new source joins the agent only on the owner's
+            # explicit confirmation, exactly like a pasted-key card.
+            try:
+                confirmation = offer_signed_in_source(
+                    base=base, uid=home, owner=identity.user_id,
+                    request_id=str(done.get("request_id") or ""), completed=done,
+                    public_resource=resource)
+            except Exception:  # noqa: BLE001 - post-deposit failures must not fail sign-in
+                # The sign-in itself landed; expose no internal exception details.
+                return {**done, "confirmation_error": "model_confirmation_requires_review"}
+            if confirmation is not None:
+                done = {**done, "confirmation": confirmation["request"]}
+            return done
 
     from tinyassets.connection_oauth.flow import FlowError
 
     try:
         if operation == "oauth_begin":
             result = await run_in_threadpool(oauth_begin)
+        elif operation == "source_sign_in":
+            result = await run_in_threadpool(source_sign_in)
         elif operation == "oauth_exchange":
             result = await run_in_threadpool(oauth_exchange)
         elif operation == "begin":
@@ -184,3 +218,34 @@ async def handle_model_callback(request):
     response = await onboarding._handle_app(request)
     response.headers.update(_HEADERS)
     return response
+
+
+async def handle_client_metadata(request):
+    """Public OAuth Client ID Metadata Document; GET grants nothing.
+
+    Its URL IS the client id a sign-in source names when no registered client is
+    configured. Constant: built from the configured public resource (never the
+    request's Host), one redirect URI (the fixed generic callback), and no
+    secret, because this is a public PKCE client.
+    """
+    from tinyassets import onboarding
+    from tinyassets.connection_oauth import pkce
+    from tinyassets.connection_oauth.flow import FlowError, callback_origin
+    from tinyassets.onboarding.source_connect import CLIENT_METADATA_PATH
+
+    if not onboarding.onboarding_enabled():
+        return PlainTextResponse("Not Found", 404, headers=_HEADERS)
+    try:
+        origin = callback_origin(str(onboarding.app_config().get("resource") or ""))
+    except FlowError:
+        return PlainTextResponse("Not Found", 404, headers=_HEADERS)
+    return JSONResponse({
+        "client_id": origin + CLIENT_METADATA_PATH,
+        "client_name": "TinyAssets",
+        "client_uri": origin,
+        "redirect_uris": [origin + pkce.CONNECT_CALLBACK_PATH],
+        "grant_types": ["authorization_code", "refresh_token"],
+        "response_types": ["code"],
+        "token_endpoint_auth_method": "none",
+        "application_type": "web",
+    }, headers={"Cache-Control": "public, max-age=3600"})

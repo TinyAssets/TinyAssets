@@ -394,7 +394,7 @@ def test_an_unnamed_universe_never_borrows_the_product_name(base):
     unknown = _compose(base, "u-does-not-exist", crafted)
 
     for notification in (unnamed, unknown):
-        assert notification.title == "Your universe asks"
+        assert notification.title == "Your agent asks"
         assert notification.title != "TinyAssets"
         assert "Security alert" not in notification.title
 
@@ -724,6 +724,36 @@ def test_notifications_off_sends_nothing(base):
     from tinyassets.storage.pending_requests import get_request
 
     assert get_request(base / A_UID, row["request_id"])["status"] == "pending"
+
+
+def test_an_owner_who_never_chose_is_notified(base):
+    """On by default: no settings row is ON, so a phone the app registered
+    after sign-in is notified without the owner ever finding a switch."""
+    _home(base, A_UID, ALICE, A_NAME)
+    _register(base, ALICE, "token-alice-phone")
+    recorder, transports = _fake()
+
+    assert devices.notifications_enabled(base, owner_user_id=ALICE) is True
+    _raise_request(base, A_UID, ALICE, transports)
+
+    assert len(recorder.calls) == 1
+
+
+def test_turning_notifications_off_survives_the_next_automatic_registration(base):
+    """The app registers a phone automatically at sign-in. That must never
+    flip an explicit off back on: the off is the owner's, and it persists."""
+    _home(base, A_UID, ALICE, A_NAME)
+    _register(base, ALICE, "token-alice-phone")
+    devices.set_notifications_enabled(base, owner_user_id=ALICE, enabled=False)
+
+    _register(base, ALICE, "token-alice-phone")         # the sign-in rebind
+    _register(base, ALICE, "token-alice-new-phone")     # a new phone, auto-registered
+    recorder, transports = _fake()
+    _raise_request(base, A_UID, ALICE, transports)
+
+    assert devices.notifications_enabled(base, owner_user_id=ALICE) is False
+    assert devices.delivery_targets(base, owner_user_id=ALICE) == []
+    assert recorder.calls == []
 
 
 def test_one_owners_switch_does_not_silence_another(base):

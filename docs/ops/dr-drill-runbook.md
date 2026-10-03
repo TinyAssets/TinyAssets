@@ -2,7 +2,12 @@
 
 ## When to run
 
-- **Quarterly** — standing cadence to confirm backup → restore → probe chain works.
+- **Weekly, automatically** — Sunday 06:17 UTC, from the **off-region** backup store
+  (target-architecture S1a.5). The scheduled run never contacts the primary host: it
+  fetches the newest `tinyassets-data-*.tar.gz` from the off-region store and resolves the
+  image from GHCR, so it still works when the primary is gone. Until the off-region store
+  exists (`OFFREGION_BACKUP_REMOTE` + `OFFREGION_BACKUP_RCLONE_CONFIG` secrets, S1a.3), the
+  weekly run is red on purpose and says so.
 - **After major changes** to `deploy/compose.yml`, `deploy/hetzner-bootstrap.sh`,
   or `deploy/backup-restore.sh`.
 - **After any restore event** — drill confirms the restored state is healthy before
@@ -16,19 +21,27 @@ Inputs:
 
 | Input | Default | Notes |
 |---|---|---|
+| `backup_origin` | `offregion` | `offregion` is the drill. `primary` restores the primary's own tarball over ssh: a diagnostic that proves nothing about losing the primary. |
 | `drill_droplet_size` | `s-2vcpu-2gb` | Minimum tested size for apt + Docker bootstrap; `s-1vcpu-1gb` OOMs. |
-| `backup_source` | (latest on primary) | Override with a specific path, e.g. `2026-04-01` tarball for point-in-time test. |
+| `backup_source` | (newest) | A `tinyassets-data-*.tar.gz` name in the off-region store (or a path on the primary for `primary`), for a point-in-time test. |
 | `destroy_on_failure` | `false` | Set `true` to auto-destroy on failure; default keeps the Droplet up for inspection. |
 | `cleanup_droplet_id` | (empty) | Cleanup-only mode: delete this retained positive-decimal Droplet ID and skip every drill/provisioning step. |
 
 ## What the workflow does
 
-1. Validates the selected primary backup's safe archive shape and records its
-   archive + representative-member SHA-256 values.
-2. Reads only the primary host's final `TINYASSETS_IMAGE` assignment, removes
-   at most one matching pair of surrounding quotes, and requires the canonical
-   immutable `ghcr.io/tinyassets/tinyassets-daemon@sha256:<digest>` form. It does
-   not copy the primary environment or any secrets.
+1. Selects the backup. For `offregion` it fetches the newest (or named)
+   `tinyassets-data-*.tar.gz` from the off-region store onto the runner, using a
+   read-only rclone credential, and checks the name against the archive grammar
+   before rclone touches it. For `primary` it picks the newest tarball on the
+   primary. Either way, one validator checks the safe archive shape, contained in
+   that origin's root, and records the archive and representative-member SHA-256
+   values.
+2. Resolves the runtime image. For `offregion` it takes the newest of the last
+   20 commits with a published GHCR build, pinned to its digest; no primary
+   contact. For `primary` it reads only the primary host's final
+   `TINYASSETS_IMAGE` assignment. Both require the canonical immutable
+   `ghcr.io/tinyassets/tinyassets-daemon@sha256:<digest>` form, and neither copies
+   the primary environment or any secrets.
 3. Resolves the newest public, available Debian x64 image serving `nyc3` across
    a bounded DigitalOcean distribution-catalog traversal. This first request
    verifies the token's required `image:read` scope before any mutation.

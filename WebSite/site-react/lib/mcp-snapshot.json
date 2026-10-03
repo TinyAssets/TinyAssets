@@ -1,7 +1,7 @@
 {
   "fetched_at": "2026-09-02T18:09:28.796Z",
   "source": "tinyassets.io/mcp · read_graph target=graphs · public projection only",
-  "universes": [
+  "command_centers": [
     {
       "id": "u-01kxm1vszd8hwp7em418asq8h9",
       "visibility": "public",

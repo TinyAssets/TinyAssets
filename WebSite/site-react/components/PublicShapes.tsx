@@ -16,11 +16,11 @@ type Row = {
 };
 
 const baked = snapshot as Snapshot;
-const bakedRows: Row[] = discoverableRows(baked.universes);
+const bakedRows: Row[] = discoverableRows(baked.command_centers);
 const bakedStamp = `checked-in snapshot from ${fmtStampStable(baked.fetched_at)}`;
 
 /**
- * The public universe list from a labelled checked-in snapshot. Live discovery
+ * The public command center list from a labelled checked-in snapshot. Live discovery
  * belongs to signed-in connectors; this browser never opens an MCP session.
  */
 export function PublicShapes() {
@@ -36,14 +36,14 @@ export function PublicShapes() {
 
       {rows.length === 0 ? (
         <p className={styles.empty}>
-          No public universes in this snapshot. Every universe starts private; publishing is a choice.
+          No public command centers in this snapshot. Every command center starts private; publishing is a choice.
         </p>
       ) : (
         <div className="ledger--wrap">
           <table className="ledger">
             <thead>
               <tr>
-                <th>Universe</th>
+                <th>Command center</th>
                 <th>Phase</th>
                 <th>Words</th>
                 <th>Last activity</th>
@@ -69,7 +69,7 @@ export function PublicShapes() {
         </div>
       )}
       <p className="note">
-        A signed-in connector may read the public projection: universe ids and coarse activity.
+        A signed-in connector may read the public projection: command center ids and coarse activity.
         This page never downloads operator status or anyone&apos;s contents.
       </p>
     </div>

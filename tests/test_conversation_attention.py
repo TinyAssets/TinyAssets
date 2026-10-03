@@ -151,3 +151,48 @@ def test_a_call_that_reads_no_message_writes_nothing(tmp_path: Path):
         acknowledge(tmp_path, SESSION, None)
         assert unread(tmp_path) == 1
     assert not (tmp_path / ".conversation_attention.db").exists()
+
+
+def _age(root: Path, seconds: float) -> None:
+    """Backdate every store file, as if the last write were ``seconds`` ago."""
+    import os
+    import time
+
+    stamp = time.time_ns() - int(seconds * 1e9)
+    for path in root.glob(".conversation_*.db*"):
+        os.utime(path, ns=(stamp, stamp))
+
+
+def test_a_read_in_the_same_mtime_tick_is_not_served_from_cache(tmp_path: Path):
+    """Two receipt writes in one kernel timestamp tick at the same size used to
+    keep the earlier count: the badge stayed at 1 after the message was read."""
+    import os
+
+    text = "a🌱b\x00cdef"
+    ident = say(tmp_path, text)
+    acknowledge(tmp_path, SESSION, chunk(ident, text, 0, 4))
+    assert unread(tmp_path) == 1
+    receipts = tmp_path / ".conversation_attention.db"
+    before = os.stat(receipts)
+    acknowledge(tmp_path, SESSION, chunk(ident, text, 4, 4))
+    after = os.stat(receipts)
+    assert after.st_size == before.st_size
+    # The completing write landed in the same tick: its mtime did not move.
+    os.utime(receipts, ns=(after.st_atime_ns, before.st_mtime_ns))
+    assert unread(tmp_path) == 0
+
+
+def test_a_settled_store_is_still_answered_from_cache(tmp_path: Path, monkeypatch):
+    from tinyassets import conversation_attention as attention
+
+    say(tmp_path, "settled")
+    unread(tmp_path)  # the first read creates the transcript's empty -wal
+    _age(tmp_path, 10)
+    calls = []
+    real = attention._owner_ids
+    monkeypatch.setattr(
+        attention, "_owner_ids", lambda *a, **k: calls.append(1) or real(*a, **k),
+    )
+    assert unread(tmp_path) == 1
+    assert unread(tmp_path) == 1
+    assert len(calls) == 1  # the second call cost only the stat calls

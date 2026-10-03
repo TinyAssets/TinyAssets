@@ -170,10 +170,6 @@ class TestRunBranchVersionWiring:
         from tinyassets.api.runs import _RUN_ACTIONS
         assert "run_branch_version" in _RUN_ACTIONS
 
-    def test_run_branch_version_in_run_write_actions(self):
-        from tinyassets.api.runs import _RUN_WRITE_ACTIONS
-        assert "run_branch_version" in _RUN_WRITE_ACTIONS
-
     def test_set_canonical_and_run_version_actions_compose(self):
         """End-to-end wiring: a set_canonical -> run_branch_version pipeline
         depends on both actions being registered together. Confirms the

@@ -100,6 +100,21 @@ placeholder.
   - app.html is under 400 lines.
   - `main.js` is wiring only.
 
+## Central registries are the conflict source (lead, 2026-10-01)
+
+Approved PRs keep conflicting with main within minutes on shared files:
+app.html, `storage_accounting` `ROOT_ENTRIES` and the route lists. The split
+must not recreate that inside `main.js`. Every feature module registers
+itself:
+- it exports a `wire(app)` (or `register(app)`) that attaches its own DOM
+  handlers and rail or menu entries;
+- `main.js` imports the module list from one line per module, sorted, and
+  calls each one.
+
+A new feature then adds one file and one import line, not a hunk in a shared
+function. The same rule applies on the server side
+(`2026-10-01-cut-runs-py-import-coupling.md` §3).
+
 ## Risks
 
 - **Load order.** A module is deferred and runs after parsing, while the inline

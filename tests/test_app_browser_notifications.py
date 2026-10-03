@@ -125,7 +125,8 @@ const result={open:railOpen,focus:focused.id,consumed:railLink===null};
     "on", "off", "denied", "missing_key", "subscribe_failed", "account_changed",
 ])
 def test_browser_setting_permission_subscription_and_account_fence(scenario):
-    out = run_js(functions("notificationSession", "notificationAPI", "toggleNotifications") + """
+    out = run_js(functions("notificationSession", "notificationAPI", "toggleNotifications",
+                          "subscribeBrowserPush") + """
 const NATIVE=false, scenario=SCENARIO, calls=[], elements={};
 const $=id=>elements[id] ||= {textContent:'',disabled:false};
 let queueOwner='alice', notificationEnabled=scenario==='off', notificationBusy=false;

@@ -147,7 +147,7 @@ def _write_site_manifest(mark_version: str) -> None:
         "name": "TinyAssets",
         "short_name": "TinyAssets",
         "description": (
-            "Your own AI universe. Runs on the subscription you already pay for."
+            "Your own AI command center. Runs on the subscription you already pay for."
         ),
         "start_url": "/",
         "display": "browser",

@@ -942,6 +942,9 @@ def _assert_home_filesystem_identity(
         )
 
 
+_AGENT_WORKSPACE_DIR = ".agent-workspace"
+
+
 def _walk_home_without_following(home: Path) -> tuple[str, ...]:
     blockers: list[str] = []
     pending = [home]
@@ -976,6 +979,12 @@ def _walk_home_without_following(home: Path) -> tuple[str, ...]:
                     f"home-local audit or receipt store requires archival: "
                     f"{path.relative_to(home)}"
                 )
+                continue
+            if (current == home and entry.name == _AGENT_WORKSPACE_DIR
+                    and entry.is_dir(follow_symlinks=False)):
+                # The agent's own workspace (harness W2) is owner content of any
+                # shape; it goes with the home (stage_then_remove_home, which
+                # never follows a link), so it is not classified file by file.
                 continue
             if entry.is_dir(follow_symlinks=False):
                 if normalized_name in _HOME_OPERATIONAL_DIRECTORIES:
@@ -1375,11 +1384,11 @@ def inspect_reset_scope(data_dir: Path, *, principal: str) -> ScopeInventory:
             if expected.parent != root:
                 blockers.append("founder-home path escapes the data root")
             if registered is None:
-                blockers.append("founder-home binding has no universe row")
+                blockers.append("founder-home binding has no command center row")
             else:
                 registered_path = Path(str(registered[0])).resolve(strict=False)
                 if registered_path != expected:
-                    blockers.append("founder-home path disagrees with universe index")
+                    blockers.append("founder-home path disagrees with command center index")
             if not home_path.is_dir():
                 blockers.append("founder-home directory is missing")
             elif _is_link_or_reparse(home_path):
@@ -1396,7 +1405,7 @@ def inspect_reset_scope(data_dir: Path, *, principal: str) -> ScopeInventory:
     marker = root / ".active_universe"
     if home_id is not None and marker.is_file():
         if marker.read_text(encoding="utf-8").strip() == home_id:
-            blockers.append("active universe marker targets exact home")
+            blockers.append("active command center marker targets exact home")
     offer = root / "founder_offers" / f"{subject}.json"
     if offer.exists():
         blockers.append("enabled founder market offer must be disabled normally")
@@ -1696,7 +1705,7 @@ def plan_test_identity_reset(
         "filesystem_actions": filesystem_actions,
         "root_history_actions": root_history_actions,
         "preserved": [
-            "all other founder homes and universe content",
+            "all other founder homes and command center content",
             "commons, wiki, root run history, audit, market, and billing state",
             "global daemon identities and all credentials",
         ],

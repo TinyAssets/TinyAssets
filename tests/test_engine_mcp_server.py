@@ -71,8 +71,8 @@ def test_read_graph_pins_graph_id_and_target(monkeypatch):
     assert captured == {"target": "graph", "graph_id": "u-pinned"}
 
 
-def test_get_status_pins_universe_id(monkeypatch):
-    """Codex #9: get_status keys off universe_id, not graph_id — pin the right arg."""
+def test_get_status_pins_command_center_id(monkeypatch):
+    """Codex #9: get_status keys off command_center_id, not graph_id — pin the right arg."""
     import tinyassets.universe_server as us
     from tinyassets import engine_mcp_server as s
 
@@ -83,7 +83,7 @@ def test_get_status_pins_universe_id(monkeypatch):
     mock_engine_admission(monkeypatch, {s._GRAPH_ID})
 
     s.get_status()
-    assert captured == {"universe_id": "u-pinned"}
+    assert captured == {"command_center_id": "u-pinned"}
 
 
 def test_handlers_refused_when_unbound(monkeypatch):
@@ -1762,3 +1762,63 @@ def test_served_guidance_teaches_the_code_node_and_promises_no_approval():
     )
     assert "approves the source in the browser" not in whole
     assert "approves it in the browser" not in whole
+
+
+@pytest.mark.parametrize("identity_only", [False, True])
+def test_custom_agent_write_brain_refuses_main_identity_but_writes_shared_fields(
+    monkeypatch, tmp_path, identity_only,
+):
+    from types import SimpleNamespace
+    from urllib.parse import parse_qsl, urlsplit
+
+    from fastmcp.server import dependencies
+
+    from tinyassets import engine_mcp_server as s
+    from tinyassets.engine_steering import route_with_session
+
+    udir = _seed_brain_universe(monkeypatch, tmp_path)
+    before = (udir / "identity.md").read_bytes()
+    route = route_with_session("http://localhost/mcp", "thread:agent:weaver:principal:sub-brain")
+    monkeypatch.setattr(dependencies, "get_http_request", lambda: SimpleNamespace(
+        query_params=dict(parse_qsl(urlsplit(route).query))))
+    out = json.loads(s.write_brain(identity="I am Weaver.", name="Weaver",
+                                  founder="" if identity_only else "My founder studies tidepools."))
+    assert "may not" in out["error"] and "identity.md" in out["error"]
+    assert (udir / "identity.md").read_bytes() == before
+    assert json.loads(s.read_brain())["self_model"].get("name") != "Weaver"
+    if not identity_only:
+        assert out["written"]
+        assert "tidepools" in (udir / "founder.md").read_text(encoding="utf-8")
+
+
+
+def test_custom_agent_write_tool_passes_session_agent_to_runner(monkeypatch, tmp_path):
+    import asyncio
+    from types import SimpleNamespace
+    from urllib.parse import parse_qsl, urlsplit
+
+    from fastmcp.server import dependencies
+
+    from tinyassets import engine_mcp_server as s
+    from tinyassets import universe_tools
+    from tinyassets.engine_steering import route_with_session
+
+    udir = _seed_brain_universe(monkeypatch, tmp_path)
+    agent_id = "agent_binding_w1"
+    route = route_with_session(
+        "http://localhost/mcp", f"thread:agent:{agent_id}:principal:sub-brain")
+    monkeypatch.setattr(dependencies, "get_http_request", lambda: SimpleNamespace(
+        query_params=dict(parse_qsl(urlsplit(route).query))))
+    calls = []
+
+    def runner(universe_dir, inner, *, agent_id, **kwargs):
+        calls.append((universe_dir, agent_id, inner, kwargs))
+        return universe_tools.ToolRun(0, b"", None, 0.0)
+
+    monkeypatch.setattr(universe_tools, "RUNNER", runner)
+    out = asyncio.run(s.write_file(path="founder.md", content="shared learning"))
+    assert out.startswith("wrote "), out
+    assert len(calls) == 1
+    assert calls[0][0] == udir
+    assert calls[0][1] == agent_id
+    assert calls[0][3]["stdin"] == b"shared learning"

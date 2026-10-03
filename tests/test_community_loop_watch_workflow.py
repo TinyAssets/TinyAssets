@@ -57,7 +57,7 @@ def test_alarm_sink_dispatches_only_stale_uptime_canary_workflow():
         "auto-" + "fix-bug.yml",
         "auto-" + "check-pr.yml",
     ]
-    assert "createTinyAssetsDispatch" in script
+    assert "createWorkflowDispatch" in script
     assert "uptime-canary.yml" in script
     for workflow_id in retired_workflows:
         assert workflow_id not in script

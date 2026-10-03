@@ -78,11 +78,24 @@ class TestQueryRunsUniverseAcl:
                 "tinyassets.universe.read",
             ],
         ))
+        from tinyassets.api import visibility as vis
+        from tinyassets.daemon_server import grant_universe_access
+
         for uid, public in (("pub", True), ("priv", False)):
             udir = tmp_path / uid
             udir.mkdir(parents=True, exist_ok=True)
             ensure_universe_registered(tmp_path, universe_id=uid, universe_path=udir)
             ensure_universe_rules(tmp_path, universe_id=uid)
+            # Both universes belong to SOMEONE ELSE. An unowned universe grants
+            # nothing (2026-09-02) and universes are private by default
+            # (2026-09-26), so `pub` must be owned and declared public by its
+            # owner -- this used to rely on "unowned and unset reads as public",
+            # which made the readable half of this test fail on main.
+            grant_universe_access(
+                tmp_path, universe_id=uid, actor_id="workos|owner",
+                permission="admin", granted_by="workos|owner",
+            )
+            vis.set_universe_visibility(uid, "public" if public else "private", source="owner")
             if not public:
                 update_universe_rules(
                     tmp_path, universe_id=uid, updates={"public_read": False},

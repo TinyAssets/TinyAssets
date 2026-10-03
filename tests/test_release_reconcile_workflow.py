@@ -467,6 +467,31 @@ def test_exact_decision_success_overrides_older_failed_manual_retry(
     )
 
 
+def test_exact_decision_a_displaced_manual_deploy_is_not_a_failed_retry(
+    tmp_path: Path,
+) -> None:
+    """A deploy that waits up to 45 min for in-flight turns makes a pending
+    manual deploy easy to displace from the shared group. That cancellation must
+    not read as the exhausted retry, or the sha never deploys (Codex, #turn-handover)."""
+    repo, _, relevant_sha = _release_repo(tmp_path)
+
+    result = _run_decision(
+        repo,
+        retry_runs=[
+            _active_run(
+                relevant_sha,
+                status="completed",
+                path=".github/workflows/deploy-prod.yml",
+                event="workflow_dispatch",
+                conclusion="cancelled",
+                run_id=67890,
+            )
+        ],
+    )
+
+    assert result["action"] == "dispatch"
+
+
 def test_completed_and_unrelated_runs_do_not_suppress_recovery(
     tmp_path: Path,
 ) -> None:
@@ -664,6 +689,9 @@ def test_exact_converge_does_not_duplicate_active_deploy(
     [
         ("workflow_run", "completed", "failure", True),
         ("workflow_dispatch", "completed", "failure", False),
+        # Displaced from the shared concurrency group while pending: it never
+        # tried, so it must not count as the one failed retry.
+        ("workflow_dispatch", "completed", "cancelled", True),
         ("workflow_run", "completed", "success", False),
     ],
 )

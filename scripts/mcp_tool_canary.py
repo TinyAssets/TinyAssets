@@ -238,13 +238,13 @@ def run_canary(
     inspect_obj = _parse_tool_json_result(resp, label)
     _validate_probe_obj(inspect_obj, label)
     if verbose:
-        uid = inspect_obj.get("universe_id")
+        uid = inspect_obj.get("command_center_id")
         schema_version = inspect_obj.get("schema_version")
         details = []
         if schema_version is not None:
             details.append(f"schema_version={schema_version!r}")
         if uid is not None:
-            details.append(f"universe_id={uid!r}")
+            details.append(f"command_center_id={uid!r}")
         suffix = f" {' '.join(details)}" if details else ""
         print(f"[tool-canary] {label} OK{suffix}")
 
@@ -279,13 +279,13 @@ def main(argv: list[str] | None = None) -> int:
         return exc.code
 
     if args.verbose:
-        uid = inspect.get("universe_id")
+        uid = inspect.get("command_center_id")
         schema_version = inspect.get("schema_version")
         details = []
         if schema_version is not None:
             details.append(f"schema_version={schema_version!r}")
         if uid is not None:
-            details.append(f"universe_id={uid!r}")
+            details.append(f"command_center_id={uid!r}")
         suffix = f" {' '.join(details)}" if details else ""
         print(f"[tool-canary] PASS{suffix}")
     return 0

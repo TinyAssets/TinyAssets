@@ -222,7 +222,8 @@ def test_a_newer_turn_of_the_next_account_is_not_unlocked_by_the_old_spoken_turn
     console.log(JSON.stringify({midB, afterA, done:fence(), outcome}));
     """)
     mid, after_a, done = out["midB"], out["afterA"], out["done"]
-    assert mid["sendDisabled"] is True and mid["status"].startswith("Your universe is thinking")
+    assert mid["sendDisabled"] is True
+    assert mid["status"].startswith("Your agent is thinking")
     assert after_a["sendDisabled"] is True, "A's spoken turn re-enabled B's composer"
     assert after_a["status"] == mid["status"], "A's cleanup wiped B's status"
     assert after_a["turnStartedAt"] == mid["turnStartedAt"], "A's cleanup reset B's turn clock"

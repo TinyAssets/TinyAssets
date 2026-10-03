@@ -99,7 +99,7 @@ built without `google-services.json`, and a local file without an
 `io.tinyassets.app.debug` client fails `assembleDebug` (the materialise step says so).
 
 Verify the full loop on the device: **sign in (WorkOS)** → **connect your AI
-subscription** → **chat with your universe**.
+subscription** → **chat with your command center**.
 
 ## Build a release bundle (.aab) for Google Play
 

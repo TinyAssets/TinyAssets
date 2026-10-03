@@ -183,3 +183,39 @@ def test_a_storage_fault_reports_why(tmp_path: Path, monkeypatch):
     assert "no such column: decision" in out["detail"], (
         "the reason was dropped again; a schema fault is not sensitive"
     )
+
+
+def test_each_agent_asks_and_is_muted_on_its_own(tmp_path: Path):
+    """Harness §4.18: an agent's dedupe and "don't ask again" are its own; the
+    seeded agent's keys are unchanged, so nothing it was muted on returns."""
+    universe = tmp_path / "u-alpha"
+    universe.mkdir()
+
+    def ask(agent):
+        return pr.create_request(universe, kind="API", title="connect github", body="b",
+                                 fields=[], action={"type": "answer"},
+                                 dedupe_key="github", agent=agent)
+
+    main, researcher = ask("main"), ask("researcher")
+    assert main["created"] and researcher["created"]
+    assert main["request_id"] != researcher["request_id"]
+    assert main["dedupe_key"] == "github"
+    assert researcher["dedupe_key"] == "agent:researcher:github"
+    assert researcher.get("agent") == "researcher" and main.get("agent") == "main"
+    assert ask("researcher")["created"] is False, "same agent, same ask: one tab"
+
+
+def test_a_non_main_agents_request_still_reproduces_what_was_shown(tmp_path: Path):
+    """The execute pin re-derives the key from the row; an agent's prefix must
+    not make its own request refuse to run."""
+    from tinyassets.api.pending_requests import displayed_row_matches
+
+    universe = tmp_path / "u-alpha"
+    universe.mkdir()
+    import json as _json
+    key = _json.dumps(["API", "t", "b", [], {"type": "answer"}], sort_keys=True,
+                      separators=(",", ":"))
+    row = pr.create_request(universe, kind="API", title="t", body="b", fields=[],
+                            action={"type": "answer"}, dedupe_key=key, agent="researcher")
+    assert displayed_row_matches(row)
+    assert not displayed_row_matches({**row, "agent": "main"})

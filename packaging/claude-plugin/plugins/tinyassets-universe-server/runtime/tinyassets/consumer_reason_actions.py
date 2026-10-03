@@ -37,16 +37,16 @@ _STATIC: dict[str, str] = {
         "Rebind the automation to a provider you currently have."
     ),
     "no_daemon_for_principal": (
-        "No runtime is registered for this owner in this universe, so nothing can "
-        "execute. Select a serving provider for the universe to register one."
+        "No runtime is registered for this owner in this command center, so nothing can "
+        "execute. Select a serving provider for the command center to register one."
     ),
     "no_serving_runtime": (
-        "This universe has no serving provider selected, so no runtime exists to "
+        "This command center has no serving provider selected, so no runtime exists to "
         "run background work. Choose one (registering a provider is not selecting "
         "it)."
     ),
     "legacy_control_tasks_parked": (
-        "This universe IS serving: chat, runs, and your automations and schedules "
+        "This command center IS serving: chat, runs, and your automations and schedules "
         "fire on your selected provider. One kind of queued item left from before "
         "the host workers were removed (a cloud control task) has no runner on "
         "this release and stays parked; nothing you build depends on it. Nothing "
@@ -89,7 +89,7 @@ def consumer_next_action(reason: str) -> str:
         automation = automation or "another provider"
         serving = serving or "nothing"
         return (
-            f"This automation runs on {automation}, but this universe currently "
+            f"This automation runs on {automation}, but this command center currently "
             f"serves {serving}, and background work only runs when the two match. "
             f"Either rebind the automation to {serving}, or make {automation} the "
             "universe's serving provider. Both are your choice - TinyAssets will "

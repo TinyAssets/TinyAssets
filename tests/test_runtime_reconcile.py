@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import gc
 import hashlib
 import json
 import sqlite3
 import subprocess
 import sys
+from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -653,7 +655,10 @@ def _stale_fleet_fixture(base_path: Path) -> tuple[dict, dict]:
         worker_id="worker-cli-stale",
         provider_name="codex",
     )
-    with sqlite3.connect(db_path(base_path)) as conn:
+    # SQLite's connection context commits but does not close. Close the setup
+    # writer before callers snapshot bytes, so later GC cannot checkpoint its
+    # WAL during a read-only CLI call and look like a reconciler write.
+    with closing(sqlite3.connect(db_path(base_path))) as conn, conn:
         conn.execute(
             "UPDATE author_runtime_instances SET updated_at = ? "
             "WHERE instance_id = ?",
@@ -663,6 +668,21 @@ def _stale_fleet_fixture(base_path: Path) -> tuple[dict, dict]:
             ),
         )
     return task, runtime
+
+
+def test_stale_fleet_fixture_is_settled_before_cli(tmp_path: Path) -> None:
+    # Make the formerly incidental collection schedule deterministic. The
+    # fixture must settle its own writes even when automatic GC has not run.
+    enabled = gc.isenabled()
+    gc.disable()
+    try:
+        _stale_fleet_fixture(tmp_path)
+        before = db_path(tmp_path).read_bytes()
+        gc.collect()
+        assert db_path(tmp_path).read_bytes() == before
+    finally:
+        if enabled:
+            gc.enable()
 
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]

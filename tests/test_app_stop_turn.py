@@ -28,8 +28,11 @@ setQueueOwner("p-1"); setQueueScope("u-1");
 const posts=[];
 globalThis.authHeaders=()=>({});
 globalThis.refreshAccessToken=async()=>false;
-globalThis.fetch=(url,init)=>new Promise(resolve=>posts.push({url,
-  body:JSON.parse(init.body), resolve}));
+globalThis.fetch=(url,init)=>url==="/app/turn/steer"
+  // No running turn to steer on the server's side here: the line queues,
+  // which is the behaviour these Stop cases are about.
+  ? Promise.resolve({ok:true,status:200,json:async()=>({steered:false})})
+  : new Promise(resolve=>posts.push({url, body:JSON.parse(init.body), resolve}));
 const ok=()=>({ok:true,status:200,json:async()=>({interrupted:1,universe_id:"u-1"})});
 """
 
@@ -82,7 +85,10 @@ console.log(JSON.stringify({posts:posts.map(p=>({url:p.url,body:p.body})), queue
 def test_stop_sends_every_queued_line_as_one_turn_in_order(tmp_path, html):  # noqa: F811
     out = _run_with_interrupt(tmp_path, html, {"stop": True}, _STOP)
     assert out["queued"] == 3
-    assert out["posts"] == [{"url": "/app/turn/interrupt", "body": {"universe_id": "u-1"}}]
+    # The body now names the agent whose conversation Stop was pressed in
+    # (harness §4.18); "main" is that agent, not stop-all.
+    assert out["posts"] == [{"url": "/app/turn/interrupt",
+                             "body": {"universe_id": "u-1", "agent_id": "main"}}]
     assert "then sending the 3 waiting messages together" in out["stoppingLine"]
     # Exactly two turns: the interrupted one, then ONE carrying all three lines.
     assert out["sent"] == ["start the long job", "one\n\ntwo\n\nthree"], out["sent"]
@@ -223,3 +229,51 @@ def test_a_stop_answer_for_another_account_is_never_painted(tmp_path, html):  # 
     # The old account's queue never went out; the new account was not held.
     assert out["beforeOld"] == ["A private line", "new account line"], out["beforeOld"]
     assert out["sent"] == ["A private line", "new account line"], out["sent"]
+
+
+_STOP_AS_AGENT = r"""
+// This harness executes a SLICE of app.html, so the agent switcher's own
+// accessor is not in it -- which is why interruptTurn reads it through
+// `typeof`. Shimmed here the way the harness shims authHeaders/fetch, so the
+// case can exercise the custom-agent path at all.
+let addressed={agent_id:"a-weaver",name:"Evidence Weaver"};
+globalThis.addressedAgentId=()=>addressed.agent_id;
+// The turn stays in flight on purpose: this case is about the Stop REQUEST,
+// and settling the turn needs the interrupted-reply plumbing the other cases
+// own. Nothing awaits it, so the scenario cannot hang on it.
+sendTurn("start the long job");
+await settle();
+const stop=interruptTurn(); await settle();
+// Switching conversation AFTER Stop was pressed must not retarget it.
+addressed={agent_id:"main",name:"Your agent"};
+posts[0].resolve(ok()); await stop; await settle();
+console.log(JSON.stringify({posts:posts.map(p=>({url:p.url,body:p.body})),
+  late:addressedAgentId()}));
+"""
+
+
+def test_stop_names_the_agent_whose_conversation_it_was_pressed_in(tmp_path, html):  # noqa: F811
+    """Harness §4.18: Stop belongs to the conversation it was pressed in.
+
+    Omitting ``agent_id`` means stop-ALL on the server, which would end a custom
+    agent's background turn because a main chat ended. The id is also captured
+    at PRESS time, so switching conversation while the request is in flight
+    cannot retarget it at whoever is on screen when it lands.
+    """
+    out = _run_with_interrupt(tmp_path, html, {}, _STOP_AS_AGENT)
+    assert out["posts"][0]["body"] == {"universe_id": "u-1", "agent_id": "a-weaver"}, (
+        "Stop did not name the agent whose conversation it was pressed in")
+    assert out["late"] == "main", "the case did not actually switch conversation"
+
+
+def test_stop_is_addressed_for_main_too_rather_than_stopping_everything(html):  # noqa: F811
+    """``main`` is an agent, not a wildcard: the body always names one.
+
+    A page that sent nothing for main would ask the server for stop-all, and
+    the server's stop-all reaches every agent's live turn in the command
+    center -- including background work the owner never asked to end.
+    """
+    source = _js_function(html, "interruptTurn")
+    assert "agent_id:agent" in source.replace(" ", ""), (
+        "the interrupt body must always carry the agent")
+    assert "addressedAgentId" in source, "the agent must come from the page's own accessor"

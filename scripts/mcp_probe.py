@@ -33,6 +33,23 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
+#: The clock `_cmd_latency` measures with, as a module attribute so a test can
+#: replace THIS and nothing else.
+#:
+#: The tests used to do `monkeypatch.setattr(mcp_probe.time, "monotonic", ...)`.
+#: `mcp_probe` does `import time`, so `mcp_probe.time` IS the `time` module --
+#: that patched `time.monotonic` process-wide, against a two-element iterator
+#: sized for this function's own two calls. Anything else in the process
+#: consulting the clock in that window stole a value and the test died with
+#: `StopIteration`, which is the attributed cause of a recurring CI flake
+#: (`test_latency_raw_includes_response`, `test_latency_subcommand_reports_elapsed_ms`).
+#:
+#: A longer fake sequence does not fix that: a stolen value just turns the loud
+#: error into a wrong `latency_ms`. Only a seam nobody else reads does, which is
+#: this. `_cmd_latency` reads it once into a local, so a mid-call replacement
+#: cannot make its two readings come from different clocks.
+_clock = time.monotonic
+
 _SCRIPTS = Path(__file__).resolve().parent
 if str(_SCRIPTS) not in sys.path:
     sys.path.insert(0, str(_SCRIPTS))
@@ -232,10 +249,11 @@ def _format_latency_line(result: dict[str, Any]) -> str:
 
 
 def _cmd_latency(url: str, raw: bool, bearer_token: str) -> int:
-    start = time.monotonic()
+    clock = _clock
+    start = clock()
     sid, rc = _initialize(url, bearer_token)
     if rc:
-        latency_ms = int((time.monotonic() - start) * 1000)
+        latency_ms = int((clock() - start) * 1000)
         result = {
             "ok": False,
             "url": url,
@@ -256,7 +274,7 @@ def _cmd_latency(url: str, raw: bool, bearer_token: str) -> int:
         },
         bearer_token,
     )
-    latency_ms = int((time.monotonic() - start) * 1000)
+    latency_ms = int((clock() - start) * 1000)
     rc = _tool_response_exit_code(resp)
     result: dict[str, Any] = {
         "ok": rc == 0,

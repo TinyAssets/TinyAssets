@@ -873,6 +873,10 @@ privileges, with no platform jail, so its defaults are conservative:
 - `bash` asks for confirmation before each command by default. Unattended
   operation is an explicit opt-in, and a missing approval blocks rather than
   proceeds.
+  This is a default, not a lock (stamp note, 2026-10-01): the harness is the
+  owner's, and pi itself runs without asking, so the owner may loosen it for
+  their own command center. It stays enforced for an imported or shared
+  command center until its owner activates and configures it.
 - File tools are confined to the folder. A path that resolves outside it is
   refused.
 - The runner's policy (`rules.json`, the runner config) is read-only to the
@@ -927,6 +931,110 @@ closes when the export ships.
 and quarantine) and before D10. It could not usefully come earlier, because
 until D9 there is no manifest to share. The local runner is independent of D9
 and can be built in parallel with it.
+
+### 4.18 Many agents, one universe: the multi-agent invariant (founder, 2026-10-01)
+
+> "depending on command center build the user might talk to more agents than
+> just the main dot one we are designing. users can design any kind of agent and
+> configure it in any command center orchestrations"
+>
+> "by default the dot like agent that comes with your universe is aware of all
+> the activity happening in that universe … and in general the universe brain is
+> usually shared so all saved feedback from the user gets all reconciled in the
+> same brain memory files no matter which agent you talk to"
+
+**The invariant.** Every per-agent record is keyed by `agent_id` from day one.
+`main` is only the seeded default, never a special case in code. The roster UI
+is D8. Nothing before D8 may assume there is one agent.
+
+**D8 integration design (2026-10-03, not implemented):**
+[addressed-agent-control-provenance](../addressed-agent-control-provenance/design.md)
+specifies the missing authenticated turn/run carrier and control-door wiring
+after #4287 and #4228. Their accepted foundation residual remains open: keyed
+storage alone does not make custom-agent rules, Stop or request routing work.
+That design owns current-binding/revocation checks and safe legacy handling;
+the shared-brain and visibility requirements below remain here. The first Claude
+ADAPT is folded there, with [design approval at 6bf7923](https://github.com/TinyAssets/TinyAssets/pull/4343#issuecomment-5965426542): native internal tools have no claimed
+pre-tool interception (D2 remains held), launch identity requires a proposed
+isolated per-launch transport credential, and legacy recurring definitions need
+visible holds plus owner reconfirmation. None of these facilities is implemented
+by the documentation change.
+
+**What is per agent, and what is shared**
+
+| Per agent (keyed by `agent_id`) | Shared by the whole universe |
+|---|---|
+| Sessions and conversation memory: one per (agent, thread) | The brain and memory files: one information layer about the owner, their projects and their goals |
+| Steering: a steer goes to the agent the owner is talking to in that thread | The workspace files (§4.3) |
+| The tool journal and status lines, which name the acting agent | Workflows and automations, attributed to the agent that made them |
+| Custom Rules and auto-review switches | |
+| Activities (effect intents inherit the agent through their activity) | Seats: account capacity stays shared, with each seat attributed to its agent |
+| Stop: a stop targets the addressed agent's turn, beside a separate stop-all | |
+| Profile, Activity and Rules pages; pending requests and push, which carry the agent's name | |
+
+**Visibility is a harness capability, not a code path.** Each agent's harness
+config has a `visibility` scope, editable by the owner:
+- `universe`: the default for the seeded main agent. It can read every agent's
+  conversations with the owner, and every agent's activities, status lines and
+  effects, within this universe only.
+- `own`: the default for other agents. It reads its own threads and activities,
+  plus the shared brain.
+
+The platform applies the scope when it builds an agent's context and when it
+serves `read_graph` reads. There is no `if main` anywhere. The cross-user floor
+is unchanged: "all activity" never leaves the universe. An agent selector never
+stands in for ownership: every read and write still binds the authenticated
+owner and the pinned universe first.
+
+**What `own` is, and is not.** It is a context and serving policy: what the
+platform puts in front of an agent and returns from its reads. It is **not**
+isolation between one owner's agents. Agents of a universe share its files, so
+an agent with `bash` can reach the stores those files live in. Those are
+conversation memory (`.conversation_memory.db`) and native session files. The
+shared brain also carries what was learned from every conversation by design.
+Raw-transcript isolation between agents would need per-agent stores behind the
+jail. That is a separate decision, not claimed here.
+
+**One brain, many writers: the reconcile rule.** Several agents can save
+feedback into the same brain at once. Silent last-writer-wins would lose it, so
+the rule is:
+1. **Capture is one immutable file per entry.** Saving a piece of owner
+   feedback creates `brain/inbox/<time>-<agent>-<id>.md`, named by a fresh id
+   and created exclusively, so concurrent captures never touch each other.
+   `log.md` stays the generated human-readable history.
+2. **Tool writes to brain files are compare-and-swap on the whole file.** The
+   platform's `write` and `edit` read the file's digest when the agent last
+   read it, and apply the change atomically only if the file still has that
+   digest. Exact-text matching alone would miss changes elsewhere in the file.
+   On a conflict the write is refused and the current content is returned. This
+   is guaranteed for writers that use the tools. A `bash` write to a brain file
+   bypasses it and is visible in file history; the guarantee is not claimed for
+   it.
+3. **One fenced reconciler.** The reconciler is the main agent by default
+   (owner-changeable). It runs single-flight per universe under the D3
+   scheduler's lease and folds inbox entries into topic files.
+   - Each topic file records the entry ids it absorbed in its frontmatter.
+   - Only after the topic write commits does the reconciler acknowledge the
+     entry, by moving it to `brain/inbox/done/`.
+   - On a crash between the two, the replay finds the id already absorbed and
+     only acknowledges it. Replay is idempotent, and no capture is lost.
+   - File history (§4.15) keeps every version, so any merge can be undone.
+
+**Slices this changes**
+
+| Slice | State | Change |
+|---|---|---|
+| S1 sessions and conversation memory | Merged | The main thread keeps `thread:principal:<owner>` and conversation key `principal:<owner>`. Other agents use conversation key `agent:<agent_id>:principal:<owner>` and session and steering key `thread:agent:<agent_id>:principal:<owner>`: the `thread:` prefix is what S2 steers. No migration |
+| Stop (`turn_interrupt`) | Shipped | Today a stop ends every live turn for (owner, universe). It becomes per agent and thread, with a separate stop-all |
+| S2 steering (#4188) | Merging | Keyed by session key, so it follows S1. The app sends the addressed agent with the steer (D8 UI) |
+| S4 journal (#4190) | Foundation in #4228; integration pending | `agent_turn_journal` has an agent column on the combined foundation, but served creation still defaults to main. The D8 provenance change wires the captured identity; status names the acting agent |
+| D1a rules | Merged | Already per agent (`rules.agent`, `MAIN_AGENT` is the seed) |
+| D1d review (#4200/#4228) | Per-agent foundation reviewed; integration pending | #4228 adds `(agent, action_class)` and migrates the old global switches to main. The effector still selects main until the D8 provenance change |
+| D2 activities | In build | `agent_id` on each activity. Effect intents inherit it through `activity_id`. Status lines go to the owning agent's main session, and to any agent whose visibility covers it |
+| Pending requests and push | Shipped | Add the asking agent's id and name ("Your agent asks" becomes "<name> asks"). Deduplication, mute and answer routing are scoped per agent |
+| converse and the app | Built | `converse`, the steer route and the owner's conversation read take an addressed `agent_id` (`tinyassets/addressed_agents.py`); a custom UI opens the chat addressed to an agent. The command center decides which agents are exposed (D8) |
+| Brain writes | Shipped | Inbox capture files, digest compare-and-swap in the `write` and `edit` tools for brain files, and the fenced reconciler (D3 or D7) |
+| Seats | Shipped | Capacity stays per account; each seat carries the agent for attribution |
 
 ## 5. What already shipped, mapped onto the dot
 

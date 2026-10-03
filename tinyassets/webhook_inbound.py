@@ -204,7 +204,7 @@ def _handle_hook_inner(
     if not webhook_hooks.claim_delivery(
         base, dedupe_key=dedupe_key, window_s=_DEDUPE_WINDOW_S, now=now,
     ):
-        logger.info("webhook: deduped replay for universe %s", universe_id)
+        logger.info("webhook: deduped replay for command center %s", universe_id)
         return 202, {"queued": True, "deduped": True}
 
     reservation_id: str | None = None
@@ -215,7 +215,7 @@ def _handle_hook_inner(
             token_max=_RATE_MAX, window_s=_RATE_WINDOW_S, now=now,
         ):
             webhook_hooks.release_delivery(base, dedupe_key=dedupe_key)
-            logger.info("webhook: token flood limit reached for universe %s", universe_id)
+            logger.info("webhook: token flood limit reached for command center %s", universe_id)
             return 429, {"error": "rate_limited"}
 
         # ── Gate 3: ONE atomic transaction — re-check the token is ACTIVE (serializes with a
@@ -227,7 +227,7 @@ def _handle_hook_inner(
         )
         if reservation_id is None:
             webhook_hooks.release_delivery(base, dedupe_key=dedupe_key)
-            logger.info("webhook: token revoked at reserve for universe %s", universe_id)
+            logger.info("webhook: token revoked at reserve for command center %s", universe_id)
             return _NOT_DELIVERABLE
 
         inputs = {"webhook": {

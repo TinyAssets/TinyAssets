@@ -106,7 +106,7 @@ def _canonical_universe(base: Path, universe_dir: str | Path, universe_id: str) 
     expected = (canonical_base / universe_id).resolve(strict=False)
     supplied = Path(universe_dir).resolve(strict=False)
     if supplied != expected or expected.parent != canonical_base:
-        raise ValueError("universe directory does not match the canonical universe id")
+        raise ValueError("command center directory does not match the canonical command center id")
     return supplied
 
 
@@ -280,7 +280,7 @@ def _open_serving_context(
         raise ServingProviderNotOwned("open provider connection grant is absent or revoked")
     if grant.owner_user_id != owner_user_id or grant.universe_id != universe_id:
         raise ServingProviderNotOwned(
-            "open provider grant is not owned by the caller / bound to this universe"
+            "open provider grant is not owned by the caller / bound to this command center"
         )
     resource = ledger._get_connection_resource(grant.connection_id)
     if resource is None:
@@ -533,7 +533,7 @@ def bind_serving_provider(
         # Sorting is for canonical publication, never the user's fallback order.
         sources = tuple(sorted(sources, key=lambda source: source.provider))
     if not owner or not uid or not binding_id:
-        raise ValueError("owner, universe, and agent binding are required")
+        raise ValueError("owner, command center, and agent binding are required")
     if (
         isinstance(expected_revision, bool)
         or not isinstance(expected_revision, int)
@@ -1003,7 +1003,7 @@ def set_serving(
     uid = universe_id.strip()
     binding_id = agent_binding_id.strip()
     if not owner or not uid or not binding_id:
-        raise ValueError("owner, universe, and agent binding are required")
+        raise ValueError("owner, command center, and agent binding are required")
     if (
         isinstance(expected_revision, bool)
         or not isinstance(expected_revision, int)
@@ -1216,7 +1216,7 @@ def resolve_current_serving_provider_authority(
     uid = universe_id.strip()
     owner = owner_user_id.strip()
     if not uid or not owner:
-        raise ValueError("owner and universe are required")
+        raise ValueError("owner and command center are required")
     universe = _canonical_universe(base, universe_dir, uid)
     store = SQLiteProviderWorkAuthorityStore(base)
     with provider_assignment_admission().shared(universe):

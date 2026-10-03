@@ -869,7 +869,7 @@ class BackgroundBranchBindingTransitionService:
         if not all(immutable_identity_matches):
             raise BackgroundBranchBindingTransitionError(
                 "identity_transfer",
-                "rotation cannot replace authorizer, universe, or source",
+                "rotation cannot replace authorizer, command center, or source",
             )
         replacement = _binding_from_seed(
             seed,
@@ -1189,7 +1189,7 @@ class BackgroundBranchAttemptIssuanceService:
         if request.physical_universe_id != binding.universe_id:
             self._fail(
                 "physical_universe_mismatch",
-                "physical universe does not match the binding",
+                "physical command center does not match the binding",
             )
         if resolution.executor_audience != request.executor_audience:
             self._fail(
@@ -1708,7 +1708,7 @@ class BackgroundBranchAuthorityHoldService:
         ):
             self._fail(
                 "reauthorization_not_authorized",
-                "reauthorization requires the canonical principal or universe admin",
+                "reauthorization requires the canonical principal or command center admin",
             )
         binding = resolution.binding
         self._validate_active_binding(binding, resolution.resolved_at)
@@ -2031,7 +2031,7 @@ class BackgroundBranchAuthorityHoldService:
         ):
             raise BackgroundBranchAuthorityHoldError(
                 "attempt_authority_mismatch",
-                "attempt does not match the resolved binding and universe",
+                "attempt does not match the resolved binding and command center",
             )
         if attempt.lifecycle is not BackgroundBranchAttemptLifecycle.RESERVED:
             raise BackgroundBranchAuthorityHoldError(

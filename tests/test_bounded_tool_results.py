@@ -237,7 +237,7 @@ def test_a_sibling_of_an_exempt_target_is_still_bounded(monkeypatch):
 
 def test_a_result_within_the_ceiling_is_returned_byte_for_byte(monkeypatch):
     """Bounding is not reformatting: a result that fits is never rewritten."""
-    payload = json.dumps({"universe_id": "u-pinned", "phase": "running"})
+    payload = json.dumps({"command_center_id": "u-pinned", "phase": "running"})
     s = _bind(monkeypatch, payload)
 
     assert _text(asyncio.run(s.mcp.call_tool("read_graph", {"target": "graph"}))) == payload

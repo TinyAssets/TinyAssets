@@ -57,12 +57,19 @@ _DECLS = (
     # there rather than lifted from the page.
     # Introduced by the fix.
     r"const TURN_WORKING_STATES=[^\n]*;", r"let serverTurn=[^\n]*;",
+    r"let deployPending=[^\n]*;",
     r"const STATUS_IDLE_MS=[^\n]*;", r"let statusBeatMs=[^\n]*;",
     r"let serverStatusLine=[^\n]*;",
+    # Which step and model the turn waits on (turn-wait-visibility).
+    r"let ownDetailLine=[^\n]*;", r"const TRY_MODEL_AFTER_MIN=[^\n]*;",
     # The Stop control's state (sendTurn's cleanup reads it).
     r"let interruptRequested=[^\n]*;", r"const STOP_REQUEST_MS=[^\n]*;",
     # The seat wait line (`universe_seats`).
     r"let seatWait=[^\n]*;", r"let seatLineShown=[^\n]*;",
+    # Lines steered into a running turn (harness S2).
+    r"let steeredLines=[^\n]*;", r"let pendingSteers=[^\n]*;", r"let watchedActive=[^\n]*;",
+    # The tool-activity suffix on the status line (harness S4).
+    r"const TOOL_SEP=[^\n]*;", r"const THINKING_LINE=[^\n]*;",
 )
 _FUNCS = (
     "formatMessageTimestamp", "appendMessage", "setStatusLine",
@@ -86,7 +93,12 @@ _NEW_FUNCS = ("isQueuedBubble", "firstQueuedBubble", "markQueued", "unmarkQueued
               "readServerTurn", "serverTurnLive", "workingSince", "workingElapsed",
               "renderWorking", "pulseHeartbeat",
               "renderStop", "takeInterruptFlush", "flushAfterTurn",
-              "drainAfterStop", "takeBatch", "flushBatch")
+              "drainAfterStop", "takeBatch", "flushBatch",
+              "markSteered", "unmarkSteered", "steerOrQueue", "settleSteered",
+              "adoptSteered", "markHeld", "restoreHeldSteers", "readServerTurnRow",
+              "claimHeldLines", "pinLineAgent", "alreadyHandled", "showActiveTurn", "finishActiveTurn",
+              "readPendingTurns", "sendBatch", "shortModelName", "waitMinutes", "waitDetail",
+              "renderTryModel", "toolLine", "paintToolLine")
 
 # A real tree. `insertBefore` and a detaching `remove` are the point: thread
 # order is what the ordering half of this bug is about.
@@ -118,8 +130,8 @@ const document={ createElement:t=>new El(t),
   createTextNode:t=>{ const e=new El("#text"); e.textContent=t; return e; },
   activeElement:null };
 const els={};
-for(const id of ["thread","thread-empty","status-line","composer-input","btn-send",
-                 "dot","universe-name"])
+for(const id of ["thread","thread-empty","status-line","deploy-pending-line",
+                 "composer-input","btn-send","dot","universe-name"])
   els[id]=new El("div");
 const $=id=>els[id];
 
@@ -190,6 +202,8 @@ const MCP={ _loginEpoch:0, invalidateSession(){},
     if(Object.prototype.hasOwnProperty.call(SCENARIO,"activeTurn"))
       s.active_turn=SCENARIO.activeTurn;
     if(Object.prototype.hasOwnProperty.call(SCENARIO,"seats")) s.seats=SCENARIO.seats;
+    if(Object.prototype.hasOwnProperty.call(SCENARIO,"deployPending"))
+      s.deploy_pending=SCENARIO.deployPending;
     return s;
   },
   async getConversation(){
@@ -279,7 +293,7 @@ def test_a_turn_this_page_never_sent_still_shows_the_indicator(tmp_path, html):
         "a turn the server reports running showed nothing, which is the bug: the "
         "founder's view was blank for four minutes")
     # The ORIGINAL sentence on the ORIGINAL line -- there is no second indicator.
-    assert out["after"]["line"].startswith("Your universe is thinking... ")
+    assert out["after"]["line"].startswith("Your agent is thinking... ")
     # How long, and that it did not come from this tab, are both said on it.
     assert "for 3m 34s" in out["after"]["line"]
     assert "another window" in out["after"]["line"]
@@ -385,7 +399,7 @@ console.log(JSON.stringify({during, after, served:!!SCENARIO.activeTurn}));
 def test_this_pages_own_turn_paints_without_waiting_for_a_poll(tmp_path, html):
     """No `active_turn` in the payload at all: an older daemon, or simply no poll yet."""
     out = _run(tmp_path, html, {}, _LOCAL_ONLY)
-    assert out["during"]["line"] == "Your universe is thinking...", (
+    assert out["during"]["line"] == "Your agent is thinking...", (
         "the page's own live turn must show at once, on the same one line, and "
         "WITHOUT the 'started in another window' detail -- the founder is looking "
         "at their own send")
@@ -449,7 +463,7 @@ def test_a_queued_answer_renders_after_the_reply_it_waited_behind(tmp_path, html
     assert out["whileQueued"][0]["queued"] is False
     # One line, and it is the queueing path's own -- which knows the count, and
     # which the server-driven sentence must not overwrite.
-    assert out["queuedIndicator"]["line"] == "Your universe is thinking... 1 waiting"
+    assert out["queuedIndicator"]["line"] == "Your agent is thinking... 1 waiting"
 
     # THE BUG: the reply was composed before the click arrived, so it belongs
     # ABOVE the queued line. It used to be appended below it, which read as the
@@ -496,7 +510,7 @@ def test_two_queued_lines_keep_their_own_order_under_the_reply(tmp_path, html):
 
 # ---------------------------------------------------------------------------
 # Exactly ONE indicator on screen. Founder, 2026-09-26: "there are now 2
-# indicators at once that my universe is thinking, i preferred only the original
+# indicators at once that my command center is thinking, i preferred only the original
 # one at the bottom."
 # ---------------------------------------------------------------------------
 
@@ -512,12 +526,78 @@ def test_the_page_has_no_second_working_indicator(html):
         "the surviving indicator must be the ORIGINAL line, not a restyled one")
 
 
+_UPDATE_LINE = r"""
+setQueueOwner("p-1");
+await pollStatus();
+renderWorking();                         // repeated renders still use one line
+const line=els["deploy-pending-line"];
+const before={text:line.textContent,hidden:line.hidden};
+if(SCENARIO.endTurn) SCENARIO.activeTurn=null;
+if(SCENARIO.clearPending) SCENARIO.deployPending={pending:false};
+if(SCENARIO.omitPending) delete SCENARIO.deployPending;
+await pollStatus();
+console.log(JSON.stringify({before,after:{text:line.textContent,hidden:line.hidden}}));
+"""
+
+_UPDATE_TEXT = "An update is waiting for this turn to finish; it installs right after."
+_LIVE_TURN = {"turn_id": "t-update", "state": "inference_started", "age_s": 10.0}
+
+
+def test_a_live_turn_shows_one_inline_pending_update(tmp_path, html):
+    out = _run(tmp_path, html, {
+        "activeTurn": _LIVE_TURN, "deployPending": {"pending": True},
+    }, _UPDATE_LINE)
+    assert out["before"] == out["after"] == {"text": _UPDATE_TEXT, "hidden": False}
+    assert html.count('id="deploy-pending-line"') == 1
+    assert 'id="deploy-pending-line" class="status-line"' in html
+
+
+@pytest.mark.parametrize("pending", [None, {}, {"pending": False},
+                                     {"pending": "true"}, {"pending": 1}, True, [], "true"])
+def test_a_live_turn_requires_an_explicit_pending_update(tmp_path, html, pending):
+    out = _run(tmp_path, html, {
+        "activeTurn": _LIVE_TURN, "deployPending": pending,
+    }, _UPDATE_LINE)
+    assert out["before"] == {"text": "", "hidden": True}
+
+
+def test_an_older_daemon_shows_no_pending_update(tmp_path, html):
+    out = _run(tmp_path, html, {"activeTurn": _LIVE_TURN}, _UPDATE_LINE)
+    assert out["before"] == {"text": "", "hidden": True}
+
+
+@pytest.mark.parametrize("turn", [None, {**_LIVE_TURN, "stale": True},
+                                {**_LIVE_TURN, "state": "completed"}])
+def test_a_pending_update_requires_a_live_turn(tmp_path, html, turn):
+    out = _run(tmp_path, html, {
+        "activeTurn": turn, "deployPending": {"pending": True},
+    }, _UPDATE_LINE)
+    assert out["before"] == {"text": "", "hidden": True}
+
+
+@pytest.mark.parametrize("transition", ["endTurn", "clearPending", "omitPending"])
+def test_the_pending_update_line_clears(tmp_path, html, transition):
+    out = _run(tmp_path, html, {
+        "activeTurn": _LIVE_TURN, "deployPending": {"pending": True}, transition: True,
+    }, _UPDATE_LINE)
+    assert out["before"] == {"text": _UPDATE_TEXT, "hidden": False}
+    assert out["after"] == {"text": "", "hidden": True}
+
+
 _LOCAL_AND_SERVER = r"""
 setQueueOwner("p-1");
-await pollStatus();                        // the server already reports a turn
+// First show the remote-only line. That earlier turn finishes before this
+// tab starts its own: never manufacture a competing send while it is live.
+readServerTurnRow({active_turn:SCENARIO.activeTurn}); renderWorking();
 const serverOnly=indicator();
+readServerTurnRow({active_turn:null}); renderWorking();
+// This tab's own send starts first; the server then reports a turn too. (A
+// send made while ONLY another window's turn runs no longer starts a turn of
+// its own -- it steers or waits; test_owner_steering covers that, P1 of
+// 2026-10-02.)
 const turn=sendTurn("and one from this tab");
 await settle();
+await pollStatus();                        // the server reports a turn as well
 const both=indicator();
 renderWorking();                           // the 1s repaint tick, mid-turn
 const afterTick=indicator();
@@ -535,10 +615,10 @@ def test_a_local_turn_and_a_server_turn_do_not_both_speak(tmp_path, html):
     assert "another window" in out["serverOnly"]["line"]
     # The page's own send takes the line, and the server sentence does not ride
     # along behind it or get appended to it.
-    assert out["both"]["line"] == "Your universe is thinking...", out["both"]["line"]
+    assert out["both"]["line"] == "Your agent is thinking...", out["both"]["line"]
     # The repaint tick is where a second writer would show up, since it runs while
     # both sources say "working". It must leave the local line exactly as it is.
-    assert out["afterTick"]["line"] == "Your universe is thinking...", (
+    assert out["afterTick"]["line"] == "Your agent is thinking...", (
         "the elapsed-time tick overwrote the line the sending path owns")
     # The local turn ending hands the ONE line back to the server-driven sentence
     # rather than going quiet: the server still says this universe is working, and
@@ -593,3 +673,123 @@ def test_another_universes_waiting_chat_is_not_shown_here(tmp_path, html):
                                 "seats": _seats(chat_waiting=False, interactive_waiting=1)},
                _SEAT_LINE)
     assert out["text"] == "" and out["parts"] == []
+
+
+
+# ---------------------------------------------------------------------------
+# Which step, which model, how long (turn-wait-visibility, live 2026-10-02:
+# turn c6ae56f9 waited ~10 minutes on one qwen request and the line could only
+# say "thinking", which read exactly like a hang).
+# ---------------------------------------------------------------------------
+
+_OWN_TURN_WAIT = r"""
+setQueueOwner("p-1");
+els["btn-try-model"]=new El("button"); els["btn-try-model"].hidden=true;
+const turn=sendTurn("build the office command center");
+await settle();
+await pollStatus();
+const waiting=indicator();
+const tryHidden=els["btn-try-model"].hidden;
+gates[0].resolve({reply:"done"});
+await turn; await settle();
+console.log(JSON.stringify({waiting, tryHidden, after:indicator()}));
+"""
+
+
+def _step(round_age_s, state="inference_started"):
+    return {"turn_id": "c6ae56f9", "state": state, "age_s": 900.0, "stale": False,
+            "round": 4, "model": "qwen/qwen3.8-27b:free", "round_age_s": round_age_s}
+
+
+def test_this_pages_own_turn_says_which_step_and_model_it_waits_on(tmp_path, html):
+    out = _run(tmp_path, html, {"activeTurn": _step(420.0)}, _OWN_TURN_WAIT)
+    assert out["waiting"]["line"] == (
+        "Your agent is thinking... step 4 · waiting on qwen3.8-27b for 7 min"
+    ), out["waiting"]["line"]
+    # Seven minutes on one request: the owner may choose another model.
+    assert out["tryHidden"] is False
+
+
+def test_another_model_is_offered_only_after_a_long_wait(tmp_path, html):
+    out = _run(tmp_path, html, {"activeTurn": _step(60.0)}, _OWN_TURN_WAIT)
+    assert out["waiting"]["line"].endswith("step 4 · waiting on qwen3.8-27b for 1 min")
+    assert out["tryHidden"] is True
+
+
+def test_a_step_running_tools_leaves_the_line_to_the_tool_painter(tmp_path, html):
+    out = _run(tmp_path, html, {"activeTurn": _step(420.0, "tools_pending")}, _OWN_TURN_WAIT)
+    assert out["waiting"]["line"] == "Your agent is thinking..."
+    assert out["tryHidden"] is True
+
+
+def test_a_server_without_step_detail_keeps_the_old_line(tmp_path, html):
+    """An older daemon sends no round: the page says exactly what it said before."""
+    row = {"turn_id": "t-1", "state": "inference_started", "age_s": 30.0, "stale": False}
+    out = _run(tmp_path, html, {"activeTurn": row}, _OWN_TURN_WAIT)
+    assert out["waiting"]["line"] == "Your agent is thinking..."
+
+
+def test_a_turn_from_another_window_names_its_step_too(tmp_path, html):
+    out = _run(tmp_path, html, {"activeTurn": _step(180.0)}, _SERVER_TURN)
+    line = out["after"]["line"]
+    assert "step 4 · waiting on qwen3.8-27b for 3 min" in line and "another window" in line
+    assert line.count("thinking") == 1
+
+
+
+def test_a_native_agent_step_names_its_model_too(tmp_path, html):
+    """Codex: a native round is noted on the server, so it is shown too."""
+    out = _run(tmp_path, html, {"activeTurn": _step(420.0, "native_started")}, _OWN_TURN_WAIT)
+    assert out["waiting"]["line"].endswith("step 4 · waiting on qwen3.8-27b for 7 min")
+    assert out["tryHidden"] is False
+
+
+_TRANSITIONS = r"""
+setQueueOwner("p-1");
+els["btn-try-model"]=new El("button"); els["btn-try-model"].hidden=true;
+const turn=sendTurn("build it");
+await settle();
+SCENARIO.activeTurn=SCENARIO.first; await pollStatus();
+const detailed=indicator();
+interruptRequested=true; setStatusLine("Stopping your agent's turn...");
+await pollStatus();
+const stopping=indicator();
+interruptRequested=false;
+await pollStatus();
+queueTurn("and also this", "and also this", {});
+await settle();
+const queued=indicator();
+SCENARIO.activeTurn=SCENARIO.second; await pollStatus();
+const afterTools=indicator();
+SCENARIO.activeTurn=null; SCENARIO.seats={running:2,waiting:1,chat_waiting:true,upgrade_url:null};
+await pollStatus();
+const buttonAfterEnd=els["btn-try-model"].hidden;
+gates[0].resolve({reply:"done"});
+await turn; await settle();
+console.log(JSON.stringify({detailed, queued, afterTools, stopping, buttonAfterEnd}));
+"""
+
+
+def test_the_detail_never_erases_a_queue_count_or_a_stop_and_the_button_clears(tmp_path, html):
+    """Codex: the inference->tools transition erased "1 waiting", the 1s render
+    overwrote "Stopping...", and the button outlived the turn into a seat wait."""
+    out = _run(tmp_path, html, {
+        "first": _step(420.0), "second": _step(430.0, "tools_pending"), "activeTurn": None,
+    }, _TRANSITIONS)
+    assert "waiting on qwen3.8-27b" in out["detailed"]["line"]
+    assert "waiting" in out["queued"]["line"] and "qwen" not in out["queued"]["line"]
+    assert out["afterTools"]["line"] == out["queued"]["line"]
+    assert out["stopping"]["line"] == "Stopping your agent's turn..."
+    assert out["buttonAfterEnd"] is True
+
+
+@pytest.mark.parametrize("model_id,shown", [
+    ("qwen/qwen3.8-27b:free", "qwen3.8-27b"),
+    ("openai/gpt-5.4", "gpt-5.4"),
+    ("anthropic/claude-sonnet-4.6", "claude-sonnet-4.6"),
+    ("nvidia/nemotron-3-ultra-550b-a55b:free", "nemotron-3-ultra-550b"),
+    ("plain-model", "plain-model"),
+])
+def test_a_model_is_named_as_a_person_would_say_it(tmp_path, html, model_id, shown):
+    body = "console.log(JSON.stringify({name: shortModelName(SCENARIO.id)}));"
+    assert _run(tmp_path, html, {"id": model_id}, body)["name"] == shown

@@ -101,23 +101,72 @@ repeats annually.
 ## 1b. Version and release gates — generated defaults are not a release strategy
 
 `mobile/android-release.json` is the checked-in Android release source of truth. It
-records the next candidate: package `io.tinyassets.app`, version code `5`, version
-name `1.0.4`, min SDK 24, target/compile SDK 36. Play has already consumed codes `3`
-(`1.0.2`) and `4` (`1.0.3`).
+records the next candidate: package `io.tinyassets.app`, version code `6`, version
+name `1.0.5`, min SDK 24, target/compile SDK 36. Play has already consumed codes `3`
+(`1.0.2`), `4` (`1.0.3`) and `5` (`1.0.4`).
 
-**Code 5 / `1.0.4` is not optional maintenance.** The app's public URL moved from
-`https://tinyassets.io/mcp/app` to `https://tinyassets.io/app` on 2026-09-30 with no
-redirect left behind (founder directive: no back-compat). `server.url` is COMPILED
-INTO the shell, so every installed `4 (1.0.3)` WebView opens a path that no longer
-serves. Shipping this bundle IS the fix for installed users — there is no
-server-side remedy, which is why the version bump belongs to the same change as
-the move.
+Code `5` / `1.0.4` carried the `/app` URL move (`server.url` is compiled into the
+shell, so installed `1.0.3` WebViews opened a path that no longer served) plus the
+first push-notification native change. It is live on the closed **Alpha** track.
 
-**The bump is checked in; the BUNDLE waits.** Code 5 must carry the push-notification
-native change (`@capacitor/push-notifications` + FCM config, owner-notify lane) as
-well, so testers get one update rather than two. Build the AAB only once both have
-landed on `main`, and do **not** bump again in between — see
-[`mobile-launch-handoff.md`](mobile-launch-handoff.md) for the ordering.
+### The closed-test update ladder (2026-10-02 → 2026-10-15)
+
+The 12-tester / 14-day closed test is a wall-clock window, and the tester-recruiting
+service's instructions require **2–3 app updates released during it**. The window's
+day 1 is 2026-10-02 (Play: "12 testers have currently been opted in for 1 day"), so
+production access can be applied for from **2026-10-15**. Each update is a real,
+small native improvement — the hosted web app ships instantly and needs no bundle,
+so a bundle exists only when the native shell changes.
+
+| Code | Name | Target date | Native change | State |
+|---|---|---|---|---|
+| 6 | `1.0.5` | 2026-10-04 (day 3) | the back gesture gets a policy: walk WebView history, then one confirmation before leaving, and leave without tearing down the signed-in WebView | checked in |
+| 7 | `1.0.6` | 2026-10-09 (day 8) | the bundled offline page becomes reachable — `server.errorPath` plus a Try again that returns to the live app | planned |
+| 8 | `1.0.7` | 2026-10-13 (day 12) | launch colour: the shell's window and splash background match what the app actually renders, so opening it has no colour flash | planned |
+
+Two candidates were dropped after reading the shipped dependency rather than
+assuming, and they are recorded here so nobody re-proposes them:
+
+- **Keyboard and safe-area insets are already handled natively.** Capacitor 8
+  registers `com.getcapacitor.plugin.SystemBars` from `Bridge` unconditionally.
+  It pads the WebView's parent by the IME inset while the keyboard is visible and
+  injects `--safe-area-inset-*` custom properties into the page. Anything left is
+  the page *using* those properties, which is a web change that ships instantly
+  and is not a bundle at all.
+- **Notification tap already opens the right request.** `MainActivity.notificationTarget`
+  has resolved `/app?request=<id>[&item=<id>]`, cold start included, since 1.0.4.
+
+`mobile/www/index.html` is the reason 1.0.6 exists: it is a finished offline and
+loading page that **nothing can currently display**, because Capacitor only falls
+back to the bundled `webDir` when `server.errorPath` is set, and it is not. An
+offline tester gets the WebView's own error page with the raw URL on it instead.
+
+Nothing in a window update may touch sign-in, `server.url`, or push. Bump the code
+and the name together, one update per bundle; a code Play has seen is refused even
+on a test track — and Play consumes a code on **upload**, not on rollout, so a
+bundle that is accepted and never published still burns its number.
+`CONSUMED_PLAY_VERSION_CODE` in `tests/test_app_url_is_apex_app.py` records the
+highest consumed code and is raised from the Console on upload, not on rollout.
+
+**The behaviour of each update is proved on a phone.** The release gate is a text
+gate over Java that ships verbatim: it can show the decision is present and
+cannot show it runs, and a disabled branch still carries every token it looks
+for. So one device check belongs to each bundle before the founder promotes it:
+
+| Code | Device check |
+|---|---|
+| 6 (`1.0.5`) | On the opening screen, press back: a toast appears and the app stays. Press back again inside ~2.5 s: the app leaves. Reopen from the launcher: the conversation is still there, not reloaded. Navigate into a second view first and back returns to the previous one instead. |
+| 7 (`1.0.6`) | Turn on airplane mode and cold-start: the TinyAssets offline page appears, not the WebView's error page, and Try again recovers once the network is back. |
+| 8 (`1.0.7`) | Cold-start and watch the first half second: no colour flash between splash and app. |
+
+**Build route: `Android release AAB` (`workflow_dispatch` on `main`), not the
+container.** The container recipe in `mobile/container/` builds without
+`ANDROID_GOOGLE_SERVICES_JSON_B64` unless the file is staged under
+`~/.tinyassets/android/`, and a bundle built that way logs `push DISABLED` and
+ships a shell whose notifications are dead — a regression against `1.0.4`. That
+secret exists in the repo (set 2026-10-01), so CI is the route that produces a
+faithful bundle. The workflow also refuses to sign any commit that is not already in
+`origin/main` history, so each update lands on `main` first and is built after.
 
 Before uploading any new AAB, increase `versionCode`; Play never accepts a code it has
 seen before, even on a test track. A `mobile-v<versionName>` tag must match the file's

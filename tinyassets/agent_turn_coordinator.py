@@ -13,6 +13,7 @@ import time
 from contextlib import AsyncExitStack
 from dataclasses import replace
 
+from tinyassets.engine_steering import session_of, turn_of
 from tinyassets.engine_tool_client import EngineToolError, open_engine_tools
 from tinyassets.exceptions import (
     AllProvidersExhaustedError,
@@ -21,13 +22,17 @@ from tinyassets.exceptions import (
     SelectedModelContextError,
 )
 from tinyassets.providers import agent_chat_codec as codec
-from tinyassets.providers.agent_capacity_boundary import capacity_boundary
+from tinyassets.providers.agent_capacity_boundary import (
+    capacity_boundary,
+    uniform_pre_generation_failure,
+)
 from tinyassets.providers.agent_inference import AgentInferenceRequest
 from tinyassets.providers.agent_model_plan import AgentModelPlan
 from tinyassets.providers.model_capacity import (
     MAX_FREE_SIBLING_RETRIES as _MAX_FREE_SIBLING_RETRIES,
 )
 from tinyassets.providers.native_agent_input import render_native_input
+from tinyassets.request_budget import pooled_budget
 from tinyassets.served_tools import granted_tools
 from tinyassets.storage.agent_native_records import NativeInput, NativeTerminal
 from tinyassets.storage.agent_turn_boot import BOOT
@@ -95,6 +100,7 @@ class AgentTurnCoordinator:
         self.router = router
         self.prompt = prompt
         self.system = system
+        self.inference_system = system
         self.context = universe_context
         self.config = config
         self.journal = None
@@ -113,6 +119,14 @@ class AgentTurnCoordinator:
         # one attempt (live 2026-09-25 read "attempts=1" for a dead end).
         self.free_sibling_retries = 0
         self.spent_attempts = []
+        # Replies that failed in flight (in-band source error, unreadable
+        # body) retried so far this turn, and the models already given their
+        # one same-model retry. See ``_next_after_bad_reply``.
+        self.bad_reply_retries = 0
+        self.bad_reply_models = set()
+        # How hard the rendered history is compacted to fit a small window;
+        # 0 renders every completed result whole. See ``_compact_to_fit``.
+        self.compaction = 0
 
     def _remaining(self, turn_deadline):
         """This turn's config with its absolute cap cut to what is left of the turn.
@@ -147,7 +161,8 @@ class AgentTurnCoordinator:
     def _begin(self, authority, reservation, config):
         candidate = self.adapter.round_input(
             authority, reservation, config, owner=self.owner, context=self.context,
-            prompt=self.prompt, system=self.system, native_input=None, kind="engine_inference",
+            prompt=self.prompt, system=self.inference_system,
+            native_input=None, kind="engine_inference",
         )
         self._accept(
             self.journal.begin_round(
@@ -160,6 +175,18 @@ class AgentTurnCoordinator:
             )
         )
         self.retrying_capacity = False
+        self._note_round()
+
+    def _note_round(self):
+        """Tell the status surface which step and model this turn is waiting on."""
+        try:
+            BOOT.note_round(
+                self.context.universe_dir.name, self.turn.turn_id,
+                round=len(self.turn.rounds),
+                model=getattr(self.context.model_selection, "model_id", "") or "",
+            )
+        except Exception:  # noqa: BLE001 - a status hint never fails a turn
+            _LOG.warning("could not note agent turn progress")
 
     def _history(self):
         history = []
@@ -207,6 +234,7 @@ class AgentTurnCoordinator:
             after_failed_inference=self.retrying_capacity,
         ))
         self.retrying_capacity = False
+        self._note_round()
 
     def _finish_native_failure(self, exc):
         terminal = NativeTerminal("indeterminate")
@@ -332,8 +360,35 @@ class AgentTurnCoordinator:
         except Exception:  # noqa: BLE001 - bookkeeping never replaces the outcome
             _LOG.warning("could not release agent turn boot ownership")
 
+    def _open_tools(self, timeout):
+        """The turn's tool session: the adapter's own, else the engine route."""
+        opener = getattr(self.adapter, "open_tools", None)
+        if opener is not None:
+            return opener(self, timeout=timeout)
+        actor_id, graph_id = self.adapter.engine_identity(self.context, self.config)
+        return open_engine_tools(
+            actor_id=actor_id, graph_id=graph_id,
+            enabled_tools=granted_tools(self.config), timeout=timeout,
+            **self.steering(),
+        )
+
+    def steering(self):
+        """The session and live turn the owner's mid-turn messages are bound to."""
+        return {
+            "session_key": session_of(self.config),
+            "turn": getattr(self.interrupt, "live_id", "") or turn_of(),
+        }
+
     def _interrupted(self):
         return self.interrupt is not None and self.interrupt.requested()
+
+    def _requests_sent(self):
+        """Model requests this turn sent, failed ones included: each one counts
+        against a free tier's daily allowance, so the owner is told the number."""
+        if self.turn is None:
+            return 0
+        return sum(1 for previous in self.turn.rounds
+                   if type(previous.candidate) is not NativeInput)
 
     def _completed_tools(self):
         """Names of the tool calls this turn's ledger proves completed, in order."""
@@ -372,6 +427,7 @@ class AgentTurnCoordinator:
         except BaseException as exc:
             try:
                 exc.turn_effects, exc.turn_stage, exc.turn_ref = self.effects_evidence()
+                exc.turn_requests = self._requests_sent()
                 if isinstance(exc, TurnInterrupted):
                     exc.completed_tools = self._completed_tools()
                 self._carry_spent_attempts(exc)
@@ -387,6 +443,19 @@ class AgentTurnCoordinator:
             raise
         finally:
             self._release_turn()
+
+    def _daily_budget(self):
+        """Refresh advisory evidence without manufacturing provider exhaustion.
+
+        Installed caps do not identify this account's tier. In particular, a
+        successful request beyond the free tier is how local evidence learns
+        a larger allowance; stopping at that estimate prevents the correction.
+        Actual capacity failures still use the existing exhaustion policy.
+        """
+        return pooled_budget(
+            self.context.universe_dir.parent, self.owner, self.context,
+            exhaustion=self.exhaustion,
+        )
 
     async def _run(self):
         self.owner = self._check_scope()
@@ -421,26 +490,27 @@ class AgentTurnCoordinator:
                     # every settled round and tool result kept as it is.
                     if self.interrupt is not None:
                         self.interrupt.check()
+                    budget = self._daily_budget()
                     self.execution_kind = self.router.selected_agent_execution_kind(
                         self.context.model_selection,
                     )
                     if self.execution_kind == "engine_inference":
                         if engine is None:
-                            actor_id, graph_id = self.adapter.engine_identity(
-                                self.context, self.config,
+                            engine = await stack.enter_async_context(
+                                self._open_tools(timeout),
                             )
-                            engine = await stack.enter_async_context(open_engine_tools(
-                                actor_id=actor_id, graph_id=graph_id,
-                                enabled_tools=granted_tools(self.config), timeout=timeout,
-                            ))
                         config = replace(
                             self._remaining(turn_deadline),
                             agent_request=AgentInferenceRequest(
                                 tools=codec.tool_definitions(engine.tools),
-                                history=self._history(),
+                                history=codec.compact_history(
+                                    self._history(), self.compaction,
+                                ),
                             ),
                         )
                         prompt, system, observer = self.prompt, self.system, self._begin
+                        if budget is not None:
+                            system += "\n\n" + budget.prompt_line()
                     else:
                         self.native_input = render_native_input(
                             self.prompt, self.system, self._history(),
@@ -451,6 +521,7 @@ class AgentTurnCoordinator:
                             selected_model=None,
                         )
                         observer = self._begin_native
+                    self.inference_system = system
                     try:
                         inference = self.adapter.infer(
                             router=self.router, prompt=prompt, system=system, config=config,
@@ -486,6 +557,9 @@ class AgentTurnCoordinator:
                             or self._next_after_refusal(exc)
                             or self._next_after_overflow(exc)
                         ):
+                            continue
+                        if self._next_after_bad_reply(exc):
+                            await self._pause_before_retry(turn_deadline)
                             continue
                         raise
                     if self.execution_kind == "native_agent":
@@ -552,7 +626,18 @@ class AgentTurnCoordinator:
                             )
                         )
                         try:
-                            result = await engine.call(tool.request.name, tool.request.arguments())
+                            if getattr(engine, "takes_op_id", False):
+                                # The journal position names the operation, so a
+                                # lost reply is asked about, never re-run.
+                                result = await engine.call(
+                                    tool.request.name, tool.request.arguments(),
+                                    op_id=f"{self.turn.turn_id}:{len(self.turn.rounds)}"
+                                          f":{call_ordinal}",
+                                )
+                            else:
+                                result = await engine.call(
+                                    tool.request.name, tool.request.arguments(),
+                                )
                         except BaseException as exc:
                             failure = (
                                 "not_sent"
@@ -673,6 +758,7 @@ class AgentTurnCoordinator:
                 return
             self.router.cool_source(
                 failed.connection_id, retry_after_s=boundary.retry_after_s,
+                reason=boundary.failure_class or "",
             )
         except Exception:  # noqa: BLE001 - cooling is hygiene, never the failure
             _LOG.warning("could not cool a spent free source")
@@ -750,6 +836,8 @@ class AgentTurnCoordinator:
 
         failed = self.context.model_selection
         self.visited.add(failed)
+        # Kept to stay on THIS model if no larger one fits (``_compact_to_fit``).
+        before = (self.exhaustion, self.plan, getattr(self.adapter, "min_context", None))
         if self.plan is None:
             # The work adapter raises every interaction its order reads, for
             # THIS turn. No Exhaustion: a work run's exhaustion is shared by all
@@ -774,12 +862,130 @@ class AgentTurnCoordinator:
             )
         candidate = self._next_candidate()
         if candidate is None or candidate in self.visited:
+            self.exhaustion, self.plan = before[0], before[1]
+            if self.plan is None and hasattr(self.adapter, "min_context"):
+                self.adapter.min_context = before[2]
+            if self._compact_to_fit():
+                return True
             self._leave_hot_source(None)
             return False
         self._leave_hot_source(candidate)
         self.context = replace(self.context, model_selection=candidate)
         self.retrying_capacity = self.turn.state != "ready"
         return True
+
+    #: Compaction levels: (rounds kept whole at the end, result characters,
+    #: argument-string characters) for every older round. Level 3 trims every
+    #: round, the last too. Three is the number of steps a small window needs to
+    #: drop from "a long build" to "the latest work, and the head and tail of the rest".
+    COMPACTION_LEVELS = codec.COMPACTION_LEVELS
+
+    def _compact_to_fit(self):
+        """Stay on this model and render older tool results shorter.
+
+        Only when no accepted model with a larger window exists (the caller
+        tried that first), and only while a stronger level still shrinks what
+        is sent. The journal keeps every result whole: this changes what the
+        model is SHOWN, never what ran or what is recorded, and a trimmed result
+        says so and that calling the tool again returns it in full.
+
+        Live 2026-09-26 (turn 8dc8ada5) a free model's turn died after four
+        tool rounds with nothing larger in the owner's order.
+        """
+        if not getattr(self.adapter, "relaunches_same_model", False):
+            return False
+        history = self._history()
+        current = codec.compact_history(history, self.compaction)
+        for level in range(self.compaction + 1, len(self.COMPACTION_LEVELS) + 1):
+            if codec.history_size(codec.compact_history(history, level)) < codec.history_size(
+                current,
+            ):
+                self.compaction = level
+                self.retrying_capacity = self.turn.state != "ready"
+                return True
+        return False
+
+    #: Classes of a reply that FAILED in flight: the source reported an error in
+    #: place of a reply, sent one we could not read, or its stream stopped
+    #: arriving. Never a reply that is merely slow: a streamed reply that keeps
+    #: arriving is not cut, and a non-streamed one that outruns the broker's
+    #: ceiling (``provider_reply_timeout``) is NOT retried or moved off -- on a
+    #: capped free tier, re-asking a slow model spends another of the day's
+    #: requests on the same slowness (founder, 2026-10-02).
+    BAD_REPLY_CLASSES = frozenset({
+        "provider_reply_error", "provider_unreadable_reply", "provider_stalled",
+    })
+    #: Per-turn bound on those retries, across every model. Two -- this model
+    #: once, then at most one other accepted model -- because every request
+    #: counts against a free tier's daily allowance, and the notice says how
+    #: many the turn used.
+    MAX_BAD_REPLY_RETRIES = 2
+    #: Seconds before each retry; an upstream error is usually a moment's.
+    BAD_REPLY_BACKOFF_S = (2.0, 5.0, 10.0)
+
+    def _next_after_bad_reply(self, exc):
+        """Retry a reply that failed in flight: this model once, then the next one.
+
+        Live 2026-09-30 and 2026-10-02, the free-only account: nemotron served
+        7-19 good tool rounds of a build, then OpenRouter answered HTTP 200 with
+        an error object in place of the reply, and the turn ended there -- every
+        model in the order had already been visited, so only a retry of the SAME
+        model could have saved it.
+
+        Safe to repeat because a failed engine inference ran nothing: a tool is
+        dispatched only from a reply the journal accepted, and the history the
+        retry renders is the journal's completed rounds -- no tool is re-run.
+        What a retry can cost is a second generation, so each one is a fresh
+        request under the same per-attempt ceilings and the turn takes at most
+        ``MAX_BAD_REPLY_RETRIES`` of them. The NEXT model comes only from the
+        owner's accepted order, model-scoped (the reply is one model's), so this
+        never widens authority. Native agents are out of scope: their failures
+        can follow real work.
+        """
+        if (
+            self.execution_kind != "engine_inference"
+            or not getattr(self.adapter, "relaunches_same_model", False)
+            or not isinstance(exc, AllProvidersExhaustedError)
+            or self.turn.state not in {"ready", "held_transport"}
+            or self.bad_reply_retries >= self.MAX_BAD_REPLY_RETRIES
+        ):
+            return False
+        attempts = tuple(exc.attempts or ())
+        if not attempts or any(a.failure_class not in self.BAD_REPLY_CLASSES for a in attempts):
+            return False
+        failed = self.context.model_selection
+        if failed in self.bad_reply_models:
+            if not self._has_candidate_order():
+                return False
+            from tinyassets.providers.model_policy import Exhaustion
+
+            self.visited.add(failed)
+            self.exhaustion = self.exhaustion + (Exhaustion("model", failed),)
+            candidate = self._next_candidate()
+            if candidate is None or candidate in self.visited:
+                # Ending exactly as a plain failure would: a slow or broken
+                # reply is no reason to cool a source the owner retries next.
+                return False
+            self._leave_hot_source(candidate)
+            self.context = replace(self.context, model_selection=candidate)
+        self.bad_reply_models.add(failed)
+        self.bad_reply_retries += 1
+        self.spent_attempts += list(attempts)
+        self.retrying_capacity = self.turn.state != "ready"
+        return True
+
+    async def _pause_before_retry(self, turn_deadline):
+        """A short, growing wait before a bad-reply retry, inside the turn's time.
+
+        Polled, so the owner's Stop is answered within a quarter second rather
+        than after the whole wait; the loop's own check then ends the turn.
+        """
+        index = min(self.bad_reply_retries, len(self.BAD_REPLY_BACKOFF_S)) - 1
+        until = time.monotonic() + min(
+            self.BAD_REPLY_BACKOFF_S[index], max(turn_deadline - time.monotonic(), 0.0),
+        )
+        while not self._interrupted() and time.monotonic() < until:
+            await asyncio.sleep(min(0.25, max(until - time.monotonic(), 0.0)))
 
     def _advance_past(self, exc, failure_class, scope):
         """Exclude the failed selection at ``scope`` and take the next candidate.
@@ -797,14 +1003,10 @@ class AgentTurnCoordinator:
         ):
             return False
         attempts = tuple(exc.attempts or ())
-        if not attempts or any(a.failure_class != failure_class for a in attempts):
-            return False
-        if any(
-            getattr(a, "side_effect_state", "none") not in ("", "none")
-            for a in attempts
-        ):
-            # A round that may have acted is not replayable on another model; the
-            # turn's own held state is the honest answer.
+        # Shared with the workflow run's loop, so a refusal means the same thing
+        # on both surfaces. A round that may have acted is not replayable on
+        # another model; the turn's own held state is the honest answer.
+        if not uniform_pre_generation_failure(attempts, failure_class):
             return False
         failed = self.context.model_selection
         self.visited.add(failed)

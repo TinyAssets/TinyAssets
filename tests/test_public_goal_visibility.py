@@ -46,6 +46,22 @@ def _no_env_identity(monkeypatch):
     auth_middleware(None)
 
 
+def _readers_universe(base, uid):
+    """A universe the reader may read. These tests are about which GOALS show
+    inside a readable universe. A bare directory is no universe at all: an
+    unowned universe grants nothing (2026-09-02), so reading it was denied and
+    the goal assertions never ran."""
+    from tinyassets.daemon_server import grant_universe_access
+
+    universe_dir = base / uid
+    universe_dir.mkdir()
+    grant_universe_access(
+        base, universe_id=uid, actor_id="authenticated-reader",
+        permission="admin", granted_by="authenticated-reader",
+    )
+    return universe_dir
+
+
 @pytest.fixture
 def goal_catalog(tmp_path, monkeypatch):
     base = tmp_path / "output"
@@ -742,8 +758,7 @@ def test_universe_goal_record_reads_exclude_non_public_subscriptions(
     action,
 ):
     uid = "subscriber-universe"
-    universe_dir = goal_catalog["base"] / uid
-    universe_dir.mkdir()
+    universe_dir = _readers_universe(goal_catalog["base"], uid)
     repo = tmp_path / "repo"
     repo.mkdir()
     (repo / "bids").mkdir()
@@ -768,8 +783,7 @@ def test_universe_queue_excludes_non_public_goal_tasks(
     monkeypatch,
 ):
     uid = "queue-universe"
-    universe_dir = goal_catalog["base"] / uid
-    universe_dir.mkdir()
+    universe_dir = _readers_universe(goal_catalog["base"], uid)
     monkeypatch.setenv("UNIVERSE_SERVER_DEFAULT_UNIVERSE", uid)
     for label, goal_id in (
         ("public", goal_catalog["public"]["goal_id"]),
@@ -814,8 +828,7 @@ def test_universe_ledger_excludes_non_public_goal_records(
     monkeypatch,
 ):
     uid = "ledger-universe"
-    universe_dir = goal_catalog["base"] / uid
-    universe_dir.mkdir()
+    universe_dir = _readers_universe(goal_catalog["base"], uid)
     monkeypatch.setenv("UNIVERSE_SERVER_DEFAULT_UNIVERSE", uid)
     entries = [
         {

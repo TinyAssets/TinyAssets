@@ -76,10 +76,6 @@ def test_module_exposes_expected_public_names():
 # ── _ESCROW_ACTIONS dispatch table ──────────────────────────────────────────
 
 
-def test_escrow_actions_table_has_8_handlers():
-    assert len(_ESCROW_ACTIONS) == 8
-
-
 def test_escrow_actions_keys():
     expected = {
         "escrow_lock", "escrow_release", "escrow_refund", "escrow_inspect",
@@ -91,10 +87,6 @@ def test_escrow_actions_keys():
 # ── _OUTCOME_ACTIONS dispatch table ─────────────────────────────────────────
 
 
-def test_outcome_actions_table_has_3_handlers():
-    assert len(_OUTCOME_ACTIONS) == 3
-
-
 def test_outcome_actions_keys():
     assert set(_OUTCOME_ACTIONS.keys()) == {"record_outcome", "list_outcomes", "get_outcome"}
 
@@ -102,23 +94,11 @@ def test_outcome_actions_keys():
 # ── _ATTRIBUTION_ACTIONS dispatch table ─────────────────────────────────────
 
 
-def test_attribution_actions_table_has_2_handlers():
-    assert len(_ATTRIBUTION_ACTIONS) == 2
-
-
 def test_attribution_actions_keys():
     assert set(_ATTRIBUTION_ACTIONS.keys()) == {"record_remix", "get_provenance"}
 
 
 # ── _GOAL_ACTIONS dispatch table ────────────────────────────────────────────
-
-
-def test_goal_actions_table_has_14_handlers():
-    # 9 base actions + archive_consultation (pre-existing on main) +
-    # run_canonical (PR-127 M6 cutover Step 4) +
-    # set_selector (DESIGN-008 user-buildable selector primitive) +
-    # define_protocol + get_protocol (goal-bound branch protocols) = 14.
-    assert len(_GOAL_ACTIONS) == 14
 
 
 def test_goal_actions_keys():
@@ -195,10 +175,6 @@ def test_goals_unknown_action_lists_directory_aliases():
 # ── _GATES_ACTIONS dispatch table ───────────────────────────────────────────
 
 
-def test_gates_actions_table_has_14_handlers():
-    assert len(_GATES_ACTIONS) == 14
-
-
 def test_gates_actions_keys():
     expected = {
         "define_ladder", "get_ladder", "claim", "retract", "list",
@@ -210,10 +186,6 @@ def test_gates_actions_keys():
         "record_conformance_pack", "list_conformance_packs", "get_conformance_pack",
     }
     assert set(_GATES_ACTIONS.keys()) == expected
-
-
-def test_gate_event_actions_table_has_6_handlers():
-    assert len(_GATE_EVENT_ACTIONS) == 6
 
 
 def test_gate_event_actions_keys():

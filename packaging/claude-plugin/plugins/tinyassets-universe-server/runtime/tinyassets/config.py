@@ -41,7 +41,7 @@ class UniverseConfig:
 
     None = no stored allowlist. Legacy/contextless routing preserves the full
     fallback chain, while an explicit requester-universe call derives a strict
-    ceiling from that universe's selected writer/judge so it cannot borrow the
+    ceiling from that command center's selected writer/judge so it cannot borrow the
     process-global chain. A list = strict allowlist; the
     router filters every fallback chain (writer/judge/extract) and the
     judge ensemble down to providers whose name appears here. If the
@@ -69,7 +69,7 @@ class UniverseConfig:
     # Engine source (how this universe's intelligence is powered) — set by
     # `universe action=set_engine`. The founder chooses at onboard.
     engine_source: str = "byo_api_key"
-    """How this universe sources its engine: ``byo_api_key`` (default; a BYO API
+    """How this command center sources its engine: ``byo_api_key`` (default; a BYO API
     key in the vault) / ``requester_local`` / ``self_hosted_endpoint`` /
     ``market_rented`` / ``host_daemon``. The BYO-API-key path is fully wired end-to-end; the others
     persist the founder's choice (deeper market-matching / endpoint-routing
@@ -161,19 +161,34 @@ def _read_config_document(
     return load_untrusted_yaml(raw, max_bytes=MAX_CONFIG_BYTES)
 
 
+#: ``config.yaml`` exists but could not be parsed (see `_load_preferences`).
+UNREADABLE = object()
+
+
 def load_universe_config(universe_path: str | Path) -> UniverseConfig:
-    """Load config.yaml from a universe directory.
+    """Load config.yaml, with authority read only from the platform record.
 
-    Parameters
-    ----------
-    universe_path : str or Path
-        Root directory of the universe.
+    The preference fields come from ``config.yaml``. The authority fields
+    (``tinyassets.provider_authority.AUTHORITY_FIELDS``) come only from the
+    platform record, whatever ``config.yaml`` says (command-center-cutover E6).
+    """
+    from dataclasses import replace
 
-    Returns
-    -------
-    UniverseConfig
-        Parsed config with defaults for missing fields.  Returns
-        a default config if the file doesn't exist or can't be parsed.
+    from tinyassets.provider_authority import AUTHORITY_FIELDS, authority_for
+
+    preferences, data = _load_preferences(universe_path)
+    authority = authority_for(universe_path, data)
+    return replace(preferences, **{name: authority[name] for name in AUTHORITY_FIELDS})
+
+
+def _load_preferences(universe_path: str | Path) -> tuple[UniverseConfig, Any]:
+    """The preference half of ``config.yaml`` (authority stripped), and its raw data.
+
+    Returns ``(config, data)``: ``config`` has defaults for missing fields (and is
+    all defaults when the file is absent or cannot be parsed); ``data`` is the
+    parsed mapping for the one-time authority migration, ``None`` when there is no
+    config.yaml, or ``UNREADABLE`` when one exists but cannot be parsed (the
+    migration then waits rather than record defaults over a real assignment).
     """
     try:
         data = _read_config_document(universe_path)
@@ -182,22 +197,25 @@ def load_universe_config(universe_path: str | Path) -> UniverseConfig:
             "PyYAML not installed; cannot read config.yaml. "
             "Install with: pip install pyyaml"
         )
-        return UniverseConfig()
+        return UniverseConfig(), UNREADABLE
     except (OSError, UnicodeDecodeError) as e:
         # A linked, oversized, alias-bearing or malformed config.yaml is never
         # parsed into the shared daemon: defaults, and a note -- never an
         # exception that breaks the turn (harness S1 review round 2).
         logger.warning("config.yaml in %s refused (%s); using defaults", universe_path, e)
-        return UniverseConfig()
+        return UniverseConfig(), UNREADABLE
     if data is None:
         logger.debug("No config.yaml in %s; using defaults", universe_path)
-        return UniverseConfig()
+        return UniverseConfig(), None
 
     if not isinstance(data, dict):
         logger.warning("config.yaml is not a mapping; using defaults")
-        return UniverseConfig()
+        return UniverseConfig(), UNREADABLE
 
-    return _build_config(data)
+    from tinyassets.provider_authority import AUTHORITY_FIELDS
+
+    preferences = {key: value for key, value in data.items() if key not in AUTHORITY_FIELDS}
+    return _build_config(preferences), data
 
 
 def _build_config(data: dict[str, Any]) -> UniverseConfig:
@@ -248,6 +266,12 @@ def write_universe_config_fields(
 
     import yaml
 
+    from tinyassets.provider_authority import AUTHORITY_FIELDS, authority_for, record_path
+
+    refused = sorted(set(fields) & set(AUTHORITY_FIELDS))
+    if refused:
+        # Authority never goes into the agent-editable file (provider_authority).
+        raise ValueError(f"authority fields belong in the platform record: {refused}")
     config_file = Path(universe_path) / "config.yaml"
     data: dict[str, Any] = {}
     try:
@@ -259,6 +283,11 @@ def write_universe_config_fields(
             "Existing config.yaml at %s unreadable (%s); rewriting fresh",
             config_file, e,
         )
+    authority_for(universe_path, data)
+    if any(name in data for name in AUTHORITY_FIELDS) and not record_path(universe_path).is_file():
+        raise OSError("cannot strip legacy authority before its platform record exists")
+    for name in AUTHORITY_FIELDS:
+        data.pop(name, None)
     data.update(fields)
 
     config_file.parent.mkdir(parents=True, exist_ok=True)
@@ -373,13 +402,21 @@ def write_provider_assignment_projection(
         if not isinstance(loaded, dict):
             raise ValueError("existing config.yaml must be a mapping")
         data = loaded
-    data.update({
+    # Authority goes to the platform record only (tinyassets.provider_authority);
+    # config.yaml keeps the preferences and loses any authority it still held.
+    from tinyassets.provider_authority import AUTHORITY_FIELDS, write_record
+
+    write_record(universe_path, {
         "allowed_providers": allowed,
         "engine_assignment_generation": generation,
         "engine_assignment_state": normalized_state,
+        "provider_authority_bindings": bindings,
+    })
+    for name in AUTHORITY_FIELDS:
+        data.pop(name, None)
+    data.update({
         "engine_source": engine_source,
         "preferred_writer": preferred,
-        "provider_authority_bindings": bindings,
     })
     config_file.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp_path = tempfile.mkstemp(

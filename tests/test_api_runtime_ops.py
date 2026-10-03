@@ -53,10 +53,6 @@ def test_module_exposes_expected_public_names():
 # ── _PROJECT_MEMORY_ACTIONS dispatch table ──────────────────────────────────
 
 
-def test_project_memory_actions_table_has_3_handlers():
-    assert len(_PROJECT_MEMORY_ACTIONS) == 3
-
-
 def test_project_memory_actions_keys():
     expected = {"project_memory_get", "project_memory_set", "project_memory_list"}
     assert set(_PROJECT_MEMORY_ACTIONS.keys()) == expected
@@ -74,19 +70,11 @@ def test_project_memory_write_actions_subset_of_actions():
 # ── _INSPECT_DRY_ACTIONS dispatch table ─────────────────────────────────────
 
 
-def test_inspect_dry_actions_table_has_2_handlers():
-    assert len(_INSPECT_DRY_ACTIONS) == 2
-
-
 def test_inspect_dry_actions_keys():
     assert set(_INSPECT_DRY_ACTIONS.keys()) == {"dry_inspect_node", "dry_inspect_patch"}
 
 
 # ── _MESSAGING_ACTIONS dispatch table ───────────────────────────────────────
-
-
-def test_messaging_actions_table_has_3_handlers():
-    assert len(_MESSAGING_ACTIONS) == 3
 
 
 def test_messaging_actions_keys():
@@ -95,11 +83,6 @@ def test_messaging_actions_keys():
 
 
 # ── _SCHEDULER_ACTIONS dispatch table ───────────────────────────────────────
-
-
-def test_scheduler_actions_table_is_the_event_bus_only():
-    """Schedules are retired; the three event-subscription actions remain."""
-    assert len(_SCHEDULER_ACTIONS) == 3
 
 
 def test_scheduler_actions_keys():

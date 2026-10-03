@@ -426,6 +426,9 @@ def prepare_owned_model_plan(
     all_models, admitted, snapshots, source_policies = [], [], [], []
     interaction = Interaction(True, frozenset({"text"}), frozenset())
     ranking_sources = set()
+    from tinyassets.provider_authority import current as current_authority
+
+    config = current_authority(universe, config)
     allowed = None if config is None else config.allowed_providers
     for provider, chain in chains:
         member = next(m for m in chain[0].candidates if m.provider == provider)
@@ -433,23 +436,47 @@ def prepare_owned_model_plan(
             if provider in _PROVIDER_SERVICE:
                 native_snapshot = None
                 if member.access.model_scope == "discovered":
-                    from tinyassets.providers.native_discovery import discover_native_models_sync
+                    # A DISPLAY read takes whatever is warm and asks for a
+                    # refresh in the background; it never runs discovery. That
+                    # is what stops one slow or expired source delaying the
+                    # selection of a different accepted one
+                    # (concerns/2026-09-16-model-picker-global-discovery-delay).
+                    #
+                    # A served turn still discovers inline: it is about to
+                    # launch, and a plan built from a catalogue it has not
+                    # confirmed is not a saving. Execution's own fresh check in
+                    # `prepare_selected_model` is unchanged either way.
+                    if allow_empty:
+                        from tinyassets.providers.shortlist_refresh import SHORTLIST_CACHE
 
-                    try:
-                        native_snapshot = discover_native_models_sync(
-                            base_path=base, owner_user_id=owner,
-                            universe_id=universe.name, provider=provider,
+                        native_snapshot, pending = SHORTLIST_CACHE.get(
+                            base=base, owner=owner, universe_id=universe.name,
+                            provider=provider,
                         )
                         if native_snapshot is None:
+                            rejected.append(Ineligible(ModelRef(provider, ""), pending,
+                                                       scope="source"))
+                    else:
+                        from tinyassets.providers.native_discovery import (
+                            discover_native_models_sync,
+                        )
+
+                        try:
+                            native_snapshot = discover_native_models_sync(
+                                base_path=base, owner_user_id=owner,
+                                universe_id=universe.name, provider=provider,
+                            )
+                            if native_snapshot is None:
+                                rejected.append(Ineligible(
+                                    ModelRef(provider, ""), "native_enumeration_unsupported",
+                                    scope="source",
+                                ))
+                        except ProviderError:
+                            # Enumeration is not necessary to run the provider's
+                            # own default. Preserve that lane and expose the gap.
                             rejected.append(Ineligible(
-                                ModelRef(provider, ""), "native_enumeration_unsupported",
-                                scope="source",
-                            ))
-                    except ProviderError:
-                        # Enumeration is not necessary to run the provider's
-                        # own default. Preserve that lane and expose the gap.
-                        rejected.append(Ineligible(ModelRef(provider, ""),
-                                                   "native_catalogue_unavailable", scope="source"))
+                                ModelRef(provider, ""), "native_catalogue_unavailable",
+                                scope="source"))
                 catalog = _native_models(
                     base, universe, owner, member, native_snapshot=native_snapshot,
                 )

@@ -66,6 +66,12 @@ from tinyassets.storage import (  # noqa: F401  (re-exports for in-flight R7 spl
     resolve_bearer_token,
     universe_id_from_path,
 )
+from tinyassets.universe_files import (
+    MAX_CONFIG_BYTES,
+    MAX_PLATFORM_FILE_BYTES,
+    read_data_path,
+    write_data_path,
+)
 
 # The symbols above are the shared-helpers surface. Re-exported here
 # so existing `tinyassets.daemon_server` callers keep working without
@@ -709,7 +715,7 @@ def ensure_default_author(base_path: str | Path) -> dict[str, Any]:
     return register_author(
         base_path,
         display_name="House Daemon",
-        soul_text="Default house daemon for the host-run universe server.",
+        soul_text="Default house daemon for the host-run command center server.",
         created_by="system",
         metadata={"auto_created": True},
     )
@@ -866,12 +872,12 @@ def sync_universes_from_filesystem(base_path: str | Path) -> None:
             continue
         display_name = entry.name
         meta_path = entry / "universe.json"
-        if meta_path.exists():
-            try:
-                meta = json.loads(meta_path.read_text(encoding="utf-8"))
-                display_name = str(meta.get("name", entry.name))
-            except (OSError, json.JSONDecodeError):
-                display_name = entry.name
+        try:
+            raw_meta = read_data_path(meta_path, max_bytes=MAX_CONFIG_BYTES)
+            if raw_meta is not None:
+                display_name = str(json.loads(raw_meta.decode("utf-8")).get("name", entry.name))
+        except (OSError, ValueError, AttributeError):
+            display_name = entry.name
         ensure_universe_registered(
             base_path,
             universe_id=entry.name,
@@ -2386,11 +2392,19 @@ def _bootstrap_notes_from_json(universe_path: str | Path) -> None:
             "SELECT 1 FROM universe_notes WHERE universe_id = ? LIMIT 1",
             (universe_id,),
         ).fetchone()
-        if existing is not None or not path.exists():
+        if existing is not None:
+            return
+        # Link-free: a planted ``<name>.json -> /data/<other>/...`` must not
+        # import another universe's file. A REFUSED read raises: the caller is
+        # about to add a row and mirror the table back over this file, so
+        # "nothing to import" would replace its contents with one record.
+        data = read_data_path(path, max_bytes=MAX_PLATFORM_FILE_BYTES)
+        if data is None:
             return
         try:
-            raw = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
+            raw = json.loads(data.decode("utf-8"))
+        except ValueError as exc:
+            _logger.warning("not importing %s: %s", path.name, exc)
             return
         if not isinstance(raw, list):
             return
@@ -2437,11 +2451,19 @@ def _bootstrap_payload_table_from_json(
             f"SELECT 1 FROM {table} WHERE universe_id = ? LIMIT 1",
             (universe_id,),
         ).fetchone()
-        if existing is not None or not path.exists():
+        if existing is not None:
+            return
+        # Link-free: a planted ``<name>.json -> /data/<other>/...`` must not
+        # import another universe's file. A REFUSED read raises: the caller is
+        # about to add a row and mirror the table back over this file, so
+        # "nothing to import" would replace its contents with one record.
+        data = read_data_path(path, max_bytes=MAX_PLATFORM_FILE_BYTES)
+        if data is None:
             return
         try:
-            raw = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
+            raw = json.loads(data.decode("utf-8"))
+        except ValueError as exc:
+            _logger.warning("not importing %s: %s", path.name, exc)
             return
         if not isinstance(raw, list):
             return
@@ -2475,12 +2497,7 @@ def _mirror_notes_json(universe_path: str | Path) -> None:
             (universe_id,),
         ).fetchall()
     payload = [_note_from_row(row) for row in rows]
-    path = _notes_json_path(universe_path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps(payload, indent=2) + "\n",
-        encoding="utf-8",
-    )
+    write_data_path(_notes_json_path(universe_path), json.dumps(payload, indent=2) + "\n")
 
 
 def _mirror_payload_table_to_json(
@@ -2502,8 +2519,7 @@ def _mirror_payload_table_to_json(
             (universe_id,),
         ).fetchall()
     payload = [_json_loads(row["payload_json"], {}) for row in rows]
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    write_data_path(path, json.dumps(payload, indent=2) + "\n")
 
 
 def _note_from_row(row: sqlite3.Row) -> dict[str, Any]:
@@ -2599,9 +2615,9 @@ def _branch_def_from_row(row: sqlite3.Row) -> dict[str, Any]:
     }
 
 
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ═══════════════════════════════════════════════════════════════════════════
 # Community Branches — CRUD
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ═══════════════════════════════════════════════════════════════════════════
 
 
 def _branch_definition_insert(
@@ -3008,9 +3024,9 @@ def fork_branch_definition(
     return save_branch_definition(base_path, branch_def=forked.to_dict())
 
 
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ═══════════════════════════════════════════════════════════════════════════
 # Phase 5: Goals — first-class shared primitive above Branches
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ═══════════════════════════════════════════════════════════════════════════
 
 
 _logger = logging.getLogger(__name__)
@@ -3980,9 +3996,9 @@ def goal_archive_consultation(
     }
 
 
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ═══════════════════════════════════════════════════════════════════════════
 # Phase 6: Outcome gates — ladder on goals, claims per branch
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ═══════════════════════════════════════════════════════════════════════════
 
 
 def _gate_claim_from_row(row: sqlite3.Row) -> dict[str, Any]:
@@ -4817,9 +4833,9 @@ def _preview(text: str, max_len: int) -> str:
     return collapsed[: max_len - 1] + "…"
 
 
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ═══════════════════════════════════════════════════════════════════════════
 # Memory-scope Stage 2a — universe_acl CRUD
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ═══════════════════════════════════════════════════════════════════════════
 #
 # A universe with zero ACL rows is public; a universe with at least one
 # row is private and only the listed actors may access it. Enforcement

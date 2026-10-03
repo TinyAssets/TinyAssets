@@ -69,7 +69,7 @@ def test_server_instructions_point_to_control_station_prompt() -> None:
     )
     # Handshake points at the canonical prompt; it must not carry a hard-rule
     # block itself.
-    assert "universe isolation" in lower
+    assert "command center isolation" in lower
     assert "hard rule" not in lower
     assert "never transfer" not in lower
     assert len(text) < 1600
@@ -242,8 +242,8 @@ def test_control_station_prompt_has_cross_universe_section() -> None:
     from tinyassets.api.prompts import _CONTROL_STATION_PROMPT
     text = _CONTROL_STATION_PROMPT.lower()
     # Named section header.
-    assert "cross-universe" in text
-    assert "universe identifier" in text
+    assert "isolation between command centers" in text
+    assert "command center identifier" in text
     # Transfer prohibition.
     assert "never carry facts" in text or "never transfer" in text
     # Ground-truth guidance — tool output over chat memory.

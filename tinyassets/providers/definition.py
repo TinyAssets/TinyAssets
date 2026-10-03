@@ -304,7 +304,7 @@ def _verified_definition(
         )
     if expect_universe is not None and definition.universe_id != expect_universe:
         raise ProviderDefinitionError(
-            "provider definition universe mismatch (row in the wrong bucket)"
+            "provider definition command center mismatch (row in the wrong bucket)"
         )
     return definition
 

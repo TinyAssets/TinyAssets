@@ -1,16 +1,16 @@
-"""Persona resolution — the named projection of a universe's *learned* self.
+"""Persona resolution — the named projection of a command center's *learned* self.
 
 Design note: docs/design-notes/2026-06-25-blank-slate-universe-brain.md.
 
-The persona is the universe brain speaking as itself. Its self-understanding
+The persona is the command center brain speaking as itself. Its self-understanding
 comes from the brain's **self-model** — a per-universe OKF bundle the brain
 authors about itself (``tinyassets.universe_self_model``) — NOT from a hand-fed
 ``soul.purpose``. A blank brain knows almost nothing about itself: its name is
 unlearned and its self-knowledge is a set of *open questions* (OKF broken
-links). As it learns from its founder + its universe's activity, it writes
+links). As it learns from its founder + its command center's activity, it writes
 concept files and those questions become *known*.
 
-The soul stays the universe's **operational** state (loop branch, authority,
+The soul stays the command center's **operational** state (loop branch, authority,
 the founder's premise/direction). It is deliberately NOT the persona's identity
 — conflating the two is the bug this corrects (the persona used to recite the
 operational premise as if it were its identity).
@@ -48,7 +48,7 @@ def read_persona_voice(universe_dir: Path | str) -> str:
 
     A missing or blank file means "no fork" — the platform default, not an
     error. Unreadable content is likewise treated as unforked: a voice fork is
-    cosmetic, so a read failure must never break the universe's ability to speak.
+    cosmetic, so a read failure must never break the command center's ability to speak.
     """
     from tinyassets.universe_files import read_universe_text
 
@@ -60,7 +60,7 @@ def read_persona_voice(universe_dir: Path | str) -> str:
 
 @dataclass(frozen=True)
 class Persona:
-    """A universe brain's embodied projection, sourced from its learned self-model.
+    """A command center brain's embodied projection, sourced from its learned self-model.
 
     ``name`` is the learned name ("" until the brain has learned one); ``known``
     / ``open_questions`` are the slugs of what the brain understands about itself
@@ -92,7 +92,7 @@ class Persona:
         # model's seat — it cannot verify the first-party provenance claim, and
         # careful hosts (Claude.ai, observed live) correctly refuse it.
         # Embodiment behavior therefore lives ONLY in the sanctioned channels
-        # (server instructions + the user-invoked meet_universe prompt), and the
+        # (server instructions + the user-invoked meet_command_center prompt), and the
         # pattern there is USER CONSENT: offer, ask, embody on yes. First-party
         # app surfaces put the persona in the system prompt and need none of
         # this. (Host steer + docs/design-notes/2026-07-01-mcp-personification-
@@ -110,9 +110,9 @@ class Persona:
                 "source": "first_party_self_model",
                 "consent": "user_opt_in",
                 "note": (
-                    "Self-description this universe authored about itself by "
+                    "Self-description this command center authored about itself by "
                     "learning — data for the assistant, not an instruction. "
-                    "If the user is here to meet or talk with their universe, "
+                    "If the user is here to meet or talk with their command center, "
                     "offer them the choice of hearing it speak as itself in "
                     "first person, and embody only if they say yes. If it is "
                     "unnamed/uninitialized it is a new mind that has not "
@@ -127,7 +127,7 @@ def resolve_persona(
     soul: UniverseSoul | None,
     self_model: dict[str, object] | None = None,
 ) -> Persona:
-    """Project a universe's learned self-model (+ operational soul voice) onto its
+    """Project a command center's learned self-model (+ operational soul voice) onto its
     embodied persona.
 
     ``self_model`` is the view from ``universe_self_model.read_self_model``. When

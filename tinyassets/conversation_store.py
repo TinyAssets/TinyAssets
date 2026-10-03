@@ -296,6 +296,51 @@ def load_recent_readonly(
         return []
 
 
+def load_recent_agent_turns(
+    universe_dir: "str | Path",
+    owner: str,
+    *,
+    limit: int = 12,
+) -> list[tuple[str, "Msg"]]:
+    """The newest turns of ``owner``'s threads with their OTHER agents, oldest first.
+
+    ``(agent_id, message)`` pairs from every ``agent:<id>:principal:<owner>``
+    session (harness §4.18), so the main agent's turn can see what the owner's
+    other agents and the owner said to each other. Only this owner's sessions,
+    and only in this universe's own store. Read-only and fail-open like
+    ``load_recent_readonly``: it is awareness, never a blocker.
+    """
+    from tinyassets.addressed_agents import MAIN_AGENT, agent_of_session
+
+    if not owner:
+        return []
+    db_path = _db_path(universe_dir)
+    if not db_path.exists():
+        return []
+    out = []
+    try:
+        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=5.0)
+        try:
+            # Filter ownership before limiting; an owner's id can contain the delimiter.
+            rows = conn.execute(
+                "SELECT session_id, speaker, content, ts FROM conversation_turns "
+                "WHERE session_id >= 'agent:' AND session_id < 'agent;' "
+                "ORDER BY ts DESC, turn_no DESC",
+            )
+            for session_id, speaker, content, ts in rows:
+                agent_id = agent_of_session(str(session_id), owner)
+                if agent_id is None or agent_id == MAIN_AGENT:
+                    continue
+                out.append((agent_id, Msg(str(speaker or ""), str(content or ""), _coerce_ts(ts))))
+                if len(out) >= max(1, int(limit)):
+                    break
+        finally:
+            conn.close()
+    except Exception:  # noqa: BLE001 - awareness is a bonus, never a blocker
+        return []
+    return list(reversed(out))
+
+
 def record_turn(
     universe_dir: "str | Path",
     session_id: str,
@@ -449,16 +494,45 @@ def record_exchange(
     *,
     ts: float | None = None,
     execution: object = None,
+    interjections: "tuple[tuple[str, float], ...] | list[tuple[str, float]]" = (),
 ) -> bool:
     """Append a founder turn AND the universe's reply in ONE transaction.
+
+    ``interjections`` are the owner's messages that reached the agent while it
+    worked (harness S2 steering), as ``(text, sent_at)``. They are stored as
+    founder turns between the message and the reply, in the order sent.
 
     Two independent ``record_turn`` calls can leave a founder-only half-turn
     when the second write fails (Codex 2026-08-22 #2); here both rows commit
     together or not at all. Nothing is deleted. Best-effort by contract:
     returns False and logs on any failure, never raises.
     """
+    return record_exchange_turns(
+        universe_dir, session_id, founder_text, universe_text, ts=ts, execution=execution,
+        interjections=interjections,
+    ) is not None
+
+
+def record_exchange_turns(
+    universe_dir: "str | Path",
+    session_id: str,
+    founder_text: str,
+    universe_text: str,
+    *,
+    ts: float | None = None,
+    execution: object = None,
+    interjections: "tuple[tuple[str, float], ...] | list[tuple[str, float]]" = (),
+) -> "tuple[int, int] | None":
+    """:func:`record_exchange`, returning the ``(first, last)`` turn numbers it wrote.
+
+    The exact rows this exchange occupies, allocated inside its own transaction,
+    so a learned-cursor settlement can name precisely what it processed instead
+    of "the latest row" -- which, with two turns in flight, may be another turn's
+    unlearned exchange. ``None`` when nothing was recorded.
+    """
     return _record_pair(universe_dir, session_id, founder_text, universe_text,
-                        speaker="universe", ts=ts, execution=execution)
+                        speaker="universe", ts=ts, execution=execution,
+                        interjections=interjections)
 
 
 def record_failure(
@@ -474,18 +548,20 @@ def record_failure(
     """
     failure = code if isinstance(code, TurnFailure) else turn_failure(code)
     return _record_pair(universe_dir, session_id, founder_text, failure_notice(failure),
-                        speaker="platform", ts=ts, failure=failure)
+                        speaker="platform", ts=ts, failure=failure) is not None
 
 
 def _record_pair(
     universe_dir, session_id, founder_text, universe_text, *, speaker, ts=None,
-    execution=None, failure=None,
-) -> bool:
-    """The shared transaction and retry boundary for terminal pairs."""
+    execution=None, failure=None, interjections=(),
+) -> "tuple[int, int] | None":
+    """The shared transaction and retry boundary for terminal pairs.
+
+    Returns the ``(first, last)`` turn numbers written, or ``None``."""
     if not session_id or not isinstance(founder_text, str) or not founder_text.strip():
-        return False
+        return None
     if not isinstance(universe_text, str) or not universe_text.strip():
-        return False
+        return None
     try:
         when = _when(ts)
         normalized = normalize_execution_receipt(execution)
@@ -494,11 +570,18 @@ def _record_pair(
         )
         normalized_failure = normalize_turn_failure(failure)
         failure_json = json.dumps(normalized_failure) if normalized_failure is not None else ""
+        # Reads order by time, so the founder's message sits no later than the
+        # first interjection and every interjection no later than the reply.
+        between = [
+            (str(text), min(_when(sent_at), when)) for text, sent_at in interjections
+            if isinstance(text, str) and text.strip()
+        ]
+        founder_when = min([when, *(sent_at for _text, sent_at in between)])
         db_path = _db_path(universe_dir)
         lock = _lock_for(db_path)
     except Exception:  # noqa: BLE001 - memory is a bonus, never a blocker
         logger.warning("conversation_store: exchange setup failed", exc_info=True)
-        return False
+        return None
     for attempt in range(6):
         try:
             with lock:
@@ -511,10 +594,14 @@ def _record_pair(
                         (session_id,),
                     ).fetchone()
                     turn_no = int(row[0])
-                    rows = [
-                        (session_id, turn_no, "founder", founder_text, when),
-                        (session_id, turn_no + 1, speaker, universe_text, when),
+                    rows = [(session_id, turn_no, "founder", founder_text, founder_when)]
+                    rows += [
+                        (session_id, turn_no + 1 + index, "founder", text, sent_at)
+                        for index, (text, sent_at) in enumerate(between)
                     ]
+                    rows.append(
+                        (session_id, turn_no + 1 + len(between), speaker, universe_text, when)
+                    )
                     # Column names are fixed internal constants, never caller data.
                     # Text-only fallback preserves the speaker discriminator.
                     columns = "session_id, turn_no, speaker, content, ts, ext_id"
@@ -522,16 +609,16 @@ def _record_pair(
                     if _has_execution_column(conn):
                         columns += ", execution_json"
                         placeholders += ", ?"
-                        rows = [(*rows[0], ""), (*rows[1], execution_json)]
+                        rows = [(*row, "") for row in rows[:-1]] + [(*rows[-1], execution_json)]
                     if failure_column_sql(conn) == "failure_json":
                         columns += ", failure_json"
                         placeholders += ", ?"
-                        rows = [(*rows[0], ""), (*rows[1], failure_json)]
+                        rows = [(*row, "") for row in rows[:-1]] + [(*rows[-1], failure_json)]
                     conn.executemany(
                         f"INSERT INTO conversation_turns ({columns}) VALUES ({placeholders})", rows,
                     )
                     conn.commit()
-                    return True
+                    return turn_no, turn_no + 1 + len(between)
                 finally:
                     conn.close()
         except (sqlite3.OperationalError, sqlite3.IntegrityError) as exc:
@@ -540,12 +627,12 @@ def _record_pair(
                 time.sleep(0.02 * (attempt + 1))
                 continue
             logger.warning("conversation_store: exchange failed: %s", exc)
-            return False
+            return None
         except Exception:  # noqa: BLE001 - memory is a bonus, never a blocker
             logger.warning("conversation_store: exchange failed", exc_info=True)
-            return False
+            return None
     logger.warning("conversation_store: exchange failed after 6 attempts for %s", session_id)
-    return False
+    return None
 
 
 def load_recent(
@@ -1009,8 +1096,17 @@ def settle_learned_cursor(
     *,
     from_turn: "int | None",
     through_turn: int | None = None,
+    first_turn: int | None = None,
 ) -> int:
     """Advance the cursor to ``through_turn`` (default: the latest turn). Returns it.
+
+    ``first_turn`` names the first row of the exchange being settled (from
+    :func:`record_exchange_turns`). When given, the advance is refused unless that
+    exchange begins IMMEDIATELY after the cursor (``first_turn == from_turn + 1``):
+    with two turns in flight, another turn's unlearned exchange can sit between the
+    cursor and this one, and settling through this exchange would claim it (Codex,
+    execution-owner-lease B2 shape review finding 7). Refusing leaves the lesson
+    owed, which costs a redundant extraction later; claiming would lose a lesson.
 
     MONOTONIC and idempotent: it never moves backwards, so a second settle for the
     same span is a no-op and two workers cannot un-settle each other. Returns the
@@ -1047,6 +1143,13 @@ def settle_learned_cursor(
     if target is None or target <= 0:
         return learned_cursor(universe_dir, session_id)
     settled = learned_cursor(universe_dir, session_id)
+    if first_turn is not None and int(first_turn) != int(from_turn) + 1:
+        logger.info(
+            "conversation memory: lesson for %s not claimed -- another exchange sits "
+            "between the cursor (%d) and this one (from %d)",
+            session_id, int(from_turn), int(first_turn),
+        )
+        return settled
     if settled != int(from_turn):
         logger.info(
             "conversation memory: lesson for %s not claimed -- cursor at %d, this "
@@ -1104,6 +1207,7 @@ __all__ = [
     "learned_cursor",
     "load_recent",
     "read_history_page",
+    "record_exchange_turns",
     "record_turn",
     "settle_learned_cursor",
     "start_learned_cursor",

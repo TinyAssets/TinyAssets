@@ -771,7 +771,7 @@ def _priority_grant_identity(
     if not subject or not issuer:
         raise ValueError("priority grant requires subject and issuer")
     if not universe or universe == "*":
-        raise ValueError("priority grant requires an exact universe")
+        raise ValueError("priority grant requires an exact command center")
     return subject, universe, issuer
 
 

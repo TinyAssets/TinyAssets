@@ -207,7 +207,7 @@ _OUTCOME_ERROR_FIXTURES: tuple[tuple[str, str], ...] = (
     ("code node 'edit' failed: KeyError: 'content' | stderr: Traceback ...",
      "code_node_failed"),
     ("Node 'edit' carries source_code this run did not author (caller provenance: "
-     "public-foreign). Code runs only in the universe that authored it: remix the "
+     "public-foreign). Code runs only in the command center that authored it: remix the "
      "branch into your universe with write_graph (fork_from) so the code is yours, "
      "then run your copy.",
      "node_not_accepted"),

@@ -11,7 +11,7 @@ and facts a model would get wrong. Every other rule lives at its point of use.
 | Unresolved findings | `docs/concerns/` — one file each, delete to resolve |
 | Founder-only work | `docs/host-actions.md` |
 | Who has what | branches and open PRs |
-| Narrative | `.agents/activity.log` |
+| Narrative | the git log: your commit message |
 
 Orient: `python scripts/docview.py headings PLAN.md`, one section, then
 `python scripts/openspec_flow.py audit`. Write durable state before replying.

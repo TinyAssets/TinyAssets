@@ -3,8 +3,8 @@
   "name": "tinyassets-universe-server",
   "display_name": "TinyAssets Server",
   "version": "0.1.0",
-  "description": "TinyAssets — build, run, and steer custom AI agent workflows inside shared universes. Also: custom AI builder, universe builder, agent workflow platform.",
-  "long_description": "TinyAssets packages a multi-universe control plane as a local MCP Bundle. Users design agent workflows as graphs of nodes and run autonomous daemons against them inside named universes. Tiny is the acting intelligence users talk to; TinyAssets is the platform and distribution brand. Connect by natural phrases such as 'TinyAssets', 'Tiny', 'custom AI builder', 'universe builder', or 'my AI builder connector'.",
+  "description": "TinyAssets — build, run, and steer custom AI agent workflows inside your command center. Also: custom AI builder, command center, agent workflow platform.",
+  "long_description": "TinyAssets packages a multi-command-center control plane as a local MCP Bundle. Users design agent workflows as graphs of nodes and run autonomous daemons against them inside named command centers. Tiny is the acting intelligence users talk to; TinyAssets is the platform and distribution brand. Connect by natural phrases such as 'TinyAssets', 'Tiny', 'custom AI builder', 'command center', or 'my AI builder connector'.",
   "author": {
     "name": "Jonathan Farnsworth"
   },
@@ -17,7 +17,7 @@
     "custom-ai",
     "ai-builder",
     "agent-workflow",
-    "universe-builder",
+    "command-center",
     "mcp",
     "daemon",
     "fiction",
@@ -64,11 +64,11 @@
     },
     {
       "name": "converse",
-      "description": "Relay a message to a TinyAssets universe and return that universe's own reply."
+      "description": "Relay a message to a TinyAssets command center and return that command center's own reply."
     },
     {
       "name": "get_status",
-      "description": "Read current TinyAssets universe and daemon status without creating a universe."
+      "description": "Read current TinyAssets command center and daemon status without creating a command center."
     }
   ],
   "prompts_generated": true,
@@ -86,13 +86,13 @@
     "tinyassets_data_dir": {
       "type": "directory",
       "title": "TinyAssets Data Directory",
-      "description": "Select the directory that contains your universe folders, such as this repo's output directory.",
+      "description": "Select the directory that contains your command center folders, such as this repo's output directory.",
       "required": true
     },
     "default_universe": {
       "type": "string",
-      "title": "Default Universe",
-      "description": "Optional universe ID to use when the client does not pass one explicitly.",
+      "title": "Default Command Center",
+      "description": "Optional command center ID to use when the client does not pass one explicitly.",
       "required": false,
       "default": ""
     }

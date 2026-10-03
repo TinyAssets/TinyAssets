@@ -36,7 +36,7 @@ import pytest
 from tests import test_interactive_http_agent as integration
 from tinyassets.exceptions import AllProvidersExhaustedError
 from tinyassets.providers import model_capacity
-from tinyassets.providers.model_capacity import TRANSIENT_CAPACITY, free_sibling_retry
+from tinyassets.providers.model_capacity import free_sibling_retry
 
 rig = integration.rig
 reader = integration.reader
@@ -80,11 +80,6 @@ def test_no_dead_price_reader_is_left_for_someone_to_wire_back():
 # What the source reported is the whole input, and every answer it produces is
 # the same answer for everyone.
 # --------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize("failure", sorted(TRANSIENT_CAPACITY))
-def test_a_transient_unknown_window_buys_a_sibling(failure):
-    assert free_sibling_retry(scope="unknown", failure_class=failure) is True
 
 
 def test_exhausted_credit_stops_because_the_source_said_so():

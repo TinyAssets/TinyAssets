@@ -50,8 +50,8 @@ def is_host_credential_provider(provider: Any) -> bool:
 
 
 _NO_UNIVERSE = (
-    "The platform has no LLM: a model call must come from a powered universe "
-    "using its owner's own connected credentials. This call names no universe, "
+    "The platform has no LLM: a model call must come from a powered command center "
+    "using its owner's own connected credentials. This call names no command center, "
     "so it was refused. No platform, host or shared credential serves it."
 )
 #: The owner-facing refusal. Run-failure taxonomy keys on "connect your
@@ -63,7 +63,7 @@ _NO_UNIVERSE = (
 #: six tests keyed on the literal, so three copies were three chances for the
 #: sentence and its meaning to drift apart.
 CONNECT_PROVIDER_MESSAGE = (
-    "Connect your provider before running this universe. TinyAssets will not "
+    "Connect your provider before running this command center. TinyAssets will not "
     "borrow platform credentials or start a metered trial."
 )
 #: Lead-in for a held run whose universe DOES have a provider connected.
@@ -78,11 +78,16 @@ CONNECT_PROVIDER_MESSAGE = (
 #: A refusal with words of its own keeps them behind this lead-in, and the
 #: taxonomy keys on the lead-in so the failure class is unchanged.
 AUTHORITY_HELD_DETAIL = (
+    "This command center's connected provider could not authorize this run: "
+)
+#: The same lead-in as errors stored before the universe -> command center rename
+#: wrote it; readers of stored errors match either.
+LEGACY_AUTHORITY_HELD_DETAIL = (
     "This universe's connected provider could not authorize this run: "
 )
 _NO_OWNER_AUTHORITY = (
     f"{CONNECT_PROVIDER_MESSAGE} (The platform has no LLM: this call names a "
-    "universe but carries no owner authority, so it was refused rather than "
+    "command center but carries no owner authority, so it was refused rather than "
     "served from a platform or host credential.)"
 )
 
@@ -101,7 +106,7 @@ def require_owner_bound_context(universe_context: Any, *, operation: str | None)
         raise PlatformLLMCallRefusedError(_NO_UNIVERSE)
     if not isinstance(universe_context, UniverseContext):
         raise PlatformLLMCallRefusedError(
-            "The platform has no LLM: the call's universe context is not a "
+            "The platform has no LLM: the call's command center context is not a "
             "UniverseContext, so it cannot name an owner."
         )
     universe_dir = universe_context.universe_dir
@@ -120,7 +125,7 @@ def require_owner_bound_context(universe_context: Any, *, operation: str | None)
         ):
             raise PlatformLLMCallRefusedError(
                 "The platform has no LLM: the provider invocation carrier belongs "
-                "to a different universe than the one this call names."
+                "to a different command center than the one this call names."
             )
         return
     if universe_context.provider_request is None or not operation:
@@ -150,7 +155,7 @@ def require_owner_bound_dispatch(
         raise PlatformLLMCallRefusedError(
             f"The platform has no LLM: {provider_name!r} can only use the host's "
             "credentials or the host's own model server, never the owner's. "
-            "Connect this source to the universe as your own provider instead."
+            "Connect this source to the command center as your own provider instead."
         )
 
 

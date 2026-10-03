@@ -1,5 +1,9 @@
 # Free source pooling
 
+## Purpose
+
+How a command center keeps answering on free model sources: daily quota is classified and cooled per source, chat and workflows pool across the owner's own accepted sources, and the connect route offers verified free source cards.
+
 ## Requirements
 
 ### Requirement: Daily quota evidence survives source cooldown

@@ -70,7 +70,7 @@ AUTO_ROLLBACK_WEIGHT_THRESHOLD: int = -3
 MAX_BISECT_SUSPECTS: int = 32
 
 
-# â”€â”€â”€ Phase C canary auto-trigger helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ─── Phase C canary auto-trigger helpers ────────────────────────────────────
 
 
 def list_watch_window_suspects(
@@ -409,7 +409,7 @@ def _coerce_utc_datetime(
     return dt.astimezone(timezone.utc)
 
 
-# â”€â”€â”€ Closure walk â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ─── Closure walk ────────────────────────────────────────────────────────
 
 
 def compute_rollback_set(
@@ -495,7 +495,7 @@ def _query_fork_children(base_path: str | Path, bvid: str) -> list[str]:
     return [r["branch_def_id"] for r in rows]
 
 
-# â”€â”€â”€ Atomic execution (runs DB only, per refinement) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ─── Atomic execution (runs DB only, per refinement) ─────────────────────
 
 
 def execute_rollback_set(
@@ -636,7 +636,7 @@ class _RollbackAbort(Exception):
     """
 
 
-# â”€â”€â”€ Goal-canonical re-point (author_server DB, post-rollback observer) â”€â”€
+# ─── Goal-canonical re-point (author_server DB, post-rollback observer) ──
 
 
 def repoint_goals_after_rollback(
@@ -834,7 +834,7 @@ def _walk_up_to_active_ancestor(
     return None
 
 
-# â”€â”€â”€ Top-level orchestrator â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ─── Top-level orchestrator ──────────────────────────────────────────────
 
 
 def rollback_merge_orchestrator(
@@ -901,7 +901,7 @@ def rollback_merge_orchestrator(
     }
 
 
-# â”€â”€â”€ History query (read-only) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ─── History query (read-only) ───────────────────────────────────────────
 
 
 def get_rollback_history(

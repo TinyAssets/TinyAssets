@@ -16,7 +16,11 @@ WorkingDirectory=/opt/tinyassets
 EnvironmentFile=/etc/tinyassets/env
 ExecCondition=/usr/bin/test -n "${TINYASSETS_IMAGE}"
 ExecStart=/opt/tinyassets-host-uptime/current/deploy/daemon-watchdog.sh
-TimeoutStartSec=90s
+# Outlives a 20s `docker restart -t 20` plus tinyassets-daemon.service's 200s
+# start and 90s stop-after-failure, which this script waits
+# on while holding the host-mutation lock. Killed earlier, it would release the
+# lock with the restart's compose run still going.
+TimeoutStartSec=360s
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=daemon-watchdog

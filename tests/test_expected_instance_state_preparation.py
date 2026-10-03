@@ -284,11 +284,14 @@ def test_rollback_reconverges_without_replacing_named_data_volume() -> None:
     script = (_REPO / "deploy" / "deploy_fail_safe.sh").read_text(encoding="utf-8")
     restart = re.search(r"(?ms)^restart_stack\(\) \{\n(.*?)^\}", script)
     assert restart is not None
+    # One logical command; `--timeout` (the bounded drain, 2026-10-01) sits on
+    # a continuation line, so join continuations before matching.
     reconverge = (
-        'docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" '
-        'up -d daemon cloudflared logs'
+        'docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" up -d '
+        '--timeout "$MAX_DAEMON_STOP_GRACE_S" daemon cloudflared logs'
     )
-    assert reconverge in restart.group(1)
+    joined = re.sub(r"\\\n\s*", "", restart.group(1))
+    assert reconverge in joined
     executable = "\n".join(
         line for line in script.splitlines() if not line.lstrip().startswith("#")
     )

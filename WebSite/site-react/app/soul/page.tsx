@@ -7,5 +7,5 @@ export const metadata: Metadata = {
 };
 
 export default function Page() {
-  return <Moved to="/build/" name="Build" line="Souls became the brain a universe keeps for itself." />;
+  return <Moved to="/build/" name="Build" line="Souls became the brain a command center keeps for itself." />;
 }

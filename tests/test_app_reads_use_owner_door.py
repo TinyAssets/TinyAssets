@@ -46,7 +46,7 @@ def test_the_owner_client_speaks_only_to_the_owner_door():
     assert '"/app/api/read"' in owner and '"/app/api/status"' in owner
     assert "/mcp" not in owner
     for read in ("getStatus()", "getModelOptions()", "getConversation(before)",
-                 "readConversationChunk(id,offset,scope)", "listRequests()"):
+                 "readConversationChunk(id,offset,scope,agent)", "listRequests()"):
         assert read in owner
 
 

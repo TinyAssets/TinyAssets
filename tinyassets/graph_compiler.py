@@ -1995,13 +1995,13 @@ def _node_enqueue_branch_run(
     trusted_uid = str(ctx.universe_id or "").strip()
     if not trusted_uid:
         raise CompilerError(
-            f"Node '{node.node_id}' enqueue refused: no trusted universe "
-            f"context. In-node enqueue is available only for universe runs."
+            f"Node '{node.node_id}' enqueue refused: no trusted command center "
+            f"context. In-node enqueue is available only for command center runs."
         )
     requested_uid = str(kwargs.get("universe_id", "")).strip()
     if requested_uid and requested_uid != trusted_uid:
         raise CompilerError(
-            f"Node '{node.node_id}' enqueue refused: cannot target universe "
+            f"Node '{node.node_id}' enqueue refused: cannot target command center "
             f"'{requested_uid}'; this run executes in '{trusted_uid}'."
         )
     if base_path is None:
@@ -2331,8 +2331,8 @@ def _build_source_code_node(
         # touch; it does not decide whose code may run - authorship does.
         raise ForeignCodeError(
             f"Node '{node.node_id}' carries source_code this run did not author "
-            f"(caller provenance: {provenance}). Code runs only in the universe "
-            f"that authored it: remix the branch into your universe with "
+            f"(caller provenance: {provenance}). Code runs only in the command center "
+            f"that authored it: remix the branch into your command center with "
             f"write_graph (fork_from) so the code is yours, then run your copy.",
             node_id=node.node_id,
         )
@@ -2366,7 +2366,7 @@ def _build_source_code_node(
                 f"Node '{node.node_id}' declares workspace: "
                 f"'{workspace_node}' with timeout_seconds={declared}, outside "
                 f"the bound 0 < t <= {MAX_WORKSPACE_TIMEOUT_SECONDS:.0f}. A "
-                "workspace node holds the universe's job lock and the "
+                "workspace node holds the command center's job lock and the "
                 "host-wide slot for its whole run.",
                 node_id=node.node_id,
             )

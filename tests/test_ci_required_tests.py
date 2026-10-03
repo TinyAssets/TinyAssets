@@ -61,7 +61,7 @@ def test_parse_quarantine_splits_tolerated_and_flaky(tmp_path):
         "# a comment\n"
         "\n"
         "tests/test_a.py::test_one\n"
-        "flaky tests/test_b.py::test_two\n"
+        "flaky owner=dev expires=2026-10-15 tests/test_b.py::test_two\n"
         "tests/test_c.py::test_three  # trailing comment\n",
         encoding="utf-8",
     )
@@ -69,6 +69,40 @@ def test_parse_quarantine_splits_tolerated_and_flaky(tmp_path):
     assert tolerated == {"tests/test_a.py::test_one", "tests/test_c.py::test_three"}
     assert flaky == {"tests/test_b.py::test_two"}
     assert problems == []
+
+
+def test_a_flaky_entry_must_name_an_owner_and_an_expiry(tmp_path):
+    """A quarantined test still runs; the owner and date say who ends it and when."""
+    f = tmp_path / "q.txt"
+    f.write_text("flaky owner=dev tests/test_b.py::test_two\n", encoding="utf-8")
+    _, flaky, problems = gate.parse_quarantine(f)
+    assert flaky == {"tests/test_b.py::test_two"}
+    assert len(problems) == 1 and "owner= and expires=" in problems[0]
+
+
+def test_ledger_fields_lead_so_a_parameter_id_is_never_eaten():
+    """Fields come BEFORE the node id: a parameter id may end in ` owner=b]`,
+    but no node id starts with `owner=`."""
+    line = "flaky owner=a expires=2026-10-15 tests/t.py::t[x owner=b]  # c"
+    parsed = gate.split_ledger_line(line)
+    assert parsed == (True, "tests/t.py::t[x owner=b]", {"owner": "a", "expires": "2026-10-15"})
+    assert gate.split_ledger_line("tests/t.py::t[a b]") == (False, "tests/t.py::t[a b]", {})
+    assert gate.split_ledger_line("   # only a comment") is None
+
+
+def test_the_quarantine_is_capped(tmp_path, monkeypatch):
+    monkeypatch.setattr(gate, "MAX_QUARANTINE", 2)
+    f = tmp_path / "q.txt"
+    f.write_text("".join(f"tests/test_a.py::t{i}\n" for i in range(3)), encoding="utf-8")
+    assert any("the cap is 2" in p for p in gate.parse_quarantine(f)[2])
+
+
+def test_budgets_bound_skips_and_summed_seconds(monkeypatch):
+    monkeypatch.setattr(gate, "MAX_REQUIRED_SKIPPED", 2)
+    monkeypatch.setattr(gate, "MAX_TEST_SECONDS", 100)
+    assert gate.budget_failures({"a", "b"}, 100.0) == []
+    over = gate.budget_failures({"a", "b", "c"}, 100.5)
+    assert len(over) == 2 and "SKIPPED" in over[0] and "100s" in over[1]
 
 
 def test_parse_quarantine_reports_malformed_lines(tmp_path):
@@ -155,6 +189,17 @@ def test_repo_quarantine_file_is_wellformed():
     """The committed list must always parse — a malformed line fails the gate."""
     _, _, problems = gate.parse_quarantine(gate.QUARANTINE)
     assert problems == [], f"malformed quarantine entries: {problems}"
+
+
+def test_the_quarantine_cap_only_ratchets_down():
+    """Deleting ledger entries must lower MAX_QUARANTINE in the same change, so
+    the headroom never quietly grows back into room for new quarantines."""
+    tolerated, flaky, _ = gate.parse_quarantine(gate.QUARANTINE)
+    entries = len(tolerated) + len(flaky)
+    assert gate.MAX_QUARANTINE - entries <= gate.QUARANTINE_SLACK, (
+        f"{entries} ledger entries; lower MAX_QUARANTINE to at most "
+        f"{entries + gate.QUARANTINE_SLACK}"
+    )
 
 
 @pytest.mark.parametrize("attr", ["QUARANTINE", "REPO_ROOT"])
@@ -405,6 +450,81 @@ def test_aggregate_applies_the_vacuity_floor_to_the_union(shards):
 def test_shard_floor_sits_below_one_shard_of_the_full_floor():
     """A shard floor above ~1/6 of the suite would fail a healthy small shard."""
     assert 500 <= gate.MIN_RAN_FLOORS["shard"] < gate.MIN_RAN_FLOOR // 6
+
+
+# ---- PR-time affected selection --------------------------------------------
+
+
+def _selection_args(tmp_path, entries, shard=None, exclude=None):
+    sel = tmp_path / "affected.txt"
+    sel.write_text("".join(f"{e}\n" for e in entries), encoding="utf-8")
+    excl = None
+    if exclude is not None:
+        excl = tmp_path / "heavy.txt"
+        excl.write_text("# heavy\n" + "".join(f"{e}\n" for e in exclude), encoding="utf-8")
+    return argparse.Namespace(
+        affected=str(sel), shard=shard, exclude_from=str(excl) if excl else None
+    )
+
+
+def test_affected_all_means_the_whole_surface(tmp_path):
+    assert gate._read_selection(_selection_args(tmp_path, ["ALL"])) is None
+    with pytest.raises(SystemExit):
+        gate._read_selection(_selection_args(tmp_path, ["ALL", "tests/test_x.py"]))
+
+
+def test_affected_slices_cover_the_selection_exactly_once_minus_heavy(tmp_path):
+    real = sorted(
+        p.relative_to(gate.REPO_ROOT).as_posix()
+        for p in (gate.REPO_ROOT / "tests").glob("test_*.py")
+    )[:40]
+    heavy = real[:3]
+    slices = [
+        gate._read_selection(_selection_args(tmp_path, real, (i, 4), heavy))
+        for i in range(1, 5)
+    ]
+    flat = [f for s in slices for f in s]
+    assert sorted(flat) == sorted(set(real) - set(heavy))
+    assert len(flat) == len(set(flat))
+
+
+def test_affected_drops_a_missing_path_with_a_warning(tmp_path, capsys):
+    picked = gate._read_selection(_selection_args(tmp_path, ["tests/test_no_such_file.py"]))
+    assert picked == []
+    assert "missing path" in capsys.readouterr().out
+
+
+def test_affected_empty_slice_is_a_green_no_op_without_pytest(tmp_path):
+    sel = tmp_path / "affected.txt"
+    sel.write_text("", encoding="utf-8")
+    proc = subprocess.run(
+        [sys.executable, str(_SCRIPT), "--affected", str(sel), "--profile", "affected",
+         "--shard", "1/4", "--junit", str(tmp_path / "j.xml")],
+        capture_output=True, text=True, timeout=60,
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "nothing to run" in proc.stdout
+    assert "+ " not in proc.stdout, "pytest must not start for an empty slice"
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["--affected", "x.txt"],
+        ["--profile", "affected"],
+        ["--affected", "x.txt", "--profile", "affected", "--include-from", "y.txt"],
+    ],
+)
+def test_affected_flags_are_refused_out_of_pairing(argv):
+    proc = subprocess.run(
+        [sys.executable, str(_SCRIPT), *argv], capture_output=True, text=True, timeout=60
+    )
+    assert proc.returncode != 0
+    assert "affected" in proc.stderr
+
+
+def test_affected_floor_is_zero_and_only_reachable_through_affected():
+    assert gate.MIN_RAN_FLOORS["affected"] == 0
 
 
 # ---- sharding: packing by measured duration ---------------------------------

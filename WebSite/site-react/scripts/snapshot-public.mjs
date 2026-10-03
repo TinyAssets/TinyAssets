@@ -91,7 +91,7 @@ async function refresh() {
   });
   const call = publicGraphCall("graphs", LIMIT);
   const payload = await callTool(call.name, call.args);
-  const universes = requireCompleteCollection(payload, "universes", "read_graph graphs", LIMIT)
+  const universes = requireCompleteCollection(payload, "command_centers", "read_graph graphs", LIMIT)
     .map(sanitizePublicUniverse)
     .map((u) => ({
       id: u.id,
@@ -107,7 +107,7 @@ async function refresh() {
   return {
     fetched_at: new Date().toISOString(),
     source: "tinyassets.io/mcp · read_graph target=graphs · public projection only",
-    universes,
+    command_centers: universes,
   };
 }
 
@@ -127,7 +127,7 @@ async function main() {
     return;
   }
   writeFileSync(OUT, JSON.stringify(snapshot, null, 2) + "\n", "utf8");
-  console.log(`wrote ${OUT}: ${snapshot.universes.length} public universes at ${snapshot.fetched_at}`);
+  console.log(`wrote ${OUT}: ${snapshot.command_centers.length} public universes at ${snapshot.fetched_at}`);
 }
 
 main();

@@ -51,11 +51,11 @@ def _target_universe_id(universe_id: str) -> tuple[str, str | None]:
     try:
         from tinyassets.api.helpers import _request_universe
     except Exception as exc:  # noqa: BLE001
-        return "", f"universe helper import failed: {exc}"
+        return "", f"command center helper import failed: {exc}"
 
     target_universe = _request_universe(universe_id)
     if not target_universe:
-        return "", "no universe resolvable"
+        return "", "no command center resolvable"
     return target_universe, None
 
 
@@ -127,7 +127,7 @@ def _maybe_record_attempt(
 
     target_universe = _request_universe(universe_id)
     if not target_universe:
-        return None, "no universe resolvable for ledger write"
+        return None, "no command center resolvable for ledger write"
     try:
         universe_path = _universe_dir(target_universe)
     except ValueError as exc:

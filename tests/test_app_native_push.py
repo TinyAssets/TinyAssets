@@ -15,7 +15,7 @@ NAMES = (
     "armNativeFor",
     "wireNativePush",
     "nativeFcmToken", "registerNativeNotifications", "rebindNativeNotifications",
-    "unregisterNativeNotifications",
+    "unregisterNativeNotifications", "removeNativeRegistration",
 )
 
 # The page's own globals the functions close over, then a fake push plugin.
@@ -23,6 +23,7 @@ PRELUDE = """
 const NATIVE=true, NATIVE_PUSH_FLAG="app.push.fcm", NATIVE_PUSH_OWNER="app.push.owner",
   NATIVE_PUSH_RECIPIENT="app.push.recipient";
 let nativePushWired=false, nativeTokenWaiter=null, pendingReply=null;
+let nativeTeardown=Promise.resolve();
 const store={}, localStorage={getItem:k=>k in store?store[k]:null,
   setItem:(k,v)=>{store[k]=String(v);},removeItem:k=>{delete store[k];}};
 const MCP={_loginEpoch:1}; let queueOwner='alice'; const token=()=>'alice-token';

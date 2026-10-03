@@ -1,7 +1,7 @@
 {
   "name": "tinyassets-universe-server",
   "version": "0.2.0",
-  "description": "Bundled TinyAssets Server runtime and explicit slash-style skills for inspecting and steering local universes.",
+  "description": "Bundled TinyAssets Server runtime and explicit slash-style skills for inspecting and steering local command centers.",
   "author": {
     "name": "Jonathan Farnsworth"
   },
@@ -19,12 +19,12 @@
     "universe_base": {
       "type": "directory",
       "title": "TinyAssets Data Directory",
-      "description": "Directory containing your TinyAssets data root, including universe folders."
+      "description": "Directory containing your TinyAssets data root, including command center folders."
     },
     "default_universe": {
       "type": "string",
-      "title": "Default Universe",
-      "description": "Optional default universe ID when a command does not specify one.",
+      "title": "Default Command Center",
+      "description": "Optional default command center ID when a command does not specify one.",
       "sensitive": false
     }
   },

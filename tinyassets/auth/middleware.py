@@ -437,7 +437,7 @@ def validate_provider_request_carrier(
     if capability is None:
         raise PermissionError("provider request capability is revoked")
     if carrier.universe_id != universe_id:
-        raise PermissionError("provider request carrier belongs to another universe")
+        raise PermissionError("provider request carrier belongs to another command center")
     if carrier.agent_binding_id != agent_binding_id:
         raise PermissionError("provider request carrier belongs to another agent binding")
     if carrier.binding_revision != binding_revision:
@@ -601,6 +601,15 @@ def _auth_challenge_path(path: str) -> bool:
         # identity — so serving it openly grants nothing. Exactly one path, by
         # equality; no deeper /app/... route is opened.
         return False
+    if path.startswith("/app/m/"):
+        from tinyassets.onboarding.app_modules import is_module_path
+
+        if is_module_path(path):
+            # The app's ES modules (onboarding/app_modules.py). The page imports
+            # them as it loads, before any bearer exists, exactly like /app and
+            # /app/sw.js. Static, allowlisted files with no secret and no
+            # identity. Exactly /app/m/<build>/<basename>.js; no deeper path.
+            return False
     if path == "/app/ui-frame":
         # The custom-UI bootstrap. It is loaded as an <iframe src>, and a browser
         # attaches no bearer to an iframe navigation, so challenging it rendered
@@ -610,6 +619,12 @@ def _auth_challenge_path(path: str) -> bool:
         # that sandboxes itself to an opaque origin from its own response header
         # and holds no identity: the bundle and every read reach it by
         # postMessage from the authenticated page. Exactly one path, by equality.
+        return False
+    if path == "/app/oauth/client-metadata.json":
+        # The OAuth Client ID Metadata Document a sign-in source names as its
+        # client id: the provider's authorization server fetches it with no
+        # bearer. A constant public document (one redirect URI, no secret, built
+        # from the configured resource, never the request). Exactly one path.
         return False
     # Billing webhook: Stripe POSTs here with no MCP bearer, so like /app and
     # /mcp/hooks it must not be swept into the /mcp bearer 401. The handler requires

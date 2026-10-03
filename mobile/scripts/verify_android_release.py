@@ -352,6 +352,32 @@ def verify_generated_java(mobile: Path, release: AndroidRelease) -> None:
         raise ValueError("generated MainActivity did not install VoiceWebChromeClient")
     if "voiceChromeClient.stopCapture(bridge.getWebView())" not in main:
         raise ValueError("generated MainActivity does not stop microphone capture on pause")
+    # Without our own callback the app plugin's always-enabled one swallows the
+    # back gesture at the first history entry, so the opening screen cannot be
+    # left. This is a TEXT gate on Java that ships verbatim, and text cannot show
+    # that the policy runs -- a disabled branch would still carry every token
+    # below. So the decision itself is pinned exactly: changing what the app does
+    # on back has to come here and say so. The behaviour is proved on a device
+    # (docs/ops/google-play-launch.md, the ladder's device check), not here.
+    back_policy = (
+        "installBackPolicy();",
+        "new OnBackPressedCallback(true)",
+        "if (webView != null && webView.canGoBack()) {",
+        "if (exitConfirmAt != 0L && now - exitConfirmAt <= EXIT_CONFIRM_WINDOW_MS) {",
+        "moveTaskToBack(true);",
+    )
+    missing = [item for item in back_policy if item not in main]
+    if missing:
+        raise ValueError(f"generated MainActivity is missing the back-gesture policy: {missing}")
+    # Registered BEFORE super.onCreate(), the plugin's callback is added after
+    # ours and the dispatcher -- which calls the most recently added enabled
+    # callback -- hands every back press to the plugin instead. The policy would
+    # be dead code, and nothing else would say so.
+    if main.index("installBackPolicy();") < main.index("super.onCreate(savedInstanceState);"):
+        raise ValueError(
+            "installBackPolicy() must run after super.onCreate(): registered before it, the "
+            "app plugin's callback is added later and wins every back press"
+        )
     for name in NATIVE_SOURCES:
         source = mobile / "native/android" / name
         generated = package_dir / name

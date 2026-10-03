@@ -264,6 +264,10 @@ jobs:
                   run.get("status") == "completed"
                   and run.get("event") == "workflow_dispatch"
                   and run.get("conclusion") != "success"
+                  # Cancelled = displaced from the shared concurrency group
+                  # while pending (a deploy now waits up to 45 min for in-flight
+                  # turns, so this is common), not a deploy that failed.
+                  and run.get("conclusion") != "cancelled"
                   and run.get("head_sha")
                   and run.get("head_sha") not in successful_shas
               ):
@@ -447,7 +451,10 @@ jobs:
               if run.get("status") != "completed" or run.get("conclusion") == "success":
                   print(f"covered:{run_id}")
                   break
-              if run.get("event") == "workflow_dispatch":
+              # A CANCELLED run was displaced from the shared concurrency group
+              # (one pending run per group, newest wins) or stopped by hand. It
+              # never attempted the deploy, so it is not a failed retry.
+              if run.get("event") == "workflow_dispatch" and run.get("conclusion") != "cancelled":
                   print(f"retry-failed:{run_id}")
                   break
           '

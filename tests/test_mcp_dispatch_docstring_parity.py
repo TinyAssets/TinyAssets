@@ -111,7 +111,7 @@ def _universe_dispatch_keys() -> set[str]:
         "get_activity", "get_recent_events", "get_ledger",
         "submit_request", "give_direction",
         "read_premise", "set_premise", "set_visibility", "soul.edit",
-        "add_canon", "add_canon_from_path",
+        "add_canon",
         "list_canon", "read_canon", "list_sources", "read_source",
         "control_daemon", "switch_universe", "create_universe",
         "queue_list", "queue_cancel",

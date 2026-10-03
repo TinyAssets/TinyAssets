@@ -60,9 +60,9 @@ def _project(definition: Any) -> dict[str, Any]:
         "model": definition.model,
         "visibility": definition.visibility,
         "next": [
-            "registration is not selection: to make a universe RUN on this "
+            "registration is not selection: to make a command center RUN on this "
             "provider, select it as the serving provider; a workflow node normally "
-            "needs no llm_policy at all and uses whatever the universe serves. To "
+            "needs no llm_policy at all and uses whatever the command center serves. To "
             "pin one node to a provider, use the NAME, not this definition_id: "
             "llm_policy={'preferred': {'provider': 'codex'}}",
             "interactive tool-using agents can use owned CLI subscriptions or "
@@ -90,7 +90,7 @@ def _validate_http_grant(
             "error": "connection_setup_invalid",
             "detail": (
                 "api_key_http requires ref = the grant_id of an http connection "
-                "already granted to this universe (deposit the credential via the "
+                "already granted to this command center (deposit the credential via the "
                 "secure browser form / connect_http first)"
             ),
         }

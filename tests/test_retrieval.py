@@ -637,5 +637,5 @@ class TestAgenticSearchPolicy:
         assert soul["purpose"] == "A lab studies civic memory with auditable sources."
         assert soul["hard_lines"] == ["Cite uncertainty."]
         assert soul["soft_preferences"] == ["Prefer compact steps."]
-        assert soul["identity_boundary"].startswith("Universe soul guides")
+        assert soul["identity_boundary"].startswith("Command center soul guides")
         assert "soul:soul_versions/0001.md" in search["sources"]

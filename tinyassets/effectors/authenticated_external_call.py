@@ -1033,7 +1033,7 @@ def _run(
     if not universe_id or db_path is None:
         # No trusted universe context ⇒ fail closed (never borrow a default).
         return {
-            "error": "no universe authority is bound to this run",
+            "error": "no command center authority is bound to this run",
             "error_kind": "no_universe_authority",
             "matched_output_key": matched_key,
         }

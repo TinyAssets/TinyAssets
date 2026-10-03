@@ -13,8 +13,8 @@ export default function HomePage() {
   return (
     <>
       <section className={`container hero ${styles.hero}`}>
-        <RitualLabel>TinyAssets · your own AI universe</RitualLabel>
-        <h1>A universe of your own.</h1>
+        <RitualLabel>TinyAssets · your own AI command center</RitualLabel>
+        <h1>A command center of your own.</h1>
         <p className="lead">
           TinyAssets gives you a cloud agent that runs on the Claude or ChatGPT subscription you
           already pay for. It connects to any platform, builds any automation from a few
@@ -36,7 +36,7 @@ export default function HomePage() {
       <section className="section">
         <div className="container">
           <div className="head">
-            <RitualLabel>What a universe is</RitualLabel>
+            <RitualLabel>What a command center is</RitualLabel>
             <h2>An account, a hard drive, and a mind that keeps its own notes.</h2>
           </div>
           <div className="cols cols--4">
@@ -44,7 +44,7 @@ export default function HomePage() {
               <span className="num">01</span>
               <h3>A brain that writes itself</h3>
               <p>
-                Everything the universe learns about you and about its own work goes into a brain it
+                Everything the command center learns about you and about its own work goes into a brain it
                 keeps updating. One brain, whichever surface you open.
               </p>
             </div>
@@ -53,7 +53,7 @@ export default function HomePage() {
               <h3>Connections to anything</h3>
               <p>
                 Paste whatever you have for a service: an API key, a token, a webhook, a repo. The
-                universe works out the rest and asks only for what is missing, with links.
+                command center works out the rest and asks only for what is missing, with links.
               </p>
             </div>
             <div className="col">
@@ -69,7 +69,7 @@ export default function HomePage() {
               <h3>Storage and workspaces</h3>
               <p>
                 Files, checkouts of repositories on any forge, receipts of every run. Kept in your
-                universe and nowhere else.
+                command center and nowhere else.
               </p>
             </div>
           </div>
@@ -80,7 +80,7 @@ export default function HomePage() {
         <div className="container split">
           <div>
             <RitualLabel>It built this</RitualLabel>
-            <h2>The founder&apos;s universe wrote a graph, ran it, and merged the result.</h2>
+            <h2>The founder&apos;s command center wrote a graph, ran it, and merged the result.</h2>
             <p>
               Asked to keep a line count in the README current, it composed three nodes: a fetch of
               the file, a small function it wrote itself to count the lines, and a write that opened
@@ -106,8 +106,8 @@ export default function HomePage() {
               ]}
             />
             <p className="note">
-              Author of record is the account whose GitHub connection the universe used. The run
-              actor is the universe itself.
+              Author of record is the account whose GitHub connection the command center used. The run
+              actor is the command center itself.
             </p>
           </div>
         </div>
@@ -121,11 +121,11 @@ export default function HomePage() {
             <p>
               Sign in, then connect the subscription you already pay for. ChatGPT or Codex is one tap.
               For Claude you paste a setup token from your own account into the deposit form; it goes
-              straight into your universe&apos;s vault and never through the chat.
+              straight into your command center&apos;s vault and never through the chat.
             </p>
             <p>
               Nothing to install, no keys to manage by default, no docker. Nothing runs anywhere
-              except inside a universe someone controls.
+              except inside a command center someone controls.
             </p>
           </div>
           <div className={styles.quiet}>
@@ -135,7 +135,7 @@ export default function HomePage() {
             <ul className={styles.plain}>
               <li>Every run is visible, pausable, and deletable by you.</li>
               <li>A refusal names its cause and what would fix it. Nothing is faked.</li>
-              <li>Your credentials stay in your universe. Nothing runs for another user.</li>
+              <li>Your credentials stay in your command center. Nothing runs for another user.</li>
             </ul>
           </div>
         </div>
@@ -145,10 +145,10 @@ export default function HomePage() {
         <div className="container split">
           <div>
             <RitualLabel>Commons</RitualLabel>
-            <h2>Publish a shape. Others remix it into their own universe.</h2>
+            <h2>Publish a shape. Others remix it into their own command center.</h2>
             <p>
               Anything you publish is a shape: a graph, a branch, a way of doing something. Someone
-              else copies it into their universe and changes it, with lineage kept. Nothing you
+              else copies it into their command center and changes it, with lineage kept. Nothing you
               publish runs for anyone but you.
             </p>
             <p>

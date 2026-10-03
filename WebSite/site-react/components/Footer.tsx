@@ -11,7 +11,7 @@ export function Footer() {
         <div className={styles.brand}>
           <TinyAssetsMark size={26} />
           <p className={styles.line}>
-            <strong>TinyAssets</strong> is the platform. <strong>Tiny</strong> is the universe you
+            <strong>TinyAssets</strong> is the platform. <strong>Tiny</strong> is the command center you
             talk to. The code is open source under MIT on{" "}
             <a href={SITE.repo} target="_blank" rel="noreferrer">
               GitHub
@@ -32,7 +32,7 @@ export function Footer() {
         <div className={styles.col}>
           <span className="eyebrow">Read</span>
           <ul>
-            <li><Link href="/build/">How a universe builds</Link></li>
+            <li><Link href="/build/">How a command center builds</Link></li>
             <li><Link href="/commons/">Commons</Link></li>
             <li><Link href="/developers/">Developers</Link></li>
             <li><Link href="/fine-print/">Fine print</Link></li>

@@ -50,7 +50,7 @@ def app_with_slow_tool(tmp_path, monkeypatch):
     (scaled) ping interval. Removed again so the canonical tool set is not
     widened for any other test."""
     from tinyassets import universe_server as us
-    from tinyassets.auth.middleware import set_provider
+    from tinyassets.auth import middleware
     from tinyassets.auth.provider import AuthProvider, Identity
 
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
@@ -81,7 +81,10 @@ def app_with_slow_tool(tmp_path, monkeypatch):
         def exchange_code(self, *args, **kwargs):
             raise NotImplementedError("the probe never runs an OAuth dance")
 
-    previous = set_provider(_ProbeProvider())
+    # monkeypatch, not set_provider: set_provider returns None, so the old
+    # `previous = set_provider(...)` never restored anything and this probe
+    # stayed the process's auth provider for every later test.
+    monkeypatch.setattr(middleware, "_provider", _ProbeProvider())
 
     async def slow_probe(seconds: float = 3.0) -> str:
         await anyio.sleep(seconds)
@@ -93,8 +96,6 @@ def app_with_slow_tool(tmp_path, monkeypatch):
     finally:
         provider = getattr(us.mcp, "local_provider", None)   # fastmcp >= 3.4
         (provider.remove_tool if provider is not None else us.mcp.remove_tool)("slow_probe")
-        if previous is not None:
-            set_provider(previous)
 
 
 def _rpc(method: str, params: dict | None, rid: int | None) -> str:

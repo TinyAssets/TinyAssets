@@ -42,7 +42,7 @@ def _build_branch(us) -> str:
 
 def _birth(us) -> str:
     """Birth assigns its own opaque id; a caller-selected one is rejected."""
-    created = json.loads(us.write_graph(target="universe", text="test account"))
+    created = json.loads(us.write_graph(target="command_center", text="test account"))
     assert not created.get("error"), created
     uid = created.get("universe_id") or created.get("graph_id")
     assert uid, created
@@ -61,7 +61,7 @@ def test_existing_universe_can_declare_a_loop_after_birth(env):
 
     bid = _build_branch(us)
     out = json.loads(us.write_graph(
-        target="universe", operation="declare_loop", graph_id=uid, branch_id=bid,
+        target="command_center", operation="declare_loop", graph_id=uid, branch_id=bid,
     ))
     assert not out.get("error"), out
     assert out["status"] == "declared"
@@ -76,7 +76,7 @@ def test_declaring_an_unknown_branch_is_refused(env):
     us, base = env
     uid = _birth(us)
     out = json.loads(us.write_graph(
-        target="universe", operation="declare_loop", graph_id=uid,
+        target="command_center", operation="declare_loop", graph_id=uid,
         branch_id="ffffffffffff",
     ))
     assert out.get("error") == "branch_not_found", out
@@ -125,7 +125,7 @@ def test_declare_loop_refuses_a_universe_the_caller_cannot_write(env, monkeypatc
         permissions, "universe_access_allows", lambda _uid, write=False: not write
     )
     out = json.loads(us.write_graph(
-        target="universe", operation="declare_loop", graph_id=uid, branch_id=bid,
+        target="command_center", operation="declare_loop", graph_id=uid, branch_id=bid,
     ))
     assert out.get("error"), f"expected refusal, got {out}"
 
@@ -149,12 +149,12 @@ def test_clearing_a_loop_actually_clears_it(env):
     from tinyassets.universe_soul import read_universe_soul
 
     json.loads(us.write_graph(
-        target="universe", operation="declare_loop", graph_id=uid, branch_id=bid,
+        target="command_center", operation="declare_loop", graph_id=uid, branch_id=bid,
     ))
     assert read_universe_soul(base / uid).loop_branch_def_id == bid
 
     out = json.loads(us.write_graph(
-        target="universe", operation="declare_loop", graph_id=uid, branch_id="",
+        target="command_center", operation="declare_loop", graph_id=uid, branch_id="",
     ))
     assert not out.get("error"), out
     assert out["status"] == "cleared"
@@ -188,7 +188,7 @@ def test_another_authors_private_branch_cannot_become_my_loop(env, monkeypatch):
         conn.commit()
 
     out = json.loads(us.write_graph(
-        target="universe", operation="declare_loop", graph_id=uid, branch_id=bid,
+        target="command_center", operation="declare_loop", graph_id=uid, branch_id=bid,
     ))
     assert out.get("error") == "branch_not_found", (
         f"another author's private branch must not bind, got {out}"
@@ -216,7 +216,7 @@ def test_declared_loop_reports_whether_it_is_servable(env):
 
     before = len(list_daemons(str(base)))
     out = json.loads(us.write_graph(
-        target="universe", operation="declare_loop", graph_id=uid, branch_id=bid,
+        target="command_center", operation="declare_loop", graph_id=uid, branch_id=bid,
     ))
     assert not out.get("error"), out
     assert out["loop_dispatch"]["declared"] is True

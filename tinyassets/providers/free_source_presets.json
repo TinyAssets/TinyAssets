@@ -1,20 +1,5 @@
 [
   {
-    "id": "google_ai_studio",
-    "name": "Google AI Studio",
-    "base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
-    "help_url": "https://aistudio.google.com/apikey",
-    "billing_url": "https://aistudio.google.com/billing",
-    "offer": "Free tier on eligible Gemini models; project and model limits apply. Daily requests reset at midnight Pacific.",
-    "models": [
-      "gemini-2.5-flash",
-      "gemini-2.5-flash-lite",
-      "gemini-3.1-flash-lite"
-    ],
-    "daily_reset_timezone": "America/Los_Angeles",
-    "wire": "openai_chat"
-  },
-  {
     "id": "groq",
     "name": "Groq",
     "base_url": "https://api.groq.com/openai/v1",
@@ -27,7 +12,54 @@
       "qwen/qwen3.8-27b"
     ],
     "daily_request_headers": true,
-    "wire": "openai_chat"
+    "wire": "openai_chat",
+    "terms": "The free plan allows about 8,000 tokens a minute per model, so long agent turns can pause at that limit.",
+    "daily_cap": {
+      "requests_per_day": 1000,
+      "tokens_per_minute": 8000,
+      "reset_timezone": null,
+      "source_url": "https://console.groq.com/docs/rate-limits"
+    }
+  },
+  {
+    "id": "google_ai_studio",
+    "name": "Google AI Studio",
+    "base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
+    "help_url": "https://aistudio.google.com/apikey",
+    "billing_url": "https://aistudio.google.com/billing",
+    "offer": "Free tier on eligible Gemini models; project and model limits apply. Daily requests reset at midnight Pacific.",
+    "models": [
+      "gemini-2.5-flash",
+      "gemini-2.5-flash-lite",
+      "gemini-3.1-flash-lite"
+    ],
+    "daily_reset_timezone": "America/Los_Angeles",
+    "wire": "openai_chat",
+    "terms": "Google's free tier may use your prompts to improve its products, is for ages 18+, and is not offered to users in the EEA, UK or Switzerland.",
+    "daily_cap": {
+      "requests_per_day": null,
+      "tokens_per_minute": null,
+      "reset_timezone": "America/Los_Angeles",
+      "source_url": "https://ai.google.dev/gemini-api/docs/rate-limits"
+    }
+  },
+  {
+    "id": "mistral",
+    "name": "Mistral",
+    "base_url": "https://api.mistral.ai/v1",
+    "help_url": "https://console.mistral.ai/api-keys",
+    "billing_url": "https://admin.mistral.ai/organization/billing",
+    "offer": "Free mode includes limited monthly usage, with no credit card required. Current model limits appear in your account.",
+    "models": [
+      "mistral-small-latest"
+    ],
+    "wire": "openai_chat",
+    "daily_cap": {
+      "requests_per_day": null,
+      "tokens_per_minute": null,
+      "reset_timezone": null,
+      "source_url": "https://docs.mistral.ai/admin/billing-usage/usage-limits"
+    }
   },
   {
     "id": "cerebras",
@@ -40,18 +72,44 @@
       "gpt-oss-120b",
       "qwen-3.8-27b"
     ],
-    "wire": "openai_chat"
+    "wire": "openai_chat",
+    "daily_cap": {
+      "requests_per_day": null,
+      "tokens_per_minute": null,
+      "reset_timezone": null,
+      "source_url": "https://inference-docs.cerebras.ai/support/rate-limits"
+    }
   },
   {
-    "id": "mistral",
-    "name": "Mistral",
-    "base_url": "https://api.mistral.ai/v1",
-    "help_url": "https://console.mistral.ai/api-keys",
-    "billing_url": "https://admin.mistral.ai/organization/billing",
-    "offer": "Free mode includes limited monthly usage, with no credit card required. Current model limits appear in your account.",
+    "id": "huggingface",
+    "available": false,
+    "unavailable_reason": "free_only_boundary_unverified",
+    "name": "Hugging Face",
+    "base_url": "https://router.huggingface.co/v1",
+    "help_url": "https://huggingface.co/settings/connected-applications",
+    "billing_url": "https://huggingface.co/settings/billing",
+    "offer": "A small free monthly allowance of AI requests on your own Hugging Face account. Your agent uses it as a backup when your other free requests run out.",
     "models": [
-      "mistral-small-latest"
+      "openai/gpt-oss-120b",
+      "openai/gpt-oss-20b"
     ],
-    "wire": "openai_chat"
+    "wire": "openai_chat",
+    "sign_in": {
+      "label": "Sign in with Hugging Face",
+      "issuer_host": "huggingface.co",
+      "scopes": [
+        "openid",
+        "profile",
+        "inference-api"
+      ],
+      "client_id_env": "TINYASSETS_HUGGINGFACE_OAUTH_CLIENT_ID"
+    },
+    "billing_note": "Hugging Face gives free accounts $0.10 of requests a month (its figure, subject to change). After that, requests stop unless the account has bought Hugging Face credits or has PRO, which Hugging Face then bills to that account. TinyAssets cannot enforce your Hugging Face billing settings.",
+    "daily_cap": {
+      "requests_per_day": null,
+      "tokens_per_minute": null,
+      "reset_timezone": null,
+      "source_url": "https://huggingface.co/docs/inference-providers/pricing"
+    }
   }
 ]

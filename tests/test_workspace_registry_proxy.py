@@ -79,6 +79,7 @@ def launch_child(tail, child_control):
     )
 
 
+@pytest.mark.real_jail
 @linux_jail
 @pytest.mark.parametrize("destination", ["pypi.org", "127.0.0.1"])
 def test_namespace_hands_only_unix_relay_to_real_registry_broker(destination):
@@ -180,6 +181,7 @@ finally:
             echo.join(timeout=1)
 
 
+@pytest.mark.real_jail
 @linux_jail
 @pytest.mark.parametrize("mode", ["timeout", "broker_closed", "connection_limit"])
 def test_proxy_stops_on_deadline_revocation_and_connection_limit(mode):

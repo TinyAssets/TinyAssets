@@ -38,7 +38,7 @@ _OPTIONAL = ("clearAccountScopedState", "clearThread", "clearComposerState",
              # so a 15-second poll cannot delete what the user typed into a
              # card, which makes clearing them an account-change step rather
              # than a side effect of the next rebuild.
-             "clearRailCards", "clearTypedValues")
+             "clearRailCards", "clearTypedValues", "clearMemoryState")
 
 
 def _run_node(script: str):
@@ -123,6 +123,9 @@ let queuePersisted=true;
 // the harness that runs the page's own version); what matters at THIS boundary is
 // that the account switch drops it.
 let serverTurn=null;
+// Steering a running turn (harness S2): flushSendQueue holds while a steer
+// request is on the wire.
+let steeredLines=[], pendingSteers=0, steerHeldBatch=false, lastSettlement=null;
 const sendQueue=[];
 const renderedConsumerTurns=new Set();
 const renderedConsumerFounders=new Set();
@@ -394,7 +397,7 @@ def test_sign_out_takes_the_composer_with_the_rest_of_the_account(html):
       DOM.composer.value="my unsent private draft: severance terms";
       DOM.composer.style.height="96px";
       DOM.send.disabled=true; turnStartedAt=1000; activeTurn={};
-      setStatusLine("Your universe is thinking...");
+      setStatusLine("Your agent is thinking...");
       STORE.local[UPLOAD_KEY_A]=JSON.stringify(
         {version:1,owner:"principal-a",home:"universe-a",saved:[{file_id:"f1"}]});
       sendQueue.push({message:"A queued line",display:"A queued line",
@@ -457,7 +460,7 @@ def test_the_previous_turns_cleanup_cannot_touch_the_next_account(html):
       // Exactly what sendTurn holds across its await.
       const myTurn={}; activeTurn=myTurn;
       DOM.send.disabled=true; turnStartedAt=1000;
-      setStatusLine("Your universe is thinking...");
+      setStatusLine("Your agent is thinking...");
 
       enterSignedOut();                            // the boundary
       STORE.session[TOKEN_KEY]="t2";

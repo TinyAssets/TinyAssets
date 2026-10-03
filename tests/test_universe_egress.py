@@ -214,3 +214,75 @@ def test_a_replaced_socket_is_served_again(tmp_path, monkeypatch):
     path.unlink()
     again = egress.ensure_proxy(tmp_path / "u-one")
     assert again == path and path.is_socket()
+
+
+# --- the provider jail's relay to its universe's own engine server ---------------
+
+
+@pytest.fixture
+def short_root():
+    """Engine relay sockets carry an owner tag; keep the path well under 108 bytes."""
+    import shutil
+    import tempfile
+
+    root = Path(tempfile.mkdtemp(prefix="ta-er-", dir="/tmp"))
+    (root / "u-one").mkdir()
+    yield root
+    shutil.rmtree(root, ignore_errors=True)
+
+
+@pytest.fixture
+def routes(monkeypatch):
+    """The owner-checked route read, with a table the test controls."""
+    from tinyassets import engine_mcp_http
+
+    table: dict = {}
+
+    def read(*, actor_id, graph_id, root=None):
+        port = table.get((actor_id, graph_id))
+        if port is None:
+            return None
+        return engine_mcp_http.EngineMcpRoute(
+            actor_id, graph_id, f"http://127.0.0.1:{port}/mcp", "s" * 32,
+        )
+
+    monkeypatch.setattr(engine_mcp_http, "read_engine_mcp_route", read)
+    return table
+
+
+@posix_only
+def test_the_engine_relay_reaches_only_the_route_its_owner_holds(short_root, routes, upstream):
+    port, seen = upstream
+    routes[("owner", "u-one")] = port
+    universe = short_root / "u-one"
+    assert egress.ensure_engine_relay(universe, actor_id="stranger", graph_id="u-one") is None
+    path, relayed_port = egress.ensure_engine_relay(universe, actor_id="owner", graph_id="u-one")
+    assert relayed_port == port
+    assert path.parent == short_root / egress.UNIVERSE_SIDECARS_DIR / "u-one"
+    client = socket.socket(socket.AF_UNIX)
+    client.settimeout(10)
+    client.connect(str(path))
+    client.sendall(b"hello")
+    assert client.recv(4096) == b"echo:hello"
+    client.close()
+    assert seen == [True]
+
+
+@posix_only
+def test_the_engine_relay_rereads_the_route_for_every_connection(short_root, routes, upstream):
+    """A revoked route relays nothing, even through a relay that already exists."""
+    port, seen = upstream
+    routes[("owner", "u-one")] = port
+    path, _ = egress.ensure_engine_relay(short_root / "u-one", actor_id="owner", graph_id="u-one")
+    routes.clear()
+    client = socket.socket(socket.AF_UNIX)
+    client.settimeout(10)
+    client.connect(str(path))
+    client.sendall(b"hello")
+    try:
+        reply = client.recv(4096)
+    except ConnectionResetError:  # closed with our bytes unread: also nothing relayed
+        reply = b""
+    assert reply == b""
+    client.close()
+    assert seen == []

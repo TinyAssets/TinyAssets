@@ -48,4 +48,4 @@ def check_current_home(conn: sqlite3.Connection, owner: str, universe: str) -> N
         (principal_digest(owner),),
     ).fetchone()
     if home is None or home[0] != universe or deleted is not None:
-        raise CurrentHomeChanged("current universe home changed")
+        raise CurrentHomeChanged("current command center home changed")

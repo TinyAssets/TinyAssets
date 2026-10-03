@@ -43,7 +43,7 @@ def test_soul_edit_updates_governed_file_and_flips_learned(universe):
     result = apply_soul_edit(
         universe,
         changes={"identity.md": "# Identity\n\nI am Orion, a universe of maps.\n"},
-        source="founder conversation",
+        agent_id="main", source="founder conversation",
         context="founder named me during first contact",
     )
     assert result["updated_files"] == ["identity.md"]
@@ -62,7 +62,7 @@ def test_soul_edit_sets_identity_name_frontmatter(universe):
     apply_soul_edit(
         universe,
         changes={"identity.md": "# Identity\n\nMy name is Orion.\n"},
-        source="founder",
+        agent_id="main", source="founder",
         context="naming",
         name="Orion",
     )
@@ -76,7 +76,7 @@ def test_soul_edit_sets_identity_name_frontmatter(universe):
 def test_soul_edit_name_only_learns_identity(universe):
     # "Your name is Orion" should be one call — no body required.
     result = apply_soul_edit(
-        universe, changes={}, source="founder", context="naming", name="Orion",
+        universe, changes={}, agent_id="main", source="founder", context="naming", name="Orion",
     )
     assert result["updated_files"] == ["identity.md"]
     from tinyassets.universe_self_model import read_self_model
@@ -94,7 +94,7 @@ def test_soul_edit_body_carries_projects_as_body(universe):
                 "trunk; its site, connector, and daemons are my limbs.\n"
             )
         },
-        source="founder conversation",
+        agent_id="main", source="founder conversation",
         context="founder taught me my body is their projects",
     )
     from tinyassets.universe_self_model import read_self_model
@@ -109,7 +109,7 @@ def test_soul_edit_multiple_governed_files_one_edit(universe):
             "founder.md": "# Founder\n\nMy founder is Jonathan.\n",
             "origin.md": "# Origin\n\nI grew from the TinyAssets project.\n",
         },
-        source="founder conversation",
+        agent_id="main", source="founder conversation",
         context="first bonding conversation",
     )
     assert sorted(result["updated_files"]) == ["founder.md", "origin.md"]
@@ -122,7 +122,7 @@ def test_soul_edit_updates_soul_md_body_preserving_frontmatter(universe):
         changes={
             "soul.md": "# Universe Soul\n\nMy purpose: bring my founder's projects to life.\n",
         },
-        source="founder",
+        agent_id="main", source="founder",
         context="purpose statement",
     )
     text = (universe / "soul.md").read_text(encoding="utf-8")
@@ -140,7 +140,7 @@ def test_soul_edit_rejects_non_governed_files(universe):
     for bad in ("projects.md", "goals.md", "log.md", "index.md"):
         with pytest.raises(SoulEditError):
             apply_soul_edit(
-                universe, changes={bad: "x"}, source="s", context="c",
+                universe, changes={bad: "x"}, agent_id="main", source="s", context="c",
             )
 
 
@@ -148,31 +148,31 @@ def test_soul_edit_rejects_path_traversal(universe):
     for bad in ("../evil.md", "soul_versions/0001.md", "..\\evil.md", "/etc/x"):
         with pytest.raises(SoulEditError):
             apply_soul_edit(
-                universe, changes={bad: "x"}, source="s", context="c",
+                universe, changes={bad: "x"}, agent_id="main", source="s", context="c",
             )
 
 
 def test_soul_edit_requires_source_and_context(universe):
     with pytest.raises(SoulEditError):
         apply_soul_edit(
-            universe, changes={"identity.md": "x"}, source="", context="c",
+            universe, changes={"identity.md": "x"}, agent_id="main", source="", context="c",
         )
     with pytest.raises(SoulEditError):
         apply_soul_edit(
-            universe, changes={"identity.md": "x"}, source="s", context="",
+            universe, changes={"identity.md": "x"}, agent_id="main", source="s", context="",
         )
 
 
 def test_soul_edit_requires_some_change(universe):
     with pytest.raises(SoulEditError):
-        apply_soul_edit(universe, changes={}, source="s", context="c")
+        apply_soul_edit(universe, changes={}, agent_id="main", source="s", context="c")
 
 
 def test_soul_edit_refuses_without_policy_file(universe):
     (universe / "soul.edit.md").unlink()
     with pytest.raises(SoulEditError):
         apply_soul_edit(
-            universe, changes={"identity.md": "x"}, source="s", context="c",
+            universe, changes={"identity.md": "x"}, agent_id="main", source="s", context="c",
         )
 
 
@@ -213,7 +213,7 @@ def test_soul_edit_appends_log_and_writes_snapshot(universe):
     result = apply_soul_edit(
         universe,
         changes={"identity.md": "# Identity\n\nI am Orion.\n"},
-        source="founder",
+        agent_id="main", source="founder",
         context="naming",
         summary="founder named me Orion",
     )
@@ -229,10 +229,10 @@ def test_soul_edit_appends_log_and_writes_snapshot(universe):
 
 def test_every_edit_writes_a_new_snapshot(universe):
     r1 = apply_soul_edit(
-        universe, changes={"identity.md": "# A\n"}, source="s", context="c",
+        universe, changes={"identity.md": "# A\n"}, agent_id="main", source="s", context="c",
     )
     r2 = apply_soul_edit(
-        universe, changes={"identity.md": "# A\n"}, source="s", context="c2",
+        universe, changes={"identity.md": "# A\n"}, agent_id="main", source="s", context="c2",
     )
     assert r1["snapshot"] != r2["snapshot"]
 
@@ -250,7 +250,7 @@ def test_soul_edit_expected_version_mismatch_rejected(universe):
         apply_soul_edit(
             universe,
             changes={"identity.md": "# Identity\n\nstale write\n"},
-            source="s",
+            agent_id="main", source="s",
             context="c",
             expected_versions={"identity.md": "0" * 64},
         )
@@ -265,7 +265,7 @@ def test_soul_edit_expected_version_match_applies(universe):
     result = apply_soul_edit(
         universe,
         changes={"identity.md": "# Identity\n\nI am Orion.\n"},
-        source="s",
+        agent_id="main", source="s",
         context="c",
         expected_versions=versions,
     )
@@ -290,7 +290,7 @@ def test_soul_edit_runs_under_per_universe_lock(universe, monkeypatch):
 
     monkeypatch.setattr(se, "_soul_lock", _tracking)
     apply_soul_edit(
-        universe, changes={"identity.md": "# I\n"}, source="s", context="c",
+        universe, changes={"identity.md": "# I\n"}, agent_id="main", source="s", context="c",
     )
     assert entered["n"] == 1
 
@@ -315,7 +315,7 @@ def test_soul_edit_concurrent_edits_get_distinct_snapshots(universe):
             r = apply_soul_edit(
                 universe,
                 changes={"identity.md": f"# Identity\n\nedit {i}\n"},
-                source="founder",
+                agent_id="main", source="founder",
                 context=f"concurrent edit {i}",
             )
             with guard:
@@ -466,7 +466,7 @@ def test_policy_absence_still_fails_closed_despite_baseline_floor(universe):
         read_governed_files(universe)
     with pytest.raises(SoulEditError):
         apply_soul_edit(
-            universe, changes={"identity.md": "x"}, source="s", context="c",
+            universe, changes={"identity.md": "x"}, agent_id="main", source="s", context="c",
         )
 
 
@@ -482,3 +482,23 @@ def test_soul_edit_policy_is_never_self_editable(universe):
     assert "soul.edit.md" not in read_governed_files(universe)
     assert "soul.edit.md" not in _BRAIN_SECTIONS.values()
     assert "soul.md" not in _BRAIN_SECTIONS.values()  # soul.md not agent-writable
+
+
+def test_only_the_main_agent_writes_its_name_and_identity(universe):
+    """The door every soul write goes through (harness §4.18): another agent's
+    learning lands in the shared brain, but never as the main agent's identity."""
+    for kwargs in ({"changes": {"identity.md": "# Identity\n\nI am Weave.\n"}},
+                   {"changes": {}, "name": "Weave"}):
+        with pytest.raises(SoulEditError, match="only the main agent"):
+            apply_soul_edit(universe, agent_id="agent_binding_w1", source="s",
+                            context="c", **kwargs)
+    assert "Weave" not in (universe / "identity.md").read_text(encoding="utf-8")
+    result = apply_soul_edit(universe, agent_id="agent_binding_w1", source="s", context="c",
+                             changes={"founder.md": "# Founder\n\nStudies tidepools.\n"})
+    assert result["updated_files"] == ["founder.md"]
+    with pytest.raises(TypeError):
+        apply_soul_edit(universe, source="s", context="c",  # no agent stated
+                        changes={"founder.md": "# Founder\n\nx\n"})
+    with pytest.raises(SoulEditError, match="agent_id is required"):
+        apply_soul_edit(universe, agent_id=" ", source="s", context="c",
+                        changes={"founder.md": "# Founder\n\nx\n"})

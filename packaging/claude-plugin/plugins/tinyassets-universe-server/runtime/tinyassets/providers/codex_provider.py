@@ -37,6 +37,7 @@ from tinyassets.providers.base import (
 )
 from tinyassets.providers.owned_process import (
     aspawn_owned,
+    disk_stop_note,
     kill_owned_tree,
     no_window_kwargs,
 )
@@ -378,9 +379,15 @@ def _codex_engine_mcp_args(config: ModelConfig, proc_env: dict[str, str]) -> lis
     # no approver, so the prompt auto-cancels ("user cancelled MCP tool call").
     # Auto-approve this ONE trusted, enabled_tools-restricted server so its tools
     # actually execute (Codex diagnosis 2026-08-22; verified key parses on 0.146).
+    from tinyassets.engine_steering import route_with_session, session_of, turn_of
+
+    # The route names this launch's session and live turn, so the engine steers
+    # only the owner's chat thread, in this turn, with a message sent mid-turn
+    # (harness S2).
+    url = route_with_session(route.url, session_of(config), turn_of())
     server = (
         "mcp_servers.tinyassets={"
-        f'url="{route.url}",bearer_token_env_var="{_ENGINE_MCP_BEARER_ENV}",'
+        f'url="{url}",bearer_token_env_var="{_ENGINE_MCP_BEARER_ENV}",'
         f'required=true,default_tools_approval_mode="approve",'
         f"enabled_tools=[{enabled}]"
         "}"
@@ -821,10 +828,10 @@ class CodexProvider(BaseProvider):
             try:
                 codex_home.relative_to(universe_root)
             except ValueError as exc:
-                raise ProviderError("codex auth home is outside the served universe") from exc
+                raise ProviderError("codex auth home is outside the served command center") from exc
             if not bwrap_path or not codex_home.is_dir():
                 raise ProviderError(
-                    "codex served turns require an available OS sandbox and universe auth"
+                    "codex served turns require an available OS sandbox and command center auth"
                 )
             sandbox_args = [
                 "--sandbox",
@@ -930,11 +937,26 @@ class CodexProvider(BaseProvider):
             # replied with persona-echo / "reauthentication" while hosted-mode
             # codex chatted + recalled memory correctly). Coding turns
             # (run_graph etc.) keep the read-only universe workspace.
+            sandbox_chat = getattr(config, "sandbox_chat", False)
             workspace_mount = (
                 JailMount("tmpfs", "/workspace")
-                if getattr(config, "sandbox_chat", False)
+                if sandbox_chat
                 else JailMount("ro-bind", "/workspace", universe_root)
             )
+            # The universe agent's own workspace (harness W2) is masked here as
+            # in every provider launch: what its agent writes there never
+            # reaches a provider's view (gpt-6-astra on #4194, round 2).
+            workspace_masks: tuple[JailMount, ...] = ()
+            if not sandbox_chat:
+                from tinyassets.providers.provider_jail import (
+                    AGENT_WORKSPACE_DIR,
+                    ensure_agent_workspace,
+                )
+
+                ensure_agent_workspace(universe_root)
+                workspace_masks = (
+                    JailMount("tmpfs", f"/workspace/{AGENT_WORKSPACE_DIR}"),
+                )
             # This adapter's own view of its universe inside the shared jail
             # (tinyassets.providers.provider_jail): narrower than the default,
             # never wider -- every bind below comes from inside universe_root.
@@ -942,6 +964,7 @@ class CodexProvider(BaseProvider):
                 universe_dir=universe_root,
                 mounts=(
                     workspace_mount,
+                    *workspace_masks,
                     JailMount(
                         "tmpfs", "/workspace/.runtime/provider-launch-credentials",
                     ),
@@ -1075,7 +1098,8 @@ class CodexProvider(BaseProvider):
                 )
             elif proc.returncode != 0:
                 raise ProviderError(
-                    f"codex exec exit {proc.returncode}: {failure_excerpt}"
+                    f"codex exec exit {proc.returncode}{disk_stop_note(proc)}: "
+                    f"{failure_excerpt}"
                 )
 
             stdout_text = stdout.decode("utf-8", errors="replace").strip()

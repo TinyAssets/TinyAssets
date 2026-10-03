@@ -193,7 +193,9 @@ def test_canonical_preference_save_uses_same_home_and_generation(home, through_a
             raw = universe_server.write_graph(**args)
             assert isinstance(raw, str)
             value = json.loads(raw)
-        assert value["universe_id"] == "u-setup"
+        # Through the MCP adapter the reply carries the public spelling (C1).
+        key = "command_center_id" if through_adapter else "universe_id"
+        assert value[key] == "u-setup"
         assert value["policy"] == PIN and value["generation"] == 1
         assert json.loads(universe_server.write_graph(**args))["error"] == (
             "model_preferences_conflict"

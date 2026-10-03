@@ -72,6 +72,12 @@ a folder, an account, a setting, a list), the new copy says **"command
 center"**. New copy follows the same rule; a test cannot enforce the
 judgement, so review does.
 
+**A command center can hold many agents** (founder, 2026-10-01; harness design
+§4.18, #4227). So actor copy names the agent when a name is known and falls
+back to "your agent" only when none is. Examples: `<name> asks` (already built
+that way in `owner_notifications`), `<name> is thinking...`. Copy must never
+hard-code a single agent ("your one agent", "the agent" as a fixed noun).
+
 "Command center" is 6 characters longer than "universe". That matters only in
 the resident description budget (D5).
 

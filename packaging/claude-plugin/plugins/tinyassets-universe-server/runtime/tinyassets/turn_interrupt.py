@@ -65,9 +65,12 @@ class TurnInterrupted(Exception):
 class LiveTurn:
     """One running interactive turn that its owner may stop."""
 
-    def __init__(self, actor_id: str, universe_id: str) -> None:
+    def __init__(self, actor_id: str, universe_id: str, agent_id: str = "main") -> None:
         self.actor_id = actor_id
         self.universe_id = universe_id
+        #: Which of the owner's agents runs this turn (harness §4.18); ``main``
+        #: is only the seed.
+        self.agent_id = agent_id or "main"
         self.live_id = uuid.uuid4().hex
         self._requested = threading.Event()
         self._lock = threading.Lock()
@@ -160,15 +163,15 @@ def _key(actor_id: str, universe_id: str) -> tuple[str, str]:
     if not actor or not universe:
         # Never key a live turn on an empty subject: "" would be one shared
         # bucket every unauthenticated path fell into.
-        raise ValueError("an interactive turn needs an authenticated owner and a universe")
+        raise ValueError("an interactive turn needs an authenticated owner and a command center")
     return actor, universe
 
 
 @contextmanager
-def interactive_turn(actor_id: str, universe_id: str):
+def interactive_turn(actor_id: str, universe_id: str, *, agent_id: str = "main"):
     """Register the served turn running in this context until it returns."""
     key = _key(actor_id, universe_id)
-    live = LiveTurn(*key)
+    live = LiveTurn(*key, agent_id=agent_id)
     with _LOCK:
         _LIVE.setdefault(key, set()).add(live)
     token = _CURRENT.set(live)
@@ -199,15 +202,18 @@ def bound(live: LiveTurn | None):
         _CURRENT.reset(token)
 
 
-def request_interrupt(actor_id: str, universe_id: str) -> int:
-    """Stop every live turn THIS caller is running in THIS universe.
+def request_interrupt(actor_id: str, universe_id: str, *, agent_id: str | None = None) -> int:
+    """Stop the live turns THIS caller is running in THIS universe: the
+    addressed agent's when ``agent_id`` is given, every agent's (stop-all)
+    when it is ``None``.
 
     Returns how many were asked to stop; ``0`` means nothing was running, which
     is not an error -- the page may have seen a turn that just finished.
     """
     key = _key(actor_id, universe_id)
     with _LOCK:
-        targets = list(_LIVE.get(key, ()))
+        targets = [live for live in _LIVE.get(key, ())
+                   if agent_id is None or live.agent_id == agent_id]
     for live in targets:
         live.request()
     return len(targets)
@@ -217,3 +223,13 @@ def live_count(actor_id: str, universe_id: str) -> int:
     """How many turns this caller is running in this universe (tests, status)."""
     with _LOCK:
         return len(_LIVE.get(_key(actor_id, universe_id), ()))
+
+
+def live_ids(actor_id: str, universe_id: str) -> set[str]:
+    """The live ids of every turn this caller is running in this universe.
+
+    Owner steering (``agent_steering.open_turn``) uses it to close a turn a
+    dead process left open, without touching one still running here.
+    """
+    with _LOCK:
+        return {live.live_id for live in _LIVE.get(_key(actor_id, universe_id), ())}

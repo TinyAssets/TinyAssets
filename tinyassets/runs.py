@@ -63,6 +63,17 @@ RUN_STATUS_FAILED = "failed"
 RUN_STATUS_CANCELLED = "cancelled"
 RUN_STATUS_INTERRUPTED = "interrupted"
 
+#: The statuses a run never leaves. ONE definition: it used to be written
+#: twice in this module (once as string literals, once from the constants),
+#: and the later binding silently won. A long-poll ends on these, a sweep
+#: skips them, and a status write onto one of them is a terminal transition.
+_TERMINAL_STATUSES = frozenset({
+    RUN_STATUS_COMPLETED,
+    RUN_STATUS_FAILED,
+    RUN_STATUS_CANCELLED,
+    RUN_STATUS_INTERRUPTED,
+})
+
 #: When this process could first have created a run: every run it creates
 #: starts after this. A recovery sweep uses it so a process never interrupts a
 #: run it is executing itself.
@@ -342,7 +353,7 @@ def _finish_terminal_workspace_release(
     except Exception:
         logger.exception(
             "workspace terminal release enqueue failed for run %s in %s; "
-            "the universe sweep will repair it",
+            "the command center sweep will repair it",
             run_id,
             workspace_base,
         )
@@ -578,7 +589,7 @@ def nominate_workspace_waiter(universe_base: str | Path) -> str | None:
             if cancelled and not _waiter_dispatch_claimed(root, ticket.run_id):
                 _settle_waiting_run(
                     root, ticket.run_id, status=RUN_STATUS_CANCELLED,
-                    error="Cancelled while waiting for the universe workspace.",
+                    error="Cancelled while waiting for the command center workspace.",
                 )
                 workspace_pool.remove_waiter(db, ticket.run_id)
                 continue
@@ -723,7 +734,7 @@ def _admit_workspace_waiter(
     except Exception as exc:  # noqa: BLE001 - settled with the reason below
         logger.exception("could not queue run %s for its workspace", run_id)
         head = None
-        queue_error = f"Could not queue for the universe workspace: {exc}"
+        queue_error = f"Could not queue for the command center workspace: {exc}"
     else:
         queue_error = ""
     my_turn = (
@@ -775,7 +786,7 @@ def _settle_cancelled_waiter(base_path: str | Path, run_id: str) -> None:
         return
     _settle_waiting_run(
         base_path, run_id, status=RUN_STATUS_CANCELLED,
-        error="Cancelled while waiting for the universe workspace.",
+        error="Cancelled while waiting for the command center workspace.",
     )
 
 
@@ -1511,9 +1522,9 @@ def initialize_runs_db(base_path: str | Path) -> Path:
     return runs_db_path(base_path)
 
 
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ─────────────────────────────────────────────────────────────────────────────
 # Run record shape
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ─────────────────────────────────────────────────────────────────────────────
 
 
 @dataclass
@@ -1807,9 +1818,9 @@ def _row_to_receipt(row: sqlite3.Row) -> dict[str, Any]:
     }
 
 
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ─────────────────────────────────────────────────────────────────────────────
 # Persistence CRUD
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ─────────────────────────────────────────────────────────────────────────────
 
 
 def create_run(
@@ -3129,12 +3140,10 @@ def list_events(
     return [_row_to_event(r) for r in rows]
 
 
-# Terminal run statuses end a long-poll immediately regardless of
-# whether new events have landed. Callers don't need to wait the full
-# max_wait_s once the run has resolved.
-_TERMINAL_STATUSES = frozenset({
-    "completed", "failed", "cancelled", "interrupted",
-})
+# Terminal run statuses (_TERMINAL_STATUSES, defined with the status
+# constants) end a long-poll immediately regardless of whether new events
+# have landed. Callers don't need to wait the full max_wait_s once the run
+# has resolved.
 
 
 def await_run_events(
@@ -3192,9 +3201,9 @@ def await_run_events(
     }
 
 
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ─────────────────────────────────────────────────────────────────────────────
 # Phase 4: judgments, lineage, node edit audit
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ─────────────────────────────────────────────────────────────────────────────
 
 
 def _iso_now() -> str:
@@ -3589,9 +3598,9 @@ def node_output_from_run(
     }
 
 
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ─────────────────────────────────────────────────────────────────────────────
 # Cooperative cancel
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ─────────────────────────────────────────────────────────────────────────────
 
 
 def request_cancel(base_path: str | Path, run_id: str) -> bool:
@@ -3654,9 +3663,9 @@ def is_cancel_requested(base_path: str | Path, run_id: str) -> bool:
         return root is None or root[0] != member[1] or root[1] != ""
 
 
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ─────────────────────────────────────────────────────────────────────────────
 # Synchronous runner
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ─────────────────────────────────────────────────────────────────────────────
 
 
 @dataclass
@@ -5563,9 +5572,9 @@ def execute_branch(
     )
 
 
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ─────────────────────────────────────────────────────────────────────────────
 # Async executor pool — in-process background worker for graph runs
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ─────────────────────────────────────────────────────────────────────────────
 # Phase 3.5: the MCP tool returns a `run_id` in <1s. The graph runs in a
 # background thread. `cancel_run` flips the flag, the next inter-node
 # `event_sink` check unwinds the graph. Restart recovery marks in-flight
@@ -5635,7 +5644,7 @@ def run_pool_key(base_path: str | Path, universe_id: str | None) -> str:
     try:
         return account_key(uid, root=base_path)
     except Exception:  # noqa: BLE001 - isolation must not depend on the resolver
-        logger.warning("run pool: owner of %s unresolved; isolating on the universe", uid,
+        logger.warning("run pool: owner of %s unresolved; isolating on the command center", uid,
                        exc_info=True)
         return f"unattributed:{uid}"
 
@@ -6843,9 +6852,9 @@ def recover_in_flight_runs(
 _PENDING_OFFSET = 1_000_000
 
 
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ─────────────────────────────────────────────────────────────────────────────
 # Presentation helpers
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ─────────────────────────────────────────────────────────────────────────────
 
 
 def build_node_status_map(
@@ -7061,22 +7070,15 @@ def query_runs(
     return {"rows": result_rows, "count": len(result_rows)}
 
 
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ─────────────────────────────────────────────────────────────────────────────
 # Sub-branch invocation helpers
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ─────────────────────────────────────────────────────────────────────────────
 
 #: Sizes the shared sub-branch pool (``_max_child_workers`` is this + 1). It
 #: is no longer a depth cap (plan item 6): sub-branch runs are metered per
 #: universe instead. Only a BLOCKING version invoke, which waits on this pool
 #: while holding one of its threads, is bounded -- by the pool's size.
 MAX_INVOKE_BRANCH_DEPTH = 5
-
-_TERMINAL_STATUSES = frozenset({
-    RUN_STATUS_COMPLETED,
-    RUN_STATUS_FAILED,
-    RUN_STATUS_CANCELLED,
-    RUN_STATUS_INTERRUPTED,
-})
 
 
 def poll_child_run_status(
@@ -7132,7 +7134,7 @@ def poll_child_run_status(
         time.sleep(min(poll_interval, remaining))
 
 
-# â”€â”€â”€ Teammate messaging â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ─── Teammate messaging ───────────────────────────────────────────────────────
 
 _VALID_MESSAGE_TYPES = frozenset({
     "request", "response", "broadcast",
@@ -7409,7 +7411,7 @@ EXTERNAL_WRITE_FAILED_ACTION = (
 )
 
 EFFECT_BUDGET_EXHAUSTED_ACTION = (
-    "This run (or this universe's last hour) has used its outbound budget - the "
+    "This run (or this command center's last hour) has used its outbound budget - the "
     "error names which one. Split the work across runs, fetch less per run, or wait "
     "for the hourly window to clear; the budget is usage, not a limit on your graph."
 )
@@ -7423,23 +7425,23 @@ WORKSPACE_SUGGESTED_ACTIONS: dict[str, str] = {
     ),
     "workspace_push_refused": (
         "The push was refused: the default branch is never a target, the ref "
-        "must be tiny/<universe>/<slug> and fast-forward, and the bundle must "
+        "must be tiny/<command-center-id>/<slug> and fast-forward, and the bundle must "
         "verify. Commit on a fresh tiny/ branch from the checked-out ref and "
         "push again; host branch protection is the repository owner's to change."
     ),
     "workspace_busy": (
-        "Another workspace job of this universe (or the host's single slot) is "
+        "Another workspace job of this command center (or the host's single slot) is "
         "running. Wait for it to finish and run again; do not split the same "
         "job across parallel branches."
     ),
     "workspace_pool_busy": (
         "The shared scratch pool is full right now, or startup reconciliation is "
         "still running. Wait a minute and run again; permanent workspaces "
-        "(storage: universe) do not use the pool."
+        "(storage: command center) do not use the pool."
     ),
     "workspace_quota_exceeded": (
         "A storage or hourly workspace bound was reached - the error names which "
-        "(the 4 GiB lease, the universe's permanent quota, or the hourly jobs/"
+        "(the 4 GiB lease, the command center's permanent quota, or the hourly jobs/"
         "bytes). Check out less, discard what you no longer need, or wait for "
         "the window named in the error to clear."
     ),
@@ -7745,6 +7747,11 @@ def _classify_failure(run: dict) -> str:
         # this narrow known prefix must precede every substring net below: a
         # model id containing "timeout" is not a timed-out run.
         return "work_model_exhausted"
+    from tinyassets.providers.model_pins import PIN_REFUSAL_MARKER
+
+    if PIN_REFUSAL_MARKER in lower:
+        # A node pin naming no single source; the same class `api.runs` gives.
+        return "permission_denied:provider_not_bound"
     from tinyassets.exceptions import AllProvidersExhaustedError, ProviderAuthorityHeldError
     from tinyassets.providers.diagnostics import CHAIN_STATE_MARKER, held_attempt_diagnosis
 
@@ -7776,7 +7783,8 @@ def _classify_failure(run: dict) -> str:
         return "timeout"
     if "exhausted" in lower or "cooldown" in lower:
         return "provider_exhausted"
-    if "code runs only in the universe that authored it" in lower:
+    if any(f"code runs only in the {word} that authored it" in lower
+           for word in ("command center", "universe")):  # pre-rename records
         # A public foreign branch with code was run directly (design D2): the
         # fix is a remix, one tool call away.
         return "node_not_accepted"
@@ -7855,7 +7863,7 @@ def list_recent_runs(
             suggested_action = "Increase node timeout or simplify the prompt."
         elif failure_class == "node_not_accepted":
             suggested_action = (
-                "This branch's code was authored elsewhere. Remix it into your universe "
+                "This branch's code was authored elsewhere. Remix it into your command center "
                 "(write_graph with fork_from) and run your copy."
             )
         elif failure_class == "code_node_failed":

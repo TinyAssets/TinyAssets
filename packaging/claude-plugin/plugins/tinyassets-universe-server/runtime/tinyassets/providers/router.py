@@ -125,6 +125,20 @@ def _provider_invocation_carrier(
     carrier.validate_for_call(role=role, operation=operation)
     return carrier
 
+def _engine_route(cfg: ModelConfig) -> tuple[str, str] | None:
+    """The engine MCP route this call's provider jail may reach, if any.
+
+    The same three fields every adapter checks before wiring the engine server
+    (``claude_provider._engine_mcp_flags``, ``codex_provider._codex_engine_mcp_args``);
+    the route itself is re-read, owner-checked, by the jail's relay.
+    """
+    actor_id = (cfg.engine_mcp_actor_id or "").strip()
+    graph_id = (cfg.engine_mcp_graph_id or "").strip()
+    if not (cfg.engine_mcp_enabled and actor_id and graph_id):
+        return None
+    return actor_id, graph_id
+
+
 def _resolve_universe_config(
     universe_context: UniverseContext | None,
 ) -> "UniverseConfig | None":
@@ -159,7 +173,11 @@ def _effective_universe_provider_ceiling(
     use only providers the universe itself selected, never the process-global
     fallback chain. Missing/empty selection holds before provider access.
     """
+    from tinyassets.provider_authority import current
+
+    universe_dir = universe_context.universe_dir if universe_context is not None else None
     if carrier_armed or universe_context is None:
+        resolved_config = current(universe_dir, resolved_config)
         return (
             resolved_config.allowed_providers
             if resolved_config is not None
@@ -171,6 +189,7 @@ def _effective_universe_provider_ceiling(
     requester_config = universe_context.config
     if requester_config is None:
         raise ProviderAuthorityHeldError(_CONNECT_PROVIDER_MESSAGE)
+    requester_config = current(universe_dir, requester_config)
     if requester_config.allowed_providers is not None:
         ceiling = [
             str(provider).strip()
@@ -222,9 +241,9 @@ def _default_config(resolved: "UniverseConfig | None" = None) -> ModelConfig:
 # only by the provider its owner's authority names. Status surfaces still use
 # this as the catalogue of executor names the host could register.
 FALLBACK_CHAINS: dict[str, list[str]] = {
-    "writer": ["claude-code", "codex", "gemini-free", "groq-free", "grok-free", "ollama-local"],
-    "judge": ["codex", "gemini-free", "groq-free", "grok-free", "ollama-local"],
-    "extract": ["codex", "gemini-free", "groq-free", "ollama-local"],
+    "writer": ["claude-code", "codex", "ollama-local"],
+    "judge": ["codex", "ollama-local"],
+    "extract": ["codex", "ollama-local"],
     "embed": ["ollama-local"],
 }
 
@@ -501,7 +520,10 @@ class ProviderRouter:
     # Shared health
     # ------------------------------------------------------------------
 
-    def _cool(self, cfg: Any, provider_name: str, seconds: int, *, daily_detail: str = "") -> bool:
+    def _cool(
+        self, cfg: Any, provider_name: str, seconds: int, *, daily_detail: str = "",
+        reason: str = "",
+    ) -> bool:
         """The ONE place an in-flight attempt writes the shared cooldown map.
 
         Returns whether it was written. A ``ModelConfig.secondary_call`` is
@@ -525,7 +547,15 @@ class ProviderRouter:
         # cooldowns keep their original call shape.
         extra = {"daily_detail": daily_detail} if daily_detail else {}
         self._quota.cooldown(provider_name, seconds, **extra)
+        # Why, kept beside the map: a later call skipped by this cooldown says
+        # what it is waiting out. Live 2026-10-01 a run skipped a cooled source
+        # and reported only "account scope", which read as a spent allowance.
+        self.__dict__.setdefault("_cool_reasons", {})[provider_name] = reason
         return True
+
+    def cooldown_reason(self, provider_name: str) -> str:
+        """The failure class that put ``provider_name`` in cooldown, or ``""``."""
+        return self.__dict__.get("_cool_reasons", {}).get(provider_name, "")
 
     # ------------------------------------------------------------------
     # Registration helpers
@@ -583,7 +613,7 @@ class ProviderRouter:
             return chain
         return [p for p in chain if p in allowlist]
 
-    def cool_source(self, provider: str, *, retry_after_s=None) -> int:
+    def cool_source(self, provider: str, *, retry_after_s=None, reason: str = "") -> int:
         """Put a source in cooldown after the fact. Restrictive only.
 
         Cooling can only ever make this router try a source LESS, so this is
@@ -604,7 +634,7 @@ class ProviderRouter:
         # turn coordinator, which only ever follows a founder-facing turn, so it
         # is never secondary -- and saying so beats leaving a second unguarded
         # write of the shared map.
-        self._cool(None, provider, seconds)
+        self._cool(None, provider, seconds, reason=reason or "capacity refusal")
         return seconds
 
     def selected_agent_execution_kind(self, selection) -> str:
@@ -833,7 +863,11 @@ class ProviderRouter:
             raise PermissionError("native agent cannot use HTTP inference facts")
         if _agent_execution_kind == "engine_inference" and cfg.agent_request is None:
             raise PermissionError("engine inference requires its structured request")
-        from tinyassets.providers.agent_inference import input_size, output_for_settlement
+        from tinyassets.providers.agent_inference import (
+            context_tokens,
+            input_size,
+            output_for_settlement,
+        )
 
         if cfg.agent_request is not None and (
             cfg.selected_model is None or not cfg.engine_mcp_enabled
@@ -871,7 +905,7 @@ class ProviderRouter:
                     # The chosen output limit is itself part of the encoded
                     # agent request. Measure with that field present; otherwise
                     # adding it can overflow an exactly filled context afterward.
-                    required_input = input_size(
+                    required_input = context_tokens(
                         prompt, system, replace(cfg, max_tokens=output_limit),
                     )
                     output_limit = min(
@@ -903,7 +937,7 @@ class ProviderRouter:
             if cfg.max_tokens is None:
                 output_limit = invocation_carrier.max_tokens
                 if cfg.selected_model is not None:
-                    required_input = input_size(
+                    required_input = context_tokens(
                         prompt, system, replace(cfg, max_tokens=output_limit),
                     )
                     output_limit = min(
@@ -943,9 +977,10 @@ class ProviderRouter:
                 cfg.max_tokens,
             ) > invocation_carrier.max_cost_microunits:
                 raise PermissionError("selected model exceeds this workflow cost allowance")
-            # Match the existing conservative input reservation measure. The
-            # selected catalogue's context limit is not a permission to truncate.
-            required_context = input_size(prompt, system, cfg)
+            # A conservative TOKEN estimate against the window (the reservation
+            # below keeps the byte measure). The selected catalogue's context
+            # limit is not a permission to truncate.
+            required_context = context_tokens(prompt, system, cfg)
             if (
                 cfg.max_tokens is None
                 or required_context + cfg.max_tokens > cfg.selected_model.context_tokens
@@ -999,7 +1034,7 @@ class ProviderRouter:
                 )
                 raise AllProvidersExhaustedError(
                     f"All providers for role={role!r} are blocked by the "
-                    f"universe's allowed_providers={allowlist!r}. Daemon will "
+                    f"command center's allowed_providers={allowlist!r}. Daemon will "
                     f"not silently fall back to a disallowed provider."
                 )
             chain = filtered
@@ -1056,7 +1091,7 @@ class ProviderRouter:
                         _uid = served_authority.universe_id
                     else:
                         raise PermissionError(
-                            "open provider invocation requires a universe context"
+                            "open provider invocation requires a command center context"
                         )
                     _def_id = provider_name.split("api_key_http:", 1)[-1]
                     _definition = get_definition(_uid, _def_id)
@@ -1100,7 +1135,10 @@ class ProviderRouter:
                 attempts.append(ProviderAttemptDiagnostic(
                     provider=provider_name, status="skipped",
                     skip_class="quota_or_cooldown",
-                    detail=daily or "provider cooldown gate",
+                    detail=daily or (
+                        f"provider cooldown gate (after {self.cooldown_reason(provider_name)})"
+                        if self.cooldown_reason(provider_name) else "provider cooldown gate"
+                    ),
                     failure_class="provider_daily_quota" if daily else None,
                     capacity_scope="account" if daily else None,
                     cooldown_remaining_s=cd if cd > 0 else None,
@@ -1204,6 +1242,7 @@ class ProviderRouter:
                         # refuses a launch with none (provider_jail).
                         with provider_launch_scope(
                             universe_dir, credential_dir=cfg.credential_snapshot_dir,
+                            engine_route=_engine_route(cfg),
                         ):
                             dispatch = provider.complete(
                                 prompt, system, cfg, universe_dir=universe_dir,
@@ -1342,7 +1381,6 @@ class ProviderRouter:
                         output_tokens=resp.output_tokens,
                         cost_microunits=resp.cost_microunits,
                     )
-                self._quota.record_success(provider_name)
                 if served_authority is not None:
                     from tinyassets.providers.source_health import SOURCE_HEALTH, source_key
 
@@ -1383,7 +1421,7 @@ class ProviderRouter:
                 else:
                     # Preserve legacy host routing. Owned serving failures must
                     # not quarantine another owner's credential on this host.
-                    self._cool(cfg, provider_name, COOLDOWN_OTHER)
+                    self._cool(cfg, provider_name, COOLDOWN_OTHER, reason="auth_invalid")
                 proof = getattr(exc, "native_evidence", None)
                 if type(proof) is NativeCompletionEvidence and proof.provider == provider_name:
                     native_proofs[len(attempts)] = proof
@@ -1440,6 +1478,7 @@ class ProviderRouter:
                         (_retry_after_cooldown_s(exc.retry_after) if exc.retry_after is not None
                          else MAX_COOLDOWN_S) if daily else _rate_limit_cooldown_s(exc),
                         daily_detail=redacted_failure_detail(str(exc)) if daily else "",
+                        reason=exc.failure_class,
                     )
                 attempts.append(ProviderAttemptDiagnostic(
                     provider=provider_name, status="failed", skip_class="quota_or_cooldown",
@@ -1484,7 +1523,7 @@ class ProviderRouter:
                 # provider until its own retry-after (+margin), keeping fallback
                 # forbidden for the sole served writer.
                 cd = _rate_limit_cooldown_s(exc)
-                if self._cool(cfg, provider_name, cd):
+                if self._cool(cfg, provider_name, cd, reason=exc.failure_class or ""):
                     logger.warning(
                         "Provider %s rate-limited/overloaded (%s), cooldown %ds",
                         provider_name, exc.failure_class, cd,
@@ -1519,7 +1558,15 @@ class ProviderRouter:
                 ))
                 continue
             except ProviderProtocolError as exc:
-                if self._cool(cfg, provider_name, COOLDOWN_OTHER):
+                # An agent round's unreadable or in-band-error reply is about one
+                # MODEL's answer, not the connection: cooling it skipped every
+                # sibling model on the same key (live 2026-10-02, the free-only
+                # account's whole OpenRouter pool), and made the owner's very next
+                # "continue" a cooldown refusal. The turn coordinator bounds its
+                # own retries (``AgentTurnCoordinator._next_after_bad_reply``).
+                if cfg.agent_request is None and self._cool(
+                    cfg, provider_name, COOLDOWN_OTHER, reason="provider_protocol_error",
+                ):
                     logger.warning(
                         "Provider %s protocol error, cooldown %ds",
                         provider_name, COOLDOWN_OTHER,
@@ -1530,11 +1577,13 @@ class ProviderRouter:
                     detail=redacted_failure_detail(str(exc)),
                     failure_class=exc.failure_class,
                     side_effect_state=_side_effect_from(exc),
+                    partial_text=getattr(exc, "partial_text", None) or None,
                     **_tool_wait_evidence(exc),
                 ))
                 continue
             except ProviderUnavailableError as exc:
-                if self._cool(cfg, provider_name, COOLDOWN_UNAVAILABLE):
+                if self._cool(cfg, provider_name, COOLDOWN_UNAVAILABLE,
+                              reason="provider_unavailable"):
                     logger.warning(
                         "Provider %s unavailable, cooldown %ds",
                         provider_name, COOLDOWN_UNAVAILABLE,
@@ -1546,7 +1595,7 @@ class ProviderRouter:
                 ))
                 continue
             except ProviderTimeoutError as exc:
-                if self._cool(cfg, provider_name, COOLDOWN_TIMEOUT):
+                if self._cool(cfg, provider_name, COOLDOWN_TIMEOUT, reason="timed_out"):
                     logger.warning(
                         "Provider %s timed out, cooldown %ds",
                         provider_name, COOLDOWN_TIMEOUT,
@@ -1558,7 +1607,7 @@ class ProviderRouter:
                 ))
                 continue
             except ProviderError as exc:
-                if self._cool(cfg, provider_name, COOLDOWN_OTHER):
+                if self._cool(cfg, provider_name, COOLDOWN_OTHER, reason="provider_error"):
                     logger.warning(
                         "Provider %s error, cooldown %ds: %s",
                         provider_name, COOLDOWN_OTHER, exc,
@@ -1579,7 +1628,7 @@ class ProviderRouter:
                 # this outer classifier.
                 raise
             except Exception as exc:
-                self._cool(cfg, provider_name, COOLDOWN_OTHER)
+                self._cool(cfg, provider_name, COOLDOWN_OTHER, reason="unknown")
                 logger.exception("Unexpected error from %s", provider_name)
                 attempts.append(ProviderAttemptDiagnostic(
                     provider=provider_name, status="failed",
@@ -1609,7 +1658,7 @@ class ProviderRouter:
         if served_authority is not None:
             raise AllProvidersExhaustedError(
                 f"Served provider {served_authority.provider!r} exhausted; "
-                f"universe {AllProvidersExhaustedError.NO_WIDENING_MESSAGE}.",
+                f"command center {AllProvidersExhaustedError.NO_WIDENING_MESSAGE}.",
                 attempts=attempts,
                 failure_class=dominant_failure_class(attempts),
                 retry_after=dominant_retry_after_s(attempts),

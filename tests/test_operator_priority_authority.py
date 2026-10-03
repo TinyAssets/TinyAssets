@@ -509,7 +509,7 @@ def test_wildcard_priority_target_is_rejected_without_mutation(
     issuer_id = _create_actor(tmp_path, "issuer")
     subject_id = _create_actor(tmp_path, "subject")
 
-    with pytest.raises(ValueError, match="exact universe"):
+    with pytest.raises(ValueError, match="exact command center"):
         issue_priority_grant(
             tmp_path,
             subject_id=subject_id,

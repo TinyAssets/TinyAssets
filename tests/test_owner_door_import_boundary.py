@@ -172,7 +172,7 @@ with identity_context(Identity(user_id="probe_owner", username="probe_owner",
                                capabilities=["tinyassets.universe.write"])):
     for target, extra in (("pending_requests", {}), ("model_options", {}),
                           ("agent_bindings", {"limit": 5}), ("app_ui", {}),
-                          ("universe_files", {}), ("conversation", {})):
+                          ("command_center_files", {}), ("conversation", {})):
         read_graph(target=target, **extra)
     get_status(include_conversation=True)
 print(json.dumps(sorted(m for m in sys.modules if m in %s)))

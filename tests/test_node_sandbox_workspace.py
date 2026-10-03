@@ -777,6 +777,7 @@ def test_bytes_survive_a_round_trip_a_command_can_vouch_for(workspace: Path) -> 
     assert payload["text_would_mangle"] is True
 
 
+@pytest.mark.real_jail
 @pytest.mark.skipif(
     sys.platform != "linux" or BWRAP is None,
     reason="the byte doors inside the real jail need Linux and bwrap",

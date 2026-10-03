@@ -153,7 +153,7 @@ _SOURCE_SUFFIX = " asks"
 #: When the universe has no name of its own. Deliberately not the product name:
 #: "TinyAssets" in the identity position is exactly the impersonation the
 #: suffix exists to prevent.
-_UNNAMED = "Your universe"
+_UNNAMED = "Your agent"
 
 
 def _universe_title(base: Path, universe_id: str) -> str:

@@ -26,6 +26,13 @@ from tests.test_pending_requests import (  # noqa: F401 - fixtures
     _ask,
     _login,
     _make_universe,
+    # The autouse logout. An autouse fixture applies only to the module that
+    # DEFINES or imports it, so without this `_login()` left a static
+    # "founder" provider bound for the rest of the session -- and later files
+    # (test_phase7_h2_goals_cutover: KeyError 'status'; test_onboarding_model_
+    # connect: current_home_changed) ran as that founder whenever they shared
+    # a process with this one (2026-10-01; #4201's 4-way split, -n 5).
+    _reset_auth,
 )
 
 

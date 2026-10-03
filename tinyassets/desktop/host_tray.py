@@ -231,7 +231,7 @@ class HostTrayService:
 
         total_words = sum(entry.word_count for entry in entries)
         self._tray.update_extended_status(
-            universe_name=f"{len(entries)} active universes",
+            universe_name=f"{len(entries)} active command centers",
             word_count=total_words,
             phase="Host dashboard active",
         )

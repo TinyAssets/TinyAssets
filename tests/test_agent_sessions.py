@@ -301,7 +301,7 @@ def data_dir(tmp_path, monkeypatch):
 def test_the_founder_prompt_is_result_first_and_proactive(data_dir):
     udir = _seed(data_dir)
     prompt = ui._build_persona_system_prompt(udir, universe_id="u-test", tier=interlocutor.FOUNDER)
-    assert "Inside my universe I act without asking" in prompt
+    assert "Inside my command center I act without asking" in prompt
     assert "the result first" in prompt
     for teaches_hedging in ("warmly", "genuinely curious", "being raised", "raising",
                             "getting to know", "ask to clarify"):
@@ -316,7 +316,7 @@ def test_operating_instructions_are_seeded_once_and_then_the_universes_own(data_
     (udir / "AGENTS.md").write_text("Answer in one sentence.\n", encoding="utf-8")
     prompt = ui._build_persona_system_prompt(udir, universe_id="u-test", tier=interlocutor.FOUNDER)
     assert "Answer in one sentence." in prompt
-    assert "Inside my universe I act without asking" not in prompt
+    assert "Inside my command center I act without asking" not in prompt
 
 
 def test_a_visitor_is_never_handed_the_operating_instructions(data_dir):

@@ -1,5 +1,5 @@
-  // ---- Custom universe UI: isolated renderer + closed bridge ----------------
-  // A universe can hold executable UI bundles (`tinyassets.app-ui.v1`) its own
+  // ---- Custom command center UI: isolated renderer + closed bridge ----------------
+  // A command center can hold executable UI bundles (`tinyassets.app-ui.v1`) its own
   // agent writes, and this renders them. A bundle is somebody's arbitrary code —
   // usually somebody the viewer has never met, because bundles are shared by
   // publish/remix — so nothing here sanitizes it. It runs in the sandboxed,
@@ -7,15 +7,15 @@
   // policy), which owns no storage, no cookies and no network of its own.
   //
   // Everything the bundle can do is in ACTIONS below and nowhere else. Each
-  // handler builds its own tool arguments and pins the universe to the VIEWING
-  // user's current home, so a bundle cannot name a universe: cross-user reach is
+  // handler builds its own tool arguments and pins the command center to the VIEWING
+  // user's current home, so a bundle cannot name a command center: cross-user reach is
   // not refused by a check, it is unrepresentable. Replies are assembled from
   // picked fields, never spread from a server payload, so a field added upstream
   // later cannot ride out to untrusted code.
   //
   // Storage is the viewer's own `app_ui` row (read_graph/write_graph
   // target="app_ui"): the bundles in `ui_library` and the choice in
-  // `ui_selection`, one row per person and universe, keyed server-side by who is
+  // `ui_selection`, one row per person and command center, keyed server-side by who is
   // signed in. It is not an agent binding and never appears to a binding reader.
   // Every write is compare-and-set on the row's revision.
   const AppUI={
@@ -27,15 +27,19 @@
     // `sessionStorage` (the access token), `localStorage` and the parent DOM.
     // The frame's own response header sandboxes it too, so this is the second of
     // two independent locks, not the only one.
-    SANDBOX:"allow-scripts",
-    // Per-UI bounds only. There is NO bound on the library as a whole -- neither
-    // a count of UIs nor a byte total. A 4 MiB library ceiling used to refuse an
-    // install once the stored library was full; those bytes are the universe's
-    // tier storage now, one of the two limits an account has (founder 2026-09-30).
-    // Sizes are UTF-8 BYTES, because that is what the server validates: counting
-    // UTF-16 units let multi-byte bundles pass here and fail at write time
-    // (Codex, 2026-09-26).
-    MAX_MARKUP:32768,MAX_STYLE:16384,MAX_SCRIPT:32768,MAX_BUNDLE_BYTES:49152,
+    // `allow-forms` lets a bundle's <form> fire its submit event, which a bundle
+    // handles in script. Without it the browser drops the submit silently and the
+    // button does nothing. The frame's `form-action 'none'` still refuses every
+    // real submission, so no form can navigate or send anything anywhere.
+    SANDBOX:"allow-scripts allow-forms",
+    // Per-UI bounds only, the same numbers the server enforces
+    // (custom_agents.APP_UI_MAX_*). There is NO bound on the library as a whole --
+    // neither a count of UIs nor a byte total: those bytes are the command center's
+    // tier storage, one of the two limits an account has (founder 2026-09-30).
+    // The 49,152-byte bundle bound these replace made a game impossible
+    // (founder's village, 2026-10-02). Sizes are UTF-8 BYTES, because that is
+    // what the server validates (Codex, 2026-09-26).
+    MAX_TEXT_BYTES:1048576,MAX_ASSET_FILES:500,MAX_ASSET_BYTES:16777216,MAX_UI_ASSET_BYTES:134217728,
     MAX_NAME:120,MAX_MESSAGE:8192,MAX_READ_TURNS:50,
     MAX_LIST_RUNS:50,MAX_OUTPUT_CHUNK:8192,MAX_ID:200,MAX_PATH:1024,MAX_FILE_CHUNK:65536,
     // The first page of a whole-list read; see readWhole.
@@ -47,10 +51,34 @@
     // change it; the person approves in this page's own chrome, never in the UI.
     ROLE:"app_experience",TURN_KIND:"tinyassets.turn-graph.v1",
     ID_RE:/^[a-z0-9][a-z0-9-]{0,63}$/,
+    // The blank command center the platform ships. Its ui_id carries a colon,
+    // which ID_RE forbids, so no UI a person can author or install may claim
+    // it -- that is what makes it an identity rather than a convention.
+    PLATFORM_UI_ID:"platform:blank",
+    // Actions only that bundle may ask for. Installing software and composing a
+    // message as the owner are the app's offer to them, not a third-party
+    // bundle's capability. `packages.list_tryable` is absent on purpose: it
+    // only reads what is already published.
+    PLATFORM_ONLY:["packages.try","chat.prefill"],
     FIELDS:["kind","markup","name","script","style","ui_id","version"],
+    // Carried verbatim when present: the asset manifest the server checked,
+    // shared libraries by name, and whether `script` is a module.
+    OPTIONAL:["assets","libraries","script_type","workflow_refs"],
+    SHA256_RE:/^[0-9a-f]{64}$/,
+    ASSET_PATH_RE:/^[A-Za-z0-9][A-Za-z0-9._-]*(\/[A-Za-z0-9][A-Za-z0-9._-]*)*$/,
+    ASSET_FETCH:"/app/api/ui-asset",
+    // The vendored libraries and their SHA-384 pins, the same table as
+    // tinyassets/onboarding/ui_libraries.json (a test holds them equal). A
+    // library whose bytes do not match is refused, never posted to the frame.
+    LIBRARIES:Object.freeze({"howler":{format:"global",sha384:"sha384-SSf4pKRrGaeWL8bdA89QvGkhZo5WvIVCGwKVzfX7z+9sSaIHtE/AkOLehofI4JVY",requires:[]},"phaser":{format:"global",sha384:"sha384-AvQiDMZAVLda3VtAoU5MCfBz8pzXhteb2CiUJeKBmPlWzpXj1uJ96Km11+YuFNu/",requires:[]},"pixi.js":{format:"global",sha384:"sha384-sQhAUuZTvdanRcBHbVCTasnEWH28GGEK87FJGPj/JaqwL/15KWQwKe7whTHdCkwm",requires:[]},"three":{format:"module",sha384:"sha384-IDC7sAMAIMB/TZ6dgKKPPAKZ2bXXXP8+FBMBC8cU319eBhKITx+PaalhfDkDNH28",requires:[]},"three/addons/controls/OrbitControls.js":{format:"module",sha384:"sha384-aJoe4qqS/DgF2jh9njAuvA6QIveJYoCuYOfYjdFY8P3eawzmc9bEQ40jq2TvOyuP",requires:["three"]},"three/addons/loaders/GLTFLoader.js":{format:"module",sha384:"sha384-x79xjCNsFlRByL5E+VmRg4w6ppPmAVfP11fg7GzEVJ0wT+wuVfARjjZNLsq7iUmq",requires:["three", "three/addons/utils/BufferGeometryUtils.js"]},"three/addons/utils/BufferGeometryUtils.js":{format:"module",sha384:"sha384-wOjwauvHlJO7K6APr7FmMGH2nupQa3Ndzas9bJZhsAMOK055efJud8ns4aYmASKv",requires:["three"]}}),
+    libCache:new Map(),
 
     epoch:0,home:"",principal:"",enabled:false,busy:false,
-    library:[],unreadable:"",selection:null,active:null,frame:null,listener:null,
+    // `library` is the bundles this app can render; `broken` is one record per
+    // stored entry it cannot, each keeping the component VERBATIM so an install
+    // puts it back untouched. `unreadable` is reserved for a library that is not
+    // a list at all -- the only failure that really is library-wide.
+    library:[],broken:[],unreadable:"",selection:null,active:null,frame:null,listener:null,platformDefault:null,
     // The conversation installation as last read (null: none, so default), the
     // reason it could not be read, and the selection it replaced this visit.
     conversation:null,conversationNote:"",previousTurn:null,selecting:false,ambiguous:false,
@@ -60,7 +88,9 @@
     // to the bundle that was on screen a moment ago cannot settle a promise in
     // the one that replaced it -- both bootstraps number requests from r1, so the
     // ids collide by construction (Codex, 2026-09-26).
-    frameGen:0,ready:false,sending:false,emitting:false,pending:0,
+    frameGen:0,ready:false,sending:false,emitting:false,trying:false,pending:0,
+    // True only while mountDefault's own bundle is on screen (isPlatformDefault).
+    defaultMounted:false,
 
     bytes(value){ return new TextEncoder().encode(String(value)).length; },
 
@@ -71,43 +101,113 @@
       if(!component||typeof component!=="object"||Array.isArray(component))
         return this.unsupported("UI component is not an object");
       const keys=Object.keys(component).sort();
-      const extra=keys.filter(k=>!this.FIELDS.includes(k));
+      const extra=keys.filter(k=>!this.FIELDS.includes(k)&&!this.OPTIONAL.includes(k));
       if(extra.length) return this.unsupported("UI component carries fields this app does not render: "+extra.join(", "));
-      if(keys.length!==this.FIELDS.length)
-        return this.unsupported("UI component is missing "+this.FIELDS.filter(k=>!keys.includes(k)).join(", "));
+      const missing=this.FIELDS.filter(k=>!keys.includes(k));
+      if(missing.length) return this.unsupported("UI component is missing "+missing.join(", "));
       if(component.kind!==this.KIND) return this.unsupported("not a "+this.KIND+" component");
       if(component.version!==this.VERSION)
         return this.unsupported("UI version "+String(component.version)+" is not supported; this app renders version 1");
-      if(!this.text(component.ui_id,64)||!this.ID_RE.test(component.ui_id))
+      if(!this.text(component.ui_id,64)||(!this.ID_RE.test(component.ui_id)&&component.ui_id!=="platform:blank"))
         return this.unsupported("ui_id must be lowercase letters, digits or dashes");
       if(!this.text(component.name,this.MAX_NAME)||!component.name.trim())
         return this.unsupported("name must be a non-empty string of at most "+this.MAX_NAME+" characters");
-      if(!this.text(component.markup,this.MAX_MARKUP))
-        return this.unsupported("markup must be a string of at most "+this.MAX_MARKUP+" characters");
-      if(!this.text(component.style,this.MAX_STYLE))
-        return this.unsupported("style must be a string of at most "+this.MAX_STYLE+" characters");
-      if(!this.text(component.script,this.MAX_SCRIPT))
-        return this.unsupported("script must be a string of at most "+this.MAX_SCRIPT+" characters");
+      for(const field of ["markup","style","script"])
+        if(typeof component[field]!=="string") return this.unsupported(field+" must be a string");
       const size=this.bytes(JSON.stringify(component));
-      if(size>this.MAX_BUNDLE_BYTES)
-        return this.unsupported("this UI is "+size+" bytes; the limit is "+this.MAX_BUNDLE_BYTES);
-      return {ok:true,bundle:{kind:this.KIND,version:this.VERSION,ui_id:component.ui_id,
-        name:component.name.trim(),markup:component.markup,style:component.style,script:component.script}};
+      if(size>this.MAX_TEXT_BYTES)
+        return this.unsupported("this UI is "+size+" bytes of text; the limit is "+this.MAX_TEXT_BYTES);
+      if("script_type" in component&&component.script_type!=="classic"&&component.script_type!=="module")
+        return this.unsupported("script_type must be classic or module");
+      if("workflow_refs" in component){
+        const refs=component.workflow_refs;
+        if(!refs||typeof refs!=="object"||Array.isArray(refs)||Object.keys(refs).length>100)
+          return this.unsupported("workflow_refs must be an object of at most 100 references");
+        for(const [alias,id] of Object.entries(refs))
+          if(!/^[A-Za-z][A-Za-z0-9_-]{0,63}$/.test(alias)||
+             typeof id!=="string"||!id||id.length>200)
+            return this.unsupported("workflow_refs contains an invalid alias or workflow id");
+      }
+      if("libraries" in component){
+        const libs=component.libraries;
+        if(!Array.isArray(libs)) return this.unsupported("libraries must be a list");
+        for(const name of libs)
+          if(typeof name!=="string"||!Object.prototype.hasOwnProperty.call(this.LIBRARIES,name))
+            return this.unsupported("library "+String(name)+" is not one this app provides");
+        if(new Set(libs).size!==libs.length) return this.unsupported("a library is listed twice");
+      }
+      if("assets" in component){
+        const assets=component.assets;
+        if(!assets||typeof assets!=="object"||Array.isArray(assets)) return this.unsupported("assets must be an object");
+        const paths=Object.keys(assets);
+        if(paths.length>this.MAX_ASSET_FILES) return this.unsupported("this UI has more than "+this.MAX_ASSET_FILES+" assets");
+        let total=0;
+        for(const path of paths){
+          const ref=assets[path];
+          if(path.length>200||!this.ASSET_PATH_RE.test(path)) return this.unsupported("asset path "+path+" is not a bundle path");
+          if(!ref||typeof ref!=="object"||!this.SHA256_RE.test(String(ref.sha256))||!Number.isInteger(ref.size)||
+             ref.size<0||ref.size>this.MAX_ASSET_BYTES||typeof ref.media_type!=="string"||!ref.media_type)
+            return this.unsupported("asset "+path+" is not a stored blob");
+          total+=ref.size;
+        }
+        if(total>this.MAX_UI_ASSET_BYTES) return this.unsupported("this UI's assets exceed "+this.MAX_UI_ASSET_BYTES+" bytes");
+      }
+      const bundle={kind:this.KIND,version:this.VERSION,ui_id:component.ui_id,
+        name:component.name.trim(),markup:component.markup,style:component.style,script:component.script};
+      // Optional fields pass through as stored, so a library rebuilt from parsed
+      // entries (install) never strips another UI's assets.
+      for(const field of this.OPTIONAL)
+        if(field in component) bundle[field]=JSON.parse(JSON.stringify(component[field]));
+      return {ok:true,bundle};
+    },
+    // A name for an entry this app could not read, for the person to recognise
+    // it by. Its own `name`, else its `ui_id`, else where it sits in the list --
+    // all three are untrusted text, so they are bounded here and only ever
+    // reach the screen through textContent.
+    brokenLabel(component,index){
+      const pick=field=>{
+        const value=component&&typeof component==="object"?component[field]:null;
+        return typeof value==="string"&&value.trim()?value.trim().slice(0,this.MAX_NAME):"";
+      };
+      return pick("name")||pick("ui_id")||("the UI in position "+(index+1));
     },
     // The library is a LIST of any length, ordered as stored, with no
     // user-chosen keys; each entry names itself by `ui_id`.
+    //
+    // One entry this app cannot render does NOT make the library unreadable.
+    // It used to: the first failure was returned for the whole list, so a
+    // single component with a bad `version` hid every UI the person had built
+    // and disabled installing (founder, P1, 2026-10-03). Each entry is read on
+    // its own now; the ones that parse are usable, and the ones that do not are
+    // kept verbatim in `broken` so nothing is lost and each can be named with
+    // its reason. Only a non-list `ui_library` is still a library-wide refusal.
     readLibrary(configuration){
       const raw=configuration&&configuration.ui_library;
-      if(raw===undefined||raw===null) return {ok:true,entries:[]};
+      if(raw===undefined||raw===null) return {ok:true,entries:[],broken:[]};
       if(!Array.isArray(raw)) return this.unsupported("ui_library is not a list");
-      const entries=[],seen=new Set();
-      for(const component of raw){
-        const parsed=this.parseBundle(component);
-        if(!parsed.ok) return parsed;
-        if(seen.has(parsed.bundle.ui_id)) return this.unsupported("ui_id "+parsed.bundle.ui_id+" is listed twice");
-        seen.add(parsed.bundle.ui_id); entries.push(parsed.bundle);
-      }
-      return {ok:true,entries};
+      // Of several entries sharing a ui_id, the LAST is used. `install` appends,
+      // so the later entry is the more recently written one; taking the first
+      // would let a stale copy win silently (Codex, 2026-10-03). A write refuses
+      // duplicates, so this only arises in a row that already has them.
+      const read=raw.map((component,index)=>({component,index,parsed:this.parseBundle(component)}));
+      const newest=new Map();
+      for(const item of read) if(item.parsed.ok) newest.set(item.parsed.bundle.ui_id,item.index);
+      const entries=[],broken=[];
+      read.forEach(({component,index,parsed})=>{
+        const superseded=parsed.ok&&newest.get(parsed.bundle.ui_id)!==index;
+        const reason=!parsed.ok?parsed.reason
+          :superseded?"ui_id "+parsed.bundle.ui_id+" is listed twice; the later entry is the one in use":"";
+        if(reason){
+          // The id is recorded only when it is a well-formed one, so a saved
+          // choice can still be matched to the entry that cannot render.
+          const id=component&&typeof component==="object"&&this.text(component.ui_id,64)
+            &&this.ID_RE.test(component.ui_id)?component.ui_id:"";
+          broken.push({ui_id:id,label:this.brokenLabel(component,index),reason,component});
+          return;
+        }
+        entries.push(parsed.bundle);
+      });
+      return {ok:true,entries,broken};
     },
     readSelection(configuration){
       const raw=configuration&&configuration.ui_selection;
@@ -146,7 +246,8 @@
     reset(){
       this.epoch++; this.unmount();
       this.enabled=false; this.home=""; this.principal="";
-      this.library=[]; this.unreadable=""; this.selection=null; this.busy=false;
+      this.library=[]; this.broken=[]; this.unreadable=""; this.selection=null; this.busy=false;
+      this.platformDefault=null; this.defaultMounted=false;
       this.revision=0;
       this.conversation=null; this.conversationNote=""; this.previousTurn=null; this.selecting=false; this.ambiguous=false;
       $("btn-ui-switch").hidden=true;
@@ -162,7 +263,7 @@
       const id=String(home||"").trim();
       if(!this.enabled||!id||id===this.home) return;
       this.reset();
-      this.status("Your home universe changed; the custom UI was closed and its access ended.");
+      this.status("Your home command center changed; the custom UI was closed and its access ended.");
     },
     enable(home,principal){
       if(this.enabled&&this.home===home&&this.principal===principal) return;
@@ -200,7 +301,7 @@
         this.status("Could not read your installed UIs ("+(err&&err.message||"unknown error")+"). Default chat is in use.");
       }finally{ if(this.fence(epoch,home)){ this.busy=false; this.paint(); } }
     },
-    // After each turn: the universe can switch or edit this row by talking
+    // After each turn: the command center can switch or edit this row by talking
     // (write_graph target="app_ui" operation="activate" ...). A bodiless index
     // read says whether the row moved; only then is it read whole and adopted,
     // so an unchanged row never remounts a UI mid-use.
@@ -214,47 +315,109 @@
         if(row.revision!==this.revision) await this.load();
       }catch(_err){ /* the next turn asks again; the current screen stays */ }
     },
+    // Appended to the status when some entries could not be read, so the person
+    // is told without the working UIs being hidden. Switch command center names
+    // each one and its reason.
+    brokenNote(){
+      if(!this.broken.length) return "";
+      return " "+this.broken.length+(this.broken.length===1?" installed UI cannot be shown":
+        " installed UIs cannot be shown")+"; open Switch command center to see why.";
+    },
     adopt(row){
       if(!this.enabled) return;
       this.revision=row.revision;
+      this.platformDefault=row.platform_default||null;
       const library=this.readLibrary(row),selection=this.readSelection(row);
       this.unmount();
       if(!library.ok){
         // An unreadable library is remembered as unreadable, NOT as empty. An
         // empty cache here is what let a later install rewrite `ui_library` from
         // nothing and drop the bundles it could not parse (Codex, 2026-09-26).
-        this.library=[]; this.unreadable=library.reason; this.selection=null;
+        this.library=[]; this.broken=[]; this.unreadable=library.reason; this.selection=null;
+        // "Default chat is in use" has to BE true: every branch that says it
+        // mounts the platform's blank command center, or the stage is left
+        // empty with the explanation inside a closed dialog and no way back
+        // (gpt-6-astra on #4358, reproduced).
+        this.mountDefault();
         this.status("Installed UIs unreadable: "+library.reason+". Default chat is in use. Installing would overwrite them, so it is disabled."); this.paint(); return;
       }
-      this.library=library.entries; this.unreadable="";
+      this.library=library.entries; this.broken=library.broken; this.unreadable="";
       if(!selection.ok){
         this.selection=null;
+        this.mountDefault();
         this.status("Saved UI choice unreadable: "+selection.reason+". Default chat is in use."); this.paint(); return;
       }
       this.selection=selection.selection;
       if(this.selection&&this.selection.state==="active"){
         const entry=this.library.find(b=>b.ui_id===this.selection.ui_id);
-        if(entry){ this.mount(entry); this.status("Using "+entry.name+"."); }
-        else this.status("Your saved UI ("+this.selection.ui_id+") is no longer installed. Default chat is in use.");
-      }else this.status(this.library.length?"Default chat is in use.":"");
+        const spoiled=this.broken.find(b=>b.ui_id&&b.ui_id===this.selection.ui_id);
+        if(entry){ this.mount(entry); this.status("Using "+entry.name+"."+this.brokenNote()); }
+        // The chosen UI is still installed; it is the one that cannot render,
+        // so say which and why rather than "no longer installed".
+        else if(spoiled){
+          this.mountDefault();
+          this.status(spoiled.label+" cannot be shown: "+spoiled.reason
+            +". Default chat is in use; your other UIs still work.");
+        }
+        else{
+          this.mountDefault();
+          this.status("Your saved UI ("+this.selection.ui_id+") is no longer installed. Default chat is in use."+this.brokenNote());
+        }
+      }else{
+        this.mountDefault();
+        this.status((this.library.length?"Default chat is in use.":"")+this.brokenNote());
+      }
       this.paint();
     },
 
     // ---- rendering: the bundle never enters this document ------------------
+    // Is the bundle on screen RIGHT NOW the platform's own blank command
+    // center? Read off the mounted entry, so a UI cannot become the platform's
+    // by naming itself that: parseBundle is the only way into `active`, and the
+    // only bundle whose ui_id may contain a colon is the one the server sends
+    // as `platform_default`.
+    isPlatformDefault(){
+      return !!(this.active && this.active.ui_id===this.PLATFORM_UI_ID && this.defaultMounted);
+    },
+    // Returns whether the stage now holds it. It does NOT throw: it is the
+    // fallback several branches above fall back TO, and a throw there would
+    // replace their explanation with a blank stage. A malformed platform
+    // bundle is ours, not the owner's, so it is reported loudly and the caller
+    // keeps its own message.
+    mountDefault(){
+      if(!this.enabled||!this.platformDefault) return false;
+      const parsed=this.parseBundle(this.platformDefault);
+      if(!parsed.ok){
+        console.error("the platform's blank command center did not parse: "+parsed.reason);
+        return false;
+      }
+      this.mount(parsed.bundle);
+      // Set AFTER mount: mount() clears it, so this is only ever true for the
+      // bundle this call put on screen.
+      this.defaultMounted=true;
+      return true;
+    },
     mount(entry){
       this.unmount();
       const host=$("ui-frame-host"),frame=document.createElement("iframe");
       frame.id="ui-frame"; frame.className="ui-frame"; frame.title=entry.name;
+      frame.setAttribute("tabindex","0");
       frame.setAttribute("sandbox",this.SANDBOX);
       frame.setAttribute("referrerpolicy","no-referrer");
       frame.setAttribute("src",this.FRAME_SRC);
       this.frame=frame; this.active=entry; this.ready=false;
-      this.frameGen++; this.pending=0; this.sending=false; this.emitting=false;
+      this.frameGen++; this.pending=0; this.sending=false; this.emitting=false; this.trying=false;
+      this.defaultMounted=false;   // mountDefault sets it again after this call
       this.listener=event=>this.receive(event);
       window.addEventListener("message",this.listener);
       host.replaceChildren(frame);
       host.hidden=false;
       $("view-chat").classList.add("ui-custom-active");
+      // Keep the command center visible and hand keyboard input back to it.
+      if(typeof refreshChatCloud==="function") refreshChatCloud();
+      if(typeof focusCommandCenter === "function" &&
+         !(typeof isTypingTarget === "function" && isTypingTarget(document.activeElement)) &&
+         !document.activeElement.closest("dialog[open], #cloud-menu:not([hidden])")) focusCommandCenter();
       this.paintHeader();
     },
     unmount(){
@@ -262,20 +425,27 @@
       const host=$("ui-frame-host");
       host.replaceChildren(); host.hidden=true;
       $("view-chat").classList.remove("ui-custom-active");
+      // Keep the command center visible and hand keyboard input back to it.
+      if(typeof refreshChatCloud==="function") refreshChatCloud();
+      if(typeof focusCommandCenter === "function" &&
+         !(typeof isTypingTarget === "function" && isTypingTarget(document.activeElement)) &&
+         !document.activeElement.closest("dialog[open], #cloud-menu:not([hidden])")) focusCommandCenter();
       this.frame=null; this.active=null; this.ready=false; this.sending=false; this.emitting=false; this.pending=0;
+      this.trying=false; this.defaultMounted=false;
       this.frameGen++;
       this.paintHeader();
     },
 
-    // ---- the bridge: one frame, one allowlist, one universe ----------------
+    // ---- the bridge: one frame, one allowlist, one command center ----------------
     // A frozen map. An action absent from it does not exist — the refusal names
     // what was asked and nothing is guessed from a near-match.
     ACTIONS:Object.freeze({
       whoami:"whoami",list_agents:"listAgents",
-      send_message:"sendMessage",read_conversation:"readConversation",
-      list_automations:"listAutomations",list_runs:"listRuns",
+      send_message:"sendMessage",open_chat:"openChat",read_conversation:"readConversation",
+      list_automations:"listAutomations",list_runs:"listRuns",read_live:"readLive",
       read_run:"readRun",read_run_output:"readRunOutput",
       list_files:"listFiles",read_file:"readFile",emit:"emit",
+      "packages.list_tryable":"listTryablePackages","packages.try":"tryPackage","chat.prefill":"prefillChat",
       conversation_design:"conversationDesign",set_conversation_design:"setConversationDesign"}),
     receive(event){
       // Only THIS frame's window is heard. Another frame, a popup, or the page
@@ -286,14 +456,109 @@
       const message=event.data;
       if(!message||typeof message!=="object"||message.ta_ui!==this.PROTOCOL) return;
       if(message.type==="ready"){ this.deliver(); return; }
+      // The reserved key, handed back by a frame that would otherwise swallow
+      // it. The frame can only ask for THIS: focus moves to the composer, and
+      // nothing about the bundle, the turn or the account changes.
+      if(message.type==="reserved_key"){
+        if(typeof focusChatComposer==="function") focusChatComposer();
+        return;
+      }
       if(message.type!=="call"||typeof message.id!=="string"||typeof message.action!=="string") return;
       this.serve(message.id,message.action,message.params);
     },
+    // The frame owns no network, so the bytes a UI loads are fetched HERE, with
+    // the viewer's bearer, checked against their pins, and posted in; the frame
+    // turns them into blob: URLs of its own. Fenced to the frame that asked: a
+    // remount while bytes download drops them.
     deliver(){
       if(!this.frame||!this.active||this.ready) return;
       this.ready=true;
-      this.post({ta_ui:this.PROTOCOL,type:"bundle",bundle:{
-        markup:this.active.markup,style:this.active.style,script:this.active.script}});
+      if(typeof focusCommandCenter === "function" &&
+         !(typeof isTypingTarget === "function" && isTypingTarget(document.activeElement)) &&
+         !document.activeElement.closest("dialog[open], #cloud-menu:not([hidden])")) focusCommandCenter();
+      const entry=this.active;
+      const bundle={markup:entry.markup,style:entry.style,script:entry.script};
+      if(entry.script_type==="module") bundle.script_type="module";
+      // Nothing to fetch: handed over at once, exactly as before files existed.
+      if(!(entry.libraries||[]).length&&!Object.keys(entry.assets||{}).length){
+        this.post({ta_ui:this.PROTOCOL,type:"bundle",bundle});
+        return;
+      }
+      return this.deliverWithFiles(entry,bundle);
+    },
+    async deliverWithFiles(entry,bundle){
+      const gen=this.frameGen,epoch=this.epoch,home=this.home;
+      let files=[],libraries=[];
+      try{
+        libraries=await this.libraryBytes(entry.libraries||[]);
+        files=await this.assetBytes(entry.assets||{},home);
+      }catch(err){
+        if(gen!==this.frameGen||!this.fence(epoch,home)) return;
+        if(err&&err.authRequired){ sessionExpired(); return; }
+        this.status(entry.name+" could not load its files ("+(err&&err.message||"unknown error")+").");
+        this.paint();
+        return;
+      }
+      if(gen!==this.frameGen||!this.fence(epoch,home)||!this.frame) return;
+      this.post({ta_ui:this.PROTOCOL,type:"bundle",bundle:Object.assign(bundle,{files,libraries})});
+    },
+    async fetchBytes(body){
+      try{ await ensureFreshToken(); }catch(_err){ /* the request reports it */ }
+      const headers={"Content-Type":"application/json"};
+      const tk=token(); if(tk) headers["Authorization"]="Bearer "+tk;
+      const resp=await fetch(this.ASSET_FETCH,{method:"POST",headers,credentials:"same-origin",
+        cache:"no-store",body:JSON.stringify(body)});
+      if(resp.status===401){ const e=new Error("authentication_required"); e.authRequired=true; throw e; }
+      if(!resp.ok){
+        let doc=null; try{ doc=await resp.json(); }catch(_e){ doc=null; }
+        throw new Error((doc&&typeof doc.error==="string"&&doc.error)||("answered "+resp.status));
+      }
+      return await resp.arrayBuffer();
+    },
+    async digest(algorithm,bytes){
+      return new Uint8Array(await crypto.subtle.digest(algorithm,bytes));
+    },
+    // Every library named, after what it requires, each verified against its
+    // SHA-384 pin. Libraries are public code, so a verified copy is kept for
+    // the page's life.
+    async libraryBytes(names){
+      const ordered=[],visit=name=>{
+        if(ordered.includes(name)) return;
+        const pin=this.LIBRARIES[name];
+        if(!pin) throw new Error("library "+name+" is not one this app provides");
+        for(const dep of pin.requires) visit(dep);
+        ordered.push(name);
+      };
+      for(const name of names) visit(name);
+      const out=[];
+      for(const name of ordered){
+        let bytes=this.libCache.get(name);
+        if(!bytes){
+          bytes=await this.fetchBytes({library:name});
+          const got="sha384-"+btoa(String.fromCharCode(...await this.digest("SHA-384",bytes)));
+          if(got!==this.LIBRARIES[name].sha384) throw new Error("library "+name+" failed its integrity check");
+          this.libCache.set(name,bytes);
+        }
+        out.push({name,format:this.LIBRARIES[name].format,bytes});
+      }
+      return out;
+    },
+    // The viewer's own blobs, a few at a time, each checked against the hash
+    // its manifest names before the frame sees it.
+    async assetBytes(assets,home){
+      const paths=Object.keys(assets),out=new Array(paths.length);
+      let next=0;
+      const hex=bytes=>Array.from(bytes,b=>b.toString(16).padStart(2,"0")).join("");
+      const worker=async()=>{
+        while(next<paths.length){
+          const i=next++,path=paths[i],ref=assets[path];
+          const bytes=await this.fetchBytes({graph_id:home,sha256:ref.sha256});
+          if(hex(await this.digest("SHA-256",bytes))!==ref.sha256) throw new Error("asset "+path+" failed its integrity check");
+          out[i]={path,media_type:ref.media_type,bytes};
+        }
+      };
+      await Promise.all(Array.from({length:Math.min(4,paths.length)},worker));
+      return out;
     },
     post(payload){
       const frame=this.frame&&this.frame.contentWindow;
@@ -325,11 +590,31 @@
       const gen=this.frameGen,asker={gen,name:this.active?this.active.name:"This UI"};
       const method=Object.prototype.hasOwnProperty.call(this.ACTIONS,action)?this.ACTIONS[action]:null;
       if(!method){ this.refuse(id,"action not available: "+action); return; }
+      // PLATFORM-ONLY actions. Installing a package and putting words in the
+      // owner's composer are the app's own offer to them, not a capability a
+      // UI someone else wrote gets to reach for: a third-party bundle could
+      // otherwise install software or compose a message as the owner. Only the
+      // blank command center the platform ships (PLATFORM_UI_ID) may ask, and
+      // the check is on the bundle MOUNTED NOW, not on anything the frame says
+      // about itself.
+      if(this.PLATFORM_ONLY.indexOf(action)>=0 && !this.isPlatformDefault()){
+        this.refuse(id,"action not available: "+action); return;
+      }
       if(this.pending>=8){ this.refuse(id,"too many requests in flight"); return; }
       const epoch=this.epoch,home=this.home,args=(params&&typeof params==="object"&&!Array.isArray(params))?params:{};
       this.pending++;
       try{
         await this.verify();
+        // AGAIN, after the await. verify() is a server round-trip, and the
+        // owner can replace the bundle while it is in flight: the checks below
+        // used to run only on the way OUT, which discarded the reply but had
+        // already DONE the work -- gpt-6-astra reproduced chat.prefill running
+        // with a third-party bundle on screen. The effect, not just the
+        // answer, belongs to the bundle that asked.
+        if(!this.fence(epoch,home)||gen!==this.frameGen||!this.frame) return;
+        if(this.PLATFORM_ONLY.indexOf(action)>=0 && !this.isPlatformDefault()){
+          this.refuse(id,"action not available: "+action); return;
+        }
         const result=await this[method](args,asker);
         if(!this.fence(epoch,home)||gen!==this.frameGen||!this.frame) return;
         this.post({ta_ui:this.PROTOCOL,type:"result",id,ok:true,result});
@@ -343,11 +628,12 @@
     // The viewer's identity, reduced to what a UI needs to greet them. No
     // principal id, no token, no provider or credential material.
     async whoami(){
-      return {protocol:this.PROTOCOL,universe_id:this.home,
-        universe_name:String(($("universe-name")&&$("universe-name").textContent)||"").trim()};
+      return {protocol:this.PROTOCOL,command_center_id:this.home,
+        command_center_name:String(($("universe-name")&&$("universe-name").textContent)||"").trim(),
+        workflow_refs:Object.assign({},this.active&&this.active.workflow_refs||{})};
     },
     // The viewer's OWN agents. `graph_id` is this.home, never an argument, so a
-    // bundle cannot enumerate anybody else's universe.
+    // bundle cannot enumerate anybody else's command center.
     // Every row of one of the viewer's OWN lists. The read takes a page size
     // and no offset, so ask for a page and, while the server fills it exactly,
     // ask for a bigger one: a bundle
@@ -360,55 +646,75 @@
         if(!doc||doc.error||!Array.isArray(doc[key])||doc[key].length<page) return doc;
       }
     },
+    // The viewer's agents a person can talk to: the main agent, then every agent
+    // they bound into THIS command center (harness §4.18). A conversation-design
+    // installation answers the main thread, so it is not one of them.
+    // `selected` is the agent the app's chat is talking to right now.
+    conversable(b){
+      return !!(b&&typeof b==="object"&&b.created_by===this.principal&&b.universe_id===this.home&&
+        b.status==="configured"&&b.agent_binding_id&&b.configuration&&typeof b.configuration==="object"&&
+        b.configuration.role!==this.ROLE&&
+        !Object.prototype.hasOwnProperty.call(b.configuration,"turn_consumer"));
+    },
     async listAgents(){
       const doc=await this.readWhole({target:"agent_bindings",graph_id:this.home},"bindings");
       if(!doc||doc.error||!Array.isArray(doc.bindings)) throw new Error("your agents are unavailable");
-      // Read from the same list, not from a cache: the one installation whose
-      // conversation design is active is the selected agent.
-      const mine=doc.bindings.filter(b=>this.eligible(b));
-      const selectedId=mine.length===1&&this.describe(mine[0]).state==="active"?String(mine[0].agent_binding_id):"";
-      const agents=[];
+      const current=typeof addressedAgentId==="function"?addressedAgentId():"main";
+      const agents=[{agent_id:"main",name:"Your agent",selected:current==="main"}];
       for(const b of doc.bindings){
-        if(!b||typeof b!=="object"||b.universe_id!==this.home) continue;
+        if(!this.conversable(b)) continue;
         // Picked fields only. A configuration is private operational data and
         // never crosses into a bundle, so only its NAME does.
-        agents.push({agent_id:String(b.agent_binding_id||""),
-          name:String((b.configuration&&b.configuration.name)||"Unnamed agent"),
-          selected:String(b.agent_binding_id||"")===selectedId&&selectedId!==""});
+        const id=String(b.agent_binding_id);
+        agents.push({agent_id:id,name:String(b.configuration.name||"Unnamed agent"),selected:current===id});
       }
       return {agents};
     },
+    // One of the viewer's own agents, by id or by name. Anything else is refused
+    // by name: never quietly answered by a different agent.
+    async agentNamed(wanted){
+      const agents=(await this.listAgents()).agents;
+      const match=agents.find(a=>a.agent_id===wanted)||agents.find(a=>a.name===wanted);
+      if(!match) throw new Error("no agent of yours is named "+wanted);
+      return match;
+    },
+    // Opens the app's chat talking to that agent: its own thread, its name on
+    // the chat. A room-per-agent screen calls this when the person picks a room.
+    async openChat(args){
+      const wanted=typeof args.agent==="string"?args.agent.trim():"";
+      if(!wanted) throw new Error("agent is required");
+      const match=await this.agentNamed(wanted);
+      await addressAgent({agent_id:match.agent_id,name:match.name});
+      return {opened:true,agent_id:match.agent_id,name:match.name};
+    },
     // Sends through the app's ordinary turn path, so a bundle's message gets the
-    // same recovery, queueing and thread record a typed one gets — and appears
-    // in the shared conversation rather than a private side channel.
-    //
-    // `agent` is NOT yet honoured per message: the server admits a turn only for
-    // the universe's ONE currently selected conversation
-    // (consumer_runtime.reserve_prepared_turn). Naming a different agent is
-    // refused by name rather than silently sent to the selected one.
+    // same recovery, queueing and thread record a typed one gets. Naming an agent
+    // opens the chat with that agent first, so the message and its reply appear
+    // on that agent's own thread; no agent means the one the chat is talking to.
     async sendMessage(args){
       const text=typeof args.text==="string"?args.text.trim():"";
       if(!text) throw new Error("text is required");
       if(text.length>this.MAX_MESSAGE) throw new Error("text exceeds "+this.MAX_MESSAGE+" characters");
       const wanted=typeof args.agent==="string"?args.agent.trim():"";
-      if(wanted){
-        const agents=await this.listAgents();
-        const match=agents.agents.find(a=>a.agent_id===wanted||a.name===wanted);
-        if(!match) throw new Error("no agent of yours is named "+wanted);
-        if(!match.selected) throw new Error(
-          "this universe sends turns to its selected conversation only, and "+match.name+" is not it; "+
-          "change the conversation design first (set_conversation_design)");
-      }
       if(this.sending) throw new Error("a message from this UI is already in flight");
       this.sending=true;
-      try{ await sendTurn(text,text,{inputMethod:"app_action"}); }
-      finally{ this.sending=false; }
+      try{
+        let agentId=typeof addressedAgentId==="function"?addressedAgentId():"main";
+        if(wanted){
+          const match=await this.agentNamed(wanted);
+          agentId=match.agent_id;
+          await addressAgent({agent_id:agentId,name:match.name});
+        }
+        if(typeof addressedAgentId==="function"&&addressedAgentId()!==agentId)
+          throw new Error("the chat switched to another agent; nothing was sent");
+        await sendTurn(text,text,{inputMethod:"app_action",agentId});
+      }finally{ this.sending=false; }
       return {sent:true};
     },
     // The viewer's own saved conversation, field by field.
     //
     // Pinned to `this.home` and the ANSWER is checked against it. `get_status`
-    // with no universe defaults to the caller's ACTIVE universe, so an unpinned
+    // with no command center defaults to the caller's ACTIVE command center, so an unpinned
     // read hands a bundle whichever home the account moved to rather than the one
     // it was granted (Codex, 2026-09-26). `verify()` closes the window; this
     // closes the read itself, so neither depends on the other being right.
@@ -420,10 +726,16 @@
       const limit=Number.isInteger(args.limit)&&args.limit>0?Math.min(args.limit,this.MAX_READ_TURNS):this.MAX_READ_TURNS;
       const call={universe_id:this.home,include_conversation:true,conversation_limit:limit};
       if(Number.isSafeInteger(args.before)&&args.before>=0) call.conversation_before=args.before;
+      // Whose thread: a named agent of the viewer's, else the one the chat is
+      // talking to. The server re-checks that the agent is the viewer's own.
+      const wanted=typeof args.agent==="string"?args.agent.trim():"";
+      const agent=wanted?(await this.agentNamed(wanted)).agent_id:
+        (typeof addressedAgentId==="function"?addressedAgentId():"main");
+      if(agent!=="main") call.conversation_agent=agent;
       const doc=await Owner.status(call);
       if(!doc||doc.error) throw new Error("your conversation is unavailable");
       if(String(doc.universe_id||"")!==this.home)
-        throw new Error("that conversation belongs to another universe; this UI's access ended");
+        throw new Error("that conversation belongs to another command center; this UI's access ended");
       const conversation=doc.recent_conversation;
       if(!conversation||typeof conversation.error==="string"||!Array.isArray(conversation.turns))
         throw new Error("your conversation could not be read");
@@ -440,20 +752,97 @@
     // ---- live state: the viewer's own automations and runs, read-only -------
     // What a screen needs to show agents WORKING rather than a picture of them.
     // Same rules as the reads above: `graph_id` is always this.home, the answer
-    // is checked against it where it names a universe, and every reply is built
+    // is checked against it where it names a command center, and every reply is built
     // from picked fields. Automation `inputs` and a run's `actor` never cross:
     // the first is the owner's private configuration, the second a principal id.
     //
-    // The server scopes each of these to the named universe, so a run id from
+    // The server scopes each of these to the named command center, so a run id from
     // anywhere else reads as not found rather than being returned.
+    async listTryablePackages(){
+      const doc=await Owner.read({target:"command_center_packages",graph_id:this.home});
+      if(!doc||doc.error||!Array.isArray(doc.packages)||doc.packages.length>12||
+        typeof doc.build_prompt!=="string"||doc.build_prompt.length>this.MAX_MESSAGE||
+        doc.can_try!==(doc.packages.length>=1)) throw new Error("command-center packages are unavailable");
+      const packages=doc.packages.map(p=>{
+        if(!p||!this.text(p.agent_definition_id,this.MAX_ID)||!p.agent_definition_id||
+          typeof p.name!=="string"||typeof p.description!=="string"||typeof p.author_id!=="string"||
+          !Number.isInteger(p.version)||p.version<1||typeof p.size!=="string"||
+          !Number.isInteger(p.file_count)||p.file_count<0||!p.needs||
+          typeof p.needs.model!=="string"||!Array.isArray(p.needs.connections)||
+          !p.needs.connections.every(c=>typeof c==="string"))
+          throw new Error("invalid command-center package");
+        return {agent_definition_id:p.agent_definition_id,name:p.name,description:p.description,
+          author_id:p.author_id,version:p.version,size:p.size,file_count:p.file_count,
+          needs:{model:p.needs.model,connections:p.needs.connections.slice()}};
+      });
+      return {packages,build_prompt:doc.build_prompt,can_try:doc.can_try};
+    },
+    async tryPackage(args){
+      const id=args.agent_definition_id;
+      if(!this.text(id,this.MAX_ID)||!id.trim()) throw new Error("agent_definition_id is required");
+      if(this.trying) throw new Error("a package request from this UI is already in flight");
+      const gen=this.frameGen;
+      this.trying=true;
+      try{
+        const doc=await MCP.callTool("write_graph",{target:"connection",operation:"try_package",
+          graph_id:this.home,payload_json:JSON.stringify({agent_definition_id:id})});
+        if(!doc||doc.error||!this.text(doc.request_id,this.MAX_ID)||!doc.request_id)
+          throw new Error((doc&&(doc.detail||doc.error))||"the install could not be requested");
+        return {request_id:doc.request_id};
+      }finally{ if(gen===this.frameGen) this.trying=false; }
+    },
+    prefillChat(args){
+      const text=args.text;
+      if(!this.text(text,this.MAX_MESSAGE)) throw new Error("chat text is too long or missing");
+      if(typeof chatCloudPrefill==="function") chatCloudPrefill(text);
+      else throw new Error("the chat is not available");
+      return {prefilled:true};
+    },
+    // Each agent's live state, for a screen that animates agents as they work
+    // (a village whose villagers walk to what they are doing). Which agent,
+    // working or idle, since when, and its latest steps -- each a tool name, a
+    // platform-made safe summary and done/running/failed, never a command, an
+    // argument or a result (harness S4). Read-only, pinned to this.home, keyed
+    // by agent. Poll it; every call is one owner-door status read.
+    async readLive(){
+      const doc=await Owner.status({universe_id:this.home});
+      if(!doc||doc.error) throw new Error("your agents' live state is unavailable");
+      if(String(doc.universe_id||"")!==this.home)
+        throw new Error("that state belongs to another command center; this UI's access ended");
+      const turn=(doc.active_turn&&typeof doc.active_turn==="object")?doc.active_turn:null;
+      const working=!!turn&&turn.state!=="unreadable"&&turn.stale!==true;
+      const steps=[];
+      if(working&&Array.isArray(turn.tools)){
+        for(const step of turn.tools.slice(0,5)){
+          if(!step||typeof step!=="object") continue;
+          steps.push({tool:String(step.tool||""),summary:String(step.summary||""),
+            state:["running","done","failed"].includes(step.state)?step.state:"",
+            age_s:Number.isFinite(step.age_s)?step.age_s:null});
+        }
+      }
+      // The live turn is the selected conversation agent's; every other agent
+      // is idle until per-agent turns arrive (design §4.18).
+      const roster=await this.listAgents();
+      // With no installed agent selected, the conversation is the universe's own
+      // agent: it gets the seeded id "main" (design §4.18), named as the app
+      // names the universe.
+      const listed=roster.agents.some(a=>a.selected) ? roster.agents
+        : [{agent_id:"main",name:(await this.whoami()).universe_name||"Your agent",selected:true}]
+            .concat(roster.agents);
+      const agents=listed.map(a=>a.selected&&working
+        ? {agent_id:a.agent_id,name:a.name,state:"working",
+           since:typeof turn.started_at==="string"?turn.started_at:null,steps}
+        : {agent_id:a.agent_id,name:a.name,state:"idle",since:null,steps:[]});
+      return {as_of:new Date().toISOString(),agents};
+    },
     async listAutomations(){
       const doc=await this.readWhole({target:"automations",graph_id:this.home},"automations");
       if(!doc||doc.error||!Array.isArray(doc.automations)) throw new Error("your automations are unavailable");
       if(String(doc.universe_id||"")!==this.home)
-        throw new Error("those automations belong to another universe; this UI's access ended");
+        throw new Error("those automations belong to another command center; this UI's access ended");
       const automations=[];
       for(const a of doc.automations){
-        // A retired fleet-era row names no universe and runs nothing: skip it.
+        // A retired fleet-era row names no command center and runs nothing: skip it.
         if(!a||typeof a!=="object"||a.universe_id!==this.home) continue;
         const t=(a.trigger&&typeof a.trigger==="object")?a.trigger:{};
         automations.push({automation_id:String(a.automation_id||""),name:String(a.name||""),
@@ -524,7 +913,7 @@
     },
 
     // ---- the shared folder and the wake -------------------------------------
-    // Agents coordinate through files in the universe folder, so a screen of
+    // Agents coordinate through files in the command center folder, so a screen of
     // them reads those files. Owner-only on the server (an admin grant on this
     // home), pinned to this.home here, picked fields back.
     filePath(value,required){
@@ -536,10 +925,10 @@
     async listFiles(args){
       const path=this.filePath(args.path,false);
       const doc=await Owner.read(
-        {target:"universe_files",graph_id:this.home,query:path});
+        {target:"command_center_files",graph_id:this.home,query:path});
       if(!doc||doc.error||!Array.isArray(doc.entries)) throw new Error("that folder is not available");
       if(String(doc.universe_id||"")!==this.home)
-        throw new Error("that folder belongs to another universe; this UI's access ended");
+        throw new Error("that folder belongs to another command center; this UI's access ended");
       const entries=[];
       for(const e of doc.entries){
         if(!e||typeof e.name!=="string") continue;
@@ -552,11 +941,11 @@
     async readFile(args){
       const path=this.filePath(args.path,true);
       const offset=Number.isInteger(args.offset)&&args.offset>0?args.offset:0;
-      const doc=await Owner.read({target:"universe_file",graph_id:this.home,
+      const doc=await Owner.read({target:"command_center_file",graph_id:this.home,
         query:path,file_offset:offset,file_max_bytes:this.MAX_FILE_CHUNK});
       if(!doc||doc.error) throw new Error("that file is not available");
       if(String(doc.universe_id||"")!==this.home)
-        throw new Error("that file belongs to another universe; this UI's access ended");
+        throw new Error("that file belongs to another command center; this UI's access ended");
       const text=doc.encoding==="text"&&typeof doc.text==="string";
       return {path:String(doc.path||path),encoding:text?"text":"base64",
         content:text?doc.text:String(doc.base64||""),size_bytes:Number.isInteger(doc.size_bytes)?doc.size_bytes:null,
@@ -681,7 +1070,7 @@
         const rows=await this.installations();
         if(!this.fence(epoch,home)) throw new Error("your session changed");
         if(rows.length>1){
-          if(target||approve) throw new Error("more than one conversation installation exists; restore the default conversation in Switch UI first. Nothing was changed");
+          if(target||approve) throw new Error("more than one conversation installation exists; restore the default conversation in Switch command center first. Nothing was changed");
           return await this.clearAmbiguity(rows,epoch,home);
         }
         const b=rows[0]||null;
@@ -801,6 +1190,7 @@
     async chooseDefault(){
       if(!this.enabled||this.busy) return;
       this.unmount();
+      this.mountDefault();
       await this.remember({version:1,state:"default"},
         "Default chat restored.","Default chat restored for this visit only");
     },
@@ -856,7 +1246,7 @@
     },
     // Install a bundle into the viewer's own library: a remix installs the
     // COMPONENT, so it runs against this viewer's bridge and this viewer's
-    // universe. The author's universe is never addressed by an installed copy.
+    // command center. The author's command center is never addressed by an installed copy.
     async install(component){
       if(!this.enabled||this.busy) return {ok:false,reason:"not ready"};
       const parsed=this.parseBundle(component);
@@ -870,7 +1260,7 @@
         this.status("Your installed UIs cannot be read ("+this.unreadable+"), so installing would overwrite them. Nothing was changed.");
         this.paint(); return this.unsupported("library unreadable");
       }
-      let next=null;
+      let next=null,keptBroken=null;
       const outcome=await this.save("UI install",row=>{
         // Built from the row the save actually read, not from the cache -- so a
         // library that changed since the last read is re-checked here instead
@@ -878,17 +1268,33 @@
         const observed=this.readLibrary(row);
         if(!observed.ok) throw Error("Your installed UIs cannot be read ("+observed.reason+"); nothing was overwritten");
         next=observed.entries.filter(b=>b.ui_id!==parsed.bundle.ui_id).concat([parsed.bundle]);
+        // Entries this app cannot render are written back as they were read.
+        // This write replaces the whole list, so anything left out is destroyed:
+        // carrying them is what lets an install proceed beside a component with
+        // a bad version instead of being refused (founder, P1, 2026-10-03). An
+        // entry whose ui_id this install replaces is the one case that drops.
+        //
+        // NOT byte-exact, and it cannot be from here: `fetchRow` has already
+        // parsed the row as JSON, so an integer outside JavaScript's exact
+        // range was rounded before this code saw it (Codex, 2026-10-03:
+        // 9007199254740993 -> ...92 inside a field the app does not render).
+        // Reachable only through an extra field on an already-unrenderable
+        // entry. The fix is for the client to stop rewriting entries it did not
+        // author -- splice server-side with add_ui/replace_ui --
+        // docs/concerns/2026-10-03-whole-library-write-rounds-carried-numbers.md
+        keptBroken=observed.broken.filter(b=>!b.ui_id||b.ui_id!==parsed.bundle.ui_id);
         // No library-wide limit, so no install is ever turned away for the size
         // of what is already there. The bundle itself was validated above, and
-        // its bytes are the universe's storage.
-        return {ui_library:JSON.parse(JSON.stringify(next))};
+        // its bytes are the command center's storage.
+        return {ui_library:JSON.parse(JSON.stringify(
+          next.concat(keptBroken.map(b=>b.component))))};
       });
       if(!outcome.ok){
         const why=outcome.error&&outcome.error.message||outcome.reason||"unavailable";
         this.status("The UI was not installed ("+why+")."); this.paint(); return outcome;
       }
-      this.library=next;
-      this.status("Installed "+parsed.bundle.name+". Switch to it whenever you like.");
+      this.library=next; this.broken=keptBroken;
+      this.status("Installed "+parsed.bundle.name+". Switch to it whenever you like."+this.brokenNote());
       this.paint();
       return {ok:true,bundle:parsed.bundle};
     },
@@ -897,6 +1303,10 @@
     publishPayload(bundle,description){
       const parsed=this.parseBundle(bundle);
       if(!parsed.ok) return parsed;
+      // Its files live in this viewer's private UI storage; a published copy
+      // could not load them (the server's publish refuses them for the same reason).
+      if(parsed.bundle.assets&&Object.keys(parsed.bundle.assets).length)
+        return this.unsupported("a UI that loads its own files cannot be published yet");
       return {ok:true,payload:{schema_version:1,name:parsed.bundle.name,
         description:String(description||""),tags:[this.KIND],
         components:{ui:JSON.parse(JSON.stringify(parsed.bundle))}}};
@@ -921,7 +1331,12 @@
       if(!list) return;
       list.replaceChildren();
       const row=document.createElement("li");
-      row.appendChild(this.button("Default chat",()=>this.chooseDefault(),this.busy||!this.active));
+      // Disabled only while a save is in flight. It used to also require
+      // something to BE active, which disabled the way back at exactly the
+      // moment it is needed -- nothing mounted (gpt-6-astra on #4358).
+      // chooseDefault works from no bundle: it unmounts, then mounts the
+      // platform's blank command center.
+      row.appendChild(this.button("Default chat",()=>this.chooseDefault(),this.busy));
       list.appendChild(row);
       for(const bundle of this.library){
         const item=document.createElement("li"),current=!!(this.active&&this.active.ui_id===bundle.ui_id);
@@ -929,8 +1344,18 @@
           ()=>this.choose(bundle.ui_id),this.busy||current));
         list.appendChild(item);
       }
-      if(!this.library.length)
-        this.line(list,"No custom UI installed. Ask your universe to build one.","muted");
+      // Each entry this app cannot render, named with its reason, BELOW the ones
+      // that work. The reason is the parser's own sentence, so "version must be
+      // 1" reaches the person and their agent rather than a blanket "unreadable".
+      for(const entry of this.broken){
+        const item=document.createElement("li");
+        this.line(item,entry.label+" cannot be shown: "+entry.reason,"muted");
+        list.appendChild(item);
+      }
+      if(this.broken.length)
+        this.line(list,"Ask your agent to fix the ones above; your other UIs and installing are unaffected.","muted");
+      if(!this.library.length&&!this.broken.length)
+        this.line(list,"No custom UI installed. Ask your agent to build one.","muted");
       $("btn-ui-refresh").disabled=this.busy;
       this.paintConversation();
     },

@@ -355,6 +355,13 @@ def test_model_config_keeps_legacy_positional_timeout():
     assert ModelConfig(123).timeout == 123
 
 
+def _record_allowlist(universe_dir, allowlist):
+    from tinyassets import provider_authority
+
+    current = provider_authority.authority_for(universe_dir, None)
+    provider_authority.write_record(universe_dir, {**current, "allowed_providers": allowlist})
+
+
 @pytest.mark.parametrize("allowlist", [[], ["another-provider"]])
 def test_explicit_universe_allowlist_still_narrows_selected_authority(served, allowlist):
     from tinyassets.exceptions import AllProvidersExhaustedError
@@ -366,6 +373,9 @@ def test_explicit_universe_allowlist_still_narrows_selected_authority(served, al
             allowed_providers=allowlist,
         ),
     )
+    # The universe allowlist is authority: it lives in the platform record
+    # (tinyassets.provider_authority), which the router re-reads.
+    _record_allowlist(context.universe_dir, allowlist)
     with pytest.raises((ProviderAuthorityHeldError, AllProvidersExhaustedError)):
         _call(served, context=context)
     assert served.wire == []

@@ -10,9 +10,9 @@ export const metadata: Metadata = {
 };
 
 const HANDLES: Array<[string, string]> = [
-  ["converse", "Talk to a universe. With no graph id, it resolves the caller's home universe."],
-  ["read_graph", "Read graphs, branches, connections, runs, and the public universe list."],
-  ["write_graph", "Create or change a graph, branch, connection, or automation in your universe."],
+  ["converse", "Talk to a command center. With no graph id, it resolves the caller's home command center."],
+  ["read_graph", "Read graphs, branches, connections, runs, and the public command center list."],
+  ["write_graph", "Create or change a graph, branch, connection, or automation in your command center."],
   ["run_graph", "Run a graph now and get the receipt."],
   ["read_page", "Read a page of durable state, or list what changed since a time."],
   ["write_page", "Write a page of durable state."],
@@ -88,7 +88,7 @@ export default function DevelopersPage() {
             <RitualLabel>Run it yourself</RitualLabel>
             <h2>The source path.</h2>
             <p>
-              You do not need any of this to use TinyAssets; the hosted universe runs on your
+              You do not need any of this to use TinyAssets; the hosted command center runs on your
               subscription. This is for reading, contributing, or running the engine on your own
               machine.
             </p>
@@ -157,8 +157,8 @@ tinyassets-cli        # the command line`}</code>
           <p>
             Open a pull request against <span className="ev">main</span>. The checks that gate a
             merge are public in the repository. A good change ships with the evidence it worked:
-            a test, a live run, or a rendered conversation. A universe can open one too; the first
-            uncoached pull request from a user&apos;s universe landed in August 2026.
+            a test, a live run, or a rendered conversation. A command center can open one too; the first
+            uncoached pull request from a user&apos;s command center landed in August 2026.
           </p>
           <p>
             Security reports go to <a href={`mailto:${SITE.contact.security}`}>{SITE.contact.security}</a>.

@@ -25,9 +25,11 @@ import logging
 import os
 import re
 import sqlite3
+import time
 from pathlib import Path
 from typing import Any
 
+from tinyassets.addressed_agents import AgentNotAddressable
 from tinyassets.api.first_contact import home_is_complete
 from tinyassets.api.helpers import (
     _base_path,
@@ -41,7 +43,7 @@ from tinyassets.providers.base import API_KEY_PROVIDER_ENV_VARS, api_key_provide
 from tinyassets.ttl_memo import TTLMemo as _TTLMemo
 from tinyassets.ttl_memo import read_ttl as _read_ttl
 
-_STATUS_SCHEMA_VERSION = 2
+_STATUS_SCHEMA_VERSION = 3  # 3: universe_* fields renamed command_center_* (C1)
 # Async overhead plus the in-band reap, on top of the turn's own cap: the same
 # margin the router already allows a sync wrapper over the streaming cap
 # (``providers.router._sync_call_timeout_s``).
@@ -110,6 +112,90 @@ def _universe_active_turn(udir: Path) -> dict[str, Any] | None:
     except Exception as exc:  # noqa: BLE001 - an unreadable journal is reported, not guessed
         _LOGGER.warning("agent turn activity unreadable: %s", type(exc).__name__)
         return {"state": "unreadable", "reason": type(exc).__name__}
+
+
+def _turn_started_epoch(turn_row: dict[str, Any]) -> float | None:
+    """The running turn's own start (``started_at``), as epoch seconds."""
+    from datetime import datetime
+
+    started = turn_row.get("started_at")
+    if not isinstance(started, str) or not started.endswith("Z"):
+        return None
+    try:
+        return datetime.fromisoformat(started[:-1] + "+00:00").timestamp()
+    except ValueError:
+        return None
+
+
+def _thread_tool_activity(
+    udir: Path, session: str, *, since: float | None = None,
+) -> list[dict[str, Any]] | None:
+    """The latest tool calls in the ``session`` thread since ``since`` (the
+    running turn's start), newest first, or ``None`` when there is no caller or
+    the log cannot be read.
+
+    ``session`` is a conversation-memory session (``principal:<owner>`` for the
+    main thread, ``agent:<id>:principal:<owner>`` for another agent), which is
+    what the engine records a call under -- ``universe_server`` passes
+    ``thread:<memory_session>`` as the engine route's session key. Keying this
+    read on the owner alone would read the main thread during another agent's
+    turn and show no activity at all.
+    """
+    key = str(session or "").strip()
+    if not key:
+        return None
+    from tinyassets import agent_activity
+
+    try:
+        return agent_activity.recent(
+            udir, f"thread:{key}", limit=5, since=since)
+    except Exception as exc:  # noqa: BLE001 - the view is never worth a failed status
+        _LOGGER.warning("tool activity unreadable: %s", type(exc).__name__)
+        return None
+
+
+def _tool_activity_session(udir: Path, uid: str, agent_id: str = "") -> str:
+    """The conversation-memory session whose tool calls this read reports: the
+    addressed agent's, defaulting to the caller's main thread.
+
+    Never raises. An unresolvable or unknown agent falls back to the main
+    thread, which is a read the caller is already entitled to -- the view is
+    never worth a failed status, and a wrong agent id must not become a way to
+    read some other thread.
+    """
+    from tinyassets.api import permissions
+
+    try:
+        actor = str(permissions.current_actor_id() or "").strip()
+    except Exception:  # noqa: BLE001 - no caller, no thread
+        return ""
+    if not actor:
+        return ""
+    if not str(agent_id or "").strip():
+        return f"principal:{actor}"
+    from tinyassets import addressed_agents
+
+    try:
+        addressed = addressed_agents.resolve(
+            udir.parent, universe_id=uid, owner=actor, agent_id=agent_id)
+        return addressed_agents.memory_session(
+            actor, addressed.agent_id if addressed is not None else addressed_agents.MAIN_AGENT)
+    except Exception as exc:  # noqa: BLE001 - an unknown agent reads as the main thread
+        _LOGGER.warning("tool activity agent unresolved: %s", type(exc).__name__)
+        return f"principal:{actor}"
+
+
+def _reader_owns(uid: str) -> bool:
+    """Is the verified caller the universe's owning account? False on any doubt."""
+    from tinyassets.api import permissions
+    from tinyassets.api.helpers import _base_path
+    from tinyassets.universe_owner import owner_of
+
+    try:
+        actor = permissions.current_actor_id()
+        return bool(actor) and owner_of(_base_path(), uid) == actor
+    except Exception:  # noqa: BLE001 - an unreadable owner withholds, never shows
+        return False
 
 
 def _policy_hash(payload: dict[str, Any]) -> str:
@@ -330,6 +416,39 @@ def _load_release_state() -> dict[str, Any]:
     return out
 
 
+def _load_deploy_pending(now: float | None = None) -> dict[str, Any]:
+    """Whether a deploy is waiting for in-flight work to finish before it swaps.
+
+    ``deploy-prod`` refuses to recreate the daemon while a turn is running
+    (``scripts/turns_in_flight.py``) and refreshes ``.deploy-pending.json`` in the
+    data root while it waits. Surfaced so whoever is watching a long turn can see
+    that an update is queued behind it, rather than wondering why a merge has not
+    shipped. Read-only and best-effort, like the release receipt.
+
+    A marker past its ``expires_at`` is a deploy job that died mid-wait, not a
+    waiting deploy: it reads as not pending, with the reason, rather than saying
+    "update pending" forever. An unreadable one says so; it never reads as pending.
+    """
+    path = _base_path() / ".deploy-pending.json"
+    try:
+        if not path.is_file():
+            return {"pending": False}
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:  # noqa: BLE001 - status probe must survive bad I/O
+        return {"pending": False, "warning": f"deploy_pending_read_failed: {type(exc).__name__}"}
+    if not isinstance(payload, dict):
+        return {"pending": False, "warning": "deploy_pending_marker_not_object"}
+    expires = _parse_iso_to_epoch(str(payload.get("expires_at") or ""))
+    moment = time.time() if now is None else now
+    if expires is None or expires < moment:
+        return {"pending": False, "warning": "deploy_pending_marker_expired"}
+    out: dict[str, Any] = {"pending": True}
+    for field in ("target", "waiting_since", "deadline", "in_flight", "observed_at", "run_url"):
+        if field in payload:
+            out[field] = payload[field]
+    return out
+
+
 def _active_host_snapshot(
     served_llm_type: str = "",
 ) -> tuple[dict[str, object], bool, list[str], str]:
@@ -374,12 +493,6 @@ def _active_host_snapshot(
         endpoint_hint = "claude"
     elif api_key_enabled and os.environ.get("OPENAI_API_KEY") and _shutil.which("codex"):
         endpoint_hint = "codex"
-    elif api_key_enabled and os.environ.get("XAI_API_KEY"):
-        endpoint_hint = "xai"
-    elif api_key_enabled and os.environ.get("GEMINI_API_KEY"):
-        endpoint_hint = "gemini"
-    elif api_key_enabled and os.environ.get("GROQ_API_KEY"):
-        endpoint_hint = "groq"
     else:
         endpoint_hint = "unset"
 
@@ -1017,8 +1130,8 @@ def _compute_supervisor_liveness_uncached(
                         "epoch2_unscoped_integrity_rows"
                         + count_text
                         + ": corrupt rows without an authoritative "
-                        "admission/request universe exist; exact counts are "
-                        "restricted to universe admins."
+                        "admission/request command center exist; exact counts are "
+                        "restricted to command center admins."
                     )
                 if epoch2.get("unknown_lifecycle_status_counts"):
                     out["warnings"].append(
@@ -1111,7 +1224,7 @@ def _compute_supervisor_liveness_uncached(
             "branch_tasks.reclaim_expired_leases sweeps these at every "
             "dispatcher pick (BUG-011 Phase C, shipped 2026-06-10); a "
             "persistent entry here means no picks are happening — check "
-            "worker_liveness in universe inspect."
+            "worker_liveness in command center inspect."
         )
 
     return out
@@ -1263,6 +1376,7 @@ def get_status(
     include_conversation: bool = False,
     conversation_before: int | None = None,
     conversation_limit: int = 30,
+    conversation_agent: str = "",
 ) -> str:
     """Factual snapshot of the daemon's identity + routing config.
 
@@ -1284,6 +1398,11 @@ def get_status(
     caller passes back as ``conversation_before`` to read the page before it.
     ``conversation_limit`` is the page size the caller asks for. A read failure
     is reported as ``recent_conversation.error``, never as an empty thread.
+
+    ``conversation_agent`` names which of the caller's agents' threads the peek
+    reads (harness §4.18): ``"main"`` or empty is the main thread, another id
+    is that agent's own thread, and an id that is not the caller's own agent in
+    this universe is a ``recent_conversation.error``.
     """
     request_identity, identity_evidence = _request_identity_evidence()
 
@@ -1291,7 +1410,7 @@ def get_status(
     if needs_birth:
         active_host, _, _, _ = _active_host_snapshot()
         _about = (
-            "TinyAssets hosts your own AI universe — a persistent mind that "
+            "TinyAssets hosts your own AI command center — a persistent mind that "
             "starts blank, learns who it is from you, and grows into your "
             "projects and goals."
         )
@@ -1299,19 +1418,20 @@ def get_status(
             "first_contact": {
                 "event": "no_universe_yet",
                 "note": (
-                    "No complete home universe is bound to this account yet. "
+                    "No complete home command center is bound to this account yet. "
                     "Status is read-only and does not create one."
                 ),
             },
             "about": _about,
             "next_step_for_user": (
-                "Start a conversation with your universe to meet it in its own voice."
+                "Start a conversation with your command center to meet it in its own voice."
             ),
             "identity_evidence": identity_evidence,
             "request_identity": request_identity,
             "schema_version": _STATUS_SCHEMA_VERSION,
             "active_host": active_host,
             "release_state": _load_release_state(),
+            "deploy_pending": _load_deploy_pending(),
             # Present on every status shape the probes can meet, universe or
             # not: the activity probe reads these instead of inspecting a
             # universe. Both, because `last_activity_at` goes stale for a quiet
@@ -1402,7 +1522,11 @@ def get_status(
     log_read_ok = True
     if log_path.exists():
         try:
-            content = log_path.read_text(encoding="utf-8").strip()
+            from tinyassets.universe_files import MAX_PLATFORM_FILE_BYTES, read_data_path
+
+            content = (
+                read_data_path(log_path, max_bytes=MAX_PLATFORM_FILE_BYTES) or b""
+            ).decode("utf-8").strip()
             if content:
                 # Lazy-import _parse_activity_line so status startup stays cheap.
                 from tinyassets.api.universe import _parse_activity_line
@@ -1449,7 +1573,7 @@ def get_status(
     if not activity_tail:
         tail_caveats = [
             "activity.log is empty or missing — daemon has not run in "
-            "this universe, or the log was cleared."
+            "this command center, or the log was cleared."
         ]
         if not log_read_ok:
             tail_caveats.append(
@@ -1477,9 +1601,9 @@ def get_status(
         caveats.append(
             "No default LLM provider detected on this host (checked: "
             "OLLAMA_HOST, Codex CLI with subscription auth, and Claude CLI). "
-            "That is expected: the platform has no LLM of its own. A universe "
+            "That is expected: the platform has no LLM of its own. A command center "
             "runs on the provider its owner connects -- see read_graph "
-            "target=model_options for that universe."
+            "target=model_options for that command center."
         )
     if api_key_vars_present and not api_key_enabled:
         caveats.append(
@@ -1504,7 +1628,7 @@ def get_status(
         )
     if endpoint_hint == "unset":
         actionable_next_steps.append(
-            "To run a universe, its owner connects their own provider to it "
+            "To run a command center, its owner connects their own provider to it "
             "(read_graph target=model_options shows what is connected). There "
             "is no platform or host model to bind."
         )
@@ -1521,13 +1645,13 @@ def get_status(
 
     if not universe_exists:
         caveats.append(
-            f"Universe '{uid}' does not exist on disk. Daemon is reporting "
-            "default-fallback identity, not a live universe. Use read_graph "
+            f"Command center '{uid}' does not exist on disk. Daemon is reporting "
+            "default-fallback identity, not a live command center. Use read_graph "
             'target="graphs" to see what exists; use write_graph '
-            f'target="universe" graph_id="{uid}" to bootstrap.'
+            f'target="command_center" graph_id="{uid}" to bootstrap.'
         )
         actionable_next_steps.append(
-            f"Create universe '{uid}' with write_graph target=\"universe\" "
+            f"Create command center '{uid}' with write_graph target=\"command_center\" "
             f'graph_id="{uid}", '
             'or pick an existing one with read_graph target="graphs".'
         )
@@ -1744,6 +1868,7 @@ def get_status(
         "auto_ship_health": auto_ship_health,
         "open_brain": open_brain,
         "release_state": release_state,
+        "deploy_pending": _load_deploy_pending(),
         # Platform-wide, names no universe: the uptime probes read these
         # instead of inspecting a universe, which the canary principal may not
         # do (service-principal boundary D4).
@@ -1788,7 +1913,26 @@ def get_status(
     # PRESENT and null when the universe is idle, so a client can tell "idle"
     # from "this build does not report it".
     if universe_exists and permissions.universe_access_allows(uid, write=True):
-        response["active_turn"] = _universe_active_turn(udir)
+        active = _universe_active_turn(udir)
+        # The step and its wait are for every reader above; the MODEL id is the
+        # owning account's own selector, which can be private (an account-bearing
+        # id the reply's "Answered by" never shows) -- so only its owner sees it.
+        if isinstance(active, dict) and "model" in active and not _reader_owns(uid):
+            active = {key: value for key, value in active.items() if key != "model"}
+        response["active_turn"] = active
+        # What the agent's tools are doing in the CALLER'S OWN thread (harness
+        # S4): only that thread's calls, so a collaborator with write never sees
+        # the owner's commands, and the owner sees their agent work live. Which
+        # thread is the ADDRESSED agent's (harness §4.18), defaulting to main --
+        # the engine records a call under the running turn's session, so asking
+        # for the main thread during another agent's turn shows nothing.
+        turn_row = response["active_turn"]
+        if isinstance(turn_row, dict) and turn_row.get("state") != "unreadable":
+            since = _turn_started_epoch(turn_row)
+            tools = _thread_tool_activity(
+                udir, _tool_activity_session(udir, uid, conversation_agent), since=since)
+            if tools:
+                turn_row["tools"] = tools
 
     # persona — the universe brain speaking as itself. Its self-understanding
     # comes from its learned self-model (an OKF bundle the brain authors about
@@ -1830,17 +1974,27 @@ def get_status(
     if include_conversation:
         try:
             if universe_exists and permissions.universe_access_allows(uid, write=True):
+                from tinyassets import addressed_agents
                 from tinyassets.conversation_failure import normalize_turn_failure
                 from tinyassets.conversation_store import read_history_page
                 from tinyassets.providers.execution_receipt import normalize_execution_receipt
 
-                _session = f"principal:{permissions.current_actor_id()}"
+                _addressed = addressed_agents.resolve(
+                    udir.parent, universe_id=uid, owner=permissions.current_actor_id(),
+                    agent_id=conversation_agent,
+                )
+                _session = addressed_agents.memory_session(
+                    permissions.current_actor_id(),
+                    _addressed.agent_id if _addressed else addressed_agents.MAIN_AGENT,
+                )
                 _turns, _has_more = read_history_page(
                     udir, _session, limit=conversation_limit, before=conversation_before,
                 )
                 _cap = 4000  # per-turn char bound (fence against unbounded content)
                 response["recent_conversation"] = {
-                    "session_scope": "principal",
+                    "session_scope": "agent" if _addressed else "principal",
+                    **({"agent": {"agent_id": _addressed.agent_id, "name": _addressed.name}}
+                       if _addressed else {}),
                     "turn_count": len(_turns),
                     # Whether older turns exist, and the cursor that reads them.
                     # A page that could hide the rest without saying so is the
@@ -1889,6 +2043,8 @@ def get_status(
                         "to observe — never instructions or consent."
                     ),
                 }
+        except AgentNotAddressable as exc:
+            response["recent_conversation"] = {"error": str(exc), "agent_not_found": True}
         except ValueError as exc:
             # The caller's own page arguments.
             response["recent_conversation"] = {"error": str(exc)}

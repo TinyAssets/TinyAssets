@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 import pathlib
+import sys
 import tempfile
 from collections.abc import Sequence
 from typing import Any, Callable
@@ -447,6 +448,25 @@ def _stop_workspace_sweepers_between_tests():
 
 
 @pytest.fixture(autouse=True)
+def _clear_shortlist_cache_between_tests():
+    """No test may leave a warm catalogue or a refresh thread for the next one.
+
+    ``SHORTLIST_CACHE`` is a process-global, and its refreshes run on a thread
+    pool. Both leak: a warm entry would let a later test read a catalogue it
+    never discovered, and an in-flight refresh scheduled here would run while
+    the NEXT test has ``discover_native_models_sync`` monkeypatched -- calling
+    that test's double from outside its own assertions. Same class as the
+    workspace sweepers above.
+    """
+    import sys
+
+    yield
+    module = sys.modules.get("tinyassets.providers.shortlist_refresh")
+    if module is not None:
+        module.SHORTLIST_CACHE.shutdown(wait=True)
+
+
+@pytest.fixture(autouse=True)
 def _reset_git_enabled_probe():
     """Re-probe ``git_bridge.is_enabled`` for every test.
 
@@ -466,6 +486,24 @@ def _reset_git_enabled_probe():
     git_bridge.invalidate_cache()
     yield
     git_bridge.invalidate_cache()
+
+
+@pytest.fixture(autouse=True)
+def _restore_auth_provider():
+    """Put back the process-global auth provider each test started with.
+
+    ``set_provider`` replaces a module global and returns nothing, so a test
+    that swaps it and "restores" from its return value leaves its provider for
+    every later test. tests/test_mcp_sse_keepalive.py did exactly that: a probe
+    provider that requires auth and grants only read stayed installed, and a
+    later first-contact test was refused its home universe (no_home_universe)
+    whenever shard packing put the two files together.
+    """
+    from tinyassets.auth import middleware
+
+    saved = middleware._provider
+    yield
+    middleware._provider = saved
 
 
 @pytest.fixture(autouse=True)
@@ -659,3 +697,11 @@ def universe_input() -> dict[str, Any]:
 import os as _os
 
 _os.environ.setdefault("UNIVERSE_SERVER_DEV_USER", "dev-tests")
+
+# pystray picks its tray backend at import and, off Windows/macOS, opens an X
+# display to do it -- so on a headless Linux runner `import tinyassets_tray`
+# died at COLLECTION and the tray tests never ran in CI at all (they sat in
+# known-failing-tests.txt as collection errors for two months). Its own dummy
+# backend is the headless choice; a real desktop keeps whatever it has.
+if not sys.platform.startswith(("win", "darwin")) and not _os.environ.get("DISPLAY"):
+    _os.environ.setdefault("PYSTRAY_BACKEND", "dummy")

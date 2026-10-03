@@ -42,10 +42,6 @@ def test_module_exposes_expected_public_names():
 # ── _JUDGMENT_ACTIONS dispatch table ────────────────────────────────────────
 
 
-def test_judgment_actions_table_has_7_handlers():
-    assert len(_JUDGMENT_ACTIONS) == 7
-
-
 def test_judgment_actions_keys_are_expected_set():
     expected = {
         "judge_run", "list_judgments", "compare_runs",
@@ -79,10 +75,6 @@ def test_judgment_read_actions_are_excluded_from_write_set():
 
 
 # ── _BRANCH_VERSION_ACTIONS dispatch table ──────────────────────────────────
-
-
-def test_branch_version_actions_table_has_3_handlers():
-    assert len(_BRANCH_VERSION_ACTIONS) == 3
 
 
 def test_branch_version_actions_keys_are_expected_set():

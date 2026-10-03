@@ -217,6 +217,7 @@ if __name__ == "__main__":
     unittest.main()
 
 
+@pytest.mark.real_jail
 @pytest.mark.skipif(sys.platform != "linux" or not shutil.which("bwrap"),
                     reason="real provisioning mounts require Linux bubblewrap")
 @pytest.mark.parametrize("phase", ["acquire", "install"])
@@ -331,6 +332,7 @@ def npm_overlay(tmp_path):
             os.close(fd)
 
 
+@pytest.mark.real_jail
 def test_real_npm_overlays_are_readonly_and_leave_originals_unchanged(npm_overlay):
     paths, fds = npm_overlay
     launch = sandbox.BwrapLauncher().for_workspace(sandbox.WorkspaceMount(
@@ -367,6 +369,7 @@ print('overlays verified')
         assert (paths[2] / name).read_text() == '{"original":true}\n'
 
 
+@pytest.mark.real_jail
 @pytest.mark.parametrize('kind', ['wrong-file', 'directory', 'symlink-target', 'unadmitted'])
 def test_npm_overlay_refuses_wrong_files_or_targets(npm_overlay, kind):
     paths, fds = npm_overlay

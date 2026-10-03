@@ -70,7 +70,7 @@ def test_first_contact_tool_descriptions_match_the_opening_instruction() -> None
 
     assert "pure, idempotent read" in status_description
     assert "never creates or repairs" in status_description
-    assert "founder's home universe" in converse_description
+    assert "founder's home command center" in converse_description
     assert "creates and binds a blank seed" in converse_description
 
 
@@ -215,7 +215,7 @@ def test_get_status_last_n_calls_parses_tagged_entries(tmp_path) -> None:
         "[2026-04-20 10:00:00] [dispatch_guard] older entry",
         "[2026-04-20 10:05:00] [scene_write] newer entry",
     ])
-    payload = json.loads(get_status(universe_id=uid))
+    payload = json.loads(get_status(command_center_id=uid))
     calls = payload["evidence"]["last_n_calls"]
     assert len(calls) == 2
     # Newest-first ordering.
@@ -235,7 +235,7 @@ def test_get_status_evidence_caveats_flag_empty_log(tmp_path) -> None:
     from tests.conftest import own_universe
     # A universe needs an OWNER to be readable at all (2026-09-02).
     own_universe(tmp_path, "empty_universe")
-    payload = json.loads(get_status(universe_id="empty_universe"))
+    payload = json.loads(get_status(command_center_id="empty_universe"))
     ec = payload["evidence_caveats"]
     # No log → both evidence keys should carry caveats.
     assert "activity_log_tail" in ec
@@ -252,7 +252,7 @@ def test_get_status_activity_log_line_count_reflects_total(tmp_path) -> None:
         f"[2026-04-20 10:{i:02d}:00] [scene_write] entry {i}"
         for i in range(30)
     ])
-    payload = json.loads(get_status(universe_id=uid))
+    payload = json.loads(get_status(command_center_id=uid))
     ev = payload["evidence"]
     # Total should be 30; activity_log_tail is capped at 20.
     assert ev["activity_log_line_count"] == 30
@@ -506,7 +506,7 @@ def test_get_status_schema_version_is_present() -> None:
     """The token-safe request-identity contract is status schema version 2."""
     payload = json.loads(get_status())
     assert "schema_version" in payload
-    assert payload["schema_version"] == 2
+    assert payload["schema_version"] == 3
 
 
 def test_get_status_schema_contract() -> None:
@@ -563,7 +563,7 @@ def test_get_status_session_boundary_no_prior_when_empty_log(tmp_path) -> None:
     from tests.conftest import own_universe
     # A universe needs an OWNER to be readable at all (2026-09-02).
     own_universe(tmp_path, "empty_sb_universe")
-    payload = json.loads(get_status(universe_id="empty_sb_universe"))
+    payload = json.loads(get_status(command_center_id="empty_sb_universe"))
     sb = payload["session_boundary"]
     assert sb["prior_session_context_available"] is False
     assert sb["last_session_ts"] is None
@@ -588,7 +588,7 @@ def test_get_status_session_boundary_does_not_use_environment_actor(
         f"[2026-04-24 12:00:00] [{user}] some activity\n",
         encoding="utf-8",
     )
-    payload = json.loads(get_status(universe_id="active_sb_universe"))
+    payload = json.loads(get_status(command_center_id="active_sb_universe"))
     sb = payload["session_boundary"]
     assert sb["prior_session_context_available"] is False
     assert sb["last_session_ts"] is None
@@ -636,7 +636,7 @@ def test_get_status_recent_conversation_denied_to_a_non_founder(
     _mw._current_identity.set(_Identity(
         user_id="stranger", username="stranger", capabilities=["read", "list"],
     ))
-    payload = json.loads(get_status(universe_id=uid, include_conversation=True))
+    payload = json.loads(get_status(command_center_id=uid, include_conversation=True))
     assert "recent_conversation" not in payload, (
         "conversation peek must be withheld from an anonymous reader"
     )
@@ -675,11 +675,11 @@ def test_get_status_recent_conversation_optin_gate_and_isolation(
 
     # Opt-OUT default: founder A, but no include_conversation → no transcript.
     _as("founder-a", True)
-    assert "recent_conversation" not in json.loads(get_status(universe_id=uid))
+    assert "recent_conversation" not in json.loads(get_status(command_center_id=uid))
 
     # Opt-IN: founder A sees ONLY A's own turns, fenced as untrusted.
     _as("founder-a", True)
-    pa = json.loads(get_status(universe_id=uid, include_conversation=True))
+    pa = json.loads(get_status(command_center_id=uid, include_conversation=True))
     rc = pa["recent_conversation"]
     assert "execution" not in rc["turns"][0]
     assert rc["turns"][1]["execution"] == receipt_a
@@ -689,13 +689,13 @@ def test_get_status_recent_conversation_optin_gate_and_isolation(
 
     # Co-located founder B sees ONLY B's own turns, never A's.
     _as("founder-b", True)
-    pb = json.loads(get_status(universe_id=uid, include_conversation=True))
+    pb = json.loads(get_status(command_center_id=uid, include_conversation=True))
     texts_b = " ".join(t["text"] for t in pb["recent_conversation"]["turns"])
     assert "B answer" in texts_b and "A answer" not in texts_b
     assert "provider-a" not in json.dumps(pb)
 
     # Non-founder (no write access): peek withheld entirely, no content leak.
     _as("stranger", False)
-    pc = json.loads(get_status(universe_id=uid, include_conversation=True))
+    pc = json.loads(get_status(command_center_id=uid, include_conversation=True))
     assert "recent_conversation" not in pc
     assert "A answer" not in json.dumps(pc) and "B answer" not in json.dumps(pc)

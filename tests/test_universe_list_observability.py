@@ -146,7 +146,7 @@ class TestGetStatusUniverseExists:
         assert result["next_step_for_user"], result
 
     def test_existing_universe_dir_flags_true(self, populated_base):
-        result = json.loads(get_status(universe_id="alpha"))
+        result = json.loads(get_status(command_center_id="alpha"))
         assert result["universe_exists"] is True
         assert not any(
             "does not exist on disk" in c for c in result["caveats"]
@@ -154,7 +154,7 @@ class TestGetStatusUniverseExists:
 
     def test_explicit_missing_universe_flags_false(self, populated_base):
         """Explicit universe_id that does not exist — same diagnostic."""
-        result = json.loads(get_status(universe_id="ghost"))
+        result = json.loads(get_status(command_center_id="ghost"))
         assert result["universe_exists"] is False
         assert any(
             "does not exist on disk" in c for c in result["caveats"]

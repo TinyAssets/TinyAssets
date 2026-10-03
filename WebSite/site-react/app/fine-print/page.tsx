@@ -37,7 +37,7 @@ export default function FinePrintPage() {
         <div className="container">
           <div className="head">
             <RitualLabel>Plans</RitualLabel>
-            <h2>Every universe starts free.</h2>
+            <h2>Every command center starts free.</h2>
             <p>
               Most people never need more than the free tier. Premium exists for the ones who run a
               lot.
@@ -56,7 +56,7 @@ export default function FinePrintPage() {
                 <tr>
                   <td>Free</td>
                   <td>
-                    A universe: brain, storage, connections, automations, workspaces, and the app on
+                    A command center: brain, storage, connections, automations, workspaces, and the app on
                     every surface. Runs on your own subscription.
                   </td>
                   <td>
@@ -67,7 +67,7 @@ export default function FinePrintPage() {
                 </tr>
                 <tr>
                   <td>Premium, $20 a month</td>
-                  <td>The same universe, nothing held back.</td>
+                  <td>The same command center, nothing held back.</td>
                   <td>More of each.</td>
                 </tr>
               </tbody>
@@ -98,13 +98,13 @@ export default function FinePrintPage() {
               <li style={{ gridTemplateColumns: "1fr" }}>
                 <div>
                   <h3>No platform model</h3>
-                  <p>TinyAssets never supplies an LLM. Without a connected subscription your universe exists but cannot think.</p>
+                  <p>TinyAssets never supplies an LLM. Without a connected subscription your command center exists but cannot think.</p>
                 </div>
               </li>
               <li style={{ gridTemplateColumns: "1fr" }}>
                 <div>
                   <h3>No list of integrations</h3>
-                  <p>There is one connection primitive. Every integration is built by your universe from what you paste.</p>
+                  <p>There is one connection primitive. Every integration is built by your command center from what you paste.</p>
                 </div>
               </li>
               <li style={{ gridTemplateColumns: "1fr" }}>
@@ -129,21 +129,21 @@ export default function FinePrintPage() {
                 <tr>
                   <td>Isolation</td>
                   <td>
-                    Not affecting other users is the one hard invariant. Inside your own universe you
+                    Not affecting other users is the one hard invariant. Inside your own command center you
                     have full authority.
                   </td>
                 </tr>
                 <tr>
                   <td>Credentials</td>
                   <td>
-                    What you deposit goes to your universe&apos;s vault over TLS and is used only by
-                    your universe. It never passes through a chat.
+                    What you deposit goes to your command center&apos;s vault over TLS and is used only by
+                    your command center. It never passes through a chat.
                   </td>
                 </tr>
                 <tr>
                   <td>Execution</td>
                   <td>
-                    Nothing runs outside a universe someone controls. Every run has an owner who can
+                    Nothing runs outside a command center someone controls. Every run has an owner who can
                     see, pause and delete it.
                   </td>
                 </tr>

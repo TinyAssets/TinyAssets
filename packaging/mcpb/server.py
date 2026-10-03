@@ -66,9 +66,9 @@ def _resolve_default_universe() -> str | None:
         or value.startswith(".")
     ):
         raise RuntimeError(
-            "UNIVERSE_SERVER_DEFAULT_UNIVERSE must be a universe folder name "
+            "UNIVERSE_SERVER_DEFAULT_UNIVERSE must be a command center folder name "
             f"directly under the data directory, not {value!r}. Fix the "
-            "bundle's 'Default Universe' setting or leave it empty."
+            "bundle's 'Default Command Center' setting or leave it empty."
         )
     return value
 

@@ -758,7 +758,7 @@ class TestAnUnownedUniverseGrantsNothing:
         signed_in("workos|stranger")
         self._already_declared_public(base, ARCHIVE)
 
-        out = json.loads(get_status(universe_id=ARCHIVE))
+        out = json.loads(get_status(command_center_id=ARCHIVE))
 
         assert "word_count" not in out, out
         daemon = out.get("daemon")

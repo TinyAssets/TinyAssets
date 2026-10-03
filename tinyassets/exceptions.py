@@ -161,6 +161,53 @@ class ProviderProtocolError(ProviderError):
     failure_class = "provider_protocol_error"
 
 
+class ProviderReplyError(ProviderProtocolError):
+    """The source answered HTTP 200 and REPORTED an error instead of a reply.
+
+    An OpenAI-compatible body (or its one choice) carrying an ``error`` object:
+    the model behind the source failed partway through generating. Live
+    2026-09-30 and 2026-10-02 on the free-only account, nemotron did this after
+    12-19 good tool rounds, and the owner read "the connected model replied in
+    a format this command center could not read". Nothing was unreadable; the
+    source said what went wrong and we threw its words away.
+
+    The message is the source's own scrubbed words. A subclass of the protocol
+    error so every existing handler still applies; a turn treats it as
+    transient (same model once more, then the next accepted model).
+    """
+
+    failure_class = "provider_reply_error"
+
+
+class ProviderStalledError(ProviderProtocolError):
+    """A streamed reply STOPPED arriving partway (inactivity, not slowness).
+
+    The model sent part of its answer and then nothing for the source's
+    inactivity window. A reply that keeps arriving is never cut, however long
+    it takes (founder, 2026-10-02). ``partial_text`` is the assistant text that
+    did arrive, kept for the owner's notice rather than silently dropped; it is
+    never logged.
+    """
+
+    failure_class = "provider_stalled"
+
+    def __init__(self, *args, partial_text: str = "", **kwargs):
+        super().__init__(*args, **kwargs)
+        self.partial_text = partial_text
+
+
+class ProviderUnreadableReplyError(ProviderProtocolError):
+    """The source answered HTTP 2xx with a reply we could not decode.
+
+    No choice, an incomplete stream, a cut-off tool batch, a tool that is not
+    enabled: a weaker model's slip, which usually does not repeat. Distinct
+    from an unrecognized HTTP status (still a plain protocol error), which is
+    the source rejecting the REQUEST and would only be rejected again.
+    """
+
+    failure_class = "provider_unreadable_reply"
+
+
 class ProviderModelRefusedError(ProviderUnavailableError):
     """The source refused to serve THIS model before generating anything.
 

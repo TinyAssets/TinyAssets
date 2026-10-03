@@ -32,9 +32,6 @@ tinyassets/api/universe.py:codex:1
 tinyassets/api/universe.py:openai:1
 tinyassets/api/webhook_ops.py:github:1
 tinyassets/api/wiki.py:claude:1
-tinyassets/auth/host_proof.py:claude:1
-tinyassets/auth/host_proof.py:codex:1
-tinyassets/auth/host_proof.py:gemini:1
 tinyassets/auth/provider.py:github:4
 tinyassets/automations.py:codex:1
 tinyassets/branches.py:codex:1
@@ -90,10 +87,6 @@ tinyassets/providers/codex_provider.py:codex:72
 tinyassets/providers/codex_provider.py:openai:1
 tinyassets/providers/definition.py:claude:1
 tinyassets/providers/definition.py:codex:1
-tinyassets/providers/gemini_provider.py:gemini:7
-tinyassets/providers/grok_provider.py:grok:4
-tinyassets/providers/grok_provider.py:openai:3
-tinyassets/providers/groq_provider.py:groq:8
 tinyassets/providers/ollama_provider.py:ollama:10
 tinyassets/providers/protocol_encoders.py:anthropic:8
 tinyassets/providers/protocol_encoders.py:openai:7

@@ -31,6 +31,7 @@ fetches is its owner's business.
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import logging
 import os
 import select
@@ -66,23 +67,34 @@ PROXY_ENV: tuple[tuple[str, str], ...] = tuple(
                  "ALL_PROXY", "all_proxy")
 ) + (("NO_PROXY", "localhost,127.0.0.1"), ("no_proxy", "localhost,127.0.0.1"))
 
-#: Runs inside the jail as ``python3 -c FORWARDER <command...>``: binds the
-#: forwarder port, forks a quiet child that relays each connection to the
-#: proxy socket, then execs the command. The child dies with the jail.
+#: Where the universe's own engine MCP relay socket appears inside a jail.
+JAIL_ENGINE_SOCKET = "/tmp/.ta-engine.sock"
+
+#: Runs inside the jail as ``python3 -c FORWARDER PORT=SOCKET... -- command...``
+#: (see :func:`forwarder_argv`): binds each loopback port, forks a quiet child
+#: that relays every connection on a port to its unix socket, then execs the
+#: command. The child dies with the jail.
 FORWARDER = r'''
 import os, socket, sys, threading
-srv = socket.socket()
-srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-srv.bind(("127.0.0.1", 3128))
-srv.listen(64)
+args = sys.argv[1:]
+sep = args.index("--")
+servers = []
+for spec in args[:sep]:
+    port, path = spec.split("=", 1)
+    srv = socket.socket()
+    srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    srv.bind(("127.0.0.1", int(port)))
+    srv.listen(64)
+    servers.append((srv, path))
+command = args[sep + 1:]
 if os.fork():
-    srv.close()
-    os.execvp(sys.argv[1], sys.argv[1:])
+    for srv, _ in servers:
+        srv.close()
+    os.execvp(command[0], command)
 null = os.open(os.devnull, os.O_RDWR)
 for fd in (0, 1, 2):
     os.dup2(null, fd)
 threading.stack_size(256 * 1024)
-slots = threading.BoundedSemaphore(16)
 def pump(a, b):
     try:
         while True:
@@ -97,10 +109,10 @@ def pump(a, b):
             s.shutdown(socket.SHUT_RDWR)
         except OSError:
             pass
-def serve(c):
+def serve(c, path, slots):
     u = socket.socket(socket.AF_UNIX)
     try:
-        u.connect("/tmp/.ta-egress.sock")
+        u.connect(path)
     except OSError:
         c.close(); u.close(); slots.release(); return
     t = threading.Thread(target=pump, args=(u, c), daemon=True)
@@ -108,12 +120,28 @@ def serve(c):
     pump(c, u)
     t.join()
     c.close(); u.close(); slots.release()
-while True:
-    c, _ = srv.accept()
-    if not slots.acquire(blocking=False):
-        c.close(); continue
-    threading.Thread(target=serve, args=(c,), daemon=True).start()
+def accept(srv, path):
+    slots = threading.BoundedSemaphore(16)
+    while True:
+        c, _ = srv.accept()
+        if not slots.acquire(blocking=False):
+            c.close(); continue
+        threading.Thread(target=serve, args=(c, path, slots), daemon=True).start()
+for srv, path in servers[1:]:
+    threading.Thread(target=accept, args=(srv, path), daemon=True).start()
+accept(*servers[0])
 '''
+
+
+def forwarder_argv(
+    python: str, command: list[str], *, engine_port: int | None = None,
+) -> list[str]:
+    """``command`` behind the in-jail forwarder: the proxy port, plus the
+    universe's own engine MCP port when it has one."""
+    specs = [f"{JAIL_PROXY_URL.rsplit(':', 1)[1]}={JAIL_SOCKET}"]
+    if engine_port is not None:
+        specs.append(f"{int(engine_port)}={JAIL_ENGINE_SOCKET}")
+    return [python, "-I", "-S", "-c", FORWARDER, *specs, "--", *command]
 
 
 class EgressRefused(Exception):
@@ -364,3 +392,76 @@ def ensure_proxy(universe_dir: Path) -> Path | None:
         proxy = EgressProxy(path, root.name)
         _PROXIES[key] = proxy
         return path
+
+
+class EngineRelay(EgressProxy):
+    """One universe's way to its OWN engine MCP server, which listens on the
+    daemon's loopback.
+
+    A provider CLI reaches the universe's engine tools over HTTP at
+    ``127.0.0.1:<port>`` (``engine_mcp_http``). Its jail has no network, and the
+    proxy above refuses loopback by design, so this is a second socket with
+    exactly one destination: the port the owner-checked route names right now
+    (``read_engine_mcp_route``, re-read for every connection). It can never
+    reach another universe's engine server, the daemon's app port or anything
+    else on loopback; the engine server's own bearer check still applies.
+    """
+
+    def __init__(self, socket_path: Path, universe: str, route_port) -> None:
+        self._route_port = route_port
+        super().__init__(socket_path, universe)
+
+    def _serve(self, conn: socket.socket) -> None:
+        upstream = None
+        try:
+            port = self._route_port()
+            if port is None:
+                return
+            upstream = socket.create_connection(("127.0.0.1", port), timeout=_CONNECT_TIMEOUT_S)
+            _relay(conn, upstream)
+        except OSError:
+            pass
+        finally:
+            for sock in (conn, upstream):
+                if sock is not None:
+                    with contextlib.suppress(OSError):
+                        sock.close()
+            self._slots.release()
+            _HOST_SLOTS.release()
+
+
+_ENGINE_RELAYS: dict[tuple[str, str, str], EngineRelay] = {}
+
+
+def _route_port(actor_id: str, graph_id: str) -> int | None:
+    from tinyassets.engine_mcp_http import read_engine_mcp_route
+
+    route = read_engine_mcp_route(actor_id=actor_id, graph_id=graph_id)
+    return None if route is None else urlsplit(route.url).port
+
+
+def ensure_engine_relay(
+    universe_dir: Path, *, actor_id: str, graph_id: str,
+) -> tuple[Path, int] | None:
+    """The relay socket to this owner's engine MCP server for ``universe_dir``,
+    and the port the server listens on now; ``None`` when no route exists (the
+    CLI then has no HTTP engine server to reach)."""
+    if not hasattr(socket, "AF_UNIX"):
+        return None
+    port = _route_port(actor_id, graph_id)
+    if port is None:
+        return None
+    root = Path(universe_dir).resolve()
+    key = (str(root), actor_id, graph_id)
+    with _LOCK:
+        relay = _ENGINE_RELAYS.get(key)
+        if relay is None or not relay.alive():
+            directory = root.parent / UNIVERSE_SIDECARS_DIR / root.name
+            directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+            tag = hashlib.sha256(f"{actor_id}\0{graph_id}".encode()).hexdigest()[:12]
+            relay = EngineRelay(
+                directory / f"engine-{os.getpid()}-{tag}.sock", root.name,
+                lambda: _route_port(actor_id, graph_id),
+            )
+            _ENGINE_RELAYS[key] = relay
+        return relay.socket_path, port

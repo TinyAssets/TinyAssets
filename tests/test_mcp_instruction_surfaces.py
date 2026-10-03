@@ -453,7 +453,7 @@ def test_runtime_response_payloads_claim_only_live_advertised_handles(
         ),
         "read_page truncated-page response": truncated_page_response,
         "get_status missing-universe response": universe_server.get_status(
-            universe_id="u-missing-response-invariant",
+            command_center_id="u-missing-response-invariant",
         ),
         "read_graph graph response": universe_server.read_graph(
             target="graph",
@@ -602,14 +602,14 @@ def test_instruction_routing_examples_use_valid_handle_parameters() -> None:
             )
 
 
-def test_meet_universe_description_is_relay_first() -> None:
+def test_meet_command_center_description_is_relay_first() -> None:
     prompts = {
         prompt.name: prompt
         for prompt in _run(
             universe_server.mcp.list_prompts(run_middleware=False)
         )
     }
-    description = prompts["meet_universe"].description or ""
+    description = prompts["meet_command_center"].description or ""
     assert "converse" in description
     assert "relay" in description.lower()
     assert "get_status" not in description

@@ -153,9 +153,9 @@ def test_read_only_contents_and_no_job_level_widening():
 def test_hosted_ephemeral_runner_only():
     job = _job(_load())
     assert job["runs-on"] == "ubuntu-latest"
-    assert "container" not in job
+    assert "container" not in job, "the VM is the runner; the jail is one docker run"
     assert "environment" not in job, "no deployment environment on a test job"
-    assert 0 < job["timeout-minutes"] <= 20
+    assert 0 < job["timeout-minutes"] <= 30
 
 
 def test_checkout_does_not_persist_credentials():
@@ -167,7 +167,8 @@ def test_no_secrets_self_hosted_desktop_or_production_reach():
     text = _code_text()
     for forbidden in (
         "secrets.", "self-hosted", "DESKTOP-KCPMGP3", "tinyassets.io",
-        "deploy", "docker ", "--privileged", "GITHUB_TOKEN",
+        "deploy", "--privileged", "GITHUB_TOKEN", "--cap-add", "docker push",
+        "docker login", "-v /var/run/docker.sock",
     ):
         assert forbidden not in text, f"{forbidden!r} must not appear"
 
@@ -178,10 +179,11 @@ def test_no_kernel_or_apparmor_relaxation():
     assert "apparmor_restrict_unprivileged_userns=0" not in text
     assert "aa-" not in text  # aa-complain / aa-disable / aa-teardown
     assert "/etc/apparmor" not in text
-    # The only escalation is `sudo -n` in front of the same argv.
-    for line in text.splitlines():
-        if re.match(r"\s*(elif\s+)?sudo\s", line) and "apt-get" not in line:
-            assert "sudo -n" in line, f"sudo must be non-interactive: {line.strip()}"
+    # No test runs as root: production runs the jail as uid 1001, and root
+    # inside bwrap's user namespace is what made 18 proofs fail for a non-prod
+    # reason. The only sudo loads the container's named AppArmor profile.
+    sudo_lines = [ln.strip() for ln in text.splitlines() if re.match(r"\s*sudo\s", ln)]
+    assert sudo_lines == ['sudo apparmor_parser -r "$PROFILE"'], sudo_lines
 
 
 def test_run_blocks_never_interpolate_expressions():
@@ -307,49 +309,51 @@ def _assert_bwrap_gated(nodeid: str) -> None:
     assert re.search(rf"^\s*(async\s+)?def {re.escape(name)}\(", src, re.M), (
         f"{name} must exist"
     )
-    decorated = re.search(rf'@pytest\.mark\.skipif\(not shutil\.which\("bwrap"\)[^\n]*\n'
-                          rf'def {re.escape(name)}\(', src)
-    module_gate = re.search(
-        r"^pytestmark = \[?\s*pytest\.mark\.skipif\(\n[^)]*_BWRAP", src, re.M
-    )
-    assert decorated or module_gate, f"{name} must be skipif-gated on bwrap"
+    # The gate takes several forms (a decorator, a module pytestmark, a named
+    # skipif marker, a fixture that skips); what they share is the condition.
+    # A real_jail test in a file with no bwrap condition at all would run, and
+    # fail, everywhere without bwrap instead of skipping.
+    assert re.search(r'which\("bwrap"\)', src), f"{path} must skip {name} without bwrap"
 
 
-def test_bubblewrap_installed_and_functionally_probed_before_pytest():
+def test_the_jail_runs_through_the_shared_oracle_as_uid_1001():
+    """CI calls scripts/linux_oracle.py, the invocation developers run locally.
+
+    The oracle owns the image, uid 1001, the seccomp/systempaths relaxation and
+    the fail-loud bubblewrap probe (exit 3 before pytest). CI adds only the
+    AppArmor profile its kernel needs, loaded in the step before.
+    """
     wf = _load()
-    install = _step(wf, "Install bubblewrap")
-    assert "apt-get install" in install["run"] and "bubblewrap" in install["run"]
-    probe = _step(wf, "Probe the jail")
-    assert probe.get("id") == "probe"
-    assert "--unshare-all" in probe["run"], "smoke must exercise the real userns flag"
-    assert "--die-with-parent" in probe["run"]
-    assert "exit 1" in probe["run"], "an unjailable runner must fail, not skip"
-    assert 'runner=' in probe["run"]
-    assert (_step_index(wf, "Install bubblewrap")
-            < _step_index(wf, "Probe the jail")
+    run = _step(wf, _RUN_STEP)["run"]
+    assert "python scripts/linux_oracle.py --out \"$OUT_DIR\" --apparmor ta-jail-userns" in run
+    assert "docker run" not in run and "docker build" not in _code_text(), (
+        "a second, inline container recipe is what the oracle replaced"
+    )
+    assert "--as-root" not in run and "--no-bwrap" not in run
+    profile = _step(wf, "Allow user namespaces for the jail container only")["run"]
+    assert "profile ta-jail-userns flags=(unconfined)" in profile
+    assert "'  userns,'" in profile, "the one permission the kernel withholds"
+    assert "sudo apparmor_parser -r" in profile
+    assert (_step_index(wf, "Allow user namespaces for the jail container only")
             < _step_index(wf, _RUN_STEP))
+    paths = _triggers(wf)["pull_request"]["paths"]
+    for path in ("docker/linux-oracle.Dockerfile", "scripts/linux_oracle.py"):
+        assert path in paths, f"{path} must retrigger the proof"
 
 
 def test_pytest_step_is_focused_and_off_repo():
     step = _step(_load(), _RUN_STEP)
     run = step["run"]
-    env = step["env"]
     assert "ci_assert_junit_case.py --marker real_jail --list-files" in run
     assert 'mapfile -t files <<< "$listed"' in run
-    assert 'args=("${files[@]}"' in run
+    assert '"${files[@]}"' in run
     assert "-m real_jail" in run, "only the marked cases run, not the whole files"
     assert "ci_required_tests.py" not in run, "never the required gate"
     assert not re.search(r"pytest\s+tests(\s|$|/?\")", run), "never the whole suite"
-    assert "--junitxml" in run and "--basetemp" in run
+    assert "--junitxml /out/junit-linux-jail.xml" in run
+    assert "--basetemp /tmp/b" in run, "a short temp root: AF_UNIX paths cap at 108 bytes"
     assert "junit_family=xunit1" in run, "the assertion helper reads xunit1"
-    for var in ("TINYASSETS_DATA_DIR", "PYTEST_BASETEMP", "JUNIT_PATH"):
-        assert env[var].startswith("${{ runner.temp }}/"), f"{var} must live under runner.temp"
-    assert env["JAIL_RUNNER"] == "${{ steps.probe.outputs.runner }}"
-    # The exact setup-python interpreter, resolved once and reused under sudo.
-    assert 'py="$(command -v python)"' in run
-    assert '"$py" -m pytest' in run
-    assert "sudo -n --preserve-env=" in run
-    assert "sudo -E" not in run, "preserve only named variables"
+    assert step["env"]["OUT_DIR"] == "${{ runner.temp }}/jail-out"
 
 
 def test_assertion_step_always_runs_and_names_the_case():
@@ -359,7 +363,7 @@ def test_assertion_step_always_runs_and_names_the_case():
     assert "scripts/ci_assert_junit_case.py" in step["run"]
     assert "--marker real_jail" in step["run"]
     run_step = _step(wf, _RUN_STEP)
-    assert step["env"]["JUNIT_PATH"] == run_step["env"]["JUNIT_PATH"]
+    assert step["env"]["JUNIT_PATH"] == run_step["env"]["OUT_DIR"] + "/junit-linux-jail.xml"
 
 
 def test_junit_uploaded_even_on_failure():

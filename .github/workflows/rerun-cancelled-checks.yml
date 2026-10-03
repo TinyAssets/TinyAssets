@@ -1,0 +1,46 @@
+name: Re-run cancelled required checks
+
+# A stamped, armed PR whose newest run of a REQUIRED check was cancelled (for
+# example superseded) never enters the merge queue: the context reads as
+# missing even when an earlier run passed. #4204 sat like that on 2026-10-01
+# until a person noticed. Every 15 minutes this re-runs such a run
+# (scripts/rerun_cancelled_required.py) when the PR itself raised it on its
+# current head; a run on its third attempt is left alone, and at most five
+# runs are re-run per tick. It reads PR metadata and re-runs existing workflow runs only; it never
+# checks out or executes PR code.
+
+on:
+  schedule:
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: write
+  pull-requests: read
+
+concurrency:
+  group: rerun-cancelled-checks
+  cancel-in-progress: false
+
+jobs:
+  rerun:
+    name: rerun-cancelled-checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The default branch even under workflow_dispatch from another ref.
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Re-run required checks whose newest run was cancelled
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: python scripts/rerun_cancelled_required.py --repo "$REPO"

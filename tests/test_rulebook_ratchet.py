@@ -61,12 +61,6 @@ RULE_DIRS = ("docs/reference/*.md", ".agents/skills/*/SKILL.md", "docs/reviews/*
 POST_CUT_TOTAL = 4403         # sum of the per-file pins
 POST_CUT_AGGREGATE_TOTAL = 596860   # sum of the directory pins
 
-# How far a file may sit under its pin before the pin must come down. Small enough
-# that banked headroom cannot hide a re-grown rule, large enough that a typo fix
-# does not demand a re-pin. Aggregates get a wider band because a whole directory
-# sees more small legitimate churn than one file.
-MAX_SLACK = 250
-MAX_AGGREGATE_SLACK = 600
 
 
 def _load_budget_module():
@@ -118,32 +112,31 @@ def test_aggregate_pins_cover_the_rule_directories(cb) -> None:
     assert {a.pattern for a in cb.AGGREGATES} == set(RULE_DIRS)
 
 
-def test_pins_leave_no_stale_headroom(cb) -> None:
-    """A pin tracks the achieved size, so shrinking cannot bank reusable headroom.
+def test_no_file_grows_past_its_pin(cb) -> None:
+    """One-directional: growth past a pin fails; shrinking always passes.
 
-    The first version of this test asserted `max_bytes % 500 != 0` as a proxy for
-    "not a round number". Astra refuted it (2026-09-26): divisibility says nothing
-    about whether a pin matches its file, it rejects a legitimate pin that happens
-    to land on 1,500, and it let a file shrink to 1,474 and grow back to 1,524
-    unnoticed. Measuring the gap is the thing that was meant.
+    This used to also require every pin to sit within 250 B of its file
+    (600 B for aggregates), so shrinking banked no headroom. That made the pin
+    a second copy of the file's size: two PRs that each shrank AGENTS.md both
+    had to lower the same pin, and the second one collided in the merge queue.
+    Lowering a pin is now optional (lead decision, 2026-10-01). The founder's
+    rule -- the rulebook only shrinks -- is still enforced where it matters:
+    no file may grow past its pin, and a pin may rise only by displacing
+    another (test_raising_a_pin_requires_displacing_another).
     """
     for budget in cb.CONFIG:
         actual = len((REPO_ROOT / budget.path).read_bytes())
-        slack = budget.max_bytes - actual
-        assert 0 <= slack <= MAX_SLACK, (
-            f"{budget.path} sits {slack} B under its {budget.max_bytes} B pin. "
-            f"Lower the pin to {actual} in the same diff — banked headroom is how "
-            "a rulebook regrows without any check objecting."
+        assert actual <= budget.max_bytes, (
+            f"{budget.path} is {actual} B, past its {budget.max_bytes} B pin. "
+            "The rulebook only shrinks: cut it, or raise this pin by lowering another."
         )
 
 
-def test_aggregate_pins_leave_no_stale_headroom(cb) -> None:
+def test_no_aggregate_grows_past_its_pin(cb) -> None:
     for agg in cb.AGGREGATES:
         result = cb.measure_aggregate(agg, REPO_ROOT)
-        slack = agg.max_bytes - result.bytes
-        assert 0 <= slack <= MAX_AGGREGATE_SLACK, (
-            f"{agg.label} totals {result.bytes} B against a {agg.max_bytes} B pin "
-            f"({slack} B of headroom). Lower the pin to {result.bytes}."
+        assert result.bytes <= agg.max_bytes, (
+            f"{agg.label} totals {result.bytes} B, past its {agg.max_bytes} B pin."
         )
 
 
@@ -289,26 +282,23 @@ def test_an_aggregate_whose_glob_matches_nothing_is_missing(cb, tmp_path: Path) 
     assert hard_busted
 
 
-def test_shrinking_then_regrowing_within_a_pin_is_what_the_slack_guard_catches(
+def test_shrinking_under_a_pin_passes_and_growing_past_it_fails(
     cb, tmp_path: Path,
 ) -> None:
-    """The checker alone is a ceiling, not a monotonic ratchet — this names the gap.
+    """The ceiling, both ways: being under a pin is fine, being over it is red.
 
-    Astra's finding (2026-09-26): a file that shrinks well below its pin can grow
-    back with `hard_busted` False the whole time. That is true of the checker by
-    design, and `test_pins_leave_no_stale_headroom` is the part that makes it
-    monotonic. This test pins BOTH halves of that division of labour, so neither
-    can be deleted on the belief that the other covers it.
+    Regrowth within a pin that was never lowered is accepted by design
+    (2026-10-01): it is the price of letting two shrinking PRs merge without
+    both rewriting the same pin.
     """
     target = cb.CONFIG[-1]
-    shrunk = target.max_bytes - (MAX_SLACK + 50)
-    _fake_repo(cb, tmp_path, {target.path: shrunk})
-
+    _fake_repo(cb, tmp_path, {target.path: target.max_bytes - 300})
     _results, _combined, hard_busted, _imported, _missing = cb.run(tmp_path)
-    assert not hard_busted, "the checker is a ceiling: being under a pin is fine"
-    assert target.max_bytes - shrunk > MAX_SLACK, (
-        "the slack guard is what rejects banked headroom"
-    )
+    assert not hard_busted, "under a pin is fine"
+
+    _fake_repo(cb, tmp_path, {target.path: target.max_bytes + 1})
+    _results, _combined, hard_busted, _imported, _missing = cb.run(tmp_path)
+    assert hard_busted, "one byte past a pin is red"
 
 
 def test_deleting_a_rulebook_file_goes_red(cb, tmp_path: Path) -> None:

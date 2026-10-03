@@ -70,44 +70,28 @@ services:
     container_name: tinyassets-daemon
     restart: unless-stopped
     logging: *tinyassets_log_forwarding
-    # How long a recreate lets an in-flight turn FINISH before SIGKILL.
+    # How long a stopping daemon may drain before SIGKILL. SHORT ON PURPOSE.
     #
-    # `up -d` recreates this container on every deploy, and with this key ABSENT
-    # the bound was docker's 10-second default -- so a deploy killed whatever
-    # turn was running 10 seconds into a drain nobody had chosen. Live twice:
-    # 2026-08-29 (a five-step GitHub job at 07:26:04Z) and 2026-09-26 (the row
-    # left behind read "thinking" for 35 minutes).
+    # Uvicorn closes its listener on SIGTERM, and nothing else can bind
+    # 127.0.0.1:8001 until this container is gone, so the drain IS public 502.
+    # 180s here (#4039) let one long codex turn hold production down from
+    # 22:49:48Z to 22:53:04Z on 2026-10-01: the process blocked in lifespan
+    # shutdown on the turn's worker thread until docker force-killed it
+    # (docs/audits/2026-10-01-deploy-drain-repro/INCIDENT.md).
     #
-    # WHAT THIS BUYS, EXACTLY: the turn runs to completion, so its effects land
-    # and `record_exchange` stores the answer in the conversation thread. It does
-    # NOT save the HTTP reply for the request that started it -- sse-starlette
-    # cancels the SSE response the moment uvicorn begins shutting down, measured
-    # at 0.49s against a 5s grace while the turn itself finished at 1.99s
-    # (docs/audits/2026-09-26-pr4039-drain-repro.py, reproduced independently).
-    # The founder sees the answer when the app next reads the thread, not as the
-    # reply to that send. Fixing the reply is a separate, transport-level problem.
+    # The drain never saved the reply anyway: sse-starlette cancels the SSE
+    # response as shutdown begins (docs/audits/2026-09-26-pr4039-drain-repro.py).
+    # A turn cut off here is settled truthfully at the next boot by
+    # tinyassets/agent_turn_reconcile.py.
     #
-    # FIRST DEPLOY AFTER THIS LANDS STILL KILLS AT 10s. Compose stores
-    # StopTimeout on the container at CREATE time, and `up -d` stops the existing
-    # container with the value IT was created with. This takes effect from the
-    # second recreate onward (Codex on #4039).
-    #
-    # 180s, not the 3600s a granted turn may run and not the 300 first proposed:
-    # this deploy may drain TWICE (forward converge, then the rollback converge if
-    # the new image is unacceptable), each followed by a health wait, inside
-    # deploy-prod.yml's 900s job. 300 made the worst case 960s, which would
-    # CANCEL a slow deploy part-way instead of rolling it back. 180 also stays
-    # under tinyassets-daemon.service's 200s TimeoutStartSec.
-    #
-    # So this is PARTIAL by design: a longer turn is still cut off, and the
-    # startup reconciliation (tinyassets/agent_turn_reconcile.py) is what makes
-    # THAT truthful instead of silent.
-    #
-    # `deploy_fail_safe.sh` asserts this key is a DIRECT child of the daemon
-    # service and at least the floor, so a staged bundle that loses it or buries
-    # it under another mapping FAILS rather than silently returning to 10
-    # seconds. Keep it above universe_server.GRACEFUL_SHUTDOWN_S.
-    stop_grace_period: 180s
+    # Compose stores this as the container's StopTimeout at CREATE time, so a
+    # change here only binds containers created afterwards. deploy_fail_safe.sh
+    # therefore also passes `up --timeout` explicitly, which binds the container
+    # being replaced no matter what it was created with. That script refuses a
+    # bundle whose value exceeds its MAX_DAEMON_STOP_GRACE_S, and
+    # tests/test_deploy_drains_in_flight_turns.py keeps it above
+    # universe_server.GRACEFUL_SHUTDOWN_S.
+    stop_grace_period: 20s
     # Bound the daemon so a memory runaway kills the CONTAINER, not the host.
     #
     # `docker inspect` reported mem_limit=0 (2026-08-28): the daemon could consume the

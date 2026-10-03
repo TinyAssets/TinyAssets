@@ -139,7 +139,7 @@ round 1 (BLOCK) found two ways it bites. The fix is structural, in two layers:
 
 Decision: masked at every provider launch, by a rule that names no vendor.
 `provider_jail.default_view` puts an empty tmpfs over every hidden directory
-at the universe root except `.runtime` (`hidden_dir_masks`), and refuses the
+at the universe root except `.runtime` (`hidden_root_masks`), and refuses the
 launch if a hidden root entry is a symlink. The agent may write `.claude/`,
 `.git/` or anything else in its own folder; the next `claude -p` launch
 (cwd = universe, `--setting-sources project`) still sees an empty directory,

@@ -12,6 +12,7 @@ import pytest
 from tinyassets.node_sandbox import BwrapLauncher, WorkspaceMount
 
 
+@pytest.mark.real_jail
 @pytest.mark.skipif(sys.platform != "linux" or not shutil.which("bwrap"),
                     reason="mount descriptor consumption requires Linux bubblewrap")
 def test_workspace_handle_is_consumed_before_payload(tmp_path):

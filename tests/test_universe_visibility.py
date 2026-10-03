@@ -370,7 +370,7 @@ class TestEnumerationGate:
         out = json.loads(us._action_list_universes())
         assert out["count"] == 0
         note = out.get("note", "")
-        assert note == "No universes are visible to you."
+        assert note == "No command centers are visible to you."
         assert "2" not in note and str(base) not in note
 
     def test_granted_reader_sees_own_private_in_list(self, base):

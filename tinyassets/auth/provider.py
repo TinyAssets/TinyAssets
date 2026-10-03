@@ -674,7 +674,7 @@ def action_scope_audit() -> dict[str, Any]:
         "caveats": [
             "Read/write/admin legacy OAuth scopes are still advertised for "
             "older clients but are not the source of the derived table.",
-            "Argument-sensitive actions such as universe control_daemon are "
+            "Argument-sensitive actions such as command center control_daemon are "
             "classified at the action level; finer sub-action scoping can be "
             "added by attaching metadata to that internal sub-dispatch.",
         ],

@@ -68,6 +68,14 @@ def main(argv: list[str] | None = None) -> int:
         }))
         return 0
 
+    # The hourly rotation writes into the data root: the layout guard (storage_layout.py).
+    from tinyassets.storage_layout import LayoutRefused, require_layout
+
+    try:
+        require_layout(runs_dir.parent)
+    except LayoutRefused as exc:
+        logger.error("layout refused: %s", exc)
+        return 3
     result = rotate_run_transcripts(runs_dir, retention_days=retention)
     summary = result.as_dict()
     summary["retention_days"] = retention

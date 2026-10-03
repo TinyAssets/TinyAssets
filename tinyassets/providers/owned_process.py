@@ -514,8 +514,12 @@ def _parse_anchor_ready(first_line: bytes, leader_pid: int) -> int:
     return reported_anchor
 
 
-async def _aspawn_anchored(argv: list[str], **kwargs):
-    """POSIX spawn: wrapper + anchor + control pipe, or nothing at all."""
+async def _aspawn_anchored(argv: list[str], *, extra_fds=(), **kwargs):
+    """POSIX spawn: wrapper + anchor + control pipe, or nothing at all.
+
+    ``extra_fds`` are inherited by the command as well (the jail's seccomp
+    filter); the caller owns and closes them.
+    """
     bag = _FdBag()
     try:
         ctrl_r, ctrl_w = os.pipe()
@@ -534,7 +538,7 @@ async def _aspawn_anchored(argv: list[str], **kwargs):
     try:
         proc = await asyncio.create_subprocess_exec(
             *_wrapper_argv(ctrl_r, ready_w, argv),
-            pass_fds=(ctrl_r, ready_w),
+            pass_fds=(ctrl_r, ready_w, *extra_fds),
             **owned_spawn_kwargs(),
             **kwargs,
         )
@@ -642,7 +646,22 @@ async def aspawn_owned(
         # bwrap sets the child's working directory itself (--chdir); the host
         # side only needs a directory that exists.
         kwargs["cwd"] = "/"
-        return await _aspawn_anchored(jailed, **kwargs)
+        budget = None
+        try:
+            budget = _open_disk_budget(jailed.universe_dir)
+            proc = await _aspawn_anchored(
+                jailed.argv, extra_fds=jailed.pass_fds, **kwargs,
+            )
+        except BaseException:
+            if budget is not None:
+                budget.settle()
+            raise
+        finally:
+            # The child holds its own copies (bwrap reads the seccomp filter
+            # from them); ours are released whatever the spawn did.
+            jailed.close()
+        _watch_disk(proc, budget)
+        return proc
     if os.name == "posix":
         return await _aspawn_anchored(argv, **kwargs)
     if shell:
@@ -655,6 +674,80 @@ async def aspawn_owned(
         )
     mark_owned(proc)
     return proc
+
+
+# --- disk budget ------------------------------------------------------------
+
+#: Seconds between disk-budget polls of a running jailed provider process.
+DISK_POLL_SECONDS = 0.5
+
+
+def _open_disk_budget(universe_dir):
+    """The launch's disk budget, or refuse it before anything is spawned."""
+    from tinyassets import jail_disk
+    from tinyassets.providers.provider_jail import ProviderConfinementError
+
+    try:
+        budget = jail_disk.open_budget(universe_dir)
+    except jail_disk.DiskFloorRefused as below:
+        raise ProviderConfinementError(
+            f"{ProviderConfinementError.MESSAGE}: {below}; nothing was started"
+        ) from None
+    if budget.notice:
+        logger.warning("jailed provider launch on a grace disk budget: %s", budget.notice)
+    return budget
+
+
+def _watch_disk(proc, budget) -> None:
+    """Poll ``budget`` while ``proc`` runs; end its family on a breach.
+
+    The tool jail has its own supervisor loop; a provider process has none, so
+    this task is it. The breach is kept on the process (``disk_killed``) so the
+    adapter's error can say why the CLI died. The task is held on the process,
+    so it lives exactly as long as the launch does."""
+
+    async def watch() -> None:
+        waiter = asyncio.ensure_future(proc.wait())
+        try:
+            while not waiter.done():
+                done, _ = await asyncio.wait({waiter}, timeout=DISK_POLL_SECONDS)
+                if done:
+                    break
+                killed = await asyncio.to_thread(budget.breach)
+                if killed:
+                    proc.disk_killed = killed
+                    logger.warning(
+                        "jailed provider process stopped: %s (bound %d bytes)",
+                        killed, budget.bound,
+                    )
+                    kill_owned_tree(proc)
+                    await waiter
+                    break
+        finally:
+            if not waiter.done():
+                waiter.cancel()
+            await asyncio.to_thread(budget.settle)
+
+    proc.disk_killed = None
+    proc.disk_watch = asyncio.get_running_loop().create_task(watch())
+
+
+_DISK_STOP_NOTES = {
+    "storage_limit": (
+        "stopped: this run added more to its command center than the owner's "
+        "cloud storage had room for"
+    ),
+    "disk_limit": "stopped: the shared disk was nearly full",
+}
+
+
+def disk_stop_note(proc) -> str:
+    """`` (stopped: ...)`` when the disk budget ended ``proc``, else empty.
+
+    For an adapter's exit error, so a CLI killed for writing too much does not
+    read as a crash or a credential problem."""
+    note = _DISK_STOP_NOTES.get(getattr(proc, "disk_killed", None) or "")
+    return f" ({note})" if note else ""
 
 
 # --- teardown ---------------------------------------------------------------

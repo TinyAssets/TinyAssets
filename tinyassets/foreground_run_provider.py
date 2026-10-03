@@ -37,7 +37,6 @@ from tinyassets.provider_work_authority import (
     provider_work_receipt_id,
 )
 from tinyassets.providers.base import ModelConfig
-from tinyassets.providers.model_capacity import TRANSIENT_CAPACITY as _TRANSIENT_CAPACITY
 from tinyassets.providers.owner_binding import (
     AUTHORITY_HELD_DETAIL as _AUTHORITY_HELD_DETAIL,
 )
@@ -109,6 +108,21 @@ def _declared_policy_providers(policy: dict[str, Any] | None) -> set[str]:
             if isinstance(candidate, dict) and candidate.get("provider"):
                 providers.add(str(candidate["provider"]).strip())
     return {provider for provider in providers if provider}
+
+
+def _declared_policy_pins(policy: dict[str, Any] | None) -> set[tuple[str, str]]:
+    """Every ``(provider, model_id)`` a policy names, model ``""`` when absent."""
+    pins: set[tuple[str, str]] = set()
+    for value in (policy or {}).values():
+        for entry in value if isinstance(value, list) else [value]:
+            use = entry.get("use") if isinstance(entry, dict) else None
+            candidate = use if isinstance(use, dict) else entry
+            if isinstance(candidate, dict) and str(candidate.get("provider") or "").strip():
+                pins.add((
+                    str(candidate["provider"]).strip(),
+                    str(candidate.get("model_id", candidate.get("model", "")) or "").strip(),
+                ))
+    return pins
 
 
 def _work_invocation_allowance(snapshot, *, minimum: int, ceiling: int) -> int:
@@ -299,7 +313,7 @@ class _ForegroundRunProviderSession:
             or not self._universe_id
             or get_founder_home(self._base_path, self._principal_id) != self._universe_id
         ):
-            raise PermissionError("foreground run is not the principal's own universe")
+            raise PermissionError("foreground run is not the principal's own command center")
 
     def _run_record(self) -> dict[str, Any]:
         from tinyassets.runs import get_run
@@ -621,6 +635,28 @@ class _ForegroundRunProviderSession:
         except Exception as exc:
             raise _held_authority_error(exc) from exc
 
+    def _resolve_declared_pins(self, nodes, accepted):
+        """Refuse a node pin naming no single accepted source, listing the refs.
+
+        A bare access method resolves (``providers.model_pins``) against the
+        sources this run admitted, model-aware when the run captured the owner's
+        catalogue. Only the refusal's words changed for a pin that cannot
+        resolve: it used to say "unavailable accepted provider" and name nothing.
+        """
+        from tinyassets.providers.model_pins import resolve_pin_source
+
+        catalog = getattr(getattr(self, "_work_candidates", None), "catalog", None)
+        offered = {
+            connection.connection_id: tuple(model.model_id for model in connection.models)
+            for connection in (catalog.connections if catalog is not None else ())
+        }
+        sources = {ref: offered.get(ref) for ref in accepted}
+        for node in nodes:
+            for provider, model_id in _declared_policy_pins(node.get("llm_policy")):
+                if resolve_pin_source(provider, model_id, sources) not in sources:
+                    # An exact ref this run did not admit: the existing refusal.
+                    raise PermissionError("workflow requests an unavailable accepted provider")
+
     def _admit_manifest(self, conn, store, agent, assignment, nodes, roles):
         """One aggregate receipt for all nodes, not one full allowance per source."""
         from tinyassets.graph_compiler import _POLICY_PROVIDER_RETRY_BACKOFF_SECONDS
@@ -638,11 +674,9 @@ class _ForegroundRunProviderSession:
                 continue
             if set(roles) <= set(binding.allowed_roles):
                 bindings.append(binding)
-        declared = set().union(*(
-            _declared_policy_providers(node.get("llm_policy")) for node in nodes
-        ))
-        if not bindings or declared - {binding.provider for binding in bindings}:
+        if not bindings:
             raise PermissionError("workflow requests an unavailable accepted provider")
+        self._resolve_declared_pins(nodes, {binding.provider for binding in bindings})
         policies = [
             node.get("llm_policy") or self._branch_snapshot.get("default_llm_policy")
             for node in nodes
@@ -1087,7 +1121,7 @@ class _ForegroundRunProviderSession:
         if supplied_context is not None and (
             Path(supplied_context.universe_dir) != self._universe_dir
         ):
-            raise PermissionError("foreground provider universe cannot be substituted")
+            raise PermissionError("foreground provider command center cannot be substituted")
         if supplied_context is not None and any(
             getattr(supplied_context, field, None) is not None
             for field in ("provider_request", "provider_invocation", "served_provider",
@@ -1225,6 +1259,38 @@ class _ForegroundRunProviderSession:
             return boundary.exhaustion, False
         return _replace(boundary.exhaustion, scope="model"), True
 
+    def _remember_refusal(self, selected, attempts):
+        """Keep the source's refusal of THIS model past this run.
+
+        The same per-owner mark a chat turn writes
+        (``AgentTurnCoordinator._remember_refusal``), so both surfaces order the
+        model last next time. Per owner, never shared across users: a refusal
+        is what this owner's key was told. Best-effort, never the run's failure.
+        """
+        from tinyassets.storage.refused_models import record_refused_model
+
+        try:
+            record_refused_model(
+                self._base_path, owner_user_id=self._principal_id,
+                connection_id=selected.connection_id, model_id=selected.model_id,
+                failure_class="provider_refused",
+                detail=str(getattr(attempts[-1], "detail", "") or "") if attempts else "",
+            )
+        except Exception:  # noqa: BLE001 - bookkeeping, never the failure
+            logger.warning("could not remember a refused work model")
+
+    def _forget_refusal(self, selected):
+        """The model just answered this owner, so a standing refusal is stale."""
+        from tinyassets.storage.refused_models import clear_refused_model
+
+        try:
+            clear_refused_model(
+                self._base_path, owner_user_id=self._principal_id,
+                connection_id=selected.connection_id, model_id=selected.model_id,
+            )
+        except Exception:  # noqa: BLE001 - an answered node never fails on bookkeeping
+            logger.warning("could not clear a refused work model")
+
     def _cool_abandoned_sources(self, boundaries, *, keeping=None):
         """Cool every source this node leaves hot, however the node ended.
 
@@ -1246,6 +1312,7 @@ class _ForegroundRunProviderSession:
         Never raises: a failing node must not be replaced by a cooling error.
         """
         from tinyassets.providers.call import get_provider_router
+        from tinyassets.providers.model_capacity import free_sibling_retry
 
         router = get_provider_router()
         if router is None:
@@ -1255,16 +1322,28 @@ class _ForegroundRunProviderSession:
                 connection = boundary.exhaustion.ref.connection_id
                 if connection == keeping:
                     continue
-                if boundary.failure_class not in _TRANSIENT_CAPACITY:
+                # Only a cooldown the router WITHHELD is owed, which is the
+                # chat turn's own test (`AgentTurnCoordinator.
+                # _cool_abandoned_source`): an unknown-scope transient refusal.
+                # A model-scoped one (one model overloaded, one model refused)
+                # was never the source's, and cooling it here put a source the
+                # owner's chat was using into cooldown for the next run.
+                if not free_sibling_retry(
+                    scope=boundary.observed_scope, failure_class=boundary.failure_class,
+                ):
                     continue
-                router.cool_source(connection, retry_after_s=boundary.retry_after_s)
+                router.cool_source(connection, retry_after_s=boundary.retry_after_s,
+                                   reason=boundary.failure_class or "")
             except Exception:  # noqa: BLE001 - hygiene, never the failure
                 logger.warning("could not cool a spent work source")
 
     def _call_captured_prompt(self, role, prompt, system, config, policy, kwargs,
                               metadata_observer):
         from tinyassets.exceptions import AllProvidersExhaustedError
-        from tinyassets.providers.agent_capacity_boundary import capacity_boundary
+        from tinyassets.providers.agent_capacity_boundary import (
+            capacity_boundary,
+            refusal_boundary,
+        )
         from tinyassets.providers.call import get_provider_router
 
         attempts = 0
@@ -1303,6 +1382,18 @@ class _ForegroundRunProviderSession:
                     result = self._call_once(role, prompt, system, config, effective,
                                              {**kwargs, "response_observer": observe})
                 except AllProvidersExhaustedError as exc:
+                    refused = refusal_boundary(selected, exc.attempts)
+                    if refused is not None:
+                        # The source refused THIS model (403/404/410, e.g. an
+                        # agentic-harness gate). A fact about one model, never
+                        # the source or the account: remember it for the next
+                        # run and chat turn, and step to the next model. Live
+                        # 2026-10-01 (run 2a67c381980a42de) this held the run.
+                        self._remember_refusal(selected, exc.attempts)
+                        boundaries += (refused,)
+                        last_capacity = exc
+                        self._work_candidates.next_candidate(policy, (refused.exhaustion,))
+                        continue
                     router = get_provider_router()
                     kind = router.selected_agent_execution_kind(selected) if router else None
                     boundary = capacity_boundary(
@@ -1327,6 +1418,7 @@ class _ForegroundRunProviderSession:
                     self._work_candidates.next_candidate(policy, (exhaustion,))
                     continue
                 served = selected.connection_id
+                self._forget_refusal(selected)
                 if metadata_observer is not None:
                     metadata = {"attempts": attempts, "model": selected.model_id}
                     if len(observed) == 1:
@@ -1567,7 +1659,7 @@ def _rebind(provider_call: Any, session: _ForegroundRunProviderSession) -> Any:
         raise PermissionError(
             "cannot rebind a foreground provider call of type "
             f"{type(provider_call).__name__}: only an exact "
-            "UniverseBoundProviderCall carries the universe binding this "
+            "UniverseBoundProviderCall carries the command center binding this "
             "rebind is required to preserve"
         )
     try:

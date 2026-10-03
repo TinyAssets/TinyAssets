@@ -79,6 +79,42 @@ def test_an_optional_row_is_not_counted_as_an_outstanding_ask(rig, monkeypatch):
     assert outstanding == [], "a connected universe reported work waiting on its user"
 
 
+@pytest.mark.parametrize("remaining", [9, 0, 10, 50, None])
+def test_low_compute_is_derived_each_read(rig, monkeypatch, remaining):
+    from tinyassets import request_budget as budgets
+    from tinyassets.api.pending_requests import _connect_llm_request
+    from tinyassets.storage.pending_requests import list_pending
+
+    monkeypatch.setattr("tinyassets.api.pending_requests._serving_llm_bound",
+                        lambda *a, **k: True)
+    pool = None if remaining is None else budgets.PooledBudget(((
+        "source", budgets.RequestBudget(50 - remaining, 50, "Source", "UTC"),
+    ),))
+    monkeypatch.setattr(budgets, "budget_for_rail", lambda *args: pool)
+    original = _connect_llm_request(connected=True)
+    for _ in range(2):
+        cards = [row for row in _rail() if row["request_id"] == "sys_connect_llm"]
+        assert len(cards) == 1
+        card = cards[0]
+        if remaining is not None and remaining < 10:
+            assert card["status"] == "pending"
+            assert f"({remaining} left)" in card["suggestion"]
+            assert "local free-request estimate" in card["suggestion"]
+            assert "Your account may have a higher allowance; work can continue" in (
+                card["suggestion"]
+            )
+            assert "Connect another free AI source" in card["suggestion"]
+        else:
+            assert card["status"] == original["status"]
+            assert card.get("suggestion") == original.get("suggestion")
+        assert card["body"] == original["body"]
+        assert card["action"] == original["action"]
+        assert not any(row["request_id"] == "sys_connect_llm"
+                       for row in list_pending(rig / "u-owner"))
+    pool = budgets.PooledBudget((("source", budgets.RequestBudget(0, 50, "Source", "UTC")),))
+    assert _rail()[-1]["status"] == "optional"
+
+
 # --------------------------------------------------------------------------- #
 # The page: the heading stops asking when only optional rows remain.
 # --------------------------------------------------------------------------- #

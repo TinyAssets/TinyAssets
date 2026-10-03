@@ -169,7 +169,7 @@ def source_channel(
     # universe may grant or take back its channels.
     if not universe_owner_actor(base, uid, actor):
         return _auth_failed(
-            "only the universe owner may approve or configure its source "
+            "only the command center owner may approve or configure its source "
             "channels",
             universe_id=uid,
         )
@@ -226,7 +226,7 @@ def source_approval_refusal(universe_id: str) -> dict:
         "status": "rejected",
         "error": (
             "approving source_code runs arbitrary Python inside the daemon, and "
-            "this deployment has not allowlisted this universe for that. It is "
+            "this deployment has not allowlisted this command center for that. It is "
             "off by default because an approver can read every credential the "
             "process holds, including other users'."
         ),
@@ -234,7 +234,7 @@ def source_approval_refusal(universe_id: str) -> dict:
         "actionable_by": "host",
         "universe_id": universe_id,
         "remediation": (
-            f"Set {_SOURCE_APPROVAL_VAR} to a comma-separated list of universe ids "
+            f"Set {_SOURCE_APPROVAL_VAR} to a comma-separated list of command center ids "
             "that may approve source. Until user code runs in an OS sandbox, keep "
             "it to vetted founders only."
         ),
@@ -406,7 +406,10 @@ def _approve_sink(
             "failure_class": "consent_is_person_only",
             "actionable_by": "user",
             "detail": (
-                f'"{sink}" consent is answered by the universe\'s owner on the '
+                ('The owner approves patch_intake in their app. Once approved, use '
+                 'write_graph target="patch_request" operation="send".')
+                if sink == "patch_intake" else
+                f'"{sink}" consent is answered by the command center\'s owner on the '
                 "request rail, not granted here. Ask for it there."
             ),
         })
@@ -448,7 +451,7 @@ def _revoke_sink(uid: str, fields: dict[str, Any]) -> str:
         return json.dumps({
             "error": (
                 "source_code is not a consent: a code node runs in the OS sandbox "
-                "of the universe that authored it, so there is nothing to revoke"
+                "of the command center that authored it, so there is nothing to revoke"
             ),
             "failure_class": "not_a_consent",
             "actionable_by": "chatbot",

@@ -330,7 +330,14 @@ def test_the_handle_saves_and_reads_the_callers_own_row(homes) -> None:
         saved = _write("u-alice", 0, {"ui_library": [_bundle()]})
         assert saved["status"] == "saved", saved
         assert saved["app_ui"]["revision"] == 1
-        assert _read("u-alice")["app_ui"] == saved["app_ui"]
+        # The whole-row read carries the platform's blank command center
+        # alongside the stored row (read_app_ui), so it is a superset of what
+        # was written rather than equal to it. The STORED fields must still
+        # round-trip exactly, and the addition must be read-only.
+        read = _read("u-alice")["app_ui"]
+        assert {k: v for k, v in read.items() if k != "platform_default"} == saved["app_ui"]
+        assert read["platform_default"]["ui_id"] == "platform:blank"
+        assert "platform_default" not in saved["app_ui"], "never stored, only served"
         assert _write("u-alice", 0, {"ui_library": []})["error"] == "app_ui_conflict"
         assert _write("u-alice", 1, {"nope": 1})["error"] == "app_ui_validation_error"
     rows = _rows(homes)
@@ -358,7 +365,8 @@ def test_an_unknown_operation_is_refused_by_name(homes) -> None:
                                          graph_id="u-alice", payload_json="{}"))
     assert refused["error"] == "unknown_app_ui_operation"
     assert refused["allowed_operations"] == [
-        "save", "activate", "use_default", "add_ui", "replace_ui", "edit_ui", "remove_ui"]
+        "save", "activate", "use_default", "add_ui", "replace_ui", "edit_ui", "remove_ui",
+        "put_asset", "remove_asset"]
 
 
 def test_the_route_the_handbook_names_works_on_the_engine_surface(tmp_path, monkeypatch) -> None:

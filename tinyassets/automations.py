@@ -1358,6 +1358,7 @@ def register_automation(
     inputs: dict[str, Any] | None = None,
     now: datetime | None = None,
     event_key: str = "",
+    paused_reason: str = "",
 ) -> Automation:
     """Store one automation, or refuse with a named reason (D4).
 
@@ -1366,7 +1367,11 @@ def register_automation(
     cannot fire would move the failure onto a background thread they never see.
 
     ``event_key`` names an event wake: the wake already stored for that key is
-    returned instead of a second one, before anything is charged.
+    returned instead of a second one, before anything is charged. A package
+    install uses it the same way, as its per-component idempotency key.
+
+    ``paused_reason`` stores the row PAUSED in the same insert, so it is never
+    runnable before its owner resumes it (an installed package's automations).
     """
     existing = AutomationStore(base_path).get_by_event_key(event_key)
     if existing is not None:
@@ -1465,8 +1470,8 @@ def register_automation(
         interval_seconds=seconds,
         cron_expr=expr,
         inputs=dict(inputs or {}),
-        desired_state=STATE_ACTIVE,
-        pause_reason="",
+        desired_state=STATE_PAUSED if paused_reason else STATE_ACTIVE,
+        pause_reason=str(paused_reason or ""),
         revision=1,
         created_at=stamp,
         updated_at=stamp,
@@ -2144,7 +2149,7 @@ def _execute(
             ) from exc
         raise AutomationRunUnstopped(
             f"automation run {run_id} ignored cancellation for "
-            f"{cancel_grace_seconds()}s; universe stays leased"
+            f"{cancel_grace_seconds()}s; command center stays leased"
         ) from exc
     record = get_run(base_path, run_id) or {}
     return _replace(

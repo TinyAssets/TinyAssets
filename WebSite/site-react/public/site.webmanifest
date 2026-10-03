@@ -1,7 +1,7 @@
 {
   "name": "TinyAssets",
   "short_name": "TinyAssets",
-  "description": "Your own AI universe. Runs on the subscription you already pay for.",
+  "description": "Your own AI command center. Runs on the subscription you already pay for.",
   "start_url": "/",
   "display": "browser",
   "background_color": "#14140f",

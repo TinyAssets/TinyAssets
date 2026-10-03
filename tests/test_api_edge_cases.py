@@ -606,12 +606,6 @@ class TestAuthEdgeCases:
         # The API accepts raw keys without Bearer prefix
         assert resp.status_code == 200
 
-    def test_empty_api_key_env_allows_access(self, client):
-        """When no API key is configured, all access is allowed."""
-        resp = client.get("/v1/universes/test-universe/status")
-        assert resp.status_code == 200
-
-
 # ---------------------------------------------------------------------------
 # Activity edge cases
 # ---------------------------------------------------------------------------

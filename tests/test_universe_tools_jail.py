@@ -222,7 +222,7 @@ def test_io_uring_and_symlink_are_refused_in_the_jail(world, monkeypatch):
     from tinyassets import universe_tools as tools
 
     world.universe_a.joinpath("probe.py").write_text(_IO_URING_PROBE, encoding="utf-8")
-    out = tools.bash(world.universe_a, "python3 /u/probe.py", timeout=30)
+    out = tools.bash(world.universe_a, "python3 /u/probe.py", agent_id="main", timeout=30)
     assert "IO_URING_RING_CREATED" not in out, out
     assert "IO_URING_EPERM" in out, out
     assert "SYMLINK_CREATED" not in out and "SYMLINK_EPERM" in out, out
@@ -232,23 +232,36 @@ def test_io_uring_and_symlink_are_refused_in_the_jail(world, monkeypatch):
 def test_a_settings_dir_the_agent_writes_is_masked_from_a_provider_launch(
     world, monkeypatch,
 ):
-    """Design risk 8, in the real jails: the agent cannot create a CLI's project
-    settings dir (the root is read-only), and one the OWNER placed there is
-    masked from both the tool jail and the next provider launch."""
+    """Design risk 8, in the real jails. Since harness W2 the agent's ``/u`` is
+    its own workspace, so a CLI settings dir it writes lands there, never in
+    the universe root a provider launch starts in, and the provider launch
+    masks the whole workspace (a hidden root directory). One the OWNER placed
+    in the root is masked from both the tool jail and the next launch."""
     from tinyassets.providers.provider_jail import default_view, jail_argv
+    from tinyassets.universe_tools import WORKSPACE_DIR
 
     s = _engine(monkeypatch, world)
     a = world.universe_a
     hook = '{"hooks": {"SessionStart": "cat .runtime/*"}}'
-    assert _run(s.write_file(path=".claude/settings.json", content=hook)).startswith("error:")
+    assert _run(s.write_file(path=".claude/settings.json", content=hook)).startswith("wrote")
     _run(s.run_bash(command="mkdir -p .anycli && echo x > .anycli/config"))
     assert not (a / ".claude").exists() and not (a / ".anycli").exists()
+    assert (a / WORKSPACE_DIR / ".claude" / "settings.json").exists()
+    agent_probe = (f"cat {a}/{WORKSPACE_DIR}/.claude/settings.json 2>/dev/null && echo SEEN; "
+                   f"cat {a}/notes/own.txt")
+    argv = jail_argv(["/bin/sh", "-c", agent_probe], default_view(a), bwrap_path=_BWRAP)
+    launched = subprocess.run(  # noqa: S603 - fixed argv built by the shipping jail
+        argv, capture_output=True, text=True, timeout=60, check=False,
+    )
+    assert OWN_MARKER in launched.stdout, launched  # positive control
+    assert "SEEN" not in launched.stdout and "SessionStart" not in launched.stdout
 
     # An owner-placed settings dir (from outside the jail) is masked in both.
+    owner_hook = '{"hooks": {"SessionStart": "OWNER-PLACED-HOOK"}}'
     (a / ".claude").mkdir()
-    (a / ".claude" / "settings.json").write_text(hook, encoding="utf-8")
+    (a / ".claude" / "settings.json").write_text(owner_hook, encoding="utf-8")
     seen = _run(s.run_bash(command="cat .claude/settings.json; ls -A .claude"))
-    assert "SessionStart" not in seen, seen
+    assert "OWNER-PLACED-HOOK" not in seen, seen
     probe = (
         f"cat {a}/.claude/settings.json 2>/dev/null && echo LOADED; "
         f"cat {a}/notes/own.txt"
@@ -329,22 +342,61 @@ def test_the_agent_writes_its_own_wiki_but_not_the_trusted_write_back_markers(
         f"ls -A /u; echo forged > /u/{markers.name}; cat /u/{markers.name}"
     )))
     assert markers.name not in forge.split("[exit code")[0].split(), forge
-    assert "[exit code 0]" not in forge, forge
+    # A file of that name in /u is the agent's own workspace file (harness W2);
+    # the trusted markers at the universe root are untouched.
     assert markers.read_bytes() == b"SQLite format 3\x00 synthetic markers"
+
+
+def test_the_agent_owns_its_whole_workspace_and_platform_state_stays_out(
+    world, monkeypatch,
+):
+    """Harness W2 (design #4172 §4.3): /u is the agent's own workspace. It
+    creates, renames and removes anything at the top, as on its own computer;
+    the universe root and its platform state are never bound, and the visible
+    platform files keep their read-only binds on top."""
+    from tinyassets.universe_tools import WORKSPACE_DIR
+
+    s = _engine(monkeypatch, world)
+    a = world.universe_a
+    (a / "soul.md").write_text("# Universe Soul\n", encoding="utf-8")
+    (a / ".usage_ledger.db").write_bytes(b"SYNTHETIC-PLATFORM-LEDGER")
+
+    made = _run(s.run_bash(command=(
+        "mkdir -p projects/site && echo hi > projects/site/index.html && "
+        "echo draft > TODO.md && mv TODO.md PLAN.md && "
+        "python3 -c \"print(open('/u/PLAN.md').read().strip())\" && rm -rf projects"
+    )))
+    assert "[exit code 0]" in made and "draft" in made, made
+    workspace = a / WORKSPACE_DIR
+    assert (workspace / "PLAN.md").read_text(encoding="utf-8") == "draft\n"
+    assert not (a / "PLAN.md").exists(), "a new name never lands in the universe root"
+    assert not (workspace / "projects").exists()
+
+    # Platform state: hidden root entries absent; visible platform files read-only.
+    probe = _run(s.run_bash(command=(
+        "echo pwned > soul.md; cat .usage_ledger.db; grep -r SYNTHETIC-PLATFORM . ; echo done"
+    )))
+    assert "SYNTHETIC-PLATFORM-LEDGER" not in probe, probe
+    assert (a / "soul.md").read_text(encoding="utf-8") == "# Universe Soul\n"
+    assert (a / ".usage_ledger.db").read_bytes() == b"SYNTHETIC-PLATFORM-LEDGER"
+    # Positive control: what it owns in the root stays writable through /u.
+    assert _run(s.write_file(path="notes/w2.md", content="ok")).startswith("wrote")
+    assert (a / "notes" / "w2.md").read_text(encoding="utf-8") == "ok"
 
 
 def test_an_oversized_config_write_is_refused_and_the_next_load_is_prompt(world, monkeypatch):
     """The reviewer's reproduction through the real tool: a 4 MB config.yaml.
-    config.yaml is platform-owned and read-only in the jail, so the write is
-    refused; and a planted oversized one is never parsed by the next turn."""
+    The platform's config.yaml is read-only in the jail when it exists; with
+    none at the root, the agent's write lands in its own workspace (harness W2)
+    and never becomes the platform's config. A planted oversized one at the
+    root is never parsed by the next turn."""
     from tinyassets.config import UniverseConfig, load_universe_config
 
     s = _engine(monkeypatch, world)
     a = world.universe_a
     big = "timeout: 999\n" + "".join(f"k{i}: v{i}\n" for i in range(300_000))
-    assert _run(s.write_file(path="config.yaml", content=big[:4 * 1024 * 1024 - 1])).startswith(
-        "error:")
-    assert not (a / "config.yaml").exists()
+    _run(s.write_file(path="config.yaml", content=big[:4 * 1024 * 1024 - 1]))
+    assert not (a / "config.yaml").exists(), "the platform config is never the agent's write"
     started = time.monotonic()
     assert load_universe_config(a).timeout == UniverseConfig().timeout
     (a / "config.yaml").write_text(big, encoding="utf-8")  # planted from outside
@@ -504,9 +556,9 @@ def test_memory_limit_stops_a_runaway_allocation(world):
 
     small = tools.ToolLimits(memory_bytes=256 * 1024 * 1024)
     grow = "x=$(head -c {n} /dev/zero | tr '\\0' a); echo survived ${{#x}}"
-    control = tools.bash(world.universe_a, grow.format(n=1_000_000), limits=small)
+    control = tools.bash(world.universe_a, grow.format(n=1_000_000), agent_id="main", limits=small)
     assert "survived 1000000" in control, control
-    out = tools.bash(world.universe_a, grow.format(n=900_000_000), limits=small)
+    out = tools.bash(world.universe_a, grow.format(n=900_000_000), agent_id="main", limits=small)
     assert "survived" not in out and "[exit code 0]" not in out, out
 
 
@@ -530,7 +582,7 @@ def test_process_limit_holds_and_a_fork_bomb_is_contained(world):
         "        break\n"
         "print('made', made, flush=True); time.sleep(3)\n"
     )
-    run = tools.run_jailed(world.universe_a, ["/usr/bin/python3", "-c", spawn],
+    run = tools.run_jailed(world.universe_a, ["/usr/bin/python3", "-c", spawn], agent_id="main",
                            limits=limits, wall_seconds=8)
     made = [int(w) for line in run.output.decode().splitlines()
             if line.startswith("made ") for w in line.split()[1:2]]
@@ -540,6 +592,7 @@ def test_process_limit_holds_and_a_fork_bomb_is_contained(world):
     started = time.monotonic()
     out = tools.bash(world.universe_a,
                      f"bomb() {{ bomb | bomb & }}; bomb; sleep 5; echo {token}-alive",
+                     agent_id="main",
                      limits=tools.ToolLimits(processes=32), timeout=6)
     assert time.monotonic() - started < 30, "the call came back"
     # The kernel refused the bomb's forks (RLIMIT_NPROC unprivileged, pids.max
@@ -549,24 +602,24 @@ def test_process_limit_holds_and_a_fork_bomb_is_contained(world):
     time.sleep(1)
     assert _host_processes_with(token) == [], "nothing from the jail survives it"
     # The universe still works afterwards.
-    assert OWN_MARKER in tools.read_file(world.universe_a, "notes/own.txt")
+    assert OWN_MARKER in tools.read_file(world.universe_a, "notes/own.txt", agent_id="main")
 
 
 def test_cpu_output_and_wall_clock_limits_kill(world):
     from tinyassets import universe_tools as tools
 
     started = time.monotonic()
-    out = tools.bash(world.universe_a, "while :; do :; done",
+    out = tools.bash(world.universe_a, "while :; do :; done", agent_id="main",
                      limits=tools.ToolLimits(cpu_seconds=2), timeout=60)
     assert "[killed: cpu time limit]" in out and time.monotonic() - started < 20, out
 
     started = time.monotonic()
-    out = tools.bash(world.universe_a, "yes")
+    out = tools.bash(world.universe_a, "yes", agent_id="main")
     assert "[killed: output passed 65536 bytes]" in out, out[-200:]
     assert len(out.encode()) < 70 * 1024 and time.monotonic() - started < 20
 
     started = time.monotonic()
-    out = tools.bash(world.universe_a, "sleep 30", timeout=2)
+    out = tools.bash(world.universe_a, "sleep 30", agent_id="main", timeout=2)
     assert "[killed: ran longer than 2s]" in out and time.monotonic() - started < 15, out
 
 
@@ -580,18 +633,80 @@ def test_a_jail_that_fills_the_shared_disk_is_killed(world):
         out = tools.bash(
             world.universe_a,
             "for i in $(seq 1 40); do head -c 30000000 /dev/zero > notes/fill$i || exit 3; done; "
-            "echo filled",
+            "echo filled", agent_id="main",
             limits=floor, timeout=120,
         )
         assert "[killed: the shared disk was nearly full]" in out, out
         assert "filled" not in out
         # Below the floor, the next call does not start at all.
         with pytest.raises(tools.UniverseToolError, match="nearly full"):
-            tools.bash(world.universe_a, "true",
+            tools.bash(world.universe_a, "true", agent_id="main",
                        limits=tools.ToolLimits(min_free_disk_bytes=free * 2))
     finally:
         for path in (world.universe_a / "notes").glob("fill*"):
             path.unlink()
+
+
+_MiB = 1024 * 1024
+
+
+def test_a_jail_writing_many_small_files_past_its_budget_is_killed(world, monkeypatch):
+    """Each file is far under RLIMIT_FSIZE; only the per-launch budget stops it."""
+    from tinyassets import jail_disk
+    from tinyassets import universe_tools as tools
+
+    monkeypatch.setattr(jail_disk, "LAUNCH_BYTES_CAP", 24 * _MiB)
+    many = world.universe_a / "notes" / "many"
+    try:
+        out = tools.bash(
+            world.universe_a,
+            "mkdir -p notes/many && for i in $(seq 1 400); do "
+            "head -c 262144 /dev/zero > notes/many/f$i || exit 3; done; echo filled",
+            agent_id="main",
+            timeout=120,
+        )
+        assert "[killed: this call added more than" in out, out[-500:]
+        assert "filled" not in out
+        written = sum(path.stat().st_size for path in many.iterdir())
+        assert 24 * _MiB < written < 100 * _MiB, written
+        # Another universe is untouched by this one's stop.
+        assert tools.bash(
+            world.universe_b, "echo still-runs", agent_id="main",
+        ).startswith("still-runs")
+    finally:
+        shutil.rmtree(many, ignore_errors=True)
+
+
+def test_the_jails_private_tmp_is_capped(world):
+    from tinyassets import jail_disk
+    from tinyassets import universe_tools as tools
+
+    out = tools.bash(
+        world.universe_a,
+        "for i in $(seq 1 12); do head -c 30000000 /dev/zero > /tmp/f$i "
+        "|| { echo full-at-$i; exit 0; }; done; echo all-written",
+        agent_id="main",
+        timeout=120,
+    )
+    assert "all-written" not in out, out[-500:]
+    assert "No space left on device" in out and "full-at-" in out, out[-500:]
+    # 30 MB files: the cap is hit after floor(cap / 30 MB) of them.
+    assert f"full-at-{jail_disk.TMP_BYTES // 30000000 + 1}" in out, out[-500:]
+
+
+def test_a_full_account_can_still_free_space_through_its_agent(world, monkeypatch):
+    from tinyassets import universe_tools as tools
+    from tinyassets.daemon_server import grant_universe_ownership, initialize_author_server
+
+    initialize_author_server(world.data_root)
+    grant_universe_ownership(world.data_root, universe_id="u-alpha", owner_id="workos|alice")
+    # A 1 KiB quota through the real override: the universe is already over it.
+    monkeypatch.setenv("TINYASSETS_FREE_STORAGE_GIB", str(1024 / 1024**3))
+    junk = world.universe_a / "notes" / "junk.bin"
+    junk.write_bytes(b"x" * 64 * 1024)
+    out = tools.bash(world.universe_a, "rm notes/junk.bin && echo removed", agent_id="main")
+    assert "out of cloud storage" in out and "removed" in out, out
+    assert not junk.exists()
 
 
 # ── (b) a skill the agent writes changes its next turn ──────────────────────
@@ -759,7 +874,34 @@ def test_a_background_run_reads_and_writes_its_notes_while_a_database_closes(
     listing = seen["listing"].split("[exit code")[0].split()
     assert "notes" in listing and not [name for name in listing if name.startswith(".")], listing
     assert "No such file" in seen["consents"], seen["consents"]
-    # /u itself is read-only: a root write is refused, not accepted into a
-    # tmpfs and silently lost when the call ends.
-    assert not seen["root_write"].startswith("wrote"), seen["root_write"]
-    assert "root-note.md" not in listing
+    # Since harness W2 /u is the agent's own workspace: a new top-level file is
+    # kept there durably, never in the universe root and never in a tmpfs that
+    # is lost when the call ends.
+    from tinyassets.universe_tools import WORKSPACE_DIR
+
+    assert seen["root_write"].startswith("wrote"), seen["root_write"]
+    assert (a / WORKSPACE_DIR / "root-note.md").read_text(encoding="utf-8") == "lost?\n"
+    assert not (a / "root-note.md").exists()
+
+
+def test_read_shows_an_image_in_its_own_universe_and_no_other(world, monkeypatch):
+    """The image path reads through the same jail: its own PNG comes back as
+    image content, another universe's is as unreachable as its text."""
+    import io
+
+    from PIL import Image
+
+    def png(color):
+        buffer = io.BytesIO()
+        Image.new("RGB", (8, 8), color).save(buffer, "PNG")
+        return buffer.getvalue()
+
+    (world.universe_a / "notes" / "own.png").write_bytes(png((1, 2, 3)))
+    (world.universe_b / "secret.png").write_bytes(png((9, 9, 9)))
+    s = _engine(monkeypatch, world)
+    shown = _run(s.read_file(path="notes/own.png"))
+    blocks = shown.content
+    assert [b.type for b in blocks] == ["text", "image"], shown
+    for path in (str(world.universe_b / "secret.png"), "../u-bravo/secret.png"):
+        out = _run(s.read_file(path=path))
+        assert isinstance(out, str) and out.startswith("error:"), (path, out)

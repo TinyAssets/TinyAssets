@@ -20,6 +20,7 @@ import asyncio
 import hashlib
 import json
 import pathlib
+import re
 import types
 from collections import Counter
 
@@ -109,6 +110,10 @@ CHAPTER_ORDER = (
 #: run_graph step closes it ("Actually RUNNING it ... via run_graph"), and
 #: "File delivery ... not supported here" sits one line above the other.
 #:
+#: 2026-10-03: publishing became a pending-request ask the person confirms.
+#: The old browser-only denial now contradicts that route; only its exact
+#: passage is retired, with the absence marker checked below.
+#:
 #: Each entry is ``(passage, marker)``: the verbatim passage the allowance is
 #: derived from, and a word that occurs ONLY in it, so its absence is a cheap,
 #: direct check that the passage went rather than merely being rephrased.
@@ -130,6 +135,11 @@ REMOVED_PASSAGES = (
     (
         "Exact file delivery is not implemented.",
         "implemented.",
+    ),
+    (
+        "Publishing to the commons, changing visibility to public, and forking "
+        "a foreign shape are NOT available here (they stay in the browser flow);",
+        "forking",
     ),
 )
 DELIBERATELY_REMOVED: Counter = sum(
@@ -223,6 +233,32 @@ def _source_docstring(name: str = "write_graph") -> str:
     return ast.get_docstring(node, clean=False) or ""
 
 
+#: A prose "universe" in the baseline is the same guidance renamed (founder,
+#: 2026-10-01: the product is the person's command center;
+#: `openspec/changes/rename-universe-to-command-center` C0). Only the bare prose
+#: forms move; identifiers such as ``universe_id`` stay in the count untouched.
+_RENAMED_PROSE = re.compile(r"^(\(?)universe((?:'s|s)?[).,;:]*)$")
+
+
+#: Machine spellings C1 renamed in the advertised text (the public names).
+_RENAMED_CODE = {"``tiny/<universe>/<slug>``": "``tiny/<command-center-id>/<slug>``"}
+
+
+def _renamed(counts: Counter) -> Counter:
+    out: Counter = Counter()
+    for word, count in counts.items():
+        if word in _RENAMED_CODE:
+            out[_RENAMED_CODE[word]] += count
+            continue
+        match = _RENAMED_PROSE.match(word)
+        if match:
+            out[match.group(1) + "command"] += count
+            out["center" + match.group(2)] += count
+        else:
+            out[word] += count
+    return out
+
+
 def test_the_split_lost_no_guidance():
     """The whole safety claim in one assertion: relocation, not deletion.
 
@@ -236,7 +272,8 @@ def test_the_split_lost_no_guidance():
     text: the passage is gone, and so is the word that occurred only in it. A word
     list alone would excuse a global deficit in those words wherever it happened.
     """
-    before = _pre_split_word_counts()
+    baseline = _pre_split_word_counts()
+    before = _renamed(baseline)
     text = _source_docstring() + "".join(
         engine.SERVED_TOOL_CHAPTERS["write_graph"][name] for name in CHAPTER_ORDER
     )
@@ -255,7 +292,7 @@ def test_the_split_lost_no_guidance():
     for passage, marker in REMOVED_PASSAGES:
         assert passage not in flat
         assert marker not in text
-    assert sum(before.values()) == 4968  # provenance, stated in the fixture header
+    assert sum(baseline.values()) == 4968  # provenance, stated in the fixture header
 
 
 #: The two shapes a FastMCP version can hand us for the same docstring: 3.2.0 leaves

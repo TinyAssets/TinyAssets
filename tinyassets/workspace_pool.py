@@ -861,9 +861,9 @@ def admit(
     used_fn: Callable[[str], int] = _no_universe_bytes
     if storage_class == STORAGE_UNIVERSE:
         if universe_quota_bytes is None:
-            raise ValueError("universe storage needs universe_quota_bytes")
+            raise ValueError("command center storage needs universe_quota_bytes")
         if universe_used_bytes_fn is None:
-            raise ValueError("universe storage needs universe_used_bytes_fn")
+            raise ValueError("command center storage needs universe_used_bytes_fn")
         quota_bytes = int(universe_quota_bytes)
         used_fn = universe_used_bytes_fn
 
@@ -933,7 +933,7 @@ def admit(
                     if used + outstanding + max_bytes > quota_bytes:
                         raise WorkspacePoolRefused(
                             REFUSED_QUOTA,
-                            f"universe quota ({quota_bytes}) exhausted for "
+                            f"command center quota ({quota_bytes}) exhausted for "
                             f"{universe_id}: {used} used + {outstanding} reserved "
                             f"+ {max_bytes} requested",
                         )
@@ -1162,7 +1162,8 @@ def reserve_transfer_bytes(
     if type(max_bytes) is not int or max_bytes < 0:
         raise ValueError("max_bytes must be a nonnegative integer")
     if type(universe_id) is not str or not universe_id or type(run_id) is not str:
-        raise ValueError("transfer reservation requires universe and explicit string run scope")
+        raise ValueError("transfer reservation requires command center and explicit string run "
+            "scope")
     if type(operation_id) is not str or not operation_id:
         raise ValueError("transfer reservation requires operation identity")
     return _reserve_transfer_bytes(

@@ -113,7 +113,7 @@ def test_get_status_returns_versioned_contract_keys(status_env):
     assert expected_keys <= set(parsed.keys()), (
         f"missing keys: {expected_keys - set(parsed.keys())}"
     )
-    assert parsed["schema_version"] == 2
+    assert parsed["schema_version"] == 3
 
 
 def test_get_status_active_host_shape(status_env):

@@ -205,7 +205,7 @@ def require_send_consent(*, universe_dir: str | Path, receiver_id: str) -> None:
     raise PatchIntakeConsentMissing(
         "patch_intake_consent_required: sending to the "
         f"{label} patch intake needs the owner's approval of the "
-        f'"Let your universe report problems to {label}" request in their '
+        f'"Let your command center report problems to {label}" request in their '
         "rail; nothing has been sent"
     )
 
@@ -260,14 +260,14 @@ def request_payload(intake: dict[str, str]) -> dict[str, Any]:
     label = intake["label"]
     return {
         "kind": REQUEST_KIND,
-        "title": f"Let your universe report problems to {label}",
+        "title": f"Let your command center report problems to {label}",
         "body": (
-            f"When your universe hits a bug, a missing feature or an idea worth "
+            f"When your command center hits a bug, a missing feature or an idea worth "
             f"building, it can tell {label} directly instead of stopping. "
             "Approving this lets it send those reports -- what it was trying to "
             "do and what was missing -- and nothing else: not your files, not "
             "your conversations, not your other work. Whoever runs the intake "
-            "sees who sent it and what your universe sent them, nothing more, "
+            "sees who sent it and what your command center sent them, nothing more, "
             "and you can take this back at any time. There is nothing to paste."
         ),
         "fields": [],
@@ -383,16 +383,14 @@ def _how(receiver_id: str, label: str, *, granted: bool, pending: bool) -> str:
     """
     if granted:
         return (
-            'Read its contract with read_graph target="receiver" query='
-            f'"{receiver_id}", connect one of your own step\'s outputs with '
-            'write_graph target="output_link" operation="connect", then send with '
-            'run_graph operation="deliver_output". No credential, no URL and no '
-            "token is involved -- see the handbook chapter write_graph.delivering."
+            'Use write_graph target="patch_request" operation="send" with '
+            'payload_json={"title": "One line", "details": "What I tried and what was missing"}. '
+            "No credential, URL or token is involved."
         )
     if pending:
         return (
             f"Your user has not approved sending to {label} yet. The request "
-            f'"Let your universe report problems to {label}" is waiting in their '
+            f'"Let your command center report problems to {label}" is waiting in their '
             "rail -- point them at that one. Do NOT raise a connection or "
             "credential request for this: there is no token, and approving that "
             "one request is the whole setup."
@@ -404,6 +402,183 @@ def _how(receiver_id: str, label: str, *, granted: bool, pending: bool) -> str:
         "credential request -- there is no token involved. If they bring it up "
         "themselves, they can lift it from the muted list in their rail."
     )
+
+
+def send_patch_request(universe_id: str, principal_id: str, title: Any, details: Any) -> dict:
+    """Send through an owner-authored private source and the native delivery core."""
+    import hashlib
+    import json
+    from uuid import uuid4
+
+    from tinyassets.api import deliveries, receiver_links
+    from tinyassets.api.helpers import _universe_dir
+    from tinyassets.branches import BranchDefinition, EdgeDefinition, GraphNodeRef, NodeDefinition
+    from tinyassets.daemon_server import create_branch_definition_once
+    from tinyassets.storage import receiver_links as store
+
+    example = {"title": "One line", "details": "What I tried and what was missing"}
+    for field, value, limit in (("title", title, 120), ("details", details, 8000)):
+        if value is None:
+            return {"error": "patch_request_field_missing", "field": field, "example": example}
+        if (not isinstance(value, str) or not value.strip() or len(value) > limit
+                or (field == "title" and value.splitlines() != [value])):
+            return {"error": "patch_request_field_invalid", "field": field, "example": example}
+    intake = configured_intake()
+    if intake is None:
+        return {"error": "patch_intake_unavailable"}
+    universe_dir = _universe_dir(universe_id)
+    address = intake["receiver_id"]
+    try:
+        require_send_consent(universe_dir=universe_dir, receiver_id=address)
+    except PatchIntakeConsentMissing:
+        view = rail_entry(universe_id, universe_dir)
+        return {"error": "patch_intake_consent_required", "how": view["how"]}
+
+    # The engine binds this identity from its pins, never from the report payload.
+    if receiver_links._principal(write=True) != principal_id:
+        raise PermissionError("patch request principal does not match the bound identity")
+    base = receiver_links._base()
+    receiver_links._require_admin(base, universe_id, principal_id)
+    receiver = receiver_links.inspect_receiver(receiver_id=address)
+    outputs = _report_outputs(receiver["contract"], title, details)
+    branch_id = "patch-report-" + hashlib.sha256(
+        json.dumps([universe_id, principal_id]).encode()
+    ).hexdigest()
+    branch = BranchDefinition(
+        branch_def_id=branch_id, name="Report to TinyAssets", author=principal_id,
+        visibility="private", entry_point="report",
+        node_defs=[NodeDefinition(
+            node_id="report", display_name="Report to TinyAssets", output_keys=list(outputs),
+        )],
+        graph_nodes=[GraphNodeRef(id="report", node_def_id="report")],
+        edges=[EdgeDefinition("START", "report"), EdgeDefinition("report", "END")],
+        state_schema=[{"name": key, "type": "str"} for key in outputs],
+    )
+    create_branch_definition_once(base, branch_def=branch.to_dict())
+    # Serialize lookup + connect under the same author-store reservation used by
+    # native link management. The storage connect retains contract/generation checks.
+    with receiver_links._owner_authority(base, universe_id, principal_id):
+        owned = receiver_links._owned_branch(base, universe_id, branch_id, principal_id)
+        if (owned.visibility != "private" or owned.author != principal_id
+                or owned.graph_nodes != branch.graph_nodes
+                or len(owned.node_defs) != 1
+                or set(owned.node_defs[0].output_keys) != set(outputs)):
+            raise ValueError("patch request source changed; restore its private output contract")
+        with store.transaction(base) as conn:
+            link = conn.execute(
+                "SELECT link_id FROM graph_output_links WHERE owner_id=? AND universe_id=? "
+                "AND branch_def_id=? AND node_id=? AND receiver_id=? "
+                "AND receiver_generation=? AND mapping_json=? AND disconnected_at IS NULL",
+                (principal_id, universe_id, branch_id, "report", address,
+                 receiver["generation"], store._json({key: key for key in outputs})),
+            ).fetchone()
+        link_id = link["link_id"] if link else store.connect_output(
+            base, owner_id=principal_id, universe_id=universe_id, branch_def_id=branch_id,
+            node_id="report", receiver_id=address, expected_generation=receiver["generation"],
+            mapping={key: key for key in outputs},
+        )["link_id"]
+    try:
+        receipt = deliveries.deliver_output(
+            universe_id=universe_id, link_id=link_id, occurrence_id=uuid4().hex, outputs=outputs,
+        )
+    except PatchIntakeConsentMissing:
+        # A revocation between provisioning and acceptance still gets the same guidance.
+        view = rail_entry(universe_id, universe_dir)
+        return {"error": "patch_intake_consent_required", "how": view["how"]}
+    return {"sent": True, "delivery_id": receipt["delivery_id"], "to": intake["label"]}
+
+
+#: Declared input names that mean "the one-line summary".
+_TITLE_NAMES = frozenset({"title", "summary", "subject", "reporttitle", "requesttitle"})
+#: Keep the shipped aliases separate: recognizing a new optional input can
+#: change an existing sender's output keys even when its contract already worked.
+_LEGACY_DETAIL_NAMES = frozenset({
+    "details", "description", "body", "reportdetails", "requestdetails",
+})
+#: Declared input names that mean "the body of the report". ``tried``/``missing``
+#: and ``broken`` are here because the intake this platform actually offers asks
+#: ``what_they_tried`` / ``what_was_missing_or_broken`` (docs/host-actions.md):
+#: both are asking for the body, in the owner's own wording.
+_DETAIL_NAMES = _LEGACY_DETAIL_NAMES | frozenset({
+    "whattheytried", "whattried", "tried",
+    "whatwasmissingorbroken", "whatwasmissing", "missing", "broken",
+})
+
+
+def _report_outputs(contract: list[dict], title: str, details: str) -> dict[str, str]:
+    """Map the report onto the receiver's declared inputs.
+
+    The mapping that shipped is used UNCHANGED wherever it worked, because the
+    sender branch is created once per (command center, principal) and a later
+    send refuses outright if the output KEY SET no longer matches the stored
+    one (``set(owned.node_defs[0].output_keys) != set(outputs)`` below). So
+    anyone whose channel already worked must keep getting the same keys; only a
+    contract the old mapping REFUSED may be mapped differently.
+
+    What it refused: it placed the whole report in ONE field when no name
+    matched, then failed the contract because the other required inputs were
+    empty. The intake this platform offers declares three required inputs
+    (``what_they_tried``/``what_was_missing_or_broken``/``request_type``), so
+    every patch request came back ``invalid_patch_request`` -- the agent's one
+    channel for telling us something is broken was itself broken (live
+    2026-10-03).
+
+    For those, and only those: every required text input is filled, a named one
+    with its own part and an unnamed one with the full report, which is accurate
+    rather than invented. Both halves of the report always reach the receiver --
+    an input matched to the title alone never leaves the details unsent. A
+    required input that is NOT text cannot be filled from a text report, and
+    that refusal names it so the owner can see which input to relax.
+    """
+    text_fields = [field for field in contract if field["type"] in {"str", "string"}]
+    whole = title + "\n\n" + details
+    if len(contract) == len(text_fields) == 1:
+        return {text_fields[0]["name"]: whole}
+
+    def _named(detail_names: frozenset[str]) -> dict[str, str]:
+        found: dict[str, str] = {}
+        for field in text_fields:
+            name = re.sub(r"[^a-z0-9]", "", field["name"].lower())
+            if name in _TITLE_NAMES:
+                found[field["name"]] = title
+            elif name in detail_names:
+                found[field["name"]] = details
+        return found
+
+    # --- exactly what shipped, for every contract it could satisfy ---
+    outputs = _named(_LEGACY_DETAIL_NAMES)
+    if title not in outputs.values() or details not in outputs.values():
+        target = next((f for f in text_fields if f["required"]),
+                      text_fields[0] if text_fields else None)
+        outputs = {target["name"]: whole} if target else {}
+    if outputs and not any(field["required"] and field["name"] not in outputs
+                           for field in contract):
+        return outputs
+
+    # --- only now: a contract the mapping above refuses ---
+    unfillable = sorted(field["name"] for field in contract
+                        if field["required"] and field["type"] not in {"str", "string"})
+    if unfillable:
+        raise ValueError(
+            "patch intake declares required non-text input(s) a text report cannot "
+            f"fill: {', '.join(unfillable)}. Make them optional or text."
+        )
+    if not text_fields:
+        raise ValueError("patch intake contract declares no text input to report into")
+    outputs = _named(_DETAIL_NAMES)
+    for field in text_fields:
+        if field["required"] and field["name"] not in outputs:
+            outputs[field["name"]] = whole
+    if not outputs:
+        outputs = {text_fields[0]["name"]: whole}
+    # No half of the report may be dropped: if one of them is nowhere, the field
+    # that would carry it least surprisingly carries the whole thing instead.
+    if not any(title in value for value in outputs.values()) or not any(
+            details in value for value in outputs.values()):
+        carrier = next((f["name"] for f in text_fields if f["required"]),
+                       text_fields[0]["name"])
+        outputs[carrier] = whole
+    return outputs
 
 
 __all__ = [
@@ -421,4 +596,5 @@ __all__ = [
     "rail_entry",
     "request_payload",
     "require_send_consent",
+    "send_patch_request",
 ]

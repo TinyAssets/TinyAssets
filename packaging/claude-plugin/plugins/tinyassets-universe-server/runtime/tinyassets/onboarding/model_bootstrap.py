@@ -116,7 +116,7 @@ def complete_bootstrap(*, base: Path, uid: str, owner: str, preset: AcquisitionP
     provider = did
     # Raised by the platform, not by the agent, so the agent cannot withdraw it.
     request = request_from_user(universe_id=uid, origin="platform", payload={
-        "kind": "Models", "title": "Power your universe with free models",
+        "kind": "Models", "title": "Power your command center with free models",
         "body": (f"Use eligible free models from your {preset.display_name} account. "
                  "No paid-model access or credit purchase is approved. Your source's privacy "
                  "settings and free limits still apply. You can connect another LLM later."),

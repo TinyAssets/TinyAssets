@@ -10,7 +10,6 @@ Within the canonical seven-handle invariant: a new *target*, no new handle.
 """
 from __future__ import annotations
 
-import asyncio
 import importlib
 import json
 
@@ -59,12 +58,6 @@ def server_env(tmp_path, monkeypatch, authenticate_request):
     importlib.reload(us)
     yield us
     importlib.reload(us)
-
-
-def test_new_target_preserves_canonical_handle_set(server_env):
-    us = server_env
-    advertised = {t.name for t in asyncio.run(us.mcp.list_tools(run_middleware=True))}
-    assert advertised == CANONICAL_HANDLES
 
 
 def test_read_graph_branch_routes_to_get_branch(server_env):

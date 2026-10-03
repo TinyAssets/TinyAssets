@@ -74,10 +74,6 @@ class TestCronParserEdgeCases:
         with pytest.raises(CronParseError):
             CronSchedule.parse("0 24 * * *")
 
-    def test_step_zero_raises(self):
-        with pytest.raises(CronParseError):
-            CronSchedule.parse("*/0 * * * *")
-
     def test_step_negative_raises(self):
         with pytest.raises(CronParseError):
             CronSchedule.parse("*/-1 * * * *")

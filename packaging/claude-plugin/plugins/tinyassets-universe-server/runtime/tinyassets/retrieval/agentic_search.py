@@ -111,7 +111,7 @@ def assemble_soul_lens_context(state: dict[str, Any]) -> dict[str, Any]:
 
         pinned = read_pinned_universe_soul(universe_dir)
     except Exception as exc:
-        logger.warning("Failed to read universe soul lens: %s", exc)
+        logger.warning("Failed to read command center soul lens: %s", exc)
         return {}
 
     if pinned is None:

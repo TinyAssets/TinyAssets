@@ -16,7 +16,7 @@ import pytest
 
 from tinyassets.onboarding import render_app_html
 
-_SLICE_START = "    // ---- your universe's connections ----"
+_SLICE_START = "    // ---- your command center's connections ----"
 _SLICE_END = "    function leaveAccount()"
 
 # A synthetic DOM that records what the controller did to it: attributes (the

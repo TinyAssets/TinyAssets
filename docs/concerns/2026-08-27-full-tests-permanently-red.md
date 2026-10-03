@@ -2,7 +2,7 @@
 severity: P2
 title: The scheduled tripwire has been red continuously
 filed: '2026-08-27'
-summary: '`full-tests`, now `heavy-tests`: 107 unquarantined failures, since before the reset; a permanent red carries no more signal than a permanent green'
+summary: '`heavy-tests` red 8/8 since 09-30; 4 fixed (#4302), 72 quarantined with owner deploy-incident (#4304) until plan B deletes the retired-design ones per test; a permanent red carries no more signal than a permanent green'
 ---
 
 # The scheduled tripwire has been red continuously, so it carries no signal
@@ -213,12 +213,12 @@ against the current workflow individually.
 |---|---|---|
 | Step-name assertions: `Rollback on failure`, `Capture previous image tag`, `Scrub stale cloud env overrides`, `Transitional task 2.1 *`, `Resolve image tag`, `Post-deploy canary` | 66 | **Stale.** Steps were replaced, not renamed — already measured: mapping every rename moved 81 to 79. |
 | `terminal_receipt_result=` | 14 | **Stale.** The capability is retained by `Publish release-state receipt` (`:336`). Its hardcoded `forward_canary_status:"passed"` is honest because the step is `if: ${{ success() }}`, so it cannot publish over a red canary. |
-| `TINYASSETS_CODEX_AUTH_JSON_B64` reaches the droplet | 4 | **REAL DROP.** Filed separately; no workflow delivers it. |
+| `TINYASSETS_CODEX_AUTH_JSON_B64` reaches the droplet | 4 | **Retired 2026-09-24 (Hard Rule 15: the platform has no LLM).** These now assert a retired design. They were a real drop on 08-27. |
 | `TINYASSETS_GITHUB_PR_CAPABILITIES` | (same cluster) | **Retired 2026-09-24 with the platform GitHub push credential (map, refresher and host units removed).** Previously: **Relocated but BROKEN — corrected by cross-family review.** The timer mints and writes the host env file, but the daemon's environment is an `env_file` snapshot taken at container creation, so the refresh never reaches the running process. Filed as [github-app-token-refresh-never-reaches-daemon](2026-08-27-github-app-token-refresh-never-reaches-daemon.md) (P1). I stopped at "a delivery path exists" without following it to the consumer. |
 | `org.opencontainers.image.revision` | 2 | **Not stale — keep.** The current workflow takes `revision` from `github.event.workflow_run.head_sha` (`:112`), not from the image's revision label, while the receipt still claims `"active_source_provenance":"digest_revision_label"`. These two assert the mechanism that would close [deployed-sha-proves-receipt-only](2026-08-26-deployed-sha-proves-receipt-only.md). Deleting them deletes the spec for that fix. |
 | Cloud-worker liveness | 2 | **Stale.** The deploy starts `daemon cloudflared logs` only, deliberately — `deploy/deploy_fail_safe.sh:148` names the reason ("unprofiled worker services that an unqualified `up -d` would start"), and `slack-agent` is `profiles: ["slack"]`. |
-| Runtime compose sync | 2 | **REAL DROP.** Already filed as [deploy-drops-compose-sync](2026-08-27-deploy-drops-compose-sync.md). |
-| Step-summary capability-map / codex-auth visibility lines | 2 | **Downstream of the auth drop**, not independent. Restoring delivery should restore the summary lines. |
+| Runtime compose sync | 2 | **Restored** by #2685, which resolved and deleted the deploy-drops-compose-sync concern. |
+| Step-summary capability-map / codex-auth visibility lines | 2 | **Retired with the auth delivery** (Hard Rule 15). |
 | `recover-unsafe` / `retire_cheat_loop_deploy_fence.py` | 6 | **ANSWERED — accident. Keep.** Task 2.5a authorises deleting the fence only *after* task 2.5's locked migration; 2.1, 2.5 and 2.5a are all unchecked, three workflows still arm the fence, and all four recovery support files are orphaned in-tree. Filed as [unsafe-fence-recovery-path-deleted](2026-08-27-unsafe-fence-recovery-path-deleted.md) (P1). |
 
 **So the file is not uniformly stale, and "delete all 81" would have destroyed
@@ -227,4 +227,30 @@ two real findings and one open spec.** Six assertions must survive in some form
 rewritten against the current workflow, per the two conditions this file set
 before any deletion lands.
 
+---
+
+## Update 2026-10-02: quarantined with an owner; what still survives
+
+The scheduled heavy-tests job was red 8 of 8 runs since 09-30 with 76
+failures. 4 were a test-setup defect in public_goal_visibility (unowned
+universes), fixed in #4302. The other 72 (55 here, 17 in
+`test_retire_cheat_loop_deploy_fence.py`) are quarantined in #4304. They are
+ratcheted ledger entries with `owner=deploy-incident`, an expiry and a link to
+this concern or the fence concern. They still run and are not weakened. A NEW
+heavy failure is a signal again.
+
+What changed since the table above:
+
+- The 4 auth-delivery assertions and the 2 summary lines are now retired
+  design: Hard Rule 15 retired the platform's model logins on 2026-09-24.
+- Compose sync was restored by #2685.
+- A fifth #2442 drop surfaced: the request-idempotency HMAC path,
+  `2026-10-01-deploy-dropped-request-idempotency-hmac.md`, decision RESTORE.
+  Its six assertions are a spec, not stale.
+
+So the specs that must survive are the 2 revision-label assertions, the 6 HMAC
+assertions and the fence file's recovery path (KEEP stands). The rest are
+retired design. Plan B deletes them per test, in their own PRs
+(`Test-Removal: retired`, cross-family refute). Each deletion removes its
+ledger line and lowers `MAX_QUARANTINE`.
 

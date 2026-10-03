@@ -36,17 +36,18 @@ What main has today (verified 2026-10-01 at origin/main):
   records, effect intents and status lines.
 - **New session keys:** `activity:<id>`, and `agent:<id>:thread` for D8. The
   main agent keeps `thread:principal:<owner>`.
-- **A new `activity` work item kind** in the provider authority store. An
-  activity is admitted through the foreground lane's existing admission core,
-  with the same assignment, credential path and budget, and only the subject
-  validation is new: the activity record, the runner's liveness token and
-  generation, founder-home ownership, and the admin ACL.
+- **Substrate:** an activity runs as runs of one owner-authored agent-node
+  branch per universe, called *Activities*. It is part of the harness layer:
+  seeded, visible and editable like `AGENTS.md`. This is the platform's one
+  canonical way to run an agent with no client. Admission, credential, budget,
+  seats, effect review and run-owner liveness all come unchanged from the
+  foreground run lane. The authority store is not touched; a non-branch agent
+  work item was tried before and retired. Linkage comes from the record, never
+  from run inputs. One adapter is the only code that knows the substrate.
 - **A durable dispatcher.** It runs on the pump cadence and on demand, never
-  only at boot. It takes over only runners whose liveness lock is provably dead,
-  using the same semantics as run recovery. It queues on seats without blocking
-  a thread (`try_acquire`) and fences every runner write by generation.
-- **Seat kind `activity`** in the background class. It is released while the
-  activity waits on the owner or is paused.
+  only at boot. It replaces a run only once that run has ended or been
+  interrupted, and fences every runner write by generation. Waiting on the
+  owner ends the run, which releases its seat.
 - **Effect intents.** For runs an activity started, the effector commits
   `planned`, then `sent`, before the wire, keyed on the run, node, effect index
   and the resolved request. Transport uncertainty is recorded as `unknown`.
@@ -59,10 +60,10 @@ What main has today (verified 2026-10-01 at origin/main):
     cursor-paged.
 
   D6's `ta activity` wraps these.
-- **Automations get two additive columns,** `target_kind` and
-  `activity_template_json`. An activity target uses its own collision-free
-  lease key, and its firing is linked idempotently by
-  `<automation_id>@<due_at>`.
+- **Schedules:** an ordinary automation targets the *Activities* branch with
+  `{title, brief}`. A run of that branch with no activity named creates its
+  record idempotently by `<automation_id>@<due_at>`. There is **no
+  automations migration**.
 - **Owner door `/app/activities`:** list, stop, pause, resume and delete, for
   the owner's own home only.
 
@@ -72,29 +73,25 @@ contexts (D5), the `ta` command (D6), and nested activities.
 ## Capabilities
 
 ### New Capabilities
-- `universe-agent-activities`: the activity store, the work item, dispatch and
-  fencing, effect intents, the served-tool contract, and the automation
-  activity target.
+- `universe-agent-activities`: the activity store, the *Activities* branch
+  substrate, dispatch and fencing, effect intents, and the served-tool
+  contract.
 
 ### Modified Capabilities
-- `user-owned-automations`: a second target kind under the same owner,
-  assignment, budget and firing-fence contract.
+- None. Schedules use automations unchanged.
 
 ## Impact
 
 - **Storage.**
   - A new root-side DB. It is declared in `storage_accounting`, and its bytes
     are charged to the universe's quota.
-  - Two additive automations columns.
   - Prerequisite: S2 (#4188) must land first. It removes
     `.agent-sessions/<home>` on account deletion.
-- **Authority.** One new work item kind, with the admission core reused.
+- **Authority.** No change. Activities run on the foreground run lane.
 - **Code.**
   - New: `tinyassets/agent_activities.py`, the dispatcher and runner.
-  - `provider_work_authority` and `foreground_run_provider`: the activity
-    subject.
-  - `universe_seats`: one new kind.
+  - The *Activities* branch seed (harness layer).
   - `effectors/authenticated_external_call`: effect intents for activity runs.
   - `runs.py`: activity linkage and recovery of intents.
-  - `automations.py`, `engine_mcp_server`, the onboarding door, `app.html`.
+  - `engine_mcp_server`, the onboarding door, `app.html`.
 - **No public connector change.**

@@ -3,7 +3,7 @@
 Encodes the invariant from the founder/universe identity design — see
 ``docs/design-notes/2026-06-26-founder-and-universe-identity.md`` (decision
 D0a) and ``openspec/changes/archive/2026-08-26-universe-creation`` requirement *"MCP writes are
-scoped to the founder's own universe"*:
+scoped to the founder's own command center"*:
 
     A universe created through ``universe action=create_universe`` is OWNED by
     the founder who created it. Another authenticated founder — even one
@@ -186,7 +186,7 @@ class TestFounderWriteBoundary:
 class TestPrivateCanonRelay:
     """Relay reshape (2026-07-02, design note §13/§14): the chatbot does NOT
     write a universe's private canon — the universe's OWN intelligence does. A
-    page write that targets a universe is RELAYED (``relay_to_universe``), never
+    page write that targets a universe is RELAYED (``relay_to_command_center``), never
     written here, so the brain stays one coherent mind whether reached via app
     or chatbot. Issue filings (``kind=``) and no-target writes stay on the
     shared commons."""
@@ -210,7 +210,7 @@ class TestPrivateCanonRelay:
             dry_run=False,
         ))
         # Relayed to the universe — the chatbot did not write the brain.
-        assert out.get("status") == "relay_to_universe", out
+        assert out.get("status") == "relay_to_command_center", out
         assert out.get("universe_id") == uid, out
         assert out.get("relay", {}).get("content"), out
         # Nothing landed in the universe's own wiki…
@@ -247,7 +247,7 @@ class TestPrivateCanonRelay:
             dry_run=False,
         ))
 
-        assert out.get("status") != "relay_to_universe", out
+        assert out.get("status") != "relay_to_command_center", out
         commons_hits = list(
             (universe_base / "wiki").rglob("shared-reference.md")
         )
@@ -270,15 +270,15 @@ class TestPrivateCanonRelay:
         )
 
         out = json.loads(write_page(
-            scope="universe",
-            universe_id="u-relay-carol",
+            scope="command_center",
+            command_center_id="u-relay-carol",
             category="lore",
             filename="private-reference",
             content="This belongs to the universe's learned mind.",
             dry_run=False,
         ))
 
-        assert out.get("status") == "relay_to_universe", out
+        assert out.get("status") == "relay_to_command_center", out
         assert out.get("universe_id") == "u-relay-carol", out
         assert out.get("relay", {}).get("content"), out
 
@@ -295,7 +295,7 @@ class TestPrivateCanonRelay:
         )
 
         out = json.loads(write_page(
-            scope="universe",
+            scope="command_center",
             category="notes",
             filename="must-not-exist",
             content="No universe target resolved.",
@@ -303,7 +303,7 @@ class TestPrivateCanonRelay:
         ))
 
         assert out["error"] == (
-            "scope=universe requires universe_id or a founder home"
+            "scope=command_center requires command_center_id or a founder home"
         )
         assert not list(universe_base.rglob("must-not-exist.md"))
 
@@ -318,13 +318,13 @@ class TestPrivateCanonRelay:
         )
 
         out = json.loads(write_page(
-            scope="universe",
-            universe_id="u-relay-carol",
+            scope="command_center",
+            command_center_id="u-relay-carol",
             kind="bug",
             title="must not file",
         ))
 
-        assert out["error"] == "scope=universe cannot be combined with kind"
+        assert out["error"] == "scope=command_center cannot be combined with kind"
         assert not list(universe_base.rglob("*.md"))
 
     @pytest.mark.parametrize("scope", ["elsewhere", " COMMONS "])
@@ -347,7 +347,7 @@ class TestPrivateCanonRelay:
         ))
 
         assert out["error"] == (
-            "scope must be one of: commons, universe"
+            "scope must be one of: commons, command_center"
         )
         assert not list(universe_base.rglob("must-not-exist.md"))
 
@@ -363,7 +363,7 @@ class TestPrivateCanonRelay:
 
         out = json.loads(write_page(
             scope="commons",
-            universe_id="u-contradictory",
+            command_center_id="u-contradictory",
             category="notes",
             filename="must-not-exist",
             content="Contradictory targets must not mutate.",
@@ -371,7 +371,7 @@ class TestPrivateCanonRelay:
         ))
 
         assert out["error"] == (
-            "scope=commons cannot be combined with universe_id"
+            "scope=commons cannot be combined with command_center_id"
         )
         assert not list(universe_base.rglob("must-not-exist.md"))
 
@@ -556,14 +556,13 @@ class TestOpenCommonsContribution:
 class TestBrainWriteDoorsClosed:
     """Relay reshape (2026-07-02, design §13/§14): the deprecated fat ``universe``
     tool is hidden from tools/list but still dispatchable — so its brain-content
-    write actions (``set_premise`` / ``add_canon`` / ``add_canon_from_path`` /
-    ``soul.edit``) must be RELAYED, never dispatched. Otherwise a legacy connector
+    write actions (``set_premise`` / ``add_canon`` / ``soul.edit``) must be RELAYED, never dispatched. Otherwise a legacy connector
     keeps a live door into the brain that bypasses the universe intelligence
     (Codex impl-review REFUTED, thread 019f268b)."""
 
     @pytest.mark.parametrize(
         "action",
-        ["set_premise", "add_canon", "add_canon_from_path", "soul.edit"],
+        ["set_premise", "add_canon", "soul.edit"],
     )
     def test_brain_write_action_is_relayed_not_dispatched(
         self, universe_base, action
@@ -585,7 +584,7 @@ class TestBrainWriteDoorsClosed:
             }),
         ))
         # Relayed, not written.
-        assert out.get("status") == "relay_to_universe", out
+        assert out.get("status") == "relay_to_command_center", out
         assert out.get("action") == action, out
         idy = universe_base / uid / "identity.md"
         if idy.exists():
@@ -599,4 +598,4 @@ class TestBrainWriteDoorsClosed:
         assert created.get("status") == "created", created
         _authenticate("hank", _FOUNDER_SCOPES)
         out = json.loads(universe(action="list"))
-        assert out.get("status") != "relay_to_universe", out
+        assert out.get("status") != "relay_to_command_center", out

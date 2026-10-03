@@ -201,12 +201,14 @@ def _slow_server(delay_s, *, drip=False, timeout=0.3, max_total_seconds=0.3):
                 _read_request(conn)
                 if drip:
                     conn.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\n")
-                    while not stop.is_set():
+                    while not stop.wait(0.05):
                         conn.sendall(b"x")
-                        time.sleep(0.05)
                     return
-                # A model that says nothing until it has finished.
-                time.sleep(delay_s)
+                # A model that says nothing until it has finished. An event
+                # wait, not a sleep: `stop` ends it at teardown instead of
+                # leaving the thread asleep into later tests.
+                if stop.wait(delay_s):
+                    return
                 conn.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}")
             finally:
                 conn.close()

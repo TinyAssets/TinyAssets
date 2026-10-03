@@ -652,11 +652,18 @@ def test_http_application_lifespan_stops_workspace_sweepers(
         "stop_scheduler_for_serving",
         lambda: lifecycle.append("scheduler"),
     )
-    monkeypatch.setattr(
-        universe_server,
-        "stop_workspace_sweepers_for_serving",
-        lambda: lifecycle.append("workspace-sweepers"),
-    )
+    # Record the stop AND perform it. Replacing it with a bare recorder left
+    # the real staging sweeper this lifespan starts running for the rest of
+    # the session, so every later start_sweeper() was a no-op and
+    # test_workspace_staging's boot-sweeper test timed out whenever it ran
+    # after this one (order-dependent; seen on two heads 2026-10-01).
+    real_stop = universe_server.stop_workspace_sweepers_for_serving
+
+    def _stop() -> None:
+        lifecycle.append("workspace-sweepers")
+        real_stop()
+
+    monkeypatch.setattr(universe_server, "stop_workspace_sweepers_for_serving", _stop)
 
     with TestClient(universe_server.create_streamable_http_app()):
         lifecycle.append("serving")
@@ -781,6 +788,6 @@ def test_served_docs_name_the_workspace_sink():
         "ws.run(",
         "ws.bundle(",
         "workspace_command_timeout",
-        "tiny/<universe>/<slug>",
+        "tiny/<command-center-id>/<slug>",
     ):
         assert needle in text or needle in doc, needle

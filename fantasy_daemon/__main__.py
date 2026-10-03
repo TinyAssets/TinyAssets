@@ -120,28 +120,6 @@ def _build_provider_router() -> ProviderRouter:
     except Exception:
         logger.warning("Ollama not available; local fallback disabled")
 
-    # Optional SDK providers (soft-fail if deps missing).
-    try:
-        from fantasy_daemon.providers.gemini_provider import GeminiProvider
-
-        router.register(GeminiProvider())
-    except Exception:
-        logger.debug("Gemini provider not available")
-
-    try:
-        from fantasy_daemon.providers.groq_provider import GroqProvider
-
-        router.register(GroqProvider())
-    except Exception:
-        logger.debug("Groq provider not available")
-
-    try:
-        from fantasy_daemon.providers.grok_provider import GrokProvider
-
-        router.register(GrokProvider())
-    except Exception:
-        logger.debug("Grok provider not available")
-
     logger.info("Registered providers: %s", router.available_providers)
     return router
 
@@ -3498,8 +3476,8 @@ def _main_unfenced() -> None:
         default="",
         help=(
             "Pin the writer role to a single provider (no fallback). "
-            "Known: claude-code, codex, gemini-free, groq-free, grok-free, "
-            "ollama-local. Omit for the default fallback chain."
+            "Known: claude-code, codex, ollama-local. Omit for the default "
+            "fallback chain."
         ),
     )
 

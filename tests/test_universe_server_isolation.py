@@ -945,7 +945,7 @@ class TestScopeHeader:
             {"universe_id": "alpha"},
         ))
         assert "text" in out
-        assert out["text"].startswith("Universe: alpha")
+        assert out["text"].startswith("Command center: alpha")
         assert out["premise"] == "An alpha premise."
 
     def test_universe_id_is_first_key(self, universe_base):
@@ -968,7 +968,7 @@ class TestScopeHeader:
         ))
         assert out["universe_id"] == "alpha"
         assert "text" in out
-        assert out["text"].startswith("Universe: alpha")
+        assert out["text"].startswith("Command center: alpha")
         assert out["status"] == "updated"
 
     def test_error_without_universe_id_is_unchanged(self, universe_base):
@@ -981,7 +981,7 @@ class TestScopeHeader:
         ))
         assert "error" in out
         if "text" in out:
-            assert not out["text"].startswith("Universe: ")
+            assert not out["text"].startswith("Command center: ")
 
     def test_multi_universe_list_not_scoped(self, universe_base):
         # list_universes returns a multi-universe response with no
@@ -995,14 +995,14 @@ class TestScopeHeader:
         ))
         assert "universes" in out
         if "text" in out:
-            assert not out["text"].startswith("Universe: ")
+            assert not out["text"].startswith("Command center: ")
 
     def test_existing_text_field_preserved_under_header(self):
         # If a handler already emits a `text` field, the helper prepends
         # the header rather than clobbering it.
         fake = json.dumps({"universe_id": "alpha", "text": "Prior prose."})
         wrapped = json.loads(us._scope_universe_response(fake))
-        assert wrapped["text"].startswith("Universe: alpha")
+        assert wrapped["text"].startswith("Command center: alpha")
         assert "Prior prose." in wrapped["text"]
 
     def test_preserves_all_other_fields(self, universe_base):

@@ -1,40 +1,32 @@
-"""A deploy waits for the founder's turn instead of killing it 10 seconds in.
+"""A deploy's drain is short, because the drain is a public outage.
 
-The concern (`docs/concerns/2026-08-29-a-deploy-kills-in-flight-turns-silently.md`)
-proposed a drain ENDPOINT the deploy would ask. It is not needed, and finding
-that out is what this change rests on:
+History, because the numbers have moved twice:
 
-* `restart_stack` is `docker compose up -d`, so a recreate STOPS the old daemon
-  first and waits up to the service's ``stop_grace_period``;
-* uvicorn's graceful shutdown already stops accepting connections and waits on
-  in-flight work;
-* `deploy/compose.yml` declared no ``stop_grace_period``, so the effective bound
-  was docker's 10-second default.
+* Until #4039 compose declared no ``stop_grace_period``, so a recreate SIGKILLed
+  the old daemon after docker's 10-second default and cut turns off mid-flight.
+* #4039 raised it to 180s so turns could finish. On 2026-10-01 that held
+  production at 502 from 22:49:48Z to 22:53:04Z behind one long codex turn
+  (``docs/audits/2026-10-01-deploy-drain-repro/INCIDENT.md``).
+  Uvicorn closes its only listener the moment SIGTERM arrives, and nothing else
+  can bind 127.0.0.1:8001 until the old container is gone, so every second of
+  drain is a second of outage. The process then sat in "Waiting for application
+  shutdown" on the turn's worker thread until docker force-killed it.
 
-The daemon was already willing to drain. The only thing killing the turn was a
-bound nobody had chosen.
+The drain never saved the reply either: sse-starlette cancels the SSE response
+as shutdown begins (``docs/audits/2026-09-26-pr4039-drain-repro.py``). A turn
+cut off now is settled truthfully at the next boot by
+``tinyassets/agent_turn_reconcile.py``.
 
-WHAT THE GRACE ACTUALLY BUYS, since the first version of this file claimed more.
-A served ``converse`` is NOT saved end to end: sse-starlette cancels the SSE
-response the moment uvicorn begins shutting down -- measured at 0.49s against a
-5s grace, while the turn itself finished at 1.99s
-(``docs/audits/2026-09-26-pr4039-drain-repro.py``, Codex on #4039, reproduced
-independently). What the grace buys is the turn COMPLETING: its effects land and
-``record_exchange`` stores the answer, so the founder reads it in the thread
-rather than losing the work. Saving the reply itself is a transport-level problem
-and not this change.
-
-So the fix is three numbers in three files, and what needs testing is the
-RELATIONSHIP between them -- each one alone looks fine while the set is broken:
+What needs testing is still the RELATIONSHIP between numbers in different files,
+because each one alone looks fine while the set is broken:
 
     universe_server.GRACEFUL_SHUTDOWN_S  <  compose daemon.stop_grace_period
-                                         >=  deploy_fail_safe MIN_DAEMON_STOP_GRACE_S
+                                         ==  deploy_fail_safe MAX_DAEMON_STOP_GRACE_S
+                                         <=  OUTAGE_BUDGET_S
 
-and the whole worst case has to fit inside the deploy job, which the first version
-of this file got WRONG: it divided the job budget by two and passed, missing that
-a failing deploy drains a SECOND time on the rollback converge and waits for
-health both times. At 300s that was 960s against a 900s job -- a slow deploy
-CANCELLED part-way instead of rolled back, worse than the bug being fixed.
+plus the deploy passing that ceiling to ``up --timeout``. Compose otherwise stops
+the old container with the StopTimeout it was CREATED with, so without the flag
+the first deploy after a lowered grace would still drain for the old 180s.
 """
 
 from __future__ import annotations
@@ -51,7 +43,8 @@ COMPOSE = REPO / "deploy" / "compose.yml"
 SCRIPT = REPO / "deploy" / "deploy_fail_safe.sh"
 SERVER = REPO / "tinyassets" / "universe_server.py"
 
-#: What the deploy job allows in total, from `.github/workflows/deploy-prod.yml`.
+#: What the deploy job allows for deploy work, from `.github/workflows/deploy-prod.yml`:
+#: the job's timeout less the "Wait for in-flight turns" step's.
 DEPLOY_JOB_BUDGET_S = 15 * 60
 #: How many times one run can converge, and therefore drain: the forward converge,
 #: plus the rollback converge when the new image does not become acceptable.
@@ -60,13 +53,24 @@ CONVERGES_PER_RUN = 2
 #: Everything else the job must still afford after the drains and health waits:
 #: image pull, bundle claim/validate/snapshot/install, env write, canary.
 DEPLOY_OVERHEAD_S = 120
+#: The most public 502 one daemon stop may cost. The drain happens with the
+#: listener already closed, so it is outage time, not grace.
+OUTAGE_BUDGET_S = 30
 
 
 def _workflow_job_timeout_s() -> int:
+    """What the job allows for deploy WORK: its timeout minus the turn wait.
+
+    "Wait for in-flight turns" may spend its whole step timeout before the swap
+    starts (``tests/test_turns_in_flight.py``), so that share is not available
+    to the converges and health waits this file budgets.
+    """
     text = (REPO / ".github" / "workflows" / "deploy-prod.yml").read_text(encoding="utf-8")
     match = re.search(r"^    timeout-minutes:\s*(\d+)$", text, re.M)
     assert match, "the deploy job's timeout-minutes moved; re-point this"
-    return int(match.group(1)) * 60
+    steps = yaml.safe_load(text)["jobs"]["deploy"]["steps"]
+    wait = next(s for s in steps if s.get("name") == "Wait for in-flight turns")
+    return (int(match.group(1)) - int(wait["timeout-minutes"])) * 60
 
 
 def _health_timeout_s() -> int:
@@ -95,10 +99,17 @@ def _compose_grace_s() -> float:
     return int(match.group(1)) * (60 if match.group(2) == "m" else 1)
 
 
-def _script_floor_s() -> int:
-    match = re.search(r"^MIN_DAEMON_STOP_GRACE_S=(\d+)$", SCRIPT.read_text(encoding="utf-8"), re.M)
-    assert match, "MIN_DAEMON_STOP_GRACE_S is no longer a plain integer assignment"
+def _script_ceiling_s() -> int:
+    match = re.search(r"^MAX_DAEMON_STOP_GRACE_S=(\d+)$", SCRIPT.read_text(encoding="utf-8"), re.M)
+    assert match, "MAX_DAEMON_STOP_GRACE_S is no longer a plain integer assignment"
     return int(match.group(1))
+
+
+def _restart_stack_body() -> str:
+    body = SCRIPT.read_text(encoding="utf-8")
+    match = re.search(r"^restart_stack\(\) \{\n(.*?)^\}", body, re.S | re.M)
+    assert match, "restart_stack is no longer a plain shell function"
+    return match.group(1)
 
 
 def test_the_servers_own_bound_expires_before_dockers():
@@ -123,12 +134,40 @@ def test_the_servers_own_bound_expires_before_dockers():
 
 
 def test_the_deploy_gate_enforces_exactly_the_bound_that_shipped():
-    """The floor the validator asserts IS the value in the file it validates.
+    """The ceiling the validator asserts IS the value in the file it validates.
 
-    A floor below the shipped value would let a later bundle quietly lower the
-    grace; a floor above it would refuse the bundle that is live right now.
+    A ceiling above the shipped value would let a later bundle quietly raise the
+    drain back toward an outage; one below it would refuse the live bundle.
     """
-    assert _script_floor_s() == _compose_grace_s()
+    assert _script_ceiling_s() == _compose_grace_s()
+
+
+def test_the_drain_fits_the_outage_budget():
+    """The drain is public 502 with the listener already closed (2026-10-01)."""
+    assert _compose_grace_s() <= OUTAGE_BUDGET_S, (
+        f"a {_compose_grace_s()}s drain is {_compose_grace_s()}s of public 502 on every "
+        "deploy that lands during a turn")
+
+
+def test_the_converge_bounds_the_old_containers_stop_explicitly():
+    """`up --timeout` binds the container being REPLACED.
+
+    Compose stops the old container with the StopTimeout it was created with, so
+    lowering the compose value alone leaves the next deploy draining for the old
+    180s. The flag is what makes the bound hold on the very next deploy.
+    """
+    function = _restart_stack_body()
+    assert re.search(
+        r'up -d \\\n\s*--timeout "\$MAX_DAEMON_STOP_GRACE_S" daemon cloudflared logs', function,
+    ), "restart_stack must pass the ceiling to `docker compose up --timeout`"
+
+
+def test_the_converge_clears_compose_temp_containers_first():
+    """A leftover `<hex>_tinyassets-daemon` made the 2026-10-01 rollback fail."""
+    function = _restart_stack_body()
+    assert "remove_compose_temp_daemons" in function
+    assert function.index("remove_compose_temp_daemons") < function.index("docker compose"), (
+        "the strays must be gone BEFORE compose tries to create its own temp name")
 
 
 def test_the_worst_case_deploy_still_fits_inside_the_job():
@@ -203,7 +242,7 @@ def test_uvicorn_accepts_the_keyword_we_are_passing():
 
 
 def test_the_converge_is_timed_so_the_bound_can_be_measured():
-    """300s is a judgement, and it is only revisable with data.
+    """The bound is a judgement, and it is only revisable with data.
 
     `restart_stack` logs how long the converge took, and says so when it reaches
     the grace bound -- which is the observable that says whether turns are still
@@ -216,7 +255,7 @@ def test_the_converge_is_timed_so_the_bound_can_be_measured():
     assert 'started="$SECONDS"' in function
     assert "SECONDS - started" in function
     assert "converge took" in function
-    assert "MIN_DAEMON_STOP_GRACE_S" in function, (
+    assert "MAX_DAEMON_STOP_GRACE_S" in function, (
         "reaching the bound is the signal that a turn was cut off; say so in the log")
 
 
@@ -231,26 +270,23 @@ def test_the_measurement_behind_the_narrowed_claim_is_retained():
     """
     repro = REPO / "docs" / "audits" / "2026-09-26-pr4039-drain-repro.py"
     assert repro.is_file(), "the shutdown reproduction is the basis of the narrowed claim"
+    # Carried into the open zero-downtime concern when the 2026-08-29 concern was
+    # resolved by the live proof of the deploy wait (2026-10-02).
     concern = (REPO / "docs" / "concerns"
-               / "2026-08-29-a-deploy-kills-in-flight-turns-silently.md").read_text(
-        encoding="utf-8")
+               / "2026-10-01-deploys-are-not-zero-downtime.md").read_text(encoding="utf-8")
     assert "sse-starlette" in concern, (
         "the concern must record WHY a longer grace does not save the reply")
 
 
-def test_the_concern_this_does_not_close_is_still_open():
-    """A 300s bound does not save a turn that runs for an hour.
-
-    The concern's own resolution condition is a turn that survives a deploy OR is
-    left a truthful notice, observed live. This change plus the startup
-    reconciliation make the second half true; neither makes the first half true
-    for a long turn, so the file stays until someone sees it on the live surface.
-    """
-    concern = REPO / "docs" / "concerns" / (
-        "2026-08-29-a-deploy-kills-in-flight-turns-silently.md")
-    assert concern.is_file(), (
-        "if this was deleted, it needs the live observation its own 'How to resolve' "
-        "section demands -- not a green test suite")
+def test_the_deploy_wait_was_resolved_by_a_live_observation():
+    """The 2026-08-29 concern could close only on a live observation of a turn
+    surviving a deploy, not on a green suite. That happened on 2026-10-02, and the
+    as-built requirement records it: deploy run 36979226551 waited for the
+    founder's turn c5264d0a, which completed."""
+    spec = (REPO / "openspec" / "specs" / "uptime-and-alarms" / "spec.md").read_text(
+        encoding="utf-8")
+    assert "A Deploy Waits For In-Flight Work Before It Swaps The Daemon" in spec
+    assert "36979226551" in spec and "c5264d0a" in spec
 
 
 @pytest.mark.parametrize("name", ["daemon"])
@@ -262,3 +298,14 @@ def test_only_the_daemon_carries_the_grace(name: str):
         if isinstance(body, dict) and body.get("stop_grace_period") is not None
     }
     assert carriers == {name}, f"{sorted(carriers)} declare a grace; only {name} should"
+
+
+def test_the_units_own_converge_carries_the_same_stop_ceiling():
+    """Watchdog and manual restarts go through tinyassets-daemon.service. Its
+    `up -d` would otherwise stop the old container with its create-time
+    StopTimeout, which is 180s for anything recreated from a pre-2026-10-01
+    bundle."""
+    text = (REPO / "deploy" / "tinyassets-daemon.service").read_text(encoding="utf-8")
+    exec_start = [ln for ln in text.splitlines() if ln.startswith("ExecStart=")]
+    assert len(exec_start) == 1
+    assert f"up -d --timeout {_script_ceiling_s()} daemon cloudflared logs" in exec_start[0]

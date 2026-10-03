@@ -422,13 +422,13 @@ def deletion_blockers(
         return blockers
 
     checks = (
-        ("another founder is bound to this universe",
+        ("another founder is bound to this command center",
          "SELECT COUNT(*) FROM founder_home WHERE universe_id = ? AND founder_sub <> ?",
          (home, principal)),
-        ("another person holds access to this universe",
+        ("another person holds access to this command center",
          "SELECT COUNT(*) FROM universe_acl WHERE universe_id = ? AND actor_id <> ?",
          (home, principal)),
-        ("another person's requests live in this universe",
+        ("another person's requests live in this command center",
          "SELECT COUNT(*) FROM user_requests WHERE universe_id = ? AND user_id <> ?",
          (home, principal)),
         ("another person authored branches here",
@@ -458,7 +458,7 @@ def deletion_blockers(
          "JOIN user_requests AS request ON request.request_id = dep.request_id "
          "WHERE request.universe_id = ? AND request.user_id <> ?",
          (home, principal)),
-        ("a daemon is still running for this universe",
+        ("a daemon is still running for this command center",
          "SELECT COUNT(*) FROM author_runtime_instances WHERE universe_id = ? "
          f"AND lower(status) IN ({','.join('?' for _ in _ACTIVE_DAEMON_STATES)})",
          (home, *sorted(_ACTIVE_DAEMON_STATES))),

@@ -8,7 +8,7 @@ import styles from "./page.module.css";
 export const metadata: Metadata = {
   title: "Build",
   description:
-    "A universe does not come with integrations. It builds them from five primitives while you talk: connection, graph, code node, workspace, automation. And it keeps its own brain.",
+    "A command center does not come with integrations. It builds them from five primitives while you talk: connection, graph, code node, workspace, automation. And it keeps its own brain.",
   alternates: { canonical: `${SITE.origin}/build/` },
 };
 
@@ -19,7 +19,7 @@ export default function BuildPage() {
         <RitualLabel>Build</RitualLabel>
         <h1>Five primitives. Anything you can describe.</h1>
         <p className="lead">
-          A universe does not come with a list of integrations. It builds them, from a small set of
+          A command center does not come with a list of integrations. It builds them, from a small set of
           parts, while you talk. The parts are few on purpose: they compose.
         </p>
       </section>
@@ -39,7 +39,7 @@ export default function BuildPage() {
                 <tr>
                   <td>Connection</td>
                   <td>
-                    One generic way to reach any outside platform. Paste what you have; the universe
+                    One generic way to reach any outside platform. Paste what you have; the command center
                     asks for what is missing, with links to where to get it.
                   </td>
                   <td className={styles.say}>&ldquo;Here is my GitHub token. Watch the issues on that repo.&rdquo;</td>
@@ -55,7 +55,7 @@ export default function BuildPage() {
                 <tr>
                   <td>Code node</td>
                   <td>
-                    A sandboxed function the universe writes itself when no node fits. It sees the
+                    A sandboxed function the agent writes itself when no node fits. It sees the
                     outputs of earlier nodes and nothing else.
                   </td>
                   <td className={styles.say}>&ldquo;Count the lines and put the number in the README.&rdquo;</td>
@@ -64,7 +64,7 @@ export default function BuildPage() {
                   <td>Workspace</td>
                   <td>
                     A checked-out repository on any forge, runnable and pushable. Scratch unless you
-                    pin it, so a universe never has to be bigger than the repo it works on.
+                    pin it, so a command center never has to be bigger than the repo it works on.
                   </td>
                   <td className={styles.say}>&ldquo;Clone it, run the tests, open a PR with the fix.&rdquo;</td>
                 </tr>
@@ -79,7 +79,7 @@ export default function BuildPage() {
                 <tr>
                   <td>Brain</td>
                   <td>
-                    What the universe knows about you and about its own work. It writes to it as it
+                    What the agent knows about you and about its own work. It writes to it as it
                     learns; you can read it and correct it.
                   </td>
                   <td className={styles.say}>Nothing. It happens as you talk.</td>
@@ -94,9 +94,9 @@ export default function BuildPage() {
         <div className="container split">
           <div>
             <RitualLabel>A worked example</RitualLabel>
-            <h2>Three nodes, written and run by the universe.</h2>
+            <h2>Three nodes, written and run by the command center.</h2>
             <p>
-              The founder asked for the README to carry its own line count. The universe composed a
+              The founder asked for the README to carry its own line count. The command center composed a
               fetch of the file, wrote a small function to count the lines, and added a write node
               that opened the pull request. The first attempt (
               <a href={SITE.proof.firstPr} target="_blank" rel="noreferrer">
@@ -160,7 +160,7 @@ export default function BuildPage() {
         <div className="container">
           <div className="head">
             <RitualLabel>Ask for real work</RitualLabel>
-            <h2>The kind of thing a universe is for.</h2>
+            <h2>The kind of thing a command center is for.</h2>
           </div>
           <div className="cols cols--3">
             <div className="col">

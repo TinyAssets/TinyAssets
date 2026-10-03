@@ -16,6 +16,8 @@ HEARTBEAT_MAX_AGE_SECONDS="${TINYASSETS_HEARTBEAT_MAX_AGE_SECONDS:-900}"
 # heartbeat is allowed to condemn it (see within_heartbeat_grace).
 HEARTBEAT_GRACE_MARGIN_SECONDS="${TINYASSETS_HEARTBEAT_GRACE_MARGIN_SECONDS:-120}"
 LOCK_FILE="${TINYASSETS_DAEMON_WATCHDOG_LOCK:-/run/tinyassets-daemon-watchdog.lock}"
+# The lock deploy/deploy_fail_safe.sh holds for its whole run (its LOCK_FILE).
+HOST_MUTATION_LOCK="${TINYASSETS_HOST_MUTATION_LOCK:-/var/lock/tinyassets-host-mutation.lock}"
 LOG_TAG="daemon-watchdog"
 
 log() {
@@ -78,7 +80,10 @@ restart_daemon() {
     if docker inspect tinyassets-daemon >/dev/null 2>&1; then
         # A hung-but-"healthy" daemon needs an actual container restart;
         # `up -d` alone would leave an unchanged container running.
-        docker restart tinyassets-daemon || true
+        # -t 20: the same drain ceiling as deploy_fail_safe.sh. A plain restart
+        # would use the container's create-time StopTimeout, which is 180s for a
+        # container a rollback recreated from a pre-2026-10-01 bundle.
+        docker restart -t 20 tinyassets-daemon || true
     fi
     # Then re-converge the unit: with no ExecStop this is a safe `up -d` of
     # the three production services, which (re)starts the tunnel/logs if they
@@ -180,6 +185,22 @@ main() {
     exec 9>"$LOCK_FILE"
     if ! flock -n 9; then
         log "another watchdog run is active; exiting"
+        exit 0
+    fi
+
+    # Stand down while a deploy holds the host-mutation lock. A deploy's own
+    # recreate leaves the unit inactive and the container briefly absent, which
+    # reads as dead here. On 2026-10-01 this script restarted the container
+    # mid-deploy and helped kill the new image and fail the rollback
+    # (docs/audits/2026-10-01-deploy-drain-repro/INCIDENT.md).
+    # This unit runs as root, the lock's owner, so `>>` may create it. Creating
+    # it here closes the window right after boot where a lockless check could
+    # race a deploy that takes the lock a moment later. fd 8 stays held through
+    # any restart below, so a deploy waits for us in turn.
+    if ! exec 8>>"$HOST_MUTATION_LOCK"; then
+        log "cannot open ${HOST_MUTATION_LOCK}; proceeding unlocked"
+    elif ! flock -n 8; then
+        log "a deploy holds ${HOST_MUTATION_LOCK}; standing down"
         exit 0
     fi
 

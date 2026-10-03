@@ -1030,7 +1030,7 @@ def test_foreground_open_provider_settles_fresh_resolution_refusal_before_launch
     )
 
     assert response["terminal_status"] == "failed"
-    assert "Connect your provider before running this universe" in response[
+    assert "Connect your provider before running this command center" in response[
         "terminal_error"
     ]
     assert substituted_provider.calls == []
@@ -1075,7 +1075,7 @@ def test_foreground_run_mints_one_carrier_per_node_and_refuses_n_plus_one(
 
 
 #: What each held case must SAY, not merely that it was held. Every one of
-#: these used to read "Connect your provider before running this universe",
+#: these used to read "Connect your provider before running this command center",
 #: including on a universe that had -- live 2026-09-30, where the owner of a
 #: connected, serving `api_key_http` source was sent to connect a provider
 #: (tests/test_free_account_run_provider_parity.py). Only the two cases that
@@ -1085,7 +1085,7 @@ _HELD_CASE_REASON = {
     "registered_only": None,
     "stale": "provider assignment digest is invalid",
     "revoked": "connect your provider before enabling serving",
-    "cross_universe": "foreground run is not the principal's own universe",
+    "cross_universe": "foreground run is not the principal's own command center",
 }
 
 

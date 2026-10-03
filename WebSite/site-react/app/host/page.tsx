@@ -7,5 +7,5 @@ export const metadata: Metadata = {
 };
 
 export default function Page() {
-  return <Moved to="/start/" name="Start" line="Hosting became starting: your universe runs in the cloud on your subscription." />;
+  return <Moved to="/start/" name="Start" line="Hosting became starting: your command center runs in the cloud on your subscription." />;
 }

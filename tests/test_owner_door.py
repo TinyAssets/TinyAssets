@@ -167,7 +167,7 @@ def test_anonymous_and_unknown_bearers_are_challenged(door):
     ("pending_requests", {}),
     ("agent_bindings", {"limit": 10}),
     ("model_options", {}),
-    ("universe_files", {}),
+    ("command_center_files", {}),
 ])
 def test_another_account_is_refused_exactly_as_the_connector_refuses_it(door, target, extra):
     from tinyassets import universe_server as us

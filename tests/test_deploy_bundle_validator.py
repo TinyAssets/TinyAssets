@@ -63,7 +63,7 @@ def _script_int(name: str) -> int:
     return int(match.group(1))
 
 
-MIN_STOP_GRACE_S = _script_int("MIN_DAEMON_STOP_GRACE_S")
+MAX_STOP_GRACE_S = _script_int("MAX_DAEMON_STOP_GRACE_S")
 
 
 def _validator_source() -> str:
@@ -225,7 +225,7 @@ def _validate(
             # with `os.environ[...]` on purpose, so a shell that forgets to export
             # it fails loudly, and a test that hard-coded the number would keep
             # passing after the deploy script changed it.
-            "MIN_DAEMON_STOP_GRACE_S": str(MIN_STOP_GRACE_S),
+            "MAX_DAEMON_STOP_GRACE_S": str(MAX_STOP_GRACE_S),
             "SYSTEMROOT": "C:/Windows",  # cpython needs this on Windows
             "PATH": "",
         },
@@ -467,13 +467,14 @@ def test_the_logs_sidecar_may_not_forward_to_its_own_listener(tmp_path: Path):
 
 
 # ---------------------------------------------------------------------------
-# the drain bound (2026-09-26)
+# the drain bound (2026-09-26, inverted 2026-10-01)
 #
-# `stop_grace_period` decides whether a deploy lets the founder's turn finish.
-# With the key ABSENT the bound is docker's 10-second default, which is what cut
-# two live turns off mid-flight -- so losing it must refuse the bundle rather
-# than quietly returning to 10 seconds. Read from the SOURCE, not either render:
-# compose normalizes durations and this check must not depend on which form this
+# `stop_grace_period` is how long a stopping daemon drains with its listener
+# already closed, so it is public 502 time. On 2026-10-01 a 180s value held
+# production down for 3m16s behind one long turn. It is a CEILING now. The key
+# is still required, so the bound stays written down rather than silently left
+# to docker's 10s default. Read from the SOURCE, not either render: compose
+# normalizes durations and this check must not depend on which form this
 # version emits.
 # ---------------------------------------------------------------------------
 
@@ -492,27 +493,27 @@ def test_losing_the_stop_grace_period_is_refused(tmp_path: Path):
         "the refusal must say what absence MEANS, not just that a key is missing")
 
 
-@pytest.mark.parametrize("value", ["10s", "179s", "2m", "179000ms", "2m59s"])
-def test_a_grace_below_the_floor_is_refused(tmp_path: Path, value: str):
-    """Every form has to clear the floor, not just the one the file happens to use."""
+@pytest.mark.parametrize("value", ["21s", "180s", "3m", "20001ms", "0m21s", "1h"])
+def test_a_grace_above_the_ceiling_is_refused(tmp_path: Path, value: str):
+    """Every form has to stay under the ceiling, not just the one the file uses."""
     source = re.sub(
         r"^(\s*)stop_grace_period:.*$", rf"\g<1>stop_grace_period: {value}",
         _source(), count=1, flags=re.M,
     )
     result = _validate(tmp_path, _render(), source)
     assert result.returncode == 1
-    assert "must be at least" in result.stderr
+    assert "must be at most" in result.stderr
 
 
 @pytest.mark.parametrize(
-    "value", ["180s", "3m", "3m0s", "180.0s", "180000ms", "1h30m", "600s", "10m"],
+    "value", ["20s", "0m20s", "20.0s", "20000ms", "10s", "1s", "500ms"],
 )
 def test_every_equivalent_duration_compose_accepts_is_accepted(tmp_path: Path, value: str):
     """Go duration syntax, because that is what compose documents.
 
     The first version took `(\\d+)(s|m)?` and refused `3m0s`, `180.0s` and
-    `180000ms` -- all the same bound as the shipped `180s`, all valid compose
-    (Codex on #4039, P2). A gate that blocks deploys, INCLUDING a rollback, must
+    `180000ms` -- all the same bound as the then-shipped `180s`, all valid
+    compose (Codex on #4039, P2). A gate that blocks deploys, INCLUDING a rollback, must
     not refuse the next maintainer for writing an equivalent value.
 
     The oracle for WHICH forms compose accepts is

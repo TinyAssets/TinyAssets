@@ -43,10 +43,21 @@ def test_node_definition_round_trips_effort():
     assert again.reasoning_effort == "minimal"
 
 
-def test_compiled_node_threads_effort_into_provider_call():
+def test_compiled_node_threads_effort_into_provider_call(monkeypatch):
     """The decisive test: a node's reasoning_effort reaches the provider call's
     ModelConfig (not a prompt suggestion)."""
+    from types import SimpleNamespace
+
+    from tinyassets import graph_compiler
     from tinyassets.graph_compiler import _build_prompt_template_node
+
+    # Model zero worker wait for config threading; queue-wait subtraction is
+    # covered with real clocks in test_node_timeout_queue_cancellation.py.
+    # Replace only this module's clock reference, not shared time.monotonic.
+    monkeypatch.setattr(graph_compiler, "time", SimpleNamespace(
+        monotonic=lambda: 100.0,
+        sleep=graph_compiler.time.sleep,
+    ))
 
     captured: dict = {}
 
@@ -73,6 +84,7 @@ def test_compiled_node_threads_effort_into_provider_call():
     assert cfg.reasoning_effort == "minimal"
     # The node's own timeout threads too (closes the node/provider decoupling).
     assert cfg.timeout == 45
+    assert cfg.absolute_cap_s == 45.0
 
 
 def test_subsecond_node_timeout_floors_provider_timeout_to_one():

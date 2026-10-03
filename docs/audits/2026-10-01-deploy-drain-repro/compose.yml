@@ -1,0 +1,19 @@
+# Same shape as deploy/compose.yml's daemon: host-published 127.0.0.1 port,
+# fixed container_name, a stop_grace_period, recreated by `up -d` when GEN
+# changes (standing in for a new image).
+name: deploy-drain-repro
+services:
+  daemon:
+    image: ${REPRO_IMAGE:?set REPRO_IMAGE to an image with fastmcp+uvicorn}
+    container_name: deploy-drain-repro-daemon
+    entrypoint: ["python", "/repro/app.py"]
+    working_dir: /repro
+    user: "0:0"
+    environment:
+      GEN: ${GEN}
+      GRACEFUL_SHUTDOWN_S: ${GRACEFUL_SHUTDOWN_S}
+    volumes:
+      - ./:/repro:ro
+    ports:
+      - "127.0.0.1:18001:8001"
+    stop_grace_period: ${GRACE}

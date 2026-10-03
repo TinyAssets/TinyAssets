@@ -11,6 +11,7 @@ import asyncio
 import math
 from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -184,6 +185,8 @@ async def open_engine_tools(
     graph_id: str,
     enabled_tools: Sequence[str],
     timeout: float = 60.0,
+    session_key: str = "",
+    turn: str = "",
 ) -> AsyncIterator[EngineToolSession]:
     """Use caller-verified identity; no caller-supplied URL, secret or transport."""
     if not isinstance(enabled_tools, Sequence) or isinstance(enabled_tools, (str, bytes)):
@@ -210,7 +213,12 @@ async def open_engine_tools(
     if route is None:
         raise EngineToolError("engine_tools_unavailable")
     try:
-        client = _make_client(route, timeout)
+        # The session and live turn ride on the URL the client dials; the
+        # verified route itself, which the session checks against, is unchanged.
+        from tinyassets.engine_steering import route_with_session
+
+        dialled = replace(route, url=route_with_session(route.url, session_key, turn))
+        client = _make_client(dialled, timeout)
     except Exception:
         raise EngineToolError("engine_tools_unavailable") from None
     session = EngineToolSession(client, route, root, enabled)

@@ -17,6 +17,14 @@ tinyassets-daemon`` (which the systemd unit wires to
 Stdlib only. No third-party deps. Idempotent + race-free because the
 timer is single-concurrency at the systemd level.
 
+Stands down while a deploy holds the host-mutation lock. A deploy's own
+recreate looks exactly like a dead daemon to this probe. On 2026-10-01 this
+watchdog restarted the unit mid-deploy, and the unit's second compose run
+killed the new container and made the rollback fail
+(docs/audits/2026-10-01-deploy-drain-repro/INCIDENT.md). While the
+lock is held, a tick resets the red streak and touches nothing. While a tick
+holds the lock, a deploy waits for it.
+
 Exit codes
 ----------
 0  Probe handled (green, first-red, sustained-red, or recovery).
@@ -40,6 +48,7 @@ zero-reds (warn via stderr).
 from __future__ import annotations
 
 import argparse
+import contextlib
 import datetime as _dt
 import json
 import os
@@ -54,11 +63,22 @@ DEFAULT_STATE_DIR = Path("/var/lib/tinyassets-watchdog")
 DEFAULT_STATE_FILE = DEFAULT_STATE_DIR / "state.json"
 DEFAULT_CANARY_SCRIPT = Path("/opt/tinyassets/scripts/mcp_public_canary.py")
 DEFAULT_SERVICE_UNIT = "tinyassets-daemon.service"
+# The lock deploy/deploy_fail_safe.sh holds for its whole run (its LOCK_FILE).
+DEFAULT_HOST_MUTATION_LOCK = Path(
+    os.environ.get(
+        "TINYASSETS_HOST_MUTATION_LOCK", "/var/lock/tinyassets-host-mutation.lock",
+    )
+)
 DEFAULT_THRESHOLD = 3
 # Min wall-time between restarts. Prevents a wedged daemon from
 # being restart-looped every 30s when the underlying problem
 # (bad env, dep issue) isn't "restart will fix it."
 MIN_RESTART_INTERVAL_SECONDS = 600  # 10 min
+# Longer than tinyassets-daemon.service's TimeoutStartSec (200s) plus the stop
+# systemd runs after a failed start (TimeoutStopSec, 90s), so the lock outlives
+# the restart job and its cleanup. tinyassets-watchdog.service's
+# TimeoutStartSec is longer again.
+RESTART_JOB_TIMEOUT_SECONDS = 320
 
 # Production alarm-log path. Env-var override allows tests + dev setups
 # to redirect to a tmp path without touching the real production file.
@@ -185,10 +205,16 @@ def _restart_service(unit: str) -> tuple[bool, str]:
             ["sudo", "-n", "/usr/bin/systemctl", "restart", unit],
             capture_output=True,
             text=True,
-            timeout=60,
+            # The restart is a systemd JOB: the unit's own compose run, bounded by
+            # its TimeoutStartSec=200s. systemctl waits for that job, and the
+            # host-mutation lock is held for as long as we wait. Giving up at
+            # 60s (the old value) released the lock while the job's compose was
+            # still mutating, which let a deploy start on top of it (Codex
+            # refute on the 2026-10-01 fix).
+            timeout=RESTART_JOB_TIMEOUT_SECONDS,
         )
     except subprocess.TimeoutExpired:
-        return (False, "systemctl restart timeout (>60s)")
+        return (False, f"systemctl restart timeout (>{RESTART_JOB_TIMEOUT_SECONDS}s)")
     except OSError as exc:
         return (False, f"systemctl invoke error: {exc}")
     if result.returncode == 0:
@@ -205,6 +231,44 @@ def _iso_to_epoch(iso: str | None) -> float | None:
         return None
 
 
+@contextlib.contextmanager
+def _host_mutation_lock(path: Path = DEFAULT_HOST_MUTATION_LOCK):
+    """Yield False when another host mutator (a deploy) holds the lock.
+
+    Opened READ-ONLY and never created. This runs as ``tinyassets``, the deploy
+    runs as root, and ``/var/lock`` is sticky and world-writable with
+    ``fs.protected_regular=2``. A file this user created there would make root's
+    own ``exec 9>`` on it fail, locking every later deploy out. ``flock`` needs
+    no write access. If the file is absent, no deploy has run since boot, so
+    there is nothing to wait for.
+
+    Any other failure to open or lock yields True. This watchdog exists for
+    uptime, and a broken lock must not silence it.
+    """
+    try:
+        fd = os.open(path, os.O_RDONLY)
+    except FileNotFoundError:
+        yield True
+        return
+    except OSError as exc:
+        _log("WARN", f"host-mutation lock {path} unreadable ({exc}); proceeding unlocked")
+        yield True
+        return
+    try:
+        import fcntl
+
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            yield False
+            return
+        except OSError as exc:
+            _log("WARN", f"host-mutation lock {path} not lockable ({exc}); proceeding unlocked")
+        yield True
+    finally:
+        os.close(fd)
+
+
 def watchdog_tick(
     *,
     canary_script: Path = DEFAULT_CANARY_SCRIPT,
@@ -219,15 +283,63 @@ def watchdog_tick(
     min_restart_interval: float = MIN_RESTART_INTERVAL_SECONDS,
     dry_run: bool = False,
     alarm_log: Path = ALARM_LOG,
+    host_mutation_lock=_host_mutation_lock,  # injection seam for tests
 ) -> dict:
     """Run one probe cycle. Return the post-tick state dict.
 
     When ``dry_run=True`` (or ``DRY_RUN=1`` env var), probes are still
     executed (read-only) but restarts + GH issues are suppressed.
+
+    While a deploy holds the host-mutation lock the tick does not probe. It
+    resets the red streak, so reds counted during a deploy's own recreate cannot
+    trip a restart on the first red after it either.
     """
     if os.environ.get("DRY_RUN", "").strip() in ("1", "true", "yes"):
         dry_run = True
 
+    with host_mutation_lock() as free:
+        if not free:
+            state = _load_state(state_file)
+            state["last_probe_ts"] = _now_iso()
+            if state.get("consecutive_reds"):
+                _log("INFO", f"discarding {state['consecutive_reds']} red(s) "
+                     "counted across a deploy")
+            state["consecutive_reds"] = 0
+            _log("INFO", "a deploy holds the host-mutation lock; standing down this tick")
+            _save_state(state_file, state)
+            return state
+        return _tick_unlocked(
+            canary_script=canary_script,
+            probe_url=probe_url,
+            state_file=state_file,
+            service_unit=service_unit,
+            threshold=threshold,
+            probe_timeout=probe_timeout,
+            restart_fn=restart_fn,
+            probe_fn=probe_fn,
+            gh_issue_fn=gh_issue_fn,
+            min_restart_interval=min_restart_interval,
+            dry_run=dry_run,
+            alarm_log=alarm_log,
+        )
+
+
+def _tick_unlocked(
+    *,
+    canary_script: Path,
+    probe_url: str,
+    state_file: Path,
+    service_unit: str,
+    threshold: int,
+    probe_timeout: float,
+    restart_fn,
+    probe_fn,
+    gh_issue_fn,
+    min_restart_interval: float,
+    dry_run: bool,
+    alarm_log: Path,
+) -> dict:
+    """One probe cycle, with no other host mutator running."""
     state = _load_state(state_file)
 
     if probe_fn is None:

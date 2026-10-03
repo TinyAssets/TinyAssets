@@ -9,7 +9,7 @@ import Footer from "../components/Footer";
 import { TINYASSETS_MARK_VERSION } from "../components/TinyAssetsMark";
 import { SITE } from "../lib/site";
 
-const TITLE = "TinyAssets — your own AI universe";
+const TITLE = "TinyAssets — your own AI command center";
 const DESCRIPTION =
   "A cloud agent of your own. It runs on the Claude or ChatGPT subscription you already pay for, connects to any platform, builds any automation from a few primitives, learns you as it goes, and keeps working after you close the tab.";
 const markAsset = (path: string) => `${path}?v=${TINYASSETS_MARK_VERSION}`;

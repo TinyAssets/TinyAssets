@@ -288,6 +288,49 @@ def test_nonzero_exit_writes_an_error_marker_carrying_stderr(monkeypatch, tmp_pa
     assert "upstream exploded" in out
 
 
+def test_nonzero_exit_carries_the_end_of_a_long_stderr(monkeypatch, tmp_path):
+    """The reason a CLI died comes LAST, after a long banner; a head slice of
+    stderr made a rejected-model run look like it had produced output."""
+    banner = b"".join(b"config line %d\n" % i for i in range(400))
+    rc, out, _ = _run_main(
+        monkeypatch, tmp_path,
+        _FakeProc(returncode=1, stderr=banner + b"ERROR: model gpt-6.1-sol is not supported"),
+        provider="codex", out_file_text=None,
+    )
+    assert rc == 2
+    assert out.startswith("[peer_agent] ERROR: codex exited 1")
+    assert "model gpt-6.1-sol is not supported" in out
+    assert "config line 0" in out
+
+
+def test_codex_pins_model_and_effort_by_default(monkeypatch) -> None:
+    monkeypatch.setattr(peer_agent, "resolve_codex", lambda: "codex.exe")
+    monkeypatch.delenv("WORKFLOW_CODEX_MODEL", raising=False)
+    monkeypatch.delenv("WORKFLOW_CODEX_EFFORT", raising=False)
+
+    command = peer_agent.build_codex_cmd(_args(write=False), "C:\\result.md")
+
+    assert command[command.index("-m") + 1] == "gpt-6-astra"
+    assert "model_reasoning_effort=medium" in command
+
+
+def test_codex_model_and_effort_overrides_win(monkeypatch) -> None:
+    monkeypatch.setattr(peer_agent, "resolve_codex", lambda: "codex.exe")
+    monkeypatch.setenv("WORKFLOW_CODEX_MODEL", "env-model")
+    monkeypatch.setenv("WORKFLOW_CODEX_EFFORT", "high")
+
+    command = peer_agent.build_codex_cmd(_args(write=False), "C:\\result.md")
+    assert command[command.index("-m") + 1] == "env-model"
+    assert "model_reasoning_effort=high" in command
+
+    args = _args(write=False)
+    args.model, args.effort = "flag-model", "low"
+    command = peer_agent.build_codex_cmd(args, "C:\\result.md")
+    assert command[command.index("-m") + 1] == "flag-model"
+    assert "model_reasoning_effort=low" in command
+    assert command.count("-m") == 1
+
+
 def test_prompt_reaches_the_provider_on_stdin_not_argv(monkeypatch, tmp_path):
     # Windows cmd.exe truncates argv at a newline, which silently shortened
     # multi-line review prompts -- stdin is the contract.

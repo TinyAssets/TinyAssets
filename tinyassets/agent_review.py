@@ -96,8 +96,10 @@ def bound(provider_call: Any, *, active: bool):
 # -- the owner's off switch ------------------------------------------------------
 
 _FILE = "rules.db"
+#: Per agent from the store up (harness §4.18): ``main`` is only the seed.
 _SCHEMA = """CREATE TABLE IF NOT EXISTS review_off (
-    action_class TEXT PRIMARY KEY, updated_at REAL NOT NULL)"""
+    agent TEXT NOT NULL DEFAULT 'main', action_class TEXT NOT NULL,
+    updated_at REAL NOT NULL, PRIMARY KEY (agent, action_class))"""
 
 
 class ReviewSwitchRefused(ValueError):
@@ -108,17 +110,42 @@ def _connect(universe_dir: Path) -> sqlite3.Connection:
     path = agent_sessions._records_dir(Path(universe_dir)) / _FILE
     conn = sqlite3.connect(path, timeout=10.0, isolation_level=None)
     conn.execute("PRAGMA busy_timeout = 10000")
+    _migrate(conn)
     conn.execute(_SCHEMA)
     return conn
 
 
-def switched_off(universe_dir: Path) -> set[str]:
+def _migrate(conn: sqlite3.Connection) -> None:
+    """A switch table from before agents were keyed: its rows become main's."""
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(review_off)")}
+    if not columns or "agent" in columns:
+        return
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        # Re-read under the write lock: another process may have just migrated.
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(review_off)")}
+        if "agent" in columns:
+            conn.execute("COMMIT")
+            return
+        conn.execute("ALTER TABLE review_off RENAME TO review_off_unkeyed")
+        conn.execute(_SCHEMA)
+        conn.execute("INSERT OR IGNORE INTO review_off (agent, action_class, updated_at) "
+                     "SELECT 'main', action_class, updated_at FROM review_off_unkeyed")
+        conn.execute("DROP TABLE review_off_unkeyed")
+        conn.execute("COMMIT")
+    except BaseException:
+        conn.execute("ROLLBACK")
+        raise
+
+
+def switched_off(universe_dir: Path, agent: str = "main") -> set[str]:
     with closing(_connect(universe_dir)) as conn:
-        return {row[0] for row in conn.execute("SELECT action_class FROM review_off")}
+        return {row[0] for row in conn.execute(
+            "SELECT action_class FROM review_off WHERE agent = ?", (agent,))}
 
 
 def set_review(universe_dir: Path, action_class: str, enabled: bool, *,
-               confirm: bool = False) -> None:
+               confirm: bool = False, agent: str = "main") -> None:
     """The owner turns the review on or off for one class (the owner door only)."""
     from tinyassets.agent_rules import ACTION_CLASSES
 
@@ -131,10 +158,11 @@ def set_review(universe_dir: Path, action_class: str, enabled: bool, *,
         raise ReviewSwitchRefused(OFF_CONSEQUENCE + " Confirm to switch it off.")
     with closing(_connect(universe_dir)) as conn:
         if enabled:
-            conn.execute("DELETE FROM review_off WHERE action_class = ?", (action_class,))
+            conn.execute("DELETE FROM review_off WHERE agent = ? AND action_class = ?",
+                         (agent, action_class))
         else:
-            conn.execute("INSERT OR REPLACE INTO review_off VALUES (?, ?)",
-                         (action_class, time.time()))
+            conn.execute("INSERT OR REPLACE INTO review_off (agent, action_class, updated_at) "
+                         "VALUES (?, ?, ?)", (agent, action_class, time.time()))
 
 
 # -- the review --------------------------------------------------------------------
@@ -219,7 +247,7 @@ def _refusal(reason: str, *, kind: str, digest: str) -> dict:
 
 
 def review_refusal(universe_dir: Path, *, action: dict, rule: str,
-                   evidence: str = "") -> dict | None:
+                   evidence: str = "", agent: str = "main") -> dict | None:
     """``None`` when the action may proceed, else a refusal naming why.
 
     ``action`` is the structured, platform-derived description (class,
@@ -231,7 +259,7 @@ def review_refusal(universe_dir: Path, *, action: dict, rule: str,
         return None
     if action_class not in ALWAYS_REVIEWED:
         try:
-            if action_class in switched_off(universe_dir):
+            if action_class in switched_off(universe_dir, agent):
                 return None
         except (OSError, sqlite3.Error):
             pass  # an unreadable switch leaves the review on

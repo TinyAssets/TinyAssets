@@ -56,6 +56,9 @@ TREE_EXCLUDES: tuple[str, ...] = (
     "*.pyc",
     ".pytest_cache",
     "*.tmp",
+    # Vendored custom-UI libraries (~3 MB) are served only by the hosted app;
+    # the plugin runtime has no app. Their pinned manifest IS mirrored.
+    "ui_libraries",
 )
 
 #: Divergence is compared for text the mirror is expected to ship verbatim.

@@ -5,7 +5,7 @@ Live 2026-09-30, prod sha 6235666b, universe ``u-01ky3zh1arr8qth8jee7zx63pq``
 on that source. Its workflow did not: branch ``04521fb54792`` (one ``prompt``
 node, no ``llm_policy``) failed twice at the node -- runs ``61184d8f21724915``
 and ``4828ae18e2414e77`` -- with ``ProviderAuthorityHeldError`` and the words
-*"Connect your provider before running this universe"*, which was both the wrong
+*"Connect your provider before running this command center"*, which was both the wrong
 cause and the wrong fix: the provider WAS connected, ready, serving and in the
 accepted manifest.
 
@@ -923,7 +923,7 @@ def test_a_held_run_names_its_own_refusal_instead_of_connect_your_provider(
 
     assert record["status"] == "failed"
     assert AUTHORITY_HELD_DETAIL in record["error"], record["error"]
-    assert "not the principal's own universe" in record["error"], record["error"]
+    assert "not the principal's own command center" in record["error"], record["error"]
     assert CONNECT_PROVIDER_MESSAGE not in record["error"]
     assert wires[A_OWNER].requests == []
 

@@ -122,7 +122,7 @@ jobs:
         run: |
           echo "Restart reason: ${{ inputs.reason }}"
           ssh -i ~/.ssh/do_deploy -o BatchMode=yes "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-              "sudo python3 /tmp/retire-cheat-loop-deploy-fence.py guard-host-mutation --command-timeout 120 -- /bin/bash -lc 'systemctl reset-failed tinyassets-daemon.service || true; systemctl restart tinyassets-daemon.service'"
+              "sudo python3 /tmp/retire-cheat-loop-deploy-fence.py guard-host-mutation --command-timeout 300 -- /bin/bash -lc 'flock -w 60 /var/lock/tinyassets-host-mutation.lock bash -c \"systemctl reset-failed tinyassets-daemon.service || true; systemctl restart tinyassets-daemon.service\"'"
 
       - name: Wait for public canary
         env:

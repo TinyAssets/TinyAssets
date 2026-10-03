@@ -19,6 +19,7 @@ import base64
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -85,15 +86,6 @@ def test_workflow_dispatch_has_image_tag_input():
     dispatch = triggers.get("workflow_dispatch") or {}
     inputs = dispatch.get("inputs") or {}
     assert "image_tag" in inputs, "workflow_dispatch must expose image_tag input"
-
-
-def test_workflow_dispatch_has_explicit_request_hmac_rotation_input():
-    wf = _load()
-    inputs = (_triggers(wf).get("workflow_dispatch") or {}).get("inputs") or {}
-    rotation = inputs["rotate_request_idempotency_hmac"]
-    assert rotation.get("type") == "boolean"
-    assert rotation.get("default") is False
-    assert "exposed" in str(rotation.get("description", "")).lower()
 
 
 def test_manual_unsafe_fence_recovery_is_separate_and_source_bound():
@@ -450,139 +442,172 @@ def test_rollback_step_present():
 
 
 def test_failed_candidate_diagnostics_are_preserved_before_rollback():
+    """Evidence outlives the rollback, and never delays it.
+
+    Two landmarks this test used to key on are gone for different reasons, and
+    the difference is the finding:
+
+    * ``Wait for daemon health`` was REPLACED, not dropped. #2442 moved the wait
+      into ``deploy/deploy_fail_safe.sh``, which reaches 'healthy' within
+      ``HEALTH_TIMEOUT`` or rolls itself back (rc 2); the workflow proves the
+      PUBLIC surfaces separately afterwards. Asserted through the step that now
+      owns it.
+    * ``Rollback on failure``, the task 2.1 cleanup and the ``terminal`` receipt
+      outputs belonged to the stop-writer fence the same PR retired, so their
+      orderings are not re-asserted.
+
+    What did NOT survive was the diagnostics path: #2442 took the capture and
+    upload with it and left ``scripts/sanitize_startup_diagnostics.py`` with no
+    caller, so a failed prod deploy kept nothing.
+
+    The split into snapshot-then-rollback-then-sanitize is a Codex P1 finding on
+    the first version of this restore: collecting evidence over two SSH calls
+    before the rollback left the broken candidate serving while it ran. Only the
+    fast raw-bytes snapshot may precede the rollback.
+    """
     wf = _load()
     steps = _steps(wf)
-    health = _step_named(wf, "Wait for daemon health")
-    capture = _step_named(wf, "Capture failed candidate startup diagnostics")
+    deploy = _step_named(wf, "Run fail-safe deploy on the droplet")
+    snapshot = _step_named(wf, "Snapshot failed candidate evidence (before rollback)")
+    sanitize = _step_named(wf, "Sanitize failed candidate diagnostics")
     upload = _step_named(wf, "Upload failed candidate startup diagnostics")
-    rollback = _step_named(wf, "Rollback on failure")
-    cleanup = _step_named(wf, "Transitional task 2.1 restore restart racers when safe")
+    rollback = _step_named(wf, "Roll back if the public canary is red")
     terminal = _step_named(wf, "Publish release-state receipt")
 
-    assert steps.index(health) < steps.index(capture) < steps.index(rollback)
-    assert steps.index(rollback) < steps.index(cleanup) < steps.index(terminal)
+    # The ONLY thing between the deploy and the rollback is the raw snapshot.
+    assert steps.index(deploy) < steps.index(snapshot) < steps.index(rollback)
+    # Everything that costs time happens after production is recovered.
+    assert steps.index(rollback) < steps.index(sanitize) < steps.index(terminal)
     assert steps.index(terminal) < steps.index(upload)
-    assert health.get("id") == "candidate_health"
-    assert capture.get("id") == "candidate_diagnostics"
-    capture_condition = str(capture.get("if", "")).strip()
-    assert capture_condition == (
-        "${{ always() && steps.deploy.outputs.image_mutation_started == 'true' "
+    assert deploy.get("id") == "deploy"
+    assert snapshot.get("id") == "candidate_snapshot"
+    assert sanitize.get("id") == "candidate_diagnostics"
+
+    # The health wait is the fail-safe script's, bounded and self-rolling-back,
+    # which is why no workflow step polls for it any more.
+    deploy_run = str(deploy.get("run", ""))
+    assert "HEALTH_TIMEOUT=180" in deploy_run
+    assert "deploy_fail_safe.sh" in deploy_run
+    assert "snapshot_candidate_evidence.sh" in deploy_run, (
+        "the snapshot script ships in the same scp as the deploy script"
+    )
+
+    # ---- the snapshot must be cheap and bounded -------------------------
+    snapshot_condition = str(snapshot.get("if", "")).strip()
+    assert snapshot_condition == (
+        "${{ always() && steps.deploy.outputs.rc == '0' "
         "&& (failure() || cancelled()) }}"
     )
-    assert "always()" in capture_condition
-    assert "failure()" in capture_condition
-    assert "cancelled()" in capture_condition
-    assert "steps.deploy.outputs.image_mutation_started == 'true'" in capture_condition
-    assert "steps.candidate_health.outcome" not in capture_condition, (
-        "post-mutation deploy and env-assert failures skip health but still "
-        "need identity-bound diagnostics"
+    assert "steps.deploy.outputs.rc == '0'" in snapshot_condition, (
+        "rc 2 was already rolled back inside the script, so its container is "
+        "the PREVIOUS image; reading it would mislabel the evidence"
     )
+    assert "steps.canary.outcome" not in snapshot_condition, (
+        "a cancellation, or any later failure after a good swap, still needs "
+        "identity-bound evidence -- not only a red canary"
+    )
+    assert snapshot.get("continue-on-error") is True, (
+        "the rollback must run even if the snapshot fails"
+    )
+    assert 0 < int(snapshot["timeout-minutes"]) <= 2, (
+        "an unbounded snapshot step is an unbounded delay before rollback"
+    )
+    snapshot_run = str(snapshot.get("run", ""))
+    assert snapshot_run.count("ssh ") == 1, (
+        "ONE round trip: two sequential SSH calls is what delayed the rollback"
+    )
+    assert "timeout 25s ssh" in snapshot_run
+    assert "ConnectTimeout=10" in snapshot_run
+    assert "ServerAliveInterval=5" in snapshot_run
+    assert "ServerAliveCountMax=2" in snapshot_run
+    assert "exit 0" in snapshot_run
+    # No sanitizing, no artifact work, no local python on the critical path.
+    assert "sanitize_startup_diagnostics.py" not in snapshot_run
+    assert "scp" not in snapshot_run
+
+    # ---- the snapshot script binds both reads to one container id -------
+    script = Path("deploy/snapshot_candidate_evidence.sh").read_text(encoding="utf-8")
+    assert "--format '{{.Id}}'" in script, "the id is resolved first"
+    assert script.count('"${cid}"') >= 3, (
+        "inspect and logs must read the ID, not the mutable container NAME: "
+        "a replacement between two name reads can supply the rollback "
+        "container's logs under a matching manifest"
+    )
+    assert "docker logs --tail" in script
+    assert 'tail -c "${LOG_BYTES}"' in script
+    assert "LOG_BYTES=131072" in script
+    assert "STATE_BYTES=16385" in script
+    assert "rm -f" in script, "a stale file from an earlier deploy is not evidence"
+    assert script.count("timeout ") >= 3, "every docker call is bounded"
+    assert "exit 0" in script
+    assert "org.opencontainers.image.revision" in script
+    assert ".Config.Image" in script
+    assert ".Config.Env" not in script
+    assert "/etc/tinyassets/env" not in script
+    assert "docker compose" not in script
+    state_template_match = re.search(r"--format '(\{\{\.State\.Status\}\}[^']+)'", script)
+    assert state_template_match is not None, "the inspect template is quoted once"
+    state_template = state_template_match.group(1)
+    assert state_template.split("|")[:6] == [
+        "{{.State.Status}}",
+        "{{.State.Running}}",
+        "{{.State.Restarting}}",
+        "{{.State.ExitCode}}",
+        "{{.State.OOMKilled}}",
+        "{{if .State.Health}}{{.State.Health.Status}}{{end}}",
+    ], state_template
+    assert state_template.endswith("{{json .State.Error}}")
+
+    # ---- sanitizing is after recovery, non-fatal, and fails closed -----
+    sanitize_condition = str(sanitize.get("if", "")).strip()
+    assert sanitize_condition == (
+        "${{ always() && steps.candidate_snapshot.outcome != 'skipped' }}"
+    )
+    assert sanitize.get("continue-on-error") is True
+    assert 0 < int(sanitize["timeout-minutes"]) <= 5
+    sanitize_run = str(sanitize.get("run", ""))
+    assert "scripts/sanitize_startup_diagnostics.py" in sanitize_run
+    assert '--target-revision "${TARGET_REVISION}"' in sanitize_run
+    assert '--target-image-ref "${TARGET_IMAGE_REF}"' in sanitize_run
+    assert "TARGET_REVISION" in (sanitize.get("env") or {})
+    assert "TARGET_IMAGE_REF" in (sanitize.get("env") or {})
+    assert '"capture":"unavailable"' in sanitize_run, (
+        "a vanished container produces unavailable evidence, not a manifest "
+        "that implies the logs were the candidate's"
+    )
+    assert '"candidate_identity_match":false' in sanitize_run, "the default is no match"
+    assert '"container_id"' in sanitize_run, "the manifest records which container"
+    assert 'rm -f "${raw_log}"' in sanitize_run, "raw bytes never reach the artifact"
+    assert "exit 0" in sanitize_run
+    assert "deploy_fail_safe.sh" not in sanitize_run, "it must not touch production"
+
+    # ---- the upload is non-fatal and bounded ---------------------------
+    upload_with = upload.get("with") or {}
     upload_condition = str(upload.get("if", "")).strip()
     assert upload_condition == (
-        "${{ always() && steps.candidate_diagnostics.outcome == 'success' "
-        "&& steps.terminal.outputs.terminal_receipt_result == 'published' "
-        "&& (steps.stop-writer-cleanup.outputs.cleanup_restored == 'true' "
-        "|| steps.stop-writer-cleanup.outputs.cleanup_safely_fenced == 'true') }}"
+        "${{ always() && steps.candidate_diagnostics.outcome == 'success' }}"
     )
-    assert "always()" in upload_condition
-    assert "steps.candidate_diagnostics.outcome == 'success'" in upload_condition
-    assert (
-        "steps.terminal.outputs.terminal_receipt_result == 'published'"
-        in upload_condition
+    assert upload.get("continue-on-error") is True, (
+        "an artifact-service error on the recovery path must not fail the job"
     )
-    assert (
-        "steps.stop-writer-cleanup.outputs.cleanup_restored == 'true'"
-        in upload_condition
+    assert 0 < int(upload["timeout-minutes"]) <= 5, (
+        "a slow upload holds the production-host-mutation group"
     )
-    assert (
-        "steps.stop-writer-cleanup.outputs.cleanup_safely_fenced == 'true'"
-        in upload_condition
-    )
-    assert "steps.candidate_health.outcome" not in upload_condition
-
-    capture_script = str(capture.get("run", ""))
-    assert "docker inspect --type container tinyassets-daemon" in capture_script
-    assert "docker logs --tail 200 tinyassets-daemon" in capture_script
-    assert "tail -c 131072" in capture_script
-    assert "scripts/sanitize_startup_diagnostics.py" in capture_script
-    assert "ConnectTimeout=10" in capture_script
-    assert "ServerAliveInterval=5" in capture_script
-    assert "ServerAliveCountMax=2" in capture_script
-    assert capture_script.count("timeout 25s ssh") >= 2
-    assert capture_script.count("timeout 15s sudo docker") >= 2
-    assert "head -c 16385" in capture_script
-    assert 'rm -f "${raw_log}"' in capture_script
-    assert "TARGET_REVISION" in (capture.get("env") or {})
-    assert "TARGET_IMAGE_REF" in (capture.get("env") or {})
-    assert "org.opencontainers.image.revision" in capture_script
-    assert ".Config.Image" in capture_script
-    assert r"\t" not in capture_script
-    state_template_match = re.search(r"--format '([^']+)'", capture_script)
-    assert state_template_match is not None
-    state_template = state_template_match.group(1)
-    expected_state_template = STATE_SEPARATOR.join(
-        (
-            "{{.State.Status}}",
-            "{{.State.Running}}",
-            "{{.State.Restarting}}",
-            "{{.State.ExitCode}}",
-            "{{.State.OOMKilled}}",
-            "{{if .State.Health}}{{.State.Health.Status}}{{end}}",
-            r'{{index .Config.Labels \"org.opencontainers.image.revision\"}}',
-            "{{.Config.Image}}",
-            "{{json .State.Error}}",
-        )
-    )
-    assert state_template == expected_state_template
-    assert state_template.count(STATE_SEPARATOR) == 8
-    revision = "a" * 40
-    image_ref = f"ghcr.io/tinyassets/tinyassets-daemon@sha256:{'b' * 64}"
-    rendered_state = STATE_SEPARATOR.join(
-        (
-            "exited",
-            "false",
-            "false",
-            "1",
-            "false",
-            "unhealthy",
-            revision,
-            image_ref,
-            json.dumps(""),
-        )
-    ).encode()
-    assert (
-        sanitize_candidate_state(
-            rendered_state,
-            target_revision=revision,
-            target_image_ref=image_ref,
-        )["candidate_identity_match"]
-        is True
-    )
-    assert "candidate_identity_match" in capture_script
-    assert "--state" in capture_script
-    assert '--target-revision "${TARGET_REVISION}"' in capture_script
-    assert '--target-image-ref "${TARGET_IMAGE_REF}"' in capture_script
-    assert 'if [ "${candidate_identity_match}" = "true" ]' in capture_script
-    assert "GITHUB_SHA" not in capture_script
-    assert "docker compose" not in capture_script
-    assert "compose-ps" not in capture_script
-    assert "daemon.log" not in capture_script
-    assert "/etc/tinyassets/env" not in capture_script
-    assert ".Config.Env" not in capture_script
-    assert "{{json .State.Error}}" in capture_script
-
-    upload_with = upload.get("with") or {}
     assert (
         upload.get("uses")
         == "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02"
     )
+    # The invariant is that every upload is pinned to the reviewed commit, not
+    # how many uploads there are: the count was 3 when two of them belonged to
+    # the stop-writer artifacts #2442 retired.
     assert "actions/upload-artifact@v4" not in _text()
-    assert _text().count(
-        "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02"
-    ) == 3
-    assert upload_with.get("if-no-files-found") == "error"
+    uploads = re.findall(r"actions/upload-artifact@(\S+)", _text())
+    assert uploads, "the diagnostics upload is the one artifact this job writes"
+    assert set(uploads) == {"ea165f8d65b6e75b540449e92b4886f43607fa02"}, uploads
+    assert upload_with.get("if-no-files-found") == "warn", (
+        "an empty evidence dir is legitimate when the container was gone"
+    )
     assert 0 < int(upload_with["retention-days"]) <= 7
-
 
 def test_rollback_runs_always_and_eligibility_keys_to_image_marker():
     wf = _load()
@@ -790,46 +815,6 @@ def test_disk_preflight_prunes_disposable_state_and_fails_before_restart():
     assert "refusing deploy before image pull/restart" in run_script
 
 
-def test_deploy_scrubs_stdio_only_workflow_universe_from_cloud_env():
-    wf = _load()
-    scrub_step = next(
-        (s for s in _steps(wf) if s.get("name") == "Scrub stale cloud env overrides"),
-        None,
-    )
-    assert scrub_step is not None
-    run_script = scrub_step.get("run", "") or ""
-    assert "delete TINYASSETS_WIKI_PATH TINYASSETS_UNIVERSE" in run_script
-
-
-def test_deploy_scrubs_legacy_workflow_env_from_cloud_env():
-    wf = _load()
-    scrub_step = next(
-        (s for s in _steps(wf) if s.get("name") == "Scrub stale cloud env overrides"),
-        None,
-    )
-    assert scrub_step is not None
-    run_script = scrub_step.get("run", "") or ""
-
-    for key in (
-        "WORKFLOW_IMAGE",
-        "WORKFLOW_DATA_DIR",
-        "WORKFLOW_MCP_CANARY_URL",
-        "BACKUP_GH_REPO",
-    ):
-        assert key in run_script
-
-
-def test_deploy_scrubs_and_fails_closed_on_shared_request_hmac_duplicate():
-    wf = _load()
-    scrub_step = _step_named(wf, "Scrub stale cloud env overrides")
-    run_script = scrub_step.get("run", "") or ""
-
-    assert "delete TINYASSETS_WIKI_PATH" in run_script
-    assert "TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY" in run_script
-    assert "assert-absent TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY" in run_script
-    assert "shared env still contains request admission minting authority" in run_script
-
-
 def test_deploy_preserves_host_owned_backup_destination():
     wf = _load()
     scrub_step = next(
@@ -1029,24 +1014,90 @@ def test_rollback_emits_safe_defaults_and_final_outputs_before_exit():
             )
 
 
-def test_rollback_identity_failure_preserves_the_passed_canary_tuple():
-    wf = _load()
-    rollback_step = _step_named(wf, "Rollback on failure")
-    run_script = rollback_step.get("run", "") or ""
+def test_rollback_identity_failure_preserves_the_passed_canary_tuple(tmp_path):
+    """A healthy rollback with the wrong image must never report success.
 
-    passed_idx = run_script.find("rollback_canary_status=passed")
-    identity_check_idx = run_script.find('if [ "${identity_status}" -ne 0 ]')
-    assert 0 <= passed_idx < identity_check_idx
-    pre_identity = run_script[passed_idx:identity_check_idx]
-    assert "rollback_result=succeeded" in pre_identity, (
-        "a passed rollback canary must retain the valid succeeded/passed tuple "
-        "so terminal classification can record rollback_failed when the "
-        "separate identity proof fails"
+    The old workflow emitted a separate canary/identity tuple. Its classifier
+    matrix remains in test_deploy_terminal_receipt; the active producer is now
+    deploy_fail_safe.sh. Execute its rollback branch and real acceptance/output
+    functions, faking only host operations. No Docker, host files or network.
+    """
+    git_bash = Path(r"C:\Program Files\Git\bin\bash.exe")
+    bash = str(git_bash) if sys.platform == "win32" and git_bash.exists() else shutil.which("bash")
+    assert bash is not None and not (sys.platform == "win32" and "system32" in bash.lower()), (
+        "this rollback contract requires a POSIX bash executable (Git Bash on Windows)"
     )
-    identity_failure = run_script[identity_check_idx : run_script.find("fi", identity_check_idx)]
-    assert "rollback_result=failed" not in identity_failure, (
-        "failed/passed is a contradictory tuple rejected by the pure builder"
-    )
+    source = (_REPO / "deploy" / "deploy_fail_safe.sh").read_text(encoding="utf-8")
+    functions = []
+    for name in ("container_state", "health_ok", "tunnel_up",
+                 "running_image_matches", "accept", "finish"):
+        match = re.search(rf"^{name}\(\) \{{[^\n]*\n.*?^\}}\n", source, re.M | re.S)
+        assert match, f"cannot find current rollback collaborator {name}"
+        functions.append(match.group(0))
+    marker = "# --- 6. unhealthy -> restore the bundle, then roll back the image"
+    assert source.count(marker) == 1
+    rollback = source[source.index(marker):]
+    harness = tmp_path / "rollback.sh"
+    harness.write_text(r'''
+set -uo pipefail
+PREV_IMAGE="ghcr.io/tinyassets/tinyassets-daemon@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+RUNNING_ID="$1"
+CALLS="$2"
+: > "$CALLS"
+DAEMON_CONTAINER=tinyassets-daemon
+TUNNEL_CONTAINER=tinyassets-tunnel
+LOGS_CONTAINER=tinyassets-logs
+INSTALLED_THIS_RUN=0
+MARKER_STALE=0
+HEALTH_TIMEOUT=10
+HEALTH_INTERVAL=0
+INSPECT_ERR_TOLERANCE=1
+HEALTH_FORMAT='{{if .State.Health}}{{.State.Health.Status}}'
+HEALTH_FORMAT+='{{else}}{{.State.Status}}{{end}}'
+log() { :; }
+err() { printf '%s\n' "$*" >&2; }
+layout_marker_path() { echo fixture-layout; }
+layout_allows_any_image() { return 0; }
+set_image() { printf 'set_image:%s\n' "$1" >> "$CALLS"; }
+restart_stack() { echo restart_stack >> "$CALLS"; }
+docker() {
+  printf 'docker:%s\n' "$*" >> "$CALLS"
+  case "$*" in
+    "inspect -f ${HEALTH_FORMAT} tinyassets-daemon") echo healthy ;;
+    "image inspect -f {{.Id}} ${PREV_IMAGE}") echo sha256:previous ;;
+    "inspect -f {{.Image}} tinyassets-daemon") echo "$RUNNING_ID" ;;
+    "inspect -f {{.Config.Image}} tinyassets-daemon") echo "$RUNNING_ID" ;;
+    "inspect -f {{.State.Status}} tinyassets-tunnel"|\
+    "inspect -f {{.State.Status}} tinyassets-logs") echo running ;;
+    *) echo "unexpected docker call: $*" >> "$CALLS"; return 97 ;;
+  esac
+}
+''' + "\n".join(functions) + rollback, encoding="utf-8", newline="\n")
+    for identity, expected_code, expected_result in (
+        ("sha256:previous", 2, "rolled_back"),
+        ("sha256:other", 3, "rollback_unhealthy"),
+    ):
+        calls = tmp_path / "rollback-calls.txt"
+        result = subprocess.run(
+            [bash, harness.as_posix(), identity, calls.as_posix()],
+            capture_output=True, text=True, check=False, timeout=30,
+        )
+        assert result.returncode == expected_code, result.stderr
+        assert f"deploy_result={expected_result}\n" in result.stdout
+        # Both scenarios reached real health AND identity checks after converge;
+        # a refusal in fixture setup would not exercise the guarantee.
+        trace = calls.read_text(encoding="utf-8")
+        assert "unexpected docker call" not in trace
+        assert trace.index("set_image:") < trace.index("restart_stack\n")
+        assert trace.index("restart_stack\n") < trace.index("{{.State.Health.Status}}")
+        assert trace.index("{{.State.Health.Status}}") < trace.index("{{.Image}}")
+        if identity == "sha256:previous":
+            assert "deployed_image=ghcr.io/tinyassets/tinyassets-daemon@sha256:" in result.stdout
+            assert "{{.State.Status}} tinyassets-logs" in trace
+        else:
+            assert "daemon is healthy but NOT running" in result.stderr
+            assert "deploy_result=rolled_back" not in result.stdout
+            assert "deployed_image=" not in result.stdout
 
 
 def test_terminal_receipt_invokes_pure_helper_and_preserves_atomic_writer():
@@ -1121,7 +1172,15 @@ def test_terminal_receipt_summary_python_is_executable(tmp_path):
 def test_terminal_receipt_does_not_assign_manual_image_source_from_github_sha():
     text = _text()
     assert "github.event.workflow_run.head_sha || github.sha" not in text
-    assert "org.opencontainers.image.revision" in text
+    # The deploy identifies an image by its OCI revision label, never by the
+    # run's own sha. The label is read in the script the workflow ships to the
+    # host (deploy/snapshot_candidate_evidence.sh) rather than inline, so the
+    # assertion covers the deploy CHAIN -- grepping only the workflow text would
+    # pass or fail on where the string happens to live.
+    chain = text + Path("deploy/snapshot_candidate_evidence.sh").read_text(
+        encoding="utf-8"
+    )
+    assert "org.opencontainers.image.revision" in chain
 
 
 def test_terminal_writer_outputs_are_visible_before_fallible_work():
@@ -1383,99 +1442,6 @@ def test_deploy_never_installs_a_github_push_capability():
     assert "install-tinyassets-env.sh set TINYASSETS_GITHUB" not in text
 
 
-def test_deploy_requires_and_installs_agent_interchange_hmac_secret():
-    wf = _load()
-    steps = _steps(wf)
-    validation_index = next(
-        index
-        for index, step in enumerate(steps)
-        if step.get("name") == "Validate agent interchange HMAC prerequisite"
-    )
-    validation_step = steps[validation_index]
-    validation_env = validation_step.get("env") or {}
-    secret_source = str(
-        validation_env.get("TINYASSETS_AGENT_INTERCHANGE_HMAC_KEY", "")
-    )
-    assert "secrets.TINYASSETS_AGENT_INTERCHANGE_HMAC_KEY" in secret_source
-    assert validation_step.get("run") == "python scripts/validate_agent_interchange_hmac.py"
-
-    mutating_steps = {
-        "Install daemon-only agent interchange HMAC secret",
-        "Preflight droplet disk before image pull",
-        "Transitional task 2.1 stop-writer preflight",
-        "Scrub stale cloud env overrides",
-        "Sync runtime deploy files",
-        "Prepare data volume root",
-        "Retire legacy Workflow service",
-        "Deploy new image",
-    }
-    mutation_indexes = [
-        index for index, step in enumerate(steps) if step.get("name") in mutating_steps
-    ]
-    assert len(mutation_indexes) == len(mutating_steps)
-    assert validation_index < min(mutation_indexes)
-
-    step_indexes = {step.get("name"): index for index, step in enumerate(steps)}
-    assert step_indexes["Preflight droplet disk before image pull"] < step_indexes[
-        "Install daemon-only agent interchange HMAC secret"
-    ]
-    assert step_indexes["Transitional task 2.1 stop-writer preflight"] < step_indexes[
-        "Install daemon-only agent interchange HMAC secret"
-    ]
-    assert step_indexes["Install daemon-only agent interchange HMAC secret"] < (
-        step_indexes["Scrub stale cloud env overrides"]
-    )
-
-    install_index = next(
-        index
-        for index, step in enumerate(steps)
-        if step.get("name") == "Install daemon-only agent interchange HMAC secret"
-    )
-    install_step = steps[install_index]
-    install_env = install_step.get("env") or {}
-    install_secret = str(
-        install_env.get("TINYASSETS_AGENT_INTERCHANGE_HMAC_KEY", "")
-    )
-    assert "secrets.TINYASSETS_AGENT_INTERCHANGE_HMAC_KEY" in install_secret
-
-    deploy_step = next(step for step in steps if step.get("id") == "deploy")
-    step_env = deploy_step.get("env") or {}
-    assert "TINYASSETS_AGENT_INTERCHANGE_HMAC_KEY" not in step_env
-
-    script = install_step.get("run", "") or ""
-    assert re.search(
-        r'printf \'%s\' "\$\{TINYASSETS_AGENT_INTERCHANGE_HMAC_KEY\}" '
-        r'\|\s*\\?\s*ssh',
-        script,
-    )
-    install = script.index(
-        "install-tinyassets-env.sh set TINYASSETS_AGENT_INTERCHANGE_HMAC_KEY"
-    )
-    assert install > 0
-    assert install_index < steps.index(deploy_step)
-    assert "TINYASSETS_ENV_FILE=/etc/tinyassets/agent-interchange.env" in script
-    assert 'echo "${TINYASSETS_AGENT_INTERCHANGE_HMAC_KEY}"' not in script
-    assert "set TINYASSETS_AGENT_INTERCHANGE_HMAC_KEY '" not in script
-
-
-def test_self_host_template_declares_empty_agent_interchange_hmac_key():
-    shared = Path("deploy/tinyassets-env.template").read_text(encoding="utf-8")
-    dedicated = Path("deploy/agent-interchange-env.template").read_text(
-        encoding="utf-8"
-    )
-    assert "TINYASSETS_AGENT_INTERCHANGE_HMAC_KEY" not in shared
-    assert "TINYASSETS_AGENT_INTERCHANGE_HMAC_KEY=" in dedicated
-    assert "TINYASSETS_AGENT_INTERCHANGE_HMAC_KEY=change" not in dedicated
-
-    compose = yaml.safe_load(Path("deploy/compose.yml").read_text(encoding="utf-8"))
-    services = compose["services"]
-    dedicated_path = "/etc/tinyassets/agent-interchange.env"
-    assert dedicated_path in services["daemon"]["env_file"]
-    for name, service in services.items():
-        if name != "daemon":
-            assert dedicated_path not in (service.get("env_file") or []), name
-
-
 @pytest.mark.parametrize(
     "value",
     [
@@ -1516,129 +1482,6 @@ def test_agent_interchange_hmac_validator_never_echoes_rejected_secret():
     assert secret not in result.stdout
     assert "INJECTED_SETTING" not in result.stdout
     assert secret not in result.stderr
-
-
-def test_deploy_requires_and_installs_daemon_request_idempotency_hmac_secret():
-    wf = _load()
-    steps = _steps(wf)
-    indexes = {step.get("name"): index for index, step in enumerate(steps)}
-
-    validation_name = "Validate request idempotency HMAC prerequisite"
-    install_name = "Install daemon-only request idempotency HMAC secret"
-    validation = steps[indexes[validation_name]]
-    validation_secret = str(
-        (validation.get("env") or {}).get(
-            "TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY", ""
-        )
-    )
-    assert "secrets.TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY" in validation_secret
-    validation_companion = str(
-        (validation.get("env") or {}).get(
-            "TINYASSETS_AGENT_INTERCHANGE_HMAC_KEY", ""
-        )
-    )
-    assert "secrets.TINYASSETS_AGENT_INTERCHANGE_HMAC_KEY" in validation_companion
-    assert validation.get("run") == (
-        "python scripts/validate_request_idempotency_hmac.py"
-    )
-
-    mutating_names = {
-        "Preflight droplet disk before image pull",
-        "Transitional task 2.1 stop-writer preflight",
-        "Install daemon-only agent interchange HMAC secret",
-        install_name,
-        "Scrub stale cloud env overrides",
-        "Sync runtime deploy files",
-        "Prepare data volume root",
-        "Retire legacy Workflow service",
-        "Deploy new image",
-    }
-    assert indexes[validation_name] < min(
-        indexes[name] for name in mutating_names
-    )
-    assert indexes["Transitional task 2.1 stop-writer preflight"] < indexes[
-        install_name
-    ]
-    assert indexes[install_name] < indexes[
-        "Install daemon-only agent interchange HMAC secret"
-    ]
-    assert indexes["Install daemon-only agent interchange HMAC secret"] < indexes[
-        "Validate installed host HMAC pair"
-    ]
-    assert indexes["Validate installed host HMAC pair"] < indexes[
-        "Scrub stale cloud env overrides"
-    ]
-    host_validation = steps[indexes["Validate installed host HMAC pair"]]
-    host_validation_script = host_validation.get("run", "") or ""
-    assert "scripts/validate_host_runtime_hmac_pair.py" in host_validation_script
-    assert '"sudo python3 -"' in host_validation_script
-    assert indexes[install_name] < indexes["Scrub stale cloud env overrides"]
-
-    install = steps[indexes[install_name]]
-    install_secret = str(
-        (install.get("env") or {}).get(
-            "TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY", ""
-        )
-    )
-    assert "secrets.TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY" in install_secret
-    script = install.get("run", "") or ""
-    assert re.search(
-        r'printf \'%s\' "\$\{TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY\}" '
-        r'\|\s*\\?\s*ssh',
-        script,
-    )
-    assert "TINYASSETS_ENV_FILE=/etc/tinyassets/request-idempotency.env" in script
-    assert "no-request-idempotency-legacy" in script
-    install_mode = str((install.get("env") or {}).get("REQUEST_HMAC_INSTALL_MODE", ""))
-    assert "github.event_name == 'workflow_dispatch'" in install_mode
-    assert "inputs.rotate_request_idempotency_hmac" in install_mode
-    assert "set-once" in install_mode
-    assert "set" in install_mode
-    assert 'case "${REQUEST_HMAC_INSTALL_MODE}" in' in script
-    assert "set-once|set)" in script
-    assert "bash /tmp/install-tinyassets-env.sh '${REQUEST_HMAC_INSTALL_MODE}'" in script
-    assert 'echo "${TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY}"' not in script
-
-    deploy_step = next(step for step in steps if step.get("id") == "deploy")
-    assert "TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY" not in (
-        deploy_step.get("env") or {}
-    )
-
-
-def test_request_idempotency_hmac_template_and_compose_contract():
-    template = Path("deploy/tinyassets-env.template").read_text(encoding="utf-8")
-    dedicated = Path("deploy/request-idempotency-env.template").read_text(
-        encoding="utf-8"
-    )
-    assert "TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY" not in template
-    assert "TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY=" in dedicated
-    assert "TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY=change" not in dedicated
-
-    compose = yaml.safe_load(Path("deploy/compose.yml").read_text(encoding="utf-8"))
-    services = compose["services"]
-    dedicated_path = "/etc/tinyassets/request-idempotency.env"
-    assert dedicated_path in (services["daemon"].get("env_file") or [])
-    for name, service in services.items():
-        if name != "daemon":
-            assert dedicated_path not in (service.get("env_file") or []), name
-
-
-def test_request_hmac_operator_guidance_is_daemon_only_and_rotation_aware():
-    deploy_doc = Path("deploy/DEPLOY.md").read_text(encoding="utf-8")
-    template = Path("deploy/request-idempotency-env.template").read_text(
-        encoding="utf-8"
-    )
-    bootstrap = Path("deploy/hetzner-bootstrap.sh").read_text(encoding="utf-8")
-
-    assert "daemon+worker request-admission" not in deploy_doc
-    assert "daemon + worker request-admission" not in deploy_doc
-    assert "daemon + worker request-admission" not in template
-    assert "daemon+worker request-admission" not in bootstrap
-    assert "daemon+worker template" not in bootstrap
-    assert "daemon-only request-admission" in deploy_doc
-    assert "daemon-only request-admission" in template
-    assert "daemon-only template" in bootstrap
-    assert "rotate_request_idempotency_hmac=true" in deploy_doc
 
 
 @pytest.mark.parametrize(

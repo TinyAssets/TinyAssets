@@ -50,10 +50,18 @@ LogsDirectoryMode=0750
 # scripts/watchdog.py calls `systemctl restart tinyassets-daemon.service`
 # when threshold is crossed. That command hits the sudoers allowlist.
 
+# Create the host-mutation lock as ROOT (`+`) if it is missing, so the watchdog
+# (running as tinyassets, which must never create it) is never lockless
+# right after boot, while a deploy could be about to take it.
+ExecStartPre=+/usr/bin/touch /var/lock/tinyassets-host-mutation.lock
 ExecStart=/usr/bin/python3 /opt/tinyassets-host-uptime/current/scripts/watchdog.py --canary-script /opt/tinyassets-host-uptime/current/scripts/mcp_public_canary.py
 
-# One-shot exit; timer handles cadence. Fail fast if script errors.
-TimeoutStartSec=60s
+# One-shot exit; timer handles cadence. Longer than watchdog.py's 320s wait
+# on a restart job, which itself outlives tinyassets-daemon.service's 200s
+# start plus 90s stop:
+# systemd killing us mid-wait would release the host-mutation lock while the
+# restart's compose is still running.
+TimeoutStartSec=360s
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=tinyassets-watchdog

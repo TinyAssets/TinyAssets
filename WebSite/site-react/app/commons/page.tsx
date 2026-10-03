@@ -7,7 +7,7 @@ import { SITE } from "../../lib/site";
 export const metadata: Metadata = {
   title: "Commons",
   description:
-    "Anything a universe publishes is a shape: a graph, a branch, a way of doing something. Copy it into your own universe and change it. Nothing published runs for anyone else.",
+    "Anything a command center publishes is a shape: a graph, a branch, a way of doing something. Copy it into your own command center and change it. Nothing published runs for anyone else.",
   alternates: { canonical: `${SITE.origin}/commons/` },
 };
 
@@ -18,8 +18,8 @@ export default function CommonsPage() {
         <RitualLabel>Commons</RitualLabel>
         <h1>Shapes to remix.</h1>
         <p className="lead">
-          Anything a universe publishes is a shape: a graph, a branch, a way of doing something.
-          Copy it into your own universe and change it. Lineage is kept. Nothing published runs for
+          Anything a command center publishes is a shape: a graph, a branch, a way of doing something.
+          Copy it into your own command center and change it. Lineage is kept. Nothing published runs for
           anyone else.
         </p>
       </section>
@@ -27,17 +27,17 @@ export default function CommonsPage() {
       <section className="section">
         <div className="container">
           <div className="head">
-            <RitualLabel>Public universes</RitualLabel>
+            <RitualLabel>Public command centers</RitualLabel>
             <h2>What the latest snapshot showed.</h2>
             <p>
               This checked-in snapshot carries its capture date. Live discovery belongs in a
-              signed-in connector. Every universe starts private; appearing here is a choice its
+              signed-in connector. Every command center starts private; appearing here is a choice its
               owner made.
             </p>
             <p className="note">
               This is the raw list the endpoint reports as publicly discoverable, not a curated
               gallery. Early on that includes the founder&apos;s own working and housekeeping
-              records alongside real universes.
+              records alongside real command centers.
             </p>
           </div>
           <PublicShapes />
@@ -54,12 +54,12 @@ export default function CommonsPage() {
             <div className="col">
               <span className="num">01</span>
               <h3>Find a shape</h3>
-              <p>Browse here, or ask your universe to look. A shape is the structure of a graph or branch, never anyone&apos;s contents.</p>
+              <p>Browse here, or ask your command center to look. A shape is the structure of a graph or branch, never anyone&apos;s contents.</p>
             </div>
             <div className="col">
               <span className="num">02</span>
-              <h3>Copy it into your universe</h3>
-              <p>Tell your universe to remix it. The copy is yours: it runs on your subscription, with your connections, under your control.</p>
+              <h3>Copy it into your command center</h3>
+              <p>Tell your agent to remix it. The copy is yours: it runs on your subscription, with your connections, under your control.</p>
             </div>
             <div className="col">
               <span className="num">03</span>
@@ -86,7 +86,7 @@ export default function CommonsPage() {
             <h2 style={{ fontSize: "var(--fs-2xl)" }}>A public shape is not a service.</h2>
             <p>
               No one can invoke your published graph. They copy it and run their own. That is what
-              keeps every universe isolated from every other, and it is the only hard boundary the
+              keeps every command center isolated from every other, and it is the only hard boundary the
               platform enforces.
             </p>
             <p>

@@ -1,0 +1,10 @@
+{
+  "openrouter.ai": {
+    "name": "OpenRouter",
+    "free_requests_per_day": 50,
+    "credit_requests_per_day": 1000,
+    "credit_amount": "$10",
+    "credit_url": "https://openrouter.ai/settings/credits",
+    "reset_timezone": "UTC"
+  }
+}

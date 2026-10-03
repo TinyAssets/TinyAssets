@@ -10,7 +10,7 @@ Not in this table = judgement, not a gate.
 | No mojibake | `scripts/invariants/mojibake.py` | hook, CI |
 | Behavioural tests | `scripts/ci_required_tests.py`, `known-failing-tests.txt` (one-way) | required |
 | Diff scope | `.github/workflows/pr-scope-guard.yml` | required |
-| Exact-head receipt: gate files, `AUTHORITY_RE`, `drain/` | `scripts/drain_review_gate.py` | required |
+| Review receipt (head or diff key), every PR | `scripts/drain_review_gate.py` | required |
 | Public MCP handles | `scripts/mcp_public_canary.py --assert-handles` | deploy, DNS/tunnel edits |
 | Merged is not deployed | `scripts/deployed_sha.py --assert-contains <sha>`: 0 shipped, 1 not, **2 cannot tell** (never collapse 2 into 0) | deploy, never required |
 

@@ -1,4 +1,4 @@
-"""Blank OKF soul-bundle seeder for new universes.
+"""Blank OKF soul-bundle seeder for new command centers.
 
 Implements the ``universe-creation`` creation contract (D4/D5): creation seeds
 one linked OKF concept-document bundle rooted at ``soul.md``. Non-reserved
@@ -16,11 +16,11 @@ Files seeded (13):
     soul_versions/index.md  soul_versions/0001.md
 
 Creation does NOT create ``self/``, ``soul/``, ``notes.json``, or
-``activity.log``. A blank universe is unnamed: its self-name is learned later
+``activity.log``. A blank command center is unnamed: its self-name is learned later
 through ``identity.md`` and the linked soul files.
 
 The seeded ``soul.md`` stays parseable by :mod:`tinyassets.universe_soul` (a
-blank universe simply reads back as an empty :class:`UniverseSoul`), so persona
+blank command center simply reads back as an empty :class:`UniverseSoul`), so persona
 resolution and status reads are unaffected.
 """
 
@@ -30,9 +30,9 @@ from pathlib import Path
 
 import yaml
 
+from tinyassets.universe_files import write_data_path
 from tinyassets.universe_soul import (
     SOUL_FILENAME,
-    SOUL_VERSIONS_DIR,
     UniverseSoul,
     read_universe_soul,
 )
@@ -88,9 +88,9 @@ def _doc(concept_type: str, body: str, **fields: str) -> str:
 
 def _soul_md(purpose: str, loop_branch_def_id: str) -> str:
     body_lines = [
-        "# Universe Soul",
+        "# Command Center Soul",
         "",
-        "This is the central, editable soul entrypoint for this universe. It is",
+        "This is the central, editable soul entrypoint for this command center. It is",
         "an OKF concept document that tracks the latest OKF spec on GitHub as the",
         "living standard, not a pinned copy.",
         "",
@@ -103,10 +103,10 @@ def _soul_md(purpose: str, loop_branch_def_id: str) -> str:
         "How changes to this soul are learned is governed by",
         "[soul.edit](soul.edit.md). Soul-governed files:",
         "",
-        "- [identity](identity.md) — the universe's learned self-name and self-understanding",
-        "- [founder](founder.md) — the oath-confirmed founder this universe is bonded to",
+        "- [identity](identity.md) — the command center's learned self-name and self-understanding",
+        "- [founder](founder.md) — the oath-confirmed founder this command center is bonded to",
         "- [body](body.md) — the learned embodiment (surfaces, voice, hands, senses)",
-        "- [origin](origin.md) — how and why this universe came to be",
+        "- [origin](origin.md) — how and why this command center came to be",
         "- [orgchart](orgchart.md) — the org chart; the founder is the sole "
         "member by default, always the top anchor",
         "",
@@ -126,8 +126,8 @@ def _soul_md(purpose: str, loop_branch_def_id: str) -> str:
     return _doc(
         "Universe Soul",
         "\n".join(body_lines),
-        title="Universe Soul",
-        description="Central editable soul entrypoint for this universe.",
+        title="Command Center Soul",
+        description="Central editable soul entrypoint for this command center.",
         okf_source=OKF_SPEC_URL,
         okf_tracking=OKF_TRACKING_POLICY,
         edit_authority="soul.edit",
@@ -138,7 +138,7 @@ def _soul_edit_md() -> str:
     governed = "\n".join(f"- `{name}`" for name in SOUL_EDIT_GOVERNED)
     body = f"""# Soul Edit Policy
 
-Concept id: `soul.edit`. This file states the hard rules for how this universe
+Concept id: `soul.edit`. This file states the hard rules for how this command center
 learns high-authority changes to its own soul. These are rules, not open
 questions.
 
@@ -167,7 +167,7 @@ this policy.
         body,
         id="soul.edit",
         title="Soul Edit Policy",
-        description="Hard rules for learning changes to this universe's soul.",
+        description="Hard rules for learning changes to this command center's soul.",
     )
 
 
@@ -176,16 +176,16 @@ def _identity_md() -> str:
 
 Status: not learned yet.
 
-This universe does not have a learned self-name yet. Its name and
+This command center does not have a learned self-name yet. Its name and
 self-understanding are learned after creation through interaction with its
-founder; creation never sets a persona name. Until then this universe is
+founder; creation never sets a persona name. Until then this command center is
 unnamed.
 """
     return _doc(
         "Universe Identity",
         body,
         title="Identity",
-        description="The universe's learned self-name and self-understanding.",
+        description="The command center's learned self-name and self-understanding.",
         status="not-learned",
     )
 
@@ -195,14 +195,14 @@ def _founder_md() -> str:
 
 Status: not learned yet.
 
-The oath-confirmed founder this universe is bonded to is recorded here once
+The oath-confirmed founder this command center is bonded to is recorded here once
 confirmed. Nothing about the founder is invented at creation.
 """
     return _doc(
         "Founder",
         body,
         title="Founder",
-        description="The oath-confirmed founder this universe is bonded to.",
+        description="The oath-confirmed founder this command center is bonded to.",
         status="not-learned",
     )
 
@@ -253,12 +253,12 @@ def _goals_md() -> str:
 
 Status: not learned yet.
 
-This file describes the runtime goals this universe runs, plus the Branch
+This file describes the runtime goals this command center runs, plus the Branch
 uses/runs attached to those goals. Founder projects belong in
 [projects](projects.md), not here.
 
-Every universe run or use of a Branch must be attached to a goal. A commons
-Branch may be reusable across many goals and universes; each universe's use of
+Every command center run or use of a Branch must be attached to a goal. A commons
+Branch may be reusable across many goals and command centers; each command center's use of
 it is a separate goal-bound instance.
 """
     return _doc(
@@ -275,17 +275,17 @@ def _body_md() -> str:
 
 Status: not learned yet.
 
-This document describes the universe's embodiment by analogy, to aid
+This document describes the command center's embodiment by analogy, to aid
 personification:
 
-- The universe is the brain.
+- The command center is the brain.
 - Live platforms, applications, interfaces, and hosted services are body
   surfaces people can interact with.
 - Text that lands in the real world is voice.
-- Branches the universe runs are hands taking actions.
+- Branches the command center runs are hands taking actions.
 - Real-world feedback is eyes, ears, and other sensory input.
 
-No body is learned yet. This universe does not claim any live platforms,
+No body is learned yet. This command center does not claim any live platforms,
 applications, voice, hands, or senses until real surfaces, actions, or feedback
 have actually been built or observed.
 """
@@ -303,15 +303,15 @@ def _origin_md() -> str:
 
 Status: not learned yet.
 
-How and why this universe came to be is recorded here as it is learned. Nothing
-is invented at creation beyond the fact that a founder brought this universe
+How and why this command center came to be is recorded here as it is learned. Nothing
+is invented at creation beyond the fact that a founder brought this command center
 into being.
 """
     return _doc(
         "Universe Origin",
         body,
         title="Origin",
-        description="How and why this universe came to be.",
+        description="How and why this command center came to be.",
         status="not-learned",
     )
 
@@ -335,7 +335,7 @@ def _index_md() -> str:
     )
     body = f"""# Bundle Index
 
-This is the OKF bundle map for this universe. Every baseline file is linked
+This is the OKF bundle map for this command center. Every baseline file is linked
 here.
 
 {links}
@@ -349,9 +349,9 @@ here.
 def _log_md() -> str:
     body = """# Update Log
 
-Human-readable history of soul and baseline updates for this universe.
+Human-readable history of soul and baseline updates for this command center.
 
-- created: blank universe seeded with the OKF soul bundle.
+- created: blank command center seeded with the OKF soul bundle.
 """
     # OKF: log.md is a RESERVED structural file — no concept frontmatter.
     return body
@@ -360,7 +360,7 @@ Human-readable history of soul and baseline updates for this universe.
 def _soul_versions_index_md() -> str:
     body = """# Soul Version Index
 
-Snapshots of this universe's soul over time.
+Snapshots of this command center's soul over time.
 
 - [0001](0001.md) — initial blank soul snapshot at creation.
 """
@@ -381,8 +381,6 @@ def seed_okf_bundle(
     Does not create ``self/``, ``soul/``, ``notes.json``, or ``activity.log``.
     """
     universe_dir.mkdir(parents=True, exist_ok=True)
-    versions_dir = universe_dir / SOUL_VERSIONS_DIR
-    versions_dir.mkdir(parents=True, exist_ok=True)
 
     soul_text = _soul_md(purpose, loop_branch_def_id)
 
@@ -404,9 +402,8 @@ def seed_okf_bundle(
     }
 
     for rel, content in files.items():
-        path = universe_dir / rel
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(content, encoding="utf-8")
+        # Link-free: a seed over an existing folder never writes through a link.
+        write_data_path(universe_dir / rel, content)
 
     soul = read_universe_soul(universe_dir)
     # read_universe_soul returns None only if soul.md is unreadable, which we

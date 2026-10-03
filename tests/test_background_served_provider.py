@@ -604,7 +604,7 @@ def test_cross_universe_and_provider_substitution_never_reaches_ambient_call(
         lambda *_a, **_k: raw_calls.append("raw") or "unexpected",
     )
 
-    with pytest.raises(PermissionError, match="universe cannot be substituted"):
+    with pytest.raises(PermissionError, match="command center cannot be substituted"):
         session(
             "prompt",
             universe_context=UniverseContext(universe_dir=tmp_path / "universe-b", config={}),

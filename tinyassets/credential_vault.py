@@ -744,7 +744,41 @@ def write_credential_vault(
     _records_from_payload(credentials)
 
     with provider_assignment_admission().exclusive(universe):
-        return _write_credential_vault_locked(universe, credentials, owner, uid)
+        result = _write_credential_vault_locked(universe, credentials, owner, uid)
+    # AFTER the lock, never inside it: warming runs discovery on a background
+    # thread, and the boundary it crosses forbids a caller holding the
+    # admission lock or a SQL transaction across enumeration.
+    _warm_after_deposit(universe, owner, uid)
+    return result
+
+
+def _warm_after_deposit(universe: Path, owner: str, uid: str) -> None:
+    """Connecting a source is when to fetch its shortlist, not first open.
+
+    Two things, both best-effort: drop any cached catalogue read under the
+    PREVIOUS credential, because a snapshot pins the custody it was taken
+    under and a reconnect would otherwise leave a stale negative on screen for
+    its whole usable window; then queue a background refresh so the first
+    picker open is already warm.
+
+    A failure here cannot affect the deposit that triggered it -- the write has
+    already committed, and the next picker read schedules its own refresh.
+    """
+    if not owner:
+        return  # Unowned material is ineligible for serving; nothing to warm.
+    try:
+        from tinyassets.providers.shortlist_refresh import (
+            SHORTLIST_CACHE,
+            warm_connected_shortlists,
+        )
+
+        SHORTLIST_CACHE.forget(base=universe.parent, owner=owner, universe_id=uid)
+        warm_connected_shortlists(
+            base_path=universe.parent, universe_dir=universe,
+            owner_user_id=owner, universe_id=uid,
+        )
+    except Exception as exc:  # noqa: BLE001 - never the depositor's error
+        logger.warning("shortlist warm after deposit skipped: %s", type(exc).__name__)
 
 
 def _write_identity(
@@ -755,7 +789,7 @@ def _write_identity(
     if owner_user_id is not None and not owner:
         raise ValueError("credential owner must be a non-empty server principal")
     if uid != universe.name:
-        raise ValueError("credential universe does not match its canonical directory")
+        raise ValueError("credential command center does not match its canonical directory")
     return owner, uid
 
 

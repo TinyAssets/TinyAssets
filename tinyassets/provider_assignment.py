@@ -1283,7 +1283,7 @@ def _served_request_agent(base_path, universe, request_carrier, role, operation)
     binding_id = str(getattr(request_carrier, "agent_binding_id", ""))
     revision = getattr(request_carrier, "binding_revision", 0)
     if str(getattr(request_carrier, "universe_id", "")) != uid or not binding_id:
-        raise PermissionError("provider request does not match universe")
+        raise PermissionError("provider request does not match command center")
     capability = validate_provider_request_carrier(
         request_carrier, universe_id=uid, agent_binding_id=binding_id,
         binding_revision=revision, operation=operation,

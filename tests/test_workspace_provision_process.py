@@ -53,6 +53,7 @@ def stage(tmp_path):
             os.close(fd)
 
 
+@pytest.mark.real_jail
 def test_actual_offline_stage_profile_environment_and_closed_handles(stage):
     launcher, paths = stage
     source = '''
@@ -85,6 +86,7 @@ print(json.dumps({'installed': True}))
     assert (paths[2] / "installed").read_text() == "ok"
 
 
+@pytest.mark.real_jail
 @pytest.mark.parametrize("change", [dict(timeout_s=True), dict(timeout_s=float("nan")),
                                    dict(timeout_s=1801), dict(timeout_s=0),
                                    dict(storage_bound=False), dict(storage_bound=0)])
@@ -95,6 +97,7 @@ def test_invalid_limits_never_launch(stage, change):
     launch.assert_not_called()
 
 
+@pytest.mark.real_jail
 @pytest.mark.parametrize("setting, expected", [
     ({"cancelled": lambda: True}, "cancelled"),
     ({"storage_usage": lambda: -1}, "storage_measurement_failed"),
@@ -108,6 +111,7 @@ def test_preflight_guard_prevents_execution(stage, setting, expected):
         launch.assert_not_called()
 
 
+@pytest.mark.real_jail
 @pytest.mark.parametrize("stream", [1, 2])
 def test_output_flood_bounded_and_terminated(stage, stream):
     launcher, _ = stage
@@ -116,6 +120,7 @@ def test_output_flood_bounded_and_terminated(stage, stream):
     assert len(result.stdout) + len(result.stderr) <= sandbox.MAX_WORKSPACE_OUTPUT_BYTES
 
 
+@pytest.mark.real_jail
 @pytest.mark.parametrize("mode", ["timeout", "cancel", "storage", "memory", "measurement"])
 def test_running_stage_is_reaped_on_every_guard(stage, mode):
     launcher, paths = stage
@@ -144,11 +149,13 @@ def test_running_stage_is_reaped_on_every_guard(stage, mode):
                               "measurement": "memory_measurement_failed"}[mode]
 
 
+@pytest.mark.real_jail
 def test_nonzero_exit_is_not_success(stage):
     launcher, _ = stage
     assert invoke(launcher(), "raise SystemExit(17)").failure == "process_failed"
 
 
+@pytest.mark.real_jail
 @pytest.mark.parametrize("phase", ["acquire", "install"])
 def test_actual_storage_growth_is_measured_and_ends_jail(stage, phase):
     launcher, paths = stage
@@ -176,6 +183,7 @@ def test_actual_storage_growth_is_measured_and_ends_jail(stage, phase):
         os.close(held)
 
 
+@pytest.mark.real_jail
 def test_resource_setup_failure_never_executes_install(stage):
     launcher, paths = stage
     with patch.object(sandbox, "_RLIMIT_HELPER",
@@ -185,6 +193,7 @@ def test_resource_setup_failure_never_executes_install(stage):
     assert not (paths[2] / "installed").exists()
 
 
+@pytest.mark.real_jail
 def test_detached_descendant_really_started_then_dies_on_cancel(stage):
     launcher, paths = stage
     marker = "ta-provision-child-" + os.urandom(6).hex()
@@ -220,6 +229,7 @@ time.sleep(60)
     assert not live(), "detached child survived the tracked bubblewrap supervisor"
 
 
+@pytest.mark.real_jail
 def test_failed_acquisition_revokes_and_reaps_broker(stage):
     launcher, _ = stage
     broker = RegistryBrokerProcess(max_bytes=4096)
@@ -231,6 +241,7 @@ def test_failed_acquisition_revokes_and_reaps_broker(stage):
     assert broker.control is None
 
 
+@pytest.mark.real_jail
 def test_launch_failure_reaps_started_broker(stage):
     launcher, _ = stage
     broker = RegistryBrokerProcess(max_bytes=4096)
@@ -243,6 +254,7 @@ def test_launch_failure_reaps_started_broker(stage):
     assert broker.process.poll() is not None
 
 
+@pytest.mark.real_jail
 @pytest.mark.parametrize("failure", ["output", "storage", "cancel"])
 def test_late_guard_failure_keeps_full_transfer_charge(stage, failure):
     launcher, _ = stage
@@ -259,6 +271,7 @@ def test_late_guard_failure_keeps_full_transfer_charge(stage, failure):
     assert result.broker.bytes_to_charge == 4096
 
 
+@pytest.mark.real_jail
 def test_broker_cannot_enter_offline_stage(stage):
     launcher, _ = stage
     broker = RegistryBrokerProcess(max_bytes=4096)
@@ -267,6 +280,7 @@ def test_broker_cannot_enter_offline_stage(stage):
     launch.assert_not_called()
 
 
+@pytest.mark.real_jail
 def test_acquisition_requires_started_broker(stage):
     launcher, _ = stage
     with pytest.raises(ValueError, match="only acquisition"):
@@ -275,6 +289,7 @@ def test_acquisition_requires_started_broker(stage):
         invoke(launcher("acquire"), broker=RegistryBrokerProcess(max_bytes=4096))
 
 
+@pytest.mark.real_jail
 def test_broker_finalization_cannot_outlive_stage_deadline(stage):
     launcher, _ = stage
     broker = RegistryBrokerProcess(max_bytes=4096, timeout_s=60)

@@ -359,7 +359,9 @@ def test_poll_rejects_foreign_unknown_and_replayed_handles(monkeypatch):
         identity=_user("victim"),
         monkeypatch=monkeypatch,
     )
-    assert (status, doc) == (200, {"status": "connected", "service": "codex"})
+    assert status == 200
+    assert doc["status"] == "connected" and doc["service"] == "codex"
+    assert doc["serving"] == {"status": "held"}
     assert polled == [{"device_auth_id": "dev-1", "user_code": "AB-CD"}]
     # …and the handle is consumed: a replay cannot deposit again.
     status, doc = _drive(
@@ -484,7 +486,9 @@ def test_poll_route_deposits_as_user_and_never_echoes_credential(monkeypatch):
         identity=_user("user_777"),
         monkeypatch=monkeypatch,
     )
-    assert (status, doc) == (200, {"status": "connected", "service": "codex"})
+    assert status == 200
+    assert doc["status"] == "connected" and doc["service"] == "codex"
+    assert doc["serving"] == {"status": "held"}
     assert captured["actor"] == "user_777" and captured["service"] == "codex"
     assert json.loads(captured["material"])["tokens"]["refresh_token"] == secret
     assert secret not in json.dumps(doc)
@@ -1092,3 +1096,37 @@ def test_no_named_universe_still_uses_the_callers_own_home(tmp_path, monkeypatch
     flow = openai_device.lookup_flow(body["flow"], user_id="owner-a")
     assert flow.universe_id, "the caller's own home should have been resolved"
     openai_device.release_flow(body["flow"])
+
+
+@pytest.mark.parametrize("offer_error", [False, True])
+def test_poll_preserves_deposit_and_exposes_pending_model_consent(monkeypatch, offer_error):
+    from tinyassets.onboarding import source_connect
+
+    od._reset_pending_for_tests()
+    handle = _started(monkeypatch, user=_user())
+
+    async def fake_poll(**kwargs):
+        return {"auth_json": "private-credential"}
+
+    def offer(**kwargs):
+        assert kwargs["owner"] == _user().user_id
+        assert kwargs["service"] == "codex"
+        if offer_error:
+            raise RuntimeError("private-exception")
+        return {"request": {"request_id": "consent-1", "title": "Use subscription",
+                            "action": {"type": "bind_model_access"}}}
+
+    monkeypatch.setattr(od, "poll_device_auth", fake_poll)
+    monkeypatch.setattr(od, "deposit_codex_auth_json", lambda *a, **kw: {
+        "ok": True, "serving": {"status": "held", "detail": "private-detail"}})
+    monkeypatch.setattr(source_connect, "offer_subscription_source", offer)
+    status, doc = _drive("/app/openai/device/poll", {"flow": handle},
+                         identity=_user(), monkeypatch=monkeypatch)
+    assert status == 200 and doc["status"] == "connected"
+    assert doc["serving"] == {"status": "held"}
+    assert "private" not in json.dumps(doc)
+    if offer_error:
+        assert doc["confirmation_error"] == "model_confirmation_requires_review"
+        assert "confirmation" not in doc
+    else:
+        assert doc["confirmation"]["action"]["type"] == "bind_model_access"

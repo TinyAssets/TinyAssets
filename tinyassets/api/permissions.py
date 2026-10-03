@@ -347,7 +347,7 @@ def universe_public_read_allowed(universe_id: str) -> bool:
         # A real error reading the visibility rule — never fall open.
         logger.warning(
             "universe_public_read_allowed: failing closed on rules-read error "
-            "for universe %r",
+            "for command center %r",
             uid,
             exc_info=True,
         )
@@ -370,7 +370,7 @@ def _universe_is_owned(base: Any, universe_id: str) -> bool:
         return bool(owned_universe_id(base, universe_id))
     except Exception:  # noqa: BLE001 - fail closed
         logger.warning(
-            "universe ownership lookup failed closed for %r", universe_id, exc_info=True,
+            "command center ownership lookup failed closed for %r", universe_id, exc_info=True,
         )
         return False
 

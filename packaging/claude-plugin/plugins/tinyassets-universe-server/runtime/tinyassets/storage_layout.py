@@ -1,0 +1,240 @@
+"""The data-layout marker: an image never runs against data it does not understand.
+
+The universe -> command center cutover (`openspec/changes/rename-universe-to-
+command-center`, design D7.2 / D10) renames tables, columns, files and ids in one
+locked migration run. An image built for the old layout must never start against
+renamed data: it would find no ``universes`` table and could create a blank home
+for a person who already has one. So this marker ships first (C4a), alone, and is
+the production baseline before any migration exists:
+
+* ``data_dir()/.layout.json`` holds ``{"layout": <n>, "state": "stable"}``,
+  written the first time an image that knows layout 1 finds none.
+* Every process that opens the data calls `require_layout` first. It takes a
+  SHARED lock on ``data_dir()/.layout.lock`` and only then reads the marker, so
+  the check and the hold are one admission: a migration (which takes the lock
+  EXCLUSIVELY) can never slip between them. It refuses -- loudly, opening
+  nothing -- unless it knows the layout AND the state is ``stable``; a migration
+  writes ``"state": "migrating"`` durably before its first change, so a crash
+  mid-run leaves a marker every process refuses. The lock is held for the
+  process lifetime. Host jobs (``deploy/backup.sh``) take the same lock.
+* Who calls it: every INDEPENDENT entry point that opens the data -- the
+  server (``universe_server.main``), the daemon CLI (``python -m tinyassets``),
+  the desktop daemon role, operator scripts and the hourly rotation, and host
+  jobs via ``flock`` (``deploy/backup.sh``). A process's children (spawned
+  workspace/broker workers, the per-turn engine MCP subprocess) are covered by
+  their parent: they live inside its lifetime, and in a container they die with
+  it, before any new container could migrate.
+* POSIX uses ``flock``; Windows uses ``LockFileEx`` (shared and exclusive), so a
+  local install's separate daemon and connector processes are excluded too.
+
+``python -m tinyassets.storage_layout check [DATA_DIR]`` exits 0 when this code
+may run on that data, 3 when it may not.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import sys
+import tempfile
+from pathlib import Path
+from typing import Any
+
+#: The layout this code reads and writes. The cutover's image bumps it to 2.
+LAYOUT = 1
+#: Layouts this code understands. A newer one means "migrated past me".
+KNOWN_LAYOUTS = frozenset({1})
+STABLE = "stable"
+MARKER = ".layout.json"
+LOCK = ".layout.lock"
+
+_held: list[int] = []
+
+
+class LayoutRefused(RuntimeError):
+    """This code must not run against this data."""
+
+
+# ---------------------------------------------------------------------------
+# The lock: shared for every reader, exclusive for initialisation / migration
+# ---------------------------------------------------------------------------
+
+
+def _open_lock(base: Path) -> int:
+    path = Path(base) / LOCK
+    try:
+        fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o666)
+    except PermissionError:
+        # Created by a host job running as another user (backup.sh as root): a
+        # read-only descriptor is enough to lock it.
+        return os.open(path, os.O_RDONLY)
+    try:
+        os.chmod(path, 0o666)  # every service user and host job can open it
+    except OSError:
+        pass
+    return fd
+
+
+if sys.platform == "win32":  # pragma: no cover - exercised on Windows installs
+    import ctypes
+    import msvcrt
+    from ctypes import wintypes
+
+    class _Overlapped(ctypes.Structure):
+        _fields_ = [("Internal", ctypes.c_void_p), ("InternalHigh", ctypes.c_void_p),
+                    ("Offset", wintypes.DWORD), ("OffsetHigh", wintypes.DWORD),
+                    ("hEvent", wintypes.HANDLE)]
+
+    _kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    _LOCKFILE_EXCLUSIVE = 0x2
+
+    def _lock(fd: int, exclusive: bool) -> None:
+        handle = msvcrt.get_osfhandle(fd)
+        flags = _LOCKFILE_EXCLUSIVE if exclusive else 0
+        if not _kernel32.LockFileEx(handle, flags, 0, 1, 0, ctypes.byref(_Overlapped())):
+            raise OSError(ctypes.get_last_error(), "LockFileEx failed on the layout lock")
+
+    def _unlock(fd: int) -> None:
+        handle = msvcrt.get_osfhandle(fd)
+        _kernel32.UnlockFileEx(handle, 0, 1, 0, ctypes.byref(_Overlapped()))
+else:
+    import fcntl
+
+    def _lock(fd: int, exclusive: bool) -> None:
+        fcntl.flock(fd, fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH)
+
+    def _unlock(fd: int) -> None:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+
+
+# ---------------------------------------------------------------------------
+# The marker
+# ---------------------------------------------------------------------------
+
+
+def marker_path(base: Path) -> Path:
+    return Path(base) / MARKER
+
+
+def read_marker(base: Path) -> dict[str, Any] | None:
+    path = marker_path(base)
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return None
+    try:
+        document = json.loads(raw)
+    except ValueError as exc:
+        raise LayoutRefused(f"{path} is not valid JSON ({exc}); nothing was opened") from None
+    if not isinstance(document, dict):
+        raise LayoutRefused(f"{path} is not a JSON object; nothing was opened")
+    return document
+
+
+def _write_atomically(path: Path, document: dict[str, Any]) -> None:
+    fd, tmp = tempfile.mkstemp(prefix=path.name + ".", suffix=".tmp", dir=path.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(document, handle)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        Path(tmp).unlink(missing_ok=True)
+        raise
+    if hasattr(os, "O_DIRECTORY"):
+        dfd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(dfd)
+        finally:
+            os.close(dfd)
+
+
+def _validated(base: Path, document: dict[str, Any]) -> dict[str, Any]:
+    layout, state = document.get("layout"), document.get("state")
+    if state != STABLE:
+        raise LayoutRefused(
+            f"{marker_path(base)} says state={state!r}: a migration did not finish. "
+            "Nothing was opened; restore the backup or finish the migration first."
+        )
+    if layout not in KNOWN_LAYOUTS:
+        raise LayoutRefused(
+            f"{marker_path(base)} says layout={layout!r}; this code understands "
+            f"{sorted(KNOWN_LAYOUTS)}. Nothing was opened; run the image built for "
+            "that layout."
+        )
+    return document
+
+
+def _admit(base: Path, *, hold: bool) -> dict[str, Any]:
+    """Lock shared, then read and validate; initialise under the exclusive lock."""
+    base = Path(base)
+    base.mkdir(parents=True, exist_ok=True)
+    fd = _open_lock(base)
+    try:
+        _lock(fd, exclusive=False)
+        document = read_marker(base)
+        if document is None:
+            # First start: only one process may write the marker.
+            _unlock(fd)
+            _lock(fd, exclusive=True)
+            if read_marker(base) is None:
+                _write_atomically(marker_path(base), {"layout": LAYOUT, "state": STABLE})
+            _unlock(fd)
+            _lock(fd, exclusive=False)
+            # Re-read under the shared lock: whatever ran in the gap is what counts.
+            document = read_marker(base)
+            if document is None:
+                raise LayoutRefused(f"{marker_path(base)} vanished during first start")
+        _validated(base, document)
+    except BaseException:
+        os.close(fd)
+        raise
+    if hold:
+        _held.append(fd)
+    else:
+        os.close(fd)
+    return document
+
+
+def check(base: Path) -> dict[str, Any]:
+    """The marker if this code may run on ``base`` (initialising it); no lock kept."""
+    return _admit(Path(base), hold=False)
+
+
+def require_layout(base: Path | None = None) -> dict[str, Any]:
+    """Refuse unless this code understands the data; then hold the shared lock."""
+    if base is None:
+        from tinyassets.storage import data_dir
+
+        base = data_dir()
+    return _admit(Path(base), hold=True)
+
+
+def release_for_tests() -> None:
+    """Close every held lock (test isolation only; production holds for life)."""
+    while _held:
+        os.close(_held.pop())
+
+
+def main(argv: list[str]) -> int:
+    if not argv or argv[0] != "check":
+        print("usage: python -m tinyassets.storage_layout check [DATA_DIR]", file=sys.stderr)
+        return 2
+    if len(argv) > 1:
+        base = Path(argv[1])
+    else:
+        from tinyassets.storage import data_dir
+
+        base = data_dir()
+    try:
+        document = check(base)
+    except LayoutRefused as exc:
+        print(f"layout refused: {exc}", file=sys.stderr)
+        return 3
+    print(json.dumps(document))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

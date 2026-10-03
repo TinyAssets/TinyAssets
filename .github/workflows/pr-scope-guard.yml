@@ -119,22 +119,32 @@ jobs:
           echo "diff key: ${KEY:-<none>}"
           echo "key=${KEY}" >> "$GITHUB_OUTPUT"
 
-      - name: Require exact-head review for drain PRs
+      # PR-relative test hygiene: removing, skipping or loosening an existing
+      # test needs a stated reason and its own PR; a new skip needs an owner
+      # and an end; a new test may not touch the network, real paths or sleep.
+      # The trusted base copy of the script reads both trees as text
+      # (`git show` + ast.parse); no PR code runs. Nothing here fails on a
+      # date of main -- the weekly inventory (quarantine-oracle.yml) reports
+      # expiry, and expired markers block only a PR that touches their file.
+      - name: Test hygiene (what this PR changes)
         if: github.event_name == 'pull_request_target'
         env:
-          HEAD_REF: ${{ github.event.pull_request.head.ref }}
           HEAD_OID: ${{ github.event.pull_request.head.sha }}
+          BASE_OID: ${{ github.event.pull_request.base.sha }}
           PR_BODY: ${{ github.event.pull_request.body }}
-          DIFF_KEY: ${{ steps.diffkey.outputs.key }}
         shell: bash
         run: |
           set -euo pipefail
-          printf '%s' "${PR_BODY:-}" > "$RUNNER_TEMP/pr-body.md"
-          python scripts/drain_review_gate.py \
-            --branch "${HEAD_REF}" \
-            --head "${HEAD_OID}" \
-            --diff-key "${DIFF_KEY}" \
-            --body-file "$RUNNER_TEMP/pr-body.md"
+          if [ ! -f scripts/test_hygiene_gate.py ]; then
+            echo "::notice::base predates scripts/test_hygiene_gate.py; nothing to check"
+            exit 0
+          fi
+          git cat-file -e "${HEAD_OID}^{commit}" \
+            || git fetch --no-tags --filter=blob:none origin "${HEAD_OID}"
+          printf '%s' "${PR_BODY:-}" > "$RUNNER_TEMP/pr-body-hygiene.md"
+          python scripts/test_hygiene_gate.py \
+            --base "${BASE_OID}" --head "${HEAD_OID}" \
+            --body "$RUNNER_TEMP/pr-body-hygiene.md"
 
       # Under pull_request_target, only the trusted base SHA above is checked out.
       # The PR head is never executed with this workflow's token. The file list
@@ -146,7 +156,6 @@ jobs:
           PR: ${{ github.event.pull_request.number }}
           REPO: ${{ github.repository }}
           LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
-          HEAD_REF: ${{ github.event.pull_request.head.ref }}
           HEAD_OID: ${{ github.event.pull_request.head.sha }}
           BASE_OID: ${{ github.event.pull_request.base.sha }}
           DIFF_KEY: ${{ steps.diffkey.outputs.key }}
@@ -186,6 +195,40 @@ jobs:
           fi
 
           TOTAL="$(printf '%s\n' "$CHANGED" | sed '/^$/d' | wc -l | tr -d ' ')"
+
+          # Paths no PR may touch at all (scripts/check_forbidden_pr_paths.py).
+          # Checked FIRST, and on purpose, even though the receipt check below
+          # deliberately reports its own complaint together with the label one:
+          # fixing this is mechanical and takes seconds, and the fix is a PUSH,
+          # which voids a head-pinned receipt anyway. Telling the author now
+          # means they fix it and get stamped once; bundling it with the receipt
+          # failure would have them get stamped and then void it.
+          #
+          # The `-f` guard is REQUIRED, not defensive. Under
+          # pull_request_target this workflow is the trusted copy from the
+          # default branch, but the CHECKOUT above is the PR's own base sha --
+          # so for any PR whose base predates the script, the workflow calls a
+          # file that is not there. Without this, python exited 2 ("can't open
+          # file"), the `if !` read that as "a forbidden path was found", and
+          # the REQUIRED `Diff scope declared` check failed every such PR with
+          # a message naming the wrong cause. The step above does exactly this
+          # for scripts/test_hygiene_gate.py and I did not copy it.
+          if [ ! -f scripts/check_forbidden_pr_paths.py ]; then
+            echo "::notice::base predates scripts/check_forbidden_pr_paths.py; nothing to check"
+          elif ! printf '%s\n' "$CHANGED" \
+              | python scripts/check_forbidden_pr_paths.py \
+                2> "$RUNNER_TEMP/forbidden-paths.txt"; then
+            echo "::error::this PR changes a path no PR may change"
+            {
+              echo "### PR scope guard"
+              echo ""
+              echo "**Blocked — this PR changes a path no PR may change.**"
+              echo ""
+              sed 's/^/> /' "$RUNNER_TEMP/forbidden-paths.txt"
+            } >> "$GITHUB_STEP_SUMMARY"
+            cat "$RUNNER_TEMP/forbidden-paths.txt"
+            exit 1
+          fi
 
           # The endpoint caps at 3000 files and says nothing when it truncates.
           # An earlier version of this comment claimed the read above already
@@ -227,190 +270,16 @@ jobs:
           HITS="$(classify "$SENSITIVE_RE" "")" || exit 1
           HIT_COUNT="$(printf '%s\n' "$HITS" | sed '/^$/d' | wc -l | tr -d ' ')"
 
-          # The files below DEFINE the required-tests gate (and this guard's
-          # own receipt checker). The gate executes the PR's checkout, so a PR
-          # editing them can neuter the check while its name stays green. A
-          # label is a declaration, not authorization — editing these demands
-          # the same exact-head review receipt drain PRs carry (Codex gate
-          # review 2026-08-02, finding 2). This runs from the TRUSTED base
-          # checkout, so a PR cannot weaken the rule that judges it.
-          # This workflow protects ITSELF. Without it, a later PR could narrow or
-          # delete AUTHORITY_RE with only an `infra-change` label -- permanently
-          # weakening exact-head enforcement for every PR after it. A gate that
-          # anyone can quietly disable is not a gate.
-          #
-          # WHO needs a receipt is deliberately UNCHANGED as of 2026-09-26: this
-          # set plus AUTHORITY_RE, exactly as before. Widening it to every
-          # release-critical path, the `infra-change` label and a Tier 2 title
-          # was built and then CUT -- measured against the 60 most recently
-          # merged PRs it would have made 29 of them wait for a stamp, and the
-          # founder's direction is that the process is already bloated. What
-          # changed on 2026-09-26 is only WHAT a receipt has to be: see the
-          # attestation requirement below and in scripts/drain_review_gate.py.
-          # `check_context_budget.py` and `test_rulebook_ratchet.py` are the
-          # rulebook ratchet: they pin how large the always-loaded rule files may
-          # be. RAISING a pin is the bypass direction and it is a one-line edit,
-          # so it needs the same receipt. The ratchet test arrives with #4025;
-          # naming it here first costs nothing, because a path that does not
-          # exist simply never matches.
-          GATE_RE='^(\.github/workflows/tests\.yml$|\.github/workflows/pr-scope-guard\.yml$|\.github/known-failing-tests\.txt$|\.github/heavy-test-files\.txt$|scripts/ci_required_tests\.py$|scripts/drain_review_gate\.py$|scripts/check_context_budget\.py$|tests/test_rulebook_ratchet\.py$)'
-          GATE_HITS="$(classify "$GATE_RE" "")" || exit 1
-
-          # AUTHORITY paths carry the same receipt requirement, for a different
-          # reason: a bug here is privilege escalation or credential disclosure,
-          # not a broken build. AGENTS.md already REQUIRES exact-head approval
-          # for auth/storage/public-surface changes -- this makes that stated
-          # rule executable rather than adding a new one.
-          #
-          # Scoped to where the repeat actually happened. Every file below is
-          # named in an open finding in docs/concerns/: the write-ACL tier grant
-          # (api/interlocutor.py), the ambient identity fallback
-          # (api/engine_helpers.py), founder canon defaulting public
-          # (api/visibility.py), and the credential-vault fail-open. The shared
-          # shape is that all of them LANDED and were found later by
-          # cross-family review -- the gap is not "no review", it is review not
-          # bound to the merge, which is exactly what an exact-head receipt
-          # binds.
-          #
-          # Deliberately narrow: ~7% of recent commits touch these paths. A
-          # blanket receipt requirement across tinyassets/ would be the process
-          # bloat this repo just removed.
-          # Matched case-INSENSITIVELY (-i) and anchored at either the repo root
-          # or the packaging runtime mirror. Three bypasses this closes, all
-          # confirmed by regex probe before the fix:
-          #   - `TinyAssets/Auth/...` differing only in case
-          #   - the shipped mirror at packaging/claude-plugin/plugins/
-          #     tinyassets-universe-server/runtime/tinyassets/auth/, which
-          #     contains the same authority code and was unprotected
-          #   - renames, handled by the previous_filename projection above
-          # ANCHORED to the two real roots. `(^|/)tinyassets/` was permissive so
-          # the packaging mirror would match, but it also matched ANY nested
-          # copy: `docs/audits/harness-reset-preserved/.../tinyassets/api/
-          # permissions.py` is an archived snapshot, not the authority surface,
-          # and DELETING four such copies is what blocked PR #2561 for six review
-          # rounds. Naming both roots keeps the mirror covered and stops the
-          # guard policing docs.
-          # WIDENED 2026-08-27, because the narrow list let an authority change
-          # ship unreviewed. PR #2559 changed WHEN foreground runs mint provider
-          # authority -- splitting admission into prepare()/lazy _admit() -- and
-          # touched foreground_run_provider.py, provider_work_authority.py and
-          # providers/router.py. None were listed, so no receipt was demanded and
-          # auto-merge took it. The post-merge review then found three Medium
-          # findings on code that was already live, including async sub-branches
-          # failing outright.
-          #
-          # Still deliberately NOT a blanket `tinyassets/` rule -- that was
-          # rejected as process bloat and the reasoning holds. These are the
-          # modules that mint, bind, or validate provider authority.
-          # `providers/router.py` and `storage/provider_work_authority.py` were
-          # MISSED in the first widening -- the comment above named router.py as
-          # part of what escaped and the regex still omitted it. router.py validates
-          # carriers and classifies receipt settlement; storage/ persists and mints
-          # receipts, claims and invocation reservations. Both now covered.
-          # WIDENED 2026-09-28, because PR #4073 changed custody path validation
-          # in conversation_custody.py and nothing asked for a receipt. Any
-          # module whose NAME says authority or custody now matches, so the next
-          # one is covered when it is created, plus the named grant, principal,
-          # owner-binding, credential and consent modules. Measured against the
-          # 60 most recently merged PRs: 8 needed a receipt before, 9 after, and
-          # the one added is #4073 itself.
-          AUTHORITY_RE='^(tinyassets|packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/tinyassets)/(auth/|execution_authority/|credential_vault\.py$|foreground_run_provider\.py$|provider_work_authority\.py$|provider_serving_binding\.py$|provider_assignment\.py$|providers/router\.py$|storage/provider_work_authority\.py$|api/(permissions|interlocutor|visibility|engine_helpers)\.py$|([a-z_]+/)*[a-z_]*(authority|custody)[a-z_]*\.py$|providers/owner_binding\.py$|agent_runtime_(grants|principal)\.py$|principals\.py$|credential_refresh\.py$|connection_oauth/tokens\.py$|desktop/credentials\.py$|storage/effector_consents\.py$)'
-          AUTHORITY_HITS="$(classify "$AUTHORITY_RE" "-i")" || exit 1
-
-          # GROUNDED, not regex-only. A path match says WHERE an edit landed,
-          # never WHETHER it can escalate a privilege. PR #2561's entire
-          # authority change was ONE docstring line repointing a spec path after
-          # archiving -- an unbounded prose review demanded for a comment.
-          #
-          # authority_behavior_check.py parses both revisions, strips docstrings,
-          # and compares ASTs. It fails CLOSED on an add, a delete, a rename, a
-          # syntax error, a non-Python path, or an unreadable blob, so the
-          # receipt stands down only when the code is PROVABLY unchanged. It runs
-          # from this trusted base checkout and only ever ast.parse()s the head
-          # blob -- parsing never executes it.
-          # EXEMPT_FIRED records that a CONTENT PROOF cleared a hit, and
-          # FOOTPRINT_EXEMPT below only trusts it when it accounts for the WHOLE
-          # footprint. One unproven hit left over and the receipt stands.
-          EXEMPT_FIRED=0
-          if [ -n "$AUTHORITY_HITS" ]; then
-            git fetch --no-tags --depth=1 origin "$HEAD_OID" >/dev/null 2>&1 || true
-            # Explicit array, not bare word-splitting: each hit is its own argv
-            # entry, and a path containing a space must not become two arguments.
-            mapfile -t AUTHORITY_ARR <<< "$AUTHORITY_HITS"
-            if python scripts/authority_behavior_check.py \
-                 --base "$BASE_OID" --head "$HEAD_OID" "${AUTHORITY_ARR[@]}"; then
-              echo "authority hits are comment/docstring-only -- receipt not required"
-              AUTHORITY_HITS=""
-              EXEMPT_FIRED=1
-            fi
-          fi
-
-          # The receipt footprint: the gate-defining files plus every authority
-          # path that survived the AST proof, deduplicated. Either list may name
-          # a file twice (the rename projection emits both names).
-          RECEIPT_HITS="$(printf '%s\n%s\n' "$GATE_HITS" "$AUTHORITY_HITS" | sed '/^$/d' | sort -u)"
-
-          # Exception: a DELETION-ONLY ledger edit is the maintenance the gate
-          # itself forces (stale quarantine entries fail the run) and only
-          # tightens the ratchet. ADDING a quarantine line is the bypass
-          # direction and keeps the receipt requirement.
-          #
-          # Decided on the `additions` COUNT, never on `.patch`: GitHub omits
-          # `patch` for binary files and drops it entirely on large diffs, so a
-          # patch-grep silently sees "no additions" and waves the edit through
-          # (Codex review 2026-08-02, finding 1 — this exact fail-open). The
-          # count is trusted metadata and is always present. Anything that is
-          # not a clean numeric 0 keeps the receipt requirement.
-          if [ "$RECEIPT_HITS" = ".github/known-failing-tests.txt" ]; then
-            # Compare CONTENT, not diff metadata. GitHub reports additions: 0
-            # for binary files and for pure renames alike, so a NUL-poisoned
-            # ledger or a pre-planted file renamed into place both read as
-            # "no additions" (verified on PRs #2041/#2172).
-            #
-            # Read through the GIT TREE, not the Contents API: that API
-            # DEREFERENCES symlinks, so swapping the ledger for a link to
-            # identical content reads as a no-op — and the link target is not
-            # a gate-protected path, so a later PR edits it freely. The tree
-            # gives the true blob mode and size; the blob endpoint gives the
-            # bytes of that exact blob. Every failure below leaves RECEIPT_HITS
-            # intact, i.e. requires a receipt.
-            HEAD_LEDGER="$RUNNER_TEMP/head-ledger.txt"
-            : > "$HEAD_LEDGER"
-            LEDGER_MODE=""; LEDGER_SIZE=""
-            if TREE_ROW="$(gh api "repos/${REPO}/git/trees/${HEAD_OID}:.github" \
-                --jq '.tree[] | select(.path=="known-failing-tests.txt") | "\(.mode) \(.size) \(.sha)"' \
-                2>/dev/null)" && [ "$(printf '%s\n' "$TREE_ROW" | wc -l)" -eq 1 ]; then
-              LEDGER_MODE="$(printf '%s' "$TREE_ROW" | cut -d' ' -f1)"
-              LEDGER_SIZE="$(printf '%s' "$TREE_ROW" | cut -d' ' -f2)"
-              LEDGER_SHA="$(printf '%s' "$TREE_ROW" | cut -d' ' -f3)"
-              if ! gh api "repos/${REPO}/git/blobs/${LEDGER_SHA}" --jq '.content' 2>/dev/null \
-                  | tr -d '\n' | base64 -d > "$HEAD_LEDGER" 2>/dev/null; then
-                : > "$HEAD_LEDGER"   # partial decode must not read as a deletion
-              fi
-            fi
-            # The decision (mode/size trust + entry comparison) lives in the
-            # policy script so every branch of it is unit tested.
-            if python scripts/drain_review_gate.py \
-                --ledger-base-file .github/known-failing-tests.txt \
-                --ledger-head-file "$HEAD_LEDGER" \
-                --ledger-head-mode "${LEDGER_MODE}" \
-                --ledger-head-size "${LEDGER_SIZE}" \
-                --branch "${HEAD_REF}" --head "${HEAD_OID}" --body-file "$HEAD_LEDGER"; then
-              echo "scope guard: ledger edit removes entries only — receipt not required"
-              RECEIPT_HITS=""
-              EXEMPT_FIRED=1
-            else
-              echo "ledger edit adds entries, or the head blob was not a trustworthy regular file — receipt required"
-            fi
-          fi
-
-          # A content proof only outranks the label when it accounts for the
-          # PR's ENTIRE release-critical/authority footprint. One unproven hit
-          # left over and the receipt stands.
-          FOOTPRINT_EXEMPT=0
-          if [ "$EXEMPT_FIRED" -eq 1 ] && [ -z "$RECEIPT_HITS" ]; then
-            FOOTPRINT_EXEMPT=1
-          fi
+          # EVERY PR needs a review receipt (2026-10-02). This used to be a
+          # narrow set -- gate-defining files plus an authority-path regex, with AST and
+          # deletion-only-ledger exemptions -- on the reasoning that a blanket
+          # rule was process bloat. Then auto-enroll armed #4247, a superseded
+          # head with a known data-loss bug, no receipt and no path in that
+          # set, and the merge queue admitted it (a merge-group run passes this
+          # check unconditionally). Every PR is stamped by the lead anyway, so
+          # the blanket rule adds no step; it stops unreviewed heads merging.
+          # This is the only place that can stop one: the queue does not re-run
+          # it, because a merge-group run would grade itself.
 
           # The receipt's artifact must be a comment ON THIS PR that a trusted
           # author published, AND that comment must itself attest
@@ -426,9 +295,8 @@ jobs:
           # verdict legitimately lands in any of them: a top-level comment, a
           # submitted review, an inline review comment.
           #
-          # A failed read REMOVES the inventory rather than failing the step. A
-          # PR that needs no receipt must not be blocked by an unrelated API
-          # blip; a PR that needs one then finds no inventory and is denied.
+          # A failed read REMOVES the inventory rather than failing the step:
+          # the decision then finds no inventory and denies, saying why.
           COMMENTS_FILE="$RUNNER_TEMP/pr-comments.ndjson"
           rm -f "$COMMENTS_FILE"
           for ENDPOINT in "issues/${PR}/comments" "pulls/${PR}/comments" "pulls/${PR}/reviews"; do
@@ -441,24 +309,14 @@ jobs:
             fi
           done
 
-          printf '%s\n' "$RECEIPT_HITS" | sed '/^$/d' > "$RUNNER_TEMP/receipt-hits.txt"
           printf '%s' "${PR_BODY:-}" > "$RUNNER_TEMP/pr-body-gate.md"
-          # Seeded with the mode flag so the array is never empty, which `set -u`
-          # would otherwise make an error on expansion.
-          RECEIPT_ARGS=(--blocking-review)
-          if [ "$FOOTPRINT_EXEMPT" -eq 1 ]; then
-            RECEIPT_ARGS+=(--review-footprint-exempt)
-          fi
-          # Every trigger, every exemption and the receipt parse itself are one
-          # decision in one unit-tested place. stderr carries the reason, so it
-          # can be shown on the PR whether the answer is allow or deny.
-          if ! python scripts/drain_review_gate.py \
-              "${RECEIPT_ARGS[@]}" \
-              --branch "${HEAD_REF}" \
+          # The receipt parse and its corroboration are one decision in one
+          # unit-tested place. stderr names the head and diff key a receipt
+          # must carry, so it can be shown on the PR either way.
+          if ! python scripts/drain_review_gate.py --blocking-review \
               --head "${HEAD_OID}" \
               --diff-key "${DIFF_KEY}" \
               --body-file "$RUNNER_TEMP/pr-body-gate.md" \
-              --review-hits-file "$RUNNER_TEMP/receipt-hits.txt" \
               --review-repo "${REPO}" \
               --review-pr "${PR}" \
               --review-comments-file "$COMMENTS_FILE" \
@@ -466,7 +324,9 @@ jobs:
             {
               echo "### PR scope guard"
               echo ""
-              echo "**Blocked — no exact-head blocking-review receipt.**"
+              echo "**Blocked — no Drain-Review receipt for head \`${HEAD_OID}\`${DIFF_KEY:+ (diff key \`${DIFF_KEY}\`)}.**"
+              echo ""
+              echo "Every PR needs a current review receipt before it can merge."
               echo ""
               sed 's/^/> /' "$RUNNER_TEMP/receipt-why.txt"
               echo ""
@@ -502,8 +362,9 @@ jobs:
               echo "fenced block, an HTML comment, a \`<details>\` or a quote is"
               echo "simply not at the top. If yours is being refused, MOVE IT UP:"
               echo "only blank lines may precede it."
-              echo "Re-stamp after every push: the head SHA must match exactly,"
-              echo "in BOTH places."
+              echo "A head receipt must name this exact head SHA in BOTH places, so a"
+              echo "push voids it; a \`Drain-Review-Diff:\` receipt survives a rebase"
+              echo "or merge-main that leaves the PR's own change unchanged."
               # Both complaints at once. The receipt is checked before the label
               # declaration below, so reporting only this one sends a legitimate
               # PR round the loop twice: stamp, still red, then add the label.
@@ -518,7 +379,7 @@ jobs:
                 esac
               fi
             } >> "$GITHUB_STEP_SUMMARY"
-            echo "scope guard: BLOCKED — no exact-head blocking-review receipt"
+            echo "scope guard: BLOCKED — no Drain-Review receipt for head ${HEAD_OID}${DIFF_KEY:+ / diff key ${DIFF_KEY}}"
             cat "$RUNNER_TEMP/receipt-why.txt" || true
             exit 1
           fi

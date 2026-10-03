@@ -31,8 +31,14 @@ const RUNS={
   output:{secret:'BOBS SECRET OUTPUT'}},
 };
 let automationsUniverseOverride='';
+let liveTurn=null, liveUniverseOverride='';
 const baseCall=MCP.callTool.bind(MCP);
 MCP.callTool=async function(tool,args,opts){
+ if(tool==='get_status'&&liveTurn!==null){
+  calls.push({tool,args:JSON.parse(JSON.stringify(args||{}))});
+  return {universe_id:liveUniverseOverride||args.universe_id,active_turn:liveTurn,
+    persona:{name:'PRIVATE PERSONA'},recent_conversation:{turns:[{speaker:'founder',text:'SECRET'}]}};
+ }
  if(tool==='read_graph'&&['automations','runs','run','run_output'].includes(args.target)){
   calls.push({tool,args:JSON.parse(JSON.stringify(args||{}))});
   allCalls.push({tool,args:JSON.parse(JSON.stringify(args||{}))});
@@ -99,7 +105,7 @@ assert.equal(JSON.stringify(autos).includes('is_you'),false);
 automationsUniverseOverride='u-bob';
 const wrongAutos=await ask('list_automations',{});
 assert.equal(wrongAutos.ok,false);
-assert(/another universe/.test(wrongAutos.error),wrongAutos.error);
+assert(/another command center/.test(wrongAutos.error),wrongAutos.error);
 automationsUniverseOverride='';
 
 // ---- runs: pinned, bounded, no principal id -------------------------------
@@ -150,6 +156,33 @@ for(const action of ['read_run','read_run_output']){
 const noField=await ask('read_run_output',{run_id:'run-a'});
 assert.equal(noField.ok,false); assert(/field is required/.test(noField.error),noField.error);
 assert.equal(calls.length,0,'refused arguments reach no tool');
+
+// ---- live state: which agent is working, on what, keyed by agent ---------
+binding=installed();
+liveTurn={turn_id:'t1',state:'tool',started_at:'2026-10-01T10:00:00+00:00',age_s:4,stale:false,
+ tools:[{tool:'bash',summary:'ran a command (git status)',state:'running',age_s:1.2,
+   command:'cat ~/.ssh/id_rsa',arguments:{x:1},result:'SECRET RESULT'},
+  {tool:'read',summary:'read notes/plan.md',state:'done',age_s:3,took_s:0.1}]};
+calls=[];
+const live=await ask('read_live',hostile);
+const liveCall=calls.find(c=>c.tool==='get_status');
+assert.equal(liveCall.args.universe_id,HOME,'pinned to the granted home');
+const agentsLive=live.result.agents;
+assert(agentsLive.length>=1);
+const worker=agentsLive.find(a=>a.state==='working');
+assert(worker,'the selected agent shows as working');
+assert.equal(worker.since,'2026-10-01T10:00:00+00:00');
+assert.deepEqual(worker.steps.map(s=>Object.keys(s).sort()),
+ [['age_s','state','summary','tool'],['age_s','state','summary','tool']]);
+assert(!JSON.stringify(live.result).includes('SECRET')&&!JSON.stringify(live.result).includes('id_rsa')
+ &&!JSON.stringify(live.result).includes('PRIVATE PERSONA'),'only picked fields cross');
+liveTurn={turn_id:'t1',state:'tool',started_at:'x',stale:true,tools:[]};
+const staleLive=await ask('read_live',{});
+assert(staleLive.result.agents.every(a=>a.state==='idle'),'a stale turn is not working');
+liveUniverseOverride='u-bob';
+const foreignLive=await ask('read_live',{});
+assert(foreignLive.error,'another universe\'s state is refused');
+liveUniverseOverride='';liveTurn=null;
 
 // ---- a home change ends the grant for these reads too ---------------------
 me={principal_id:PRINCIPAL,universe_id:'u-bob',setup:'connected'};

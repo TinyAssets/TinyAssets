@@ -1256,15 +1256,30 @@ def test_missing_manifest_source_fails_before_systemd(tmp_path):
     assert not (tmp_path / "runtime" / "current").exists()
 
 
+def _change_runtime_content(source: Path) -> None:
+    """Give the next install something to do.
+
+    Since the idempotence gate (#3989), a repeat install of byte-identical
+    content exits "already current" before it ever reads service state, so a
+    test of the service-state refusal must change the bundle first -- the
+    refusal only guards a run that would mutate the host.
+    """
+    (source / "scripts" / "watchdog.py").write_text(
+        "WATCH = 2\n", encoding="utf-8", newline="\n"
+    )
+
+
 @pytest.mark.parametrize(
     "active_state", ["active", "activating", "reloading", "deactivating"]
 )
 def test_active_service_timeout_reactivates_timers_before_file_mutation(
     tmp_path, active_state
 ):
-    env = _install_env(tmp_path)
+    source = _copy_source(tmp_path)
+    env = _install_env(tmp_path, source)
     first = _run_installer(env)
     assert first.returncode == 0, f"{first.stdout}\n{first.stderr}"
+    _change_runtime_content(source)
     current_before = _bash_readlink(tmp_path / "runtime" / "current")
     units_before = {
         unit: (tmp_path / "systemd" / unit).read_bytes()
@@ -1288,9 +1303,11 @@ def test_active_service_timeout_reactivates_timers_before_file_mutation(
 
 
 def test_unknown_service_state_fails_closed_before_file_mutation(tmp_path):
-    env = _install_env(tmp_path)
+    source = _copy_source(tmp_path)
+    env = _install_env(tmp_path, source)
     first = _run_installer(env)
     assert first.returncode == 0, f"{first.stdout}\n{first.stderr}"
+    _change_runtime_content(source)
     current_before = _bash_readlink(tmp_path / "runtime" / "current")
     units_before = {
         unit: (tmp_path / "systemd" / unit).read_bytes()
@@ -1314,9 +1331,11 @@ def test_unknown_service_state_fails_closed_before_file_mutation(tmp_path):
 
 
 def test_partial_timer_stop_failure_reactivates_every_timer(tmp_path):
-    env = _install_env(tmp_path)
+    source = _copy_source(tmp_path)
+    env = _install_env(tmp_path, source)
     first = _run_installer(env)
     assert first.returncode == 0, f"{first.stdout}\n{first.stderr}"
+    _change_runtime_content(source)
     env["FAIL_STOP_UNIT"] = TIMERS[2]
 
     result = _run_installer(env)
@@ -1596,6 +1615,7 @@ def test_callers_and_workflow_have_one_pinned_installer_owner():
         "deploy/install-host-uptime-services.sh",
         *(f"deploy/{unit}" for unit in UNIT_FILES),
         *RUNTIME_FILES,
+        JOURNALD_DROPIN_SOURCE,
     ]
     restart_checkout = restart["jobs"]["restart"]["steps"][0]
     assert restart_checkout["with"]["ref"] == "${{ github.sha }}"
@@ -2265,9 +2285,14 @@ esac
 
     # Git Bash ships no flock at all. Mocking it makes the script reach its
     # checks; it proves nothing about the lock itself.
+    # WATCHDOG_FLOCK_BUSY_FD names one descriptor whose lock is "held
+    # elsewhere", so a test can stand in for a deploy holding its lock.
     (fake_bin / "flock").write_text(
         """#!/usr/bin/env bash
 echo "$*" >> "$WATCHDOG_FLOCK_LOG"
+if [[ -n "${WATCHDOG_FLOCK_BUSY_FD:-}" && "$2" == "$WATCHDOG_FLOCK_BUSY_FD" ]]; then
+  exit 1
+fi
 exit 0
 """,
         encoding="utf-8",
@@ -2337,6 +2362,8 @@ def _run_watchdog(
         "WATCHDOG_VOLUME_MOUNT": _watchdog_arg(volume),
         "TINYASSETS_COMPOSE_FILE": compose_arg,
         "TINYASSETS_DAEMON_WATCHDOG_LOCK": _watchdog_arg(tmp_path / "wd.lock"),
+        # Absent unless a test creates it: no deploy has run since boot.
+        "TINYASSETS_HOST_MUTATION_LOCK": _watchdog_arg(tmp_path / "host-mutation.lock"),
         "TINYASSETS_HEARTBEAT_MAX_AGE_SECONDS": "60",
         # Emptied rather than omitted: `${VAR:-default}` falls through on an
         # empty value, so this pins the script's own production defaults even
@@ -2438,7 +2465,7 @@ def test_daemon_watchdog_restart_repertoire_is_same_service_only(
         line.replace("{compose}", compose_arg) for line in docker_prefix
     ] + [
         "inspect tinyassets-daemon",
-        "restart tinyassets-daemon",
+        "restart -t 20 tinyassets-daemon",
     ]
     assert docker_lines == expected_docker
 
@@ -2449,7 +2476,7 @@ def test_daemon_watchdog_restart_repertoire_is_same_service_only(
         for line in docker_lines
         if line.split()[0] not in _WATCHDOG_READ_ONLY_DOCKER_VERBS
     ]
-    assert mutations == ["restart tinyassets-daemon"]
+    assert mutations == ["restart -t 20 tinyassets-daemon"]
 
     # No second target anywhere. Path-shaped tokens are excluded because the
     # temp root is not ours to predict.
@@ -2523,7 +2550,7 @@ def test_an_old_container_with_a_stale_heartbeat_is_still_restarted(tmp_path):
         "reset-failed tinyassets-daemon.service",
         "restart tinyassets-daemon.service",
     ]
-    assert "restart tinyassets-daemon" in docker_lines
+    assert "restart -t 20 tinyassets-daemon" in docker_lines
 
 
 @pytest.mark.skipif(not _BASH, reason="bash is unavailable")
@@ -2711,3 +2738,40 @@ def test_a_valid_threshold_is_left_alone(tmp_path):
     # max-age 60 + margin 30 = a 90s window, and the container is 60s old.
     assert "too young to have refreshed the heartbeat" in result.stdout
     assert "(< 90s)" in result.stdout, result.stdout
+
+
+@pytest.mark.skipif(not _BASH, reason="bash is unavailable")
+@pytest.mark.parametrize("trigger", ["inactive-unit", "stopped-container"])
+def test_daemon_watchdog_stands_down_while_a_deploy_holds_the_lock(tmp_path, trigger):
+    """A deploy's recreate looks like a dead daemon; the watchdog must not act on it.
+
+    2026-10-01: the unit was inactive and the container absent mid-recreate, so
+    this script restarted the container. That helped kill the new image and
+    fail the rollback
+    (docs/audits/2026-10-01-deploy-drain-repro/INCIDENT.md).
+    flock is mocked here, so this proves the script ASKS for the deploy's lock
+    on fd 8 and stops when it is held. It does not prove kernel lock semantics.
+    """
+    (tmp_path / "host-mutation.lock").write_text("", encoding="utf-8")
+    result, systemctl_lines, docker_lines, _relay, _compose = _run_watchdog(
+        tmp_path, trigger, extra_env={"WATCHDOG_FLOCK_BUSY_FD": "8"},
+    )
+    assert result.returncode == 0, f"{result.stdout}\n{result.stderr}"
+    assert "a deploy holds" in result.stdout
+    assert "restarting daemon container" not in result.stdout
+    assert systemctl_lines == []
+    assert docker_lines == []
+
+
+@pytest.mark.skipif(not _BASH, reason="bash is unavailable")
+def test_daemon_watchdog_acts_when_the_deploy_lock_is_free(tmp_path):
+    """The lock gates the watchdog only while it is HELD; a free lock changes nothing."""
+    (tmp_path / "host-mutation.lock").write_text("", encoding="utf-8")
+    result, systemctl_lines, _docker, _relay, _compose = _run_watchdog(
+        tmp_path, "inactive-unit",
+    )
+    assert result.returncode == 0, f"{result.stdout}\n{result.stderr}"
+    assert "restarting daemon container: systemd unit is not active" in result.stdout
+    assert "restart tinyassets-daemon.service" in systemctl_lines
+    flock_calls = (tmp_path / "wd-flock.log").read_text(encoding="utf-8").split("\n")
+    assert "-n 8" in flock_calls, "the deploy's lock must actually be asked for"

@@ -36,18 +36,17 @@ def _run_gate(
 ) -> subprocess.CompletedProcess[str]:
     body_path = tmp_path / "body.md"
     body_path.write_text(body, encoding="utf-8")
+    # `branch` and `require_receipt` are kept so the drain-era cases below read
+    # the same, but neither reaches the CLI: every branch needs a receipt now.
+    del branch, require_receipt
     cmd = [
         sys.executable,
         str(SCRIPT),
-        "--branch",
-        branch,
         "--head",
         head,
         "--body-file",
         str(body_path),
     ]
-    if require_receipt:
-        cmd.append("--require-receipt")
     return subprocess.run(cmd, text=True, capture_output=True, check=False)
 
 
@@ -62,11 +61,12 @@ def _valid_body(*, head: str = HEAD) -> str:
     )
 
 
-def test_non_drain_branch_preserves_existing_enrollment(tmp_path: Path) -> None:
+def test_an_ordinary_branch_without_a_receipt_is_denied(tmp_path: Path) -> None:
+    """Every PR needs a receipt (2026-10-02): #4247 was armed and queued without one."""
     completed = _run_gate(tmp_path, branch="fix/ordinary")
 
-    assert completed.returncode == 0
-    assert completed.stdout.strip() == "allow"
+    assert completed.returncode == 2
+    assert completed.stdout.strip() == "deny"
 
 
 def test_require_receipt_denies_ordinary_branch_without_receipt(tmp_path: Path) -> None:
@@ -75,199 +75,6 @@ def test_require_receipt_denies_ordinary_branch_without_receipt(tmp_path: Path) 
 
     assert completed.returncode == 2
     assert completed.stdout.strip() == "deny"
-
-
-_BASE_LEDGER = (
-    "# header\ntests/a.py::test_one\ntests/b.py::test_two\nflaky tests/c.py::test_three\n"
-)
-
-
-def _run_ledger_gate(
-    tmp_path: Path,
-    *,
-    base: str | None,
-    head: bytes | None,
-    mode: str = "100644",
-    size: str | None = None,
-    head_path_override: Path | None = None,
-) -> subprocess.CompletedProcess[str]:
-    base_path = tmp_path / "base-ledger.txt"
-    head_path = tmp_path / "head-ledger.txt"
-    if base is not None:
-        base_path.write_text(base, encoding="utf-8")
-    # Bytes, not text: a "binary" ledger is one of the bypasses under test.
-    payload = head if head is not None else b""
-    head_path.write_bytes(payload)
-    # Default: the tree's size agrees with what was fetched (an honest fetch).
-    declared = str(len(payload)) if size is None else size
-    return subprocess.run(
-        [
-            sys.executable,
-            str(SCRIPT),
-            "--ledger-base-file",
-            str(base_path),
-            "--ledger-head-file",
-            str(head_path_override or head_path),
-            "--ledger-head-mode",
-            mode,
-            "--ledger-head-size",
-            declared,
-            "--branch",
-            "fix/ordinary",
-            "--head",
-            HEAD,
-            "--body-file",
-            str(head_path),
-        ],
-        text=True,
-        capture_output=True,
-        check=False,
-    )
-
-
-@pytest.mark.parametrize(
-    "mode,size,why",
-    [
-        ("120000", None, "symlink: Contents API dereferences it; target path is unprotected"),
-        ("160000", None, "submodule/gitlink"),
-        ("040000", None, "tree, not a file"),
-        ("", None, "tree lookup failed entirely"),
-        ("100644", "999999", "declared size > bytes fetched: truncated (>1MB blobs)"),
-        ("100644", "0", "declared 0 but bytes present: response did not match the blob"),
-        ("100644", "not-a-number", "unparseable size"),
-        ("100644", "", "size missing"),
-    ],
-)
-def test_untrustworthy_head_blob_always_requires_receipt(
-    tmp_path: Path, mode: str, size: str | None, why: str
-) -> None:
-    # A deletion-only edit — the one shape that WOULD be exempt — must still be
-    # refused when the fetch itself cannot be trusted.
-    deletion_only = b"# header\ntests/a.py::test_one\n"
-    completed = _run_ledger_gate(
-        tmp_path, base=_BASE_LEDGER, head=deletion_only, mode=mode, size=size
-    )
-
-    assert completed.returncode == 2, why
-    assert completed.stdout.strip() == "receipt-required"
-
-
-def test_genuinely_unreadable_head_file_requires_receipt(tmp_path: Path) -> None:
-    # Not merely empty — absent. The earlier version of this test wrote an
-    # empty file, which never exercised the unreadable path at all.
-    completed = _run_ledger_gate(
-        tmp_path,
-        base=_BASE_LEDGER,
-        head=b"# header\n",
-        head_path_override=tmp_path / "does-not-exist.txt",
-    )
-
-    assert completed.returncode == 2
-    assert completed.stdout.strip() == "receipt-required"
-
-
-@pytest.mark.parametrize(
-    "head_bytes,expected_rc,why",
-    [
-        # Deletion-only: the maintenance the ratchet itself forces.
-        (b"# header\ntests/a.py::test_one\n", 0, "removed two entries"),
-        (_BASE_LEDGER.encode(), 0, "unchanged"),
-        (b"# header\ntests/a.py::test_one\ntests/b.py::test_two\n", 0, "dropped flaky entry"),
-        # Additions in any dress -> receipt required.
-        (_BASE_LEDGER.encode() + b"tests/d.py::test_new\n", 2, "plain addition"),
-        (
-            b"# header\x00poisoned\ntests/a.py::test_one\ntests/b.py::test_two\n"
-            b"flaky tests/c.py::test_three\ntests/d.py::test_new\n",
-            2,
-            "NUL-poisoned 'binary' file still parses as an addition (additions:0 bypass)",
-        ),
-        (b"# planted\ntests/evil.py::test_smuggled\n", 2, "file renamed into place"),
-        (b"", 2, "rename-out / deleted / unreadable head -> fail closed"),
-        (b"# comments only\n", 2, "every entry wiped at once needs a human"),
-        (
-            b"# header\ntests/a.py::test_one\nflaky tests/b.py::test_two\n"
-            b"flaky tests/c.py::test_three\n",
-            2,
-            "plain -> flaky exempts an entry from stale detection: weakens the ratchet",
-        ),
-        (
-            b"# header\ntests/a.py::test_one  # still broken\ntests/b.py::test_two\n"
-            b"flaky tests/c.py::test_three\n",
-            0,
-            "trailing comment is stripped by BOTH parsers, so this is not a new entry",
-        ),
-        (
-            _BASE_LEDGER.encode() + b"tests/d.py::test_new  # looks like a comment\n",
-            2,
-            "trailing comment cannot disguise an addition",
-        ),
-    ],
-)
-def test_ledger_edit_receipt_policy_fails_closed(
-    tmp_path: Path, head_bytes: bytes, expected_rc: int, why: str
-) -> None:
-    # Regressions for two verified bypasses: GitHub reports additions:0 for
-    # BOTH binary files and pure renames, so any metadata-based check waves
-    # those through. Content comparison is immune to how the change is dressed.
-    completed = _run_ledger_gate(tmp_path, base=_BASE_LEDGER, head=head_bytes)
-
-    assert completed.returncode == expected_rc, why
-    assert completed.stdout.strip() == ("exempt" if expected_rc == 0 else "receipt-required")
-
-
-def test_ledger_parsers_have_no_seam(tmp_path: Path) -> None:
-    """Every entry the GATE honours must be visible to the EXEMPTION check.
-
-    The two live in different files; if they ever disagree on a line shape,
-    an entry could count as "not new" for the exemption while still being
-    honoured as quarantine — a smuggling seam. This pins them together.
-    """
-    import importlib.util
-
-    def _load(rel: str, name: str):
-        spec = importlib.util.spec_from_file_location(
-            name, Path(__file__).resolve().parents[1] / rel
-        )
-        assert spec and spec.loader
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)
-        return mod
-
-    gate = _load("scripts/drain_review_gate.py", "gate_policy")
-    aggregator = _load("scripts/ci_required_tests.py", "aggregator")
-
-    text = "\n".join(
-        [
-            "tests/a.py::t",
-            "flaky tests/b.py::t",
-            "tests/c.py::t # trailing note",
-            "  tests/d.py::t  ",
-            "# whole-line comment",
-            "",
-            "flaky tests/e.py::t  # both",
-            "tests/f.py::t\x00",  # NUL-poisoned, still an entry
-        ]
-    )
-    ledger = tmp_path / "ledger.txt"
-    ledger.write_text(text, encoding="utf-8")
-
-    tolerated, flaky, _ = aggregator.parse_quarantine(ledger)
-    honoured = tolerated | flaky
-    seen = {
-        e[len("flaky ") :] if e.startswith("flaky ") else e
-        for e in gate.ledger_entries(text)
-    }
-
-    assert honoured, "fixture must produce entries or the test proves nothing"
-    assert not (honoured - seen), "gate honours entries the exemption cannot see"
-
-
-def test_ledger_gate_missing_base_treats_every_entry_as_new(tmp_path: Path) -> None:
-    # No ledger on base (as on `main` before this lands) -> nothing is exempt.
-    completed = _run_ledger_gate(tmp_path, base=None, head=_BASE_LEDGER.encode())
-
-    assert completed.returncode == 2
-    assert completed.stdout.strip() == "receipt-required"
 
 
 def test_require_receipt_allows_ordinary_branch_with_receipt(tmp_path: Path) -> None:
@@ -351,7 +158,6 @@ def test_auto_enroll_reconciles_drain_review_on_head_and_body_changes() -> None:
 
     assert "edited" in text
     assert "scripts/drain_review_gate.py" in text
-    assert "headRefName" in text
     assert "headRefOid" in text
     assert "gh pr merge \"$PR\" --repo \"$REPO\" --disable-auto" in text
     assert "--match-head-commit \"$HEAD_OID\"" in text
@@ -370,10 +176,9 @@ def test_required_scope_check_fails_closed_on_unreviewed_drain_head() -> None:
         "actions/checkout@11d5960a326750d5838078e36cf38b85af677262"
         in text
     )
-    assert "scripts/drain_review_gate.py" in text
-    assert "--branch \"${HEAD_REF}\"" in text
+    assert "scripts/drain_review_gate.py --blocking-review" in text
     assert "--head \"${HEAD_OID}\"" in text
-    assert "--body-file \"$RUNNER_TEMP/pr-body.md\"" in text
+    assert "--body-file \"$RUNNER_TEMP/pr-body-gate.md\"" in text
 
 
 # ---------------------------------------------------------------------------
@@ -415,22 +220,15 @@ def _receipt_body(*, head: str = HEAD, url: str = ARTIFACT_URL, verdict: str = "
 def _run_blocking(
     tmp_path: Path,
     *,
-    hits: tuple[str, ...] = ("scripts/drain_review_gate.py",),
     body: str = "",
     head: str = HEAD,
     repo: str = REPO,
     pr: int = PR,
     comments: tuple[tuple[str, ...], ...] | None = TRUSTED_COMMENTS,
     comments_raw: str | None = None,
-    footprint_exempt: bool = False,
-    branch: str = "fix/ordinary",
-    hits_file_missing: bool = False,
 ) -> subprocess.CompletedProcess[str]:
     body_path = tmp_path / "body.md"
     body_path.write_text(body, encoding="utf-8")
-    hits_path = tmp_path / "hits.txt"
-    if not hits_file_missing:
-        hits_path.write_text("".join(f"{h}\n" for h in hits), encoding="utf-8")
     comments_path = tmp_path / "comments.ndjson"
     if comments_raw is not None:
         comments_path.write_text(comments_raw, encoding="utf-8")
@@ -457,14 +255,10 @@ def _run_blocking(
         sys.executable,
         str(SCRIPT),
         "--blocking-review",
-        "--branch",
-        branch,
         "--head",
         head,
         "--body-file",
         str(body_path),
-        "--review-hits-file",
-        str(hits_path),
         "--review-repo",
         repo,
         "--review-pr",
@@ -472,56 +266,18 @@ def _run_blocking(
         "--review-comments-file",
         str(comments_path),
     ]
-    if footprint_exempt:
-        cmd.append("--review-footprint-exempt")
     return subprocess.run(cmd, text=True, capture_output=True, check=False)
 
 
-@pytest.mark.parametrize(
-    "hit,why",
-    [
-        (".github/workflows/tests.yml", "the required-tests workflow"),
-        (".github/workflows/pr-scope-guard.yml", "this guard itself"),
-        (".github/known-failing-tests.txt", "the quarantine ledger"),
-        ("scripts/ci_required_tests.py", "the aggregator"),
-        ("scripts/drain_review_gate.py", "this policy script"),
-        ("tinyassets/auth/provider.py", "an authority path"),
-        ("tinyassets/credential_vault.py", "the credential vault"),
-    ],
-)
-def test_a_gate_or_authority_path_without_a_receipt_is_denied(
-    tmp_path: Path, hit: str, why: str
-) -> None:
-    # No receipt in the body, so the required check fails. This is the set that
-    # ALREADY needed a receipt before 2026-09-26; what changed is what a receipt
-    # has to be, not who needs one.
-    completed = _run_blocking(tmp_path, hits=(hit,))
+def test_any_pr_without_a_receipt_is_denied_naming_what_is_missing(tmp_path: Path) -> None:
+    # No receipt in the body, so the required check fails -- for every PR, not
+    # only gate-defining or authority paths (2026-10-02). The reason names the
+    # head a receipt must carry, so a blocked builder knows what to stamp.
+    completed = _run_blocking(tmp_path)
 
-    assert completed.returncode == 2, why
+    assert completed.returncode == 2
     assert completed.stdout.strip() == "deny"
-    assert "blocking-review receipt is required" in completed.stderr
-    assert hit in completed.stderr, "the reason must name the file"
-
-
-@pytest.mark.parametrize(
-    "hits,why",
-    [
-        ((), "an ordinary PR touches no gate-defining or authority path"),
-        # The workflow seds blank lines out, but an empty footprint must read as
-        # empty however it is spelled — never as one unnamed hit.
-        (("", "   "), "a blank hits file is not a hit"),
-    ],
-)
-def test_a_pr_outside_those_paths_needs_no_receipt(
-    tmp_path: Path, hits: tuple[str, ...], why: str
-) -> None:
-    # WHO needs a receipt is unchanged from before 2026-09-26. A Tier 2 title and
-    # the `infra-change` label were built as extra triggers and CUT: they would
-    # have made 29 of the 60 most recently merged PRs wait for a stamp.
-    completed = _run_blocking(tmp_path, hits=hits)
-
-    assert completed.returncode == 0, why
-    assert completed.stdout.strip() == "receipt-not-required"
+    assert f"every PR needs a Drain-Review receipt for head {HEAD}" in completed.stderr
 
 
 def test_a_valid_receipt_unblocks_the_pr(tmp_path: Path) -> None:
@@ -529,8 +285,8 @@ def test_a_valid_receipt_unblocks_the_pr(tmp_path: Path) -> None:
 
     assert completed.returncode == 0
     assert completed.stdout.strip() == "allow"
-    # The reason is still reported, so the PR says WHY a receipt was needed.
-    assert "gate-defining or authority-critical files" in completed.stderr
+    # The requirement is still reported, so the PR says what had to be carried.
+    assert "every PR needs a Drain-Review receipt" in completed.stderr
 
 
 @pytest.mark.parametrize(
@@ -1097,59 +853,6 @@ def test_citing_the_wrong_comment_of_two_fails(tmp_path: Path) -> None:
     assert completed.stdout.strip() == "deny"
 
 
-def test_an_unreadable_hits_file_fails_closed(tmp_path: Path) -> None:
-    # The gate could not see its own path list. That must not read as "no
-    # release-critical paths touched".
-    completed = _run_blocking(tmp_path, hits_file_missing=True)
-
-    assert completed.returncode == 2
-    assert completed.stdout.strip() == "deny"
-    assert "could not be read" in completed.stderr
-
-
-def test_a_proven_inert_footprint_stands_the_receipt_down(tmp_path: Path) -> None:
-    # A deletion-only quarantine ledger edit, or an AST-identical authority file,
-    # is exempt: the gate itself forces that maintenance and the proof is about
-    # content, not a declaration. But only when it covers the WHOLE footprint —
-    # one unproven hit left over and the receipt stands.
-    exempt = _run_blocking(tmp_path, hits=(), footprint_exempt=True)
-    unproven_leftover = _run_blocking(
-        tmp_path,
-        hits=("scripts/ci_required_tests.py",),
-        footprint_exempt=False,
-    )
-
-    assert exempt.returncode == 0
-    assert exempt.stdout.strip() == "receipt-not-required"
-    assert unproven_leftover.returncode == 2
-
-
-def test_receipt_requirement_survives_a_rename_duplicated_hit(tmp_path: Path) -> None:
-    # The file list projects both the new and previous name, so the same path
-    # can appear twice. That must read as one reason, not crash or double-count.
-    completed = _run_blocking(
-        tmp_path,
-        hits=("tinyassets/auth/provider.py", "tinyassets/auth/provider.py", ""),
-    )
-
-    assert completed.returncode == 2
-    assert completed.stderr.count("tinyassets/auth/provider.py") == 1
-
-
-# Each of these can neuter the check that judges it from the PR's own checkout,
-# so losing the receipt on any one is a silent regression. Pinned by name because
-# a widening of this set was built and then cut, and the cut must not have
-# dropped one on the way back.
-_GATE_DEFINING_PATHS = (
-    ".github/workflows/tests.yml",
-    ".github/workflows/pr-scope-guard.yml",
-    ".github/known-failing-tests.txt",
-    ".github/heavy-test-files.txt",
-    "scripts/ci_required_tests.py",
-    "scripts/drain_review_gate.py",
-)
-
-
 def _workflow_regex(name: str) -> str:
     text = POLICY_WORKFLOW.read_text(encoding="utf-8")
     match = re.search(rf"^\s*{name}='(?P<pattern>.+)'\s*$", text, re.MULTILINE)
@@ -1157,111 +860,33 @@ def _workflow_regex(name: str) -> str:
     return match.group("pattern")
 
 
-def test_every_gate_defining_path_demands_a_receipt() -> None:
-    gate = re.compile(_workflow_regex("GATE_RE"))
+def test_the_scope_declaration_set_is_what_the_label_rule_reads() -> None:
+    """SENSITIVE_RE still decides which PRs need the infra-change label and
+    which files count toward the hard caps, so its membership is pinned here
+    (Codex round 2 on #4255: deleting the narrow receipt set also deleted the
+    only tests of this regex)."""
     sensitive = re.compile(_workflow_regex("SENSITIVE_RE"))
-
-    for path in _GATE_DEFINING_PATHS:
-        assert gate.match(path), f"{path} lost its receipt requirement"
-        # And still needs the scope declaration, which is the older, wider rule.
-        assert sensitive.match(path), f"{path} left the release-critical set"
-
-
-def test_raising_a_rulebook_pin_needs_a_receipt() -> None:
-    """The rulebook ratchet is a one-line bypass, so it is gate-defining.
-
-    `check_context_budget.py` and `test_rulebook_ratchet.py` pin how large the
-    always-loaded rule files may be. Raising a pin is the bypass direction and
-    takes one edit, so it needs the same receipt as editing the test gate itself.
-    They are deliberately NOT in SENSITIVE_RE: this adds a receipt requirement,
-    not a scope declaration, so no extra PR has to carry `infra-change`.
-    """
-    gate = re.compile(_workflow_regex("GATE_RE"))
-    sensitive = re.compile(_workflow_regex("SENSITIVE_RE"))
-
-    for path in ("scripts/check_context_budget.py", "tests/test_rulebook_ratchet.py"):
-        assert gate.match(path), f"{path} must require a receipt"
-        assert not sensitive.match(path), f"{path} must not newly need the label"
-
-
-def test_ordinary_release_critical_paths_need_no_receipt() -> None:
-    """The cut, asserted: `deploy/` and a random workflow declare, not stamp.
-
-    Widening the receipt to every release-critical path would have made 29 of the
-    60 most recently merged PRs wait for a stamp. These paths are release-critical
-    — they need the `infra-change` label — but they do not need a review receipt,
-    exactly as before 2026-09-26.
-    """
-    gate = re.compile(_workflow_regex("GATE_RE"))
-    sensitive = re.compile(_workflow_regex("SENSITIVE_RE"))
-
     for path in (
-        "deploy/install-host-uptime-services.sh",
+        ".github/workflows/tests.yml",
+        ".github/workflows/pr-scope-guard.yml",
         ".github/workflows/deploy-prod.yml",
+        ".github/known-failing-tests.txt",
+        ".github/heavy-test-files.txt",
+        "scripts/ci_required_tests.py",
+        "scripts/drain_review_gate.py",
+        "deploy/install-host-uptime-services.sh",
         "Dockerfile",
         ".dockerignore",
     ):
-        assert sensitive.match(path), f"{path} should still be release-critical"
-        assert not gate.match(path), f"{path} must NOT require a receipt"
-
-
-def test_authority_paths_still_demand_a_receipt() -> None:
-    authority = re.compile(_workflow_regex("AUTHORITY_RE"), re.IGNORECASE)
-
+        assert sensitive.match(path), f"{path} must stay release-critical"
     for path in (
+        "scripts/check_context_budget.py",
+        "tests/test_rulebook_ratchet.py",
         "tinyassets/auth/provider.py",
-        "tinyassets/credential_vault.py",
-        "tinyassets/providers/router.py",
-        "tinyassets/api/permissions.py",
-        "packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/tinyassets/auth/x.py",
+        "docs/reference/executable-gates.md",
+        "packaging/claude-plugin/build_plugin.py",
     ):
-        assert authority.match(path), f"{path} lost its receipt requirement"
-
-
-MIRROR = "packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/"
-
-
-@pytest.mark.parametrize("root", ["", MIRROR])
-@pytest.mark.parametrize(
-    "module",
-    [
-        # #4073 changed custody path validation here and no receipt was asked.
-        "conversation_custody.py",
-        "storage/conversation_custody.py",
-        # Any module named for authority, at any depth, including future ones.
-        "agent_invocation_authority.py",
-        "background_branch_authority_service.py",
-        "effectors/authority.py",
-        "storage/workspace_authority.py",
-        "providers/owner_binding.py",
-        "agent_runtime_grants.py",
-        "agent_runtime_principal.py",
-        "principals.py",
-        "credential_refresh.py",
-        "connection_oauth/tokens.py",
-        "desktop/credentials.py",
-        "storage/effector_consents.py",
-    ],
-)
-def test_custody_and_named_authority_modules_demand_a_receipt(root: str, module: str) -> None:
-    authority = re.compile(_workflow_regex("AUTHORITY_RE"), re.IGNORECASE)
-    path = f"{root}tinyassets/{module}"
-    assert authority.match(path), f"{path} must require a receipt"
-
-
-def test_authority_widening_stays_off_neighbours() -> None:
-    authority = re.compile(_workflow_regex("AUTHORITY_RE"), re.IGNORECASE)
-
-    for path in (
-        "tests/test_conversation_custody.py",
-        "docs/audits/snapshot/tinyassets/conversation_custody.py",
-        "tinyassets/identity.py",
-        "tinyassets/provider_admission.py",
-        "tinyassets/run_file_crossowner.py",
-        "tinyassets/connection_oauth/flow.py",
-        "tinyassets/conversation_custody.md",
-    ):
-        assert not authority.match(path), f"{path} must NOT require a receipt"
+        assert not sensitive.match(path), f"{path} must not newly need the label"
 
 
 def _extract(pattern: str) -> str:
@@ -1270,74 +895,6 @@ def _extract(pattern: str) -> str:
     match = re.search(pattern, text, re.MULTILINE)
     assert match, f"{pattern!r} is gone from {POLICY_WORKFLOW.name}"
     return match.group(0).strip()
-
-
-@pytest.mark.parametrize(
-    "gate_hits,authority,exempt_fired,expected_hits,expected_exempt",
-    [
-        ("", "", "0", [], "0"),
-        ("deploy/x.sh", "", "0", ["deploy/x.sh"], "0"),
-        # The file list projects both the new and the previous name on a rename,
-        # so the same path arrives twice and must collapse to one.
-        ("deploy/x.sh\ndeploy/x.sh", "", "0", ["deploy/x.sh"], "0"),
-        (
-            "deploy/x.sh",
-            "tinyassets/auth/p.py",
-            "0",
-            ["deploy/x.sh", "tinyassets/auth/p.py"],
-            "0",
-        ),
-        # AST proof cleared AUTHORITY_HITS and nothing else was release-critical.
-        ("", "", "1", [], "1"),
-        # AST proof cleared one authority file but a gate-defining path
-        # remains: the proof does not cover the footprint, so no exemption.
-        ("scripts/ci_required_tests.py", "", "1", ["scripts/ci_required_tests.py"], "0"),
-    ],
-)
-def test_receipt_footprint_is_the_deduplicated_union(
-    tmp_path: Path,
-    gate_hits: str,
-    authority: str,
-    exempt_fired: str,
-    expected_hits: list[str],
-    expected_exempt: str,
-) -> None:
-    bash = shutil.which("bash")
-    if bash is None:  # pragma: no cover - CI runners all have bash
-        pytest.skip("bash is required to exercise the workflow's own lines")
-
-    script = "\n".join(
-        [
-            "set -euo pipefail",
-            # Inputs arrive through the environment: a hits list is multi-line,
-            # and Windows argv quoting mangles an embedded newline.
-            _extract(r'^\s*RECEIPT_HITS="\$\(printf .*$'),
-            _extract(r"^\s*FOOTPRINT_EXEMPT=0\n(?:.*\n)*?\s*fi$"),
-            _extract(r"^\s*printf '%s\\n' \"\$RECEIPT_HITS\" \| sed .*receipt-hits\.txt\"$"),
-            'echo "FOOTPRINT_EXEMPT=${FOOTPRINT_EXEMPT}"',
-        ]
-    )
-    script_path = tmp_path / "fragment.sh"
-    script_path.write_text(script, encoding="utf-8")
-
-    completed = subprocess.run(
-        [bash, str(script_path)],
-        text=True,
-        capture_output=True,
-        check=False,
-        env={
-            **os.environ,
-            "GATE_HITS": gate_hits,
-            "AUTHORITY_HITS": authority,
-            "EXEMPT_FIRED": exempt_fired,
-            "RUNNER_TEMP": str(tmp_path),
-        },
-    )
-
-    assert completed.returncode == 0, completed.stderr
-    written = (tmp_path / "receipt-hits.txt").read_text(encoding="utf-8").splitlines()
-    assert written == expected_hits
-    assert completed.stdout.strip() == f"FOOTPRINT_EXEMPT={expected_exempt}"
 
 
 @pytest.mark.parametrize(
@@ -1417,7 +974,7 @@ def test_the_blocked_summary_tells_a_human_exactly_what_to_do(tmp_path: Path) ->
 
     lines = POLICY_WORKFLOW.read_text(encoding="utf-8").splitlines()
     anchor = next(
-        i for i, ln in enumerate(lines) if "Blocked — no exact-head blocking-review receipt" in ln
+        i for i, ln in enumerate(lines) if "Blocked — no Drain-Review receipt for head" in ln
     )
     start = next(i for i in range(anchor, 0, -1) if lines[i].strip() == "{")
     end = next(i for i in range(anchor, len(lines)) if '} >> "$GITHUB_STEP_SUMMARY"' in lines[i])
@@ -1446,6 +1003,7 @@ def test_the_blocked_summary_tells_a_human_exactly_what_to_do(tmp_path: Path) ->
             "RUNNER_TEMP": str(tmp_path),
             "OUT": str(tmp_path / "summary.md"),
             "HEAD_OID": head,
+            "DIFF_KEY": "f" * 64,
             "REPO": REPO,
             "PR": str(PR),
             "HIT_COUNT": "2",
@@ -1462,6 +1020,9 @@ def test_the_blocked_summary_tells_a_human_exactly_what_to_do(tmp_path: Path) ->
         "both steps must show the real head, or the stamper signs the wrong sha"
     )
     assert f"https://github.com/{REPO}/pull/{PR}#issuecomment-<id>" in summary
+    assert f"no Drain-Review receipt for head `{head}` (diff key `{'f' * 64}`)" in summary, (
+        "the heading must name exactly what is missing"
+    )
     assert "because the title declares Tier 2" in summary, "the reason must reach the reader"
     assert "FIRST two non-blank lines" in summary
     assert "FIRST three non-blank lines" in summary
@@ -1499,14 +1060,13 @@ def test_scope_guard_wires_the_blocking_review_decision() -> None:
     # The mode flag must REACH python, not merely exist in the file. Deleting
     # the array expansion from the invocation survived a bare
     # `"--blocking-review" in text` check (cross-family review round 2).
-    assert "RECEIPT_ARGS=(--blocking-review)" in text
-    assert re.search(
-        r'python scripts/drain_review_gate\.py \\\n\s*"\$\{RECEIPT_ARGS\[@\]\}" \\',
-        text,
-    ), "the blocking-review mode flag must be passed to the policy script"
-    assert 'RECEIPT_ARGS+=(--review-footprint-exempt)' in text
+    assert "if ! python scripts/drain_review_gate.py --blocking-review \\" in text, (
+        "the blocking-review decision must run for EVERY PR, not behind a footprint test"
+    )
+    for gone in ("RECEIPT_HITS", "AUTHORITY_RE", "GATE_RE", "--review-footprint-exempt",
+                 "--review-hits-file", "authority_behavior_check"):
+        assert gone not in text, f"{gone}: the narrow receipt set is deleted, not bypassed"
     for flag in (
-        '--review-hits-file "$RUNNER_TEMP/receipt-hits.txt"',
         '--review-repo "${REPO}"',
         '--review-pr "${PR}"',
         '--review-comments-file "$COMMENTS_FILE"',
@@ -1663,13 +1223,13 @@ def _diff_receipt(*, key: str = KEY, url: str = ARTIFACT_URL) -> str:
 def test_a_diff_receipt_is_honoured_only_for_the_computed_key() -> None:
     gate = _gate_module()
     body = _diff_receipt()
-    assert gate.review_allows_merge(branch="drain/x", head=HEAD, body=body, diff_key=KEY)
-    assert not gate.review_allows_merge(branch="drain/x", head=HEAD, body=body, diff_key="c" * 64)
+    assert gate.review_allows_merge(head=HEAD, body=body, diff_key=KEY)
+    assert not gate.review_allows_merge(head=HEAD, body=body, diff_key="c" * 64)
     # No key computed (git failed, or an old caller): only a head receipt can match.
-    assert not gate.review_allows_merge(branch="drain/x", head=HEAD, body=body, diff_key=None)
+    assert not gate.review_allows_merge(head=HEAD, body=body, diff_key=None)
     # A malformed key is never a binding, even if the body repeats it verbatim.
     assert not gate.review_allows_merge(
-        branch="drain/x", head=HEAD, body=_diff_receipt(key="xyz"), diff_key="xyz"
+        head=HEAD, body=_diff_receipt(key="xyz"), diff_key="xyz"
     )
     # The head receipt keeps working alongside.
     head_body = (
@@ -1677,7 +1237,7 @@ def test_a_diff_receipt_is_honoured_only_for_the_computed_key() -> None:
         f"Drain-Review-Head: {HEAD}\n"
         f"Drain-Review-Artifact: {ARTIFACT_URL}\n"
     )
-    assert gate.review_allows_merge(branch="drain/x", head=HEAD, body=head_body, diff_key=KEY)
+    assert gate.review_allows_merge(head=HEAD, body=head_body, diff_key=KEY)
 
 
 def test_a_comment_attests_a_diff_only_for_the_computed_key() -> None:
@@ -1693,8 +1253,7 @@ def test_a_comment_attests_a_diff_only_for_the_computed_key() -> None:
 def test_cli_accepts_a_diff_receipt_with_the_workflow_key(tmp_path: Path) -> None:
     body_path = tmp_path / "body.md"
     body_path.write_text(_diff_receipt(), encoding="utf-8")
-    base = [sys.executable, str(SCRIPT), "--branch", "drain/x", "--head", HEAD,
-            "--body-file", str(body_path)]
+    base = [sys.executable, str(SCRIPT), "--head", HEAD, "--body-file", str(body_path)]
     ok = subprocess.run([*base, "--diff-key", KEY], capture_output=True, text=True)
     assert ok.returncode == 0 and ok.stdout.strip() == "allow", ok
     denied = subprocess.run(base, capture_output=True, text=True)
@@ -1798,7 +1357,7 @@ def test_no_step_checks_out_the_pr_head(workflow: Path) -> None:
 def test_scope_guard_passes_the_computed_key_verbatim() -> None:
     text = POLICY_WORKFLOW.read_text(encoding="utf-8")
     assert "DIFF_KEY: ${{ steps.diffkey.outputs.key }}" in text
-    assert text.count('--diff-key "${DIFF_KEY}"') == 2
+    assert text.count('--diff-key "${DIFF_KEY}"') == 1
     assert '"${BASE_OID}" "${HEAD_OID}"' in text
     assert "base.sha }}" in text and "head.sha }}" in text
 
@@ -1826,3 +1385,32 @@ def test_a_submodule_change_ignored_by_config_still_changes_the_key(pr_repo: _Re
     pr_repo.git("update-index", "--cacheinfo", f"160000,{'2' * 40},sub")
     pr_repo.git("commit", "-q", "-m", "move gitlink")
     assert pr_repo.key() != added
+
+
+
+def test_every_pr_needs_a_receipt_and_the_check_cannot_quietly_pass() -> None:
+    """#4247 was armed and queued unreviewed on 2026-10-01 (Codex P2 on #4255).
+
+    Pins the property, not just the call: the scope job has no job-level skip,
+    no continue-on-error anywhere, and its receipt decision is not swallowed.
+    """
+    import yaml
+
+    root = Path(__file__).resolve().parents[1] / ".github" / "workflows"
+    enroll = yaml.safe_load((root / "auto-enroll-merge.yml").read_text("utf-8"))
+    enable = next(
+        s for s in enroll["jobs"]["enroll"]["steps"] if s.get("name") == "Enable auto-merge"
+    )
+    call = re.compile(r'python scripts/drain_review_gate\.py \\\n\s*--head "\$HEAD_OID"')
+    assert call.search(enable["run"])
+
+    guard = yaml.safe_load((root / "pr-scope-guard.yml").read_text("utf-8"))
+    job = guard["jobs"]["scope"]
+    assert "if" not in job and "continue-on-error" not in job
+    assert not any(step.get("continue-on-error") for step in job["steps"])
+    compare = next(st for st in job["steps"]
+                   if st.get("name") == "Compare the PR diff against release-critical paths")
+    run = compare["run"]
+    gate = run.index("if ! python scripts/drain_review_gate.py --blocking-review")
+    assert "exit 1" in run[gate:run.index("fi\n", run.index("scope guard: BLOCKED", gate))]
+    assert "|| true" not in run[gate:gate + 400]

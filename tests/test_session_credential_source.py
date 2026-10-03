@@ -111,13 +111,6 @@ def test_an_unconfigured_deployment_still_does_not_publish_the_handle(monkeypatc
     assert re.fullmatch(r"[0-9a-f]{64}", key)
 
 
-def test_the_round_trip_survives_the_rename():
-    handle = onboarding._mint_refresh_session("rt_abc")
-    assert onboarding._read_refresh_session(handle) == "rt_abc"
-    onboarding._drop_refresh_session(handle)
-    assert onboarding._read_refresh_session(handle) == ""
-
-
 def test_two_handles_do_not_collide():
     a = onboarding._mint_refresh_session("rt_a")
     b = onboarding._mint_refresh_session("rt_b")

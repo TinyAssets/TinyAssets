@@ -10,7 +10,7 @@
   "plugins": [
     {
       "name": "tinyassets-universe-server",
-      "description": "TinyAssets / Tiny Builder — build, run, and steer custom AI agent workflows inside shared universes. Ships a long-form fiction domain (Author daemons writing novels) and extends to other domains via custom graph nodes. Also known as: Tiny builder, custom AI builder, universe builder, agent workflow platform.",
+      "description": "TinyAssets / Tiny Builder — build, run, and steer custom AI agent workflows inside your command center. Ships a long-form fiction domain (Author daemons writing novels) and extends to other domains via custom graph nodes. Also known as: Tiny builder, custom AI builder, command center, agent workflow platform.",
       "version": "0.1.0",
       "author": {
         "name": "Jonathan Farnsworth"

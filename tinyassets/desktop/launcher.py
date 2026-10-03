@@ -196,7 +196,9 @@ class LauncherApp:
 
         btn_frame = ttk.Frame(container)
         btn_frame.pack(fill=tk.X, pady=(6, 12))
-        ttk.Button(btn_frame, text="New Universe", command=self._new_universe).pack(side=tk.LEFT)
+        ttk.Button(
+            btn_frame, text="New Command Center", command=self._new_universe,
+        ).pack(side=tk.LEFT)
 
         self._add_files_btn = ttk.Button(
             btn_frame, text="Add Files...",
@@ -353,7 +355,7 @@ class LauncherApp:
 
     def _browse_universe(self) -> None:
         path = filedialog.askdirectory(
-            title="Select Universe Directory",
+            title="Select Command Center Directory",
             initialdir=self._universe_var.get(),
         )
         if path:
@@ -366,10 +368,10 @@ class LauncherApp:
             ensure_universe_soul(path)
             canon_path.mkdir(parents=True, exist_ok=True)
             self.set_status(f"Created: {path}")
-            logger.info("Created universe directory: %s", path)
+            logger.info("Created command center directory: %s", path)
         except OSError as exc:
             self.set_status(f"Error: {exc}")
-            logger.error("Failed to create universe: %s", exc)
+            logger.error("Failed to create command center: %s", exc)
 
     def _handle_add_files(self) -> None:
         """Open a file dialog and copy selected files to the canon folder."""

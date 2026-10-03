@@ -242,7 +242,9 @@ def test_systemd_unit_compose_loads_tinyassets_env_for_interpolation():
     directives = [ln for ln in service_section.splitlines() if ln and not ln.startswith("#")]
     assert any(
         ln.startswith("ExecStart=/usr/bin/docker compose --env-file /etc/tinyassets/env")
-        and ln.endswith("up -d daemon cloudflared logs")
+        # `--timeout 20` (the bounded drain, 2026-10-01) sits between them.
+        and " up -d " in ln
+        and ln.endswith(" daemon cloudflared logs")
         for ln in directives
     ), directives
     assert not any(ln.startswith("EnvironmentFile=") for ln in directives), directives

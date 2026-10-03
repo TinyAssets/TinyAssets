@@ -609,7 +609,10 @@ def test_local_backup_file_rejects_symlink_source(tmp_path):
     result = _run(
         RESTORE_SH,
         {
-            "BACKUP_FILE": _bash_path(link),
+            # Not _bash_path(link): it resolve()s, which follows the link and
+            # handed the script the TARGET -- so this test never saw a symlink
+            # and failed on every Linux run since it was written.
+            "BACKUP_FILE": f"{_bash_path(link.parent)}/{link.name}",
             "BACKUP_LOG": _bash_path(tmp_path / "restore.log"),
         },
     )

@@ -69,7 +69,7 @@ _EDITORIAL_SYSTEM = (
     "  clearly_wrong = provable error (wrong name, contradicts canon, "
     "broken continuity, impossible action, or total premise departure)\n"
     "  clearly_wrong = false means it might be an intentional creative choice\n"
-    "- If a Universe Premise is provided, flag clearly_wrong if the scene's "
+    "- If a Command Center Premise is provided, flag clearly_wrong if the scene's "
     "protagonist, world, or setting has no connection to the premise.\n"
     "- One sentence for next scene direction.\n"
     "- Return ONLY the JSON object."
@@ -122,7 +122,7 @@ def read_editorial(
     # Build prompt with context sections
     parts: list[str] = []
     if premise:
-        parts.append(f"## Universe Premise\n{premise[:2000]}")
+        parts.append(f"## Command Center Premise\n{premise[:2000]}")
     if previous_scene:
         parts.append(f"## Previous Scene\n{previous_scene[-2000:]}")
     if canon_facts:

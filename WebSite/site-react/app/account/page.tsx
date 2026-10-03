@@ -5,7 +5,7 @@ import { SITE } from "../../lib/site";
 export const metadata: Metadata = {
   title: "Account",
   description:
-    "Your account lives in the app. How to sign in, how to delete your account and universe yourself, what is removed, and what is kept.",
+    "Your account lives in the app. How to sign in, how to delete your account and command center yourself, what is removed, and what is kept.",
   alternates: { canonical: `${SITE.origin}/account/` },
   robots: { index: false, follow: false },
 };
@@ -16,7 +16,7 @@ export default function AccountPage() {
       <RitualLabel>Account</RitualLabel>
       <h1>Your account lives in the app.</h1>
       <p className="lead">
-        Sign in to the web app with your email. Your universe, its brain, its connections and its
+        Sign in to the web app with your email. Your command center, its brain, its connections and its
         stored files are all bound to that account. There is no separate website account.
       </p>
       <div className="actions">
@@ -42,9 +42,9 @@ export default function AccountPage() {
         </li>
       </ol>
       <p>
-        <strong>Removed right away:</strong> your universe — its memory and everything it learned,
+        <strong>Removed right away:</strong> your command center — its memory and everything it learned,
         your conversation history, files you sent it, automations and drafts you made — any AI
-        credential you deposited, connections you added, your access to any other universe, your
+        credential you deposited, connections you added, your access to any other command center, your
         sign-in identity, and any paid plan, cancelled immediately so nothing further is charged.
       </p>
       <p>
@@ -54,13 +54,13 @@ export default function AccountPage() {
         one-way digest of your sign-in id, kept so a still-valid session on another device cannot
         silently re-create the account you just deleted — it cannot be turned back into your id or
         your email; the invoices our payment processor holds; and server backups until they age out
-        on our retention schedule. Nothing that could rebuild your universe is retained.
+        on our retention schedule. Nothing that could rebuild your command center is retained.
       </p>
       <p>
         <strong>If a step cannot complete</strong> — the payment processor is unreachable, say — the
         app tells you instead of claiming a deletion that did not happen, we record exactly which
         step is outstanding, and we finish it by hand. Deletion is also refused, with the reason
-        shown, while another person&apos;s data or live work is inside your universe; write to us and
+        shown, while another person&apos;s data or live work is inside your command center; write to us and
         we will sort it out.
       </p>
 

@@ -184,7 +184,7 @@ def test_request_carrier_cannot_outlive_or_change_its_request_lease():
         operation="converse",
     )
     assert validated.principal_id == "owner-1"
-    with pytest.raises(PermissionError, match="another universe"):
+    with pytest.raises(PermissionError, match="another command center"):
         validate_provider_request_carrier(
             carrier,
             universe_id="u-other",

@@ -133,10 +133,92 @@ async def handle_status(request):
     return await _serve(request, read, _allowed_arguments(read))
 
 
+#: How a custom UI's bytes leave this origin: as an opaque download the app
+#: reads into memory and posts to its sandboxed frame. Never the asset's own
+#: media type, so nothing a UI stored can render, sniff or run on the app origin.
+_BYTE_HEADERS = {
+    **_HEADERS,
+    "Content-Type": "application/octet-stream",
+    "X-Content-Type-Options": "nosniff",
+    "Content-Disposition": "attachment",
+    "Content-Security-Policy": "sandbox; default-src 'none'",
+}
+
+
+async def handle_ui_asset(request):
+    """The bytes a custom UI loads: one of the caller's own blobs, or a library.
+
+    ``{"graph_id": <universe>, "sha256": <hex>}`` is a blob from the caller's
+    own UI storage; ``{"library": <name>}`` is a vendored, pinned library. The
+    app fetches these with its bearer and posts them into the frame, which loads
+    them as ``blob:`` URLs -- the frame itself never fetches anything.
+    """
+    from starlette.responses import Response
+
+    from tinyassets import onboarding
+    from tinyassets.auth.middleware import current_identity, identity_context
+
+    if not onboarding.onboarding_enabled():
+        return PlainTextResponse("Not Found", 404, headers=_HEADERS)
+    denied = onboarding._app_identity_required()
+    if denied is not None:
+        denied.headers.update(_HEADERS)
+        return denied
+    ctype = str(request.headers.get("content-type", "")).split(";")[0].strip().lower()
+    if ctype != "application/json":
+        return JSONResponse({"error": "json_required"}, 415, headers=_HEADERS)
+    raw = await onboarding._read_bounded_body(request, _MAX_ARGUMENT_BYTES)
+    if raw is None:
+        return JSONResponse({"error": "arguments_too_large"}, 413, headers=_HEADERS)
+    try:
+        arguments = json.loads(raw or b"{}")
+    except (ValueError, UnicodeError):
+        arguments = None
+    if not isinstance(arguments, dict) or not (
+        set(arguments) == {"library"} and isinstance(arguments["library"], str)
+        or set(arguments) == {"graph_id", "sha256"}
+        and all(isinstance(v, str) for v in arguments.values())
+    ):
+        return JSONResponse(
+            {"error": "invalid_arguments",
+             "detail": 'send {"library": <name>} or {"graph_id": <id>, "sha256": <hex>}'},
+            400, headers=_HEADERS)
+
+    if "library" in arguments:
+        from tinyassets.onboarding import ui_library_set
+
+        try:
+            data = ui_library_set.library_bytes(arguments["library"])
+        except KeyError:
+            return JSONResponse({"error": "unknown_library"}, 404, headers=_HEADERS)
+        except ui_library_set.LibraryUnavailable:
+            return JSONResponse({"error": "library_unavailable"}, 404, headers=_HEADERS)
+        return Response(data, 200, headers=dict(_BYTE_HEADERS))
+
+    identity = current_identity()
+
+    def run():
+        from tinyassets.api.app_ui import read_app_ui_asset_bytes
+
+        with identity_context(identity):
+            return read_app_ui_asset_bytes(
+                universe_id=arguments["graph_id"], sha256=arguments["sha256"])
+
+    try:
+        found = await run_in_threadpool(run)
+    except Exception:  # noqa: BLE001 - no storage detail in a reply
+        _log.exception("owner door: ui asset read failed")
+        return JSONResponse({"error": "owner_read_failed"}, 500, headers=_HEADERS)
+    if isinstance(found, dict):
+        return JSONResponse(found, 404, headers=_HEADERS)
+    return Response(found, 200, headers=dict(_BYTE_HEADERS))
+
+
 def owner_door_routes() -> list[Any]:
     from starlette.routing import Route
 
     return [
         Route("/app/api/read", handle_read, methods=["POST"]),
         Route("/app/api/status", handle_status, methods=["POST"]),
+        Route("/app/api/ui-asset", handle_ui_asset, methods=["POST"]),
     ]

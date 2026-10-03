@@ -541,7 +541,7 @@ def _require_database_universe_binding(
         if binding["singleton_id"] != 1 or binding["universe_id"] != evidence.universe_id:
             raise ConversationCustodyAuthorizationError(
                 "storage_universe_mismatch",
-                "custody database belongs to another universe",
+                "custody database belongs to another command center",
             )
         return
 
@@ -558,11 +558,12 @@ def _require_database_universe_binding(
             )
         persisted_universes.add(receipt.universe_id)
     if len(persisted_universes) > 1:
-        raise ConversationCustodyIntegrityError("custody database contains more than one universe")
+        raise ConversationCustodyIntegrityError("custody database contains more than one "
+            "command center")
     if persisted_universes and next(iter(persisted_universes)) != evidence.universe_id:
         raise ConversationCustodyAuthorizationError(
             "storage_universe_mismatch",
-            "custody database belongs to another universe",
+            "custody database belongs to another command center",
         )
     conn.execute(
         """

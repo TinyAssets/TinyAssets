@@ -405,3 +405,122 @@ def test_gh_issue_failure_does_not_crash_watchdog(state_path):
     # Watchdog should still complete normally.
     assert state is not None
     assert len(gh.calls) == 1
+
+
+# ---- standing down while a deploy holds the host-mutation lock ------------
+#
+# 2026-10-01: a deploy's own recreate read as three reds, this watchdog ran
+# `systemctl restart`, and the unit's second compose run killed the new
+# container and failed the rollback
+# (docs/audits/2026-10-01-deploy-drain-repro/INCIDENT.md).
+
+
+def _lock_held():
+    import contextlib
+
+    @contextlib.contextmanager
+    def held():
+        yield False
+
+    return held
+
+
+def test_a_held_host_mutation_lock_suppresses_probe_and_restart(state_path, alarm_path):
+    recorder = _RestartRecorder()
+    probes: list[int] = []
+
+    def probe():
+        probes.append(1)
+        return (False, "connection refused")
+
+    for _ in range(5):
+        state = watchdog_tick(
+            state_file=state_path, probe_fn=probe, restart_fn=recorder,
+            alarm_log=alarm_path, host_mutation_lock=_lock_held(),
+        )
+    assert recorder.calls == []
+    assert probes == [], "a deploy in progress must not even be probed"
+    assert state["consecutive_reds"] == 0
+
+
+def test_reds_counted_before_a_deploy_do_not_carry_across_it(state_path, alarm_path):
+    """Two reds, then the deploy's lock, then one red: no restart.
+
+    Without the reset, the first red after the deploy releases the lock would be
+    red #3 and restart the daemon the deploy just brought up.
+    """
+    recorder = _RestartRecorder()
+    for _ in range(2):
+        watchdog_tick(state_file=state_path, probe_fn=_red_probe(),
+                      restart_fn=recorder, alarm_log=alarm_path)
+    watchdog_tick(state_file=state_path, probe_fn=_red_probe(), restart_fn=recorder,
+                  alarm_log=alarm_path, host_mutation_lock=_lock_held())
+    state = watchdog_tick(state_file=state_path, probe_fn=_red_probe(),
+                          restart_fn=recorder, alarm_log=alarm_path)
+    assert recorder.calls == []
+    assert state["consecutive_reds"] == 1
+
+
+def test_an_absent_lock_file_does_not_block_and_is_not_created(tmp_path):
+    lock = tmp_path / "host-mutation.lock"
+    with _watchdog_module._host_mutation_lock(lock) as free:
+        assert free is True
+    assert not lock.exists(), (
+        "the watchdog must never create the deploy's lock file: under "
+        "fs.protected_regular=2 root's `exec 9>` on a file this user owns fails")
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="flock is POSIX-only")
+def test_the_real_lock_reports_held_while_another_holder_has_it(tmp_path):
+    import fcntl
+    import os
+
+    lock = tmp_path / "host-mutation.lock"
+    lock.write_text("", encoding="utf-8")
+    holder = os.open(lock, os.O_RDONLY)
+    try:
+        fcntl.flock(holder, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        with _watchdog_module._host_mutation_lock(lock) as free:
+            assert free is False
+    finally:
+        os.close(holder)
+    with _watchdog_module._host_mutation_lock(lock) as free:
+        assert free is True
+
+
+def _unit_timeout_s(name: str) -> int:
+    import re
+
+    text = (_SCRIPTS.parent / "deploy" / name).read_text(encoding="utf-8")
+    match = re.search(r"^TimeoutStartSec=(\d+)s?$", text, re.M)
+    assert match, f"{name} TimeoutStartSec is no longer plain seconds"
+    return int(match.group(1))
+
+
+def test_the_lock_outlives_the_restart_job_it_covers():
+    """systemctl waits for the restart JOB, which the daemon unit's
+    TimeoutStartSec bounds. If watchdog.py or its own unit gave up first, the
+    lock would be released while the job's compose run was still mutating, and a
+    deploy could start on top of it (Codex refute, 2026-10-01)."""
+    # A failed start is followed by systemd's stop, so the job ends after
+    # start + stop, not start alone (Codex refute round 2).
+    unit = (_SCRIPTS.parent / "deploy" / "tinyassets-daemon.service").read_text(
+        encoding="utf-8")
+    import re
+
+    stop = re.search(r"^TimeoutStopSec=(\d+)s?$", unit, re.M)
+    assert stop, "the daemon unit must pin TimeoutStopSec; the lock lifetime depends on it"
+    daemon_job = _unit_timeout_s("tinyassets-daemon.service") + int(stop.group(1))
+    assert _watchdog_module.RESTART_JOB_TIMEOUT_SECONDS > daemon_job
+    assert _unit_timeout_s("tinyassets-watchdog.service") > (
+        _watchdog_module.RESTART_JOB_TIMEOUT_SECONDS)
+    assert _unit_timeout_s("daemon-watchdog.service") > daemon_job + 20  # restart -t 20
+
+
+def test_the_watchdog_unit_creates_the_lock_as_root():
+    """The script runs as tinyassets and must never create the lock (under
+    protected_regular=2 that would lock root out of it). The unit's root
+    ExecStartPre makes sure it exists, so the watchdog is never lockless."""
+    text = (_SCRIPTS.parent / "deploy" / "tinyassets-watchdog.service").read_text(
+        encoding="utf-8")
+    assert "ExecStartPre=+/usr/bin/touch /var/lock/tinyassets-host-mutation.lock" in text

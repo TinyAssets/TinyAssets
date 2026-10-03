@@ -464,7 +464,7 @@ class TestExposure:
         _authenticate(STRANGER)
         out = json.loads(
             write_graph(
-                target="universe", operation="set_visibility",
+                target="command_center", operation="set_visibility",
                 graph_id="u-mine", visibility="public",
             )
         )
@@ -509,7 +509,7 @@ class TestWriteGraphSurface:
         _authenticate(OWNER)
         out = json.loads(
             write_graph(
-                target="universe",
+                target="command_center",
                 operation="set_visibility",
                 graph_id="u-mine",
                 visibility="public",
@@ -526,7 +526,7 @@ class TestWriteGraphSurface:
         _authenticate(OWNER)
         out = json.loads(
             write_graph(
-                target="universe", operation="set_visibility", graph_id="u-mine"
+                target="command_center", operation="set_visibility", graph_id="u-mine"
             )
         )
         assert "error" in out

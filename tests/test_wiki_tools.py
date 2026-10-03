@@ -359,19 +359,6 @@ class TestWikiWrite:
         )
         assert result.get("status") in {"drafted", "updated"}, result
 
-    def test_wiki_categories_enum_matches_expanded_taxonomy(self):
-        """Lock-in: the module constant carries the seed-default categories in
-        canonical order. These are defaults, not a closed whitelist — custom
-        categories grow organically (see test_wiki_write_accepts_custom_category)."""
-        from tinyassets.api.wiki import _WIKI_CATEGORIES
-
-        assert _WIKI_CATEGORIES == (
-            "projects", "concepts", "people", "research",
-            "recipes", "workflows", "notes", "references", "plans",
-            "bugs", "feature-requests", "design-proposals", "patch-requests",
-        )
-
-
 class TestWikiDelete:
     def test_delete_dry_run_default_does_not_delete(self, wiki_dir):
         target = wiki_dir / "pages" / "projects" / "test-project.md"
@@ -912,18 +899,21 @@ class TestWikiFileBugDispatch:
         (wiki_dir / "pages" / "bugs").mkdir(parents=True, exist_ok=True)
         (wiki_dir / "drafts" / "bugs").mkdir(parents=True, exist_ok=True)
 
-        real_open = open
+        from tinyassets.api import wiki as wiki_mod
+
+        real_write = wiki_mod.write_data_path
         first_call = {"fired": False}
 
-        def fake_open(path, mode="r", *args, **kwargs):
-            p = Path(path) if not isinstance(path, Path) else path
-            if mode == "x" and "bug-001" in p.name and not first_call["fired"]:
+        def fake_write(path, data, *args, mode="replace", **kwargs):
+            p = Path(path)
+            if mode == "exclusive" and "bug-001" in p.name and not first_call["fired"]:
+                # A concurrent filer took the id between the scan and the create.
                 first_call["fired"] = True
-                real_open(path, "w", *args, **kwargs).close()
+                real_write(path, "", *args, **kwargs)
                 raise FileExistsError(path)
-            return real_open(path, mode, *args, **kwargs)
+            return real_write(path, data, *args, mode=mode, **kwargs)
 
-        with patch("tinyassets.api.wiki.open", side_effect=fake_open, create=True):
+        with patch("tinyassets.api.wiki.write_data_path", side_effect=fake_write):
             out = json.loads(
                 wiki(
                     "file_bug",

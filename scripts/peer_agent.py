@@ -258,6 +258,15 @@ def resolve_git_common_dir(
     return str(path.resolve())
 
 
+#: The model every codex peer runs on unless --model / WORKFLOW_CODEX_MODEL says
+#: otherwise. Never the CLI's own default: on a ChatGPT account `codex exec`
+#: defaults to a model the account rejects in seconds (gpt-6.1-sol, 2026-10-02),
+#: and ~/.codex/config.toml is whatever it last said, named nowhere in a result.
+DEFAULT_CODEX_MODEL = "gpt-6-astra"
+#: Reasoning effort when --effort / WORKFLOW_CODEX_EFFORT is not given.
+DEFAULT_CODEX_EFFORT = "medium"
+
+
 def build_codex_cmd(
     args: argparse.Namespace,
     out_path: str,
@@ -276,6 +285,13 @@ def build_codex_cmd(
         "-o",
         out_path,
     ]
+    model = (
+        args.model or os.environ.get("WORKFLOW_CODEX_MODEL", "").strip() or DEFAULT_CODEX_MODEL
+    )
+    effort = (
+        args.effort or os.environ.get("WORKFLOW_CODEX_EFFORT", "").strip() or DEFAULT_CODEX_EFFORT
+    )
+    cmd.extend(["-m", model, "-c", f"model_reasoning_effort={effort}"])
     if args.write:
         # Codex protects Git metadata under workspace-write even when a linked
         # worktree's common directory is supplied via --add-dir. A write peer
@@ -285,14 +301,6 @@ def build_codex_cmd(
             cmd.extend(["--add-dir", git_common_dir])
     else:
         cmd.extend(["-s", "read-only"])
-    # No -m by default: codex then uses the model from ~/.codex/config.toml,
-    # which the host keeps at the subscription frontier (e.g. gpt-5.6-sol).
-    # Pin only when explicitly asked via --model or WORKFLOW_CODEX_MODEL.
-    model = args.model or os.environ.get("WORKFLOW_CODEX_MODEL", "").strip()
-    if model:
-        cmd.extend(["-m", model])
-    if args.effort:
-        cmd.extend(["-c", f"model_reasoning_effort={args.effort}"])
     return cmd
 
 
@@ -475,9 +483,12 @@ def _main() -> int:
         stderr = stderr_b.decode("utf-8", errors="replace")
 
         if proc.returncode != 0:
+            # The WHOLE stderr: a CLI prints its banner and config first and the
+            # reason it died last, so a head slice reads like a run that did
+            # something (a rejected model, 2026-10-02).
             return fail(
                 f"{args.provider} exited {proc.returncode} after {elapsed:.0f}s\n"
-                f"stderr: {stderr[:1500].strip() or '(empty)'}",
+                f"stderr:\n{stderr.strip() or '(empty)'}",
                 2,
             )
 

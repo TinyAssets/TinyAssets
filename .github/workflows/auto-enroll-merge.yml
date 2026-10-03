@@ -110,11 +110,10 @@ jobs:
           }
 
           PR_JSON="$(gh pr view "$PR" --repo "$REPO" \
-            --json autoMergeRequest,body,headRefName,headRefOid,baseRefOid)"
+            --json autoMergeRequest,body,headRefOid,baseRefOid)"
           STATE="$(jq -r \
             'if .autoMergeRequest == null then "no" else "yes" end' \
             <<<"$PR_JSON")"
-          HEAD_REF="$(jq -r '.headRefName' <<<"$PR_JSON")"
           HEAD_OID="$(jq -r '.headRefOid' <<<"$PR_JSON")"
           # Base and head from the SAME read, never the event's base with the
           # current head: a rebase between the two would key the wrong diff.
@@ -133,8 +132,10 @@ jobs:
               "$BASE_OID" "$HEAD_OID")" || DIFF_KEY=""
           fi
 
+          # Every PR needs a receipt for its head (2026-10-02): on 2026-10-01
+          # this step armed #4247 -- a superseded head with a known data-loss
+          # bug and no review receipt -- and the queue accepted it.
           if python scripts/drain_review_gate.py \
-              --branch "$HEAD_REF" \
               --head "$HEAD_OID" \
               --diff-key "$DIFF_KEY" \
               --body-file "$RUNNER_TEMP/pr-body.md"; then
@@ -145,15 +146,26 @@ jobs:
 
           if [ "$REVIEW_GATE" = "deny" ]; then
             if [ "$STATE" = "yes" ]; then
+              # Fetch/diff evaluation can outlive a new head or receipt. A
+              # stale denial must not disarm that newer enrollment. Compare
+              # the same fields, including the body and enrollment identity.
+              # This is not an atomic compare-and-disable; the final
+              # read-to-mutation gap remains.
+              CURRENT_PR_JSON="$(gh pr view "$PR" --repo "$REPO" \
+                --json autoMergeRequest,body,headRefOid,baseRefOid)"
+              if [ "$CURRENT_PR_JSON" != "$PR_JSON" ]; then
+                echo "PR state changed since receipt evaluation; leaving current enrollment alone."
+                exit 0
+              fi
               gh pr merge "$PR" --repo "$REPO" --disable-auto
-              echo "Disabled stale or unreviewed drain auto-merge."
+              echo "Disabled auto-merge: no current review receipt for this head."
             else
-              echo "Drain PR remains unenrolled pending exact-head review."
+              echo "PR remains unenrolled pending a review receipt for this head."
             fi
             {
               echo "### Auto-merge"
               echo ""
-              echo "Not enrolled: drain PR needs exactly one current review receipt:"
+              echo "Not enrolled: every PR needs exactly one current review receipt:"
               echo "\`Drain-Review-Verdict: APPROVE\`"
               echo "\`Drain-Review-Head: <40-character lowercase head SHA>\`"
               echo "\`Drain-Review-Artifact: <docs path or GitHub URL>\`"

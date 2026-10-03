@@ -2,7 +2,7 @@
 
 Realtime is an auxiliary speech transport, never a TinyAssets writer. It uses a
 bounded capability declared on the exact user-owned HTTP connection already
-serving the founder's universe. The remote bridge implements the public
+serving the founder's command center. The remote bridge implements the public
 TinyAssets voice protocol and may be backed by any service or local resource;
 this module contains no service-specific endpoint, model, credential name, or
 wire-event vocabulary. SDP signaling stays on the authenticated same-origin
@@ -173,7 +173,7 @@ def _resolve_voice_binding(universe_dir: Path, owner_user_id: str) -> VoiceBindi
 def voice_capability(
     universe_dir: str | Path | None, owner_user_id: str = ""
 ) -> dict[str, Any]:
-    """Return a secret-free view of one universe's bound voice capability."""
+    """Return a secret-free view of one command center's bound voice capability."""
 
     if universe_dir is None or not owner_user_id:
         return {
@@ -256,7 +256,7 @@ def session_request(offer_sdp: str) -> dict[str, Any]:
         "offer_sdp": offer_sdp,
         "session": {
             "instructions": (
-                "Act only as the speech interface for this universe. For each "
+                "Act only as the speech interface for this command center. For each "
                 "completed utterance, invoke converse exactly once. Speak only "
                 "the returned tool result and add nothing."
             ),
@@ -268,7 +268,7 @@ def session_request(offer_sdp: str) -> dict[str, Any]:
             "tool": {
                 "name": "converse",
                 "description": (
-                    "Send the founder's complete spoken turn to their universe."
+                    "Send the founder's complete spoken turn to their command center."
                 ),
                 "input_schema": {
                     "type": "object",

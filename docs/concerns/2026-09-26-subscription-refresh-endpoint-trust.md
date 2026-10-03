@@ -40,8 +40,9 @@ STILL OPEN by design, and worth a decision rather than a fix: the issuer still c
 Smaller than it looks, and one trap that would make it self-defeating:
 
 - `pyjwt[crypto]` is already a dependency (`pyproject.toml`), and `PyJWKClient` +
-  `jwt.decode` are already used for exactly this shape in
-  `tinyassets/auth/host_binding.py`. Nothing new to add, nothing vendor-specific.
+  `jwt.decode` were used for exactly this shape in the deleted (never-wired)
+  `tinyassets/auth/host_binding.py` (`git log --diff-filter=D -- tinyassets/auth/host_binding.py`).
+  Nothing new to add, nothing vendor-specific.
 - The JWKS URI belongs to the issuer's own metadata, so it comes from the same
   RFC 8414 / OpenID document the token endpoint does. `connection_oauth.discovery.
   ServerMetadata` does not currently carry `jwks_uri`, so that field has to be

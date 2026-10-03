@@ -36,7 +36,7 @@ def test_relay_is_thin_no_over_narration():
 
 def test_connector_does_not_do_the_universes_work():
     assert "do NOT fetch, research, or answer it yourself" in _CS
-    assert "never assume what the universe can or cannot do" in _CS
+    assert "never assume what the command center can or cannot do" in _CS
 
 
 def test_learning_extraction_guards_generic_identity():

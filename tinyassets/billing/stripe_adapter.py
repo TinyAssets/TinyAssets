@@ -80,7 +80,7 @@ class AlreadySubscribed(RuntimeError):
     """This universe already has an active subscription."""
 
     def __init__(self, subscription_id: str) -> None:
-        super().__init__("universe already has an active subscription")
+        super().__init__("command center already has an active subscription")
         self.subscription_id = subscription_id
 
 

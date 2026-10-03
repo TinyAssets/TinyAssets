@@ -219,10 +219,12 @@ public class TinyAssetsMessagingService extends FirebaseMessagingService {
 
     private void ensureChannel(NotificationManager manager) {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return;
-        if (manager.getNotificationChannel(CHANNEL_ID) != null) return;
+        // Always (re)create: for an existing channel id Android applies the new
+        // name and description and keeps the person's own importance choice, so
+        // copy changes reach installed apps.
         NotificationChannel channel = new NotificationChannel(
             CHANNEL_ID, "Waiting on you", NotificationManager.IMPORTANCE_HIGH);
-        channel.setDescription("Requests your universe is waiting on you for");
+        channel.setDescription("Requests your agent is waiting on you for");
         manager.createNotificationChannel(channel);
     }
 }

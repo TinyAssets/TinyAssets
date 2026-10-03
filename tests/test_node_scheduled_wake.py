@@ -233,7 +233,7 @@ def test_malformed_timing_is_refused_and_nothing_is_stored(
     [
         # A branch-named universe other than the run's own.
         (OWNER, f"branch_def_id={PRIVATE!r}, universe_id={BOB_UNIVERSE!r}", UNIVERSE,
-         "cannot target universe"),
+         "cannot target command center"),
         # Nobody bound: there is no one to run the wake as.
         (None, f"branch_def_id={PRIVATE!r}", UNIVERSE, "no owner is bound"),
         # Bob bound inside Alice's universe: not an admin there.

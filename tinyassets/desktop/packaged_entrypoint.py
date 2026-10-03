@@ -162,6 +162,10 @@ def dispatch(arguments: list[str] | None = None) -> int:
             _require_authority()
         except PackagedRuntimeUnavailable as exc:
             raise SystemExit(str(exc)) from exc
+        # The desktop daemon opens the same data root: the layout guard (storage_layout.py).
+        from tinyassets.storage_layout import require_layout
+
+        require_layout()
         from fantasy_daemon.__main__ import main
 
         main()

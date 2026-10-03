@@ -15,14 +15,14 @@ const FILES={'u-alice':{'notes/board.md':'# Board\n- scout: working'},
 let folderUniverseOverride='', emits=[], emitReply=null;
 const baseCall2=MCP.callTool.bind(MCP);
 MCP.callTool=async function(tool,args,opts){
- if(tool==='read_graph'&&(args.target==='universe_files'||args.target==='universe_file')){
+ if(tool==='read_graph'&&(args.target==='command_center_files'||args.target==='command_center_file')){
   calls.push({tool,args:JSON.parse(JSON.stringify(args||{}))});
   const scope=folderUniverseOverride||args.graph_id,files=FILES[args.graph_id]||{};
-  if(args.target==='universe_files')
+  if(args.target==='command_center_files')
    return {universe_id:scope,path:args.query,entries:[{name:'board.md',kind:'file',size_bytes:24,owner:'x'},
      {name:'sub',kind:'dir',size_bytes:4096}],truncated:false};
   const text=files[args.query];
-  if(text===undefined) return {error:'not_found',resource:'universe_file'};
+  if(text===undefined) return {error:'not_found',resource:'command_center_file'};
   return {universe_id:scope,path:args.query,size_bytes:text.length,offset:args.file_offset,
    length:text.length,next_offset:null,eof:true,encoding:'text',text,inode:42};
  }
@@ -54,14 +54,14 @@ const ask=async(action,params)=>{
 calls=[];
 const listed=await ask('list_files',{path:'notes',graph_id:'u-bob',universe_id:'u-bob'});
 assert.equal(listed.ok,true,listed.error);
-const listCall=calls.filter(c=>c.args.target==='universe_files').pop();
+const listCall=calls.filter(c=>c.args.target==='command_center_files').pop();
 assert.equal(listCall.args.graph_id,HOME,'graph_id came from the viewer, not the bundle');
 assert(!('universe_id' in listCall.args));
 assert.deepEqual(listed.result.entries,[{name:'board.md',kind:'file',size_bytes:24},{name:'sub',kind:'dir'}]);
 
 const read=await ask('read_file',{path:'notes/board.md',graph_id:'u-bob'});
 assert.equal(read.ok,true,read.error);
-const readCall=calls.filter(c=>c.args.target==='universe_file').pop();
+const readCall=calls.filter(c=>c.args.target==='command_center_file').pop();
 assert.equal(readCall.args.graph_id,HOME);
 assert.equal(readCall.args.file_max_bytes,u.MAX_FILE_CHUNK,'a bundle cannot raise the chunk');
 assert.equal(read.result.content,'# Board\n- scout: working');
@@ -72,7 +72,7 @@ folderUniverseOverride='u-bob';
 for(const action of ['list_files','read_file']){
  const wrong=await ask(action,{path:'notes/board.md'});
  assert.equal(wrong.ok,false,action);
- assert(/another universe/.test(wrong.error),wrong.error);
+ assert(/another command center/.test(wrong.error),wrong.error);
 }
 folderUniverseOverride='';
 calls=[];

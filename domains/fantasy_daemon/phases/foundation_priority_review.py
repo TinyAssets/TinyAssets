@@ -34,11 +34,30 @@ def foundation_priority_review(state: dict[str, Any]) -> dict[str, Any]:
         }
 
     review_cycle = int(state.get("health", {}).get("review_cycles_completed", 0))
-    finalized_discards = finalize_eligible_discards(
-        universe_path,
-        review_cycle=review_cycle,
-    )
-    priorities, synth_signals = sync_source_synthesis_priorities(universe_path)
+    try:
+        # Inside the handler: this loads work targets, so a refused read here is
+        # the same class of refusal as the signal sync below and must idle the
+        # cycle rather than escape the phase.
+        finalized_discards = finalize_eligible_discards(
+            universe_path,
+            review_cycle=review_cycle,
+        )
+        priorities, synth_signals = sync_source_synthesis_priorities(universe_path)
+    except (RuntimeError, OSError) as exc:
+        # The signal queue or the work targets are unreadable or refused (a
+        # link). Never rebuild from empty, and never read that as "no
+        # blockers": stay in foundation and idle this cycle, leaving it
+        # untouched.
+        return {
+            "review_stage": "foundation",
+            "current_task": "idle",
+            "soft_conflicts": [],
+            "quality_trace": [{
+                "node": "foundation_priority_review",
+                "action": "foundation_review_signals_unreadable",
+                "error": str(exc),
+            }],
+        }
     active_hard = [
         priority for priority in priorities
         if priority.status == HARD_PRIORITY_ACTIVE and priority.hard_block

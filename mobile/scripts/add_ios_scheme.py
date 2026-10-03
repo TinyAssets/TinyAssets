@@ -43,7 +43,7 @@ URL_TYPES_BLOCK = """\t<key>CFBundleURLTypes</key>
 
 MICROPHONE_PURPOSE = (
     "TinyAssets uses the microphone only while voice conversation is active "
-    "so you can speak with your universe."
+    "so you can speak with your command center."
 )
 MICROPHONE_BLOCK = f"""\t<key>NSMicrophoneUsageDescription</key>
 \t<string>{MICROPHONE_PURPOSE}</string>

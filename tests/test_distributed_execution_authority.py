@@ -8,41 +8,16 @@ from pathlib import Path
 import pytest
 import rfc8785
 
-from tests.support.execution_authority import (
-    D0AuthorityError,
-)
-from tests.support.execution_authority import (
-    TestAuthorityRoot as AuthorityRoot,
-)
-from tests.support.execution_authority import (
-    test_authority_sentinel as authority_sentinel,
-)
 from tinyassets.branch_tasks_v2 import (
     Epoch2BranchTaskAdapter,
     WorkerClaimDescriptor,
 )
 from tinyassets.daemon_server import initialize_author_server
-from tinyassets.execution_authority import (
-    BlobReferenceV1,
-    ExecutionCandidateV1,
-    ExecutionCapsuleV1,
-    ExecutionGrantV1,
-    ExecutionTerminalV1,
-    RecordAuthorityError,
-)
-from tinyassets.providers.diagnostics import ProviderAttemptDiagnostic
 from tinyassets.storage.request_admissions import RequestAdmissionStore
 from tinyassets.work_targets import (
     list_selectable_targets,
     materialize_pending_requests,
 )
-
-_NOW = "2026-07-24T08:01:00Z"
-_NOW_EPOCH = int(datetime.fromisoformat(_NOW.replace("Z", "+00:00")).timestamp())
-
-
-def _clock() -> datetime:
-    return datetime.fromisoformat(_NOW.replace("Z", "+00:00"))
 
 
 def _commit_admission(base_path: Path) -> dict:
@@ -96,107 +71,6 @@ def _descriptor() -> WorkerClaimDescriptor:
         config_hash="b" * 64,
         universe_id="universe-a",
         expires_at="2026-07-24T08:02:15Z",
-    )
-
-
-def _root(state_dir: Path) -> AuthorityRoot:
-    return AuthorityRoot.create(
-        sentinel=authority_sentinel(),
-        mode="test",
-        state_dir=state_dir,
-    )
-
-
-def _signed_authority_records(root: AuthorityRoot):
-    allocation = root.allocate_lease(job_id="job-1", lease_id="b2-lease-1")
-    capsule = ExecutionCapsuleV1(
-        signing_key_id=root.key_id_for(ExecutionCapsuleV1),
-        owner_id="user:owner-1",
-        audience_daemon_id="worker-a",
-        job_id="job-1",
-        capsule_id="capsule-1",
-        attempt=1,
-        generation=allocation.generation,
-        source_id="source:bundle-1",
-        source_digest="1" * 64,
-        policy_id="policy:repo-coding-v1",
-        policy_digest="2" * 64,
-        issued_at="2026-07-24T08:00:00Z",
-        expires_at="2026-07-24T08:05:00Z",
-        max_wall_time_seconds=120,
-        max_memory_bytes=536_870_912,
-        max_output_bytes=1_048_576,
-    )
-    signed_capsule = root.sign(capsule)
-    capsule_digest = root.verify(
-        signed_capsule,
-        verified_at=_NOW_EPOCH,
-    ).evidence_digest
-    grant = ExecutionGrantV1(
-        signing_key_id=root.key_id_for(ExecutionGrantV1),
-        owner_id=capsule.owner_id,
-        daemon_id=capsule.audience_daemon_id,
-        job_id=capsule.job_id,
-        capsule_id=capsule.capsule_id,
-        capsule_digest=capsule_digest,
-        lease_id=allocation.lease_id,
-        generation=allocation.generation,
-        fence=allocation.fence,
-        expires_at="2026-07-24T08:05:00Z",
-        capability_ceiling=("result_upload",),
-        idempotency_key="idem:grant-1",
-    )
-    signed_grant = root.sign(grant)
-    stored_blob = root.put_blob("results/result.bin", b"result")
-    blob_ref = BlobReferenceV1(
-        ref=stored_blob.relative_path,
-        sha256=stored_blob.sha256,
-        size_bytes=stored_blob.size,
-        media_type="application/octet-stream",
-    )
-    candidate = ExecutionCandidateV1(
-        device_key_id=root.key_id_for(ExecutionCandidateV1),
-        owner_id=capsule.owner_id,
-        daemon_id=capsule.audience_daemon_id,
-        job_id=capsule.job_id,
-        capsule_id=capsule.capsule_id,
-        capsule_digest=capsule_digest,
-        lease_id=allocation.lease_id,
-        generation=allocation.generation,
-        fence=allocation.fence,
-        result_digest=stored_blob.sha256,
-        blob_refs=(blob_ref,),
-        blob_set_digest=root.blob_set_digest((blob_ref,)),
-        status="succeeded",
-        idempotency_key="idem:candidate-1",
-    )
-    signed_candidate = root.sign(candidate)
-    candidate_digest = root.verify(
-        signed_candidate,
-        verified_at=_NOW_EPOCH,
-    ).evidence_digest
-    terminal = ExecutionTerminalV1(
-        signing_key_id=root.key_id_for(ExecutionTerminalV1),
-        owner_id=candidate.owner_id,
-        daemon_id=candidate.daemon_id,
-        job_id=candidate.job_id,
-        capsule_id=candidate.capsule_id,
-        capsule_digest=candidate.capsule_digest,
-        lease_id=candidate.lease_id,
-        generation=candidate.generation,
-        fence=candidate.fence,
-        accepted_candidate_digest=candidate_digest,
-        accepted_result_digest=candidate.result_digest,
-        accepted_blob_set_digest=candidate.blob_set_digest,
-        terminal_state="succeeded",
-        completed_at=_NOW,
-        idempotency_key="idem:terminal-1",
-    )
-    return (
-        signed_capsule,
-        signed_grant,
-        signed_candidate,
-        root.sign(terminal),
     )
 
 
@@ -255,114 +129,3 @@ def test_epoch2_claim_enters_execution_for_its_claiming_worker(
     assert [t.target_id for t in selectable] == [target.target_id]
 
     assert _restartable_work_exists(universe_path) is True
-
-
-def test_signed_execution_record_domains_cannot_promote_into_one_another(
-    tmp_path: Path,
-) -> None:
-    root = _root(tmp_path / "d0-authority")
-    signed_capsule, signed_grant, signed_candidate, signed_terminal = _signed_authority_records(
-        root
-    )
-
-    with pytest.raises(
-        D0AuthorityError,
-        match="expected ExecutionCandidateV1 authority record",
-    ):
-        root.accept_candidate(
-            capsule=signed_capsule,
-            grant=signed_grant,
-            candidate=signed_grant,
-            verified_at=_NOW_EPOCH,
-        )
-    with pytest.raises(
-        D0AuthorityError,
-        match="expected ExecutionTerminalV1 authority record",
-    ):
-        root.complete(
-            capsule=signed_capsule,
-            grant=signed_grant,
-            candidate=signed_candidate,
-            terminal=signed_grant,
-            verified_at=_NOW_EPOCH,
-        )
-    assert (
-        len(
-            {
-                signed_capsule.domain,
-                signed_grant.domain,
-                signed_candidate.domain,
-                signed_terminal.domain,
-            }
-        )
-        == 4
-    )
-    assert root.replay_terminal("job-1", verified_at=_NOW_EPOCH) is None
-    root.close()
-
-
-def test_queue_admission_and_provider_receipts_cannot_be_signed_as_b2_authority(
-    tmp_path: Path,
-) -> None:
-    initialize_author_server(tmp_path)
-    admission = _commit_admission(tmp_path)
-    descriptor = _descriptor()
-    adapter = Epoch2BranchTaskAdapter(tmp_path, clock=_clock)
-    claimed = adapter.claim(
-        admission["branch_task_id"],
-        descriptor=descriptor,
-        descriptor_reader=lambda _conn, _worker_id: descriptor,
-    )
-    assert claimed is not None
-
-    provider_attempt = ProviderAttemptDiagnostic(
-        provider="codex",
-        status="failed",
-        skip_class="provider_error",
-        detail="synthetic test receipt",
-    )
-    root = _root(tmp_path / "d0-authority")
-
-    for foreign_artifact in (
-        admission,
-        claimed,
-        descriptor,
-        provider_attempt,
-    ):
-        with pytest.raises(
-            RecordAuthorityError,
-            match="no immutable domain contract",
-        ):
-            root.sign(foreign_artifact)  # type: ignore[arg-type]
-
-    root.close()
-
-
-def test_epoch2_heartbeat_row_cannot_be_signed_as_b2_authority(
-    tmp_path: Path,
-) -> None:
-    initialize_author_server(tmp_path)
-    admission = _commit_admission(tmp_path)
-    descriptor = _descriptor()
-    adapter = Epoch2BranchTaskAdapter(tmp_path, clock=_clock)
-    claimed = adapter.claim(
-        admission["branch_task_id"],
-        descriptor=descriptor,
-        descriptor_reader=lambda _conn, _worker_id: descriptor,
-    )
-    assert claimed is not None
-
-    heartbeat = adapter.heartbeat(
-        admission["branch_task_id"],
-        worker_id=descriptor.worker_id,
-    )
-    assert heartbeat is not None
-    assert heartbeat.heartbeat_at
-
-    root = _root(tmp_path / "d0-authority")
-    with pytest.raises(
-        RecordAuthorityError,
-        match="no immutable domain contract",
-    ):
-        root.sign(heartbeat)  # type: ignore[arg-type]
-    root.close()

@@ -73,15 +73,15 @@ _UNAVAILABLE_DETAIL = {
     ),
     "authentication_required": (
         "Sign in before creating an automation: an automation is owned by a "
-        "person, never by the universe."
+        "person, never by the command center."
     ),
     "owner_not_admin": (
-        "You need an admin grant on this universe to create an automation in "
+        "You need an admin grant on this command center to create an automation in "
         "it. A write grant lets you edit its work, not schedule it."
     ),
     "not_owner_home": (
-        "Automations run in your own home universe. Create this one there, or "
-        "make this universe your home first."
+        "Automations run in your own home command center. Create this one there, or "
+        "make this command center your home first."
     ),
     "timezone_invalid": (
         "That timezone is not one I recognize. Pass an IANA name such as "
@@ -89,7 +89,7 @@ _UNAVAILABLE_DETAIL = {
         "and I will use the zone your app reported."
     ),
     "no_serving_assignment": (
-        "This universe has no model serving it yet, so a run would have "
+        "This command center has no model serving it yet, so a run would have "
         "nothing to run on. Connect a model -- a subscription or your own "
         "API-key source -- and set it serving first."
     ),
@@ -123,7 +123,7 @@ _UNAVAILABLE_DETAIL = {
     ),
     "not_owner_or_admin": (
         "This automation belongs to someone else. Only its owner or an admin "
-        "on this universe can change it."
+        "on this command center can change it."
     ),
     "already_retired": (
         "This automation is deleted. Create a new one rather than reviving it."
@@ -312,7 +312,7 @@ def _recent_reasons(base: Path, universe_id: str) -> dict[str, str]:
         )
     except Exception:  # noqa: BLE001 - visibility must not break the list
         logger.warning(
-            "automation recent-reason lookup failed for universe %r",
+            "automation recent-reason lookup failed for command center %r",
             universe_id,
             exc_info=True,
         )
@@ -341,7 +341,7 @@ def _legacy_rows(base: Path, universe_id: str) -> list[dict[str, Any]]:
         )
     except Exception:  # noqa: BLE001 - a dead layer must not break a live read
         logger.warning(
-            "legacy automation control listing failed for universe %r",
+            "legacy automation control listing failed for command center %r",
             universe_id,
             exc_info=True,
         )
@@ -565,7 +565,7 @@ def _controllable(
         )
     except Exception:  # noqa: BLE001 - fail closed on an unreadable ACL
         logger.warning(
-            "automation control ACL read failed for universe %r",
+            "automation control ACL read failed for command center %r",
             automation.universe_id,
             exc_info=True,
         )

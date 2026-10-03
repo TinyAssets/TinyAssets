@@ -119,7 +119,7 @@ def record_creation(conn: sqlite3.Connection, *, universe_id: str, owner_id: str
     owner = named_principal(owner_id)
     uid = (universe_id or "").strip()
     if not owner or not uid:
-        raise ValueError("a universe owner needs a named principal and a universe id")
+        raise ValueError("a command center owner needs a named principal and a command center id")
     conn.execute(
         "INSERT INTO universe_owner (universe_id, owner_id, bound_at, source) "
         "VALUES (?, ?, ?, ?) ON CONFLICT(universe_id) DO NOTHING",
@@ -129,7 +129,7 @@ def record_creation(conn: sqlite3.Connection, *, universe_id: str, owner_id: str
         "SELECT owner_id FROM universe_owner WHERE universe_id = ?", (uid,)
     ).fetchone()
     if row is None or str(row[0]) != owner:
-        raise OwnershipConflict(f"universe {uid!r} is already owned by another account")
+        raise OwnershipConflict(f"command center {uid!r} is already owned by another account")
 
 
 def owner_of(base_path: str | Path, universe_id: str) -> str | None:

@@ -309,3 +309,77 @@ def test_the_letters_only_gap_is_bounded_and_stays_bounded():
                 f"single-case letter escapes at {length} chars rose to {rate:.1%}, "
                 f"over the {ceiling:.0%} measured on 2026-09-30"
             )
+
+
+# ---------------------------------------------------------------------------
+# ISO-8601 date-times are writing, not key material (2026-10-01)
+# ---------------------------------------------------------------------------
+# Live: every timestamp in a published workflow row, and every dated line of an
+# agent's board, read as "opaque_high_entropy" -- the ``T`` glues ``01`` to
+# ``12`` into a part that is neither a number nor a word. A stamp is now taken
+# out of the run before it is judged; what sits beside it is judged on its own.
+
+TIMESTAMPS = [
+    "2026-10-01T12:00:00Z",
+    "2026-10-01T12:00:00+00:00",
+    "2026-10-02T01:35:29.863058+00:00",
+    "2026-10-01T12:00Z",
+    "2026-10-01 12:00:00",
+    "2026-10-01T23:59:60Z",
+    "20261001T120000Z",
+    "20261001T1200+0530",
+    "at 2026-10-01T12:00:00Z the scout found three bakeries",
+    "created_at: 2026-09-30T08:15:00.123+02:00, updated_at: 2026-10-01T09:00:00Z",
+    "run-2026-10-01T12-00-00.log",
+    "(2026-10-01T12:00:00Z)",
+    "https://example.com/runs/2026-10-01T12:00:00Z/output",
+    "2026-10-01t12:00:00z",
+    "2026-10-01T12:00:00z",
+    "2024-02-29T12:00:00Z",
+]
+
+
+@pytest.mark.parametrize("text", TIMESTAMPS)
+def test_iso_timestamps_are_not_credentials(text):
+    assert credential_shape(text) is None, credential_shape(text)
+
+
+STAMP_SHAPED_SECRETS = [
+    # A key glued to a stamp, with or without a separator, is still a key.
+    ("AbC9xQ7LmZ2pR8tW2026-10-01T12:00:00Z", "opaque_high_entropy"),
+    ("AbC9xQ7LmZ2pR8tW-2026-10-01T12:00:00Z", "opaque_high_entropy"),
+    ("2026-10-01T12:00:00Z-AbC9xQ7LmZ2pR8tW", "opaque_high_entropy"),
+    # A glued stamp is not a stamp: taking it out would leave a short key under
+    # the length bar, so the whole run is judged.
+    ("Xq7Lm9Rt2026-10-01T12:00:00Z", "opaque_high_entropy"),
+    ("2026-10-01T12:00:00ZXq7Lm9Rt", "opaque_high_entropy"),
+    ("2026-10-01T12:00:00.123ZXq7Lm9Rt", "opaque_high_entropy"),
+    ("2026-10-01T12:00:00Z_" + _shape("sk_live", "_51H8ZqKLmNoPqRsTuVwXyZaBcDeFgHi"),
+     "opaque_high_entropy"),
+    # Not a stamp at all: impossible calendar or clock fields.
+    ("2026-13-01T12:00:00Z", "opaque_high_entropy"),
+    ("2026-10-32T12:00:00Z", "opaque_high_entropy"),
+    ("2026-10-01T24:00:00Z", "opaque_high_entropy"),
+    ("2026-10-01T12:61:00Z", "opaque_high_entropy"),
+    # A stamp in a URL never hides the secret parameter beside it.
+    ("https://example.com/r/2026-10-01T12:00:00Z?token=Zm9vYmFyYmF6cXV1eA",
+     "url_secret_parameter"),
+    # A stamp cannot carry a short key under the length bar with it.
+    ("20261001T120000Z-Xq7Lm9RtAbC9", "opaque_high_entropy"),
+    ("https://example.com/20261001T120000Z-Xq7Lm9Rt", "url_path_secret"),
+    # Only ASCII digits make a stamp, and a glued non-ASCII digit is glue.
+    ("2026-10-01T12:00:00.123456789٠Z", "opaque_high_entropy"),
+    ("٢٠٢٦-10-01T12:00:00Z", "opaque_high_entropy"),
+    # The calendar decides, and offsets are bounded.
+    ("2026-02-31T12:00:00Z", "opaque_high_entropy"),
+    ("2026-02-29T12:00:00Z", "opaque_high_entropy"),
+    ("2026-10-01T12:00:00+00:99", "opaque_high_entropy"),
+    ("2026-10-01T12:00:00+15:00", "opaque_high_entropy"),
+    # A UUID stays key material: some services issue API keys as bare UUIDs.
+    ("550e8400-e29b-41d4-a716-446655440000", "opaque_high_entropy"),
+]
+
+
+@pytest.mark.parametrize("text,shape", STAMP_SHAPED_SECRETS)
+def test_a_stamp_never_launders_key_material(text, shape):
+    assert credential_shape(text) == shape

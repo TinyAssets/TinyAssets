@@ -525,7 +525,7 @@ class RequestAdmissionStore:
                 raise ValueError("automation_activation must be active")
             if automation_activation.universe_id != scope[2]:
                 raise ValueError(
-                    "automation_activation universe does not match admission"
+                    "automation_activation command center does not match admission"
                 )
             assert automation_activation.executor_class is not None
             assert automation_activation.subject is not None

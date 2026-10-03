@@ -268,7 +268,7 @@ def test_first_connect_existing_founder_loads_learned_home_voice(
     apply_soul_edit(
         data_dir / uid,
         changes={"identity.md": "# Identity\n\nI am Aetheria.\n"},
-        source="founder conversation",
+        agent_id="main", source="founder conversation",
         context="The founder named the universe Aetheria.",
         name="Aetheria",
     )
@@ -752,7 +752,7 @@ def test_write_graph_target_universe_creates_and_binds(data_dir, monkeypatch):
 
     monkeypatch.setattr(universe_api, "_base_path", lambda: data_dir)
     _login("founder-1")
-    out = json.loads(write_graph(target="universe"))
+    out = json.loads(write_graph(target="command_center"))
     assert out.get("error") is None, out
     assert out["status"] == "born"
     assert "persona" in out and "first_run_checklist" not in out
@@ -771,7 +771,7 @@ def test_write_graph_unknown_target_lists_universe(data_dir):
     _login("founder-1")
     out = json.loads(write_graph(target="nope"))
     assert out["error"] == "unknown_target"
-    assert "universe" in out["allowed_targets"]
+    assert "command_center" in out["allowed_targets"]
 
 
 # ---------------------------------------------------------------------------
@@ -817,7 +817,7 @@ def test_write_graph_universe_rejects_caller_selected_graph_id(data_dir, monkeyp
 
     monkeypatch.setattr(universe_api, "_base_path", lambda: data_dir)
     _login("founder-1")
-    out = json.loads(write_graph(target="universe", graph_id="chosen-name"))
+    out = json.loads(write_graph(target="command_center", graph_id="chosen-name"))
     assert out["reason"] == "caller_selected_id_rejected"
     assert _universe_dirs(data_dir) == []
 

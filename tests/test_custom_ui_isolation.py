@@ -39,15 +39,28 @@ def test_frame_document_is_an_opaque_origin_with_no_network() -> None:
     # grant the frame would share the app's origin and could read the access
     # token out of sessionStorage.
     assert "sandbox" in frame, FRAME_CSP
-    assert frame["sandbox"] == ["allow-scripts"], frame["sandbox"]
+    # allow-forms only lets a <form> fire `submit` for the bundle's handler;
+    # form-action 'none' (below) refuses every real submission.
+    assert frame["sandbox"] == ["allow-scripts", "allow-forms"], frame["sandbox"]
 
     # No network of its own, so the only way out is the bridge. An image URL is a
     # GET a bundle could smuggle data through, so remote images are refused too.
-    assert frame["connect-src"] == ["'none'"]
+    # Every source is local to the browser: data:, and blob: URLs the frame
+    # mints from bytes the parent posted. No host, no 'self', no scheme that
+    # leaves the device -- in ANY directive, so a new one cannot open a hole.
+    local = {"data:", "blob:", "'unsafe-inline'", "'unsafe-eval'", "'wasm-unsafe-eval'",
+             "'none'"}
+    for directive, sources in frame.items():
+        if directive.endswith("-src"):
+            assert set(sources) <= local, (directive, sources)
+    assert set(frame["connect-src"]) == {"data:", "blob:"}
     assert frame["form-action"] == ["'none'"]
     assert frame["default-src"] == ["'none'"]
-    assert frame["img-src"] == ["data:"]
-    assert "'self'" not in frame["img-src"] and "*" not in frame["img-src"]
+    assert set(frame["img-src"]) == {"data:", "blob:"}
+    # Workers come only from blob: URLs the frame minted; a worker scope has no
+    # WebRTC constructor and inherits this same network policy.
+    assert frame["worker-src"] == ["blob:"]
+    assert "script-src-elem" not in frame and "frame-src" not in frame
 
     # frame-src is absent, so it falls back to default-src 'none': the bundle
     # cannot nest a frame to shop for a weaker context.
@@ -106,7 +119,10 @@ def test_frame_closes_the_egress_channels_csp_does_not_cover() -> None:
     frame = _directives(FRAME_CSP)
     assert "frame-src" not in frame          # falls back to default-src 'none'
     assert "child-src" not in frame
-    assert "worker-src" not in frame
+    # A worker realm is allowed from blob: only, and a worker scope exposes no
+    # RTCPeerConnection to hand back (proved in a real browser:
+    # test_custom_ui_real_browser.py, the worker's own `typeof RTCPeerConnection`).
+    assert frame["worker-src"] == ["blob:"]
     assert frame["default-src"] == ["'none'"]
     assert "allow-popups" not in frame["sandbox"]
 
@@ -128,10 +144,15 @@ def test_app_page_grants_frames_but_keeps_nonce_only_script() -> None:
     # bootstrap.
     assert app["frame-src"] == ["'self'"]
 
-    # Deliberately unchanged: even a bug that inserted bundle script into this
-    # page would not execute it, because nothing carries the per-request nonce.
-    assert len(app["script-src"]) == 1
-    assert app["script-src"][0].startswith("'nonce-")
+    # Inline script still runs only with the per-request nonce, so bundle text
+    # inserted into this page as script does not execute. The one other entry is
+    # the app's own ES-module path (app_modules.script_source): an inserted
+    # <script src> can load only our allowlisted module files from it. Never a
+    # bare origin, 'self' or 'strict-dynamic' (Codex on #4281 asked that this
+    # comment stop claiming every script element needs the nonce).
+    nonce, *rest = app["script-src"]
+    assert nonce.startswith("'nonce-")
+    assert len(rest) <= 1 and all(r.endswith("/app/m/") and "://" in r for r in rest), rest
     assert "'unsafe-inline'" not in app["script-src"]
     assert "'unsafe-eval'" not in app["script-src"]
 
@@ -152,7 +173,7 @@ def test_bundle_source_never_enters_the_app_document() -> None:
     sandbox = re.search(r'SANDBOX:"([^"]*)"', APP_UI)
     assert sandbox, "AppUI must declare the sandbox it applies"
     grants = sandbox.group(1).split()
-    assert grants == ["allow-scripts"], grants
+    assert grants == ["allow-scripts", "allow-forms"], grants
     assert 'setAttribute("sandbox",this.SANDBOX)' in APP_UI
 
 
@@ -205,11 +226,11 @@ def test_the_home_transition_funnel_revokes_the_bridge() -> None:
     assert "AppUI.reset()" in clear.group(1), clear.group(1)
 
 
-def test_bundle_bounds_fit_the_real_library_cap() -> None:
-    """The JS bounds are derived from the Python caps, not a coincidence.
+def test_bundle_bounds_are_the_servers_bounds() -> None:
+    """The JS bounds are the Python bounds, not a coincidence.
 
     The library has NO bound -- not a count of UIs and not a byte total. What is
-    bounded is one bundle, on both sides, and those two numbers must agree so
+    bounded is one UI, on both sides, and the two sets of numbers must agree so
     raising either without the other fails here instead of at a user's write.
     """
     from tinyassets import custom_agents
@@ -219,7 +240,12 @@ def test_bundle_bounds_fit_the_real_library_cap() -> None:
         assert found, name
         return int(found.group(1))
 
-    per_bundle = constant("MAX_BUNDLE_BYTES")
+    assert constant("MAX_TEXT_BYTES") == custom_agents.APP_UI_MAX_COMPONENT_TEXT_BYTES
+    assert constant("MAX_ASSET_BYTES") == custom_agents.APP_UI_MAX_ASSET_BYTES
+    assert constant("MAX_UI_ASSET_BYTES") == custom_agents.APP_UI_MAX_UI_ASSET_BYTES
+    assert constant("MAX_ASSET_FILES") == custom_agents.APP_UI_MAX_ASSET_FILES
+    # The 49,152-byte bundle bound that made a game impossible is gone.
+    assert "MAX_BUNDLE_BYTES" not in APP_UI and "49152" not in APP_UI
 
     # No library-wide ceiling on either side, by bytes or by count.
     assert not hasattr(custom_agents, "MAX_APP_UI_LIBRARY_BYTES")
@@ -231,9 +257,3 @@ def test_bundle_bounds_fit_the_real_library_cap() -> None:
     # units accepted multi-byte bundles that the byte cap then refused.
     assert "new TextEncoder().encode(String(value)).length" in APP_UI
     assert "JSON.stringify(component).length" not in APP_UI
-
-    # Every field bound must be reachable inside one bundle's own budget, or the
-    # field bound is decoration.
-    assert constant("MAX_MARKUP") <= per_bundle
-    assert constant("MAX_STYLE") <= per_bundle
-    assert constant("MAX_SCRIPT") <= per_bundle

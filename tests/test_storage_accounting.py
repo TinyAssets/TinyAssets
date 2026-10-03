@@ -60,7 +60,7 @@ class TestOnePoolPerAccount:
         record = refused.value.record
         assert record["failure_class"] == sa.FAILURE_QUOTA
         assert record["used_bytes"] == 90 * KIB
-        assert "across 2 universes" in record["error"]
+        assert "across 2 command centers" in record["error"]
 
     def test_another_account_is_unaffected(self, base):
         _write(_universe(base, "u-a", A), "a.bin", 95 * KIB)

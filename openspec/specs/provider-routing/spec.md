@@ -20,7 +20,7 @@ The provider router (`tinyassets/providers/router.py`) SHALL define a fallback c
 - **AND** an unknown role name resolves to the `writer` chain
 
 ### Requirement: User-brought compute of any allowed access method
-The platform SHALL NOT enumerate a compiled provider set. A universe runs on compute the user brings, of any allowed access method — subscription (via CLI), API key (via HTTP), or another published standard — never on platform-supplied compute. This REPLACES the earlier "subscription-only by default" requirement: subscription is one access method, not the only one. "No host writer ever" is preserved — the compute is always the user's own. API-key providers are honored only when the credential is held under the custody owner's contract (no raw key in the control plane / JSON vault). The legacy fixed api-key providers (`gemini-free`, `groq-free`, `grok-free`) remain gated off unless `TINYASSETS_ALLOW_API_KEY_PROVIDERS` is truthy; primary subscription writers are `claude -p` / `codex exec` subprocesses, never API SDKs (project hard rule).
+The platform SHALL NOT enumerate a compiled provider set. A universe runs on compute the user brings, of any allowed access method — subscription (via CLI), API key (via HTTP), or another published standard — never on platform-supplied compute. This REPLACES the earlier "subscription-only by default" requirement: subscription is one access method, not the only one. "No host writer ever" is preserved — the compute is always the user's own. API-key providers are honored only when the credential is held under the custody owner's contract (no raw key in the control plane / JSON vault). There are no fixed built-in api-key providers; primary subscription writers are `claude -p` / `codex exec` subprocesses, never API SDKs (project hard rule).
 
 #### Scenario: an api-key provider serves a universe
 - **GIVEN** a universe whose owner has registered an `api_key_http` provider definition and deposited its credential through the custody owner's path
@@ -1063,3 +1063,54 @@ The system SHALL record a model that the owner's source refused during a served 
 #### Scenario: The mark expires
 - **WHEN** the mark's lifetime has passed
 - **THEN** the model is ordered as if it had never been refused
+
+### Requirement: A reply that fails in flight is retried within a bound, and a small window compacts
+The system SHALL request every engine-inference agent reply as a stream and SHALL judge it by inactivity, not total time: once the response headers arrive, a reply that keeps arriving SHALL NOT be cut for being slow (bounded only by an outer ceiling against a drip), and one that sends nothing for the source's inactivity window (default 120 seconds, per-source configurable) is `provider_stalled`, returned as far as it got. A non-streamed reply that outruns the whole-reply ceiling (`provider_reply_timeout`) SHALL NOT be retried or moved to another model. The system SHALL treat a 2xx agent reply that carries an in-band source error (`provider_reply_error`, with the source's own message and code as detail), that cannot be decoded (`provider_unreadable_reply`), or that stalled, as a failed step of an engine-inference round: the turn SHALL retry the same model once, then at most one other model in the owner's accepted order with only the failed model excluded (at most two such retries per turn), re-rendering only the journal's completed rounds so no tool is re-run; the connection SHALL NOT be cooled for such a failure; an unrecognized non-2xx status SHALL remain `provider_protocol_error` and SHALL NOT be retried. A failed turn's record SHALL state how many model requests the turn sent, and a stalled reply's partial text SHALL be kept in the owner's notice (never in a run record or log). When a turn no longer fits its model's window and no accepted model with a larger window exists, the turn SHALL render older tool results and call arguments clipped (each clip saying what it left out) and retry on the same model, while the journal keeps every round whole.
+
+#### Scenario: An upstream error after real work does not end the build
+- **WHEN** a source answers HTTP 200 with an error object in place of the reply after earlier tool rounds completed
+- **THEN** the same model is asked again with the completed rounds' results, no completed tool runs again, and the turn continues
+
+#### Scenario: The error persists
+- **WHEN** the same model and the remaining accepted models keep failing in flight past the bound
+- **THEN** the record is `code=provider_reply_error` (or `provider_unreadable_reply`), `stage=model_reply`, its detail is the source's own words, and the notice offers asking the turn to continue rather than saying a reply was unreadable
+
+#### Scenario: A slow reply is never abandoned
+- **WHEN** a streamed reply keeps arriving for longer than the old whole-reply ceiling
+- **THEN** it is read to the end and no second request is spent on it
+
+#### Scenario: A reply goes silent
+- **WHEN** a streamed reply sends nothing for the inactivity window
+- **THEN** the same model is asked again, and if the turn still ends the notice quotes what the model had written and how many requests the turn sent
+
+#### Scenario: The turn outgrows its only model
+- **WHEN** the next request would exceed the selected model's window and no accepted model is larger
+- **THEN** older tool results are sent clipped with a marker saying the tool can be called again for the whole result, and only when clipping no longer shrinks the request is the record `context_window_exceeded`
+
+### Requirement: Request economy uses advisory daily compute estimates
+The served conversation coordinator SHALL NOT impose a per-turn or per-step request ceiling. It SHALL read daily cap facts through `daily_cap_for_host`, using the connect-screen's installed data, and count the owner's journaled free-model requests, including failed attempts. Successful requests beyond the declared free cap SHALL retain the existing credit-tier self-correction. The accepted `AgentModelPlan` order, including capacity exclusions, SHALL determine which sources contribute, counted once per connection. Any usable uncapped source, non-free candidate, or unreadable evidence SHALL make the pool UNBOUNDED; an unbounded pool SHALL add no budget prompt.
+
+Installed cap facts and local counts SHALL be advisory, not proof of this account's applicable quota. A zero or low estimate SHALL NOT exclude a source, force `tool_choice="none"`, or truncate accepted work. The provider must remain reachable beyond the estimated free cap so a successful request can correct the tier. Genuine provider capacity failures SHALL retain the existing scoped exhaustion, retry, fallback, and journal behavior.
+
+For a finite estimate, the prompt SHALL describe its total and per-source remaining requests and installed midnight reset timezones, explicitly distinguishing them from confirmed account limits and recovery times. It SHALL ask the agent to save progress to `notes/<project>-progress.md` as it works, without claiming an unsaved file exists or an automatic wake is armed. On every `list_requests` read, an estimate below ten SHALL derive pending status and a short advisory suggestion on the existing `sys_connect_llm` card, using credit amount and URL from `daily_cap_for_host` when present and acknowledging that the account may already qualify. The card SHALL never be stored. The next rail read SHALL clear budget urgency when the estimate rises or becomes unbounded, without requiring a turn. Optional learning extraction SHALL still skip a capped selected source below ten estimated remaining; accepted user work SHALL continue.
+
+#### Scenario: A higher-tier account reaches its fifty-first request
+- **WHEN** local evidence reaches the installed free cap of fifty but the provider accepts further requests
+- **THEN** the next request retains tools, its success updates the tier estimate, and the task continues through its normal journaled completion
+
+#### Scenario: A long task has enough compute
+- **WHEN** fifteen tool rounds are needed and the local estimate is low, high, or unbounded
+- **THEN** all fifteen tool rounds and the final reply remain permitted while the provider accepts them
+
+#### Scenario: A source really refuses for capacity
+- **WHEN** a provider reports a capacity refusal after earlier tools completed
+- **THEN** existing scoped capacity handling applies and completed tools remain journaled without replay
+
+#### Scenario: A low estimate spans two turns
+- **WHEN** successive turns observe fewer than ten estimated requests remaining
+- **THEN** the app receives one advisory pending `sys_connect_llm` card rather than duplicate requests or a claim that work cannot continue
+
+#### Scenario: A conversation needs to continue after confirmed exhaustion
+- **WHEN** an interactive conversation encounters a real provider capacity refusal
+- **THEN** known progress remains journaled without claiming an automatic resume or treating an installed reset estimate as confirmed recovery
+- **AND** no new scheduler or owner-authored Branch is invented: activity start awaits #4221; the one-shot control-plane WakeTarget integration is tracked in `docs/concerns/2026-10-02-budget-exhaustion-auto-resume.md`

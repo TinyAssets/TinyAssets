@@ -167,7 +167,7 @@ def grant_sentence(action: dict) -> str:
     before = action["previous_membership"]
     after = describe(action["proposed_membership"])
     return (
-        f"Your universe will think with {after}. "
+        f"Your command center will think with {after}. "
         + (f"Until now it could use {describe(before)}. " if before else "")
         + "No paid-model spending or credit purchase is approved beyond that. "
         "If it is running, it reconnects with this access; if that fails it stays "

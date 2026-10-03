@@ -99,12 +99,12 @@ test("the checked-in snapshot fails closed on visibility, like a live read", () 
 
   // The checked-in render path goes through it. Live reads belong to a
   // signed-in connector, not this public browser component.
-  assert.match(shapes, /const bakedRows: Row\[\] = discoverableRows\(baked\.universes\)/);
+  assert.match(shapes, /const bakedRows: Row\[\] = discoverableRows\(baked\.command_centers\)/);
 
   // And the checked-in snapshot itself carries only discoverable records.
   const snapshot = JSON.parse(readFileSync(resolve(siteRoot, "lib/mcp-snapshot.json"), "utf8"));
-  assert.ok(Array.isArray(snapshot.universes));
-  assert.equal(discoverableRows(snapshot.universes).length, snapshot.universes.length);
+  assert.ok(Array.isArray(snapshot.command_centers));
+  assert.equal(discoverableRows(snapshot.command_centers).length, snapshot.command_centers.length);
 });
 
 test("public pages never surface untrusted error detail", () => {
@@ -119,7 +119,7 @@ test("the public list labels its snapshot and sign-in boundary", () => {
   assert.match(shapes, /mcp-snapshot\.json/);
   assert.match(shapes, /checked-in snapshot from/);
   assert.match(shapes, /PUBLIC_READ_NEEDS_SIGN_IN/);
-  assert.match(shapes, /No public universes/);
+  assert.match(shapes, /No public command centers/);
   assert.doesNotMatch(shapes, /visibility\s*\?\?\s*["']public["']/);
   assert.doesNotMatch(shapes, /visibility\s*!==\s*["']private["']/);
   assert.doesNotMatch(shapes, /Refresh MCP|live read from/);

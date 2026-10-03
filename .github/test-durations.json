@@ -449,7 +449,6 @@
 "tests/test_graph_reply_execution.py": 0.0,
 "tests/test_graph_run_controls.py": 25.4,
 "tests/test_graph_topology.py": 2.7,
-"tests/test_grok_provider_registration.py": 0.0,
 "tests/test_handoff_authority.py": 4.0,
 "tests/test_handoff_receipts.py": 4.9,
 "tests/test_handoff_store.py": 0.0,

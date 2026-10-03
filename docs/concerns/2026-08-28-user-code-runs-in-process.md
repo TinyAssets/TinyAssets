@@ -72,7 +72,8 @@ Until one exists, "safe for strangers" rests on the allowlist being right.
 
 ## Related
 
-`docs/concerns/2026-07-02-no-os-engine-sandbox.md` records the same boundary from the
-sandbox side ("in-process confinement only; the denylist fails open"). This file records
-what that costs specifically once a second user exists, and why the credential-hardening
-work does not substitute for it.
+The sandbox-side concern (`2026-07-02-no-os-engine-sandbox`, "in-process confinement only")
+was deleted on 2026-10-01: bwrap works in production, and every provider launch for a
+universe is OS-jailed and refuses to run when it cannot be (`tinyassets/providers/provider_jail.py`).
+This file records what in-process execution costs once a second user exists, and why the
+credential-hardening work does not substitute for it.

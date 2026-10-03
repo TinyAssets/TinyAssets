@@ -38,9 +38,11 @@ def ensure_bootstrap_binding(base: Path, *, uid: str, owner: str) -> dict:
     from tinyassets.custom_agents import create_binding, list_bindings
     from tinyassets.onboarding.serving import (
         _BINDING_PAYLOAD,
+        RETIRED_BINDING_PAYLOAD,
         _gesture_lock,
         _platform_definition,
         _require_current_admin,
+        _retired_platform_definition_ids,
     )
     from tinyassets.provider_assignment import load_provider_assignment
     from tinyassets.shared_self import require_founder_home
@@ -58,9 +60,16 @@ def ensure_bootstrap_binding(base: Path, *, uid: str, owner: str) -> dict:
         did = definition["agent_definition_id"]
         if bindings:
             binding = bindings[0]
+            # A pre-rename platform binding (retired definition, retired name) is
+            # the same untouched default; the storage migration (C4) re-points it.
+            untouched = (
+                binding["agent_definition_id"] == did
+                and binding["configuration"] == _BINDING_PAYLOAD
+                or (binding["agent_definition_id"] in _retired_platform_definition_ids(base)
+                    and binding["configuration"] == RETIRED_BINDING_PAYLOAD)
+            )
             if (binding["created_by"] != owner or binding["updated_by"] != owner
-                    or binding["agent_definition_id"] != did
-                    or binding["configuration"] != _BINDING_PAYLOAD
+                    or not untouched
                     or binding["revision"] != 1 or binding["status"] != "configured"):
                 raise PermissionError("existing_agent_requires_review")
             return binding

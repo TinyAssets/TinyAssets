@@ -64,10 +64,6 @@ def test_module_exposes_expected_public_names():
 # ── _RUN_ACTIONS dispatch table ─────────────────────────────────────────────
 
 
-def test_run_actions_table_has_34_handlers():
-    assert len(_RUN_ACTIONS) == 34
-
-
 def test_run_actions_table_keys_are_expected_set():
     expected = {
         "run_branch", "run_branch_version", "get_run", "list_runs",

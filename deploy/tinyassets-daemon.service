@@ -76,7 +76,11 @@ ExecStartPre=/bin/sh -c 'meta=$$(stat -c "%%U:%%G %%a" /etc/tinyassets/request-i
 # a failed restart left production down. Stopping the unit leaves the
 # containers to docker's restart policy; restarting it re-converges. The
 # watchdog restarts the daemon CONTAINER, daemon-scoped (daemon-watchdog.sh).
-ExecStart=/usr/bin/docker compose --env-file /etc/tinyassets/env -f /opt/tinyassets/compose.yml up -d daemon cloudflared logs
+# `--timeout 20` bounds the old daemon's drain on a unit-driven recreate, matching
+# deploy_fail_safe.sh's MAX_DAEMON_STOP_GRACE_S. Without it, compose uses the
+# container's create-time StopTimeout, which is 180s for anything a rollback
+# recreated from a pre-2026-10-01 bundle.
+ExecStart=/usr/bin/docker compose --env-file /etc/tinyassets/env -f /opt/tinyassets/compose.yml up -d --timeout 20 daemon cloudflared logs
 
 # Restart posture. on-failure (NOT always — with RemainAfterExit, `always` would
 # re-run a SUCCESSFUL oneshot). 10s delay + the [Unit] start-limit cap avoids a hot-loop;
@@ -86,6 +90,9 @@ RestartSec=10s
 
 # TimeoutStartSec > the up -d + healthcheck-wait budget (daemon health ~30s).
 TimeoutStartSec=200s
+# Pinned (systemd's default) because the watchdogs' lock lifetimes are derived
+# from start + stop: see tests/test_watchdog.py.
+TimeoutStopSec=90s
 
 # Hardening NOTE (2026-08-21 P0 fix): the previous ProtectHome=yes +
 # ProtectSystem=strict masked the tinyassets user's docker config + compose CLI

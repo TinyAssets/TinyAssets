@@ -135,19 +135,37 @@ def test_http_lifespan_orders_initialization_before_background_work(fresh_data_d
 
 @pytest.fixture
 def isolate_boot_maintenance_thread(monkeypatch):
-    """Do not leak main's unrelated perpetual reconciler into later tests."""
+    """Do not leak main's perpetual background threads into later tests.
+
+    `main` also takes the process-wide run-recovery lock and starts the
+    run-owner watcher, which every 15 s interrupts "dead-owner" runs and
+    redelivers terminal events in whatever data dir is CURRENT -- so a watcher
+    leaked from here acted on later tests' runs (found by the leak probe,
+    2026-10-01). Suppress the thread and restore the recovery globals.
+    """
+    from tinyassets.api import runs as api_runs
+
+    monkeypatch.setattr(api_runs, "_RUNS_RECOVERY_DONE", False)
+    monkeypatch.setattr(api_runs, "_RUNS_RECOVERY_LOCK", None)
     real_start = threading.Thread.start
     suppressed = []
 
     def _start(thread):
-        if thread.name == "served-budget-lease-reconciler":
+        if thread.name in ("served-budget-lease-reconciler", "run-owner-watcher"):
             suppressed.append(thread)
             return None
         return real_start(thread)
 
     monkeypatch.setattr(threading.Thread, "start", _start)
     yield suppressed
-    assert suppressed, "main did not reach maintenance thread startup"
+    lock = api_runs._RUNS_RECOVERY_LOCK
+    if lock is not None:
+        from tinyassets.singleton_lock import release_singleton_lock
+
+        release_singleton_lock(lock)
+    assert any(t.name == "served-budget-lease-reconciler" for t in suppressed), (
+        "main did not reach maintenance thread startup"
+    )
     assert all(not thread.is_alive() for thread in suppressed)
 
 

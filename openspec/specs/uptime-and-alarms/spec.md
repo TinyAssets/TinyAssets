@@ -1034,3 +1034,32 @@ identity only from a container whose inspected running state is true.
   has neither exact restoration nor safe-fence proof
 - **THEN** terminal receipt construction fails closed and the workflow remains
   red without replacing the prior atomic receipt
+
+### Requirement: A Deploy Waits For In-Flight Work Before It Swaps The Daemon
+The production deploy SHALL NOT recreate the daemon while work is in flight. It MAY proceed regardless in four cases only:
+- its cap is reached (45 min, including the image prefetch);
+- the daemon is not serving;
+- the in-flight check cannot answer three times running;
+- a host-mutating recovery workflow (p0-outage-triage, restart-daemon, install-host-services, apply-daemon-env) is queued behind it.
+
+Work is in flight when either holds:
+- an account seat is held by a live holder process, whether or not its lease has expired;
+- a queued, running or resumed graph run is owned by a live process. A run row with no owner token counts if the run started after the daemon container did.
+
+The check runs before the swap and outside the host-mutation lock, from deploy-prod's "Wait for in-flight turns" step. That step runs `deploy/wait_for_turns.sh`, which runs `scripts/turns_in_flight.py`. The check SHALL run in a throwaway sibling container that uses the daemon's image and uid, mounts the data volume, has no network, and never execs into the daemon. The probe file SHALL be checksum-verified before each poll. Every remote call SHALL be bounded. While waiting, the deploy SHALL refresh an expiring `/data/.deploy-pending.json` marker, which `get_status.deploy_pending` reports. Live proof (2026-10-02): deploy run 36979226551 held the swap while the founder's turn `c5264d0a253a4d07b6ff7466a087b6cf` ran past 5 minutes; that turn ended `completed`.
+
+#### Scenario: A long turn finishes before the swap
+- **WHEN** a deploy starts while a chat turn holds an interactive seat
+- **THEN** the deploy polls until the seat is released, swaps only then, and the turn completes on the old daemon
+
+#### Scenario: The cap still bounds the wait
+- **WHEN** work stays in flight for the whole cap
+- **THEN** the deploy proceeds with outcome `cap_reached`, and the cut turn is settled and reported by the startup reconcile
+
+#### Scenario: Recovery is never queued behind a polite wait
+- **WHEN** a host-mutating recovery workflow is queued behind the deploy's concurrency group
+- **THEN** the wait ends with outcome `yield_to_host_mutation` and the deploy proceeds
+
+#### Scenario: An unverifiable probe is never read as idle
+- **WHEN** the probe upload is missing, partial or stale, or the sibling container cannot run
+- **THEN** the poll is unknown, and only three consecutive unknowns let the deploy proceed (`check_unavailable`)

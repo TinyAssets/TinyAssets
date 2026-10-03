@@ -78,7 +78,7 @@ def _resolve_owned_branch(base: str, branch_def_id: str, uid: str) -> tuple[str,
     from tinyassets.api.permissions import current_request_actor_id
     from tinyassets.daemon_server import get_branch_definition
 
-    not_found = json.dumps({"error": f"branch not found in your universe: {branch_def_id}"})
+    not_found = json.dumps({"error": f"branch not found in your command center: {branch_def_id}"})
     bid = _resolve_branch_id(branch_def_id, base)
     try:
         branch = get_branch_definition(base, branch_def_id=bid)
@@ -106,7 +106,9 @@ def _action_mint_webhook(kwargs: dict[str, Any]) -> str:
 
     uid = _uid(kwargs)
     if not uid:
-        return json.dumps({"error": "mint_webhook requires a universe_id (your own universe)."})
+        return json.dumps({
+            "error": "mint_webhook requires a universe_id (your own command center).",
+        })
     branch_def_id = str(kwargs.get("branch_def_id", "")).strip()
     if not branch_def_id:
         return json.dumps({"error": "branch_def_id is required."})
@@ -127,7 +129,7 @@ def _action_mint_webhook(kwargs: dict[str, Any]) -> str:
         "text": (
             "Inbound webhook URL created. Paste it into the channel's webhook settings "
             f"(GitHub, Stripe, or any tool that can POST a webhook):\n{url}\n"
-            "Each POST to it runs this branch as your universe."
+            "Each POST to it runs this branch as your command center."
         ),
         "url": url,
         "token": token,
@@ -173,7 +175,9 @@ def _action_list_webhooks(kwargs: dict[str, Any]) -> str:
 
     uid = _uid(kwargs)
     if not uid:
-        return json.dumps({"error": "list_webhooks requires a universe_id (your own universe)."})
+        return json.dumps({
+            "error": "list_webhooks requires a universe_id (your own command center).",
+        })
     base = _base_path()
     rows = webhook_hooks.list_for_universe(base, universe_id=uid)
     active = [r for r in rows if r.get("revoked_at") is None]
@@ -216,7 +220,9 @@ def _action_create_source(kwargs: dict[str, Any]) -> str:
 
     uid = _uid(kwargs)
     if not uid:
-        return json.dumps({"error": "create_source requires a universe_id (your own universe)."})
+        return json.dumps({
+            "error": "create_source requires a universe_id (your own command center).",
+        })
     branch_def_id = str(kwargs.get("branch_def_id", "")).strip()
     if not branch_def_id:
         return json.dumps({"error": "branch_def_id is required."})
@@ -265,7 +271,9 @@ def _action_list_sources(kwargs: dict[str, Any]) -> str:
 
     uid = _uid(kwargs)
     if not uid:
-        return json.dumps({"error": "list_sources requires a universe_id (your own universe)."})
+        return json.dumps({
+            "error": "list_sources requires a universe_id (your own command center).",
+        })
     base = _base_path()
     rows = webhook_hooks.list_for_universe(base, universe_id=uid)
     sources = [{

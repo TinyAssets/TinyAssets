@@ -106,42 +106,49 @@ documents each):
 
 Save + exit (`Ctrl+O`, `Enter`, `Ctrl+X` in nano).
 
-Generate the daemon-only request-admission key without printing it. The
-dedicated file is exposed only to the daemon, not to workers, Cloudflare, or
-logging sidecars, and the atomic installer preserves its ownership and mode:
+Both daemon HMAC keys live in GitHub Actions repository secrets, and
+`deploy-prod.yml` installs them on every deploy. **GitHub is the source of
+truth**: do not generate a different value on the host.
+
+**Request-admission key** (`TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY`): this is
+the daemon-only request-admission key, kept in its own
+`/etc/tinyassets/request-idempotency.env`. That file is mounted only by the
+daemon, not by Cloudflare or the logging sidecar, and the atomic installer keeps
+it `root:tinyassets 640`. On every deploy the workflow does the following:
+
+1. Validates the secret on the runner before touching the host: canonical
+   base64, at least 32 bytes, and different from the agent interchange key.
+2. Installs it with `set-once`. An absent key is written. An identical key is a
+   no-op. A **different** host key fails the deploy closed before any swap,
+   because persisted idempotency hashes and admission witnesses depend on the
+   current key.
+3. Validates the installed pair on the host.
+4. Asserts the shared `/etc/tinyassets/env` carries no copy of the key.
+
+To seed a new host before its first deploy, generate the key once, store that
+same value as the repository secret, and let the deploy install it:
 
 ```bash
-openssl rand -base64 48 | tr -d "\n" | sudo env TINYASSETS_ENV_FILE=/etc/tinyassets/request-idempotency.env TINYASSETS_LEGACY_ENV_FILE=/etc/tinyassets/no-request-idempotency-legacy bash /opt/tinyassets/deploy/install-tinyassets-env.sh set-once TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY
+openssl rand -base64 48 | tr -d "\n"   # paste into the GitHub secret; do not keep a copy
 ```
 
-For automated production deploys, store a separately generated value under the
-GitHub Actions repository secret `TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY`.
-The deploy validates it before touching the host and installs it before
-recreating the daemon/workers. Ordinary deploys use `set-once` and fail closed
-if GitHub and the host differ because persisted idempotency hashes and admission
-witnesses depend on the current key. If the key crosses an execution boundary,
-first ship the reviewed daemon-only boundary correction, replace the repository
-secret, then manually dispatch that same correction image with
-`rotate_request_idempotency_hmac=true`. Incident rotation intentionally
-invalidates witnesses signed by the exposed key. The rotation workflow requires
-the resolved target to match the exact immutable image already running on the
-daemon and four workers, proves the worker identities lack minting authority in
-host-controlled Docker configuration metadata before the stop-writer fence,
-then reads state by those immutable IDs and repeats the name-to-ID check before
-it transmits the replacement. Verify the restarted worker environments and
-canonical MCP health before resuming activation.
+To rotate it (the key was exposed, or crossed an execution boundary):
 
-Generate a unique daemon-only agent interchange key without printing it to the
-terminal. This writes canonical single-line base64 for 48 random bytes:
+1. Replace the repository secret.
+2. Manually dispatch `deploy-prod.yml` with `rotate_request_idempotency_hmac=true`.
+   The run proves the shared env holds no copy, replaces the key with `set`, and
+   the fail-safe deploy recreates the daemon (its only consumer) on the new key.
+   Rotation is refused on any automatic run.
+3. Verify canonical MCP health afterwards.
 
-```bash
-sudo sh -c 'umask 027; key=$(openssl rand -base64 48 | tr -d "\n"); printf "TINYASSETS_AGENT_INTERCHANGE_HMAC_KEY=%s\n" "$key" > /etc/tinyassets/agent-interchange.env; chown root:tinyassets /etc/tinyassets/agent-interchange.env; chmod 640 /etc/tinyassets/agent-interchange.env'
-```
+Rotation intentionally invalidates witnesses signed by the exposed key.
 
-The separate file is injected only into the daemon container. Replace the key
-and restart to rotate it. Deleting a repository secret merely blocks automated
-deploys; normal revocation rotates and deploys, while emergency revocation
-stops the daemon before removing this protected file.
+**Agent interchange key** (`TINYASSETS_AGENT_INTERCHANGE_HMAC_KEY`): kept in
+`/etc/tinyassets/agent-interchange.env`, which is likewise injected only into
+the daemon container. Every deploy installs the repository secret with `set`, so
+to rotate it, replace the secret and deploy. Deleting a repository secret only
+blocks automated deploys. Normal revocation is rotate-and-deploy. Emergency
+revocation stops the daemon before removing the protected file.
 
 Permissions check:
 
