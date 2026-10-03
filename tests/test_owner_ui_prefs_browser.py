@@ -81,12 +81,18 @@ def server():
 
 @pytest.fixture
 def page():
-    sync_api = pytest.importorskip("playwright.sync_api")
+    sync_api = pytest.importorskip(
+        "playwright.sync_api",
+        reason="owner=owner-ui-prefs runs-in=real-browser-proof; Playwright required",
+    )
     with sync_api.sync_playwright() as p:
         try:
             browser = p.chromium.launch()
         except Exception as exc:  # noqa: BLE001 - no browser binary on this host
-            pytest.skip(f"Chromium is not available here: {exc.__class__.__name__}")
+            pytest.skip(
+                "owner=owner-ui-prefs runs-in=real-browser-proof; "
+                f"Chromium is not available here: {exc.__class__.__name__}"
+            )
         try:
             yield browser.new_page(viewport={"width": 1280, "height": 800})
         finally:

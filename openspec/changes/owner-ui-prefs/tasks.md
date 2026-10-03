@@ -28,6 +28,6 @@ Design approval gates task 1 onward. Depends on the chat cloud (#4277) being on 
 
 ## Recovery verification checkpoint
 
-Verified source: #4285 `8c5e8af4b6bf72192ea4af33e6440ab09dc1086b`; #4385 `694aebe34e133206f39cf47c91d38968976f5089` adds the hosted browser trigger. #4386 `d0d81e83c1c02a4b70659dbfe42ed478676119ca` annotation-only delta is pending exact-patch retrieval; no annotation equivalence is claimed.
+Verified source: #4285 `8c5e8af4b6bf72192ea4af33e6440ab09dc1086b`; #4385 `694aebe34e133206f39cf47c91d38968976f5089` adds the hosted browser trigger. #4386 `d0d81e83c1c02a4b70659dbfe42ed478676119ca` annotations are integrated from the coordinator-transferred verified patch (receipt https://github.com/TinyAssets/TinyAssets/pull/4386#issuecomment-5968482313); its owner/venue reasons change no assertion or execution requirement.
 
 Storage, route, deletion, controller and existing account-transition tests pass; lifecycle tests cover ordered writes, token-refresh races, owner/home changes, same-owner re-login, phone/wide separation and local-only custom agents. Task 4.2 remains pending hosted execution of the preserved and extended real-browser cases. Task 4.3 remains pending landing/archive; the onboarding persistence clause is updated. Review and hosted proof must name the final replacement head; no historical receipt is carried forward as proof.
