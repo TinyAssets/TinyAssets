@@ -617,3 +617,65 @@ def test_empty_journal_inventory_preserves_legacy_bytes_and_rejects_unsolicited_
             replace(existing, tools_json=records.dump({
                 "version": 1, "tools": invalid,
             })).canonical_json()
+
+
+def test_wrapped_work_budget_stop_has_terminal_run_classification():
+    from tinyassets import runs
+    from tinyassets.graph_compiler import _wrap_provider_failure
+
+    budget = TurnRequestBudget("owner", "u-models", max_requests=1)
+    budget.settle(dispatch(budget), "succeeded")
+    try:
+        reserve(budget)
+    except RequestBudgetExceeded as exc:
+        wrapped = _wrap_provider_failure("a-node", exc)
+        wrapped.__cause__ = exc
+    message = runs._request_budget_failure(wrapped)
+    assert message.startswith("[request_budget_exhausted] ")
+    assert runs._classify_failure({"status": "failed", "error": message}) == (
+        "request_budget_exhausted"
+    )
+    assert runs.ACTIONABLE_BY["request_budget_exhausted"] == "none"
+    assert runs._request_budget_failure(RuntimeError(message)) is None
+
+
+@pytest.mark.parametrize("mode", ["run", "resume"])
+@pytest.mark.parametrize("kind", ["inference", "effect"])
+def test_run_and_resume_persist_budget_hold_without_retry(tmp_path, monkeypatch, mode, kind):
+    from tests.test_graph_compiler_failed_event import _simple_branch
+    from tinyassets import runs
+    from tinyassets.effectors import EffectFailedError
+
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    branch = _simple_branch()
+    calls = []
+    budget = TurnRequestBudget("owner", "u-models", max_requests=1)
+    budget.settle(dispatch(budget), "succeeded")
+
+    def stop(*args, **kwargs):
+        calls.append(1)
+        if kind == "effect":
+            raise EffectFailedError("step1", "synthetic", "budget hold",
+                                    "request_budget_exhausted")
+        reserve(budget)
+
+    if mode == "run":
+        outcome = runs.execute_branch(
+            tmp_path, branch=branch, inputs={"x": "test"}, actor="tester", provider_call=stop,
+        )
+    else:
+        run_id = runs.create_run(tmp_path, branch_def_id=branch.branch_def_id,
+                                 thread_id="budget-resume", inputs={"x": "test"}, actor="tester")
+        monkeypatch.setattr(runs, "compile_branch", lambda *a, **kw: SimpleNamespace(
+            graph=SimpleNamespace(compile=lambda **kw: SimpleNamespace(invoke=stop)),
+        ))
+        outcome = runs._invoke_graph_resume(
+            tmp_path, run_id=run_id, branch=branch, thread_id="budget-resume",
+            provider_call=None, recursion_limit=runs.DEFAULT_RECURSION_LIMIT,
+            concurrency_budget_override=None,
+        )
+    assert outcome.status == "failed"
+    stored = runs.get_run(tmp_path, outcome.run_id)
+    assert runs._classify_failure(stored) == "request_budget_exhausted"
+    assert runs.ACTIONABLE_BY[runs._classify_failure(stored)] == "none"
+    assert len(calls) == 1 and budget.receipt()["dispatched"] == 1

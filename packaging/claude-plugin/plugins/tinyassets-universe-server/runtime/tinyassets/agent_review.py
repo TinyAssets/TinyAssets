@@ -20,7 +20,9 @@ requires approval" (design #4172 §1.2, §4.9). Here:
   action leaves, not assumed of its caller.
 * **Tool-free and tighten-only.** A single text call that returns
   ``proceed`` or ``needs_approval``. Anything else -- an error, a timeout,
-  unparseable output, no model at all -- is ``needs_approval`` with its cause:
+  unparseable output, no model at all -- is ``needs_approval`` with its cause.
+  A parent request-budget stop instead holds the action without requesting
+  approval or renewing inference capacity. In either case,
   the review can stop an action, never allow one the rules did not. The answer
   must be exactly one JSON object with exactly those two keys; an object echoed
   inside prose (say, from the action's own content) is no answer.
@@ -329,6 +331,20 @@ def _review_answer(universe_dir, provider_call, prompt, digest):
         except Exception as exc:  # noqa: BLE001 - any failure is "ask the owner"
             from tinyassets.exceptions import ProviderAuthorityHeldError
             from tinyassets.providers.diagnostics import redacted_failure_detail
+            from tinyassets.request_budget import RequestBudgetExceeded
+
+            if isinstance(exc, RequestBudgetExceeded):
+                return {
+                    "dry_run": True,
+                    "reason": "request_budget_exhausted",
+                    "error_kind": "request_budget_exhausted",
+                    "review": {
+                        "verdict": "not_completed", "reason": exc.continuation,
+                        "action_sha256": digest,
+                    },
+                    "request_receipt": exc.request_receipt,
+                    "hint": exc.continuation + " The action was not sent.",
+                }
 
             cause = f"the check could not be completed ({type(exc).__name__})"
             if isinstance(exc, (ProviderAuthorityHeldError, PermissionError)):

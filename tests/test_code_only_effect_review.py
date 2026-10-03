@@ -328,13 +328,31 @@ def test_review_attempts_share_parent_dispatch_budget_and_keep_two_attempt_ceili
     rig["session"]._request_budget = budget
     rig["terminal"].answers = ["invalid", '{"verdict":"proceed","reason":"ok"}']
     result = rig["fire"]()
-    assert result["error_kind"] == "auto_review_unavailable"
+    assert result["error_kind"] == "request_budget_exhausted"
+    assert result["review"]["verdict"] == "not_completed"
+    assert "approval" not in result["hint"].lower()
+    assert "none is scheduled automatically" in result["hint"]
+    assert result["request_receipt"]["dispatched"] == 1
+    from tinyassets import runs
+
+    failure = runs._classify_external_write(
+        "external write failed - authenticated_external_call [request_budget_exhausted]",
+    )
+    assert failure == "request_budget_exhausted"
+    assert runs.ACTIONABLE_BY[failure] == "none"
+    assert "do not retry" in runs.external_write_suggested_action(failure)
     assert len(rig["terminal"].calls) == 1 and not rig["sends"]
     receipt = budget.receipt()
     assert receipt["dispatched"] == 1
     assert receipt["sources"][0]["purpose"] == "review"
     assert receipt["sources"][0]["succeeded"] == 1
     assert rig["terminal"].calls[0][2].text_only is True
+    # An already owner-allowed action and a fresh review invocation do not
+    # renew inference capacity on this parent. The unsent effect stays held.
+    again = rig["fire"]()
+    assert again["error_kind"] == "request_budget_exhausted"
+    assert again["review"]["verdict"] == "not_completed"
+    assert len(rig["terminal"].calls) == 1 and not rig["sends"]
 
 
 def test_review_and_prompt_call_share_one_parent_without_renewal(rig):
