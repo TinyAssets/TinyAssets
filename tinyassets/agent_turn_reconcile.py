@@ -33,9 +33,14 @@ A ``planned`` tool is settled ``not_sent`` rather than ``unknown`` because the
 journal PROVES it: a tool is recorded ``started`` before it is dispatched, so one
 still ``planned`` was never sent.
 
-Keyed on boot ownership (``storage.agent_turn_boot``), never on age: a turn this
-boot is running must survive reconciliation even if it started before this call,
-and every row a dead container left behind is settled however young it is.
+Keyed on the OWNER LEASE GENERATION, never on age or on which process booted
+(change execution-owner-lease D2): for each command center with progressing
+rows, the sweep first ACQUIRES that command center's key -- which succeeds only
+when the previous owner released it or its whole owner tree is proven dead --
+and then settles only rows whose ``owner_generation`` is below the generation it
+now holds. A turn the current owner is running is at the current generation and
+survives however old it is; every row an earlier owner left is settled however
+young it is; and a standby process that cannot take the key settles nothing.
 """
 
 from __future__ import annotations
@@ -44,11 +49,11 @@ import logging
 import sqlite3
 from pathlib import Path
 
+from tinyassets import owner_lease
 from tinyassets.agent_turn_coordinator import turn_effects
 from tinyassets.conversation_failure import failure_notice, turn_failure
 from tinyassets.storage import db_path
 from tinyassets.storage.agent_native_records import NativeTerminal
-from tinyassets.storage.agent_turn_boot import BOOT, BootTurns
 from tinyassets.storage.agent_turn_journal import (
     WORKING_STATES,
     AgentTurnJournal,
@@ -66,8 +71,8 @@ REASON = "server restarted during this turn"
 INTERRUPTED_CODE = "platform_fault"
 
 
-def _orphan_rows(path: Path, boot: BootTurns) -> list[tuple[str, str, str, str]]:
-    """Scan for progressing rows no process in this boot is running.
+def _progressing_rows(path: Path) -> list[tuple[str, str, str, str, int]]:
+    """Every progressing row, with the generation of the owner that created it.
 
     Observational, like the status projection: ``mode=rw`` opens an existing
     database and refuses to create one, and it runs no DDL, so a daemon whose
@@ -85,19 +90,19 @@ def _orphan_rows(path: Path, boot: BootTurns) -> list[tuple[str, str, str, str]]
             "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'agent_turns'"
         ).fetchone():
             return []
+        columns = {r[1] for r in conn.execute("PRAGMA table_info(agent_turns)")}
+        generation = "owner_generation" if "owner_generation" in columns else "0"
         rows = conn.execute(
-            "SELECT owner_user_id, universe_id, turn_id, state, created_at FROM agent_turns "
-            f"WHERE state IN ({','.join('?' * len(WORKING_STATES))}) ORDER BY created_at",
+            f"SELECT owner_user_id, universe_id, turn_id, state, {generation} AS g "
+            f"FROM agent_turns WHERE state IN ({','.join('?' * len(WORKING_STATES))}) "
+            "ORDER BY created_at",
             tuple(sorted(WORKING_STATES)),
         ).fetchall()
     finally:
         conn.close()
     return [
-        (row["owner_user_id"], row["universe_id"], row["turn_id"], row["state"])
+        (row["owner_user_id"], row["universe_id"], row["turn_id"], row["state"], int(row["g"]))
         for row in rows
-        if not boot.holds(
-            row["universe_id"], row["turn_id"], created_at=row["created_at"],
-        )
     ]
 
 
@@ -213,10 +218,8 @@ def _notify(base_path: Path, owner: str, universe: str, turn) -> bool:
         return False
 
 
-def reconcile_orphaned_turns(
-    base_path: str | Path, *, boot: BootTurns = BOOT,
-) -> list[dict[str, str]]:
-    """Settle every progressing turn row this boot is not running.
+def reconcile_orphaned_turns(base_path: str | Path) -> list[dict[str, str]]:
+    """Settle every progressing turn row an EARLIER owner generation left.
 
     Returns one record per row it touched: ``universe_id``, ``turn_id``, the
     ``was`` state, and either the ``settled`` state plus whether the thread was
@@ -236,7 +239,19 @@ def reconcile_orphaned_turns(
         return []
     journal = AgentTurnJournal(base_path)
     settled: list[dict[str, object]] = []
-    for owner, universe, turn_id, state in _orphan_rows(path, boot):
+    held: dict[str, int | None] = {}
+    for owner, universe, turn_id, state, generation in _progressing_rows(path):
+        if universe not in held:
+            try:
+                held[universe] = owner_lease.acquire(
+                    base_path, owner_lease.key_for(universe), wait_s=0,
+                ).generation
+            except owner_lease.LeaseBusy:
+                # A LIVE owner holds this command center: its rows are its own,
+                # whatever their age. This process settles none of them.
+                held[universe] = None
+        if held[universe] is None or generation >= held[universe]:
+            continue
         record: dict[str, object] = {
             "universe_id": universe, "turn_id": turn_id, "was": state,
         }

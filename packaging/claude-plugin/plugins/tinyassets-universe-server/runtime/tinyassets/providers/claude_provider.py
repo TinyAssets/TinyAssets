@@ -469,6 +469,14 @@ def _engine_mcp_flags(config: ModelConfig, universe_dir: Path) -> list[str]:
     }
     root = data_dir()
     server_env["TINYASSETS_DATA_DIR"] = str(root)
+    # A stdio engine acts for this owner and joins its tree
+    # (execution-owner-lease D2); the CLI may not pass the environment through.
+    import os as _os
+
+    from tinyassets.owner_lease import TREE_ENV
+
+    if _os.environ.get(TREE_ENV):
+        server_env[TREE_ENV] = _os.environ[TREE_ENV]
     # The ceiling on a single tool result scales with the window the result has
     # to fit in (``engine_result_bounds``). Passed only when this turn's model is
     # known; the persistent HTTP transport below outlives any one turn's choice,
