@@ -78,7 +78,8 @@ CONTEXT_TOKENS_ENV = "TINYASSETS_ENGINE_MODEL_CONTEXT_TOKENS"
 #: query=... and read the next page" tells it what to do next.
 NARROWING_HINTS = {
     "read_graph": (
-        "use this target's documented selectors; follow next_offset only when returned; "
+        "use this target's documented selectors (query=... where supported); "
+        "pass a returned next_offset as output_offset only where documented; "
         "a target without a cursor does not promise offset paging"
     ),
     "read": (

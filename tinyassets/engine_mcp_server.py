@@ -2338,7 +2338,7 @@ _WRITE_GRAPH_SYSTEMS_CHAPTER = """\
         write_graph target="pending_request" operation="ask" payload_json={
           "action": {"type": "publish", "publish_kind": "command_center",
                      "name": "...", "description": "...", "package": {},
-                     "branch_ids": ["<mine>", ...], "ui_id": "<in my library>",
+                     "branch_ids": ["<mine>"], "ui_id": "<in my library>",
                      "automation_ids": ["<mine, driving a listed branch>"]}}
 
       The platform writes the tab listing everything that becomes public, pins
@@ -2348,8 +2348,9 @@ _WRITE_GRAPH_SYSTEMS_CHAPTER = """\
       ``tinyassets.automation-spec.v1`` per trigger (never its inputs).
       For portable workflow lookups, the UI declares ``workflow_refs`` as an
       alias-to-owned-branch-id object and reads ``(await tinyassets.whoami()).
-      workflow_refs.<alias>``. Publishing maps only those selected references
-      to package component keys; installing maps them to the recipient's copies.
+      workflow_refs.<alias>``. Publishing, after the person confirms, maps only
+      those selected references to package component keys; installing maps them
+      to the recipient's copies.
       Script text stays unchanged. Existing named ``emit`` events remain owner
       broadcasts; this does not grant direct workflow execution or exclusive routing.
     * **Sharing workflows only** uses ``publish_kind: "workflows"`` and
