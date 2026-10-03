@@ -604,3 +604,20 @@ def test_the_context_is_the_only_source_of_the_agent(agent, monkeypatch):
         rows = conn.execute("SELECT agent_id FROM agent_turns").fetchall()
     assert [row[0] for row in rows] == ["a-weaver"], (
         "the journal followed the Stop registry instead of the context")
+
+
+def test_context_keeps_existing_positional_provider_fields(tmp_path):
+    """Adding attribution must not rebind an existing positional carrier."""
+    from tinyassets.providers.base import UniverseContext
+
+    config, invocation, request, served, selection, plan = (object() for _ in range(6))
+    context = UniverseContext(tmp_path, config, invocation, request, served, selection, plan)
+    assert context.universe_dir == tmp_path
+    assert context.config is config
+    assert context.provider_invocation is invocation
+    assert context.provider_request is request
+    assert context.served_provider is served
+    assert context.model_selection is selection
+    assert context.agent_model_plan is plan
+    assert context.agent_id == "main"
+    assert replace(context, agent_id="a-weaver").agent_id == "a-weaver"

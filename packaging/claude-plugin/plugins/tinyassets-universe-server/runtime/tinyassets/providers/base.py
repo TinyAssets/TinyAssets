@@ -142,6 +142,13 @@ class UniverseContext:
 
     universe_dir: Path | None = None
     config: "UniverseConfig | None" = None
+    provider_invocation: "ProviderInvocationCarrier | None" = None
+    provider_request: "ProviderRequestCarrier | None" = None
+    served_provider: "ServedProviderAuthority | None" = None
+    model_selection: ModelRef | None = None
+    """Requested candidate, not authority; revalidated by the serving boundary."""
+    agent_model_plan: AgentModelPlan | None = None
+    """Captured advisory owner policy; never a grant or a tool-replay instruction."""
     agent_id: str = MAIN_AGENT
     """WHICH of the owner's agents this work belongs to (harness §4.18).
 
@@ -164,13 +171,6 @@ class UniverseContext:
     proposes reads THIS field rather than introducing a second source, so
     extending provenance later does not mean replacing this carrier.
     """
-    provider_invocation: "ProviderInvocationCarrier | None" = None
-    provider_request: "ProviderRequestCarrier | None" = None
-    served_provider: "ServedProviderAuthority | None" = None
-    model_selection: ModelRef | None = None
-    """Requested candidate, not authority; revalidated by the serving boundary."""
-    agent_model_plan: AgentModelPlan | None = None
-    """Captured advisory owner policy; never a grant or a tool-replay instruction."""
 
 
 #: Claude CLI builtins that reach the host through its filesystem or a shell.
