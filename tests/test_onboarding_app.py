@@ -1879,6 +1879,7 @@ def _run_app(tmp_path, scenario: dict) -> dict:
         "sendConversationRequest",
         "executionLabel", "answerExecutionDetail", "servedFailureError", "appendFailureNotice",
         "offerResend", "noteHeldQueue", "offerSavedConversationCheck",
+        "attachSavedConversationCheck",
         "sendTurn", "sendVoiceTurn", "checkForNewBuild", "loadHistory",
         "drawHistoryTurns", "offerEarlier", "loadEarlier", "historyFailed",
         # loadHistory now offers the rest of a turn the peek bounded; without
