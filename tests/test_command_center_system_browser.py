@@ -45,6 +45,10 @@ pytestmark = pytest.mark.usefixtures("cloud_runtime")
 
 @pytest.fixture
 def system_server(home):
+    from urllib.parse import parse_qs, urlsplit
+
+    from tinyassets.storage.owner_ui_prefs import read_prefs, write_pref
+
     calls, failures = [], []
     html, csp = render_app_html()
 
@@ -73,6 +77,14 @@ def system_server(home):
             elif path == "/fixture/identity":
                 self.reply({"principal_id": BOB, "universe_id": BOB_UNIVERSE,
                             "setup": "connected"})
+            elif path == "/app/ui-prefs":
+                assert self.headers.get("Authorization") == "Bearer synthetic-bob"
+                query = parse_qs(urlsplit(self.path).query)
+                with _as(BOB):
+                    prefs = read_prefs(home, owner_user_id=BOB,
+                                       agent_id=query.get("agent", ["main"])[0],
+                                       viewport=query.get("viewport", [""])[0])
+                self.reply({"prefs": prefs})
             else:
                 self.reply({"error": "not_found"}, status=404)
 
@@ -91,6 +103,13 @@ def system_server(home):
                         args.setdefault("graph_id", BOB_UNIVERSE)
                         result = json.loads(read_graph(**args))
                         operation = "read:" + args["target"]
+                    elif self.path == "/app/ui-prefs":
+                        write_pref(home, owner_user_id=BOB,
+                                   agent_id=args.get("agent", "main"),
+                                   viewport=args.get("viewport", ""),
+                                   key=args.get("key", ""), value=args.get("value"))
+                        result = {"saved": True}
+                        operation = "save:ui_prefs"
                     elif self.path == "/fixture/mcp":
                         assert args["name"] == "write_graph"
                         args = args["args"]
@@ -219,6 +238,15 @@ def _seed_own(home):
 def test_loopback_transport_reaches_real_owner_handlers_and_runs_private_copy(home, system_server):
     """Nonbrowser control: the browser fixture cannot return canned install success."""
     origin, calls, failures = system_server
+    placement = {"v": 1, "mode": "open", "open": {"x": 20, "y": 30, "w": 400, "h": 500},
+                 "bubble": {"x": 40, "y": 50}}
+    saved_pref = _rpc(origin, "/app/ui-prefs", {"agent": "main", "viewport": "wide",
+                                               "key": "chat_cloud", "value": placement})
+    assert saved_pref == {"saved": True}
+    request = Request(origin + "/app/ui-prefs?agent=main&viewport=wide",
+                      headers={"Authorization": "Bearer synthetic-bob"})
+    with urlopen(request, timeout=15) as response:  # hermetic-ok: loopback fixture only
+        assert json.load(response)["prefs"]["chat_cloud"] == placement
     _seed_own(home)
     definition_id = _legacy(home)
     source = get_definition(home, definition_id)
