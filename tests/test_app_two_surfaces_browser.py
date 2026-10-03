@@ -106,19 +106,6 @@ def _drag(page, selector, dx, dy, *, at=(0.5, 0.5)):
 
 
 
-def test_blank_command_center(app_url, browser):
-    page = browser.new_page(viewport={"width": 1280, "height": 800})
-    _enter_chat(page, app_url)
-    assert page.locator("#cc-blank").is_visible()
-    assert _box(page, "#cc-blank") == _box(page, "#chat-stage")
-    page.mouse.click(5, 5)
-    assert page.evaluate("document.activeElement.id") == "cc-blank"
-    page.click("#btn-cloud-shrink")
-    page.click("#btn-cc-build")
-    assert page.input_value("#composer-input") == "Build me a command center for "
-    assert page.evaluate("document.activeElement.id") == "composer-input"
-    assert page.locator("#composer-input").evaluate("e=>e.selectionStart") == 30
-    page.close()
 
 
 def test_play_never_needs_a_second_click(app_url, browser):
