@@ -7,7 +7,11 @@ from dataclasses import replace
 
 import pytest
 
-from tests.test_run_provider_session import _branch, _seed_serving_assignment
+from tests.test_run_provider_session import (
+    _branch,
+    _seed_open_serving_assignment,
+    _seed_serving_assignment,
+)
 from tinyassets import agent_rules, effectors
 from tinyassets.daemon_server import set_founder_home
 from tinyassets.effectors import authenticated_external_call as aec
@@ -27,6 +31,9 @@ from tinyassets.storage.provider_work_authority import db_path
 
 class Terminal(BaseProvider):
     name = family = "codex"
+    # This synthetic terminal returns text and implements no tools. Actual
+    # native adapters are tested separately and refuse text-only requests.
+    supports_text_only = True
 
     def __init__(self):
         self.calls = []
@@ -66,8 +73,35 @@ def rig(tmp_path, monkeypatch, request):
     manifest = getattr(request, "param", "legacy") == "manifest"
     from tinyassets.provider_assignment_manifest import ModelAccess
 
-    _seed_serving_assignment(
-        tmp_path, model_access={"codex": ModelAccess("explicit", ("",))} if manifest else None)
+    if getattr(request, "param", "legacy") == "http":
+        from tinyassets.providers.api_key_http_provider import ApiKeyHttpProvider
+
+        selected = _seed_open_serving_assignment(tmp_path, monkeypatch)
+        terminal.name = selected
+        router.register(terminal)
+        complete = ApiKeyHttpProvider._complete_sync
+
+        def capture_http(self, prompt, system, config, **kwargs):
+            terminal.calls.append((prompt, system, config))
+            return complete(self, prompt, system, config, **kwargs)
+
+        class ModelProxy:
+            def request(self, verb, wire):
+                assert verb == "POST"
+                assert wire["body"].keys() <= {
+                    "model", "messages", "system", "temperature", "max_tokens"}
+                return {"status": 200, "body": json.dumps({
+                    "choices": [{"message": {"content": terminal.answers.pop(0)}}],
+                    "usage": {"prompt_tokens": 5, "completion_tokens": 5}})}
+
+            def close(self):
+                pass
+
+        monkeypatch.setattr(ApiKeyHttpProvider, "_complete_sync", capture_http)
+        monkeypatch.setattr(ApiKeyHttpProvider, "_resolve_proxy", lambda *a, **k: ModelProxy())
+    else:
+        _seed_serving_assignment(
+            tmp_path, model_access={"codex": ModelAccess("explicit", ("",))} if manifest else None)
     universe = tmp_path / "universe_alice"
     branch = _branch(node_count=1)
     node = branch.node_defs[0]
@@ -136,7 +170,7 @@ def rig(tmp_path, monkeypatch, request):
     session.close()
 
 
-@pytest.mark.parametrize("rig", ["legacy", "manifest"], indirect=True)
+@pytest.mark.parametrize("rig", ["legacy", "manifest", "http"], indirect=True)
 def test_code_only_effect_reaches_review_and_fake_send(rig):
     result = rig["fire"]()
     assert result.get("delivered"), result
@@ -146,6 +180,7 @@ def test_code_only_effect_reaches_review_and_fake_send(rig):
     assert session._receipt.principal_id == "acct_alice"
     assert session._receipt.work_item_id == rig["run_id"]
     assert not rig["terminal"].calls[0][2].engine_mcp_enabled
+    assert rig["terminal"].calls[0][2].text_only is True
     if rig["manifest"]:
         assert session._receipt.authority_scope == "manifest"
         assert session._work_candidates is not None

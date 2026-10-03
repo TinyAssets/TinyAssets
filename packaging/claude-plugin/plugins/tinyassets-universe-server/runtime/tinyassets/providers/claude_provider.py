@@ -561,6 +561,9 @@ def _sandbox_cli_args(
     subprocess to the universe's own dir. Both are no-ops for host-trusted roles
     that leave the config fields at their defaults.
     """
+    # Empty allowed_tools is not a CLI deny-all: it emits no flag below.
+    # No verified native tool-free contract is enabled for this adapter.
+    BaseProvider.require_text_only_support(ClaudeProvider(), config)
     flags: list[str] = []
     if config.workflow_node:
         config = _confine_workflow_node(config)
@@ -661,6 +664,7 @@ class ClaudeProvider(BaseProvider):
         ``ProviderOverloadedError`` / ``ProviderProtocolError`` /
         ``ProviderUnavailableError`` / ``ProviderError``).
         """
+        self.require_text_only_support(config)
         base_cmd, use_shell = _resolve_claude_cmd()
         from tinyassets.providers.native_model_selection import native_model_arguments
 
@@ -1168,6 +1172,7 @@ class ClaudeProvider(BaseProvider):
         universe_dir: Path | None = None,
     ) -> ProviderResponse:
         """Call with ``--output-format json`` for structured output."""
+        self.require_text_only_support(config)
         base_cmd, use_shell = _resolve_claude_cmd()
         cmd = [*base_cmd, "-p", "--output-format", "json"]
         from tinyassets.providers.native_model_selection import native_model_arguments

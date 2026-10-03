@@ -1124,6 +1124,17 @@ class ProviderRouter:
                     detail="provider name not registered with daemon",
                 ))
                 continue
+            try:
+                # After fresh executor resolution, before quota or launch. A
+                # refusal must not enter capacity fallback or lose the mode.
+                BaseProvider.require_text_only_support(provider, cfg)
+            except ProviderAuthorityHeldError:
+                if invocation_carrier is not None:
+                    settle_carrier(
+                        ProviderInvocationReservationState.CANCELLED_BEFORE_LAUNCH,
+                        input_tokens=0, output_tokens=0, cost_microunits=0,
+                    )
+                raise
             if _agent_execution_kind is not None and (
                 getattr(provider, "agent_execution_kind", None) != _agent_execution_kind
             ):

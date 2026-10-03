@@ -159,6 +159,7 @@ class ApiKeyHttpProvider(BaseProvider):
     """Compute over a user-registered http provider, via the credential-blind proxy."""
 
     agent_execution_kind = "engine_inference"
+    supports_text_only = True
 
     def __init__(
         self, definition: ProviderDefinition, *, proxy_override: Any | None = None
@@ -231,6 +232,7 @@ class ApiKeyHttpProvider(BaseProvider):
         *,
         universe_dir: Path | None = None,
     ) -> ProviderResponse:
+        self.require_text_only_support(config)
         # An executor Future (not a Task wrapping to_thread) survives the
         # cancel-all-Tasks phase of asyncio.run teardown. Shield alone would
         # not protect a to_thread Task from being cancelled directly there.
@@ -271,6 +273,7 @@ class ApiKeyHttpProvider(BaseProvider):
         *,
         universe_dir: Path | None = None,
     ) -> ProviderResponse:
+        self.require_text_only_support(config)
         if universe_dir is None:
             raise ProviderUnavailableError(
                 "api_key_http compute requires a command center context (universe_dir)"
@@ -338,6 +341,26 @@ class ApiKeyHttpProvider(BaseProvider):
             )
             if selection is not None:
                 body = contract.constrain_inference(body, selection.cost_caps)
+        if getattr(config, "text_only", False):
+            # Only the installed text wire is proven tool-free. In particular,
+            # source-contract extensions must not reintroduce tools/plugins or
+            # completed agent history after the text encoder ran. Unknown
+            # extensions refuse rather than silently dropping billing controls.
+            from tinyassets.exceptions import ProviderAuthorityHeldError
+
+            if (type(body) is not dict or not {"model", "messages"} <= body.keys()
+                    or body.keys() - {"model", "messages", "system", "temperature", "max_tokens"}
+                    or type(body["messages"]) is not list
+                    or any(type(message) is not dict
+                           or message.keys() != {"role", "content"}
+                           or message["role"] not in {"system", "user"}
+                           or type(message["content"]) is not str
+                           for message in body["messages"])
+                    or ("system" in body and type(body["system"]) is not str)):
+                raise ProviderAuthorityHeldError(
+                    "selected HTTP request does not support enforced text-only review; "
+                    "nothing was sent"
+                )
         # The path the user granted wins over the protocol's canonical one: the
         # broker allowlists what they registered, so calling anything else is a
         # guaranteed refusal. The encoder still owns the BODY shape.
@@ -525,6 +548,20 @@ class ApiKeyHttpProvider(BaseProvider):
                 parsed = json.loads(body_str)
         except (TypeError, ValueError) as exc:
             raise unreadable(f"compute response was not JSON: {exc}") from exc
+        if getattr(config, "text_only", False):
+            # Do not accept a verdict alongside an unexpected tool request.
+            pending = [parsed]
+            while pending:
+                value = pending.pop()
+                if isinstance(value, dict):
+                    if ({"tool_calls", "function_call"} & value.keys()
+                            or value.get("type") in ("tool_use", "server_tool_use")):
+                        from tinyassets.exceptions import ProviderAuthorityHeldError
+
+                        raise ProviderAuthorityHeldError("text-only review returned a tool request")
+                    pending.extend(value.values())
+                elif isinstance(value, list):
+                    pending.extend(value)
         agent_reply = None
         cost = None
         try:
