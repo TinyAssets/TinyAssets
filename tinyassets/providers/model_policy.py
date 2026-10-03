@@ -69,6 +69,12 @@ class Model:
     scores: Scores | None = None
     output_modalities: frozenset[str] = frozenset({"text"})
     availability_basis: str | None = None
+    #: Effort/reasoning levels the SOURCE advertised for this model, in its own
+    #: order. Empty means no effort control exists for it, which is a real and
+    #: common answer -- a live Claude Code catalogue reports levels for Opus and
+    #: none for Haiku. Per-model rather than per-source for that reason: the
+    #: same source's models disagree, and 4.6 lacks a level 5.x has.
+    effort_levels: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -107,6 +113,10 @@ class ModelPolicy:
     stable_preference: ModelRef | None = None
     # None is free-only. A cap must name every required charge component.
     cost_caps: tuple[Charge, ...] | None = None
+    # The owner's saved effort level per model, as ``(ref, level)`` pairs.
+    # Independent of mode on purpose: an automatic plan still runs whichever
+    # model it lands on at the level the owner set for that model.
+    efforts: tuple[tuple[ModelRef, str], ...] = ()
 
     def __post_init__(self) -> None:
         if type(self.generation) is not int or self.generation < 0:
@@ -122,6 +132,26 @@ class ModelPolicy:
             and self.fallbacks
         ):
             raise ValueError("accepted fallbacks require an explicit primary or explicit mode")
+        if type(self.efforts) is not tuple or any(
+            type(item) is not tuple or len(item) != 2
+            or type(item[0]) is not ModelRef or type(item[1]) is not str or not item[1]
+            for item in self.efforts
+        ):
+            raise ValueError("invalid saved effort levels")
+        if len({ref for ref, _ in self.efforts}) != len(self.efforts):
+            raise ValueError("duplicate effort level for one model")
+
+    def effort_for(self, ref: ModelRef | None) -> str:
+        """The owner's saved level for exactly this model, or empty for none.
+
+        Empty is "whatever the executor does by default", never a level chosen
+        here. Callers that invoke a provider must still hold the level to the
+        set that model ADVERTISED; this is storage, not admission.
+        """
+        for item, level in self.efforts:
+            if item == ref:
+                return level
+        return ""
 
 
 @dataclass(frozen=True, slots=True)

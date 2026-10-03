@@ -857,6 +857,20 @@ class ProviderRouter:
             None if model_authority is None else
             native_selection.requested_model_id if native_selection is not None else ""
         ))
+        # Effort rides the same validated authority as the model id, for the
+        # same reason: an ordinary caller's ModelConfig must not be able to
+        # raise the effort of a served turn.
+        #
+        # Only an ENUMERATED selection speaks for effort, and it speaks
+        # absolutely -- including with "" , which means the owner saved no level
+        # and the executor's default applies. An owner-DECLARED selection has no
+        # advertised level list, so it could not have validated one and has
+        # nothing to say here; overwriting from it would erase a workflow node's
+        # own declared reasoning_effort (branch definitions set it, and a node
+        # running on a native source with an explicit model id would silently
+        # drop from `minimal` to the executor default).
+        if native_selection is not None and native_selection.basis == "executor_enumerated":
+            cfg = replace(cfg, reasoning_effort=native_selection.effort)
         if _agent_execution_kind == "native_agent" and (
             cfg.agent_request is not None or cfg.selected_model is not None
         ):

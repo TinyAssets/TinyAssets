@@ -3229,9 +3229,46 @@
   const ModelPicker={
     snapshot:null,draft:null,epoch:0,busy:false,stale:true,expires:0,timer:null,recovery:null,
     actual:"No answering model reported yet",nativeDrafts:{},
-    automatic(){return {version:1,mode:"automatic",saved_default:null,fallbacks:[]};},
+    // Version 2 carries `efforts`. Sending a version-1 draft would be a silent
+    // RESET: every save from this client would drop the owner's saved effort
+    // levels, because the server replaces the whole policy document.
+    automatic(){return {version:2,mode:"automatic",saved_default:null,fallbacks:[],efforts:[]};},
     key(ref){return JSON.stringify([ref.provider_ref,ref.model_id]);},
     label(ref){return ref.provider_ref+" · "+(ref.model_id||"Provider default");},
+    // ---- effort ---------------------------------------------------------
+    //
+    // "effort level controls should also be avalible" (founder, 2026-10-03).
+    // The levels come from the SOURCE, per model: a live Claude Code catalogue
+    // reports effort on Opus and none on Haiku, and 4.6 lacks a level 5.x has.
+    // So this never renders a fixed set of levels, and renders nothing at all
+    // for a model whose source advertised none.
+    effortLevels(ref){
+      const row=ref ? this.row(ref) : null;
+      return row&&Array.isArray(row.effort_levels) ? row.effort_levels : [];
+    },
+    // The DRAFT's level, so an unsaved pick shows immediately. Empty means the
+    // provider's own default -- never a level this app chose.
+    effortFor(ref){
+      if(!ref||!this.draft||!Array.isArray(this.draft.efforts)) return "";
+      const found=this.draft.efforts.find(item=>
+        item&&item.provider_ref===ref.provider_ref&&item.model_id===ref.model_id);
+      return found ? found.level : "";
+    },
+    // Replace this model's entry only; other models keep their levels so that
+    // switching model does not quietly reset effort everywhere.
+    setEffort(ref,level){
+      if(!this.draft) return;
+      const others=(Array.isArray(this.draft.efforts)?this.draft.efforts:[]).filter(item=>
+        !(item&&item.provider_ref===ref.provider_ref&&item.model_id===ref.model_id));
+      this.draft.efforts=level
+        ? [...others,{provider_ref:ref.provider_ref,model_id:ref.model_id,level}]
+        : others;
+    },
+    // The one model an effort row would apply to. Automatic has no single
+    // model, so it gets no control rather than a control that guesses.
+    effortTarget(){
+      return this.draft&&this.draft.mode==="explicit" ? this.draft.saved_default : null;
+    },
     policyLabel(policy){return !policy||policy.mode==="automatic" ? "Automatic" : this.label(policy.saved_default);},
     rows(){return this.snapshot ? [...this.snapshot.options,...this.snapshot.unavailable] : [];},
     row(ref){return this.rows().find(row=>this.key(row.reference)===this.key(ref));},
@@ -3341,6 +3378,20 @@
           this.menuRow(this.label(row.reference),false,null,"— "+(reasons||"availability unconfirmed"));
         }
       }
+      // Effort for the current model, offering exactly the levels its source
+      // advertised. Absent entirely when the model has none, so the control
+      // never implies a setting the provider would reject.
+      const target=this.effortTarget(),levels=this.effortLevels(target);
+      if(levels.length){
+        this.menuNote("Effort","model-menu-divider");
+        const chosen=this.effortFor(target);
+        this.menuRow("Provider default",!chosen,
+          pickable?()=>this.chooseEffort(target,""):null);
+        for(const level of levels){
+          this.menuRow(level,chosen===level,
+            pickable?()=>this.chooseEffort(target,level):null);
+        }
+      }
       // Not a model row: the way through to access, availability and fallback
       // order. Classed apart so it is never counted as one of the choices.
       const more=this.menuRow("Model access and availability…",false,()=>{
@@ -3356,6 +3407,21 @@
         this.menuClose({restoreFocus:false});openConnectRequest();
       });
       connect.className+=" model-menu-item--more";
+    },
+    // Same contract as choosing a model: the click IS the decision, so it
+    // saves. The menu stays OPEN, because effort is the kind of setting an
+    // owner adjusts and compares rather than picks once and leaves.
+    async chooseEffort(ref,level){
+      if(this.busy||!this.fresh()||!ref) return;
+      const previous=this.effortFor(ref);
+      if(previous===level) return;
+      this.setEffort(ref,level);
+      if(!(await this.save())){
+        // A refused save must not leave the menu showing a level that is not
+        // stored. `save()` clears the draft on failure; restore otherwise.
+        if(this.draft) this.setEffort(ref,previous);
+      }
+      if(this.menuIsOpen()) this.renderMenu();
     },
     // A click in the list IS the decision: apply it as the saved default now.
     async choose(key){
@@ -3507,11 +3573,17 @@
     },
     select(key){
       if(this.busy||!this.fresh()) return;
-      if(!key){this.draft=this.automatic();this.render();return;}
+      // Saved effort levels survive BOTH switches. Choosing another model, or
+      // going back to Automatic, is not a decision about effort -- and since a
+      // save replaces the whole policy document, rebuilding the draft without
+      // them would silently erase every level the owner had set.
+      const efforts=copyModelChoice((this.draft&&this.draft.efforts)||[]);
+      if(!key){this.draft=Object.assign(this.automatic(),{efforts});this.render();return;}
       const row=this.rows().find(r=>this.key(r.reference)===key);
       if(!this.usable(row)) return;
-      this.draft={version:1,mode:"explicit",saved_default:copyModelChoice(row.reference),
-        fallbacks:(this.draft&&this.draft.fallbacks||[]).filter(r=>this.key(r)!==key)};
+      this.draft={version:2,mode:"explicit",saved_default:copyModelChoice(row.reference),
+        fallbacks:(this.draft&&this.draft.fallbacks||[]).filter(r=>this.key(r)!==key),
+        efforts};
       this.render();
     },
     addFallback(key){

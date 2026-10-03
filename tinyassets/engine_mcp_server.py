@@ -3019,7 +3019,9 @@ def write_graph(
         target: ``branch``, ``automation``, ``webhook``, ``pending_request``, ``patch_request``,
             ``model_preferences`` or ``connection``. model_preferences/save takes the existing
             {expected_generation, policy} document: save a default and complete
-            fallback order from model_options. This grants no model access.
+            fallback order from model_options, plus optional per-model
+            ``efforts`` (provider_ref/model_id/level) using only the levels that
+            model advertised in model_options. This grants no model access.
             connection/configure_provider_capability accepts model_discovery
             metadata only, on an already owned registered compute definition.
             connection/configure sets constant headers on a held connection:
