@@ -32,7 +32,17 @@ from tinyassets.providers.model_capacity import (
     MAX_FREE_SIBLING_RETRIES as _MAX_FREE_SIBLING_RETRIES,
 )
 from tinyassets.providers.native_agent_input import render_native_input
-from tinyassets.request_budget import pooled_budget
+from tinyassets.request_budget import (
+    FREE_TURN_ATTEMPTS,
+    TEXT_TURN_ATTEMPTS,
+    RequestBudgetExceeded,
+    TurnRequestBudget,
+    budget_for_context,
+    current_request_budget,
+    pooled_budget,
+    request_budget_scope,
+    selection_is_free,
+)
 from tinyassets.served_tools import granted_tools
 from tinyassets.storage.agent_native_records import NativeInput, NativeTerminal
 from tinyassets.storage.agent_turn_boot import BOOT
@@ -127,6 +137,14 @@ class AgentTurnCoordinator:
         # How hard the rendered history is compacted to fit a small window;
         # 0 renders every completed result whole. See ``_compact_to_fit``.
         self.compaction = 0
+        self.request_budget = current_request_budget()
+        self._owns_request_budget = self.request_budget is None
+        self._request_reservation = None
+        self._free_request = False
+        self._budget_skipped = set()
+        self._text_only = (
+            type(config.agent_request) is AgentInferenceRequest and config.agent_request.text_only
+        )
 
     def _remaining(self, turn_deadline):
         """This turn's config with its absolute cap cut to what is left of the turn.
@@ -151,7 +169,9 @@ class AgentTurnCoordinator:
             return self.adapter.next_candidate(
                 self.owner, self.context.universe_dir.name, self.exhaustion,
             )
-        return self.plan.next_candidate(self.owner, self.context.universe_dir.name, self.exhaustion)
+        order = self.plan.order(self.owner, self.context.universe_dir.name, self.exhaustion)
+        return next((item.ref for item in order.candidates
+                     if item.ref not in self._budget_skipped), None)
 
     def _accept(self, transition):
         if transition.status != "applied":
@@ -164,16 +184,36 @@ class AgentTurnCoordinator:
             prompt=self.prompt, system=self.inference_system,
             native_input=None, kind="engine_inference",
         )
-        self._accept(
-            self.journal.begin_round(
+        self._free_request = (
+            selection_is_free(config.selected_model)
+            and budget_for_context(self.context, owner=self.owner) is not None
+        )
+        self._request_reservation = self.request_budget.reserve(
+            owner=self.owner, universe=self.context.universe_dir.name,
+            source_ref=candidate.source_ref, model=candidate.model,
+            free=self._free_request,
+            purpose="tool_review" if self._completed_tools() else "reply",
+        )
+        try:
+            self._accept(self.journal.begin_round(
                 self.owner,
                 self.context.universe_dir.name,
                 self.turn.turn_id,
                 expected_generation=self.turn.generation,
                 candidate=candidate,
                 after_failed_inference=self.retrying_capacity,
-            )
-        )
+            ))
+        except BaseException:
+            self.request_budget.settle(self._request_reservation, "not_sent")
+            self._request_reservation = None
+            raise
+        try:
+            self.request_budget.dispatched(self._request_reservation)
+        except BaseException:
+            # The budget already recorded not_sent if close/deadline won the
+            # race after reservation. Do not settle it as an upstream failure.
+            self._request_reservation = None
+            raise
         self.retrying_capacity = False
         self._note_round()
 
@@ -385,6 +425,8 @@ class AgentTurnCoordinator:
     def _requests_sent(self):
         """Model requests this turn sent, failed ones included: each one counts
         against a free tier's daily allowance, so the owner is told the number."""
+        if self.request_budget is not None:
+            return self.request_budget.receipt()["dispatched"]
         if self.turn is None:
             return 0
         return sum(1 for previous in self.turn.rounds
@@ -422,12 +464,23 @@ class AgentTurnCoordinator:
         raise TurnInterrupted("the owner stopped this turn before a tool call")
 
     async def run(self):
+        owner = self._check_scope()
+        if self.request_budget is None:
+            self.request_budget = TurnRequestBudget(
+                owner, self.context.universe_dir.name,
+                free_limit=TEXT_TURN_ATTEMPTS if self._text_only else FREE_TURN_ATTEMPTS,
+            )
+        self.request_budget.check_scope(owner, self.context.universe_dir.name)
         try:
-            return await self._run()
+            with request_budget_scope(self.request_budget):
+                return await self._run()
         except BaseException as exc:
             try:
                 exc.turn_effects, exc.turn_stage, exc.turn_ref = self.effects_evidence()
                 exc.turn_requests = self._requests_sent()
+                exc.request_receipt = self.request_budget.receipt()
+                if isinstance(exc, RequestBudgetExceeded):
+                    exc.completed_tools = self._completed_tools()
                 if isinstance(exc, TurnInterrupted):
                     exc.completed_tools = self._completed_tools()
                 self._carry_spent_attempts(exc)
@@ -442,6 +495,8 @@ class AgentTurnCoordinator:
                     _LOG.exception("could not close settled interactive agent progress")
             raise
         finally:
+            if self._owns_request_budget:
+                self.request_budget.close()
             self._release_turn()
 
     def _daily_budget(self):
@@ -494,18 +549,25 @@ class AgentTurnCoordinator:
                     self.execution_kind = self.router.selected_agent_execution_kind(
                         self.context.model_selection,
                     )
+                    if self._text_only and self.execution_kind != "engine_inference":
+                        raise ProviderAuthorityHeldError(
+                            "text-only mode requires an admitted text inference route"
+                        )
                     if self.execution_kind == "engine_inference":
-                        if engine is None:
+                        if engine is None and not self._text_only:
                             engine = await stack.enter_async_context(
                                 self._open_tools(timeout),
                             )
                         config = replace(
                             self._remaining(turn_deadline),
                             agent_request=AgentInferenceRequest(
-                                tools=codec.tool_definitions(engine.tools),
+                                tools=(
+                                    () if self._text_only else codec.tool_definitions(engine.tools)
+                                ),
                                 history=codec.compact_history(
                                     self._history(), self.compaction,
                                 ),
+                                tool_choice="none" if self._text_only else "auto",
                             ),
                         )
                         prompt, system, observer = self.prompt, self.system, self._begin
@@ -536,6 +598,13 @@ class AgentTurnCoordinator:
                         else:
                             response = await inference
                     except BaseException as exc:
+                        if self._request_reservation is not None:
+                            self.request_budget.settle(
+                                self._request_reservation,
+                                "unknown" if isinstance(exc, (asyncio.CancelledError, TimeoutError))
+                                else "failed",
+                            )
+                            self._request_reservation = None
                         # No engine tool can start before a validated inference
                         # is committed. Preserve failure, never restart this turn.
                         if self.turn.state == "native_started":
@@ -552,7 +621,8 @@ class AgentTurnCoordinator:
                                 )
                             )
                         if (
-                            self._next_after_capacity(exc)
+                            self._next_after_request_budget(exc)
+                            or self._next_after_capacity(exc)
                             or self._next_after_signin(exc)
                             or self._next_after_refusal(exc)
                             or self._next_after_overflow(exc)
@@ -562,6 +632,9 @@ class AgentTurnCoordinator:
                             await self._pause_before_retry(turn_deadline)
                             continue
                         raise
+                    if self._request_reservation is not None:
+                        self.request_budget.settle(self._request_reservation, "succeeded")
+                        self._request_reservation = None
                     if self.execution_kind == "native_agent":
                         try:
                             if response.provider != self.context.model_selection.connection_id:
@@ -615,6 +688,20 @@ class AgentTurnCoordinator:
                         if self._interrupted():
                             self._stop_before_tool(uid, call_ordinal, tool)
                         self._check_scope()
+                        try:
+                            self.request_budget.check_available(
+                                source_ref=self.context.model_selection.connection_id,
+                                free=self._free_request, purpose="tool_review",
+                            )
+                        except RequestBudgetExceeded as exc:
+                            if (exc.reason not in {"free_attempt_limit", "consecutive_failures"}
+                                    or self._request_budget_fallback() is None):
+                                # A held tool is never approved or silently resumed.
+                                try:
+                                    self._stop_before_tool(uid, call_ordinal, tool)
+                                except TurnInterrupted:
+                                    pass
+                                raise
                         self._accept(
                             self.journal.start_tool(
                                 self.owner,
@@ -671,6 +758,52 @@ class AgentTurnCoordinator:
                         )
                         if self.turn.state not in {"ready", "tools_pending"}:
                             raise ProviderProtocolError("agent tool result requires attention")
+
+    def _request_budget_fallback(self):
+        # Do not manufacture remote Exhaustion records from a local allocation:
+        # even model-scoped exhaustion can exclude another connection when its
+        # provider account identity is unknown. Filter the accepted order only.
+        if self.plan is None:
+            return None
+        order = self.plan.order(self.owner, self.context.universe_dir.name, self.exhaustion)
+        for item in order.candidates:
+            candidate = item.ref
+            if (candidate == self.context.model_selection or candidate in self.visited
+                    or candidate in self._budget_skipped):
+                continue
+            if (self._text_only
+                    and self.router.selected_agent_execution_kind(candidate) != "engine_inference"):
+                continue
+            limited = budget_for_context(
+                replace(self.context, model_selection=candidate), owner=self.owner,
+            ) is not None
+            try:
+                self.request_budget.check_available(
+                    source_ref=candidate.connection_id, free=limited,
+                )
+                return candidate
+            except RequestBudgetExceeded as exc:
+                if exc.reason not in {"free_attempt_limit", "consecutive_failures"}:
+                    return None
+        return None
+
+    def _next_after_request_budget(self, exc):
+        # A local allocation is not a provider refusal and writes no cooldown.
+        # The existing accepted order still controls explicit/automatic fallback.
+        if (not isinstance(exc, RequestBudgetExceeded)
+                or exc.reason not in {"free_attempt_limit", "consecutive_failures"}
+                or self.turn.state not in {"ready", "held_transport"}):
+            return False
+        fallback = self._request_budget_fallback()
+        if fallback is None:
+            return False
+        candidate = fallback
+        failed = self.context.model_selection
+        self._budget_skipped.add(failed)
+        self.visited.add(failed)
+        self.context = replace(self.context, model_selection=candidate)
+        self.retrying_capacity = self.turn.state != "ready"
+        return True
 
     #: How many times one turn may narrow an UNPROVEN account exhaustion to the
     #: model that actually failed. Small on purpose: the narrowing is a policy

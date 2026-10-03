@@ -1,20 +1,230 @@
-"""Advisory daily request budgets from local evidence, never a remote quota probe."""
+"""Per-turn dispatch limits and separate advisory daily evidence; no quota probes."""
 
 from __future__ import annotations
 
 import json
 import math
 import sqlite3
-from contextlib import closing
+import threading
+import time
+from contextlib import closing, contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+from tinyassets.exceptions import ProviderAuthorityHeldError
 from tinyassets.storage import DB_FILENAME
 
 UNBOUNDED = None
 LEARNING_MIN_REMAINING = 10
+
+# Execution policy, NOT an assertion about a provider's remaining allowance.
+FREE_TURN_ATTEMPTS = 6
+TEXT_TURN_ATTEMPTS = 3
+FREE_CONSECUTIVE_FAILURES = 2
+
+
+class RequestBudgetExceeded(ProviderAuthorityHeldError):
+    """A local turn stopped; no reconnect, approval, cooldown or automatic wake."""
+
+    def __init__(self, reason, receipt):
+        self.reason = reason
+        self.request_receipt = receipt
+        self.continuation = (
+            f"This turn stopped at its request budget ({receipt['dispatched']} "
+            "provider attempts). Any progress recorded in the turn journal is preserved. "
+            "You can request a continuation; none is scheduled automatically."
+        )
+        super().__init__(self.continuation)
+
+
+@dataclass(frozen=True)
+class RequestAttempt:
+    ordinal: int
+    source_ref: str
+    model: str
+    purpose: str
+    free: bool
+    state: str
+    reserved_at: float
+    dispatched_at: str | None = None
+
+
+class TurnRequestBudget:
+    """One parent turn's locked ledger, shared by retries, helpers and children.
+
+    This object restricts dispatch but grants no provider/tool authority. Bind it
+    outside the writer and keep it through secondary work. Child tasks share the
+    object; independent turns create independent objects. Closing is final, so a
+    copied task context cannot spend after the parent returns. No crash replay.
+    ``dispatched`` means an invocation crossed the local dispatch boundary, not
+    proof the upstream received it or a confirmed provider billing count.
+    """
+
+    def __init__(self, owner, universe, *, max_requests=None,
+                 free_limit=FREE_TURN_ATTEMPTS, failure_limit=FREE_CONSECUTIVE_FAILURES,
+                 deadline=None, clock=time.monotonic, source_limits=None, wall_clock=None):
+        for limit in (max_requests, free_limit, failure_limit):
+            if limit is not None and (type(limit) is not int or limit < 1):
+                raise ValueError("request limits must be positive integers")
+        if not owner or not universe:
+            raise ValueError("parent turn owner and command center required")
+        self.owner, self.universe = owner, universe
+        self.max_requests, self.free_limit = max_requests, free_limit
+        self.failure_limit, self.deadline, self.clock = failure_limit, deadline, clock
+        self.wall_clock = wall_clock or (lambda: datetime.now(timezone.utc))
+        self.source_limits = dict(source_limits or {})
+        for limit in self.source_limits.values():
+            if limit is not None and (type(limit) is not int or limit < 1):
+                raise ValueError("source request limits must be positive integers")
+        self._lock = threading.RLock()
+        self._attempts = []
+        self._failures = {}
+        self._closed = False
+
+    def check_scope(self, owner, universe):
+        if (owner, universe) != (self.owner, self.universe):
+            raise ProviderAuthorityHeldError("parent request budget scope changed")
+
+    def _check(self, *, source_ref, free, purpose):
+        active = [a for a in self._attempts if a.state != "not_sent"]
+        limit = self.source_limits.get(source_ref, self.free_limit)
+        source_attempts = sum(a.free and a.source_ref == source_ref for a in active)
+        reason = None
+        if self._closed:
+            reason = "parent_closed"
+        elif self.deadline is not None and self.clock() >= self.deadline:
+            reason = "dispatch_deadline"
+        elif free and purpose == "learning":
+            reason = "automatic_learning_disabled"
+        elif self.max_requests is not None and len(active) >= self.max_requests:
+            reason = "turn_attempt_limit"
+        elif free and limit is not None and source_attempts >= limit:
+            reason = "free_attempt_limit"
+        elif (free and self.failure_limit is not None
+              and self._failures.get(source_ref, 0) >= self.failure_limit):
+            reason = "consecutive_failures"
+        if reason is not None:
+            raise RequestBudgetExceeded(reason, self.receipt())
+
+    def check_available(self, *, source_ref, free, purpose="reply"):
+        with self._lock:
+            self._check(source_ref=source_ref, free=free, purpose=purpose)
+
+    def reserve(self, *, owner, universe, source_ref, model, free, purpose="reply"):
+        """Reserve BEFORE dispatch, after existing grant/admission checks.
+
+        ``free`` means an admitted metered free source, NOT merely zero price.
+        Local/unmetered models pass False. Only explicit owner policy supplies
+        max_requests; defaults never apply an aggregate cap across sources.
+        """
+        self.check_scope(owner, universe)
+        if purpose not in {"reply", "tool_review", "review", "helper", "learning"}:
+            raise ValueError("unknown request purpose")
+        if type(free) is not bool or not source_ref or not model:
+            raise ValueError("admitted source, model and price classification required")
+        with self._lock:
+            self._check(source_ref=source_ref, free=free, purpose=purpose)
+            attempt = RequestAttempt(len(self._attempts) + 1, source_ref, model, purpose,
+                                     free, "reserved", self.clock())
+            self._attempts.append(attempt)
+            return attempt.ordinal
+
+    def dispatched(self, ordinal):
+        from dataclasses import replace
+
+        with self._lock:
+            if type(ordinal) is not int or not 1 <= ordinal <= len(self._attempts):
+                raise ValueError("unknown request reservation")
+            attempt = self._attempts[ordinal - 1]
+            if attempt.state != "reserved":
+                raise ValueError("request reservation already dispatched or settled")
+            # A reservation is no licence to launch after Stop/parent completion.
+            if self._closed or self.deadline is not None and self.clock() >= self.deadline:
+                self._attempts[ordinal - 1] = replace(attempt, state="not_sent")
+                raise RequestBudgetExceeded("dispatch_closed", self.receipt())
+            self._attempts[ordinal - 1] = replace(
+                attempt, state="dispatched",
+                dispatched_at=self.wall_clock().astimezone(timezone.utc).isoformat(),
+            )
+
+    def settle(self, ordinal, outcome):
+        from dataclasses import replace
+
+        with self._lock:
+            if type(ordinal) is not int or not 1 <= ordinal <= len(self._attempts):
+                raise ValueError("unknown request reservation")
+            attempt = self._attempts[ordinal - 1]
+            allowed = {"not_sent"} if attempt.state == "reserved" else {
+                "succeeded", "failed", "unknown",
+            } if attempt.state == "dispatched" else set()
+            if outcome not in allowed:
+                raise ValueError("invalid request settlement")
+            self._attempts[ordinal - 1] = replace(attempt, state=outcome)
+            if attempt.free and outcome in {"failed", "unknown"}:
+                self._failures[attempt.source_ref] = self._failures.get(attempt.source_ref, 0) + 1
+            elif attempt.free and outcome == "succeeded":
+                self._failures[attempt.source_ref] = 0
+
+    def close(self):
+        with self._lock:
+            self._closed = True
+
+    def receipt(self):
+        """Detached source/purpose counters; no prompts, results or credentials."""
+        from dataclasses import asdict
+
+        with self._lock:
+            groups = {}
+            for attempt in self._attempts:
+                group = groups.setdefault((attempt.source_ref, attempt.purpose), {
+                    "source_ref": attempt.source_ref, "purpose": attempt.purpose,
+                    "reserved": 0, "dispatched": 0, "succeeded": 0,
+                    "failed": 0, "unknown": 0, "not_sent": 0,
+                })
+                group["reserved"] += 1
+                if attempt.dispatched_at is not None:
+                    group["dispatched"] += 1
+                if attempt.state not in {"reserved", "dispatched"}:
+                    group[attempt.state] += 1
+            return {
+                "dispatched": sum(a.dispatched_at is not None for a in self._attempts),
+                "reserved": len(self._attempts), "closed": self._closed,
+                "sources": list(groups.values()),
+                "attempts": [asdict(a) for a in self._attempts],
+                "quota_authoritative": False,
+                "count_basis": "local_provider_dispatch",
+            }
+
+
+_TURN_REQUEST_BUDGET = ContextVar("parent_turn_request_budget", default=None)
+
+
+def current_request_budget():
+    return _TURN_REQUEST_BUDGET.get()
+
+
+@contextmanager
+def request_budget_scope(budget):
+    """Propagate a parent object without permitting a nested reset of its limit."""
+    current = current_request_budget()
+    if current is not None and current is not budget:
+        raise ProviderAuthorityHeldError("cannot replace an active parent request budget")
+    token = _TURN_REQUEST_BUDGET.set(budget)
+    try:
+        yield budget
+    finally:
+        if current is None:
+            budget.close()
+        _TURN_REQUEST_BUDGET.reset(token)
+
+
+def selection_is_free(selection):
+    """Use admitted ceilings; never infer this from an account name or balance."""
+    caps = getattr(selection, "cost_caps", ())
+    return bool(caps) and all(type(value) is int and value == 0 for _, value in caps)
 
 
 def _now():
