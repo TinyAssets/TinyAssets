@@ -834,7 +834,6 @@ def test_served_budget_overrun_delivers_the_reply_and_charges_actual(tmp_path, m
 
 @pytest.mark.skipif(os.name == "nt", reason="bubblewrap is a POSIX sandbox")
 def test_served_turn_spawns_fake_codex_through_full_os_sandbox_command(
-    tmp_path,
     tmp_path_factory,
     monkeypatch,
 ):
@@ -843,6 +842,8 @@ def test_served_turn_spawns_fake_codex_through_full_os_sandbox_command(
     from tinyassets.providers.codex_provider import CodexProvider
     from tinyassets.providers.router import ProviderRouter
 
+    # Keep the real egress socket below AF_UNIX's path limit in CI's temp root.
+    tmp_path = tmp_path_factory.mktemp("served")
     universe_dir, serving, capability, context = _served_context(
         tmp_path,
         path_backed=True,
