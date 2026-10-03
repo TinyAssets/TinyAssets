@@ -99,6 +99,17 @@ def page():
             browser.close()
 
 
+def _wait_for_placement(page, mode, x):
+    # Locator assertions poll observable layout without evaluating a predicate
+    # string in the app's CSP-protected execution context.
+    from playwright.sync_api import expect
+
+    selector = "#chat-cloud-bubble" if mode == "bubble" else "#chat-cloud"
+    expect(page.locator(selector)).to_be_visible()
+    expect(page.locator(selector)).to_have_css("left", f"{x}px")
+    assert page.evaluate("mode => cloudState[mode].x", mode) == x
+
+
 def test_a_new_device_takes_the_owners_record_and_writes_back_its_placement(server, page):
     url, posts, _delay = server
     page.goto(url)
@@ -106,7 +117,7 @@ def test_a_new_device_takes_the_owners_record_and_writes_back_its_placement(serv
     page.wait_for_load_state("networkidle")
     page.evaluate("() => { setQueueOwner('owner-1'); showView('chat'); refreshChatCloud(); }")
 
-    page.wait_for_function("cloudState && cloudState.open.x === 200")
+    _wait_for_placement(page, "open", 200)
     box = page.locator("#chat-cloud").bounding_box()
     stage = page.locator("#chat-stage").bounding_box()
     assert box["x"] - stage["x"] == pytest.approx(200, abs=2)
@@ -115,7 +126,7 @@ def test_a_new_device_takes_the_owners_record_and_writes_back_its_placement(serv
     assert page.evaluate(cached) == 200
 
     page.click("#btn-cloud-shrink")
-    page.wait_for_function("document.getElementById('chat-cloud-bubble').offsetParent !== null")
+    page.locator("#chat-cloud-bubble").wait_for(state="visible")
     page.wait_for_timeout(300)
     assert posts and posts[-1]["key"] == "chat_cloud" and posts[-1]["value"]["mode"] == "bubble"
     assert posts[-1]["agent"] == "main" and posts[-1]["viewport"] == "wide"
@@ -127,7 +138,8 @@ def test_a_record_arriving_mid_drag_does_not_move_the_cloud(server, page):
     page.goto(url)
     page.wait_for_selector("#view-signin", state="visible")
     page.evaluate("() => { setQueueOwner('owner-1'); showView('chat'); refreshChatCloud(); }")
-    page.wait_for_function("cloudState !== null")
+    page.locator("#chat-cloud").wait_for(state="visible")
+    assert page.evaluate("cloudState !== null")
     corner = page.locator("#chat-cloud-resize").bounding_box()
 
     page.mouse.move(corner["x"] + 9, corner["y"] + 9)
@@ -158,11 +170,11 @@ def test_placement_follows_owner_to_a_fresh_browser_context(server, page):
     page.goto(url)
     page.wait_for_selector("#view-signin", state="visible")
     _synthetic_login(page, "synthetic-alice")
-    page.wait_for_function("cloudState && cloudState.open.x === 200")
+    _wait_for_placement(page, "open", 200)
     page.locator("#chat-cloud-bar").focus()
     page.keyboard.press("ArrowLeft")
     page.keyboard.press("ArrowLeft")
-    page.wait_for_function("cloudState.open.x === 168")
+    _wait_for_placement(page, "open", 168)
     page.evaluate("() => cloudPrefs.writeTail")
     assert posts[-1]["test_owner"] == "Bearer synthetic-alice"
     assert posts[-1]["value"]["open"]["x"] == 168
@@ -173,7 +185,7 @@ def test_placement_follows_owner_to_a_fresh_browser_context(server, page):
         other.wait_for_selector("#view-signin", state="visible")
         assert other.evaluate("localStorage.length") == 0
         _synthetic_login(other, "synthetic-alice")
-        other.wait_for_function("cloudState && cloudState.open.x === 168")
+        _wait_for_placement(other, "open", 168)
         box = other.locator("#chat-cloud").bounding_box()
         stage = other.locator("#chat-stage").bounding_box()
         assert box["x"] - stage["x"] == pytest.approx(168, abs=2)
@@ -189,7 +201,7 @@ def test_phone_placement_and_repeated_bubble_interaction_are_separate_from_deskt
     page.goto(url)
     page.wait_for_selector("#view-signin", state="visible")
     _synthetic_login(page, "synthetic-alice")
-    page.wait_for_function("cloudState && cloudState.bubble.x === 50")
+    _wait_for_placement(page, "bubble", 50)
     for _ in range(3):
         page.click("#chat-cloud-bubble")
         assert page.evaluate("document.activeElement.id") == "composer-input"
@@ -214,7 +226,7 @@ def test_late_account_and_home_reads_cannot_replace_current_owners_placement(ser
     with page.expect_request(lambda r: "/app/ui-prefs?" in r.url):
         _synthetic_login(page, "synthetic-alice")
     _synthetic_login(page, "synthetic-bob")
-    page.wait_for_function("cloudState && cloudState.open.x === 80")
+    _wait_for_placement(page, "open", 80)
     page.wait_for_timeout(600)
     assert page.evaluate("cloudState.open.x") == 80
     local_key = "app.chatCloud.v1:synthetic-alice:main:wide"
@@ -230,7 +242,7 @@ def test_late_account_and_home_reads_cannot_replace_current_owners_placement(ser
     # remain account-scoped, but the old lifecycle is no longer allowed to paint.
     state["records"][alice_key] = {**RECORD, "open": {**RECORD["open"], "x": 300}}
     page.evaluate("setQueueScope('home-new')")
-    page.wait_for_function("cloudState && cloudState.open.x === 300")
+    _wait_for_placement(page, "open", 300)
     page.wait_for_timeout(600)
     assert page.evaluate("cloudState.open.x") == 300
     assert page.evaluate("queueScope") == "home-new"
