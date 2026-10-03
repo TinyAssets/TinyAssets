@@ -83,3 +83,12 @@ with integration owner `01a10149-49ab-7403-8295-a337a0e7102c` before implementat
   pre-cleanup session poll (`storage_limit`, expected no breach).
 - All original test ASTs and fixtures equal the base definitions.
 - Ruff and diff whitespace checks pass. The original product head is unchanged.
+
+For the candidate comparison, import `tinyassets.jail_disk` and
+`tinyassets.storage_accounting` from the candidate checkout **before** calling
+`pytest.main()` on this prerequisite's test path, and print/assert both module
+paths. Pytest otherwise prepends the prerequisite's checkout during collection
+and can accidentally exercise baseline source. With the imports pinned to
+`/workspace/wf-quota-reservation-headroom/tinyassets/`, both failures occur at
+`assert budget.breach() is None`, with `bound=0` and `storage_limit`, before any
+cleanup or exact-grace assertion. The baseline run uses this worktree's source.
