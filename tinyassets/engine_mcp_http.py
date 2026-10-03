@@ -273,6 +273,12 @@ class _EngineServer:
         env["TINYASSETS_DATA_DIR"] = self._data_dir
         env["TINYASSETS_ENGINE_MCP_HTTP_PORT"] = str(self.port)
         env["TINYASSETS_ENGINE_MCP_HTTP_SECRET"] = self.secret
+        # The engine acts for this owner: it joins the owner tree, so its death
+        # is part of the proof a successor needs (execution-owner-lease D2).
+        from tinyassets.owner_lease import TREE_ENV
+
+        if os.environ.get(TREE_ENV):
+            env[TREE_ENV] = os.environ[TREE_ENV]
         try:
             self.proc = subprocess.Popen(  # noqa: S603 - fixed argv, no shell
                 [sys.executable, "-m", "tinyassets.engine_mcp_server"],

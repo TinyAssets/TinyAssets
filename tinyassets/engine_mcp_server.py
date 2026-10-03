@@ -4278,6 +4278,17 @@ async def run_bash(command: str, timeout: int = 0) -> str:
 
 
 if __name__ == "__main__":
+    # An engine acts for the owner that spawned it: join its tree BEFORE serving
+    # anything, so even an effect-only run is covered by the owner's death proof,
+    # and refuse to start if that owner is already gone (execution-owner-lease D2).
+    from tinyassets.owner_lease import LeaseLost as _LeaseLost
+    from tinyassets.owner_lease import join_inherited_tree as _join_inherited_tree
+    from tinyassets.storage import data_dir as _engine_data_dir
+
+    try:
+        _join_inherited_tree(_engine_data_dir())
+    except _LeaseLost as _gone:
+        raise SystemExit(f"engine MCP refuses to start: {_gone}") from None
     # Transport: HTTP when a port is pinned (the reliable path — claude CLI's
     # stdio-MCP spawn is flaky in the headless served subprocess, HTTP is not),
     # else stdio (spawned by claude -p via --mcp-config). Identity stays pinned
