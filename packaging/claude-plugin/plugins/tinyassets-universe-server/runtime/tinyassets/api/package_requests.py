@@ -145,6 +145,12 @@ def _plan(uid: str, action: dict[str, Any]) -> dict[str, Any]:
     except PackageError as exc:
         raise ValueError(f"this package cannot be installed: {exc}") from None
     parts = _components(definition)
+    from tinyassets.custom_agents import app_ui_workflow_refs
+
+    workflow_keys = {workflow["key"] for workflow in parts["workflows"]}
+    for ui in parts["ui"]:
+        if any(key not in workflow_keys for key in app_ui_workflow_refs(ui).values()):
+            raise ValueError("package workflow_refs must name its selected workflow components")
     needs = component.get("needs") or {}
     have = _connections_you_have(actor)
     connections = [{"name": str(name), "you_have": None if have is None else name in have}
@@ -350,10 +356,14 @@ def _materialise(uid: str, actor: str, pin_id: str, plan: dict[str, Any],
             progress["workflows"][workflow["key"]] = _remix(pin_id, workflow)
             save()
     if plan["ui"] and "ui" not in progress:
+        ui = dict(plan["ui"])
+        if "workflow_refs" in ui:
+            ui["workflow_refs"] = {alias: progress["workflows"][key]
+                                   for alias, key in ui["workflow_refs"].items()}
         if "ui_intended" not in progress:
-            progress["ui_intended"] = _free_ui_id(uid, plan["ui"])
+            progress["ui_intended"] = _free_ui_id(uid, ui)
         save()
-        progress["ui"] = _add_ui(uid, plan["ui"], progress["ui_intended"])
+        progress["ui"] = _add_ui(uid, ui, progress["ui_intended"])
         save()
     for automation in plan["automations"]:
         if automation["key"] not in progress["automations"]:
@@ -501,7 +511,8 @@ def _write_files(uid: str, plan: dict[str, Any], files: dict[str, bytes],
             kept.append(path)
 
 
-def list_packages(*, query: str = "", author: str = "", limit: int = 30) -> list[dict[str, Any]]:
+def list_packages(*, query: str = "", author: str = "", limit: int = 30,
+                  offset: int = 0) -> list[dict[str, Any]]:
     """The listing: one row per published package version, from its definition.
 
     Name, description and author are the publisher's words; size, version, file
@@ -512,11 +523,28 @@ def list_packages(*, query: str = "", author: str = "", limit: int = 30) -> list
     from tinyassets.command_center_packages import PACKAGE_KIND, PACKAGE_TAG, human
     from tinyassets.custom_agents import list_definitions
 
+    if type(offset) is not int or offset < 0:
+        raise ValueError("offset must be a non-negative integer")
+    bounded_limit = max(1, min(int(limit), 100))
+
+    def definitions():
+        start = 0
+        while True:
+            batch = list_definitions(_base_path(), query=query, tags=[PACKAGE_TAG],
+                                     author_id=author, limit=100, offset=start)
+            yield from batch
+            if len(batch) < 100:
+                break
+            start += len(batch)
+
     rows = []
-    for definition in list_definitions(_base_path(), query=query, tags=[PACKAGE_TAG],
-                                       author_id=author, limit=limit):
+    matched = 0
+    for definition in definitions():
         component = (definition.get("components") or {}).get("package") or {}
         if component.get("kind") != PACKAGE_KIND:
+            continue
+        matched += 1
+        if matched <= offset:
             continue
         rows.append({
             "agent_definition_id": definition["agent_definition_id"],
@@ -530,6 +558,8 @@ def list_packages(*, query: str = "", author: str = "", limit: int = 30) -> list
             "needs": component.get("needs") or {},
             "created_at": definition.get("created_at"),
         })
+        if len(rows) >= bounded_limit:
+            break
     return rows
 
 

@@ -51,10 +51,19 @@
     // change it; the person approves in this page's own chrome, never in the UI.
     ROLE:"app_experience",TURN_KIND:"tinyassets.turn-graph.v1",
     ID_RE:/^[a-z0-9][a-z0-9-]{0,63}$/,
+    // The blank command center the platform ships. Its ui_id carries a colon,
+    // which ID_RE forbids, so no UI a person can author or install may claim
+    // it -- that is what makes it an identity rather than a convention.
+    PLATFORM_UI_ID:"platform:blank",
+    // Actions only that bundle may ask for. Installing software and composing a
+    // message as the owner are the app's offer to them, not a third-party
+    // bundle's capability. `packages.list_tryable` is absent on purpose: it
+    // only reads what is already published.
+    PLATFORM_ONLY:["packages.try","chat.prefill"],
     FIELDS:["kind","markup","name","script","style","ui_id","version"],
     // Carried verbatim when present: the asset manifest the server checked,
     // shared libraries by name, and whether `script` is a module.
-    OPTIONAL:["assets","libraries","script_type"],
+    OPTIONAL:["assets","libraries","script_type","workflow_refs"],
     SHA256_RE:/^[0-9a-f]{64}$/,
     ASSET_PATH_RE:/^[A-Za-z0-9][A-Za-z0-9._-]*(\/[A-Za-z0-9][A-Za-z0-9._-]*)*$/,
     ASSET_FETCH:"/app/api/ui-asset",
@@ -69,7 +78,7 @@
     // stored entry it cannot, each keeping the component VERBATIM so an install
     // puts it back untouched. `unreadable` is reserved for a library that is not
     // a list at all -- the only failure that really is library-wide.
-    library:[],broken:[],unreadable:"",selection:null,active:null,frame:null,listener:null,
+    library:[],broken:[],unreadable:"",selection:null,active:null,frame:null,listener:null,platformDefault:null,
     // The conversation installation as last read (null: none, so default), the
     // reason it could not be read, and the selection it replaced this visit.
     conversation:null,conversationNote:"",previousTurn:null,selecting:false,ambiguous:false,
@@ -79,7 +88,9 @@
     // to the bundle that was on screen a moment ago cannot settle a promise in
     // the one that replaced it -- both bootstraps number requests from r1, so the
     // ids collide by construction (Codex, 2026-09-26).
-    frameGen:0,ready:false,sending:false,emitting:false,pending:0,
+    frameGen:0,ready:false,sending:false,emitting:false,trying:false,pending:0,
+    // True only while mountDefault's own bundle is on screen (isPlatformDefault).
+    defaultMounted:false,
 
     bytes(value){ return new TextEncoder().encode(String(value)).length; },
 
@@ -97,7 +108,7 @@
       if(component.kind!==this.KIND) return this.unsupported("not a "+this.KIND+" component");
       if(component.version!==this.VERSION)
         return this.unsupported("UI version "+String(component.version)+" is not supported; this app renders version 1");
-      if(!this.text(component.ui_id,64)||!this.ID_RE.test(component.ui_id))
+      if(!this.text(component.ui_id,64)||(!this.ID_RE.test(component.ui_id)&&component.ui_id!=="platform:blank"))
         return this.unsupported("ui_id must be lowercase letters, digits or dashes");
       if(!this.text(component.name,this.MAX_NAME)||!component.name.trim())
         return this.unsupported("name must be a non-empty string of at most "+this.MAX_NAME+" characters");
@@ -108,6 +119,15 @@
         return this.unsupported("this UI is "+size+" bytes of text; the limit is "+this.MAX_TEXT_BYTES);
       if("script_type" in component&&component.script_type!=="classic"&&component.script_type!=="module")
         return this.unsupported("script_type must be classic or module");
+      if("workflow_refs" in component){
+        const refs=component.workflow_refs;
+        if(!refs||typeof refs!=="object"||Array.isArray(refs)||Object.keys(refs).length>100)
+          return this.unsupported("workflow_refs must be an object of at most 100 references");
+        for(const [alias,id] of Object.entries(refs))
+          if(!/^[A-Za-z][A-Za-z0-9_-]{0,63}$/.test(alias)||
+             typeof id!=="string"||!id||id.length>200)
+            return this.unsupported("workflow_refs contains an invalid alias or workflow id");
+      }
       if("libraries" in component){
         const libs=component.libraries;
         if(!Array.isArray(libs)) return this.unsupported("libraries must be a list");
@@ -227,6 +247,7 @@
       this.epoch++; this.unmount();
       this.enabled=false; this.home=""; this.principal="";
       this.library=[]; this.broken=[]; this.unreadable=""; this.selection=null; this.busy=false;
+      this.platformDefault=null; this.defaultMounted=false;
       this.revision=0;
       this.conversation=null; this.conversationNote=""; this.previousTurn=null; this.selecting=false; this.ambiguous=false;
       $("btn-ui-switch").hidden=true;
@@ -305,6 +326,7 @@
     adopt(row){
       if(!this.enabled) return;
       this.revision=row.revision;
+      this.platformDefault=row.platform_default||null;
       const library=this.readLibrary(row),selection=this.readSelection(row);
       this.unmount();
       if(!library.ok){
@@ -312,11 +334,17 @@
         // empty cache here is what let a later install rewrite `ui_library` from
         // nothing and drop the bundles it could not parse (Codex, 2026-09-26).
         this.library=[]; this.broken=[]; this.unreadable=library.reason; this.selection=null;
+        // "Default chat is in use" has to BE true: every branch that says it
+        // mounts the platform's blank command center, or the stage is left
+        // empty with the explanation inside a closed dialog and no way back
+        // (gpt-6-astra on #4358, reproduced).
+        this.mountDefault();
         this.status("Installed UIs unreadable: "+library.reason+". Default chat is in use. Installing would overwrite them, so it is disabled."); this.paint(); return;
       }
       this.library=library.entries; this.broken=library.broken; this.unreadable="";
       if(!selection.ok){
         this.selection=null;
+        this.mountDefault();
         this.status("Saved UI choice unreadable: "+selection.reason+". Default chat is in use."); this.paint(); return;
       }
       this.selection=selection.selection;
@@ -326,14 +354,49 @@
         if(entry){ this.mount(entry); this.status("Using "+entry.name+"."+this.brokenNote()); }
         // The chosen UI is still installed; it is the one that cannot render,
         // so say which and why rather than "no longer installed".
-        else if(spoiled) this.status(spoiled.label+" cannot be shown: "+spoiled.reason
-          +". Default chat is in use; your other UIs still work.");
-        else this.status("Your saved UI ("+this.selection.ui_id+") is no longer installed. Default chat is in use."+this.brokenNote());
-      }else this.status((this.library.length?"Default chat is in use.":"")+this.brokenNote());
+        else if(spoiled){
+          this.mountDefault();
+          this.status(spoiled.label+" cannot be shown: "+spoiled.reason
+            +". Default chat is in use; your other UIs still work.");
+        }
+        else{
+          this.mountDefault();
+          this.status("Your saved UI ("+this.selection.ui_id+") is no longer installed. Default chat is in use."+this.brokenNote());
+        }
+      }else{
+        this.mountDefault();
+        this.status((this.library.length?"Default chat is in use.":"")+this.brokenNote());
+      }
       this.paint();
     },
 
     // ---- rendering: the bundle never enters this document ------------------
+    // Is the bundle on screen RIGHT NOW the platform's own blank command
+    // center? Read off the mounted entry, so a UI cannot become the platform's
+    // by naming itself that: parseBundle is the only way into `active`, and the
+    // only bundle whose ui_id may contain a colon is the one the server sends
+    // as `platform_default`.
+    isPlatformDefault(){
+      return !!(this.active && this.active.ui_id===this.PLATFORM_UI_ID && this.defaultMounted);
+    },
+    // Returns whether the stage now holds it. It does NOT throw: it is the
+    // fallback several branches above fall back TO, and a throw there would
+    // replace their explanation with a blank stage. A malformed platform
+    // bundle is ours, not the owner's, so it is reported loudly and the caller
+    // keeps its own message.
+    mountDefault(){
+      if(!this.enabled||!this.platformDefault) return false;
+      const parsed=this.parseBundle(this.platformDefault);
+      if(!parsed.ok){
+        console.error("the platform's blank command center did not parse: "+parsed.reason);
+        return false;
+      }
+      this.mount(parsed.bundle);
+      // Set AFTER mount: mount() clears it, so this is only ever true for the
+      // bundle this call put on screen.
+      this.defaultMounted=true;
+      return true;
+    },
     mount(entry){
       this.unmount();
       const host=$("ui-frame-host"),frame=document.createElement("iframe");
@@ -343,7 +406,8 @@
       frame.setAttribute("referrerpolicy","no-referrer");
       frame.setAttribute("src",this.FRAME_SRC);
       this.frame=frame; this.active=entry; this.ready=false;
-      this.frameGen++; this.pending=0; this.sending=false; this.emitting=false;
+      this.frameGen++; this.pending=0; this.sending=false; this.emitting=false; this.trying=false;
+      this.defaultMounted=false;   // mountDefault sets it again after this call
       this.listener=event=>this.receive(event);
       window.addEventListener("message",this.listener);
       host.replaceChildren(frame);
@@ -351,7 +415,6 @@
       $("view-chat").classList.add("ui-custom-active");
       // Keep the command center visible and hand keyboard input back to it.
       if(typeof refreshChatCloud==="function") refreshChatCloud();
-      if(typeof refreshCommandCenter === "function") refreshCommandCenter();
       if(typeof focusCommandCenter === "function" &&
          !(typeof isTypingTarget === "function" && isTypingTarget(document.activeElement)) &&
          !document.activeElement.closest("dialog[open], #cloud-menu:not([hidden])")) focusCommandCenter();
@@ -364,11 +427,11 @@
       $("view-chat").classList.remove("ui-custom-active");
       // Keep the command center visible and hand keyboard input back to it.
       if(typeof refreshChatCloud==="function") refreshChatCloud();
-      if(typeof refreshCommandCenter === "function") refreshCommandCenter();
       if(typeof focusCommandCenter === "function" &&
          !(typeof isTypingTarget === "function" && isTypingTarget(document.activeElement)) &&
          !document.activeElement.closest("dialog[open], #cloud-menu:not([hidden])")) focusCommandCenter();
       this.frame=null; this.active=null; this.ready=false; this.sending=false; this.emitting=false; this.pending=0;
+      this.trying=false; this.defaultMounted=false;
       this.frameGen++;
       this.paintHeader();
     },
@@ -382,6 +445,7 @@
       list_automations:"listAutomations",list_runs:"listRuns",read_live:"readLive",
       read_run:"readRun",read_run_output:"readRunOutput",
       list_files:"listFiles",read_file:"readFile",emit:"emit",
+      "packages.list_tryable":"listTryablePackages","packages.try":"tryPackage","chat.prefill":"prefillChat",
       conversation_design:"conversationDesign",set_conversation_design:"setConversationDesign"}),
     receive(event){
       // Only THIS frame's window is heard. Another frame, a popup, or the page
@@ -526,11 +590,31 @@
       const gen=this.frameGen,asker={gen,name:this.active?this.active.name:"This UI"};
       const method=Object.prototype.hasOwnProperty.call(this.ACTIONS,action)?this.ACTIONS[action]:null;
       if(!method){ this.refuse(id,"action not available: "+action); return; }
+      // PLATFORM-ONLY actions. Installing a package and putting words in the
+      // owner's composer are the app's own offer to them, not a capability a
+      // UI someone else wrote gets to reach for: a third-party bundle could
+      // otherwise install software or compose a message as the owner. Only the
+      // blank command center the platform ships (PLATFORM_UI_ID) may ask, and
+      // the check is on the bundle MOUNTED NOW, not on anything the frame says
+      // about itself.
+      if(this.PLATFORM_ONLY.indexOf(action)>=0 && !this.isPlatformDefault()){
+        this.refuse(id,"action not available: "+action); return;
+      }
       if(this.pending>=8){ this.refuse(id,"too many requests in flight"); return; }
       const epoch=this.epoch,home=this.home,args=(params&&typeof params==="object"&&!Array.isArray(params))?params:{};
       this.pending++;
       try{
         await this.verify();
+        // AGAIN, after the await. verify() is a server round-trip, and the
+        // owner can replace the bundle while it is in flight: the checks below
+        // used to run only on the way OUT, which discarded the reply but had
+        // already DONE the work -- gpt-6-astra reproduced chat.prefill running
+        // with a third-party bundle on screen. The effect, not just the
+        // answer, belongs to the bundle that asked.
+        if(!this.fence(epoch,home)||gen!==this.frameGen||!this.frame) return;
+        if(this.PLATFORM_ONLY.indexOf(action)>=0 && !this.isPlatformDefault()){
+          this.refuse(id,"action not available: "+action); return;
+        }
         const result=await this[method](args,asker);
         if(!this.fence(epoch,home)||gen!==this.frameGen||!this.frame) return;
         this.post({ta_ui:this.PROTOCOL,type:"result",id,ok:true,result});
@@ -545,7 +629,8 @@
     // principal id, no token, no provider or credential material.
     async whoami(){
       return {protocol:this.PROTOCOL,command_center_id:this.home,
-        command_center_name:String(($("universe-name")&&$("universe-name").textContent)||"").trim()};
+        command_center_name:String(($("universe-name")&&$("universe-name").textContent)||"").trim(),
+        workflow_refs:Object.assign({},this.active&&this.active.workflow_refs||{})};
     },
     // The viewer's OWN agents. `graph_id` is this.home, never an argument, so a
     // bundle cannot enumerate anybody else's command center.
@@ -673,6 +758,46 @@
     //
     // The server scopes each of these to the named command center, so a run id from
     // anywhere else reads as not found rather than being returned.
+    async listTryablePackages(){
+      const doc=await Owner.read({target:"command_center_packages",graph_id:this.home});
+      if(!doc||doc.error||!Array.isArray(doc.packages)||doc.packages.length>12||
+        typeof doc.build_prompt!=="string"||doc.build_prompt.length>this.MAX_MESSAGE||
+        doc.can_try!==(doc.packages.length>=1)) throw new Error("command-center packages are unavailable");
+      const packages=doc.packages.map(p=>{
+        if(!p||!this.text(p.agent_definition_id,this.MAX_ID)||!p.agent_definition_id||
+          typeof p.name!=="string"||typeof p.description!=="string"||typeof p.author_id!=="string"||
+          !Number.isInteger(p.version)||p.version<1||typeof p.size!=="string"||
+          !Number.isInteger(p.file_count)||p.file_count<0||!p.needs||
+          typeof p.needs.model!=="string"||!Array.isArray(p.needs.connections)||
+          !p.needs.connections.every(c=>typeof c==="string"))
+          throw new Error("invalid command-center package");
+        return {agent_definition_id:p.agent_definition_id,name:p.name,description:p.description,
+          author_id:p.author_id,version:p.version,size:p.size,file_count:p.file_count,
+          needs:{model:p.needs.model,connections:p.needs.connections.slice()}};
+      });
+      return {packages,build_prompt:doc.build_prompt,can_try:doc.can_try};
+    },
+    async tryPackage(args){
+      const id=args.agent_definition_id;
+      if(!this.text(id,this.MAX_ID)||!id.trim()) throw new Error("agent_definition_id is required");
+      if(this.trying) throw new Error("a package request from this UI is already in flight");
+      const gen=this.frameGen;
+      this.trying=true;
+      try{
+        const doc=await MCP.callTool("write_graph",{target:"connection",operation:"try_package",
+          graph_id:this.home,payload_json:JSON.stringify({agent_definition_id:id})});
+        if(!doc||doc.error||!this.text(doc.request_id,this.MAX_ID)||!doc.request_id)
+          throw new Error((doc&&(doc.detail||doc.error))||"the install could not be requested");
+        return {request_id:doc.request_id};
+      }finally{ if(gen===this.frameGen) this.trying=false; }
+    },
+    prefillChat(args){
+      const text=args.text;
+      if(!this.text(text,this.MAX_MESSAGE)) throw new Error("chat text is too long or missing");
+      if(typeof chatCloudPrefill==="function") chatCloudPrefill(text);
+      else throw new Error("the chat is not available");
+      return {prefilled:true};
+    },
     // Each agent's live state, for a screen that animates agents as they work
     // (a village whose villagers walk to what they are doing). Which agent,
     // working or idle, since when, and its latest steps -- each a tool name, a
@@ -1065,6 +1190,7 @@
     async chooseDefault(){
       if(!this.enabled||this.busy) return;
       this.unmount();
+      this.mountDefault();
       await this.remember({version:1,state:"default"},
         "Default chat restored.","Default chat restored for this visit only");
     },
@@ -1205,7 +1331,12 @@
       if(!list) return;
       list.replaceChildren();
       const row=document.createElement("li");
-      row.appendChild(this.button("Default chat",()=>this.chooseDefault(),this.busy||!this.active));
+      // Disabled only while a save is in flight. It used to also require
+      // something to BE active, which disabled the way back at exactly the
+      // moment it is needed -- nothing mounted (gpt-6-astra on #4358).
+      // chooseDefault works from no bundle: it unmounts, then mounts the
+      // platform's blank command center.
+      row.appendChild(this.button("Default chat",()=>this.chooseDefault(),this.busy));
       list.appendChild(row);
       for(const bundle of this.library){
         const item=document.createElement("li"),current=!!(this.active&&this.active.ui_id===bundle.ui_id);

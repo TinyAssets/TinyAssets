@@ -256,7 +256,8 @@ for(const action of ['write_graph','connectHTTP','whoami ','WHOAMI','constructor
 
 // ---- the viewer's identity, and nothing else ------------------------------
 const who=(await ask('whoami',{universe_id:'u-bob'})).result;
-assert.deepEqual(Object.keys(who).sort(),['command_center_id','command_center_name','protocol']);
+assert.deepEqual(Object.keys(who).sort(),['command_center_id','command_center_name','protocol','workflow_refs']);
+assert.deepEqual(who.workflow_refs,{});
 assert.equal(who.command_center_id,HOME);
 assert.equal(who.command_center_name,'Alice universe');
 
