@@ -30,6 +30,7 @@ import errno
 import os
 import stat
 import uuid
+from itertools import islice
 from pathlib import Path
 
 from tinyassets import workspace_fs as fs
@@ -43,6 +44,7 @@ __all__ = [
     "UniverseFileError",
     "is_data_path",
     "list_universe_dir",
+    "list_universe_entries",
     "load_untrusted_yaml",
     "open_runtime_dir",
     "read_data_path",
@@ -153,6 +155,13 @@ def list_universe_dir(universe_dir: Path | str, relpath: str) -> list[str]:
     component is a link or not a directory. Names only: read each entry with
     :func:`read_universe_file`, which re-checks it.
     """
+    return [name for name, _ in list_universe_entries(universe_dir, relpath)]
+
+
+def list_universe_entries(
+    universe_dir: Path | str, relpath: str, *, limit: int | None = None,
+) -> list[tuple[str, os.stat_result]]:
+    """Sorted no-follow metadata, optionally scanning only the first limit entries."""
     root = Path(universe_dir)
     if getattr(fs, "_POSIX", False):
         root_fd = fs.open_dir_nofollow(root.resolve(strict=False))
@@ -164,7 +173,11 @@ def list_universe_dir(universe_dir: Path | str, relpath: str) -> list[str]:
                     _check_component(part)
                     current = fs.open_subdir_nofollow(current, part)
                     opened.append(current)
-                return sorted(os.listdir(current))
+                with os.scandir(current) as entries:
+                    return sorted(
+                        (entry.name, entry.stat(follow_symlinks=False))
+                        for entry in islice(entries, limit)
+                    )
             finally:
                 for handle in opened:
                     os.close(handle)
@@ -173,7 +186,11 @@ def list_universe_dir(universe_dir: Path | str, relpath: str) -> list[str]:
     directory = _lstat_nofollow_windows(root, relpath)
     if not directory.is_dir():
         raise UniverseFileError("not a directory")
-    return sorted(entry.name for entry in os.scandir(directory))
+    with os.scandir(directory) as entries:
+        return sorted(
+            (entry.name, entry.stat(follow_symlinks=False))
+            for entry in islice(entries, limit)
+        )
 
 
 def open_runtime_dir(universe_dir: Path | str, *parts: str) -> int:

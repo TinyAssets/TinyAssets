@@ -32,6 +32,7 @@ from tinyassets.providers.model_capacity import (
     MAX_FREE_SIBLING_RETRIES as _MAX_FREE_SIBLING_RETRIES,
 )
 from tinyassets.providers.native_agent_input import render_native_input
+from tinyassets.request_budget import pooled_budget
 from tinyassets.served_tools import granted_tools
 from tinyassets.storage.agent_native_records import NativeInput, NativeTerminal
 from tinyassets.storage.agent_turn_boot import BOOT
@@ -99,6 +100,7 @@ class AgentTurnCoordinator:
         self.router = router
         self.prompt = prompt
         self.system = system
+        self.inference_system = system
         self.context = universe_context
         self.config = config
         self.journal = None
@@ -159,7 +161,8 @@ class AgentTurnCoordinator:
     def _begin(self, authority, reservation, config):
         candidate = self.adapter.round_input(
             authority, reservation, config, owner=self.owner, context=self.context,
-            prompt=self.prompt, system=self.system, native_input=None, kind="engine_inference",
+            prompt=self.prompt, system=self.inference_system,
+            native_input=None, kind="engine_inference",
         )
         self._accept(
             self.journal.begin_round(
@@ -441,6 +444,19 @@ class AgentTurnCoordinator:
         finally:
             self._release_turn()
 
+    def _daily_budget(self):
+        """Refresh advisory evidence without manufacturing provider exhaustion.
+
+        Installed caps do not identify this account's tier. In particular, a
+        successful request beyond the free tier is how local evidence learns
+        a larger allowance; stopping at that estimate prevents the correction.
+        Actual capacity failures still use the existing exhaustion policy.
+        """
+        return pooled_budget(
+            self.context.universe_dir.parent, self.owner, self.context,
+            exhaustion=self.exhaustion,
+        )
+
     async def _run(self):
         self.owner = self._check_scope()
         uid = self.context.universe_dir.name
@@ -474,6 +490,7 @@ class AgentTurnCoordinator:
                     # every settled round and tool result kept as it is.
                     if self.interrupt is not None:
                         self.interrupt.check()
+                    budget = self._daily_budget()
                     self.execution_kind = self.router.selected_agent_execution_kind(
                         self.context.model_selection,
                     )
@@ -492,6 +509,8 @@ class AgentTurnCoordinator:
                             ),
                         )
                         prompt, system, observer = self.prompt, self.system, self._begin
+                        if budget is not None:
+                            system += "\n\n" + budget.prompt_line()
                     else:
                         self.native_input = render_native_input(
                             self.prompt, self.system, self._history(),
@@ -502,6 +521,7 @@ class AgentTurnCoordinator:
                             selected_model=None,
                         )
                         observer = self._begin_native
+                    self.inference_system = system
                     try:
                         inference = self.adapter.infer(
                             router=self.router, prompt=prompt, system=system, config=config,

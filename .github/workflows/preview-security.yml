@@ -1,9 +1,14 @@
-# Unfiltered required-check candidate for the trusted preview boundary.
+# Path-unfiltered required-check candidate for the trusted preview boundary.
 #
 # `preview-worker.yml` remains path-filtered so unrelated pull requests do not
-# build/upload a site artifact. This small job runs on every pull request so
-# validator or workflow regressions always produce a check that branch
-# protection can require.
+# build/upload a site artifact. This small job runs on every NON-DRAFT pull
+# request, whatever it touches, so validator or workflow regressions always
+# produce a check that branch protection can require.
+#
+# "Unfiltered" here means by PATH, not by event: #4352 added a draft skip for
+# runner cost. If this is ever made an actually-required check, read the `if:`
+# on the job first -- a skipped job reports `conclusion=skipped` and branch
+# protection accepts that as satisfied.
 name: preview-security
 
 on:

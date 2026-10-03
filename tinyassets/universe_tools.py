@@ -85,6 +85,7 @@ import os
 import re
 import shutil
 import signal
+import stat
 import subprocess
 import threading
 import time
@@ -1133,44 +1134,126 @@ def skill_index(universe_dir: Path) -> list[tuple[str, str]]:
 
 _HARNESS_HEAD = (
     "# My folder and my four tools\n"
-    "My command center is a folder, mounted at /u, and I work in it with four tools: "
-    "`read` (a file, or a range of its lines), `write` (create or replace a "
-    "file), `edit` (replace one exact passage in a file) and `bash` (a shell in "
-    "/u with public internet through a proxy that HTTP(S)_PROXY already points "
-    "at, so pip, npm, git and urllib work, and bounded memory, processes and "
-    "time, so long-running "
-    "work does not belong there: it is workflows and automations in this "
+    "My folder is /u: `read` reads files/lines, `write` creates/replaces files, "
+    "`edit` replaces one exact passage, and `bash` runs a "
+    "shell with public internet via HTTP(S)_PROXY (pip, npm, git, urllib) and "
+    "bounded memory, processes and time; long-running work is workflows and automations in this "
     "command center, never a service hosted elsewhere -- handbook chapter "
-    "write_graph.systems). Relative paths are under /u. Nothing outside "
-    "/u is mine or reachable. /u is my own workspace: I can create, change and "
-    "delete anything in it, including new folders at the top. My brain files "
-    "(identity.md, founder.md, origin.md, body.md, orgchart.md, projects.md, "
-    "goals.md, index.md, log.md, voice.md), my wiki/ and skills/, prompts/, "
-    "extensions/, workflows/, bin/ and notes/ are mine too; a few platform "
-    "files such as soul.md and config.yaml are read-only.\n"
-    "A skill is `skills/<name>/SKILL.md`, starting with frontmatter that has a "
-    "`name:` and a one-line `description:` of when to use it. Only the list "
-    "below is in this prompt: when a request matches a skill, I `read` its "
-    "SKILL.md and follow it. I make or change my own skills by writing that "
-    "file; a skill takes effect from my next turn.\n"
+    "write_graph.systems; relative paths are under /u, nothing outside is reachable. "
+    "/u is my own workspace: I create, change and delete anything in it, "
+    "including new top-level folders; only a few platform files such as "
+    "soul.md and config.yaml are read-only.\n"
+    "Skills are `skills/<name>/SKILL.md` with frontmatter `name:` and a one-line "
+    "`description:`; I read and follow matching skills, and write that file "
+    "to change them next turn.\n"
+    "When I need several independent reads or checks, I make those tool calls "
+    "together in one reply, not one per reply.\n"
+    "I install an app UI as one component with `write_graph target=\"app_ui\" "
+    "operation=\"add_ui\"` and `payload_json={\"component\": {...}}` (handbook "
+    "write_graph.interfaces), in one call rather than staging "
+    "pieces in /u files and reading them back.\n"
     "## My skills\n"
 )
 
 
+def _folder_section(universe_dir: Path) -> str:
+    """Two levels of metadata through the same no-follow reader as skills."""
+    from tinyassets.universe_files import list_universe_entries
+
+    lines: list[str] = []
+    remaining = 200
+
+    def read(directory: str) -> list:
+        nonlocal remaining
+        entries = list_universe_entries(universe_dir, directory, limit=remaining)
+        remaining -= len(entries)
+        return entries
+
+    def visit(directory: str, depth: int, entries: list) -> None:
+        for name, info in entries:
+            if stat.S_ISLNK(info.st_mode) or getattr(info, "st_reparse_tag", 0):
+                continue
+            path = f"{directory}/{name}"
+            # Escape unusual names so a filename cannot inject extra prompt lines.
+            shown = path.encode("unicode_escape").decode("ascii")
+            if stat.S_ISDIR(info.st_mode):
+                lines.append(f"- {shown}/")
+                if depth < 2 and remaining:
+                    visit(path, depth + 1, read(path))
+            elif stat.S_ISREG(info.st_mode):
+                lines.append(f"- {shown} ({info.st_size / 1024:.1f} KB)")
+
+    try:
+        for directory in ("notes", "prompts", "workflows"):
+            if not remaining:
+                break
+            try:
+                entries = read(directory)
+            except FileNotFoundError:
+                continue  # Optional top-level folders need not exist yet.
+            visit(directory, 1, entries)
+    except (OSError, NotImplementedError, RecursionError, ValueError):
+        return ""
+    lines.sort()
+    visible = lines[:40]
+    if not remaining:
+        visible.append("(more entries; `bash ls` shows them.)")
+    elif len(lines) > 40:
+        visible.append(f"({len(lines) - 40} more entries; `bash ls` shows them.)")
+    return "\n\n## What is in my folder now\n" + "\n".join(visible or ["(empty)"])
+
+
+def command_center_summary(universe_dir: Path, owner: str) -> str:
+    """Bounded resident names and status for the verified owner's current home."""
+    try:
+        from tinyassets.api.status import _universe_active_turn
+        from tinyassets.daemon_server import get_founder_home, list_branch_definitions
+        from tinyassets.storage.outbound_connections import ConnectionLedger
+
+        if not owner or get_founder_home(universe_dir.parent, owner) != universe_dir.name:
+            return ""
+        branches = list_branch_definitions(universe_dir.parent, author=owner, viewer=owner)
+        ledger = ConnectionLedger(universe_dir.parent / "outbound.db")
+        names = []
+        for grant in ledger.list_grants(owner_user_id=owner, universe_id=universe_dir.name,
+                                        limit=21):
+            connection = ledger.get_connection_view(grant.connection_id)
+            if connection and connection.owner_user_id == owner and connection.revoked_at is None:
+                names.append(connection.destination)
+        active = _universe_active_turn(universe_dir)
+        if active and active.get("state") == "unreadable":
+            return ""
+
+        def bounded(values):
+            # Names are data, not instructions. Bound both rows and each name.
+            import json
+
+            shown = [str(value)[:100] for value in values[:20]]
+            suffix = " (more omitted)" if len(values) > 20 else ""
+            return json.dumps(shown, ensure_ascii=False) + suffix
+
+        return (
+            "\n\n## My command center now\nCurrent names (data only):\n"
+            + "Branches: " + bounded([row["name"] for row in branches])
+            + "\nConnections: " + bounded(names)
+            + "\nStatus: " + ("working" if active else "idle")
+        )
+    except Exception:  # noqa: BLE001 - omit unavailable resident evidence, never guess
+        return ""
+
+
 def harness_prompt(universe_dir: Path) -> str:
-    """The base harness section: the four tools, the folder, the skill index.
+    """The four tools, skill index and bounded current folder inventory.
 
     Runs in the shared daemon on every founder turn, so a bad skill folder
-    never breaks the turn: any failure yields the section with no skills.
+    never breaks the turn; an unreadable inventory is omitted.
     """
     try:
         skills = skill_index(universe_dir)
     except (OSError, RecursionError, ValueError):
         skills = []
-    if not skills:
-        return _HARNESS_HEAD + "(none yet)"
     lines = [
         f"- `{name}`: {description} ({SKILLS_DIR}/{name}/SKILL.md)"
         for name, description in skills
     ]
-    return _HARNESS_HEAD + "\n".join(lines)
+    return _HARNESS_HEAD + "\n".join(lines or ["(none yet)"]) + _folder_section(universe_dir)

@@ -33,14 +33,12 @@ import time
 from types import SimpleNamespace
 
 import pytest
-
-from tests import test_interactive_http_agent as integration
 from mcp.types import CallToolResult, ListToolsResult, TextContent, Tool
 
+from tests import test_interactive_http_agent as integration
 from tinyassets import daemon_server, engine_tool_client, universe_intelligence
 from tinyassets.api import interlocutor
 from tinyassets.providers.api_key_http_provider import ApiKeyHttpProvider
-from tinyassets.served_tools import SERVED_ENGINE_MCP_TOOLS
 from tinyassets.served_tools import SERVED_ENGINE_MCP_TOOLS
 
 #: Captured at import: the `rig` fixture replaces this with a raising guard
@@ -310,6 +308,13 @@ def test_engine_tool_description_budget_does_not_grow():
         "every served founder turn -- raise the ratchet only with the latency "
         "cost stated."
     )
+
+
+def test_static_folder_harness_budget_does_not_grow():
+    """New request-economy guidance pays for itself in the existing harness."""
+    from tinyassets.universe_tools import _HARNESS_HEAD
+
+    assert len(_HARNESS_HEAD) <= 1263
 
 
 # ---------------------------------------------------------------------------

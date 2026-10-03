@@ -2157,6 +2157,7 @@ def list_requests(*, universe_id: str = "") -> dict[str, Any]:
     # mute with no way back, and needs no migration.
     connected = _serving_llm_bound(_base_path(), uid, permissions.current_actor_id().strip())
     entry = _connect_llm_request(connected=connected)
+    rows = [row for row in rows if row["request_id"] != _LLM_REQUEST_ID]
     if connected:
         from tinyassets.provider_assignment import load_provider_assignment
 
@@ -2165,6 +2166,13 @@ def list_requests(*, universe_id: str = "") -> dict[str, Any]:
             entry["suggestion"] = (
                 "Add another free source to keep going when one reaches its limit."
             )
+    if connected:
+        from tinyassets.request_budget import budget_for_rail
+
+        budget = budget_for_rail(_base_path(), permissions.current_actor_id().strip(), udir)
+        if budget is not None and budget.remaining < 10:
+            entry["status"] = "pending"
+            entry["suggestion"] = budget.connect_suggestion()
     rows = [*rows, entry] if connected else [entry, *rows]
     # FIRST in the rail: a refused sign-in is the reason a powered universe is not
     # working, so it outranks both the agent's asks and the optional

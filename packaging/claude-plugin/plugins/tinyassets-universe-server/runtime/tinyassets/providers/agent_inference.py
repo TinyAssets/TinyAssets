@@ -22,14 +22,18 @@ if TYPE_CHECKING:
 class AgentInferenceRequest:
     tools_json: str = field(repr=False)
     history: tuple[codec.CapturedToolRound, ...] = field(repr=False)
+    tool_choice: str
 
-    def __init__(self, *, tools, history=()) -> None:
+    def __init__(self, *, tools, history=(), tool_choice="auto") -> None:
         if not isinstance(history, tuple) or any(
             not isinstance(item, codec.CapturedToolRound) for item in history
         ):
             raise ValueError("captured immutable agent history required")
         object.__setattr__(self, "tools_json", codec._dump({"tools": codec._definitions(tools)}))
         object.__setattr__(self, "history", history)
+        if tool_choice not in {"auto", "none", "required"}:
+            raise ValueError("invalid agent tool choice")
+        object.__setattr__(self, "tool_choice", tool_choice)
 
     def tools(self) -> tuple[dict[str, Any], ...]:
         return codec._definitions(codec._object(self.tools_json)["tools"])
@@ -58,6 +62,7 @@ class AgentInferenceRequest:
             model=selection.model_id,
             tools=self.tools(),
             history=self.history,
+            tool_choice=self.tool_choice,
             temperature=temperature,
             max_tokens=max_tokens,
         )

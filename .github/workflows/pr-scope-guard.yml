@@ -196,6 +196,28 @@ jobs:
 
           TOTAL="$(printf '%s\n' "$CHANGED" | sed '/^$/d' | wc -l | tr -d ' ')"
 
+          # Paths no PR may touch at all (scripts/check_forbidden_pr_paths.py).
+          # Checked FIRST, and on purpose, even though the receipt check below
+          # deliberately reports its own complaint together with the label one:
+          # fixing this is mechanical and takes seconds, and the fix is a PUSH,
+          # which voids a head-pinned receipt anyway. Telling the author now
+          # means they fix it and get stamped once; bundling it with the receipt
+          # failure would have them get stamped and then void it.
+          if ! printf '%s\n' "$CHANGED" \
+              | python scripts/check_forbidden_pr_paths.py \
+                2> "$RUNNER_TEMP/forbidden-paths.txt"; then
+            echo "::error::this PR changes a path no PR may change"
+            {
+              echo "### PR scope guard"
+              echo ""
+              echo "**Blocked — this PR changes a path no PR may change.**"
+              echo ""
+              sed 's/^/> /' "$RUNNER_TEMP/forbidden-paths.txt"
+            } >> "$GITHUB_STEP_SUMMARY"
+            cat "$RUNNER_TEMP/forbidden-paths.txt"
+            exit 1
+          fi
+
           # The endpoint caps at 3000 files and says nothing when it truncates.
           # An earlier version of this comment claimed the read above already
           # failed closed on truncation; it did not, and a cross-family review

@@ -58,6 +58,8 @@ def agent(served, monkeypatch):
         wires=[],
         tools=[],
         requested_rounds=1,
+        first_text=None,
+        tools_per_round=1,
         fail_tool=False,
         closed=False,
         before_reply=None,
@@ -94,7 +96,7 @@ def agent(served, monkeypatch):
             )
 
         async def call_tool_mcp(self, name, arguments):
-            assert latest().rounds[-1].tools[0].state == "started"
+            assert any(tool.state == "started" for tool in latest().rounds[-1].tools)
             state.tools.append((name, arguments))
             if state.fail_tool:
                 raise RuntimeError("synthetic post-dispatch disconnect")
@@ -105,8 +107,14 @@ def agent(served, monkeypatch):
             pass
 
         def request(self, verb, document):
-            assert latest().state == "inference_started"
-            assert latest().rounds[-1].candidate.reservation_id
+            learning = any(
+                message.get("role") == "system"
+                and message.get("content") == universe_intelligence._LEARNING_SYSTEM
+                for message in document["body"]["messages"]
+            )
+            if not learning:
+                assert latest().state == "inference_started"
+                assert latest().rounds[-1].candidate.reservation_id
             state.wires.append((verb, document))
             if state.unknown_inference:
                 return {"error": "synthetic post-dispatch disconnect"}
@@ -122,18 +130,25 @@ def agent(served, monkeypatch):
                 }
             if state.before_reply is not None:
                 state.before_reply()
-            tools = len(state.wires) <= state.requested_rounds
-            message = {"role": "assistant", "content": None if tools else "finished exact answer"}
+            tools = (not learning and len(state.wires) <= state.requested_rounds
+                     and document["body"].get("tool_choice") != "none")
+            message = {
+                "role": "assistant",
+                "content": "{}" if learning else None if tools else "finished exact answer",
+            }
             if tools:
+                if len(state.wires) == 1:
+                    message["content"] = state.first_text
                 message["tool_calls"] = [
                     {
-                        "id": "same-wire-id",
+                        "id": "same-wire-id" if index == 0 else f"wire-id-{index}",
                         "type": "function",
                         "function": {
                             "name": state.tool_call[0],
                             "arguments": state.tool_call[1],
                         },
                     }
+                    for index in range(state.tools_per_round)
                 ]
             return {
                 "status": 200,
@@ -154,7 +169,12 @@ def agent(served, monkeypatch):
     return state
 
 
-def run(agent, observer=None):
+def run(agent, observer=None, *, greeting=False):
+    if greeting:
+        return universe_intelligence.converse(
+            founder_message="hi", universe_id=agent.served.context.universe_dir.name,
+            response_observer=observer,
+        )
     return universe_intelligence._call_writer(
         "exact user prompt",
         system="exact system",

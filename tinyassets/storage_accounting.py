@@ -613,6 +613,9 @@ UNIVERSE_ENTRIES: frozenset[str] = frozenset({
 #: directory is named here.
 ELSEWHERE_ENTRIES: frozenset[str] = frozenset({
     ".git", ".agents", ".author_server.db", ".workflow.db",
+    # The box host's control-plane record (boxes/local.py), kept in the box
+    # driver's own state_dir, never inside a universe or charged to a user.
+    "boxhost.db",
 })
 
 

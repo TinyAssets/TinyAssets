@@ -2889,9 +2889,7 @@ def write_graph(
     then a "repair" with 36 typos).** The `connections` chapter has the
     two-node shape that does it correctly.
 
-    THE HANDBOOK. My long-form guidance for this handle is not repeated in
-    every round of every turn -- it is chapters I read when I need one,
-    exactly as I read a skill's SKILL.md when a request matches it:
+    THE HANDBOOK. Read the relevant chapter on demand, like a matching skill's SKILL.md:
 
     * ``branches`` -- the minimal branch that builds, field by field: a working
       one-node and two-node ``operation="create"`` payload, which keys have
