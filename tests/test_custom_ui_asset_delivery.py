@@ -35,6 +35,14 @@ const fetch=async(path,options)=>{
 CHECKS = r'''
 (async()=>{
 const u=AppUI;
+// The ready event starts asynchronous hashing. Observe its real completion;
+// a fixed number of event-loop turns cannot establish that bytes were checked.
+let delivery=Promise.resolve();
+const originalDelivery=u.deliverWithFiles;
+u.deliverWithFiles=function(...args){
+ delivery=originalDelivery.apply(this,args);
+ return delivery;
+};
 // Pins for the double's library bytes, in the controller's own table shape.
 const pin=async b=>'sha384-'+Buffer.from(await sha('SHA-384',b)).toString('base64');
 u.LIBRARIES={three:{format:'module',sha384:await pin(LIB.three),requires:[]},
@@ -59,7 +67,7 @@ const mountReady=async(entry)=>{
 // ---- the happy path: bearer, viewer's home, requirements first -----------
 let win=await mountReady(village);
 assert.equal(win.posts.length,0,'nothing reaches the frame before its bytes are checked');
-await settle(40);
+await delivery;
 assert.equal(win.posts.length,1);
 const b=win.posts[0].bundle;
 assert.equal(b.script_type,'module');
@@ -77,7 +85,7 @@ for(const f of fetches){
 // ---- a library is fetched once per page life ------------------------------
 fetches=[];
 win=await mountReady(bundleOf({ui_id:'v2',libraries:['three']}));
-await settle(40);
+await delivery;
 assert.equal(win.posts.length,1);
 assert.equal(fetches.filter(f=>f.body.library).length,0,'a verified library is not refetched');
 
@@ -85,19 +93,19 @@ assert.equal(fetches.filter(f=>f.body.library).length,0,'a verified library is n
 u.libCache.clear();
 tamper='three';
 win=await mountReady(village);
-await settle(40);
+await delivery;
 assert.equal(win.posts.length,0,'a library failing its pin is not posted');
 assert(/integrity check/.test($('ui-status').textContent),$('ui-status').textContent);
 tamper=grass.sha256;
 win=await mountReady(village);
-await settle(40);
+await delivery;
 assert.equal(win.posts.length,0,'an asset failing its hash is not posted');
 assert(/asset img\/grass\.png failed its integrity check/.test($('ui-status').textContent),$('ui-status').textContent);
 tamper='';
 
 // ---- a missing blob is reported, not rendered half-loaded ----------------
 win=await mountReady(bundleOf({ui_id:'gone',assets:{'x.png':{sha256:'f'.repeat(64),size:1,media_type:'image/png'}}}));
-await settle(40);
+await delivery;
 assert.equal(win.posts.length,0);
 assert(/app_ui_asset_not_found/.test($('ui-status').textContent),$('ui-status').textContent);
 
@@ -106,7 +114,7 @@ u.libCache.clear();
 const old=await mountReady(village);
 // The person switches to a plain UI before the village's bytes arrive.
 const plain=await mountReady(bundleOf({ui_id:'plain',markup:'<p>plain</p>'}));
-await settle(40);
+await delivery;
 assert.equal(old.posts.length,0,'bytes fetched for a frame that is gone are dropped');
 assert.equal(plain.posts.length,1,'the new frame gets its own bundle and nothing else');
 assert.equal(plain.posts[0].bundle.markup,'<p>plain</p>');
@@ -120,3 +128,53 @@ console.log('asset delivery checks passed');
 def test_the_app_checks_every_pin_before_the_frame_sees_a_byte(tmp_path):
     out = _run(tmp_path, "custom_ui_assets.js", CHECKS, extra=BYTES_DOUBLE)
     assert "asset delivery checks passed" in out
+
+
+def test_delivery_completion_waits_for_hash_and_integrity_refusal_posts_no_bytes(tmp_path):
+    checks = r'''
+(async()=>{
+const u=AppUI;
+const bytes=enc('PNG-BYTES');
+const ref={sha256:hex(await sha('SHA-256',bytes)),size:bytes.byteLength,media_type:'image/png'};
+FILES[ref.sha256]=bytes; tamper=ref.sha256;
+const entry=bundleOf({ui_id:'held-hash',assets:{'img/grass.png':ref}});
+
+let releaseHash,hashStarted;
+const hashGate=new Promise(resolve=>{releaseHash=resolve;});
+const started=new Promise(resolve=>{hashStarted=resolve;});
+const originalDigest=u.digest;
+u.digest=async function(...args){
+ hashStarted();
+ await hashGate;
+ return originalDigest.apply(this,args);
+};
+let delivery;
+const originalDelivery=u.deliverWithFiles;
+u.deliverWithFiles=function(...args){
+ delivery=originalDelivery.apply(this,args);
+ return delivery;
+};
+appUi=stored([entry],{version:1,state:'active',ui_id:entry.ui_id});
+u.enabled=true;u.home=HOME;u.principal=PRINCIPAL;u.adopt(clone(appUi));
+const win=u.frame.contentWindow;
+emit({source:win,data:{ta_ui:1,type:'ready'}});
+assert(delivery instanceof Promise,'the ready event exposes the actual delivery work');
+let verified=false;
+const verification=delivery.then(()=>{
+ assert(/asset img\/grass\.png failed its integrity check/.test($('ui-status').textContent),
+        $('ui-status').textContent);
+ assert.equal(win.posts.length,0,'a tampered asset never reaches the frame');
+ verified=true;
+});
+await started;
+await settle(40); // Deliberately exhaust the old wait with hashing still held.
+assert.equal(verified,false,'verification cannot race ahead of the held hash');
+assert.equal(win.posts.length,0,'no bytes reach the frame while integrity is undecided');
+releaseHash();
+await verification;
+assert.equal(verified,true,'verification runs after integrity refusal completes');
+console.log('held hash checks passed');
+})().catch(err=>{console.error(err);process.exit(1);});
+'''
+    out = _run(tmp_path, "custom_ui_held_hash.js", checks, extra=BYTES_DOUBLE)
+    assert "held hash checks passed" in out
