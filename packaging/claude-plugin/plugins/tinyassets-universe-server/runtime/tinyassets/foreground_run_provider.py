@@ -96,6 +96,21 @@ def _prompt_nodes(snapshot: dict[str, Any]) -> tuple[dict[str, Any], ...]:
     )
 
 
+def _review_allowance(snapshot: dict[str, Any]) -> int:
+    """At most two text attempts per declared effect, within the owner's cap."""
+    from tinyassets.agent_review import REVIEW_MAX_ATTEMPTS
+    from tinyassets.effectors.authenticated_external_call import (
+        EXTERNAL_WRITE_SINK_AUTHENTICATED_CALL,
+    )
+
+    raw = snapshot.get("node_defs", [])
+    nodes = raw.values() if isinstance(raw, dict) else raw
+    return REVIEW_MAX_ATTEMPTS * sum(
+        (node.get("effects") or []).count(EXTERNAL_WRITE_SINK_AUTHENTICATED_CALL)
+        for node in nodes if isinstance(node, dict)
+    )
+
+
 def _declared_policy_providers(policy: dict[str, Any] | None) -> set[str]:
     providers: set[str] = set()
     if not policy:
@@ -323,6 +338,26 @@ class _ForegroundRunProviderSession:
             raise PermissionError("foreground run record is missing")
         return record
 
+    def _review_purpose(self):
+        from tinyassets.agent_review import _PURPOSE, _ReviewPurpose
+
+        purpose = _PURPOSE.get()
+        if purpose is None:
+            return None
+        bound_session, depth = _locate_session(purpose.provider_call)
+        if (type(purpose) is not _ReviewPurpose or not purpose.active
+                or purpose.universe_dir != self._universe_dir
+                or not purpose.run_id or purpose.run_id != self._run_id
+                or not purpose.action_sha256
+                or not (purpose.provider_call is self
+                        or (bound_session is self and depth == 1))):
+            raise PermissionError("effect review does not belong to this owner and run")
+        if not self._branch_snapshot or not _review_allowance(self._branch_snapshot):
+            raise PermissionError("effect review has no declared effect in this run")
+        if self._run_record().get("owner_user_id") != self._principal_id:
+            raise PermissionError("effect review run owner does not match its principal")
+        return purpose
+
     def _validate_run(self, *, allowed_statuses: set[str]) -> None:
         from tinyassets.runs import is_cancel_requested
 
@@ -441,17 +476,18 @@ class _ForegroundRunProviderSession:
             if branch_author != self._principal_id:
                 raise PermissionError("foreground Branch author is not the principal")
             nodes = _prompt_nodes(snapshot)
+            review_slots = _review_allowance(snapshot)
             roles = tuple(
                 sorted(
                     {
                         str(node.get("model_hint") or "writer").strip() or "writer"
                         for node in nodes
-                    }
+                    } | ({"writer"} if review_slots else set())
                 )
             )
             if not set(roles).issubset(_SUPPORTED_ROLES):
                 raise PermissionError("foreground Branch requests an unsupported role")
-            if not nodes:
+            if not nodes and self._review_purpose() is None:
                 raise PermissionError("foreground provider attempt has no prompt node")
             self._validate_run(allowed_statuses={"running"})
             # AFTER every refusal this lane can decide from stored state, and
@@ -507,7 +543,7 @@ class _ForegroundRunProviderSession:
                                 "foreground Branch policy is outside the active provider"
                             )
                         if (
-                            len(nodes) > parent_binding.max_invocations
+                            len(nodes) + review_slots > parent_binding.max_invocations
                             or not set(roles).issubset(parent_binding.allowed_roles)
                             or parent_binding.max_tokens < 1
                             or parent_binding.max_cost_microunits < 1
@@ -585,7 +621,7 @@ class _ForegroundRunProviderSession:
                             # value has to be true rather than asserted.
                             executor_class=_admitted_cloud_class(),
                             max_invocations=_work_invocation_allowance(
-                                snapshot, minimum=len(nodes),
+                                snapshot, minimum=len(nodes) + review_slots,
                                 ceiling=child_binding.max_invocations,
                             ),
                             max_tokens=child_binding.max_tokens,
@@ -688,12 +724,13 @@ class _ForegroundRunProviderSession:
              + int(bool(policy.get("difficulty_override"))))
             * (1 + len(_POLICY_PROVIDER_RETRY_BACKOFF_SECONDS)) if policy else 1
             for policy in policies
-        )
+        ) + _review_allowance(self._branch_snapshot)
         if getattr(self, "_work_candidates", None) is not None:
             max_invocations = self._work_candidates.fit(
                 self._branch_snapshot,
                 ceiling=min(binding.max_invocations for binding in bindings),
                 retry_multiplier=1 + len(_POLICY_PROVIDER_RETRY_BACKOFF_SECONDS),
+                review_attempts=_review_allowance(self._branch_snapshot),
             )
         max_invocations = _work_invocation_allowance(
             self._branch_snapshot, minimum=max_invocations,
@@ -822,7 +859,7 @@ class _ForegroundRunProviderSession:
             raise PermissionError("foreground run provider authority is stale")
 
     def _check_agent_authority(self, carrier: ProviderInvocationCarrier) -> str:
-        """Fresh work fence between agent steps; never reserve or rearm a call."""
+        """Fresh fence between agent steps or after a review; never rearm a call."""
         import hmac
 
         from tinyassets.provider_assignment import provider_assignment_admission
@@ -853,7 +890,8 @@ class _ForegroundRunProviderSession:
             raise PermissionError("work agent carrier does not match its active run")
         if (self._branch_snapshot is None
                 or _content_digest(self._branch_snapshot) != self._branch_digest
-                or not shared_self_requested(self._branch_snapshot)):
+                or (not shared_self_requested(self._branch_snapshot)
+                    and self._review_purpose() is None)):
             raise PermissionError("work agent immutable subject changed")
         self._validate_founder_home()
         self._validate_run(allowed_statuses={"running"})
@@ -963,6 +1001,13 @@ class _ForegroundRunProviderSession:
         snapshot = None
         carrier = None
         try:
+            review = self._review_purpose()
+            if review is not None:
+                from tinyassets.agent_review import SAFETY_REQUIREMENTS
+
+                if role != "writer" or prompt != review.prompt or system != SAFETY_REQUIREMENTS:
+                    raise PermissionError("effect review cannot substitute its text-only purpose")
+                review.consume()
             if self._closed or self._receipt is None or self._claim is None:
                 raise PermissionError("foreground run provider session is not active")
             if role not in self._receipt.allowed_roles:
@@ -990,7 +1035,10 @@ class _ForegroundRunProviderSession:
             with self._lock:
                 self._call_index += 1
                 invocation_index = self._call_index
-            prompt_digest = _content_digest([role, prompt, system])
+            prompt_digest = _content_digest([
+                role, prompt, system,
+                ["effect_review", review.action_sha256] if review else "prompt_node",
+            ])
             invocation_key = (
                 f"run:{self._run_id}:{invocation_index}:{prompt_digest.removeprefix('sha256:')}"
             )
@@ -1059,7 +1107,8 @@ class _ForegroundRunProviderSession:
                             )
                             provider = assignment.provider
                         self._validate_receipt_parent(parent_binding, assignment)
-                        shares = len(_prompt_nodes(self._branch_snapshot))
+                        shares = (len(_prompt_nodes(self._branch_snapshot))
+                                  + _review_allowance(self._branch_snapshot))
                         token_share = max(
                             1,
                             self._receipt.max_tokens // shares,
@@ -1079,7 +1128,8 @@ class _ForegroundRunProviderSession:
                             max_cost_microunits=cost_share,
                             selection=selection,
                             model_snapshot=model_snapshot,
-                            needs_tools=shared_self_requested(self._branch_snapshot),
+                            needs_tools=(review is None
+                                         and shared_self_requested(self._branch_snapshot)),
                         )
                         if not _is_open_provider(provider):
                             snapshot = snapshot_llm_subscription_credential(
@@ -1133,6 +1183,20 @@ class _ForegroundRunProviderSession:
                 PermissionError("this run's provider session is already closed")
             )
 
+        review = self._review_purpose()
+        if review is not None:
+            from tinyassets.agent_review import SAFETY_REQUIREMENTS
+
+            if (role != "writer" or prompt != review.prompt
+                    or system != SAFETY_REQUIREMENTS or config is not None
+                    or policy is not None or kwargs):
+                raise PermissionError("effect review cannot substitute its text-only purpose")
+            config = ModelConfig()
+        elif self._branch_snapshot is not None and not _prompt_nodes(self._branch_snapshot):
+            raise _held_authority_error(
+                PermissionError("foreground provider attempt has no prompt node")
+            )
+
         # Enforcement site (C), foreground half, at the call boundary — the
         # mirror of the served lane's gate in `background_served_provider._call`.
         # `_admit()` alone is not enough here, for two independent reasons:
@@ -1163,7 +1227,8 @@ class _ForegroundRunProviderSession:
         # the production call primitive. Give that stub one fail-closed,
         # unarmed invocation: a real ProviderRouter refuses before launch, while a
         # mock returns without creating provider authority or a run receipt.
-        if getattr(self._provider_call, "__module__", "") != "tinyassets.providers.call":
+        if (review is None
+                and getattr(self._provider_call, "__module__", "") != "tinyassets.providers.call"):
             from tinyassets.exceptions import ProviderAuthorityHeldError
             from tinyassets.providers.base import UniverseContext
 
@@ -1188,7 +1253,7 @@ class _ForegroundRunProviderSession:
         self._ensure_admitted()
         from tinyassets.shared_self import agent_node, prepare_shared_self_turn
 
-        node = agent_node(
+        node = None if review is not None else agent_node(
             self._branch_snapshot, getattr(config, "agent_node_id", ""), self._principal_id,
             node_key=getattr(config, "agent_node_key", ""),
         )
@@ -1474,6 +1539,10 @@ class _ForegroundRunProviderSession:
                 ),
                 **kwargs,
             )
+            if self._review_purpose() is not None:
+                # The model answer cannot authorize an effect after a stop or
+                # revocation that arrived while the review was in flight.
+                self._check_agent_authority(carrier)
             return result, provider
 
     def __call__(

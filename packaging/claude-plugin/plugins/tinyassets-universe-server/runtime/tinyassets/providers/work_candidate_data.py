@@ -198,7 +198,7 @@ class WorkCandidateData:
             tail = narrowed
         return (primary, *tail)
 
-    def fit(self, snapshot, *, ceiling, retry_multiplier):
+    def fit(self, snapshot, *, ceiling, retry_multiplier, review_attempts=0):
         groups = {}
         for node in snapshot["node_defs"]:
             if not str(node.get("prompt_template") or "").strip():
@@ -207,6 +207,12 @@ class WorkCandidateData:
             key = policy_key(policy)
             prior = groups.get(key, (self._constrained(policy), 0, self.automatic))
             groups[key] = (prior[0], prior[1] + (retry_multiplier if policy else 1), prior[2])
+        if review_attempts:
+            # A review is a separate text purpose with the owner's captured
+            # default order, never a fabricated prompt node or a new grant.
+            key = policy_key(None)
+            prior = groups.get(key, (self._constrained(None), 0, self.automatic))
+            groups[key] = (prior[0], prior[1] + review_attempts, prior[2])
         fitted, minimum = fit_orders(groups, ceiling=ceiling)
         with self._lock:
             if self._fitted is not None and self._fitted != fitted:
