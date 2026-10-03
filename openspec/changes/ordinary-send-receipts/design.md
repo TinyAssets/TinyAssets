@@ -244,7 +244,7 @@ does not select between overlapping serving owners, which remain unsupported.
 
 Executable `proofs/engine_incarnation.py` spawns a synthetic serving process and
 uses the existing process_liveness implementation from a distinct delivery
-observer. Four cases prove live delivery with distinct BOOTs, retained uncertainty
+observer. Five cases prove live delivery with distinct BOOTs, retained uncertainty
 after SIGKILL, refusal after closure despite ALIVE, missing-proof refusal and scope/
 non-dispatch restrictions. The 19 prior protocol cases remain green. No provider,
 real engine, account, device or production path is called. Actual session/live_id

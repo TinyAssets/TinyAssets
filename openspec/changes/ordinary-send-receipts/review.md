@@ -137,7 +137,7 @@ engine BOOT as serving BOOT, new authority/credentials, or handover. Only propos
 additional runtime file is engine_steering.py plus packaged mirror; new focused
 integration tests are named there. No runtime file changed.
 
-The original 19 model cases and four new actual-process synthetic cases pass.
+The original 19 model cases and five new actual-process synthetic cases pass.
 The latter imports existing process_liveness and proves legitimate delivery from
 a distinct BOOT, post-SIGKILL/closed/missing-proof refusal and no second start.
 It does not prove production routing/ACL wiring or instantaneous crash fencing.

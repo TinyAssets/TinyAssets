@@ -209,7 +209,7 @@ class Model:
 
     def take(self, key, scope):
         with self.guard(scope) as c, self.db(self.steering) as s:
-            self.running(c, key, scope, delivery=True)
+            receipt = self.running(c, key, scope, delivery=True)
             s.execute("BEGIN IMMEDIATE")
             self.open_for_input(s, key)
             rows = list(
@@ -220,6 +220,10 @@ class Model:
                 "UPDATE inputs SET state='attempted' WHERE receipt=? AND state='claimed'", (key,)
             )
             s.commit()
+            if not self.issuer_alive(receipt["issuer"]):
+                # Attempt state stays committed; dying after the admission
+                # observation never makes the input safe to repeat.
+                raise Held("issuer lost after attempt commit")
             return [r["body"] for r in rows]
 
     def freeze(self, key, scope):

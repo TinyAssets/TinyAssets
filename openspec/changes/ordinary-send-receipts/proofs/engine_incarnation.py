@@ -113,6 +113,24 @@ class EngineIncarnationProof(unittest.TestCase):
             self.engine.take(self.key, A)
         self.assertEqual(self.engine.rows(self.key)[0]["state"], "claimed")
 
+    def test_death_after_initial_observation_preserves_attempt_without_return(self):
+        observations = []
+
+        def die_after_first_observation(token):
+            alive = owner_state(self.root, token) == ALIVE
+            observations.append(alive)
+            if len(observations) == 1:
+                self.serving.kill()
+                self.serving.wait(timeout=5)
+            return alive
+
+        self.engine.issuer_alive = die_after_first_observation
+        with self.assertRaises(Held):
+            self.engine.take(self.key, A)
+        self.assertEqual(observations, [True, False])
+        self.assertEqual(self.engine.rows(self.key)[0]["state"], "attempted")
+        self.assertFalse(self.engine.start(self.key, A, "synthetic original"))
+
     def test_liveness_never_overrides_scope_or_grants_server_mutations(self):
         for scope in (B, ("alice", "home-a", "other")):
             with self.assertRaises(Held):
