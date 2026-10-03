@@ -82,3 +82,23 @@ physical no-oversubscription. Crash/TTL/idempotent settlement tests characterize
 existing recovery only; they do not prove safety for a still-running orphan.
 Kernel quotas or a fenced reservation/process lifecycle remain necessary for
 that stronger claim. No deploy or real-user pass is claimed by this code-only lane.
+
+## Owner diagnostic extension (reviewed before implementation)
+
+The parent reports a read-only agent receipt for the same UI workflow at
+17:12:46, 36 seconds after the second refusal: replace_ui saved revision 56,
+renderable=true. This is source-agent-reported, not independently root-read full
+output, and strengthens a transient explanation without proving ledger attribution.
+A surfaced 4 GiB workspace allocation belongs to a separate ledger and is not
+proof of 4 GiB billable retained storage.
+
+Expose additive `measured_bytes`, `reserved_bytes`, and `committed_bytes` in
+`Usage` and the owner's existing refusal record. Query pending by the same
+account and preserve used = measured + reserved + committed without clamping.
+These are accounting components, not disjoint physical bytes; measured and
+pending can conservatively overlap. The refusal explains reservations and
+suggests retrying after active calls finish before deleting files. No new
+endpoint, reservation identifiers, raw paths, or credentials. Existing
+`visible_record` keeps its fixed generic response for every nonowner; test
+explicit owner, other owner, unauthenticated, and inferred authenticated viewers.
+The independent exact-head reviewer agreed with these constraints before code.

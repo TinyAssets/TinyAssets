@@ -331,6 +331,51 @@ class TestUnattributedAndUnmeasurable:
 
 
 class TestTheRefusal:
+    @pytest.mark.parametrize("viewer", [A, B, ""])
+    def test_accounting_components_are_truthful_and_visible_only_to_owner(
+        self, base, signed_in, viewer,
+    ):
+        root = _universe(base, "u-one", A)
+        _write(root, "retained.bin", 10 * KIB)
+        _universe(base, "u-other-private", B)
+        reserved = _admit(base, "u-one", 20 * KIB)
+        landed = _admit(base, "u-one", 30 * KIB)
+        _write(root, "landed.bin", 30 * KIB)
+        sa.commit(landed)
+        # Another owner's pending bytes must never enter this number.
+        other = _admit(base, "u-other-private", 90 * KIB, account=B)
+        try:
+            with pytest.raises(sa.StorageRefused) as refused:
+                _admit(base, "u-one", 50 * KIB)
+            record = refused.value.record
+            assert record["measured_bytes"] == 10 * KIB
+            assert record["reserved_bytes"] == 20 * KIB
+            assert record["committed_bytes"] == 30 * KIB
+            assert record["used_bytes"] == 60 * KIB
+            assert "Reservations may clear" in record["error"]
+            assert "u-other-private" not in str(record)
+            assert str(base) not in str(record)
+            visible = sa.visible_record(refused.value, viewer=viewer)
+            if viewer == A:
+                assert visible == record
+            else:
+                assert visible == sa._OTHER_ACCOUNT_FULL
+                assert set(visible) == {"error", "failure_class", "actionable_by"}
+            if viewer:
+                signed_in(viewer)
+                assert sa.visible_record(refused.value) == visible
+            # Measurement absorbs only the landed committed part. Outstanding
+            # speculative bytes remain reserved, with the same total charge.
+            sa.measure(base, "u-one", "universe_files")
+            usage = sa.usage(base, A)
+            assert usage.measured_bytes == 40 * KIB
+            assert usage.committed_bytes == 0
+            assert usage.reserved_bytes == 20 * KIB
+            assert usage.used_bytes == 60 * KIB
+        finally:
+            sa.release(reserved)
+            sa.release(other)
+
     def test_free_refusal_carries_the_inline_upgrade_link(self, base):
         _write(_universe(base, "u-one", A), "big.bin", 95 * KIB)
         with pytest.raises(sa.StorageRefused) as refused:
