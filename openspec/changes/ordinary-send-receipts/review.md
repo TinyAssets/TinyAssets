@@ -141,3 +141,23 @@ The original 19 model cases and five new actual-process synthetic cases pass.
 The latter imports existing process_liveness and proves legitimate delivery from
 a distinct BOOT, post-SIGKILL/closed/missing-proof refusal and no second start.
 It does not prove production routing/ACL wiring or instantaneous crash fencing.
+
+
+## Original-issuer candidate review — ADAPT
+
+Independent same-family review of exact
+`10e6a395164614587d691a35249aa460f09a2c42` agrees that BOOT mismatch and original
+four findings are closed at design level. No additional privacy finding.
+
+AGREE with new P1: owner_state ALIVE can mean unrelated cleanup owns the dead
+issuer's lock, or any OSError from the lock probe. Two observations do not repair
+this. Reviewer independently ran 19 protocol + 5 process tests, which missed
+these conditions. Author subsequently reproduced BOTH cases deterministically in
+engine_incarnation.py using the real helpers; tests named CHARACTERIZATION assert
+the incorrect delivery, explicitly NOT acceptance. Thus the new 7-case process
+script contains five supported scenarios and two known-gap reproductions.
+
+Implementation gate remains BLOCKED. Section 8 names exact additional helper/
+mirror/test files for possible scope expansion; a positive identity contract is
+not yet approved. Parent coordination required before runtime work. No live calls,
+credentials, authority/lease changes or PR attempts on this structural branch.

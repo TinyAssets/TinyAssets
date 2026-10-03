@@ -191,7 +191,7 @@ truncated/silent stream, genuine failure, offline/auth recovery, same-page/reloa
 and multiple surfaces. Exact-head implementation review and protected CI follow;
 parent owns integration/deploy, then real Android acceptance remains required.
 
-## 7. Serving-to-engine delivery contract (revised, pending review)
+## 7. Serving-to-engine delivery candidate (ADAPT; see section 8)
 
 Actual main path: universe_server starts engine_mcp_http._EngineServer children;
 engine_steering._take uses engine_conversation_attention._scope to verify the
@@ -267,3 +267,37 @@ map, new endpoint/secret or credential-setting changes. Account deletion remains
 separately coordinated; erase the issuer field with its receipt, retaining no user
 content for replay protection. Runtime implementation awaits this revised review
 and parent's scope/lifecycle coordination.
+
+
+## 8. Independent review of issuer probe — new P1 / handoff
+
+Exact reviewed design `10e6a395164614587d691a35249aa460f09a2c42` received ADAPT.
+BOOT mismatch and the original four findings are closed at design level, but
+section 7's assumption that existing owner_state ALIVE positively proves the
+original issuer alive is FALSE. It cannot be implemented as proposed.
+
+`singleton_lock._lock_fd` returns False for every OSError, and owner_state turns
+False into ALIVE. Also process_liveness.remove_if_dead holds the dead issuer's
+exclusive lock while it runs still_named; both delivery probes can see that
+cleanup lock and report ALIVE after the issuer died. This existing primitive is
+conservative for anti-reclaim decisions; it is not positive delivery permission.
+
+Two deterministic CHARACTERIZATION cases now reproduce the unsafe model delivery
+using actual existing helpers: hold cleanup's lock after SIGKILL, and inject EIO
+from fcntl.flock. These tests passing MEANS THE GAP EXISTS, not design acceptance.
+The other five process scenarios and 19 protocol scenarios still pass.
+
+The next proposed scope must include a positive original-issuer observation that
+distinguishes original holder identity, probe errors and cleanup/observer locks.
+Do not change existing conservative owner_state semantics to make this pass.
+If adding a dedicated positive identity helper to process_liveness, the exact
+additional files beyond section 7 are `tinyassets/process_liveness.py`, its mirror
+`packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/tinyassets/process_liveness.py`,
+and `tests/test_ordinary_receipt_issuer_identity.py` (new). This is a PROPOSED scope
+expansion, not an approved interface or implementation. A callback to the original
+serving process would instead require its own explicitly reviewed transport scope.
+Do not invent PID/lock/heartbeat proof or introduce takeover to get past this gate.
+
+Hand off for parent scope coordination before further runtime work. No process,
+authority, steering, lifecycle or server runtime files have been changed. Existing
+account-deletion coordination and cross-family review remain outstanding.

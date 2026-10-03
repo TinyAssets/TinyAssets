@@ -8,12 +8,16 @@ Run from repository root with: python <this file>
 
 from __future__ import annotations
 
+import errno
 import json
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from unittest.mock import patch
 
 from protocol import A, B, Held, Model
 
@@ -25,6 +29,7 @@ from tinyassets.process_liveness import (  # noqa: E402
     UNKNOWN,
     liveness_path,
     owner_state,
+    remove_if_dead,
 )
 
 SERVING_FIXTURE = """
@@ -141,6 +146,42 @@ class EngineIncarnationProof(unittest.TestCase):
             self.engine.enqueue(self.key, A, "untrusted origin")
         self.assertFalse(self.engine.start(self.key, A, "synthetic original"))
         self.assertEqual(self.engine.take(self.key, A), ["first input"])
+
+    def test_CHARACTERIZATION_dead_issuer_cleanup_causes_false_alive_delivery(self):
+        """Known design P1, reproduces incorrect delivery; NOT acceptance proof."""
+        self.serving.kill()
+        self.serving.wait(timeout=5)
+        token = self.record["issuer"]
+        self.assertEqual(owner_state(self.root, token), DEAD)
+        entered, release = threading.Event(), threading.Event()
+
+        def still_named(_token):
+            entered.set()
+            if not release.wait(timeout=5):
+                raise AssertionError("fixture cleanup wait timed out")
+            return True
+
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            cleanup = pool.submit(remove_if_dead, self.root, token, still_named)
+            try:
+                self.assertTrue(entered.wait(timeout=5))
+                self.assertEqual(owner_state(self.root, token), ALIVE)
+                # Both model checks see cleanup's lock, not the dead issuer.
+                self.assertEqual(self.engine.take(self.key, A), ["first input"])
+            finally:
+                release.set()
+                self.assertFalse(cleanup.result(timeout=5))
+        self.assertEqual(owner_state(self.root, token), DEAD)
+
+    @unittest.skipIf(sys.platform == "win32", "POSIX fault injection fixture")
+    def test_CHARACTERIZATION_probe_io_error_causes_false_alive_delivery(self):
+        """Known design P1: unexpected probe errors are not positive proof."""
+        self.serving.kill()
+        self.serving.wait(timeout=5)
+        self.assertEqual(owner_state(self.root, self.record["issuer"]), DEAD)
+        with patch("fcntl.flock", side_effect=OSError(errno.EIO, "synthetic probe failure")):
+            self.assertEqual(owner_state(self.root, self.record["issuer"]), ALIVE)
+            self.assertEqual(self.engine.take(self.key, A), ["first input"])
 
 
 if __name__ == "__main__":
