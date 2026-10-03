@@ -150,7 +150,17 @@ _ADDED_COLUMNS: tuple[tuple[str, str, str], ...] = (
     ("request_suppressions", "answer_json", "TEXT"),
     ("pending_requests", "origin", "TEXT NOT NULL DEFAULT 'agent'"),
     ("pending_requests", "items_json", "TEXT NOT NULL DEFAULT '[]'"),
+    # Which agent asked (harness §4.18): answers route back to it, and its
+    # dedupe and "don't ask again" are its own. ``main`` is only the seed.
+    ("pending_requests", "agent", "TEXT NOT NULL DEFAULT 'main'"),
 )
+
+
+def scoped_dedupe_key(dedupe_key: str, agent: str = "main") -> str:
+    """The dedupe key for one agent's ask. The seeded agent's keys are the ones
+    already stored, so nothing it was told "don't ask again" comes back."""
+    agent = (agent or "main").strip() or "main"
+    return dedupe_key if agent == "main" else f"agent:{agent}:{dedupe_key}"
 
 #: Who may raise a request. Only ``agent`` requests can be withdrawn by the
 #: agent; a platform-raised ask is the platform's to clear.
@@ -286,8 +296,12 @@ def create_request(
     dedupe_key: str,
     origin: str = ORIGIN_AGENT,
     items: list[dict[str, Any]] | None = None,
+    agent: str = "main",
 ) -> dict[str, Any] | None:
     """Record one pending request. Returns the row, or None on storage failure.
+
+    ``agent`` is the asking agent, derived by the caller from the turn, never
+    from the request's own text; its dedupe and suppressions are its own.
 
     Deduplicated on ``dedupe_key`` while pending, so an agent retrying the same
     ask does not open a second identical tab.
@@ -302,6 +316,8 @@ def create_request(
     """
     if origin not in ORIGINS:
         raise ValueError(f"unknown request origin {origin!r}")
+    agent = (agent or "main").strip() or "main"
+    dedupe_key = scoped_dedupe_key(dedupe_key, agent)
     try:
         with _db(universe_dir) as conn:
             # A user who said "don't ask me this again" must not be asked again.
@@ -359,8 +375,8 @@ def create_request(
             conn.execute(
                 "INSERT INTO pending_requests (request_id, kind, title, body, "
                 "fields_json, action_json, items_json, dedupe_key, status, "
-                "answer_json, created_at, resolved_at, origin) "
-                "VALUES (?,?,?,?,?,?,?,?,'pending',NULL,?,NULL,?)",
+                "answer_json, created_at, resolved_at, origin, agent) "
+                "VALUES (?,?,?,?,?,?,?,?,'pending',NULL,?,NULL,?,?)",
                 (
                     row_id,
                     kind,
@@ -372,6 +388,7 @@ def create_request(
                     dedupe_key,
                     time.time(),
                     origin,
+                    agent,
                 ),
             )
         fresh = get_request(universe_dir, row_id)
@@ -456,6 +473,7 @@ def _project(row: Any, answers: dict[str, dict[str, Any]] | None = None) -> dict
         "feedback": row[10],
         "dedupe_key": row[11],
         "origin": row[12] or ORIGIN_AGENT,
+        "agent": (row[14] if len(row) > 14 else None) or "main",
         "items": items,
         "item_answers": _item_state(items, answers or {}, str(row[6])),
     }
@@ -464,7 +482,7 @@ def _project(row: Any, answers: dict[str, dict[str, Any]] | None = None) -> dict
 _SELECT = (
     "SELECT request_id, kind, title, body, fields_json, action_json, status, "
     "answer_json, created_at, resolved_at, feedback, dedupe_key, origin, "
-    "items_json FROM pending_requests"
+    "items_json, agent FROM pending_requests"
 )
 
 

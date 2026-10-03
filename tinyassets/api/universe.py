@@ -38,7 +38,7 @@ Public surface (back-compat re-exported via ``tinyassets.universe_server``):
                                           handler-scoped helpers
 
 Cross-module note: ``_current_actor``, ``_truncate``, ``_append_ledger``,
-``_upload_whitelist_prefixes`` (and ``_storage_backend``,
+``_storage_backend``, (and
 ``_format_dirty_file_conflict``, ``_format_commit_failed`` if needed by future
 edits) live in ``tinyassets.universe_server`` (preamble engine helpers
 territory) and are lazy-imported inside the functions that use them. This
@@ -255,26 +255,6 @@ def _extract_add_canon(
             "filename": name,
             "provenance": provenance,
             "bytes": len(kwargs.get("text", "").encode("utf-8")),
-        },
-    )
-
-
-def _extract_add_canon_from_path(
-    kwargs: dict[str, Any], result: dict[str, Any],
-) -> tuple[str, str, dict[str, Any]]:
-    from tinyassets.api.engine_helpers import _truncate
-    name = result.get("filename", "") or Path(kwargs.get("path", "")).name
-    provenance = kwargs.get("provenance_tag", "") or "user_upload"
-    bytes_written = result.get("bytes_written", 0)
-    return (
-        f"canon/sources/{name}",
-        _truncate(f"{name} ({provenance}, {bytes_written} bytes)"),
-        {
-            "filename": name,
-            "provenance": provenance,
-            "source_path": kwargs.get("path", ""),
-            "bytes": bytes_written,
-            "synthesis_signal": result.get("synthesis_signal_emitted", False),
         },
     )
 
@@ -717,7 +697,6 @@ WRITE_ACTIONS: dict[str, Any] = {
     "set_engine": (_extract_set_engine, None),
     "offer_engine": (_extract_offer_engine, None),
     "add_canon": (_extract_add_canon, None),
-    "add_canon_from_path": (_extract_add_canon_from_path, None),
     "control_daemon": (_extract_control_daemon, {"pause", "resume"}),
     "switch_universe": (_extract_switch_universe, None),
     "create_universe": (_extract_create_universe, None),
@@ -4889,9 +4868,7 @@ def _action_add_canon(
     provenance_tag: str = "",
     **_kwargs: Any,
 ) -> str:
-    """Add inline canon text. Small uploads only; large files should use
-    ``add_canon_from_path`` so the LLM never has to copy content verbatim
-    into the tool-call arg.
+    """Add inline canon text.
 
     Memory-scope Stage 2b landed the ``synthesize_source`` signal as the
     trigger for premise/canon/entity synthesis. This path now routes
@@ -4960,166 +4937,6 @@ def _action_add_canon(
         })
     except OSError as exc:
         return json.dumps({"error": f"Failed to write canon file: {exc}"})
-
-
-def _action_add_canon_from_path(
-    universe_id: str = "",
-    path: str = "",
-    filename: str = "",
-    provenance_tag: str = "",
-    **_kwargs: Any,
-) -> str:
-    """Ingest a file from the server's filesystem into a command center's canon.
-
-    Solves the "copy-through-tool-arg" defect of ``add_canon``: for
-    large uploads (>20K tokens) the LLM cannot reliably reproduce the
-    file content verbatim in a tool-call arg — summarization drift,
-    max-output cutoff, and JSON-escaping errors silently corrupt the
-    upload. This path reads the file server-side instead, preserving
-    the "user uploads are authoritative" hard rule.
-
-    Trust-model mitigations (task #15):
-
-    - ``TINYASSETS_UPLOAD_WHITELIST`` (env var, optional): colon/
-      semicolon-separated absolute-path prefixes. When set, a path
-      not under any prefix is rejected with a clear error. When
-      unset, any absolute path is accepted and a WARNING is logged
-      at startup. The whitelist is opt-in enforcement — the demo
-      UX is open-by-default.
-    - Response includes ``preview_first_200_bytes``: the first ~200
-      UTF-8 characters of the ingested file so the host can see in
-      the MCP response what was actually stored (silent substitution
-      becomes detectable without an out-of-band read).
-
-    Parameters
-    ----------
-    universe_id : str
-        Target command center. Defaults to the active command center.
-    path : str
-        **Absolute** path on the server's filesystem. The MCP client's
-        LLM never reads the file content through this param — it just
-        references a path the host has already placed.
-    filename : str, optional
-        Filename to store the file under in ``canon/sources/``. Defaults
-        to the basename of ``path``.
-    provenance_tag : str, optional
-        Source tag (e.g. "published novel", "rough notes"). Defaults
-        to "user_upload".
-    """
-    from tinyassets.api.engine_helpers import _current_actor, _upload_whitelist_prefixes
-    if not path:
-        return json.dumps({"error": "path is required."})
-
-    src = Path(path)
-    if not src.is_absolute():
-        return json.dumps({
-            "error": (
-                "path must be absolute — this action reads from the "
-                "server's filesystem, not the MCP client's context."
-            ),
-        })
-
-    # Whitelist enforcement (opt-in via TINYASSETS_UPLOAD_WHITELIST).
-    # Resolve src to handle symlinks + ``..`` traversals before the
-    # prefix check; otherwise ``/allowed/../secret`` would slip past.
-    whitelist = _upload_whitelist_prefixes()
-    if whitelist is not None:
-        try:
-            resolved = src.resolve(strict=False)
-        except OSError as exc:
-            return json.dumps({"error": f"Failed to resolve path: {exc}"})
-        if not any(
-            resolved.is_relative_to(prefix) for prefix in whitelist
-        ):
-            return json.dumps({
-                "error": (
-                    f"Path is not under any TINYASSETS_UPLOAD_WHITELIST "
-                    f"prefix. Resolved={resolved!s}, "
-                    f"allowed_prefixes={[str(p) for p in whitelist]}."
-                ),
-            })
-
-    if not src.exists():
-        return json.dumps({"error": f"File not found: {path}"})
-    if not src.is_file():
-        return json.dumps({"error": f"Not a regular file: {path}"})
-
-    try:
-        data = src.read_bytes()
-    except OSError as exc:
-        return json.dumps({"error": f"Failed to read file: {exc}"})
-
-    # Reject non-UTF-8 early with a clear error. The daemon's canon
-    # pipeline assumes UTF-8; binary or latin-1 files would silently
-    # corrupt synthesis.
-    try:
-        decoded = data.decode("utf-8")
-    except UnicodeDecodeError as exc:
-        return json.dumps({
-            "error": (
-                f"File is not valid UTF-8 ({exc.reason} at byte "
-                f"{exc.start}). Convert to UTF-8 before ingesting."
-            ),
-        })
-
-    uid = _request_universe(universe_id)
-    udir = _universe_dir(uid)
-    canon_dir = udir / "canon"
-    safe_name = Path(filename).name if filename else src.name
-    if not safe_name:
-        return json.dumps({"error": "Invalid filename."})
-
-    from tinyassets.ingestion.core import ingest_file
-
-    try:
-        canon_dir.mkdir(parents=True, exist_ok=True)
-        source_operation = _canon_source_operation(canon_dir, safe_name, data)
-        result = ingest_file(
-            canon_dir=canon_dir,
-            filename=safe_name,
-            data=data,
-            universe_path=udir,
-            user_upload=True,
-        )
-
-        tag = provenance_tag or "user_upload"
-        # Resolve + contain the sidecar meta path before write so a crafted
-        # ``safe_name`` cannot clobber a file outside canon_dir.
-        meta_path = safe_canon_path(
-            canon_dir, f".{safe_name}.meta.json", kind="meta sidecar"
-        )
-        meta = {
-            "provenance": tag,
-            "source_path": str(src),
-            "added": datetime.now(timezone.utc).isoformat(),
-            "source": _current_actor(),
-        }
-        meta_path.write_text(json.dumps(meta), encoding="utf-8")
-
-        return json.dumps({
-            "universe_id": uid,
-            "filename": safe_name,
-            "canonical_path": str(canon_dir / "sources" / safe_name),
-            "bytes_written": result.byte_count,
-            "synthesis_signal_emitted": result.signal_emitted,
-            "routed_to": result.routed_to,
-            "provenance": tag,
-            "source_operation": source_operation,
-            "version_semantics": _canon_version_semantics(
-                safe_name, result.routed_to,
-            ),
-            # Task #15: echo the first 200 decoded chars so the host
-            # can confirm in the MCP response what was ingested —
-            # silent file-swap becomes detectable without an
-            # out-of-band read.
-            "preview_first_200_bytes": decoded[:200],
-            "note": (
-                "File ingested from server path. The daemon will pick "
-                "up the synthesize_source signal on its next cycle."
-            ),
-        })
-    except OSError as exc:
-        return json.dumps({"error": f"Failed to ingest file: {exc}"})
 
 
 def _action_list_canon(
@@ -6765,7 +6582,6 @@ UNIVERSE_ACTIONS: dict[str, Any] = {
     "set_engine": _action_set_engine,
     "offer_engine": _action_offer_engine,
     "add_canon": _action_add_canon,
-    "add_canon_from_path": _action_add_canon_from_path,
     "list_canon": _action_list_canon,
     "read_canon": _action_read_canon,
     "list_sources": _action_list_sources,

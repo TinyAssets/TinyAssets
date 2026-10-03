@@ -556,14 +556,13 @@ class TestOpenCommonsContribution:
 class TestBrainWriteDoorsClosed:
     """Relay reshape (2026-07-02, design §13/§14): the deprecated fat ``universe``
     tool is hidden from tools/list but still dispatchable — so its brain-content
-    write actions (``set_premise`` / ``add_canon`` / ``add_canon_from_path`` /
-    ``soul.edit``) must be RELAYED, never dispatched. Otherwise a legacy connector
+    write actions (``set_premise`` / ``add_canon`` / ``soul.edit``) must be RELAYED, never dispatched. Otherwise a legacy connector
     keeps a live door into the brain that bypasses the universe intelligence
     (Codex impl-review REFUTED, thread 019f268b)."""
 
     @pytest.mark.parametrize(
         "action",
-        ["set_premise", "add_canon", "add_canon_from_path", "soul.edit"],
+        ["set_premise", "add_canon", "soul.edit"],
     )
     def test_brain_write_action_is_relayed_not_dispatched(
         self, universe_base, action

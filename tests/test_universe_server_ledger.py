@@ -187,7 +187,7 @@ def test_write_actions_table_is_exhaustive() -> None:
         # may see the universe, so it is gated at WRITE strength by the same
         # central ACL check, and ledgered like every other write.
         "set_visibility",
-        "add_canon", "add_canon_from_path",
+        "add_canon",
         "control_daemon", "switch_universe", "create_universe",
         "queue_cancel",
         "subscribe_goal", "unsubscribe_goal", "post_to_goal_pool",

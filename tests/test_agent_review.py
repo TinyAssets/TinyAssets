@@ -249,3 +249,29 @@ def test_the_owner_door_switches_the_check(monkeypatch, tmp_path):
     assert agent_review.switched_off(universe) == {"app.write"}
     assert post({"review": {"action_class": "money.move", "enabled": False},
                  "confirm": True})[0] == 409
+
+
+def test_switches_are_per_agent_and_an_old_table_becomes_mains(tmp_path):
+    """Harness §4.18: every per-agent record is keyed by agent; main is a seed."""
+    import sqlite3
+
+    from tinyassets import agent_sessions
+
+    universe = _universe(tmp_path)
+    db = agent_sessions._records_dir(universe) / "rules.db"
+    with sqlite3.connect(db) as conn:  # the shape #4200 shipped
+        conn.execute("CREATE TABLE review_off (action_class TEXT PRIMARY KEY, "
+                     "updated_at REAL NOT NULL)")
+        conn.execute("INSERT INTO review_off VALUES ('app.write', 1.0)")
+    assert agent_review.switched_off(universe) == {"app.write"}
+    assert agent_review.switched_off(universe, "researcher") == set()
+    agent_review.set_review(universe, "people.message", False, confirm=True,
+                            agent="researcher")
+    assert agent_review.switched_off(universe, "researcher") == {"people.message"}
+    assert agent_review.switched_off(universe) == {"app.write"}
+    model = _Model('{"verdict": "proceed", "reason": "ok"}')
+    with agent_review.bound(model, active=True):
+        assert agent_review.review_refusal(
+            universe, action={**ACTION, "action_class": "people.message"}, rule="r",
+            agent="researcher") is None
+    assert model.prompts == [], "switched off for that agent only"

@@ -48,7 +48,6 @@ from tinyassets.api.automations import automations as _automations_impl
 from tinyassets.api.branches import _branch_design_guide_prompt
 from tinyassets.api.cloud_connections import cloud_connections as _cloud_connections_impl
 from tinyassets.api.custom_agents import custom_agents as _custom_agents_impl
-from tinyassets.api.engine_helpers import _warn_if_no_upload_whitelist
 from tinyassets.api.extensions import _extensions_impl
 from tinyassets.api.market import gates as _gates_impl
 from tinyassets.api.market import goals as _goals_impl
@@ -503,10 +502,6 @@ async def _landing_index(request):  # type: ignore[no-untyped-def]
     from starlette.responses import HTMLResponse
 
     return HTMLResponse(_LANDING_HTML)
-
-
-# Preserve the at-server-start whitelist warning (Step 10 prep §3.5 Option B).
-_warn_if_no_upload_whitelist()
 
 
 # ---------------------------------------------------------------------------
@@ -3376,7 +3371,6 @@ _mcp_converse = _register_structured_tool(
 _BRAIN_WRITE_RELAY_ACTIONS = frozenset({
     "set_premise",
     "add_canon",
-    "add_canon_from_path",
     "soul.edit",
 })
 
@@ -3432,7 +3426,7 @@ def universe(
         action: One of — reads: list, inspect, read_output, query_world,
             get_activity, get_recent_events, get_ledger, read_premise,
             list_canon, read_canon, list_sources, read_source; writes: submit_request,
-            give_direction, set_premise, set_visibility, add_canon, add_canon_from_path,
+            give_direction, set_premise, set_visibility, add_canon,
             create_universe, switch_universe; learning: soul.edit (teach the
             command center — inputs_json {changes: {governed file: new body},
             source, context, name?}; persists per its soul.edit.md policy);

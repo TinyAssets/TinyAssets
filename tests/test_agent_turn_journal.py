@@ -709,6 +709,16 @@ def test_every_mutation_rechecks_home_in_same_write_transaction(journal, change,
     assert journal.get("owner", "home", turn.turn_id) == turn
 
 
+def test_every_turn_names_its_agent_and_main_is_the_default(journal):
+    """Harness §4.18: per-agent records are keyed by agent; main is only the seed."""
+    mine = new(journal)
+    theirs = journal.create("owner", "home", prompt="p", system="s", agent_id="researcher")
+    with journal._ledger.connection() as conn:
+        rows = dict(conn.execute("SELECT turn_id, agent_id FROM agent_turns").fetchall())
+    assert rows == {mine.turn_id: "main", theirs.turn_id: "researcher"}
+    assert journal.get("owner", "home", theirs.turn_id) == theirs
+
+
 def test_inserts_survive_an_added_column(journal, tmp_path):
     """Every insert names its columns, so a later additive column (the owner
     generation of change execution-owner-lease) cannot break this code, and a

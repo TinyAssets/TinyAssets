@@ -6,19 +6,11 @@ test-monkeypatch-target burden** of the decomposition: 11 ``mock.patch``
 sites + 2 ``monkeypatch.setattr`` sites = 13 test-patch interactions
 across 5 test files. This module is the foundation that every Step-1-9
 submodule lazy-imports from for ledger attribution, storage backend
-resolution, error formatting, and upload-whitelist enforcement. After
+resolution and error formatting. After
 Step 10, the dependency-graph inversion is complete: engine_helpers.py
 is a leaf module with no upstream dependency on universe_server.py.
 
 Public surface (back-compat re-exported via ``tinyassets.universe_server``):
-    Upload-whitelist trio:
-      _upload_whitelist_prefixes()   - return list[Path] | None from
-                                       TINYASSETS_UPLOAD_WHITELIST env var
-      _split_whitelist_entry(raw)    - cross-platform path-list split
-                                       (handles Windows drive-letter colons)
-      _warn_if_no_upload_whitelist() - log warning at module-import time
-                                       when the whitelist is unset
-
     Public action ledger trio:
       _current_actor()               - resolve the bound request identity or
                                        refuse when no named principal exists;
@@ -44,12 +36,6 @@ helpers depend only on `tinyassets.api.helpers._base_path` (top-of-module
 import) and `tinyassets.catalog` types (DirtyFileError, CommitFailedError,
 get_backend).
 
-The `_warn_if_no_upload_whitelist()` import-time call is intentionally NOT
-invoked at engine_helpers.py module load — universe_server.py preserves the
-behavior with a lazy-import + invocation at its own module load (Option B
-from Step 10 prep §3.5). Otherwise the warning would only fire when
-something else imports engine_helpers, missing the at-server-start contract.
-
 Pattern-A2-style leaf inversion: after this extraction, every Steps 1-9
 submodule retargets its lazy `from tinyassets.universe_server import _X`
 imports to `from tinyassets.api.engine_helpers import _X`. universe_server.py
@@ -61,7 +47,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -70,100 +55,6 @@ from tinyassets.api.helpers import _base_path, _read_json
 from tinyassets.catalog import CommitFailedError, DirtyFileError, get_backend
 
 logger = logging.getLogger("universe_server.engine_helpers")
-
-
-# ---------------------------------------------------------------------------
-# Upload whitelist — guards add_canon_from_path against arbitrary path reads
-# ---------------------------------------------------------------------------
-
-
-def _upload_whitelist_prefixes() -> list[Path] | None:
-    """Return the configured upload whitelist, or ``None`` if unset.
-
-    Reads ``TINYASSETS_UPLOAD_WHITELIST`` at call time (consistent with
-    the other behavior-gate flags in this module). Values are split on
-    both ``;`` and ``:`` separators, stripped, resolved to absolute
-    paths. An unset or empty variable returns ``None`` meaning "no
-    whitelist enforcement" — preserving the open-by-default UX the
-    host wanted for the demo. ``None`` is NOT the same as an empty
-    list (the latter would forbid all uploads).
-    """
-    raw = os.environ.get("TINYASSETS_UPLOAD_WHITELIST", "").strip()
-    if not raw:
-        return None
-    # Accept both ``:`` (Unix PATH-style) and ``;`` (Windows PATH-style)
-    # so the same env-var syntax works on either platform. Drive-letter
-    # colons on Windows (``C:``) survive because the path gets split
-    # again inside ``_split_whitelist_entry``.
-    parts: list[Path] = []
-    for entry in _split_whitelist_entry(raw):
-        entry = entry.strip()
-        if not entry:
-            continue
-        parts.append(Path(entry).resolve())
-    return parts
-
-
-def _split_whitelist_entry(raw: str) -> list[str]:
-    """Split the env var on ``;`` (always) and on ``:`` except when the
-    colon is a Windows drive-letter separator (e.g. ``C:\\Users``).
-    """
-    chunks: list[str] = []
-    for semi_chunk in raw.split(";"):
-        # A bare ``:`` separator joins two paths; a drive-letter colon
-        # has a single letter to its left. Walk the string and split
-        # only on the first kind.
-        buffer = []
-        i = 0
-        while i < len(semi_chunk):
-            ch = semi_chunk[i]
-            if ch == ":":
-                # Drive letter iff this is position 1 of the current
-                # buffer AND the char before is a single letter AND
-                # the char after is a path separator.
-                if (
-                    len(buffer) == 1
-                    and buffer[0].isalpha()
-                    and i + 1 < len(semi_chunk)
-                    and semi_chunk[i + 1] in ("/", "\\")
-                ):
-                    buffer.append(ch)
-                    i += 1
-                    continue
-                # Otherwise this colon separates paths.
-                chunks.append("".join(buffer))
-                buffer = []
-                i += 1
-                continue
-            buffer.append(ch)
-            i += 1
-        if buffer:
-            chunks.append("".join(buffer))
-    return chunks
-
-
-def _warn_if_no_upload_whitelist() -> None:
-    """Log a WARNING once at import time if the whitelist is unset.
-
-    Reminds the host that ``add_canon_from_path`` accepts any absolute
-    path when ``TINYASSETS_UPLOAD_WHITELIST`` is empty. Best-effort —
-    logger failure must never block module import.
-
-    Intentionally NOT invoked at this module's import time. ``universe_server.py``
-    invokes it at server-start via lazy-import (Option B from Step 10 prep §3.5)
-    so the warning still surfaces at the at-server-start contract instead of
-    only when something else imports engine_helpers.
-    """
-    try:
-        if _upload_whitelist_prefixes() is None:
-            logger.warning(
-                "TINYASSETS_UPLOAD_WHITELIST is unset — add_canon_from_path "
-                "will accept any absolute path. Set the env var to a "
-                "colon/semicolon-separated list of prefixes to enforce.",
-            )
-    except Exception:
-        # Never let a logger-configuration edge case break import.
-        pass
 
 
 # ---------------------------------------------------------------------------

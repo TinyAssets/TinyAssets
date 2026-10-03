@@ -2825,8 +2825,11 @@ def displayed_row_matches(row: dict[str, Any]) -> bool:
     identity = [row["kind"], row["title"], row["body"], row["fields"], row["action"]]
     if row.get("items"):
         identity.append(row["items"])
+    from tinyassets.storage.pending_requests import scoped_dedupe_key
+
     expected = json.dumps(identity, sort_keys=True, separators=(",", ":"))
-    return stored == expected
+    # A non-main agent's key carries its agent (harness §4.18); main's is bare.
+    return stored == scoped_dedupe_key(expected, str(row.get("agent") or "main"))
 
 
 def _assembled_secret(

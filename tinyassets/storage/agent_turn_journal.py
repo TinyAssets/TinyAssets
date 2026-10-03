@@ -79,6 +79,19 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
         raise JournalUnavailable("agent turn schema requires an idle connection")
     for statement in _SCHEMA:
         conn.execute(statement)
+    # Which agent ran the turn (harness §4.18); rows from before are main's.
+    # Checked again under the write lock: another process may add it first.
+    if "agent_id" in {row[1] for row in conn.execute("PRAGMA table_info(agent_turns)")}:
+        return
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        if "agent_id" not in {row[1] for row in conn.execute("PRAGMA table_info(agent_turns)")}:
+            conn.execute(
+                "ALTER TABLE agent_turns ADD COLUMN agent_id TEXT NOT NULL DEFAULT 'main'")
+        conn.execute("COMMIT")
+    except BaseException:
+        conn.execute("ROLLBACK")
+        raise
 
 
 def _scope(owner: str, universe: str, turn: str) -> tuple[str, str, str]:
@@ -385,8 +398,10 @@ class AgentTurnJournal:
         policy_source: str = "unknown",
         authority_kind: str = "served_request",
         work_receipt_id: str = "",
+        agent_id: str = "main",
     ) -> TurnSnapshot:
         scope = _scope(owner, universe, uuid.uuid4().hex)
+        agent_id = records.identity(agent_id or "main")
         if not isinstance(prompt, str) or not isinstance(system, str):
             raise records.invalid()
         if policy_generation is not None:
@@ -408,10 +423,9 @@ class AgentTurnJournal:
             check_current_home(conn, owner, universe)
             conn.execute(
                 "INSERT INTO agent_turns (owner_user_id, universe_id, turn_id, version, "
-                "generation, "
-                "state, round_ordinal, input_json, created_at) "
-                "VALUES (?, ?, ?, 1, 1, 'ready', 0, ?, ?)",
-                (*scope, raw, self._ledger.timestamp()),
+                "generation, state, round_ordinal, input_json, created_at, agent_id) "
+                "VALUES (?, ?, ?, 1, 1, 'ready', 0, ?, ?, ?)",
+                (*scope, raw, self._ledger.timestamp(), agent_id),
             )
             snapshot = _read(conn, scope)
         # Creating the row IS this boot taking the turn on: both adapters reach a

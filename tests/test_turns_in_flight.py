@@ -202,7 +202,8 @@ def test_a_working_journal_row_is_reported_but_does_not_hold_the_deploy(tmp_path
     conn = sqlite3.connect(tmp_path / DB_FILENAME, isolation_level=None)
     ensure_schema(conn)
     conn.execute(
-        "INSERT INTO agent_turns VALUES (?,?,?,?,?,?,?,?,?)",
+        "INSERT INTO agent_turns (owner_user_id, universe_id, turn_id, version, generation, "
+        "state, round_ordinal, input_json, created_at) VALUES (?,?,?,?,?,?,?,?,?)",
         ("owner", "u-village", "652a2f31e82546a1", 1, 1, "native_started", 1, "{}",
          "2026-10-02T01:00:00Z"),
     )

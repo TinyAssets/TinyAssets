@@ -481,3 +481,15 @@ def test_live_run_returns_work_that_finished_before_the_stop():
 
     assert asyncio.run(drive()) == "answer"
 
+
+
+def test_a_stop_reaches_the_addressed_agent_and_stop_all_reaches_every_one():
+    """Harness §4.18: a stop targets the agent being talked to; stop-all stays."""
+    from tinyassets import turn_interrupt as ti
+
+    with ti.interactive_turn("owner-x", "u-x") as main_turn, \
+            ti.interactive_turn("owner-x", "u-x", agent_id="researcher") as other:
+        assert ti.request_interrupt("owner-x", "u-x", agent_id="researcher") == 1
+        assert other.requested() and not main_turn.requested()
+        assert ti.request_interrupt("owner-x", "u-x") == 2
+        assert main_turn.requested()

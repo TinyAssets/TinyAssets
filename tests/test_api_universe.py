@@ -94,7 +94,7 @@ def test_module_exposes_expected_public_names() -> None:
         "WRITE_ACTIONS",
         "_extract_submit_request", "_extract_give_direction",
         "_extract_set_premise", "_extract_add_canon",
-        "_extract_add_canon_from_path", "_extract_control_daemon",
+        "_extract_control_daemon",
         "_extract_switch_universe", "_extract_create_universe",
         "_extract_queue_cancel", "_extract_subscribe_goal",
         "_extract_unsubscribe_goal", "_extract_post_to_goal_pool",
@@ -133,7 +133,7 @@ def test_module_exposes_expected_public_names() -> None:
         "_action_give_direction",
         "_action_query_world", "_action_read_premise",
         "_action_set_premise", "_action_add_canon",
-        "_action_add_canon_from_path", "_action_list_canon",
+        "_action_list_canon",
         "_action_read_canon", "_action_list_sources",
         "_action_read_source", "_action_control_daemon",
         "_action_get_activity", "_action_get_recent_events",
@@ -147,7 +147,7 @@ def test_module_exposes_expected_public_names() -> None:
     )
 
 
-def test_write_actions_table_has_29_entries() -> None:
+def test_write_actions_table_has_28_entries() -> None:
     """WRITE_ACTIONS dict literal includes daemon create/summon/banish writes,
     the soul.edit learn path, the set_engine founder engine-assignment path, the
     offer_engine market-supply path, declare_universe_loop, and set_visibility.
@@ -161,7 +161,7 @@ def test_write_actions_table_has_29_entries() -> None:
     gated at READ strength — a cross-tenant write (2026-08-05). `set_visibility`
     (2026-09-26) decides who else may see the universe at all, so it has to be
     gated at WRITE strength and ledgered for the same reason."""
-    assert len(univ_mod.WRITE_ACTIONS) == 29
+    assert len(univ_mod.WRITE_ACTIONS) == 28
     assert "soul.edit" in univ_mod.WRITE_ACTIONS
     assert "set_engine" in univ_mod.WRITE_ACTIONS
     assert "offer_engine" in univ_mod.WRITE_ACTIONS
@@ -287,7 +287,7 @@ def test_universe_impl_dispatch_table_has_known_actions() -> None:
     "post_to_goal_pool", "submit_node_bid",
     "give_direction",
     "query_world", "read_premise", "set_premise", "add_canon",
-    "add_canon_from_path", "list_canon", "read_canon",
+    "list_canon", "read_canon",
     "list_sources", "read_source",
     "control_daemon", "get_activity", "get_recent_events",
     "get_ledger", "switch_universe", "create_universe",
