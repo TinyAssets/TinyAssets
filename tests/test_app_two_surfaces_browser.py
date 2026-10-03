@@ -6,6 +6,7 @@ every gesture is a real mouse or keyboard input.
 """
 from __future__ import annotations
 
+import os
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -66,7 +67,9 @@ def browser():
     )
     with sync_api.sync_playwright() as p:
         try:
-            chromium = p.chromium.launch()
+            chromium = p.chromium.launch(
+                executable_path=os.environ.get("TINYASSETS_TEST_CHROMIUM") or None
+            )
         except Exception as exc:  # noqa: BLE001 - no browser binary on this host
             pytest.skip(
                 "owner=codex runs-in=real-browser-proof Chromium is not available here: "
@@ -651,3 +654,130 @@ def test_clicking_the_composer_while_the_ui_holds_focus_gives_the_chat_the_keys(
     page.keyboard.type("typed after the click")
     assert page.input_value("#composer-input") == "typed after the click"
     context.close()
+
+
+# All data and frames are local fixtures. Observe browser cancellation/selection,
+# never read or assert the host clipboard's contents.
+def _shortcut_page(browser, app_url):
+    page = browser.new_page(viewport={"width": 1280, "height": 800})
+    _enter_chat(page, app_url)
+    page.evaluate("""() => AppUI.mount({ui_id:'keys',name:'Keys',
+      markup:'<div id="key-probe" tabindex="0">Local frame</div>',
+      style:'#key-probe{width:100%;height:100%}',
+      script:`window.observedKeys=[];
+        for(const phase of ['keydown','keyup']) document.addEventListener(phase,e=>{
+          window.observedKeys.push({key:e.key,phase,trusted:e.isTrusted});
+        });`})""")
+    page.frame_locator('#ui-frame').locator('#key-probe').wait_for()
+    page.click('#chat-cloud-bubble')
+    page.evaluate("""() => {
+      const message=document.createElement('p');
+      message.id='selection-probe'; message.textContent='Message text stays selectable';
+      document.getElementById('chat-cloud').appendChild(message);
+      document.activeElement.blur();
+      window.parentKeys=[];
+      for(const phase of ['keydown','keyup']) window.addEventListener(phase,e=>{
+        window.parentKeys.push({key:e.key,phase,prevented:e.defaultPrevented});
+      });
+    }""")
+    assert page.evaluate('document.activeElement.tagName') == 'BODY'
+    return page
+
+
+def _frame_keys(page):
+    return page.frame_locator('#ui-frame').locator('#key-probe').evaluate(
+        '() => window.observedKeys')
+
+
+def _select_message(page):
+    page.evaluate("""() => {
+      const range=document.createRange();
+      range.selectNodeContents(document.getElementById('selection-probe'));
+      const selection=window.getSelection(); selection.removeAllRanges();
+      selection.addRange(range);
+    }""")
+
+
+@pytest.mark.parametrize('modifier', ['Control', 'Meta'])
+def test_selected_message_copy_keeps_native_browser_event(app_url, browser, modifier):
+    page = _shortcut_page(browser, app_url)
+    try:
+        _select_message(page)
+        selected = page.evaluate('String(window.getSelection())')
+        page.keyboard.press(modifier + '+c')
+        events = page.evaluate("parentKeys.filter(e=>e.key.toLowerCase()==='c')")
+        assert [e['phase'] for e in events] == ['keydown', 'keyup']
+        assert not any(e['prevented'] for e in events)
+        assert page.evaluate('String(window.getSelection())') == selected
+        assert _frame_keys(page) == []
+    finally:
+        page.close()
+
+
+@pytest.mark.parametrize('shortcut', [
+    {'key':'a','ctrlKey':True}, {'key':'x','ctrlKey':True},
+    {'key':'v','metaKey':True}, {'key':'z','metaKey':True},
+    {'key':'r','ctrlKey':True}, {'key':'r','metaKey':True},
+    {'key':'ArrowLeft','altKey':True}, {'key':'F5'},
+    {'key':'BrowserBack'}, {'key':'BrowserForward'},
+])
+def test_browser_shortcuts_are_not_canceled_or_forwarded(app_url, browser, shortcut):
+    page = _shortcut_page(browser, app_url)
+    try:
+        # Dispatch in the actual browser to inspect both listener phases without
+        # navigating away, opening browser UI, or reading/writing a clipboard.
+        result = page.evaluate("""shortcut => ['keydown','keyup'].map(type=>{
+          const event=new KeyboardEvent(type,{...shortcut,bubbles:true,cancelable:true});
+          document.body.dispatchEvent(event); return event.defaultPrevented;
+        })""", shortcut)
+        assert result == [False, False]
+        assert _frame_keys(page) == []
+    finally:
+        page.close()
+
+
+def test_native_editing_and_plain_frame_controls_survive(app_url, browser):
+    page = _shortcut_page(browser, app_url)
+    try:
+        composer = page.locator('#composer-input')
+        composer.fill('draft')
+        page.keyboard.press('Control+a')
+        assert composer.evaluate('e=>[e.selectionStart,e.selectionEnd]') == [0, 5]
+        page.keyboard.type('replacement')
+        page.keyboard.press('Control+z')
+        assert composer.input_value() == 'draft'
+        assert _frame_keys(page) == []
+        page.evaluate('document.activeElement.blur();window.getSelection().removeAllRanges()')
+        page.keyboard.press('Shift+ArrowRight')
+        page.wait_for_function('parentKeys.some(e=>e.key==="ArrowRight"&&e.phase==="keyup")')
+        keys = _frame_keys(page)
+        assert [(e['key'], e['phase']) for e in keys if e['key']=='ArrowRight'] == [
+            ('ArrowRight','keydown'), ('ArrowRight','keyup')]
+        assert not any(e['trusted'] for e in keys)
+        page.frame_locator('#ui-frame').locator('#key-probe').focus()
+        page.keyboard.press('ArrowLeft')
+        keys = _frame_keys(page)
+        assert [(e['phase'], e['trusted']) for e in keys if e['key']=='ArrowLeft'] == [
+            ('keydown',True), ('keyup',True)]
+    finally:
+        page.close()
+
+
+def test_shortcut_release_order_and_selected_text_do_not_send_orphan_keys(app_url, browser):
+    page = _shortcut_page(browser, app_url)
+    try:
+        page.keyboard.down('Control')
+        page.keyboard.down('c')
+        page.keyboard.up('Control')
+        page.keyboard.up('c')
+        assert _frame_keys(page) == []
+        _select_message(page)
+        page.keyboard.down('ArrowLeft')
+        assert page.evaluate('parentKeys.at(-1).prevented') is False
+        # Selection can disappear between phases (for example a pointer gesture).
+        # Its release still must not invent a game keydown or an orphan keyup.
+        page.evaluate('window.getSelection().removeAllRanges()')
+        page.keyboard.up('ArrowLeft')
+        assert _frame_keys(page) == []
+    finally:
+        page.close()

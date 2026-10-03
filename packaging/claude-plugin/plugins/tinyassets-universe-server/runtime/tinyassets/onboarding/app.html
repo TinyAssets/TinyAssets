@@ -5139,18 +5139,34 @@
   function forwardCommandCenterKey(event){
     const frame=$("ui-frame"), host=$("ui-frame-host");
     if(!frame || !host || host.hidden || !frame.contentWindow) return;
-    const target=event.target;
-    if(event.defaultPrevented || event.key==="Tab" ||
-       (typeof isTypingTarget === "function" && isTypingTarget(target))) return;
-    if(target.closest && (target.closest("dialog[open]") ||
-       (!$("cloud-menu").hidden && target.closest("#cloud-menu")))) return;
-    if((event.key==="Enter" || event.key===" ") && target.closest &&
-       target.closest("button, a, [role=button]")) return;
+    const up=event.type==="keyup", identity=event.code || event.key;
+    const sent=forwardCommandCenterKey.sentKeys ||= new Map();
+    if(up){
+      // A shortcut's modifiers may be released before its letter. Only release
+      // a key this bridge actually pressed, and only into that same frame.
+      if(sent.get(identity)!==frame.contentWindow) return;
+      sent.delete(identity);
+    }else{
+      const target=event.target;
+      // Parent-page selection and browser/editing shortcuts belong to the
+      // browser. A focused frame still receives its own native key events.
+      const selection=typeof document.getSelection==="function" ? document.getSelection() : null;
+      if(event.defaultPrevented || event.ctrlKey || event.metaKey || event.altKey ||
+         /^(Control|Meta|Alt|F\d{1,2}|BrowserBack|BrowserForward|BrowserRefresh)$/.test(event.key) ||
+         (selection && !selection.isCollapsed) || event.key==="Tab" ||
+         (typeof isTypingTarget === "function" && isTypingTarget(target))) return;
+      if(target.closest && (target.closest("dialog[open]") ||
+         (!$("cloud-menu").hidden && target.closest("#cloud-menu")))) return;
+      if((event.key==="Enter" || event.key===" ") && target.closest &&
+         target.closest("button, a, [role=button]")) return;
+      sent.set(identity,frame.contentWindow);
+    }
     const {key,code,shiftKey,altKey,ctrlKey,metaKey,repeat}=event;
     frame.contentWindow.postMessage({ta_ui:1,type:"key",key,code,shiftKey,altKey,ctrlKey,metaKey,repeat,
-      phase:event.type==="keyup" ? "up" : "down"},"*");
-    event.preventDefault();
+      phase:up ? "up" : "down"},"*");
+    if(!up) event.preventDefault();
   }
+
   // Puts text in the chat input without sending it, opening the cloud first if
   // it is a bubble. The one entry point for "start this sentence for me": the
   // blank command center's button, and the default bundle's chat.prefill.
