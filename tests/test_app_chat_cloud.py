@@ -119,10 +119,13 @@ def test_saved_per_owner_agent_and_viewport_class():
 
 CONTROLLER = PURE + ("cloudStageSize", "cloudHasLayout", "refreshChatCloud", "applyChatCloud",
                      "saveChatCloud", "setChatCloudMode", "cloudShifted", "cloudKeydown",
-                     "setCloudUnread", "paintCloudBubbleLabel")
+                     "setCloudUnread", "paintCloudBubbleLabel", "cloudRecord")
 
 DOM = """
 let cloudState=null, cloudStoreKey="", cloudWired=true, cloudSuppressClick=false;
+const MCP={_loginEpoch:1};
+const cloudPrefs={epoch:0,scope:'',synced:'',gestured:false,writeTail:Promise.resolve()};
+let queueScope='home-alice';
 let queueOwner='alice', stage={clientWidth:1280, clientHeight:740}, layout=false;
 const store={}, localStorage={getItem:k=>k in store?store[k]:null,
   setItem:(k,v)=>{store[k]=String(v);}};
@@ -209,3 +212,131 @@ console.log(JSON.stringify({mode:snap().mode, w:cloudState.open.w}));""")
 
     assert out["mode"] == "open"
     assert out["w"] == 440 - 16
+# --- the owner's record on the server (openspec/changes/owner-ui-prefs) -----
+
+SYNC = CONTROLLER + ("syncChatCloudFromServer", "postChatCloud", "cloudPrefsQuery", "cloudSession")
+
+NET = """
+let cloudSynced="", cloudGestured=false, answer=null, failRead=false, onRefresh=null;
+const posts=[], reads=[];
+const ensureFreshToken=async()=>{ if(onRefresh) onRefresh(); };
+const authHeaders=()=>({Authorization:'Bearer '+queueOwner});
+const fetch=async(path,opts)=>{
+  if(opts&&opts.method==='POST'){ posts.push(Object.assign(JSON.parse(opts.body),
+      {bearer:opts.headers.Authorization}));
+    return {ok:true,json:async()=>({saved:true})}; }
+  reads.push(path);
+  if(failRead) throw new Error('offline');
+  return {ok:true, json:async()=>(typeof answer==='function' ? answer(opts) : answer)};
+};
+const settle=()=>new Promise(r=>setTimeout(r,10));
+const SERVER={v:1,mode:'open',open:{x:300,y:120,w:500,h:400},bubble:{x:10,y:10}};
+"""
+
+
+def sync(body: str):
+    return run_js(functions(*SYNC) + CONSTS + DOM + NET + "(async()=>{" + body + "})();")
+
+
+def test_the_owners_record_wins_and_is_cached_on_this_device():
+    out = sync("""
+answer={prefs:{chat_cloud:SERVER}};
+refreshChatCloud(); await settle();
+console.log(JSON.stringify({open:cloudState.open, reads,
+  cached:JSON.parse(store['app.chatCloud.v1:alice:main:wide']||'null')}));""")
+
+    assert out["open"] == {"x": 300, "y": 120, "w": 500, "h": 400}
+    assert out["reads"] == ["/app/ui-prefs?agent=main&viewport=wide"]
+    assert out["cached"]["open"] == out["open"]
+
+
+def test_an_empty_record_keeps_and_migrates_this_devices_placement():
+    out = sync("""
+store['app.chatCloud.v1:alice:main:wide']=JSON.stringify(
+  {v:1,mode:'bubble',open:{x:1,y:1,w:400,h:400},bubble:{x:50,y:60}});
+answer={prefs:{}};
+refreshChatCloud(); await settle();
+console.log(JSON.stringify({mode:cloudState.mode, posts}));""")
+
+    assert out["mode"] == "bubble"
+    [post] = out["posts"]
+    assert post["key"] == "chat_cloud" and post["viewport"] == "wide" and post["agent"] == "main"
+    assert post["value"]["bubble"] == {"x": 50, "y": 60}
+
+
+def test_an_empty_record_and_no_placement_writes_nothing():
+    out = sync("""answer={prefs:{}}; refreshChatCloud(); await settle();
+console.log(JSON.stringify({posts, mode:cloudState.mode}));""")
+
+    assert out == {"posts": [], "mode": "open"}
+
+
+def test_a_failed_read_keeps_this_devices_placement():
+    out = sync("""
+store['app.chatCloud.v1:alice:main:wide']=JSON.stringify(
+  {v:1,mode:'bubble',open:{x:1,y:1,w:400,h:400},bubble:{x:50,y:60}});
+failRead=true; refreshChatCloud(); await settle();
+console.log(JSON.stringify({mode:cloudState.mode, posts}));""")
+
+    assert out == {"mode": "bubble", "posts": []}
+
+
+def test_a_late_answer_never_moves_a_cloud_the_owner_already_moved():
+    out = sync("""
+answer={prefs:{chat_cloud:SERVER}};
+refreshChatCloud();                                   // the read is now in flight
+cloudKeydown({key:'ArrowLeft', shiftKey:true, preventDefault(){}});
+const placed=Object.assign({}, cloudState.open);
+await settle();
+console.log(JSON.stringify({placed, now:cloudState.open}));""")
+
+    assert out["now"] == out["placed"]
+    assert out["now"]["x"] != 300
+
+
+def test_every_placement_writes_the_owners_record():
+    out = sync("""
+answer={prefs:{}}; refreshChatCloud(); await settle();
+setChatCloudMode('bubble'); await settle();
+console.log(JSON.stringify(posts.map(p=>p.value.mode)));""")
+
+    assert out == ["bubble"]
+
+
+def test_an_answer_for_a_previous_owner_is_dropped():
+    out = sync("""
+const ALICE={v:1,mode:'open',open:{x:300,y:120,w:500,h:400},bubble:{x:10,y:10}};
+const BOB={v:1,mode:'bubble',open:{x:20,y:20,w:400,h:400},bubble:{x:70,y:80}};
+answer=o=>({prefs:{chat_cloud:o.headers.Authorization==='Bearer bob'?BOB:ALICE}});
+refreshChatCloud();                                   // alice's read is in flight
+queueOwner='bob'; refreshChatCloud();                 // bob signs in before it lands
+await settle();
+console.log(JSON.stringify({key:cloudStoreKey, mode:cloudState.mode, bubble:cloudState.bubble,
+  aliceCached:'app.chatCloud.v1:alice:main:wide' in store}));""")
+
+    assert out["key"] == "app.chatCloud.v1:bob:main:wide"
+    assert out["mode"] == "bubble" and out["bubble"] == {"x": 70, "y": 80}   # bob's own
+    assert out["aliceCached"] is False
+
+
+def test_a_placement_is_never_written_under_the_next_owners_sign_in():
+    out = sync("""
+answer={prefs:{}}; refreshChatCloud(); await settle();
+onRefresh=()=>{ queueOwner='bob'; MCP._loginEpoch++; };   // the refresh lands on bob
+setChatCloudMode('bubble'); await settle();
+console.log(JSON.stringify(posts));""")
+
+    assert out == []
+
+
+def test_a_late_record_does_not_overwrite_this_devices_newer_copy():
+    out = sync("""
+answer={prefs:{chat_cloud:SERVER}};
+refreshChatCloud();
+cloudKeydown({key:'ArrowLeft', shiftKey:true, preventDefault(){}});
+const mine=JSON.parse(store['app.chatCloud.v1:alice:main:wide']).open;
+await settle();
+const cached=JSON.parse(store['app.chatCloud.v1:alice:main:wide']).open;
+console.log(JSON.stringify({mine, cached}));""")
+
+    assert out["cached"] == out["mine"]

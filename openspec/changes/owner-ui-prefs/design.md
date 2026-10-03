@@ -83,8 +83,8 @@ one owner write unbounded rows that no storage accounting sees.
   caller's row and returns `{"saved": true}`.
 - No body or query field names an owner. A different owner's row is
   unreachable: every statement binds `owner_user_id` from the authenticated
-  identity. `agent` is validated as a short id (`main` or a custom agent id),
-  never resolved to anything.
+  identity. `agent` is restricted to `main`, as in D2. Other addressed agents
+  retain their existing device-local placement without calling these routes.
 
 ### D4. The page: server first, local fallback, write both
 
@@ -101,6 +101,15 @@ record:
 On each placement the page writes `localStorage` immediately and then posts the
 server record, so the local copy stays valid if the post fails. The page never
 blocks on the server.
+
+Reads, writes and pointer callbacks capture the login epoch, owner, home,
+preference key and a lifecycle generation. Account/home transitions invalidate
+that generation, including leaving and returning to the same home. Reads and
+writes recheck after token refresh, before sending a request; reads also recheck
+before painting or caching. The record remains account-scoped: a home change is
+a request fence, not a new storage dimension. Writes are serialized so repeated
+gestures cannot complete in reverse order. Only a successful empty read migrates
+the local record; a malformed response leaves it alone.
 
 ### D5. Deletion and accounting
 

@@ -253,3 +253,20 @@ def test_auto_shrink_preserves_typing_until_focus_leaves_the_composer(app_url, b
         "document.activeElement.closest('#chat-cloud') === null"), "not the chat's any more"
     page.click("#chat-cloud-bubble")
     assert page.input_value("#composer-input") == "Keep this draft"
+
+
+def test_arrows_inside_a_control_in_the_bar_do_not_move_the_window(app_url, browser):
+    page = browser.new_page(viewport={"width": 1280, "height": 800})
+    _enter_chat(page, app_url)
+    _drag(page, "#chat-cloud-resize", -700, -400)
+    page.evaluate("""() => { const s = document.createElement('select'); s.id = 'probe-select';
+        for (const v of ['a', 'b', 'c']) { const o = document.createElement('option');
+          o.value = v; o.textContent = v; s.appendChild(o); }
+        document.getElementById('chat-cloud-bar').appendChild(s); }""")
+    before = _box(page, "#chat-cloud")
+
+    page.focus("#probe-select")
+    page.keyboard.press("ArrowDown")
+
+    after = _box(page, "#chat-cloud")
+    assert (after["x"], after["y"]) == (before["x"], before["y"])
