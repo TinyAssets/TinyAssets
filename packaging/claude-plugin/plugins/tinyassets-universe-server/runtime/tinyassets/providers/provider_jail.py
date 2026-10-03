@@ -303,6 +303,33 @@ def default_view(
     return UniverseView(universe_dir=root, mounts=tuple(mounts), chdir=chdir)
 
 
+def metadata_view(universe_dir: Path, snapshot_dir: Path, env: Mapping[str, str]) -> UniverseView:
+    """Only this owned launch snapshot, with disposable homes inside the jail.
+
+    Custody is established by native_discovery before this call. Path checks
+    here prevent a missing, redirected or broad snapshot from becoming a bind.
+    Ordinary universe content and sibling launch snapshots are never mounted.
+    """
+    root = Path(universe_dir).resolve(strict=True)
+    snapshot = Path(os.path.abspath(snapshot_dir))
+    launch_root = root / _LAUNCH_CREDENTIALS
+    if (not root.is_dir() or snapshot.parent != launch_root
+            or snapshot.resolve(strict=True) != snapshot or not snapshot.is_dir()):
+        raise _refuse("metadata requires its exact launch snapshot")
+    # HOME and scratch directories contain no persistent owner state. Preserve
+    # an auth directory only when it names the exact snapshot mounted below.
+    private_env = {"HOME": "/tmp", "USERPROFILE": "/tmp",
+                   "TMPDIR": "/tmp", "TMP": "/tmp", "TEMP": "/tmp"}
+    for name in ("APPDATA", "LOCALAPPDATA", "XDG_CONFIG_HOME", "XDG_CACHE_HOME",
+                 "XDG_DATA_HOME", "XDG_STATE_HOME", "XDG_RUNTIME_DIR",
+                 "CLAUDE_CONFIG_DIR", "CODEX_HOME"):
+        private_env[name] = str(snapshot) if env.get(name) == str(snapshot) else f"/tmp/{name}"
+    return UniverseView(
+        universe_dir=root, mounts=(JailMount("bind", str(snapshot), snapshot),),
+        chdir=str(snapshot), setenv=tuple(private_env.items()),
+    )
+
+
 def hidden_root_masks(universe_dir: Path) -> list[JailMount]:
     """Masks over every hidden root entry except ``.runtime``, or refuse.
 

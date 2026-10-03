@@ -606,6 +606,7 @@ async def aspawn_owned(
     shell: bool = False,
     universe_view=None,
     install_mounts=None,
+    require_confinement: bool = False,
     **kwargs,
 ):
     """Spawn ``cmd`` as an owned family and return the ``asyncio`` process.
@@ -626,13 +627,16 @@ async def aspawn_owned(
     resolution cannot see (a wrapper script that execs a binary elsewhere).
     Both are only read when a jail applies.
 
+    ``require_confinement`` refuses even an unbound call instead of using the
+    non-provider fallback. Metadata transport sets this alongside its view.
+
     POSIX goes through the wrapper/anchor handshake and **fails closed**: on
     any anchor failure the half-spawned family is torn down and
     :class:`FamilyAnchorError` is raised rather than a CLI this adapter could
     not end. Windows spawns exactly as before and registers the bounded
     tree-walk teardown.
     """
-    from tinyassets.providers.provider_jail import confine_launch
+    from tinyassets.providers.provider_jail import ProviderConfinementError, confine_launch
 
     argv = _shell_argv(cmd) if shell else list(cmd)
     jailed = confine_launch(
@@ -642,6 +646,8 @@ async def aspawn_owned(
         view=universe_view,
         install_mounts=install_mounts,
     )
+    if require_confinement and jailed is None:
+        raise ProviderConfinementError(ProviderConfinementError.MESSAGE)
     if jailed is not None:
         # bwrap sets the child's working directory itself (--chdir); the host
         # side only needs a directory that exists.

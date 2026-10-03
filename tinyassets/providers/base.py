@@ -1411,6 +1411,7 @@ class BaseProvider(abc.ABC):
     native_discovery_protocol = None
     native_metadata_arguments: tuple[str, ...] = ()
     native_command_resolver = None
+    native_install_mounts = None
 
     @staticmethod
     def native_process_options():
@@ -1440,7 +1441,10 @@ class BaseProvider(abc.ABC):
         )
         return await read_native_catalogue(
             [*base_cmd, *self.native_metadata_arguments], protocol=self.native_discovery_protocol,
-            env=env, cwd=str(credential_snapshot_dir), spawn_kwargs=self.native_process_options(),
+            env=env, cwd=str(credential_snapshot_dir), universe_dir=universe_dir,
+            spawn_kwargs=self.native_process_options(),
+            install_mounts=(None if self.native_install_mounts is None else
+                            lambda: self.native_install_mounts(base_cmd)),
         )
 
     @classmethod
