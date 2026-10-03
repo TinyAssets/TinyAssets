@@ -1254,22 +1254,31 @@ def commit(reservation: Reservation, actual_bytes: int | None = None) -> None:
         )
 
 
-def renew(reservation: Reservation) -> None:
-    """Keep a still-running write's reservation from expiring.
+def renew_checked(reservation: Reservation) -> bool:
+    """Renew an existing lease, reporting whether its capacity is still held.
 
-    A measurement drops a reserved row older than `RESERVED_TTL_S` as a crashed
-    writer's. A write that is genuinely still running (a long jailed provider
-    turn) re-stamps its row so its headroom stays spent. Never raises."""
+    Never recreates a lost reservation. An old but still-present reserved row
+    may renew: its capacity remains charged until a measurement reaps it.
+    Unattributed writes have no ledger lease. Ledger failures fail closed.
+    """
     if reservation.id is None:
-        return
+        return True
     try:
         with _txn(reservation.base) as conn:
-            conn.execute(
-                "UPDATE pending SET created_at = ? WHERE id = ? AND state = 'reserved'",
-                (time.time(), reservation.id),
+            cursor = conn.execute(
+                "UPDATE pending SET created_at = ? WHERE id = ? "
+                "AND account_id = ? AND bytes = ? AND state = 'reserved'",
+                (time.time(), reservation.id, reservation.account_id, reservation.bytes),
             )
-    except Exception:  # noqa: BLE001 -- worst case the row expires as before
+            return cursor.rowcount == 1
+    except Exception:  # noqa: BLE001 -- callers must stop on a lost lease
         _log.warning("storage renew failed for reservation %s", reservation.id, exc_info=True)
+        return False
+
+
+def renew(reservation: Reservation) -> None:
+    """Best-effort compatibility API; supervisors should use `renew_checked`."""
+    renew_checked(reservation)
 
 
 def release(reservation: Reservation) -> None:

@@ -297,3 +297,92 @@ def test_a_long_launch_keeps_its_reservation_past_the_ledger_ttl(base, volume, m
     assert other.bound == jail_disk.GRACE_BYTES
     other.settle()
     budget.settle()
+
+
+@pytest.mark.parametrize("loss", ["release", "expiry", "commit"])
+def test_a_lost_lease_stops_without_reclaiming_reallocated_capacity(
+    base, volume, monkeypatch, loss,
+):
+    udir = _universe(base, "u-one")
+    budget = jail_disk.open_budget(udir)
+    original = budget.reservation
+    if loss == "release":
+        sa.release(original)
+    elif loss == "expiry":
+        with sa._txn(base) as conn:
+            conn.execute(
+                "UPDATE pending SET created_at = created_at - ? WHERE id = ?",
+                (sa.RESERVED_TTL_S + 1, original.id),
+            )
+        sa.measure(base, udir.name, "universe_files")
+    else:
+        sa.commit(original)
+    replacement = jail_disk.open_budget(_universe(base, "u-two"))
+    other_owner = jail_disk.open_budget(_universe(base, "u-other", "workos|bob"))
+    before = sa.usage(base, A).used_bytes
+    monkeypatch.setattr(jail_disk, "RENEW_SECONDS", 0.0)
+    assert budget.breach() == jail_disk.STORAGE_LIMIT
+    assert replacement.breach() is None
+    assert other_owner.breach() is None
+    assert sa.usage(base, A).used_bytes == before
+    assert not sa.renew_checked(original)
+    assert replacement.reservation.id != original.id
+    # The failure stays latched even if future renewal calls would succeed.
+    monkeypatch.setattr(sa, "renew_checked", lambda reservation: True)
+    assert budget.breach() == jail_disk.STORAGE_LIMIT
+    replacement.settle()
+    other_owner.settle()
+    budget.settle()
+
+
+@pytest.mark.parametrize("field,value", [("account_id", "workos|bob"), ("bytes", 1)])
+def test_checked_renewal_rejects_a_mismatched_handle(base, volume, field, value):
+    from dataclasses import replace
+
+    budget = jail_disk.open_budget(_universe(base, "u-one"))
+    handle = replace(budget.reservation, **{field: value})
+    assert not sa.renew_checked(handle)
+    assert sa.renew_checked(budget.reservation)
+    budget.settle()
+
+
+def test_checked_renewal_supports_zero_byte_and_unattributed_handles(base, volume):
+    _universe(base, "u-one")
+    reservation = sa.reserve(
+        base, account_id=A, scope_id="u-one", store="universe_files", nbytes=0,
+    )
+    assert sa.renew_checked(reservation)
+    assert sa.renew(reservation) is None
+    assert sa.renew_checked(sa.Reservation(base, None, None, 0))
+    sa.release(reservation)
+    assert not sa.renew_checked(reservation)
+
+
+@pytest.mark.parametrize("message", ["database is locked", "disk I/O error"])
+def test_a_ledger_error_stops_the_budget_and_does_not_advance_renewal_clock(
+    base, volume, monkeypatch, message,
+):
+    import sqlite3
+
+    budget = jail_disk.open_budget(_universe(base, "u-one"))
+    previous = budget._last_renew
+    monkeypatch.setattr(jail_disk, "RENEW_SECONDS", 0.0)
+    with monkeypatch.context() as patch:
+        def fail_connect(_base):
+            raise sqlite3.OperationalError(message)
+
+        patch.setattr(sa, "_connect", fail_connect)
+        assert budget.breach() == jail_disk.STORAGE_LIMIT
+        assert budget._last_renew == previous
+        assert sa.renew(budget.reservation) is None
+    assert sa.renew_checked(budget.reservation)
+    assert budget.breach() == jail_disk.STORAGE_LIMIT
+    budget.settle()
+
+
+@pytest.mark.parametrize("owner", [A, None])
+def test_a_settled_budget_cannot_authorize_more_execution(base, volume, owner):
+    budget = jail_disk.open_budget(_universe(base, "u-one", owner))
+    budget.settle()
+    budget.settle()
+    assert budget.breach() == jail_disk.STORAGE_LIMIT
