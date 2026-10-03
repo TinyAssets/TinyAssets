@@ -218,3 +218,79 @@ def test_unpublished_workflow_is_refused_before_snapshot_is_read(home, monkeypat
     with pytest.raises(ValueError, match="no longer public"):
         _source(definition_id)
     assert reads == []
+
+
+@pytest.mark.parametrize("field,value", [
+    ("trigger", 1), ("trigger", ["event"]),
+    ("workflow", []), ("workflow", {}), ("overlap", []),
+    ("trigger.kind", []), ("trigger.kind", "once"),
+    ("trigger.interval_seconds", {}), ("trigger.interval_seconds", True),
+    ("trigger.event_filter", 1), ("trigger.event_filter.branch_def_id", ["workflow-1"]),
+    ("trigger.event_filter.branch_def_id", []),
+    ("trigger.event_filter.branch_def_id", None),
+    ("published_version_id", {}), ("published_version_id", ["private"]),
+])
+def test_malformed_public_components_disable_only_their_own_card(home, field, value):
+    from copy import deepcopy
+
+    from tinyassets.custom_agents import publish_definition
+
+    good_id = _legacy(home)
+    source = get_definition(home, good_id)
+    components = deepcopy(source["components"])
+    if field == "published_version_id":
+        components["workflow-1"][field] = value
+    else:
+        target = components["automation-1"]
+        parts = field.split(".")
+        for part in parts[:-1]:
+            target = target[part]
+        target[parts[-1]] = value
+    bad = publish_definition(home, author_id="unrelated-publisher", payload={
+        "schema_version": 1, "name": "Malformed public system", "description": "",
+        "tags": ["tinyassets.system.v1"], "components": components})
+    with _as(BOB):
+        catalogue = read_packages(universe_id=BOB_UNIVERSE)
+    rows = {row["agent_definition_id"]: row for row in catalogue["systems"]}
+    assert rows[good_id]["available"]
+    assert not rows[bad["agent_definition_id"]]["available"]
+    assert rows[bad["agent_definition_id"]]["unavailable_reason"]
+    assert catalogue["can_try"]
+    refused = _ask(BOB, BOB_UNIVERSE, {
+        "type": "install", "agent_definition_id": bad["agent_definition_id"]})
+    assert "error" in refused and "request_id" not in refused
+    assert _bobs_branches(home) == []
+
+
+def test_copied_legacy_workflow_runs_with_recipients_own_provider(home):
+    from tests.test_automations import _real_providers
+    from tests.test_background_budget_finalization_e2e import _CountingProvider
+    from tinyassets.api.automations import automations
+    from tinyassets.automations import run_due_automation
+    from tinyassets.runs import get_run, wait_for
+
+    ask = _preview(_legacy(home))
+    copied = _answer(BOB, BOB_UNIVERSE, ask["request_id"])
+    assert copied.get("installed"), copied
+    rows = AutomationStore(home).list(universe_id=BOB_UNIVERSE)
+    beat = next(row for row in rows if row.name == "scout heartbeat")
+    library = get_app_ui(home, owner_user_id=BOB, universe_id=BOB_UNIVERSE)["ui_library"]
+    assert library[0]["workflow_refs"]["scout"] == beat.branch_def_id
+    with _as(BOB):
+        resumed = automations(action="resume", universe_id=BOB_UNIVERSE,
+                              automation_id=beat.automation_id, expected_revision=beat.revision)
+    assert not resumed.get("error"), resumed
+    provider = _CountingProvider()
+    with _real_providers(codex=provider):
+        outcome = run_due_automation(home, AutomationStore(home).get(beat.automation_id),
+                                     "2026-10-01T12:05:00+00:00")
+    run_id = str(outcome).rsplit(":", 1)[-1]
+    wait_for(run_id, timeout=30)
+    run = get_run(home, run_id) or {}
+    assert run.get("status") == "completed", (outcome, run)
+    assert run.get("branch_def_id") == beat.branch_def_id
+    assert beat.branch_def_id not in {SCOUT, SCRIBE}
+    assert provider.calls, "the recipient's copied workflow never reached its own provider"
+    follow = next(row for row in AutomationStore(home).list(universe_id=BOB_UNIVERSE)
+                  if row.name == "scribe follows")
+    assert follow.desired_state == STATE_PAUSED

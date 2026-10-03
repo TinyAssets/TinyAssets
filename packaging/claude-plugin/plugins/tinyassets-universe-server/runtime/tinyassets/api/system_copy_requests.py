@@ -23,7 +23,9 @@ def _source(definition_id: str) -> tuple[dict, dict]:
         raise LookupError("this is not a published component system")
     components = definition.get("components") or {}
     supported = {UI_KIND, BRANCH_REF_KIND, AUTOMATION_SPEC_KIND}
-    if any(not isinstance(c, dict) or c.get("kind") not in supported
+    if not isinstance(components, dict) or any(
+            not isinstance(c, dict) or not isinstance(c.get("kind"), str)
+            or c["kind"] not in supported
            for c in components.values()):
         raise ValueError("this system contains components this copier does not support")
     screens = [c for c in components.values() if c["kind"] == UI_KIND]
@@ -37,7 +39,9 @@ def _source(definition_id: str) -> tuple[dict, dict]:
         if component["kind"] != BRANCH_REF_KIND:
             continue
         version_id = component.get("published_version_id")
-        if not version_id or not branch_version_is_public(base, version_id):
+        if not isinstance(version_id, str) or not version_id:
+            raise ValueError("a required workflow version is missing or invalid")
+        if not branch_version_is_public(base, version_id):
             raise ValueError("a required workflow version is missing or no longer public")
         version = get_branch_version(base, version_id)
         if version is None:
@@ -49,6 +53,8 @@ def _source(definition_id: str) -> tuple[dict, dict]:
     workflow_keys = {w["key"] for w in workflows}
 
     def resolve(reference: str) -> str:
+        if not isinstance(reference, str) or not reference:
+            raise ValueError("a declared workflow reference must name one included workflow")
         if reference in workflow_keys:
             return reference
         candidates = source_keys.get(reference, [])
@@ -66,9 +72,26 @@ def _source(definition_id: str) -> tuple[dict, dict]:
     for key, component in components.items():
         if component["kind"] != AUTOMATION_SPEC_KIND:
             continue
-        trigger = dict(component.get("trigger") or {})
-        event_filter = dict(trigger.get("event_filter") or {})
-        if event_filter.get("branch_def_id"):
+        raw_trigger = component.get("trigger")
+        if not isinstance(raw_trigger, dict):
+            raise ValueError("an automation trigger must be an object")
+        trigger = dict(raw_trigger)
+        kind = trigger.get("kind")
+        if not isinstance(kind, str) or kind not in {"interval", "cron", "event"}:
+            raise ValueError("an automation trigger kind is unsupported")
+        if kind == "interval" and (type(trigger.get("interval_seconds")) is not int
+                                   or trigger["interval_seconds"] <= 0):
+            raise ValueError("an automation interval must be a positive whole number")
+        field = "cron_expr" if kind == "cron" else "event_type" if kind == "event" else ""
+        if field and (not isinstance(trigger.get(field), str) or not trigger[field].strip()):
+            raise ValueError("an automation trigger is missing its schedule or event")
+        if not isinstance(component.get("overlap", ""), str):
+            raise ValueError("an automation overlap policy must be text")
+        raw_filter = trigger.get("event_filter", {})
+        if not isinstance(raw_filter, dict):
+            raise ValueError("an automation event filter must be an object")
+        event_filter = dict(raw_filter)
+        if "branch_def_id" in event_filter:
             event_filter["branch_def_id"] = resolve(event_filter["branch_def_id"])
         trigger["event_filter"] = event_filter
         automations.append({"key": key, "name": str(component.get("name") or key),

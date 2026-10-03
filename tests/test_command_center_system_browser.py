@@ -1,0 +1,317 @@
+"""Shipped browser surfaces -> HTTP -> real two-owner component-copy handlers.
+
+Only authentication and MCP transport are synthetic. Owner reads, publish,
+preview, trusted approval, private copies and UI persistence use real stores.
+No live model: the recipient's copied workflow runs through a counting provider.
+"""
+from __future__ import annotations
+
+import json
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.request import Request, urlopen
+
+import pytest
+
+from tests.cloud_runtime_fixture import cloud_runtime  # noqa: F401
+from tests.test_app_two_surfaces_browser import browser as _browser
+from tests.test_command_center_packages import (
+    BOB,
+    BOB_UNIVERSE,
+    OWNER,
+    SCOUT,
+    SCRIBE,
+    UI,
+    UNIVERSE,
+    _as,
+    _bob_files,
+    _bobs_branches,
+    _pin_data_dir,  # noqa: F401
+    _real_providers,
+)
+from tests.test_command_center_packages import home as home  # noqa: F401
+from tests.test_command_center_system_copy import _legacy
+from tinyassets.api.app_ui import change_app_ui, write_app_ui
+from tinyassets.api.graph_reads import read_graph
+from tinyassets.api.pending_requests import answer_request, try_package
+from tinyassets.automations import STATE_PAUSED, AutomationStore
+from tinyassets.custom_agents import get_app_ui, get_definition, save_app_ui
+from tinyassets.onboarding import render_app_html
+from tinyassets.onboarding.ui_frame import BOOTSTRAP_HTML, FRAME_HEADERS
+
+browser = _browser
+pytestmark = pytest.mark.usefixtures("cloud_runtime")
+
+
+@pytest.fixture
+def system_server(home):
+    calls, failures = [], []
+    html, csp = render_app_html()
+
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, *_args):
+            pass
+
+        def reply(self, body, *, content_type="application/json", headers=None, status=200):
+            raw = body.encode() if isinstance(body, str) else json.dumps(body).encode()
+            self.send_response(status)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(raw)))
+            for key, value in (headers or {}).items():
+                self.send_header(key, value)
+            self.end_headers()
+            self.wfile.write(raw)
+
+        def do_GET(self):
+            path = self.path.split("?")[0]
+            if path == "/app":
+                self.reply(html, content_type="text/html; charset=utf-8",
+                           headers={"Content-Security-Policy": csp})
+            elif path == "/app/ui-frame":
+                self.reply(BOOTSTRAP_HTML, content_type="text/html; charset=utf-8",
+                           headers=FRAME_HEADERS)
+            elif path == "/fixture/identity":
+                self.reply({"principal_id": BOB, "universe_id": BOB_UNIVERSE,
+                            "setup": "connected"})
+            else:
+                self.reply({"error": "not_found"}, status=404)
+
+        def do_POST(self):
+            try:
+                assert self.headers.get("Authorization") == "Bearer synthetic-bob"
+                args = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+                # Thread-local actor binding for EVERY RPC, never a process-wide actor.
+                with _as(BOB):
+                    if self.path == "/app/api/read":
+                        assert args.get("graph_id", BOB_UNIVERSE) == BOB_UNIVERSE
+                        args.setdefault("graph_id", BOB_UNIVERSE)
+                        result = json.loads(read_graph(**args))
+                        operation = "read:" + args["target"]
+                    elif self.path == "/fixture/mcp":
+                        assert args["name"] == "write_graph"
+                        args = args["args"]
+                        assert args.get("graph_id", BOB_UNIVERSE) == BOB_UNIVERSE
+                        operation = args["operation"]
+                        payload = args.get("payload_json", "{}")
+                        if args["target"] == "connection":
+                            handler = {"try_package": try_package,
+                                       "answer_request": answer_request}[operation]
+                            result = handler(universe_id=BOB_UNIVERSE, payload=payload)
+                        elif args["target"] == "app_ui":
+                            if operation == "save":
+                                result = write_app_ui(universe_id=BOB_UNIVERSE, payload=payload,
+                                                      expected_revision=args["expected_revision"])
+                            else:
+                                result = change_app_ui(universe_id=BOB_UNIVERSE,
+                                                       operation=operation, payload=payload)
+                        else:
+                            raise AssertionError(f"unexpected write target: {args['target']}")
+                    else:
+                        raise AssertionError(f"unexpected POST: {self.path}")
+                calls.append((operation, result))
+                self.reply(result)
+            except Exception as exc:
+                failures.append(repr(exc))
+                self.reply({"error": "fixture_transport_failure", "detail": str(exc)}, status=500)
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_port}", calls, failures
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
+def _rpc(origin, path, args):
+    request = Request(origin + path, data=json.dumps(args).encode(),
+                      headers={"Content-Type": "application/json",
+                               "Authorization": "Bearer synthetic-bob"})
+    with urlopen(request, timeout=15) as response:  # hermetic-ok: loopback fixture only
+        return json.load(response)
+
+
+def _enter(page, origin):
+    page.goto(origin + "/app")
+    page.wait_for_selector("#view-signin", state="visible")
+    page.evaluate("""async ({owner,home}) => {
+      sessionStorage.setItem(TOKEN_KEY,'synthetic-bob');
+      sessionStorage.setItem(EXP_KEY,String(Math.floor(Date.now()/1000)+3600));
+      fetchMe=async()=> (await fetch('/fixture/identity')).json();
+      MCP.callTool=async(name,args)=>{
+        const r=await fetch('/fixture/mcp',{method:'POST',
+          headers:{'Content-Type':'application/json','Authorization':'Bearer synthetic-bob'},
+          body:JSON.stringify({name,args})});
+        if(!r.ok) throw new Error('fixture MCP transport failed');
+        return r.json();
+      };
+      window.acceptRelays=[];
+      sendTurn=(...args)=>{window.acceptRelays.push(args);};
+      setQueueScope(home);setQueueOwner(owner);showView('chat');refreshChatCloud();
+      AppUI.enabled=true;AppUI.home=home;AppUI.principal=owner;
+      document.getElementById('btn-ui-switch').hidden=false;
+      await AppUI.load();
+    }""", {"owner": BOB, "home": BOB_UNIVERSE})
+
+
+def _assert_copy_and_run(home, definition_id, source, alice_ui, alice_automations, before):
+    from tests.test_background_budget_finalization_e2e import _CountingProvider
+    from tinyassets.api.automations import automations
+    from tinyassets.automations import run_due_automation
+    from tinyassets.runs import get_run, wait_for
+
+    copies = _bobs_branches(home)
+    ids = {row["branch_def_id"] for row in copies}
+    assert len(ids) == 2 and ids.isdisjoint({SCOUT, SCRIBE})
+    assert all(row["visibility"] == "private" and row["author"] == BOB for row in copies)
+    library = get_app_ui(home, owner_user_id=BOB, universe_id=BOB_UNIVERSE)["ui_library"]
+    assert len(library) == 2 and library[0]["ui_id"] == "my-own"
+    assert set(library[1]["workflow_refs"].values()) == ids
+    rows = {row.name: row for row in AutomationStore(home).list(universe_id=BOB_UNIVERSE)}
+    assert len(rows) == 2
+    assert all(row.desired_state == STATE_PAUSED and row.owner_principal_id == BOB
+               and row.branch_def_id in ids and row.inputs == {} for row in rows.values())
+    assert rows["scribe follows"].event_filter["branch_def_id"] == (
+        rows["scout heartbeat"].branch_def_id)
+    assert _bob_files(home) == before  # component-only: never an invented file import
+    assert get_definition(home, definition_id) == source
+    assert get_app_ui(home, owner_user_id=OWNER, universe_id=UNIVERSE) == alice_ui
+    assert AutomationStore(home).list(universe_id=UNIVERSE) == alice_automations
+    beat = rows["scout heartbeat"]
+    with _as(BOB):
+        resumed = automations(action="resume", universe_id=BOB_UNIVERSE,
+                              automation_id=beat.automation_id, expected_revision=beat.revision)
+    assert not resumed.get("error"), resumed
+    beat = AutomationStore(home).get(beat.automation_id)
+    fake = _CountingProvider()
+    with _real_providers(codex=fake):
+        outcome = run_due_automation(home, beat, "2026-10-01T12:05:00+00:00")
+        run_id = str(outcome).rsplit(":", 1)[-1]
+        wait_for(run_id, timeout=30)
+    run = get_run(home, run_id) or {}
+    assert run.get("status") == "completed", (outcome, run)
+    assert run["branch_def_id"] == beat.branch_def_id and fake.calls
+    assert get_definition(home, definition_id) == source
+    assert AutomationStore(home).list(universe_id=UNIVERSE) == alice_automations
+
+
+def _seed_own(home):
+    own = {**UI, "ui_id": "my-own", "name": "Bob's own", "script": ""}
+    save_app_ui(home, owner_user_id=BOB, universe_id=BOB_UNIVERSE,
+                expected_revision=0, changes={"ui_library": [own]})
+
+
+def test_loopback_transport_reaches_real_owner_handlers_and_runs_private_copy(home, system_server):
+    """Nonbrowser control: the browser fixture cannot return canned install success."""
+    origin, calls, failures = system_server
+    _seed_own(home)
+    definition_id = _legacy(home)
+    source = get_definition(home, definition_id)
+    alice_ui = get_app_ui(home, owner_user_id=OWNER, universe_id=UNIVERSE)
+    alice_automations = AutomationStore(home).list(universe_id=UNIVERSE)
+    before = _bob_files(home)
+    catalogue = _rpc(origin, "/app/api/read", {"target": "command_center_packages"})
+    assert catalogue["packages"] == []
+    assert catalogue["systems"][0]["agent_definition_id"] == definition_id
+    ask = _rpc(origin, "/fixture/mcp", {"name": "write_graph", "args": {
+        "target": "connection", "operation": "try_package",
+        "payload_json": json.dumps({"agent_definition_id": definition_id})}})
+    assert "request_id" in ask and not _bobs_branches(home)
+    rail = _rpc(origin, "/app/api/read", {"target": "pending_requests"})
+    assert ask["request_id"] in json.dumps(rail)
+    own_row = _rpc(origin, "/app/api/read", {"target": "app_ui"})["app_ui"]
+    assert own_row["ui_library"][0]["ui_id"] == "my-own"
+    assert own_row["platform_default"]["ui_id"] == "platform:blank"
+    bindings = _rpc(origin, "/app/api/read", {"target": "agent_bindings", "limit": 100})
+    assert "bindings" in bindings
+    done = _rpc(origin, "/fixture/mcp", {"name": "write_graph", "args": {
+        "target": "connection", "operation": "answer_request",
+        "payload_json": json.dumps({"request_id": ask["request_id"], "values": {}})}})
+    assert done.get("installed"), done
+    _assert_copy_and_run(home, definition_id, source, alice_ui, alice_automations, before)
+    row = _rpc(origin, "/app/api/read", {"target": "app_ui"})["app_ui"]
+    saved = _rpc(origin, "/fixture/mcp", {"name": "write_graph", "args": {
+        "target": "app_ui", "operation": "save", "expected_revision": row["revision"],
+        "payload_json": json.dumps({"ui_selection": {
+            "version": 1, "state": "active", "ui_id": "village"}})}})
+    assert saved["status"] == "saved", saved
+    reread = _rpc(origin, "/app/api/read", {"target": "app_ui"})["app_ui"]
+    assert reread["ui_selection"]["ui_id"] == "village"
+    assert not failures and any(op == "answer_request" for op, _ in calls)
+
+
+@pytest.mark.real_browser
+def test_shipped_frame_previews_system_trusted_rail_copies_and_navigation_persists(
+    home, system_server, browser,
+):
+    from playwright.sync_api import expect
+
+    origin, calls, failures = system_server
+    _seed_own(home)
+    page = browser.new_page(viewport={"width": 1280, "height": 900})
+    try:
+        _enter(page, origin)
+        frame = page.frame_locator("#ui-frame")
+        frame.get_by_role("button", name="Try someone else's", exact=True).click()
+        expect(frame.locator("#packages")).to_contain_text("No shared command centers")
+        definition_id = _legacy(home)
+        source = get_definition(home, definition_id)
+        assert "package" not in source["components"]
+        alice_ui = get_app_ui(home, owner_user_id=OWNER, universe_id=UNIVERSE)
+        alice_automations = AutomationStore(home).list(universe_id=UNIVERSE)
+        before = _bob_files(home)
+        page.evaluate("async()=>{await AppUI.load();}")
+        frame.get_by_role("button", name="Try someone else's", exact=True).click()
+        expect(frame.locator("#packages")).to_contain_text("Components only; no files")
+        frame.get_by_role("button", name="Preview copy", exact=True).click()
+        expect(frame.locator("#message")).to_contain_text("preview and confirm")
+        assert not _bobs_branches(home) and _bob_files(home) == before
+        assert AutomationStore(home).list(universe_id=BOB_UNIVERSE) == []
+        page.evaluate("async()=>{await refreshRail();}")
+        if page.locator("#chat-cloud-bubble").is_visible():
+            page.locator("#chat-cloud-bubble").click()
+        tab = page.locator("#rail-items .rtab").filter(has_text="GTM Village")
+        expect(tab).to_have_count(1)
+        accept = tab.get_by_role("button", name="Accept", exact=True)
+        if not accept.is_visible():
+            tab.locator(".rtab-btn").click()
+        expect(tab).to_contain_text("Component-only copy")
+        accept.click()  # actual trusted parent-document confirmation, never frame approval
+        expect(tab).to_have_count(0)
+        assert any(op == "answer_request" and result.get("installed") for op, result in calls)
+        _assert_copy_and_run(home, definition_id, source, alice_ui, alice_automations, before)
+        page.evaluate("async()=>{await AppUI.load();}")
+        for name, expected_id in [("Bob's own", "my-own"), ("Village", "village")]:
+            page.locator("#btn-ui-switch").click()
+            page.get_by_role("button", name="Use " + name, exact=True).click()
+            expect(page.locator("#ui-status")).to_contain_text("Now using " + name + ".")
+            page.locator("#btn-ui-close").click()
+            # Real reload and rebind the same synthetic owner; stored choice is read again.
+            page.evaluate("sessionStorage.clear()")
+            _enter(page, origin)
+            assert page.evaluate("AppUI.active.ui_id") == expected_id
+            page.locator("#btn-ui-switch").click()
+            page.locator("#ui-dialog").get_by_role(
+                "button", name="Try someone else's", exact=True).click()
+            expect(page.locator("#ui-dialog")).to_contain_text("GTM Village")
+            page.locator("#btn-ui-close").click()
+        from tests.test_command_center_packages import _published
+
+        _published(home)  # Explicit second publish: a real file package beside the legacy system.
+        assert "package" not in get_definition(home, definition_id)["components"]
+        page.locator("#btn-ui-switch").click()
+        page.locator("#ui-dialog").get_by_role(
+            "button", name="Try someone else's", exact=True).click()
+        expect(page.locator("#ui-dialog")).to_contain_text("File package")
+        expect(page.locator("#ui-dialog")).to_contain_text("Public system")
+        page.get_by_role("button", name="Blank command center", exact=True).click()
+        expect(page.locator("#ui-status")).to_contain_text("Default chat restored.")
+        page.evaluate("sessionStorage.clear()")
+        _enter(page, origin)
+        assert page.evaluate("AppUI.isPlatformDefault()") is True
+        assert len(_bobs_branches(home)) == 2
+        assert not failures
+    finally:
+        page.close()
