@@ -705,7 +705,7 @@ def test_a_full_account_can_still_free_space_through_its_agent(world, monkeypatc
     junk = world.universe_a / "notes" / "junk.bin"
     junk.write_bytes(b"x" * 64 * 1024)
     out = tools.bash(world.universe_a, "rm notes/junk.bin && echo removed", agent_id="main")
-    assert "out of cloud storage" in out and "removed" in out, out
+    assert "no additional cloud storage allocation" in out and "removed" in out, out
     assert not junk.exists()
 
 

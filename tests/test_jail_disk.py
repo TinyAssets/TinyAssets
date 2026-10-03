@@ -56,6 +56,7 @@ def base(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     # Shrunk so the numbers stay in kilobytes; the logic is unchanged.
     monkeypatch.setattr(jail_disk, "LAUNCH_BYTES_CAP", 50 * KIB)
     monkeypatch.setattr(jail_disk, "GRACE_BYTES", 4 * KIB)
+    monkeypatch.setattr(jail_disk, "WRITE_HEADROOM_BYTES", 4 * KIB)
     return root
 
 
@@ -118,16 +119,16 @@ def test_the_bound_is_the_accounts_fresh_headroom_and_is_reserved(base, volume):
 
     first = jail_disk.open_budget(udir)
     # 100 KiB quota - 50 KiB on disk (measured at launch, not cached).
-    assert first.bound == 50 * KIB and first.notice == ""
+    assert first.bound == 46 * KIB and first.notice == ""
     assert first.start_bytes == 30 * KIB
     # The headroom is pending while the first launch runs: a concurrent launch
     # of the same account cannot spend it again.
     second = jail_disk.open_budget(other)
-    assert second.bound == jail_disk.GRACE_BYTES and second.notice
+    assert second.bound == 0 and second.notice
     first.settle()
     second.settle()
     third = jail_disk.open_budget(other)
-    assert third.bound == 50 * KIB
+    assert third.bound == 46 * KIB
     third.settle()
 
 
@@ -137,17 +138,17 @@ def test_the_launch_measures_its_universe_fresh(base, volume):
     # A jailed write lands; nothing gated it, so only a fresh walk sees it.
     _write(udir, "jail-wrote.bin", 100 * KIB)
     budget = jail_disk.open_budget(udir)
-    assert budget.bound == jail_disk.GRACE_BYTES
-    assert "out of cloud storage" in budget.notice
+    assert budget.bound == 0
+    assert "no additional cloud storage allocation" in budget.notice
     budget.settle()
 
 
-def test_a_full_account_still_launches_on_the_grace_budget(base, volume):
+def test_a_full_account_still_launches_without_new_growth(base, volume):
     udir = _universe(base, "u-one")
     _write(udir, "full.bin", 100 * KIB)
     budget = jail_disk.open_budget(udir)
-    assert budget.bound == jail_disk.GRACE_BYTES
-    assert budget.reservation is None
+    assert budget.bound == 0
+    assert budget.reservation.bytes == 0
     # Never the owner's numbers: a collaborator may be the caller.
     assert "KiB" not in budget.notice.split("at most")[0]
     budget.settle()
@@ -237,11 +238,11 @@ def test_growth_masked_by_another_users_deletes_is_caught_by_the_timed_walk(
     budget.settle()
 
 
-def test_a_nearly_full_account_gets_no_less_than_the_grace_budget(base, volume):
+def test_a_nearly_full_account_does_not_spend_the_write_headroom(base, volume):
     udir = _universe(base, "u-one")
     _write(udir, "almost.bin", 99 * KIB)  # 1 KiB of headroom, below the grace
     budget = jail_disk.open_budget(udir)
-    assert budget.bound == jail_disk.GRACE_BYTES
+    assert budget.bound == budget.reservation.bytes == 0
     budget.settle()
 
 
@@ -281,7 +282,7 @@ def test_a_long_launch_keeps_its_reservation_past_the_ledger_ttl(base, volume, m
     udir = _universe(base, "u-one")
     _write(udir, "half.bin", 50 * KIB)  # the other 50 KiB is this launch's
     budget = jail_disk.open_budget(udir)
-    assert budget.bound == 50 * KIB
+    assert budget.bound == 46 * KIB
     conn = sa._connect(base)
     try:
         conn.execute("UPDATE pending SET created_at = created_at - ?", (sa.RESERVED_TTL_S + 1,))
@@ -294,6 +295,6 @@ def test_a_long_launch_keeps_its_reservation_past_the_ledger_ttl(base, volume, m
     sa.measure(base, "u-one", "universe_files")
     # ...so a concurrent launch of the same account still finds the headroom spent.
     other = jail_disk.open_budget(_universe(base, "u-two"))
-    assert other.bound == jail_disk.GRACE_BYTES
+    assert other.bound == 0
     other.settle()
     budget.settle()

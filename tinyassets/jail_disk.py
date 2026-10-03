@@ -13,7 +13,8 @@ At launch, `open_budget`:
 * measures the universe's own files FRESH and reserves what still fits in the
   owning account's storage (`storage_accounting.reserve_fitted`), capped per
   launch. The reservation is pending while the process runs, so two concurrent
-  launches cannot both spend the same headroom.
+  launches cannot both spend the same headroom. Speculation leaves a small
+  amount available to independently gated writes such as saving an app UI.
 
 While the process runs, the supervisor polls `DiskBudget.breach()`:
 
@@ -25,11 +26,10 @@ While the process runs, the supervisor polls `DiskBudget.breach()`:
   one walk. The timed walk is there because the signal can also be masked --
   another user DELETING while this one writes leaves the volume flat.
 
-An account that is already full is NOT refused: the process still starts with a
-small grace budget, so the owner can still talk to their agent and free space
-(``rm`` makes the walk shrink). Refusing would lock the owner out of the one
-tool that can fix it -- the reason `storage_accounting` never gates chat. The
-caller shows `DiskBudget.notice` instead.
+An account with no launch headroom still starts, with zero additional growth,
+so reads and deletes can run (``rm`` makes the walk shrink). A CLI that needs
+to create files may be stopped. Unknown accounting retains the bounded grace
+fallback; a known full account never receives an unreserved growth allowance.
 """
 
 from __future__ import annotations
@@ -55,8 +55,10 @@ MIN_FREE_INODES = 4096
 #: reservation is pending while it runs, so this is also what a concurrent
 #: launch of the same account cannot use.
 LAUNCH_BYTES_CAP = 1024 * _MiB
-#: What a launch may still add when its account is full (or the ledger cannot
-#: answer): enough for a provider CLI's session files and an agent's notes.
+#: Capacity speculative jail reservations leave for ordinary gated writes.
+#: This is inside the owner's existing quota, not an extra storage allowance.
+WRITE_HEADROOM_BYTES = 16 * _MiB
+#: Existing bounded fallback when the ledger cannot answer.
 GRACE_BYTES = 16 * _MiB
 #: Size of the jail's private ``/tmp`` (RAM-backed tmpfs).
 TMP_BYTES = 256 * _MiB
@@ -230,8 +232,8 @@ def open_budget(
 ) -> DiskBudget:
     """The budget for one jailed launch in ``universe_dir``, or refuse.
 
-    Raises `DiskFloorRefused` when the shared volume is below a floor. A full
-    account is not refused: it gets `GRACE_BYTES` and a `notice` to show.
+    Raises `DiskFloorRefused` when the shared volume is below a floor. An
+    exhausted launch allocation gets zero growth and a `notice` to show.
     """
     from tinyassets import storage_accounting
     from tinyassets.universe_owner import owner_of
@@ -254,11 +256,13 @@ def open_budget(
         storage_accounting.measure(base, universe_id, _STORE)
         reservation, bound = storage_accounting.reserve_fitted(
             base, account_id=account, scope_id=universe_id, store=_STORE,
-            cap=LAUNCH_BYTES_CAP, minimum=1,
+            cap=LAUNCH_BYTES_CAP, minimum=0, headroom=WRITE_HEADROOM_BYTES,
         )
-        bound = max(int(bound), GRACE_BYTES)
+        if bound == 0:
+            notice = _no_growth_notice()
     except storage_accounting.StorageRefused as refused:
-        bound = GRACE_BYTES
+        bound = (0 if refused.record.get("failure_class") == storage_accounting.FAILURE_QUOTA
+                 else GRACE_BYTES)
         notice = _full_notice(refused)
     except (sqlite3.Error, OSError, ValueError):
         _log.exception("jail disk budget: storage ledger unavailable")
@@ -289,9 +293,12 @@ def _full_notice(refused) -> str:
             f"{_human(GRACE_BYTES)} to the command center]"
         )
     # Never the owner's numbers here: the caller may be a collaborator.
-    return (
-        "[this command center's owner is out of cloud storage: this call may add at most "
-        f"{_human(GRACE_BYTES)}, and is stopped past that. Delete files to make room, "
-        "or the owner can upgrade]"
-    )
+    return _no_growth_notice()
 
+
+def _no_growth_notice() -> str:
+    return (
+        "[this call has no additional cloud storage allocation and is stopped if "
+        "its command center grows. Reads and deletes can still run; other active "
+        "calls or stored files may be using the owner's storage]"
+    )

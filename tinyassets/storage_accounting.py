@@ -820,46 +820,63 @@ def reserve_fitted(
     cap: int,
     credit: int = 0,
     minimum: int = MIN_WORKSPACE_BYTES,
+    headroom: int = 0,
 ) -> tuple[Reservation, int]:
     """Reserve a write whose size is unknown up front, sized to what FITS.
 
     Returns ``(reservation, bound)``: the caller must not let the write exceed
-    ``bound`` = min(``cap``, headroom + ``credit``). ``credit`` is bytes the
+    ``bound`` = min(``cap``, max(0, available - ``headroom``) + ``credit``).
+    ``credit`` is bytes the
     write replaces and that are already owed deletion (a published workspace
     generation this checkout supersedes), so a re-checkout of the same repo
-    fits the quota it already occupies. Raises `StorageRefused` when the bound
+    fits the quota it already occupies. ``headroom`` leaves capacity for other
+    write paths; it is subtracted before fitting, in the admission transaction.
+    With ``minimum=0`` a launch can receive a zero-growth reservation.
+    Raises `StorageRefused` when the bound
     is below ``minimum`` -- before any bytes move. (account-storage-quota D6:
     a fixed 4 GiB reservation refused every permanent workspace on a 2 GiB
     free account, empty or not.) No account: the cap, ungated.
     """
+    if store not in STORES:
+        raise KeyError(f"unregistered store {store!r}")
+    cap, minimum, headroom = int(cap), int(minimum), int(headroom)
+    if min(cap, minimum, headroom) < 0:
+        raise ValueError("cap, minimum and headroom must be >= 0")
+    credit = max(0, int(credit))
     base = Path(base_path)
     account = named_principal(account_id or "")
     if not account:
         return Reservation(base, None, None, 0), int(cap)
     quota, tier = _quota(base, account)
     pairs = _scopes(base, account)
+    if (scope_id, store) not in pairs:
+        raise ValueError(f"{store}/{scope_id} is not part of this account's storage")
     try:
         stale = _stale_pairs(base, pairs)
         if stale:
             _measure_many(base, stale)
-        conn = _connect(base)
-        try:
+        with _txn(base) as conn:
             current = _usage_in(conn, account, pairs, quota, tier)
-        finally:
-            conn.close()
+            bound = min(cap, max(0, quota - current.used_bytes - headroom) + credit)
+            # Replaced bytes remain measured until discard. Only the increment
+            # is pending; a concurrent launch fits what remains under this lock.
+            incremental = max(0, bound - credit)
+            if bound < minimum or current.used_bytes + incremental > quota:
+                universes = len({
+                    scope for scope, st in pairs if STORES[st].scope == SCOPE_UNIVERSE
+                })
+                raise StorageRefused(
+                    refusal_record(current, minimum, universes=universes), account,
+                )
+            cursor = conn.execute(
+                "INSERT INTO pending (account_id, scope_id, store, bytes, state, created_at) "
+                "VALUES (?, ?, ?, ?, 'reserved', ?)",
+                (account, scope_id, store, incremental, time.time()),
+            )
+            reservation = Reservation(base, int(cursor.lastrowid), account, incremental)
     except sqlite3.Error:
         _log.exception("storage ledger unavailable for a fitted reservation")
         raise StorageRefused(_unavailable_record(minimum)) from None
-    bound = min(int(cap), quota - current.used_bytes + max(0, int(credit)))
-    if bound < minimum:
-        universes = len({scope for scope, st in pairs if STORES[st].scope == SCOPE_UNIVERSE})
-        raise StorageRefused(refusal_record(current, minimum, universes=universes), account)
-    # The replaced bytes are still measured until their discard lands, so only
-    # the part beyond them is new pending.
-    reservation = reserve(
-        base, account_id=account, scope_id=scope_id, store=store,
-        nbytes=max(0, bound - max(0, int(credit))),
-    )
     return reservation, bound
 
 
