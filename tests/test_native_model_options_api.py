@@ -26,9 +26,29 @@ def picker(native, monkeypatch):
     monkeypatch.setattr(permissions, "is_authenticated_request", lambda: True)
     monkeypatch.setattr(permissions, "current_actor_id", lambda: "owner-1")
     from tinyassets.api.graph_reads import read_graph
+    from tinyassets.providers.shortlist_refresh import SHORTLIST_CACHE
 
-    # The complete catalogue (the owner door's read); the connector projects it.
-    return lambda: json.loads(read_graph(target="model_options"))
+    # A picker read serves the warm per-source catalogue and never discovers,
+    # so the fixture warms it the way a real connect does
+    # (`credential_vault._warm_after_deposit`). It cannot happen at the real
+    # deposit here: that runs before `install_discovery` patches the executor,
+    # so it would warm from the unpatched one.
+    #
+    # Warmed on each call, not once in the fixture: several tests install
+    # their OWN discovery stub after this fixture runs, and one reads twice
+    # expecting the second read to see a newly advertised id. Warming per read
+    # keeps every test reflecting its own stub without depending on background
+    # timing. Cold-read behaviour has its own coverage in
+    # tests/test_shortlist_background_refresh.py.
+    def read():
+        SHORTLIST_CACHE.refresh_now(
+            base=native.base, owner="owner-1",
+            universe_id=native.universe.name, provider="codex",
+        )
+        # The complete catalogue (the owner door's read); the connector projects it.
+        return json.loads(read_graph(target="model_options"))
+
+    return read
 
 
 @pytest.mark.parametrize("native", ["discovered"], indirect=True)

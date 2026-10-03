@@ -37,6 +37,7 @@ from tinyassets.providers.base import (
 )
 from tinyassets.providers.owned_process import (
     aspawn_owned,
+    disk_stop_note,
     kill_owned_tree,
     no_window_kwargs,
 )
@@ -1097,7 +1098,8 @@ class CodexProvider(BaseProvider):
                 )
             elif proc.returncode != 0:
                 raise ProviderError(
-                    f"codex exec exit {proc.returncode}: {failure_excerpt}"
+                    f"codex exec exit {proc.returncode}{disk_stop_note(proc)}: "
+                    f"{failure_excerpt}"
                 )
 
             stdout_text = stdout.decode("utf-8", errors="replace").strip()

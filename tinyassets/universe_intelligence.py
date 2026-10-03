@@ -138,6 +138,19 @@ _ENGINE_DISALLOWED_TOOLS = (
     "ScheduleWakeup", "ReportFindings", "PushNotification", "RemoteTrigger",
     "SendMessage", "CronCreate", "CronDelete", "CronList",
     "TaskCreate", "TaskUpdate", "TaskGet", "TaskList", "TaskStop", "TaskOutput",
+    # claude.ai account reach, re-checked against the CLI changelog for
+    # 2.1.184-2.1.288 (Codex ADAPT 2026-10-03). These act on the LOGGED-IN
+    # claude.ai account, which is the daemon host's -- not the universe owner's
+    # -- so none of them is contained by the OS jail or --strict-mcp-config.
+    #   Artifact      publishes pages, uploads assets, and reads other people's
+    #                 artifacts; its artifact-database writes are visible to
+    #                 every viewer of the artifact (2.1.285).
+    #   ListAgents    the discovery half of cross-session SendMessage, which is
+    #                 already denied: it enumerates other live sessions.
+    #   SendFeedback  drafts and sends a report off-box (added in range).
+    #   ListPlugins   reads the plugins enabled on the claude.ai account.
+    #   EndConversation  can end the served turn from inside it (added in range).
+    "Artifact", "ListAgents", "SendFeedback", "ListPlugins", "EndConversation",
     # remote integrations
     "DesignSync", "DesignSyncTool",
     # MCP: all server tools (wildcard) + resource readers

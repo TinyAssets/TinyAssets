@@ -50,11 +50,16 @@ import unicodedata
 from pathlib import Path
 from typing import Any, Iterator
 
+from tinyassets.api.interlocutor import FOUNDER_PRIVATE_GROUNDING as _FOUNDER_PRIVATE
+from tinyassets.automation_context import BRAIN_FILES as _GOVERNED_BRAIN
+from tinyassets.ingestion.canon_io import CANON_DIRNAME as _CANON_DIRNAME
 from tinyassets.universe_files import (
     MAX_UNIVERSE_FILE_BYTES,
     list_universe_dir,
     read_universe_file,
 )
+from tinyassets.work_targets import ARTIFACTS_DIRNAME as _ARTIFACTS_DIRNAME
+from tinyassets.work_targets import REQUESTS_FILENAME as _REQUESTS_FILENAME
 
 FORMAT_VERSION = 1
 PROFILE_PUBLISH = "publish"
@@ -99,14 +104,82 @@ _HARNESS_FILES_F = frozenset(fold(n) for n in HARNESS_ROOT_FILES)
 _HARNESS_DIRS_F = frozenset(fold(n) for n in HARNESS_ROOT_DIRS)
 _MEMORY_F = fold(MEMORY_FILE)
 
-_BRAIN_FILES = frozenset({"founder.md", "soul.md", "soul.edit.md", "log.md"})
-#: Platform-written runtime state at the folder root.
+#: Brain files that never travel. Derived from two authorities rather than
+#: re-listed by name, because spelling them out once is what let ``orgchart.md``
+#: through while the publish confirmation said brain files were left out:
+#:
+#: * ``FOUNDER_PRIVATE_GROUNDING`` (``api/interlocutor.py``) -- withheld from
+#:   every non-founder interlocutor *regardless of the command center's
+#:   visibility level*: a command center may be fully public without its
+#:   founder's private description becoming public.
+#: * ``automation_context.BRAIN_FILES`` -- the governed grounding set, private by
+#:   default (host decision 2026-10-03).
+#:
+#: Minus ``HARNESS_ROOT_FILES``, which travel on purpose: ``destination``
+#: remaps them into ``agents/<slug>/`` so a published command center arrives as
+#: a roster agent, and ``identity.md`` is that agent's own self-description --
+#: the thing being shared, not a founder fact. Excluding it would install an
+#: agent with no identity. ``MEMORY.md`` is in that set too and is handled
+#: per-item by the scrub, not wholesale.
+_BRAIN_FILES = (
+    frozenset({"founder.md", "soul.md", "soul.edit.md", "log.md"})
+    | _FOUNDER_PRIVATE
+    | (frozenset(_GOVERNED_BRAIN) - HARNESS_ROOT_FILES)
+)
+#: Platform-written runtime state at the folder root. RETAINED only to name a
+#: reason in the tab: since the root became an allowlist (:data:`ROOT_FILES`)
+#: an unlisted root file stays home whether or not it appears here, so this set
+#: no longer has to be complete. It was never close: a grep of the root-level
+#: filenames platform code writes found 21 more that travelled, including
+#: ``branch_tasks.json`` -- the work queue, the same class as
+#: ``requests.json``. Enumerating private names was the losing half of the game.
 _RUNTIME_FILES = frozenset({
     "activity.log", "status.json", "ledger.json", "work_targets.json", "notes.json",
     "timeline.json", "promises.json", "facts.json", "characters.json",
-    "dispatcher_config.yaml", "config.yaml",
+    "dispatcher_config.yaml", "config.yaml", _REQUESTS_FILENAME,
+    "branch_tasks.json", "branch_tasks_archive.json", "enrichment_signals.json",
+    "hard_priorities.json",
 })
-NEVER_DIRS = frozenset({"workspaces", "soul_versions"})
+
+#: **The root is an allowlist.** Every file directly at the command center's
+#: root that may travel, and nothing else.
+#:
+#: This is the boundary that matters, because the root is where the platform
+#: writes its own state -- every known-private name is checked at depth 1
+#: only, and a same-named file in a user's own folder (``notes/orgchart.md``) is
+#: that user's note and still travels. So a closed set here, and the existing
+#: per-folder rules below it, is the whole fix: a platform file added to the
+#: root by a future change is private by default instead of public by default.
+#:
+#: The members are exactly the kinds the ask already publishes:
+#: ``HARNESS_ROOT_FILES`` (remapped into ``agents/<slug>/`` by
+#: :func:`destination`, so a published command center arrives as a roster
+#: agent) plus the UI bundle's entry point.
+UI_ROOT_FILE = "app.html"
+ROOT_FILES = HARNESS_ROOT_FILES | frozenset({UI_ROOT_FILE})
+_ROOT_FILES_F = frozenset(fold(n) for n in ROOT_FILES)
+
+#: Root folders that never travel. Unlike :data:`ROOT_FILES` this cannot be a
+#: closed allowlist: a user may make any folder, and their content is most of
+#: what sharing a command center means. So the platform's own folders are named
+#: here, and **derived from the writer's constants** rather than spelled out --
+#: ``artifacts/`` was missed by exactly the hand-listing this avoids, and it
+#: holds the review, execution and discarded-target records, which preserve the
+#: whole work target including its request text (``work_targets.py:137-146``).
+#: A review of the root-only version found it there (2026-10-03), which is also
+#: why "the top folder is where platform state lives" was too strong: most of
+#: it is, but not all.
+#: ``canon/`` holds the owner's UPLOADS. Private by default (host decision
+#: 2026-10-03): an upload can be anything personal, and Hard Rule 9 makes it
+#: authoritative content the platform never reshapes -- so it is not the
+#: platform's to publish on the owner's behalf. Note this is a name match, not
+#: a derivation: every writer spells the folder as a bare literal
+#: (``api/universe.py``, ``work_targets.py``), so ``canon_io.CANON_DIRNAME``
+#: names it once rather than deriving from them. A rename would have to change
+#: that constant too; the test below pins it.
+NEVER_DIRS = frozenset({
+    "workspaces", "soul_versions", _ARTIFACTS_DIRNAME, _CANON_DIRNAME,
+})
 _BRAIN_F = frozenset(fold(n) for n in _BRAIN_FILES)
 _RUNTIME_F = frozenset(fold(n) for n in _RUNTIME_FILES)
 #: Under ``wiki/`` only the curated ``pages/`` travel (okf_export's set).
@@ -227,6 +300,20 @@ R_TOO_BIG = "over the per-file size bound"
 R_UNREADABLE = "a link or not a regular file"
 R_CHECKOUT = "a managed repository checkout"
 R_DEEP = "deeper than a package may go"
+R_ROOT_UNLISTED = "not one of the files a package carries from the top folder"
+R_WORK_RECORDS = "your command center's own work records"
+R_UPLOADS = "the files you uploaded stay yours"
+
+#: One reason per never-folder, so the tab says which kind of state it is. The
+#: assertion is the guard: a name added to :data:`NEVER_DIRS` without a reason
+#: here fails on import rather than reading as something it is not.
+_NEVER_DIR_REASON = {
+    fold("workspaces"): R_CHECKOUT,
+    fold("soul_versions"): R_BRAIN,
+    fold(_ARTIFACTS_DIRNAME): R_WORK_RECORDS,
+    fold(_CANON_DIRNAME): R_UPLOADS,
+}
+assert set(_NEVER_DIR_REASON) == {fold(n) for n in NEVER_DIRS}
 
 
 class PackageError(ValueError):
@@ -310,6 +397,13 @@ def structural_exclusion(rel: str) -> str | None:
         return R_WIKI
     if parts[-1].lower().endswith(_DB_SUFFIXES):
         return R_DATABASE
+    if len(parts) == 1 and head not in _ROOT_FILES_F:
+        # THE ROOT IS AN ALLOWLIST, and this is deliberately the LAST root rule:
+        # every specific reason above keeps its own wording in the tab, so a
+        # database still reads "a database file" rather than this catch-all.
+        # What lands here is a root file nobody enumerated -- where both real
+        # leaks lived, and the 21 found after them.
+        return R_ROOT_UNLISTED
     return None
 
 
@@ -321,7 +415,7 @@ def dir_exclusion(rel_dir: str) -> str | None:
         return R_DOT
     head = fold(parts[0])
     if head in NEVER_DIRS:
-        return R_CHECKOUT if head == "workspaces" else R_BRAIN
+        return _NEVER_DIR_REASON[head]
     if "__pycache__" in parts or "node_modules" in parts:
         return R_RUNTIME
     if head == WIKI_DIR and len(parts) >= 2 and fold(parts[1]) != WIKI_PAGES:

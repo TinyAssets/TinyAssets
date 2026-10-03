@@ -383,6 +383,86 @@ def test_public_status_forwards_the_addressed_agent(world):
     assert out["recent_conversation"]["turns"][0]["text"] == "weaver only"
 
 
+def test_an_addressed_turn_registers_under_that_agent_so_stop_can_reach_it(world, monkeypatch):
+    """Harness §4.18: the owner's Stop must reach the agent they are talking to.
+
+    ``request_interrupt`` filters on ``live.agent_id`` and ``LiveTurn`` carries
+    it, but ``converse`` registered every turn at the ``main`` default whoever
+    it was addressed to. So a Stop aimed at a custom agent matched nothing and
+    did nothing, and a Stop aimed at main stopped that custom agent's turn.
+    """
+    from tinyassets import turn_interrupt as ti
+
+    seen: dict[str, object] = {}
+    provider = world["provider"]
+
+    def capture(prompt, system="", **kwargs):
+        live = ti.current()
+        seen["registered_agent"] = None if live is None else live.agent_id
+        # A Stop addressed to MAIN must not match this turn. Side-effect free
+        # only because this fixture runs no main turn in the same
+        # (owner, universe) bucket -- if one existed this call would correctly
+        # stop it, so do not reuse this line where one does (Codex refute of
+        # this PR, finding E).
+        seen["main_stop"] = ti.request_interrupt(OWNER, "u-home", agent_id="main")
+        seen["still_running"] = live is not None and not live.requested()
+        return provider(prompt, system=system, **kwargs)
+
+    monkeypatch.setattr(ui, "call_provider", capture)
+    out = _converse(message="hello", agent_id=world["weaver"])
+
+    assert seen["registered_agent"] == world["weaver"], (
+        "the turn registered under "
+        f"{seen['registered_agent']!r}, so a Stop addressed to the agent cannot find it"
+    )
+    assert seen["main_stop"] == 0, "a Stop addressed to main reached a custom agent's turn"
+    assert seen["still_running"] is True, "main's Stop asked a custom agent's turn to stop"
+    assert out.get("interrupted") is not True and "error" not in out
+    assert ti.live_count(OWNER, "u-home") == 0, "the turn stayed registered after returning"
+
+
+def test_a_stop_addressed_to_the_agent_interrupts_its_live_turn(world, monkeypatch):
+    """The positive half, end to end through a real converse turn."""
+    from tinyassets import turn_interrupt as ti
+
+    stopped: dict[str, object] = {}
+
+    def capture(prompt, system="", **kwargs):
+        stopped["matched"] = ti.request_interrupt(OWNER, "u-home", agent_id=world["weaver"])
+        live = ti.current()
+        stopped["requested"] = live is not None and live.requested()
+        live.check()  # raises TurnInterrupted at this boundary
+        raise AssertionError("the stop did not take effect")
+
+    monkeypatch.setattr(ui, "call_provider", capture)
+    out = _converse(message="stop me", agent_id=world["weaver"])
+
+    assert stopped["matched"] == 1, "the addressed Stop did not match the agent's live turn"
+    assert stopped["requested"] is True
+    assert out["interrupted"] is True
+    assert ti.live_count(OWNER, "u-home") == 0
+
+
+def test_a_main_turn_still_registers_as_main(world, monkeypatch):
+    """No change for the main agent: its Stop target is exactly what it was."""
+    from tinyassets import turn_interrupt as ti
+
+    seen: dict[str, object] = {}
+    provider = world["provider"]
+
+    def capture(prompt, system="", **kwargs):
+        live = ti.current()
+        seen["registered_agent"] = None if live is None else live.agent_id
+        seen["weaver_stop"] = ti.request_interrupt(OWNER, "u-home", agent_id=world["weaver"])
+        return provider(prompt, system=system, **kwargs)
+
+    monkeypatch.setattr(ui, "call_provider", capture)
+    _converse(message="hello")
+
+    assert seen["registered_agent"] == "main"
+    assert seen["weaver_stop"] == 0, "a custom agent's Stop reached the main turn"
+
+
 def test_ingress_puts_the_addressed_agent_on_the_context(world, monkeypatch):
     """The ONE place UniverseContext.agent_id is set (harness §4.18).
 

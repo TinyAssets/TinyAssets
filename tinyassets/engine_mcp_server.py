@@ -45,6 +45,7 @@ from tinyassets.command_center_names import CommandCenterNames
 from tinyassets.engine_conversation_attention import ConversationAttention
 from tinyassets.engine_read_views import compact_model_options, universe_status_view
 from tinyassets.engine_steering import OwnerSteering
+from tinyassets.engine_tool_activity import ToolActivity
 
 #: What a JSON-carrying argument (``write_graph payload_json``, ``run_graph
 #: inputs_json``) accepts on the wire: the JSON TEXT, or the value itself
@@ -420,9 +421,27 @@ class RefusalsAreErrors(Middleware):
         raise ToolError(text if bounded is None else bounded)
 
 
-# First added is OUTERMOST: attention acknowledges only the final bounded
+class ResearchReadOnly(Middleware):
+    """Positive allowlist before any handler or response middleware runs."""
+
+    async def on_call_tool(self, context, call_next):
+        from fastmcp.exceptions import ToolError
+
+        from tinyassets.research_capability import research_refusal
+
+        message = context.message
+        refusal = research_refusal(message.name, message.arguments)
+        if refusal is not None:
+            raise ToolError(refusal)
+        return await call_next(context)
+
+
+# First added is OUTERMOST: new tools default to refused in research.
+mcp.add_middleware(ResearchReadOnly())
+# Attention acknowledges only the final bounded
 # result, then the ceiling wraps the refusal flag.
 mcp.add_middleware(OwnerSteering())
+mcp.add_middleware(ToolActivity())
 mcp.add_middleware(ConversationAttention())
 mcp.add_middleware(BoundedResults())
 mcp.add_middleware(RefusalsAreErrors())
@@ -2008,6 +2027,32 @@ _WRITE_GRAPH_INTERFACES_CHAPTER = """\
          "style": ".floor{display:grid}",
          "script": "async function enter(room){...}"}
 
+    **Only these calls change what the person sees.** A UI exists in that row
+    and nowhere else. Keeping a copy under ``extensions/<name>/component.json``
+    in my own folder is fine as a working file, but editing that file changes
+    NOTHING the person looks at -- the platform never reads it. Every change has
+    to go through ``write_graph target="app_ui"`` (``add_ui``, ``replace_ui``,
+    ``edit_ui``), and I confirm it landed by reading the row back. If I edit the
+    file and tell the person their screen is updated, I am wrong.
+
+    ``version`` is the FORMAT version of this component and is always ``1``. It
+    is not a revision, a build number or a cache-buster: the app renders version
+    1 and refuses anything else, and a UI it refuses cannot be shown until the
+    field is 1 again. Nothing needs busting: the app re-reads this row after a
+    turn whose revision moved, and on the person's Refresh, and it asks for each
+    asset by its own ``sha256`` with caching off -- so there is no stale copy for
+    a version number to defeat. There is nowhere to put a build id either: a
+    field outside the ten above is refused too. To publish a change, change the
+    content with ``replace_ui`` or ``edit_ui``; the person's screen picks it up
+    on its next turn, or at once if they Refresh.
+
+    ``add_ui`` and ``replace_ui`` REFUSE a component the app could not render,
+    and the refusal says what to change -- so a receipt means the person can
+    really see it. For a UI stored before that check existed, a read tells me:
+    ``read_graph target="app_ui"`` carries ``renderable`` per UI, with ``reason``
+    and ``fix`` when it is false. Worth reading whenever someone says a screen
+    is not what I think I saved.
+
     ``markup`` is assigned, not parsed for scripts, so a ``<script>`` tag inside it
     does NOT run -- the only code that runs is ``script``. Bounds: the component's
     text (markup, style, script and the asset list) under 1048576 UTF-8 bytes;
@@ -2062,6 +2107,9 @@ _WRITE_GRAPH_INTERFACES_CHAPTER = """\
         await tinyassets.listRuns({status, limit}) -> {runs:[{run_id,branch_id,name,
                   status,started_at,finished_at,last_node_id}], has_more}
                   # newest first, at most 50; has_more says there are older
+        await tinyassets.readLive()                -> {as_of, agents:[{agent_id,name,
+                  state:"working"|"idle", since, steps:[{tool,summary,state,age_s}]}]}
+                  # each agent's live state; poll it to animate agents at work
         await tinyassets.readRun(run_id)           -> {status,nodes:[{node_id,status}],
                   error,output_fields:[...]}
         await tinyassets.readRunOutput(run_id, field, offset)
@@ -2105,8 +2153,11 @@ _WRITE_GRAPH_INTERFACES_CHAPTER = """\
     UI I only install stays private. (The connector's ``write_graph
     target="agent" operation="publish"`` is the person's own direct route, not a
     call I have.) To use someone else's, I read it with
-    ``read_commons_shape agent_definition_id=...`` and ``add_ui`` its component
-    into this person's library; that copy is theirs, the same thing the
+    ``read_commons_shape agent_definition_id=...`` for metadata and component
+    keys. Read the chosen key with ``field_name=<key>``; concatenate ``chunk``
+    values in ``output_offset=next_offset`` order until ``next_offset`` is null,
+    then JSON-decode and ``add_ui`` that complete component into this person's
+    library; that copy is theirs, the same thing the
     connector's ``operation="remix"`` does. A copy always runs as the person who
     installed it, in THEIR command center -- it can never reach back to whoever wrote it.
 
@@ -2268,12 +2319,26 @@ _WRITE_GRAPH_SYSTEMS_CHAPTER = """\
     * **Its screen is an app UI** (chapter ``interfaces``) that reads the real
       thing: automations, runs, what each agent wrote, the shared files. I build
       it only from the calls that chapter lists and never fake state on it.
-    * **Sharing it** is a ``publish`` ask the person confirms; I cannot publish
+    **What the person means by its name.** In the app, the screen they look at
+    IS called a command center -- "Switch command center" moves between them.
+    So "publish my Fantasy Village" names the command center they see, not a
+    stray file: I never call it a UI to them, and never call one of their
+    screens leftover. Publishing a named screen uses the PACKAGE form below,
+    as an ask the person must confirm --
+    ``ui_id`` for that screen plus ``"package": {}`` -- because the screen alone
+    is a picture: without its workflows and files the person who installs it
+    gets something that cannot do anything. There is no screen-only publish to
+    fall back to: ``branch_ids`` must name at least one workflow, so the choice
+    is an explicit command-center package or a legacy component-only system.
+    The component-only system does not appear in the command-center picker.
+
+    * **Sharing a command center** is a ``publish`` ask the person confirms; I cannot publish
       myself::
 
         write_graph target="pending_request" operation="ask" payload_json={
-          "action": {"type": "publish", "name": "...", "description": "...",
-                     "branch_ids": ["<mine>", ...], "ui_id": "<in my library>",
+          "action": {"type": "publish", "publish_kind": "command_center",
+                     "name": "...", "description": "...", "package": {},
+                     "branch_ids": ["<mine>"], "ui_id": "<in my library>",
                      "automation_ids": ["<mine, driving a listed branch>"]}}
 
       The platform writes the tab listing everything that becomes public, pins
@@ -2281,7 +2346,18 @@ _WRITE_GRAPH_SYSTEMS_CHAPTER = """\
       workflow goes public with a version, and ONE definition bundles the UI, a
       ``tinyassets.branch-ref.v1`` per workflow and a
       ``tinyassets.automation-spec.v1`` per trigger (never its inputs).
-    * **Sharing the WHOLE command center** is the same ask with a ``package``
+      For portable workflow lookups, the UI declares ``workflow_refs`` as an
+      alias-to-owned-branch-id object and reads ``(await tinyassets.whoami()).
+      workflow_refs.<alias>``. Publishing, after the person confirms, maps only
+      those selected references to package component keys; installing maps them
+      to the recipient's copies.
+      Script text stays unchanged. Existing named ``emit`` events remain owner
+      broadcasts; this does not grant direct workflow execution or exclusive routing.
+    * **Sharing workflows only** uses ``publish_kind: "workflows"`` and
+      ``branch_ids`` without ``ui_id`` or ``package``. A legacy screen-and-workflow
+      system without ``package`` appears in agents, not the package picker; it
+      never silently exports files.
+    * **Sharing the WHOLE command center** uses the explicit ``package``
       block, ``"package": {}``: the files travel too (agents' instructions and
       skills, workspace files, ``wiki/pages``) as one versioned package. The
       platform leaves out memory, the brain files about the person, platform
@@ -2299,8 +2375,12 @@ _WRITE_GRAPH_SYSTEMS_CHAPTER = """\
       its agent's instructions under ``agents/<name>/``. Tell them to resume the
       automations they want.
     * **Installing someone else's** single system: ``browse_commons kind="agents"``, then
-      ``read_commons_shape agent_definition_id=...``; ``remix_shape`` each
-      branch-ref's ``published_version_id``; ``add_ui`` the ``ui`` component into
+      ``read_commons_shape agent_definition_id=...`` for metadata and component
+      keys. Read each component with ``field_name=<key>`` and concatenate its
+      JSON ``chunk`` pages using ``output_offset=next_offset`` until null, then
+      JSON-decode. ``field_name="@definition"`` pages the complete legacy
+      definition in the same way. ``remix_shape`` each branch-ref's
+      ``published_version_id``; ``add_ui`` the ``ui`` component into
       this person's ``app_ui``; create an automation per automation-spec against the
       copy its ``workflow`` names (an ``event_filter.branch_def_id`` that names a
       workflow key means that copy's id). Every copy is private, runs on this
@@ -2794,6 +2874,12 @@ def write_graph(
 ) -> str:
     """Build or EDIT one of YOUR OWN command center's workflow shapes (branches).
 
+    target=proposal operation=propose takes payload_json {action, why, evidence}:
+    one planned action (one line, <=200 chars), reason (<=1000), and observations
+    (<=2000). Creates an owner approval request. RESEARCH SESSIONS ONLY, the one
+    write research may do; any other session is refused and uses its own request
+    tools instead.
+
     FILE INPUTS, exact shape (an app attachment is already a six-field
     reference; full example under FILE INPUTS below). Create with
     ``"io_manifest": {"inputs": [{"name": "files", "io_type": "file_bundle",
@@ -2872,9 +2958,11 @@ def write_graph(
       edges + nodes, retune a node's prompt/source or its ``llm_policy`` model pin,
       rename, retag, add skills). The ``branches`` chapter has the
       workflow-wide ops. The
-      edit is transactional (all-or-nothing). Publishing to the commons, changing
-      visibility to public, and forking a foreign shape are NOT available here (they
-      stay in the browser flow); a patched source_code node re-enters UNAPPROVED.
+      edit is transactional (all-or-nothing). Public ``visibility`` and foreign
+      forks are not on this operation; a patched source_code node re-enters
+      UNAPPROVED. Publishing IS mine, as an ask: ``target="pending_request"
+      operation="ask"`` with a ``publish`` action, ``"package": {}`` for the
+      whole command center. Chapter ``systems``.
     - ``operation="delete"`` — delete one of YOUR OWN branches by ``branch_id``,
       public or private (a public branch is a shape others copy; it runs nothing
       for them). Refused only when something of yours still depends on it
@@ -2911,7 +2999,8 @@ def write_graph(
     * ``interfaces`` -- the screen the user looks at. A dashboard, a game, an
       office plan, any interface they ask for: I write its HTML/CSS/JS myself.
     * ``systems`` -- anything always on, several agents working together, or a
-      product for others: built HERE, never hosted elsewhere.
+      product for others: built HERE, never hosted elsewhere. PUBLISHING,
+      SHARING and INSTALLING a command center are here.
 
     I read one with ``read_graph target="handbook"
     query="write_graph.<chapter>"``; ``read_graph target="handbook"`` with no
@@ -2983,6 +3072,17 @@ def write_graph(
     # Each target delegates to its own confined adapter, never broad connector
     # write_graph. Raw connection secrets and person-only request answers stay out.
     t = (target or "").strip().lower()
+    if t == "proposal":
+        from tinyassets.api.pending_requests import propose
+        from tinyassets.auth.middleware import _current_identity
+
+        if (operation or "").strip().lower() != "propose":
+            return json.dumps({"error": "proposal supports operation='propose' only"})
+        token = _bind_founder_identity()
+        try:
+            return json.dumps(propose(universe_id=_GRAPH_ID, payload=payload_json))
+        finally:
+            _current_identity.reset(token)
     if t == "run_file":
         from tinyassets.auth.middleware import _current_identity
         from tinyassets.universe_server import write_graph as _write_file
@@ -3514,6 +3614,7 @@ def browse_commons(
     query: str = "",
     author: str = "",
     limit: int = 30,
+    output_offset: int = 0,
 ) -> str:
     """Browse the SHARED TinyAssets commons — what other command centers
     published, that you can remix into your own.
@@ -3529,6 +3630,8 @@ def browse_commons(
         query: Optional search text (not branches).
         author: Optional author filter.
         limit: Max records (not branches).
+        output_offset: For agents/packages, the returned next_offset (matching row index).
+            Other kinds currently do not support paging.
     """
     import json
 
@@ -3543,6 +3646,9 @@ def browse_commons(
                 f"use one of: {sorted(_COMMONS_LIST_KINDS)}."
             ),
         })
+
+    if normalized not in {"agents", "packages"} and output_offset != 0:
+        return json.dumps({"error": "output_offset is supported only for agents/packages"})
 
     from tinyassets.auth.middleware import _current_identity
 
@@ -3581,11 +3687,38 @@ def browse_commons(
             return _untrusted(f"commons:browse:{normalized}", foreign, own=own)
         if normalized == "packages":
             from tinyassets.api.package_requests import list_packages
+            from tinyassets.engine_read_views import project_agents
+            from tinyassets.engine_result_bounds import resolve_ceiling
 
-            rows = list_packages(query=(query or "").strip(), author=(author or "").strip(),
-                                 limit=max(1, min(int(limit or 30), _COMMONS_BROWSE_MAX)))
-            foreign, own = _split_own_rows(
-                json.dumps({"packages": rows, "count": len(rows)}, default=str))
+            if type(output_offset) is not int or output_offset < 0:
+                return json.dumps({"error": "output_offset must be a non-negative integer"})
+            if type(limit) is not int or not 1 <= limit <= 100:
+                return json.dumps({"error": "limit must be between 1 and 100"})
+            filters = {"query": (query or "").strip(), "author": (author or "").strip()}
+            rows = list_packages(**filters, limit=max(1, min(int(limit or 30),
+                                                           _COMMONS_BROWSE_MAX)),
+                                 offset=output_offset)
+            more = bool(list_packages(**filters, limit=1, offset=output_offset + len(rows)))
+            if output_offset and not rows and not list_packages(
+                    **filters, limit=1, offset=output_offset - 1):
+                return json.dumps({"error": "output_offset is past the package catalog"})
+            definitions = [{**row, "tags": ["tinyassets.command-center-package.v1"],
+                            "components": {"package": {**row, "kind": "tinyassets.package.v1"}}}
+                           for row in rows]
+            result = project_agents(definitions, offset=output_offset, more=more,
+                                    budget=resolve_ceiling() - 2048)
+            if "error" in result:
+                return json.dumps(result)
+            by_id = {row["agent_definition_id"]: row for row in rows}
+            for row in result["agents"]:
+                original = by_id[row["agent_definition_id"]]
+                row.update(version=row["package"]["version"], size=original["size"],
+                           file_count=row["package"]["file_count"],
+                           needs=row["package"]["needs"],
+                           agent_count=row["package"]["agent_count"],
+                           details_field="package")
+            result["packages"] = result.pop("agents")
+            foreign, own = _split_own_rows(json.dumps(result))
             return _untrusted(f"commons:browse:{normalized}", foreign, own=own)
         from tinyassets.universe_server import read_graph as _impl
 
@@ -3595,6 +3728,7 @@ def browse_commons(
                 query=(query or "").strip(),
                 author=(author or "").strip(),
                 limit=limit,
+                **({"output_offset": output_offset} if normalized == "agents" else {}),
             )
         )
         return _untrusted(f"commons:browse:{normalized}", foreign, own=own)
@@ -3603,9 +3737,15 @@ def browse_commons(
 
 
 @mcp.tool
-def read_commons_shape(branch_id: str = "", agent_definition_id: str = "") -> str:
-    """Read the FULL definition of ONE shared shape so you can decide whether to
-    remix it — nodes, edges, prompts, and lineage.
+def read_commons_shape(branch_id: str = "", agent_definition_id: str = "",
+                       field_name: str = "", output_offset: int = 0,
+                       output_max_chars: int = 8192) -> str:
+    """Read one public shape. Branches return nodes, edges, prompts and lineage.
+
+    Agents return metadata and a pageable component catalog, not inline UI bodies.
+    Select field_name=<exact component key> for lossless Unicode JSON chunks, or
+    @definition for the complete legacy definition. Concatenate chunk values
+    following next_offset until it is null.
 
     Pass exactly one id (from ``browse_commons``). You can read any PUBLIC shape
     from any command center; a private shape you did not author reads as "not found".
@@ -3620,6 +3760,9 @@ def read_commons_shape(branch_id: str = "", agent_definition_id: str = "") -> st
     Args:
         branch_id: A branch definition id (a workflow graph shape).
         agent_definition_id: A public custom-agent definition id.
+        field_name: Exact agent component key, or @definition; omit for catalog.
+        output_offset: Component index for catalog, Unicode offset for a chunk.
+        output_max_chars: Maximum chunk characters, 1..32768; budget may reduce it.
     """
     import json
 
@@ -3635,6 +3778,9 @@ def read_commons_shape(branch_id: str = "", agent_definition_id: str = "") -> st
             "error": "pass exactly one of branch_id / agent_definition_id.",
         })
 
+    if bid and (field_name or output_offset != 0 or output_max_chars != 8192):
+        return json.dumps({"error": "component selectors apply only to agent_definition_id"})
+
     from tinyassets.auth.middleware import _current_identity
     from tinyassets.universe_server import read_graph as _impl
 
@@ -3646,7 +3792,8 @@ def read_commons_shape(branch_id: str = "", agent_definition_id: str = "") -> st
             payload = _impl(target="branch", branch_id=bid)
             foreign, origin = _foreign_branch_origin(bid)
             return _untrusted(f"commons:{origin[len('branch:'):]}", payload) if foreign else payload
-        payload = _impl(target="agent", agent_definition_id=aid)
+        payload = _impl(target="agent", agent_definition_id=aid, field_name=field_name,
+                        output_offset=output_offset, output_max_chars=output_max_chars)
         foreign, origin = _foreign_agent_origin(aid)
         return _untrusted(origin, payload) if foreign else payload
     finally:
@@ -4266,18 +4413,26 @@ async def _universe_tool(op, /, **kwargs) -> str:
     try:
         return await asyncio.to_thread(op, udir, **kwargs)
     except (universe_tools.UniverseToolError, ProviderConfinementError) as exc:
+        from tinyassets.engine_tool_activity import note_refusal
+
+        note_refusal(str(exc))
         return f"error: {exc}"
 
 
-@mcp.tool(name="read")
+# No output schema: an image comes back as [text, image] content, which a str
+# schema would make the client report as an error (tinyassets/tool_images.py).
+@mcp.tool(name="read", output_schema=None)
 async def read_file(path: str, offset: int = 0, limit: int = 0) -> str:
-    """Read a file in your folder /u (relative paths are under /u).
+    """Read a file in your folder /u (relative paths are under /u); an image
+    (.png .jpg .webp .gif) is shown to you, scaled to fit.
     offset: first line (1-based); limit: line count (default 2000)."""
     from tinyassets import universe_tools
+    from tinyassets.tool_images import ToolImage
 
-    return await _universe_tool(
+    result = await _universe_tool(
         universe_tools.read_file, agent_id=_acting_agent(), path=path, offset=offset, limit=limit,
     )
+    return result.tool_result() if isinstance(result, ToolImage) else result
 
 
 @mcp.tool(name="write")

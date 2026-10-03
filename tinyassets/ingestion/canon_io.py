@@ -37,7 +37,17 @@ from tinyassets.universe_files import (
 
 logger = logging.getLogger(__name__)
 
+#: The canon folder's name inside a command center. Every function here takes
+#: ``canon_dir`` as a parameter, so this module did not previously need the
+#: name -- but its callers all spell it as a bare literal
+#: (``tinyassets/api/universe.py``, ``tinyassets/work_targets.py``), and
+#: ``command_center_packages`` has to refuse the folder by name to keep uploads
+#: out of a published package. Named here, beside the I/O that owns it, so
+#: there is one place to change and one place to find.
+CANON_DIRNAME = "canon"
+
 __all__ = [
+    "CANON_DIRNAME",
     "safe_canon_path",
     "iter_canon_files",
     "read_canon_text",

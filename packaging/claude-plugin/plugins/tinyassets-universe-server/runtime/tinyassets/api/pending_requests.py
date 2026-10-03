@@ -1094,6 +1094,29 @@ def _validated_items(raw: Any, action: dict[str, Any]) -> list[dict[str, Any]]:
     return out
 
 
+def try_package(*, universe_id: str = "", payload: Any = None) -> dict[str, Any]:
+    """Raise the existing install ask; only the trusted owner surface can answer it."""
+    from tinyassets.command_center_picker import working_packages
+
+    uid, _, denial = _owner_gate(universe_id)
+    if denial is not None:
+        return denial
+    try:
+        definition_id = _payload(payload).get("agent_definition_id")
+    except (ValueError, TypeError) as exc:
+        return _bad(str(exc))
+    if not isinstance(definition_id, str) or not any(
+        row["agent_definition_id"] == definition_id for row in working_packages()
+    ):
+        return _bad("this package is not available to try")
+    ask = request_from_user(universe_id=uid, payload=json.dumps({"action": {
+        "type": "install", "agent_definition_id": definition_id,
+    }}))
+    if "error" in ask:
+        return ask
+    return {"request_id": ask["request_id"], "title": ask["title"]}
+
+
 def request_from_user(
     *, universe_id: str = "", payload: Any = None, origin: str = "agent",
     sign_in_hosts: tuple[str, ...] = (),
@@ -2599,6 +2622,52 @@ def _answer_item(
     }
 
 
+def propose(*, universe_id: str = "", payload: Any = None) -> dict[str, Any]:
+    """Store one proposed action for this owner; never accept a request shape.
+
+    Research sessions only: see ``research_capability``.
+    """
+    from tinyassets.proposals import dedupe_key, validate
+    from tinyassets.research_capability import non_research_proposal_refusal
+    from tinyassets.storage.pending_requests import create_request
+
+    _uid, udir, denied = _owner_gate(universe_id)
+    if denied is not None:
+        return denied
+    refusal = non_research_proposal_refusal()
+    if refusal is not None:
+        return refusal
+    try:
+        document = validate(_payload(payload))
+    except ValueError as exc:
+        return _bad(str(exc))
+    title = document["action"]
+    brief = document["why"] + "\n\n" + document["evidence"]
+    row = create_request(
+        udir, kind="proposal", title=title, body=brief, fields=[],
+        action={"type": "start_activity", "title": title, "brief": brief},
+        dedupe_key=dedupe_key(title), origin="agent",
+    )
+    return row if row is not None else {"error": "proposal_storage_failed"}
+
+
+def _start_approved_proposal(universe_id: str, row: dict[str, Any]) -> dict[str, Any]:
+    """TODO(#4221): start the approved activity, idempotently by request_id.
+
+    Call api.activities.write(operation="start", payload={"title": ..., "brief": ...})
+    with the stored action and approval id when that subsystem lands.
+
+    Until then this REFUSES rather than raising. ``answer_request`` returns an
+    error from here unchanged and leaves the request pending, so the owner's
+    Approve reads as a truthful "not yet" they can retry once #4221 lands. A
+    raise reached them as an unhandled error instead, which is the crash Hard
+    Rule 8 rules out -- loud, but never a crash and never a silent success.
+    """
+    return {"error": "proposal_start_unavailable",
+            "detail": "approved proposals can't start activities yet; D2a #4221 wires this",
+            "request_pending": True}
+
+
 def answer_request(*, universe_id: str = "", payload: Any = None) -> dict[str, Any]:
     """The user's answer.
 
@@ -2767,6 +2836,23 @@ def answer_request(*, universe_id: str = "", payload: Any = None) -> dict[str, A
             "that feedback looks like it contains a credential; it is stored in "
             "the clear, so say it in words instead"
         )
+
+    if row["kind"] == "proposal":
+        if values:
+            return _bad("proposal approval has no fields")
+        if document.get("decline") is True:
+            result = {}
+            decision = "declined"
+        else:
+            result = _start_approved_proposal(_uid, row)
+            if result.get("error"):
+                return result
+            decision = "allowed"
+        if not resolve_request(udir, request_id, status="answered", answer=answer,
+                               feedback=feedback, decision=decision):
+            return {"error": "request_resolution_unconfirmed", "request_pending": True}
+        return {**result, "status": "answered", "decision": decision,
+                "request_id": request_id}
 
     if action.get("type") == "bind_model_access":
         from tinyassets.api.model_access_requests import execute_action
@@ -2976,6 +3062,10 @@ def displayed_row_matches(row: dict[str, Any]) -> bool:
     carries the sixth. One shape per row -- "try a few shapes" would defeat the
     pin.
     """
+    if row.get("kind") == "proposal":
+        from tinyassets.proposals import displayed_row_matches as proposal_matches
+
+        return proposal_matches(row)
     stored = row.get("dedupe_key")
     if not stored:
         return True

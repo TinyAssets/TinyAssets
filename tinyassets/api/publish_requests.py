@@ -50,7 +50,7 @@ _MAX_ID = 200
 PUBLIC_SENTENCE = (
     "Anyone will be able to read and copy these. A copy runs in the copier's own "
     "universe on their own compute and never reaches yours. Publishing does not "
-    "share your conversations, files, credentials or automation inputs."
+    "share your conversations, credentials or automation inputs."
 )
 
 
@@ -96,7 +96,26 @@ def validate_action(action: dict[str, Any]) -> dict[str, Any]:
         from tinyassets.command_center_packages import validate_options
 
         validated["package"] = validate_options(action["package"])
+    kind = action.get("publish_kind")
+    if kind is not None:
+        if kind not in ("command_center", "workflows", "system"):
+            raise ValueError("publish_kind must be command_center, workflows or system")
+        if kind == "command_center" and ("package" not in validated or not validated["ui_id"]):
+            raise ValueError("publishing a command center needs its ui_id and an explicit "
+                             "package object; review the included files before confirming")
+        if kind != "command_center" and "package" in validated:
+            raise ValueError("only command_center intent may include a package")
+        if kind == "workflows" and validated["ui_id"]:
+            raise ValueError("workflow-only publishing cannot include a screen")
+        validated["publish_kind"] = kind
     return validated
+
+
+def _publication_kind(action: dict[str, Any]) -> str:
+    """Describe the actual payload, including legacy asks; never add content."""
+    if action.get("package") is not None:
+        return "command_center"
+    return "system" if action.get("ui_id") else "workflows"
 
 
 #: Fields of a branch row that publishing itself changes, or pure edit
@@ -113,7 +132,7 @@ UI_PORTABLE_FIELDS = ("kind", "version", "ui_id", "name", "markup", "style", "sc
 #: Optional fields that publish as they are: library names from the public
 #: allowlist and the script type. ``assets`` is NOT one: its bytes live in the
 #: publisher's private UI storage and a published copy could not load them.
-UI_PORTABLE_OPTIONAL_FIELDS = ("libraries", "script_type")
+UI_PORTABLE_OPTIONAL_FIELDS = ("libraries", "script_type", "workflow_refs")
 
 _CHANGED = (
     "something in this ask changed after you were shown it, so nothing was "
@@ -193,7 +212,10 @@ def _trigger_words(trigger: dict[str, Any]) -> str:
 def tab_text(action: dict[str, Any]) -> tuple[str, str, str]:
     """``(kind, title, body)`` for the tab, written from the pinned action only."""
     shown = action["shown"]
-    lines = [f"Public name: {_shown(action['name'], 120)}"]
+    kind = _publication_kind(action)
+    label = {"command_center": "command center", "system": "workflow and screen bundle",
+             "workflows": "workflows"}[kind]
+    lines = [f"Publication: {label}", f"Public name: {_shown(action['name'], 120)}"]
     if action["description"]:
         lines.append(f"Description: {_shown(action['description'], 400)}")
     lines.append("These become public:")
@@ -207,20 +229,36 @@ def tab_text(action: dict[str, Any]) -> tuple[str, str, str]:
     package = shown.get("package")
     if package:
         lines.extend(_package_lines(package))
+    else:
+        lines.append("No files are included. This appears in the shared systems catalogue, "
+                     "not the command-center package picker; its components copy separately.")
     lines.append("")
     lines.append(PUBLIC_SENTENCE)
     if package:
         lines.append(PACKAGE_SENTENCE)
-    return ("Publish", f"Publish \"{_shown(action['name'], 120)}\" for anyone to copy?",
+    return ("Publish", f"Publish {label} \"{_shown(action['name'], 120)}\" for anyone to copy?",
             "\n".join(lines))
 
 
 #: The platform's sentence about what a scrub can and cannot prove (§4.17).
+#:
+#: It now names what TRAVELS, because the contents rule is an allowlist
+#: (``command_center_packages.ROOT_FILES``) and a sentence that lists what was
+#: removed can only ever be as complete as the removal list was. The previous
+#: wording promised "your brain files and platform state were left out" while
+#: ``orgchart.md``, ``requests.json`` and 21 other platform root files
+#: travelled. Describing the carried kinds is a claim the code can keep.
+#:
+#: Two exactness notes kept deliberately: "private" brain files, because
+#: ``identity.md`` travels as the published roster agent's own identity; and
+#: memory as conditional, because entries the owner named do travel.
 PACKAGE_SENTENCE = (
-    "Every file listed above becomes public. Files with a detected credential or "
-    "contact details, your memory, your brain files and platform state were left "
-    "out, but detection cannot prove a file holds no personal information: read "
-    "the list before you confirm."
+    "Every file listed above becomes public: your agent and skill files, your "
+    "roster agents, your published wiki pages, your app, and your own folders. "
+    "Your private brain files, your memory unless you named entries, platform "
+    "state, and anything else sitting in the top folder stay home. But "
+    "detection cannot prove a file holds no personal information: read the "
+    "list before you confirm."
 )
 
 
@@ -277,6 +315,7 @@ def build_snapshot(uid: str, action: dict[str, Any]) -> dict[str, Any]:
         AgentValidationError,
         _check_secret_fields,
         _normalize_definition_payload,
+        app_ui_workflow_refs,
         get_app_ui,
     )
     from tinyassets.daemon_server import get_branch_definition
@@ -313,12 +352,27 @@ def build_snapshot(uid: str, action: dict[str, Any]) -> dict[str, Any]:
     for n, (bid, raw) in enumerate(rows.items(), start=1):
         key = f"workflow-{n}"
         keys[bid] = key
-        content_hash = compute_content_hash(_canonical_snapshot(_flipped(raw)))
+        snapshot = _canonical_snapshot(_flipped(raw))
+        content_hash = compute_content_hash(snapshot)
         name = str(raw.get("name") or bid)
         components[key] = {"kind": BRANCH_REF_KIND, "name": name,
                            "published_version_id": f"{bid}@{content_hash[:8]}"}
         shown["workflows"].append({"name": _shown(name),
-                                   "nodes": len(raw.get("graph_nodes") or [])})
+                                   "nodes": len(snapshot.get("graph_nodes") or [])})
+
+    if "ui" in components and action.get("package") is not None:
+        ui = components["ui"]
+        refs = app_ui_workflow_refs(ui)
+        if any(bid not in keys for bid in refs.values()):
+            raise ValueError("workflow_refs must name only workflows selected in this publish ask")
+        if action.get("publish_kind") == "command_center" and any(
+                bid in ui["script"] for bid in keys):
+            raise ValueError(
+                "this screen embeds a source workflow id; use whoami().workflow_refs "
+                "with an explicit workflow_refs alias so installed copies use their own workflows"
+            )
+        if "workflow_refs" in ui:
+            ui["workflow_refs"] = {alias: keys[bid] for alias, bid in refs.items()}
 
     store = AutomationStore(base)
     for n, automation_id in enumerate(action["automation_ids"], start=1):
@@ -739,7 +793,8 @@ def _publish_snapshot(actor: str, action: dict[str, Any], snap: dict[str, Any], 
         _unflip(prior)
         raise
     receipt = {"published": True, "agent_definition_id": agent["agent_definition_id"],
-               "branch_versions": versions}
+               "branch_versions": versions, "publication_kind": _publication_kind(action),
+               "catalogue": "packages" if package else "agents"}
     if package:
         from tinyassets.command_center_packages import set_version_definition
 

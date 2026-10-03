@@ -74,7 +74,17 @@ FINAL_REPLY = "Nebula is a good cat name."
 #: skipping it produces a wrong effectful call.) Ratchet lowered to 30,000:
 #: raising it again means stating the per-round latency cost, and ~28.5k is the
 #: level the reachable-not-resident rule holds the surface at.
-MAX_SERVED_TOOL_DESCRIPTION_CHARS = 30_000
+#: 2026-10-03: 30,096, ratchet 30,100. +165 chars on write_graph for the same
+#: reason the base64 rule came back, one step worse: the resident text SAID
+#: "Publishing to the commons ... NOT available here (they stay in the browser
+#: flow)", which went stale when #4315 shipped publish as a pending-request ask.
+#: Live on prod, the founder asked their agent to publish and it answered that it
+#: has no publish surface at all -- it was obeying this text. A chapter the agent
+#: has no reason to fetch cannot fix that, so the correction is resident: the ask
+#: exists, and chapter `systems` has the payload. Cost: ~41 tokens per
+#: round-trip; ~124 if a two-tool turn takes three model rounds. A token
+#: estimate, not measured latency.
+MAX_SERVED_TOOL_DESCRIPTION_CHARS = 30_100
 
 
 def _learning_call(system: str) -> bool:
