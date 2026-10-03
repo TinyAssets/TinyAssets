@@ -31,5 +31,6 @@ maintenance barrier and journal identities. Preserve the single-writer,
 no-handover operating restriction. This proposal does not depend on held #4308,
 change that branch, add lease machinery, or claim cross-store fencing/atomicity.
 BOOT identity adds a conservative stale-preparation restriction; it grants no
-execution authority. Foreground/effect-review plumbing and placement are excluded.
+execution authority. Cross-process delivery observes the stored original issuer
+using existing process_liveness, never the engine process's BOOT (design section 7). Foreground/effect-review plumbing and placement are excluded.
 No provider calls, new credentials/settings/privileges, replay, or watchdog removal.

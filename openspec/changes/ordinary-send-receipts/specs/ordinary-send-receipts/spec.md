@@ -56,3 +56,17 @@ NOT settle a request. An ordinary ID SHALL be resolved before consumer routing.
 #### Scenario: Consumer selected after ordinary send
 - WHEN an ordinary receipt is presented after consumer selection changes
 - THEN its exact stored ordinary identity is observed, never converted/rekeyed
+
+
+### Requirement: Original issuing process across engine delivery
+Engine delivery SHALL preserve existing serving-owner/scope checks and exact
+session/live_id/root binding. It SHALL require the original issuer's stored
+process_liveness token to observe ALIVE; engine BOOT SHALL NOT stand in for issuer
+identity. This observation SHALL NOT grant a start, takeover or terminal write.
+
+#### Scenario: Separate engine process and dead issuer
+- WHEN a separately running engine observes an open admitted root's issuer alive
+- THEN exact bound inputs may be attempted once under existing scope checks
+- WHEN that issuer is dead/unknown or its input frontier is closed
+- THEN further delivery SHALL hold, preserving attempted/untouched inputs
+- AND no observer SHALL gain another dispatch permission

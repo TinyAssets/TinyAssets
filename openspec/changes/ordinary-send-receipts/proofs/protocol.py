@@ -30,9 +30,13 @@ def digest(value):
 
 
 class Model:
-    def __init__(self, root, *, boot=None):
+    def __init__(self, root, *, boot=None, issuer=None, issuer_alive=None):
         self.root = Path(root)
         self.boot = boot or uuid.uuid4().hex
+        self.issuer = issuer or self.boot
+        # Default is this single-process fixture's liveness observation. The
+        # distinct-process proof injects the existing OS-lock observer instead.
+        self.issuer_alive = issuer_alive or (lambda token: token == self.issuer)
         self.author = self.root / "author.db"
         self.steering = self.root / "steering.db"
         self.history = self.root / "history.db"
@@ -54,7 +58,8 @@ class Model:
                 CREATE TABLE homes(owner TEXT PRIMARY KEY, home TEXT, deleted INTEGER);
                 INSERT INTO homes VALUES ('alice','home-a',0),('bob','home-b',0);
                 CREATE TABLE receipts(id TEXT PRIMARY KEY, owner TEXT, home TEXT, agent TEXT,
-                    boot TEXT, phase TEXT, intent TEXT, digest TEXT, inputs TEXT, terminal TEXT);
+                    boot TEXT, phase TEXT, intent TEXT, digest TEXT, inputs TEXT,
+                    terminal TEXT, issuer TEXT);
             """)
         with sqlite3.connect(self.steering) as c:
             c.executescript("""
@@ -118,7 +123,7 @@ class Model:
         intent = {"body": body, "ids": list(ids)}
         with self.guard(scope) as c:
             c.execute(
-                "INSERT INTO receipts VALUES (?,?,?,?,?,?,?,?,?,?)",
+                "INSERT INTO receipts VALUES (?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     key,
                     *scope,
@@ -128,6 +133,7 @@ class Model:
                     digest(intent),
                     "[]",
                     None,
+                    self.issuer,
                 ),
             )
         if crash == "reserved":
@@ -175,9 +181,10 @@ class Model:
             s.commit()
         return True
 
-    def running(self, c, key, scope):
+    def running(self, c, key, scope, *, delivery=False):
         row = self.receipt(c, key, scope)
-        if row["phase"] != "started" or row["boot"] != self.boot:
+        current = self.issuer_alive(row["issuer"]) if delivery else row["boot"] == self.boot
+        if row["phase"] != "started" or not current:
             raise Held("stale/non-running writer")
         return row
 
@@ -202,7 +209,7 @@ class Model:
 
     def take(self, key, scope):
         with self.guard(scope) as c, self.db(self.steering) as s:
-            self.running(c, key, scope)
+            self.running(c, key, scope, delivery=True)
             s.execute("BEGIN IMMEDIATE")
             self.open_for_input(s, key)
             rows = list(

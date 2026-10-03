@@ -126,3 +126,18 @@ This is a substantive process/security extension beyond the submitted surface.
 Hand off this finding for parent coordination; no runtime changes, new credentials,
 live migrations, or additional PR attempts have occurred. Revised implementation
 gate remains BLOCKED. The observational repair stays frozen at `cf5ff2a5`.
+
+
+## Cross-process amendment submission — pending independent review
+
+Parent authorized proposed interface design and requested exact additional files
+before implementation. Section 7 now uses existing process_liveness of the stored
+original issuer, preserving real engine scope/session/live delegation. No use of
+engine BOOT as serving BOOT, new authority/credentials, or handover. Only proposed
+additional runtime file is engine_steering.py plus packaged mirror; new focused
+integration tests are named there. No runtime file changed.
+
+The original 19 model cases and four new actual-process synthetic cases pass.
+The latter imports existing process_liveness and proves legitimate delivery from
+a distinct BOOT, post-SIGKILL/closed/missing-proof refusal and no second start.
+It does not prove production routing/ACL wiring or instantaneous crash fencing.

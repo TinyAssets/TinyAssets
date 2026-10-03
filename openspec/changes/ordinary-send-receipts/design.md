@@ -62,7 +62,7 @@ or possibly exposed to inference, never proof of completed delivery or zero effe
 | claim / take_carryover | preparation transaction retains exact rows as claimed; returns stable identities; no deletion/text matching |
 | open_turn | root must be STARTED; link existing live_id separately; stale keyed roots freeze/hold custody, never delete/requeue |
 | enqueue | while root/open input frontier is current and open, commit immutable bound row before acknowledging it |
-| take | validate STARTED/current BOOT/open frontier; commit claimed -> attempted before returning exact input to model |
+| take | validate STARTED/exact scoped live binding/open frontier plus original issuing process liveness (section 7); commit claimed -> attempted before returning exact input to model |
 | settle | atomically freeze frontier, retain all claimed/attempted rows and exact states |
 | stale cleanup / legacy APIs | exclude receipt-owned rows from destructive legacy paths; freeze without granting new execution |
 
@@ -191,13 +191,79 @@ truncated/silent stream, genuine failure, offline/auth recovery, same-page/reloa
 and multiple surfaces. Exact-head implementation review and protected CI follow;
 parent owns integration/deploy, then real Android acceptance remains required.
 
-## 7. Independent review outcome: implementation blocked
+## 7. Serving-to-engine delivery contract (revised, pending review)
 
-Review of `e55431ce` closed the four original P1s and accepted the privacy direction,
-but found a cross-process P1. The current-BOOT test in section 2/model assumes the
-steering caller is the serving process. Actual engine_steering._take runs in a
-separate engine process with its own BOOT identity. The implementation must NOT
-copy this equality literally or trust a supplied boot ID as current authority.
-The engine delivery/serving-incarnation contract and its bounded file scope need
-parent coordination and a distinct-process retirement proof before this gate can
-pass. See review.md for exact finding; no runtime implementation is approved.
+Actual main path: universe_server starts engine_mcp_http._EngineServer children;
+engine_steering._take uses engine_conversation_attention._scope to verify the
+engine's pinned owner/home against current serving authority, then calls
+agent_steering.take with the platform's exact session/live_id. Engine BOOT is a
+different process identity. Do NOT compare it to the receipt's serving BOOT or
+accept a caller-supplied boot token as proof.
+
+Use the EXISTING process_liveness.owner_token(base) in the serving process. It
+holds an OS lock for that process lifetime before returning a non-secret token;
+owner_state(base, token) observes ALIVE/DEAD/UNKNOWN without creating a lock file.
+Store this server-obtained issuer token immutably with the root preparation, in
+the same author insert as its boot identity. Neither field comes from the client,
+model, engine URL, supplied receipt envelope or route-map secret. No new token
+service, credential, privilege, lease, readiness writer or ownership election.
+
+Only engine delivery uses the cross-process observation. Proposed internal call:
+`agent_steering.take(root, session_key, live_id, *, verified_owner=...)`.
+The engine middleware obtains verified_owner from its already verified `_scope`
+principal, NOT the session query. Keep the current `_binding_error`/current
+serving-owner check. Parse the platform session with `agent_of_session` and the
+verified owner, then resolve its EXACT open live_id/receipt link. Receipt scope,
+owner/current home, addressed agent, current serving binding/admin ACL, nondeleted
+principal, STARTED state and open frontier must all agree inside the existing
+author guard before any steering mutation. Do not infer a receipt from newest
+row/text, and do not accept an engine-supplied receipt/issuer as an authorization.
+Use transaction-aware predicates; no mutating resolve or nested author connection.
+
+For this already admitted delivery only, require owner_state on the STORED issuer
+token to be ALIVE. DEAD, missing lock, probe error or UNKNOWN holds custody and
+returns no input. A closed root refuses even while the issuer process is alive.
+A different engine process can therefore deliver once while the ORIGINAL serving
+invocation remains open; after serving death it cannot deliver or obtain a new
+start. The engine's own liveness/BOOT is irrelevant to original-issuer liveness.
+Serving admission/enqueue/publication still require the local issuing BOOT and
+all prior authority checks. Engine delivery cannot publish a terminal, enqueue a
+new root, replace its issuer, or acquire dispatch rights. The auth/authority doors
+remain existing ones; liveness is an additional refusal condition, not a grant.
+
+The ALIVE observation is a point-in-time check, not an instantaneous revocation
+fence. Preserve lock order author -> steering. After choosing/committing attempted
+inputs, recheck original-issuer liveness before returning them; if it died, return
+none and KEEP attempted custody. A crash immediately after any last check can
+leave one already-admitted in-flight delivery uncertain; it never licenses repeat,
+requeue or takeover. No claim of cross-process atomic death fencing. Graceful
+retirement freezes/closes the input frontier under the existing author/steering
+guard before returning; abrupt process exit releases the existing kernel lock.
+The existing single-serving-writer/no-handover restriction is unchanged: ALIVE
+does not select between overlapping serving owners, which remain unsupported.
+
+Executable `proofs/engine_incarnation.py` spawns a synthetic serving process and
+uses the existing process_liveness implementation from a distinct delivery
+observer. Four cases prove live delivery with distinct BOOTs, retained uncertainty
+after SIGKILL, refusal after closure despite ALIVE, missing-proof refusal and scope/
+non-dispatch restrictions. The 19 prior protocol cases remain green. No provider,
+real engine, account, device or production path is called. Actual session/live_id
+mapping, engine serving ACL and retirement-gap integration still need production
+focused tests. This is an interface proposal, not an implemented server change.
+
+### Exact additional file scope to coordinate before implementation
+
+Beyond the section 6 receipt/custody surface, add only:
+
+- `tinyassets/engine_steering.py`: pass verified owner context into keyed delivery.
+- `packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/tinyassets/engine_steering.py`: exact packaged mirror.
+- `tests/test_ordinary_receipt_engine_delivery.py`: new focused authenticated-scope,
+  distinct-process/death/closure and no-second-start integration proofs.
+
+Issuer storage and liveness calls live in the ALREADY proposed journal/steering
+receipt methods. Reuse process_liveness.py and addressed_agents.py unchanged.
+No engine_mcp_http.py/supervisor, broker, effect-review, foreground provider, route
+map, new endpoint/secret or credential-setting changes. Account deletion remains
+separately coordinated; erase the issuer field with its receipt, retaining no user
+content for replay protection. Runtime implementation awaits this revised review
+and parent's scope/lifecycle coordination.
