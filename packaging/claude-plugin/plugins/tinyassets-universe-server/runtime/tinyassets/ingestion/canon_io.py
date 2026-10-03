@@ -17,9 +17,9 @@ of its way.
 Legitimate subdirectories (e.g. ``canon/sources/foo.txt``) stay allowed
 because they still resolve under ``canon_root``; only escapes are rejected.
 
-This module imports only :mod:`tinyassets.ingestion.canon_names` and the stdlib
-so it carries zero internal-workflow import weight and cannot create circular
-dependencies.
+This module imports only :mod:`tinyassets.ingestion.canon_names`,
+:mod:`tinyassets.universe_files` (the link-free reader/writer every canon
+byte goes through) and the stdlib, so it carries no workflow import weight.
 """
 
 from __future__ import annotations
@@ -29,10 +29,25 @@ from collections.abc import Iterator
 from pathlib import Path
 
 from tinyassets.ingestion.canon_names import resolve_within_canon
+from tinyassets.universe_files import (
+    MAX_PLATFORM_FILE_BYTES,
+    read_data_path,
+    write_data_path,
+)
 
 logger = logging.getLogger(__name__)
 
+#: The canon folder's name inside a command center. Every function here takes
+#: ``canon_dir`` as a parameter, so this module did not previously need the
+#: name -- but its callers all spell it as a bare literal
+#: (``tinyassets/api/universe.py``, ``tinyassets/work_targets.py``), and
+#: ``command_center_packages`` has to refuse the folder by name to keep uploads
+#: out of a published package. Named here, beside the I/O that owns it, so
+#: there is one place to change and one place to find.
+CANON_DIRNAME = "canon"
+
 __all__ = [
+    "CANON_DIRNAME",
     "safe_canon_path",
     "iter_canon_files",
     "read_canon_text",
@@ -104,6 +119,9 @@ def iter_canon_files(
     """
     if not canon_dir.exists():
         return
+    if canon_dir.is_symlink():
+        # A linked root would enumerate another universe's canon as this one's.
+        raise ValueError("canon directory is a link; refusing to enumerate it")
 
     # Containment is always measured against the resolved canon ROOT.
     canon_root = canon_dir.resolve()
@@ -177,8 +195,9 @@ def read_canon_text(
 
     Raises :class:`ValueError` if ``name`` escapes containment (before any I/O).
     """
-    path = resolve_within_canon(canon_dir, name, kind=kind)
-    return path.read_text(encoding=encoding, **kwargs)  # type: ignore[arg-type]
+    data = read_canon_bytes(canon_dir, name, kind=kind)
+    text = data.decode(encoding, **kwargs)  # type: ignore[arg-type]
+    return text.replace("\r\n", "\n").replace("\r", "\n")
 
 
 def read_canon_bytes(
@@ -187,9 +206,20 @@ def read_canon_bytes(
     *,
     kind: str = "existing file",
 ) -> bytes:
-    """Resolve ``name`` under ``canon_dir`` then ``read_bytes``."""
+    """Resolve ``name`` under ``canon_dir``, then read it with no link followed.
+
+    Containment is checked on the resolved path (links INSIDE canon still
+    work); the bytes are then read by that resolved relative name from the
+    lexical canon dir through :func:`tinyassets.universe_files.read_data_path`,
+    so a canon root swapped for a link after the check is refused rather than
+    followed. ``FileNotFoundError`` when absent.
+    """
     path = resolve_within_canon(canon_dir, name, kind=kind)
-    return path.read_bytes()
+    rel = path.relative_to(canon_dir.resolve())
+    data = read_data_path(canon_dir / rel, max_bytes=MAX_PLATFORM_FILE_BYTES)
+    if data is None:
+        raise FileNotFoundError(str(canon_dir / name))
+    return data
 
 
 def write_canon_text(
@@ -206,9 +236,7 @@ def write_canon_text(
     write executes), so an LLM- or signal-supplied filename can never clobber
     a file outside the canon sandbox. Returns the resolved path written.
     """
-    path = resolve_within_canon(canon_dir, name, kind=kind)
-    path.write_text(data, encoding=encoding)
-    return path
+    return write_canon_bytes(canon_dir, name, data.encode(encoding), kind=kind)
 
 
 def write_canon_bytes(
@@ -218,7 +246,12 @@ def write_canon_bytes(
     *,
     kind: str = "filename",
 ) -> Path:
-    """Resolve ``name`` under ``canon_dir`` then ``write_bytes``."""
+    """Check ``name`` under ``canon_dir``, then write it with no link followed.
+
+    The write goes to the LEXICAL path through
+    :func:`tinyassets.universe_files.write_data_path` (temp + rename in a
+    directory opened link-free), never through the resolved one.
+    """
     path = resolve_within_canon(canon_dir, name, kind=kind)
-    path.write_bytes(data)
+    write_data_path(canon_dir / name, data)
     return path

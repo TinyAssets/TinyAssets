@@ -38,10 +38,21 @@ class ServedChatAgentAdapter:
         return config.engine_mcp_actor_id, config.engine_mcp_graph_id
 
     def create_turn(self, journal, *, owner, context, prompt, system, plan):
+        # ``agent_id`` names which of the owner's agents ran the turn (harness
+        # §4.18). The journal column has been per-agent since #4228; this
+        # adapter left it at its ``main`` default, so every served turn --
+        # including a custom agent's -- was recorded as main, and the per-agent
+        # journal, status projection and history all read the wrong agent.
+        #
+        # Taken from the context, which authenticated ingress set, and from
+        # nowhere else: not turn_interrupt.current() (absent on a workflow-node
+        # turn, so attribution would depend on whether a Stop was registrable)
+        # and not the session key (which cannot establish an identity).
         return journal.create(
             owner, context.universe_dir.name, prompt=prompt, system=system,
             policy_generation=None if plan is None else plan.policy.generation,
             policy_source="unknown" if plan is None else plan.policy_source,
+            agent_id=context.agent_id,
         )
 
     async def infer(self, *, router, prompt, system, config, context, observer, kind):

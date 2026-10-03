@@ -30,9 +30,9 @@ from pathlib import Path
 
 import yaml
 
+from tinyassets.universe_files import write_data_path
 from tinyassets.universe_soul import (
     SOUL_FILENAME,
-    SOUL_VERSIONS_DIR,
     UniverseSoul,
     read_universe_soul,
 )
@@ -381,8 +381,6 @@ def seed_okf_bundle(
     Does not create ``self/``, ``soul/``, ``notes.json``, or ``activity.log``.
     """
     universe_dir.mkdir(parents=True, exist_ok=True)
-    versions_dir = universe_dir / SOUL_VERSIONS_DIR
-    versions_dir.mkdir(parents=True, exist_ok=True)
 
     soul_text = _soul_md(purpose, loop_branch_def_id)
 
@@ -404,9 +402,8 @@ def seed_okf_bundle(
     }
 
     for rel, content in files.items():
-        path = universe_dir / rel
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(content, encoding="utf-8")
+        # Link-free: a seed over an existing folder never writes through a link.
+        write_data_path(universe_dir / rel, content)
 
     soul = read_universe_soul(universe_dir)
     # read_universe_soul returns None only if soul.md is unreadable, which we

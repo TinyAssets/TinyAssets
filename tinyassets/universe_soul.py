@@ -11,6 +11,8 @@ import re
 from dataclasses import dataclass, replace
 from pathlib import Path
 
+from tinyassets.universe_files import write_data_path
+
 SOUL_FILENAME = "soul.md"
 SOUL_VERSIONS_DIR = "soul_versions"
 LEGACY_PREMISE_FILENAME = "PROGRAM.md"
@@ -146,14 +148,25 @@ def render_soul_markdown(soul: UniverseSoul) -> str:
     ])
 
 
-def read_universe_soul(universe_dir: Path) -> UniverseSoul | None:
-    # Through the one safe reader: the agent can write/link in its own folder,
-    # so soul.md is untrusted and a link must not be followed (universe_files).
+def read_universe_soul(universe_dir: Path, *, strict: bool = False) -> UniverseSoul | None:
+    """The parsed soul, or ``None``.
+
+    Through the one safe reader: the agent can write/link in its own folder,
+    so soul.md is untrusted and a link must not be followed (universe_files).
+    By default any unreadable soul reads as ``None``. ``strict`` (for a
+    read-modify-write) returns ``None`` only when soul.md is ABSENT and raises
+    on a refusal, so an update never rebuilds the soul from defaults over a
+    file it could not read.
+    """
     from tinyassets.universe_files import read_universe_text
 
     try:
         text = read_universe_text(universe_dir, SOUL_FILENAME)
+    except FileNotFoundError:
+        return None
     except (OSError, UnicodeDecodeError):
+        if strict:
+            raise
         return None
 
     return UniverseSoul(
@@ -228,7 +241,7 @@ def write_universe_soul(
     # Collapse the persona name to a single line: a multiline name would inject
     # spurious meta lines / corrupt soul.md (Codex review 2026-06-25).
     name = " ".join(name.split())
-    existing = read_universe_soul(universe_dir)
+    existing = read_universe_soul(universe_dir, strict=True)
     if existing is None:
         soul = UniverseSoul(
             name=name,
@@ -282,7 +295,7 @@ def write_universe_soul(
         )
 
     rendered = render_soul_markdown(soul)
-    soul_path(universe_dir).write_text(rendered, encoding="utf-8")
+    write_data_path(soul_path(universe_dir), rendered)
     _write_soul_version(universe_dir, rendered)
     return soul
 
@@ -390,7 +403,6 @@ def _write_soul_version(universe_dir: Path, rendered: str) -> None:
     from tinyassets.universe_files import MAX_BRAIN_FILE_BYTES, read_universe_text
 
     versions_dir = universe_dir / SOUL_VERSIONS_DIR
-    versions_dir.mkdir(parents=True, exist_ok=True)
     versions = _soul_version_names(universe_dir)
     if versions:
         try:
@@ -408,7 +420,8 @@ def _write_soul_version(universe_dir: Path, rendered: str) -> None:
             next_number = int(versions[-1][:4]) + 1
         except ValueError:
             next_number = len(versions) + 1
-    (versions_dir / f"{next_number:04d}.md").write_text(rendered, encoding="utf-8")
+    # Exclusive and link-free: never through a planted soul_versions link.
+    write_data_path(versions_dir / f"{next_number:04d}.md", rendered, mode="exclusive")
 
 
 def _matching_soul_version_id(universe_dir: Path, content: str) -> str | None:

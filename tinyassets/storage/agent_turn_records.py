@@ -250,7 +250,11 @@ def result_json(result: CallToolResult) -> tuple[str, str, bool]:
     ]
     raw = dump(
         {
-            "version": 1,
+            # Version 2 is a result carrying an image block, which this version
+            # presents to a text-only model as a line. A version-1 row keeps the
+            # rule it was written under (an image held the turn), so a stored
+            # row never changes meaning or fails re-validation.
+            "version": 2 if any(block.get("type") == "image" for block in content) else 1,
             "content": content,
             "structuredContent": result.structuredContent,
             "isError": result.isError,
@@ -259,8 +263,18 @@ def result_json(result: CallToolResult) -> tuple[str, str, bool]:
     return raw, *load_result(raw)[1:]
 
 
+#: Content block types a text-only model connection can be given (an image as a
+#: line saying it was not shown).
+_PRESENTABLE = frozenset({"text", "image"})
+
+
 def load_result(raw: str) -> tuple[CallToolResult, str, bool]:
-    value = fields(document(raw), {"version", "content", "structuredContent", "isError"})
+    parsed = document(raw)
+    version = parsed.get("version") if isinstance(parsed, dict) else None
+    if version not in (1, 2) or type(version) is not int:
+        raise invalid()
+    value = fields(parsed, {"version", "content", "structuredContent", "isError"},
+                   version=version)
     if (
         not isinstance(value["content"], list)
         or type(value["isError"]) is not bool
@@ -277,7 +291,15 @@ def load_result(raw: str) -> tuple[CallToolResult, str, bool]:
             != source
         ):
             raise invalid()
-    kind = "text_only" if all(block.type == "text" for block in content) else "non_text"
+    # "text_only" means the model can be shown it as text. An image block counts:
+    # the chat codec presents it as one line saying it was not shown
+    # (agent_chat_codec._result_projection), while THIS record keeps the exact
+    # result. Any other non-text block still holds the turn as unsupported.
+    presentable = _PRESENTABLE if version == 2 else frozenset({"text"})
+    if version == 2 and not any(block.type == "image" for block in content):
+        raise invalid()  # version 2 exists only for image results
+    kind = ("text_only" if all(block.type in presentable for block in content)
+            else "non_text")
     return (
         CallToolResult(
             content=content, structuredContent=value["structuredContent"], isError=value["isError"]

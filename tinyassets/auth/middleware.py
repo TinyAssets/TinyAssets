@@ -601,6 +601,15 @@ def _auth_challenge_path(path: str) -> bool:
         # identity — so serving it openly grants nothing. Exactly one path, by
         # equality; no deeper /app/... route is opened.
         return False
+    if path.startswith("/app/m/"):
+        from tinyassets.onboarding.app_modules import is_module_path
+
+        if is_module_path(path):
+            # The app's ES modules (onboarding/app_modules.py). The page imports
+            # them as it loads, before any bearer exists, exactly like /app and
+            # /app/sw.js. Static, allowlisted files with no secret and no
+            # identity. Exactly /app/m/<build>/<basename>.js; no deeper path.
+            return False
     if path == "/app/ui-frame":
         # The custom-UI bootstrap. It is loaded as an <iframe src>, and a browser
         # attaches no bearer to an iframe navigation, so challenging it rendered

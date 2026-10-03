@@ -229,10 +229,12 @@ def test_route_is_apex_app_get(monkeypatch):
         "/app/serving/bind", "/app/models/preferences",
         "/app/billing/status", "/app/billing/checkout",
         "/app/billing/cancel", "/app/billing/webhook",
-        "/app/account/delete", "/app/account/timezone", "/app/rules",
-        "/app/turn/interrupt", "/app/turn/steer",
+        "/app/account/delete", "/app/account/timezone", "/app/rules", "/app/profile", "/app/memory",
+        "/app/turn/interrupt", "/app/turn/steer", "/app/turn/pending",
         "/app/connections", "/app/files",
         "/app/devices", "/app/notify", "/app/sw.js",
+        # The app's own ES modules (app_modules.py), static and allowlisted.
+        "/app/m/{build}/{name}",
         # The owner door: every read the app renders, complete.
         "/app/api/read", "/app/api/status",
         # The bytes a custom UI loads, fetched by the app for its sealed frame.
@@ -249,9 +251,12 @@ def test_route_is_apex_app_get(monkeypatch):
     assert by_path["/app/ui-frame"].methods == {"GET", "HEAD"}
     assert "GET" in by_path["/app/billing/status"].methods
     assert "GET" in by_path["/app/me"].methods
+    assert by_path["/app/profile"].methods == {"GET", "HEAD"}
     assert "GET" in by_path["/app/voice/status"].methods
     assert {"GET", "POST"} <= by_path["/app/models/preferences"].methods
     assert by_path["/app/connections"].methods == {"GET", "HEAD", "POST"}
+    for path in ("/app/rules", "/app/memory"):
+        assert by_path[path].methods == {"GET", "HEAD", "POST"}
     for post_only in (
         "/app/token", "/app/openai/device/start", "/app/openai/device/poll",
         "/app/openai/begin", "/app/openai/exchange", "/app/trace",
@@ -259,7 +264,7 @@ def test_route_is_apex_app_get(monkeypatch):
         "/app/serving/bind",
         "/app/billing/checkout", "/app/billing/cancel",
         "/app/billing/webhook", "/app/account/delete",
-        "/app/turn/interrupt", "/app/turn/steer",
+        "/app/turn/interrupt", "/app/turn/steer", "/app/turn/pending",
     ):
         assert "POST" in by_path[post_only].methods
         assert "GET" not in by_path[post_only].methods
@@ -1849,6 +1854,7 @@ def _run_app(tmp_path, scenario: dict) -> dict:
     decls = "\n".join(
         re.search(pat, html).group(0)
         for pat in (r"const INFLIGHT_KEY=[^\n]*;", r"let turnStartedAt=[^\n]*;",
+                    r"let activeTurn=[^\n]*;",
                     r"let historyLoaded = [^\n]*;", r"let inflightRestored = [^\n]*;",
                     r"let railOpen = [^\n]*;", r"const sendQueue=[^\n]*;",
                     r"let sendQueueHeld=[^\n]*;",
@@ -1863,6 +1869,7 @@ def _run_app(tmp_path, scenario: dict) -> dict:
                     r"let Uploads=[^\n]*;",
                     r"let interruptRequested=[^\n]*;",
                     r"let steeredLines=[^\n]*;",
+                    r"let watchedActive=[^\n]*;",
                     r"let pendingSteers=[^\n]*;")
     )
     funcs = "\n".join(_js_function(html, f) for f in (
@@ -1887,6 +1894,10 @@ def _run_app(tmp_path, scenario: dict) -> dict:
         "restoreQueue", "claimedElsewhere", "offerSavedLine",
         # Harness S2: a line typed mid-turn steers the running turn when it can.
         "markSteered", "unmarkSteered", "steerOrQueue", "settleSteered", "adoptSteered",
+        # A held line (no turn could take it) and its return after a reload.
+        "markHeld", "restoreHeldSteers", "readServerTurnRow",
+        "claimHeldLines", "pinLineAgent", "alreadyHandled", "showActiveTurn", "finishActiveTurn",
+        "readPendingTurns", "sendBatch",
     ))
     program = (_APP_SHIM
                .replace("__SCENARIO__", json.dumps(scenario))
@@ -2330,8 +2341,11 @@ def test_an_unconfirmed_message_survives_a_reload_and_says_so():
 
     html, _csp = render_app_html()
     assert "ta_inflight_turn" in html
+    # `agent` is last and defaulted: a claimed held line names the agent it was
+    # sent to, because the owner may have switched since (#4290 P1).
     assert ("rememberInflight(message, display, sentAt, inputMethod, modelChoice, "
-            "consumerRequest=null)") in html
+            "consumerRequest=null,") in html
+    assert "agent=null)" in html
     assert "inputMethod:turnInputMethod(inputMethod)" in html
     # Cleared on success, KEPT on failure — a failed send is still the user's.
     assert "forgetInflight();" in html

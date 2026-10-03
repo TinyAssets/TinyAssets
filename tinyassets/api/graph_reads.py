@@ -307,6 +307,10 @@ def read_graph(
             count=min(file_max_bytes, universe_file_reads.MAX_READ_BYTES)
             if isinstance(file_max_bytes, int) else file_max_bytes,
         ))
+    if normalized == "command_center_packages":
+        from tinyassets.command_center_picker import read_packages
+
+        return json.dumps(read_packages(universe_id=graph_id))
     if normalized == "app_ui":
         # The caller's own UI library + choice; keyed by the authenticated caller.
         from tinyassets.api.app_ui import read_app_ui
@@ -358,6 +362,7 @@ def read_graph(
             "agent_bindings",
             "agent_binding",
             "app_ui",
+            "command_center_packages",
             "command_center_file",
             "command_center_files",
             "receiver",

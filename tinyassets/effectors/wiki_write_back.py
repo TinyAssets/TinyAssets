@@ -18,6 +18,7 @@ from typing import Any
 
 from tinyassets.effectors.authority import DENIED as SOUL_AUTHORITY_DENIED
 from tinyassets.effectors.authority import resolve_soul_effect_authority
+from tinyassets.universe_files import write_data_path
 
 logger = logging.getLogger(__name__)
 
@@ -368,7 +369,9 @@ def _append_or_update_section(path: Path, section: str, idem_hint: str) -> dict[
         new_text = text.rstrip() + "\n\n" + section + "\n"
         status = "written"
     new_sha = hashlib.sha256(new_text.encode("utf-8")).hexdigest()
-    path.write_text(new_text, encoding="utf-8")
+    # Link-free: the page or a parent swapped for a link after the read above
+    # refuses instead of being written through.
+    write_data_path(path, new_text)
     rel = _page_rel_path(path)
     _append_wiki_log(f"wiki_write_back | {rel} | idempotency_hint={idem_hint}")
     return {

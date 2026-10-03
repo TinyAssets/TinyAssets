@@ -87,18 +87,23 @@ class WorkCandidateData:
     """
 
     def __init__(self, plan):
-        # A workflow's explicit order is "complete and ordered or the graph
-        # refuses", checked position by position below and against each node's
-        # pinned primary. Demoting a recently refused model would reorder it and
-        # refuse the run outright, so the run keeps the owner's order and its
-        # coordinator steps past a refusal within the run as it meets one.
-        plan = replace(plan, refused_models=())
-        self.owner, self.universe = plan.catalog.owner_id, plan.catalog.universe_id
-        self.catalog, self.interaction = plan.catalog, plan.interaction
-        self.source_policies = plan.source_policies
         self.automatic = (plan.policy.mode == "automatic"
                           and plan.policy.current_selection is None
                           and plan.policy.saved_default is None)
+        if not self.automatic:
+            # A workflow's explicit order is "complete and ordered or the graph
+            # refuses", checked position by position below and against each
+            # node's pinned primary. Demoting a recently refused model would
+            # reorder it and refuse the run outright, so an explicit order is
+            # kept and the run steps past a refusal as it meets one.
+            plan = replace(plan, refused_models=())
+        # An Automatic order only ranks, so it keeps the chat turn's demotion: a
+        # model this owner's source refused (``storage.refused_models``) goes
+        # last, and a run does not spend a request rediscovering the refusal a
+        # chat turn or an earlier run already met (live 2026-10-01).
+        self.owner, self.universe = plan.catalog.owner_id, plan.catalog.universe_id
+        self.catalog, self.interaction = plan.catalog, plan.interaction
+        self.source_policies = plan.source_policies
         # Includes the existing Automatic-only source-health demotion.
         self.order = tuple(item.ref for item in plan.order(self.owner, self.universe).candidates)
         explicit = plan.policy.current_selection or plan.policy.saved_default
@@ -147,12 +152,32 @@ class WorkCandidateData:
             if _matches(ref, pin)
         )
 
+    def resolved_pin(self, pin):
+        """``pin`` with its provider resolved to one of this owner's sources.
+
+        A bare access method (``api_key_http``) names the single admitted source
+        of that method, or the one offering the pinned model
+        (``providers.model_pins``); ambiguity refuses with the choices.
+        """
+        if not isinstance(pin, dict) or not pin.get("provider"):
+            return pin
+        from tinyassets.providers.model_pins import resolve_pin_source
+
+        sources = {
+            connection.connection_id: tuple(model.model_id for model in connection.models)
+            for connection in self.catalog.connections
+        }
+        provider = resolve_pin_source(
+            pin["provider"], pin.get("model_id", pin.get("model", "")), sources,
+        )
+        return pin if provider == pin["provider"] else {**pin, "provider": provider}
+
     def _constrained(self, policy):
         if not policy:
             return self.order
         if policy.get("difficulty_override"):
             raise PermissionError("dynamic graph model overrides conflict with captured selection")
-        pin = policy.get("preferred", {})
+        pin = self.resolved_pin(policy.get("preferred", {}))
         matching = tuple(ref for ref in self.order if _matches(ref, pin))
         if not matching and self.automatic:
             # The owner chose nothing, so the captured order ranks, it does not
@@ -166,6 +191,7 @@ class WorkCandidateData:
         tail = tuple(ref for ref in self.order if ref != primary)
         if "fallback_chain" in policy:
             permitted = policy["fallback_chain"]
+            permitted = [self.resolved_pin(item) for item in permitted]
             narrowed = tuple(ref for ref in tail if any(_matches(ref, pin) for pin in permitted))
             if not self.automatic and narrowed != tail:
                 raise PermissionError("graph model constraint conflicts with explicit fallbacks")
@@ -208,6 +234,20 @@ class WorkCandidateData:
                 if boundary.exhaustion == item:
                     if boundary.failure_class:
                         detail.append(boundary.failure_class)
+                    if boundary.refusal_detail:
+                        # The source refused THIS model; its own words say why
+                        # (an agentic-harness gate, a withdrawn model). Not a
+                        # rate limit, and its siblings stayed eligible.
+                        detail.append("the source refused this model: "
+                                      + boundary.refusal_detail)
+                    if boundary.cooling_s is not None:
+                        # Skipped, not asked: an earlier failure on this source
+                        # (named by the router's detail) is being waited out.
+                        detail.append(
+                            f"source cooling down, {boundary.cooling_s:g}s left: "
+                            f"{boundary.cooling_detail or 'provider cooldown gate'}; "
+                            "not a spent allowance"
+                        )
                     if boundary.daily_detail:
                         detail.append(boundary.daily_detail)
                         detail.append("Connect another free source, or add credit at that provider")
