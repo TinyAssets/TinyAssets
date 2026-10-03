@@ -153,6 +153,39 @@ def test_a_full_account_still_launches_on_the_grace_budget(base, volume):
     budget.settle()
 
 
+
+def test_a_full_account_preserves_bounded_provider_recovery(base, volume, monkeypatch):
+    """Session setup must survive a poll BEFORE the agent can delete a file.
+
+    Extends the existing exact-grace contract with startup-before-cleanup ordering.
+    The provider's writable runtime is not billed, but the jail still bounds it.
+    """
+    udir = _universe(base, "u-one")
+    _write(udir, "full.bin", 100 * KIB)
+    budget = jail_disk.open_budget(udir)
+    try:
+        (udir / ".runtime").mkdir()
+        _write(udir / ".runtime", "session.bin", KIB)
+        monkeypatch.setattr(jail_disk, "WALK_SECONDS", 0.0)
+        assert jail_disk._jail_writable_bytes(udir) == 101 * KIB
+        assert sa.measure(base, "u-one", "universe_files") == 100 * KIB
+        assert budget.breach() is None, "session setup must reach the cleanup step"
+        # Original protected contract assertions, unchanged.
+        assert budget.bound == jail_disk.GRACE_BYTES
+        assert budget.reservation is None
+        # Never the owner's numbers: a collaborator may be the caller.
+        assert "KiB" not in budget.notice.split("at most")[0]
+        assert (udir / "full.bin").read_bytes() == b"x" * (100 * KIB)
+        (udir / "full.bin").unlink()
+        assert budget.breach() is None
+        assert sa.measure(base, "u-one", "universe_files") == 0
+        # Recovery cannot bypass the shared-volume safety floor.
+        volume.free = jail_disk.MIN_FREE_DISK_BYTES - 1
+        assert budget.breach() == jail_disk.DISK_LIMIT
+    finally:
+        budget.settle()
+
+
 def test_an_unattributed_universe_gets_the_launch_cap(base, volume):
     udir = _universe(base, "u-nobody", owner=None)
     budget = jail_disk.open_budget(udir)
@@ -243,6 +276,32 @@ def test_a_nearly_full_account_gets_no_less_than_the_grace_budget(base, volume):
     budget = jail_disk.open_budget(udir)
     assert budget.bound == jail_disk.GRACE_BYTES
     budget.settle()
+
+
+
+def test_a_nearly_full_account_preserves_bounded_provider_recovery(base, volume, monkeypatch):
+    udir = _universe(base, "u-one")
+    _write(udir, "almost.bin", 99 * KIB)  # 1 KiB of headroom, below the grace
+    budget = jail_disk.open_budget(udir)
+    try:
+        (udir / ".runtime").mkdir()
+        _write(udir / ".runtime", "session.bin", KIB)
+        monkeypatch.setattr(jail_disk, "WALK_SECONDS", 0.0)
+        assert jail_disk._jail_writable_bytes(udir) == 100 * KIB
+        assert sa.measure(base, "u-one", "universe_files") == 99 * KIB
+        assert budget.breach() is None, "session setup must reach the cleanup step"
+        # Original grace-bound assertion, unchanged; also preserve admission.
+        assert budget.bound == jail_disk.GRACE_BYTES
+        assert budget.reservation.bytes == KIB
+        assert (udir / "almost.bin").read_bytes() == b"x" * (99 * KIB)
+        (udir / "almost.bin").unlink()
+        assert budget.breach() is None
+        assert sa.measure(base, "u-one", "universe_files") == 0
+        # Excluding runtime from billing must not make its allocation unbounded.
+        _write(udir / ".runtime", "overflow.bin", 99 * KIB + budget.bound + 1)
+        assert budget.breach() == jail_disk.STORAGE_LIMIT
+    finally:
+        budget.settle()
 
 
 def test_crossing_the_volume_floor_mid_run_is_a_disk_limit(base, volume):
