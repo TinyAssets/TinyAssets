@@ -64,7 +64,9 @@ def read_app_ui(
         return {"error": "app_ui_validation_error", "detail": str(exc)}
     selector = (ui_id or "").strip()
     if not selector:
-        return {"app_ui": document}
+        from tinyassets.command_center_picker import PLATFORM_DEFAULT_UI
+
+        return {"app_ui": {**document, "platform_default": PLATFORM_DEFAULT_UI}}
     if selector == INDEX:
         return {"app_ui": app_ui_index(document)}
     entry = next((e for e in document["ui_library"]

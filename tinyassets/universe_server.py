@@ -699,6 +699,7 @@ def read_graph(
             by name + branch_def_id), goals, goal, runs, run, run_output,
             branch, automations, automation, connections, compute, agents, agent, agent_bindings,
             agent_binding, app_ui (your own UI library and choice),
+            command_center_packages (working public packages to try in your own command center),
             command_center_files / command_center_file (the owner's own command center folder:
             query=<path under /u>; list a directory, or read a file in chunks
             with file_offset/file_max_bytes),
@@ -723,7 +724,9 @@ def read_graph(
             target=automation. The server assigns it on create and returns it
             in the response; use that value for later reads and controls.
         agent_definition_id: Public agent definition identifier for
-            target=agent. Falls back to graph_id.
+            target=agent. Falls back to graph_id. Returns metadata and a component
+            catalog; field_name selects an exact component key, or @definition
+            for the complete legacy definition as lossless JSON chunks.
         agent_binding_id: Private command center binding identifier for
             target=agent_binding, or your addressed agent for target=conversation.
         agent_stage_id: Private import stage identifier for target=agent.
@@ -733,11 +736,14 @@ def read_graph(
         run_status: Optional run status filter.
         limit: Maximum number of records to return.
         field_name: Output field for target=run_output, or a retained turn id for
-            target=conversation. Omit for a metadata catalog.
+            target=conversation. For agent, an exact component key or @definition.
+            Omit for a metadata/component catalog (no UI bodies).
         output_offset: Unicode code-point offset within a selected output field or
             conversation message, or field index when reading the catalog (for a
             conversation catalogue, the returned before-message-id key). Continue
-            using next_offset.
+            using next_offset. For agents, a filtered definition index; for an agent
+            catalog, a component index; for a selected component, Unicode JSON
+            character offset. Concatenate chunks until next_offset is null.
         output_max_chars: Selected-field chunk length (1..32768, default 8192).
         request_key: Original UUIDv4 for target=conversation_turn; observation never starts work.
         file_id: For target=run_file, an owned opaque reference bound to run_id.
@@ -764,6 +770,33 @@ def read_graph(
         "file_id": file_id, "file_offset": file_offset,
         "file_max_bytes": file_max_bytes,
     }
+    if normalized in {"agents", "agent"} and not agent_stage_id:
+        from tinyassets.api.custom_agents import _base_path, _tags
+        from tinyassets.custom_agents import get_definition, list_definitions
+        from tinyassets.engine_read_views import project_agent, project_agents
+        from tinyassets.engine_result_bounds import resolve_ceiling
+
+        budget = resolve_ceiling() - 1024
+        if type(output_offset) is not int or output_offset < 0:
+            return json.dumps({"error": "output_offset must be a non-negative integer"})
+        if normalized == "agent":
+            row = get_definition(_base_path(), agent_definition_id or graph_id)
+            if row is None:
+                return json.dumps({"error": "not_found", "resource": "agent_definition"})
+            return json.dumps(project_agent(row, field_name=field_name, offset=output_offset,
+                                           max_chars=output_max_chars, budget=budget))
+        if field_name:
+            return json.dumps({"error": "use read_graph target=agent before selecting a component"})
+        if type(limit) is not int or not 1 <= limit <= 100:
+            return json.dumps({"error": "limit must be between 1 and 100"})
+        filters = {"query": query, "tags": _tags(tags), "author_id": author}
+        rows = list_definitions(_base_path(), **filters, limit=limit, offset=output_offset)
+        more = bool(list_definitions(_base_path(), **filters, limit=1,
+                                    offset=output_offset + len(rows)))
+        if output_offset and not rows and not list_definitions(
+                _base_path(), **filters, limit=1, offset=output_offset - 1):
+            return json.dumps({"error": "output_offset is past the definition catalog"})
+        return json.dumps(project_agents(rows, offset=output_offset, more=more, budget=budget))
     if normalized in {"model_options", "model_options_summary"}:
         # One projection for both names, and the same one the engine serves:
         # per source its counts and the head of the existing order, with
@@ -1459,7 +1492,7 @@ def write_graph(
                 )
             )
         if connection_operation in (
-            "request_from_user", "answer_request", "unmute_request",
+            "request_from_user", "answer_request", "unmute_request", "try_package",
             "withdraw_request",
         ):
             # ONE general primitive: the agent asks its user something and waits,

@@ -1094,6 +1094,29 @@ def _validated_items(raw: Any, action: dict[str, Any]) -> list[dict[str, Any]]:
     return out
 
 
+def try_package(*, universe_id: str = "", payload: Any = None) -> dict[str, Any]:
+    """Raise the existing install ask; only the trusted owner surface can answer it."""
+    from tinyassets.command_center_picker import working_packages
+
+    uid, _, denial = _owner_gate(universe_id)
+    if denial is not None:
+        return denial
+    try:
+        definition_id = _payload(payload).get("agent_definition_id")
+    except (ValueError, TypeError) as exc:
+        return _bad(str(exc))
+    if not isinstance(definition_id, str) or not any(
+        row["agent_definition_id"] == definition_id for row in working_packages()
+    ):
+        return _bad("this package is not available to try")
+    ask = request_from_user(universe_id=uid, payload=json.dumps({"action": {
+        "type": "install", "agent_definition_id": definition_id,
+    }}))
+    if "error" in ask:
+        return ask
+    return {"request_id": ask["request_id"], "title": ask["title"]}
+
+
 def request_from_user(
     *, universe_id: str = "", payload: Any = None, origin: str = "agent",
     sign_in_hosts: tuple[str, ...] = (),

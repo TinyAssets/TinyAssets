@@ -284,8 +284,6 @@
     #ui-frame-host{position:absolute;inset:0;display:flex;min-height:0}
     .ui-frame{flex:1;width:100%;border:0;min-height:20rem;background:var(--bg)}
     /* The chat cloud: the conversation floats over the command center. */
-    #cc-blank{position:absolute;inset:0;padding:2rem;box-sizing:border-box;background:var(--bg)}
-    #cc-blank[hidden]{display:none}
     #cloud-menu{position:absolute;right:.5rem;top:2.5rem;z-index:10;background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:.4rem}
     #cloud-menu button{display:block}
     .chat-cloud-bar .universe-name{max-width:40%;font-size:.82rem}
@@ -307,8 +305,9 @@
       box-shadow:inset 0 0 0 2px var(--accent),0 12px 40px rgba(0,0,0,.45)}
     .chat-stage[data-keys="chat"] #chat-cloud-bubble{border-color:var(--accent);
       box-shadow:inset 0 0 0 2px var(--accent),0 8px 24px rgba(0,0,0,.45)}
-    .chat-stage[data-keys="cc"] #ui-frame-host:not([hidden]),
-    .chat-stage[data-keys="cc"] #cc-blank:not([hidden]){
+    /* The command center is always the frame host now -- #cc-blank, the
+       in-document stand-in #4353 also ringed, is gone with cc-package. */
+    .chat-stage[data-keys="cc"] #ui-frame-host:not([hidden]){
       box-shadow:inset 0 0 0 2px var(--accent)}
     /* The way back, said in the chat's own bar while the keys are elsewhere. */
     .chat-cloud-hint{font-size:.72rem;color:var(--ink-dim);white-space:nowrap;flex:0 0 auto}
@@ -417,13 +416,6 @@
       <!-- A user-authored UI is hosted here and NOWHERE else: its own iframe on a
            sandboxed, opaque origin (see tinyassets/onboarding/ui_frame.py). No
            bundle markup, style or script is ever assigned into this document. -->
-      <div id="cc-blank" tabindex="-1" aria-label="Command center">
-        <p>Your command center is empty.</p>
-        <p>Build your own with your agent, or try one.</p>
-        <button id="btn-cc-build" class="btn" type="button">Build one with my agent</button>
-        <button id="btn-cc-try" class="btn" type="button">Try one</button>
-        <div id="cc-blank-picker"></div>
-      </div>
       <div id="ui-frame-host" hidden></div>
       <section id="chat-cloud" class="chat-cloud" data-agent="main" data-mode="open"
                aria-label="Chat with your agent">
@@ -5062,15 +5054,16 @@
   const CLOUD_KEY_PREFIX="app.chatCloud.v1", CLOUD_BUBBLE=56, CLOUD_MARGIN=12,
         CLOUD_MIN_W=320, CLOUD_MIN_H=360, CLOUD_PHONE_MAX=760, CLOUD_STEP=16;
   let cloudState=null, cloudStoreKey="", cloudWired=false, cloudSuppressClick=false;
-  function refreshCommandCenter(){
-    $("cc-blank").hidden=!$("ui-frame-host").hidden;
-  }
   function isTypingTarget(el){
     if(!el) return false;
     const tag=(el.tagName||"").toLowerCase();
     return el.isContentEditable===true || tag==="textarea" || tag==="select" ||
       (tag==="input" && !["button","submit","checkbox","radio","range","file","color","reset","image"].includes((el.type||"text").toLowerCase()));
   }
+  // ONE code path. The command center is always a mounted bundle now -- the
+  // platform's own blank one when the owner has chosen nothing (AppUI
+  // mountDefault) -- so this only ever targets the frame. The #cc-blank
+  // in-document stand-in it used to fall back to is gone with cc-package.
   function focusCommandCenter(){
     const frame=$("ui-frame");
     if(frame){
@@ -5081,7 +5074,9 @@
         frame.contentWindow.focus();
         frame.contentWindow.postMessage({ta_ui:1,type:"focus"},"*");
       }
-    }else if($("cc-blank")) $("cc-blank").focus();
+    }
+    // Always, frame or not: part of this function's job is leaving the ring
+    // telling the truth about who holds the keyboard (#4353).
     if(typeof paintKeyboardOwner==="function") paintKeyboardOwner();
   }
   // ---- Which surface owns the keyboard, and the way out -----------------------
@@ -5166,12 +5161,6 @@
     input.value=String(text||""); input.focus();
     input.setSelectionRange(input.value.length,input.value.length);
   }
-  // TEMPORARY: #cc-blank and these two buttons stand in until cc-package's
-  // platform-default command-center bundle lands; that change mounts the bundle
-  // in the frame when no layout is active and deletes #cc-blank, so
-  // focusCommandCenter only ever targets the frame (one code path).
-  function ccBlankBuild(){ chatCloudPrefill("Build me a command center for "); }
-  function ccBlankTryOne(){ $("btn-ui-switch").click(); }
   function closeCloudMenu(){
     if($("cloud-menu").hidden) return;
     $("cloud-menu").hidden=true;
@@ -5179,8 +5168,6 @@
     if(!(typeof isTypingTarget === "function" && isTypingTarget(document.activeElement))) focusCommandCenter();
   }
   function wireCommandCenter(){
-    $("btn-cc-build").addEventListener("click",ccBlankBuild);
-    $("btn-cc-try").addEventListener("click",ccBlankTryOne);
     $("view-chat").addEventListener("pointerdown",event=>{
       if(!event.target.closest("#chat-cloud, #chat-cloud-bubble")){
         // Avoid the pointer's default focus step undoing the handoff; buttons still click.

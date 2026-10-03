@@ -946,7 +946,11 @@ def list_definitions(
     tags: list[str] | tuple[str, ...] = (),
     author_id: str = "",
     limit: int = 30,
+    offset: int = 0,
 ) -> list[dict[str, Any]]:
+    if type(offset) is not int or offset < 0:
+        raise AgentValidationError("offset must be a non-negative integer")
+    matched = 0
     bounded_limit = max(1, min(int(limit), 100))
     wanted_query = (query or "").strip().casefold()
     wanted_tags = {str(tag).strip() for tag in tags if str(tag).strip()}
@@ -971,6 +975,9 @@ def list_definitions(
                 haystack = f"{row['name']} {row['description']}".casefold()
                 if wanted_query not in haystack:
                     continue
+            matched += 1
+            if matched <= offset:
+                continue
             results.append(_definition_from_row(conn, row))
             if len(results) >= bounded_limit:
                 break
@@ -1492,6 +1499,20 @@ def _check_asset_path(path: Any) -> str:
     return path
 
 
+def app_ui_workflow_refs(entry: dict[str, Any]) -> dict[str, str]:
+    """Validate the explicit portable bindings; never interpret script text."""
+    refs = entry.get("workflow_refs", {})
+    if not isinstance(refs, dict) or len(refs) > 100:
+        raise AgentValidationError("workflow_refs must be an object of at most 100 references")
+    for alias, workflow in refs.items():
+        if (not isinstance(alias, str)
+                or not re.fullmatch(r"[A-Za-z][A-Za-z0-9_-]{0,63}", alias)
+                or not isinstance(workflow, str) or not workflow
+                or workflow != workflow.strip() or _utf16_units(workflow) > 200):
+            raise AgentValidationError("workflow_refs contains an invalid alias or workflow id")
+    return dict(refs)
+
+
 def _check_component(entry: dict[str, Any]) -> None:
     """The bounds and shape of the fields the server stores for one UI.
 
@@ -1517,6 +1538,7 @@ def _check_component(entry: dict[str, Any]) -> None:
             ui_library_set.check_names(entry["libraries"])
         except ValueError as exc:
             raise AgentValidationError(f"UI {ui_id!r}: {exc}") from None
+    app_ui_workflow_refs(entry)
     if "assets" not in entry:
         return
     assets = entry["assets"]
@@ -1794,7 +1816,8 @@ def _save_app_ui_row(
 #: Fields ``edit_ui`` may change. ``kind``, ``version`` and ``ui_id`` are what
 #: the component IS; changing those is a ``replace_ui``. ``assets`` changes one
 #: path at a time through ``put_asset`` / ``remove_asset``.
-APP_UI_EDITABLE_FIELDS = ("name", "markup", "style", "script", "libraries", "script_type")
+APP_UI_EDITABLE_FIELDS = ("name", "markup", "style", "script", "libraries", "script_type",
+                          "workflow_refs")
 _APP_UI_TEXT_FIELDS = ("name", "markup", "style", "script")
 APP_UI_ENTRY_OPERATIONS = (
     "activate", "use_default", "add_ui", "replace_ui", "edit_ui", "remove_ui",
@@ -1822,7 +1845,7 @@ APP_UI_KIND = "tinyassets.app-ui.v1"
 #: had built (founder, P1, 2026-10-03).
 APP_UI_FORMAT_VERSION = 1
 APP_UI_COMPONENT_FIELDS = ("kind", "markup", "name", "script", "style", "ui_id", "version")
-APP_UI_OPTIONAL_COMPONENT_FIELDS = ("assets", "libraries", "script_type")
+APP_UI_OPTIONAL_COMPONENT_FIELDS = ("assets", "libraries", "script_type", "workflow_refs")
 #: Matched with ``fullmatch``, never ``match``: Python's ``$`` also matches
 #: BEFORE a trailing newline, so ``"x" * 64 + "\n"`` passed here while the app
 #: refused it -- a mirror saying "renderable" about a UI the app will not show
@@ -2016,7 +2039,9 @@ def _edited_entry(entry: dict[str, Any], payload: dict[str, Any]) -> dict[str, A
             )
         if field == "libraries" and not isinstance(value, list):
             raise AgentValidationError("set.libraries must be a list of library names")
-        if field != "libraries" and not isinstance(value, str):
+        if field == "workflow_refs":
+            app_ui_workflow_refs({"workflow_refs": value})
+        if field not in {"libraries", "workflow_refs"} and not isinstance(value, str):
             raise AgentValidationError(f"set.{field} must be a string")
         edited[field] = value
     for number, edit in enumerate(edits):

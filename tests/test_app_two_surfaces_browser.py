@@ -106,6 +106,57 @@ def _drag(page, selector, dx, dy, *, at=(0.5, 0.5)):
 
 
 
+# The retired #cc-blank stand-in had a different focus/composer contract.
+# The replacement test below mounts and clicks the shipped platform bundle;
+# its browser execution is required in real-browser-proof, not inferred from
+# the synthetic play UI or the Node bridge tests.
+
+
+def test_default_bundle_build_focuses_composer_at_prompt_end_without_sending(app_url, browser):
+    from playwright.sync_api import expect
+
+    from tinyassets.command_center_picker import BUILD_PROMPT, PLATFORM_DEFAULT_UI
+
+    page = browser.new_page(viewport={"width": 1280, "height": 800})
+    try:
+        _enter_chat(page, app_url)
+        page.evaluate("""({bundle,prompt}) => {
+            // Synthetic owner/read responses are at the server boundary. The
+            // real default script, iframe bridge, verify and prefill all run.
+            fetchMe=async()=>({principal_id:'owner-1',universe_id:'home-1',setup:'connected'});
+            Owner.read=async args=>{
+                if(args.target!=='command_center_packages'||args.graph_id!=='home-1')
+                    throw new Error('unexpected picker read');
+                return {packages:[],build_prompt:prompt,can_try:false};
+            };
+            window.pickerSendCalls=[];
+            const originalSendTurn=sendTurn;
+            sendTurn=(...args)=>{
+                window.pickerSendCalls.push(args);return originalSendTurn(...args);
+            };
+            AppUI.enabled=true;AppUI.home='home-1';AppUI.principal='owner-1';
+            AppUI.platformDefault=bundle;
+            if(!AppUI.mountDefault())throw new Error('default did not mount');
+        }""", {"bundle": PLATFORM_DEFAULT_UI, "prompt": BUILD_PROMPT})
+        frame = page.frame_locator("#ui-frame")
+        build = frame.get_by_role("button", name="Build one with your agent", exact=True)
+        expect(build).to_be_visible()
+        expect(frame.locator("#try-one")).to_be_hidden()
+        page.fill("#composer-input", "draft before Build")
+        page.click("#btn-cloud-shrink")
+        expect(page.locator("#chat-cloud-bubble")).to_be_visible()
+        build.click()
+        composer = page.locator("#composer-input")
+        expect(composer).to_have_value(BUILD_PROMPT)
+        expect(composer).to_be_focused()
+        expect(page.locator("#chat-cloud-bubble")).to_be_hidden()
+        assert composer.evaluate("e=>[e.selectionStart,e.selectionEnd]") == [
+            len(BUILD_PROMPT), len(BUILD_PROMPT)]
+        assert page.evaluate("window.pickerSendCalls") == []
+        assert page.evaluate("AppUI.isPlatformDefault()") is True
+        expect(frame.locator("#message")).to_have_text("")
+    finally:
+        page.close()
 
 
 def test_play_never_needs_a_second_click(app_url, browser):
@@ -136,7 +187,6 @@ def test_play_never_needs_a_second_click(app_url, browser):
             expect(hero).to_have_attribute("data-trusted", "true")
 
     walk()
-    assert page.locator("#cc-blank").is_hidden()
     page.click("#chat-cloud-bubble")
     assert _box(page, "#chat-cloud")["width"] <= 440
     # Put the cloud centrally so all four stage edges and corners are exposed.
@@ -242,9 +292,16 @@ def test_play_never_needs_a_second_click(app_url, browser):
         page.keyboard.press("ArrowRight")
         position += 10
         expect(hero).to_have_css("left", f"{position}px")
+    # Unmounting ends the forwarding: with no frame there is nothing to forward
+    # to, and the keys stay with the control that has them. In the app a bare
+    # unmount does not happen -- chooseDefault mounts the platform's blank
+    # command center in its place -- so this only pins that the teardown is
+    # clean, not where focus lands.
     page.evaluate("AppUI.unmount()")
-    assert page.locator("#cc-blank").is_visible()
-    assert page.evaluate("document.activeElement.id") == "cc-blank"
+    assert page.locator("#ui-frame").count() == 0
+    assert page.locator("#ui-frame-host").is_hidden()
+    page.keyboard.press("ArrowRight")
+    assert page.evaluate("document.activeElement.id") == "btn-models", "keys stay put"
     page.close()
 
 
