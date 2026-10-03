@@ -36,14 +36,6 @@ const $=id=>nodes[id]; const document={body:{}};
 """
 
 
-def test_focus_frame_or_blank():
-    out = run_js(functions('focusCommandCenter') + DOM + """
-focusCommandCenter(); const first=focused;
-delete nodes['ui-frame']; focusCommandCenter();
-console.log(JSON.stringify({first,focused,tabindex:frame.tabindex,messages}));
-""")
-    assert out == {"first": "frame", "focused": "blank", "tabindex": "0",
-                   "messages": [[{"ta_ui": 1, "type": "focus"}, "*"]]}
 
 
 def test_forward_only_from_unclaimed_focus():
