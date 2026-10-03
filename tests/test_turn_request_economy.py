@@ -13,7 +13,19 @@ rig = http.rig
 reader = http.reader
 served = http.served
 agent = http.agent
-run = http.run
+def run(agent, *args, free_requests=None, **kwargs):
+    """Explicit owner allocation for long-work tests; ordinary defaults stay real."""
+    if free_requests is None:
+        return http.run(agent, *args, **kwargs)
+    from tinyassets.request_budget import TurnRequestBudget, request_budget_scope
+
+    with request_budget_scope(TurnRequestBudget(
+        "owner", agent.served.context.universe_dir.name,
+        free_limit=free_requests, free_pool_limit=free_requests,
+    )):
+        return http.run(agent, *args, **kwargs)
+
+
 HEADING = "## What is in my folder now"
 
 
@@ -139,7 +151,7 @@ def test_scripted_greeting_no_unfinished_work_request_count(agent, monkeypatch, 
     """No unfinished work: measure requests, not real-model prompt compliance.
 
     The scripted model asks for zero tool rounds; the real served path must
-    add no orientation requests of its own (at most reply plus learning).
+    add no orientation, continuation, or automatic learning requests.
     """
     root = agent.served.context.universe_dir
     seed(root)
@@ -150,13 +162,14 @@ def test_scripted_greeting_no_unfinished_work_request_count(agent, monkeypatch, 
     signed_in("owner")
     monkeypatch.setattr(universe_intelligence, "_universe_dir", lambda uid: root)
     assert run(agent, greeting=True) == "finished exact answer"
-    assert 1 <= len(agent.wires) <= 2
+    assert len(agent.wires) == 1 and not agent.tools
     assert agent.latest().state == "completed"
-    assert len(agent.wires) == 2, "the existing learning pass is counted too"
+    assert len(agent.wires) == 1, "bare greeting must not spend an extraction call"
     messages = agent.wires[0][1]["body"]["messages"]
     system = next(message["content"] for message in messages if message["role"] == "system")
-    assert HEADING in system
-    assert "workflows/x/index.html" in system and "notes/a.md" in system
+    assert HEADING not in system
+    assert "Prior work is context, not a request to resume it" in system
+    assert "tools" not in agent.wires[0][1]["body"]
     assert any(message["role"] == "user" and message["content"] == "hi" for message in messages)
 
 
@@ -174,7 +187,9 @@ def test_resume_pipeline_delivers_round_one_text_with_tools_and_resident_context
     monkeypatch.setattr(daemon_server, "get_founder_home", get_founder_home)
     signed_in("owner")
     monkeypatch.setattr(universe_intelligence, "_universe_dir", lambda uid: root)
-    assert run(agent, greeting=True) == "finished exact answer"
+    assert universe_intelligence.converse(
+        founder_message="Continue the office build", universe_id=root.name,
+    ) == "finished exact answer"
     first_round = agent.latest().rounds[0]
     assert first_round.ordinal == 1
     assert first_round.reply.text == agent.first_text
@@ -221,7 +236,7 @@ def test_served_request_beyond_free_estimate_updates_credit_tier(agent, monkeypa
     seed_budget(agent, monkeypatch, remaining=5)
     assert budget_for_context(agent.served.context).remaining == 5
     agent.requested_rounds = 12
-    assert run(agent) == "finished exact answer"
+    assert run(agent, free_requests=20) == "finished exact answer"
     assert len(agent.wires) == 13 and len(agent.tools) == 12
     assert all(wire[1]["body"]["tool_choice"] == "auto" for wire in agent.wires)
     turn = agent.latest()
@@ -261,7 +276,7 @@ def test_unknown_budget_preserves_requested_rounds_and_omits_prompt(agent):
     assert "Compute today:" not in agent.wires[0][1]["body"]["messages"][0]["content"]
 
 
-@pytest.mark.parametrize("remaining,skipped", [(9, True), (10, False), (None, False)])
+@pytest.mark.parametrize("remaining,skipped", [(9, True), (10, True), (None, False)])
 def test_learning_budget_threshold(agent, monkeypatch, caplog, remaining, skipped):
     import logging
 
@@ -283,20 +298,20 @@ def test_served_converse_conserves_optional_learning_on_low_estimate(
 
     seed_budget(agent, monkeypatch, remaining=5)
     root = agent.served.context.universe_dir
-    agent.requested_rounds = 1
+    agent.requested_rounds = 0
     monkeypatch.setattr(daemon_server, "get_founder_home", get_founder_home)
     signed_in("owner")
     monkeypatch.setattr(universe_intelligence, "_universe_dir", lambda uid: root)
     assert run(agent, greeting=True) == "finished exact answer"
-    assert len(agent.wires) == 2 and len(agent.tools) == 1
-    assert all(wire[1]["body"]["tool_choice"] == "auto" for wire in agent.wires)
+    assert len(agent.wires) == 1 and not agent.tools
+    assert all("tools" not in wire[1]["body"] for wire in agent.wires)
     assert agent.latest().state == "completed"
 
 
 def test_large_daily_pool_does_not_cap_a_long_turn(agent, monkeypatch):
     seed_budget(agent, monkeypatch, remaining=50)
     agent.requested_rounds = 15
-    assert run(agent) == "finished exact answer"
+    assert run(agent, free_requests=20) == "finished exact answer"
     assert len(agent.wires) == 16 and len(agent.tools) == 15
     assert all(wire[1]["body"]["tool_choice"] == "auto" for wire in agent.wires)
 
@@ -421,7 +436,7 @@ def test_uncapped_member_makes_whole_pool_unbounded(agent, monkeypatch, signed_i
                         else original(ctx, **kw))
     assert pooled_budget(agent.served.rig.base, "owner", agent.served.context) is UNBOUNDED
     agent.requested_rounds = 15
-    assert run(agent) == "finished exact answer"
+    assert run(agent, free_requests=20) == "finished exact answer"
     assert len(agent.wires) == 16
     assert all(wire[1]["body"]["tool_choice"] == "auto" for wire in agent.wires)
     assert all("Compute today:" not in wire[1]["body"]["messages"][0]["content"]
@@ -448,7 +463,7 @@ def test_low_estimates_across_the_pool_do_not_truncate_requested_work(agent, mon
                   created_at=datetime.now(timezone.utc) - timedelta(seconds=1))
     assert pooled_budget(agent.served.rig.base, "owner", agent.served.context).remaining == 5
     agent.requested_rounds = 15
-    assert run(agent) == "finished exact answer"
+    assert run(agent, free_requests=20) == "finished exact answer"
     assert len(agent.wires) == 16 and len(agent.tools) == 15
     assert [item.candidate.source_ref for item in agent.latest().rounds] == (
         [first.connection_id] * 16
@@ -474,7 +489,7 @@ def test_new_served_turn_after_reset_has_full_pool(agent, monkeypatch):
     after = budgets.pooled_budget(agent.served.rig.base, "owner", agent.served.context)
     assert after.remaining == 50
     agent.requested_rounds = 15
-    assert run(agent) == "finished exact answer"
+    assert run(agent, free_requests=20) == "finished exact answer"
     assert len(agent.wires) == 16 and len(agent.tools) == 15
     assert all(wire[1]["body"]["tool_choice"] == "auto" for wire in agent.wires)
 

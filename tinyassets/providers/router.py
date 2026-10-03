@@ -661,6 +661,12 @@ class ProviderRouter:
         # Hard Rule 15: no universe-owner authority, no provider. Before any
         # provider is resolved, probed or configured.
         require_owner_bound_context(universe_context, operation=operation)
+        from tinyassets.providers.agent_inference import AgentInferenceRequest
+
+        ordinary_text = (
+            config is not None and type(config.agent_request) is AgentInferenceRequest
+            and config.agent_request.text_only
+        )
         work_agent = (
             universe_context is not None
             and type(universe_context.provider_invocation) is ProviderInvocationCarrier
@@ -673,7 +679,7 @@ class ProviderRouter:
         if _agent_execution_kind is not None and (
             _agent_execution_kind not in ("native_agent", "engine_inference")
             or role != "writer" or (operation != "converse" and not work_agent)
-            or config is None or not config.engine_mcp_enabled
+            or config is None or not (config.engine_mcp_enabled or ordinary_text)
             or universe_context is None or universe_context.model_selection is None
             or (universe_context.provider_invocation is not None and not work_agent)
         ):
@@ -718,7 +724,7 @@ class ProviderRouter:
                         request_carrier=universe_context.provider_request,
                         role=role, operation=operation,
                         model_selection=universe_context.model_selection,
-                        **({"agent_turn": True} if agent_turn else {}),
+                        **({"agent_turn": True} if agent_turn and not ordinary_text else {}),
                     ),
                     universe_context.model_selection,
                 ) as authority:
@@ -833,6 +839,20 @@ class ProviderRouter:
         resolved_config = _resolve_universe_config(universe_context)
         universe_dir = universe_context.universe_dir if universe_context else None
         cfg = config or _default_config(resolved_config)
+        from tinyassets.request_budget import (
+            TurnRequestBudget,
+            current_request_budget,
+            metered_free_source,
+        )
+
+        parent_budget = current_request_budget()
+        request_budget = cfg.request_budget or parent_budget
+        if request_budget is not None and (
+            type(request_budget) is not TurnRequestBudget
+            or parent_budget is not None and parent_budget is not request_budget
+        ):
+            raise ProviderAuthorityHeldError("invalid parent request budget")
+        cfg = replace(cfg, request_budget=request_budget)
         if _work_agent_observer is not None:
             if (type(invocation_carrier) is not ProviderInvocationCarrier
                     or not callable(_work_agent_observer) or _agent_execution_kind is None):
@@ -870,7 +890,9 @@ class ProviderRouter:
         )
 
         if cfg.agent_request is not None and (
-            cfg.selected_model is None or not cfg.engine_mcp_enabled
+            cfg.selected_model is None or not (
+                cfg.engine_mcp_enabled or cfg.agent_request.text_only
+            )
             or role != "writer" or (
                 operation != "converse" and not (
                     _work_agent_observer is not None
@@ -1204,6 +1226,8 @@ class ProviderRouter:
                     )
                     cfg = replace(cfg, max_tokens=budget_reservation.output_tokens)
                 provider_started = False
+                request_attempt = None
+                request_dispatched = False
                 try:
                     # Bound concurrent provider SUBPROCESSES (~77 MB PSS each,
                     # measured). ASYNC form: a blocking acquire here stalls the event
@@ -1240,6 +1264,23 @@ class ProviderRouter:
                                 raise ProviderAuthorityHeldError(
                                     _CONNECT_PROVIDER_MESSAGE
                                 ) from exc
+                        if request_budget is not None:
+                            from tinyassets.providers.model_policy import ModelRef
+
+                            owner = (served_authority.owner_user_id if served_authority is not None
+                                     else invocation_carrier._receipt.principal_id)
+                            selected = cfg.selected_model
+                            selected_id = (selected.model_id if selected is not None
+                                           else cfg.native_model_id or "provider-default")
+                            accounting_context = replace(universe_context, model_selection=ModelRef(
+                                provider_name, selected_id,
+                            ))
+                            request_attempt = request_budget.reserve(
+                                owner=owner, universe=universe_dir.name,
+                                source_ref=provider_name, model=selected_id,
+                                free=metered_free_source(accounting_context, selected, owner=owner),
+                                purpose="learning" if cfg.secondary_call else cfg.request_purpose,
+                            )
                         after_claim = getattr(served_authority, "after_provider_claim", None)
                         if after_claim is not None:
                             if not callable(after_claim) or budget_reservation is None:
@@ -1247,7 +1288,6 @@ class ProviderRouter:
                             after_claim(served_authority, budget_reservation, cfg)
                         if _work_agent_observer is not None:
                             _work_agent_observer(invocation_carrier, None, cfg)
-                        provider_started = True
                         # The owning universe for every process this call
                         # launches; the shared spawn point jails to it, or
                         # refuses a launch with none (provider_jail).
@@ -1255,6 +1295,10 @@ class ProviderRouter:
                             universe_dir, credential_dir=cfg.credential_snapshot_dir,
                             engine_route=_engine_route(cfg),
                         ):
+                            if request_attempt is not None:
+                                request_budget.dispatched(request_attempt)
+                                request_dispatched = True
+                            provider_started = True
                             dispatch = provider.complete(
                                 prompt, system, cfg, universe_dir=universe_dir,
                             )
@@ -1290,6 +1334,18 @@ class ProviderRouter:
                             )
                     raise
                 except BaseException as exc:
+                    if request_attempt is not None:
+                        # dispatched() records a close-race as not_sent itself.
+                        state = request_budget.receipt()["attempts"][request_attempt - 1]["state"]
+                        if state == "reserved":
+                            request_budget.settle(request_attempt, "not_sent")
+                        elif state == "dispatched":
+                            request_budget.settle(
+                                request_attempt,
+                                "unknown" if isinstance(exc, (asyncio.CancelledError,
+                                                               ProviderTimeoutError, TimeoutError))
+                                else "failed",
+                            )
                     if budget_reservation is not None:
                         # A provider that never became available produced no
                         # tokens, so its reservation must be RELEASED, not
@@ -1350,6 +1406,9 @@ class ProviderRouter:
                                 ProviderInvocationReservationState.INDETERMINATE
                             )
                     raise
+                if request_dispatched:
+                    request_budget.settle(request_attempt, "succeeded")
+                    resp = replace(resp, request_receipt=request_budget.receipt())
                 if budget_reservation is not None:
                     finalize_served_provider_budget(
                         universe_dir.parent,

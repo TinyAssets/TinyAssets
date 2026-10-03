@@ -319,3 +319,72 @@ def test_review_purpose_rejects_text_substitution_and_expired_context(rig):
     finally:
         agent_review._PURPOSE.reset(token)
     assert not rig["terminal"].calls and not rig["sends"]
+
+
+def test_review_attempts_share_parent_dispatch_budget_and_keep_two_attempt_ceiling(rig):
+    from tinyassets.request_budget import TurnRequestBudget
+
+    budget = TurnRequestBudget("acct_alice", "universe_alice", max_requests=1)
+    rig["session"]._request_budget = budget
+    rig["terminal"].answers = ["invalid", '{"verdict":"proceed","reason":"ok"}']
+    result = rig["fire"]()
+    assert result["error_kind"] == "auto_review_unavailable"
+    assert len(rig["terminal"].calls) == 1 and not rig["sends"]
+    receipt = budget.receipt()
+    assert receipt["dispatched"] == 1
+    assert receipt["sources"][0]["purpose"] == "review"
+    assert receipt["sources"][0]["succeeded"] == 1
+    assert rig["terminal"].calls[0][2].text_only is True
+
+
+def test_review_and_prompt_call_share_one_parent_without_renewal(rig):
+    from tinyassets.foreground_run_provider import _content_digest
+
+    session = rig["session"]
+    session._branch_snapshot["node_defs"][0]["prompt_template"] = "Generate output"
+    session._branch_digest = _content_digest(session._branch_snapshot)
+    rig["terminal"].answers = ["node answer", '{"verdict":"proceed","reason":"ok"}']
+    assert rig["wrapper"]("Generate output") == "node answer"
+    assert rig["fire"]().get("delivered")
+    receipt = session._request_budget.receipt()
+    assert receipt["dispatched"] == 2
+    assert [(row["purpose"], row["dispatched"]) for row in receipt["sources"]] == [
+        ("helper", 1), ("review", 1),
+    ]
+
+
+@pytest.mark.parametrize("rig", ["manifest"], indirect=True)
+def test_spent_free_candidates_do_not_consume_review_attempts_before_paid_fallback(
+    rig, monkeypatch,
+):
+    from tinyassets.providers.model_policy import ModelRef
+    from tinyassets.request_budget import TurnRequestBudget
+
+    session = rig["session"]
+    budget = TurnRequestBudget("acct_alice", "universe_alice", free_pool_limit=2)
+    session._request_budget = budget
+    spent = [ModelRef("synthetic-free-a", "m"), ModelRef("synthetic-free-b", "m")]
+    for ref in spent:
+        ordinal = budget.reserve(owner="acct_alice", universe="universe_alice",
+                                 source_ref=ref.connection_id, model=ref.model_id, free=True)
+        budget.dispatched(ordinal)
+        budget.settle(ordinal, "succeeded")
+    capture = session._capture_choices
+
+    def capture_with_spent_prefix():
+        capture()
+        original = session._work_candidates.next_candidate
+
+        def candidates(policy=None, *args, local_exclusions=(), **kwargs):
+            return next((ref for ref in spent if ref not in local_exclusions), None) or original(
+                policy, *args, local_exclusions=local_exclusions, **kwargs,
+            )
+
+        monkeypatch.setattr(session._work_candidates, "next_candidate", candidates)
+
+    monkeypatch.setattr(session, "_capture_choices", capture_with_spent_prefix)
+    monkeypatch.setattr("tinyassets.request_budget.candidate_is_metered_free",
+                        lambda ctx, catalog, **kw: ctx.model_selection in spent)
+    assert rig["fire"]().get("delivered")
+    assert len(rig["terminal"].calls) == len(rig["sends"]) == 1
+    assert budget.receipt()["dispatched"] == 3

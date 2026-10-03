@@ -324,7 +324,7 @@ class ApiKeyHttpProvider(BaseProvider):
 
             agent_codec = agent_codec_for(self._definition.protocol)
             if (type(agent_request) is not AgentInferenceRequest or selection is None
-                    or not config.engine_mcp_enabled
+                    or not (config.engine_mcp_enabled or agent_request.text_only)
                     or agent_codec is None):
                 raise ProviderUnavailableError("HTTP agent inference requires admitted selection")
             protocol_path, body = agent_request.encode(

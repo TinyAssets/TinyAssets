@@ -130,7 +130,8 @@ def agent(served, monkeypatch):
                 }
             if state.before_reply is not None:
                 state.before_reply()
-            tools = (not learning and len(state.wires) <= state.requested_rounds
+            tools = (not learning and bool(document["body"].get("tools"))
+                     and len(state.wires) <= state.requested_rounds
                      and document["body"].get("tool_choice") != "none")
             message = {
                 "role": "assistant",

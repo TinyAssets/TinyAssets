@@ -28,7 +28,7 @@ class AgentModelPlan:
     def __post_init__(self):
         if (
             type(self.catalog) is not Catalog or type(self.policy) is not ModelPolicy
-            or type(self.interaction) is not Interaction or not self.interaction.needs_tools
+            or type(self.interaction) is not Interaction
             or type(self.policy_source) is not str
             or self.policy_source not in {"unknown", "current", "saved", "automatic"}
             or type(self.source_policies) is not tuple
@@ -36,7 +36,8 @@ class AgentModelPlan:
             or any(type(item) is not str for item in self.reconnect_sources)
             or type(self.refused_models) is not tuple
             or any(type(item) is not ModelRef for item in self.refused_models)
-            or any(type(item) is not SourceModelPolicy or not item.interaction.needs_tools
+            or any(type(item) is not SourceModelPolicy
+                   or item.interaction.needs_tools != self.interaction.needs_tools
                    for item in self.source_policies)
         ):
             raise ValueError("invalid interactive candidate plan")
@@ -81,4 +82,3 @@ class AgentModelPlan:
     def next_candidate(self, owner, universe, exhaustion=()):
         order = self.order(owner, universe, exhaustion)
         return order.candidates[0].ref if order.candidates else None
-

@@ -28,6 +28,7 @@ if TYPE_CHECKING:
     from tinyassets.providers.agent_model_plan import AgentModelPlan
     from tinyassets.providers.model_policy import ModelRef
     from tinyassets.providers.model_selection import SelectedModel
+    from tinyassets.request_budget import TurnRequestBudget
 
 logger = logging.getLogger(__name__)
 
@@ -345,6 +346,10 @@ class ModelConfig:
     agent_request: AgentInferenceRequest | None = field(default=None, repr=False)
     """Internal tool inventory/completed history, never execution authority."""
 
+    request_budget: TurnRequestBudget | None = field(default=None, repr=False, compare=False)
+    """Server-owned parent ledger; not wire data, quota evidence or authority."""
+    request_purpose: str = "reply"
+
     secondary_call: bool = False
     """This call is the platform's own bookkeeping beside a founder turn, not the
     turn. Set for post-reply learning extraction; never for a served reply.
@@ -476,6 +481,8 @@ class ProviderResponse:
 
     agent_reply: AgentReply | None = field(default=None, repr=False)
     """One inference's validated result; requested tools have not been executed."""
+    request_receipt: dict | None = field(default=None, repr=False, compare=False)
+    """Detached local dispatch accounting, never a confirmed provider quota."""
     native_evidence: NativeCompletionEvidence | None = field(default=None, repr=False)
     """Local execution evidence, not provider-reported billing or HTTP progress."""
 

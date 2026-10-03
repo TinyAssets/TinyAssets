@@ -29,6 +29,10 @@ FREE_CONSECUTIVE_FAILURES = 2
 class RequestBudgetExceeded(ProviderAuthorityHeldError):
     """A local turn stopped; no reconnect, approval, cooldown or automatic wake."""
 
+    SOURCE_LIMIT_REASONS = frozenset({
+        "free_attempt_limit", "free_pool_attempt_limit", "consecutive_failures",
+    })
+
     def __init__(self, reason, receipt):
         self.reason = reason
         self.request_receipt = receipt
@@ -65,14 +69,16 @@ class TurnRequestBudget:
 
     def __init__(self, owner, universe, *, max_requests=None,
                  free_limit=FREE_TURN_ATTEMPTS, failure_limit=FREE_CONSECUTIVE_FAILURES,
+                 free_pool_limit=FREE_TURN_ATTEMPTS,
                  deadline=None, clock=time.monotonic, source_limits=None, wall_clock=None):
-        for limit in (max_requests, free_limit, failure_limit):
+        for limit in (max_requests, free_limit, failure_limit, free_pool_limit):
             if limit is not None and (type(limit) is not int or limit < 1):
                 raise ValueError("request limits must be positive integers")
         if not owner or not universe:
             raise ValueError("parent turn owner and command center required")
         self.owner, self.universe = owner, universe
         self.max_requests, self.free_limit = max_requests, free_limit
+        self.free_pool_limit = free_pool_limit
         self.failure_limit, self.deadline, self.clock = failure_limit, deadline, clock
         self.wall_clock = wall_clock or (lambda: datetime.now(timezone.utc))
         self.source_limits = dict(source_limits or {})
@@ -101,6 +107,9 @@ class TurnRequestBudget:
             reason = "automatic_learning_disabled"
         elif self.max_requests is not None and len(active) >= self.max_requests:
             reason = "turn_attempt_limit"
+        elif (free and self.free_pool_limit is not None
+              and sum(a.free for a in active) >= self.free_pool_limit):
+            reason = "free_pool_attempt_limit"
         elif free and limit is not None and source_attempts >= limit:
             reason = "free_attempt_limit"
         elif (free and self.failure_limit is not None
@@ -118,7 +127,8 @@ class TurnRequestBudget:
 
         ``free`` means an admitted metered free source, NOT merely zero price.
         Local/unmetered models pass False. Only explicit owner policy supplies
-        max_requests; defaults never apply an aggregate cap across sources.
+        max_requests. The free pool allocation counts only metered free attempts;
+        adding connections cannot multiply it or restrict paid/local work.
         """
         self.check_scope(owner, universe)
         if purpose not in {"reply", "tool_review", "review", "helper", "learning"}:
@@ -207,7 +217,7 @@ def current_request_budget():
 
 
 @contextmanager
-def request_budget_scope(budget):
+def request_budget_scope(budget, *, close_on_exit=True):
     """Propagate a parent object without permitting a nested reset of its limit."""
     current = current_request_budget()
     if current is not None and current is not budget:
@@ -216,7 +226,7 @@ def request_budget_scope(budget):
     try:
         yield budget
     finally:
-        if current is None:
+        if current is None and close_on_exit:
             budget.close()
         _TURN_REQUEST_BUDGET.reset(token)
 
@@ -383,7 +393,7 @@ def request_budget(base_path, owner, source_ref, model, *, preset, zero_priced_m
         return None
 
 
-def budget_for_context(context, *, owner=None):
+def _source_budget_facts(context, *, owner=None):
     """Resolve installed source facts and captured prices locally, with no IO to a model."""
     try:
         from tinyassets.providers.definition import get_definition
@@ -413,6 +423,45 @@ def budget_for_context(context, *, owner=None):
         if len(hosts) != 1:
             return None
         preset = daily_cap_for_host(hosts.pop())
+        return owner, preset
+    except Exception:  # noqa: BLE001 - unavailable source facts do not invent limits
+        return None
+
+
+def metered_free_source(context, selection, *, owner):
+    if context is None or not selection_is_free(selection):
+        return False
+    facts = _source_budget_facts(context, owner=owner)
+    return bool(facts and facts[1] and facts[1].get("requests_per_day"))
+
+
+def candidate_is_metered_free(context, catalog, *, owner):
+    """Local allocation classification only; invocation still admits afresh."""
+    if catalog.owner_id != owner:
+        return False
+    facts = _source_budget_facts(context, owner=owner)
+    if not (facts and facts[1] and facts[1].get("requests_per_day")):
+        return False
+    ref = context.model_selection
+    for connection in catalog.connections:
+        if connection.connection_id == ref.connection_id:
+            for model in connection.models:
+                if model.model_id == ref.model_id:
+                    price = model.pricing
+                    return (price.freshness == "fresh" and not price.unknown_components
+                            and bool(price.charges)
+                            and all(c.amount_micros == 0 for c in price.charges))
+    return False
+
+
+def budget_for_context(context, *, owner=None):
+    """Advisory daily evidence, separate from per-turn dispatch admission."""
+    try:
+        facts = _source_budget_facts(context, owner=owner)
+        if facts is None:
+            return None
+        owner, preset = facts
+        selection, root = context.model_selection, context.universe_dir
         zero = set()
         plan = context.agent_model_plan
         if plan is not None and plan.catalog.owner_id == owner:

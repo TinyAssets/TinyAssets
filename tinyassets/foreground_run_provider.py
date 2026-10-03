@@ -268,12 +268,20 @@ class _ForegroundRunProviderSession:
         principal_id: str,
         provider_call: Callable[..., str],
         model_preference_data: dict | None = None,
+        request_budget=None,
     ) -> None:
         self._base_path = Path(base_path)
         self._universe_id = universe_id.strip()
         self._universe_dir = self._base_path / self._universe_id
         self._principal_id = principal_id.strip()
         self._provider_call = provider_call
+        from tinyassets.request_budget import TurnRequestBudget, current_request_budget
+
+        self._request_budget = request_budget or current_request_budget()
+        self._owns_request_budget = self._request_budget is None
+        if self._request_budget is None:
+            self._request_budget = TurnRequestBudget(self._principal_id, self._universe_id)
+        self._request_budget.check_scope(self._principal_id, self._universe_id)
         self._run_id = ""
         self._branch_def_id = ""
         self._branch_version_id = ""
@@ -398,6 +406,7 @@ class _ForegroundRunProviderSession:
             "universe_id": self._universe_id,
             "principal_id": self._principal_id,
             "provider_call": self._provider_call,
+            "request_budget": self._request_budget,
             "model_preference_data": self._model_preference_data,
         }
 
@@ -1197,11 +1206,20 @@ class _ForegroundRunProviderSession:
                     or system != SAFETY_REQUIREMENTS or config is not None
                     or policy is not None or kwargs):
                 raise PermissionError("effect review cannot substitute its text-only purpose")
-            config = ModelConfig(text_only=True)
+            config = ModelConfig(text_only=True, request_budget=self._request_budget,
+                                 request_purpose="review")
         elif self._branch_snapshot is not None and not _prompt_nodes(self._branch_snapshot):
             raise _held_authority_error(
                 PermissionError("foreground provider attempt has no prompt node")
             )
+
+        if config is None:
+            config = ModelConfig()
+        if isinstance(config, ModelConfig):
+            if config.request_budget not in (None, self._request_budget):
+                raise PermissionError("foreground parent request budget cannot be substituted")
+            config = replace(config, request_budget=self._request_budget,
+                             request_purpose="review" if review is not None else "helper")
 
         # Enforcement site (C), foreground half, at the call boundary — the
         # mirror of the served lane's gate in `background_served_provider._call`.
@@ -1416,19 +1434,24 @@ class _ForegroundRunProviderSession:
             refusal_boundary,
         )
         from tinyassets.providers.call import get_provider_router
+        from tinyassets.request_budget import RequestBudgetExceeded, candidate_is_metered_free
 
         attempts = 0
         boundaries = ()
         narrowings = 0
         last_capacity = None
         served = None
+        local_exclusions = set()
+        last_budget_stop = None
         # This loop holds the owner's order, so it is entitled to the router's
         # withheld cooldown -- and responsible for settling it, on EVERY exit.
         config = (replace(config, owns_capacity_siblings=True)
                   if isinstance(config, ModelConfig) else config)
         try:
             while True:
-                selected = self._work_candidates.next_candidate(policy)
+                selected = self._work_candidates.next_candidate(
+                    policy, local_exclusions=local_exclusions,
+                )
                 # Exhaustion, NOT an unbound provider: the owner's own order ran
                 # out. Typed so `api/runs` can say so without matching this
                 # message. The boundaries this loop validated are the evidence
@@ -1436,6 +1459,8 @@ class _ForegroundRunProviderSession:
                 # failures never get here: they raise the held class below on
                 # the attempt that saw them.
                 if selected is None:
+                    if last_budget_stop is not None:
+                        raise last_budget_stop
                     raise self._work_candidates.exhausted_error(boundaries) from last_capacity
                 effective = {**(policy or {}), "preferred": {
                     "provider": selected.connection_id, "model_id": selected.model_id,
@@ -1449,9 +1474,30 @@ class _ForegroundRunProviderSession:
                         outer(response)
 
                 try:
+                    from tinyassets.providers.base import UniverseContext
+
+                    # A known local stop must not consume the review's separate
+                    # attempt allowance or a durable invocation reservation.
+                    accounting_context = UniverseContext(
+                        universe_dir=self._universe_dir, config=None, model_selection=selected,
+                    )
+                    self._request_budget.check_available(
+                        source_ref=selected.connection_id,
+                        free=candidate_is_metered_free(
+                            accounting_context, self._work_candidates.catalog,
+                            owner=self._principal_id,
+                        ),
+                        purpose=config.request_purpose,
+                    )
                     attempts += 1
                     result = self._call_once(role, prompt, system, config, effective,
                                              {**kwargs, "response_observer": observe})
+                except RequestBudgetExceeded as exc:
+                    if exc.reason not in RequestBudgetExceeded.SOURCE_LIMIT_REASONS:
+                        raise
+                    last_budget_stop = exc
+                    local_exclusions.add(selected)
+                    continue
                 except AllProvidersExhaustedError as exc:
                     refused = refusal_boundary(selected, exc.attempts)
                     if refused is not None:
@@ -1591,6 +1637,8 @@ class _ForegroundRunProviderSession:
         if self._closed:
             return
         self._closed = True
+        if self._owns_request_budget:
+            self._request_budget.close()
         if self._receipt is not None:
             from tinyassets.storage.provider_work_authority import (
                 SQLiteProviderWorkAuthorityStore,

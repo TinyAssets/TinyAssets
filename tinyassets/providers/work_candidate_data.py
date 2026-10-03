@@ -267,7 +267,7 @@ class WorkCandidateData:
             message += ": " + "; ".join(parts)
         return WorkModelExhaustedError(message)
 
-    def next_candidate(self, policy, exhaustion=(), *, min_context=None):
+    def next_candidate(self, policy, exhaustion=(), *, min_context=None, local_exclusions=()):
         """The next admitted ref, or None.
 
         ``min_context`` is ONE agent turn's measured need (its own pre-send
@@ -297,7 +297,8 @@ class WorkCandidateData:
                 interaction, owner_id=self.owner, universe_id=self.universe,
                 exhaustion=self._exhaustion, source_policies=source_policies,
             )
-            return ordered.candidates[0].ref if ordered.candidates else None
+            return next((item.ref for item in ordered.candidates
+                         if item.ref not in local_exclusions), None)
 
 
 def _at_least(interaction, tokens):

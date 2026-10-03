@@ -26,6 +26,16 @@ served = integration.served
 agent = integration.agent
 
 
+def run_coordinator(agent):
+    from tinyassets.providers.call import call_interactive_agent_turn, make_interactive_agent_turn
+
+    turn = make_interactive_agent_turn(
+        prompt="exact user prompt", system="exact system",
+        universe_context=agent.served.context, config=agent.config,
+    )
+    return call_interactive_agent_turn(turn)
+
+
 def reserve(budget, *, source="accepted-a", free=True, purpose="reply"):
     return budget.reserve(owner="owner", universe="u-models", source_ref=source,
                           model="model", free=free, purpose=purpose)
@@ -88,7 +98,7 @@ def test_progress_resets_failure_streak_but_does_not_reset_total():
         budget.settle(dispatch(budget), outcome)
     with pytest.raises(RequestBudgetExceeded) as held:
         dispatch(budget)
-    assert held.value.reason == "free_attempt_limit"
+    assert held.value.reason in {"free_attempt_limit", "free_pool_attempt_limit"}
 
 
 def test_new_dispatch_deadline_does_not_cancel_valid_progressing_reply():
@@ -194,7 +204,7 @@ def test_real_coordinator_budget_stops_before_extra_tool_effect(agent):
     budget = TurnRequestBudget("owner", "u-models", max_requests=3)
     agent.requested_rounds = 20
     with request_budget_scope(budget), pytest.raises(RequestBudgetExceeded) as held:
-        integration.run(agent)
+        run_coordinator(agent)
     assert len(agent.wires) == 3
     assert len(agent.tools) == 2
     assert agent.latest().state == "held_tool_not_sent"
@@ -235,7 +245,8 @@ def test_source_allocations_preserve_paid_local_and_other_free_capacity():
 
 
 def test_explicit_larger_source_allocation_preserves_long_useful_work():
-    budget = TurnRequestBudget("owner", "u-models", source_limits={"accepted-a": 20})
+    budget = TurnRequestBudget("owner", "u-models", source_limits={"accepted-a": 20},
+                               free_pool_limit=20)
     for _ in range(16):
         budget.settle(dispatch(budget), "succeeded")
     assert budget.receipt()["dispatched"] == 16
@@ -252,12 +263,23 @@ def test_real_coordinator_close_race_records_no_dispatch_and_keeps_typed_stop(ag
 
     monkeypatch.setattr(agent.journal.__class__, "begin_round", close_after_journal)
     with request_budget_scope(budget), pytest.raises(RequestBudgetExceeded) as held:
-        integration.run(agent)
+        run_coordinator(agent)
     assert held.value.reason == "dispatch_closed"
     assert not agent.wires and not agent.tools
     assert agent.latest().state == "held_transport"
     assert budget.receipt()["sources"][0]["not_sent"] == 1
     assert held.value.turn_requests == 0
+    import sqlite3
+
+    from tinyassets.storage import DB_FILENAME
+
+    with sqlite3.connect(agent.served.context.universe_dir.parent / DB_FILENAME) as db:
+        states = db.execute(
+            "SELECT state, actual_total_tokens, actual_cost_microunits "
+            "FROM served_provider_budget_reservations"
+        ).fetchall()
+    # The existing monetary ledger represents release as settled zero usage.
+    assert states and all(row == ("succeeded", 0, 0) for row in states)
 
 
 def test_real_claim_denial_never_reserves_request(agent, monkeypatch):
@@ -299,16 +321,16 @@ def test_real_metered_free_turn_stops_at_source_allocation(agent, monkeypatch):
     economy.seed_budget(agent, monkeypatch, remaining=50)
     agent.requested_rounds = 20
     with pytest.raises(RequestBudgetExceeded) as held:
-        integration.run(agent)
+        run_coordinator(agent)
     assert len(agent.wires) == 6 and len(agent.tools) == 5
-    assert held.value.reason == "free_attempt_limit"
+    assert held.value.reason in {"free_attempt_limit", "free_pool_attempt_limit"}
     assert agent.latest().state == "held_tool_not_sent"
 
 
 def test_real_larger_owner_allocation_crosses_advisory_daily_zero(agent, monkeypatch):
     economy.seed_budget(agent, monkeypatch, remaining=0)
     source = agent.served.context.model_selection.connection_id
-    budget = TurnRequestBudget("owner", "u-models", source_limits={source: 20})
+    budget = TurnRequestBudget("owner", "u-models", source_limits={source: 20}, free_pool_limit=20)
     agent.requested_rounds = 15
     with request_budget_scope(budget):
         assert integration.run(agent) == "finished exact answer"
@@ -320,7 +342,7 @@ def test_real_larger_owner_allocation_crosses_advisory_daily_zero(agent, monkeyp
 def test_real_mixed_pool_keeps_long_progress_on_accepted_unmetered_fallback(
     agent, monkeypatch, identity_known,
 ):
-    import tinyassets.agent_turn_coordinator as coordinator
+    import tinyassets.request_budget as budgets
 
     economy.seed_budget(agent, monkeypatch, remaining=50)
     first, second = economy.add_second_source(agent, monkeypatch)
@@ -331,8 +353,8 @@ def test_real_mixed_pool_keeps_long_progress_on_accepted_unmetered_fallback(
             for connection in plan.catalog.connections
         )))
         agent.served.context = replace(agent.served.context, agent_model_plan=plan)
-    original = coordinator.budget_for_context
-    monkeypatch.setattr(coordinator, "budget_for_context", lambda ctx, **kw:
+    original = budgets._source_budget_facts
+    monkeypatch.setattr(budgets, "_source_budget_facts", lambda ctx, **kw:
                         None if ctx.model_selection.connection_id == second.connection_id
                         else original(ctx, **kw))
     budget = TurnRequestBudget("owner", "u-models")
@@ -396,8 +418,8 @@ def test_accepted_same_connection_paid_candidate_remains_eligible(agent, monkeyp
     turn.request_budget.settle(dispatch(turn.request_budget, source=source), "succeeded")
     # Admission remains the router's job. This fixture represents a second
     # accepted model whose paid policy does not consume the free allocation.
-    monkeypatch.setattr(coordinator, "budget_for_context", lambda ctx, **kw:
-                        None if ctx.model_selection.model_id == alternate else object())
+    monkeypatch.setattr(coordinator, "candidate_is_metered_free", lambda ctx, catalog, **kw:
+                        ctx.model_selection.model_id != alternate)
     candidate = turn._request_budget_fallback()
     assert candidate.model_id == alternate and candidate.connection_id == source
     assert turn.exhaustion == ()
@@ -430,3 +452,168 @@ def test_receipt_buckets_by_actual_dispatch_time_instead_of_parent_creation():
     assert [row["dispatched_at"][:10] for row in budget.receipt()["attempts"]] == [
         "2026-10-03", "2026-10-04",
     ]
+
+
+@pytest.mark.parametrize("message", ["hi", "What is a tuple?", "Explain recursion"])
+@pytest.mark.parametrize("choice", [None, "explicit"])
+def test_ordinary_chat_uses_one_tool_incapable_accepted_http_call(
+    agent, monkeypatch, signed_in, message, choice,
+):
+    from tinyassets import daemon_server, universe_intelligence
+    from tinyassets.providers import discovery_snapshot
+
+    root = agent.served.context.universe_dir
+    monkeypatch.setattr(daemon_server, "get_founder_home", economy.get_founder_home)
+    monkeypatch.setattr(universe_intelligence, "_universe_dir", lambda uid: root)
+    monkeypatch.setenv("TINYASSETS_ENGINE_MCP_TOOLS", "0")
+    original = discovery_snapshot.read_http_discovery_document
+
+    def text_models(**kwargs):
+        document = original(**kwargs)
+        if "benchmarks" not in kwargs["url"]:
+            for model in document["data"]:
+                model["supported_parameters"] = []
+        return document
+
+    monkeypatch.setattr(discovery_snapshot, "read_http_discovery_document", text_models)
+    signed_in("owner")
+    model_choice = None
+    if choice:
+        from tinyassets.storage.model_preferences import ModelPreferences
+
+        model_choice = ModelPreferences(
+            "explicit", agent.served.context.model_selection, (),
+        ).document()
+    observations = []
+    answer = universe_intelligence.converse(
+        founder_message=message, universe_id=root.name, model_choice=model_choice,
+        response_observer=observations.append,
+        conversation_history=[{"role": "assistant", "content": "An old project is unfinished."}],
+    )
+    assert answer == "finished exact answer"
+    assert len(agent.wires) == 1 and not agent.tools
+    assert not agent.closed, "no engine tool session was opened"
+    assert "tools" not in agent.wires[0][1]["body"]
+    assert observations[0].request_receipt["dispatched"] == 1
+    assert observations[0].request_receipt["sources"][0]["purpose"] == "reply"
+    assert agent.latest().state == "completed"
+
+
+def test_free_pool_cannot_multiply_default_budget_across_fifty_accepted_sources():
+    budget = TurnRequestBudget("owner", "u-models")
+    calls = []
+    for number in range(50):
+        try:
+            ordinal = dispatch(budget, source=f"accepted-{number}")
+        except RequestBudgetExceeded:
+            continue
+        calls.append(number)
+        budget.settle(ordinal, "failed")
+    assert len(calls) == 6
+    assert budget.receipt()["dispatched"] == 6
+    # Exhausted free allocation is not a global cap on accepted richer capacity.
+    for _ in range(30):
+        budget.settle(dispatch(budget, source="local", free=False), "succeeded")
+    assert budget.receipt()["dispatched"] == 36
+
+
+def test_whole_parent_receipt_includes_learning_when_unmetered_work_requests_it(
+    agent, monkeypatch, signed_in,
+):
+    from tinyassets import daemon_server, universe_intelligence
+
+    root = agent.served.context.universe_dir
+    monkeypatch.setattr(daemon_server, "get_founder_home", economy.get_founder_home)
+    monkeypatch.setattr(universe_intelligence, "_universe_dir", lambda uid: root)
+    signed_in("owner")
+    agent.requested_rounds = 0
+    observed = []
+    assert universe_intelligence.converse(
+        founder_message="Remember that I prefer short answers", universe_id=root.name,
+        response_observer=observed.append,
+    ) == "finished exact answer"
+    assert len(agent.wires) == 2
+    receipt = observed[0].request_receipt
+    assert receipt["dispatched"] == 2
+    assert [(row["purpose"], row["dispatched"]) for row in receipt["sources"]] == [
+        ("reply", 1), ("learning", 1),
+    ]
+
+
+def test_budget_stop_returns_bounded_continuation_without_extra_model_call(agent):
+    agent.requested_rounds = 20
+    budget = TurnRequestBudget("owner", "u-models", max_requests=2)
+    with request_budget_scope(budget):
+        answer = integration.run(agent)
+    assert "request budget (2 provider attempts)" in answer
+    assert "none is scheduled automatically" in answer
+    assert len(agent.wires) == 2 and len(agent.tools) == 1
+    assert agent.latest().state == "held_tool_not_sent"
+
+
+@pytest.mark.parametrize("message", [
+    "What are open pull requests?", "Explain README.md", "What is the status?",
+    "Continue the project", "Read my email", "What is a repository in this project?",
+])
+def test_real_work_is_not_demoted_to_plain_conversation(message):
+    from tinyassets.universe_intelligence import _ordinary_chat
+
+    assert not _ordinary_chat(message)
+
+
+def test_final_receipt_observer_failure_keeps_earned_reply(agent, monkeypatch, signed_in):
+    from tinyassets import daemon_server, universe_intelligence
+
+    root = agent.served.context.universe_dir
+    monkeypatch.setattr(daemon_server, "get_founder_home", economy.get_founder_home)
+    monkeypatch.setattr(universe_intelligence, "_universe_dir", lambda uid: root)
+    signed_in("owner")
+
+    def broken_observer(response):
+        assert response.request_receipt["dispatched"] == 1
+        raise RuntimeError("synthetic telemetry failure")
+
+    assert universe_intelligence.converse(
+        founder_message="hi", universe_id=root.name, response_observer=broken_observer,
+    ) == "finished exact answer"
+    assert len(agent.wires) == 1 and not agent.tools
+
+
+def test_budget_stop_observer_receives_parent_receipt(agent):
+    from tinyassets.universe_intelligence import _call_writer
+
+    agent.requested_rounds = 20
+    budget = TurnRequestBudget("owner", "u-models", max_requests=2)
+    observations = []
+    with request_budget_scope(budget):
+        answer = _call_writer(
+            "Build the requested app", system="system", universe_context=agent.served.context,
+            config=agent.config, response_observer=observations.append,
+        )
+    assert "none is scheduled automatically" in answer
+    assert len(observations) == 1
+    assert observations[0].request_receipt["dispatched"] == len(agent.wires) == 2
+    assert observations[0].degraded and not observations[0].reported_model
+
+
+def test_empty_journal_inventory_preserves_legacy_bytes_and_rejects_unsolicited_tools():
+    from dataclasses import asdict
+
+    from tests.test_agent_turn_journal import candidate, reply
+    from tinyassets.storage import agent_turn_records as records
+
+    existing = candidate()
+    legacy = asdict(existing)
+    legacy.pop("authority_kind")
+    legacy.pop("work_receipt_id")
+    assert existing.canonical_json() == records.dump({"version": 1, **legacy})
+    empty = replace(existing, tools_json=records.dump({"version": 1, "tools": []}))
+    assert records.RoundInput.from_json(empty.canonical_json()) == empty
+    assert not empty.tool_names()
+    with pytest.raises(ValueError):
+        records.reply_json(reply(), empty)
+    for invalid in (None, {}, "", False, [None]):
+        with pytest.raises(ValueError):
+            replace(existing, tools_json=records.dump({
+                "version": 1, "tools": invalid,
+            })).canonical_json()
