@@ -229,3 +229,24 @@ def test_late_account_and_home_reads_cannot_replace_current_owners_placement(ser
     assert page.evaluate("cloudState.open.x") == 300
     assert page.evaluate("queueScope") == "home-new"
     assert posts == []
+
+
+def test_delayed_saved_bubble_keeps_the_composer_draft_selection_and_focus(server, page):
+    url, _posts, state = server
+    state["seconds"] = 0.5
+    state["records"][("Bearer synthetic-alice", "wide")] = {**RECORD, "mode": "bubble"}
+    page.goto(url)
+    page.wait_for_selector("#view-signin", state="visible")
+    _synthetic_login(page, "synthetic-alice")
+    page.fill("#composer-input", "Keep this draft")
+    page.locator("#composer-input").evaluate("el => el.setSelectionRange(5,9)")
+    page.wait_for_timeout(800)
+    assert page.locator("#composer-input").is_visible()
+    assert page.evaluate("document.activeElement.id") == "composer-input"
+    assert page.input_value("#composer-input") == "Keep this draft"
+    assert page.locator("#composer-input").evaluate(
+        "el => [el.selectionStart,el.selectionEnd]") == [5, 9]
+    page.locator("#chat-cloud-bar").focus()
+    page.wait_for_selector("#chat-cloud-bubble", state="visible")
+    page.click("#chat-cloud-bubble")
+    assert page.input_value("#composer-input") == "Keep this draft"

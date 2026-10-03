@@ -111,6 +111,12 @@ a request fence, not a new storage dimension. Writes are serialized so repeated
 gestures cannot complete in reverse order. Only a successful empty read migrates
 the local record; a malformed response leaves it alone.
 
+A placement gesture keeps precedence for its owner/agent/viewport and login,
+including when the same owner changes home or switches viewport and returns.
+A saved bubble received while the composer is active is deferred until typing
+focus leaves. The draft and selection stay in place; a new gesture or lifecycle
+change cancels deferred hydration.
+
 ### D5. Deletion and accounting
 
 The canonical root database is already registered for storage accounting, and

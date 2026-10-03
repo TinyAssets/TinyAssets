@@ -5057,7 +5057,8 @@
   const CLOUD_KEY_PREFIX="app.chatCloud.v1", CLOUD_BUBBLE=56, CLOUD_MARGIN=12,
         CLOUD_MIN_W=320, CLOUD_MIN_H=360, CLOUD_PHONE_MAX=760, CLOUD_STEP=16;
   let cloudState=null, cloudStoreKey="", cloudWired=false, cloudSuppressClick=false;
-  const cloudPrefs={epoch:0,scope:"",synced:"",gestured:false,writeTail:Promise.resolve()};
+  const cloudPrefs={epoch:0,scope:"",synced:"",gestured:false,gestures:new Set(),
+    cancelHydration:null,writeTail:Promise.resolve()};
   function isTypingTarget(el){
     if(!el) return false;
     const tag=(el.tagName||"").toLowerCase();
@@ -5310,7 +5311,9 @@
     const key=cloudStorageKey(queueOwner, cloud.dataset.agent, cloudViewportClass(stage.w));
     const scope=JSON.stringify([key,queueScope,MCP._loginEpoch]);
     if(scope!==cloudPrefs.scope){
-      cloudPrefs.epoch++; cloudPrefs.scope=scope; cloudPrefs.synced=""; cloudPrefs.gestured=false;
+      if(cloudPrefs.cancelHydration) cloudPrefs.cancelHydration();
+      cloudPrefs.epoch++; cloudPrefs.scope=scope; cloudPrefs.synced="";
+      cloudPrefs.gestured=cloudPrefs.gestures.has(JSON.stringify([key,MCP._loginEpoch]));
     }
     if(key===cloudStoreKey && cloudState && cloudState.userSet){
       // Same owner, agent and viewport class, and the owner has placed it: the
@@ -5350,20 +5353,26 @@
   function saveChatCloud(){
     if(!cloudState || !cloudStoreKey) return;
     cloudState.userSet=true;
-    cloudPrefs.gestured=true;
+    markChatCloudGesture();
     try{
       localStorage.setItem(cloudStoreKey, JSON.stringify(cloudRecord(cloudState)));
     }catch(_error){ /* storage full or disabled: the cloud still works, unremembered */ }
     if(typeof postChatCloud==="function") postChatCloud(cloudStoreKey);
   }
   function invalidateChatCloudPrefs(){
-    cloudPrefs.epoch++; cloudPrefs.scope=""; cloudPrefs.synced=""; cloudPrefs.gestured=false;
+    if(cloudPrefs.cancelHydration) cloudPrefs.cancelHydration();
+    cloudPrefs.epoch++; cloudPrefs.scope=""; cloudPrefs.synced="";
     const epoch=cloudPrefs.epoch;
     // The lifecycle setters finish assigning their verified owner/home first.
     // Keep this separate from their send/recovery state and AppUI revocation.
     Promise.resolve().then(()=>{
       if(epoch===cloudPrefs.epoch && queueOwner) refreshChatCloud();
     });
+  }
+  function markChatCloudGesture(){
+    cloudPrefs.gestured=true;
+    cloudPrefs.gestures.add(JSON.stringify([cloudStoreKey,MCP._loginEpoch]));
+    if(cloudPrefs.cancelHydration) cloudPrefs.cancelHydration();
   }
   function cloudRecord(s){
     return {v:1,mode:s.mode,open:Object.assign({},s.open),bubble:Object.assign({},s.bubble)};
@@ -5417,9 +5426,28 @@
     }
     const server=cloudParseSaved(JSON.stringify(doc.prefs.chat_cloud));
     if(!server) return;                         // malformed is not an empty record
-    try{ localStorage.setItem(key,JSON.stringify(cloudRecord(server))); }catch(_error){ /* cache only */ }
-    cloudState=cloudClamp(server,cloudStageSize());
-    applyChatCloud();
+    const cloud=$("chat-cloud");
+    const typing=()=>server.mode==="bubble" && cloud.contains(document.activeElement) &&
+      isTypingTarget(document.activeElement);
+    const cancel=()=>{
+      document.removeEventListener("focusout",afterFocus);
+      if(cloudPrefs.cancelHydration===cancel) cloudPrefs.cancelHydration=null;
+    };
+    const applyRecord=()=>{
+      if(!current() || cloudPrefs.gestured){ cancel(); return; }
+      if(typing()) return;
+      cancel();
+      try{ localStorage.setItem(key,JSON.stringify(cloudRecord(server))); }catch(_error){ /* cache only */ }
+      cloudState=cloudClamp(server,cloudStageSize());
+      applyChatCloud();
+    };
+    const afterFocus=()=>Promise.resolve().then(applyRecord);
+    // A saved bubble must not hide a draft or move its caret. Apply it only
+    // after focus leaves typing; any placement or lifecycle change cancels it.
+    if(typing()){
+      cloudPrefs.cancelHydration=cancel;
+      document.addEventListener("focusout",afterFocus);
+    }else applyRecord();
   }
   function setChatCloudMode(mode){
     if(!cloudState) return;
@@ -5465,7 +5493,7 @@
         const dx=e.clientX-start.x, dy=e.clientY-start.y;
         if(!moved && Math.abs(dx)+Math.abs(dy)<4) return;
         moved=true;
-        cloudPrefs.gestured=true;
+        markChatCloudGesture();
         $("chat-cloud").classList.add("is-dragging");
         cloudState=kind==="resize" ? cloudShifted(origin,0,0,dx,dy) : cloudShifted(origin,dx,dy,0,0);
         applyChatCloud();

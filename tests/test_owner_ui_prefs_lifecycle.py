@@ -169,3 +169,62 @@ console.log(JSON.stringify({same:before===JSON.stringify(cloudState),posts,store
   remaining:Object.keys(handlers)}));
 """)
     assert out == {"same": True, "posts": [], "store": {}, "remaining": ["pointerdown"]}
+
+
+def test_delayed_bubble_hydration_preserves_typing_until_focus_leaves():
+    out = execute("""
+let release, focusMoved=false;
+globalThis.focusCommandCenter=()=>{focusMoved=true;};
+answer=()=>new Promise(r=>{release=r;});
+refreshChatCloud(); await settle();
+const input=nodes['composer-input']; input.tagName='TEXTAREA';
+input.value='Keep this draft'; input.selectionStart=5; input.selectionEnd=9;
+nodes['chat-cloud'].child=input; input.focus();
+release({prefs:{chat_cloud:{...SERVER,mode:'bubble'}}}); await settle();
+const during={mode:cloudState.mode,focusMoved,focused:document.activeElement===input,
+  text:input.value,start:input.selectionStart,end:input.selectionEnd};
+document.activeElement=null; document.events.focusout(); await settle();
+console.log(JSON.stringify({during,after:cloudState.mode,listener:!!document.events.focusout}));
+""")
+    assert out == {"during": {"mode": "open", "focusMoved": False, "focused": True,
+                              "text": "Keep this draft", "start": 5, "end": 9},
+                   "after": "bubble", "listener": False}
+
+
+def test_pending_write_survives_home_and_viewport_round_trip_without_old_hydration():
+    network = NET.replace("const fetch=async(path,opts)=>{",
+                          "let release;\nconst fetch=async(path,opts)=>{")
+    network = network.replace("return {ok:true,json:async()=>({saved:true})};",
+                              "if(posts.length===1) await new Promise(r=>{release=r;});\n"
+                              "return {ok:true,json:async()=>({saved:true})};")
+    out = execute("""
+answer={prefs:{chat_cloud:SERVER}}; refreshChatCloud(); await settle();
+setChatCloudMode('bubble'); await settle();
+setQueueScope('other-home'); await settle();
+stage.clientWidth=390; refreshChatCloud(); await settle();
+stage.clientWidth=1280; refreshChatCloud(); await settle();
+const during=cloudState.mode;
+release(); await settle();
+console.log(JSON.stringify({during,after:cloudState.mode,
+  cached:JSON.parse(store['app.chatCloud.v1:alice:main:wide']).mode,posts}));
+""", network)
+    assert out["during"] == out["after"] == out["cached"] == "bubble"
+    assert len(out["posts"]) == 1
+    assert out["posts"][0]["value"]["mode"] == "bubble"
+
+
+def test_account_change_cancels_deferred_hydration_and_its_focus_listener():
+    out = execute("""
+let release;
+answer=()=>new Promise(r=>{release=r;});
+refreshChatCloud(); await settle();
+const input=nodes['composer-input']; input.tagName='TEXTAREA';
+nodes['chat-cloud'].child=input; input.focus();
+release({prefs:{chat_cloud:{...SERVER,mode:'bubble'}}}); await settle();
+const listening=!!document.events.focusout;
+answer={prefs:{}}; setQueueOwner('bob'); MCP._loginEpoch++; await settle();
+console.log(JSON.stringify({listening,after:!!document.events.focusout,
+  key:cloudStoreKey,mode:cloudState.mode,store}));
+""")
+    assert out == {"listening": True, "after": False,
+                   "key": "app.chatCloud.v1:bob:main:wide", "mode": "open", "store": {}}

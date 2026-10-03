@@ -119,12 +119,14 @@ def test_saved_per_owner_agent_and_viewport_class():
 
 CONTROLLER = PURE + ("cloudStageSize", "cloudHasLayout", "refreshChatCloud", "applyChatCloud",
                      "saveChatCloud", "setChatCloudMode", "cloudShifted", "cloudKeydown",
-                     "setCloudUnread", "paintCloudBubbleLabel", "cloudRecord")
+                     "setCloudUnread", "paintCloudBubbleLabel", "cloudRecord",
+                     "markChatCloudGesture")
 
 DOM = """
 let cloudState=null, cloudStoreKey="", cloudWired=true, cloudSuppressClick=false;
 const MCP={_loginEpoch:1};
-const cloudPrefs={epoch:0,scope:'',synced:'',gestured:false,writeTail:Promise.resolve()};
+const cloudPrefs={epoch:0,scope:'',synced:'',gestured:false,gestures:new Set(),
+  cancelHydration:null,writeTail:Promise.resolve()};
 let queueScope='home-alice';
 let queueOwner='alice', stage={clientWidth:1280, clientHeight:740}, layout=false;
 const store={}, localStorage={getItem:k=>k in store?store[k]:null,
@@ -141,7 +143,8 @@ const nodes={'chat-stage':stage, 'chat-cloud':el(), 'chat-cloud-bubble':el(),
              'view-chat':{classList:{contains:c=>c==='ui-custom-active'&&layout}}};
 nodes['chat-cloud'].dataset.agent='main';
 const $=id=>nodes[id];
-const document={activeElement:null};
+const document={activeElement:null,events:{},
+  addEventListener(k,v){this.events[k]=v;},removeEventListener(k){delete this.events[k];}};
 const snap=()=>({state:cloudState, store, mode:nodes['chat-cloud'].dataset.mode,
   bubbleHidden:nodes['chat-cloud-bubble'].hidden, left:nodes['chat-cloud'].style.left});
 """
@@ -214,7 +217,8 @@ console.log(JSON.stringify({mode:snap().mode, w:cloudState.open.w}));""")
     assert out["w"] == 440 - 16
 # --- the owner's record on the server (openspec/changes/owner-ui-prefs) -----
 
-SYNC = CONTROLLER + ("syncChatCloudFromServer", "postChatCloud", "cloudPrefsQuery", "cloudSession")
+SYNC = CONTROLLER + ("syncChatCloudFromServer", "postChatCloud", "cloudPrefsQuery", "cloudSession",
+                     "isTypingTarget")
 
 NET = """
 let cloudSynced="", cloudGestured=false, answer=null, failRead=false, onRefresh=null;
