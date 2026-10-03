@@ -77,6 +77,10 @@ def system_server(home):
                 self.reply({"error": "not_found"}, status=404)
 
         def do_POST(self):
+            if self.path == "/app/token":
+                # Normal signed-out boot probes its absent refresh cookie.
+                self.reply({"error": "authentication_required"}, status=401)
+                return
             try:
                 assert self.headers.get("Authorization") == "Bearer synthetic-bob"
                 args = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
@@ -138,7 +142,7 @@ def _enter(page, origin):
     page.wait_for_selector("#view-signin", state="visible")
     page.evaluate("""async ({owner,home}) => {
       sessionStorage.setItem(TOKEN_KEY,'synthetic-bob');
-      sessionStorage.setItem(EXP_KEY,String(Math.floor(Date.now()/1000)+3600));
+      sessionStorage.setItem(EXP_KEY,String(Date.now()+3600*1000));
       fetchMe=async()=> (await fetch('/fixture/identity')).json();
       MCP.callTool=async(name,args)=>{
         const r=await fetch('/fixture/mcp',{method:'POST',
@@ -154,6 +158,15 @@ def _enter(page, origin):
       document.getElementById('btn-ui-switch').hidden=false;
       await AppUI.load();
     }""", {"owner": BOB, "home": BOB_UNIVERSE})
+
+
+def _open_switcher(page):
+    # This command lives inside the real cloud menu, which starts collapsed.
+    if page.locator("#chat-cloud-bubble").is_visible():
+        page.locator("#chat-cloud-bubble").click()
+    if not page.locator("#btn-ui-switch").is_visible():
+        page.locator("#btn-cloud-menu").click()
+    page.locator("#btn-ui-switch").click()
 
 
 def _assert_copy_and_run(home, definition_id, source, alice_ui, alice_automations, before):
@@ -284,7 +297,7 @@ def test_shipped_frame_previews_system_trusted_rail_copies_and_navigation_persis
         _assert_copy_and_run(home, definition_id, source, alice_ui, alice_automations, before)
         page.evaluate("async()=>{await AppUI.load();}")
         for name, expected_id in [("Bob's own", "my-own"), ("Village", "village")]:
-            page.locator("#btn-ui-switch").click()
+            _open_switcher(page)
             page.get_by_role("button", name="Use " + name, exact=True).click()
             expect(page.locator("#ui-status")).to_contain_text("Now using " + name + ".")
             page.locator("#btn-ui-close").click()
@@ -292,7 +305,7 @@ def test_shipped_frame_previews_system_trusted_rail_copies_and_navigation_persis
             page.evaluate("sessionStorage.clear()")
             _enter(page, origin)
             assert page.evaluate("AppUI.active.ui_id") == expected_id
-            page.locator("#btn-ui-switch").click()
+            _open_switcher(page)
             page.locator("#ui-dialog").get_by_role(
                 "button", name="Try someone else's", exact=True).click()
             expect(page.locator("#ui-dialog")).to_contain_text("GTM Village")
@@ -301,7 +314,7 @@ def test_shipped_frame_previews_system_trusted_rail_copies_and_navigation_persis
 
         _published(home)  # Explicit second publish: a real file package beside the legacy system.
         assert "package" not in get_definition(home, definition_id)["components"]
-        page.locator("#btn-ui-switch").click()
+        _open_switcher(page)
         page.locator("#ui-dialog").get_by_role(
             "button", name="Try someone else's", exact=True).click()
         expect(page.locator("#ui-dialog")).to_contain_text("File package")
