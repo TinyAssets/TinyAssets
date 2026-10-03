@@ -179,6 +179,48 @@ conflicts will not.
 - Failing tests: `gh run list --workflow tests.yml --event merge_group`, then
   `gh run view <id> --log-failed`, then the ``- `tests/...` `` lines.
 
+## M2c, 2026-10-03: heavy `pull_request` workflows skip drafts
+
+Prompted by a merge-group `Tests` run queued 20+ minutes behind 30 PR runs.
+Five heavy, non-required `pull_request` workflows now skip while the PR is a
+draft, and re-run on `ready_for_review`:
+
+| Workflow | Job | Median / run | Total of last 100 completed PR runs |
+|---|---|---|---|
+| Docker build smoke | `build-smoke` | 11 min | 81 min |
+| preview-security | `contract` | 6 min | 77 min |
+| Build packaging artifacts | `stage-and-probe` | 11 min | 72 min |
+| linux-jail-proof | `linux-jail-proof` | 10 min | 66 min |
+| real-browser-proof | `real-browser-proof` | 10 min | 15 min |
+
+Those five are 311 of the 436 `pull_request` runner-minutes in that window
+(71%). Pinned by `tests/test_ci_runner_budget.py`, both halves: the condition
+and the `ready_for_review` type that makes the skip recoverable instead of
+sticky (it is not a default type, so without it a PR marked ready keeps the
+draft run's skip until its next push).
+
+**Measure this before expecting it to fix the queue.** Of those 436 minutes,
+only **62 (14%)** were on branches whose PR is currently a draft — 12 of 40
+open PRs. The draft cut is cheap and correct, but the dominant cost is 40 open
+PRs each running five heavy workflows on every push, not drafts specifically.
+The lower bound caveat: "currently a draft" misses runs that were drafts then
+and are ready now, so 14% understates it by an unmeasured amount. The next cut
+should target ready PRs — path-filter width, or per-PR concurrency on
+`preview-security` and `build-bundle`, which have no `concurrency:` block at
+all and so do not cancel superseded runs.
+
+**Why the required checks were left alone, and must stay that way.** A job
+skipped by an `if:` reports `conclusion=skipped`, and branch protection accepts
+a skipped required check as SATISFIED — verified on this repo on PR #2197 and
+written up at length in `tests.yml`. So a draft condition on `required-tests`,
+`slow-tests`, `invariants` or `Diff scope declared` fails OPEN: any edge case
+where the condition is wrong merges untested code silently, and auto-enrol arms
+auto-merge on every non-draft PR. `tests/test_ci_runner_budget.py` pins that
+boundary from both sides — the five above carry the condition, the required
+four do not. There was also nothing to win there: `tests.yml` already gates its
+heavy jobs on `github.event_name != 'pull_request'`, so a PR run is only
+`affected-tests` plus the aggregate, median 3 minutes.
+
 ## 2026-10-03: measure runner-minutes from JOBS, not run elapsed time
 
 **Read this before citing any minute figure in this note.** A workflow run's

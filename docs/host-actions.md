@@ -12,6 +12,55 @@ whose next step is *"the founder logs into Cloudflare."*
 
 ---
 
+## Creator revenue share: decide F1–F14 and get counsel on the token questions (2026-10-01)
+
+**Why:** `openspec/changes/creator-revenue-share/` designs paying creators a share of
+paid subscriptions in TINY. Phase A (attribution, shadow dollar ledger, metrics, no
+money) waits only on your approval and the parameter answers in design §10. Mainnet
+payout waits on counsel's answers to design §9: securities and token-promotion optics,
+money transmission, creator tax reporting, Stripe, Google Play and Apple policy,
+jurisdictions, privacy, unclaimed balances. Nothing pays out until you sign each
+monthly batch yourself.
+
+## Decide: do pre-#4287 automations get grandfathered, or does every recurring job hold? (2026-10-03)
+
+Talking to a custom agent works, but its turns still pick up **main's** rules,
+review, approval requests and Stop controls — so the agent you addressed is not
+the agent whose controls apply. #4343 designs the fix. Two things in it are hard
+to reverse, so they are yours before anyone writes code.
+
+**1. The one real judgement call: grandfathering.** Existing recurring
+automations carry no record of which agent authored them. The design's safe
+default is to hold every future firing until you reconfirm it — and that means
+**every ordinary main automation stops too**, which is a lot of stopped work to
+restart by hand. The alternative: custom-agent `converse` only existed from
+#4287 (merged 2026-10-03 01:41Z), so anything authored before that moment can
+only have come from you or `main`; stamp those explicit-`main` and hold only
+definitions newer than that. Cheaper and matches clean cutover — but it trusts a
+merge timestamp as lineage, which the same design forbids everywhere else, so it
+is a deliberate exception rather than an oversight.
+
+> **Ask:** is the #4287 merge time good enough to grandfather everything older as
+> `main`? **Yes** → only post-#4287 definitions hold. **No** → every recurring
+> definition holds until you reconfirm it, and the implementation must ship the
+> hold inert until the owner-vs-engine audience split is proven (otherwise it is
+> a self-inflicted outage with no reachable restart).
+
+**2. Approve the shape, once, before implementation.** AGENTS.md wants public
+surface, storage shape and authority specced before code. This change adds: a
+public `write_graph` payload field (`confirm_agent_provenance`) plus `held` /
+`held_reason` / `reconfirmation_required` read fields — a live-connector spec
+delta needing a canary `--assert-handles`; a per-launch 256-bit transport
+credential with a server-side digest; snapshot columns on runs, turns, the
+journal, pending requests and automations plus a launch-binding table; and the
+new held state on existing rows. No money, no new provider spend, no widened
+permission — each control keeps its current authority and merely selects the
+addressed agent instead of always `main`.
+
+> **Ask:** say go on that shape and implementation starts in vertical slices,
+> founder-visible one first. Design review is otherwise complete (Claude ADAPT
+> folded 2026-10-03; design is docs-only).
+
 ## Expose your patch intake as a receiver, so new users can be offered it (2026-09-30)
 
 **Why:** PR #4121 seeds a consent request in every new user's rail — "Let your universe

@@ -158,15 +158,16 @@ def _file_lock(universe_path: Path) -> Iterator[None]:
     operations; that is intentional — deleting it while another
     process holds the lock would unlink the descriptor and break the
     contract.
+
+    Opened through ``universe_files.open_lock_file``: the lock name sits in a
+    directory the universe's own processes can write, and a plain
+    ``O_RDWR|O_CREAT`` on it follows a planted link and CREATES the link's
+    target outside this universe.
     """
+    from tinyassets.universe_files import open_lock_file
+
     Path(universe_path).mkdir(parents=True, exist_ok=True)
-    lock_file = _lock_path(universe_path)
-    # Open for read+write, creating if missing.
-    fd = os.open(
-        str(lock_file),
-        os.O_RDWR | os.O_CREAT,
-        0o644,
-    )
+    fd = open_lock_file(universe_path, LOCK_FILENAME)
     try:
         if sys.platform == "win32":
             import msvcrt
@@ -215,12 +216,19 @@ def _lease_window(*, lease_seconds: int = DEFAULT_LEASE_SECONDS) -> tuple[str, s
 
 
 def _read_raw(qp: Path) -> list[dict]:
-    if not qp.exists():
-        return []
+    from tinyassets.universe_files import MAX_PLATFORM_FILE_BYTES, read_data_path
+
     try:
-        raw = qp.read_text(encoding="utf-8")
+        # Link-free: a planted queue link refuses rather than being read.
+        data_bytes = read_data_path(qp, max_bytes=MAX_PLATFORM_FILE_BYTES)
     except OSError as exc:
         raise RuntimeError(f"Failed to read {qp}: {exc}") from exc
+    if data_bytes is None:
+        return []
+    try:
+        raw = data_bytes.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise RuntimeError(f"Corrupt queue at {qp}: {exc}") from exc
     if not raw.strip():
         raise RuntimeError(
             f"Corrupt queue/history at {qp}: blank, expected a JSON list"
@@ -235,13 +243,11 @@ def _read_raw(qp: Path) -> list[dict]:
 
 
 def _write_raw(qp: Path, data: list[dict]) -> None:
-    qp.parent.mkdir(parents=True, exist_ok=True)
-    tmp = qp.with_suffix(qp.suffix + ".tmp")
-    tmp.write_text(
-        json.dumps(data, indent=2, default=str),
-        encoding="utf-8",
-    )
-    os.replace(tmp, qp)
+    from tinyassets.universe_files import write_data_path
+
+    # Link-free, with a fresh O_EXCL temp name: a fixed ``.tmp`` could be a
+    # planted link (or hardlink) that the old write truncated through.
+    write_data_path(qp, json.dumps(data, indent=2, default=str))
 
 
 def read_queue(universe_path: Path) -> list[BranchTask]:

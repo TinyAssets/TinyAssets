@@ -7747,6 +7747,11 @@ def _classify_failure(run: dict) -> str:
         # this narrow known prefix must precede every substring net below: a
         # model id containing "timeout" is not a timed-out run.
         return "work_model_exhausted"
+    from tinyassets.providers.model_pins import PIN_REFUSAL_MARKER
+
+    if PIN_REFUSAL_MARKER in lower:
+        # A node pin naming no single source; the same class `api.runs` gives.
+        return "permission_denied:provider_not_bound"
     from tinyassets.exceptions import AllProvidersExhaustedError, ProviderAuthorityHeldError
     from tinyassets.providers.diagnostics import CHAIN_STATE_MARKER, held_attempt_diagnosis
 

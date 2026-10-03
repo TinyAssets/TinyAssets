@@ -284,8 +284,6 @@
     #ui-frame-host{position:absolute;inset:0;display:flex;min-height:0}
     .ui-frame{flex:1;width:100%;border:0;min-height:20rem;background:var(--bg)}
     /* The chat cloud: the conversation floats over the command center. */
-    #cc-blank{position:absolute;inset:0;padding:2rem;box-sizing:border-box;background:var(--bg)}
-    #cc-blank[hidden]{display:none}
     #cloud-menu{position:absolute;right:.5rem;top:2.5rem;z-index:10;background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:.4rem}
     #cloud-menu button{display:block}
     .chat-cloud-bar .universe-name{max-width:40%;font-size:.82rem}
@@ -296,6 +294,28 @@
       background:var(--bg);border:1px solid var(--line);border-radius:var(--radius);
       box-shadow:0 12px 40px rgba(0,0,0,.45);overflow:hidden;z-index:5}
     .chat-cloud[data-mode="bubble"]{display:none}
+    /* WHICH SURFACE HAS THE KEYBOARD. Two surfaces share one window and a
+       focused cross-origin frame swallows keys, so the owner is never a guess:
+       the surface holding it wears an accent ring (founder, 2026-10-03, after
+       getting stuck in a UI with no visible way back). Rings are INSET so the
+       phone layout, where the cloud fills the stage with square corners,
+       cannot clip them; 2px reads at 390px wide. --accent carries it, as it
+       does every other focus ring on the page. */
+    .chat-stage[data-keys="chat"] #chat-cloud{border-color:var(--accent);
+      box-shadow:inset 0 0 0 2px var(--accent),0 12px 40px rgba(0,0,0,.45)}
+    .chat-stage[data-keys="chat"] #chat-cloud-bubble{border-color:var(--accent);
+      box-shadow:inset 0 0 0 2px var(--accent),0 8px 24px rgba(0,0,0,.45)}
+    /* The command center is always the frame host now -- #cc-blank, the
+       in-document stand-in #4353 also ringed, is gone with cc-package. */
+    .chat-stage[data-keys="cc"] #ui-frame-host:not([hidden]){
+      box-shadow:inset 0 0 0 2px var(--accent)}
+    /* The way back, said in the chat's own bar while the keys are elsewhere. */
+    .chat-cloud-hint{font-size:.72rem;color:var(--ink-dim);white-space:nowrap;flex:0 0 auto}
+    .chat-stage[data-keys="chat"] .chat-cloud-hint{visibility:hidden}
+    /* Hidden only where the bar genuinely has no room -- a phone's 390px cloud,
+       where there is no "/" key on a touch keyboard anyway. The default desktop
+       cloud is 440px wide, so the threshold sits below that on purpose. */
+    @container (max-width:400px){.chat-cloud-hint{display:none}}
     .chat-cloud-bar{display:flex;align-items:center;gap:.5rem;padding:.3rem .5rem .3rem .9rem;
       background:var(--surface);border-bottom:1px solid var(--line);cursor:grab;touch-action:none;
       user-select:none;flex:0 0 auto}
@@ -396,13 +416,6 @@
       <!-- A user-authored UI is hosted here and NOWHERE else: its own iframe on a
            sandboxed, opaque origin (see tinyassets/onboarding/ui_frame.py). No
            bundle markup, style or script is ever assigned into this document. -->
-      <div id="cc-blank" tabindex="-1" aria-label="Command center">
-        <p>Your command center is empty.</p>
-        <p>Build your own with your agent, or try one.</p>
-        <button id="btn-cc-build" class="btn" type="button">Build one with my agent</button>
-        <button id="btn-cc-try" class="btn" type="button">Try one</button>
-        <div id="cc-blank-picker"></div>
-      </div>
       <div id="ui-frame-host" hidden></div>
       <section id="chat-cloud" class="chat-cloud" data-agent="main" data-mode="open"
                aria-label="Chat with your agent">
@@ -420,6 +433,10 @@
           <button id="btn-signout" class="btn btn--link">Sign out</button>
         </div>
         <span id="chat-cloud-title" class="chat-cloud-title">Your agent</span>
+        <!-- Shown only while the command center has the keyboard: the one key
+             that always comes back here. Hidden, not removed, so the bar does
+             not reflow as focus moves. -->
+        <span id="chat-cloud-hint" class="chat-cloud-hint" aria-hidden="true">Press / to chat</span>
         <button id="btn-cloud-shrink" class="chat-cloud-btn" type="button"
                 aria-label="Shrink the chat to a bubble" aria-controls="chat-cloud-body"
                 aria-expanded="true" title="Shrink">&#8211;</button>
@@ -731,6 +748,18 @@
         <button id="btn-connect-free-ai" class="btn btn--ghost" type="button">Connect free AI</button>
         <div id="connection-list"></div>
         <div id="connection-status" class="notice" role="status"></div>
+        <h3>Your agent</h3>
+        <p id="profile-name"></p>
+        <p id="profile-responsibility"></p>
+        <div id="profile-status" class="notice" role="status"></div>
+        <h3>What your agent remembers</h3>
+        <div id="memory-list"></div>
+        <div class="rule-row">
+          <input id="memory-new" aria-label="New memory" placeholder="Add a memory">
+          <button id="btn-memory-add" class="btn btn--link" type="button">Add</button>
+        </div>
+        <button id="btn-memory-undo" class="btn btn--link" type="button" disabled>Undo latest change</button>
+        <div id="memory-status" class="notice" role="status"></div>
         <h3>Your agent's rules</h3>
         <p>What your agent may do on its own. For each kind of action, choose: take action
         without asking, take action if you asked for exactly that, ask you first, or hand
@@ -1969,6 +1998,16 @@
   let seatWait=null;
   let seatLineShown=false;
   function readServerTurn(payload){
+    const wasLive=serverTurnLive();
+    readServerTurnRow(payload);
+    if(serverTurnLive() || activeTurn) return;
+    // A turn this page did not start just ended: its reply is drawn, and what it
+    // did not take (steered lines left undelivered) comes back from the server.
+    if(wasLive){ finishActiveTurn(); restoreHeldSteers(); return; }
+    // Idle and something waits: send it (a missed transition never strands it).
+    if(sendQueue.length) flushSendQueue();
+  }
+  function readServerTurnRow(payload){
     const deploy=payload&&payload.deploy_pending;
     deployPending=!!deploy&&typeof deploy==="object"&&deploy.pending===true;
     seatWait=payload&&payload.seats&&payload.seats.chat_waiting===true
@@ -1990,6 +2029,7 @@
       &&row.round_age_s>=0)?row.round_age_s:null;
     serverTurn={turn_id:String(row.turn_id||""),state:String(row.state),
       startedMs:Date.now()-age*1000,observedAt:Date.now(),
+      tools:Array.isArray(row.tools)?row.tools:[],
       round:(Number.isInteger(row.round)&&row.round>0)?row.round:0,
       model:(typeof row.model==="string")?row.model:"",
       roundSinceMs:roundAge===null?0:Date.now()-roundAge*1000};
@@ -2027,6 +2067,30 @@
     const button=$("btn-try-model");
     if(!button) return;
     button.hidden=!(waitDetail()&&waitMinutes()>=TRY_MODEL_AFTER_MIN);
+  }
+  // What the agent's tools are doing, newest call first (harness S4): said on
+  // the ONE status line, after the sentence it already shows, never as a second
+  // indicator. Only this owner's own thread is reported by the server.
+  function toolLine(){
+    const t=serverTurnLive()&&serverTurn.tools&&serverTurn.tools[0];
+    if(!t||typeof t.tool!=="string"||!t.tool) return "";
+    const what=t.tool+(t.summary?": "+String(t.summary):"");
+    if(t.state==="running") return "running "+what;
+    if(t.state==="failed") return "ran "+what+" (failed"+(t.error?": "+String(t.error):"")+")";
+    return "ran "+what;
+  }
+  const TOOL_SEP=" \u00b7 ";
+  // The working sentence other paths write ("Your agent is thinking...", the
+  // agent being the actor). The older wording is still recognised so a line
+  // written before an update keeps its tool step.
+  const THINKING_LINE=/^Your (agent|universe) is thinking\.\.\./;
+  function paintToolLine(){
+    const line=$("status-line");
+    const text=String(line.textContent||"");
+    if(!THINKING_LINE.test(text)||waitDetail()) return;
+    const base=text.split(TOOL_SEP)[0], tl=toolLine();
+    const next=tl?base+TOOL_SEP+tl:base;
+    if(next!==text) setStatusLine(next);
   }
   function serverTurnLive(){
     return !!serverTurn && (Date.now()-serverTurn.observedAt)<3*STATUS_WORKING_MS;
@@ -2092,6 +2156,15 @@
     // Fenced like every other answer: what this request may change belongs to
     // the turn, account and home it was pressed for.
     const mine=activeTurn, epoch=MCP._loginEpoch, owner=queueOwner, scope=queueScope;
+    // The agent is fenced with the rest: captured when Stop was PRESSED, so
+    // switching conversations mid-request cannot retarget the stop at whoever
+    // is on screen by the time it lands.
+    //
+    // Sent ALWAYS, including "main". Stop belongs to the conversation it was
+    // pressed in: omitting it means stop-ALL on the server, which would end a
+    // custom agent's background turn because a main chat ended. The route still
+    // accepts no agent_id as stop-all for a caller that wants it.
+    const agent=(typeof addressedAgentId==="function"?addressedAgentId():"main")||"main";
     const sameAccount=()=>epoch===MCP._loginEpoch&&owner===queueOwner&&scope===queueScope;
     const stillMine=()=>activeTurn===mine&&sameAccount();
     interruptRequested=true; flushAfterInterrupt=true; renderStop();
@@ -2102,7 +2175,8 @@
     const abort=typeof AbortController==="function"?new AbortController():null;
     const post=()=>fetch("/app/turn/interrupt",{method:"POST",credentials:"same-origin",
       headers:Object.assign({"Content-Type":"application/json"},authHeaders()),
-      body:JSON.stringify({universe_id:scope}),signal:abort?abort.signal:undefined});
+      body:JSON.stringify({universe_id:scope,agent_id:agent}),
+      signal:abort?abort.signal:undefined});
     const request=(async()=>{
       let r=await post();
       // A retry carries whatever credential is current THEN: never send it once
@@ -2214,6 +2288,7 @@
       }else if(ownDetailLine&&!detail&&mine){
         setStatusLine("Your agent is thinking..."); ownDetailLine=false;
       }
+      paintToolLine();
       return;
     }
     ownDetailLine=false;
@@ -2228,7 +2303,8 @@
     // at a turn they have no other evidence of.
     const detail=[elapsed,waitDetail(),"started in another window, by a request you answered, "+
       "or before this page loaded"].filter(Boolean).join(" · ");
-    setStatusLine("Your agent is thinking... " + detail);
+    const tl=toolLine();
+    setStatusLine("Your agent is thinking... " + detail + (tl?TOOL_SEP+tl:""));
   }
   // ---- Voice ----------------------------------------------------------
   // Voice owns only speech transport and turn timing. The command center's actual
@@ -3689,12 +3765,18 @@
   // does: another founder signing in on this browser must never be shown, or
   // offered to resend, a message this one held - nor the filenames it names
   // (Fable 21633 on the app byte-intake shape, 2026-09-20).
-  function rememberInflight(message, display, sentAt, inputMethod, modelChoice, consumerRequest=null){
+  function rememberInflight(message, display, sentAt, inputMethod, modelChoice, consumerRequest=null,
+                            agent=null){
     const record={message, display: display||message,
        inputMethod:turnInputMethod(inputMethod),
        modelChoice:copyModelChoice(modelChoice),
        consumerRequest,
-       agent:(typeof addressedAgentId==="function"?addressedAgentId():"main"),
+       // The agent this turn was SENT to. A pinned line (a claimed held line)
+       // names it, because the owner may have switched agents since: the
+       // record has to describe the turn on the wire, not the screen, or the
+       // recovery offer reappears under the wrong agent.
+       agent:String((typeof agent==="string"&&agent)||
+         (typeof addressedAgentId==="function"?addressedAgentId():"main")),
        owner:queueOwner,
        scope:queueScope,
        ts:(typeof sentAt==="number" && Number.isFinite(sentAt))?sentAt:Date.now()};
@@ -3739,7 +3821,8 @@
       if(opts.keepInflight)throw new Error("Resolve the earlier unconfirmed conversation first.");
       opts.consumerRequest={version:1,request_key:crypto.randomUUID(),
         binding_id:s.binding_id,binding_revision:s.binding_revision};
-      rememberInflight(message,display,sentAt,opts.inputMethod,opts.modelChoice,opts.consumerRequest);
+      rememberInflight(message,display,sentAt,opts.inputMethod,opts.modelChoice,opts.consumerRequest,
+        opts.agentId);
       const saved=readInflight();
       if(!saved||JSON.stringify(saved.consumerRequest)!==JSON.stringify(opts.consumerRequest))
         throw new Error("Could not save safe conversation recovery. No workflow was started.");
@@ -3984,9 +4067,19 @@
     // AND the home, it cannot tell an own row from a stranger's, so it says
     // nothing and leaves every row on disk.
     if(queueRestored || !queueScope || !queueOwner) return; queueRestored=true;
-    const now=Date.now();
+    // Read the device's own saved rows FIRST: restoring the server's lines
+    // saves the queue, and must keep every row this device was holding.
     retainedItems=readSavedQueue();
-    retainedItems.forEach(i=>offerSavedLine(i, now));
+    const offer=(serverLines)=>{
+      const now=Date.now();
+      // A line the server holds is already queued again above; its copy saved
+      // on this device is not offered a second time.
+      retainedItems=retainedItems.filter(i=>!(ownsSavedRow(i)&&serverLines.includes(i.message)));
+      saveQueue();
+      retainedItems.forEach(i=>offerSavedLine(i, now));
+    };
+    if(typeof fetch!=="function"){ offer([]); return; }
+    restoreHeldSteers().then(offer, ()=>offer([]));
   }
   function offerSavedLine(item, now){
     // OWNERSHIP FIRST, and it is the SAME rule the in-flight record uses. A
@@ -4064,8 +4157,19 @@
     return group;
   }
   function flushBatch(){
-    const group=takeBatch();
+    const taken=takeBatch();
     saveQueue();
+    if(!taken.length) return flushSendQueue();
+    if(taken.some(item=>item.heldId)){
+      claimHeldLines(taken).then(kept=>{
+        taken.filter(item=>kept.indexOf(item)<0).forEach(alreadyHandled);
+        sendBatch(kept);
+      });
+      return;
+    }
+    sendBatch(taken);
+  }
+  function sendBatch(group){
     if(!group.length) return flushSendQueue();
     group.forEach(item=>unmarkQueued(item.bubble));
     const methods=group.map(item=>turnInputMethod(item.opts.inputMethod));
@@ -4083,6 +4187,8 @@
     // that also sits in this queue: nothing goes out until it does.
     if(pendingSteers>0){ steerHeldBatch=steerHeldBatch||batch===true; return; }
     if(sendQueueHeld || $("btn-send").disabled || interruptPending || !sendQueue.length) return;
+    // A turn this page did not start is still running: everything waits for it.
+    if(!activeTurn && serverTurnLive()) return;
     if(batch===true) return flushBatch();
     const next=sendQueue.shift();
     // A queued line goes out only under the account and home that queued it.
@@ -4099,6 +4205,16 @@
     }
     if(claimedElsewhere(next)){ unmarkQueued(next.bubble); saveQueue(); return flushSendQueue(); }
     saveQueue();
+    if(next.heldId){
+      claimHeldLines([next]).then(kept=>{
+        if(kept.length){
+          unmarkQueued(next.bubble);
+          sendTurn(next.message, next.display, next.opts)
+            .catch(err=>{ console.error("queued send failed", err); flushSendQueue(); });
+        }else{ alreadyHandled(next); flushSendQueue(); }
+      });
+      return;
+    }
     // Its turn starts now: from here it is a sent message like any other.
     unmarkQueued(next.bubble);
     // A rejection before sendTurn's own try/finally (a missing node) must not
@@ -4172,6 +4288,140 @@
     el.appendChild(note); el.steeredNote=note;
     return el;
   }
+  // A queued line's honest state: saved on the server for the next turn, or
+  // kept only on this device because the server could not be reached.
+  function markHeld(el, saved){
+    if(!el) return el;
+    if(el.heldNote&&el.heldNote.remove) el.heldNote.remove();
+    const note=document.createElement("span");
+    note.className="msg-steered-note";
+    note.textContent=saved
+      ? "Saved \u2014 your agent gets this as soon as its current work ends."
+      : "Not saved yet \u2014 kept on this device; it goes out when your agent finishes.";
+    el.appendChild(note); el.heldNote=note;
+    return el;
+  }
+  // Held lines are removed from the server's keeping before this page sends
+  // them itself, atomically: a line another tab or a turn already took comes
+  // back unclaimed and is not sent again. Unreachable server: sent as before
+  // (the next turn's carryover check still drops an exact repeat).
+  async function claimHeldLines(items){
+    const ids=items.filter(i=>i.heldId).map(i=>i.heldId);
+    if(!ids.length) return items;
+    // PINNED before the request suspends. A claim DELETES the server's copy,
+    // and the lines are already out of the queue -- which is what lets
+    // addressAgent switch while this is in flight. So the claim and the send
+    // that follows it must name the one agent the line was held for, or the
+    // line is deleted from one agent's thread and spoken to another's
+    // (gpt-6-astra on #4290, P1). Dropping the line instead is not an option:
+    // its server copy is gone.
+    const agent=pinLineAgent(items);
+    let doc=null;
+    try{
+      const r=await fetch("/app/turn/pending",{method:"POST",credentials:"same-origin",
+        headers:Object.assign({"Content-Type":"application/json"},authHeaders()),
+        body:JSON.stringify({universe_id:queueScope,claim:ids,agent_id:agent})});
+      doc=r.ok?await r.json():null;
+    }catch(e){ doc=null; }
+    if(!doc||!Array.isArray(doc.claimed)) return items;
+    return items.filter(i=>!i.heldId||doc.claimed.indexOf(i.heldId)>=0);
+  }
+  // The agent a queued line belongs to, written onto the line itself so every
+  // later step reads the same answer. The precedence is captureTurnOptions's,
+  // so a pinned line and a fresh send resolve their agent identically.
+  function pinLineAgent(items){
+    const live=(typeof addressedAgentId==="function"?addressedAgentId():"main");
+    const held=items.filter(i=>i&&i.heldId);
+    const first=held.length?held[0]:items[0];
+    const agent=String((first&&first.opts&&typeof first.opts.agentId==="string"
+      &&first.opts.agentId)||live);
+    items.forEach(item=>{ if(item&&item.opts) item.opts.agentId=agent; });
+    return agent;
+  }
+  function alreadyHandled(item){
+    unmarkQueued(item.bubble);
+    if(item.bubble&&item.bubble.heldNote) item.bubble.heldNote.textContent=
+      "Already passed to your agent.";
+  }
+  // The message a running turn is answering, drawn after a reload with the
+  // working state on it (P2, live 2026-10-02: a reload mid-turn showed neither
+  // the message nor that it was being worked on, so it was sent twice).
+  let watchedActive=null, lastActiveText="";
+  function showActiveTurn(active){
+    if(!active||typeof active.text!=="string"||!active.text||watchedActive||
+       active.text===lastActiveText) return false;
+    lastActiveText=active.text;
+    const bubble=appendMessage("founder", active.text, null,
+      typeof active.started_at==="number"?active.started_at:Date.now()/1000);
+    if(bubble){
+      const note=document.createElement("span");
+      note.className="msg-steered-note";
+      note.textContent="Your agent is working on this.";
+      bubble.appendChild(note); bubble.workingNote=note;
+    }
+    watchedActive={text:active.text, bubble};
+    return true;
+  }
+  // That turn ended: its reply is drawn under the message, read from the store.
+  async function finishActiveTurn(){
+    const watched=watchedActive; if(!watched) return;
+    watchedActive=null;
+    if(watched.bubble&&watched.bubble.workingNote&&watched.bubble.workingNote.remove)
+      watched.bubble.workingNote.remove();
+    let r=null;
+    try{ r=await Owner.getConversation(); }catch(_e){ return; }
+    const turns=(r&&r.recent_conversation&&Array.isArray(r.recent_conversation.turns))
+      ? r.recent_conversation.turns : [];
+    let at=-1;
+    turns.forEach((t,i)=>{ if(t&&t.speaker==="founder"&&t.text===watched.text) at=i; });
+    if(at>=0) drawHistoryTurns(turns.slice(at+1));
+    const held=readInflight();
+    if(held&&held.message===watched.text) forgetInflightIf(held);
+  }
+  // What the server holds or is running for this thread, read once.
+  async function readPendingTurns(){
+    const agentNow=()=>(typeof addressedAgentId==="function"?addressedAgentId():"main");
+    const owner=queueOwner, scope=queueScope, epoch=MCP._loginEpoch, agent=agentNow();
+    try{
+      const r=await fetch("/app/turn/pending",{method:"POST",credentials:"same-origin",
+        headers:Object.assign({"Content-Type":"application/json"},authHeaders()),
+        body:JSON.stringify({universe_id:scope,agent_id:agent})});
+      const doc=r.ok?await r.json():null;
+      // The agent this asked FOR, as well as the account and home: an answer
+      // landing after the owner switched agents holds ANOTHER thread's lines.
+      if(!doc||epoch!==MCP._loginEpoch||owner!==queueOwner||scope!==queueScope||
+         agent!==agentNow()) return null;
+      return doc;
+    }catch(e){ return null; }
+  }
+  // After a reload: what the server still holds for this thread comes back on
+  // screen -- a line saved for the next turn is queued again and goes out when
+  // the work ends; one already handed to the running turn shows as sent there.
+  async function restoreHeldSteers(){
+    const doc=await readPendingTurns();
+    if(!doc||!Array.isArray(doc.pending)) return [];
+    if(doc.active && !activeTurn) showActiveTurn(doc.active);
+    const restored=[];
+    // The agent this answer is FOR: readPendingTurns asked for it by name and
+    // refuses an answer that lands after a switch, so a restored line is
+    // stamped with it rather than with whichever agent is on screen later.
+    const agent=(typeof addressedAgentId==="function"?addressedAgentId():"main");
+    for(const line of doc.pending){
+      const text=line&&typeof line.text==="string"?line.text:"";
+      if(!text||sendQueue.some(q=>q.message===text)) continue;
+      if(line.state==="steered"){
+        markSteered(appendMessage("founder", text, null,
+          (typeof line.created_at==="number"?line.created_at:Date.now()/1000)));
+      }else{
+        queueTurn(text, text, {inputMethod:"typed", keepComposer:true, agentId:agent});
+        const item=sendQueue[sendQueue.length-1];
+        if(item&&item.message===text){ item.heldId=line.id; markHeld(item.bubble, true); }
+      }
+      restored.push(text);
+    }
+    if(!activeTurn && !serverTurnLive()) flushSendQueue();
+    return restored;
+  }
   function unmarkSteered(el){
     if(el&&el.steeredNote&&el.steeredNote.remove) el.steeredNote.remove();
     if(el) el.steeredNote=null;
@@ -4182,8 +4432,8 @@
     // takes it.
     const before=sendQueue.length;
     queueTurn(message, display, opts);
-    const plain=!interruptPending && !!activeTurn && !opts.relay && !opts.echoed &&
-      !opts.consumerRequest && (!display || display===message);
+    const plain=!interruptPending && (!!activeTurn || serverTurnLive()) && !opts.relay &&
+      !opts.echoed && !opts.consumerRequest && (!display || display===message);
     const item=sendQueue.length>before ? sendQueue[sendQueue.length-1] : null;
     // Folded into an identical queued line, or returned to the composer when
     // the queue is full: nothing new to steer.
@@ -4199,8 +4449,13 @@
       doc=r.ok?await r.json():null;
     }catch(e){ doc=null; }
     finally{ pendingSteers--; }
-    if(epoch===MCP._loginEpoch&&owner===queueOwner&&scope===queueScope&&
-       doc&&doc.steered===true) adoptSteered(item, doc.steer_id, owner, scope);
+    const same=epoch===MCP._loginEpoch&&owner===queueOwner&&scope===queueScope;
+    if(same&&doc&&doc.steered===true) adoptSteered(item, doc.steer_id, owner, scope);
+    // No turn could take it: the server SAVED it for the next one. It stays
+    // queued here too and goes out when the work ends; the next turn does not
+    // repeat a line its own message already carries.
+    else if(same&&doc&&doc.held===true){ item.heldId=doc.steer_id; markHeld(item.bubble, true); }
+    else if(same) markHeld(item.bubble, false);
     // The turn may have ended while this request was out: what was held goes now.
     if(pendingSteers===0 && !activeTurn){
       const batch=steerHeldBatch; steerHeldBatch=false; flushSendQueue(batch);
@@ -4251,7 +4506,13 @@
 
   async function sendTurn(message, display, opts){
     opts=captureTurnOptions(opts);
-    if($("btn-send").disabled || interruptPending) return steerOrQueue(message, display, opts);
+    // A turn running on the server that this page did not start (another
+    // window, an answered request) is just as busy as this page's own: a send
+    // now steers or waits, never starts a second turn beside it (P1, live
+    // 2026-10-02: such a send was lost).
+    const otherTurn=!activeTurn && serverTurnLive();
+    if($("btn-send").disabled || interruptPending || otherTurn)
+      return steerOrQueue(message, display, opts);
     // `display` is what the founder sees in their bubble (compact when a file is
     // attached); `message` is the full text sent to the command center (file content
     // embedded verbatim). They differ only when an attachment rode along.
@@ -4263,7 +4524,8 @@
     // A line sent from a restore offer is a SIDE send: it must not take over
     // the in-flight record of an unconfirmed turn still on screen.
     if(!opts.keepInflight) rememberInflight(
-      message, display, sentAt, opts.inputMethod, opts.modelChoice,opts.consumerRequest||null);
+      message, display, sentAt, opts.inputMethod, opts.modelChoice,opts.consumerRequest||null,
+      opts.agentId);
     // A relayed answer or a side send did not come from the composer: what
     // the founder is typing there stays (Codex round 3).
     const input=$("composer-input");
@@ -4376,7 +4638,7 @@
     if($("btn-send").disabled || interruptPending) throw new Error("voice_turn_busy");
     const opts=captureTurnOptions({inputMethod:"spoken"});
     appendMessage("founder",message);
-    rememberInflight(message,message,undefined,"spoken",opts.modelChoice);
+    rememberInflight(message,message,undefined,"spoken",opts.modelChoice,null,opts.agentId);
     // A spoken turn takes the composer too, so a typed turn's late cleanup can
     // see that it is no longer the one holding it.
     const myTurn={}; activeTurn=myTurn;
@@ -4792,15 +5054,16 @@
   const CLOUD_KEY_PREFIX="app.chatCloud.v1", CLOUD_BUBBLE=56, CLOUD_MARGIN=12,
         CLOUD_MIN_W=320, CLOUD_MIN_H=360, CLOUD_PHONE_MAX=760, CLOUD_STEP=16;
   let cloudState=null, cloudStoreKey="", cloudWired=false, cloudSuppressClick=false;
-  function refreshCommandCenter(){
-    $("cc-blank").hidden=!$("ui-frame-host").hidden;
-  }
   function isTypingTarget(el){
     if(!el) return false;
     const tag=(el.tagName||"").toLowerCase();
     return el.isContentEditable===true || tag==="textarea" || tag==="select" ||
       (tag==="input" && !["button","submit","checkbox","radio","range","file","color","reset","image"].includes((el.type||"text").toLowerCase()));
   }
+  // ONE code path. The command center is always a mounted bundle now -- the
+  // platform's own blank one when the owner has chosen nothing (AppUI
+  // mountDefault) -- so this only ever targets the frame. The #cc-blank
+  // in-document stand-in it used to fall back to is gone with cc-package.
   function focusCommandCenter(){
     const frame=$("ui-frame");
     if(frame){
@@ -4811,7 +5074,60 @@
         frame.contentWindow.focus();
         frame.contentWindow.postMessage({ta_ui:1,type:"focus"},"*");
       }
-    }else if($("cc-blank")) $("cc-blank").focus();
+    }
+    // Always, frame or not: part of this function's job is leaving the ring
+    // telling the truth about who holds the keyboard (#4353).
+    if(typeof paintKeyboardOwner==="function") paintKeyboardOwner();
+  }
+  // ---- Which surface owns the keyboard, and the way out -----------------------
+  // The chat and the command center share one window, and a focused
+  // cross-origin frame swallows every key. So the owner is SHOWN (an accent
+  // ring, paintKeyboardOwner) and there is one key that always leads back to
+  // the chat (CHAT_KEY), because a person who cannot tell where their typing
+  // goes has no way to find out by trying (founder, 2026-10-03).
+  const CHAT_KEY="/";
+  function keyboardOwner(){
+    const active=document.activeElement;
+    if(active && active.closest && active.closest("#chat-cloud, #chat-cloud-bubble"))
+      return "chat";
+    // Nothing focused is the COMMAND CENTER's: forwardCommandCenterKey sends
+    // those keys to the frame, so saying "chat" would be a lie.
+    return "cc";
+  }
+  function paintKeyboardOwner(){
+    const stage=$("chat-stage");
+    if(!stage) return;
+    stage.dataset.keys=keyboardOwner();
+  }
+  // The guaranteed way IN. Opens the cloud first when it is a bubble, so the
+  // key works from every state rather than only the ones where chat is visible.
+  function focusChatComposer(){
+    const input=$("composer-input");
+    if(!input) return false;
+    if(cloudState && cloudState.mode==="bubble") setChatCloudMode("open");
+    input.focus();
+    paintKeyboardOwner();
+    return true;
+  }
+  // CHAT_KEY, and Enter when nothing in the chat holds the keys, land in the
+  // composer. Runs before forwardCommandCenterKey, which skips an event whose
+  // default is already prevented, so the frame never also receives it.
+  function reservedChatKey(event){
+    if(event.defaultPrevented) return;
+    if(event.ctrlKey || event.metaKey || event.altKey) return;
+    if(event.key!==CHAT_KEY && event.key!=="Enter") return;
+    const target=event.target;
+    // A text field keeps the key wherever it is: the composer, a dialog, or a
+    // field in this document. Typing "/" is typing "/".
+    if(typeof isTypingTarget==="function" && isTypingTarget(target)) return;
+    if(target && target.closest && target.closest("dialog[open]")) return;
+    if(target && target.closest && !$("cloud-menu").hidden && target.closest("#cloud-menu")) return;
+    // Enter still activates whatever control has focus.
+    if(event.key==="Enter" && target && target.closest &&
+       target.closest("button, a, [role=button]")) return;
+    if(keyboardOwner()==="chat") return;
+    event.preventDefault();
+    focusChatComposer();
   }
   function cloudCoversStage(){
     const cloud=$("chat-cloud"), stage=$("chat-stage");
@@ -4845,12 +5161,6 @@
     input.value=String(text||""); input.focus();
     input.setSelectionRange(input.value.length,input.value.length);
   }
-  // TEMPORARY: #cc-blank and these two buttons stand in until cc-package's
-  // platform-default command-center bundle lands; that change mounts the bundle
-  // in the frame when no layout is active and deletes #cc-blank, so
-  // focusCommandCenter only ever targets the frame (one code path).
-  function ccBlankBuild(){ chatCloudPrefill("Build me a command center for "); }
-  function ccBlankTryOne(){ $("btn-ui-switch").click(); }
   function closeCloudMenu(){
     if($("cloud-menu").hidden) return;
     $("cloud-menu").hidden=true;
@@ -4858,8 +5168,6 @@
     if(!(typeof isTypingTarget === "function" && isTypingTarget(document.activeElement))) focusCommandCenter();
   }
   function wireCommandCenter(){
-    $("btn-cc-build").addEventListener("click",ccBlankBuild);
-    $("btn-cc-try").addEventListener("click",ccBlankTryOne);
     $("view-chat").addEventListener("pointerdown",event=>{
       if(!event.target.closest("#chat-cloud, #chat-cloud-bubble")){
         // Avoid the pointer's default focus step undoing the handoff; buttons still click.
@@ -4911,8 +5219,33 @@
         if(typeof focusCommandCenter === "function") focusCommandCenter();
       }
     });
+    // Before the forwarder: a reserved key is CLAIMED here, and the frame only
+    // ever sees what this did not take.
+    document.addEventListener("keydown",reservedChatKey);
     document.addEventListener("keydown",forwardCommandCenterKey);
     document.addEventListener("keyup",forwardCommandCenterKey);
+    // ...and the way back out. Escape in the composer returns the keyboard to
+    // the command center, so the pair is symmetric and neither surface is a
+    // trap. The cloud menu's own Escape handler runs in the capture phase and
+    // stops there, so this only sees an Escape no overlay wanted.
+    // ...only when there is a command center to go back TO. With no layout
+    // mounted the chat is the whole experience and nothing holds the keyboard
+    // hostage, so Escape stays the composer's own: a phone's keyboard "done"
+    // sends it mid-conversation and must not throw typing away
+    // (test_phone_send_keeps_composer_focus).
+    $("composer-input").addEventListener("keydown",event=>{
+      if(event.key!=="Escape" || event.defaultPrevented) return;
+      if(!cloudHasLayout()) return;
+      event.preventDefault();
+      focusCommandCenter();
+    });
+    // The ring follows focus however it moved -- a key, a click, a frame
+    // handoff, a dialog closing.
+    document.addEventListener("focusin",paintKeyboardOwner);
+    document.addEventListener("focusout",()=>setTimeout(paintKeyboardOwner,0));
+    window.addEventListener("blur",()=>setTimeout(paintKeyboardOwner,0));
+    window.addEventListener("focus",()=>setTimeout(paintKeyboardOwner,0));
+    paintKeyboardOwner();
   }
   function cloudViewportClass(width){ return width<CLOUD_PHONE_MAX ? "phone" : "wide"; }
   function cloudStorageKey(owner, agentId, viewport){
@@ -5353,6 +5686,8 @@
   }
   function clearAccountScopedState(){
     queueScope=""; queueOwner="";
+    $("profile-name").textContent=""; $("profile-responsibility").textContent="";
+    $("profile-status").textContent="";
     if(typeof resetAddressedAgent==="function") resetAddressedAgent();
     // The other writer of the home. A custom UI's bridge is account- AND
     // home-scoped, so an account-scoped clear must end it here too; leaving it to
@@ -5365,6 +5700,15 @@
     clearComposerState();
     clearThread();
     clearRailCards();
+    clearMemoryState();
+  }
+  function clearMemoryState(){
+    const list=$("memory-list");
+    if(list){ clearTypedValues(list); list.textContent=""; }
+    const draft=$("memory-new"); if(draft) draft.value="";
+    const status=$("memory-status"); if(status) status.textContent="";
+    const undo=$("btn-memory-undo");
+    if(undo){ undo.disabled=true; undo.onclick=null; undo.textContent="Undo latest change"; }
   }
   // Every control under a node, cleared by WALKING it rather than by a selector
   // list. A `value` that is a string is a control holding typed text, whatever
@@ -6538,7 +6882,86 @@
       openExternal(a.getAttribute("href"));
     });
     // ---- account / deletion (the in-app path Google Play requires) ----
-    function showAccount(){ Voice.stop(false); $("delete-confirm").value=""; $("btn-delete-account").disabled=true; $("delete-status").textContent=""; showView("account"); loadConnections(); loadNotifications(); loadRules(); }
+    function showAccount(){ Voice.stop(false); $("delete-confirm").value=""; $("btn-delete-account").disabled=true; $("delete-status").textContent=""; showView("account"); loadConnections(); loadNotifications(); loadProfile(); loadRules(); loadMemory(); }
+    async function loadProfile(){
+      const epoch=MCP._loginEpoch, owner=queueOwner, home=queueScope;
+      const current=()=>epoch===MCP._loginEpoch&&owner===queueOwner&&home===queueScope;
+      $("profile-name").textContent=""; $("profile-responsibility").textContent="";
+      $("profile-status").textContent="Loading your agent…";
+      try{
+        const r=await fetch("/app/profile",{credentials:"same-origin",headers:authHeaders()});
+        const doc=await r.json();
+        if(!current()) return;
+        if(!r.ok){ $("profile-status").textContent="Your agent could not be loaded."; return; }
+        $("profile-name").textContent=doc.name||"Not named yet";
+        $("profile-responsibility").textContent=doc.responsibility||"No responsibility set yet";
+        $("profile-status").textContent=({working:"Working",idle:"Idle",waiting_on_you:"Waiting on you"})[doc.status]||"";
+      }catch(e){ if(current()) $("profile-status").textContent="Your agent could not be loaded."; }
+    }
+    // ---- Memory items and Undo (harness D7a) ---------------------------
+    function memoryContext(){
+      return {epoch:MCP._loginEpoch,owner:queueOwner,home:queueScope};
+    }
+    function ownsMemory(context){
+      return !!context.owner&&!!context.home&&context.epoch===MCP._loginEpoch&&
+        context.owner===queueOwner&&context.home===queueScope;
+    }
+    async function memoryRequest(body){
+      const init={method:body?"POST":"GET",credentials:"same-origin",
+        headers:Object.assign({"Content-Type":"application/json"},authHeaders())};
+      if(body) init.body=JSON.stringify(body);
+      const r=await fetch("/app/memory",init);
+      const doc=await r.json().catch(()=>({}));
+      return {ok:r.ok,status:r.status,doc};
+    }
+    function renderMemory(doc,context){
+      if(!ownsMemory(context)) return;
+      const list=$("memory-list"); list.textContent="";
+      (doc.items||[]).forEach(item=>{
+        const row=document.createElement("div"); row.className="rule-row";
+        const text=document.createElement("input"); text.value=item.text;
+        text.setAttribute("aria-label","Memory item");
+        const save=document.createElement("button"); save.type="button";
+        save.className="btn btn--link"; save.textContent="Save";
+        save.addEventListener("click",()=>saveMemory({id:item.id,text:text.value},context));
+        const drop=document.createElement("button"); drop.type="button";
+        drop.className="btn btn--link"; drop.textContent="Delete";
+        drop.addEventListener("click",()=>saveMemory({delete:item.id},context));
+        row.appendChild(text); row.appendChild(save); row.appendChild(drop); list.appendChild(row);
+      });
+      if(!(doc.items||[]).length) list.textContent="No memories yet.";
+      const latest=(doc.history||[])[0], undo=$("btn-memory-undo");
+      undo.disabled=!latest||latest.prior_state==="too large";
+      undo.textContent=latest?"Undo latest change to "+latest.path:"Undo latest change";
+      undo.onclick=latest?()=>saveMemory({undo:latest.id},context):null;
+    }
+    async function loadMemory(){
+      const context=memoryContext();
+      $("memory-status").textContent="";
+      clearTypedValues($("memory-list")); $("memory-list").textContent="";
+      const undo=$("btn-memory-undo");
+      undo.disabled=true; undo.onclick=null; undo.textContent="Undo latest change";
+      if(!ownsMemory(context)) return;
+      try{
+        const res=await memoryRequest(null);
+        if(!ownsMemory(context)) return;
+        if(!res.ok){ $("memory-status").textContent=res.doc.detail||"Memory could not be loaded."; return; }
+        renderMemory(res.doc,context);
+      }catch(e){ if(ownsMemory(context)) $("memory-status").textContent="Memory could not be loaded."; }
+    }
+    async function saveMemory(body,context=memoryContext()){
+      // A retained row/Undo belongs to the login and home that rendered it.
+      // Check before reading fresh auth headers as well as after the response.
+      if(!ownsMemory(context)) return;
+      try{
+        const res=await memoryRequest(body);
+        if(!ownsMemory(context)) return;
+        if(!res.ok){ $("memory-status").textContent=res.doc.detail||"Memory was not saved."; return; }
+        renderMemory(res.doc,context); $("memory-status").textContent="Saved.";
+        if(!body.id&&!body.delete&&!body.undo) $("memory-new").value="";
+      }catch(e){ if(ownsMemory(context)) $("memory-status").textContent="Memory was not saved."; }
+    }
+    $("btn-memory-add").addEventListener("click",()=>saveMemory({text:$("memory-new").value}));
     // ---- Your agent's rules (harness D1a/D1b) ---------------------------
     // The owner's Custom Rules, read and written through /app/rules, which only
     // ever addresses the signed-in owner's own home. Loosening a hand-back is
@@ -8913,6 +9336,13 @@
       (typeof last.ts !== "number" || last.ts*1000 >= (pending.ts||0) - 60*1000);
     if(already){ forgetInflightIf(pending); restoreQueue(); return; }
     inflightRestored = true;
+    // Still being answered on the server: shown with its working state, and its
+    // reply is drawn when that turn ends -- never offered as unconfirmed.
+    const running=await readPendingTurns();
+    if(running&&running.active&&running.active.text===pending.message&&
+       showActiveTurn(running.active)){
+      restoreQueue(); return;
+    }
     appendMessage("founder", pending.display, null,
       typeof pending.ts==="number"?pending.ts/1000:null);
     const again = document.createElement("button");

@@ -238,12 +238,14 @@ def _is_namespace_refusal(stderr: str) -> bool:
 
 
 def _strip_mask(argv: list[str], mountpoint: str) -> list[str]:
-    """Drop one ``--tmpfs <mountpoint>`` pair, leaving everything else intact."""
+    """Drop one ``--tmpfs <mountpoint>`` (and the ``--size`` sizing it), leaving
+    everything else intact."""
 
     stripped = list(argv)
     for index in range(len(stripped) - 1):
         if stripped[index] == "--tmpfs" and stripped[index + 1] == mountpoint:
-            del stripped[index : index + 2]
+            start = index - 2 if index >= 2 and stripped[index - 2] == "--size" else index
+            del stripped[start : index + 2]
             return stripped
     raise AssertionError(f"no --tmpfs {mountpoint} in the provider's argv: {argv}")
 

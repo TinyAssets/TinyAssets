@@ -74,6 +74,7 @@ def daily_cap_for_host(host):
     if offer is not None:
         return {"requests_per_day": offer.get("free_requests_per_day"),
                 "credit_requests_per_day": offer.get("credit_requests_per_day"),
+                "credit_amount": offer.get("credit_amount"),
                 "reset_timezone": offer.get("reset_timezone"), "name": offer["name"],
                 "credit_url": offer.get("credit_url")}
     row = source_for_host(host)
@@ -91,7 +92,12 @@ def daily_cap_offers():
 
 
 def source_for_host(host):
-    return next((row for row in _SOURCES if urlsplit(row["base_url"]).netloc == host), {})
+    source = next((row for row in _SOURCES if urlsplit(row["base_url"]).netloc == host), None)
+    if source is not None:
+        return deepcopy(source)
+    presets = json.loads(Path(__file__).with_name("acquisition_presets.json").read_text("utf-8"))
+    return next((row for row in presets.values()
+                 if urlsplit(row["inference_url"]).netloc == host), {})
 
 
 def billing_url_for_host(host):

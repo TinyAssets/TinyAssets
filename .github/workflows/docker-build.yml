@@ -30,6 +30,10 @@ on:
       - 'tests/fixtures/docker_protocol_probe.py'
       - '.github/workflows/docker-build.yml'
   pull_request:
+    # `ready_for_review` is NOT a default type, and the job below skips on a
+    # draft; without it a PR marked ready keeps the draft run's skip until its
+    # next push.
+    types: [opened, reopened, synchronize, ready_for_review]
     paths:
       - 'Dockerfile'
       - '.dockerignore'
@@ -57,6 +61,13 @@ concurrency:
 
 jobs:
   build-smoke:
+    # Drafts do not spend a runner here (this was the single largest
+    # pull_request consumer measured 2026-10-03, median 11 min per run);
+    # `ready_for_review` above runs it for real as soon as the PR is ready.
+    # Not a branch-protection context, which is what makes skipping safe -- a
+    # skipped job reports `conclusion=skipped` and branch protection accepts
+    # that as satisfied (see tests.yml's note on `required-tests`).
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
