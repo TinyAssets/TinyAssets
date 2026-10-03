@@ -1,3 +1,10 @@
+---
+severity: P1
+title: Ordinary phone sends need exact accepted-request receipts
+filed: '2026-10-03'
+summary: Interrupted ordinary sends cannot be settled by exact identity; manual resend can duplicate work.
+---
+
 # Ordinary phone sends need exact accepted-request receipts
 
 Owner: mobile send/recovery lane; integration coordinator owns admission/storage

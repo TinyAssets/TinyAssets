@@ -6,7 +6,6 @@ owner read client execute in the rendered page. No live account/provider is used
 import os
 
 import pytest
-from playwright.sync_api import expect, sync_playwright
 
 from tests.test_app_chat_cloud_browser import _enter_chat
 from tests.test_app_chat_cloud_browser import app_url as _app_url
@@ -18,7 +17,10 @@ pytestmark = pytest.mark.real_browser
 
 @pytest.fixture
 def recovery_page(app_url):
-    with sync_playwright() as p:
+    sync_api = pytest.importorskip(
+        "playwright.sync_api", reason="owner=codex runs-in=real-browser-proof"
+    )
+    with sync_api.sync_playwright() as p:
         browser = p.chromium.launch(executable_path=os.environ.get("TINYASSETS_TEST_CHROMIUM"))
         context = browser.new_context(viewport={"width": 390, "height": 844},
                                       is_mobile=True, has_touch=True)
@@ -64,6 +66,8 @@ def recovery_page(app_url):
 
 
 def _send_and_interrupt(page, mode="cut"):
+    from playwright.sync_api import expect
+
     page.locator("#composer-input").fill("Please finish the checklist")
     page.locator("#btn-send").click()
     page.wait_for_function("wire.sends.length===1 && !!wire.stream")
@@ -88,6 +92,8 @@ def _complete_and_resume(page):
 @pytest.mark.parametrize("mode", ["cut", "disconnect", "silent"])
 def test_resume_observes_saved_reply_without_replaying_or_claiming_delivery(
         recovery_page, mode, tmp_path):
+    from playwright.sync_api import expect
+
     page = recovery_page
     if mode == "silent":
         page.evaluate("MCP.SILENCE_MS=300")
@@ -105,6 +111,8 @@ def test_resume_observes_saved_reply_without_replaying_or_claiming_delivery(
 
 
 def test_offline_resume_waits_for_online_and_coalesces_reads(recovery_page):
+    from playwright.sync_api import expect
+
     page = recovery_page
     _send_and_interrupt(page)
     page.evaluate("""() => {
@@ -132,6 +140,8 @@ def test_offline_resume_waits_for_online_and_coalesces_reads(recovery_page):
 @pytest.mark.parametrize("changed", ["owner", "home", "epoch", "agent"])
 @pytest.mark.parametrize("late", [False, True])
 def test_resume_checks_and_late_results_are_thread_fenced(recovery_page, changed, late):
+    from playwright.sync_api import expect
+
     page = recovery_page
     _send_and_interrupt(page)
     if late:
@@ -156,6 +166,8 @@ def test_resume_checks_and_late_results_are_thread_fenced(recovery_page, changed
 
 @pytest.mark.parametrize("kind", ["notSent", "provider"])
 def test_confirmed_failure_does_not_become_ambiguous_resume(recovery_page, kind):
+    from playwright.sync_api import expect
+
     page = recovery_page
     page.evaluate("""kind => {
         MCP.converse=async()=>{
@@ -175,6 +187,8 @@ def test_confirmed_failure_does_not_become_ambiguous_resume(recovery_page, kind)
 
 
 def test_stream_failure_after_visibility_event_also_checks(recovery_page):
+    from playwright.sync_api import expect
+
     page = recovery_page
     page.locator("#composer-input").fill("Please finish the checklist")
     page.locator("#btn-send").click()
