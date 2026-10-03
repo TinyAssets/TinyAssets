@@ -275,6 +275,17 @@ Every per-agent record (sessions and conversation memory, steering and stop, the
 - **WHEN** a specialist agent with default visibility reads conversations through its tools
 - **THEN** it is served its own threads only, while the main agent with default visibility is served all of them
 
+### Requirement: The owner talks to any of their agents directly
+A conversation turn SHALL carry the agent it addresses, `main` by default or one of the owner's own agents bound in that universe, and SHALL run as that agent: its own instructions from its definition, its own thread (conversation memory `agent:<agent_id>:principal:<owner>`, native session and steering key `thread:` plus that), on the universe's serving engine and seats, reading and writing the universe's shared brain. A lesson taught to a non-main agent SHALL reach the shared brain except a name or identity file, which would rename the main agent. The main agent's turn SHALL see the owner's recent turns with the other agents as untrusted context naming each agent. An addressed id that is not the caller's own conversable agent in that universe (unknown, another account's, bound in another universe, or a conversation-design installation) SHALL be refused by name before any model call or stored turn, never answered by the main agent instead. A steer and a conversation read SHALL name the addressed agent the same way. A custom UI SHALL be able to open the app's chat addressed to one of the viewer's agents and send a turn to a named agent, and SHALL be refused for an agent that is not the viewer's.
+
+#### Scenario: clicking a villager talks to that agent
+- **WHEN** the owner addresses a custom agent and sends a message
+- **THEN** the reply comes from that agent's instructions on its own thread, the main thread is unchanged, and the main agent's next turn sees that exchange
+
+#### Scenario: a foreign agent id is refused
+- **WHEN** a turn, steer or conversation read names an agent that belongs to another account or another universe
+- **THEN** it is refused as not one of the caller's agents, no model is called and nothing is recorded
+
 ### Requirement: The harness layer is user-configurable for any roster of agents
 A universe SHALL support any number of agents. Each agent SHALL have its own instructions, identity, memory, skills, extensions, settings (model, research cadence, idle period, active hours, compaction, channels), rules, sessions, activities and profile. A per-agent skill or extension SHALL override a shared one of the same name. An agent SHALL be able to start an activity on another agent in the same universe under the delegation rule. New universes SHALL be seeded from an explicitly published starter template.
 

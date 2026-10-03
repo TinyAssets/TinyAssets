@@ -1,6 +1,7 @@
 """Require named pytest cases to be PRESENT and CLEAN in a JUnit report.
 
-Used by `.github/workflows/linux-jail-proof.yml`. The cases it guards are
+Used by `.github/workflows/linux-jail-proof.yml` and
+`.github/workflows/real-browser-proof.yml`. The cases it guards are
 `skipif`-gated on the presence of `bwrap`, so a green pytest exit code proves
 nothing about them: pytest exits 0 when a test skips. This script is the part of
 the job that refuses to read a skip as a pass.
@@ -119,13 +120,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--list-files", action="store_true",
                         help="with --marker: print the test files holding the cases and exit")
     parser.add_argument("--root", type=Path, default=Path(__file__).resolve().parent.parent)
+    parser.add_argument("--label", default="linux-jail-proof",
+                        help="the job name its verdict lines carry")
     parser.add_argument("--summary", type=Path, default=None,
                         help="append a one-line markdown verdict per case here")
     ns = parser.parse_args(argv)
     nodeids = ns.nodeid or marked_cases(ns.root, ns.marker)
     if not nodeids:
         # A marker nobody carries would make every run vacuously green.
-        print(f"linux-jail-proof FAIL: no test carries pytest.mark.{ns.marker}",
+        print(f"{ns.label} FAIL: no test carries pytest.mark.{ns.marker}",
               file=sys.stderr)
         return 2
     if ns.list_files:
@@ -141,7 +144,7 @@ def main(argv: list[str] | None = None) -> int:
         code, message = check(ns.junit, nodeid)
         worst = max(worst, code)
         verdict = "PASS" if code == 0 else "FAIL"
-        print(f"linux-jail-proof {verdict}: {message}")
+        print(f"{ns.label} {verdict}: {message}")
         if ns.summary is not None:
             with ns.summary.open("a", encoding="utf-8") as handle:
                 handle.write(f"- **{verdict}** `{nodeid}` — {message}\n")

@@ -48,7 +48,7 @@ def test_a_workspace_that_is_a_link_refuses_every_launch(tmp_path, monkeypatch):
         default_view(universe)
     monkeypatch.setattr(provider_jail, "BWRAP_RESOLVER", lambda: "/usr/bin/bwrap")
     with pytest.raises(universe_tools.UniverseToolError):
-        universe_tools.tool_jail_argv(universe, ["/bin/true"])
+        universe_tools.tool_jail_argv(universe, ["/bin/true"], agent_id="main")
 
 
 def test_a_brain_file_written_while_the_root_had_none_reaches_the_root(tmp_path, monkeypatch):
@@ -58,7 +58,7 @@ def test_a_brain_file_written_while_the_root_had_none_reaches_the_root(tmp_path,
     (universe / WS / "goals.md").write_text("in workspace", encoding="utf-8")
     (universe / "goals.md").write_text("in root", encoding="utf-8")
     monkeypatch.setattr(provider_jail, "BWRAP_RESOLVER", lambda: "/usr/bin/bwrap")
-    universe_tools.tool_jail_argv(universe, ["/bin/true"])
+    universe_tools.tool_jail_argv(universe, ["/bin/true"], agent_id="main")
     assert (universe / "identity.md").read_text(encoding="utf-8").startswith("---")
     assert not (universe / WS / "identity.md").exists()
     assert (universe / "goals.md").read_text(encoding="utf-8") == "in root", (
@@ -116,8 +116,20 @@ def test_promotion_never_replaces_a_root_brain_file_created_meanwhile(tmp_path):
     universe = _universe(tmp_path)
     (universe / WS).mkdir()
     (universe / WS / "log.md").write_text("from workspace", encoding="utf-8")
-    universe_tools._promote_brain_files(universe, universe / WS)
+    universe_tools._promote_brain_files(universe, universe / WS, agent_id="main")
     assert (universe / "log.md").read_text(encoding="utf-8") == "from workspace"
     (universe / WS / "log.md").write_text("second", encoding="utf-8")
-    universe_tools._promote_brain_files(universe, universe / WS)
+    universe_tools._promote_brain_files(universe, universe / WS, agent_id="main")
     assert (universe / "log.md").read_text(encoding="utf-8") == "from workspace"
+
+
+def test_another_agents_call_never_promotes_the_main_identity(tmp_path):
+    """harness §4.18: identity.md is the main agent's; a custom agent's call
+    promotes the other brain files but never that one."""
+    universe = _universe(tmp_path)
+    (universe / WS).mkdir()
+    (universe / WS / "identity.md").write_text("I am Weave", encoding="utf-8")
+    (universe / WS / "log.md").write_text("shared note", encoding="utf-8")
+    universe_tools._promote_brain_files(universe, universe / WS, agent_id="agent_binding_w1")
+    assert not (universe / "identity.md").exists()
+    assert (universe / "log.md").read_text(encoding="utf-8") == "shared note"

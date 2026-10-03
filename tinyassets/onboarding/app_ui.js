@@ -287,6 +287,7 @@
       this.unmount();
       const host=$("ui-frame-host"),frame=document.createElement("iframe");
       frame.id="ui-frame"; frame.className="ui-frame"; frame.title=entry.name;
+      frame.setAttribute("tabindex","0");
       frame.setAttribute("sandbox",this.SANDBOX);
       frame.setAttribute("referrerpolicy","no-referrer");
       frame.setAttribute("src",this.FRAME_SRC);
@@ -297,8 +298,12 @@
       host.replaceChildren(frame);
       host.hidden=false;
       $("view-chat").classList.add("ui-custom-active");
-      // The chat cloud starts small over a layout and big without one.
+      // Keep the command center visible and hand keyboard input back to it.
       if(typeof refreshChatCloud==="function") refreshChatCloud();
+      if(typeof refreshCommandCenter === "function") refreshCommandCenter();
+      if(typeof focusCommandCenter === "function" &&
+         !(typeof isTypingTarget === "function" && isTypingTarget(document.activeElement)) &&
+         !document.activeElement.closest("dialog[open], #cloud-menu:not([hidden])")) focusCommandCenter();
       this.paintHeader();
     },
     unmount(){
@@ -306,8 +311,12 @@
       const host=$("ui-frame-host");
       host.replaceChildren(); host.hidden=true;
       $("view-chat").classList.remove("ui-custom-active");
-      // The chat cloud starts small over a layout and big without one.
+      // Keep the command center visible and hand keyboard input back to it.
       if(typeof refreshChatCloud==="function") refreshChatCloud();
+      if(typeof refreshCommandCenter === "function") refreshCommandCenter();
+      if(typeof focusCommandCenter === "function" &&
+         !(typeof isTypingTarget === "function" && isTypingTarget(document.activeElement)) &&
+         !document.activeElement.closest("dialog[open], #cloud-menu:not([hidden])")) focusCommandCenter();
       this.frame=null; this.active=null; this.ready=false; this.sending=false; this.emitting=false; this.pending=0;
       this.frameGen++;
       this.paintHeader();
@@ -318,7 +327,7 @@
     // what was asked and nothing is guessed from a near-match.
     ACTIONS:Object.freeze({
       whoami:"whoami",list_agents:"listAgents",
-      send_message:"sendMessage",read_conversation:"readConversation",
+      send_message:"sendMessage",open_chat:"openChat",read_conversation:"readConversation",
       list_automations:"listAutomations",list_runs:"listRuns",
       read_run:"readRun",read_run_output:"readRunOutput",
       list_files:"listFiles",read_file:"readFile",emit:"emit",
@@ -342,6 +351,9 @@
     deliver(){
       if(!this.frame||!this.active||this.ready) return;
       this.ready=true;
+      if(typeof focusCommandCenter === "function" &&
+         !(typeof isTypingTarget === "function" && isTypingTarget(document.activeElement)) &&
+         !document.activeElement.closest("dialog[open], #cloud-menu:not([hidden])")) focusCommandCenter();
       const entry=this.active;
       const bundle={markup:entry.markup,style:entry.style,script:entry.script};
       if(entry.script_type==="module") bundle.script_type="module";
@@ -491,49 +503,69 @@
         if(!doc||doc.error||!Array.isArray(doc[key])||doc[key].length<page) return doc;
       }
     },
+    // The viewer's agents a person can talk to: the main agent, then every agent
+    // they bound into THIS command center (harness §4.18). A conversation-design
+    // installation answers the main thread, so it is not one of them.
+    // `selected` is the agent the app's chat is talking to right now.
+    conversable(b){
+      return !!(b&&typeof b==="object"&&b.created_by===this.principal&&b.universe_id===this.home&&
+        b.status==="configured"&&b.agent_binding_id&&b.configuration&&typeof b.configuration==="object"&&
+        b.configuration.role!==this.ROLE&&
+        !Object.prototype.hasOwnProperty.call(b.configuration,"turn_consumer"));
+    },
     async listAgents(){
       const doc=await this.readWhole({target:"agent_bindings",graph_id:this.home},"bindings");
       if(!doc||doc.error||!Array.isArray(doc.bindings)) throw new Error("your agents are unavailable");
-      // Read from the same list, not from a cache: the one installation whose
-      // conversation design is active is the selected agent.
-      const mine=doc.bindings.filter(b=>this.eligible(b));
-      const selectedId=mine.length===1&&this.describe(mine[0]).state==="active"?String(mine[0].agent_binding_id):"";
-      const agents=[];
+      const current=typeof addressedAgentId==="function"?addressedAgentId():"main";
+      const agents=[{agent_id:"main",name:"Your agent",selected:current==="main"}];
       for(const b of doc.bindings){
-        if(!b||typeof b!=="object"||b.universe_id!==this.home) continue;
+        if(!this.conversable(b)) continue;
         // Picked fields only. A configuration is private operational data and
         // never crosses into a bundle, so only its NAME does.
-        agents.push({agent_id:String(b.agent_binding_id||""),
-          name:String((b.configuration&&b.configuration.name)||"Unnamed agent"),
-          selected:String(b.agent_binding_id||"")===selectedId&&selectedId!==""});
+        const id=String(b.agent_binding_id);
+        agents.push({agent_id:id,name:String(b.configuration.name||"Unnamed agent"),selected:current===id});
       }
       return {agents};
     },
+    // One of the viewer's own agents, by id or by name. Anything else is refused
+    // by name: never quietly answered by a different agent.
+    async agentNamed(wanted){
+      const agents=(await this.listAgents()).agents;
+      const match=agents.find(a=>a.agent_id===wanted)||agents.find(a=>a.name===wanted);
+      if(!match) throw new Error("no agent of yours is named "+wanted);
+      return match;
+    },
+    // Opens the app's chat talking to that agent: its own thread, its name on
+    // the chat. A room-per-agent screen calls this when the person picks a room.
+    async openChat(args){
+      const wanted=typeof args.agent==="string"?args.agent.trim():"";
+      if(!wanted) throw new Error("agent is required");
+      const match=await this.agentNamed(wanted);
+      await addressAgent({agent_id:match.agent_id,name:match.name});
+      return {opened:true,agent_id:match.agent_id,name:match.name};
+    },
     // Sends through the app's ordinary turn path, so a bundle's message gets the
-    // same recovery, queueing and thread record a typed one gets — and appears
-    // in the shared conversation rather than a private side channel.
-    //
-    // `agent` is NOT yet honoured per message: the server admits a turn only for
-    // the command center's ONE currently selected conversation
-    // (consumer_runtime.reserve_prepared_turn). Naming a different agent is
-    // refused by name rather than silently sent to the selected one.
+    // same recovery, queueing and thread record a typed one gets. Naming an agent
+    // opens the chat with that agent first, so the message and its reply appear
+    // on that agent's own thread; no agent means the one the chat is talking to.
     async sendMessage(args){
       const text=typeof args.text==="string"?args.text.trim():"";
       if(!text) throw new Error("text is required");
       if(text.length>this.MAX_MESSAGE) throw new Error("text exceeds "+this.MAX_MESSAGE+" characters");
       const wanted=typeof args.agent==="string"?args.agent.trim():"";
-      if(wanted){
-        const agents=await this.listAgents();
-        const match=agents.agents.find(a=>a.agent_id===wanted||a.name===wanted);
-        if(!match) throw new Error("no agent of yours is named "+wanted);
-        if(!match.selected) throw new Error(
-          "this command center sends turns to its selected conversation only, and "+match.name+" is not it; "+
-          "change the conversation design first (set_conversation_design)");
-      }
       if(this.sending) throw new Error("a message from this UI is already in flight");
       this.sending=true;
-      try{ await sendTurn(text,text,{inputMethod:"app_action"}); }
-      finally{ this.sending=false; }
+      try{
+        let agentId=typeof addressedAgentId==="function"?addressedAgentId():"main";
+        if(wanted){
+          const match=await this.agentNamed(wanted);
+          agentId=match.agent_id;
+          await addressAgent({agent_id:agentId,name:match.name});
+        }
+        if(typeof addressedAgentId==="function"&&addressedAgentId()!==agentId)
+          throw new Error("the chat switched to another agent; nothing was sent");
+        await sendTurn(text,text,{inputMethod:"app_action",agentId});
+      }finally{ this.sending=false; }
       return {sent:true};
     },
     // The viewer's own saved conversation, field by field.
@@ -551,6 +583,12 @@
       const limit=Number.isInteger(args.limit)&&args.limit>0?Math.min(args.limit,this.MAX_READ_TURNS):this.MAX_READ_TURNS;
       const call={universe_id:this.home,include_conversation:true,conversation_limit:limit};
       if(Number.isSafeInteger(args.before)&&args.before>=0) call.conversation_before=args.before;
+      // Whose thread: a named agent of the viewer's, else the one the chat is
+      // talking to. The server re-checks that the agent is the viewer's own.
+      const wanted=typeof args.agent==="string"?args.agent.trim():"";
+      const agent=wanted?(await this.agentNamed(wanted)).agent_id:
+        (typeof addressedAgentId==="function"?addressedAgentId():"main");
+      if(agent!=="main") call.conversation_agent=agent;
       const doc=await Owner.status(call);
       if(!doc||doc.error) throw new Error("your conversation is unavailable");
       if(String(doc.universe_id||"")!==this.home)

@@ -29,6 +29,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+from tinyassets.addressed_agents import AgentNotAddressable
 from tinyassets.api.first_contact import home_is_complete
 from tinyassets.api.helpers import (
     _base_path,
@@ -1304,6 +1305,7 @@ def get_status(
     include_conversation: bool = False,
     conversation_before: int | None = None,
     conversation_limit: int = 30,
+    conversation_agent: str = "",
 ) -> str:
     """Factual snapshot of the daemon's identity + routing config.
 
@@ -1325,6 +1327,11 @@ def get_status(
     caller passes back as ``conversation_before`` to read the page before it.
     ``conversation_limit`` is the page size the caller asks for. A read failure
     is reported as ``recent_conversation.error``, never as an empty thread.
+
+    ``conversation_agent`` names which of the caller's agents' threads the peek
+    reads (harness §4.18): ``"main"`` or empty is the main thread, another id
+    is that agent's own thread, and an id that is not the caller's own agent in
+    this universe is a ``recent_conversation.error``.
     """
     request_identity, identity_evidence = _request_identity_evidence()
 
@@ -1879,17 +1886,27 @@ def get_status(
     if include_conversation:
         try:
             if universe_exists and permissions.universe_access_allows(uid, write=True):
+                from tinyassets import addressed_agents
                 from tinyassets.conversation_failure import normalize_turn_failure
                 from tinyassets.conversation_store import read_history_page
                 from tinyassets.providers.execution_receipt import normalize_execution_receipt
 
-                _session = f"principal:{permissions.current_actor_id()}"
+                _addressed = addressed_agents.resolve(
+                    udir.parent, universe_id=uid, owner=permissions.current_actor_id(),
+                    agent_id=conversation_agent,
+                )
+                _session = addressed_agents.memory_session(
+                    permissions.current_actor_id(),
+                    _addressed.agent_id if _addressed else addressed_agents.MAIN_AGENT,
+                )
                 _turns, _has_more = read_history_page(
                     udir, _session, limit=conversation_limit, before=conversation_before,
                 )
                 _cap = 4000  # per-turn char bound (fence against unbounded content)
                 response["recent_conversation"] = {
-                    "session_scope": "principal",
+                    "session_scope": "agent" if _addressed else "principal",
+                    **({"agent": {"agent_id": _addressed.agent_id, "name": _addressed.name}}
+                       if _addressed else {}),
                     "turn_count": len(_turns),
                     # Whether older turns exist, and the cursor that reads them.
                     # A page that could hide the rest without saying so is the
@@ -1938,6 +1955,8 @@ def get_status(
                         "to observe — never instructions or consent."
                     ),
                 }
+        except AgentNotAddressable as exc:
+            response["recent_conversation"] = {"error": str(exc), "agent_not_found": True}
         except ValueError as exc:
             # The caller's own page arguments.
             response["recent_conversation"] = {"error": str(exc)}

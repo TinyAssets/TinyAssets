@@ -95,6 +95,11 @@ fantasy_daemon = "domains.fantasy_daemon.skill:FantasyAuthorDomain"
 research_probe = "domains.research_probe.skill:ResearchProbeDomain"
 
 [project.optional-dependencies]
+# Real-browser proofs (tests marked real_browser); installed by
+# .github/workflows/real-browser-proof.yml. Pinned so its browser cache key holds.
+browser = [
+    "playwright==1.58.0",
+]
 desktop = [
     "Pillow>=10.0",
     "pystray>=0.19",
@@ -155,5 +160,5 @@ testpaths = ["tests"]
 markers = [
     "slow: stress/race tests; opt-in via `pytest -m slow`",
     "real_jail: needs a real bubblewrap jail; run by .github/workflows/linux-jail-proof.yml, which fails on any skip",
-    "real_browser: drives a real Chromium through Playwright; skips only when Playwright's browser is not installed",
+    "real_browser: needs a real Chromium; run by .github/workflows/real-browser-proof.yml, which fails on any skip",
 ]

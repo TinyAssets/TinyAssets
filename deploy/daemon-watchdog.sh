@@ -192,7 +192,7 @@ main() {
     # recreate leaves the unit inactive and the container briefly absent, which
     # reads as dead here. On 2026-10-01 this script restarted the container
     # mid-deploy and helped kill the new image and fail the rollback
-    # (docs/concerns/2026-10-01-deploy-drain-outage-and-watchdog-race.md).
+    # (docs/audits/2026-10-01-deploy-drain-repro/INCIDENT.md).
     # This unit runs as root, the lock's owner, so `>>` may create it. Creating
     # it here closes the window right after boot where a lockless check could
     # race a deploy that takes the lock a moment later. fd 8 stays held through

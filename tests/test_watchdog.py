@@ -412,7 +412,7 @@ def test_gh_issue_failure_does_not_crash_watchdog(state_path):
 # 2026-10-01: a deploy's own recreate read as three reds, this watchdog ran
 # `systemctl restart`, and the unit's second compose run killed the new
 # container and failed the rollback
-# (docs/concerns/2026-10-01-deploy-drain-outage-and-watchdog-race.md).
+# (docs/audits/2026-10-01-deploy-drain-repro/INCIDENT.md).
 
 
 def _lock_held():

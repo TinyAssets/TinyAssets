@@ -222,7 +222,7 @@ def test_io_uring_and_symlink_are_refused_in_the_jail(world, monkeypatch):
     from tinyassets import universe_tools as tools
 
     world.universe_a.joinpath("probe.py").write_text(_IO_URING_PROBE, encoding="utf-8")
-    out = tools.bash(world.universe_a, "python3 /u/probe.py", timeout=30)
+    out = tools.bash(world.universe_a, "python3 /u/probe.py", agent_id="main", timeout=30)
     assert "IO_URING_RING_CREATED" not in out, out
     assert "IO_URING_EPERM" in out, out
     assert "SYMLINK_CREATED" not in out and "SYMLINK_EPERM" in out, out
@@ -556,9 +556,9 @@ def test_memory_limit_stops_a_runaway_allocation(world):
 
     small = tools.ToolLimits(memory_bytes=256 * 1024 * 1024)
     grow = "x=$(head -c {n} /dev/zero | tr '\\0' a); echo survived ${{#x}}"
-    control = tools.bash(world.universe_a, grow.format(n=1_000_000), limits=small)
+    control = tools.bash(world.universe_a, grow.format(n=1_000_000), agent_id="main", limits=small)
     assert "survived 1000000" in control, control
-    out = tools.bash(world.universe_a, grow.format(n=900_000_000), limits=small)
+    out = tools.bash(world.universe_a, grow.format(n=900_000_000), agent_id="main", limits=small)
     assert "survived" not in out and "[exit code 0]" not in out, out
 
 
@@ -582,7 +582,7 @@ def test_process_limit_holds_and_a_fork_bomb_is_contained(world):
         "        break\n"
         "print('made', made, flush=True); time.sleep(3)\n"
     )
-    run = tools.run_jailed(world.universe_a, ["/usr/bin/python3", "-c", spawn],
+    run = tools.run_jailed(world.universe_a, ["/usr/bin/python3", "-c", spawn], agent_id="main",
                            limits=limits, wall_seconds=8)
     made = [int(w) for line in run.output.decode().splitlines()
             if line.startswith("made ") for w in line.split()[1:2]]
@@ -592,6 +592,7 @@ def test_process_limit_holds_and_a_fork_bomb_is_contained(world):
     started = time.monotonic()
     out = tools.bash(world.universe_a,
                      f"bomb() {{ bomb | bomb & }}; bomb; sleep 5; echo {token}-alive",
+                     agent_id="main",
                      limits=tools.ToolLimits(processes=32), timeout=6)
     assert time.monotonic() - started < 30, "the call came back"
     # The kernel refused the bomb's forks (RLIMIT_NPROC unprivileged, pids.max
@@ -601,24 +602,24 @@ def test_process_limit_holds_and_a_fork_bomb_is_contained(world):
     time.sleep(1)
     assert _host_processes_with(token) == [], "nothing from the jail survives it"
     # The universe still works afterwards.
-    assert OWN_MARKER in tools.read_file(world.universe_a, "notes/own.txt")
+    assert OWN_MARKER in tools.read_file(world.universe_a, "notes/own.txt", agent_id="main")
 
 
 def test_cpu_output_and_wall_clock_limits_kill(world):
     from tinyassets import universe_tools as tools
 
     started = time.monotonic()
-    out = tools.bash(world.universe_a, "while :; do :; done",
+    out = tools.bash(world.universe_a, "while :; do :; done", agent_id="main",
                      limits=tools.ToolLimits(cpu_seconds=2), timeout=60)
     assert "[killed: cpu time limit]" in out and time.monotonic() - started < 20, out
 
     started = time.monotonic()
-    out = tools.bash(world.universe_a, "yes")
+    out = tools.bash(world.universe_a, "yes", agent_id="main")
     assert "[killed: output passed 65536 bytes]" in out, out[-200:]
     assert len(out.encode()) < 70 * 1024 and time.monotonic() - started < 20
 
     started = time.monotonic()
-    out = tools.bash(world.universe_a, "sleep 30", timeout=2)
+    out = tools.bash(world.universe_a, "sleep 30", agent_id="main", timeout=2)
     assert "[killed: ran longer than 2s]" in out and time.monotonic() - started < 15, out
 
 
@@ -632,14 +633,14 @@ def test_a_jail_that_fills_the_shared_disk_is_killed(world):
         out = tools.bash(
             world.universe_a,
             "for i in $(seq 1 40); do head -c 30000000 /dev/zero > notes/fill$i || exit 3; done; "
-            "echo filled",
+            "echo filled", agent_id="main",
             limits=floor, timeout=120,
         )
         assert "[killed: the shared disk was nearly full]" in out, out
         assert "filled" not in out
         # Below the floor, the next call does not start at all.
         with pytest.raises(tools.UniverseToolError, match="nearly full"):
-            tools.bash(world.universe_a, "true",
+            tools.bash(world.universe_a, "true", agent_id="main",
                        limits=tools.ToolLimits(min_free_disk_bytes=free * 2))
     finally:
         for path in (world.universe_a / "notes").glob("fill*"):

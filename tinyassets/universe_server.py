@@ -94,7 +94,7 @@ _OAUTH_TOOL_SCOPES = ("openid", "profile", "email", "offline_access")
 #: a second in which the public surface (/mcp, /app) returns 502. Nothing else can
 #: listen on 127.0.0.1:8001 until this process exits. On 2026-10-01 a 170s/180s
 #: drain behind a long codex turn took production down from 22:49:48Z to
-#: 22:53:04Z (docs/concerns/2026-10-01-deploy-drain-outage-and-watchdog-race.md).
+#: 22:53:04Z (docs/audits/2026-10-01-deploy-drain-repro/INCIDENT.md).
 #: Uptime is the Forever Rule, and a turn cut off here is settled truthfully at
 #: the next boot by ``agent_turn_reconcile.reconcile_orphaned_turns``.
 #:
@@ -725,7 +725,7 @@ def read_graph(
         agent_definition_id: Public agent definition identifier for
             target=agent. Falls back to graph_id.
         agent_binding_id: Private command center binding identifier for
-            target=agent_binding.
+            target=agent_binding, or your addressed agent for target=conversation.
         agent_stage_id: Private import stage identifier for target=agent.
         query: Optional search text.
         tags: Optional comma-separated goal tag filter.
@@ -2916,6 +2916,7 @@ def converse(
     input_method: Literal["typed", "spoken", "app_action", "unknown"] = "unknown",
     model_choice: dict | None = None,
     consumer_request: dict | None = None,
+    agent_id: str = "",
 ) -> str:
     """Relay a message to your command center's intelligence and return its reply.
 
@@ -2946,6 +2947,8 @@ def converse(
             request_key UUIDv4, binding_id and binding_revision. Reuse the exact
             original object/message/model choice on reconnect; never create a
             new key to observe work. Omit for the unchanged default conversation.
+        agent_id: Which of your agents to talk to: "main" (default) or one of
+            your agents' ids in this command center. Each has its own thread.
     """
     import json
 
@@ -3043,14 +3046,40 @@ def converse(
             "auth_scope_required": True,
         })
 
-    from tinyassets.consumer_runtime import converse_turn
+    # Which of the owner's agents this turn is addressed to (harness §4.18). The
+    # owner and the universe are bound above; this resolves the id INSIDE that
+    # scope, and an id that is not one of the owner's own agents here is refused
+    # by name, never answered by the main agent instead.
+    from tinyassets import addressed_agents
 
-    custom = converse_turn(
-        _base_path(), owner=current_actor_id(), universe=uid, message=message,
-        input_method=input_method, model_choice=model_choice, request=consumer_request,
-    )
-    if custom is not None:
-        return json.dumps(custom)
+    try:
+        addressed = addressed_agents.resolve(
+            _base_path(), universe_id=uid, owner=current_actor_id(), agent_id=agent_id,
+        )
+        addressed_id = addressed.agent_id if addressed is not None else addressed_agents.MAIN_AGENT
+        # Built here, inside the refusal: a key that cannot be built has no reading.
+        memory_session = addressed_agents.memory_session(current_actor_id(), addressed_id)
+    except addressed_agents.AgentNotAddressable as exc:
+        return json.dumps({"error": str(exc), "agent_not_found": True, "universe_id": uid})
+    except Exception:
+        logger.warning("converse: could not resolve agent %r", agent_id, exc_info=True)
+        return json.dumps({
+            "error": "Your agents couldn't be read right now, so nothing was sent.",
+            "universe_id": uid,
+        })
+
+    if addressed is None:
+        from tinyassets.consumer_runtime import converse_turn
+
+        custom = converse_turn(
+            _base_path(), owner=current_actor_id(), universe=uid, message=message,
+            input_method=input_method, model_choice=model_choice, request=consumer_request,
+        )
+        if custom is not None:
+            return json.dumps(custom)
+    elif consumer_request is not None:
+        # A conversation design answers the main thread only.
+        return json.dumps({"error": "invalid_consumer_request", "universe_id": uid})
 
     # Cross-turn memory (founder goal 2026-08-22: a conversation that persists).
     # One continuous session per founder per universe, keyed on the VERIFIED
@@ -3063,13 +3092,16 @@ def converse(
     from tinyassets.universe_intelligence import converse as _converse_impl
 
     memory_universe_dir = _memory_universe_dir(uid)
-    memory_session = f"principal:{current_actor_id()}"
     try:
         from tinyassets.conversation_store import load_recent
 
         conversation_history = load_recent(memory_universe_dir, memory_session)
     except Exception:  # noqa: BLE001 - no memory this turn, never a failed turn
         conversation_history = []
+    if addressed is None:
+        conversation_history = _with_agent_activity(
+            conversation_history, memory_universe_dir, uid, current_actor_id(),
+        )
 
     from tinyassets.providers.execution_receipt import WriterExecutionReceipt
 
@@ -3114,6 +3146,7 @@ def converse(
                 response_observer=execution_receipt.observe,
                 learning_observer=lesson_settled.append,
                 session_key=f"thread:{memory_session}",
+                addressed_agent=addressed,
                 **({} if model_choice is None else {"model_choice": model_choice}),
             )
     except TurnInterrupted as exc:
@@ -3185,6 +3218,8 @@ def converse(
     except Exception:  # noqa: BLE001 - the reply is already earned; memory is best-effort
         logger.warning("converse: conversation memory could not record the turn", exc_info=True)
     payload = {"reply": reply, "universe_id": uid}
+    if addressed is not None:
+        payload["agent"] = {"agent_id": addressed.agent_id, "name": addressed.name}
     if execution is not None:
         payload["execution"] = execution
     if delivered or undelivered:
@@ -3198,6 +3233,50 @@ def _steering_receipt(delivered, undelivered):
         "delivered": [item.id for item in delivered],
         "undelivered": [{"id": item.id, "text": item.text} for item in undelivered],
     }
+
+
+#: Other-agent awareness has its own budget within the main thread's memory block.
+_AGENT_ACTIVITY_TURNS = 6
+_AGENT_ACTIVITY_NOTICE_CHARS = 300
+_AGENT_ACTIVITY_TOTAL_CHARS = 1500
+
+
+def _with_agent_activity(history, universe_dir, universe_id, owner):
+    """The main thread's history plus what the owner's other agents said, by time.
+
+    The main agent is aware of every agent's conversation with the owner in its
+    own universe (harness §4.18, visibility ``universe``). Each other-agent turn
+    rides as a ``platform`` notice naming the agent, so it is untrusted context
+    like the rest of the history, and a resumed native session still receives
+    the ones it has not seen. Never fails the turn.
+    """
+    from tinyassets.conversation_memory import Msg
+    from tinyassets.conversation_store import load_recent_agent_turns
+
+    try:
+        turns = load_recent_agent_turns(universe_dir, owner, limit=_AGENT_ACTIVITY_TURNS)
+        if not turns:
+            return history
+        from tinyassets.addressed_agents import roster
+        from tinyassets.api.helpers import _base_path
+
+        names = {row["agent_id"]: row["name"]
+                 for row in roster(_base_path(), universe_id=universe_id, owner=owner)}
+    except Exception:  # noqa: BLE001 - awareness is never worth a failed turn
+        logger.warning("converse: other agents' activity unreadable", exc_info=True)
+        return history
+    notices = []
+    remaining = _AGENT_ACTIVITY_TOTAL_CHARS
+    for agent_id, msg in reversed(turns):
+        if remaining <= 0:
+            break
+        name = names.get(agent_id, "an agent you no longer have")
+        who = "your founder" if msg.speaker == "founder" else name
+        text = f"[{name}'s conversation] {who}: {msg.text}"
+        text = text[:min(_AGENT_ACTIVITY_NOTICE_CHARS, remaining)]
+        remaining -= len(text)
+        notices.append(Msg("platform", text, msg.ts))
+    return sorted([*history, *notices], key=lambda m: m.ts or 0.0)
 
 
 def _open_steering(universe_dir, memory_session, universe_id, live_id, actor_id):
@@ -4111,6 +4190,7 @@ def get_status(
     include_conversation: bool = False,
     conversation_before: int | None = None,
     conversation_limit: int = 30,
+    conversation_agent: str = "",
 ) -> str:
     """Factual snapshot of the daemon's identity + routing config.
 
@@ -4142,6 +4222,7 @@ def get_status(
         conversation_before: The ``next_before`` a previous peek returned; the
             page then holds the turns just before it. Omit for the newest page.
         conversation_limit: Turns per page, 1 to 30 (default 30).
+        conversation_agent: Which of your agents' threads to read: "main" (default) or its id.
     """
     universe_id = command_center_id  # internal name until C3
     # The model door's projection: a page a model's context can hold. get_status
@@ -4151,6 +4232,7 @@ def get_status(
     return _get_status_impl(
         universe_id=universe_id, include_conversation=include_conversation,
         conversation_before=conversation_before, conversation_limit=page,
+        conversation_agent=conversation_agent,
     )
 
 

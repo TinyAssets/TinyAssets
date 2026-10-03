@@ -268,7 +268,7 @@ def test_first_connect_existing_founder_loads_learned_home_voice(
     apply_soul_edit(
         data_dir / uid,
         changes={"identity.md": "# Identity\n\nI am Aetheria.\n"},
-        source="founder conversation",
+        agent_id="main", source="founder conversation",
         context="The founder named the universe Aetheria.",
         name="Aetheria",
     )

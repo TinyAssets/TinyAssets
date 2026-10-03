@@ -6,7 +6,7 @@ History, because the numbers have moved twice:
   the old daemon after docker's 10-second default and cut turns off mid-flight.
 * #4039 raised it to 180s so turns could finish. On 2026-10-01 that held
   production at 502 from 22:49:48Z to 22:53:04Z behind one long codex turn
-  (``docs/concerns/2026-10-01-deploy-drain-outage-and-watchdog-race.md``).
+  (``docs/audits/2026-10-01-deploy-drain-repro/INCIDENT.md``).
   Uvicorn closes its only listener the moment SIGTERM arrives, and nothing else
   can bind 127.0.0.1:8001 until the old container is gone, so every second of
   drain is a second of outage. The process then sat in "Waiting for application

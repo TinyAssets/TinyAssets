@@ -41,7 +41,7 @@ def test_no_layout_starts_big():
     state = call(f"cloudDefaultState(false, {json.dumps(WIDE)})")
 
     assert state["mode"] == "open" and state["userSet"] is False
-    assert state["open"] == {"x": 12, "y": 12, "w": 1256, "h": 716}
+    assert state["open"] == {"x": 828, "y": 108, "w": 440, "h": 620}
 
 
 def test_no_layout_on_a_phone_starts_as_the_whole_stage():
@@ -55,8 +55,10 @@ def test_a_layout_starts_small_in_the_corner():
 
     assert state["mode"] == "bubble"
     assert state["bubble"] == {"x": 1280 - 56 - 12, "y": 740 - 56 - 12}
-    # Expanding it from there opens it big.
-    assert state["open"]["w"] == 1256
+    # Expanding it opens the same medium rectangle as without a layout.
+    assert state["open"] == {"x": 828, "y": 108, "w": 440, "h": 620}
+    assert call("cloudDefaultState(true, {w:390,h:700})")["open"] == {
+        "x": 0, "y": 280, "w": 390, "h": 420}
 
 
 def test_the_owners_last_state_wins_over_either_default():
@@ -206,4 +208,4 @@ layout=true; refreshChatCloud();
 console.log(JSON.stringify({mode:snap().mode, w:cloudState.open.w}));""")
 
     assert out["mode"] == "open"
-    assert out["w"] == 1256 - 16
+    assert out["w"] == 440 - 16

@@ -579,7 +579,10 @@ def test_native_dialog_close_returns_focus_and_connection_is_real_action(tmp_pat
     result = run_picker(
         tmp_path, '$("btn-model-close").events.click();$("btn-model-connect").events.click();'
     )
-    assert result["focusReturned"] and not result["dialogOpen"] and result["connects"] == 1
+    # Document's capture close listener owns the command-center handoff;
+    # the isolated picker must no longer restore its invoking button.
+    assert not result["focusReturned"]
+    assert not result["dialogOpen"] and result["connects"] == 1
     html, _ = render_app_html()
     # The access sheet survives as a sheet; the BAR BUTTON now controls the
     # dropdown, which is the founder's "just a list dropdown menu".

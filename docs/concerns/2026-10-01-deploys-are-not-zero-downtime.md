@@ -12,8 +12,9 @@ summary: 'A deploy stops the old daemon (bounded at 20s since the 2026-10-01 fix
 tunnel's dashboard ingress is `http://localhost:8001` (compose comments on the `cloudflared` service).
 The repro in `docs/audits/2026-10-01-deploy-drain-repro/` measured a 21.4s dead window per recreate
 during a long tool call.
-**Severity:** P2. The P0 version, a 180s+ outage per deploy, is fixed by
-`docs/concerns/2026-10-01-deploy-drain-outage-and-watchdog-race.md`. This file is what remains.
+**Severity:** P2. The P0 version, 3m16s of 502 per deploy during a turn, was fixed by #4242
+(record: `docs/audits/2026-10-01-deploy-drain-repro/INCIDENT.md`). Measured after the fix on
+2026-10-02: a 27s 502 window with a turn in flight. This file is what remains.
 
 ## What is true
 
@@ -21,8 +22,16 @@ during a long tool call.
 - The new container cannot bind 8001 until the old one is gone.
 - So downtime = drain bound (20s with a turn in flight, about 1s without) + boot (about 3 to 12s to the
   first answer).
-- A drain cut off at 20s also kills that turn's in-flight work. `agent_turn_reconcile` makes that
-  truthful, but the work itself is lost.
+- **A container swap can end an in-flight turn.** Observed 2026-10-02 at 01:30Z: the
+  founder's village turn showed "reply was cut off in transit". Current deploys first run
+  `deploy/wait_for_turns.sh` and wait while the live-work probe reports busy. That reduces
+  interruptions, but the wait is bounded and yields to recovery; a turn can also begin
+  after the final idle poll. A swap that reaches a running turn can still cut it off.
+  `agent_turn_reconcile` settles the row truthfully at boot; it does not resume the lost work.
+- **Guaranteed turn survival is not reachable by tuning the drain alone.** It needs the
+  target architecture's single-execution-owner handover (#4263 S7/S8), so a turn can move
+  to, or keep running beside, the new process. Any interrupted turn's user-visible notice
+  must say it was interrupted by a deploy, never imply it completed.
 
 ## Shape of the fix
 

@@ -118,6 +118,7 @@ def read_graph(
         # graph_id is VERIFIED rather than ignored -- require_founder_home
         # refuses a universe that is not this caller's current home with admin,
         # so a foreign id can never return this caller's bytes under its label.
+        from tinyassets import addressed_agents
         from tinyassets.api.helpers import _base_path, _request_universe
         from tinyassets.api.permissions import current_actor_id, is_authenticated_request
         from tinyassets.conversation_retrieval import read_conversation_page
@@ -127,11 +128,18 @@ def read_graph(
             return json.dumps({"error": "not_found"})
         actor = current_actor_id()
         try:
-            root = require_founder_home(_base_path(), _request_universe(graph_id), actor)
+            base, uid = _base_path(), _request_universe(graph_id)
+            root = require_founder_home(base, uid, actor)
+            agent = addressed_agents.resolve(
+                base, universe_id=uid, owner=actor, agent_id=agent_binding_id,
+            )
+            session = addressed_agents.memory_session(actor, agent.agent_id if agent else "main")
             payload = read_conversation_page(
-                root, f"principal:{actor}", field_name=field_name,
+                root, session, field_name=field_name,
                 offset=output_offset, max_chars=output_max_chars,
             )
+        except addressed_agents.AgentNotAddressable as exc:
+            return json.dumps({"error": str(exc), "agent_not_found": True})
         except PermissionError:
             # Same envelope an absent thread gets: a refusal here must not
             # confirm another account's home exists.

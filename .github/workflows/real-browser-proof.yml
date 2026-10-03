@@ -1,0 +1,126 @@
+name: real-browser-proof
+
+# Why this exists
+# ---------------
+# Some proofs only mean anything in a real browser. The custom-UI frame is the
+# first: a bundle's <form> must fire `submit` for its own script (the sandbox
+# grants allow-forms) while `form-action 'none'` keeps any real submission from
+# going anywhere (tests/test_custom_ui_forms_browser.py, PR #4265). A static
+# assert on the sandbox string cannot show that Chrome actually delivers the
+# event; only Chromium can.
+#
+# The required shards install Chromium and assert these cases in their union.
+# This job provides the same proof before a PR enters the merge queue. It
+# installs Playwright and Chromium on a disposable GitHub-hosted Ubuntu VM and
+# FAILS unless EVERY case marked `@pytest.mark.real_browser` is present in
+# JUnit with no skip, failure or error. The marker is the only list: a new
+# browser proof joins by carrying it (and adding its file to `paths:` below so
+# it retriggers).
+#
+# It is cloud-only test infrastructure: no deployment, no production surface,
+# no account secrets, no self-hosted runner, never the founder's desktop.
+#
+# It is deliberately NOT a branch-protection context, the same as
+# linux-jail-proof. `required-tests` in tests.yml remains the merge gate; this
+# is read before a stamp.
+
+on:
+  pull_request:
+    paths:
+      # This job and its assertion helper.
+      - ".github/workflows/real-browser-proof.yml"
+      - "scripts/ci_assert_junit_case.py"
+      # The custom-UI frame: the sandbox attribute, the frame document and its
+      # headers, and the page that hosts it.
+      - "tinyassets/onboarding/app_ui.js"
+      - "tinyassets/onboarding/ui_frame.py"
+      - "tinyassets/onboarding/app.html"
+      - "pyproject.toml"
+      # The proofs.
+      - "tests/test_custom_ui_forms_browser.py"
+      - "tests/test_app_chat_cloud_browser.py"
+      - "tests/test_app_phone_conversation_browser.py"
+      - "tests/test_app_two_surfaces_browser.py"
+      - "tests/test_custom_ui_real_browser.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: real-browser-proof-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  real-browser-proof:
+    name: real-browser-proof
+    # Ephemeral GitHub-hosted VM only, never self-hosted.
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install the project and Playwright
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e '.[dev,browser]'
+
+      - name: Cache the Playwright browser
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: ms-playwright-${{ runner.os }}-${{ hashFiles('pyproject.toml') }}
+
+      - name: Install Chromium
+        # --with-deps installs the system libraries Chromium needs (apt); the
+        # browser itself comes from the cache when the pinned version matches.
+        run: python -m playwright install --with-deps chromium
+
+      - name: Run the real-browser proofs
+        env:
+          OUT_DIR: ${{ runner.temp }}/browser-out
+        run: |
+          set -euo pipefail
+          # The cases are whatever carries @pytest.mark.real_browser -- the ONE
+          # definition. A plain assignment, so `set -e` stops on the helper's
+          # own failure (it exits 2 when no test carries the marker).
+          listed="$(python scripts/ci_assert_junit_case.py --marker real_browser --list-files)"
+          mapfile -t files <<< "$listed"
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "::error::no test file carries pytest.mark.real_browser"
+            exit 1
+          fi
+          mkdir -p "$OUT_DIR"
+          python -m pytest "${files[@]}" -m real_browser -q -p no:cacheprovider \
+            -o junit_family=xunit1 --basetemp "$RUNNER_TEMP/b" \
+            --junitxml "$OUT_DIR/junit-real-browser.xml"
+
+      - name: Assert every real-browser case executed (a skip is not a pass)
+        # Runs even when pytest is red so the summary names each case's state.
+        if: always()
+        env:
+          JUNIT_PATH: ${{ runner.temp }}/browser-out/junit-real-browser.xml
+        run: |
+          set -euo pipefail
+          python scripts/ci_assert_junit_case.py \
+            --junit "$JUNIT_PATH" \
+            --marker real_browser \
+            --label real-browser-proof \
+            --summary "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload junit
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: junit-real-browser-proof
+          path: ${{ runner.temp }}/browser-out/junit-real-browser.xml
+          if-no-files-found: warn

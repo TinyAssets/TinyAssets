@@ -2042,8 +2042,10 @@ _WRITE_GRAPH_INTERFACES_CHAPTER = """\
 
         await tinyassets.whoami()                  -> {command_center_id, command_center_name}
         await tinyassets.listAgents()              -> {agents:[{agent_id,name,selected}]}
-        await tinyassets.sendMessage(text, agent)  -> sends a turn, as them
-        await tinyassets.readConversation(limit, before) -> {turns:[{speaker,text,at}],
+                  # "main" first; selected = the agent the chat talks to now
+        await tinyassets.openChat(agent)           -> opens the chat with that agent
+        await tinyassets.sendMessage(text, agent)  -> sends a turn, as them, to that agent
+        await tinyassets.readConversation(limit, before, agent) -> {turns:[{speaker,text,at}],
                   has_more, next_before}   # pass next_before as `before` for older
         await tinyassets.listAutomations()         -> {automations:[{automation_id,name,
                   branch_id,trigger,state,last_run_id,last_result,next_due_at,...}]}
@@ -2076,10 +2078,12 @@ _WRITE_GRAPH_INTERFACES_CHAPTER = """\
     where every id differs, so a UI finds its agents by automation or workflow
     NAME, never by an id written into its code.
 
-    Anything else it calls is refused by name. ``sendMessage`` reaches the
-    command center's currently selected conversation; naming a different agent is refused
-    rather than quietly redirected, so a room-per-agent screen should call
-    ``listAgents()`` and act on ``selected`` instead of assuming. Arranging,
+    Anything else it calls is refused by name. Each agent has its own thread
+    and they share one brain. ``agent`` is an ``agent_id`` or name from
+    ``listAgents()``; omitted, it is the agent the chat talks to now. Naming
+    one opens the chat with that agent, so a room-per-agent screen calls
+    ``openChat(agent)`` when the person picks a room. A name that is not one of
+    their agents is refused, never sent to another. Arranging,
     spacing and choosing which conversation design answers are all things a UI
     I build can do; the app has no separate design or layout screen.
 
@@ -3811,6 +3815,23 @@ def read_brain(section: str = "") -> str:
         _current_identity.reset(token)
 
 
+def _acting_agent() -> str:
+    """The agent this engine call acts for, from the launch's own session key.
+
+    Set by the platform for one launch (``?session=``), never by the model. No
+    session is a background or main-thread launch: the main agent. A key that is
+    an agent's thread but does not parse as one of THIS owner's is never main.
+    """
+    from tinyassets.addressed_agents import MAIN_AGENT, agent_of_session
+    from tinyassets.engine_steering import STEERED_PREFIX, _session_key
+
+    session = _session_key()
+    if not session.startswith(STEERED_PREFIX + "agent:"):
+        return MAIN_AGENT
+    agent = agent_of_session(session[len(STEERED_PREFIX):], _ACTOR_ID)
+    return agent if agent and agent != MAIN_AGENT else "unresolved-agent"
+
+
 @mcp.tool
 def write_brain(
     identity: str = "",
@@ -3844,6 +3865,12 @@ def write_brain(
     err = _binding_error()
     if err is not None:
         return err
+    from tinyassets.engine_steering import _session_key
+
+    refused = ""
+    if _session_key().startswith("thread:agent:") and (identity.strip() or name.strip()):
+        refused = "custom agent turns may not set the main agent's name or write identity.md"
+        identity = name = ""
     section_values = {
         "identity": identity,
         "founder": founder,
@@ -3877,7 +3904,7 @@ def write_brain(
         })
     if not (soul or learned_name):
         return json.dumps({
-            "error": (
+            "error": refused or (
                 "nothing to write; pass a section body "
                 "(identity/founder/origin/body/orgchart) or a name."
             ),
@@ -3895,7 +3922,8 @@ def write_brain(
         udir = _universe_dir(_GRAPH_ID)
         proposed: dict = {"name": learned_name, "soul": soul}
         result = commit_learning(
-            udir, proposed, universe_id=_GRAPH_ID, actor_id=_ACTOR_ID
+            udir, proposed, universe_id=_GRAPH_ID, actor_id=_ACTOR_ID,
+            agent_id=_acting_agent(),
         )
         if result is None:
             return json.dumps({
@@ -3904,7 +3932,8 @@ def write_brain(
                     "rejected (e.g. a section that is not governed-editable)."
                 ),
             })
-        return json.dumps({"ok": True, "written": result})
+        return json.dumps({"ok": not refused, "written": result,
+                           **({"error": refused} if refused else {})})
     finally:
         _current_identity.reset(token)
 
@@ -4214,7 +4243,7 @@ async def read_file(path: str, offset: int = 0, limit: int = 0) -> str:
     from tinyassets import universe_tools
 
     return await _universe_tool(
-        universe_tools.read_file, path=path, offset=offset, limit=limit,
+        universe_tools.read_file, agent_id=_acting_agent(), path=path, offset=offset, limit=limit,
     )
 
 
@@ -4223,7 +4252,9 @@ async def write_file(path: str, content: str) -> str:
     """Create or replace a file in /u, making parent folders."""
     from tinyassets import universe_tools
 
-    return await _universe_tool(universe_tools.write_file, path=path, content=content)
+    return await _universe_tool(
+        universe_tools.write_file, agent_id=_acting_agent(), path=path, content=content,
+    )
 
 
 @mcp.tool(name="edit")
@@ -4232,7 +4263,8 @@ async def edit_file(path: str, old_text: str, new_text: str) -> str:
     from tinyassets import universe_tools
 
     return await _universe_tool(
-        universe_tools.edit_file, path=path, old_text=old_text, new_text=new_text,
+        universe_tools.edit_file, agent_id=_acting_agent(), path=path,
+        old_text=old_text, new_text=new_text,
     )
 
 
@@ -4243,7 +4275,9 @@ async def run_bash(command: str, timeout: int = 0) -> str:
     timeout: seconds (default 120, max 600)."""
     from tinyassets import universe_tools
 
-    return await _universe_tool(universe_tools.bash, command=command, timeout=timeout)
+    return await _universe_tool(
+        universe_tools.bash, agent_id=_acting_agent(), command=command, timeout=timeout,
+    )
 
 
 if __name__ == "__main__":

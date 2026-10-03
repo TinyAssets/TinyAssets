@@ -6522,6 +6522,7 @@ def _action_soul_edit(
     try:
         result = apply_soul_edit(
             udir,
+            agent_id="main",
             changes=changes,
             source=str(data.get("source", "")),
             context=str(data.get("context", "")),

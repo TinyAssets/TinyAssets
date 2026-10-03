@@ -1011,7 +1011,7 @@ the rule is:
 
 | Slice | State | Change |
 |---|---|---|
-| S1 sessions and conversation memory | Merged | The main thread keeps `thread:principal:<owner>` and conversation key `principal:<owner>`. Other agents use `agent:<agent_id>:thread:<principal>` and `agent:<agent_id>:principal:<owner>`. No migration |
+| S1 sessions and conversation memory | Merged | The main thread keeps `thread:principal:<owner>` and conversation key `principal:<owner>`. Other agents use conversation key `agent:<agent_id>:principal:<owner>` and session and steering key `thread:agent:<agent_id>:principal:<owner>`: the `thread:` prefix is what S2 steers. No migration |
 | Stop (`turn_interrupt`) | Shipped | Today a stop ends every live turn for (owner, universe). It becomes per agent and thread, with a separate stop-all |
 | S2 steering (#4188) | Merging | Keyed by session key, so it follows S1. The app sends the addressed agent with the steer (D8 UI) |
 | S4 journal (#4190) | Open | S4's activity journal is keyed by session, which names the agent. The shipped `agent_turn_journal` has no session or agent column; add one. The status line shows the agent's name (D8 roster name, "Your agent" until then) |
@@ -1019,7 +1019,7 @@ the rule is:
 | D1d review (#4200) | Merged | `review_off` lacks `agent_id`. Follow-up: rebuild it with `(agent_id, action_class)`, existing rows becoming `main` |
 | D2 activities | In build | `agent_id` on each activity. Effect intents inherit it through `activity_id`. Status lines go to the owning agent's main session, and to any agent whose visibility covers it |
 | Pending requests and push | Shipped | Add the asking agent's id and name ("Your agent asks" becomes "<name> asks"). Deduplication, mute and answer routing are scoped per agent |
-| converse and the app | Shipped | Accept an addressed `agent_id` on a thread. The command center decides which agents are exposed (D8) |
+| converse and the app | Built | `converse`, the steer route and the owner's conversation read take an addressed `agent_id` (`tinyassets/addressed_agents.py`); a custom UI opens the chat addressed to an agent. The command center decides which agents are exposed (D8) |
 | Brain writes | Shipped | Inbox capture files, digest compare-and-swap in the `write` and `edit` tools for brain files, and the fenced reconciler (D3 or D7) |
 | Seats | Shipped | Capacity stays per account; each seat carries the agent for attribution |
 

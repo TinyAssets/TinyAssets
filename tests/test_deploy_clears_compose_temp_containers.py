@@ -6,7 +6,7 @@ run (the systemd unit's, started by a watchdog) raced the deploy's. The deploy's
 rollback `up -d` then failed with "Conflict. The container name
 /1cc5a277f659_tinyassets-daemon is already in use", and the result was
 `deploy_result=rollback_failed`
-(docs/concerns/2026-10-01-deploy-drain-outage-and-watchdog-race.md).
+(docs/audits/2026-10-01-deploy-drain-repro/INCIDENT.md).
 
 This runs the REAL shell function, lifted out of deploy_fail_safe.sh, against a
 recording fake `docker`.

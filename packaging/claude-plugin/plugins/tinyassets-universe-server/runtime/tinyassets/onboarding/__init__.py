@@ -1494,17 +1494,31 @@ async def _handle_turn_steer(request: Any) -> Any:
         return JSONResponse({"error": "invalid_universe"}, status_code=400, headers=_NO_STORE)
 
     def _queue():
-        from tinyassets import agent_steering
-        from tinyassets.api.helpers import _universe_dir
+        from tinyassets import addressed_agents, agent_steering
+        from tinyassets.api.helpers import _base_path, _universe_dir
 
-        return agent_steering.enqueue(
-            _universe_dir(universe_id), f"thread:principal:{identity.user_id}", text,
+        # A steer goes to the agent the owner is talking to (harness §4.18):
+        # that agent's own thread, resolved inside the owner's own universe.
+        addressed = addressed_agents.resolve(
+            _base_path(), universe_id=universe_id, owner=identity.user_id,
+            agent_id=data.get("agent_id"),
         )
+        session = addressed_agents.memory_session(
+            identity.user_id,
+            addressed.agent_id if addressed is not None else addressed_agents.MAIN_AGENT,
+        )
+        return agent_steering.enqueue(_universe_dir(universe_id), f"thread:{session}", text)
 
+    from tinyassets.addressed_agents import AgentNotAddressable
     from tinyassets.agent_steering import SteeringRefused
 
     try:
         queued = await run_in_threadpool(_queue)
+    except AgentNotAddressable as exc:
+        return JSONResponse(
+            {"error": "agent_not_found", "detail": str(exc)},
+            status_code=404, headers=_NO_STORE,
+        )
     except SteeringRefused as exc:
         return JSONResponse(
             {"error": "steering_refused", "detail": str(exc)},

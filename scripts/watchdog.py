@@ -21,7 +21,7 @@ Stands down while a deploy holds the host-mutation lock. A deploy's own
 recreate looks exactly like a dead daemon to this probe. On 2026-10-01 this
 watchdog restarted the unit mid-deploy, and the unit's second compose run
 killed the new container and made the rollback fail
-(docs/concerns/2026-10-01-deploy-drain-outage-and-watchdog-race.md). While the
+(docs/audits/2026-10-01-deploy-drain-repro/INCIDENT.md). While the
 lock is held, a tick resets the red streak and touches nothing. While a tick
 holds the lock, a deploy waits for it.
 

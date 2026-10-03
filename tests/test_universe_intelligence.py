@@ -270,6 +270,7 @@ def test_commit_learning_persists_grounded_soul(tmp_path):
             },
         },
         actor_id="alex",
+        agent_id="main",
     )
     assert result is not None
     assert "founder.md" in result["updated_files"]
@@ -287,6 +288,7 @@ def test_commit_learning_ignores_non_governed_and_empty_bodies(tmp_path):
     result = ui.commit_learning(
         udir,
         {"soul": {"made-up-nonsense.md": "not governed", "founder.md": "   "}},
+        agent_id="main",
     )
     assert result is None
     # governed founder.md untouched; the non-governed file was never created
@@ -296,7 +298,7 @@ def test_commit_learning_ignores_non_governed_and_empty_bodies(tmp_path):
 
 def test_commit_learning_returns_none_when_nothing_grounded(tmp_path):
     udir = _seed(tmp_path)
-    assert ui.commit_learning(udir, {}) is None
+    assert ui.commit_learning(udir, {}, agent_id="main") is None
     assert _fm(udir / "founder.md", "status") == "not-learned"
 
 
@@ -386,6 +388,7 @@ def test_commit_learning_persists_canon_to_universe_wiki(tmp_path, monkeypatch):
             ]
         },
         universe_id="u-test",
+        agent_id="main",
     )
     assert result is not None
     assert result["canon"] == ["The Resonance"]
@@ -490,7 +493,7 @@ def test_commit_learning_drops_generic_identity_boilerplate(tmp_path):
             "founder.md": "My founder is Dana, a documentary filmmaker.",
         }
     }
-    ui.commit_learning(udir, proposed, universe_id="", actor_id="dana")
+    ui.commit_learning(udir, proposed, universe_id="", actor_id="dana", agent_id="main")
 
     # Founder fact persisted; generic identity boilerplate dropped (not learned).
     assert _fm(udir / "founder.md", "status") == "learned"
@@ -507,7 +510,7 @@ def test_commit_learning_keeps_founder_grounded_identity(tmp_path):
             ),
         }
     }
-    ui.commit_learning(udir, proposed, universe_id="", actor_id="dana")
+    ui.commit_learning(udir, proposed, universe_id="", actor_id="dana", agent_id="main")
 
     assert _fm(udir / "identity.md", "status") == "learned"
 

@@ -212,6 +212,27 @@ html,body{margin:0;padding:0;height:100%;font:15px/1.5 system-ui,sans-serif;colo
     if (event.source !== parentWindow) { return; }
     var message = event.data;
     if (!message || typeof message !== "object" || message.ta_ui !== PROTOCOL) { return; }
+    if (message.type === "focus") {
+      window.focus();
+      // Hand the keyboard to this frame without taking it from a control the
+      // UI itself has focused (an input the owner is typing in keeps focus).
+      if (!document.activeElement || document.activeElement === document.body
+          || document.activeElement === document.documentElement) {
+        if (!document.body.hasAttribute("tabindex")) document.body.setAttribute("tabindex", "-1");
+        document.body.focus();
+      }
+      return;
+    }
+    if (message.type === "key") {
+      if (message.phase !== "down" && message.phase !== "up") return;
+      (document.activeElement || document.body).dispatchEvent(new KeyboardEvent(
+        message.phase === "up" ? "keyup" : "keydown", {
+          key: message.key, code: message.code, shiftKey: !!message.shiftKey,
+          altKey: !!message.altKey, ctrlKey: !!message.ctrlKey, metaKey: !!message.metaKey,
+          repeat: !!message.repeat, bubbles: true
+        }));
+      return;
+    }
     if (message.type === "bundle") {
       var bundle = message.bundle;
       if (!bundle || typeof bundle !== "object") { fault("This UI arrived unreadable."); return; }
@@ -234,7 +255,8 @@ html,body{margin:0;padding:0;height:100%;font:15px/1.5 system-ui,sans-serif;colo
     whoami: function () { return call("whoami", {}); },
     listAgents: function () { return call("list_agents", {}); },
     sendMessage: function (text, agent) { return call("send_message", {text: text, agent: agent || ""}); },
-    readConversation: function (limit, before) { return call("read_conversation", {limit: limit || 0, before: before}); },
+    openChat: function (agent) { return call("open_chat", {agent: agent || ""}); },
+    readConversation: function (limit, before, agent) { return call("read_conversation", {limit: limit || 0, before: before, agent: agent || ""}); },
     listAutomations: function () { return call("list_automations", {}); },
     listRuns: function (options) { return call("list_runs", options || {}); },
     readRun: function (runId) { return call("read_run", {run_id: runId}); },

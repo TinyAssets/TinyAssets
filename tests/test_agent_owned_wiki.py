@@ -36,7 +36,7 @@ def _universe(tmp_path: Path) -> Path:
 def test_the_wiki_is_bound_read_write_in_the_tool_jail(tmp_path, monkeypatch):
     universe = _universe(tmp_path)
     monkeypatch.setattr(provider_jail, "BWRAP_RESOLVER", lambda: "/usr/bin/bwrap")
-    argv = universe_tools.tool_jail_argv(universe, ["/bin/true"])
+    argv = universe_tools.tool_jail_argv(universe, ["/bin/true"], agent_id="main")
     rw = dict((dest, src) for src, dest in _pairs(argv, "--bind-try"))
     assert rw["/u/wiki"] == str(universe.resolve() / "wiki")
     ro = {dest for _src, dest in _pairs(argv, "--ro-bind-try")}
@@ -47,7 +47,7 @@ def test_a_universe_without_a_wiki_gets_one_to_write(tmp_path, monkeypatch):
     universe = tmp_path / "data" / "u-new"
     universe.mkdir(parents=True)
     monkeypatch.setattr(provider_jail, "BWRAP_RESOLVER", lambda: "/usr/bin/bwrap")
-    argv = universe_tools.tool_jail_argv(universe, ["/bin/true"])
+    argv = universe_tools.tool_jail_argv(universe, ["/bin/true"], agent_id="main")
     assert (universe / "wiki").is_dir()
     assert "/u/wiki" in {dest for _src, dest in _pairs(argv, "--bind-try")}
 

@@ -108,13 +108,39 @@ def _pairs(argv: list[str], flag: str) -> list[tuple[str, str]]:
     return [(argv[i + 1], argv[i + 2]) for i, a in enumerate(argv[:-2]) if a == flag]
 
 
+@pytest.mark.parametrize("agent_id,identity_flag", [
+    ("agent_binding_w1", "--ro-bind-try"),
+    ("main", "--bind-try"),
+])
+def test_identity_mount_is_writable_only_for_main(tmp_path, monkeypatch, agent_id, identity_flag):
+    universe = _universe(tmp_path)
+    for name in ("identity.md", "founder.md"):
+        (universe / name).write_text("original", encoding="utf-8")
+    monkeypatch.setattr(provider_jail, "BWRAP_RESOLVER", lambda: "/usr/bin/bwrap")
+    argv = universe_tools.tool_jail_argv(universe, ["/bin/true"], agent_id=agent_id)
+    identity = (str(universe.resolve() / "identity.md"), "/u/identity.md")
+    assert identity in _pairs(argv, identity_flag)
+    other_flag = "--bind-try" if identity_flag == "--ro-bind-try" else "--ro-bind-try"
+    assert identity not in _pairs(argv, other_flag)
+    assert (str(universe.resolve() / "founder.md"), "/u/founder.md") in _pairs(
+        argv, "--bind-try")
+
+
+@pytest.mark.parametrize("agent_id", ["", " \t\n"])
+def test_tool_jail_refuses_blank_agent_id(tmp_path, agent_id):
+    with pytest.raises(UniverseToolError, match="agent_id is required"):
+        universe_tools.tool_jail_argv(tmp_path, ["/bin/true"], agent_id=agent_id)
+    with pytest.raises(UniverseToolError, match="agent_id is required"):
+        universe_tools._universe_view(tmp_path, agent_id=agent_id)
+
+
 def test_tool_jail_argv_has_no_network_no_env_and_only_the_universe_at_u(
     tmp_path, monkeypatch,
 ):
     universe = _universe(tmp_path)
     (universe / "identity.md").write_text("---\nname: A\n---\n", encoding="utf-8")
     monkeypatch.setattr(provider_jail, "BWRAP_RESOLVER", lambda: "/usr/bin/bwrap")
-    argv = universe_tools.tool_jail_argv(universe, ["/bin/true"])
+    argv = universe_tools.tool_jail_argv(universe, ["/bin/true"], agent_id="main")
     root = str(universe.resolve())
 
     assert "--share-net" not in argv
@@ -165,7 +191,7 @@ def test_the_owners_credentials_and_authority_state_are_absent_from_the_jail(
     (universe / "soul.md").write_text("# soul", encoding="utf-8")
     (universe / "config.yaml").write_text("timeout: 5\n", encoding="utf-8")
     monkeypatch.setattr(provider_jail, "BWRAP_RESOLVER", lambda: "/usr/bin/bwrap")
-    argv = universe_tools.tool_jail_argv(universe, ["/bin/true"])
+    argv = universe_tools.tool_jail_argv(universe, ["/bin/true"], agent_id="main")
 
     workspace = str(universe.resolve() / universe_tools.WORKSPACE_DIR)
     for arg in argv:
@@ -188,7 +214,7 @@ def test_a_symlinked_root_entry_is_never_bound(tmp_path, monkeypatch):
     except (OSError, NotImplementedError):
         pytest.skip("this host cannot create a symlink")
     monkeypatch.setattr(provider_jail, "BWRAP_RESOLVER", lambda: "/usr/bin/bwrap")
-    argv = universe_tools.tool_jail_argv(universe, ["/bin/true"])
+    argv = universe_tools.tool_jail_argv(universe, ["/bin/true"], agent_id="main")
     assert not any(str(other.resolve()) in arg for arg in argv)
     assert "/u/notes" not in argv and "/u/founder.md" not in argv
 
@@ -199,7 +225,7 @@ def test_an_entry_gone_before_the_launch_is_skipped_not_refused(tmp_path, monkey
     ``-try``, and the view still validates when its source has vanished."""
     universe = _universe(tmp_path)
     (universe / "story.db-shm").write_bytes(b"shm")
-    view = universe_tools._universe_view(universe.resolve())
+    view = universe_tools._universe_view(universe.resolve(), agent_id="main")
     (universe / "story.db-shm").unlink()
     argv = jail_argv(["/bin/true"], view, bwrap_path="/usr/bin/bwrap")
     assert (str(universe.resolve() / "story.db-shm"), "/u/story.db-shm") in _pairs(
@@ -207,7 +233,7 @@ def test_an_entry_gone_before_the_launch_is_skipped_not_refused(tmp_path, monkey
     # Replaced by a link after the scan: the argv is refused, not bound to it.
     other = _universe(tmp_path, "u-bravo")
     (universe / "lore").mkdir()
-    view = universe_tools._universe_view(universe.resolve())
+    view = universe_tools._universe_view(universe.resolve(), agent_id="main")
     (universe / "lore").rmdir()
     try:
         (universe / "lore").symlink_to(other, target_is_directory=True)
@@ -224,11 +250,9 @@ def test_an_entry_gone_before_the_launch_is_skipped_not_refused(tmp_path, monkey
 
 
 def test_the_jail_loads_a_filter_refusing_links_and_special_files(tmp_path, monkeypatch):
-    import struct
-
     universe = _universe(tmp_path)
     monkeypatch.setattr(provider_jail, "BWRAP_RESOLVER", lambda: "/usr/bin/bwrap")
-    argv = universe_tools.tool_jail_argv(universe, ["/bin/true"], seccomp_fd=7)
+    argv = universe_tools.tool_jail_argv(universe, ["/bin/true"], agent_id="main", seccomp_fd=7)
     assert argv[argv.index("--seccomp") + 1] == "7"
     assert argv.index("--seccomp") < argv.index("--")
 
@@ -260,7 +284,7 @@ def test_no_prlimit_refuses_before_anything_runs(tmp_path, monkeypatch):
     monkeypatch.setattr(universe_tools.subprocess, "Popen",
                         lambda *a, **k: spawned.append(a))
     with pytest.raises(UniverseToolError, match="prlimit"):
-        universe_tools.run_jailed(universe, ["/bin/true"])
+        universe_tools.run_jailed(universe, ["/bin/true"], agent_id="main")
     assert spawned == []
 
 
@@ -277,7 +301,7 @@ def test_no_os_sandbox_refuses_before_anything_runs(tmp_path, monkeypatch):
     monkeypatch.setattr(universe_tools.subprocess, "Popen",
                         lambda *a, **k: spawned.append(a))
     with pytest.raises(ProviderConfinementError):
-        universe_tools.run_jailed(universe, ["/bin/true"])
+        universe_tools.run_jailed(universe, ["/bin/true"], agent_id="main")
     assert spawned == []
 
 
@@ -291,7 +315,7 @@ def test_a_jail_that_never_proves_its_limits_is_refused(tmp_path, monkeypatch):
     monkeypatch.setattr(universe_tools, "TOOL_JAIL_ARGV",
                         lambda udir, inner, **_kw: ["/bin/sh", "-c", "echo unlimited output"])
     with pytest.raises(UniverseToolError, match="did not start under its resource limits"):
-        universe_tools.run_jailed(universe, ["/bin/true"])
+        universe_tools.run_jailed(universe, ["/bin/true"], agent_id="main")
 
 
 @posix_only
@@ -309,7 +333,7 @@ def test_a_root_run_jail_without_a_cgroup_is_refused(tmp_path, monkeypatch):
     monkeypatch.setattr(universe_tools.subprocess, "Popen",
                         lambda *a, **k: spawned.append(a))
     with pytest.raises(UniverseToolError, match="exempts root from the process limit"):
-        universe_tools.run_jailed(universe, ["/bin/true"])
+        universe_tools.run_jailed(universe, ["/bin/true"], agent_id="main")
     assert spawned == []
 
 
@@ -402,7 +426,7 @@ def test_edit_replaces_exactly_one_match_and_writes_it_back(tmp_path, monkeypatc
     universe = _universe(tmp_path)
     spy = _Spy(_ok(b"alpha\nbeta\n"), _ok())
     monkeypatch.setattr(universe_tools, "RUNNER", spy)
-    assert universe_tools.edit_file(universe, "notes/a.md", "beta", "gamma") == (
+    assert universe_tools.edit_file(universe, "notes/a.md", "beta", "gamma", agent_id="main") == (
         "edited /u/notes/a.md"
     )
     write = spy.calls[1]
@@ -418,7 +442,7 @@ def test_edit_refuses_an_ambiguous_or_missing_passage(tmp_path, monkeypatch, con
     universe = _universe(tmp_path)
     spy = _Spy(_ok(content))
     monkeypatch.setattr(universe_tools, "RUNNER", spy)
-    assert expect in universe_tools.edit_file(universe, "a.md", "beta", "x")
+    assert expect in universe_tools.edit_file(universe, "a.md", "beta", "x", agent_id="main")
     assert len(spy.calls) == 1, "nothing is written back"
 
 
@@ -426,13 +450,13 @@ def test_paths_are_the_jails_paths_and_the_jail_is_the_boundary(tmp_path, monkey
     universe = _universe(tmp_path)
     spy = _Spy()
     monkeypatch.setattr(universe_tools, "RUNNER", spy)
-    universe_tools.read_file(universe, "skills/x/SKILL.md")
-    universe_tools.read_file(universe, "/data/u-bravo/founder.md")
+    universe_tools.read_file(universe, "skills/x/SKILL.md", agent_id="main")
+    universe_tools.read_file(universe, "/data/u-bravo/founder.md", agent_id="main")
     assert spy.calls[0]["inner"][4] == "/u/skills/x/SKILL.md"
     # Not rewritten, not "cleaned": outside /u it simply does not exist in the jail.
     assert spy.calls[1]["inner"][4] == "/data/u-bravo/founder.md"
     with pytest.raises(UniverseToolError):
-        universe_tools.read_file(universe, "")
+        universe_tools.read_file(universe, "", agent_id="main")
 
 
 @pytest.mark.parametrize(("run", "trailer"), [
@@ -450,7 +474,7 @@ def test_bash_reports_how_the_command_ended(tmp_path, monkeypatch, run, trailer)
     monkeypatch.setattr(universe_tools.shutil, "which",
                         lambda name, path=None: f"/usr/bin/{name}")
     monkeypatch.setattr(universe_tools, "RUNNER", _Spy(run))
-    assert trailer in universe_tools.bash(universe, "echo hi")
+    assert trailer in universe_tools.bash(universe, "echo hi", agent_id="main")
 
 
 def test_bash_clamps_its_wall_clock(tmp_path, monkeypatch):
@@ -459,8 +483,8 @@ def test_bash_clamps_its_wall_clock(tmp_path, monkeypatch):
                         lambda name, path=None: f"/usr/bin/{name}")
     spy = _Spy(_ok(), _ok())
     monkeypatch.setattr(universe_tools, "RUNNER", spy)
-    universe_tools.bash(universe, "true", timeout=99999)
-    universe_tools.bash(universe, "true")
+    universe_tools.bash(universe, "true", agent_id="main", timeout=99999)
+    universe_tools.bash(universe, "true", agent_id="main")
     assert spy.calls[0]["wall_seconds"] == universe_tools.MAX_BASH_SECONDS
     assert spy.calls[1]["wall_seconds"] == universe_tools.DEFAULT_LIMITS.wall_seconds
 
@@ -807,7 +831,7 @@ def test_a_soul_edit_refuses_alias_frontmatter_without_expanding_it(tmp_path):
                                           encoding="utf-8")
     with pytest.raises(SoulEditError, match="refused"):
         apply_soul_edit(universe, changes={"identity.md": "new identity body"},
-                        source="test", context="c", summary="s")
+                        agent_id="main", source="test", context="c", summary="s")
 
 
 def test_a_soul_edit_refuses_an_oversized_governed_file(tmp_path):
@@ -818,7 +842,7 @@ def test_a_soul_edit_refuses_an_oversized_governed_file(tmp_path):
                                           encoding="utf-8")
     with pytest.raises(SoulEditError, match="over its bound"):
         apply_soul_edit(universe, changes={"identity.md": "new identity body"},
-                        source="test", context="c", summary="s")
+                        agent_id="main", source="test", context="c", summary="s")
 
 
 def test_soul_versions_are_listed_and_read_without_following_links(tmp_path):

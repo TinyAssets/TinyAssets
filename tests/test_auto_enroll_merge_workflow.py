@@ -14,6 +14,10 @@ user credential, refuses to run without one, and checks who it enrolled as.
 
 from __future__ import annotations
 
+import json
+import os
+import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -47,6 +51,71 @@ def test_workflow_is_parseable_yaml(source):
 def _steps(source: str) -> list[dict]:
     yaml = pytest.importorskip("yaml")
     return yaml.safe_load(source)["jobs"]["enroll"]["steps"]
+
+
+@pytest.mark.parametrize(
+    "change,armed,read_fails,disabled,exit_code",
+    [
+        ({}, True, False, True, 0),
+        ({"headRefOid": "b" * 40}, True, False, False, 0),
+        ({"baseRefOid": "c" * 40}, True, False, False, 0),
+        ({"body": "new valid review receipt"}, True, False, False, 0),
+        ({"autoMergeRequest": {"enabledAt": "new enrollment"}}, True, False, False, 0),
+        ({}, True, True, False, 1),
+        ({}, False, False, False, 0),
+    ],
+)
+def test_stale_receipt_denial_cannot_disarm_newer_state(
+    source, tmp_path, change, armed, read_fails, disabled, exit_code
+):
+    """Execute the real deny branch, with all GitHub I/O replaced offline."""
+    bash = shutil.which("bash")
+    if os.name == "nt" and shutil.which("git"):
+        # Prefer Git Bash to the unrelated Windows WSL launcher on PATH.
+        git_root = Path(shutil.which("git")).resolve().parents[1]
+        bash = shutil.which("bash", path=str(git_root / "bin"))
+    assert bash, "workflow regression requires bash (provided by CI or Git for Windows)"
+    run = next(s for s in _steps(source) if s.get("name") == "Enable auto-merge")["run"]
+    deny = run[run.index('if [ "$REVIEW_GATE" = "deny" ]; then'):run.index("# Queue-attempt cap:")]
+    initial = {
+        "headRefOid": "a" * 40,
+        "baseRefOid": "d" * 40,
+        "body": "invalid receipt",
+        "autoMergeRequest": {"enabledAt": "original enrollment"} if armed else None,
+    }
+    script = """set -euo pipefail
+gh() {
+  if [ "$1 $2" = "pr view" ]; then
+    if [ "$READ_FAILS" = "yes" ]; then return 1; fi
+    printf '%s' "$LATEST_PR_JSON"
+  elif [ "$1 $2" = "pr merge" ]; then
+    printf 'MUTATION %s\\n' "$*"
+  else
+    echo "unexpected command" >&2; return 2
+  fi
+}
+""" + deny
+    result = subprocess.run(
+        [bash, "--noprofile", "--norc"],
+        input=script.encode("utf-8"),
+        capture_output=True,
+        cwd=tmp_path,
+        env={
+            **os.environ,
+            "STATE": "yes" if armed else "no",
+            "REVIEW_GATE": "deny",
+            "PR": "123",
+            "REPO": "example/repo",
+            "PR_JSON": json.dumps(initial),
+            "LATEST_PR_JSON": json.dumps(initial | change),
+            "READ_FAILS": "yes" if read_fails else "no",
+            "GITHUB_STEP_SUMMARY": (tmp_path / "summary").as_posix(),
+        },
+        timeout=10,
+    )
+    assert result.returncode == exit_code, result.stderr
+    mutation = b"MUTATION pr merge 123 --repo example/repo --disable-auto"
+    assert (mutation in result.stdout) == disabled
 
 
 def test_enrollment_uses_the_attribution_token_with_no_fallback(source):

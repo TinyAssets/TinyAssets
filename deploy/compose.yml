@@ -77,7 +77,7 @@ services:
     # 180s here (#4039) let one long codex turn hold production down from
     # 22:49:48Z to 22:53:04Z on 2026-10-01: the process blocked in lifespan
     # shutdown on the turn's worker thread until docker force-killed it
-    # (docs/concerns/2026-10-01-deploy-drain-outage-and-watchdog-race.md).
+    # (docs/audits/2026-10-01-deploy-drain-repro/INCIDENT.md).
     #
     # The drain never saved the reply anyway: sse-starlette cancels the SSE
     # response as shutdown begins (docs/audits/2026-09-26-pr4039-drain-repro.py).

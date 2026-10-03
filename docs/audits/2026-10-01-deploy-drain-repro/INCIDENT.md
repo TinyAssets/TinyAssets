@@ -1,16 +1,11 @@
----
-severity: P0
-title: A deploy during a long turn is up to 180s of public 502, and the watchdogs race the swap
-filed: '2026-10-01'
-summary: 'Deploy run 36937114232 took /app and /mcp to 502 from 22:49:48Z to 22:53:04Z. The old daemon closes its listener on SIGTERM and then blocks in lifespan shutdown on the in-flight turn until docker SIGKILLs it at stop_grace_period=180s. Mid-drain, both host watchdogs restarted the daemon through their own compose runs without the host-mutation lock. That killed the new container and made the rollback fail on a compose temp-name conflict (rollback_failed, rc=3).'
----
+# Incident 2026-10-01: a deploy during a long turn was 3m16s of public 502
 
-# A deploy during a long turn is up to 180s of public 502, and the watchdogs race the swap
+Resolved by #4242 and moved here from `docs/concerns/` (2026-10-02) as the incident record.
+The repro (`run.py`) and its compose file sit beside this file.
 
 **Filed:** 2026-10-01
 **Verified:** 2026-10-01, production droplet (`ssh workflow-droplet`), `docker events --since 40m`,
 `journalctl --since "2026-10-01 22:45" --until "2026-10-01 22:56"`; repo at origin/main `6d272dde`.
-**Severity:** P0 (Forever Rule: the public surface went down)
 
 ## Timeline (UTC, 2026-10-01)
 
@@ -46,11 +41,13 @@ summary: 'Deploy run 36937114232 took /app and /mcp to 502 from 22:49:48Z to 22:
 2. **Three uncoordinated mutators.** Each watchdog reads the drain as a dead daemon and restarts it through
    a second compose run. That turns a slow deploy into a failed deploy and a failed rollback.
 
-## Fix (in flight: branch `fix/deploy-hang-bounded-shutdown`)
+## Fix (#4242, merged f2eadb88)
 
 Bounded short drain; the deploy stops the old container with an explicit `docker stop -t` bound; both
 watchdogs stand down while the host-mutation lock is held; converge removes compose temp-named daemon
-containers. Delete this file when the fix is deployed and a deploy with a turn in flight is proven.
+containers. Two Codex gpt-6-astra refute rounds added: the watchdogs hold the lock for the whole restart
+job, the lock is created as root, the unit's converge and `docker restart` carry `--timeout 20`/`-t 20`,
+and temp-container cleanup skips running containers.
 
 ## Reproduction (2026-10-01, Docker Desktop, compose v5.1.4, fastmcp 3.4.7, uvicorn 0.54.0)
 
@@ -65,6 +62,18 @@ container while probing the port every 0.25s:
 
 Each converge equals the SIGKILL bound, not uvicorn's 10s graceful timeout. That confirms the lifespan
 hang on the worker thread, and shows `--timeout` overrides the create-time StopTimeout.
+
+## Proof in production (2026-10-02)
+
+#4242's own deploy (f2eadb88, run 36951022215) landed while a long founder turn was running:
+
+- docker events: SIGTERM 01:30:35Z, SIGKILL at 01:30:55Z (exit 137). That is exactly the 20s bound,
+  overriding the old container's 180s StopTimeout. The new container has StopTimeout=20.
+- A public probe of `https://tinyassets.io/mcp` every 0.5s saw 502 from 01:30:34Z to 01:31:01Z, about
+  27s against 3m16s in the incident. No watchdog restart interfered.
+- `deployed_sha.py --assert-contains f2eadb88...` reported SHIPPED; the public canary passed.
+- The in-flight turn was cut off ("reply was cut off in transit"). The bound ends turns; it does not
+  save them.
 
 ## Not fixed by this
 

@@ -172,7 +172,7 @@ def test_converse_logs_a_note_when_learning_is_skipped(agent, monkeypatch, caplo
         skipped = universe_intelligence._learn_from_turn(
             agent.served.context, universe_dir=agent.served.context.universe_dir,
             universe_id=agent.served.context.universe_dir.name,
-            founder_message="taught", reply="replied", actor_id="owner",
+            founder_message="taught", reply="replied", actor_id="owner", agent_id="main",
         )
     assert skipped is False
     records = [r for r in caplog.records if "learning" in r.getMessage()]

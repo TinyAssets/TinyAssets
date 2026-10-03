@@ -2748,7 +2748,7 @@ def test_daemon_watchdog_stands_down_while_a_deploy_holds_the_lock(tmp_path, tri
     2026-10-01: the unit was inactive and the container absent mid-recreate, so
     this script restarted the container. That helped kill the new image and
     fail the rollback
-    (docs/concerns/2026-10-01-deploy-drain-outage-and-watchdog-race.md).
+    (docs/audits/2026-10-01-deploy-drain-repro/INCIDENT.md).
     flock is mocked here, so this proves the script ASKS for the deploy's lock
     on fd 8 and stops when it is held. It does not prove kernel lock semantics.
     """

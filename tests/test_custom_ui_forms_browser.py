@@ -18,6 +18,9 @@ import pytest
 
 from tinyassets.onboarding.ui_frame import BOOTSTRAP_HTML, FRAME_HEADERS
 
+# Run, with a skip counted as a failure, by .github/workflows/real-browser-proof.yml.
+pytestmark = pytest.mark.real_browser
+
 APP_UI = (Path(__file__).resolve().parents[1] / "tinyassets" / "onboarding"
           / "app_ui.js").read_text(encoding="utf-8")
 SANDBOX = re.search(r'SANDBOX:"([^"]*)"', APP_UI).group(1)

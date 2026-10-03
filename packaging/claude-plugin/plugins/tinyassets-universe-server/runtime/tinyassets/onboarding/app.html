@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content" />
   <title>TinyAssets</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns=%22http://www.w3.org/2000/svg%22%20viewBox=%220%200%2064%2064%22%20width=%2264%22%20height=%2264%22%20role=%22img%22%20aria-label=%22TinyAssets:%20Mount%20Baker%20under%20a%20wolf%20moon%22%3E%3Cdefs%3E%3CclipPath%20id=%22ta-badge%22%3E%3Crect%20width=%2264%22%20height=%2264%22%20rx=%2213%22/%3E%3C/clipPath%3E%3C/defs%3E%3Crect%20width=%2264%22%20height=%2264%22%20rx=%2213%22%20fill=%22#1b1b24%22/%3E%3Cg%20clip-path=%22url%28#ta-badge%29%22%3E%3Cpath%20d=%22M-3%2027%20C14%2019%2026%209%2043%206%22%20fill=%22none%22%20stroke=%22#c9b6ff%22%20stroke-width=%221.7%22%20stroke-linecap=%22round%22%20opacity=%220.72%22/%3E%3C/g%3E%3Cg%20clip-path=%22url%28#ta-badge%29%22%3E%3Cpath%20d=%22M13%2011.9%20L13.242%2012.758%20L14.1%2013%20L13.242%2013.242%20L13%2014.1%20L12.758%2013.242%20L11.9%2013%20L12.758%2012.758%20Z%22%20fill=%22#f2efe6%22/%3E%3C/g%3E%3Cg%20clip-path=%22url%28#ta-badge%29%22%3E%3Ccircle%20cx=%2225%22%20cy=%229%22%20r=%220.65%22%20fill=%22#f2efe6%22/%3E%3C/g%3E%3Cg%20clip-path=%22url%28#ta-badge%29%22%3E%3Ccircle%20cx=%2248%22%20cy=%2214.5%22%20r=%226%22%20fill=%22#f2efe6%22/%3E%3C/g%3E%3Cg%20clip-path=%22url%28#ta-badge%29%22%3E%3Ccircle%20cx=%2248%22%20cy=%2214.5%22%20r=%225.1%22%20fill=%22#e0703f%22/%3E%3C/g%3E%3Cg%20clip-path=%22url%28#ta-badge%29%22%3E%3Cpath%20d=%22M-5%2064%20L-5%2045%20L3%2039%20L7%2042%20L11%2036%20L15%2041%20L19%2035%20L23%2038%20L31%2028%20L36%2022%20L40%2020.5%20L45%2020.8%20L49%2022.5%20L53%2027%20L57%2029%20L61%2034%20L69%2040%20L69%2064%20Z%22%20fill=%22#f2efe6%22/%3E%3C/g%3E%3Cg%20clip-path=%22url%28#ta-badge%29%22%3E%3Cpath%20d=%22M30%2037%20L37%2024%20L41%2023%20L36%2038%20Z%22%20fill=%22#1b1b24%22/%3E%3C/g%3E%3Cg%20clip-path=%22url%28#ta-badge%29%22%3E%3Cpath%20d=%22M46%2039%20L51%2029%20L55%2032%20L51%2041%20Z%22%20fill=%22#1b1b24%22/%3E%3C/g%3E%3Cg%20clip-path=%22url%28#ta-badge%29%22%3E%3Cpath%20d=%22M-4%2064%20L-4%2056%20Q9%2052.5%2022%2054%20Q35%2056.2%2047%2053.6%20Q57%2051.4%2068%2050%20L68%2064%20Z%22%20fill=%22#1b1b24%22/%3E%3C/g%3E%3Cg%20clip-path=%22url%28#ta-badge%29%22%3E%3Cg%20transform=%22translate%2821%2037.5%29%20scale%280.66%29%22%3E%3Cpath%20d=%22M27.42%200.20%20L19.38%205.10%20L20.39%206.02%20L16.77%209.36%20L6.82%2012.19%20L0%2021.91%20L3.80%2021.52%20L6.09%2018.38%20L4.44%2025.52%20L6.82%2025.97%20L6.12%2023.20%20L10.07%2019.16%20L8.82%2022.55%20L10.35%2025.69%20L12.51%2025.78%20L10.53%2022.81%20L12.90%2018.94%20L12.81%2016.89%20L17.77%2016.84%20L19.23%2025.50%20L21.61%2025.86%20L20.18%2023.37%20L20.94%2017.26%20L22.09%2025.36%20L24.56%2025.69%20L22.94%2023.73%20L23.67%2015.72%20L26.11%2012.64%20L27.17%205.88%20L28.82%202.52%20L27.33%203.22%20Z%22%20fill=%22#14140f%22/%3E%3C/g%3E%3C/g%3E%3C/svg%3E" />
   <style nonce="__TA_NONCE__">
@@ -16,7 +16,7 @@
     *{box-sizing:border-box}
     html,body{margin:0;height:100%;background:var(--bg);color:var(--ink);
       font:16px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
-    .app{height:100dvh;display:flex;flex-direction:column}
+    .app{height:var(--app-h,100dvh);display:flex;flex-direction:column}
     .view{flex:1;min-height:0;display:flex;flex-direction:column}
     [hidden]{display:none!important}
     /* sign-in */
@@ -77,8 +77,6 @@
     .model-dialog li{margin:.5rem 0;overflow-wrap:anywhere}
     .model-dialog .model-actions{display:flex;flex-wrap:wrap;gap:.4rem;margin:.7rem 0}
     /* chat */
-    .chat-header{display:flex;align-items:center;justify-content:space-between;padding:.8rem 1rem;
-      border-bottom:1px solid var(--line);background:var(--surface);padding-top:max(.8rem,env(safe-area-inset-top))}
     .chat-title{display:flex;align-items:center;gap:.55rem;font-weight:600}
     .universe-name{max-width:52vw;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
     .chat-actions{display:flex;gap:.3rem}
@@ -276,7 +274,14 @@
     #ui-frame-host{position:absolute;inset:0;display:flex;min-height:0}
     .ui-frame{flex:1;width:100%;border:0;min-height:20rem;background:var(--bg)}
     /* The chat cloud: the conversation floats over the command center. */
+    #cc-blank{position:absolute;inset:0;padding:2rem;box-sizing:border-box;background:var(--bg)}
+    #cc-blank[hidden]{display:none}
+    #cloud-menu{position:absolute;right:.5rem;top:2.5rem;z-index:10;background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:.4rem}
+    #cloud-menu button{display:block}
+    .chat-cloud-bar .universe-name{max-width:40%;font-size:.82rem}
     .chat-stage{position:relative;flex:1;min-height:0;overflow:hidden}
+    /* With no header, the stage itself keeps clear of a phone's status bar. */
+    .view--chat{padding-top:env(safe-area-inset-top)}
     .chat-cloud{position:absolute;display:flex;flex-direction:column;min-width:0;min-height:0;
       background:var(--bg);border:1px solid var(--line);border-radius:var(--radius);
       box-shadow:0 12px 40px rgba(0,0,0,.45);overflow:hidden;z-index:5}
@@ -321,6 +326,34 @@
     @keyframes cloud-pulse{0%,100%{box-shadow:0 0 0 0 rgba(120,140,255,.55)}50%{box-shadow:0 0 0 8px rgba(120,140,255,0)}}
     @media (prefers-reduced-motion:reduce){.chat-cloud-bubble.is-thinking{animation:none;outline:2px dashed var(--accent)}}
     #ui-mode{font-size:.8rem}
+    @media (max-width:600px){
+      #chat-cloud-bar{flex-wrap:nowrap;min-height:40px}
+      #chat-cloud-bar button{min-width:36px;min-height:36px}
+      #cloud-menu button{min-height:40px}
+      #chat-cloud{border-radius:0}
+      #chat-cloud-resize{display:none}
+      #chat-cloud-body > *{flex:0 0 auto}
+      #chat-cloud-body > .chat-body{flex:1;min-height:0;flex-direction:column}
+      #thread{flex:1;min-height:0;padding:12px}
+      #request-rail{flex:0 0 auto;width:auto;padding:0 8px;gap:0;max-height:45%;overflow-y:auto}
+      /* Collapsed, the chip and any load error stay; everything else (items,
+         "Add a key yourself") is one tap away. renderRail still decides when
+         the rail shows at all. */
+      #request-rail:not(.rail--open) > :not(#rail-head):not(#rail-error){display:none}
+      #rail-head{padding:8px 0;margin:0;white-space:nowrap;cursor:pointer;text-transform:none;letter-spacing:normal}
+      #model-bar{flex-wrap:nowrap;gap:8px;padding:4px 8px;white-space:nowrap}
+      #model-next{min-width:0;overflow:hidden;text-overflow:ellipsis;font-size:12px}
+      #btn-models{flex:none;font-size:12px;padding:5px 8px;white-space:nowrap}
+      #composer{grid-template-columns:36px 36px minmax(0,1fr) auto;gap:4px;padding:4px 8px;
+        padding-bottom:max(4px,env(safe-area-inset-bottom))}
+      #composer #voice-output-select{display:none}
+      #composer #btn-attach{grid-column:1;grid-row:1;width:36px;height:36px;padding:0}
+      #composer #btn-voice{grid-column:2;grid-row:1;width:36px;height:36px;min-width:0;padding:0;font-size:0}
+      #btn-voice::after{content:"\1f3a4";font-size:18px}
+      #composer #composer-input{grid-column:1/4;grid-row:2;min-width:0}
+      #composer #btn-send,#composer #btn-stop{grid-column:4;grid-row:2;padding:8px 12px}
+      #status-line{padding-bottom:2px;min-height:0}
+    }
   </style>
 </head>
 <body>
@@ -346,25 +379,6 @@
 
     <!-- Signed-in: the single chat thread. -->
     <section id="view-chat" class="view view--chat" hidden>
-      <header class="chat-header">
-        <div class="chat-title">
-          <span id="dot" class="dot" title="checking..."></span>
-          <span id="universe-name" class="universe-name">Your command center</span>
-        </div>
-        <nav class="chat-actions">
-          <span id="ui-mode" hidden></span>
-          <button id="btn-ui-switch" class="btn btn--link" hidden>Switch command center</button>
-          <button id="btn-plan" class="btn btn--link" hidden>Plan</button>
-          <button id="btn-account" class="btn btn--link">Account</button>
-          <button id="btn-signout" class="btn btn--link">Sign out</button>
-        </nav>
-      </header>
-      <div id="history-error" class="muted history-error" role="status" hidden></div>
-      <div id="notify-prompt" class="notify-prompt" role="status" hidden>
-        <span id="notify-prompt-text" class="notify-prompt-text"></span>
-        <button id="btn-notify-prompt-on" class="btn btn--link" type="button">Turn on</button>
-        <button id="btn-notify-prompt-dismiss" class="btn btn--link" type="button">No thanks</button>
-      </div>
       <!-- The stage is the command center: a custom UI fills it, and the chat with
            your agent floats above it as a movable, resizable "chat cloud" that can
            shrink to a bubble. Every element of the chat keeps its id. -->
@@ -372,18 +386,42 @@
       <!-- A user-authored UI is hosted here and NOWHERE else: its own iframe on a
            sandboxed, opaque origin (see tinyassets/onboarding/ui_frame.py). No
            bundle markup, style or script is ever assigned into this document. -->
+      <div id="cc-blank" tabindex="-1" aria-label="Command center">
+        <p>Your command center is empty.</p>
+        <p>Build your own with your agent, or try one.</p>
+        <button id="btn-cc-build" class="btn" type="button">Build one with my agent</button>
+        <button id="btn-cc-try" class="btn" type="button">Try one</button>
+        <div id="cc-blank-picker"></div>
+      </div>
       <div id="ui-frame-host" hidden></div>
       <section id="chat-cloud" class="chat-cloud" data-agent="main" data-mode="open"
                aria-label="Chat with your agent">
       <div id="chat-cloud-bar" class="chat-cloud-bar" tabindex="0"
            aria-label="Chat window. Arrow keys move it; Shift and arrow keys resize it."
            aria-describedby="chat-cloud-title">
+        <span id="dot" class="dot" title="checking..."></span>
+        <span id="universe-name" class="universe-name">Your command center</span>
+        <button id="btn-cloud-menu" class="chat-cloud-btn" type="button" aria-label="Command center menu" aria-haspopup="true" aria-expanded="false" aria-controls="cloud-menu">&#8943;</button>
+        <div id="cloud-menu" hidden>
+          <span id="ui-mode" hidden></span>
+          <button id="btn-ui-switch" class="btn btn--link" hidden>Switch command center</button>
+          <button id="btn-plan" class="btn btn--link" hidden>Plan</button>
+          <button id="btn-account" class="btn btn--link">Account</button>
+          <button id="btn-signout" class="btn btn--link">Sign out</button>
+        </div>
         <span id="chat-cloud-title" class="chat-cloud-title">Your agent</span>
         <button id="btn-cloud-shrink" class="chat-cloud-btn" type="button"
                 aria-label="Shrink the chat to a bubble" aria-controls="chat-cloud-body"
                 aria-expanded="true" title="Shrink">&#8211;</button>
       </div>
       <div id="chat-cloud-body" class="chat-cloud-body">
+      <div id="history-error" class="muted history-error" role="status" hidden></div>
+      <div id="notify-prompt" class="notify-prompt" role="status" hidden>
+        <span id="notify-prompt-text" class="notify-prompt-text"></span>
+        <button id="btn-notify-prompt-on" class="btn btn--link" type="button">Turn on</button>
+        <button id="btn-notify-prompt-dismiss" class="btn btn--link" type="button">No thanks</button>
+      </div>
+
       <div class="chat-body">
         <div id="thread" class="thread">
           <div id="thread-empty" class="thread-empty">
@@ -1631,10 +1669,12 @@
       if(block){ try{ return JSON.parse(block.text); }catch(_e){ return {reply:block.text}; } }
       return {};
     },
-    converse(message,inputMethod="unknown",modelChoice=null,consumerRequest=null){
+    converse(message,inputMethod="unknown",modelChoice=null,consumerRequest=null,agentId="main"){
       const args={message,input_method:turnInputMethod(inputMethod)};
       if(modelChoice!==null) args.model_choice=copyModelChoice(modelChoice);
       if(consumerRequest!==null) args.consumer_request=JSON.parse(JSON.stringify(consumerRequest));
+      // Which of the owner's agents this turn talks to; "main" is the default.
+      if(agentId && agentId!=="main") args.agent_id=String(agentId);
       return this.callTool("converse",args);
     },
     // Deposit a generic outbound HTTP connection (an API key + the endpoints it
@@ -1745,14 +1785,18 @@
     getConversation(before){
       const args={include_conversation:true};
       if(Number.isSafeInteger(before)) args.conversation_before=before;
+      const agent=(typeof addressedAgentId==="function"?addressedAgentId():"main");
+      if(agent!=="main") args.conversation_agent=agent;
       return this.status(args);
     },
     // The rest of a message the peek bounded. Keyed by the turn's own stored id
     // — never by its text or timestamp — and continued ONLY from the offset the
     // server returned: JS String#length counts UTF-16 code units, so a client
     // computing its own offset desynchronises on the first emoji.
-    readConversationChunk(id,offset,scope){
-      return this.read({target:"conversation",graph_id:scope,field_name:String(id),output_offset:offset});
+    readConversationChunk(id,offset,scope,agent){
+      agent=agent||(typeof addressedAgentId==="function"?addressedAgentId():"main");
+      return this.read({target:"conversation",graph_id:scope,field_name:String(id),output_offset:offset,
+        ...(agent!=="main"?{agent_binding_id:agent}:{})});
     },
     // The agent's pending asks: EVERY one. Same read from every surface, which
     // is what makes them answerable from the phone with no second mechanism.
@@ -2453,13 +2497,20 @@
         this.capability=null;this.disclosureOpen=false;$("voice-disclosure").hidden=true;
         this.returnFocus=null;this.state="checking";
         this._render("Voice capability could not be confirmed. Typed chat still works.");
-      }finally{this.acceptingDisclosure=false;button.disabled=false;}
+      }finally{
+        this.acceptingDisclosure=false;button.disabled=false;
+        if(!this.disclosureOpen && typeof focusCommandCenter === "function" &&
+           !(typeof isTypingTarget === "function" && isTypingTarget(document.activeElement)) &&
+           !document.activeElement.closest("dialog[open], #cloud-menu:not([hidden])")) focusCommandCenter();
+      }
     },
     cancelDisclosure(){
       this.disclosureOpen=false;$("voice-disclosure").hidden=true;
       const target=this.returnFocus&&typeof this.returnFocus.focus==="function"
         ?this.returnFocus:$("btn-voice");
-      target.focus(); this.returnFocus=null;
+      if(typeof isTypingTarget === "function" && isTypingTarget(target)) target.focus();
+      else if(typeof focusCommandCenter === "function") focusCommandCenter();
+      this.returnFocus=null;
     },
     async _session(offerSdp){
       await ensureFreshToken();
@@ -3102,7 +3153,7 @@
       const menu=$("model-menu");if(!menu||menu.hidden) return;
       menu.hidden=true;menu.replaceChildren();
       $("btn-models").setAttribute("aria-expanded","false");
-      if(!opts||opts.restoreFocus!==false) $("btn-models").focus();
+      if((!opts||opts.restoreFocus!==false) && typeof focusCommandCenter === "function") focusCommandCenter();
     },
     menuItems(){
       return Array.from(($("model-menu")||{children:[]}).children)
@@ -3581,7 +3632,6 @@
         this.menuClose({restoreFocus:false});
       });
       $("btn-model-close").addEventListener("click",()=>$("model-dialog").close());
-      $("model-dialog").addEventListener("close",()=>$("btn-models").focus());
       $("btn-model-refresh").addEventListener("click",()=>this.refresh());
       $("btn-model-fallback-add").addEventListener("click",()=>this.addFallback($("model-fallback-add").value));
       $("btn-model-restore").addEventListener("click",()=>this.restoreAccess());
@@ -3591,6 +3641,7 @@
   function captureTurnOptions(opts){
     opts=opts||{};
     return Object.assign({},opts,{
+      agentId:typeof opts.agentId==="string"&&opts.agentId?opts.agentId:(typeof addressedAgentId==="function"?addressedAgentId():"main"),
       inputMethod:turnInputMethod(opts.inputMethod),
       modelChoice:copyModelChoice(Object.prototype.hasOwnProperty.call(opts,"modelChoice")
         ? opts.modelChoice : modelChoiceForNextTurn)});
@@ -3604,6 +3655,7 @@
        inputMethod:turnInputMethod(inputMethod),
        modelChoice:copyModelChoice(modelChoice),
        consumerRequest,
+       agent:(typeof addressedAgentId==="function"?addressedAgentId():"main"),
        owner:queueOwner,
        scope:queueScope,
        ts:(typeof sentAt==="number" && Number.isFinite(sentAt))?sentAt:Date.now()};
@@ -3630,7 +3682,7 @@
   async function sendConversationRequest(message,display,sentAt,opts){
     const epoch=MCP._loginEpoch;
     const checkLogin=()=>{if(epoch!==MCP._loginEpoch)throw new Error("Conversation account changed.");};
-    let payload=await MCP.converse(message,opts.inputMethod,opts.modelChoice,opts.consumerRequest||null);
+    let payload=await MCP.converse(message,opts.inputMethod,opts.modelChoice,opts.consumerRequest||null,opts.agentId);
     // From here on the server has ANSWERED a converse for this message, and a
     // chosen-conversation turn may be accepted and running. A later failure (a
     // poll whose handshake fails, a 401 whose renewal is down) is not sent for
@@ -3652,7 +3704,7 @@
       const saved=readInflight();
       if(!saved||JSON.stringify(saved.consumerRequest)!==JSON.stringify(opts.consumerRequest))
         throw new Error("Could not save safe conversation recovery. No workflow was started.");
-      payload=await MCP.converse(message,opts.inputMethod,opts.modelChoice,opts.consumerRequest);
+      payload=await MCP.converse(message,opts.inputMethod,opts.modelChoice,opts.consumerRequest,opts.agentId);
       checkLogin();
     }
     const started=Date.now();
@@ -3667,7 +3719,7 @@
       if(payload&&payload.consumer_turn&&payload.consumer_turn.state==="held"&&
          ["completed","failed","cancelled","interrupted"].includes(payload.consumer_turn.run_status)){
         // Exact replay repairs only the already-terminal pair after a crash gap.
-        payload=await MCP.converse(message,opts.inputMethod,opts.modelChoice,opts.consumerRequest);
+        payload=await MCP.converse(message,opts.inputMethod,opts.modelChoice,opts.consumerRequest,opts.agentId);
         checkLogin();
       }
     }
@@ -3718,6 +3770,88 @@
     if(queueScope && value && value!==queueScope && typeof AppUI!=="undefined") AppUI.homeChanged(value);
     queueScope=value;
   }
+  // ---- The agent the chat is talking to (harness §4.18) --------------------
+  // A command center can hold many agents: the main one and any the owner
+  // bound into it. Each has its own thread on the server and they share one
+  // brain. The chat talks to ONE at a time; switching shows that agent's thread
+  // and every send, steer and read names it. A switch waits for the current
+  // turn and its queue, so a reply can never land on another agent's thread.
+  let addressedAgent={agent_id:"main",name:"Your agent"};
+  function addressedAgentId(){ return addressedAgent.agent_id; }
+  // Collaborators below call these through `typeof`, as they do refreshChatCloud.
+  function resetAddressedAgent(){
+    addressedAgent={agent_id:"main",name:"Your agent"}; paintAddressedAgent();
+  }
+  async function addressAgent(agent){
+    const id=String((agent&&agent.agent_id)||"main");
+    const name=String((agent&&agent.name)||"Your agent");
+    if(id!==addressedAgent.agent_id){
+      if(activeTurn||sendQueue.length||interruptPending||pendingSteers)
+        throw new Error("finish or stop the current message first, then switch agents");
+      if(typeof Voice!=="undefined"&&typeof Voice.stop==="function")
+        Voice.stop(Boolean(Voice.browserDraftUtterance||Voice.browserPendingUtterance||Voice.browserRecognizing),
+          "The chat switched agents; unsent voice input was discarded.");
+      addressedAgent={agent_id:id,name};
+      historyLoaded=false; inflightRestored=false; queueRestored=false;
+      renderedConsumerTurns.clear(); renderedConsumerFounders.clear();
+      clearThread(); historyFailed(null);
+      paintAddressedAgent(); openAddressedChat();
+      await loadHistory();
+      return;
+    }
+    addressedAgent={agent_id:id,name};
+    paintAddressedAgent(); openAddressedChat();
+  }
+  function paintAddressedAgent(){
+    const label=addressedAgent.agent_id==="main"?"Your agent":addressedAgent.name;
+    const cloud=$("chat-cloud"); if(cloud) cloud.dataset.agent=addressedAgent.agent_id;
+    if(typeof refreshChatCloud==="function") refreshChatCloud();
+    const title=$("chat-cloud-title"); if(title) title.textContent=label;
+    const input=$("composer-input");
+    if(input) input.setAttribute("aria-label","Message "+label);
+    const pick=$("agent-switcher"); if(pick) pick.value=addressedAgent.agent_id;
+  }
+  // A chat shrunk to a bubble opens when a screen asks to talk to an agent.
+  function openAddressedChat(){
+    if(typeof setChatCloudMode==="function"&&typeof cloudState!=="undefined"&&
+       cloudState&&cloudState.mode==="bubble") setChatCloudMode("open");
+  }
+  // Shown only when there is more than the main agent to talk to. The list is
+  // the bridge's own (the viewer's agents in their verified home), so it needs
+  // the custom-UI controller enabled; an unreadable list keeps what is shown.
+  async function refreshAgentSwitcher(){
+    if(typeof AppUI==="undefined"||!AppUI.enabled) return;
+    const gen=refreshAgentSwitcher.gen=(refreshAgentSwitcher.gen||0)+1;
+    let agents;
+    try{ agents=(await AppUI.listAgents()).agents; }catch(_e){ return; }
+    if(gen!==refreshAgentSwitcher.gen) return;
+    let pick=$("agent-switcher");
+    if(!pick){
+      const home=$("chat-cloud-bar")||document.querySelector("#view-chat .chat-actions");
+      if(!home) return;
+      pick=document.createElement("select");
+      pick.id="agent-switcher"; pick.className="agent-switcher";
+      pick.setAttribute("aria-label","Which agent you are talking to");
+      // A drag starting on the picker is not a drag of the chat window.
+      pick.addEventListener("pointerdown",ev=>ev.stopPropagation());
+      pick.addEventListener("change",async()=>{
+        const chosen=Array.from(pick.options).find(o=>o.value===pick.value);
+        try{ await addressAgent({agent_id:pick.value,name:chosen?chosen.textContent:""}); }
+        catch(err){ pick.value=addressedAgent.agent_id; setStatusLine((err&&err.message)||"could not switch agents"); }
+      });
+      home.insertBefore(pick, home.firstChild&&home.firstChild.nextSibling||null);
+    }
+    pick.replaceChildren(...agents.map(a=>{
+      const option=document.createElement("option");
+      option.value=a.agent_id; option.textContent=a.name; return option;
+    }));
+    pick.hidden=agents.length<2;
+    // The agent on screen may have been removed: back to the main agent.
+    if(addressedAgent.agent_id!=="main"&&agents.length&&!agents.some(a=>a.agent_id===addressedAgent.agent_id)){
+      try{ await addressAgent({agent_id:"main",name:"Your agent"}); }catch(_e){ /* busy: next refresh */ }
+    }
+    pick.value=addressedAgent.agent_id;
+  }
   // The ACCOUNT half of "may this page read what this browser saved". A home id
   // alone does not answer it: two accounts can sign in on one browser and the
   // second must not read the first's held lines. Learned from /app/me.
@@ -3749,7 +3883,8 @@
       modelChoice:copyModelChoice(Object.prototype.hasOwnProperty.call(q,"modelChoice")
         ? q.modelChoice : q.opts&&q.opts.modelChoice),
       owner:(q.owner!==undefined)?q.owner:queueOwner,
-      scope:(q.scope!==undefined)?q.scope:queueScope};
+      scope:(q.scope!==undefined)?q.scope:queueScope,
+      agent:String(q.agent||(q.opts&&q.opts.agentId)||"main")};
   }
   function saveQueue(){
     try{
@@ -3830,6 +3965,13 @@
           "here: this page cannot tell which account and command center saved it. "+
           "Send your message again if you still need it.",
         null, now/1000);
+      return;
+    }
+    // A line queued to another of the owner's agents waits for that agent's
+    // own thread; it is never offered, or sent, to the agent on screen.
+    if(String(item.agent||"main")!==(typeof addressedAgentId==="function"?addressedAgentId():"main")){
+      appendMessage("system","A line queued to another of your agents is waiting; "+
+        "open that agent to send or discard it.", null, now/1000);
       return;
     }
     const stale = now-(item.ts||0) > QUEUE_MAX_AGE_MS;
@@ -4013,7 +4155,8 @@
     try{
       const r=await fetch("/app/turn/steer",{method:"POST",credentials:"same-origin",
         headers:Object.assign({"Content-Type":"application/json"},authHeaders()),
-        body:JSON.stringify({universe_id:scope,text:message})});
+        body:JSON.stringify(Object.assign({universe_id:scope,text:message},
+          item.opts&&item.opts.agentId&&item.opts.agentId!=="main"?{agent_id:item.opts.agentId}:{}))});
       doc=r.ok?await r.json():null;
     }catch(e){ doc=null; }
     finally{ pendingSteers--; }
@@ -4111,6 +4254,7 @@
       settleSteered((answer&&answer.steering)||{delivered:[],undelivered:[]});
       delivered=true;setStatusLine("");
       if(typeof AppUI!=="undefined") AppUI.turnSettled();
+      if(typeof refreshAgentSwitcher==="function") refreshAgentSwitcher();
       if(!opts.keepInflight) forgetInflight();
     }catch(err){
       if(!stillHere()) return;
@@ -4398,11 +4542,13 @@
     // after a sign-out or an account switch belongs to the PREVIOUS account: it
     // paints nothing here and stops the load.
     const epoch=MCP._loginEpoch, owner=queueOwner, scope=queueScope;
-    const stillOwner=()=>epoch===MCP._loginEpoch&&owner===queueOwner&&scope===queueScope;
+    const agent=typeof addressedAgentId==="function"?addressedAgentId():"main";
+    const stillOwner=()=>epoch===MCP._loginEpoch&&owner===queueOwner&&scope===queueScope&&
+      agent===(typeof addressedAgentId==="function"?addressedAgentId():"main");
     let failed=null;
     more.addEventListener("click", ()=>{
       more.disabled=true; more.textContent="Loading the rest…";
-      loadFullMessage(id,stillOwner,scope).then(full=>{
+      loadFullMessage(id,stillOwner,scope,agent).then(full=>{
         if(!stillOwner()) return;
         if(typeof full!=="string"){
           // The preview stays exactly as it was and the control is re-armed:
@@ -4428,12 +4574,12 @@
   // Pages one message by the SERVER's offsets. Returns the whole text, or null
   // when it could not be recovered - it never returns a partial answer as if it
   // were the message.
-  async function loadFullMessage(id,stillOwner,scope){
+  async function loadFullMessage(id,stillOwner,scope,agent){
     const parts=[]; let offset=0, total=null;
     try{
       while(true){
         if(!stillOwner()) return null;
-        const r=await Owner.readConversationChunk(id,offset,scope);
+        const r=await Owner.readConversationChunk(id,offset,scope,agent);
         if(!stillOwner()) return null;            // previous account's response
         if(!r||r.available!==true||typeof r.chunk!=="string"||r.error||
            r.offset!==offset||r.offset_unit!=="unicode_code_points"||
@@ -4599,7 +4745,7 @@
   // ---- Chat cloud -------------------------------------------------------------
   // The chat with an agent floats over the command center as a "chat cloud" the
   // owner can move, resize and shrink to a bubble (founder, 2026-10-02). It
-  // starts BIG for an owner with no command-center layout and SMALL when a
+  // starts MEDIUM for an owner with no command-center layout and SMALL when a
   // layout is active; once the owner moves, resizes or shrinks it, their last
   // state is restored instead. Remembered per owner, per agent and per viewport
   // class, because a phone and a desktop want different windows. There is no
@@ -4607,6 +4753,123 @@
   const CLOUD_KEY_PREFIX="app.chatCloud.v1", CLOUD_BUBBLE=56, CLOUD_MARGIN=12,
         CLOUD_MIN_W=320, CLOUD_MIN_H=360, CLOUD_PHONE_MAX=760, CLOUD_STEP=16;
   let cloudState=null, cloudStoreKey="", cloudWired=false, cloudSuppressClick=false;
+  function refreshCommandCenter(){
+    $("cc-blank").hidden=!$("ui-frame-host").hidden;
+  }
+  function isTypingTarget(el){
+    if(!el) return false;
+    const tag=(el.tagName||"").toLowerCase();
+    return el.isContentEditable===true || tag==="textarea" || tag==="select" ||
+      (tag==="input" && !["button","submit","checkbox","radio","range","file","color","reset","image"].includes((el.type||"text").toLowerCase()));
+  }
+  function focusCommandCenter(){
+    const frame=$("ui-frame");
+    if(frame){
+      frame.setAttribute("tabindex","0"); frame.focus();
+      if(frame.contentWindow) frame.contentWindow.postMessage({ta_ui:1,type:"focus"},"*");
+    }else if($("cc-blank")) $("cc-blank").focus();
+  }
+  function cloudCoversStage(){
+    const cloud=$("chat-cloud"), stage=$("chat-stage");
+    if(!cloud || !stage || !cloudState || cloudState.mode!=="open") return false;
+    if(window.matchMedia("(max-width:600px)").matches) return true;
+    const c=cloud.getBoundingClientRect(), s=stage.getBoundingClientRect();
+    return c.x===s.x && c.y===s.y && c.width===s.width && c.height===s.height;
+  }
+  function forwardCommandCenterKey(event){
+    const frame=$("ui-frame"), host=$("ui-frame-host");
+    if(!frame || !host || host.hidden || !frame.contentWindow) return;
+    const target=event.target;
+    if(event.defaultPrevented || event.key==="Tab" ||
+       (typeof isTypingTarget === "function" && isTypingTarget(target))) return;
+    if(target.closest && (target.closest("dialog[open]") ||
+       (!$("cloud-menu").hidden && target.closest("#cloud-menu")))) return;
+    if((event.key==="Enter" || event.key===" ") && target.closest &&
+       target.closest("button, a, [role=button]")) return;
+    const {key,code,shiftKey,altKey,ctrlKey,metaKey,repeat}=event;
+    frame.contentWindow.postMessage({ta_ui:1,type:"key",key,code,shiftKey,altKey,ctrlKey,metaKey,repeat,
+      phase:event.type==="keyup" ? "up" : "down"},"*");
+    event.preventDefault();
+  }
+  // Puts text in the chat input without sending it, opening the cloud first if
+  // it is a bubble. The one entry point for "start this sentence for me": the
+  // blank command center's button, and the default bundle's chat.prefill.
+  function chatCloudPrefill(text){
+    if(cloudState && cloudState.mode==="bubble") setChatCloudMode("open");
+    const input=$("composer-input");
+    if(!input) return;
+    input.value=String(text||""); input.focus();
+    input.setSelectionRange(input.value.length,input.value.length);
+  }
+  // TEMPORARY: #cc-blank and these two buttons stand in until cc-package's
+  // platform-default command-center bundle lands; that change mounts the bundle
+  // in the frame when no layout is active and deletes #cc-blank, so
+  // focusCommandCenter only ever targets the frame (one code path).
+  function ccBlankBuild(){ chatCloudPrefill("Build me a command center for "); }
+  function ccBlankTryOne(){ $("btn-ui-switch").click(); }
+  function closeCloudMenu(){
+    if($("cloud-menu").hidden) return;
+    $("cloud-menu").hidden=true;
+    $("btn-cloud-menu").setAttribute("aria-expanded","false");
+    if(!(typeof isTypingTarget === "function" && isTypingTarget(document.activeElement))) focusCommandCenter();
+  }
+  function wireCommandCenter(){
+    $("btn-cc-build").addEventListener("click",ccBlankBuild);
+    $("btn-cc-try").addEventListener("click",ccBlankTryOne);
+    $("view-chat").addEventListener("pointerdown",event=>{
+      if(!event.target.closest("#chat-cloud, #chat-cloud-bubble")){
+        // Avoid the pointer's default focus step undoing the handoff; buttons still click.
+        if(!event.target.closest("button")) event.preventDefault();
+        focusCommandCenter();
+      }
+    });
+    $("chat-cloud").addEventListener("pointerdown",event=>{
+      if(event.target===$("chat-cloud")) event.preventDefault();
+    });
+    $("chat-cloud").addEventListener("pointerup",event=>{
+      if(event.target===$("chat-cloud")) focusCommandCenter();
+    });
+    $("btn-cloud-menu").addEventListener("click",()=>{
+      if(!$("cloud-menu").hidden){ closeCloudMenu(); return; }
+      $("cloud-menu").hidden=false;
+      $("btn-cloud-menu").setAttribute("aria-expanded","true");
+    });
+    $("cloud-menu").addEventListener("click",event=>{
+      if(event.target.closest("button")) closeCloudMenu();
+    });
+    document.addEventListener("click",event=>{
+      if(!event.target.closest("#cloud-menu, #btn-cloud-menu")) closeCloudMenu();
+    });
+    document.addEventListener("keydown",event=>{
+      if(event.key==="Escape" && !$("cloud-menu").hidden){
+        event.preventDefault(); event.stopImmediatePropagation(); closeCloudMenu();
+      }
+    },true);
+    // Clicks inside an opaque frame do not bubble into the parent document.
+    window.addEventListener("blur",()=>{
+      setTimeout(()=>{
+        if(document.activeElement===$("ui-frame")) closeCloudMenu();
+      },0);
+    });
+    document.addEventListener("close",event=>{
+      if(event.target.tagName!=="DIALOG") return;
+      if(typeof isTypingTarget === "function" && isTypingTarget(document.activeElement)) return;
+      if(document.activeElement.closest("dialog[open], #cloud-menu:not([hidden])")) return;
+      if(typeof focusCommandCenter === "function") focusCommandCenter();
+    },true);
+    window.addEventListener("focus",()=>{
+      const active=document.activeElement;
+      if(document.querySelector("dialog[open]")) return;
+      if(typeof isTypingTarget === "function" && isTypingTarget(active)) return;
+      if(active.closest("dialog[open], #cloud-menu:not([hidden])")) return;
+      if(active===document.body || active===document.documentElement ||
+         active.closest("#chat-cloud")){
+        if(typeof focusCommandCenter === "function") focusCommandCenter();
+      }
+    });
+    document.addEventListener("keydown",forwardCommandCenterKey);
+    document.addEventListener("keyup",forwardCommandCenterKey);
+  }
   function cloudViewportClass(width){ return width<CLOUD_PHONE_MAX ? "phone" : "wide"; }
   function cloudStorageKey(owner, agentId, viewport){
     return CLOUD_KEY_PREFIX+":"+(owner||"")+":"+(agentId||"main")+":"+viewport;
@@ -4619,16 +4882,20 @@
     const h=fit(state.open.h, Math.min(CLOUD_MIN_H,stage.h), stage.h);
     return {
       mode:state.mode==="bubble" ? "bubble" : "open",
-      open:{x:fit(state.open.x,0,stage.w-w), y:fit(state.open.y,0,stage.h-h), w:w, h:h},
+      open:stage.w<CLOUD_PHONE_MAX && stage.w<=600 && state.mode==="open"
+        ? {x:0,y:0,w:stage.w,h:stage.h}
+        : {x:fit(state.open.x,0,stage.w-w), y:fit(state.open.y,0,stage.h-h), w:w, h:h},
       bubble:{x:fit(state.bubble.x,0,stage.w-CLOUD_BUBBLE), y:fit(state.bubble.y,0,stage.h-CLOUD_BUBBLE)},
       userSet:!!state.userSet,
     };
   }
   function cloudDefaultState(hasLayout, stage){
     const m=cloudViewportClass(stage.w)==="phone" ? 0 : CLOUD_MARGIN;
+    const w=m ? Math.min(440,stage.w-2*m) : stage.w;
+    const h=m ? Math.min(620,stage.h-2*m) : Math.round(stage.h*.6);
     return cloudClamp({
       mode:hasLayout ? "bubble" : "open",
-      open:{x:m, y:m, w:stage.w-2*m, h:stage.h-2*m},
+      open:{x:stage.w-w-m, y:stage.h-h-m, w:w, h:h},
       bubble:{x:stage.w-CLOUD_BUBBLE-CLOUD_MARGIN, y:stage.h-CLOUD_BUBBLE-CLOUD_MARGIN},
       userSet:false,
     }, stage);
@@ -4675,6 +4942,10 @@
   function applyChatCloud(){
     const cloud=$("chat-cloud"), bubble=$("chat-cloud-bubble"), s=cloudState;
     if(!cloud || !bubble || !s) return;
+    // A default layout may arrive while the owner is still writing a draft.
+    // Leave it unsaved so the next refresh can shrink once typing focus leaves.
+    if(s.mode==="bubble" && !s.userSet && bubble.hidden &&
+       cloud.contains(document.activeElement) && isTypingTarget(document.activeElement)) s.mode="open";
     cloud.dataset.mode=s.mode;
     cloud.style.left=s.open.x+"px"; cloud.style.top=s.open.y+"px";
     cloud.style.width=s.open.w+"px"; cloud.style.height=s.open.h+"px";
@@ -4682,10 +4953,10 @@
     const stage=cloudStageSize(), size=Math.min(CLOUD_BUBBLE, stage.w, stage.h);
     bubble.style.width=size+"px"; bubble.style.height=size+"px";
     // Shrinking on its own (a layout arrived) must not strand focus inside a
-    // hidden window: it moves to the bubble.
+    // hidden window: it moves to the command center.
     const strand=s.mode==="bubble" && bubble.hidden && document.activeElement && cloud.contains(document.activeElement);
     bubble.hidden=s.mode!=="bubble";
-    if(strand) bubble.focus();
+    if(strand && typeof focusCommandCenter === "function") focusCommandCenter();
     $("btn-cloud-shrink").setAttribute("aria-expanded", String(s.mode==="open"));
     if(s.mode==="open") setCloudUnread(false);
   }
@@ -4700,9 +4971,11 @@
   function setChatCloudMode(mode){
     if(!cloudState) return;
     cloudState.mode=mode;
+    cloudState.userSet=true;
+    cloudState=cloudClamp(cloudState, cloudStageSize());
     applyChatCloud(); saveChatCloud();
-    const target=mode==="open" ? $("composer-input") : $("chat-cloud-bubble");
-    if(target) target.focus();
+    if(mode==="open") $("composer-input").focus();
+    else if(typeof focusCommandCenter === "function") focusCommandCenter();
   }
   // Moves (dx, dy) and resizes (dw, dh) from a starting state, clamped.
   function cloudShifted(from, dx, dy, dw, dh){
@@ -4729,7 +5002,7 @@
   function wireCloudDrag(handle, kind){
     handle.addEventListener("pointerdown", ev=>{
       if(ev.button!==0 || !cloudState) return;
-      if(kind==="move" && ev.target.closest && ev.target.closest(".chat-cloud-btn")) return;
+      if(kind==="move" && ev.target.closest && ev.target.closest("button, #cloud-menu, .chat-cloud-btn")) return;
       const start={x:ev.clientX, y:ev.clientY}, origin=cloudState;
       let moved=false;
       try{ handle.setPointerCapture(ev.pointerId); }catch(_error){ /* synthetic pointer */ }
@@ -4747,6 +5020,8 @@
         handle.removeEventListener("pointerup",end);
         handle.removeEventListener("pointercancel",end);
         $("chat-cloud").classList.remove("is-dragging");
+        if(e.type==="pointerup" && (kind!=="bubble" || moved) && !cloudCoversStage() &&
+           typeof focusCommandCenter === "function") focusCommandCenter();
         // Only a completed drag produces a click to swallow; a cancelled one does not.
         if(moved){ saveChatCloud(); if(kind==="bubble" && e.type==="pointerup") cloudSuppressClick=true; }
       };
@@ -4768,6 +5043,7 @@
   }
   function wireChatCloud(){
     cloudWired=true;
+    if(typeof wireCommandCenter === "function") wireCommandCenter();
     wireCloudDrag($("chat-cloud-bar"),"move");
     wireCloudDrag($("chat-cloud-resize"),"resize");
     wireCloudDrag($("chat-cloud-bubble"),"bubble");
@@ -4832,6 +5108,7 @@
     if(typeof AppUI!=="undefined"){
       if(connected) AppUI.enable(me.universe_id,me.principal_id); else AppUI.reset();
     }
+    if(typeof refreshAgentSwitcher==="function") refreshAgentSwitcher();
     // Powered or not, this is the command center's own chat. The owner and home were
     // taken above, from the same verified `me`.
     showView("chat"); startHeartbeat(); warmSession();
@@ -5032,6 +5309,7 @@
   }
   function clearAccountScopedState(){
     queueScope=""; queueOwner="";
+    if(typeof resetAddressedAgent==="function") resetAddressedAgent();
     // The other writer of the home. A custom UI's bridge is account- AND
     // home-scoped, so an account-scoped clear must end it here too; leaving it to
     // the sign-out path only would miss every other caller of this.
@@ -6042,7 +6320,56 @@
       graph_id:graph_id, payload_json:JSON.stringify({file_id:file_id})});
   }
 
+  function fitToVisualViewport(){
+    // Height x scale: the on-screen keyboard shrinks the visual viewport, a
+    // pinch-zoom only rescales it, and only the keyboard should shrink the app.
+    // Phones only: desktop and the Electron app keep 100dvh exactly as before.
+    const vv=window.visualViewport, root=document.documentElement;
+    if(vv && window.matchMedia("(max-width:600px)").matches)
+      root.style.setProperty("--app-h",(vv.height*(vv.scale||1))+"px");
+    else root.style.removeProperty("--app-h");
+  }
+  function paintRailChip(){
+    const rail=$("request-rail"), head=$("rail-head"), phone=window.matchMedia("(max-width:600px)").matches;
+    const count=$("rail-items").children.length;
+    rail.dataset.phoneEmpty=String(count===0);
+    if(phone){
+      // Only what is outstanding counts: an offered row ("Connect another LLM")
+      // is not waiting on anyone (the same rule as the desktop heading).
+      const waiting=typeof railCache!=="undefined"
+        ? railCache.filter(r=>!(typeof isOptionalRequest==="function" && isOptionalRequest(r))).length : count;
+      const label=waiting ? waiting+" waiting on you" : "Nothing waiting on you";
+      if(head.textContent!==label) head.textContent=label;
+      head.setAttribute("role","button"); head.tabIndex=0;
+      head.setAttribute("aria-expanded",String(rail.classList.contains("rail--open")));
+    }else if(head.hasAttribute("role")){
+      head.textContent=typeof railCache!=="undefined" && !railCache.some(r=>!isOptionalRequest(r))
+        ? "Nothing waiting on you" : "Waiting on you";
+      head.removeAttribute("role"); head.removeAttribute("tabindex"); head.removeAttribute("aria-expanded");
+    }
+  }
+  function toggleRailChip(event){
+    if(!window.matchMedia("(max-width:600px)").matches) return;
+    if(event.type==="keydown" && event.key!=="Enter" && event.key!==" ") return;
+    event.preventDefault(); $("request-rail").classList.toggle("rail--open"); paintRailChip();
+  }
+  function wirePhoneConversation(){
+    fitToVisualViewport();
+    if(window.visualViewport){
+      window.visualViewport.addEventListener("resize",fitToVisualViewport);
+      window.visualViewport.addEventListener("scroll",fitToVisualViewport);
+    }
+    $("rail-head").addEventListener("click",toggleRailChip);
+    $("rail-head").addEventListener("keydown",toggleRailChip);
+    new MutationObserver(paintRailChip).observe($("rail-items"),{childList:true,subtree:true});
+    new MutationObserver(()=>{
+      if(window.matchMedia("(max-width:600px)").matches) paintRailChip();
+    }).observe($("rail-head"),{childList:true});
+    window.matchMedia("(max-width:600px)").addEventListener("change",()=>{paintRailChip();fitToVisualViewport();});
+    paintRailChip();
+  }
   function wire(){
+    if(typeof wirePhoneConversation === "function") wirePhoneConversation();
     // Default-hidden in HTML prevents a pre-script flash inside the native shell.
     // Reveal and initialise Voice only on the web surface; NATIVE covers both iOS
     // and Android Capacitor shells.
@@ -6108,7 +6435,10 @@
       });
     }
     $("btn-attach").addEventListener("click",()=>$("file-input").click());
-    $("file-input").addEventListener("change",(e)=>{ Uploads.add(e.target.files); e.target.value=""; });
+    $("file-input").addEventListener("change",(e)=>{
+      Uploads.add(e.target.files); e.target.value="";
+      if(!isTypingTarget(document.activeElement)) focusCommandCenter();
+    });
     $("composer").addEventListener("submit",(e)=>{ e.preventDefault();
       const typed=$("composer-input").value.trim();
       const turn=Uploads.buildTurn(typed);
@@ -6117,7 +6447,9 @@
       if(turn.blocked){ setStatusLine(turn.reason); return; }
       if(!turn.send) return;            // nothing typed and no usable attachment
       Uploads.clear();
-      sendTurn(turn.send, turn.display, {inputMethod:"typed"}); });
+      sendTurn(turn.send, turn.display, {inputMethod:"typed"});
+      if(cloudCoversStage()) $("composer-input").focus();
+      else if(typeof focusCommandCenter === "function") focusCommandCenter(); });
     const input=$("composer-input");
     input.addEventListener("input",()=>autoGrow(input));
     input.addEventListener("keydown",(e)=>{ if(e.key==="Enter"&&!e.shiftKey){ e.preventDefault(); $("composer").requestSubmit(); } });
@@ -6128,9 +6460,15 @@
     // page already used this Escape (a menu or dialog closing handles it first).
     document.addEventListener("keydown",(e)=>{
       if(e.key!=="Escape"||e.defaultPrevented||e.isComposing) return;
-      if($("btn-stop").hidden||$("btn-stop").disabled) return;
+      if($("btn-stop").hidden||$("btn-stop").disabled){
+        if(e.target.closest("#chat-cloud, #chat-cloud-bubble") && !cloudCoversStage() && typeof focusCommandCenter === "function"){
+          e.preventDefault(); focusCommandCenter();
+        }
+        return;
+      }
       if(document.querySelector("dialog[open]")) return;
       e.preventDefault(); interruptTurn();
+      if(e.target.closest("#chat-cloud, #chat-cloud-bubble") && !cloudCoversStage() && typeof focusCommandCenter === "function") focusCommandCenter();
     });
     $("btn-rail-add").addEventListener("click",toggleAddKey);
     $("btn-rail-retry").addEventListener("click",()=>{ refreshRail(); });
@@ -8085,8 +8423,10 @@
     // The account and home this peek is FOR. A response that lands after a
     // sign-out or an account change is the PREVIOUS account's conversation: it
     // paints nothing, renames no home, and does not mark this page loaded.
-    const epoch=MCP._loginEpoch, owner=queueOwner, scope=queueScope;
-    const stillOwner=()=>epoch===MCP._loginEpoch&&owner===queueOwner&&scope===queueScope;
+    const agentNow=()=>(typeof addressedAgentId==="function"?addressedAgentId():"main");
+    const epoch=MCP._loginEpoch, owner=queueOwner, scope=queueScope, agent=agentNow();
+    const stillOwner=()=>epoch===MCP._loginEpoch&&owner===queueOwner&&scope===queueScope&&
+      agent===agentNow();
     let turns = [];
     try{
       const r = await Owner.getConversation();
@@ -8235,6 +8575,14 @@
         "on this browser is waiting there; open that command center to see it.");
       restoreQueue(); return;   // preserved on disk for that command center's own page
     }
+    // Another agent's unconfirmed message waits for that agent's own thread,
+    // where its reply would land; it is never resent to the agent on screen.
+    if((pending.agent||"main")!==(typeof addressedAgentId==="function"?addressedAgentId():"main")){
+      inflightRestored = true;
+      appendMessage("system","An unconfirmed message to another of your agents is waiting; "+
+        "open that agent to see it.");
+      restoreQueue(); return;
+    }
     if(!pending.scope||!pending.owner){
       // Written before this page recorded its command center, so it may belong to
       // another account signed in on this browser. CLICKING A BUTTON DOES NOT
@@ -8258,7 +8606,8 @@
     if(pending.consumerRequest){
       inflightRestored=true;
       const epoch=MCP._loginEpoch, scope=queueScope, owner=queueOwner;
-      const stillOwner=()=>epoch===MCP._loginEpoch&&scope===queueScope&&owner===queueOwner;
+      const stillOwner=()=>epoch===MCP._loginEpoch&&scope===queueScope&&owner===queueOwner&&
+        (pending.agent||"main")===(typeof addressedAgentId==="function"?addressedAgentId():"main");
       try{
         const observed=await Owner.read({target:"conversation_turn",
           request_key:pending.consumerRequest.request_key});
@@ -8283,14 +8632,14 @@
           // Keep this exact request available for a user-requested observation
           // or terminal projection repair, never a new workflow invocation.
           offerResend(pending.message,pending.display,new Error("Conversation is still pending."),
-            {echoed:true,inputMethod:pending.inputMethod,modelChoice:pending.modelChoice,
+            {echoed:true,agentId:pending.agent||"main",inputMethod:pending.inputMethod,modelChoice:pending.modelChoice,
              consumerRequest:pending.consumerRequest});
           restoreQueue();return;
         }
       }catch(_e){ /* Unknown status retains the exact durable local request. */ }
       if(!stillOwner())return;
       offerResend(pending.message,pending.display,new Error("Conversation status is unavailable."),
-        {echoed:true,inputMethod:pending.inputMethod,modelChoice:pending.modelChoice,
+        {echoed:true,agentId:pending.agent||"main",inputMethod:pending.inputMethod,modelChoice:pending.modelChoice,
          consumerRequest:pending.consumerRequest});
       restoreQueue();return;
     }
@@ -8311,13 +8660,14 @@
     const again = document.createElement("button");
     again.className = "btn btn--link"; again.textContent = pending.consumerRequest?"Check this conversation":"Send it again";
     again.addEventListener("click", ()=>{
-      if(!ownsSavedRow(pending)) return;
+      if(!ownsSavedRow(pending)||
+         (pending.agent||"main")!==(typeof addressedAgentId==="function"?addressedAgentId():"main")) return;
       // The bubble is already drawn above, so do not echo it a second time.
       // Only THIS record is forgotten: a turn sent meanwhile owns the disk
       // slot now, and the resend queues behind it rather than erasing it.
       note.remove(); forgetInflightIf(pending);
       sendTurn(pending.message, pending.display,
-        {echoed:true,inputMethod:turnInputMethod(pending.inputMethod),
+        {echoed:true,agentId:pending.agent||"main",inputMethod:turnInputMethod(pending.inputMethod),
          consumerRequest:pending.consumerRequest||null,
          modelChoice:copyModelChoice(pending.modelChoice)});
     });
