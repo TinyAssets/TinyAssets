@@ -253,6 +253,12 @@ New direct owner requests omitting the selector explicitly capture main at
 authenticated ingress; ordinary main behaviour, keys, rules and review defaults
 remain unchanged. Agent-aware engine requests missing their snapshot refuse.
 
+A RECURRING DEFINITION is the exception to everything in this paragraph: the
+pre-change set keeps firing as main (§10a, and the spec requirement "A recurring
+definition that predates the change keeps running as main"). What follows governs
+in-flight work and stored asks, which an owner can reissue at no cost, not a
+schedule they still depend on.
+
 Existing `main` defaults on migrated journal/request rows are not proof that a
 custom-agent turn did not create them. Completed historical rows keep their
 existing display, with provenance marked unverified when read as control evidence.
@@ -454,11 +460,21 @@ The two questions this design could not answer for itself were put to the
 founder as one `docs/host-actions.md` row. Both are answered, and the row is
 deleted; this section is where the answers live now.
 
-**(a) Grandfathering: not needed, because the definitions are being CLEARED.**
-The existing recurring automations are stale and the founder wants them gone,
-cleared through their own surface. So the answer is not "hold everything" and
-not "trust the #4287 merge time" -- it is that **there is nothing to migrate**.
-Build no migration and no grandfathering for them.
+**(a) Grandfathering: not needed -- but TWO definitions survive and must keep
+working.** Seven stale automations were deleted through the owner's own surface.
+The founder KEPT two, both authored through main and both carrying no snapshot:
+"Morning focus note" (`41e88e0f`, cron, daily 10am) and "GTM Village -- submit
+task" (`cebc77f2`, app_event, part of the GTM Village command center).
+
+So the answer is neither "hold everything" nor "trust the #4287 merge time". The
+surviving set is **enumerated and attested by its owner**, which is the
+authoritative lineage this design asked for -- not a timestamp or a default
+column, so running them as main guesses nothing. A pre-change definition with no
+snapshot therefore FIRES, dispatched as main; only a definition created after
+this change requires one. Holding the two would stop a daily note and a live
+command center's event on a surface the Forever Rule says must work with no host
+online, which is a worse outcome than the ambiguity the hold was protecting
+against.
 
 **(b) The hard-to-reverse shape: approved.** The per-launch transport credential
 with its server-side digest, the snapshot columns on runs, turns, the journal,

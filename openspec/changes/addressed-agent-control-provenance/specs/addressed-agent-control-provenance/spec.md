@@ -75,23 +75,37 @@ Served live turns and journals SHALL carry the captured agent. Addressed Stop SH
 - **THEN** only researcher's turn is interrupted and both journals retain their own identities
 
 ### Requirement: Legacy compatibility does not invent provenance
-New default-main owner requests SHALL remain compatible, but a migrated main default SHALL not authorize ambiguous historical work. Unverified queued/resumable work and stale action-bearing asks SHALL stay held for reissue unless existing authoritative lineage proves their identity. Mixed-version workers SHALL not execute new records while ignoring provenance.
+New default-main owner requests SHALL remain compatible, but a migrated main default SHALL not authorize an ambiguous historical EFFECT. An unverified queued or resumable run, and a stale action-bearing ask, SHALL stay held for reissue unless existing authoritative lineage proves its identity. Mixed-version workers SHALL not execute new records while ignoring provenance.
+
+This governs in-flight WORK, not recurring DEFINITIONS: a stale queued run is
+something the owner can reissue at no cost, while holding a definition silences
+a schedule they still depend on. The definitions are covered by the requirement
+below, which keeps the pre-change set running as main.
 
 #### Scenario: old queued row has only a default main column
 - **WHEN** a consumer cannot prove whether that row originated from main or a custom agent
 - **THEN** it holds the row without dispatch and does not backfill authority from the default
 
-### Requirement: Legacy recurring work is visibly held until owner reconfirmation
-Existing recurring definitions without provable addressed identity SHALL hold future firings, including main's definitions, and expose a durable effective held state and reason through existing automation list/get projections. The existing public owner automation resume door SHALL require explicit provenance confirmation, selected agent and expected revision before capturing a fresh snapshot. Only the definition's authenticated owner in their current home SHALL reconfirm after current binding and existing authored-branch/execution checks. A revision-guarded update SHALL persist provenance and advance existing activation/claim fencing for future work, preserving schedule/timezone/inputs/overlap without missed-fire replay. Admin pause/delete rights SHALL NOT authorize owner provenance creation. No timestamp/default inference SHALL grandfather work.
+### Requirement: A recurring definition that predates the change keeps running as main
+A recurring definition created before this change and carrying no snapshot SHALL continue to fire, dispatched as `main`, and SHALL NOT be held, refused or made to wait for an owner reconfirmation. Only a definition created AFTER this change SHALL require a snapshot, and an agent-aware request that arrives without one SHALL still refuse. No held state, reconfirmation door, projection field or public payload SHALL be added for the pre-change set.
 
-#### Scenario: ordinary main recurring definition crosses rollout
-- **WHEN** an existing main automation has no proved snapshot
-- **THEN** its future firings hold and list/get clearly report reconfirmation required, even if desired state remains active; ordinary resume does not silently restore dispatch
+The owner cleared the stale definitions through their own surface and KEPT two,
+both authored through main: "Morning focus note" (`41e88e0f`, cron, daily 10am)
+and "GTM Village — submit task" (`cebc77f2`, app_event, part of the GTM Village
+command center). The surviving set is therefore enumerated and attested by its
+owner, not inferred from a timestamp or a default column — which is why running
+them as main adds no provenance guess. Holding them would stop two live
+automations on a surface the Forever Rule says must work with no host online.
 
-#### Scenario: owner reconfirms a held definition
-- **WHEN** the stored owner explicitly confirms the displayed definition and agent through public resume at its current revision
-- **THEN** only future work gets the newly validated snapshot; old queued/resumable work remains held, schedule semantics are retained and missed effects are not replayed
+#### Scenario: the kept daily note fires after rollout
+- **WHEN** "Morning focus note" reaches 10am with no snapshot on its definition
+- **THEN** it fires as main's, with main's rules, review and request routing, and nothing reports it as held or needing reconfirmation
 
-#### Scenario: engine or co-admin tries to reconfirm
-- **WHEN** an engine launch or another admin supplies the confirmation payload
-- **THEN** no owner snapshot is created and the held definition remains held
+#### Scenario: the kept app_event still answers
+- **WHEN** the GTM Village submit-task event arrives for a definition with no snapshot
+- **THEN** it dispatches as main's and is not refused for a missing snapshot
+
+#### Scenario: a definition created after the change
+- **WHEN** an automation is created once this change is live
+- **THEN** it carries a snapshot, and an agent-aware create arriving without one is refused rather than defaulted
+
