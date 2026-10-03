@@ -196,7 +196,7 @@ def test_codex_metadata_registration_reuses_read_only_install_mounts(tmp_path, m
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(universe.parent))
     monkeypatch.setattr(codex, "_resolved_codex_executable", lambda argv: (wrapper, binary))
     monkeypatch.setattr(codex, "_codex_binary_tree", lambda executable: binary_tree)
-    assert codex.CodexProvider.native_install_mounts is codex._codex_sandbox_mounts
+    assert callable(codex.CodexProvider.native_install_mounts)
     paths = codex.CodexProvider().native_install_mounts([str(wrapper)])
     assert paths == (binary_tree, install)
     view = UniverseView(universe_dir=universe, mounts=())

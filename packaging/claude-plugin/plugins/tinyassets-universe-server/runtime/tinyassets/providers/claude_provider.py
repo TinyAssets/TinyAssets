@@ -29,6 +29,7 @@ from pathlib import Path
 from tinyassets.exceptions import (
     InteractiveDeadlineError,
     ProviderAuthenticationError,
+    ProviderAuthorityHeldError,
     ProviderError,
     ProviderIdleTimeoutError,
     ProviderOverloadedError,
@@ -563,7 +564,10 @@ def _sandbox_cli_args(
     """
     # Empty allowed_tools is not a CLI deny-all: it emits no flag below.
     # No verified native tool-free contract is enabled for this adapter.
-    BaseProvider.require_text_only_support(ClaudeProvider(), config)
+    if config.text_only:
+        raise ProviderAuthorityHeldError(
+            "native tool configuration does not support enforced text-only review"
+        )
     flags: list[str] = []
     if config.workflow_node:
         config = _confine_workflow_node(config)

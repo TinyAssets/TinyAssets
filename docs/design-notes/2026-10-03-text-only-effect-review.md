@@ -21,22 +21,37 @@ cost controls to get a request through. Returned tool requests are refused even
 when accompanied by verdict text. This is intentionally narrower than all HTTP
 sources. A future extension requires its own evidence before being accepted.
 
-Native text-only reviews are currently unsupported. Local official
-`codex exec --help` from `codex-cli 0.159.0-alpha.3` was inspected on 2026-10-03
-without a prompt/model/account invocation. It documents feature toggles, sandbox
-modes and config isolation, but no verified complete tool-free contract. Claude
-was not installed locally. Neither absence nor individual shell-disable flags
-proves full tool suppression. Both adapters therefore refuse before executable
-resolution, credential/environment construction or spawn. No existing user or
-host settings are changed. Ordinary non-review provider calls retain their policy.
+Native text-only reviews remain unsupported; this is not an end-to-end repair
+of native issue filing. The pinned Codex 0.153.4
+[request construction](https://github.com/openai/codex/blob/rust-v0.153.4/codex-rs/core/src/client.rs)
+uses `tool_choice: auto`; its
+[tool registration](https://github.com/openai/codex/blob/rust-v0.153.4/codex-rs/core/src/tools/spec_plan.rs)
+can retain model-supported patch tools independently of shell suppression.
+Installed 0.159.0-alpha.3 help was inspected without a model/account call.
 
-The Codex `native_install_mounts = staticmethod(_codex_sandbox_mounts)` registration
-is separate metadata plumbing requested by the integration lead. It reuses the
+Official Claude 2.1.288 package integrity and isolated version/help checks
+confirm `--tools ""`, strict MCP configuration and safe mode. However,
+[server-managed settings](https://code.claude.com/docs/en/server-managed-settings)
+can arrive after startup using the existing OAuth token and apply hooks or
+environment settings to noninteractive runs. Safe mode preserves managed policy;
+[per-session hook disabling](https://code.claude.com/docs/en/hooks#disable-or-remove-hooks)
+cannot disable managed hooks. The credential snapshot binds credential bytes,
+not current effective policy; checking an empty local directory is insufficient.
+Bare mode drops OAuth custody and is not an alternative. No pre-launch proof of
+inert effective policy exists in the current adapter. Both native adapters
+therefore refuse before executable resolution, credential/environment construction
+or spawn. No provider substitution or user/host settings change is made.
+Ordinary non-review provider calls retain their policy.
+
+The Codex `native_install_mounts` callback is separate metadata plumbing requested
+by the integration lead. Both metadata and execution use this callback to the
 existing installation-path resolver; the shared jail validates those paths and
 mounts them read-only. It grants no tools, writable mounts or account access.
 Metadata commit `976884c5bb00da5e3a600415053ce7ada5c4acbf` supplies its consumer.
-Integrate the metadata lane first, then this repair, resolving `base.py` serially
-so its enumeration callback and the independent text-only contract both survive.
+Extract the registration and execution callback reuse, including runtime mirrors,
+as an independent prerequisite, or fold them into metadata before merging it.
+Then integrate metadata and this repair, preserving the already-present callback
+and resolving `base.py` serially so both contracts survive.
 No changes to metadata protocols, process ownership, jail policy, authority
 storage or schema are part of this repair.
 
