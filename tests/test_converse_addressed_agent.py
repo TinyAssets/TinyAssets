@@ -461,3 +461,31 @@ def test_a_main_turn_still_registers_as_main(world, monkeypatch):
 
     assert seen["registered_agent"] == "main"
     assert seen["weaver_stop"] == 0, "a custom agent's Stop reached the main turn"
+
+
+def test_ingress_puts_the_addressed_agent_on_the_context(world, monkeypatch):
+    """The ONE place UniverseContext.agent_id is set (harness §4.18).
+
+    Everything downstream -- the journal's attribution today, the per-launch
+    snapshot later -- reads that field, so if ingress does not set it the whole
+    carrier is silently main. Asserted here because the suites that exercise
+    the journal build their own context and cannot see what converse built.
+    """
+    seen: list[str] = []
+    provider = world["provider"]
+
+    def capture(prompt, system="", **kwargs):
+        context = kwargs.get("universe_context")
+        seen.append(None if context is None else context.agent_id)
+        return provider(prompt, system=system, **kwargs)
+
+    monkeypatch.setattr(ui, "call_provider", capture)
+
+    _converse(message="as the weaver", agent_id=world["weaver"])
+    assert seen and seen[0] == world["weaver"], (
+        f"ingress built a context for {seen[:1]!r}, not the addressed agent")
+
+    seen.clear()
+    _converse(message="as main")
+    assert seen and seen[0] == addressed_agents.MAIN_AGENT, (
+        "a turn with no addressed agent must carry main, not an empty string")

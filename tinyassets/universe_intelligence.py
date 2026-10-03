@@ -1557,6 +1557,11 @@ def converse(
         universe_dir=udir,
         config=load_universe_config(udir),
         provider_request=request_carrier,
+        # The ONE place this is set (harness §4.18): ``addressed_agent`` is what
+        # the caller resolved at authenticated ingress, inside the owner and
+        # universe scope. MAIN_AGENT here means ingress had no addressed agent,
+        # not that one could not be worked out -- nothing downstream guesses.
+        agent_id=addressed_agent.agent_id if addressed_agent else MAIN_AGENT,
     )
     from tinyassets.providers.served_model_plan import apply_served_model_preferences
 

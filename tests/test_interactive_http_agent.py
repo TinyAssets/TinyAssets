@@ -537,3 +537,87 @@ def test_conflicting_plan_and_incoming_selection_refuses_before_launch(agent, mo
     with pytest.raises(ProviderAuthorityHeldError, match="contradicts"):
         run(agent)
     assert not agent.wires and not agent.tools
+
+
+def test_the_journal_records_the_agent_the_context_was_built_for(agent):
+    """Harness §4.18: the per-agent journal must say WHICH agent ran the turn.
+
+    The ``agent_turns.agent_id`` column has been per-agent since #4228, but the
+    served adapter left it at its ``main`` default, so a custom agent's turn was
+    recorded as main -- and the per-agent journal, the status projection and the
+    owner's history all read the wrong agent.
+
+    The value comes from ``UniverseContext.agent_id``, which authenticated
+    ingress sets, and from nowhere else.
+    """
+    universe_intelligence._call_writer(
+        "exact user prompt",
+        system="exact system",
+        universe_context=replace(agent.served.context, agent_id="a-weaver"),
+        config=agent.config,
+    )
+    turn = agent.latest()
+    assert turn.state == "completed"
+    with agent.journal._ledger.connection() as conn:
+        rows = conn.execute("SELECT turn_id, agent_id FROM agent_turns").fetchall()
+    assert [row[1] for row in rows] == ["a-weaver"], (
+        f"the journal recorded {[r[1] for r in rows]!r}, not the addressed agent")
+
+
+def test_a_context_with_no_addressed_agent_still_records_main(agent):
+    """The default is main only because ingress had no addressed agent."""
+    assert agent.served.context.agent_id == "main", "the rig's context is not the main case"
+    run(agent)
+    with agent.journal._ledger.connection() as conn:
+        rows = conn.execute("SELECT agent_id FROM agent_turns").fetchall()
+    assert [row[0] for row in rows] == ["main"]
+
+
+def test_the_context_is_the_only_source_of_the_agent(agent, monkeypatch):
+    """Not the Stop registry, and not a session key.
+
+    A live turn registered under a DIFFERENT agent must not change what the
+    journal records: ``turn_interrupt`` is in-process state a workflow-node turn
+    does not have, so reading it would make attribution depend on whether a Stop
+    happened to be registrable. The context is set at ingress; nothing else gets
+    a vote.
+    """
+    from tinyassets import addressed_agents, engine_steering, turn_interrupt
+
+    uid = agent.served.context.universe_dir.name
+    # A session key that NAMES a different agent, so "not a session key" is
+    # actually exercised rather than only asserted in prose: a
+    # session-first/context-fallback implementation would pass without this
+    # (Codex refute of this PR, finding E).
+    monkeypatch.setattr(
+        engine_steering, "_session_key",
+        lambda: f"thread:{addressed_agents.memory_session('owner', 'a-someone-else')}",
+    )
+    with turn_interrupt.interactive_turn("owner", uid, agent_id="a-someone-else"):
+        universe_intelligence._call_writer(
+            "exact user prompt",
+            system="exact system",
+            universe_context=replace(agent.served.context, agent_id="a-weaver"),
+            config=agent.config,
+        )
+    with agent.journal._ledger.connection() as conn:
+        rows = conn.execute("SELECT agent_id FROM agent_turns").fetchall()
+    assert [row[0] for row in rows] == ["a-weaver"], (
+        "the journal followed the Stop registry instead of the context")
+
+
+def test_context_keeps_existing_positional_provider_fields(tmp_path):
+    """Adding attribution must not rebind an existing positional carrier."""
+    from tinyassets.providers.base import UniverseContext
+
+    config, invocation, request, served, selection, plan = (object() for _ in range(6))
+    context = UniverseContext(tmp_path, config, invocation, request, served, selection, plan)
+    assert context.universe_dir == tmp_path
+    assert context.config is config
+    assert context.provider_invocation is invocation
+    assert context.provider_request is request
+    assert context.served_provider is served
+    assert context.model_selection is selection
+    assert context.agent_model_plan is plan
+    assert context.agent_id == "main"
+    assert replace(context, agent_id="a-weaver").agent_id == "a-weaver"
