@@ -13,7 +13,7 @@ import threading
 import unittest
 import uuid
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from pathlib import Path
 
 
@@ -30,12 +30,13 @@ def digest(value):
 
 
 class Model:
-    def __init__(self, root, *, boot=None, issuer=None, issuer_alive=None):
+    def __init__(self, root, *, boot=None, issuer=None, issuer_alive=None, issuer_gate=None):
         self.root = Path(root)
         self.boot = boot or uuid.uuid4().hex
         self.issuer = issuer or self.boot
-        # Default is this single-process fixture's liveness observation. The
-        # distinct-process proof injects the existing OS-lock observer instead.
+        # Pure protocol tests model an always-active local serving lifetime.
+        # Identity proofs inject the real owned epoch gate and observer.
+        self.issuer_gate = issuer_gate or (lambda: nullcontext(True))
         self.issuer_alive = issuer_alive or (lambda token: token == self.issuer)
         self.author = self.root / "author.db"
         self.steering = self.root / "steering.db"
@@ -90,6 +91,16 @@ class Model:
                 c.rollback()
                 raise
 
+    @contextmanager
+    def serving_guard(self, scope):
+        # Existing maintenance barrier precedes this gate in production. Keep
+        # the gate through author/subordinate COMMIT, never through provider work.
+        with self.issuer_gate() as active:
+            if not active:
+                raise Held("retired serving epoch")
+            with self.guard(scope) as c:
+                yield c
+
     @staticmethod
     def receipt(c, key, scope):
         row = c.execute(
@@ -121,7 +132,7 @@ class Model:
         # dispatch; lost responses may strand a held draft, never execute it.
         key = self.boot + ":" + uuid.uuid4().hex
         intent = {"body": body, "ids": list(ids)}
-        with self.guard(scope) as c:
+        with self.serving_guard(scope) as c:
             c.execute(
                 "INSERT INTO receipts VALUES (?,?,?,?,?,?,?,?,?,?,?)",
                 (
@@ -138,7 +149,7 @@ class Model:
             )
         if crash == "reserved":
             raise Crash(key)
-        with self.guard(scope), self.db(self.steering) as s:
+        with self.serving_guard(scope), self.db(self.steering) as s:
             s.execute("BEGIN IMMEDIATE")
             for ident in ids:
                 changed = s.execute(
@@ -152,7 +163,7 @@ class Model:
             s.commit()
         if crash == "custody":
             raise Crash(key)
-        with self.guard(scope) as c:
+        with self.serving_guard(scope) as c:
             inputs = self.rows(key)
             c.execute(
                 "UPDATE receipts SET phase='prepared',inputs=? WHERE id=?",
@@ -163,7 +174,7 @@ class Model:
     def start(self, key, scope, body, ids=(), *, selected_consumer=False, crash=None):
         # Existing exact ordinary identity precedes all dynamic route selection.
         del selected_consumer
-        with self.guard(scope) as c:
+        with self.serving_guard(scope) as c:
             row = self.receipt(c, key, scope)
             if row["digest"] != digest({"body": body, "ids": list(ids)}):
                 raise Held("payload conflict")
@@ -179,7 +190,7 @@ class Model:
         # Dispatch is OUTSIDE this transaction, only by its winning call.
         if crash == "started":
             raise Crash("started committed before opening steering")
-        with self.guard(scope) as c, self.db(self.steering) as s:
+        with self.serving_guard(scope) as c, self.db(self.steering) as s:
             self.running(c, key, scope)
             s.execute("INSERT INTO open_receipts VALUES (?,?,?,?,0)", (key, *scope))
             s.commit()
@@ -203,7 +214,7 @@ class Model:
             raise Held("closed")
 
     def enqueue(self, key, scope, body):
-        with self.guard(scope) as c, self.db(self.steering) as s:
+        with self.serving_guard(scope) as c, self.db(self.steering) as s:
             self.running(c, key, scope)
             s.execute("BEGIN IMMEDIATE")
             self.open_for_input(s, key)
@@ -247,7 +258,7 @@ class Model:
             s.commit()
 
     def publish(self, key, scope, reply):
-        with self.guard(scope) as c:
+        with self.serving_guard(scope) as c:
             row = self.running(c, key, scope)
             with self.db(self.steering, "ro") as s:
                 live = s.execute(

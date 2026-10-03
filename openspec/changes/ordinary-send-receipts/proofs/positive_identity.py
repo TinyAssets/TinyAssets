@@ -106,6 +106,13 @@ class Epoch:
         _HANDLES.add(self)
 
     @contextmanager
+    def serving_gate(self):
+        # Caller rejects false while still under the owned gate. The gate stays
+        # held through mutation COMMIT; retirement cannot race a checked writer.
+        with self._lock:
+            yield self._active
+
+    @contextmanager
     def launch_binding(self):
         # Hold through Popen: retirement cannot close/recycle exported numbers.
         # These observer duplicates, unlike the originals, survive a deliberate

@@ -177,3 +177,25 @@ serving -> engine inheritance, positive delivery, death/retirement/exec, cleanup
 contention/errors, descriptor lifetime and no-second-start. No runtime file edits.
 Budget-specific universe_intelligence/served_model_plan ownership is reserved to
 the request-economy lane pending parent reconciliation.
+
+## Positive-identity independent design review — APPROVE with P2 corrections
+
+Reviewed exact `6993d010c6571e2a6ecec123bfd9b716b8c81e4e` by
+`mobile_exact_head_review`, independent same-family. No P0/P1 found in the inherited
+self-pidfd plus sole-writer epoch-channel contract. Reviewer independently passed
+19 protocol and 19 positive-identity cases. Cross-family review remains unavailable.
+This is design approval only, not runtime/integration/device approval.
+
+AGREE: the delta spec still mentioned the superseded process_liveness token;
+replace it with the trusted inherited process plus active epoch and explicitly
+exclude owner_state as positive evidence. AGREE: the serving side of the executable
+model compared boot/issuer strings without an active epoch gate. Inject the owned
+epoch gate around preparation, start, enqueue and terminal mutations; add tests
+for refused post-retirement mutations and start-COMMIT versus retirement. Pure
+protocol fixtures explicitly model an always-active lifetime; identity fixtures
+supply the actual owned gate. Runtime must not copy the old incomplete checks.
+
+The same update adds timestamp source audit and three Chromium characterizations
+in timestamps.md. They reproduce current defects, not a completed timestamp fix.
+Updated exact-head delta review is pending. Launcher/bootstrap/lifecycle scope and
+account-deletion privacy coordination remain prerequisites to runtime edits.

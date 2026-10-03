@@ -60,9 +60,10 @@ NOT settle a request. An ordinary ID SHALL be resolved before consumer routing.
 
 ### Requirement: Original issuing process across engine delivery
 Engine delivery SHALL preserve existing serving-owner/scope checks and exact
-session/live_id/root binding. It SHALL require the original issuer's stored
-process_liveness token to observe ALIVE; engine BOOT SHALL NOT stand in for issuer
-identity. This observation SHALL NOT grant a start, takeover or terminal write.
+session/live_id/root binding. It SHALL require positive observation of the original inherited self-pidfd AND
+active serving-epoch channel, bound to the exact stored epoch by the trusted
+launcher/bootstrap boundary. owner_state, lock contention/errors, numeric PID
+reopening and engine BOOT SHALL NOT stand in for positive issuer identity. This observation SHALL NOT grant a start, takeover or terminal write.
 
 #### Scenario: Separate engine process and dead issuer
 - WHEN a separately running engine observes an open admitted root's issuer alive
@@ -70,3 +71,17 @@ identity. This observation SHALL NOT grant a start, takeover or terminal write.
 - WHEN that issuer is dead/unknown or its input frontier is closed
 - THEN further delivery SHALL hold, preserving attempted/untouched inputs
 - AND no observer SHALL gain another dispatch permission
+
+### Requirement: Immutable event timestamps and exact projection links
+An original client send timestamp SHALL remain immutable through prepare, send,
+queue/steer transitions, recovery and history projection. Server preparation,
+admission, terminal and first projection times SHALL remain distinct. Missing
+original times SHALL remain unknown; terminal or rendering time SHALL NOT be
+presented as original send time. Timestamp values SHALL NOT confer authority,
+settle a receipt, match repeated text or authorize replay. Founder/failure pairing
+SHALL use exact relationships, not timestamp equality.
+
+#### Scenario: Completed failure followed by navigation
+- WHEN an exact receipt projects a failure and the page reloads its history
+- THEN the founder retains the original known send time and the failure its terminal time
+- AND navigation SHALL NOT imply a different backend duration

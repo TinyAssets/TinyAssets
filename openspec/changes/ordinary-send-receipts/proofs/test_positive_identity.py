@@ -20,7 +20,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from positive_identity import ALIVE, UNKNOWN, Epoch, Observer
-from protocol import Model
+from protocol import A, Held, Model
 
 ROOT = Path(__file__).resolve().parents[4]
 sys.path.insert(0, str(ROOT))
@@ -94,7 +94,7 @@ sys.path.insert(0,sys.argv[4])
 from tinyassets.process_liveness import owner_token
 legacy=owner_token(sys.argv[1])
 epoch=Epoch()
-model=Model(sys.argv[1],issuer=epoch.label)
+model=Model(sys.argv[1],issuer=epoch.label,issuer_gate=epoch.serving_gate)
 key=model.prepare(A,'synthetic original')
 assert model.start(key,A,'synthetic original')
 model.enqueue(key,A,'first input')
@@ -274,13 +274,16 @@ class OwnershipProof(unittest.TestCase):
         from protocol import A
 
         with tempfile.TemporaryDirectory(prefix="same-boot-new-epoch-") as root:
-            original = Model(root, boot="same-boot", issuer=self.epoch.label)
+            original = Model(
+                root, boot="same-boot", issuer=self.epoch.label,
+                issuer_gate=self.epoch.serving_gate,
+            )
             original.initialize_fixture()
             key = original.prepare(A, "body")
             self.epoch.retire()
             new = Epoch()
             self.addCleanup(new.retire)
-            current = Model(root, boot="same-boot", issuer=new.label)
+            current = Model(root, boot="same-boot", issuer=new.label, issuer_gate=new.serving_gate)
             self.assertFalse(current.start(key, A, "body"))
 
     def test_closed_observer_never_uses_recycled_descriptor_numbers(self):
@@ -377,6 +380,58 @@ class OwnershipProof(unittest.TestCase):
                     os.fstat(fd)
             task.result(timeout=5)
         self.assertEqual(self.observer.state(self.epoch.label), UNKNOWN)
+
+    def test_retired_epoch_cannot_prepare_start_enqueue_or_publish(self):
+        with tempfile.TemporaryDirectory() as root:
+            model = Model(root, issuer=self.epoch.label, issuer_gate=self.epoch.serving_gate)
+            model.initialize_fixture()
+            prepared = model.prepare(A, "prepared")
+            running = model.prepare(A, "running")
+            self.assertTrue(model.start(running, A, "running"))
+            model.freeze(running, A)
+            self.epoch.retire()
+            for operation in (
+                lambda: model.prepare(A, "new"),
+                lambda: model.start(prepared, A, "prepared"),
+                lambda: model.enqueue(running, A, "new input"),
+                lambda: model.publish(running, A, "terminal"),
+            ):
+                with self.assertRaisesRegex(Held, "retired serving epoch"):
+                    operation()
+
+    def test_start_commit_serializes_against_retirement(self):
+        with tempfile.TemporaryDirectory() as root:
+            model = Model(root, issuer=self.epoch.label, issuer_gate=self.epoch.serving_gate)
+            model.initialize_fixture()
+            key = model.prepare(A, "synthetic")
+            entered, retiring, retired = threading.Event(), threading.Event(), threading.Event()
+            original_rows = model.rows
+
+            def hold_checked_transaction(receipt):
+                entered.set()
+                self.assertTrue(retiring.wait(5))
+                self.assertFalse(retired.is_set())
+                return original_rows(receipt)
+
+            def retire():
+                self.assertTrue(entered.wait(5))
+                retiring.set()
+                self.epoch.retire()
+                retired.set()
+
+            model.rows = hold_checked_transaction
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                task = pool.submit(retire)
+                # Stop exactly after start COMMIT, before any dispatch/open.
+                from protocol import Crash
+                with self.assertRaises(Crash):
+                    model.start(key, A, "synthetic", crash="started")
+                task.result(timeout=5)
+            with model.db(model.author, "ro") as conn:
+                self.assertEqual(model.receipt(conn, key, A)["phase"], "started")
+            with self.assertRaises(Held):
+                model.start(key, A, "synthetic")
+            self.assertTrue(retired.is_set())
 
     def test_wrong_descriptor_type_is_rejected_not_reported_alive(self):
         raw = os.open(os.devnull, os.O_RDONLY)
