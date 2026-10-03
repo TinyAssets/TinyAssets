@@ -213,6 +213,10 @@ html,body{margin:0;padding:0;height:100%;font:15px/1.5 system-ui,sans-serif;colo
     var message = event.data;
     if (!message || typeof message !== "object" || message.ta_ui !== PROTOCOL) { return; }
     if (message.type === "focus") {
+      // The parent focuses the iframe before posting this handoff. A newer
+      // composer/menu gesture may have moved focus while the message queued;
+      // never let that stale handoff take the keyboard back from the owner.
+      if (!document.hasFocus()) { return; }
       window.focus();
       // Hand the keyboard to this frame without taking it from a control the
       // UI itself has focused (an input the owner is typing in keeps focus).

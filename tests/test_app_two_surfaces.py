@@ -13,7 +13,7 @@ def test_medium_geometry():
 DOM = """
 let focused='', messages=[];
 const frame={setAttribute(k,v){this[k]=v},focus(){focused='frame'},
- contentWindow:{postMessage(m,origin){messages.push([m,origin])}}};
+ contentWindow:{focus(){focused='frame'},postMessage(m,origin){messages.push([m,origin])}}};
 const nodes={'ui-frame':frame,'ui-frame-host':{hidden:false},
  'cc-blank':{focus(){focused='blank'}}, 'chat-stage':{}, 'composer-input':{tagName:'TEXTAREA'},
  'cloud-menu':{hidden:true}};

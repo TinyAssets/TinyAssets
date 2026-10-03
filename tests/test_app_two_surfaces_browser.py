@@ -291,6 +291,65 @@ def test_picker_return_restores_native_frame_typing(app_url, browser):
     page.close()
 
 
+@pytest.mark.parametrize("phone", [False, True], ids=["desktop", "phone"])
+@pytest.mark.parametrize("target", ["composer-input", "btn-cloud-menu"])
+def test_queued_frame_focus_does_not_override_newer_chat_gesture(app_url, browser, phone, target):
+    context = browser.new_context(
+        viewport={"width": 390 if phone else 1280, "height": 844 if phone else 800},
+        is_mobile=phone, has_touch=phone,
+    )
+    page = context.new_page()
+    _enter_chat(page, app_url)
+    page.evaluate("""() => AppUI.mount({ui_id:'play', name:'Play',
+      markup:'<canvas id="scene" tabindex="0"></canvas>', style:'', script:''})""")
+    scene = page.frame_locator("#ui-frame").locator("#scene")
+    scene.wait_for()
+    page.click("#chat-cloud-bubble")
+    page.fill("#composer-input", "unsent draft")
+    scene.evaluate("""el => {
+      window.focusBarrierSeen=false;
+      window.addEventListener('message', event => {
+        if(event.source===parent && event.data?.testFocusBarrier) focusBarrierSeen=true;
+      });
+    }""")
+    # Deterministically order a pending frame handoff before a newer owner
+    # gesture, without a sleep or relying on process scheduling during a click.
+    page.evaluate("""target => {
+      focusCommandCenter();
+      const input=document.getElementById('composer-input');
+      input.setSelectionRange(2, 7);
+      const control=document.getElementById(target);
+      control.focus();
+      if(target==='btn-cloud-menu') control.click();
+      document.getElementById('ui-frame').contentWindow.postMessage({testFocusBarrier:true}, '*');
+    }""", target)
+    # Messages from this parent are ordered, so the barrier proves the queued
+    # focus message was consumed before we inspect focus and selection.
+    scene.evaluate("""() => new Promise(resolve => {
+      if(window.focusBarrierSeen) return resolve();
+      window.addEventListener('message', function observed(event) {
+        if(event.source===parent && event.data?.testFocusBarrier) {
+          window.removeEventListener('message', observed); resolve();
+        }
+      });
+    })""")
+    assert page.evaluate("document.activeElement.id") == target
+    assert page.input_value("#composer-input") == "unsent draft"
+    selection = page.locator("#composer-input").evaluate("e=>[e.selectionStart,e.selectionEnd]")
+    assert selection == [2, 7]
+    if target == "btn-cloud-menu":
+        assert page.locator("#cloud-menu").is_visible()
+        assert page.locator("#btn-cloud-menu").get_attribute("aria-expanded") == "true"
+    else:
+        page.keyboard.type("X")
+        assert page.input_value("#composer-input") == "unXdraft"
+    # The guard must still allow the next deliberate handoff into the frame.
+    page.evaluate("focusCommandCenter()")
+    from playwright.sync_api import expect
+    expect(page.locator("#ui-frame")).to_be_focused()
+    context.close()
+
+
 def test_phone_send_keeps_composer_focus(app_url, browser):
     context = browser.new_context(viewport={"width": 390, "height": 844},
                                   is_mobile=True, has_touch=True)

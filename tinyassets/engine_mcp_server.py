@@ -1786,8 +1786,11 @@ _WRITE_GRAPH_CODE_NODES_CHAPTER = """\
     fix ``run()`` with ``operation=patch`` and payload ``op=update_node``, then run again.
     The same ``update_node`` op also edits a node's ``llm_policy`` in place:
     a ``{"preferred": {"provider": "<name>"}}`` dict replaces the pin, explicit
-    ``null`` clears it, omitting the key leaves it unchanged. That is a routing
-    preference, not a provider grant (see ``connect_compute``).
+    ``null`` clears it, omitting the key leaves it unchanged. Add ``"model_id"``
+    to pin a model; ``<name>`` is a source ref from read_graph
+    target=model_options, or its access method (``api_key_http``) when one such
+    source offers that model. That is a routing preference, not a provider grant
+    (see ``connect_compute``).
     ``effects`` and ``workspace`` are editable the same way, so an existing
     workflow never has to be rebuilt to change what a node does: ``"effects":
     ["authenticated_external_call"]`` (or ``["workspace"]``) declares the sink,
@@ -3975,7 +3978,7 @@ def connect_compute(
 
     Do NOT try to select it by writing ``llm_policy`` on a node: the runtime reads
     only ``{"preferred": {"provider": "<name>"}}`` — a provider NAME such as
-    ``codex`` or ``claude-code``, never a ``provdef_...`` id — and a wrong key is
+    ``codex`` or ``api_key_http``, never a bare ``provdef_...`` id — and a wrong key is
     ignored, so the run fails later with ``permission_denied:provider_not_bound``.
     A workflow node normally needs NO ``llm_policy`` at all: leave it off and the run
     uses whatever provider the command center serves.

@@ -4805,7 +4805,12 @@
     const frame=$("ui-frame");
     if(frame){
       frame.setAttribute("tabindex","0"); frame.focus();
-      if(frame.contentWindow) frame.contentWindow.postMessage({ta_ui:1,type:"focus"},"*");
+      if(frame.contentWindow){
+        // Restore native frame focus now; the queued body handoff must not
+        // later override a newer composer or menu gesture.
+        frame.contentWindow.focus();
+        frame.contentWindow.postMessage({ta_ui:1,type:"focus"},"*");
+      }
     }else if($("cc-blank")) $("cc-blank").focus();
   }
   function cloudCoversStage(){

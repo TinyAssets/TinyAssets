@@ -22,7 +22,10 @@ from tinyassets.exceptions import (
     SelectedModelContextError,
 )
 from tinyassets.providers import agent_chat_codec as codec
-from tinyassets.providers.agent_capacity_boundary import capacity_boundary
+from tinyassets.providers.agent_capacity_boundary import (
+    capacity_boundary,
+    uniform_pre_generation_failure,
+)
 from tinyassets.providers.agent_inference import AgentInferenceRequest
 from tinyassets.providers.agent_model_plan import AgentModelPlan
 from tinyassets.providers.model_capacity import (
@@ -755,6 +758,7 @@ class AgentTurnCoordinator:
                 return
             self.router.cool_source(
                 failed.connection_id, retry_after_s=boundary.retry_after_s,
+                reason=boundary.failure_class or "",
             )
         except Exception:  # noqa: BLE001 - cooling is hygiene, never the failure
             _LOG.warning("could not cool a spent free source")
@@ -999,14 +1003,10 @@ class AgentTurnCoordinator:
         ):
             return False
         attempts = tuple(exc.attempts or ())
-        if not attempts or any(a.failure_class != failure_class for a in attempts):
-            return False
-        if any(
-            getattr(a, "side_effect_state", "none") not in ("", "none")
-            for a in attempts
-        ):
-            # A round that may have acted is not replayable on another model; the
-            # turn's own held state is the honest answer.
+        # Shared with the workflow run's loop, so a refusal means the same thing
+        # on both surfaces. A round that may have acted is not replayable on
+        # another model; the turn's own held state is the honest answer.
+        if not uniform_pre_generation_failure(attempts, failure_class):
             return False
         failed = self.context.model_selection
         self.visited.add(failed)
