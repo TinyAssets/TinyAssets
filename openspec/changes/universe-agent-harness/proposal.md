@@ -162,13 +162,18 @@ and adapter-specific behaviour is a declared capability (`resume`,
 
 ## Impact
 
-Ownership clarified 2026-10-04: `starter-agent-out-of-plumbing` owns editable
-starter content and renderer cutover; `starter-seed-lifecycle` is D10's single
-seed installation/upgrade/receipt mechanism. D7 keeps both learning-removal
+Ownership clarified 2026-10-04: `starter-agent-out-of-plumbing` solely owns editable
+starter content, consumer/renderer cutover wiring and all-center/dormant-center
+proof (task 2.3); `starter-seed-lifecycle` is D10's prerequisite transaction API
+and single installation/upgrade/receipt mechanism, with its owner/center-bound
+sidecar SQLite storage contract. Resident hooks and skills arrive alongside
+untouched custom AGENTS.md with visible former-defaults diagnostics. D7 keeps both learning-removal
 deltas and backlog preservation here. D6 keeps the platform-versioned read-only
 handbook, with owner skills taking precedence over workflow recommendations.
 No duplicated adoption or learning-retirement implementation is assigned to the
-starter slice, and no owner review holds a center on legacy plumbing.
+starter slice, and no owner review holds a center on legacy plumbing. Both the
+starter move and D7 require N>=10 paired write/recall trials per model-family x
+stock/customized-AGENTS fixture cell; the factual no-tools line stays in plumbing.
 
 Code: `tinyassets/universe_intelligence.py` (persona and learning paths deleted),
 `conversation_memory.py` (replaced by the session log),

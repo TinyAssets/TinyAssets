@@ -4,10 +4,11 @@ Founder direction (2026-10-04): minimal, replaceable plumbing and an editable st
 
 ## What Changes
 
-- Move starter behavior into editable seeds and on-demand skills; retain a minimal resident memory trigger and factual clock context for reliability.
+- Move resident starter behavior into editable `starter/hooks.md`, loaded alongside untouched custom `AGENTS.md`, and five on-demand skills; announce these additions visibly. Retain factual clock and no-tools context in plumbing.
 - Map all resident fragments, remove per-turn AGENTS.md reseeding/default substitution, and preserve cross-user and untrusted-data plumbing.
 - **BREAKING:** switch every center to the new renderer using D10's single starter-seed-lifecycle mechanism. Stock files upgrade automatically; customized files stay intact with a visible offer. No owner review gates cutover and no compatibility renderer remains.
-- Prove resident savings and full-task cost against D6-only per adapter, plus memory write/recall non-regression per supported model family.
+- Solely own the renderer cutover wiring and all-center/dormant-center proof; depend on seed-lifecycle's transaction mechanism.
+- Prove resident savings and full-task cost against D6-only per adapter, plus memory write/recall non-regression per supported model family on both stock and preserved-custom-AGENTS fixtures.
 
 ## Capabilities
 

@@ -733,14 +733,18 @@ a roster agent, again with at most its creator's authority.
 
 **The seed template.** A new universe is seeded from an explicitly published,
 reviewed starter template, never the founder's live private files. The
-template holds the base `AGENTS.md`, the onboarding questions, the seed rules,
+template holds the base `AGENTS.md`, separate resident `starter/hooks.md`, the onboarding questions, the seed rules,
 starter skills and channel extensions.
 
 The single D10 seed installation/upgrade mechanism is specified by
 `starter-seed-lifecycle`, including receipts for new centers, automatic updates
 of stock files, preservation of customizations/deletions, visible offers and
-conditional file Undo. `starter-agent-out-of-plumbing` owns starter content and
-renderer cutover, not a second adoption protocol. All centers cut over without
+conditional file Undo in its specified owner/center-bound sidecar SQLite store.
+`starter-agent-out-of-plumbing` solely owns starter content, consumer/renderer
+cutover wiring and all-center/dormant-center proof (task 2.3), not a second
+adoption protocol. New hooks/skills arrive alongside untouched custom AGENTS.md,
+with a visible explanation of moved guidance and legacy former-defaults cases.
+All centers cut over without
 waiting for owner review; file Undo never restores legacy plumbing. D9's explicit
 activation of imported third-party bundles remains separate.
 
@@ -1213,9 +1217,12 @@ the surfaces that need them (`ta` in D6, `browse` in D5).
    do not mark them learned. This is D7's sole responsibility, not the starter
    renderer slice or D10's seed receipts. Sync both learning-removal deltas here.
 8. Live proof: delete one item, Undo an `AGENTS.md` change, and pass N>=10 paired
-   natural fact-teaching trials per supported model family with extraction off
-   against an extraction-on baseline. Verified immediate durable-write rate and
-   later cross-surface recall rate must each be no worse in every family.
+   natural fact-teaching trials per supported model family and each stock/customized
+   AGENTS.md fixture with extraction off against matched extraction-on baselines.
+   The custom fixture keeps owner bytes containing none of the moved hooks and
+   receives resident starter/hooks.md and skills without owner acceptance.
+   Verified immediate durable-write rate and later cross-surface recall rate
+   must each be no worse in every family/fixture cell, reported separately.
 
 D7 learning cutover: IDs, history and Undo are deployed and verified first.
 Preserve each unresolved source span in an owner-only review artifact with source
@@ -1262,12 +1269,15 @@ steps remain one memory intent; the parent retains twelve task checkboxes.
 **D10: Everywhere, and delete the old surface**
 1. Use `starter-seed-lifecycle` as the sole published-template mechanism for new
    and existing centers, including installed-hash receipts at creation and
-   autonomous stock upgrades. Reuse `starter-agent-out-of-plumbing` content;
-   customized/deleted files stay with a visible offer, never an activation hold.
+   autonomous stock upgrades in its specified sidecar SQLite receipt store.
+   Reuse `starter-agent-out-of-plumbing` content; customized/deleted AGENTS.md
+   stays while new hooks/skills arrive alongside it with a visible explanation,
+   including specific empty/linked/unreadable former-defaults diagnostics.
 2. Add starter channel extensions for Slack and Telegram.
-3. Coordinate deletion of replaced handles/guidance with deployed D6 reachability
-   and the starter's single all-center cutover; no dormant or non-reviewing owner
-   remains on old plumbing. Record the release's actual UTC cutoff and SHA.
+3. Depend on deployed D6 reachability and `starter-agent-out-of-plumbing` task 2.3
+   for consumer/renderer cutover wiring, replaced-guidance deletion, cutoff UTC/SHA
+   and all-center/dormant-center proof. Do not duplicate that integration here;
+   no dormant or non-reviewing owner remains on old plumbing.
 4. Run `ui-test` on a fresh account.
 5. Run the canary with `--assert-handles`.
 
@@ -1323,7 +1333,8 @@ them where the two differ. In particular:
 - **Model context** is the last compaction summary plus every entry after it.
   The platform assembles it mechanically:
   1. base prompt (≤600 tokens);
-  2. `AGENTS.md`;
+  2. the selected agent's actual `starter/hooks.md` then `AGENTS.md`, with
+     explicit owner instructions taking precedence and no missing-file fallback;
   3. `MEMORY.md` (the first 200 lines or 25 KB);
   4. the skill index;
   5. the session.
@@ -1399,7 +1410,9 @@ user and is edited by the agent. Its core, about 300 tokens:
 
 Identity stays in `identity.md`: the persona name still comes from the
 learned self-model, as the existing personification spec requires. Only the
-platform-authored tone and behaviour text moves into `AGENTS.md`. `voice.md`
+platform-authored tone moves into `AGENTS.md`; moved resident behavioral hooks
+live in editable `starter/hooks.md` alongside it, as specified by the starter
+slice, so custom AGENTS.md keeps its bytes and former runtime guidance. `voice.md`
 keeps working until S6 folds it in. The untrusted-envelope rule stays in
 the base prompt, because it is a cross-user boundary.
 
@@ -1485,7 +1498,10 @@ the base prompt, because it is a cross-user boundary.
 - `universe_intelligence.py`:
   - persona assembly `_build_persona_system_prompt` with its brain, ask and
     clock advice sections (`starter-agent-out-of-plumbing` keeps a factual
-    founder-only clock line and an editable resident seed memory trigger);
+    founder-only clock line and an editable resident starter/hooks.md memory trigger);
+  - ordinary-text suffix advice moves to starter/hooks.md; retain the factual
+    "This turn has no tools available." line when the actual turn disables tools,
+    independent of custom/blank instructions or replacement-agent selection;
   - `_GROUNDING_IS_CURRENT`, `_CROSS_SURFACE_CONTINUITY`,
     `_turn_input_method_context` prose (retain client-reported, informational,
     never-authority-or-consent input metadata); `_UNRECORDED_LESSON` only in D7;

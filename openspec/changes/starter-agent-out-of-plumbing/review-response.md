@@ -1,4 +1,31 @@
-# Claude ADAPT response — 2026-10-04
+# Final round-3 response to round-2 ADAPT — 2026-10-04
+
+Review basis: `0697add7cf` on `spec/starter-agent-out-of-plumbing`. All five
+DISAGREE findings are accepted and resolved in planning artifacts. This is the
+final requested review round; no sub-agents, product implementation, runtime
+trials or deployment were performed. Prior round-1 history follows below and
+is superseded where the final resolutions refine it.
+
+| Finding | Final resolution |
+|---|---|
+| N1 — DISAGREE_CONCERN | AGREE. Move the mapped resident guidance to separate editable `starter/hooks.md`. D10 installs this new path and five skills alongside untouched custom AGENTS.md; generic loading reads actual hooks before owner instructions, without depending on a skill-load decision. The note explains moved guidance and edit/delete/Undo controls and identifies any unavailable collision. Owner instructions win, hook deletion/Undo is preserved, and replacement agents load their own files. Require N>=10 paired write/recall trials in every model-family x stock/customized-AGENTS fixture cell, repeated in parent D7 with extraction off. |
+| N2 — DISAGREE_CONCERN | AGREE. Require an explicit legacy-empty notice saying the instructions file is empty and previously ran defaults. Linked/unreadable cases name their observed condition and former fallback. Explain no runtime substitution, actual hooks/skills installed or unavailable, and owner controls; retain the diagnostic for dormant owners even if no file changed. |
+| N3 — DISAGREE_EVIDENCE | AGREE. Retain "This turn has no tools available." in plumbing, derived from effective allowed_tools=() and tool_choice="none", regardless of custom/blank/replacement instructions or absent hooks. Move only response-priority advice. Require tool-less/tool-enabled checks and count the retained line in costs. |
+| N4 — DISAGREE_CONCERN | AGREE. Starter task 2.3 alone owns consumer/renderer wiring and the all-center/dormant-center cutover proof. Seed-lifecycle task 3.1 supplies and contract-tests the prerequisite transaction API; its integration dependency and the parent's dependency point to that single owner. |
+| N5 — DISAGREE_CONCERN | AGREE. Fix schema v1 in `<data>/.universe-sidecars/<canonical-center-key>/starter-seeds.sqlite3`. Specify binding, receipt/path keys, persistent owner choices/tombstones, scoped journal and exact byte blobs, transaction phases/idempotency, notice outbox and Undo references. All keys/queries and private-byte references bind authenticated owner and center, including recovery/Undo; no cross-owner blob deduplication. Define recoverable file/SQLite commit ordering and cross-owner/same-owner-other-center isolation acceptance. |
+
+Final validation:
+
+- Initial requested `git pull --ff-only origin spec/starter-agent-out-of-plumbing`: already up to date.
+- `openspec validate starter-agent-out-of-plumbing --strict`: passed.
+- `openspec validate starter-seed-lifecycle --strict`: passed.
+- `openspec validate universe-agent-harness --strict`: passed.
+- Task counts remain 10 starter, 9 seed lifecycle, 12 parent; implementation checkboxes unchanged.
+- `git diff --check`: passed.
+- `python -m ruff check .`: 59 existing findings in unchanged Python files; no Python/product files changed.
+- Runtime reliability, storage/isolation and live proofs remain implementation acceptance work, not claimed results of this spec revision.
+
+## Prior round-1 response
 
 Review basis: `origin/spec/starter-agent-out-of-plumbing` at `5dfe7655ef`,
 merge-base `26980f01db`. This revision preserves the interrupted worktree edits

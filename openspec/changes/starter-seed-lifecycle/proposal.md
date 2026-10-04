@@ -4,8 +4,9 @@ D10 needs one seed mechanism for new and existing command centers. Waiting for e
 
 ## What Changes
 
-- Define D10's single versioned manifest, per-path receipt and conditional file Undo mechanism, reused by `starter-agent-out-of-plumbing`.
-- **BREAKING:** activate the new plumbing for every center without an owner approval gate. Add never-installed paths and upgrade seed-identical files automatically; preserve customized or owner-deleted files and visibly offer the new version.
+- Define D10's single versioned manifest, per-path receipt and conditional file Undo mechanism in a per-center sidecar SQLite database, with owner/center composite keys for receipt, journal, tombstone, notice and Undo records.
+- Supply the transaction API for the **breaking** all-center cutover solely owned by `starter-agent-out-of-plumbing` task 2.3. Add never-installed paths and upgrade seed-identical files automatically; preserve customized or owner-deleted files and visibly offer the new version.
+- Deliver new hooks/skills alongside untouched customized instructions; explicitly tell legacy empty/linked/unreadable-AGENTS owners that they previously ran runtime defaults and where guidance now resides.
 - Record the same installed hashes during new-center provisioning; never reseed on startup or a conversation turn.
 - Keep recovery and Undo limited to file changes, with no legacy renderer or extraction compatibility mode.
 

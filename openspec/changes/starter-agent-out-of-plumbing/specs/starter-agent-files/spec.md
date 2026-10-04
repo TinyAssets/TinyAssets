@@ -1,7 +1,7 @@
 ## ADDED Requirements
 
 ### Requirement: Starter policy is editable content above minimal plumbing
-The system SHALL implement the design's complete section mapping using seed AGENTS.md and on-demand memory, access, onboarding, time and workspace skills, with only name, one-line trigger and path resident per skill. It SHALL retain an editable resident memory hook, factual founder clock data, identity/honesty, untrusted-envelope and nonce-history framing, input-method provenance, code disclosure filtering, founder-only exposure and four tool definitions. Owners SHALL be able to replace starter files and the main agent without hidden fallback or broader authority.
+The system SHALL implement the design's complete section mapping using seed AGENTS.md, separate resident starter/hooks.md and on-demand memory, access, onboarding, time and workspace skills, with only name, one-line trigger and path resident per skill. Generic loading SHALL read the selected agent's actual hook bytes before AGENTS.md, independently of AGENTS.md readability or skill selection, with source paths and explicit owner instructions taking precedence. The hooks SHALL contain the mapped memory, continuity, input-method, incomplete-onboarding, harness, grounding-current and response-priority advice; stock AGENTS.md SHALL NOT duplicate it. Plumbing SHALL retain factual founder clock data, identity/honesty, untrusted-envelope and nonce-history framing, input-method provenance, code disclosure filtering and founder-only exposure. Tool-enabled turns SHALL expose the four tool definitions; tool-less turns SHALL instead include the factual line "This turn has no tools available." derived from effective allowed_tools=() and tool_choice="none", independent of editable content. Owners SHALL be able to replace starter files and the main agent without hidden fallback or broader authority.
 
 #### Scenario: Relevant guidance is available without losing the memory trigger
 - **WHEN** a default starter handles an owner-taught durable fact
@@ -12,6 +12,16 @@ The system SHALL implement the design's complete section mapping using seed AGEN
 - **WHEN** the platform knows the founder's timezone and the task is time-relative
 - **THEN** a minimal factual resident line gives current timezone and local date/time without a skill load or a redundant timezone question
 - **AND** turn data refreshes across timezone changes and local midnight; an unknown timezone is never guessed and private clock data is excluded from unauthorized tiers
+
+#### Scenario: Tool availability is factual even with no starter instructions
+- **WHEN** a default, customized, blank or replacement agent takes a turn with allowed_tools=() and tool_choice="none", including with starter/hooks.md absent
+- **THEN** the request includes the factual no-tools line and no available tools, independently of AGENTS.md
+- **AND** only prioritization advice comes from editable hooks; a tool-enabled turn does not receive the no-tools line
+
+#### Scenario: Owner control includes the resident hooks
+- **WHEN** the owner edits, empties, deletes or Undoes starter/hooks.md, or selects a replacement main agent
+- **THEN** the loader uses only the selected agent's actual instruction files and never restores missing hook text or appends the old main's hooks
+- **AND** D10 preserves the choice on later upgrades; linked/unreadable hooks produce a visible failure without traversal or fallback
 
 #### Scenario: Replacement or deletion retains the floor
 - **WHEN** an owner replaces the main agent, empties or deletes AGENTS.md, or its path is unreadable or linked
@@ -27,12 +37,17 @@ The starter SHALL link to D6-owned platform-versioned read-only handbook referen
 - **AND** API examples stay versioned/tested with the platform rather than fossilized in a customized seed copy
 
 ### Requirement: Every center cuts over through D10's single seed mechanism
-The starter SHALL consume starter-seed-lifecycle for both provisioning and existing centers and SHALL NOT implement its own receipt/acceptance protocol. At the coordinated release boundary it SHALL switch every center to the new renderer and remove the old renderer, without owner-response, collision-mapping or dormant-center gates. Untouched or seed-identical files SHALL upgrade automatically; customizations and owner deletions SHALL remain with a visible offer under D10's per-path rules. D7 learning extraction SHALL remain separately owned and SHALL NOT be selected by seed adoption.
+The starter SHALL consume starter-seed-lifecycle for both provisioning and existing centers and SHALL NOT implement its own receipt/acceptance protocol. This change alone SHALL own consumer/renderer cutover integration and the all-center/dormant-center acceptance proof; seed-lifecycle SHALL provide the prerequisite transaction API. At the coordinated release boundary it SHALL switch every center to the new renderer and remove the old renderer, without owner-response, collision-mapping or dormant-center gates. Untouched or seed-identical files SHALL upgrade automatically; customizations and owner deletions SHALL remain with a visible offer under D10's per-path rules. Proven new starter/hooks.md and skill paths SHALL install alongside preserved AGENTS.md, with a note explaining where former runtime guidance now loads and how to edit/delete/Undo it. D7 learning extraction SHALL remain separately owned and SHALL NOT be selected by seed adoption.
 
 #### Scenario: No owner reviews a custom-file offer
 - **WHEN** migration finds customized AGENTS.md and a colliding skill and receives no owner response
-- **THEN** those files remain unchanged with a visible offer, safe stock updates proceed, and the center runs the new plumbing
-- **AND** the generic skill index exposes owner skills without requiring an AGENTS.md amendment or silently restoring stock behavior
+- **THEN** those files remain unchanged, never-installed starter/hooks.md and noncolliding starter skills are added, and the center runs the new plumbing with resident hooks alongside its custom AGENTS.md
+- **AND** the generic index exposes installed starter and owner skills without an AGENTS.md amendment; the visible note explains the moved guidance, edit/delete/Undo controls, and any preserved collision's unavailable guidance and offered candidate
+
+#### Scenario: A legacy instructions file previously invoked defaults
+- **WHEN** legacy AGENTS.md is empty, linked or unreadable at cutover
+- **THEN** its bytes/path remain untouched while new hook/skill paths install independently
+- **AND** the notice states the specific condition, that the old runtime supplied defaults, that the new runtime reads actual files with no fallback, and which hooks/skills now supply guidance or could not be installed
 
 #### Scenario: A dormant center wakes after cutover
 - **WHEN** a previously dormant center next starts a turn
@@ -53,11 +68,11 @@ Activation SHALL require deployed D6 discovery/invocation and D6's core-plus-fou
 - **AND** the report includes all input/output tokens, extraction requests, skill loads and calls and requires rework rather than pooling adapters
 
 ### Requirement: Remembering and live capabilities do not regress
-The default starter SHALL pass N>=10 paired natural fact-teaching trials per supported model family against an extraction-on baseline, with verified immediate durable-write rate and later cross-surface recall rate each no worse than baseline in that family. Acceptance SHALL also pass the design's negative controls, clock cases and natural live memory/access/onboarding/replacement-main/unauthorized-tier proofs on an asserted deployed SHA. D7 SHALL repeat the memory comparison with extraction off before retiring it.
+Both the default starter and a preserved customized-AGENTS fixture containing none of the moved hooks SHALL pass N>=10 paired natural fact-teaching trials per supported model family against matched extraction-on baselines. The custom fixture SHALL retain identical owner bytes and receive hooks/skills without owner acceptance. Verified immediate durable-write rate and later cross-surface recall rate SHALL each be no worse than baseline in every family/fixture cell, reported separately. Acceptance SHALL also pass the design's negative controls, clock and hook-control cases and natural live memory/access/onboarding/replacement-main/unauthorized-tier proofs on an asserted deployed SHA. D7 SHALL repeat the entire two-fixture memory comparison with extraction off before retiring it.
 
 #### Scenario: One family loses learned facts
-- **WHEN** either write rate or recall rate is below extraction-on baseline in one family
-- **THEN** acceptance fails for that family regardless of pooled results or a successful demonstration
+- **WHEN** either write rate or recall rate is below extraction-on baseline in one family/fixture cell
+- **THEN** acceptance fails for that cell regardless of pooled results or a successful demonstration
 - **AND** the evidence reports numerator/denominator, fixtures, model settings and traces, and keeps the minimal resident hook while correcting the regression
 
 #### Scenario: Natural live use preserves the intended behavior
