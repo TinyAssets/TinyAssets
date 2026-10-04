@@ -2,14 +2,17 @@
 
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 
 import pytest
 
 from tests.cloud_runtime_fixture import cloud_runtime  # noqa: F401
 from tests.test_native_discovery_integration import install_discovery
 from tests.test_native_model_authority import native  # noqa: F401
+from tinyassets.agent_turn_coordinator import AgentTurnCoordinator
 from tinyassets.exceptions import ProviderError
 from tinyassets.providers.model_options import model_options_document
+from tinyassets.providers.model_policy import ModelRef
 from tinyassets.providers.native_catalogue import NativeCatalogue, NativeModel
 from tinyassets.providers.served_model_plan import prepare_owned_model_plan
 from tinyassets.providers.shortlist_refresh import SHORTLIST_CACHE
@@ -35,13 +38,13 @@ def test_known_model_stays_pickable_during_refresh(native, monkeypatch, history,
     if history == "verified":
         OwnModelHistory(native.base).record(
             source_kind="subscription", model_id=model_id, owner_user_id="owner-1")
-    else:
-        snapshot = SHORTLIST_CACHE.refresh_now(**where)
-        # Expire both the cache and snapshot clocks, not merely the refresh TTL.
-        aged = replace(snapshot, observed_at=snapshot.observed_at - timedelta(minutes=10))
-        monkeypatch.setattr("tinyassets.providers.native_discovery.discover_native_models_sync",
-                            lambda **kwargs: aged)
-        SHORTLIST_CACHE.refresh_now(**where)
+    snapshot = SHORTLIST_CACHE.refresh_now(**where)
+    # Even verified history needs this provider's snapshot. Display retention
+    # has no upper age limit; execution still requires fresh discovery.
+    aged = replace(snapshot, observed_at=snapshot.observed_at - timedelta(days=365))
+    monkeypatch.setattr("tinyassets.providers.native_discovery.discover_native_models_sync",
+                        lambda **kwargs: aged)
+    SHORTLIST_CACHE.refresh_now(**where)
     if failed:
         def unavailable(**kwargs):
             raise ProviderError("offline")
@@ -74,6 +77,9 @@ def test_refresh_retention_respects_current_scope_and_owner(native, monkeypatch)
                    owner_user_id="someone-else")
     history.record(source_kind="subscription", model_id="previously-verified-model",
                    owner_user_id="owner-1")
+    SHORTLIST_CACHE.refresh_now(
+        base=native.base, owner="owner-1", universe_id=native.universe.name,
+        provider="codex")
     prepared = prepare_owned_model_plan(
         base=native.base, universe=native.universe, owner="owner-1", agent=native.agent,
         allow_empty=True)
@@ -81,7 +87,7 @@ def test_refresh_retention_respects_current_scope_and_owner(native, monkeypatch)
     rows = {row["reference"]["model_id"]: row for row in document["options"]}
     assert "private-other-owner-model" not in rows
     discovered = prepared.assignment.candidates[0].access.model_scope == "discovered"
-    assert rows["previously-verified-model"]["in_candidate_catalog"] is discovered
+    assert rows["previously-verified-model"]["in_candidate_catalog"] is False
     if not discovered:
         assert rows["future-native-model"]["in_candidate_catalog"] is True
         assert rows["future-native-model"]["reasons"] == []
@@ -90,7 +96,7 @@ def test_refresh_retention_respects_current_scope_and_owner(native, monkeypatch)
 
 
 @pytest.mark.parametrize("native", ["discovered"], indirect=True)
-@pytest.mark.parametrize("mismatch", ["owner_id", "universe", "custody"])
+@pytest.mark.parametrize("mismatch", ["owner_id", "universe", "custody", "provider"])
 def test_last_catalogue_cannot_cross_current_source_authority(native, monkeypatch, mismatch):  # noqa: F811
     install_discovery(native, monkeypatch)
     where = dict(base=native.base, owner="owner-1", universe_id=native.universe.name,
@@ -99,6 +105,7 @@ def test_last_catalogue_cannot_cross_current_source_authority(native, monkeypatc
     changes = {
         "owner_id": "someone-else", "universe": native.base / "other-home",
         "custody": replace(snapshot.custody, reference_digest="old-credential"),
+        "provider": "claude-code",
     }
     stale = replace(snapshot, observed_at=snapshot.observed_at - timedelta(minutes=10),
                     **{mismatch: changes[mismatch]})
@@ -109,3 +116,82 @@ def test_last_catalogue_cannot_cross_current_source_authority(native, monkeypatc
         allow_empty=True)
     assert not prepared.plan.catalog.connections
     assert any(item.reason == "discovery_unavailable" for item in prepared.ineligible)
+
+
+def _display(rig):
+    prepared = prepare_owned_model_plan(
+        base=rig.base, universe=rig.universe, owner="owner-1", agent=rig.agent,
+        allow_empty=True)
+    return model_options_document(prepared.catalog, prepared.plan, prepared.ineligible)
+
+
+@pytest.mark.parametrize("native", ["discovered"], indirect=True)
+@pytest.mark.parametrize("failed", [False, True])
+def test_verified_on_source_a_is_not_selectable_on_source_b(native, monkeypatch, failed):  # noqa: F811
+    install_discovery(native, monkeypatch)
+    model_id = "source-a-only-model"
+    # Use the same history writer as a successful subscription turn on source A.
+    AgentTurnCoordinator._learn_verified_model(SimpleNamespace(
+        context=replace(native.context, model_selection=ModelRef("claude-code", model_id)),
+        owner="owner-1"), response=None)
+    where = dict(base=native.base, owner="owner-1", universe_id=native.universe.name,
+                 provider="codex")
+    snapshot = SHORTLIST_CACHE.refresh_now(**where)
+    aged = replace(snapshot, observed_at=snapshot.observed_at - timedelta(minutes=10))
+    monkeypatch.setattr("tinyassets.providers.native_discovery.discover_native_models_sync",
+                        lambda **kwargs: aged)
+    SHORTLIST_CACHE.refresh_now(**where)
+    if failed:
+        def unavailable(**kwargs):
+            raise ProviderError("offline")
+        monkeypatch.setattr("tinyassets.providers.native_discovery.discover_native_models_sync",
+                            unavailable)
+        SHORTLIST_CACHE.refresh_now(**where)
+    monkeypatch.setattr(SHORTLIST_CACHE, "schedule", lambda **kwargs: False)
+    rows = {row["reference"]["model_id"]: row for row in _display(native)["options"]}
+    assert rows[model_id]["in_candidate_catalog"] is False
+    assert rows["new-account-model"]["in_candidate_catalog"] is True
+
+
+@pytest.mark.parametrize("native", ["discovered"], indirect=True)
+def test_fresh_catalogue_that_dropped_verified_model_hides_it(native, monkeypatch):  # noqa: F811
+    model_id = "withdrawn-model"
+    models = [NativeModel(model_id, frozenset({"text"}))]
+
+    async def discover():
+        return NativeCatalogue(tuple(models), None, datetime.now(timezone.utc))
+
+    install_discovery(native, monkeypatch, discover)
+    OwnModelHistory(native.base).record(
+        source_kind="subscription", model_id=model_id, owner_user_id="owner-1")
+    where = dict(base=native.base, owner="owner-1", universe_id=native.universe.name,
+                 provider="codex")
+    SHORTLIST_CACHE.refresh_now(**where)
+    assert any(row["reference"]["model_id"] == model_id and row["in_candidate_catalog"]
+               for row in _display(native)["options"])
+    models[:] = [NativeModel("replacement-model", frozenset({"text"}))]
+    SHORTLIST_CACHE.refresh_now(**where)
+    rows = {row["reference"]["model_id"]: row for row in _display(native)["options"]}
+    assert rows[model_id]["in_candidate_catalog"] is False
+    assert rows["replacement-model"]["in_candidate_catalog"] is True
+
+
+@pytest.mark.parametrize("native", ["discovered"], indirect=True)
+def test_hidden_verified_model_stays_unselectable_with_no_snapshot(native, monkeypatch):  # noqa: F811
+    model_id = "hidden-model"
+
+    async def discover():
+        return NativeCatalogue((NativeModel(model_id, frozenset({"text"}), hidden=True),),
+                               None, datetime.now(timezone.utc))
+
+    install_discovery(native, monkeypatch, discover)
+    OwnModelHistory(native.base).record(
+        source_kind="subscription", model_id=model_id, owner_user_id="owner-1")
+    where = dict(base=native.base, owner="owner-1", universe_id=native.universe.name,
+                 provider="codex")
+    SHORTLIST_CACHE.refresh_now(**where)
+    assert all(row["reference"]["model_id"] != model_id for row in _display(native)["options"])
+    SHORTLIST_CACHE.forget(**where)
+    monkeypatch.setattr(SHORTLIST_CACHE, "schedule", lambda **kwargs: False)
+    rows = {row["reference"]["model_id"]: row for row in _display(native)["options"]}
+    assert rows[model_id]["in_candidate_catalog"] is False

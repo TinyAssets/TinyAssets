@@ -53,8 +53,8 @@ _LOG = logging.getLogger("universe_server.served_model_plan")
 #: id EXISTS, never permission to use it.
 PUBLIC_LISTED_BASIS = "publicly_listed"
 
-#: Evidence alone cannot grant access. Display under an accepted discovery scope
-#: may retain own verified choices; legacy and execution plans keep both as offers.
+#: Evidence alone cannot grant access. Subscription history is not provider-keyed;
+#: only this provider's catalogue or an explicit grant can make its ids selectable.
 _CANDIDATE_ONLY_BASES = frozenset({PUBLIC_LISTED_BASIS, OWN_VERIFIED_BASIS})
 
 
@@ -259,8 +259,11 @@ def _own_verified_candidates(base, source_kind, owner, *, already, excluded=froz
     Carries its own basis so the list can be honest about the difference between
     "you have run this" and "two owners elsewhere have run this". Like the
     published rows, these do not grant access: the owner may have narrowed their
-    scope since. Display can retain them under a current discovery grant; other
-    scopes still require an explicit grant, and execution needs fresh discovery.
+    scope since, and subscription history does not identify the provider. Display
+    retention requires a non-hidden row in this provider's last catalogue under
+    current custody, while refresh is pending or failed. Such rows are already
+    included as executor_enumerated, so history-only rows remain offers. A fresh
+    catalogue is authoritative; execution always needs fresh discovery.
     """
     from tinyassets.storage.learned_models import OwnModelHistory
 
@@ -499,15 +502,11 @@ def prepare_owned_model_plan(
                     base, universe, owner, member, native_snapshot=native_snapshot,
                     display_only=allow_empty,
                 )
-                # Public claims remain offers to grant. Display may retain this
-                # owner's history under accepted discovery scope; execution still
-                # requires fresh enumeration, and explicit scope stays exact.
+                # The provider/custody-checked snapshot already contributes its
+                # non-hidden rows as executor_enumerated, including during a
+                # pending/failed display refresh. History alone cannot restore a
+                # missing/hidden row or transfer access from another provider.
                 candidate_only = _CANDIDATE_ONLY_BASES
-                if allow_empty and member.access.model_scope == "discovered":
-                    # Auto-detect already grants this scope. An owner's verified
-                    # history remains pickable during discovery; it does not
-                    # attest fresh execution facts or widen explicit/legacy scope.
-                    candidate_only = candidate_only - {OWN_VERIFIED_BASIS}
                 contributed = tuple(
                     model for model in catalog.models
                     if model.availability_basis in candidate_only

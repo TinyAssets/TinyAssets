@@ -16,9 +16,9 @@ Two properties that concern asks for, both structural here rather than tuned:
   a dict lookup, not its own latency.
 
 Fresh reads withhold entries past :data:`USABLE_AGE`. Display-only reads retain
-the last known catalogue with a refresh diagnostic: catalogue age must not be
-mistaken for revoked consent. The display caller rechecks current membership
-and custody, and cannot use these display facts to authorize a launch.
+the last known catalogue with no upper age limit and a refresh diagnostic:
+catalogue age must not be mistaken for revoked consent. The display caller
+rechecks membership and custody, and cannot use these facts to authorize a launch.
 
 Execution is untouched. ``prepare_selected_model`` still discovers fresh at
 launch, with its own custody and freshness checks, so nothing here participates
@@ -38,7 +38,7 @@ from pathlib import Path
 
 _LOG = logging.getLogger("universe_server.shortlist_refresh")
 
-#: Oldest entry a read will serve. Under the five minutes
+#: Oldest entry a non-display read will serve. Under the five minutes
 #: ``NativeDiscoverySnapshot.assert_fresh`` allows, so anything handed out has
 #: headroom to survive the owner reading it and then choosing.
 USABLE_AGE = 150.0
@@ -157,9 +157,9 @@ class ShortlistCache:
         """The warm snapshot for this source, or ``(None, reason)``.
 
         Never blocks and never discovers. Display-only callers may retain the
-        last known snapshot, but must validate its custody and report the
-        returned diagnostic separately from consent. Other callers get only
-        snapshots inside the usable window.
+        last known snapshot with no upper age limit, but must validate its custody
+        and report the returned diagnostic separately from consent. Other callers
+        get only snapshots inside the usable window.
         """
         key = _Key(str(base), owner, universe_id, provider)
         with self._lock:
