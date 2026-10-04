@@ -456,6 +456,7 @@ def _engine_mcp_flags(config: ModelConfig, universe_dir: Path) -> list[str]:
     from tinyassets.agent_sessions import digest as _session_digest
     from tinyassets.engine_mcp_http import read_engine_mcp_route
     from tinyassets.engine_steering import route_with_session, session_of, turn_of
+    from tinyassets.served_tools import granted_tools
     from tinyassets.storage import data_dir
 
     session_key = session_of(config)
@@ -502,7 +503,9 @@ def _engine_mcp_flags(config: ModelConfig, universe_dir: Path) -> list[str]:
                 "tinyassets": {
                     "type": "http",
                     # Names this launch's session for owner steering (S2).
-                    "url": route_with_session(route.url, session_key, turn_of()),
+                    "url": route_with_session(
+                        route.url, session_key, turn_of(),
+                        grant_key=getattr(route, "grant_key", ""), tools=granted_tools(config)),
                     "headers": {"Authorization": "Bearer " + route.secret},
                 }
             }

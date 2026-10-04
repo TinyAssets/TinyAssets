@@ -27,23 +27,36 @@ logger = logging.getLogger(__name__)
 #: Query parameters on the engine route naming this launch's session and turn.
 SESSION_PARAM = "session"
 TURN_PARAM = "turn"
+#: The launch's signed tool grant (``served_tools.launch_grant``).
+GRANT_PARAM = "grant"
 #: Only the owner's conversation thread is steered.
 STEERED_PREFIX = "thread:"
 
 
-def route_with_session(url: str, session_key: str, turn: str = "") -> str:
-    """``url`` naming ``session_key`` (and the live ``turn``) for one launch."""
+def route_with_session(url: str, session_key: str, turn: str = "", *,
+                       grant_key: str = "", tools=None) -> str:
+    """``url`` naming ``session_key`` (and the live ``turn``) for one launch.
+
+    ``tools`` (``served_tools.granted_tools(config)``) adds the launch's grant,
+    signed with the route's ``grant_key`` over the same session and turn.
+    """
     from urllib.parse import quote
 
+    from tinyassets.served_tools import launch_grant
+
     key = str(session_key or "").strip()
-    if not key:
-        return url
-    joiner = "&" if "?" in url else "?"
-    out = f"{url}{joiner}{SESSION_PARAM}={quote(key, safe='')}"
-    live = str(turn or "").strip()
+    live = str(turn or "").strip() if key else ""
+    params = []
+    if key:
+        params.append(f"{SESSION_PARAM}={quote(key, safe='')}")
     if live:
-        out += f"&{TURN_PARAM}={quote(live, safe='')}"
-    return out
+        params.append(f"{TURN_PARAM}={quote(live, safe='')}")
+    grant = launch_grant(grant_key, key, live, tools) if tools is not None else ""
+    if grant:
+        params.append(f"{GRANT_PARAM}={quote(grant, safe='')}")
+    if not params:
+        return url
+    return url + ("&" if "?" in url else "?") + "&".join(params)
 
 
 def session_of(config) -> str:
@@ -73,6 +86,23 @@ def _route_params() -> tuple[str, str]:
 
 def _session_key() -> str:
     return _route_params()[0]
+
+
+def launch_tools() -> tuple[str, ...] | None:
+    """The served tools the platform granted this launch; ``None`` if unsigned."""
+    import os
+
+    from tinyassets.served_tools import LAUNCH_GRANT_KEY_ENV, verified_launch_grant
+
+    try:
+        from fastmcp.server.dependencies import get_http_request
+
+        grant = str(get_http_request().query_params.get(GRANT_PARAM) or "")
+    except Exception:  # noqa: BLE001 - stdio, or no request: no grant
+        return None
+    session_key, turn = _route_params()
+    return verified_launch_grant(
+        (os.environ.get(LAUNCH_GRANT_KEY_ENV) or "").strip(), session_key, turn, grant)
 
 
 def _take(session_key: str, turn: str) -> str | None:

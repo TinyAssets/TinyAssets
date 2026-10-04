@@ -22,7 +22,7 @@ queue), **review** (PR open, not stamped), **building** (draft or in progress),
 | D3 proactive research + proposals | Idle research on a cadence; output is proposals the owner approves | **not started** (trigger owned by S8b) | — |
 | D4 onboarding, profile, push | Name + one responsibility; profile page; push on done/waiting | push live; onboarding/profile **not started** | #4138 |
 | D5 computer | Browser broker, live view, take over; the agent sees what it built | **building** (ui-capabilities) | #4306 image read, #4316 UI preview, #4314 headless shell |
-| D6 four tools + `ta` | Exactly read/write/edit/bash, breadth behind `ta search` | tools live (S1); `ta` **not started** | #3972 |
+| D6 four tools + `ta` | Exactly read/write/edit/bash, breadth behind `ta search` | tools live (S1); **building**: D6a additive jail CLI, platform/connection discovery and calls, local extensions implemented on `feat/d6-ta-capabilities`; verification below. Attached MCP interface deferred in design §6 D6a; resident cutover remains | #3972; no D6a PR requested |
 | D7 memory | Memory items, Harness tab, history, Undo | **not started** | — |
 | D8 roster | Talk to any agent; per-agent rules/visibility | converse-by-agent **building** (agent-chat); design live | #4287, #4227 |
 | D9 sharing | Publish / install a whole command center | **building** (cc-package) | #4315 |
@@ -34,6 +34,30 @@ queue), **review** (PR open, not stamped), **building** (draft or in progress),
 | S8a owner lease | Per-command-center owner, fenced turn journal | **building** / review | #4308, #4313 |
 | S8b scheduler | One owner tick; triggers; decayed proactive cadence | **building** | #4276 |
 | Friction fixes | One-call patch request | **building** | (harness-patch-request, PR to open) |
+
+**D6a verification (2026-10-04, `feat/d6-ta-capabilities`).** Implemented and
+locally verified; no PR, deploy or real-user acceptance claimed. Linux oracle:
+`python scripts/linux_oracle.py -- tests/test_ta_capabilities.py tests/test_ta_capabilities_jail.py tests/test_universe_tools.py tests/test_universe_tools_jail.py tests/test_universe_egress.py tests/test_authenticated_external_call_effector.py tests/test_agent_rules.py -q`
+passed **206 tests, zero skips**. Final CLI refusal-exit and credential-reflection
+coverage plus route regressions:
+`python scripts/linux_oracle.py -- tests/test_ta_capabilities.py tests/test_ta_capabilities_jail.py tests/test_engine_mcp_routes.py -q`
+passed **69 tests, zero skips**. Oracle temp root is `/tmp/b`, outside the repo.
+Windows focused ta/engine tests: **124 passed, 3 skipped**, with basetemp under
+the host's external Temp directory. An initial Windows run also hit the existing
+drive-letter mount failure in `test_a_provider_launch_view_masks_every_hidden_root_file`;
+that test passed on Linux. Changed-source/test Ruff and mirror regeneration
+(including the import probe) pass. Repository-wide Ruff has **59 existing
+findings in untouched files**; no unrelated lint edits. Attached MCP, resident
+cutover and D1 durable workflow provenance remain explicitly deferred in
+design §6 D6a. Existing tests were neither removed nor renamed.
+
+**D6a grant binding (2026-10-04, PR #4439 review finding 2).** `ta` is bounded by
+the launch's signed tool grant (design §6 D6a). Windows:
+`tests/test_ta_capabilities.py` covers the default, narrowed nodes, connections,
+forged, absent, cross-launch and cross-server grants. **Pending the hosted Linux
+run**: `tests/test_ta_capabilities_jail.py`, whose engine helper now launches on
+a signed route and which adds `test_node_grant_bounds_ta_inside_the_jail`; it
+was not run for this change. Independent cross-family review is still owed.
 
 **Next integration step.** Once S7 (#4282/#4292), S6 (#4299) and the box tools
 land, the founder's account is switched (per account) onto the thin loop, the

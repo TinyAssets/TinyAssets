@@ -185,6 +185,59 @@ def granted_tools(config) -> tuple[str, ...]:
     return tuple(t for t in SERVED_ENGINE_MCP_TOOLS if t in grant)
 
 
+#: The engine server's environment variable holding the key that signs launch grants.
+LAUNCH_GRANT_KEY_ENV = "TINYASSETS_ENGINE_MCP_GRANT_KEY"
+
+
+def _launch_grant_mac(key: str, session_key: str, turn: str, names: str) -> str:
+    import hashlib
+    import hmac
+    import json
+
+    return hmac.new(key.encode(), json.dumps([session_key, turn, names]).encode(),
+                    hashlib.sha256).hexdigest()
+
+
+def launch_grant(key: str, session_key: str, turn: str, tools) -> str:
+    """The platform's signed statement of one launch's served tools, or "".
+
+    The launcher takes ``tools`` from ``granted_tools(config)`` and the key from
+    its verified engine route. The grant is bound to the launch's session and
+    turn; the key is one engine server's, so one owner's and one universe's.
+    """
+    if not key:
+        return ""
+    names = ",".join(t for t in SERVED_ENGINE_MCP_TOOLS if t in set(tools))
+    return f"{names}.{_launch_grant_mac(key, session_key, turn, names)}"
+
+
+def verified_launch_grant(key: str, session_key: str, turn: str,
+                          grant: str) -> tuple[str, ...] | None:
+    """The tools a launch's signed grant names; ``None`` unless the platform signed it.
+
+    No key, no grant, another launch's grant and an edited one are all ``None``:
+    nothing on the route is authority until the signature binds it to this launch.
+    """
+    import hmac
+
+    names, dot, mac = str(grant or "").rpartition(".")
+    if not key or not dot or not hmac.compare_digest(
+        mac.encode(), _launch_grant_mac(key, session_key, turn, names).encode(),
+    ):
+        return None
+    return tuple(t for t in SERVED_ENGINE_MCP_TOOLS if t in set(names.split(",")))
+
+
+def connections_granted(tools) -> bool:
+    """Whether a grant already reaches the owner's connections.
+
+    Before ``ta`` an agent reached a connection only by building an effect node
+    (``write_graph``) and running it (``run_graph``). ``ta`` calls a connection
+    directly only for a grant holding both, so it adds no reach.
+    """
+    return {"write_graph", "run_graph"} <= set(tools)
+
+
 # Explicit reviewed authority boundary. A future connector write action must not
 # become agent-callable merely because it is added to the canonical adapter.
 SERVED_AUTOMATION_WRITE_OPERATIONS = frozenset({"create", "pause", "resume", "delete"})

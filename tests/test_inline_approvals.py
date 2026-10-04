@@ -92,6 +92,61 @@ def test_approve_executes_once_through_ordinary_effector(case, monkeypatch):
     assert not any("preapproval" == getattr(r, "kind", "") for r in agent_rules.list_rules(home))
 
 
+@pytest.mark.parametrize("agent", ["main", "worker"])
+def test_bound_approval_cannot_override_a_different_signed_launch_agent(case, monkeypatch, agent):
+    from tinyassets.effectors import authenticated_external_call as effector
+    from tinyassets.ta_capabilities import ExecutionContext
+
+    home, _card, _session, raw = case
+    packet = {"sink": raw["executor"], **raw["arguments"]}
+    calls = []
+
+    class Proxy:
+        def request(self, verb, request):
+            calls.append((verb, request))
+            return {"status": 200, "body": "sent", "headers": {}}
+
+    monkeypatch.setattr(effector, "_open_connection_proxy", lambda **kw: Proxy())
+    token = bound._dispatch.set((str(home.resolve()), bound.digest(packet), "main"))
+    try:
+        result = effector.run_authenticated_external_call_effector(
+            node_id="signed-launch", output_keys=["action"], run_state={"action": packet},
+            base_path=home, execution_context=ExecutionContext(home.name, "user-1", agent),
+        )
+    finally:
+        bound._dispatch.reset(token)
+    if agent == "worker":
+        assert result["error_kind"] == "execution_context_mismatch"
+        assert result["dry_run"] is True
+        assert not calls
+    else:
+        assert result.get("delivered") is True, result
+        assert len(calls) == 1
+
+
+@pytest.mark.parametrize("agent", ["main", "worker"])
+def test_signed_launch_captures_only_its_own_ambient_turn(case, agent):
+    from tinyassets.effectors import authenticated_external_call as effector
+    from tinyassets.ta_capabilities import ExecutionContext
+
+    home, _card, _session, raw = case
+    agent_rules.set_rule(home, "app.write", "ask_first", agent=agent)
+    packet = {"sink": raw["executor"], **raw["arguments"]}
+    with identity_context(Identity(user_id="user-1", username="owner")), \
+            turn_interrupt.interactive_turn("user-1", home.name, agent_id="main"):
+        result = effector.run_authenticated_external_call_effector(
+            node_id="signed-launch", output_keys=["action"], run_state={"action": packet},
+            base_path=home, execution_context=ExecutionContext(home.name, "user-1", agent),
+        )
+    assert result["error_kind"] == "rule_ask_first"
+    if agent == "main":
+        assert result["request_id"]
+        stored = pending_requests.get_request(home, result["request_id"])
+        assert stored["action"]["envelope"]["subject"]["agent"] == "main"
+    else:
+        assert "request_id" not in result
+
+
 @pytest.mark.parametrize(
     "change",
     ["token", "session", "owner", "revision", "scope", "logout", "policy", "stop", "expiry"],

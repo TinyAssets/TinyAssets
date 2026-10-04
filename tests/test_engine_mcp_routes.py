@@ -110,7 +110,8 @@ def test_publish_readback_binds_owner_and_hides_secret_in_repr(tmp_path):
     with pytest.raises(FrozenInstanceError):
         route.secret = "changed"
     raw = json.loads((tmp_path / ".engine_mcp_http_routes.json").read_text(encoding="utf-8"))
-    assert raw["u-a"] == _entry(secret=server.secret)
+    assert raw["u-a"] == _entry(secret=server.secret, grant_key=server.grant_key)
+    assert route.grant_key == server.grant_key and route.grant_key not in repr(route)
     if os.name != "nt":
         assert (tmp_path / ".engine_mcp_http_routes.json").stat().st_mode & 0o777 == 0o600
 
