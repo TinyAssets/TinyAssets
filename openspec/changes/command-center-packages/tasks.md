@@ -30,6 +30,14 @@
   - code round 2: ADAPT, 7 of 8 folded, 1 DISAGREE_CONCERN (the design's review log);
   - code round 3 (last): ADAPT, one P1 folded (schema-location id exemption). Then the lead's live-village dry run drove the certain/suspect tiers (the design's review log).
 - [ ] 2.4 Linux oracle on the changed tests and their importers; deploy; `deployed_sha.py --assert-contains`; the lead's founder-account village test.
+- [x] 2.5 The top folder became a closed set (post-merge review, 2026-10-03). The
+      denylist published `orgchart.md` and `requests.json` (#4363), and a grep of
+      the root-level filenames platform code writes found 21 more that travelled,
+      including the branch-task queue. `ROOT_FILES` is now the carried set;
+      private-name lists keep their wording in the tab but no longer have to be
+      complete. The owner sentence names what travels. Root folders stay a
+      refusal list (an owner may create any) with the platform-created ones held
+      to it by test.
 
 ## 3. Land
 - [ ] 3.1 Sync the deltas into `universe-agent-harness` and `universe-custom-agents`, then archive.

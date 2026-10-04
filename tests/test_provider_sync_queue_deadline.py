@@ -6,27 +6,19 @@ check refuses work whose deadline already passed
 (``graph_compiler.py:407-412``), and ``_deadline_cfg`` subtracts the queue
 wait from the provider cap it hands over (``graph_compiler.py:1464-1494``).
 
-There is a SECOND queue on the same call path, and it has neither.
-``_run_with_timeout``'s worker calls ``ProviderRouter.call_sync`` /
-``call_with_policy_sync`` (``graph_compiler.py:1525``, ``:1534``, ``:1551``),
-and both submit to a different bounded pool — ``ProviderRouter._thread_pool``
-(``router.py:1911-1914``) — and then:
+There is a SECOND queue on the same call path: ``ProviderRouter._thread_pool``.
+Both sync wrappers now refuse expired work at worker entry and deduct queue wait
+from an explicit caller cap. These tests drive the REAL wrapper pair through
+``_run_with_timeout`` and stub final provider I/O; ``call``, ``call_with_policy``,
+``call_sync`` and ``call_with_policy_sync`` all run unmodified.
 
-* submit with **no worker-entry deadline check** (``router.py:1969``,
-  ``:1894``), so an item that sat out the node's whole budget in *this* queue
-  still starts; and
-* compute ``inner_timeout`` on the CALLER's thread before submitting
-  (``router.py:1945``, ``:1868``) while the clock it arms —
-  ``asyncio.wait_for(..., timeout=inner_timeout)`` (``router.py:1951``,
-  ``:1877``) — only starts when a worker picks ``_run`` up. Time spent queued
-  in pool 2 is therefore neither deducted nor refused.
-
-The node's ``NodeTimeoutError`` fires on schedule either way; the correction
-pool 1 makes is simply undone one hop later. These tests drive the REAL
-wrapper pair through the REAL compiler entry point and stub only the final
-provider I/O (``BaseProvider.complete``, ``base.py:1305``) — ``call``,
-``call_with_policy``, ``call_sync`` and ``call_with_policy_sync`` all run
-unmodified.
+The test callable supplies a fresh cap when pool 1 picks it up. It does not run
+the compiled node's ``_deadline_cfg`` closure, which deducts first-pool waits of
+at least 50ms and deliberately preserves smaller scheduling jitter. Therefore
+an outer ``NodeTimeoutError`` alone does NOT prove the router's handed-in budget
+expired. The expiry proofs hold pool 2 until its observed submit time plus that
+cap: an upper bound on the real deadline, which is armed before submit. Both
+wrappers are also exercised with a deliberately occupied first pool.
 
 Scope, deliberately: no thread is killed and no call is replayed. Work that
 got past the pool-2 worker entry before expiry must settle untouched — that
@@ -118,6 +110,7 @@ class _SubmitSignallingPool(concurrent.futures.ThreadPoolExecutor):
         super().__init__(*args, **kwargs)
         self._cond = threading.Condition()
         self.submits = 0
+        self.submitted_at: list[float] = []
         # Every blocker handed out by _occupy_sole_worker, so the fixture can
         # release them all in its finally. A test that fails mid-way must not
         # leave a worker parked on a 30s wait.
@@ -127,6 +120,7 @@ class _SubmitSignallingPool(concurrent.futures.ThreadPoolExecutor):
         future = super().submit(fn, *args, **kwargs)
         with self._cond:
             self.submits += 1
+            self.submitted_at.append(time.monotonic())
             self._cond.notify_all()
         return future
 
@@ -226,6 +220,50 @@ def _occupy_sole_worker(pool: _SubmitSignallingPool) -> threading.Event:
     return release
 
 
+@pytest.fixture(params=[0.0, 0.2], ids=["free-first-pool", "occupied-first-pool"])
+def first_pool_delay(request, monkeypatch):
+    """Exercise the handoff after a real, observed wait in the compiler pool."""
+    if not request.param:
+        yield
+        return
+    from tinyassets import graph_compiler
+
+    pool = _SubmitSignallingPool(max_workers=1, thread_name_prefix="test-node-pool")
+    release = _occupy_sole_worker(pool)
+    enqueued = []
+
+    def _release_after_submit():
+        enqueued.append(pool.wait_for_submits(2, timeout=SETTLE_S))
+        # A bounded real queue hold, started only once the tested node submitted.
+        release.wait(timeout=request.param)
+        release.set()
+
+    controller = threading.Thread(target=_release_after_submit, daemon=True)
+    monkeypatch.setattr(graph_compiler, "_TIMEOUT_EXECUTOR", pool)
+    controller.start()
+    try:
+        yield
+    finally:
+        release.set()
+        controller.join(timeout=SETTLE_S)
+        pool.shutdown(wait=True)
+    assert enqueued == [True], "node never entered the deliberately occupied first pool"
+
+
+def _await_handed_in_deadline(pool: _SubmitSignallingPool, budget_s: float) -> None:
+    """Keep pool 2 occupied until its explicit caller budget certainly expired.
+
+    The router arms its deadline BEFORE submit. Observing submit plus the full
+    cap is an upper bound even if this thread or the first pool was delayed;
+    no fixed scheduling allowance or mocked clock is involved.
+    """
+    with pool._cond:
+        assert pool.submits >= 2, "router item must be observed in the occupied pool"
+        expired_by = pool.submitted_at[-1] + budget_s
+    threading.Event().wait(timeout=max(0.0, expired_by - time.monotonic()))
+    assert time.monotonic() >= expired_by, "router's handed-in budget has not expired"
+
+
 def _node_cfg(budget_s: float) -> ModelConfig:
     """What the compiler hands the wrapper as the node's REMAINING budget.
 
@@ -237,7 +275,7 @@ def _node_cfg(budget_s: float) -> ModelConfig:
 
 
 def _drive_node(router: ProviderRouter, budget_s: float, node_id: str) -> dict:
-    """Run one node exactly as the compiler does, and record the inner outcome.
+    """Run the real timeout wrapper with an explicit provider cap.
 
     ``_run_with_timeout`` is the real compiler entry point; the callable it
     receives is the real router wrapper, as at ``graph_compiler.py:1534``.
@@ -271,8 +309,10 @@ def _await_settled(outcome: dict, timeout: float) -> bool:
     return bool(outcome)
 
 
-def test_expired_node_work_does_not_launch_from_the_provider_sync_queue(sync_pool):
-    """A node that went terminal while queued in POOL 2 must launch nothing.
+def test_expired_node_work_does_not_launch_from_the_provider_sync_queue(
+    sync_pool, first_pool_delay,
+):
+    """Work still queued after its handed-in deadline must launch nothing.
 
     RED on ff1320d5: the item is picked up after the node is already terminal
     and drives a provider call nobody awaits — the exact condition
@@ -293,6 +333,7 @@ def test_expired_node_work_does_not_launch_from_the_provider_sync_queue(sync_poo
     )
     assert not provider.launched.is_set(), "provider launched while pool 2 was saturated"
     assert time.monotonic() >= expired_at, "node budget had not actually elapsed"
+    _await_handed_in_deadline(sync_pool, NODE_BUDGET_S)
 
     release.set()
     assert _await_settled(outcome, SETTLE_S), (
@@ -300,9 +341,7 @@ def test_expired_node_work_does_not_launch_from_the_provider_sync_queue(sync_poo
     )
 
     assert provider.launches == [], (
-        "provider launched AFTER the node's deadline passed: pool 2 "
-        "(router.py:1911) has no worker-entry deadline check, so work that "
-        "spent its whole budget in that queue still starts"
+        "provider launched AFTER its handed-in deadline passed while queued in pool 2"
     )
 
 
@@ -404,7 +443,9 @@ def test_call_already_past_the_pool_worker_entry_settles_untouched(sync_pool):
     assert len(provider.launches) == 1, "the settled call was replayed"
 
 
-def test_expired_work_does_not_launch_from_call_with_policy_sync_either(sync_pool):
+def test_expired_work_does_not_launch_from_call_with_policy_sync_either(
+    sync_pool, first_pool_delay,
+):
     """The SECOND wrapper on the same pool, covered by its own evidence.
 
     ``call_with_policy_sync`` (``router.py:1852``) is the wrapper the compiler's
@@ -446,13 +487,14 @@ def test_expired_work_does_not_launch_from_call_with_policy_sync_either(sync_poo
     )
     assert not provider.launched.is_set()
     assert time.monotonic() >= expired_at
+    _await_handed_in_deadline(sync_pool, NODE_BUDGET_S)
 
     release.set()
     assert _await_settled(outcome, SETTLE_S), (
         "the queued policy item never settled after the pool freed up"
     )
     assert provider.launches == [], (
-        "call_with_policy_sync launched a provider AFTER its deadline passed"
+        "call_with_policy_sync launched a provider AFTER its handed-in deadline passed"
     )
 
 

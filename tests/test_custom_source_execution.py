@@ -13,6 +13,7 @@ import pytest
 
 from tests import test_custom_discovery_publication as publication
 from tests import test_interactive_http_agent as interactive
+from tests.inference_usage_helpers import accounting_resolver
 from tests.test_selected_model_authority import _authorize
 from tinyassets.exceptions import ProviderAuthorityHeldError
 from tinyassets.provider_assignment_manifest import ModelAccess
@@ -54,7 +55,7 @@ def reader(rig, source):
 def running(agent, source, monkeypatch):
     # Restore the production adapter's scoped-proxy resolver; publication.source
     # supplies the real broker and synthetic network, not a fake inference proxy.
-    monkeypatch.setattr(ApiKeyHttpProvider, "_resolve_proxy", _RESOLVE_PROXY)
+    monkeypatch.setattr(ApiKeyHttpProvider, "_resolve_proxy", accounting_resolver(_RESOLVE_PROXY))
     response_state = SimpleNamespace(failure_at=None, reported_cost="0", before_reply=lambda: None)
 
     def infer(request):

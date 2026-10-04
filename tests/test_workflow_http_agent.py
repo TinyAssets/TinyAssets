@@ -9,6 +9,7 @@ from mcp.types import CallToolResult, ListToolsResult, TextContent, Tool
 
 from tests import test_work_model_selection as work_model_tests
 from tests.cloud_runtime_fixture import cloud_runtime  # noqa: F401
+from tests.inference_usage_helpers import accounting_resolver
 from tests.test_run_provider_session import _branch, _CountingProvider, _run_branch
 from tinyassets import engine_mcp_http, engine_tool_client
 from tinyassets.provider_assignment_manifest import ModelAccess
@@ -122,7 +123,8 @@ def work_agent(tmp_path, monkeypatch, http_wire):
             })}
 
     monkeypatch.setattr(engine_tool_client, "_make_client", client)
-    monkeypatch.setattr(ApiKeyHttpProvider, "_resolve_proxy", lambda *a, **k: Proxy())
+    monkeypatch.setattr(ApiKeyHttpProvider, "_resolve_proxy",
+                        accounting_resolver(lambda *a, **k: Proxy()))
     return state
 
 

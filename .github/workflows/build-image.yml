@@ -51,6 +51,11 @@ on:
       # is a change that never builds and never deploys, so the probe would go
       # on asserting the old contract while looking green.
       - 'scripts/probe_app_surface.py'
+      # Same reason: deploy-prod.yml runs it on the runner to sanitize a failed
+      # candidate's state and logs, so a change to what it redacts has to reach
+      # a deploy. It was orphaned while the diagnostics step was missing, which
+      # is why it only becomes a runtime input now.
+      - 'scripts/sanitize_startup_diagnostics.py'
       - 'deploy/**'
       # Other Dockerfile COPY sources.
       - 'scripts/_canary_common.py'

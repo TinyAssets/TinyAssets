@@ -114,6 +114,8 @@ UNIVERSE_KEY = "universe_id"
 #: universe that no longer exists and goes when its own owner is deleted.
 OWNER_ONLY_TABLES = MappingProxyType({
     "universe_app_ui": "owner_user_id",
+    "command_center_adoptions": "owner_id",
+    "command_center_update_requests": "owner_id",
 })
 
 #: Universe-scoped tables that ALSO hold a person-keyed row worth removing

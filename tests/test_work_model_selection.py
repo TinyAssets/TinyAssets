@@ -7,6 +7,7 @@ from concurrent.futures import ThreadPoolExecutor
 import pytest
 
 from tests.cloud_runtime_fixture import cloud_runtime  # noqa: F401
+from tests.inference_usage_helpers import accounting_resolver
 from tests.test_discovery_snapshot import _model
 from tests.test_run_provider_session import _branch, _run_branch
 from tinyassets.foreground_run_provider import _ForegroundRunProviderSession
@@ -81,7 +82,8 @@ def http_wire(tmp_path, monkeypatch):
             }
 
     monkeypatch.setattr(discovery_snapshot, "read_http_discovery_document", read)
-    monkeypatch.setattr(ApiKeyHttpProvider, "_resolve_proxy", lambda *a, **k: Proxy())
+    monkeypatch.setattr(ApiKeyHttpProvider, "_resolve_proxy",
+                        accounting_resolver(lambda *a, **k: Proxy()))
     return reads, writes, errors
 
 

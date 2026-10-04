@@ -139,13 +139,29 @@ def test_picker_refresh_adds_new_model_without_static_release_table(native, monk
         return [m for m in plan.catalog.connections[0].models
                 if m.availability_basis not in _CANDIDATE_ONLY_BASES]
 
-    before = options()
+    # A display read now serves the warm per-source catalogue rather than
+    # discovering inline, so the refresh that used to happen DURING the read
+    # happens before it. The user-facing claim is unchanged and still what is
+    # asserted: a newly advertised id reaches the picker with no platform
+    # release. Only who runs discovery moved.
+    from tinyassets.providers.shortlist_refresh import SHORTLIST_CACHE
+
+    def refreshed():
+        SHORTLIST_CACHE.refresh_now(
+            base=native.base, owner="owner-1",
+            universe_id=native.universe.name, provider="codex",
+        )
+        return options()
+
+    before = refreshed()
     ids.append("brand-new-account-release")
-    after = options()
+    after = refreshed()
     assert [m.model_id for m in granted(before)] == ["", "initial-model"]
     assert [m.model_id for m in granted(after)] == ["", *ids]
     assert granted(after)[-1].availability_basis == "executor_enumerated"
     assert after.catalog.connections[0].default_model_id == ""
+    SHORTLIST_CACHE.forget(base=native.base, owner="owner-1",
+                           universe_id=native.universe.name)
 
 
 @pytest.mark.parametrize("native", ["discovered"], indirect=True)

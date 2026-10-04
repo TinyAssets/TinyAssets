@@ -18,7 +18,7 @@ def test_background_rejects_caller_context_substitution_before_admission(tmp_pat
     from tinyassets.providers.base import ModelConfig, UniverseContext
 
     session = _BackgroundAssignedProviderSession(
-        tmp_path, SimpleNamespace(universe_id="universe_alice"), None, None,
+        tmp_path, SimpleNamespace(universe_id="universe_alice", actor_id="acct_alice"), None, None,
     )
     value = tmp_path / "another-root" / "universe_alice" if field == "universe_dir" else object()
     context = replace(UniverseContext(universe_dir=tmp_path / "universe_alice", config=None),

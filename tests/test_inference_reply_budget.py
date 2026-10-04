@@ -13,6 +13,7 @@ model capability) and never from what the request claims; everything else the
 driver bounds is unchanged.
 """
 
+import json
 import math
 import socket
 import threading
@@ -21,8 +22,12 @@ import time
 import pytest
 
 from tests import test_interactive_http_agent as integration
+from tests.inference_usage_helpers import accounting_resolver
 from tests.test_outbound_ssrf_driver import _PassThroughTLS
+from tinyassets.broker.ops import new_op_id
 from tinyassets.exceptions import AllProvidersExhaustedError
+from tinyassets.providers.definition import ProviderDefinition, _definition_id
+from tinyassets.request_budget import TurnRequestBudget
 from tinyassets.storage.outbound_connections import (
     INFERENCE_MAX_SECONDS,
     ConnectionLedger,
@@ -77,18 +82,51 @@ def broker(tmp_path):
         connection_id="conn-model", capability_kind="model_use",
         descriptor=MODEL_USE, enabled=True,
     )
+    root = tmp_path / "universe"
+    root.mkdir()
+    fields = dict(universe_id="universe", owner_user_id="owner", access_method="api_key_http",
+                  protocol="openai_chat", model="lab/model:free", ref="grant-model")
+    definition = ProviderDefinition(**fields, id=_definition_id(**fields), visibility="private",
+                                    created_at="2026-10-04T00:00:00+00:00")
+    (root / "provider_definitions.json").write_text(json.dumps([definition.as_dict()]))
     calls = []
     outcome = {"raise": None}
 
     def network(**kwargs):
+        if kwargs.get("on_connect") is not None:
+            kwargs["on_connect"](None)
         calls.append(kwargs)
         if outcome["raise"] is not None:
             raise outcome["raise"]
-        return {"status": 200, "body": "{}"}
+        return outcome.get("response", {"status": 200, "body": "{}"})
 
-    return CredentialBlindBroker(
+    actual = CredentialBlindBroker(
         ledger, resolve_credential=lambda *_: "synthetic-nonsecret", network_request=network,
-    ), calls, outcome
+    )
+
+    class AccountedBroker:
+        def dispatch(self, grant, verb, request):
+            if grant != "grant-model" or verb != "POST":
+                return actual.dispatch(grant, verb, request)
+            request = {**request, "body": {"model": "lab/model:free"}}
+            budget = TurnRequestBudget("owner", "universe")
+            budget.persist(tmp_path)
+            ordinal = budget.reserve(owner="owner", universe="universe",
+                                     source_ref="api_key_http:" + definition.id,
+                                     model="lab/model:free", free=True, purpose="reply")
+            reference = budget.issue_reference(
+                ordinal, grant_id=grant, connection_id="conn-model", verb=verb,
+                request=request, operation_id=new_op_id(),
+            )
+            try:
+                result = actual.dispatch(grant, verb, request, inference_usage=reference.document(),
+                                         operation_id=reference.operation_id)
+                budget.settle_invocation(ordinal, "succeeded")
+                return result
+            finally:
+                budget.close()
+
+    return AccountedBroker(), calls, outcome
 
 
 def _post(broker, grant, budget, verb="POST"):
@@ -327,7 +365,7 @@ def test_the_live_sequence_says_the_model_took_too_long(agent, monkeypatch):
         proxy.request = request
         return proxy
 
-    monkeypatch.setattr(ApiKeyHttpProvider, "_resolve_proxy", resolve)
+    monkeypatch.setattr(ApiKeyHttpProvider, "_resolve_proxy", accounting_resolver(resolve))
     with pytest.raises(AllProvidersExhaustedError) as error:
         integration.run(agent)
     attempt = error.value.attempts[-1]

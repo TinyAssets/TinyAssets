@@ -138,6 +138,19 @@ _ENGINE_DISALLOWED_TOOLS = (
     "ScheduleWakeup", "ReportFindings", "PushNotification", "RemoteTrigger",
     "SendMessage", "CronCreate", "CronDelete", "CronList",
     "TaskCreate", "TaskUpdate", "TaskGet", "TaskList", "TaskStop", "TaskOutput",
+    # claude.ai account reach, re-checked against the CLI changelog for
+    # 2.1.184-2.1.288 (Codex ADAPT 2026-10-03). These act on the LOGGED-IN
+    # claude.ai account, which is the daemon host's -- not the universe owner's
+    # -- so none of them is contained by the OS jail or --strict-mcp-config.
+    #   Artifact      publishes pages, uploads assets, and reads other people's
+    #                 artifacts; its artifact-database writes are visible to
+    #                 every viewer of the artifact (2.1.285).
+    #   ListAgents    the discovery half of cross-session SendMessage, which is
+    #                 already denied: it enumerates other live sessions.
+    #   SendFeedback  drafts and sends a report off-box (added in range).
+    #   ListPlugins   reads the plugins enabled on the claude.ai account.
+    #   EndConversation  can end the served turn from inside it (added in range).
+    "Artifact", "ListAgents", "SendFeedback", "ListPlugins", "EndConversation",
     # remote integrations
     "DesignSync", "DesignSyncTool",
     # MCP: all server tools (wildcard) + resource readers
@@ -845,12 +858,11 @@ def extract_learning(
     never blindly persisted. Returns a possibly-empty dict; grounding is enforced
     by the prompt and re-checked in :func:`commit_learning`.
     """
-    from tinyassets.request_budget import LEARNING_MIN_REMAINING, budget_for_context
+    from tinyassets.request_budget import budget_for_context, current_request_budget
 
     budget = budget_for_context(ctx)
-    if budget is not None and budget.remaining < LEARNING_MIN_REMAINING:
-        logger.info("Skipping learning extraction: %s free requests remain on %s",
-                    budget.remaining, budget.source_name)
+    if budget is not None:
+        logger.info("Skipping learning extraction: automatic metered-free extraction is disabled")
         return {}
     raw = call_provider(
         f"Founder's latest message:\n{founder_message}\n\n"
@@ -863,7 +875,8 @@ def extract_learning(
         # Live 2026-09-25 on a free source: this call's 429 cooled the source for
         # 120s, and the founder's next message never reached a model. See
         # ``ModelConfig.secondary_call``.
-        config=replace(_sandboxed_config(ctx), secondary_call=True),
+        config=replace(_sandboxed_config(ctx), secondary_call=True,
+                       request_budget=current_request_budget(), request_purpose="learning"),
         operation="converse",
         # Learning extraction runs AFTER the reply is already produced but BEFORE
         # `converse` returns it, so a synchronous tenacity backoff here (call.py's
@@ -1226,15 +1239,22 @@ def _call_writer(
     otherwise end the turn honestly and let the caller post an accurate notice.
     """
     from tinyassets.exceptions import AllProvidersExhaustedError
+    from tinyassets.providers.agent_inference import AgentInferenceRequest
+    from tinyassets.providers.base import ModelConfig
+    from tinyassets.request_budget import RequestBudgetExceeded, current_request_budget
 
+    config = config or ModelConfig()
+    config = replace(config, request_budget=config.request_budget or current_request_budget())
+    ordinary_text = (type(config.agent_request) is AgentInferenceRequest
+                     and config.agent_request.text_only)
     http_turn = None
     selection = getattr(universe_context, "model_selection", None)
     if (selection is not None and universe_context.agent_model_plan is not None
-            and not getattr(config, "engine_mcp_enabled", False)):
+            and not (getattr(config, "engine_mcp_enabled", False) or ordinary_text)):
         from tinyassets.exceptions import ProviderAuthorityHeldError
 
         raise ProviderAuthorityHeldError("selected interactive model requires engine tools")
-    if (getattr(config, "engine_mcp_enabled", False) and selection is not None
+    if ((getattr(config, "engine_mcp_enabled", False) or ordinary_text) and selection is not None
             and (universe_context.agent_model_plan is not None
                  or selection.connection_id.startswith("api_key_http:"))):
         from tinyassets.providers.call import make_interactive_agent_turn
@@ -1264,6 +1284,21 @@ def _call_writer(
 
     try:
         return _attempt()
+    except RequestBudgetExceeded as exc:
+        completed = getattr(exc, "completed_tools", ())
+        detail = f" Completed tool calls: {len(completed)}." if completed else ""
+        answer = exc.continuation + detail
+        if response_observer is not None:
+            from tinyassets.providers.base import ProviderResponse
+
+            try:
+                response_observer(ProviderResponse(
+                    text=answer, provider="", model="", family="", latency_ms=0,
+                    degraded=True, request_receipt=exc.request_receipt,
+                ))
+            except Exception:  # noqa: BLE001 - telemetry cannot lose earned progress
+                logger.warning("writer budget stop could not be reported")
+        return answer
     except AllProvidersExhaustedError as exc:
         # Codex 2026-08-09: the writer call is an AGENTIC loop (it may run
         # tools), so retrying blindly could re-execute tools it already ran.
@@ -1396,6 +1431,28 @@ def session_ref(universe_dir: Path, key: str, fresh_prompt: str, message: str,
         resume_prompt=f"{block}[{now}]\n{message}",
         built_at=time.time(),
     )
+
+
+def _ordinary_chat(message: str) -> bool:
+    """Only clear, self-contained chat; ambiguity keeps the full agent route."""
+    text = message.strip().casefold()
+    if re.fullmatch(
+        r"(?:hi|hello|hey|thanks|thank you|good (?:morning|afternoon|evening))[!., ]*", text,
+    ):
+        return True
+    if re.fullmatch(r"(?:tell me a joke|how are you|what can you do)[?.! ]*", text):
+        return True
+    if len(text) > 500 or re.search(
+        r"\b(my|our|this|these|those|current|latest|today|online|search|browse|read|"
+        r"write|create|build|change|update|file|folder|project|continue|resume|send|"
+        r"schedule|remember|save|connect)\b|https?://|[/\\]", text,
+    ):
+        return False
+    return bool(re.fullmatch(
+        r"(?:what is (?:a|an) [a-z]+(?: [a-z]+){0,2}|define [a-z]+|"
+        r"explain (?:recursion|photosynthesis|gravity|the concept of [a-z]+)|"
+        r"what is [0-9 ()+*/.%-]+)[?.! ]*", text,
+    ))
 
 
 def converse(
@@ -1544,10 +1601,18 @@ def converse(
         universe_dir=udir,
         config=load_universe_config(udir),
         provider_request=request_carrier,
+        # The ONE place this is set (harness §4.18): ``addressed_agent`` is what
+        # the caller resolved at authenticated ingress, inside the owner and
+        # universe scope. MAIN_AGENT here means ingress had no addressed agent,
+        # not that one could not be worked out -- nothing downstream guesses.
+        agent_id=addressed_agent.agent_id if addressed_agent else MAIN_AGENT,
     )
     from tinyassets.providers.served_model_plan import apply_served_model_preferences
 
-    ctx = apply_served_model_preferences(ctx, model_choice=model_choice)
+    ordinary_text = _ordinary_chat(founder_message)
+    ctx = apply_served_model_preferences(
+        ctx, model_choice=model_choice, needs_tools=not ordinary_text,
+    )
     granted = bound_tier == interlocutor.FOUNDER
     system = _build_persona_system_prompt(
         udir, tier=bound_tier, universe_id=uid, addressed_agent=addressed_agent,
@@ -1591,6 +1656,20 @@ def converse(
         universe_id=uid,
         granted=granted,
     )
+    if ordinary_text and ctx.model_selection is not None and (
+        ctx.model_selection.connection_id.startswith("api_key_http:")
+    ):
+        from tinyassets.providers.agent_inference import AgentInferenceRequest
+
+        turn_config = replace(
+            turn_config, engine_mcp_enabled=False, engine_mcp_actor_id="",
+            engine_mcp_graph_id="", allowed_tools=(), engine_tool_grant=None,
+            agent_session=None, agent_request=AgentInferenceRequest(tools=(), tool_choice="none"),
+        )
+        system += (
+            "\n\nAnswer this message directly. Prior work is context, not a request "
+            "to resume it. Do not start tools, projects, or background work."
+        )
     # The universe is the harness (S1): a turn that HAS the four folder tools is
     # told about them and given its skill index -- the name and one-line
     # description of each skills/<name>/SKILL.md, read fresh from the folder
@@ -1602,7 +1681,7 @@ def converse(
 
         system = (system + "\n\n" + harness_prompt(udir)
                   + command_center_summary(udir, founder_principal))
-    if history_block:
+    if history_block and not ordinary_text:
         system = system + "\n\n" + _CROSS_SURFACE_CONTINUITY
     system = system + "\n\n" + _turn_input_method_context(input_method)
     # Tell the turn whether it still owes a lesson, so it can record it in-turn
@@ -1626,22 +1705,39 @@ def converse(
     # queue row, tagged with this universe, is what `get_status` reports as
     # `seats.chat_waiting` with the waiting line and upgrade link. The interactive
     # reserve means a chat only ever waits behind another chat.
-    from tinyassets import universe_seats
+    from contextlib import nullcontext
 
-    with universe_seats.hold(
+    from tinyassets import universe_seats
+    from tinyassets.request_budget import (
+        FREE_TURN_ATTEMPTS,
+        TEXT_TURN_ATTEMPTS,
+        TurnRequestBudget,
+        current_request_budget,
+        request_budget_scope,
+    )
+
+    budget = current_request_budget()
+    if budget is None and capability is not None:
+        allocation = TEXT_TURN_ATTEMPTS if ordinary_text else FREE_TURN_ATTEMPTS
+        budget = TurnRequestBudget(
+            capability.principal_id, uid, free_limit=allocation, free_pool_limit=allocation,
+        )
+    scope = request_budget_scope(budget) if budget is not None else nullcontext()
+    with scope, universe_seats.hold(
         universe_seats.account_key(uid, root=udir.parent),
         seat_class=universe_seats.CLASS_INTERACTIVE,
         kind=universe_seats.KIND_CHAT_TURN, universe_id=uid,
         db=universe_seats.ledger_path(udir.parent),
     ):
         recorded: set = set()
+        responses = []
         reply = _call_writer(
             turn_input,
             system=system,
             universe_context=ctx,
             config=turn_config,
             tools_observer=recorded.update,
-            **({} if response_observer is None else {"response_observer": response_observer}),
+            **({} if response_observer is None else {"response_observer": responses.append}),
         )
         # Only a FOUNDER teaches the universe.
         #
@@ -1661,7 +1757,11 @@ def converse(
         # the founder is spared a whole round-trip; when it did not, this is exactly
         # the call it always was, so no lesson is lost either way.
         if bound_tier == interlocutor.FOUNDER:
-            if recorded & _BRAIN_RECORDING_TOOLS:
+            if ordinary_text:
+                # A plain conversation did not ask for another inference or a
+                # memory write; no hidden learning call delays its earned reply.
+                settled = False
+            elif recorded & _BRAIN_RECORDING_TOOLS:
                 settled = True
             else:
                 # Settled even when nothing was written: extraction ran and found
@@ -1677,4 +1777,12 @@ def converse(
                     learning_observer(bool(settled))
                 except Exception:  # noqa: BLE001 - the reply is already earned
                     logger.warning("converse: learning outcome could not be reported")
+        if response_observer is not None:
+            for response in responses:
+                try:
+                    response_observer(replace(
+                        response, request_receipt=budget.receipt() if budget is not None else None,
+                    ))
+                except Exception:  # noqa: BLE001 - telemetry cannot lose an earned reply
+                    logger.warning("converse: request receipt could not be reported")
         return reply

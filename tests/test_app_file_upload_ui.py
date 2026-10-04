@@ -1586,6 +1586,8 @@ function queueTurn(){ log.push({queued:true}); }
 // Harness S2: a line typed mid-turn may steer the running turn; settling a
 // turn reconciles those lines. Collaborators here, as queueTurn is.
 function steerOrQueue(){ queueTurn(); }
+// No turn running elsewhere: this page is the only sender.
+function serverTurnLive(){ return false; }
 function settleSteered(){}
 function appendMessage(role,text){ log.push({append:role, text:text}); return {remove(){}}; }
 function appendFailureNotice(msg){ log.push({failure:msg}); }

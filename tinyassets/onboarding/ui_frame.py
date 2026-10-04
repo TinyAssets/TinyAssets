@@ -296,6 +296,7 @@ html,body{margin:0;padding:0;height:100%;font:15px/1.5 system-ui,sans-serif;colo
     readConversation: function (limit, before, agent) { return call("read_conversation", {limit: limit || 0, before: before, agent: agent || ""}); },
     listAutomations: function () { return call("list_automations", {}); },
     listRuns: function (options) { return call("list_runs", options || {}); },
+    readLive: function () { return call("read_live", {}); },
     readRun: function (runId) { return call("read_run", {run_id: runId}); },
     readRunOutput: function (runId, field, offset) { return call("read_run_output", {run_id: runId, field: field, offset: offset || 0}); },
     listFiles: function (path) { return call("list_files", {path: path || ""}); },
