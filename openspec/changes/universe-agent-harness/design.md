@@ -1240,8 +1240,8 @@ nothing else; with no signed grant, or one without `bash`, bash runs with no
 building and running an effect node. The unnarrowed default (the owner's chat,
 or a node naming no tool) signs the whole served set, so it keeps every
 capability. Nothing in a `ta` request, a manifest or the request route is a
-grant unless the signature verifies. The key lives and dies with its engine
-server; there is no table and no public handle. Not covered: the grant has no
+grant unless the signature verifies. The key lasts for the supervised engine
+server object, including subprocess crash/respawn; there is no table and no public handle. Not covered: the grant has no
 expiry within one server's life, and a direct call on the engine's MCP route by
 a holder of the bearer is still narrowed only by the provider's tool list, as
 it was before D6a.
