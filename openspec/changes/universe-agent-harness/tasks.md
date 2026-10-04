@@ -22,7 +22,7 @@ queue), **review** (PR open, not stamped), **building** (draft or in progress),
 | D3 proactive research + proposals | Idle research on a cadence; output is proposals the owner approves | **not started** (trigger owned by S8b) | — |
 | D4 onboarding, profile, push | Name + one responsibility; profile page; push on done/waiting | push live; onboarding/profile **not started** | #4138 |
 | D5 computer | Browser broker, live view, take over; the agent sees what it built | **building** (ui-capabilities) | #4306 image read, #4316 UI preview, #4314 headless shell |
-| D6 four tools + `ta` | Exactly read/write/edit/bash, breadth behind `ta search` | tools live (S1); **building**: D6a additive jail CLI, platform/connection discovery and calls, local extensions implemented on `feat/d6-ta-capabilities`; verification below. Attached MCP interface deferred in design §6 D6a; resident cutover remains | #3972; no D6a PR requested |
+| D6 four tools + `ta` | Exactly read/write/edit/bash, breadth behind `ta search` | tools live (S1); **building**: D6a additive jail CLI, platform/connection discovery and calls, local extensions implemented on `feat/d6-ta-capabilities`; verification below. Attached MCP interface deferred in design §6 D6a; resident cutover remains | #3972; D6a PR #4439 |
 | D7 memory | Memory items, Harness tab, history, Undo | **not started** | — |
 | D8 roster | Talk to any agent; per-agent rules/visibility | converse-by-agent **building** (agent-chat); design live | #4287, #4227 |
 | D9 sharing | Publish / install a whole command center | **building** (cc-package) | #4315 |
@@ -36,7 +36,7 @@ queue), **review** (PR open, not stamped), **building** (draft or in progress),
 | Friction fixes | One-call patch request | **building** | (harness-patch-request, PR to open) |
 
 **D6a verification (2026-10-04, `feat/d6-ta-capabilities`).** Implemented and
-locally verified; no PR, deploy or real-user acceptance claimed. Linux oracle:
+locally verified, with PR #4439 now under the authorized all-open-PR drain; no deploy or real-user acceptance claimed. Original Linux oracle:
 `python scripts/linux_oracle.py -- tests/test_ta_capabilities.py tests/test_ta_capabilities_jail.py tests/test_universe_tools.py tests/test_universe_tools_jail.py tests/test_universe_egress.py tests/test_authenticated_external_call_effector.py tests/test_agent_rules.py -q`
 passed **206 tests, zero skips**. Final CLI refusal-exit and credential-reflection
 coverage plus route regressions:
@@ -54,10 +54,7 @@ design §6 D6a. Existing tests were neither removed nor renamed.
 **D6a grant binding (2026-10-04, PR #4439 review finding 2).** `ta` is bounded by
 the launch's signed tool grant (design §6 D6a). Windows:
 `tests/test_ta_capabilities.py` covers the default, narrowed nodes, connections,
-forged, absent, cross-launch and cross-server grants. **Pending the hosted Linux
-run**: `tests/test_ta_capabilities_jail.py`, whose engine helper now launches on
-a signed route and which adds `test_node_grant_bounds_ta_inside_the_jail`; it
-was not run for this change. Independent cross-family review is still owed.
+forged, absent, cross-launch and cross-server grants. **Hosted Linux proof now passed** on 2026-10-04: run37231177806 at65a96e83d0 executed all100 real-jail cases with zero skips, including all six ta cases and `test_node_grant_bounds_ta_inside_the_jail`. Independent cross-family approval is recorded in PR #4439 comment5983940824. The implemented D6a requirements are synced to `openspec/specs/universe-agent-harness/spec.md`; broader unchecked harness tasks remain in flight.
 
 **Next integration step.** Once S7 (#4282/#4292), S6 (#4299) and the box tools
 land, the founder's account is switched (per account) onto the thin loop, the
