@@ -53,9 +53,9 @@ def _producer_sandbox_reject(
     (defense-in-depth). This is the producer side of layers 1 + 2.
 
     Layer 1: node must resolve in the registry with ``approved=True``.
-    Layer 2: the resolved node's ``source_code`` must NOT contain
+    Layer 2: pre-check the source outside literals/comments for
     any pattern in ``_BID_DANGEROUS_PATTERNS`` (wider than the
-    wrapper-node list used by Phase D).
+    wrapper-node list used by Phase D). The OS jail is the boundary.
 
     ``node_lookup_fn`` is ``None`` or a callable
     ``(node_def_id) -> NodeDefinition | None``. If ``None``, the

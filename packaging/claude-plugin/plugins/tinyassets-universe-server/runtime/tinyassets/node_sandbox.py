@@ -428,7 +428,7 @@ ALLOWED_IMPORTS = {
     "operator", "heapq", "bisect", "time",
 }
 
-# Patterns that are never allowed in node source code
+# Pre-check patterns for source outside literals/comments; the OS jail is the boundary.
 FORBIDDEN_PATTERNS = [
     "os.system",
     "os.popen",
@@ -2511,7 +2511,8 @@ class NodeSandbox:
     def validate_source(self, source_code: str) -> list[str]:
         """Pre-validate source code before execution.
 
-        Returns a list of validation errors (empty if valid).
+        Returns pre-check errors (empty if these checks pass).
+        The OS jail is the security boundary.
         """
         errors = []
 

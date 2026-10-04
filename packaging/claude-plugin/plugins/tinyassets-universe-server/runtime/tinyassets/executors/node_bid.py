@@ -61,7 +61,7 @@ def _strip_producer_keys(inputs: dict) -> dict:
 
 
 def _scan_dangerous_patterns(source: str) -> str:
-    """Return the offending pattern or empty string."""
+    """Return the first pre-check failure; the OS jail is the boundary."""
     try:
         patterns = dangerous_source_patterns(source, _BID_DANGEROUS_PATTERNS)
     except (SyntaxError, ValueError):

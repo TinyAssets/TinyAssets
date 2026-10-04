@@ -1,11 +1,18 @@
-"""Source guards judge Python operations, not prose embedded in a workflow."""
+"""Source pre-checks retain raw substring rules outside literals and comments."""
+import tokenize
 from types import SimpleNamespace
 
 import pytest
 
 from tinyassets.executors.node_bid import _scan_dangerous_patterns
-from tinyassets.graph_compiler import source_code_problems
-from tinyassets.node_sandbox import NodeSandbox
+from tinyassets.graph_compiler import (
+    _BID_DANGEROUS_PATTERNS,
+    _DANGEROUS_PATTERNS,
+    _source_without_literals,
+    dangerous_source_patterns,
+    source_code_problems,
+)
+from tinyassets.node_sandbox import FORBIDDEN_PATTERNS, NodeSandbox
 from tinyassets.producers.node_bid import _producer_sandbox_reject
 
 
@@ -16,6 +23,9 @@ from tinyassets.producers.node_bid import _producer_sandbox_reject
     '# open(path) exec(code) os.system(cmd) importlib\ndef run(s): return {}',
     'def run(s):\n    """compile(code), __import__, marshal"""\n    return {}',
     'print("open(path), vars(), timeit.timeit(code), getattr(obj, name)")',
+    'text = f"open(path) {value}"',
+    'text = f"open(path) {value:open(}"',
+    'text = f"open(path) {f\'open(path) {value}\'}"',
     'text = "open(path)"\ndef run(s): return {"text": text}',
 ])
 def test_prose_is_allowed_at_every_source_boundary(source):
@@ -26,19 +36,50 @@ def test_prose_is_allowed_at_every_source_boundary(source):
     assert _producer_sandbox_reject("n", lambda _: node) == ""
 
 
+def assert_original_scan_results(source):
+    """For code without literal/comment matches, preserve each caller's policy."""
+    node = SimpleNamespace(approved=True, source_code=source)
+    expected = [p for p in _BID_DANGEROUS_PATTERNS if p in source]
+    assert _scan_dangerous_patterns(source) == (expected[0] if expected else "")
+    assert _producer_sandbox_reject("n", lambda _: node) == (
+        f"dangerous_pattern:{expected[0]}" if expected else ""
+    )
+    assert source_code_problems(source, "n") == [
+        f"Node 'n' source_code contains disallowed pattern: '{p}'"
+        for p in _DANGEROUS_PATTERNS if p in source
+    ]
+    assert NodeSandbox().validate_source(source) == [
+        f"Forbidden pattern: '{p}'" for p in FORBIDDEN_PATTERNS if p in source
+    ]
+
+
+@pytest.mark.parametrize("pattern", sorted(set(FORBIDDEN_PATTERNS) | set(_BID_DANGEROUS_PATTERNS)))
+def test_every_original_pattern_at_every_boundary(pattern):
+    source = pattern + ")" if pattern.endswith("(") else pattern
+    assert_original_scan_results(source)
+
+
+@pytest.mark.parametrize("source", [
+    "is_open = True", "retrieval = []", "super().__init__()", "x.__class__",
+    "code = s['code']; code.strip()", "profile.get('name')", "trace.append(1)",
+    "from types import SimpleNamespace", "self.modules",
+    "d.get('k')", "obj.method()",
+])
+def test_round_two_ordinary_code_passes_original_scan(source):
+    assert not any(p in source for p in (*FORBIDDEN_PATTERNS, *_BID_DANGEROUS_PATTERNS))
+    assert_original_scan_results(source)
+
+
 @pytest.mark.parametrize("source", [
     "open('secret')", "open ('secret')", "(open)('secret')",
     "obj.open('secret')", "obj.open ('secret')", "compile('x', 'x', 'exec')",
     "eval ('1')", "exec ('pass')", "__import__('os')", "os.system ('cmd')",
     "import subprocess as sp", "from pickle import loads", "import marshal",
-    "import importlib", "f'{open(\"secret\")}'",
+    "import importlib", "is_open()", "retrieval()", "subprocess_result = 1",
+    "os . system('cmd')", "from os import system", "reader = open",
 ])
-def test_real_operations_stay_blocked_at_both_bid_boundaries(source):
-    node = SimpleNamespace(approved=True, source_code=source)
-    if source != "import marshal":  # Only the bid policy bans this module statically.
-        assert NodeSandbox().validate_source(source)
-    assert _scan_dangerous_patterns(source)
-    assert _producer_sandbox_reject("n", lambda _: node)
+def test_original_substring_boundaries_and_policy_differences(source):
+    assert_original_scan_results(source)
 
 
 def test_wrapper_keeps_its_narrower_policy():
@@ -47,86 +88,69 @@ def test_wrapper_keeps_its_narrower_policy():
 
 
 @pytest.mark.parametrize("source", [
-    # Every demonstrated cross-family-review bypass, verbatim.
-    'import timeit; timeit.timeit("open(\'/etc/passwd\').read()")',
-    'timeit.timeit("import os; os.system(\'id\')")',
-    'cProfile.run("__import__(\'os\').system(\'id\')")',
-    'pdb.run("import subprocess")',
-    "vars()['__builtins__']['open']('x')",
-    # Aliases, nonliteral code and namespace keys must fail closed too.
-    'import timeit as timer; timer.timeit("open(\'x\')")',
-    'from timeit import timeit as timer; timer("open(\'x\')")',
-    'from timeit import Timer; Timer(state["code"]).timeit()',
-    'import cProfile as profiler; profiler.run(state["code"])',
-    'import profile; profile.run("open(\'x\')")',
-    'import pdb as debugger; debugger.run(state["code"])',
-    'import bdb; bdb.Bdb().run(state["code"])',
-    'import code; code.InteractiveInterpreter().runsource(state["code"])',
-    'import codeop; codeop.compile_command(state["code"])',
-    'import trace; trace.Trace().run(state["code"])',
-    'import doctest; doctest.run_docstring_examples(fn, {})',
-    'import runpy; runpy.run_path(state["path"])',
-    'namespace = vars; namespace()[state["key"]]["open"]("x")',
-    'globals()["__builtins__"]["open"]("x")',
-    'locals()["__builtins__"]["open"]("x")',
-    'getattr(__builtins__, "open")("x")',
-    'lookup = getattr; lookup(obj, state["key"])("open(\'x\')")',
-    'obj.__dict__["open"]("x")',
-    'fn.__globals__["__builtins__"]["open"]("x")',
-    'obj.__getattribute__(state["key"])("open(\'x\')")',
-    'from operator import attrgetter as lookup; lookup("open")(obj)("x")',
-    'import builtins as b; b.open("x")',
-    'import inspect; inspect.currentframe().f_builtins["open"]("x")',
-    'import types; types.FunctionType(state["code"], {})()',
-    'import sys; sys.modules["cProfile"].run("open(\'x\')")',
-    'import sys as s; s.modules["cProfile"].run("open(\'x\')")',
-    'import sys; s = sys; s.modules["pdb"].run("import subprocess")',
-    'from sys import modules as registry; registry["pdb"].run("import subprocess")',
-    'from sys import *; modules["cProfile"].run("open(\'x\')")',
-    'import sys; sys._getframe().f_builtins["open"]("x")',
-    'frame.f_builtins["open"]("x")',
+    'text = "open(path)"\n( # subprocess',
+    'text = "open(path)"\n"""unfinished subprocess',
+    "text = 'open(path)",
+    'if True:\n    text = "open(path)"\n  pass',
 ])
-def test_dynamic_execution_and_reflection_fail_closed_at_every_boundary(source):
+def test_invalid_tokenization_falls_back_to_unmodified_raw_scan(source):
+    assert _source_without_literals(source) == source
+    for patterns in (_BID_DANGEROUS_PATTERNS, _DANGEROUS_PATTERNS, tuple(FORBIDDEN_PATTERNS)):
+        assert dangerous_source_patterns(source, patterns) == [p for p in patterns if p in source]
     node = SimpleNamespace(approved=True, source_code=source)
-    assert NodeSandbox().validate_source(source)
-    assert source_code_problems(source, "n")
-    assert _scan_dangerous_patterns(source)
-    assert _producer_sandbox_reject("n", lambda _: node)
-
-
-def test_dynamic_execution_refusal_explains_the_unsupported_construct():
-    source = 'import timeit; timeit.timeit(state["code"])'
-    assert "dynamic execution/reflection is not supported: timeit" in (
-        _scan_dangerous_patterns(source)
-    )
+    expected = next(p for p in _BID_DANGEROUS_PATTERNS if p in source)
+    assert _scan_dangerous_patterns(source) == expected
+    assert _producer_sandbox_reject("n", lambda _: node) == f"dangerous_pattern:{expected}"
+    assert any("Forbidden pattern" in p for p in NodeSandbox().validate_source(source))
+    assert any("does not parse" in p for p in source_code_problems(source, "n"))
 
 
 @pytest.mark.parametrize("source", [
-    'reader = open; reader("x")',
-    'import io; reader = io.open; reader("x")',
-    'from io import open as reader; reader("x")',
-    'list(map(open, ["x"]))',
+    'text = "é open(path)"; open(path) # eval(code)\r\nexec(code)',
+    'text = """open(path)\nsubprocess\n"""; eval(code)\n',
+    'text = "open(path)\vsubprocess"\nopen(path)',
+    'text = f"open(path) {value:open(}"; eval(code)',
 ])
-def test_forbidden_callable_references_cannot_be_aliased(source):
-    node = SimpleNamespace(approved=True, source_code=source)
-    assert NodeSandbox().validate_source(source)
-    assert _scan_dangerous_patterns(source)
-    assert _producer_sandbox_reject("n", lambda _: node)
+def test_mask_preserves_offsets_and_line_endings(source):
+    masked = _source_without_literals(source)
+    assert len(masked) == len(source)
+    for i, char in enumerate(source):
+        if char in "\r\n":
+            assert masked[i] == char
+    if ";" in source:
+        assert "open(path)" not in masked[:source.index(";")]
+    for pattern in ("open(path)", "eval(code)", "exec(code)"):
+        if pattern in masked:
+            start = masked.index(pattern)
+            assert source[start:start + len(pattern)] == pattern
 
 
-@pytest.mark.parametrize("legacy_value_error", [False, True])
-def test_null_bytes_return_rejections_at_every_boundary(monkeypatch, legacy_value_error):
+def test_fstring_expression_matches_the_interpreters_token_boundaries():
+    source = 'text = f"open(path) {open(path)}"'
+    # Python 3.11 emits one STRING; 3.12+ exposes replacement-field code tokens.
+    expected = "open(" if hasattr(tokenize, "FSTRING_START") else ""
+    assert _scan_dangerous_patterns(source) == expected
+    assert NodeSandbox().validate_source(source) == (
+        ["Forbidden pattern: 'open('"] if expected else []
+    )
+
+
+def test_null_bytes_return_rejections_at_every_boundary():
     source = 'def run(s): return {"text": "\x00"}'
-    if legacy_value_error:
-        # Exercise ast.parse's Python 3.11 ValueError on newer interpreters too.
-        from tinyassets import graph_compiler
-
-        def null_byte_parse(*args, **kwargs):
-            raise ValueError("source code cannot contain null bytes")
-
-        monkeypatch.setattr(graph_compiler.ast, "parse", null_byte_parse)
     node = SimpleNamespace(approved=True, source_code=source)
     assert "null bytes" in " ".join(NodeSandbox().validate_source(source))
     assert "null bytes" in " ".join(source_code_problems(source, "n"))
     assert _scan_dangerous_patterns(source) == "invalid_syntax"
     assert _producer_sandbox_reject("n", lambda _: node) == "invalid_syntax"
+
+
+def test_legacy_compile_value_error_is_reported(monkeypatch):
+    from tinyassets import graph_compiler, node_sandbox
+
+    def null_byte_compile(*args, **kwargs):
+        raise ValueError("source code cannot contain null bytes")
+
+    for module in (graph_compiler, node_sandbox):
+        monkeypatch.setattr(module, "compile", null_byte_compile, raising=False)
+    assert "null bytes" in " ".join(NodeSandbox().validate_source("pass"))
+    assert "null bytes" in " ".join(source_code_problems("pass", "n"))

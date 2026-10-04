@@ -27,10 +27,10 @@ Design rules (from `docs/specs/community_branches_phase3.md`):
 
 from __future__ import annotations
 
-import ast
 import concurrent.futures
 import copy
 import dataclasses as _dataclasses
+import io
 import json
 import logging
 import math
@@ -40,6 +40,7 @@ import re
 import stat
 import threading
 import time
+import tokenize
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Any, Callable
@@ -618,82 +619,45 @@ _BID_DANGEROUS_PATTERNS = _DANGEROUS_PATTERNS + (
     "compile(", "open(", "importlib", "pickle", "marshal",
 )
 
-# These APIs execute strings or recover capabilities through reflection. Their
-# arguments may be assembled at runtime, so inspecting literal arguments cannot
-# make them safe. Refuse the constructs themselves, including imported aliases,
-# at EVERY source boundary, even the wrapper's otherwise narrower policy.
-_DYNAMIC_SOURCE_MODULES = frozenset({
-    "timeit", "cProfile", "profile", "pdb", "bdb", "code", "codeop",
-    "trace", "doctest", "runpy", "builtins", "inspect", "types",
-})
-_DYNAMIC_SOURCE_NAMES = frozenset({
-    "vars", "globals", "locals", "getattr", "setattr", "delattr",
-    "breakpoint", "attrgetter", "methodcaller", "_getframe",
-    "f_builtins", "f_globals", "f_locals", "gi_frame", "cr_frame", "tb_frame",
-})
+
+def _source_without_literals(source: str) -> str:
+    """Blank literal/comment tokens without moving any remaining source text.
+
+    Tokenization errors retain the original text for the conservative raw scan.
+    On Python 3.12+, f-string expression tokens remain code; earlier tokenizers
+    expose an entire f-string as one STRING token.
+    """
+    offsets = [0]
+    for line in io.StringIO(source):
+        offsets.append(offsets[-1] + len(line))
+    masked = list(source)
+    try:
+        for token in tokenize.generate_tokens(io.StringIO(source).readline):
+            if token.type == tokenize.ERRORTOKEN:
+                return source
+            if token.type in (tokenize.STRING, tokenize.COMMENT) or (
+                tokenize.tok_name[token.type].startswith(("FSTRING_", "TSTRING_"))
+            ):
+                start = offsets[token.start[0] - 1] + token.start[1]
+                end = offsets[token.end[0] - 1] + token.end[1]
+                masked[start:end] = [
+                    char if char in "\r\n" else " " for char in source[start:end]
+                ]
+    except (tokenize.TokenError, SyntaxError, ValueError):
+        return source
+    return "".join(masked)
 
 
 def dangerous_source_patterns(source: str, patterns: tuple[str, ...]) -> list[str]:
-    """Match executable syntax, never comments, docstrings or literal contents.
+    """Pre-check with the original substring rules, excluding literal/comment text.
 
-    Keep the existing call-name and module/reference restrictions, including
-    attribute calls and references to forbidden callables (which can be aliased).
-    String-running modules and reflection are refused, not speculatively checked:
-    Python cannot statically distinguish their data from dynamically built code.
-    Ordinary prose remains allowed. The OS sandbox is the authority boundary.
+    This is not a Python security analysis: the OS jail is the boundary.
+    If tokenization fails, scan the unmodified source (fail closed on masking).
     """
-    tree = ast.parse(source)
-
-    def dotted(node: ast.AST) -> str:
-        if isinstance(node, ast.Name):
-            return node.id
-        if isinstance(node, ast.Attribute):
-            return dotted(node.value) + "." + node.attr
-        return ""
-
-    references: set[str] = set()
-    calls: set[str] = set()
-    unsupported: set[str] = set()
-    for node in ast.walk(tree):
-        if isinstance(node, (ast.Name, ast.Attribute)):
-            references.add(dotted(node))
-            name = node.id if isinstance(node, ast.Name) else node.attr
-            if name in _DYNAMIC_SOURCE_NAMES or (
-                name.startswith("__") and name.endswith("__") and name != "__name__"
-            ):
-                unsupported.add(name)
-            if isinstance(node, ast.Attribute):
-                root = dotted(node).split(".")[0]
-                if root in _DYNAMIC_SOURCE_MODULES:
-                    unsupported.add(root)
-                # A module registry may be reached through an alias or another
-                # object; its runtime identity cannot be proved by this scan.
-                if node.attr == "modules":
-                    unsupported.add("module registry access (.modules)")
-        elif isinstance(node, ast.Call):
-            calls.add(dotted(node.func) + "(")
-        elif isinstance(node, ast.ImportFrom):
-            references.add(node.module or "")
-            root = (node.module or "").split(".")[0]
-            if root in _DYNAMIC_SOURCE_MODULES:
-                unsupported.add(root)
-            for alias in node.names:
-                references.add(f"{node.module}.{alias.name}")
-                if alias.name == "*":
-                    unsupported.add("wildcard imports")
-                if node.module == "sys" and alias.name == "modules":
-                    unsupported.add("sys.modules")
-        elif isinstance(node, ast.alias):
-            references.update((node.name, node.asname or ""))
-            root = node.name.split(".")[0]
-            if root in _DYNAMIC_SOURCE_MODULES or root in _DYNAMIC_SOURCE_NAMES:
-                unsupported.add(root)
-    # A forbidden callable may be assigned or handed to map/partial before use.
-    calls.update(name + "(" for name in references)
-    found = [pattern for pattern in patterns
-             if any(pattern in name for name in (calls if pattern.endswith("(") else references))]
-    return found + [f"dynamic execution/reflection is not supported: {name}"
-                    for name in sorted(unsupported)]
+    if "\x00" in source:
+        raise ValueError("source code cannot contain null bytes")
+    code = _source_without_literals(source)
+    return [pattern for pattern in patterns if pattern in code]
 
 
 def _is_cancel_exception(exc: BaseException) -> bool:
@@ -1924,6 +1888,7 @@ def source_code_problems(source_code: str, node_id: str) -> list[str]:
     false`` the runtime never enforced (concern 2026-09-01, live thread
     2026-09-02: "platform-side source-code approval is the missing piece").
 
+    These are pre-checks; the OS jail is the execution boundary.
     An empty ``source_code`` is not a code node and has no problems.
     """
     src = source_code or ""

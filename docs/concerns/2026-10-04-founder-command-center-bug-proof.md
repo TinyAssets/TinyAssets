@@ -3,16 +3,17 @@
 Branch: `fix/app-ui-run-and-code-checks`, PR #4442. Review fixes and push only;
 deployment and real-user verification are still pending.
 
-Review-repair validation: related source-guard, bid, sandbox, branch-runner
-(affected heavy file), approval-description, path-I/O, storage-accounting,
-storage-registry and jail-disk tests: **388 passed / 7 platform skips on Windows;
-395 passed / no skips in the Linux oracle** (Python 3.11.16, bwrap 0.12.0,
-uid 1001). After the final module-registry alias/wildcard cases, the source-guard
-file passed **66 tests on each platform**, no skips. All pytest temp roots were
-outside the repository. Ruff passed for changed canonical/mirror Python and
-tests; the mirror build/import probe and whole-tree parity check passed. Every
-main-branch test name in changed test files was retained. No full suite or
-additional agents were used.
+Final revision validation: **580 passed / 6 POSIX skips on Windows** (Python
+3.14.3), including all 16 browser recovery cases; **570 passed / no skips in the
+Linux oracle** (Python 3.11.16, bwrap 0.12.0, uid 1001). Both runs cover source
+guards, bids, sandbox, the affected heavy branch-runner file, approval receipts,
+path-I/O, storage accounting, failed-run reads, onboarding and owner-door reads.
+All pytest base temp directories were outside the repository. The 82 source-scan
+regressions pass on both interpreters. Ruff, mirror regeneration/import probe,
+whole-tree mirror parity and diff whitespace checks pass. Pattern-list ASTs were
+compared against `origin/main` and are identical. The other three fixes are
+unchanged; no full suite or sub-agents were used. Deployment and real-user
+verification remain pending under this push-only request.
 
 ## Failed run reads
 
@@ -30,40 +31,31 @@ push-only request. Delete this finding once those are proved.
 
 ## Source guards
 
-`node_sandbox.NodeSandbox.validate_source` and the bid producer/executor scanned
-raw source for `open(` and other patterns; the compiler's narrower list had the
-same prose false positives. Shared AST inspection examines calls and module/name
-references, preserving each list. Comments, prose literals and docstrings pass;
-direct calls (including spaced, parenthesized, attribute and f-string-expression
-calls) and references to forbidden callables are blocked. The universe path-I/O
-test was already AST-based and needed no change.
+Final revision replaces the PR's AST denylist with the original `origin/main`
+substring scan at the compiler, sandbox and both bid call sites. The pattern
+lists, matching order and per-caller policies are unchanged. Before matching,
+Python `tokenize` STRING, COMMENT and f-string literal-part tokens are replaced
+with equal-length whitespace, preserving line endings and all code offsets.
+Tokenization failures (including ERRORTOKEN) scan the unmodified source instead;
+null bytes still return syntax diagnostics/reason codes at all four callers.
+This is a pre-check, not a Python security analysis. The OS jail is the boundary.
 
-PR #4442 cross-family review found that ignoring literals let string-running
-APIs and reflective namespace lookups through. The repair refuses the constructs
-themselves: string-running modules (including aliased imports), namespace and
-attribute reflection, dunder references, module registries and wildcard imports.
-The refusal explains that dynamic execution/reflection is unsupported; inspecting
-literal arguments alone cannot prove dynamically assembled code safe. The OS jail
-remains the authority boundary. `test_source_guard_syntax.py` has a negative for
-each of the five reported bypasses, plus alias, nonliteral argument, reflection
-and module-registry variants; prose remains positive at all four callers.
-Null bytes return syntax diagnostics/reason codes at all four callers, including
-the Python 3.11 `ast.parse` ValueError path.
+All nine round-2 ordinary-code examples pass: `is_open = True`, `retrieval = []`,
+`super().__init__()`, `x.__class__`, `code = s['code']; code.strip()`,
+`profile.get('name')`, `trace.append(1)`, `from types import SimpleNamespace`,
+and `self.modules`. None matched the original scan. Original substring quirks
+are retained: `is_open()` and `retrieval()` match the relevant call patterns,
+while `open (...)`, `(open)(...)`, `os . system(...)` and callable aliases do not
+acquire new AST-based refusals. Strings holding API names are exempt regardless
+of how a caller might later use them; the scan makes no reflection-safety claim.
 
-Red: `test_source_guard_syntax.py` had 8 failures before the fix (3 prose
-rejections, 5 whitespace/parenthesized-call bypasses). Green: all 113 tests in
-that file, `test_node_bid.py`, `test_describe_branch_approval.py`, and
-`test_universe_path_io_guard.py` passed on Windows and the Linux oracle
-(Python 3.11.16, bwrap 0.12.0, uid 1001; no skips).
-
-The subsequent runtime-boundary regression failed on both an isolated `open(`
-string and comment before the sandbox change. It now uses the same AST helper
-with its original, wider forbidden list. The affected heavy file is
-`test_branch_runner.py`; `test_node_sandbox.py` exercises actual execution and
-the Linux jail. Windows skips for those six jail cases are not Linux proof.
-Final runtime checks: 179 passes on Linux, no skips (syntax regressions,
-sandbox, branch runner, path-I/O guard); 169 passes / 6 POSIX skips on Windows
-for the first three files.
+Python 3.11 tokenizes a whole f-string as STRING, so the whole token is blanked.
+Python 3.12+ exposes FSTRING literal parts separately and leaves expression code
+available to the original scan. Tests record that interpreter-defined behavior,
+along with nested f-strings, format text, multiline/Unicode/CRLF offsets, every
+original forbidden pattern, raw fallback and legacy compile ValueError handling.
+The AST-only tests removed in this revision were all introduced by this PR;
+no tests from `origin/main` were changed or removed in this revision.
 
 ## Storage accounting
 
