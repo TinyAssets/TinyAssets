@@ -273,6 +273,21 @@ PINNED: dict[str, list[str]] = {
         "_write_record: .write_text()",
         "_write_record: os.replace()",
     ],
+    # Data-root files only: the lease db and every owner-tree member lock live
+    # at ``<data_root>/.owner_tree/<tree_id>/`` -- both names are registered
+    # platform entries in ``storage_accounting.ROOT_ENTRIES``, and no jail binds
+    # the data root, so no universe can plant a link on these paths.
+    # The locks additionally CANNOT route through universe_files: that writer
+    # publishes by fresh inode plus rename, which would move the lock off the
+    # inode each member holds open for its whole process life, and the proof
+    # that an owner is dead is exactly "every member file is lockable".
+    # tests/test_owner_lease.py::test_tree_files_live_only_at_the_data_root
+    "tinyassets/owner_lease.py": [
+        "_try_lock: os.open()",
+        "founder_alive: .read_text()",
+        "join: .write_text()",
+        "leave: .unlink()",
+    ],
     "tinyassets/platform_runtime_provenance.py": [
         "_read_metadata_instance_id: .open()",
         "read_expected_instance_id: .open()",

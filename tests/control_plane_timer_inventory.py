@@ -70,6 +70,14 @@ SITES: dict[str, tuple[str, str]] = {
         "still refuses activation pending the per-role UID split",
     ),
     # -- bounded waits inside one call -----------------------------------------
+    "tinyassets/owner_lease.py::_lock_blocking": (
+        CALL_SCOPED, "one owner-tree gate acquisition retries until timeout_s",
+    ),
+    "tinyassets/owner_lease.py::acquire": (
+        CALL_SCOPED,
+        "one owner-key acquisition waits for a live holder only until wait_s; "
+        "it returns a lease or refuses, without scheduling work",
+    ),
     "tinyassets/agent_turn_coordinator.py::AgentTurnCoordinator._pause_before_retry": (
         CALL_SCOPED,
         "bad-reply backoff bounded by the remaining turn deadline; polls Stop "
