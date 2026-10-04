@@ -40,10 +40,8 @@ def decide(program: bytes, arch: int, nr: int, arg0: int = 0) -> int:
         pc += 1
 
 
-#: Every launch but a served codex turn: the tool jail, claude, non-served codex.
-DENY = deny_program()
-#: A served codex turn, whose apply_patch helper builds a nested sandbox.
-SERVED = deny_program(nested_sandbox=True)
+TOOL = deny_program()
+PROVIDER = deny_program(nested_sandbox=True)
 
 # (name, x86_64 nr, aarch64 nr)
 KERNEL_SURFACE = [
@@ -56,14 +54,14 @@ ORDINARY = [("read", 0, 63), ("openat", 257, 56), ("socket", 41, 198), ("execve"
             ("mount", 165, 40), ("seccomp", 317, 277)]
 
 
-@pytest.mark.parametrize("program", [DENY, SERVED], ids=["deny", "served"])
+@pytest.mark.parametrize("program", [TOOL, PROVIDER], ids=["tool", "provider"])
 @pytest.mark.parametrize("name,x86,arm", KERNEL_SURFACE)
 def test_both_jails_refuse_the_kernel_surface_on_both_arches(program, name, x86, arm):
     assert decide(program, X86_64, x86) == EPERM, name
     assert decide(program, AARCH64, arm) == EPERM, name
 
 
-@pytest.mark.parametrize("program", [DENY, SERVED], ids=["deny", "served"])
+@pytest.mark.parametrize("program", [TOOL, PROVIDER], ids=["tool", "provider"])
 @pytest.mark.parametrize("name,x86,arm", ORDINARY)
 def test_ordinary_calls_are_allowed(program, name, x86, arm):
     assert decide(program, X86_64, x86) == ALLOW, name
@@ -71,44 +69,42 @@ def test_ordinary_calls_are_allowed(program, name, x86, arm):
 
 
 def test_x86_mknod_is_refused_in_both():
-    for program in (DENY, SERVED):
+    for program in (TOOL, PROVIDER):
         assert decide(program, X86_64, 133) == EPERM
 
 
-def test_the_deny_profile_refuses_links_and_new_user_namespaces():
-    """The tool jail, claude and a non-served codex call (its sandbox off)."""
+def test_the_tool_jail_refuses_links_and_new_user_namespaces():
     for nr in (88, 266):  # symlink, symlinkat
-        assert decide(DENY, X86_64, nr) == EPERM
-    assert decide(DENY, AARCH64, 36) == EPERM
+        assert decide(TOOL, X86_64, nr) == EPERM
+    assert decide(TOOL, AARCH64, 36) == EPERM
     for arch, unshare, clone in ((X86_64, 272, 56), (AARCH64, 97, 220)):
-        assert decide(DENY, arch, unshare, NEWUSER) == EPERM
-        assert decide(DENY, arch, clone, NEWUSER | 0x11) == EPERM
+        assert decide(TOOL, arch, unshare, NEWUSER) == EPERM
+        assert decide(TOOL, arch, clone, NEWUSER | 0x11) == EPERM
         # Threads and forks (no CLONE_NEWUSER) still work.
-        assert decide(DENY, arch, clone, 0x003D0F00) == ALLOW
-        assert decide(DENY, arch, unshare, 0x00000200) == ALLOW  # CLONE_FS
+        assert decide(TOOL, arch, clone, 0x003D0F00) == ALLOW
+        assert decide(TOOL, arch, unshare, 0x00000200) == ALLOW  # CLONE_FS
         # clone3 hides its flags, so libc is sent back to the checked clone.
-        assert decide(DENY, arch, 435) == ENOSYS
+        assert decide(TOOL, arch, 435) == ENOSYS
 
 
-def test_the_served_profile_keeps_what_codexs_nested_sandbox_needs():
-    """A served codex turn's apply_patch helper needs a user namespace and /dev
-    symlinks, so this profile keeps both; every other launch denies them."""
-    assert decide(SERVED, X86_64, 88) == ALLOW
-    assert decide(SERVED, AARCH64, 36) == ALLOW
+def test_the_provider_jail_keeps_what_a_nested_cli_sandbox_needs():
+    """codex's own bubblewrap needs a user namespace and /dev symlinks."""
+    assert decide(PROVIDER, X86_64, 88) == ALLOW
+    assert decide(PROVIDER, AARCH64, 36) == ALLOW
     for arch, unshare, clone in ((X86_64, 272, 56), (AARCH64, 97, 220)):
-        assert decide(SERVED, arch, unshare, NEWUSER) == ALLOW
-        assert decide(SERVED, arch, clone, NEWUSER) == ALLOW
-        assert decide(SERVED, arch, 435) == ALLOW
+        assert decide(PROVIDER, arch, unshare, NEWUSER) == ALLOW
+        assert decide(PROVIDER, arch, clone, NEWUSER) == ALLOW
+        assert decide(PROVIDER, arch, 435) == ALLOW
 
 
-@pytest.mark.parametrize("program", [DENY, SERVED], ids=["deny", "served"])
+@pytest.mark.parametrize("program", [TOOL, PROVIDER], ids=["tool", "provider"])
 def test_unknown_arches_and_x32_are_refused_outright(program):
     assert decide(program, I386, 3) == EPERM
     assert decide(program, X86_64, 0x40000000 | 0) == EPERM
 
 
 def test_every_jump_lands_inside_the_program():
-    for program in (DENY, SERVED):
+    for program in (TOOL, PROVIDER):
         insns = [struct.unpack("=HBBI", program[i:i + 8]) for i in range(0, len(program), 8)]
         for pc, (code, jt, jf, _k) in enumerate(insns):
             if code in (0x15, 0x35, 0x45):
@@ -121,6 +117,6 @@ def test_program_fd_holds_exactly_the_program():
 
     fd = jail_seccomp.program_fd(nested_sandbox=True)
     try:
-        assert os.read(fd, 1 << 16) == SERVED
+        assert os.read(fd, 1 << 16) == PROVIDER
     finally:
         os.close(fd)
