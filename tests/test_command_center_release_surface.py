@@ -1,5 +1,6 @@
 """Real publication consent establishes lineage only after the owner answers."""
 import json
+import sqlite3
 
 import pytest
 
@@ -15,7 +16,7 @@ from tests.test_command_center_packages import (
 from tests.test_command_center_packages import _pin_data_dir as _pin_data_dir
 from tests.test_command_center_packages import home as home
 from tinyassets import command_center_release_series as releases
-from tinyassets.command_center_packages import pin_for_request
+from tinyassets.command_center_packages import database_path, pin_for_request
 from tinyassets.custom_agents import get_definition
 
 pytestmark = pytest.mark.usefixtures("cloud_runtime")
@@ -31,6 +32,9 @@ def test_actual_publish_consent_records_explicit_series_after_answer(home):
     ask = _ask(OWNER, UNIVERSE, action())
     assert "request_id" in ask, ask
     pin = pin_for_request(home, universe_id=UNIVERSE, request_id=ask["request_id"])
+    with sqlite3.connect(database_path(home)) as conn:
+        assert conn.execute("SELECT owner_id FROM pins WHERE request_id=?",
+                            (ask["request_id"],)).fetchone() == (OWNER,)
     link = pin["record"]["action"]["release_link"]
     assert releases.consent_text(link) in pin["record"]["tab"]["body"]
     with _as(OWNER), pytest.raises(LookupError):

@@ -2,6 +2,7 @@
 
 import gc
 import json
+import sqlite3
 
 import pytest
 
@@ -10,19 +11,40 @@ from tests.test_command_center_release_policy import enable
 from tests.test_command_center_update_executor import apply, release
 from tests.test_command_center_update_executor import published as published
 from tinyassets import account_deletion
+from tinyassets import command_center_packages as packages
 from tinyassets import command_center_release_series as releases
 from tinyassets.command_center_updates import digest
 from tinyassets.custom_agents import _agent_connect
 
 
 @pytest.mark.parametrize("home_state", ["original", "changed", "none"])
+@pytest.mark.parametrize("legacy_pins", [False, True], ids=["new-pins", "legacy-pins"])
 def test_publisher_deletion_erases_evidence_preserves_recipient_and_release_hashes(
-    published, home_state,
+    published, home_state, legacy_pins,
 ):
     data = published
     enable(data)
     target = release(data, style="main { color: teal; }")
     assert apply(data)["applied"]
+    package_db = packages.store_dir(data["base"]) / "packages.db"
+    # A peer's private pin must survive even if it names the publisher's old home.
+    packages.pin(data["base"], universe_id=data["publisher_home"], kind="publish",
+                 agent="main", digest="peer-digest",
+                 record={"action": {"release_link": {"author_id": data["owner"],
+                                                    "identity_hashes": {"ui": "peer-private"}}}})
+    with sqlite3.connect(package_db) as conn:
+        pin_rows = conn.execute("SELECT request_id, record_json FROM pins").fetchall()
+        publisher_requests = {
+            request for request, record in pin_rows
+            if json.loads(record).get("action", {}).get("release_link", {}).get("author_id")
+            == data["publisher"]
+        }
+        assert len(publisher_requests) == 2
+        peer_pins = [row for row in pin_rows if row[0] not in publisher_requests]
+        assert len(peer_pins) >= 2
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(pins)")}
+        if legacy_pins and "owner_id" in columns:
+            conn.execute("ALTER TABLE pins DROP COLUMN owner_id")
     recipient_tables = (
         "command_center_adoptions", "command_center_update_policies",
         "command_center_auto_receipts", "command_center_auto_status",
@@ -56,6 +78,13 @@ def test_publisher_deletion_erases_evidence_preserves_recipient_and_release_hash
     assert receipt["unfinished_phases"] == []
     assert receipt["rows_deleted"]["command_center_release_evidence"] == 2
     assert receipt["rows_deleted"]["command_center_release_series"] == 1
+    # Read raw SQLite: cleanup must migrate even without reopening the package API.
+    with sqlite3.connect(package_db) as conn:
+        remaining = conn.execute("SELECT request_id, record_json FROM pins").fetchall()
+        assert remaining == peer_pins
+        assert all(value not in json.dumps(remaining) for value in private_values
+                   if value != data["publisher_home"])
+    assert receipt["rows_deleted"]["packages:pins"] == 2
     with _agent_connect(data["base"]) as conn:
         for table in ("command_center_release_series", "command_center_release_evidence"):
             assert conn.execute(f"SELECT * FROM {table}").fetchall() == []

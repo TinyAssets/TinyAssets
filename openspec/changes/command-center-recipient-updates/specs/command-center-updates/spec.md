@@ -124,6 +124,7 @@ The owner SHALL see release histories only from exact registered immutable-defin
 #### Scenario: Publisher deletes their account
 - **WHEN** a publisher deletes their account with its original home, a changed home or no home
 - **THEN** private release source identity hashes, publisher home IDs and publication request IDs are erased by publisher owner ID
+- **AND** this includes consent pins in `.command-center-packages/packages.db`, including legacy pins written without an ownership column, while another owner's pins survive even with the same universe ID
 - **AND** public release records and their valid content hashes remain unchanged, as do another owner's adoption and receipt rows
 - **AND** another publisher cannot reuse the retained series ID
 

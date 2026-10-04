@@ -113,6 +113,7 @@ UNIVERSE_KEY = "universe_id"
 #: the delete (gpt-6-astra review, 2026-09-26). Left behind, the row names a
 #: universe that no longer exists and goes when its own owner is deleted.
 OWNER_ONLY_TABLES = MappingProxyType({
+    "pins": "owner_id",
     "universe_app_ui": "owner_user_id",
     "command_center_adoptions": "owner_id",
     "command_center_update_requests": "owner_id",
@@ -670,14 +671,18 @@ def _root_databases(root: Path) -> list[Path]:
     A registry that reads the directory cannot go stale the way a hand-listed
     one does — round 3 found ``.authoring.db`` and ``.automations.db``
     untouched because the list named only ``outbound.db`` and ``.auth.db``.
-    Non-recursive on purpose: per-universe stores live inside the universe
-    directory and go with it.
+    Per-universe stores go with the universe directory. The shared package
+    store is nested outside those directories and must be visited explicitly.
     """
+    from tinyassets.command_center_packages import database_path
     from tinyassets.storage import DB_FILENAME
 
-    return sorted(
+    stores = [
         p for p in root.glob("*.db") if p.is_file() and p.name != DB_FILENAME
-    )
+    ]
+    if database_path(root).is_file():
+        stores.append(database_path(root))
+    return sorted(stores)
 
 
 def _delivery_deletion_targets(conn, *, principal: str, home: str):
@@ -738,8 +743,21 @@ def _delete_satellite_rows(
         conn.execute("PRAGMA foreign_keys = ON")
         local: dict[str, int] = {}
         with conn:
+            from tinyassets.command_center_packages import database_path, ensure_pin_owners
+
+            package_store = path == database_path(path.parent.parent)
+            if package_store:
+                # DDL and legacy owner backfill must precede the deletion plan,
+                # even when this is the first access since upgrading the store.
+                conn.execute("BEGIN IMMEDIATE")
+                ensure_pin_owners(conn)
             plan = deletion_plan(conn, principal=principal, home=home)
             targets = _delivery_deletion_targets(conn, principal=principal, home=home)
+            if package_store and home:
+                # Only unowned legacy pins may fall back to the current home.
+                # Explicit peer ownership always wins over universe identity.
+                targets.append(("pins", "owner_id = ? OR (owner_id = '' AND universe_id = ?)",
+                                (principal, home)))
             delivery_tables = {target[0] for target in targets}
             from tinyassets.run_file_erasure import settled_deletion_targets
             file_targets = settled_deletion_targets(conn, principal=principal)
