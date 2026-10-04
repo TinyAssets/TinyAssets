@@ -96,13 +96,17 @@ _NEW_FUNCS = ("isQueuedBubble", "firstQueuedBubble", "markQueued", "unmarkQueued
               "drainAfterStop", "takeBatch", "flushBatch",
               "markSteered", "unmarkSteered", "steerOrQueue", "settleSteered",
               "adoptSteered", "markHeld", "restoreHeldSteers", "readServerTurnRow",
-              "claimHeldLines", "pinLineAgent", "alreadyHandled", "showActiveTurn", "finishActiveTurn",
+              "claimHeldLines", "pinLineAgent", "alreadyHandled", "showActiveTurn",
+              "finishActiveTurn",
               "readPendingTurns", "sendBatch", "shortModelName", "waitMinutes", "waitDetail",
               "renderTryModel", "toolLine", "paintToolLine")
 
 # A real tree. `insertBefore` and a detaching `remove` are the point: thread
 # order is what the ordering half of this bug is about.
 _SHIM = r"""
+const InlineConnection={waiting:()=>false,hold:()=>{
+  throw new Error('Unexpected connection request in the working-indicator harness');
+}};
 const store={};
 const localStorage={ getItem:k=>(k in store?store[k]:null),
   setItem:(k,v)=>{store[k]=String(v);}, removeItem:k=>{delete store[k];} };
