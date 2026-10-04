@@ -437,6 +437,13 @@ async def read_native_catalogue(
                     raise ValueError("native catalogue cursor repeated")
                 cursors.add(cursor)
             raise ValueError("native catalogue page limit exceeded")
+    except NativeMetadataUnsupported:
+        # The executor ANSWERED "I do not implement this". That is a truthful
+        # unknown, not a fault, and `BaseProvider.enumerate_models` turns it
+        # into None so the source keeps its own default. This clause MUST come
+        # first: the sanitizing handler below catches ProviderError, which this
+        # subclasses, and would widen the honest answer into a generic failure.
+        raise
     except (OSError, ValueError, ProviderError, FamilyAnchorError,
             TimeoutError, asyncio.LimitOverrunError):
         # Never relay process output, errors, paths or account material.

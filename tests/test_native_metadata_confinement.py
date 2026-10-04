@@ -44,15 +44,24 @@ def test_the_jail_names_no_vendor_and_still_covers_every_auth_directory():
     allow-list once -- not by editing the jail.
     """
     names = provider_base.auth_directory_env_names()
-    assert names, 'the provider layer must declare its auth directories'
+    # The concrete set today, written out rather than re-deriving the predicate:
+    # repeating the implementation's filter here would assert nothing.
+    assert names == ('CLAUDE_CONFIG_DIR', 'CODEX_HOME')
     declared = {n for group in provider_base._PROVIDER_AUTH_OVERLAY_ENV_VARS.values()
                 for n in group}
-    # Every declared auth DIRECTORY is passed down; token variables are not,
-    # because a credential must never be handed a disposable path as its value.
-    assert set(names) == {n for n in declared if n.endswith(('_HOME', '_CONFIG_DIR'))}
+    # Token variables are NOT passed down: a credential must never be handed a
+    # disposable path as its value.
+    assert {'ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN'} <= declared
+    assert not {n for n in names if 'KEY' in n or 'TOKEN' in n}
     source = Path(provider_jail.__file__).read_text(encoding='utf-8')
     for name in names:
         assert name not in source, f'{name} must not be written into the jail'
+    # A future executor's auth directory is covered by declaring it in the
+    # overlay map, with no edit to the jail -- as long as it is spelled as a
+    # directory. Codex review 2026-10-04 (DISAGREE_EVIDENCE) is why this is a
+    # test and not a claim: the suffix list is the thing to widen.
+    assert 'EXECUTOR_AUTH_DIR'.endswith(provider_base._AUTH_DIR_ENV_SUFFIXES)
+    assert not 'EXECUTOR_AUTH_SECRET'.endswith(provider_base._AUTH_DIR_ENV_SUFFIXES)
 
 
 def test_discovery_passes_the_auth_directory_names_to_the_jail(tmp_path, monkeypatch):

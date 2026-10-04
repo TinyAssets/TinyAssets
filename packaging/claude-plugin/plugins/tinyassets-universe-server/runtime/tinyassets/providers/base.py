@@ -632,6 +632,12 @@ _PROVIDER_AUTH_OVERLAY_ENV_VARS: dict[str, frozenset[str]] = {
 }
 
 
+#: How a DIRECTORY variable is told apart from a credential variable, by shape
+#: rather than by name. Widen this when an executor declares an auth directory
+#: spelled some other way.
+_AUTH_DIR_ENV_SUFFIXES: tuple[str, ...] = ("_HOME", "_DIR")
+
+
 def auth_directory_env_names() -> tuple[str, ...]:
     """Every executor auth DIRECTORY variable name, for jails that name none.
 
@@ -641,9 +647,14 @@ def auth_directory_env_names() -> tuple[str, ...]:
     path, and must never be handed a disposable directory as its value. The jail
     (``tinyassets.providers.provider_jail``) is channel-agnostic and takes these
     as data (``scripts/check_channel_agnostic.py``).
+
+    The shape test is the suffix, because naming the variables here is what the
+    ratchet forbids. ``_DIR`` and ``_HOME`` cover every directory name any
+    executor has used; a declared auth directory spelled some other way would
+    be missed, so :data:`_AUTH_DIR_ENV_SUFFIXES` is the place to widen it.
     """
     names = {name for group in _PROVIDER_AUTH_OVERLAY_ENV_VARS.values() for name in group}
-    return tuple(sorted(n for n in names if n.endswith(("_HOME", "_CONFIG_DIR"))))
+    return tuple(sorted(n for n in names if n.endswith(_AUTH_DIR_ENV_SUFFIXES)))
 
 
 def subprocess_env_without_api_keys() -> dict[str, str] | None:

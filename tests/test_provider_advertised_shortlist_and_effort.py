@@ -18,6 +18,7 @@ import os
 import sys
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import pytest
 
@@ -317,10 +318,25 @@ print(json.dumps({{"type": "control_response", "response": {{
 '''
 
 
+def metadata_snapshot(universe):
+    """The one launch-credential snapshot the metadata jail will bind.
+
+    `read_native_catalogue` refuses without its owning command center and an
+    exact snapshot under it (`provider_jail.metadata_view`), so a transport
+    test has to stand one up or it never reaches the decoder -- a negative
+    case would then pass on the confinement refusal instead of the behaviour
+    it names.
+    """
+    snapshot = universe / ".runtime" / "provider-launch-credentials" / "metadata-test"
+    snapshot.mkdir(parents=True, exist_ok=True)
+    return str(snapshot)
+
+
 def run_control(tmp_path, reply, *, noise=(), protocol=CLAUDE_PROTOCOL):
     return asyncio.run(read_native_catalogue(
         [sys.executable, "-u", "-c", control_peer(reply, noise=noise)],
-        env=os.environ.copy(), cwd=str(tmp_path), protocol=protocol, timeout=10,
+        env=os.environ.copy(), cwd=metadata_snapshot(tmp_path),
+        universe_dir=tmp_path, protocol=protocol, timeout=10,
     ))
 
 
@@ -389,7 +405,8 @@ print(json.dumps({"type": "control_response", "response": {
     with pytest.raises(ProviderError, match="^native model discovery unavailable$"):
         asyncio.run(read_native_catalogue(
             [sys.executable, "-u", "-c", script], env=os.environ.copy(),
-            cwd=str(tmp_path), protocol=CLAUDE_PROTOCOL, timeout=10,
+            cwd=metadata_snapshot(tmp_path), universe_dir=tmp_path,
+            protocol=CLAUDE_PROTOCOL, timeout=10,
         ))
 
 
@@ -407,7 +424,8 @@ print(json.dumps({"type": "control_response", "response": {
     with pytest.raises(ProviderError, match="^native model discovery unavailable$"):
         asyncio.run(read_native_catalogue(
             [sys.executable, "-u", "-c", script], env=os.environ.copy(),
-            cwd=str(tmp_path), protocol=CLAUDE_PROTOCOL, timeout=10,
+            cwd=metadata_snapshot(tmp_path), universe_dir=tmp_path,
+            protocol=CLAUDE_PROTOCOL, timeout=10,
         ))
 
 
@@ -530,7 +548,8 @@ def test_installed_cli_advertises_a_shortlist_with_effort(tmp_path):
     catalogue = asyncio.run(read_native_catalogue(
         [*base_cmd, *_METADATA_ARGUMENTS],
         protocol=ClaudeProvider.native_discovery_protocol,
-        env=os.environ.copy(), cwd=str(tmp_path),
+        env=os.environ.copy(), cwd=metadata_snapshot(tmp_path),
+        universe_dir=tmp_path,
         spawn_kwargs=ClaudeProvider.native_process_options(), timeout=60,
     ))
     assert catalogue.models, "the CLI advertised no models"
@@ -731,7 +750,8 @@ print(json.dumps({"type": "control_response", "response": {
     with pytest.raises(NativeMetadataUnsupported):
         asyncio.run(read_native_catalogue(
             [sys.executable, "-u", "-c", script], env=os.environ.copy(),
-            cwd=str(tmp_path), protocol=CLAUDE_PROTOCOL, timeout=10,
+            cwd=metadata_snapshot(tmp_path), universe_dir=tmp_path,
+            protocol=CLAUDE_PROTOCOL, timeout=10,
         ))
 
 
@@ -756,6 +776,36 @@ def test_unsupported_enumeration_becomes_the_unknown_contract(monkeypatch, tmp_p
     snapshot.mkdir()
     assert asyncio.run(ClaudeProvider().enumerate_models(
         universe_dir=tmp_path, credential_snapshot_dir=snapshot,
+    )) is None
+
+
+def test_the_unsupported_answer_survives_the_real_transport(monkeypatch, tmp_path):
+    """Through the REAL transport, not a stub, into `enumerate_models`.
+
+    The test above replaces `read_native_catalogue`, so it cannot see the
+    transport widening the answer. It did: the sanitizing handler catches
+    `ProviderError`, which `NativeMetadataUnsupported` subclasses, so an
+    executor's truthful "I do not implement this" came back as a generic
+    failure and the honest unknown was lost (Codex review 2026-10-04,
+    DISAGREE_EVIDENCE). Only a real child answering the real decoder proves it.
+    """
+    from tinyassets.providers.claude_provider import ClaudeProvider
+
+    script = '''
+import json, sys
+request = json.loads(sys.stdin.readline())
+print(json.dumps({"type": "control_response", "response": {
+    "subtype": "error", "request_id": request["request_id"],
+    "error": "Unsupported control request subtype: list_models",
+}}), flush=True)
+'''
+    monkeypatch.setattr(
+        ClaudeProvider, "native_command_resolver",
+        staticmethod(lambda: ([sys.executable, "-u", "-c", script], False)))
+    monkeypatch.setattr(ClaudeProvider, "native_metadata_arguments", ())
+    snapshot = metadata_snapshot(tmp_path)
+    assert asyncio.run(ClaudeProvider().enumerate_models(
+        universe_dir=tmp_path, credential_snapshot_dir=Path(snapshot),
     )) is None
 
 
