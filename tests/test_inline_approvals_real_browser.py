@@ -27,7 +27,7 @@ CARD = {
 @pytest.fixture
 def page():
     sync = pytest.importorskip(
-        "playwright.sync_api", reason="runs-in=real-browser-proof; Chromium controller tests"
+        "playwright.sync_api", reason="owner=onboarding; runs-in=real-browser-proof"
     )
     html, _ = render_app_html()
     start = html.index("  // Begin protected inline approval cards.")
