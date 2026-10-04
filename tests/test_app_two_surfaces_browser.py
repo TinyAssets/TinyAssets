@@ -837,6 +837,10 @@ def test_native_editing_and_plain_frame_controls_survive(app_url, browser):
         page.evaluate('document.activeElement.blur();window.getSelection().removeAllRanges()')
         page.keyboard.press('Shift+ArrowRight')
         page.wait_for_function('parentKeys.some(e=>e.key==="ArrowRight"&&e.phase==="keyup")')
+        # The parent forwards with postMessage; its keyup is not the frame's receipt.
+        frame = page.locator('#ui-frame').element_handle().content_frame()
+        frame.wait_for_function(
+            'observedKeys.some(e=>e.key==="ArrowRight"&&e.phase==="keyup")')
         keys = _frame_keys(page)
         assert [(e['key'], e['phase']) for e in keys if e['key']=='ArrowRight'] == [
             ('ArrowRight','keydown'), ('ArrowRight','keyup')]
