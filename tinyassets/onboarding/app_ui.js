@@ -1617,13 +1617,14 @@
       this.closePreview();
       const state={epoch:this.epoch,home:this.home,principal:this.principal,
         frameGen:this.frameGen,selection:JSON.stringify(this.selection),busy:true,rows:[],earlier:[],
-        message:"Loading your shared copies…",consent:null};
+        message:"Loading your shared copies…",consent:null,policyConsent:null};
       this.updateState=state;this.paintUpdates();
       try{
         const doc=await Owner.read({target:"command_center_updates",graph_id:state.home});
         if(!this.updateCurrent(state))return;
         if(!doc||doc.error||!Array.isArray(doc.adoptions))throw Error(doc&&doc.detail||"Shared copies could not be read.");
         state.rows=doc.adoptions;state.earlier=Array.isArray(doc.earlier_copies)?doc.earlier_copies:[];
+        state.maintenance=doc.maintenance||{};
         state.message=state.rows.length?"":"No verified shared copies are registered.";
       }catch(error){if(this.updateCurrent(state))state.message=error.message||"Shared copies could not be read.";}
       if(this.updateCurrent(state)){state.busy=false;this.paintUpdates();}
@@ -1634,14 +1635,20 @@
       if(!state||!this.updateCurrent(state))return;
       panel.id="ui-shared-updates";
       this.line(panel,"Manage shared copies");
-      this.line(panel,"Manual screen replacement only. Automatic updates are unavailable and remain off.");
-      this.line(panel,"Choose a public definition by the same publisher. This does not establish a version or release relationship.");
+      this.line(panel,"Automatic presentation updates are off unless you explicitly opt in for a verified release series.");
+      this.line(panel,"Only eligible name/style changes qualify. Code, components, permissions and conflicts require your decision.");
+      const maintenance=(state.maintenance||{}).state;
+      if(maintenance==="blocked"||maintenance==="unavailable")
+        this.line(panel,"Automatic checks are currently unavailable. Your saved preferences and screens are retained.");
+      else if(maintenance==="waiting_for_service")
+        this.line(panel,"Automatic checks are waiting for the service maintenance worker.");
+      else if(maintenance==="scheduled")this.line(panel,"Automatic checks are scheduled by the service.");
       if(state.message)this.line(panel,state.message);
       for(const earlier of state.earlier){
         const card=document.createElement("section");panel.appendChild(card);
         this.line(card,"Earlier copy: "+earlier.name+" · Source: "+earlier.source_definition_id);
         this.line(card,"Verify this installation receipt before managing its screen. Private edits and missing proof will be refused.");
-        card.appendChild(this.button("Verify earlier copy",()=>this.registerEarlierCopy(state,earlier),state.busy||!!state.consent));
+        card.appendChild(this.button("Verify earlier copy",()=>this.registerEarlierCopy(state,earlier),state.busy||!!state.consent||!!state.policyConsent));
       }
       for(const row of state.rows){
         const card=document.createElement("section");panel.appendChild(card);
@@ -1649,11 +1656,54 @@
         this.line(card,"Screen source: "+row.ui_definition_id);
         this.line(card,"Retained component source: "+row.retained_definition_id);
         this.line(card,row.private_edit?"Private edits detected. Replacement is blocked; your edits stay yours.":"No private screen edits detected.");
+        const policy=row.presentation_policy||{enabled:false};
+        this.line(card,"Automatic presentation update preference: "+(policy.enabled===true?"On":"Off"));
+        const automatic=row.automatic_status||{};
+        if(automatic.status==="requires_decision")
+          this.line(card,"An automatic update needs your review. Your saved screen was kept.");
+        else if(automatic.status==="retryable_error")
+          this.line(card,"The service could not complete its last automatic check and will check again.");
+        else if(automatic.applied===true)this.line(card,"An eligible presentation update was saved.");
+        if(automatic.pending_settlements>0)
+          this.line(card,"A saved update is waiting for storage accounting to finish. The service will retry.");
+        if(policy.enabled===true){
+          this.line(card,"Selected series: "+policy.series_id+" · Linked installed release: "+policy.installed_release_id);
+          card.appendChild(this.button("Review turning automatic updates off",
+            ()=>this.previewPolicy(state,row,false),state.busy||!!state.consent||!!state.policyConsent));
+        }
+        const histories=Array.isArray(row.release_histories)?row.release_histories:[],known=new Set();
+        for(const history of histories){
+          const list=document.createElement("section");list.setAttribute("role","region");
+          list.setAttribute("aria-label","Published version history");list.tabIndex=0;
+          list.style.maxHeight="22rem";list.style.overflowY="auto";card.appendChild(list);
+          this.line(list,"Verified release series: "+history.series_id);
+          for(const release of history.releases||[]){
+            known.add(release.definition_id);
+            const current=release.definition_id===row.ui_definition_id,available=release.available===true;
+            this.line(list,"Version "+release.sequence+(current?" · Installed screen source":""));
+            this.line(list,release.summary||"No summary was published.");
+            this.line(list,"Release: "+release.release_id+" · Definition: "+release.definition_id);
+            if(release.parent_release_id)this.line(list,"Previous release: "+release.parent_release_id);
+            if(!available)this.line(list,"Unavailable: this published source cannot currently be adopted.");
+            if(!current){
+              list.appendChild(this.button("Review version "+release.sequence,
+                ()=>this.previewUpdate(state,row,{agent_definition_id:release.definition_id,
+                  name:"version "+release.sequence}),!available||state.busy||!!row.private_edit||!!state.consent||!!state.policyConsent));
+            }else if(available&&!(policy.enabled===true&&policy.series_id===history.series_id)){
+              list.appendChild(this.button("Review automatic presentation updates",
+                ()=>this.previewPolicy(state,row,true,history,release),
+                state.busy||!!row.private_edit||!!state.consent||!!state.policyConsent));
+            }
+          }
+        }
+        if(!histories.length)this.line(card,"No verified release history is linked to this exact screen source. Enabling automatic updates requires verified provenance.");
         for(const candidate of row.candidates||[]){
+          if(known.has(candidate.agent_definition_id))continue;
           this.line(card,(candidate.name||candidate.agent_definition_id)+" · "+(candidate.description||""));
           this.line(card,"Selected source: "+candidate.agent_definition_id);
+          this.line(card,"Same-publisher alternative; no verified release relationship is claimed.");
           card.appendChild(this.button("Review screen replacement: "+candidate.name,
-            ()=>this.previewUpdate(state,row,candidate),state.busy||!!row.private_edit||!!state.consent));
+            ()=>this.previewUpdate(state,row,candidate),state.busy||!!row.private_edit||!!state.consent||!!state.policyConsent));
         }
         if(!(row.candidates||[]).length)this.line(card,"No other public definitions by this publisher are available.");
       }
@@ -1662,7 +1712,7 @@
           if(!this.updateCurrent(state)||state.busy)return;
           const uiId=state.savedUI;this.closeUpdates();
           await this.choose(uiId);
-        },state.busy));
+        },state.busy||!!state.policyConsent));
       }
       if(state.consent){
         const consent=state.consent,plan=consent.plan;
@@ -1673,13 +1723,72 @@
         this.line(review,"Your workflows, agents, files and automation paused/running state stay unchanged. No message is sent, and no workflow or automation is started.");
         this.line(review,plan.permission_decision);
         this.line(review,"Retained components: "+JSON.stringify(plan.retained_components));
-        this.line(review,"This is your selected replacement, not a verified next release. Automatic updates remain off.");
+        this.line(review,"This replaces only the selected screen. Retained components and automatic-update preferences are unchanged.");
         review.appendChild(this.button("Replace screen",()=>this.answerUpdate(state,"accepted"),state.busy));
         review.appendChild(this.button("Keep current",()=>this.answerUpdate(state,"declined"),state.busy));
       }
+      if(state.policyConsent){
+        const consent=state.policyConsent,policy=consent.policy;
+        const review=document.createElement("section");review.id="ui-policy-confirmation";panel.appendChild(review);
+        this.line(review,policy.enabled?"Allow eligible presentation updates for this copy?":"Turn automatic presentation updates off for this copy?");
+        this.line(review,policy.explanation);
+        if(policy.link)this.line(review,"Series: "+policy.link.series_id+" · Installed release: "+policy.link.release_id+
+          " · Screen source: "+policy.link.definition_id);
+        this.line(review,"This consent changes your preference only. It sends no message and applies no screen update.");
+        review.appendChild(this.button(policy.enabled?"Allow presentation updates":"Turn automatic updates off",
+          ()=>this.answerPolicy(state,"accepted"),state.busy));
+        review.appendChild(this.button("Keep current preference",()=>this.answerPolicy(state,"declined"),state.busy));
+      }
+    },
+    async previewPolicy(state,row,enabled,history,release){
+      if(!this.updateCurrent(state)||state.busy||state.consent||state.policyConsent)return;
+      if(enabled&&(!history||!release||release.available!==true||row.private_edit||
+          release.definition_id!==row.ui_definition_id||!(history.releases||[]).includes(release)))return;
+      const payload={adoption_id:row.adoption_id,enabled};
+      if(enabled){payload.series_id=history.series_id;payload.release_id=release.release_id;}
+      state.busy=true;state.message="Preparing your update preference for review…";this.paintUpdates();
+      try{
+        const doc=await MCP.callTool("write_graph",{target:"connection",operation:"preview_center_policy",
+          graph_id:state.home,payload_json:JSON.stringify(payload)});
+        if(!this.updateCurrent(state))return;
+        const policy=doc&&doc.policy,link=policy&&policy.link;
+        if(!doc||doc.error||!doc.request_id||!doc.plan_digest||doc.requires_explicit_consent!==true||
+           !policy||policy.enabled!==enabled||policy.adoption_id!==row.adoption_id||
+           policy.owner_id!==state.principal||policy.universe_id!==state.home||
+           (enabled&&(!link||link.series_id!==history.series_id||link.release_id!==release.release_id||
+             link.definition_id!==row.ui_definition_id)))
+          throw Error(doc&&doc.detail||"This update preference could not be prepared.");
+        state.policyConsent=doc;state.message="Review only: your update preference has not changed.";
+      }catch(error){if(this.updateCurrent(state))state.message=error.message||"This update preference could not be prepared.";}
+      if(this.updateCurrent(state)){state.busy=false;this.paintUpdates();}
+    },
+    async answerPolicy(state,decision){
+      if(!this.updateCurrent(state)||state.busy||!state.policyConsent)return;
+      const consent=state.policyConsent;
+      state.busy=true;state.message="Saving your update preference…";this.paintUpdates();
+      try{
+        const doc=await MCP.callTool("write_graph",{target:"connection",operation:"answer_center_policy",
+          graph_id:state.home,payload_json:JSON.stringify({request_id:consent.request_id,
+            plan_digest:consent.plan_digest,decision})});
+        if(!this.updateCurrent(state))return;
+        if(!doc||doc.error||(decision==="accepted"?
+            doc.enabled!==consent.policy.enabled||doc.revision!==consent.policy.policy_revision+1:
+            doc.changed!==false||doc.decision!=="declined"))
+          throw Error(doc&&doc.detail||"The saved preference could not be confirmed. Reopen shared copies to read it.");
+        if(decision==="accepted"){
+          const row=state.rows.find(item=>item.adoption_id===consent.policy.adoption_id);
+          if(row)row.presentation_policy=doc;
+        }
+        state.policyConsent=null;
+        state.message=decision==="accepted"?"Update preference saved. No screen update was applied by this confirmation.":
+          "Kept your current update preference.";
+      }catch(error){if(this.updateCurrent(state)){
+        state.policyConsent=null;state.message=error.message||"The saved preference could not be confirmed. Reopen shared copies to read it.";
+      }}
+      if(this.updateCurrent(state)){state.busy=false;this.paintUpdates();}
     },
     async registerEarlierCopy(state,earlier){
-      if(!this.updateCurrent(state)||state.busy||state.consent)return;
+      if(!this.updateCurrent(state)||state.busy||state.consent||state.policyConsent)return;
       state.busy=true;state.message="Verifying your earlier installation receipt…";this.paintUpdates();
       try{
         const doc=await MCP.callTool("write_graph",{target:"connection",operation:"register_center_copy",
@@ -1691,7 +1800,7 @@
       }catch(error){if(this.updateCurrent(state)){state.busy=false;state.message=error.message||"This earlier copy could not be verified.";this.paintUpdates();}}
     },
     async previewUpdate(state,row,candidate){
-      if(!this.updateCurrent(state)||state.busy||state.consent||row.private_edit)return;
+      if(!this.updateCurrent(state)||state.busy||state.consent||state.policyConsent||row.private_edit)return;
       state.busy=true;state.message="Preparing screen replacement for your review…";this.paintUpdates();
       try{
         const doc=await MCP.callTool("write_graph",{target:"connection",operation:"preview_center_update",

@@ -35,14 +35,16 @@ def _scope(universe_id):
     return _base_path(), _authenticated_actor(), uid
 
 
-def _pin(base, uid, request_id):
+def _pin(base, uid, request_id, *, readers=None):
     from tinyassets.command_center_packages import pin_for_request
 
-    pin = pin_for_request(base, universe_id=uid, request_id=request_id)
+    pin = (readers.pin(uid, request_id) if readers is not None
+           else pin_for_request(base, universe_id=uid, request_id=request_id))
     if pin is None:
         raise LookupError("installation not found")
     plan = pin.get("record", {}).get("action", {}).get("plan", {})
-    definition = get_definition(base, plan.get("definition_id", ""))
+    definition = (readers.definition(plan.get("definition_id", "")) if readers is not None
+                  else get_definition(base, plan.get("definition_id", "")))
     if definition is None:
         raise ValueError("immutable source definition is missing")
     legacy_provenance(pin=pin, definition=definition)
@@ -215,12 +217,12 @@ def inspect_adoptions(*, universe_id: str) -> dict:
         return {"adoptions": [_inspect(conn, owner, uid, key) for key in ids]}
 
 
-def _prepare(conn, base, owner, uid, adoption_id, definition_id):
+def _prepare(conn, base, owner, uid, adoption_id, definition_id, *, readers=None):
     from tinyassets.api.system_copy_requests import _plan
 
     installed = registry.adoption(conn, owner=owner, uid=uid, adoption_id=adoption_id)
-    pin, original = _pin(base, uid, installed["install_request_id"])
-    proposed = _plan({"agent_definition_id": definition_id})
+    pin, original = _pin(base, uid, installed["install_request_id"], readers=readers)
+    proposed = _plan({"agent_definition_id": definition_id}, readers=readers)
     if proposed["author"] != original["author"]:
         raise ValueError("replacement must name an exact public definition by the same author")
     # Whole-system dependency changes cannot be disguised as a safe UI-only patch.

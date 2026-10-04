@@ -1509,7 +1509,8 @@ def write_graph(
             handler = getattr(_pending, connection_operation)
             return json.dumps(handler(universe_id=graph_id, payload=payload_json))
         if connection_operation in ("preview_center_update", "answer_center_update",
-                                    "register_center_copy"):
+                                    "register_center_copy", "preview_center_policy",
+                                    "answer_center_policy"):
             from tinyassets.api.command_center_update_surface import write_update
 
             return json.dumps(write_update(universe_id=graph_id,
@@ -4982,6 +4983,12 @@ def main(
             while True:
                 _time.sleep(300.0)
                 try:
+                    from tinyassets.command_center_update_maintenance import tick as update_centers
+
+                    update_centers(_sb_data_dir())
+                except Exception:  # noqa: BLE001 - keep unrelated maintenance running
+                    logger.exception("command center updates: maintenance unavailable")
+                try:
                     _file_retention_cursor = reconcile_run_files(
                         _sb_data_dir(), after_operation_id=_file_retention_cursor,
                     )
@@ -5015,8 +5022,20 @@ def main(
             name="served-budget-lease-reconciler",
             daemon=True,
         ).start()
+        from tinyassets.command_center_update_maintenance import scheduled as updates_scheduled
+
+        updates_scheduled(_sb_data_dir())
     except Exception:  # noqa: BLE001 - boot must not fail on budget maintenance
         logger.exception("served budget: maintenance not started")
+        try:
+            from tinyassets.command_center_update_maintenance import (
+                unavailable as updates_unavailable,
+            )
+            from tinyassets.storage import data_dir as update_data_dir
+
+            updates_unavailable(update_data_dir())
+        except Exception:  # noqa: BLE001 - the original startup failure stays authoritative
+            logger.exception("command center updates: availability could not be recorded")
 
     # Take the run-recovery lock and interrupt what the previous process left in
     # flight BEFORE starting anything that runs: the engine MCP children serve
