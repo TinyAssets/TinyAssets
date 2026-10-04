@@ -6983,7 +6983,7 @@
     const rail=$("request-rail"), head=$("rail-head"), phone=window.matchMedia("(max-width:600px)").matches;
     const history=$("request-history");
     rail.dataset.phoneEmpty=String(!history||history.children.length===0);
-    head.textContent="Request history";
+    if(head.textContent!=="Request history") head.textContent="Request history";
     if(phone){
       head.setAttribute("role","button");head.tabIndex=0;
       head.setAttribute("aria-expanded",String(rail.classList.contains("rail--open")));
