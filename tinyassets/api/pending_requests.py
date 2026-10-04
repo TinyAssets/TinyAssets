@@ -2889,6 +2889,9 @@ def answer_request(*, universe_id: str = "", payload: Any = None) -> dict[str, A
         if not resolve_request(udir, request_id, status="answered", answer=answer,
                                feedback=feedback, dont_ask_again=False, decision="allowed"):
             return {"error": "request_resolution_unconfirmed", "request_pending": True}
+        from tinyassets.api.command_center_update_surface import after_install
+
+        result = {**result, **after_install(universe_id=_uid, request_id=request_id, result=result)}
         return {**result, "status": "answered", "request_id": request_id,
                 "receipt": f"Installed \"{action['plan']['name']}\" as your own copy.",
                 "suppressed": False}

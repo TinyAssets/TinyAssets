@@ -2330,7 +2330,7 @@ _WRITE_GRAPH_SYSTEMS_CHAPTER = """\
     gets something that cannot do anything. There is no screen-only publish to
     fall back to: ``branch_ids`` must name at least one workflow, so the choice
     is an explicit command-center package or a legacy component-only system.
-    The component-only system does not appear in the command-center picker.
+    Supported component-only systems also appear in the command-center picker.
 
     * **Sharing a command center** is a ``publish`` ask the person confirms; I cannot publish
       myself::
@@ -2351,12 +2351,22 @@ _WRITE_GRAPH_SYSTEMS_CHAPTER = """\
       workflow_refs.<alias>``. Publishing, after the person confirms, maps only
       those selected references to package component keys; installing maps them
       to the recipient's copies.
+      To include real conversation agents, explicitly select public instruction
+      templates with ``agent_templates: {"stable-key": "<my binding id>"}``.
+      Use stable keys across releases. The UI declares ``agent_refs`` from alias
+      to those owned binding IDs and reads ``(await tinyassets.whoami()).
+      agent_refs.<alias>`` for ``open_chat``. Confirmation publishes only the
+      selected public instruction definitions; copying creates fresh private
+      recipient bindings and remaps aliases. Provider settings, permissions,
+      credentials, memory and private agent configuration never travel. A UI
+      villager label or workflow name alone is not an exported agent template.
+      Unsupported agent kinds and nested dependencies are refused before copy.
       Script text stays unchanged. Existing named ``emit`` events remain owner
       broadcasts; this does not grant direct workflow execution or exclusive routing.
     * **Sharing workflows only** uses ``publish_kind: "workflows"`` and
       ``branch_ids`` without ``ui_id`` or ``package``. A legacy screen-and-workflow
-      system without ``package`` appears in agents, not the package picker; it
-      never silently exports files.
+      system without ``package`` appears in agents and the supported system
+      picker; it never silently exports files.
     * **Sharing the WHOLE command center** uses the explicit ``package``
       block, ``"package": {}``: the files travel too (agents' instructions and
       skills, workspace files, ``wiki/pages``) as one versioned package. The

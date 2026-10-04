@@ -701,6 +701,7 @@ def read_graph(
             agent_binding, app_ui (your own UI library and choice),
             command_center_packages (working public packages to try in your own command center),
             command_center_preview (public visual bytes only; no copy or consent),
+            command_center_updates (your copy provenance and explicit replacement choices),
             command_center_files / command_center_file (the owner's own command center folder:
             query=<path under /u>; list a directory, or read a file in chunks
             with file_offset/file_max_bytes),
@@ -1506,6 +1507,12 @@ def write_graph(
 
             handler = getattr(_pending, connection_operation)
             return json.dumps(handler(universe_id=graph_id, payload=payload_json))
+        if connection_operation in ("preview_center_update", "answer_center_update",
+                                    "register_center_copy"):
+            from tinyassets.api.command_center_update_surface import write_update
+
+            return json.dumps(write_update(universe_id=graph_id,
+                                           operation=connection_operation, payload=payload_json))
         if connection_operation == "resolve_connection":
             # Owner-scoped, WRITE-FREE proposal: turns the *shape* of pasted
             # credential material (label + public prefix + length, never the

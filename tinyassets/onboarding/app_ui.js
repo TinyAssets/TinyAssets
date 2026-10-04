@@ -63,7 +63,7 @@
     FIELDS:["kind","markup","name","script","style","ui_id","version"],
     // Carried verbatim when present: the asset manifest the server checked,
     // shared libraries by name, and whether `script` is a module.
-    OPTIONAL:["assets","libraries","script_type","workflow_refs"],
+    OPTIONAL:["assets","libraries","script_type","workflow_refs","agent_refs"],
     SHA256_RE:/^[0-9a-f]{64}$/,
     ASSET_PATH_RE:/^[A-Za-z0-9][A-Za-z0-9._-]*(\/[A-Za-z0-9][A-Za-z0-9._-]*)*$/,
     ASSET_FETCH:"/app/api/ui-asset",
@@ -84,6 +84,8 @@
     conversation:null,conversationNote:"",previousTurn:null,selecting:false,ambiguous:false,
     // The stored row's revision as last read; 0 means no row exists yet.
     revision:0,
+    // Only manually saved screens awaiting an explicit open in this session.
+    deferredUpdates:new Map(),
     // Bumped on every mount AND unmount. A request captures it, so a reply owed
     // to the bundle that was on screen a moment ago cannot settle a promise in
     // the one that replaced it -- both bootstraps number requests from r1, so the
@@ -127,6 +129,15 @@
           if(!/^[A-Za-z][A-Za-z0-9_-]{0,63}$/.test(alias)||
              typeof id!=="string"||!id||id.length>200)
             return this.unsupported("workflow_refs contains an invalid alias or workflow id");
+      }
+      if("agent_refs" in component){
+        const refs=component.agent_refs;
+        if(!refs||typeof refs!=="object"||Array.isArray(refs)||Object.keys(refs).length>100)
+          return this.unsupported("agent_refs must be an object of at most 100 references");
+        for(const [alias,id] of Object.entries(refs))
+          if(!/^[A-Za-z][A-Za-z0-9_-]{0,63}$/.test(alias)||
+             typeof id!=="string"||!id||id.length>200)
+            return this.unsupported("agent_refs contains an invalid alias or agent id");
       }
       if("libraries" in component){
         const libs=component.libraries;
@@ -244,6 +255,8 @@
     // ---- lifecycle and fencing ---------------------------------------------
     fence(epoch,home){ return this.enabled&&epoch===this.epoch&&home===this.home; },
     reset(){
+      this.closeUpdates();
+      this.deferredUpdates.clear();
       this.closePreview();
       const receipt=$("ui-install-receipt");if(receipt){receipt.hidden=true;receipt.replaceChildren();}
       this.epoch++; this.unmount();
@@ -332,7 +345,12 @@
       this.revision=row.revision;
       this.platformDefault=row.platform_default||null;
       const library=this.readLibrary(row),selection=this.readSelection(row);
-      this.unmount();
+      const selected=selection.ok&&selection.selection&&selection.selection.state==="active"
+        ?selection.selection.ui_id:null;
+      const deferred=library.ok&&library.entries.some(b=>b.ui_id===selected)
+        ?this.deferredUpdates.get(selected):null;
+      const keepMounted=deferred&&this.active===deferred.bundle&&this.frame;
+      if(!keepMounted)this.unmount();
       if(!library.ok){
         // An unreadable library is remembered as unreadable, NOT as empty. An
         // empty cache here is what let a later install rewrite `ui_library` from
@@ -355,7 +373,12 @@
       if(this.selection&&this.selection.state==="active"){
         const entry=this.library.find(b=>b.ui_id===this.selection.ui_id);
         const spoiled=this.broken.find(b=>b.ui_id&&b.ui_id===this.selection.ui_id);
-        if(entry){ this.mount(entry); this.status("Using "+entry.name+"."+this.brokenNote()); }
+        if(entry){
+          if(deferred){
+            if(!keepMounted)this.mount(deferred.bundle);
+            this.status("Screen update saved. The earlier screen stays displayed until you choose Use "+entry.name+" or Open updated screen.");
+          }else{this.mount(entry);this.status("Using "+entry.name+"."+this.brokenNote());}
+        }
         // The chosen UI is still installed; it is the one that cannot render,
         // so say which and why rather than "no longer installed".
         else if(spoiled){
@@ -635,7 +658,8 @@
     async whoami(){
       return {protocol:this.PROTOCOL,command_center_id:this.home,
         command_center_name:String(($("universe-name")&&$("universe-name").textContent)||"").trim(),
-        workflow_refs:Object.assign({},this.active&&this.active.workflow_refs||{})};
+        workflow_refs:Object.assign({},this.active&&this.active.workflow_refs||{}),
+        agent_refs:Object.assign({},this.active&&this.active.agent_refs||{})};
     },
     // The viewer's OWN agents. `graph_id` is this.home, never an argument, so a
     // bundle cannot enumerate anybody else's command center.
@@ -777,7 +801,9 @@
         typeof p.author_id!=="string"||typeof p.available!=="boolean"||
         typeof p.unavailable_reason!=="string"||
         !Number.isInteger(p.workflow_count)||p.workflow_count<0||
-        !Number.isInteger(p.automation_count)||p.automation_count<0)||
+        !Number.isInteger(p.automation_count)||p.automation_count<0||
+        (p.agent_template_count!==undefined&&(!Number.isInteger(p.agent_template_count)||
+          p.agent_template_count<0)))||
         doc.can_try!==(doc.packages.length>=1||systems.some(p=>p.available)))
         throw new Error("shared command centers are unavailable");
       const packages=doc.packages.map(p=>{
@@ -790,11 +816,13 @@
           throw new Error("invalid command-center package");
         return {agent_definition_id:p.agent_definition_id,name:p.name,description:p.description,
           author_id:p.author_id,version:p.version,size:p.size,file_count:p.file_count,
+          agent_template_count:Number.isInteger(p.agent_template_count)?p.agent_template_count:0,
           needs:{model:p.needs.model,connections:p.needs.connections.slice()}};
       });
       return {packages,systems:systems.map(p=>({agent_definition_id:p.agent_definition_id,
         publication_kind:"system",name:p.name,description:p.description,author_id:p.author_id,
         workflow_count:p.workflow_count,automation_count:p.automation_count,
+        agent_template_count:p.agent_template_count||0,
         available:p.available,unavailable_reason:p.unavailable_reason})),
         build_prompt:doc.build_prompt,can_try:doc.can_try};
     },
@@ -1199,12 +1227,18 @@
     // ---- switching: explicit, persisted through ONE write path -------------
     async choose(uiId){
       if(!this.enabled||this.busy) return;
+      const held=this.deferredUpdates.get(uiId);
+      if(held&&held.pending){
+        this.status("The screen replacement outcome is not confirmed. Wait for its reply, or reload to read the saved screen; the earlier screen is still displayed.");
+        return;
+      }
       this.closePreview();
       const entry=this.library.find(b=>b.ui_id===uiId);
       if(!entry){ this.status("That UI is not installed. Refresh."); this.paint(); return; }
       // Apply first so the switch is immediate; persistence is what makes it
       // survive a sign-in, and a failed write says so rather than reverting the
       // view the user just asked for.
+      this.deferredUpdates.delete(uiId);
       this.mount(entry);
       await this.remember({version:1,state:"active",ui_id:entry.ui_id},
         "Now using "+entry.name+".","Now using "+entry.name+" for this visit only");
@@ -1356,6 +1390,7 @@
       const navigation=document.createElement("li");
       navigation.appendChild(this.button("Build your own",()=>this.buildOwn(),false));
       navigation.appendChild(this.button("Try someone else's",()=>this.browseShared(),false));
+      navigation.appendChild(this.button("Manage shared copies",()=>this.manageUpdates(),this.busy));
       list.appendChild(navigation);
       this.line(list,"Your command centers");
       const row=document.createElement("li");
@@ -1367,7 +1402,8 @@
       row.appendChild(this.button("Blank command center",()=>this.chooseDefault(),this.busy));
       list.appendChild(row);
       for(const bundle of this.library){
-        const item=document.createElement("li"),current=!!(this.active&&this.active.ui_id===bundle.ui_id);
+        const item=document.createElement("li"),current=!!(this.active&&this.active.ui_id===bundle.ui_id&&
+          JSON.stringify(this.active)===JSON.stringify(bundle));
         item.appendChild(this.button((current?"Using: ":"Use ")+bundle.name,
           ()=>this.choose(bundle.ui_id),this.busy||current));
         list.appendChild(item);
@@ -1385,6 +1421,8 @@
       if(!this.library.length&&!this.broken.length)
         this.line(list,"No custom UI installed. Ask your agent to build one.","muted");
       this.sharedNode=document.createElement("li");list.appendChild(this.sharedNode);
+      this.updateNode=document.createElement("li");list.appendChild(this.updateNode);
+      this.paintUpdates();
       this.paintShared();
       $("btn-ui-refresh").disabled=this.busy;
       this.paintConversation();
@@ -1434,6 +1472,8 @@
         this.line(card,system?"Public system · Components only; no files · "+
           item.workflow_count+" workflows · "+item.automation_count+" paused automations":
           "File package · Version "+item.version+" · "+item.size);
+        this.line(card,(item.agent_template_count||0)+" public agent templates"+
+          (item.agent_template_count?" · Copies get your own agent bindings":" · No conversation agents included"));
         if(system&&!item.available)this.line(card,item.unavailable_reason,"muted");
         card.appendChild(this.button("Preview "+item.name,
           ()=>this.previewShared(item.agent_definition_id),this.trying||(system&&!item.available)));
@@ -1518,7 +1558,7 @@
     },
     previewRead(action){
       // No owner calls here. Unknown methods and EVERY mutation are refused.
-      const reads={whoami:{protocol:1,command_center_id:"preview",command_center_name:"Visual preview",workflow_refs:{}},
+      const reads={whoami:{protocol:1,command_center_id:"preview",command_center_name:"Visual preview",workflow_refs:{},agent_refs:{}},
         list_agents:{agents:[]},read_conversation:{turns:[]},list_automations:{automations:[]},
         list_runs:{runs:[]},list_files:{files:[]},read_live:{agents:[],preview:true},
         conversation_design:{state:"default",preview:true}};
@@ -1550,6 +1590,8 @@
       const panel=$("ui-install-receipt");if(!panel)return;
       panel.hidden=false;panel.replaceChildren();
       this.line(panel,result.receipt||"Copied into your command center.");
+      if(result.update_registration==="unavailable")
+        this.line(panel,result.update_registration_detail||"Your copy is installed; update history is unavailable. Use Manage shared copies to verify the earlier copy.");
       this.line(panel,"Copied automations stay paused until you resume them. No message was sent.");
       if(typeof result.ui==="string"&&this.library.some(b=>b.ui_id===result.ui)){
         panel.appendChild(this.button("Open copied screen",async()=>{
@@ -1561,6 +1603,170 @@
           }catch(error){if(this.fence(epoch,home))this.line(panel,error.message||"The screen could not be opened.");}
         },false));
       }
+    },
+    // Manual replacement belongs to trusted chrome only: no frame action routes here.
+    closeUpdates(){ this.updateState=null;if(this.updateNode)this.updateNode.replaceChildren(); },
+    updateCurrent(state){
+      return this.updateState===state&&this.fence(state.epoch,state.home)&&
+        state.principal===this.principal&&state.frameGen===this.frameGen&&
+        state.selection===JSON.stringify(this.selection);
+    },
+    async manageUpdates(){
+      if(!this.enabled||this.busy)return;
+      this.closePreview();
+      const state={epoch:this.epoch,home:this.home,principal:this.principal,
+        frameGen:this.frameGen,selection:JSON.stringify(this.selection),busy:true,rows:[],earlier:[],
+        message:"Loading your shared copies…",consent:null};
+      this.updateState=state;this.paintUpdates();
+      try{
+        const doc=await Owner.read({target:"command_center_updates",graph_id:state.home});
+        if(!this.updateCurrent(state))return;
+        if(!doc||doc.error||!Array.isArray(doc.adoptions))throw Error(doc&&doc.detail||"Shared copies could not be read.");
+        state.rows=doc.adoptions;state.earlier=Array.isArray(doc.earlier_copies)?doc.earlier_copies:[];
+        state.message=state.rows.length?"":"No verified shared copies are registered.";
+      }catch(error){if(this.updateCurrent(state))state.message=error.message||"Shared copies could not be read.";}
+      if(this.updateCurrent(state)){state.busy=false;this.paintUpdates();}
+    },
+    paintUpdates(){
+      const panel=this.updateNode,state=this.updateState;if(!panel)return;
+      panel.replaceChildren();
+      if(!state||!this.updateCurrent(state))return;
+      panel.id="ui-shared-updates";
+      this.line(panel,"Manage shared copies");
+      this.line(panel,"Manual screen replacement only. Automatic updates are unavailable and remain off.");
+      this.line(panel,"Choose a public definition by the same publisher. This does not establish a version or release relationship.");
+      if(state.message)this.line(panel,state.message);
+      for(const earlier of state.earlier){
+        const card=document.createElement("section");panel.appendChild(card);
+        this.line(card,"Earlier copy: "+earlier.name+" · Source: "+earlier.source_definition_id);
+        this.line(card,"Verify this installation receipt before managing its screen. Private edits and missing proof will be refused.");
+        card.appendChild(this.button("Verify earlier copy",()=>this.registerEarlierCopy(state,earlier),state.busy||!!state.consent));
+      }
+      for(const row of state.rows){
+        const card=document.createElement("section");panel.appendChild(card);
+        this.line(card,(row.name||row.ui_id)+" · Publisher: "+row.author_id);
+        this.line(card,"Screen source: "+row.ui_definition_id);
+        this.line(card,"Retained component source: "+row.retained_definition_id);
+        this.line(card,row.private_edit?"Private edits detected. Replacement is blocked; your edits stay yours.":"No private screen edits detected.");
+        for(const candidate of row.candidates||[]){
+          this.line(card,(candidate.name||candidate.agent_definition_id)+" · "+(candidate.description||""));
+          this.line(card,"Selected source: "+candidate.agent_definition_id);
+          card.appendChild(this.button("Review screen replacement: "+candidate.name,
+            ()=>this.previewUpdate(state,row,candidate),state.busy||!!row.private_edit||!!state.consent));
+        }
+        if(!(row.candidates||[]).length)this.line(card,"No other public definitions by this publisher are available.");
+      }
+      if(state.savedUI){
+        panel.appendChild(this.button("Open updated screen",async()=>{
+          if(!this.updateCurrent(state)||state.busy)return;
+          const uiId=state.savedUI;this.closeUpdates();
+          await this.choose(uiId);
+        },state.busy));
+      }
+      if(state.consent){
+        const consent=state.consent,plan=consent.plan;
+        const review=document.createElement("section");review.id="ui-update-confirmation";panel.appendChild(review);
+        this.line(review,"Replace screen only with "+plan.definition_name+"?");
+        this.line(review,"Publisher: "+plan.author+" · Selected definition: "+plan.definition_id);
+        this.line(review,"Screen: "+plan.ui_id+" · Retained component source: "+plan.retained_definition_id);
+        this.line(review,"Your workflows, agents, files and automation paused/running state stay unchanged. No message is sent, and no workflow or automation is started.");
+        this.line(review,plan.permission_decision);
+        this.line(review,"Retained components: "+JSON.stringify(plan.retained_components));
+        this.line(review,"This is your selected replacement, not a verified next release. Automatic updates remain off.");
+        review.appendChild(this.button("Replace screen",()=>this.answerUpdate(state,"accepted"),state.busy));
+        review.appendChild(this.button("Keep current",()=>this.answerUpdate(state,"declined"),state.busy));
+      }
+    },
+    async registerEarlierCopy(state,earlier){
+      if(!this.updateCurrent(state)||state.busy||state.consent)return;
+      state.busy=true;state.message="Verifying your earlier installation receipt…";this.paintUpdates();
+      try{
+        const doc=await MCP.callTool("write_graph",{target:"connection",operation:"register_center_copy",
+          graph_id:state.home,payload_json:JSON.stringify({request_id:earlier.request_id})});
+        if(!this.updateCurrent(state))return;
+        if(!doc||doc.error||doc.registered!==true||!doc.adoption)
+          throw Error(doc&&doc.detail||"This earlier copy could not be verified.");
+        await this.manageUpdates();
+      }catch(error){if(this.updateCurrent(state)){state.busy=false;state.message=error.message||"This earlier copy could not be verified.";this.paintUpdates();}}
+    },
+    async previewUpdate(state,row,candidate){
+      if(!this.updateCurrent(state)||state.busy||state.consent||row.private_edit)return;
+      state.busy=true;state.message="Preparing screen replacement for your review…";this.paintUpdates();
+      try{
+        const doc=await MCP.callTool("write_graph",{target:"connection",operation:"preview_center_update",
+          graph_id:state.home,payload_json:JSON.stringify({adoption_id:row.adoption_id,
+            agent_definition_id:candidate.agent_definition_id})});
+        if(!this.updateCurrent(state))return;
+        if(!doc||doc.error||!doc.request_id||!doc.plan_digest||!doc.plan||
+           doc.requires_explicit_consent!==true||doc.applied!==false||
+           doc.plan.definition_id!==candidate.agent_definition_id||doc.plan.ui_id!==row.ui_id||
+           doc.plan.author!==row.author_id||doc.plan.retained_definition_id!==row.retained_definition_id||
+           doc.plan.link_kind!=="user-selected-replacement")
+          throw Error(doc&&doc.detail||"The replacement could not be prepared.");
+        state.consent=doc;state.message="Review only: your screen has not changed.";
+      }catch(error){if(this.updateCurrent(state))state.message=error.message||"The replacement could not be prepared.";}
+      if(this.updateCurrent(state)){state.busy=false;this.paintUpdates();}
+    },
+    async answerUpdate(state,decision){
+      if(!this.updateCurrent(state)||state.busy||!state.consent)return;
+      const consent=state.consent,uiId=consent.plan.ui_id;
+      const previous=this.deferredUpdates.get(uiId);
+      let hold=null;
+      if(decision==="accepted"){
+        if(previous&&previous.pending){
+          state.message="This screen already has an unconfirmed replacement. Reload to read its saved state before replacing it again.";this.paintUpdates();return;
+        }
+        const bundle=previous?previous.bundle:
+          (this.active&&this.active.ui_id===uiId?this.active:this.library.find(b=>b.ui_id===uiId));
+        if(!bundle){state.message="Read the installed screen before replacing it.";this.paintUpdates();return;}
+        // Install before dispatch or any paint/await. The server can commit
+        // before its reply, and ordinary refreshes are independent of this dialog.
+        hold={bundle,pending:true,requestId:consent.request_id};
+        this.deferredUpdates.set(uiId,hold);
+      }
+      state.busy=true;state.message=decision==="accepted"?"Replacing the screen…":"Keeping your current screen…";this.paintUpdates();
+      try{
+        const doc=await MCP.callTool("write_graph",{target:"connection",operation:"answer_center_update",
+          graph_id:state.home,payload_json:JSON.stringify({request_id:consent.request_id,
+            plan_digest:consent.plan_digest,decision})});
+        // Settle only this operation's hold, even if its dialog was closed.
+        // A reset, explicit choice or later operation owns any replacement entry.
+        // Generic errors are ambiguous: accounting may fail after SQL commit.
+        if(hold&&this.fence(state.epoch,state.home)&&this.principal===state.principal&&
+           this.deferredUpdates.get(uiId)===hold&&doc&&!doc.error){
+          if(doc.applied===true)hold.pending=false;
+          else if(doc.applied===false){
+            if(previous)this.deferredUpdates.set(uiId,previous);
+            else this.deferredUpdates.delete(uiId);
+          }
+        }
+        if(!this.updateCurrent(state))return;
+        if(!doc||doc.error||(decision==="accepted"?doc.applied!==true:doc.applied!==false))
+          throw Error(doc&&doc.detail||"The replacement could not be completed. Refresh before trying again.");
+        state.consent=null;
+        if(doc.applied){
+          // Refresh metadata without adopting/remounting: changed publisher code
+          // must wait for a separate Open click even when its old screen is active.
+          const row=await this.fetchRow();if(!this.updateCurrent(state))return;
+          const library=this.readLibrary(row),selection=this.readSelection(row);
+          if(!library.ok||!selection.ok||JSON.stringify(selection.selection)!==state.selection)
+            throw Error("Screen saved, but your library or selection changed. Refresh before opening it.");
+          if(hold&&this.deferredUpdates.get(uiId)===hold)
+            hold.saved=JSON.stringify(library.entries.find(b=>b.ui_id===uiId));
+          this.library=library.entries;this.broken=library.broken;this.unreadable="";
+          this.revision=row.revision;this.platformDefault=row.platform_default||null;
+          state.rows=[];state.earlier=[];state.savedUI=consent.plan.ui_id;
+          state.message="Screen saved. Open updated screen when ready. Your current display and selection are unchanged; other components and automatic-update settings were retained.";
+          state.busy=false;this.paint();this.status("Screen saved. Open updated screen when ready.");
+          return;
+        }
+        state.message="Kept your current screen. Nothing was replaced.";
+      }catch(error){if(this.updateCurrent(state)){
+        state.consent=null;state.message=error.message||"The replacement could not be completed.";
+        if(hold&&this.deferredUpdates.get(uiId)===hold&&hold.pending)
+          state.message+=" The outcome is not confirmed. The earlier screen remains displayed; reload to read the saved state.";
+      }}
+      if(this.updateCurrent(state)){state.busy=false;this.paintUpdates();}
     },
     // Trusted recovery, outside any custom UI: what answers this person's
     // messages, and the way back to the default without the UI's help.
@@ -1589,7 +1795,7 @@
       $("btn-ui-switch").addEventListener("click",()=>this.open());
       $("btn-ui-refresh").addEventListener("click",()=>this.load());
       $("btn-ui-close").addEventListener("click",()=>$("ui-dialog").close());
-      $("ui-dialog").addEventListener("close",()=>this.closePreview());
+      $("ui-dialog").addEventListener("close",()=>{this.closePreview();this.closeUpdates();});
       for(const id of ["btn-chat-browse","btn-bubble-browse"])
         $(id).addEventListener("click",()=>this.openBrowse());
       this.paintHeader();

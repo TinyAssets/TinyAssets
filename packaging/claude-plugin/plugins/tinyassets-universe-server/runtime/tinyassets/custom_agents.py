@@ -1513,6 +1513,14 @@ def app_ui_workflow_refs(entry: dict[str, Any]) -> dict[str, str]:
     return dict(refs)
 
 
+def app_ui_agent_refs(entry: dict[str, Any]) -> dict[str, str]:
+    """Declared agent aliases have the same shape as workflow aliases."""
+    try:
+        return app_ui_workflow_refs({"workflow_refs": entry.get("agent_refs", {})})
+    except AgentValidationError as exc:
+        raise AgentValidationError(str(exc).replace("workflow", "agent")) from None
+
+
 def _check_component(entry: dict[str, Any]) -> None:
     """The bounds and shape of the fields the server stores for one UI.
 
@@ -1539,6 +1547,7 @@ def _check_component(entry: dict[str, Any]) -> None:
         except ValueError as exc:
             raise AgentValidationError(f"UI {ui_id!r}: {exc}") from None
     app_ui_workflow_refs(entry)
+    app_ui_agent_refs(entry)
     if "assets" not in entry:
         return
     assets = entry["assets"]
@@ -1817,7 +1826,7 @@ def _save_app_ui_row(
 #: the component IS; changing those is a ``replace_ui``. ``assets`` changes one
 #: path at a time through ``put_asset`` / ``remove_asset``.
 APP_UI_EDITABLE_FIELDS = ("name", "markup", "style", "script", "libraries", "script_type",
-                          "workflow_refs")
+                          "workflow_refs", "agent_refs")
 _APP_UI_TEXT_FIELDS = ("name", "markup", "style", "script")
 APP_UI_ENTRY_OPERATIONS = (
     "activate", "use_default", "add_ui", "replace_ui", "edit_ui", "remove_ui",
@@ -1845,7 +1854,8 @@ APP_UI_KIND = "tinyassets.app-ui.v1"
 #: had built (founder, P1, 2026-10-03).
 APP_UI_FORMAT_VERSION = 1
 APP_UI_COMPONENT_FIELDS = ("kind", "markup", "name", "script", "style", "ui_id", "version")
-APP_UI_OPTIONAL_COMPONENT_FIELDS = ("assets", "libraries", "script_type", "workflow_refs")
+APP_UI_OPTIONAL_COMPONENT_FIELDS = ("assets", "libraries", "script_type", "workflow_refs",
+                                    "agent_refs")
 #: Matched with ``fullmatch``, never ``match``: Python's ``$`` also matches
 #: BEFORE a trailing newline, so ``"x" * 64 + "\n"`` passed here while the app
 #: refused it -- a mirror saying "renderable" about a UI the app will not show
@@ -2041,7 +2051,9 @@ def _edited_entry(entry: dict[str, Any], payload: dict[str, Any]) -> dict[str, A
             raise AgentValidationError("set.libraries must be a list of library names")
         if field == "workflow_refs":
             app_ui_workflow_refs({"workflow_refs": value})
-        if field not in {"libraries", "workflow_refs"} and not isinstance(value, str):
+        if field == "agent_refs":
+            app_ui_agent_refs({"agent_refs": value})
+        if field not in {"libraries", "workflow_refs", "agent_refs"} and not isinstance(value, str):
             raise AgentValidationError(f"set.{field} must be a string")
         edited[field] = value
     for number, edit in enumerate(edits):

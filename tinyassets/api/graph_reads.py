@@ -311,6 +311,10 @@ def read_graph(
         from tinyassets.command_center_picker import read_packages
 
         return json.dumps(read_packages(universe_id=graph_id))
+    if normalized == "command_center_updates":
+        from tinyassets.api.command_center_update_surface import read_updates
+
+        return json.dumps(read_updates(universe_id=graph_id))
     if normalized == "command_center_preview":
         from tinyassets.command_center_preview import read_preview
 
@@ -370,6 +374,7 @@ def read_graph(
             "app_ui",
             "command_center_packages",
             "command_center_preview",
+            "command_center_updates",
             "command_center_file",
             "command_center_files",
             "receiver",

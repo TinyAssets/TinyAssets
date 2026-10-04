@@ -73,7 +73,8 @@ try{
     card.appendChild(description);
     const detail=document.createElement('p');
     detail.textContent=p.author_id+' · Public system · Components only; no files · '+
-      p.workflow_count+' workflows · '+p.automation_count+' paused automations';
+      p.workflow_count+' workflows · '+p.automation_count+' paused automations · '+
+      (p.agent_template_count||0)+' public agent templates';
     card.appendChild(detail);
     const button=document.createElement('button');button.textContent='Preview copy';
     button.disabled=!p.available;
@@ -100,6 +101,7 @@ def working_packages() -> list[dict]:
     from tinyassets.api.helpers import _base_path
     from tinyassets.api.publish_requests import BRANCH_REF_KIND
     from tinyassets.branch_versions import branch_version_is_public, get_branch_version
+    from tinyassets.command_center_agent_templates import templates
 
     try:
         rows = package_requests.list_packages(limit=100)
@@ -130,10 +132,12 @@ def working_packages() -> list[dict]:
                 if (not version or not branch_version_is_public(base, version)
                         or get_branch_version(base, version) is None):
                     raise ValueError("package workflow version is missing or not public")
+            agent_template_count = len(templates(base, definition["components"]))
             result.append({key: row[key] for key in (
                 "agent_definition_id", "name", "description", "author_id", "version",
                 "size", "file_count", "needs",
             )})
+            result[-1]["agent_template_count"] = agent_template_count
             if len(result) == 12:
                 break
         except Exception:

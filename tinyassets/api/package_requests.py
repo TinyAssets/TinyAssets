@@ -117,8 +117,18 @@ def _components(definition: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
         BRANCH_REF_KIND,
         UI_KIND,
     )
+    from tinyassets.command_center_agent_templates import AGENT_REF_KIND
+    from tinyassets.command_center_packages import PACKAGE_KIND
 
     components = definition.get("components") or {}
+    supported = {AUTOMATION_SPEC_KIND, BRANCH_REF_KIND, UI_KIND, PACKAGE_KIND, AGENT_REF_KIND}
+    if not isinstance(components, dict) or any(
+            not isinstance(c, dict) or not isinstance(c.get("kind"), str)
+            or c["kind"] not in supported
+            for c in components.values()):
+        raise ValueError("this package contains components this copier does not support")
+    if any(c["kind"] == UI_KIND and key != "ui" for key, c in components.items()):
+        raise ValueError("this package needs one declared ui component")
     workflows = [{"key": k, **c} for k, c in sorted(components.items())
                  if isinstance(c, dict) and c.get("kind") == BRANCH_REF_KIND]
     automations = [{"key": k, **c} for k, c in sorted(components.items())
@@ -145,10 +155,19 @@ def _plan(uid: str, action: dict[str, Any]) -> dict[str, Any]:
     except PackageError as exc:
         raise ValueError(f"this package cannot be installed: {exc}") from None
     parts = _components(definition)
+    from tinyassets.api.helpers import _base_path
+    from tinyassets.command_center_agent_templates import (
+        resolve_ui_refs,
+        templates,
+        validate_workflows,
+    )
     from tinyassets.custom_agents import app_ui_workflow_refs
 
+    agent_templates = templates(_base_path(), definition.get("components") or {})
+    validate_workflows(_base_path(), parts["workflows"], version_field="published_version_id")
     workflow_keys = {workflow["key"] for workflow in parts["workflows"]}
     for ui in parts["ui"]:
+        resolve_ui_refs(ui, {a["key"] for a in agent_templates})
         if any(key not in workflow_keys for key in app_ui_workflow_refs(ui).values()):
             raise ValueError("package workflow_refs must name its selected workflow components")
     needs = component.get("needs") or {}
@@ -169,6 +188,7 @@ def _plan(uid: str, action: dict[str, Any]) -> dict[str, Any]:
         "size": human(component["size_bytes"]),
         "blob_sha256": component["blob_sha256"],
         "placement": placement,
+        "agent_templates": agent_templates,
         "workflows": [{"key": w["key"], "name": str(w.get("name") or w["key"]),
                        "version_id": str(w.get("published_version_id") or "")}
                       for w in parts["workflows"]],
@@ -216,6 +236,9 @@ def tab_text(action: dict[str, Any]) -> tuple[str, str, str]:
         lines.extend(f"- {_shown(w['name'])}" for w in plan["workflows"])
     if plan["ui"]:
         lines.append(f"The screen \"{_shown(plan['ui'].get('name'))}\", added to your screens")
+    from tinyassets.command_center_agent_templates import consent_lines
+
+    lines.extend(consent_lines(plan.get("agent_templates", [])))
     if plan["automations"]:
         lines.append("Automations, paused until you resume them:")
         lines.extend(f"- {_shown(a['name'])}" for a in plan["automations"])
@@ -363,7 +386,10 @@ def _materialise(uid: str, actor: str, pin_id: str, plan: dict[str, Any],
     `LostClaim` if another confirm took over, so no effect runs after that.
     """
     from tinyassets.api.helpers import _base_path
+    from tinyassets.command_center_agent_templates import check_targets
     from tinyassets.command_center_packages import record_progress
+
+    check_targets(_base_path(), uid, actor, pin_id, plan.get("agent_templates", []))
 
     def save() -> None:
         record_progress(_base_path(), universe_id=uid, pin_id=pin_id, progress=progress,
@@ -374,11 +400,25 @@ def _materialise(uid: str, actor: str, pin_id: str, plan: dict[str, Any],
             save()
             progress["workflows"][workflow["key"]] = _remix(pin_id, workflow)
             save()
+    if plan.get("agent_templates"):
+        from tinyassets.command_center_agent_templates import install
+
+        progress.setdefault("agents", {})
+        for template in plan["agent_templates"]:
+            save()
+            # Recheck even a recorded target: an intervening recipient edit is
+            # not permission to wire a new UI to a changed agent.
+            progress["agents"][template["key"]] = install(
+                _base_path(), uid, actor, pin_id, template)
+            save()
     if plan["ui"] and "ui" not in progress:
         ui = dict(plan["ui"])
         if "workflow_refs" in ui:
             ui["workflow_refs"] = {alias: progress["workflows"][key]
                                    for alias, key in ui["workflow_refs"].items()}
+        if "agent_refs" in ui:
+            ui["agent_refs"] = {alias: progress.get("agents", {})[key]
+                                for alias, key in ui["agent_refs"].items()}
         if "ui_intended" not in progress:
             progress["ui_intended"] = _free_ui_id(uid, ui)
         save()
