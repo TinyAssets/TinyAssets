@@ -152,7 +152,7 @@ console.log(JSON.stringify({tabs,head:$('rail-head').textContent,
 
 
 @pytest.mark.skipif(_NODE is None, reason="node is not installed")
-def test_the_history_heading_does_not_ask_when_only_optional_rows_remain():
+def test_the_heading_stops_asking_when_only_optional_rows_remain():
     out = _run_head([_CONNECTED])
     assert out["head"] == "Request history", "a connected universe was still asked"
     assert out["railHidden"] is False, "the rail vanished, so 'Add a key yourself' went with it"
@@ -162,7 +162,8 @@ def test_the_history_heading_does_not_ask_when_only_optional_rows_remain():
 
 
 @pytest.mark.skipif(_NODE is None, reason="node is not installed")
-def test_one_real_ask_still_renders_beside_optional_history():
+def test_one_real_ask_still_makes_the_heading_ask():
+    """Keep the historical test id; asks now render alongside read-only history."""
     """A real ask renders; the optional entry beside it still does not."""
     out = _run_head([_ASK, _CONNECTED])
     assert out["head"] == "Request history"
