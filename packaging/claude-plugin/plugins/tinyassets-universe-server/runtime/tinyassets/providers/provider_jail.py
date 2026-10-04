@@ -91,6 +91,7 @@ __all__ = [
     "default_view",
     "jail_argv",
     "hidden_root_masks",
+    "launch_is_confined",
     "provider_launch_scope",
 ]
 
@@ -149,6 +150,21 @@ def provider_launch_scope(
         yield
     finally:
         _SCOPE.reset(token)
+
+
+def launch_is_confined() -> bool:
+    """Whether a provider process launched right now would be OS-jailed.
+
+    True exactly when the active scope names an owning universe -- the same
+    condition under which :func:`confine_launch` builds a jail (a scope with no
+    universe is refused, not jailed). An adapter reads this to drop its OWN,
+    nested sandbox when ours is the boundary: a second sandbox inside this one
+    only adds attack surface, and a nested bubblewrap is what would force this
+    jail's seccomp filter to keep user namespaces and symlinks open
+    (``tinyassets.providers.jail_seccomp``).
+    """
+    scope = _SCOPE.get()
+    return scope is not None and scope.universe_dir is not None
 
 
 @dataclass(frozen=True, slots=True)
@@ -659,6 +675,7 @@ def confine_launch(
     env: Mapping[str, str] | None = None,
     view: UniverseView | None = None,
     install_mounts: Callable[[], Iterable[Path]] | None = None,
+    nested_sandbox: bool = False,
 ) -> ConfinedLaunch | None:
     """The jailed launch, ``None`` when no jail applies, or refuse.
 
@@ -666,6 +683,12 @@ def confine_launch(
     reads only the bound scope and the adapter's optional view -- never the
     vendor, the config or the command. Inside the jail the command runs under
     ``prlimit``, behind the egress forwarder, with the seccomp filter loaded.
+
+    ``nested_sandbox=True`` is the adapter declaring that its CLI builds its
+    own sandbox inside this one (a served codex turn keeps ``--sandbox
+    workspace-write`` for its ``apply_patch`` helper). That launch gets the
+    filter profile keeping new user namespaces and symlinks open; every other
+    launch gets the full deny profile (:mod:`tinyassets.providers.jail_seccomp`).
     """
     scope = _SCOPE.get()
     if scope is None and view is None:
@@ -711,9 +734,13 @@ def confine_launch(
         prlimit, *_limit_args(), "--",
         *universe_egress.forwarder_argv(python, list(argv), engine_port=engine_port),
     ]
-    # A provider CLI may build its own sandbox inside this one (codex does), so
-    # user namespaces and symlinks stay open (tinyassets.providers.jail_seccomp).
-    filter_fd = program_fd(nested_sandbox=True)
+    # The full deny profile (no new user namespaces, no symlinks) unless the
+    # adapter declared a nested sandbox: a non-served codex call runs its
+    # commands directly here with its own sandbox off, and claude has none, so
+    # neither can plant a link the daemon would follow out of the universe. A
+    # served codex turn keeps its own sandbox (apply_patch needs it); its link
+    # residual is the daemon-side link-refusing reader/writer's (#4254).
+    filter_fd = program_fd(nested_sandbox=nested_sandbox)
     try:
         jailed = jail_argv(
             inner, view, bwrap_path=bwrap_path, install_paths=install_paths, env=env,

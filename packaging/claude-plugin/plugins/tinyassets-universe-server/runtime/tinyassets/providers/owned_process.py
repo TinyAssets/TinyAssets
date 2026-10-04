@@ -606,6 +606,7 @@ async def aspawn_owned(
     shell: bool = False,
     universe_view=None,
     install_mounts=None,
+    nested_sandbox=False,
     **kwargs,
 ):
     """Spawn ``cmd`` as an owned family and return the ``asyncio`` process.
@@ -624,7 +625,9 @@ async def aspawn_owned(
     adapter narrow what the universe looks like inside the jail;
     ``install_mounts`` is a callable naming install trees the generic command
     resolution cannot see (a wrapper script that execs a binary elsewhere).
-    Both are only read when a jail applies.
+    ``nested_sandbox`` declares that the CLI builds its own sandbox inside the
+    jail, which selects the jail's permissive seccomp profile. All three are only
+    read when a jail applies.
 
     POSIX goes through the wrapper/anchor handshake and **fails closed**: on
     any anchor failure the half-spawned family is torn down and
@@ -641,6 +644,7 @@ async def aspawn_owned(
         env=kwargs.get("env"),
         view=universe_view,
         install_mounts=install_mounts,
+        nested_sandbox=nested_sandbox,
     )
     if jailed is not None:
         # bwrap sets the child's working directory itself (--chdir); the host
