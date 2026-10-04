@@ -250,7 +250,7 @@ u.mount({kind:u.KIND,version:1,ui_id:'third-party',name:'Theirs',
 assert.equal(u.isPlatformDefault(),false);
 const listed=await ask('packages.list_tryable',{});
 assert.equal(listed.ok,true,'reading the offers stays open to any UI');
-for(const action of ['packages.try','chat.prefill']){
+for(const action of ['packages.try','packages.preview','chat.prefill']){
  const answer=await ask(action,{agent_definition_id:'d1',text:'build'});
  assert.equal(answer.ok,false,action+' must be refused to a third-party UI');
  assert.match(answer.error,/action not available/);
@@ -301,7 +301,8 @@ def test_the_allowlist_names_exactly_the_platform_only_actions():
     adding it here would hand it to every UI."""
     source = Path("tinyassets/onboarding/app_ui.js").read_text(encoding="utf-8")
     block = source.split("PLATFORM_ONLY:[", 1)[1].split("]", 1)[0]
-    assert sorted(re.findall(r'"([^"]+)"', block)) == ["chat.prefill", "packages.try"]
+    assert sorted(re.findall(r'"([^"]+)"', block)) == [
+        "chat.prefill", "packages.preview", "packages.try"]
     assert 'PLATFORM_UI_ID:"platform:blank"' in source
     # Enforced in serve(), the one place every call passes through.
     served = source.split("async serve(id,action,params){", 1)[1].split("\n    },", 1)[0]
@@ -664,6 +665,9 @@ let catalogue={packages:[],systems:[],build_prompt:BUILD_PROMPT,can_try:false};
 const ownerRead=Owner.read;
 Owner.read=async args=>{
  if(args.target==='command_center_packages')return clone(catalogue);
+ if(args.target==='command_center_preview')return {
+  agent_definition_id:'legacy',name:'Village',description:'A real design',
+  ui:{kind:u.KIND,version:1,ui_id:'village',name:'Village',markup:'<p>Village</p>',style:'',script:''},assets:[]};
  const reply=await ownerRead(args);
  if(args.target==='app_ui')reply.app_ui.platform_default=DEFAULT_BUNDLE;
  return reply;
@@ -689,9 +693,11 @@ MCP.callTool=async(tool,args)=>{
   preview.push(args);return {request_id:'copy-1',title:'Copy Village'};
  }return call(tool,args);
 };
-await find('Preview component copy').onclick();assert.equal(preview.length,1);
+await find('Preview Village').onclick();
+assert.equal(preview.length,0,'visual preview creates no consent');
+await u.copyShared('legacy');assert.equal(preview.length,1);
 assert.equal(preview[0].graph_id,HOME);assert.equal(sends.length,0);
-assert.match($('ui-status').textContent,/Nothing installs before you confirm/);
+assert.match($('ui-status').textContent,/Copy asks for your confirmation/);
 await find('Blank command center').onclick();assert(u.isPlatformDefault());navigation();
 u.open();navigation();
 let release;Owner.read=async()=>new Promise(resolve=>release=resolve);
@@ -709,3 +715,47 @@ console.log('persistent trusted discovery passed');
     extra += "const BUILD_PROMPT=" + json.dumps(BUILD_PROMPT) + ";\n"
     assert "persistent trusted discovery passed" in _run(
         tmp_path, "persistent_discovery.js", extra + checks)
+
+
+def test_public_preview_uses_separate_frame_and_never_owner_capabilities(tmp_path):
+    from tests.test_custom_ui_bridge import _run
+
+    checks = r"""
+(async()=>{
+const u=AppUI;u.enabled=true;u.home=HOME;u.principal=PRINCIPAL;
+const publicUI={kind:u.KIND,version:1,ui_id:'village',name:'Village',
+ markup:'<h1>Actual public Village</h1>',style:'',script:'window.actualDesign=true;'};
+const reads=[];Owner.read=async args=>{
+ reads.push(args);assert.equal(args.target,'command_center_preview');
+ return {agent_definition_id:'public',name:'Village',description:'A visual village',
+  ui:publicUI,assets:[]};
+};
+const all=node=>[node,...node.children.flatMap(all)];
+await u.previewShared('public');
+const frame=all($('ui-preview')).find(n=>n.tag==='iframe');assert(frame);
+assert.equal(frame.attrs.sandbox,'allow-scripts allow-forms');
+emit({source:{},data:{ta_ui:1,type:'ready'}});assert.equal(frame.contentWindow.posts.length,0);
+emit({source:frame.contentWindow,data:{ta_ui:1,type:'ready'}});
+assert.equal(frame.contentWindow.posts[0].bundle.markup,publicUI.markup);
+assert.equal(frame.contentWindow.posts[0].bundle.script,publicUI.script);
+for(const action of ['send_message','emit','open_chat','read_file','read_run_output',
+ 'packages.try','set_conversation_design','chat.prefill']){
+ emit({source:frame.contentWindow,data:{ta_ui:1,type:'call',id:action,action,params:{}}});
+ assert.equal(frame.contentWindow.posts.at(-1).ok,false,action);
+}
+emit({source:frame.contentWindow,data:{ta_ui:1,type:'call',id:'agents',action:'list_agents'}});
+assert.deepEqual(frame.contentWindow.posts.at(-1).result,{agents:[],preview:true});
+assert.equal(reads.length,1);assert.equal(calls.length,0);assert.equal(sends.length,0);
+const count=frame.contentWindow.posts.length;u.reset();
+u.enabled=true;u.home='bob-home';u.principal='bob';
+emit({source:frame.contentWindow,data:{ta_ui:1,type:'call',id:'late',action:'whoami'}});
+assert.equal(frame.contentWindow.posts.length,count,'old preview receives no new-account reply');
+assert.equal($('ui-preview').hidden,true);
+let release;Owner.read=()=>new Promise(resolve=>release=resolve);
+const pending=u.previewShared('public');await settle();u.reset();
+release({agent_definition_id:'public',ui:publicUI,assets:[]});await pending;
+assert.equal($('ui-preview').hidden,true,'late public response cannot remount after logout');
+console.log('preview has no owner bridge');
+})().catch(e=>{console.error(e);process.exit(1);});
+"""
+    assert "preview has no owner bridge" in _run(tmp_path, "preview_isolation.js", checks)

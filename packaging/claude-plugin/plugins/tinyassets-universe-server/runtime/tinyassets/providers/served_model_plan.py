@@ -287,7 +287,7 @@ def _listed_candidates(source_kind, *, already):
     )
 
 
-def _http_models(owner, uid, member, *, snapshot=None):
+def _http_models(owner, uid, member, *, snapshot=None, needs_tools=True):
     from tinyassets.providers.definition import get_definition
     from tinyassets.providers.discovery_snapshot import refresh_model_discovery
 
@@ -308,7 +308,7 @@ def _http_models(owner, uid, member, *, snapshot=None):
         caps = tuple((name, 0) for name in sorted(contract.price_components))
     if {name for name, _ in caps} != contract.price_components:
         raise ModelSourceUnavailable("price_components_unenforceable")
-    interaction = replace(contract.text_interaction, needs_tools=True)
+    interaction = replace(contract.text_interaction, needs_tools=needs_tools)
     order = order_models(
         Catalog(owner, uid, (snapshot.models,)),
         ModelPolicy(0, "automatic", (), cost_caps=tuple(Charge(k, v, True) for k, v in caps)),
@@ -359,7 +359,7 @@ def _refused_models(base, owner, chains):
 
 def prepare_owned_model_plan(
     *, base, universe, owner, agent, current=None, config=None, allow_empty=False,
-    preference_snapshot=None,
+    preference_snapshot=None, needs_tools=True,
 ):
     """Private composition for authenticated ingress and serving readiness.
 
@@ -368,6 +368,8 @@ def prepare_owned_model_plan(
     absent preferences on an existing legacy assignment leave its path unchanged.
     allow_empty permits advisory display, never invocation without a candidate.
     """
+    if type(needs_tools) is not bool:
+        raise ValueError("invalid conversation tool mode")
     base, universe = Path(base), Path(universe)
     store = SQLiteProviderWorkAuthorityStore(base)
     if preference_snapshot is None:
@@ -424,7 +426,7 @@ def prepare_owned_model_plan(
         captured = ModelPolicy(0, "automatic", ()), "automatic"
     policy, source = captured
     all_models, admitted, snapshots, source_policies = [], [], [], []
-    interaction = Interaction(True, frozenset({"text"}), frozenset())
+    interaction = Interaction(needs_tools, frozenset({"text"}), frozenset())
     ranking_sources = set()
     from tinyassets.provider_authority import current as current_authority
 
@@ -520,11 +522,11 @@ def prepare_owned_model_plan(
                 all_models.append(snapshot.models)
                 snapshots.append(snapshot)
                 snapshot, filtered, required, caps, denied = _http_models(
-                    owner, universe.name, member, snapshot=snapshot,
+                    owner, universe.name, member, snapshot=snapshot, needs_tools=needs_tools,
                 )
                 from tinyassets.universe_intelligence import _engine_mcp_enabled
 
-                if not _engine_mcp_enabled():
+                if needs_tools and not _engine_mcp_enabled():
                     denied.extend(Ineligible(ModelRef(provider, model.model_id),
                                              "engine_tools_unavailable")
                                   for model in filtered.models)
@@ -596,7 +598,7 @@ def prepare_owned_model_plan(
     return result
 
 
-def apply_served_model_preferences(context, *, model_choice=None):
+def apply_served_model_preferences(context, *, model_choice=None, needs_tools=True):
     """Capture preferences only from a genuine current owned conversation."""
     from tinyassets.daemon_server import get_founder_home
     from tinyassets.exceptions import ProviderAuthorityHeldError
@@ -617,7 +619,7 @@ def apply_served_model_preferences(context, *, model_choice=None):
             return context
         prepared = prepare_owned_model_plan(
             base=universe.parent, universe=universe, owner=capability.principal_id,
-            agent=agent, current=current, config=context.config,
+            agent=agent, current=current, config=context.config, needs_tools=needs_tools,
         )
         if prepared is None:
             return context

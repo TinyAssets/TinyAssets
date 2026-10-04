@@ -36,6 +36,7 @@ import pytest
 from mcp.types import CallToolResult, ListToolsResult, TextContent, Tool
 
 from tests import test_interactive_http_agent as integration
+from tests.inference_usage_helpers import accounting_resolver
 from tinyassets import daemon_server, engine_tool_client, universe_intelligence
 from tinyassets.api import interlocutor
 from tinyassets.providers.api_key_http_provider import ApiKeyHttpProvider
@@ -197,7 +198,8 @@ def turn(agent, monkeypatch, signed_in):
                 }),
             }
 
-    monkeypatch.setattr(ApiKeyHttpProvider, "_resolve_proxy", lambda *a, **k: Proxy())
+    monkeypatch.setattr(ApiKeyHttpProvider, "_resolve_proxy",
+                        accounting_resolver(lambda *a, **k: Proxy()))
     return state
 
 

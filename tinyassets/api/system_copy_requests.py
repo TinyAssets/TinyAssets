@@ -24,6 +24,12 @@ def _source(definition_id: str) -> tuple[dict, dict]:
         branch_version_is_public,
         version_readable_by,
     )
+    from tinyassets.command_center_agent_templates import (
+        AGENT_REF_KIND,
+        resolve_ui_refs,
+        templates,
+        validate_workflows,
+    )
     from tinyassets.command_center_packages import PACKAGE_TAG
     from tinyassets.custom_agents import app_ui_renderability, app_ui_workflow_refs, get_definition
     from tinyassets.daemon_server import get_branch_definition
@@ -34,7 +40,7 @@ def _source(definition_id: str) -> tuple[dict, dict]:
             or PACKAGE_TAG in definition.get("tags", [])):
         raise LookupError("this is not a published component system")
     components = definition.get("components") or {}
-    supported = {UI_KIND, BRANCH_REF_KIND, AUTOMATION_SPEC_KIND}
+    supported = {UI_KIND, BRANCH_REF_KIND, AUTOMATION_SPEC_KIND, AGENT_REF_KIND}
     if not isinstance(components, dict) or any(
             not isinstance(c, dict) or not isinstance(c.get("kind"), str)
             or c["kind"] not in supported
@@ -70,6 +76,9 @@ def _source(definition_id: str) -> tuple[dict, dict]:
         workflows.append({"key": key, "name": str(component.get("name") or key),
                           "version_id": version_id})
     workflow_keys = {w["key"] for w in workflows}
+    agent_templates = templates(base, components)
+    resolve_ui_refs(ui, {a["key"] for a in agent_templates})
+    validate_workflows(base, workflows)
 
     def resolve(reference: str) -> str:
         if not isinstance(reference, str) or not reference:
@@ -131,7 +140,12 @@ def _source(definition_id: str) -> tuple[dict, dict]:
         automations.append({"key": key, "name": str(component.get("name") or key),
                             "workflow": resolve(component.get("workflow", "")),
                             "trigger": trigger, "overlap": overlap})
-    return definition, {"ui": ui, "workflows": workflows, "automations": automations}
+    parts = {"ui": ui, "workflows": workflows, "automations": automations}
+    # Preserve old component-only pin digests when no new templates exist, so
+    # a deployment cannot strand an already partially materialised legacy copy.
+    if agent_templates:
+        parts["agent_templates"] = agent_templates
+    return definition, parts
 
 
 def list_systems() -> list[dict]:
@@ -169,6 +183,7 @@ def list_systems() -> list[dict]:
                      "author_id": definition.get("author_id", ""),
                      "workflow_count": len(parts["workflows"]),
                      "automation_count": len(parts["automations"]),
+                     "agent_template_count": len(parts.get("agent_templates", [])),
                      "available": not reason, "unavailable_reason": reason})
         if len(rows) == 12:
             break
@@ -202,6 +217,9 @@ def tab_text(action: dict) -> tuple[str, str, str]:
              "Component-only copy. No package or files are imported.",
              f"Screen: {_shown(plan['ui']['name'])}", "Your own private workflow copies:"]
     lines.extend(f"- {_shown(w['name'])}" for w in plan["workflows"])
+    from tinyassets.command_center_agent_templates import consent_lines
+
+    lines.extend(consent_lines(plan.get("agent_templates", [])))
     if plan["automations"]:
         lines.append("Your automations, paused until you resume them:")
         lines.extend(f"- {_shown(a['name'])}" for a in plan["automations"])

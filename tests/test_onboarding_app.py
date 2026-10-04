@@ -2403,6 +2403,32 @@ def test_an_approval_is_relayed_as_the_founders_line(tmp_path):
     assert out["refreshed"] == 1 and out["note"] == "Sent." and out["buttonsEnabled"]
 
 
+@pytest.mark.parametrize("mode,reply", [
+    ("accept", {"installed": True, "receipt": "Copied."}),
+    ("deny", {"decision": "declined"}),
+    ("clear", {"dismissed": True}),
+    ("accept", {"error": "install_refused", "detail": "withdrawn", "request_pending": True}),
+])
+def test_deterministic_install_decisions_do_not_send_model_messages(tmp_path, mode, reply):
+    out = _run_app(tmp_path, {
+        "kind": "rail", "mode": mode, "request": {**_REQ, "action": {"type": "install"}},
+        "answerReply": reply, "draft": "keep my draft",
+    })
+    assert out["converseCalls"] == []
+    assert out["composer"] == "keep my draft"
+    assert len(out["answered"]) == 1
+    assert out["buttonsEnabled"]
+
+
+def test_intentional_install_reply_still_sends_its_message(tmp_path):
+    out = _run_app(tmp_path, {
+        "kind": "rail", "mode": "reply", "feedback": "Tell me what this copies",
+        "request": {**_REQ, "action": {"type": "install"}},
+    })
+    assert out["converseCalls"] == [f'About "{_TITLE}": Tell me what this copies']
+    assert out["answered"] == []
+
+
 def test_feedback_rides_along_and_clear_is_relayed_too(tmp_path):
     out = _run_app(tmp_path, {
         "kind": "rail", "request": _REQ, "dismiss": True,

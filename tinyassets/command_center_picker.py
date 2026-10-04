@@ -18,7 +18,8 @@ PLATFORM_DEFAULT_UI = {
     "name": "Blank command center",
     "markup": """<main id="offer">
 <h1>Your command center is empty</h1>
-<p>Build a space that works for you, or start with one someone has shared.</p>
+<p>Talk to your agent to build or change this space, or browse a design someone has shared.
+Browsing and visual previews do not send a message or use a model.</p>
 <button id="build">Build your own</button>
 <button id="try-one">Try someone else's</button>
 <section id="packages" hidden aria-label="Published command centers"></section>
@@ -48,16 +49,19 @@ try{
   if(doc.can_try)for(const p of doc.packages){
     const card=document.createElement('article'),name=document.createElement('h2');
     name.textContent=p.name;card.appendChild(name);
+    const description=document.createElement('p');description.textContent=p.description;
+    card.appendChild(description);
     const detail=document.createElement('p');
     detail.textContent=p.author_id+' · Version '+p.version+' · '+p.size+
       ' · Model: '+(p.needs.model||'None specified')+
       ' · Connections: '+(p.needs.connections.join(', ')||'None');
     card.appendChild(detail);
-    const button=document.createElement('button');button.textContent='Try';
+    const button=document.createElement('button');button.textContent='Preview';
     button.onclick=async()=>{
       button.disabled=true;
-      try{await tinyassets.call('packages.try',{agent_definition_id:p.agent_definition_id});
-        message.textContent='Open the chat to preview and confirm the install.';
+      try{await tinyassets.call('packages.preview',{agent_definition_id:p.agent_definition_id});
+        message.textContent='Visual preview is open. '+
+          'Nothing installs before you choose Copy and confirm.';
       }catch(error){say(error);}finally{button.disabled=false;}
     };
     card.appendChild(button);el('packages').appendChild(card);
@@ -65,16 +69,20 @@ try{
   for(const p of doc.systems||[]){
     const card=document.createElement('article'),name=document.createElement('h2');
     name.textContent=p.name;card.appendChild(name);
+    const description=document.createElement('p');description.textContent=p.description;
+    card.appendChild(description);
     const detail=document.createElement('p');
     detail.textContent=p.author_id+' · Public system · Components only; no files · '+
-      p.workflow_count+' workflows · '+p.automation_count+' paused automations';
+      p.workflow_count+' workflows · '+p.automation_count+' paused automations · '+
+      (p.agent_template_count||0)+' public agent templates';
     card.appendChild(detail);
     const button=document.createElement('button');button.textContent='Preview copy';
     button.disabled=!p.available;
     button.onclick=async()=>{
       button.disabled=true;
-      try{await tinyassets.call('packages.try',{agent_definition_id:p.agent_definition_id});
-        message.textContent='Open the chat to preview and confirm the component copy.';
+      try{await tinyassets.call('packages.preview',{agent_definition_id:p.agent_definition_id});
+        message.textContent='Visual preview is open. '+
+          'Choose Copy to review and confirm; nothing installs yet.';
       }catch(error){say(error);}finally{button.disabled=!p.available;}
     };
     card.appendChild(button);
@@ -93,6 +101,7 @@ def working_packages() -> list[dict]:
     from tinyassets.api.helpers import _base_path
     from tinyassets.api.publish_requests import BRANCH_REF_KIND
     from tinyassets.branch_versions import branch_version_is_public, get_branch_version
+    from tinyassets.command_center_agent_templates import templates
 
     try:
         rows = package_requests.list_packages(limit=100)
@@ -123,10 +132,12 @@ def working_packages() -> list[dict]:
                 if (not version or not branch_version_is_public(base, version)
                         or get_branch_version(base, version) is None):
                     raise ValueError("package workflow version is missing or not public")
+            agent_template_count = len(templates(base, definition["components"]))
             result.append({key: row[key] for key in (
                 "agent_definition_id", "name", "description", "author_id", "version",
                 "size", "file_count", "needs",
             )})
+            result[-1]["agent_template_count"] = agent_template_count
             if len(result) == 12:
                 break
         except Exception:

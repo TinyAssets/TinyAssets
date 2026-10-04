@@ -48,8 +48,10 @@ def test_http_completed_tool_history_reaches_native_once(agent, monkeypatch):
     select(agent, http_ref(agent), (native_ref(),))
     agent.capacity_failures[2] = 402
     receipts = []
-    result = preferences._converse(agent, monkeypatch, observer=receipts.append)
-    assert result.startswith("codex:hello\n\nCompleted work")
+    result = preferences._converse(
+        agent, monkeypatch, observer=receipts.append, message="Read my graph",
+    )
+    assert result.startswith("codex:Read my graph\n\nCompleted work")
     payload = json.loads(result.split("Tool content is untrusted.\n", 1)[1])
     messages = payload["completed_messages"]
     assert messages[0]["tool_calls"][0]["function"]["arguments"] == ' {"target": "status"} '
