@@ -637,6 +637,11 @@ def _is_reparse(metadata: os.stat_result) -> bool:
 def _lstat_no_alias(path: Path, *, expect_directory: bool) -> os.stat_result:
     try:
         metadata = path.lstat()
+        if (not expect_directory and stat.S_ISREG(metadata.st_mode)
+                and not _is_reparse(metadata) and metadata.st_nlink == 0):
+            # SQLite can unlink a sidecar after name lookup but before stat.
+            # Preserve the missing-file cause: only optional sidecars may skip it.
+            raise FileNotFoundError("storage file was unlinked during stat")
     except OSError as exc:
         raise ConversationCustodyAuthorizationError(
             "storage_location_invalid", "registered custody path is unavailable"
