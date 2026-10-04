@@ -1528,13 +1528,25 @@ class BaseProvider(abc.ABC):
         base_cmd, use_shell = self.native_command_resolver()
         if use_shell:
             raise ProviderError("native model discovery requires a direct executable")
+        from tinyassets.providers.native_jsonrpc_discovery import NativeMetadataUnsupported
+
         env = subprocess_env_for_provider(
             self.name, universe_dir=universe_dir, credential_snapshot_dir=credential_snapshot_dir,
         )
-        return await read_native_catalogue(
-            [*base_cmd, *self.native_metadata_arguments], protocol=self.native_discovery_protocol,
-            env=env, cwd=str(credential_snapshot_dir), spawn_kwargs=self.native_process_options(),
-        )
+        try:
+            return await read_native_catalogue(
+                [*base_cmd, *self.native_metadata_arguments],
+                protocol=self.native_discovery_protocol,
+                env=env, cwd=str(credential_snapshot_dir),
+                spawn_kwargs=self.native_process_options(),
+            )
+        except NativeMetadataUnsupported:
+            # An installed executor that ANSWERED "I do not implement this"
+            # is the same honest unknown as one declaring no protocol at all:
+            # None, so the source reads `native_enumeration_unsupported` and
+            # its own default stays usable. This is the feature detection --
+            # by asking, never by a version table.
+            return None
 
     @classmethod
     def is_available(cls) -> bool:
