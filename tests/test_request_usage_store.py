@@ -396,3 +396,95 @@ def test_independent_processes_share_the_same_parent_free_allocation(budget):
     independent.persist(budget._store.base)
     assert reserve(independent) == 1
     independent.close()
+
+
+def test_admitted_run_children_keep_one_budget_until_final_release(budget):
+    from tinyassets.request_budget import RunRequestAllocation
+
+    parent = RunRequestAllocation(budget, owns_budget=True)
+    child = parent.child()
+    parent.close()
+    assert child.budget is budget and not budget.receipt()["closed"]
+    with pytest.raises(ProviderAuthorityHeldError, match="already released"):
+        parent.child()
+    for _ in range(6):
+        ordinal = reserve(child.budget)
+        child.budget.dispatched(ordinal)
+        child.budget.settle(ordinal, "succeeded")
+    sibling = child.child()
+    with pytest.raises(RequestBudgetExceeded):
+        reserve(sibling.budget)
+    child.close()
+    assert not budget.receipt()["closed"]
+    sibling.close()
+    assert budget.receipt()["closed"] and budget.receipt()["dispatched"] == 6
+
+
+def test_explicit_parent_stop_fences_admitted_children(budget):
+    from tinyassets.request_budget import RunRequestAllocation
+
+    parent = RunRequestAllocation(budget, owns_budget=True)
+    child = parent.child()
+    ordinal = reserve(child.budget)
+    budget.close()
+    with pytest.raises(RequestBudgetExceeded):
+        child.budget.dispatched(ordinal)
+    with pytest.raises(ProviderAuthorityHeldError):
+        child.child()
+    assert budget.receipt()["dispatched"] == 0
+    parent.close()
+    child.close()
+
+
+def test_borrowed_run_allocation_cannot_close_its_chat_owner(budget):
+    from tinyassets.request_budget import RunRequestAllocation
+
+    parent = RunRequestAllocation(budget)
+    child = parent.child()
+    parent.close()
+    child.close()
+    assert not budget.receipt()["closed"]
+    budget.close()
+    assert budget.receipt()["closed"]
+
+
+def test_concurrent_run_child_admission_and_parent_release_never_reopens(budget):
+    import threading
+
+    from tinyassets.request_budget import RunRequestAllocation
+
+    parent = RunRequestAllocation(budget, owns_budget=True)
+    barrier = threading.Barrier(16)
+
+    def race(index):
+        barrier.wait(timeout=5)
+        if index == 0:
+            parent.close()
+            return None
+        try:
+            return parent.child()
+        except ProviderAuthorityHeldError:
+            return None
+
+    with ThreadPoolExecutor(max_workers=16) as pool:
+        children = [c for c in pool.map(race, range(16)) if c is not None]
+    with pytest.raises(ProviderAuthorityHeldError):
+        parent.child()
+    for child in children:
+        assert child.budget is budget
+        child.close()
+    assert budget.receipt()["closed"]
+
+
+def test_abandoned_admitted_run_releases_without_leaking_parent_liveness(budget):
+    import gc
+
+    from tinyassets.request_budget import RunRequestAllocation
+
+    parent = RunRequestAllocation(budget, owns_budget=True)
+    child = parent.child()
+    parent.close()
+    assert not budget.receipt()["closed"]
+    del child
+    gc.collect()
+    assert budget.receipt()["closed"]

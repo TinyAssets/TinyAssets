@@ -63,6 +63,13 @@ def sign_in_preset(source_id):
                  and "sign_in" in row), None)
 
 
+def model_uses_metered_free_offer(host, model):
+    """Recognize a model tier only when the installed source declares it."""
+    suffix = (_DAILY_CAPS.get(host) or {}).get("free_model_suffix")
+    return (isinstance(suffix, str) and bool(suffix) and isinstance(model, str)
+            and len(model) > len(suffix) and model.endswith(suffix))
+
+
 def daily_cap_for_host(host):
     """The ONE reader of a source's daily limit, by inference host, or None.
 

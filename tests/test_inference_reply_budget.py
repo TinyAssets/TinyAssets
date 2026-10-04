@@ -98,7 +98,7 @@ def broker(tmp_path):
         calls.append(kwargs)
         if outcome["raise"] is not None:
             raise outcome["raise"]
-        return {"status": 200, "body": "{}"}
+        return outcome.get("response", {"status": 200, "body": "{}"})
 
     actual = CredentialBlindBroker(
         ledger, resolve_credential=lambda *_: "synthetic-nonsecret", network_request=network,

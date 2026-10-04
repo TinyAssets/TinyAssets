@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import sqlite3
 import threading
 import time
@@ -286,6 +287,64 @@ class TurnRequestBudget:
 _TURN_REQUEST_BUDGET = ContextVar("parent_turn_request_budget", default=None)
 
 
+class _RunRequestFamily:
+    def __init__(self, budget, owns_budget):
+        self.budget, self.owns_budget = budget, owns_budget
+        self.lock = threading.RLock()
+        self.members = set()
+        self.creator_pid = os.getpid()
+
+    def release(self, member):
+        # A forked child cannot close its parent process's durable allocation.
+        if os.getpid() != self.creator_pid:
+            return
+        with self.lock:
+            if member not in self.members:
+                return
+            self.members.remove(member)
+            close_root = not self.members and self.owns_budget
+        # GC can release an allocation while another budget lock is held.
+        # Never nest the family lock with budget / persistence locks.
+        if close_root:
+            self.budget.close()
+
+
+class RunRequestAllocation:
+    """One admitted run's participation in its existing parent allocation.
+
+    An async child is registered before dispatch and still admits on its own
+    run authority. Ordinary completion releases only that run's participation;
+    the final participant closes a run-owned root. A closed participant cannot
+    spawn more children, and explicit budget closure still fences everyone.
+    A borrowed chat budget retains the chat owner's original close policy.
+    """
+
+    def __init__(self, budget, *, owns_budget=False, _family=None, _parent=None):
+        import weakref
+
+        family = _family or _RunRequestFamily(budget, owns_budget)
+        self._family, self._member = family, object()
+        if os.getpid() != family.creator_pid:
+            raise ProviderAuthorityHeldError("run allocation belongs to another process")
+        if budget.receipt()["closed"]:
+            raise ProviderAuthorityHeldError("the parent request allocation is already closed")
+        with family.lock:
+            if _parent is not None and _parent not in family.members:
+                raise ProviderAuthorityHeldError("the parent run's allocation is already released")
+            family.members.add(self._member)
+        self._release = weakref.finalize(self, family.release, self._member)
+
+    @property
+    def budget(self):
+        return self._family.budget
+
+    def child(self):
+        return RunRequestAllocation(self.budget, _family=self._family, _parent=self._member)
+
+    def close(self):
+        self._release()
+
+
 def current_request_budget():
     return _TURN_REQUEST_BUDGET.get()
 
@@ -501,7 +560,10 @@ def _source_budget_facts(context, *, owner=None, require_known_free_model=False)
     """Resolve installed source facts and captured prices locally, with no IO to a model."""
     try:
         from tinyassets.providers.definition import get_definition
-        from tinyassets.providers.free_sources import daily_cap_for_host
+        from tinyassets.providers.free_sources import (
+            daily_cap_for_host,
+            model_uses_metered_free_offer,
+        )
 
         selection = context.model_selection
         if selection is None or not selection.connection_id.startswith("api_key_http:"):
@@ -527,10 +589,7 @@ def _source_budget_facts(context, *, owner=None, require_known_free_model=False)
         if len(hosts) != 1:
             return None
         host = hosts.pop()
-        if require_known_free_model and not (
-            host == "openrouter.ai" and selection.model_id.endswith(":free")
-            and len(selection.model_id) > len(":free")
-        ):
+        if require_known_free_model and not model_uses_metered_free_offer(host, selection.model_id):
             return None
         preset = daily_cap_for_host(host)
         return owner, preset

@@ -269,19 +269,32 @@ class _ForegroundRunProviderSession:
         provider_call: Callable[..., str],
         model_preference_data: dict | None = None,
         request_budget=None,
+        request_allocation=None,
     ) -> None:
         self._base_path = Path(base_path)
         self._universe_id = universe_id.strip()
         self._universe_dir = self._base_path / self._universe_id
         self._principal_id = principal_id.strip()
         self._provider_call = provider_call
-        from tinyassets.request_budget import TurnRequestBudget, current_request_budget
+        from tinyassets.request_budget import (
+            RunRequestAllocation,
+            TurnRequestBudget,
+            current_request_budget,
+        )
 
         self._request_budget = request_budget or current_request_budget()
         self._owns_request_budget = self._request_budget is None
         if self._request_budget is None:
             self._request_budget = TurnRequestBudget(self._principal_id, self._universe_id)
         self._request_budget.check_scope(self._principal_id, self._universe_id)
+        if request_allocation is not None and (
+            type(request_allocation) is not RunRequestAllocation
+            or request_allocation.budget is not self._request_budget
+        ):
+            raise PermissionError("run request allocation cannot be substituted")
+        self._request_allocation = request_allocation or RunRequestAllocation(
+            self._request_budget, owns_budget=self._owns_request_budget,
+        )
         self._run_id = ""
         self._branch_def_id = ""
         self._branch_version_id = ""
@@ -386,7 +399,7 @@ class _ForegroundRunProviderSession:
         return self._run_id
 
     def constructor_inputs(self) -> dict[str, Any]:
-        """Exactly what a SIBLING session needs, and nothing more.
+        """Stable provider inputs for a sibling; no admitted runtime handles.
 
         Deliberately excludes `_receipt`, `_claim`, `_branch_snapshot` and
         `_branch_digest`: a child run must admit on its OWN authority against
@@ -400,13 +413,14 @@ class _ForegroundRunProviderSession:
         exhaustion state, and because rebuilding is what re-checks current
         authority and revocation. A preference is advisory either way -- it
         carries no invocation authority, and every attempt still admits afresh.
+        The shared request allocation is joined separately, atomically with
+        checking that the parent session has not released its participation.
         """
         return {
             "base_path": self._base_path,
             "universe_id": self._universe_id,
             "principal_id": self._principal_id,
             "provider_call": self._provider_call,
-            "request_budget": self._request_budget,
             "model_preference_data": self._model_preference_data,
         }
 
@@ -1639,8 +1653,7 @@ class _ForegroundRunProviderSession:
         if self._closed:
             return
         self._closed = True
-        if self._owns_request_budget:
-            self._request_budget.close()
+        self._request_allocation.close()
         if self._receipt is not None:
             from tinyassets.storage.provider_work_authority import (
                 SQLiteProviderWorkAuthorityStore,
@@ -1844,13 +1857,21 @@ def prepare_foreground_run_provider(
     # untouched for its remaining nodes.
     bound = session.bound_run_id
     if bound and bound != run_id.strip():
-        child = _ForegroundRunProviderSession(**session.constructor_inputs())
-        child.prepare(
-            run_id=run_id,
-            branch=branch,
-            branch_version_id=branch_version_id,
-            allowed_statuses=allowed_statuses,
-        )
+        allocation = session._request_allocation.child()
+        try:
+            child = _ForegroundRunProviderSession(
+                **session.constructor_inputs(), request_budget=allocation.budget,
+                request_allocation=allocation,
+            )
+            child.prepare(
+                run_id=run_id,
+                branch=branch,
+                branch_version_id=branch_version_id,
+                allowed_statuses=allowed_statuses,
+            )
+        except BaseException:
+            allocation.close()
+            raise
         return _rebind(provider_call, child)
 
     session.prepare(

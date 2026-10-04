@@ -55,9 +55,11 @@ def rig(tmp_path):
         budget.close()
 
 
-def reserve(rig, *, limit=6, budget=None, free=True, purpose="reply", wire=None):
+def reserve(rig, *, limit=6, budget=None, free=True, purpose="reply", wire=None,
+            failure_limit=2):
     if budget is None:
-        budget = TurnRequestBudget(OWNER_ID, UNIVERSE, free_pool_limit=limit)
+        budget = TurnRequestBudget(OWNER_ID, UNIVERSE, free_pool_limit=limit,
+                                   failure_limit=failure_limit)
         budget.persist(rig.base)
         rig.budgets.append(budget)
     ordinal = budget.reserve(owner=OWNER_ID, universe=UNIVERSE,
@@ -299,7 +301,7 @@ def test_parent_closure_during_connect_fences_send_and_does_not_count(rig, bound
 def test_concurrent_oauth_invocations_cannot_exceed_parent_free_pool(rig):
     from concurrent.futures import ThreadPoolExecutor
 
-    budget, first, ref1 = reserve(rig, limit=3)
+    budget, first, ref1 = reserve(rig, limit=3, failure_limit=None)
     _, second, ref2 = reserve(rig, budget=budget)
     barrier = threading.Barrier(2)
     events = []
@@ -521,3 +523,37 @@ def test_real_unix_cancel_during_connect_has_no_send_or_refresh(uds_broker, rig)
     assert not uds_broker.server._streams
     operation = uds_broker.ops.status(f"{OWNER_ID}|{UNIVERSE}", reference.operation_id)
     assert operation.state == "cancelled"
+
+
+@pytest.mark.parametrize("with_reference", [False, True])
+def test_symlinked_provider_definition_cannot_reach_credentials(rig, with_reference):
+    budget, ordinal, reference = reserve(rig)
+    path = rig.base / UNIVERSE / "provider_definitions.json"
+    other = rig.base / "outside-definition.json"
+    path.rename(other)
+    path.symlink_to(other)
+    events = []
+    dispatch = build_dispatch(rig.base, events=events)
+    with pytest.raises(ProviderAuthorityHeldError):
+        if with_reference:
+            budget.issue_reference(ordinal, grant_id=GRANT, connection_id=CONNECTION,
+                                   verb="POST", request=WIRE, operation_id=new_op_id())
+        else:
+            invoke(dispatch)
+    assert events == []
+    assert budget.receipt()["dispatched"] == 0
+
+
+def test_two_failed_oauth_sends_stop_next_attempt_before_extra_effects(rig):
+    budget, ordinal, reference = reserve(rig)
+    events = []
+    dispatch = build_dispatch(rig.base, statuses=(401, 401), events=events)
+    assert invoke(dispatch, reference)["status"] == 401
+    budget.settle_invocation(ordinal, "failed")
+    effects = list(events)
+    with pytest.raises(RequestBudgetExceeded) as stopped:
+        reserve(rig, budget=budget)
+    assert stopped.value.reason == "consecutive_failures"
+    assert events == effects
+    assert events.count("send") == 2 and events.count("refresh") == 1
+    assert budget.receipt()["dispatched"] == 2

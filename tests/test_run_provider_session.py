@@ -365,6 +365,7 @@ def _run_branch(
     model_access=None,
     services=("codex",),
     after_provider_call=None,
+    on_active_session=None,
 ) -> tuple[dict[str, Any], _CountingProvider, dict[str, Any]]:
     from tinyassets.api import runs as api_runs
     from tinyassets.daemon_server import save_branch_definition, set_founder_home
@@ -499,6 +500,8 @@ def _run_branch(
                 "tinyassets.providers.provider_resolver.provider_for_definition",
                 refuse_resolution,
             )
+        if on_active_session is not None:
+            on_active_session(captured["provider_call"])
         return provider_router.call_sync(
             role,
             prompt,
@@ -1255,45 +1258,60 @@ def test_async_sub_branch_gets_its_own_session_not_the_parents(
         prepare_foreground_run_provider,
     )
 
-    _, _, captured = _run_branch(tmp_path, monkeypatch, authenticate_request, _branch(node_count=1))
-    parent_wrapper = captured["provider_call"]
-    parent_session = _session_from_provider_call(parent_wrapper)
-    assert parent_session is not None, "fixture did not produce a real bound session"
+    active_checks = []
 
-    # A real child run row: the child must validate against ITS OWN run, so a
-    # made-up id proves nothing (and correctly fails "run record is missing").
-    from tinyassets.runs import create_run, update_run_status
+    def check_active_parent(parent_wrapper):
+        check_index = len(active_checks)
+        active_checks.append(False)
+        parent_session = _session_from_provider_call(parent_wrapper)
+        assert parent_session is not None, "fixture did not produce a real bound session"
 
-    child_branch = _branch(node_count=1)
-    save_branch_definition(tmp_path, branch_def=child_branch.to_dict())
-    child_run_id = create_run(
-        tmp_path,
-        branch_def_id=child_branch.branch_def_id,
-        thread_id="thread-child",
-        inputs={},
-        actor="universe:universe_alice",
+        # A real child run row: the child must validate against ITS OWN run, so a
+        # made-up id proves nothing (and correctly fails "run record is missing").
+        from tinyassets.runs import create_run, update_run_status
+
+        child_branch = _branch(node_count=1)
+        save_branch_definition(tmp_path, branch_def=child_branch.to_dict())
+        child_run_id = create_run(
+            tmp_path,
+            branch_def_id=child_branch.branch_def_id,
+            thread_id="thread-child",
+            inputs={},
+            actor="universe:universe_alice",
+        )
+        update_run_status(tmp_path, child_run_id, status="running")
+
+        child_wrapper = prepare_foreground_run_provider(
+            parent_wrapper,
+            run_id=child_run_id,
+            branch=child_branch,
+            branch_version_id=None,
+            allowed_statuses={"running", "queued"},
+        )
+
+        child_session = _session_from_provider_call(child_wrapper)
+        assert child_session is not None, "child run got no session at all"
+        assert child_session is not parent_session, (
+            "the child reused the PARENT's session; its receipt and claim are minted "
+            "against the parent's run id"
+        )
+        # The child must carry no authority inherited from the parent.
+        assert child_session._receipt is None, "child inherited the parent's receipt"
+        assert child_session._claim is None, "child inherited the parent's claim"
+        # And the parent must be left intact for its own remaining nodes.
+        assert _session_from_provider_call(parent_wrapper) is parent_session
+        child_session.close()
+        active_checks[check_index] = True
+
+    response, _, captured = _run_branch(
+        tmp_path, monkeypatch, authenticate_request, _branch(node_count=1),
+        on_active_session=check_active_parent,
     )
-    update_run_status(tmp_path, child_run_id, status="running")
-
-    child_wrapper = prepare_foreground_run_provider(
-        parent_wrapper,
-        run_id=child_run_id,
-        branch=child_branch,
-        branch_version_id=None,
-        allowed_statuses={"running", "queued"},
-    )
-
-    child_session = _session_from_provider_call(child_wrapper)
-    assert child_session is not None, "child run got no session at all"
-    assert child_session is not parent_session, (
-        "the child reused the PARENT's session; its receipt and claim are minted "
-        "against the parent's run id"
-    )
-    # The child must carry no authority inherited from the parent.
-    assert child_session._receipt is None, "child inherited the parent's receipt"
-    assert child_session._claim is None, "child inherited the parent's claim"
-    # And the parent must be left intact for its own remaining nodes.
-    assert _session_from_provider_call(parent_wrapper) is parent_session
+    assert response["terminal_status"] == "completed", response
+    assert active_checks and all(active_checks), "every callback must complete its assertions"
+    parent_session = _session_from_provider_call(captured["provider_call"])
+    with pytest.raises(ProviderAuthorityHeldError):
+        parent_session._request_allocation.child()
 
 
 def test_a_session_hidden_behind_an_extra_wrapper_is_refused_not_passed_through() -> None:

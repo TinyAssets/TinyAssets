@@ -152,16 +152,24 @@ def resolve_inference_usage(base, owner, universe, ledger, resource, grant_id, v
         # inference sources; a request cannot evade this by omitting model/body.
         is_model = any(ledger.get_connection_capability(resource.connection_id, kind) is not None
                        for kind in ("model_use", "model_discovery"))
-        path = root / "provider_definitions.json"
-        if path.exists():
-            from tinyassets.providers.definition import _verified_definition
+        from tinyassets.providers.definition import _verified_definition
+        from tinyassets.universe_files import read_universe_file
 
-            definitions = json.loads(path.read_text())
-            is_model = is_model or any(
-                (definition := _verified_definition(row, expect_universe=universe)).ref == grant_id
-                and definition.owner_user_id == owner and definition.access_method == "api_key_http"
-                for row in definitions
-            )
+        try:
+            definitions = json.loads(read_universe_file(
+                store.base, f"{universe}/provider_definitions.json",
+            ))
+        except FileNotFoundError:
+            definitions = ()
+        except (OSError, ValueError, TypeError) as exc:
+            raise ProviderAuthorityHeldError(
+                "inference source definitions are unavailable",
+            ) from exc
+        is_model = is_model or any(
+            (definition := _verified_definition(row, expect_universe=universe)).ref == grant_id
+            and definition.owner_user_id == owner and definition.access_method == "api_key_http"
+            for row in definitions
+        )
         if is_model:
             raise ProviderAuthorityHeldError("HTTP inference requires a parent usage reference")
         return None
@@ -323,7 +331,11 @@ class UsageStore:
                     or not isinstance(request.get("body"), dict)
                     or request["body"].get("model") != attempt.model):
                 raise ValueError("source or model mismatch")
-            rows = json.loads((root / "provider_definitions.json").read_text())
+            from tinyassets.universe_files import read_universe_file
+
+            rows = json.loads(read_universe_file(
+                self.base, f"{scope[1]}/provider_definitions.json",
+            ))
             definition = next(_verified_definition(row, expect_universe=scope[1])
                               for row in rows
                               if row.get("id") == attempt.source_ref.removeprefix("api_key_http:"))
