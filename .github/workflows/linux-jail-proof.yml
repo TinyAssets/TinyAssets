@@ -134,6 +134,8 @@ on:
       # The universe agent's four tools, the engine surface that serves them,
       # the served turn that indexes its skills, and their real-jail proof.
       - "tests/test_universe_tools_jail.py"
+      - "tests/test_ta_capabilities_jail.py"
+      - "tests/test_ta_capabilities.py"
       # Workspace provisioning and registry proxy jail proofs (real_jail-marked
       # 2026-10-01; before that no CI job ran them).
       - "tests/test_node_sandbox_workspace.py"
@@ -149,6 +151,8 @@ on:
       - "tinyassets/workspace_registry_proxy.py"
       - "tests/engine_authority_helpers.py"
       - "tinyassets/universe_tools.py"
+      - "tinyassets/ta_capabilities.py"
+      - "tinyassets/ta_cli.py"
       - "tinyassets/engine_mcp_server.py"
       - "tinyassets/served_tools.py"
       - "tinyassets/universe_intelligence.py"
