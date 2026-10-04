@@ -146,3 +146,18 @@ The server-side owner-control coordinator SHALL own the exclusive owner/home loc
 - **THEN** verified copy/cutover preserves requests/items/answers/suppressions with one active protected writer and retained recovery data
 - **AND** legacy approvals require new bound previews; rollback cannot restore a bypass or a second lifecycle authority
 - **AND** rollback without compatible protected-store handlers stays paused for forward recovery
+
+
+#### Scenario: Repeated failed continuation
+- **WHEN** an admitted wake fails, is interrupted, or its process dies before acknowledgment
+- **THEN** its persisted attempt count and next-eligible time prevent immediate re-admission; delays start at 60 seconds and double to at most one hour
+- **AND** the pending payload survives without a false processed acknowledgment
+
+#### Scenario: Dismiss an expired or stopped action
+- **WHEN** the bound owner reviews an expired, stopped or authority-changed card
+- **THEN** the server offers a session-bound dismissal-only decision and the UI disables approval and editing
+- **AND** denial or skip resolves the card without any external effect or resumption of a stopped task
+
+#### Scenario: Stop while request controls are busy
+- **WHEN** the owner stops a live turn while the approval coordinator is locked
+- **THEN** the live turn is interrupted and the response explicitly reports retryable incomplete approval-task invalidation

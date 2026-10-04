@@ -99,3 +99,23 @@ External APIs cannot promise exactly-once effects; reconcile uncertainty before 
 All eight DISAGREE findings are accepted for adaptation: (1) server verifier custody and callback exchange; (2) interactive session plus bound token, never bearer-only approval; (3) matching behavior digest excluding all preapproval evidence; (4) reuse rules/effect_intents, once as decision and one protected pending-request authority; (5) preview from protected envelope; (6) task identity, expiry and Stop invalidation; (7) boot recovery via activity_events; (8) defer stream/status migration and general error schema. Finding 9's Muse flow is retained on web and native.
 
 Final round-2 disposition: A, B, C and F are accepted and addressed. A requires the initiating browser session plus a flow cookie on the callback itself, preserving parent-independent completion while rejecting copied authorization URLs. B retains/re-delivers wakes until an atomic processed-ack and keeps authoritative dedupe beyond the wake lifetime. C recomputes the policy digest at dispatch for once as well as wider scopes and refuses stale authority. F names the owner-control lock owner, refuses mutations during a durable migration pause, and defines recovery on both sides of cutover and each grant-finalization boundary. The prior AGREE findings remain in force; this is the final proposal review, with no implementation claimed.
+
+
+## First-slice lifecycle closure (2026-10-04)
+
+Unacknowledged continuation events persist `attempt_count` and `next_attempt_at`
+in the existing protected activity_events store. Admission increments the count
+and reserves the next retry time before computation, including crash recovery.
+Retry delays start at 60 seconds and double to a one-hour ceiling; pending wakes
+retain their payload and are never falsely acknowledged. Repeated failed or
+interrupted computation cannot spend the owner's budget on every five-second sweep.
+
+An expired, stopped or authority-changed card remains readable and dismissable
+by its bound owner through the interactive session. A dismissal-only preview
+token remains short lived but does not inherit the expired action deadline.
+It cannot authorize editing or effects. Approval continues to recheck the full
+current task, policy, session, revision and action binding before dispatch.
+
+Stop signals the live turn before acquiring the approval coordinator lock.
+If persistent approval/continuation invalidation is busy, return an explicit
+retryable refusal with the interrupted count; never imply it completed.

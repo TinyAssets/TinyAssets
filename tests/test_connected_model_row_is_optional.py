@@ -154,7 +154,7 @@ console.log(JSON.stringify({tabs,head:$('rail-head').textContent,
 @pytest.mark.skipif(_NODE is None, reason="node is not installed")
 def test_the_heading_stops_asking_when_only_optional_rows_remain():
     out = _run_head([_CONNECTED])
-    assert out["head"] == "Nothing waiting on you", "a connected universe was still asked"
+    assert out["head"] == "Request history", "a connected universe was still asked"
     assert out["railHidden"] is False, "the rail vanished, so 'Add a key yourself' went with it"
     assert out["tabs"] == [], (
         "an item with nothing to accept, deny or clear was left in 'Waiting on you'"
@@ -163,9 +163,10 @@ def test_the_heading_stops_asking_when_only_optional_rows_remain():
 
 @pytest.mark.skipif(_NODE is None, reason="node is not installed")
 def test_one_real_ask_still_makes_the_heading_ask():
+    """Keep the historical test id; asks now render alongside read-only history."""
     """A real ask renders; the optional entry beside it still does not."""
     out = _run_head([_ASK, _CONNECTED])
-    assert out["head"] == "Waiting on you"
+    assert out["head"] == "Request history"
     assert [tab["optional"] for tab in out["tabs"]] == [False]
     assert "Key please" in out["tabs"][0]["text"]
 
@@ -174,7 +175,7 @@ def test_one_real_ask_still_makes_the_heading_ask():
 def test_an_older_page_payload_without_a_status_is_still_treated_as_an_ask():
     """A row with no ``status`` is a real ask; never guess it optional."""
     out = _run_head([{k: v for k, v in _ASK.items() if k != "status"}])
-    assert out["head"] == "Waiting on you"
+    assert out["head"] == "Request history"
     assert out["tabs"][0]["optional"] is False
 
 
@@ -232,7 +233,7 @@ def test_the_finished_setup_card_does_not_carry_its_expansion_across_the_connect
     assert out["panelHidden"] is True, "the setup panel was still on screen"
     assert out["otherOpen"] is False, "'Other ways to connect' stayed open"
     assert out["railOpen"] is None
-    assert out["head"] == "Nothing waiting on you"
+    assert out["head"] == "Request history"
 
 
 @pytest.mark.skipif(_NODE is None, reason="node is not installed")

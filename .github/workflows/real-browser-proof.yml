@@ -50,6 +50,7 @@ on:
       - "tests/test_command_center_system_browser.py"
       - "tests/test_custom_ui_real_browser.py"
       - "tests/test_connect_free_ai_real_browser.py"
+      - "tests/test_inline_approvals_real_browser.py"
   workflow_dispatch:
 
 permissions:

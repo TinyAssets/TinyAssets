@@ -52,6 +52,27 @@ assert _spec and _spec.loader
 _assert = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_assert)
 
+_collect_marked_cases = _assert.marked_cases
+
+
+@functools.cache
+def _repository_cases(marker: str, tests_dir: str) -> tuple[str, ...]:
+    # This checked-out tree is immutable during a test run. Collect each real
+    # marker once; the synthetic JUnit verdicts below vary, not the source set.
+    return tuple(_collect_marked_cases(_REPO, marker, tests_dir))
+
+
+@pytest.fixture(autouse=True)
+def reuse_unchanged_repository_collection(monkeypatch):
+    def collect(root, marker, tests_dir="tests"):
+        if Path(root).resolve() == _REPO:
+            return list(_repository_cases(marker, tests_dir))
+        # Temporary source trees exercise collection changes and failures.
+        # They must always call the real collector, without cached results.
+        return _collect_marked_cases(root, marker, tests_dir)
+
+    monkeypatch.setattr(_assert, "marked_cases", collect)
+
 # The guarded cases, derived the same way the job derives them: every test
 # carrying @pytest.mark.real_jail. Not a hand-pinned list -- that list had to
 # mirror the workflow's and drifted three times.

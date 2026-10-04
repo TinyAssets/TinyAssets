@@ -278,9 +278,9 @@ def test_a_detection_in_a_name_or_description_refuses_the_publish(home: Path):
 
 def _rewrite_row(home: Path, universe: str, request_id: str, **changes) -> None:
     """What an agent with bash in its own folder can do to its pending row."""
+    from tinyassets.agent_activities import store_path
     from tinyassets.storage.pending_requests import get_request
-
-    db = home / universe / ".pending_requests.db"
+    db = store_path(home / universe)
     row = get_request(home / universe, request_id)
     row.update(changes)
     identity = [row["kind"], row["title"], row["body"], row["fields"], row["action"]]
@@ -698,7 +698,8 @@ def test_a_planted_row_is_never_adopted_as_a_consent(home: Path):
     key = get_request(home / UNIVERSE, first["request_id"])["dedupe_key"]
     with sqlite3.connect(ccp.store_dir(home) / "packages.db") as conn:
         conn.execute("UPDATE pins SET state = 'activated'")
-    with sqlite3.connect(home / UNIVERSE / ".pending_requests.db") as conn:
+    from tinyassets.agent_activities import store_path
+    with sqlite3.connect(store_path(home / UNIVERSE)) as conn:
         conn.execute("UPDATE pending_requests SET status = 'answered'")
     planted = create_request(home / UNIVERSE, kind="x", title="harmless", body="harmless",
                              fields=[], action={"type": "answer"}, dedupe_key=key)

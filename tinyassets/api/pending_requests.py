@@ -58,6 +58,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+from functools import wraps
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -200,6 +201,24 @@ def _owner_gate(universe_id: str):
     if not udir.is_dir():
         return None, None, dict(_NOT_FOUND)
     return uid, udir, None
+
+
+def _coordinated(fn):
+    @wraps(fn)
+    def wrapped(*, universe_id="", **kwargs):
+        from tinyassets.owner_control import ControlUnavailable, control
+        from tinyassets.storage.request_migration import ensure_protected
+
+        _, home, denied = _owner_gate(universe_id)
+        if denied is not None:
+            return denied
+        try:
+            with control(home):
+                ensure_protected(home)
+                return fn(universe_id=universe_id, **kwargs)
+        except ControlUnavailable as exc:
+            return {"error": exc.kind, "retryable": True, "detail": str(exc)}
+    return wrapped
 
 
 def _validated_action(raw: Any) -> dict[str, Any]:
@@ -1118,6 +1137,7 @@ def try_package(*, universe_id: str = "", payload: Any = None) -> dict[str, Any]
     return {"request_id": ask["request_id"], "title": ask["title"]}
 
 
+@_coordinated
 def request_from_user(
     *, universe_id: str = "", payload: Any = None, origin: str = "agent",
     sign_in_hosts: tuple[str, ...] = (),
@@ -1144,6 +1164,12 @@ def request_from_user(
     body = str(document.get("body") or "").strip()[:_MAX_BODY_CHARS]
     raw_type = str((document.get("action") or {}).get("type") or "").strip().lower() \
         if isinstance(document.get("action"), dict) else ""
+    if raw_type == "approve_action":
+        from tinyassets.bound_requests import RequestRefused, capture
+        try:
+            return capture(udir, document["action"].get("pending_action"))
+        except (RequestRefused, ValueError) as exc:
+            return _bad(str(exc))
     if raw_type in _PINNED_ACTIONS:
         # The platform writes these tabs itself; whatever the agent sent is replaced.
         kind, title = kind or raw_type, title or raw_type
@@ -2224,6 +2250,7 @@ def list_requests(*, universe_id: str = "") -> dict[str, Any]:
     }
 
 
+@_coordinated
 def unmute_request(*, universe_id: str = "", payload: Any = None) -> dict[str, Any]:
     """Lift a "don't ask again". A standing refusal a user cannot undo is a trap."""
     from tinyassets.storage.pending_requests import record_unmute, unsuppress
@@ -2249,6 +2276,7 @@ def unmute_request(*, universe_id: str = "", payload: Any = None) -> dict[str, A
     return {"status": "unmuted" if lifted else "not_muted"}
 
 
+@_coordinated
 def withdraw_request(*, universe_id: str = "", payload: Any = None) -> dict[str, Any]:
     """The agent takes down an ask of its own that it knows is stale.
 
@@ -2674,6 +2702,7 @@ def _start_approved_proposal(universe_id: str, row: dict[str, Any]) -> dict[str,
             "request_pending": True}
 
 
+@_coordinated
 def answer_request(*, universe_id: str = "", payload: Any = None) -> dict[str, Any]:
     """The user's answer.
 
@@ -2707,6 +2736,9 @@ def answer_request(*, universe_id: str = "", payload: Any = None) -> dict[str, A
     row = get_request(udir, request_id) if request_id else None
     if row is None:
         return {"error": "not_found", "resource": "pending_request"}
+    if row["action"].get("type") == "approve_action":
+        return {"error": "interactive_approval_required",
+                "detail": "Open the protected inline owner card to decide this action."}
     if row["status"] != "pending":
         return {"error": "already_resolved", "status": row["status"]}
 
@@ -3273,6 +3305,7 @@ def _deposit_answer(
     }
 
 
+@_coordinated
 def answer_connect_with_token(
     *, universe_id: str = "", request_id: str = "", token: str = "",
 ) -> dict[str, Any]:
