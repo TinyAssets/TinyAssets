@@ -54,6 +54,43 @@ def _text() -> str:
     return _WORKFLOW.read_text(encoding="utf-8")
 
 
+def test_oauth_provider_credentials_step_sources_and_order():
+    wf = _load()
+    steps = _steps(wf)
+    validation = _step_named(wf, "Validate OAuth provider credentials")
+    step = _step_named(wf, "Install OAuth provider client credentials")
+    credentials = {
+        "TINYASSETS_OAUTH_GOOGLE_CLIENT_ID":
+            "${{ vars.TINYASSETS_OAUTH_GOOGLE_CLIENT_ID }}",
+        "TINYASSETS_OAUTH_GOOGLE_CLIENT_SECRET":
+            "${{ secrets.TINYASSETS_OAUTH_GOOGLE_CLIENT_SECRET }}",
+    }
+    assert validation["id"] == "oauth"
+    assert validation["env"] == {
+        "TINYASSETS_OAUTH_CREDENTIALS_INSTALL":
+            "${{ vars.TINYASSETS_OAUTH_CREDENTIALS_INSTALL }}",
+        **credentials,
+        "TARGET_REVISION": "${{ steps.tag.outputs.revision }}",
+    }
+    assert validation["run"] == "python scripts/validate_oauth_provider_credentials.py"
+    assert step["env"] == {
+        **credentials,
+        "OAUTH_ACTION": "${{ steps.oauth.outputs.action }}",
+        "PREV_IMAGE": "${{ steps.capture.outputs.prev_image }}",
+    }
+    assert steps.index(validation) < steps.index(_step_named(wf, "Install SSH key"))
+    assert steps.index(_step_named(
+        wf, "Install daemon-only request idempotency HMAC secret",
+    )) < steps.index(step) < steps.index(_step_named(
+        wf, "Run fail-safe deploy on the droplet",
+    ))
+    script = step["run"]
+    assert "${{ secrets." not in script
+    assert "set +x" in script
+    assert "set -x" not in script
+    assert "sudo flock -w 120 /var/lock/tinyassets-host-mutation.lock" in script
+
+
 def _triggers(wf: dict) -> dict:
     return wf.get(True, {}) or {}
 

@@ -10,12 +10,14 @@ import os
 import pickle
 import secrets
 import sqlite3
+import stat
 import threading
 import weakref
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
@@ -617,6 +619,76 @@ def test_database_removed_between_exists_and_lstat_is_refused(
     with pytest.raises(custody.ConversationCustodyAuthorizationError) as blocked:
         custody.validate_private_universe_location(evidence)
     assert seen and blocked.value.code == "storage_location_invalid"
+
+
+@pytest.mark.parametrize("name,links,kind", [
+    (name, links, "regular")
+    for name in (".tinyassets.db", ".tinyassets.db-wal", ".tinyassets.db-shm")
+    for links in (0, 2)
+] + [(".tinyassets.db-shm", 0, kind) for kind in ("symlink", "directory", "reparse")])
+def test_unlinked_sidecar_snapshot_is_absent_but_primary_and_aliases_refuse(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, name: str, links: int, kind: str,
+) -> None:
+    custody = _custody()
+    root = tmp_path / "platform"
+    universe = root / "universes" / "u1"
+    universe.mkdir(parents=True)
+    evidence = _evidence(custody, root, universe)
+    target = universe / name
+    target.write_bytes(b"transient")
+    original = Path.lstat
+
+    def snapshot(path, *args, **kwargs):
+        metadata = original(path, *args, **kwargs)
+        if path == target:
+            values = {field: getattr(metadata, field) for field in dir(metadata)
+                      if field.startswith("st_")}
+            values["st_nlink"] = links
+            if kind in {"symlink", "directory"}:
+                values["st_mode"] = stat.S_IFLNK if kind == "symlink" else stat.S_IFDIR
+            elif kind == "reparse":
+                values["st_file_attributes"] = 0x400
+            if links == 0:
+                target.unlink()
+            return SimpleNamespace(**values)
+        return metadata
+
+    monkeypatch.setattr(Path, "lstat", snapshot)
+    if links == 0 and name != ".tinyassets.db" and kind == "regular":
+        custody.validate_private_universe_location(evidence)
+    else:
+        with pytest.raises(custody.ConversationCustodyAuthorizationError):
+            custody.validate_private_universe_location(evidence)
+
+
+def test_unlinked_sidecar_does_not_bypass_primary_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    custody = _custody()
+    root = tmp_path / "platform"
+    universe = root / "universes" / "u1"
+    universe.mkdir(parents=True)
+    (universe / ".tinyassets.db").write_bytes(b"primary")
+    sidecar = universe / ".tinyassets.db-shm"
+    sidecar.write_bytes(b"transient")
+    original = Path.lstat
+
+    def snapshot(path, *args, **kwargs):
+        metadata = original(path, *args, **kwargs)
+        if path == sidecar:
+            values = {field: getattr(metadata, field) for field in dir(metadata)
+                      if field.startswith("st_")}
+            values["st_nlink"] = 0
+            sidecar.unlink()
+            return SimpleNamespace(**values)
+        return metadata
+
+    monkeypatch.setattr(Path, "lstat", snapshot)
+    with pytest.raises(custody.ConversationCustodyAuthorizationError, match="identity changed"):
+        custody.validate_private_universe_location(
+            _evidence(custody, root, universe),
+            expected_primary_identity=custody.StorageFileIdentity(-1, -1),
+        )
 
 
 def test_unreadable_sidecar_is_still_refused(

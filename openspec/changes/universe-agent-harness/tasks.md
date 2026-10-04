@@ -87,8 +87,8 @@ is recorded at 6bf7923597983ec9af61968b99001745a981f2a7; implementation proofs r
 - [ ] 2.4 D2 Activities: parallel child sessions, seat release while waiting, deploy recovery, the automation activity target, and a complete Scheduled view (storage proposal first).
 - [ ] 2.5 D3 Read-only proactive research by capability, proposals and grantable blocks; D4 onboarding, the profile shell and push.
 - [ ] 2.6 D5 The computer: restricted browser broker, a context per activity, live view, Take over / Return control.
-- [ ] 2.7 D6 Exactly four tools behind `ta search`/`describe`; D7 memory items, the Harness tab, history and Undo.
-- [ ] 2.8 D8 Roster and command center; D9 shareable bundles with owner-activated quarantine; D11 export to a runnable, publish-ready folder (design §4.17); D10 starter template everywhere, chat-app channel extensions, old surface deleted.
+- [ ] 2.7 D6 Exactly four tools behind `ta search`/`describe` with versioned read-only handbook references; D7 memory items, Harness tab, history and Undo, then sole-owned learning retirement/backlog migration and N>=10 paired write/recall proof per model-family x stock/customized-AGENTS fixture cell (design D7). Starter policy/content is delegated to `starter-agent-out-of-plumbing`.
+- [ ] 2.8 D8 Roster and command center; D9 shareable bundles with owner-activated quarantine; D11 export to a runnable, publish-ready folder (design §4.17); D10 reuses `starter-seed-lifecycle`'s scoped sidecar receipts/upgrades, plus chat-app channel extensions. Depend exclusively on starter-agent-out-of-plumbing task 2.3 for consumer/renderer cutover wiring, old-guidance deletion and all-center/dormant-center proof without owner-review holds.
 
 ## 3. Close
 

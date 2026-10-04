@@ -16,6 +16,11 @@ The platform SHALL keep one durable, append-only session per conversation thread
 - **WHEN** the agent writes to its session log path from a tool
 - **THEN** the write is refused and the log is unchanged
 
+#### Scenario: replacing the history renderer preserves provenance
+- **WHEN** session entries are rendered into model context by a replacement for conversation_memory.format_history
+- **THEN** nonce-delimited untrusted / NOT consent framing and sanitized roles/names remain, and quoted approvals cannot mint current authority
+- **AND** input-method metadata remains client-reported, informational and never authority or consent even after its advice helper is removed
+
 ### Requirement: Sessions compact automatically with a pre-compaction flush
 When a session's projected context exceeds the model window minus a reserve, the platform SHALL first give the agent one round to write durable notes to its files, then, using the universe's own model and credentials with no platform fallback, replace older entries in model context with a structured summary that keeps tool call and result pairs together, while the original entries remain in the log. Thresholds SHALL be read from the universe's own settings file with defaults of a 16,000-token reserve and 20,000 recent tokens kept verbatim.
 
@@ -71,6 +76,11 @@ No other tool schema SHALL be sent to the model. Native adapter built-in tools S
 - **WHEN** the agent needs to start one of its workflows
 - **THEN** it finds the capability by searching from bash and calls it there
 - **AND** the model request on every round carried only the four tool schemas
+
+#### Scenario: handbook guidance stays current and can be overridden
+- **WHEN** a seed skill needs handbook API guidance
+- **THEN** it links to D6's platform-versioned read-only reference through ta describe or a skill reference, with examples tested against the real create path, instead of copying chapters into a seed
+- **AND** owner-authored skills/instructions override workflow recommendations within existing authority; API contracts and code permission checks still apply
 
 ### Requirement: Platform-owned agent state is unreachable from every agent-controlled environment
 The following records SHALL be stored outside every agent-controlled execution environment, including the tool jail, workflow provider jails, extension processes and the browser sandbox:
@@ -260,6 +270,26 @@ Agent memory SHALL be held as items with stable ids. The owner SHALL be able to 
 - **WHEN** the owner deletes one memory item from the profile
 - **THEN** the next turn's memory lacks that item and every other item is unchanged
 
+### Requirement: Learning retirement preserves unresolved sources
+D7 alone SHALL retire extract_learning, _learn_from_turn and its converse invocation, _UNRECORDED_LESSON and extraction-only helpers, after memory IDs, the history store and Undo are deployed and verified. Before removal, D7 SHALL preserve unresolved cursor spans verbatim with conversation/turn source IDs in an owner-only review artifact, retain original history and existing memory, and SHALL NOT mark unwritten facts learned. Migration SHALL be idempotent across crashes and SHALL NOT re-extract settled history. The editable memory/review workflow SHALL deduplicate against current notes and mark a source handled only after verified persistence or an explicit no-fact decision; failed work SHALL remain visibly pending without breaking reply delivery. Replacement agents SHALL have the same authorized access to the backlog. At D7's release, extraction SHALL be removed globally without an owner-response gate, hidden background replacement or per-center compatibility path; seed adoption and file Undo SHALL NOT control extraction.
+
+D7 acceptance SHALL include N>=10 paired natural fact-teaching trials per supported model family and each stock/customized-AGENTS fixture with extraction off against matched extraction-on baselines. The custom fixture SHALL keep identical owner bytes containing none of the moved hooks, with starter/hooks.md and skills delivered alongside it without owner acceptance. Verified immediate durable-write rate and later cross-surface recall rate SHALL each be no worse than baseline in every family/fixture cell, with numerators, denominators and traces reported separately. Negative controls SHALL cover jokes, hypotheticals, credentials and failed writes. Starter renderer savings SHALL NOT count this separate removal.
+
+#### Scenario: an unsettled conversation survives retirement and retry
+- **WHEN** D7 migrates a conversation with unresolved source spans and the process restarts before completing the migration
+- **THEN** retry preserves each span's original text and source IDs exactly once, retains the original history and memory, and leaves unprocessed sources pending
+- **AND** an existing or replacement agent can review them without a resurrected extractor or false learned marker
+
+#### Scenario: a failed write does not settle a source
+- **WHEN** the memory/review workflow cannot persist a fact from a pending source
+- **THEN** the source remains visibly pending, the failure is reported and reply delivery continues
+- **AND** only a later verified write or explicit no-fact decision settles that source
+
+#### Scenario: extraction removal fails the memory comparison
+- **WHEN** a supported model family has a lower immediate write rate or later recall rate than its extraction-on baseline
+- **THEN** D7 retirement acceptance fails and the regression is corrected before global removal
+- **AND** no pooled score, owner acceptance or seed-file adoption bypasses that evidence
+
 ### Requirement: Every per-agent record is keyed by agent, and the brain is shared
 Every per-agent record (sessions and conversation memory, steering and stop, the tool journals and status lines, rules and auto-review switches, activities, pending requests with their deduplication and answer routing, and notifications) SHALL be keyed by agent id, with the seeded main agent only a default; an agent id SHALL never replace the owner and universe binding. The universe's brain and memory files SHALL be shared by all of its agents. Each agent's harness configuration SHALL carry a visibility scope the owner may change, applied to what the platform places in the agent's context and returns from its reads: the seeded main agent SHALL default to every agent's conversations with the owner and every agent's activity within the universe, and other agents SHALL default to their own threads and activities plus the shared brain. The scope is not isolation between one owner's agents, which share the universe's files. No scope SHALL reach another user's universe. Concurrent brain writes through the platform's tools SHALL NOT silently overwrite each other: owner feedback SHALL be captured as one exclusively created entry file per item naming the agent, tool writes and edits to a brain file SHALL apply atomically only to the whole-file version the agent read and otherwise be refused with the current content, and one reconciler agent (the main agent by default) running single-flight SHALL fold entries into topic files, recording absorbed entry ids before acknowledging them so a replay after a crash loses nothing.
 
@@ -287,7 +317,7 @@ A conversation turn SHALL carry the agent it addresses, `main` by default or one
 - **THEN** it is refused as not one of the caller's agents, no model is called and nothing is recorded
 
 ### Requirement: The harness layer is user-configurable for any roster of agents
-A universe SHALL support any number of agents. Each agent SHALL have its own instructions, identity, memory, skills, extensions, settings (model, research cadence, idle period, active hours, compaction, channels), rules, sessions, activities and profile. A per-agent skill or extension SHALL override a shared one of the same name. An agent SHALL be able to start an activity on another agent in the same universe under the delegation rule. New universes SHALL be seeded from an explicitly published starter template.
+A universe SHALL support any number of agents. Each agent SHALL have its own instructions, identity, memory, skills, extensions, settings (model, research cadence, idle period, active hours, compaction, channels), rules, sessions, activities and profile. A per-agent skill or extension SHALL override a shared one of the same name. An agent SHALL be able to start an activity on another agent in the same universe under the delegation rule. New universes SHALL be seeded from an explicitly published starter template. D10 SHALL use starter-seed-lifecycle as its sole provisioning and upgrade mechanism, including its specified owner/center-bound sidecar SQLite receipts at creation, autonomous stock upgrades, preservation of owner customizations/deletions, visible version offers and conditional file Undo. New resident starter/hooks.md and skills SHALL arrive alongside untouched custom AGENTS.md with a visible explanation of moved guidance and legacy empty/linked/unreadable former-defaults cases. Starter-agent-out-of-plumbing alone SHALL own consumer/renderer cutover wiring and all-center/dormant-center proof, including every center without waiting for owner review; D9 activation of imported third-party bundles SHALL remain separate.
 
 #### Scenario: a lead hands work to a specialist
 - **WHEN** the owner's main agent starts an activity on a specialist agent with narrower rules

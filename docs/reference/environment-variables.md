@@ -9,6 +9,56 @@
 The daemon reads configuration from env vars. Defaults are CWD-independent so
 containerized deploys don't drift based on where the process was launched from.
 
+## Platform-registered connection OAuth
+
+| Var | Purpose | Default |
+|-----|---------|---------|
+| `TINYASSETS_OAUTH_DIRECTORY` | Absolute path to daemon-owned provider JSON; replaces the packaged directory. No secrets in this file. | `tinyassets/connection_oauth/providers.json` |
+| `TINYASSETS_OAUTH_GOOGLE_CLIENT_ID` | Platform's registered Web application OAuth client ID. | Unset; entry inactive |
+| `TINYASSETS_OAUTH_GOOGLE_CLIENT_SECRET` | Daemon-only platform client secret. Filtered by the OAuth namespace. | Unset; entry inactive |
+
+The directory is `{"providers": [entry, ...]}`. Every entry requires a stable
+`id`, exact API `hosts`, HTTPS `authorization_endpoint` and `token_endpoint`,
+`client_id_env`, `client_secret_env`, and `token_endpoint_auth_method`
+(`client_secret_post` or `client_secret_basic`). Optional fields are `issuer`,
+`revocation_endpoint` (metadata only), `default_scopes` (use name to scope list),
+`host_uses` (host to use name), and `extra_auth_params` (string parameters).
+Reserved parameters such as state, redirect URI and PKCE cannot be overridden.
+Use the packaged JSON as a complete example. A replacement file can add any
+provider without Python changes. Secret names must follow
+`TINYASSETS_OAUTH_*_SECRET`; client ID names use the `TINYASSETS_OAUTH_` namespace.
+
+The packaged Google entry matches `gmail.googleapis.com`,
+`calendar.googleapis.com` and `www.googleapis.com`. It uses
+`https://accounts.google.com/o/oauth2/v2/auth`,
+`https://oauth2.googleapis.com/token`, and the optional
+`https://oauth2.googleapis.com/revoke`, with `access_type=offline` and
+`prompt=consent`, per [Google's web server OAuth documentation](https://developers.google.com/identity/protocols/oauth2/web-server).
+Register `https://tinyassets.io/app/model-callback/connect` as its redirect URI.
+Gmail and Calendar defaults are read-only. Explicit `oauth.scopes` take
+precedence but must stay within the entry's declared scope sets;
+`oauth.use: "gmail"` or `"calendar"` selects a default set. Dedicated
+hosts infer the use; `www.googleapis.com` needs explicit scopes or a use.
+
+Set credentials in the daemon's environment through the platform secret
+configuration, never in a connect ask, agent prompt, or directory JSON. Missing
+credentials deactivate an entry and preserve discovery/key-paste fallback.
+An invalid optional directory is logged with a fixed code and offers no entries;
+engine and broker launch continue. Unavailable directory/RPC lookups fall through
+to discovery and key paste. Exchange/refresh still refuse unusable registrations.
+At daemon startup and before child spawn, OAuth secrets move into daemon
+process-local memory; rotate or remove them by updating the daemon environment
+and restarting the daemon.
+All `TINYASSETS_OAUTH_*` variables are filtered from engine children. A private
+loopback service resolves offers and performs refreshes for the launcher's
+fixed owner/universe; its internal `TINYASSETS_CONNECTION_OAUTH_SERVICE`
+capability is installed only for that engine and is not a user configuration
+variable. Each daemon launch gets a separate capability, revoked at engine
+stop/restart or proxy close/startup failure. An engine's child proxies share its
+capability. The service returns no tokens or client secrets. Jails clear their
+environment. This follows #4267's inheritance boundary; it does not replace
+the separately tracked daemon/engine UID and procfs isolation work.
+
 ## Data + paths
 
 | Var | Purpose | Default |
@@ -244,6 +294,57 @@ A request reaches its owner's registered devices as a notification. Each channel
 | `TINYASSETS_WEBPUSH_VAPID_SUBJECT` | `mailto:` address or `https://` URL a push service uses to contact the sender. Anything else leaves web push unconfigured. | unset. |
 
 `TINYASSETS_WEBPUSH_VAPID_PUBLIC_KEY` is printed by the same script for the **client** to pass to `pushManager.subscribe({applicationServerKey})`. The server never reads it — it is derived from the private key, and storing it twice is how two copies of one fact drift.
+
+## Deploying platform OAuth client credentials
+
+| Variable | Repository configuration | Daemon use |
+|---|---|---|
+| `TINYASSETS_OAUTH_GOOGLE_CLIENT_ID` | GitHub Actions **variable** (non-secret). | Platform Google Web application client ID, consumed by the provider directory in #4441. |
+| `TINYASSETS_OAUTH_GOOGLE_CLIENT_SECRET` | GitHub Actions **secret**, entered by the founder through the repository's web form. | Daemon-only client secret; #4441 filters the entire `TINYASSETS_OAUTH_` namespace from engine children. |
+| `TINYASSETS_OAUTH_CREDENTIALS_INSTALL` | GitHub Actions **variable**, default disabled; case-insensitive `true` enables installation. | Explicit activation gate after deployment and process-isolation proof; disabled removes any retained pair. |
+
+Installation is disabled by default even when the credential pair is present.
+Before setting `TINYASSETS_OAUTH_CREDENTIALS_INSTALL=true`, verify deployment of
+#4441 and resolve `docs/concerns/2026-10-04-engine-mcp-shares-daemon-uid.md` with
+its Linux isolation proof. Environment filtering alone does not prevent a
+same-UID engine from recovering daemon/PID1 secrets. Until those prerequisites
+are proven, unrelated deploys continue with OAuth disabled. Disabled mode does
+not consume or validate the credential pair and selects removal of retained
+keys; setting the variable false is the deactivation path on the next deploy.
+No activation or production proof is claimed by this change.
+
+When explicitly enabled, `deploy-prod.yml` installs each configured pair through
+`deploy/install-tinyassets-env.sh set-pair` into `/etc/tinyassets/env`, under the
+shared host mutation flock. Each atomic rename installs both keys together,
+including the rendered `daemon.env`; a failure between the two file commits can
+leave a complete old pair in `daemon.env` and a complete new pair in `env`, but
+never introduces a partial pair. The subsequent fail-safe recreate loads them.
+Values travel on SSH stdin, never in command arguments or log messages.
+
+The runner's **Validate OAuth provider credentials** step precedes every host
+contact. Both absent skips installation; only one present warns and skips without
+failing deployment. A complete pair must be single-line and use portable unquoted
+characters (`A-Z a-z 0-9 . _ ~ : / + = , @ % -`). Quotes, whitespace, comments,
+backslashes and interpolation characters are refused with key-name-only errors.
+Existing values are retained on skip only when both images below are protected.
+
+**Target and rollback protection:** the runner reads the resolved target revision
+(the same revision as the stop-writer gate), requiring the provider registry and
+the OAuth namespace exclusion in `platform_secrets.child_env` from #4441. Missing
+or unrecognized protection warns and selects removal instead of installation.
+Under the host lock, `install-oauth-credentials.sh` also probes `child_env` in the
+captured immutable rollback image, with no host env, mounts or network. Missing,
+unavailable or unprotected rollback images warn and select removal too. Removal
+deletes both keys from the shared env and re-renders `daemon.env` before any
+image swap. This applies even when the repository pair is absent/half-configured.
+
+The existing automatic and public-canary rollback paths retain the env file.
+Requiring protection in the captured previous image makes both safe without
+changing rollback. The first deployment of #4441 therefore proceeds with OAuth
+disabled; a later deploy can install credentials only after explicit activation and
+when the rollback image is also protected. An explicit deployment targeting older code removes the pair.
+This workflow does not alter `tinyassets/platform_secrets.py` or claim process
+isolation beyond that code's environment filtering.
 
 ## Local secrets — vault-first
 

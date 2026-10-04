@@ -30,6 +30,7 @@ from __future__ import annotations
 import concurrent.futures
 import copy
 import dataclasses as _dataclasses
+import io
 import json
 import logging
 import math
@@ -39,6 +40,7 @@ import re
 import stat
 import threading
 import time
+import tokenize
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Any, Callable
@@ -616,6 +618,55 @@ _DANGEROUS_PATTERNS = (
 _BID_DANGEROUS_PATTERNS = _DANGEROUS_PATTERNS + (
     "compile(", "open(", "importlib", "pickle", "marshal",
 )
+
+
+def _source_without_literals(source: str) -> str:
+    """Blank literal/comment tokens without moving any remaining source text.
+
+    Tokenization errors retain the original text for the conservative raw scan.
+    On Python 3.12+, f-string expression tokens remain code; earlier tokenizers
+    expose an entire f-string as one STRING token, which must remain unmasked.
+    Lone carriage returns also retain the raw scan: compile treats them as
+    newlines, whereas StringIO.readline does not.
+    """
+    if "\r" in source.replace("\r\n", ""):
+        return source
+    offsets = [0]
+    for line in io.StringIO(source):
+        offsets.append(offsets[-1] + len(line))
+    masked = list(source)
+    try:
+        for token in tokenize.generate_tokens(io.StringIO(source).readline):
+            if token.type == tokenize.ERRORTOKEN:
+                return source
+            if token.type == tokenize.STRING and not hasattr(tokenize, "FSTRING_START"):
+                prefix = token.string.split('"', 1)[0].split("'", 1)[0]
+                if "f" in prefix.lower():
+                    continue
+            if token.type in (tokenize.STRING, tokenize.COMMENT) or (
+                tokenize.tok_name[token.type].startswith(("FSTRING_", "TSTRING_"))
+            ):
+                start = offsets[token.start[0] - 1] + token.start[1]
+                end = offsets[token.end[0] - 1] + token.end[1]
+                masked[start:end] = [
+                    char if char in "\r\n" else " " for char in source[start:end]
+                ]
+    except (tokenize.TokenError, SyntaxError, ValueError):
+        return source
+    return "".join(masked)
+
+
+def dangerous_source_patterns(source: str, patterns: tuple[str, ...]) -> list[str]:
+    """Pre-check with the original substring rules, excluding literal/comment text.
+
+    This is not a Python security analysis: sandboxed code uses the OS jail
+    as its boundary. Node bids run in-process behind approval/hash checks.
+    If tokenization fails, scan the unmodified source (fail closed on masking).
+    """
+    if "\x00" in source:
+        raise ValueError("source code cannot contain null bytes")
+    code = _source_without_literals(source)
+    return [pattern for pattern in patterns if pattern in code]
 
 
 def _is_cancel_exception(exc: BaseException) -> bool:
@@ -1846,18 +1897,22 @@ def source_code_problems(source_code: str, node_id: str) -> list[str]:
     false`` the runtime never enforced (concern 2026-09-01, live thread
     2026-09-02: "platform-side source-code approval is the missing piece").
 
+    These are pre-checks; the OS jail is the execution boundary.
     An empty ``source_code`` is not a code node and has no problems.
     """
     src = source_code or ""
     if not src:
         return []
     problems: list[str] = []
-    for pattern in _DANGEROUS_PATTERNS:
-        if pattern in src:
-            problems.append(
-                f"Node '{node_id}' source_code contains disallowed "
-                f"pattern: '{pattern}'"
-            )
+    try:
+        patterns = dangerous_source_patterns(src, _DANGEROUS_PATTERNS)
+    except (SyntaxError, ValueError):
+        patterns = []  # The syntax diagnostic below retains the compiler's detail.
+    for pattern in patterns:
+        problems.append(
+            f"Node '{node_id}' source_code contains disallowed "
+            f"pattern: '{pattern}'"
+        )
     size = len(src.encode("utf-8"))
     if size > _MAX_SOURCE_CODE_BYTES:
         problems.append(
@@ -1866,7 +1921,7 @@ def source_code_problems(source_code: str, node_id: str) -> list[str]:
         )
     try:
         compile(src, f"<node {node_id}>", "exec")
-    except SyntaxError as exc:
+    except (SyntaxError, ValueError, RecursionError) as exc:
         problems.append(f"Node '{node_id}' source_code does not parse: {exc}")
     return problems
 

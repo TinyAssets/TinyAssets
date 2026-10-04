@@ -79,6 +79,7 @@ on:
       - 'scripts/cloud_only_preflight.py'
       - 'scripts/validate_agent_interchange_hmac.py'
       - 'scripts/validate_request_idempotency_hmac.py'
+      - 'scripts/validate_oauth_provider_credentials.py'
       - 'scripts/validate_host_runtime_hmac_pair.py'
       - 'scripts/deployed_sha.py'
       # Run inside the live container before every swap (deploy-prod.yml
