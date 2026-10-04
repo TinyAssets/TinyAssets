@@ -5,6 +5,18 @@ filed: '2026-10-04'
 summary: PR 4442 fixes the storage-charge and lost-send paths; the founder's actual storage refusal still needs production attribution, and the original lost send is unproven
 ---
 
+> **Update 2026-10-04 (split):** the source-code guard change ("`open(` in a string is
+> rejected") was taken OUT of PR #4442 after the round-3 cross-family review (cap reached)
+> returned BLOCK on Python 3.11, the production runtime. Literal masking lets through
+> code main's raw scan blocked: f-string expressions (`f"{os.system('id')}"`, which 3.11
+> tokenizes as one STRING) and a lone `` inside a comment (`compile()` splits on it,
+> while the `StringIO.readline` tokenizer feed does not). Suggested fixes: on 3.11
+> (no `FSTRING_START`), leave f-prefixed STRING tokens unmasked, and feed the tokenizer
+> `compile()`-equivalent line splitting. The work is preserved on branch
+> `fix/source-guard-literal-masking`. #4442 still ships the failed-run, storage and
+> lost-send fixes. The source guard is unchanged from main, so the founder's
+> `open(`-in-a-string rejection still happens until that branch lands.
+
 # Founder command-center reports, 2026-10-04
 
 Branch: `fix/app-ui-run-and-code-checks`, PR #4442. Review fixes and push only;
@@ -58,12 +70,9 @@ while `open (...)`, `(open)(...)`, `os . system(...)` and callable aliases do no
 acquire new AST-based refusals. Strings holding API names are exempt regardless
 of how a caller might later use them; the scan makes no reflection-safety claim.
 
-Python 3.11 tokenizes a whole f-string as STRING, so it now stays unmasked:
-blanking it hid executable expressions from the original scan. Python 3.12+
-exposes FSTRING literal parts separately and leaves expression code available
-to the original scan. Source containing a lone carriage return also retains the
-raw scan, because compile treats it as a newline while StringIO.readline does
-not. Tests record these conservative fallbacks and interpreter-defined behavior,
+Python 3.11 tokenizes a whole f-string as STRING, so the whole token is blanked.
+Python 3.12+ exposes FSTRING literal parts separately and leaves expression code
+available to the original scan. Tests record that interpreter-defined behavior,
 along with nested f-strings, format text, multiline/Unicode/CRLF offsets, every
 original forbidden pattern, raw fallback and legacy compile ValueError handling.
 The AST-only tests removed in this revision were all introduced by this PR;
@@ -189,37 +198,3 @@ approval receipts and path-I/O tests, with external base temp directories.
 Mirror regeneration/import probe, full parity, Ruff and whitespace checks pass
 again. The earlier storage and app proofs remain applicable: those files and
 tests are unchanged by either source revision.
-
-## Source masking review repair
-
-On `fix/source-guard-literal-masking`, after merging `origin/main`:
-
-- **AGREE — Python 3.11 f-string masking:** retain STRING tokens with an f/F
-  prefix when FSTRING_START is unavailable. The existing expression-boundary
-  test now requires rejection on every interpreter; original test names remain.
-- **AGREE — lone carriage returns:** retain the entire raw source if it contains
-  a lone CR. This conservative fallback preserves offsets and prevents comment
-  tokenization from hiding statements that compile treats as a new line.
-
-Nine parametrized regressions cover all reported inputs, uppercase prefixes,
-CRLF and mixed newline forms. Each compiles and preserves the original scan's
-results at all four callers. Original pattern constants match `origin/main`.
-
-Validation covers `test_source_guard_syntax.py`, `test_node_bid.py`,
-`test_node_bid_claim_stress.py`, `test_node_sandbox.py`,
-`test_node_sandbox_workspace.py`, and the affected heavy `test_branch_runner.py`:
-
-| Platform | Interpreter | Passed | Skipped |
-| --- | --- | ---: | ---: |
-| Windows | Python 3.11.15 | 447 | 17 |
-| Windows | Python 3.12.13 | 447 | 17 |
-| Windows | Python 3.14.3 | 447 | 17 |
-| Linux oracle | Python 3.11.16 | 464 | 0 |
-
-Each interpreter passed all 102 source-guard cases. Windows skips require POSIX,
-bubblewrap, or symlink privileges; the Linux oracle ran them with bwrap 0.12.0
-as uid 1001. Python 3.14's totals combine 398 passes in the guard/bid/sandbox
-run and 49 in the branch-runner run. All pytest base temp directories were
-outside the repository. Plugin regeneration/import probe, mirror byte parity,
-Ruff on changed Python files, and diff whitespace checks passed. This repair
-is commit-and-push only; no PR or deployment is requested.

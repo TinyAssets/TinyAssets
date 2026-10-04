@@ -3,11 +3,14 @@
 ## D1. The offer: discovery rooted at the connection's own host
 
 **Trust root (review round 1, BLOCK).** Authorize, token and registration
-endpoints are trusted ONLY when discovered from the connection's own declared
-hosts. An agent-named URL or issuer is refused at validation: the issuer check
+endpoints are trusted only through the daemon-owned directory (D7), or
+standard discovery from the connection's own declared hosts. An agent-named URL
+or issuer is refused at validation: the issuer check
 only proves metadata came from the URL the agent chose, so such metadata could
 pair a real `authorization_endpoint` with the agent's `token_endpoint`. The
-ask's `oauth` carries only `scopes` and an optional public `client_id`.
+ask's `oauth` carries only `scopes`, a named default-scope `use`, and an
+optional public `client_id`. The directory is tried before the discovery
+sequence below; an inactive or unmatched entry falls through.
 
 `connection_oauth.discovery.resolve_offer(requested, hosts)` returns
 `(offer, "")` or `(None, reason)`:
@@ -53,7 +56,7 @@ per-owner cap.
   no client id, a public client is registered (RFC 7591,
   `token_endpoint_auth_method: none`; a server that issues a secret is
   refused). Begin returns the authorize URL with `state` set to the handle.
-- **Callback.** The fixed redirect URI is `/mcp/app/model-callback/connect`,
+- **Callback.** The fixed redirect URI is `/app/model-callback/connect`,
   because a standard client is registered for an exact URI. It is served by
   the existing callback route as a public shell, with no redemption. The app
   strips `code` and `state` before account sign-in reads the query.
@@ -126,8 +129,9 @@ reconnects with a key. No other stored shape changes.
 - **Consent names every host.** The grant sentence names the authorize host,
   the token host, and every host the sign-in contacts (`offer_hosts`).
 - **Pin.** `answer_connect_with_token` decodes the bundle and refuses unless
-  its `token_url` equals the discovered `token_url` stored on the approved
-  request. `_has_sign_in` trusts only offers with `source: "discovered"`.
+  its `token_url` equals the platform-resolved `token_url` stored on the approved
+  request. `_has_sign_in` trusts platform-resolved offers with
+  `source: "discovered"` or `source: "directory"`; the requester cannot set it.
 - **RFC 9207.** The app forwards the callback's `iss`. `complete` refuses a
   mismatch with the discovered issuer, and refuses a missing `iss` when the
   server advertised `authorization_response_iss_parameter_supported`.
@@ -136,3 +140,34 @@ reconnects with a key. No other stored shape changes.
   (retrying to the 45s deadline) BEFORE sending the refresh token, re-reads
   inside it, and writes the rotated bundle under the same hold (the write is
   retried to the deadline). If the vault cannot be held, nothing is spent.
+
+## D7. Registered clients remain daemon-owned data (2026-10-04)
+
+The packaged `connection_oauth/providers.json`, or an absolute-path
+`TINYASSETS_OAUTH_DIRECTORY` replacement, maps exact declared hosts to trusted
+endpoints, scope sets and environment credential names. Relative overrides
+fail loading with `oauth_directory_invalid`; optional-directory failures are
+logged with a fixed code and fall through to discovery without preventing
+launch. Entries missing credentials are inactive. Explicit scopes must fit
+the union of the entry's declared scope sets.
+An active match takes precedence over a requested public client ID.
+
+Registered clients keep authorization code, S256 PKCE and existing flow
+ownership. Only the opaque provider ID is added to offers and token bundles.
+Before exchange or refresh the daemon re-pins client ID and token URL against
+the current directory, then resolves the secret. Confidential failures expose
+fixed codes/status, not provider prose. Secrets are filtered from child
+environments and removed at daemon startup and before engine/scoped-broker spawn.
+
+Child refresh uses a private loopback capability bound by the launcher to one
+owner and universe. The daemon rechecks canonical admin authority or the
+founder-home binding, plus deposit ownership,
+uses the existing refresh locks and vault admission, and returns success only.
+The child rereads its own vault. Each daemon launch gets a capability revoked
+on engine stop/restart or proxy close/failed startup; child proxies reuse the
+parent capability. Public-client refresh remains unchanged.
+
+These inheritance protections do not isolate same-UID processes from the
+daemon. The concern `docs/concerns/2026-10-04-engine-mcp-shares-daemon-uid.md`
+must be resolved before production secret activation. This extension does not
+claim deployment or a live registered-provider consent pass.

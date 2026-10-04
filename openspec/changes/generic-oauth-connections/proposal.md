@@ -39,7 +39,7 @@ offers OAuth at all. A token that expires today means a reconnect (concern
 2. **One tap to sign in, back automatically.** The rail's "Sign in with
    <host>" starts authorization code + PKCE for a public client (RFC 7591
    dynamic registration when the server advertises it). The provider returns
-   to one fixed callback, `/mcp/app/model-callback/connect`, the existing
+   to one fixed callback, `/app/model-callback/connect`, the existing
    callback route generalized. The app redeems the code once. The token bundle
    is deposited through the same answer path a pasted key uses, under auth
    scheme `oauth2`, and the request is answered.
@@ -72,12 +72,21 @@ broker, rotated-token persistence) plus a public surface (the `oauth` field on
 the `connect` ask, two operations on the app sign-in ingress). A cross-family
 review is owed before landing.
 
+## Registered-client extension (2026-10-04)
+
+The founder registered a platform Google client. A trusted provider directory
+now supplies registered clients generically, before public-client discovery.
+Client secrets remain in daemon custody for exchange and refresh; asks, the
+browser, offers and token bundles never carry them. This extends the original
+public-client scope without adding provider-specific runtime branches. Live
+provider consent and deployment acceptance remain unfinished in task 12.
+
 ## Out of scope
 
 - Device code and client credentials grants (the plan's slice 2 lists them;
   this change is authorization code only, which covers the founder's case).
-- Confidential clients and any client secret. A client secret has no safe path
-  through an ask or a browser.
+- Client secrets supplied through an ask or browser. Registered confidential
+  clients use the trusted directory and daemon custody described above.
 - Porting the first-power preset exchange onto standard OAuth. Its provider's
   flow returns a key, not tokens. It stays data, as slice 6 renders it.
 - Sender-constrained tokens (DPoP, MTLS). Refused loudly as unsupported.
