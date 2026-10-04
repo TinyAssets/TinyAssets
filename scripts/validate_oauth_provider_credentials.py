@@ -9,6 +9,7 @@ from pathlib import Path
 
 ID = "TINYASSETS_OAUTH_GOOGLE_CLIENT_ID"
 SECRET = "TINYASSETS_OAUTH_GOOGLE_CLIENT_SECRET"
+INSTALL = "TINYASSETS_OAUTH_CREDENTIALS_INSTALL"
 
 
 def target_protects_children(revision: str) -> bool:
@@ -47,6 +48,11 @@ def target_protects_children(revision: str) -> bool:
 
 
 def main() -> int:
+    if os.environ.get(INSTALL, "").lower() != "true":
+        print("::notice::OAuth credential installation disabled; removing any retained pair")
+        with Path(os.environ["GITHUB_OUTPUT"]).open("a", encoding="utf-8") as output:
+            output.write("action=remove\n")
+        return 0
     values = [os.environ.get(key, "") for key in (ID, SECRET)]
     action = "skip"
     if any(values) and not all(values):

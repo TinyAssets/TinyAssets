@@ -10,7 +10,12 @@ from pathlib import Path
 import pytest
 import yaml
 
-from scripts.validate_oauth_provider_credentials import ID, SECRET, target_protects_children
+from scripts.validate_oauth_provider_credentials import (
+    ID,
+    INSTALL,
+    SECRET,
+    target_protects_children,
+)
 
 # Resolve via PATH explicitly: Windows subprocess otherwise prefers the
 # system32 WSL launcher, which does not inherit this harness environment.
@@ -54,12 +59,12 @@ def revisions(tmp_path, monkeypatch):
     return old, git("rev-parse", "HEAD")
 
 
-def validate(tmp_path, revision, client_id, secret):
+def validate(tmp_path, revision, client_id, secret, install="true"):
     output = tmp_path / "output"
     output.write_text("")
     proc = subprocess.run(
         [sys.executable, str(VALIDATOR)], capture_output=True, text=True,
-        env={**os.environ, ID: client_id, SECRET: secret,
+        env={**os.environ, ID: client_id, SECRET: secret, INSTALL: install,
              "TARGET_REVISION": revision, "GITHUB_OUTPUT": str(output)},
     )
     for value in (client_id, secret):
@@ -258,3 +263,18 @@ export -f sudo flock timeout docker bash env
         assert "::warning::rollback image lacks" in proc.stdout
     for value in ("client-id", "GOCSPX-secret"):
         assert value not in proc.stdout + proc.stderr + (tmp_path / "ssh-args").read_text()
+
+
+@pytest.mark.parametrize("install", ["", "false", "TRUEE"])
+def test_disabled_install_does_not_validate_or_activate_pair(tmp_path, revisions, install):
+    # Even a complete malformed pair cannot block unrelated deployment when
+    # installation is disabled. Retained host credentials are deactivated.
+    proc, output = validate(tmp_path, revisions[1], "client-id", "bad\nsecret", install)
+    assert proc.returncode == 0
+    assert "::notice::OAuth credential installation disabled" in proc.stdout
+    assert output == "action=remove\n"
+
+
+def test_workflow_requires_explicit_install_opt_in():
+    validation = next(s for s in STEPS if s.get("id") == "oauth")
+    assert validation["env"][INSTALL] == "${{ vars.TINYASSETS_OAUTH_CREDENTIALS_INSTALL }}"

@@ -178,6 +178,7 @@ jobs:
       - name: Validate OAuth provider credentials
         id: oauth
         env:
+          TINYASSETS_OAUTH_CREDENTIALS_INSTALL: ${{ vars.TINYASSETS_OAUTH_CREDENTIALS_INSTALL }}
           TARGET_REVISION: ${{ steps.tag.outputs.revision }}
           TINYASSETS_OAUTH_GOOGLE_CLIENT_ID: ${{ vars.TINYASSETS_OAUTH_GOOGLE_CLIENT_ID }}
           TINYASSETS_OAUTH_GOOGLE_CLIENT_SECRET: ${{ secrets.TINYASSETS_OAUTH_GOOGLE_CLIENT_SECRET }}
@@ -274,6 +275,10 @@ jobs:
           fi
           scp -i ~/.ssh/do_deploy -o BatchMode=yes deploy/install-oauth-credentials.sh \
             "${DO_SSH_USER}@${DO_DROPLET_HOST}:/tmp/install-oauth-credentials.sh"
+          if [ "${OAUTH_ACTION}" != install ]; then
+            TINYASSETS_OAUTH_GOOGLE_CLIENT_ID=''
+            TINYASSETS_OAUTH_GOOGLE_CLIENT_SECRET=''
+          fi
           # The HMAC step installed the env helper. The lock covers the rollback
           # proof and the whole-pair write/delete, including daemon.env rendering.
           printf '%s\n' "${TINYASSETS_OAUTH_GOOGLE_CLIENT_ID}" "${TINYASSETS_OAUTH_GOOGLE_CLIENT_SECRET}" | \

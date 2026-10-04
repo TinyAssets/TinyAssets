@@ -67,6 +67,8 @@ def test_oauth_provider_credentials_step_sources_and_order():
     }
     assert validation["id"] == "oauth"
     assert validation["env"] == {
+        "TINYASSETS_OAUTH_CREDENTIALS_INSTALL":
+            "${{ vars.TINYASSETS_OAUTH_CREDENTIALS_INSTALL }}",
         **credentials,
         "TARGET_REVISION": "${{ steps.tag.outputs.revision }}",
     }
