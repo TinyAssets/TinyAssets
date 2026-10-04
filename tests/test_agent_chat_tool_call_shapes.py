@@ -15,6 +15,7 @@ import logging
 import pytest
 
 from tests import test_interactive_http_agent as composed
+from tests.inference_usage_helpers import accounting_resolver
 from tinyassets.providers import agent_chat_codec as codec
 from tinyassets.providers.api_key_http_provider import ApiKeyHttpProvider
 from tinyassets.providers.protocol_encoders import ProtocolDecodeError
@@ -108,7 +109,8 @@ def _wire(agent, monkeypatch, first, *, times=1):
             agent.wires.append((verb, document))
             return {"status": 200, "body": first if len(agent.wires) <= times else FINAL}
 
-    monkeypatch.setattr(ApiKeyHttpProvider, "_resolve_proxy", lambda *a, **k: Proxy())
+    monkeypatch.setattr(ApiKeyHttpProvider, "_resolve_proxy",
+                        accounting_resolver(lambda *a, **k: Proxy()))
 
 
 @pytest.mark.parametrize("variant", sorted(VARIANTS))
