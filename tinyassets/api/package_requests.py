@@ -117,8 +117,18 @@ def _components(definition: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
         BRANCH_REF_KIND,
         UI_KIND,
     )
+    from tinyassets.command_center_agent_templates import AGENT_REF_KIND
+    from tinyassets.command_center_packages import PACKAGE_KIND
 
     components = definition.get("components") or {}
+    supported = {AUTOMATION_SPEC_KIND, BRANCH_REF_KIND, UI_KIND, PACKAGE_KIND, AGENT_REF_KIND}
+    if not isinstance(components, dict) or any(
+            not isinstance(c, dict) or not isinstance(c.get("kind"), str)
+            or c["kind"] not in supported
+            for c in components.values()):
+        raise ValueError("this package contains components this copier does not support")
+    if any(c["kind"] == UI_KIND and key != "ui" for key, c in components.items()):
+        raise ValueError("this package needs one declared ui component")
     workflows = [{"key": k, **c} for k, c in sorted(components.items())
                  if isinstance(c, dict) and c.get("kind") == BRANCH_REF_KIND]
     automations = [{"key": k, **c} for k, c in sorted(components.items())
@@ -145,6 +155,21 @@ def _plan(uid: str, action: dict[str, Any]) -> dict[str, Any]:
     except PackageError as exc:
         raise ValueError(f"this package cannot be installed: {exc}") from None
     parts = _components(definition)
+    from tinyassets.api.helpers import _base_path
+    from tinyassets.command_center_agent_templates import (
+        resolve_ui_refs,
+        templates,
+        validate_workflows,
+    )
+    from tinyassets.custom_agents import app_ui_workflow_refs
+
+    agent_templates = templates(_base_path(), definition.get("components") or {})
+    validate_workflows(_base_path(), parts["workflows"], version_field="published_version_id")
+    workflow_keys = {workflow["key"] for workflow in parts["workflows"]}
+    for ui in parts["ui"]:
+        resolve_ui_refs(ui, {a["key"] for a in agent_templates})
+        if any(key not in workflow_keys for key in app_ui_workflow_refs(ui).values()):
+            raise ValueError("package workflow_refs must name its selected workflow components")
     needs = component.get("needs") or {}
     have = _connections_you_have(actor)
     connections = [{"name": str(name), "you_have": None if have is None else name in have}
@@ -163,6 +188,7 @@ def _plan(uid: str, action: dict[str, Any]) -> dict[str, Any]:
         "size": human(component["size_bytes"]),
         "blob_sha256": component["blob_sha256"],
         "placement": placement,
+        "agent_templates": agent_templates,
         "workflows": [{"key": w["key"], "name": str(w.get("name") or w["key"]),
                        "version_id": str(w.get("published_version_id") or "")}
                       for w in parts["workflows"]],
@@ -180,6 +206,17 @@ def _plan(uid: str, action: dict[str, Any]) -> dict[str, Any]:
 
 def capture_action(uid: str, action: dict[str, Any]) -> dict[str, Any]:
     """Quarantine: verify and plan now; nothing touches the command center."""
+    from tinyassets.api.helpers import _base_path
+    from tinyassets.api.system_copy_requests import SYSTEM_TAG
+    from tinyassets.command_center_packages import PACKAGE_TAG
+    from tinyassets.custom_agents import get_definition
+
+    definition = get_definition(_base_path(), action["agent_definition_id"])
+    tags = (definition or {}).get("tags") or []
+    if SYSTEM_TAG in tags and PACKAGE_TAG not in tags:
+        from tinyassets.api.system_copy_requests import capture_action as capture_system
+
+        return capture_system(action)
     plan = _plan(uid, action)
     return {**action, "snapshot_digest": plan["digest"], "plan": plan}
 
@@ -187,6 +224,10 @@ def capture_action(uid: str, action: dict[str, Any]) -> dict[str, Any]:
 def tab_text(action: dict[str, Any]) -> tuple[str, str, str]:
     """``(kind, title, body)``, written from the pinned plan only."""
     plan = action["plan"]
+    if plan.get("publication_kind") == "system":
+        from tinyassets.api.system_copy_requests import tab_text as system_tab
+
+        return system_tab(action)
     placement = plan["placement"]
     lines = [f"Package: {_shown(plan['name'], 120)} (version {plan['version']}, "
              f"{plan['size']}), published by {_shown(plan['author'], 80)}"]
@@ -195,6 +236,9 @@ def tab_text(action: dict[str, Any]) -> tuple[str, str, str]:
         lines.extend(f"- {_shown(w['name'])}" for w in plan["workflows"])
     if plan["ui"]:
         lines.append(f"The screen \"{_shown(plan['ui'].get('name'))}\", added to your screens")
+    from tinyassets.command_center_agent_templates import consent_lines
+
+    lines.extend(consent_lines(plan.get("agent_templates", [])))
     if plan["automations"]:
         lines.append("Automations, paused until you resume them:")
         lines.extend(f"- {_shown(a['name'])}" for a in plan["automations"])
@@ -251,6 +295,10 @@ def execute_action(uid: str, pinned: dict[str, Any]) -> dict[str, Any]:
         raise PermissionError("an authenticated owner is required")
     action = pinned["record"]["action"]
     plan = action["plan"]
+    if plan.get("publication_kind") == "system":
+        from tinyassets.api.system_copy_requests import execute_action as copy_system
+
+        return copy_system(uid, pinned)
     if pinned["state"] == "activated":
         return {**pinned["progress"], "already_installed": True}
     if pinned["state"] == "pinned" and _plan(uid, action)["digest"] != pinned["digest"]:
@@ -338,7 +386,10 @@ def _materialise(uid: str, actor: str, pin_id: str, plan: dict[str, Any],
     `LostClaim` if another confirm took over, so no effect runs after that.
     """
     from tinyassets.api.helpers import _base_path
+    from tinyassets.command_center_agent_templates import check_targets
     from tinyassets.command_center_packages import record_progress
+
+    check_targets(_base_path(), uid, actor, pin_id, plan.get("agent_templates", []))
 
     def save() -> None:
         record_progress(_base_path(), universe_id=uid, pin_id=pin_id, progress=progress,
@@ -349,11 +400,29 @@ def _materialise(uid: str, actor: str, pin_id: str, plan: dict[str, Any],
             save()
             progress["workflows"][workflow["key"]] = _remix(pin_id, workflow)
             save()
+    if plan.get("agent_templates"):
+        from tinyassets.command_center_agent_templates import install
+
+        progress.setdefault("agents", {})
+        for template in plan["agent_templates"]:
+            save()
+            # Recheck even a recorded target: an intervening recipient edit is
+            # not permission to wire a new UI to a changed agent.
+            progress["agents"][template["key"]] = install(
+                _base_path(), uid, actor, pin_id, template)
+            save()
     if plan["ui"] and "ui" not in progress:
+        ui = dict(plan["ui"])
+        if "workflow_refs" in ui:
+            ui["workflow_refs"] = {alias: progress["workflows"][key]
+                                   for alias, key in ui["workflow_refs"].items()}
+        if "agent_refs" in ui:
+            ui["agent_refs"] = {alias: progress.get("agents", {})[key]
+                                for alias, key in ui["agent_refs"].items()}
         if "ui_intended" not in progress:
-            progress["ui_intended"] = _free_ui_id(uid, plan["ui"])
+            progress["ui_intended"] = _free_ui_id(uid, ui)
         save()
-        progress["ui"] = _add_ui(uid, plan["ui"], progress["ui_intended"])
+        progress["ui"] = _add_ui(uid, ui, progress["ui_intended"])
         save()
     for automation in plan["automations"]:
         if automation["key"] not in progress["automations"]:
@@ -501,7 +570,8 @@ def _write_files(uid: str, plan: dict[str, Any], files: dict[str, bytes],
             kept.append(path)
 
 
-def list_packages(*, query: str = "", author: str = "", limit: int = 30) -> list[dict[str, Any]]:
+def list_packages(*, query: str = "", author: str = "", limit: int = 30,
+                  offset: int = 0) -> list[dict[str, Any]]:
     """The listing: one row per published package version, from its definition.
 
     Name, description and author are the publisher's words; size, version, file
@@ -512,11 +582,28 @@ def list_packages(*, query: str = "", author: str = "", limit: int = 30) -> list
     from tinyassets.command_center_packages import PACKAGE_KIND, PACKAGE_TAG, human
     from tinyassets.custom_agents import list_definitions
 
+    if type(offset) is not int or offset < 0:
+        raise ValueError("offset must be a non-negative integer")
+    bounded_limit = max(1, min(int(limit), 100))
+
+    def definitions():
+        start = 0
+        while True:
+            batch = list_definitions(_base_path(), query=query, tags=[PACKAGE_TAG],
+                                     author_id=author, limit=100, offset=start)
+            yield from batch
+            if len(batch) < 100:
+                break
+            start += len(batch)
+
     rows = []
-    for definition in list_definitions(_base_path(), query=query, tags=[PACKAGE_TAG],
-                                       author_id=author, limit=limit):
+    matched = 0
+    for definition in definitions():
         component = (definition.get("components") or {}).get("package") or {}
         if component.get("kind") != PACKAGE_KIND:
+            continue
+        matched += 1
+        if matched <= offset:
             continue
         rows.append({
             "agent_definition_id": definition["agent_definition_id"],
@@ -530,6 +617,8 @@ def list_packages(*, query: str = "", author: str = "", limit: int = 30) -> list
             "needs": component.get("needs") or {},
             "created_at": definition.get("created_at"),
         })
+        if len(rows) >= bounded_limit:
+            break
     return rows
 
 

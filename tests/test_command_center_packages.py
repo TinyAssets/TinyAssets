@@ -898,6 +898,301 @@ def test_a_bare_opaque_run_is_listed_for_review_not_dropped():
     assert ccp.review_note(data) == ccp.N_OPAQUE
 
 
+def test_the_founders_private_grounding_never_travels(tmp_path):
+    """``orgchart.md`` shipped in a published package (post-merge review of #4315).
+
+    ``api/interlocutor.FOUNDER_PRIVATE_GROUNDING`` withholds these from every
+    non-founder interlocutor *whatever* the command center's visibility level,
+    and the publish confirmation says brain files were left out -- but the
+    package's own brain list spelled out four names and omitted this one, so a
+    published command center carried the founder's collaborators, delegations
+    and reporting lines.
+    """
+    from tinyassets.api.interlocutor import FOUNDER_PRIVATE_GROUNDING
+    from tinyassets.automation_context import BRAIN_FILES
+
+    # The ratchet, over both authorities: the package's exclusions are DERIVED
+    # from these, so a file added to either cannot start travelling without
+    # this test failing.
+    assert {ccp.fold(n) for n in FOUNDER_PRIVATE_GROUNDING} <= ccp._BRAIN_F
+    governed = set(BRAIN_FILES) - set(ccp.HARNESS_ROOT_FILES)
+    assert {ccp.fold(n) for n in governed} <= ccp._BRAIN_F
+
+    universe = tmp_path / "cc"
+    universe.mkdir()
+    for name in ("orgchart.md", "origin.md", "body.md"):
+        (universe / name).write_text(f"private {name}\n", encoding="utf-8")
+    # The control lives in a subfolder: the ROOT is an allowlist, so a new
+    # root file stays home by design (test_an_unlisted_root_file_stays_home).
+    _write(universe, "notes/keep.md", "a shareable note\n")
+
+    files, excluded = ccp.collect(universe, exclude=[], memory_items={})
+    assert "notes/keep.md" in files
+    for name in ("orgchart.md", "origin.md", "body.md"):
+        assert name not in files
+        assert any(row["path"] == name for row in excluded)
+
+
+def test_the_published_roster_agents_identity_still_travels(tmp_path):
+    """``identity.md`` is a brain file AND a harness root file, and the harness
+    set travels on purpose: ``destination`` remaps those into
+    ``agents/<slug>/`` so a published command center arrives as a roster agent.
+    Excluding it with the rest of the governed set would install an agent with
+    no identity, so the derivation subtracts ``HARNESS_ROOT_FILES``.
+    """
+    from tinyassets.automation_context import BRAIN_FILES
+
+    assert "identity.md" in BRAIN_FILES and "identity.md" in ccp.HARNESS_ROOT_FILES
+    assert ccp.fold("identity.md") not in ccp._BRAIN_F
+
+    universe = tmp_path / "cc"
+    universe.mkdir()
+    (universe / "identity.md").write_text("I am the village keeper.\n", encoding="utf-8")
+
+    files, _excluded = ccp.collect(universe, exclude=[], memory_items={})
+    assert "identity.md" in files
+    assert ccp.destination("identity.md", "alice-village") == "agents/alice-village/identity.md"
+
+
+def test_the_publishers_own_request_queue_never_travels(tmp_path):
+    """``requests.json`` shipped too, and it is not inert on arrival.
+
+    It holds the publisher's pending request text, and the daemon turns pending
+    rows into active work targets (``work_targets``), so an installed copy
+    carried someone else's queue into the installer's command center.
+    """
+    from tinyassets.work_targets import REQUESTS_FILENAME
+
+    assert ccp.fold(REQUESTS_FILENAME) in ccp._RUNTIME_F
+
+    universe = tmp_path / "cc"
+    universe.mkdir()
+    (universe / REQUESTS_FILENAME).write_text(
+        '[{"id":"demo","status":"pending","text":"Prepare the acquisition offer"}]',
+        encoding="utf-8")
+    _write(universe, "notes/keep.md", "a shareable note\n")
+
+    files, excluded = ccp.collect(universe, exclude=[], memory_items={})
+    assert "notes/keep.md" in files
+    assert REQUESTS_FILENAME not in files
+    assert any(row["path"] == REQUESTS_FILENAME for row in excluded)
+
+
+def test_the_publish_sentence_names_what_travels(tmp_path):
+    """The sentence describes the carried kinds, not a removal list.
+
+    A sentence that lists what was removed can only ever be as complete as the
+    removal list was, and the previous one promised "your brain files and
+    platform state were left out" while orgchart.md, requests.json and 21
+    other platform root files travelled. Two exactness points are pinned here
+    because they are easy to "simplify" back into falsehood: "private" brain
+    files (identity.md travels as the roster agent's identity) and memory being
+    conditional (named entries do travel).
+    """
+    from tinyassets.api.publish_requests import PACKAGE_SENTENCE
+
+    # Case-insensitive: these phrases may start a sentence, and which one does
+    # is incidental to the claim being made.
+    said = PACKAGE_SENTENCE.lower()
+    assert "your private brain files" in said
+    assert "your brain files" not in said.replace("your private brain files", "")
+    assert "your memory unless you named entries" in said
+    assert "anything else sitting in the top folder stay home" in said
+    # The existing tab test asserts this phrase in lowercase; keep it so.
+    assert "detection cannot prove" in PACKAGE_SENTENCE
+
+    # identity.md really does travel, which is why the wording is qualified.
+    assert ccp.structural_exclusion("identity.md") is None
+    # Memory is conditional in both directions.
+    memory = b"- [m_abc] a remembered line\n"
+    assert ccp.classify(ccp.MEMORY_FILE, memory, exclude=[], memory_items={})[0] is None
+    assert ccp.classify(ccp.MEMORY_FILE, memory, exclude=[],
+                        memory_items={ccp.MEMORY_FILE: ["m_abc"]})[0] is not None
+
+
+def test_an_unlisted_root_file_stays_home(tmp_path):
+    """The root is an ALLOWLIST, which is the whole point of this change.
+
+    Both real leaks were root files, and a grep of the root-level filenames
+    platform code writes found 21 more that travelled -- including
+    ``branch_tasks.json``, the work queue. Enumerating private names could
+    never finish; the root being closed does.
+    """
+    universe = tmp_path / "cc"
+    universe.mkdir()
+    for name in ("README.md", "surprise.yaml", "a-feature-nobody-wrote-yet.json"):
+        _write(universe, name, "content\n")
+    _write(universe, "notes/keep.md", "a shareable note\n")
+
+    files, excluded = ccp.collect(universe, exclude=[], memory_items={})
+    assert "notes/keep.md" in files, "a user's own folder still travels"
+    for name in ("README.md", "surprise.yaml", "a-feature-nobody-wrote-yet.json"):
+        assert name not in files, name
+        assert any(row["path"] == name and row["reason"] == ccp.R_ROOT_UNLISTED
+                   for row in excluded), name
+
+
+def test_every_platform_written_root_file_stays_home():
+    """The 21 found after #4363, plus the two it closed.
+
+    None of these is named in ``ROOT_FILES``, so each is already covered by the
+    allowlist -- this pins that, so nobody has to keep a private-name list
+    complete ever again. The four with a verified ``Path(universe_path) /
+    FILENAME`` site are marked.
+    """
+    platform_root = [
+        "branch_tasks.json",            # branch_tasks.py:36  (the work queue)
+        "branch_tasks_archive.json",    # branch_tasks.py:37
+        "enrichment_signals.json",      # enrichment_signals.py:19
+        "hard_priorities.json",         # work_targets.py:134
+        "requests.json", "orgchart.md", "onboarding.json", "preferences.json",
+        "priorities.yaml", "goals.md", "plan.md", "progress.md", "projects.md",
+        "proposals.md", "characters.md", "acquisition_presets.json",
+        "bid_ledger.json", "bid_execution_log.json", "assignment.json",
+        "host.json", "current.json", "output.json", "auth.json",
+    ]
+    for name in platform_root:
+        assert ccp.structural_exclusion(name) is not None, name
+        assert ccp.fold(name) not in ccp._ROOT_FILES_F, name
+
+
+def test_the_platform_folders_are_denied_from_their_writers_constants(tmp_path):
+    """Root FOLDERS cannot be a closed allowlist -- a user may make any folder,
+    and their content is most of what sharing a command center means. So the
+    platform's own folders are DERIVED from the constants their writers use,
+    not hand-listed.
+
+    The first version of this test hand-listed six names, and the review
+    pointed out that adding ``artifacts/`` would leave it green -- which is
+    exactly what had happened: ``artifacts/reviews``,
+    ``artifacts/executions`` and ``artifacts/discarded_targets`` were
+    published, and the discard archive preserves a whole work target including
+    its request text. A hand-list cannot guard against the omission that
+    produced it.
+    """
+    from tinyassets.work_targets import (
+        ARTIFACTS_DIRNAME,
+        DISCARD_ARCHIVE_DIRNAME,
+        EXECUTIONS_DIRNAME,
+        REVIEWS_DIRNAME,
+    )
+
+    # The writers' own constants, so a new artifact subtree is covered the day
+    # it is added and a renamed one fails here instead of leaking.
+    assert ccp.fold(ARTIFACTS_DIRNAME) in {ccp.fold(n) for n in ccp.NEVER_DIRS}
+    for sub in (REVIEWS_DIRNAME, EXECUTIONS_DIRNAME, DISCARD_ARCHIVE_DIRNAME):
+        rel = f"{ARTIFACTS_DIRNAME}/{sub}"
+        assert ccp.dir_exclusion(rel) is not None, rel
+        assert ccp.structural_exclusion(f"{rel}/record.json") == ccp.R_WORK_RECORDS
+
+    # Every never-folder names which kind of state it is, asserted at import.
+    for name in ccp.NEVER_DIRS:
+        assert ccp.dir_exclusion(name) is not None, name
+
+    for rel_dir in (".runtime", ".credentials", "__pycache__", "node_modules"):
+        assert ccp.dir_exclusion(rel_dir) is not None, rel_dir
+
+    # And a user's own folder is not denied, which is the line being held.
+    assert ccp.dir_exclusion("notes") is None
+    assert ccp.dir_exclusion("data") is None
+
+
+def test_the_owners_uploads_stay_home(tmp_path):
+    """``canon/`` holds uploads. Private by default (host decision 2026-10-03):
+    an upload can be anything personal, and Hard Rule 9 makes it authoritative
+    content the platform never reshapes -- so it is not the platform's to
+    publish on the owner's behalf.
+
+    This also pins the one place the folder is named. Unlike ``artifacts/``,
+    this is a name MATCH not a derivation: every writer spells the folder as a
+    bare literal (``api/universe.py``, ``work_targets.py``), so
+    ``canon_io.CANON_DIRNAME`` holds it once. If someone renames the folder at
+    those call sites without changing the constant, this test is what notices.
+    """
+    from tinyassets.ingestion.canon_io import CANON_DIRNAME
+
+    assert CANON_DIRNAME == "canon", "the writers spell it this way as a literal"
+    assert ccp.fold(CANON_DIRNAME) in {ccp.fold(n) for n in ccp.NEVER_DIRS}
+
+    universe = tmp_path / "cc"
+    universe.mkdir()
+    secret = "the acquisition term sheet, uploaded by Alice"
+    _write(universe, f"{CANON_DIRNAME}/sources/termsheet.md", secret + "\n")
+    _write(universe, f"{CANON_DIRNAME}/index.json", '{"sources": 1}')
+    _write(universe, "notes/keep.md", "a shareable note\n")
+
+    files, excluded = ccp.collect(universe, exclude=[], memory_items={})
+    assert "notes/keep.md" in files
+    assert not [p for p in files if p.startswith(CANON_DIRNAME)]
+    assert secret not in b"".join(files.values()).decode("utf-8", "replace")
+    assert any(row["reason"] == ccp.R_UPLOADS for row in excluded)
+
+
+def test_a_discarded_work_target_does_not_travel(tmp_path):
+    """The P1 the review found, as a writer-to-package regression.
+
+    ``work_targets.discard_archive_dir`` preserves the whole target under
+    ``artifacts/discarded_targets/``, including the request text a published
+    package must never carry -- the same class as ``requests.json``, two
+    folders down where the root allowlist could not see it.
+    """
+    from tinyassets.work_targets import ARTIFACTS_DIRNAME, DISCARD_ARCHIVE_DIRNAME
+
+    universe = tmp_path / "cc"
+    universe.mkdir()
+    secret = "Prepare the acquisition offer for Acme"
+    _write(universe, f"{ARTIFACTS_DIRNAME}/{DISCARD_ARCHIVE_DIRNAME}/req_demo.json",
+           '{"title": "' + secret + '"}')
+    _write(universe, "notes/keep.md", "a shareable note\n")
+
+    files, _excluded = ccp.collect(universe, exclude=[], memory_items={})
+    assert "notes/keep.md" in files
+    assert not [p for p in files if p.startswith(ARTIFACTS_DIRNAME)]
+    assert secret not in b"".join(files.values()).decode("utf-8", "replace")
+
+
+def test_the_listing_the_owner_reads_is_the_bundle_that_ships(tmp_path):
+    """Every kind that travelled before this change still travels, and the
+    paths the owner confirms against are the paths and BYTES in the blob.
+
+    The first version of this only called ``collect`` and asserted the two
+    sets were disjoint, which the review correctly said proves nothing about
+    preview-versus-bundle. This goes through ``build_publish_package`` and
+    decodes the blob with ``check_blob``, so the manifest the tab renders from
+    and the bytes an installer receives are compared directly.
+    """
+    universe = tmp_path / "cc"
+    universe.mkdir()
+    for rel, body in TRAVELS.items():
+        _write(universe, rel, body)
+    _write(universe, "app.html", "<main>ui</main>\n")
+    # An excluded control, so the comparison is not vacuous.
+    _write(universe, "founder.md", "Alice lives on Elm Street.\n")
+
+    built = ccp.build_publish_package(
+        universe, name="GTM Village", description="A village",
+        options={"exclude": [], "memory_items": {}}, branch_rows=[],
+        workflows=[], ui="", automations=[])
+
+    _manifest, carried = ccp.check_blob(built["blob"])
+    rows = built["manifest"]["files"]
+    listed = {row["path"] for row in rows}
+    excluded = {row["path"] for row in built["excluded"]}
+
+    for rel, body in TRAVELS.items():
+        assert rel in carried, rel
+        assert carried[rel] == body.encode("utf-8"), rel
+    assert "app.html" in carried
+    # The listing IS the bundle: same paths, and the digests the tab shows are
+    # the digests of the bytes an installer decodes.
+    assert listed == set(carried)
+    for row in rows:
+        assert row["sha256"] == hashlib.sha256(carried[row["path"]]).hexdigest(), row["path"]
+        assert row["size"] == len(carried[row["path"]]), row["path"]
+    assert not (excluded & listed)
+    assert "founder.md" in excluded and "founder.md" not in carried
+
+
 def test_a_one_class_value_is_neither_excluded_nor_flagged():
     # A one-class run the parser reads as opaque, even assigned to a secret
     # name: in the live village these were minified-code identifiers, not keys.

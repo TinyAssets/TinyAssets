@@ -203,7 +203,19 @@ jobs:
           # which voids a head-pinned receipt anyway. Telling the author now
           # means they fix it and get stamped once; bundling it with the receipt
           # failure would have them get stamped and then void it.
-          if ! printf '%s\n' "$CHANGED" \
+          #
+          # The `-f` guard is REQUIRED, not defensive. Under
+          # pull_request_target this workflow is the trusted copy from the
+          # default branch, but the CHECKOUT above is the PR's own base sha --
+          # so for any PR whose base predates the script, the workflow calls a
+          # file that is not there. Without this, python exited 2 ("can't open
+          # file"), the `if !` read that as "a forbidden path was found", and
+          # the REQUIRED `Diff scope declared` check failed every such PR with
+          # a message naming the wrong cause. The step above does exactly this
+          # for scripts/test_hygiene_gate.py and I did not copy it.
+          if [ ! -f scripts/check_forbidden_pr_paths.py ]; then
+            echo "::notice::base predates scripts/check_forbidden_pr_paths.py; nothing to check"
+          elif ! printf '%s\n' "$CHANGED" \
               | python scripts/check_forbidden_pr_paths.py \
                 2> "$RUNNER_TEMP/forbidden-paths.txt"; then
             echo "::error::this PR changes a path no PR may change"

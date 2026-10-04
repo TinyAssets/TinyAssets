@@ -44,6 +44,9 @@ TURN_PATH = (
     "tinyassets/config.py",
     "tinyassets/universe_tools.py",
     "tinyassets/engine_mcp_server.py",
+    # The agent writes its own MEMORY.md (harness D7a): every reader of it.
+    "tinyassets/memory_items.py",
+    "tinyassets/harness_history.py",
     # The agent writes its own wiki (harness W): every wiki reader.
     "tinyassets/api/helpers.py",
     "tinyassets/api/wiki.py",
@@ -61,8 +64,6 @@ ALLOWED = {
         "reads /sys/fs/cgroup/<jail>/cgroup.procs, not a universe path",
     ("tinyassets/universe_tools.py", "_try_lock_one"):
         "opens a slot lock under the data dir's .universe-tool-slots, O_NOFOLLOW",
-    ("tinyassets/soul_edit.py", "_soul_lock"):
-        "opens .soul.lock for flock; a hidden root entry the tool jail masks",
     ("tinyassets/universe_intelligence.py", "read_operating_instructions"):
         "creates the seed AGENTS.md with O_CREAT|O_EXCL|O_NOFOLLOW and writes it; "
         "reading it goes through universe_files",

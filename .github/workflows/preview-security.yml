@@ -23,6 +23,16 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  # One group per PR, so a new push cancels the superseded run. Every non-PR run
+  # gets its OWN group via `run_id`, so a `push: main` run has nothing to cancel
+  # and cannot be cancelled by a PR -- and `cancel-in-progress` is conditional
+  # on top of that, as defence in depth. Both layers, because tests.yml grouped
+  # non-PR runs by ref and each push then killed the previous main run: it read
+  # as coverage while providing none.
+  group: preview-security-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   contract:
     name: Preview trust-boundary contract

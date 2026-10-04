@@ -35,6 +35,7 @@ class WorkAgentAdapter:
         self.candidates = getattr(session, "_work_candidates", None)
         self.has_candidate_order = self.candidates is not None
         self._staged_next = None
+        self._budget_exclusions = set()
         # This turn's measured context need, once a model's window proved too
         # small (the coordinator's overflow path). Per turn, never the run's.
         self.min_context = None
@@ -71,8 +72,44 @@ class WorkAgentAdapter:
             raise ProviderAuthorityHeldError("workflow candidate scope changed")
         self._staged_next = self.candidates.next_candidate(
             self.source_policy, exhaustion, min_context=self.min_context,
+            local_exclusions=self._budget_exclusions,
         )
         return self._staged_next
+
+    def budget_fallback(self, owner, universe, budget):
+        from tinyassets.request_budget import RequestBudgetExceeded, budget_for_context
+
+        if self.candidates is None:
+            return None
+        if owner != self.receipt.principal_id or universe != self.receipt.universe_id:
+            raise ProviderAuthorityHeldError("workflow candidate scope changed")
+        excluded = self._budget_exclusions | {self.selection}
+        while True:
+            candidate = self.candidates.next_candidate(
+                self.source_policy, min_context=self.min_context, local_exclusions=excluded,
+            )
+            if candidate is None:
+                return None
+            context = UniverseContext(
+                universe_dir=self.session._universe_dir, config=None,
+                model_selection=candidate,
+            )
+            # The admitted catalogue supplies zero-price evidence for ordinary
+            # model IDs too; no provider discovery or grant is minted here.
+            from tinyassets.request_budget import candidate_is_metered_free
+
+            limited = (candidate_is_metered_free(context, self.candidates.catalog, owner=owner)
+                       or budget_for_context(context, owner=owner) is not None)
+            try:
+                budget.check_available(source_ref=candidate.connection_id, free=limited)
+            except RequestBudgetExceeded as exc:
+                if exc.reason not in RequestBudgetExceeded.SOURCE_LIMIT_REASONS:
+                    return None
+                excluded.add(candidate)
+                continue
+            self._budget_exclusions = excluded
+            self._staged_next = candidate
+            return candidate
 
     def require_context(self, tokens):
         """Only models whose window holds ``tokens`` may take this turn from here."""
@@ -105,6 +142,7 @@ class WorkAgentAdapter:
             self._identity(context, config, self._staged_next)
             if self.candidates.next_candidate(
                 self.source_policy, min_context=self.min_context,
+                local_exclusions=self._budget_exclusions,
             ) != self._staged_next:
                 raise ProviderAuthorityHeldError("workflow candidate was exhausted")
         else:

@@ -78,8 +78,9 @@ CONTEXT_TOKENS_ENV = "TINYASSETS_ENGINE_MODEL_CONTEXT_TOKENS"
 #: query=... and read the next page" tells it what to do next.
 NARROWING_HINTS = {
     "read_graph": (
-        'narrow this read: pass query="<text>" to filter, and limit / '
-        "output_offset to page through the rest one chunk at a time"
+        "use this target's documented selectors (query=... where supported); "
+        "pass a returned next_offset as output_offset only where documented; "
+        "a target without a cursor does not promise offset paging"
     ),
     "read": (
         "read less of this file at a time: pass offset and limit to page "
@@ -90,7 +91,7 @@ NARROWING_HINTS = {
         "rather than asking for everything and reading it here"
     ),
     "browse_commons": (
-        'narrow the search: pass query="<text>" and a smaller limit, then page'
+        'narrow with query and limit; agents/packages support returned next_offset'
     ),
 }
 _GENERIC_HINT = (

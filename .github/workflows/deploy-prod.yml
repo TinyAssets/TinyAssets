@@ -501,6 +501,7 @@ jobs:
           set -euo pipefail
           scp -i ~/.ssh/do_deploy -o BatchMode=yes \
               deploy/deploy_fail_safe.sh deploy/install-tinyassets-env.sh \
+              deploy/snapshot_candidate_evidence.sh \
               "${DO_SSH_USER}@${DO_DROPLET_HOST}:/tmp/"
           set +e
           out="$(ssh -i ~/.ssh/do_deploy -o BatchMode=yes "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
@@ -539,6 +540,33 @@ jobs:
           set -euo pipefail
           python scripts/probe_app_surface.py --verbose
 
+      # Evidence BEFORE the rollback destroys it, WITHOUT delaying the
+      # rollback (Codex P1 on #4367: two 25s SSH calls plus local sanitizing ran
+      # while the broken candidate was still serving). This step is one SSH
+      # round trip that writes raw bytes to host temp files and nothing else;
+      # the rollback runs next; fetch, sanitize and upload happen after it.
+      #
+      # #2442 dropped this path along with the stop-writer fence it was written
+      # beside, leaving scripts/sanitize_startup_diagnostics.py with no caller
+      # at all -- so a failed prod deploy kept no container state and no logs.
+      #
+      # Scope: rc 0 only -- the swap succeeded and a public surface then went
+      # red, the one window where the candidate container still exists. An
+      # unhealthy candidate (rc 2) was rolled back inside deploy_fail_safe.sh
+      # before control returned, so reading logs then would mislabel the
+      # restored image's output --
+      # docs/concerns/2026-10-03-unhealthy-candidate-rollback-keeps-no-diagnostics.md
+      - name: Snapshot failed candidate evidence (before rollback)
+        id: candidate_snapshot
+        if: ${{ always() && steps.deploy.outputs.rc == '0' && (failure() || cancelled()) }}
+        continue-on-error: true
+        timeout-minutes: 1
+        run: |
+          set +e
+          timeout 25s ssh -i ~/.ssh/do_deploy               -o BatchMode=yes               -o ConnectTimeout=10               -o ServerAliveInterval=5               -o ServerAliveCountMax=2               "${DO_SSH_USER}@${DO_DROPLET_HOST}"               "sudo bash /tmp/snapshot_candidate_evidence.sh"
+          echo "ssh_rc=$?" >> "$GITHUB_OUTPUT"
+          exit 0
+
       # Name kept verbatim: three test files key on this step by name
       # (test_deploy_prod_workflow, test_expected_instance_state_preparation,
       # test_prune_units). The CONDITION is what had to change — the app probe
@@ -563,6 +591,90 @@ jobs:
           # is undoing.
           ssh -i ~/.ssh/do_deploy -o BatchMode=yes "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
             "sudo HEALTH_TIMEOUT=180 bash /tmp/deploy_fail_safe.sh --restore-bundle '${PREV_IMAGE}'"
+
+      # AFTER the rollback: nothing here touches production, so none of it can
+      # delay recovery. Fetches what the snapshot wrote, sanitizes locally, and
+      # records the evidence as unavailable when the container was already gone
+      # (Codex P2) rather than leaving a manifest that implies a match.
+      - name: Sanitize failed candidate diagnostics
+        id: candidate_diagnostics
+        if: ${{ always() && steps.candidate_snapshot.outcome != 'skipped' }}
+        continue-on-error: true
+        timeout-minutes: 2
+        env:
+          TARGET_IMAGE_REF: ${{ steps.tag.outputs.image_ref }}
+          TARGET_REVISION: ${{ steps.tag.outputs.revision }}
+        run: |
+          set +e
+          evidence_dir="${RUNNER_TEMP}/candidate-startup-diagnostics"
+          state_raw="${RUNNER_TEMP}/ta-candidate.state"
+          raw_log="${RUNNER_TEMP}/ta-candidate.log"
+          cid_file="${RUNNER_TEMP}/ta-candidate.cid"
+          mkdir -p "${evidence_dir}"
+          printf '{"candidate_identity_match":false,"capture":"unavailable"}\n' \
+              > "${evidence_dir}/daemon-state.json"
+          : > "${raw_log}"
+          : > "${cid_file}"
+
+          timeout 40s scp -i ~/.ssh/do_deploy -o BatchMode=yes \
+              -o ConnectTimeout=10 \
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}:/tmp/ta-candidate.cid" \
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}:/tmp/ta-candidate.state" \
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}:/tmp/ta-candidate.log" \
+              "${RUNNER_TEMP}/" 2>/dev/null
+
+          container_id="$(head -c 128 "${cid_file}" 2>/dev/null | tr -dc 'a-f0-9')"
+          candidate_identity_match=false
+          if [ -n "${container_id}" ] && [ -s "${state_raw}" ]; then
+            if python scripts/sanitize_startup_diagnostics.py \
+                --state \
+                --target-revision "${TARGET_REVISION}" \
+                --target-image-ref "${TARGET_IMAGE_REF}" \
+                < "${state_raw}" \
+                > "${evidence_dir}/daemon-state.json" 2>/dev/null; then
+              candidate_identity_match=true
+            fi
+          fi
+          if [ "${candidate_identity_match}" != "true" ]; then
+            : > "${raw_log}"
+          fi
+          python scripts/sanitize_startup_diagnostics.py \
+              < "${raw_log}" \
+              > "${evidence_dir}/daemon-signals.json"
+          rm -f "${raw_log}" "${state_raw}" "${cid_file}"
+
+          CONTAINER_ID="${container_id}" python - \
+              "${evidence_dir}/manifest.json" \
+              "${evidence_dir}/daemon-state.json" <<'PY'
+          import datetime
+          import json
+          import os
+          import pathlib
+          import re
+          import sys
+
+          revision = os.environ["TARGET_REVISION"]
+          if not re.fullmatch(r"[0-9a-f]{40}", revision):
+              revision = "unavailable"
+          container_id = os.environ.get("CONTAINER_ID") or ""
+          if not re.fullmatch(r"[0-9a-f]{12,64}", container_id):
+              container_id = "unavailable"
+          state = json.loads(pathlib.Path(sys.argv[2]).read_text(encoding="utf-8"))
+          manifest = {
+              "schema_version": 2,
+              "run_id": int(os.environ["GITHUB_RUN_ID"]),
+              "run_attempt": int(os.environ["GITHUB_RUN_ATTEMPT"]),
+              "target_revision": revision,
+              "container_id": container_id,
+              "candidate_identity_match": state.get("candidate_identity_match") is True,
+              "captured_utc": datetime.datetime.now(datetime.UTC).isoformat(),
+          }
+          pathlib.Path(sys.argv[1]).write_text(
+              json.dumps(manifest, sort_keys=True, separators=(",", ":")) + "\n",
+              encoding="utf-8",
+          )
+          PY
+          exit 0
 
       - name: Publish release-state receipt
         if: ${{ success() }}
@@ -674,6 +786,29 @@ jobs:
             --title "deploy-failed: run ${{ github.run_id }}" \
             --label "deploy-failed" \
             --body "Fail-safe deploy did not fully succeed. deploy rc=${{ steps.deploy.outputs.rc }}, result=${{ steps.deploy.outputs.result }}, deployed_image=${{ steps.deploy.outputs.deployed_image }}. Run: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}. Prod is NOT left at zero (the script restores the previous image), but the target release did not become healthy — investigate before retrying." 2>&1 | tail -2 || true
+
+      # After every rollback and bookkeeping step, so the artifact is written
+      # once the deploy has finished moving. Gated on the capture SUCCEEDING,
+      # not on the deploy failing: `if-no-files-found: error` would otherwise
+      # fail a green run that never captured anything. The old gate also
+      # required the stop-writer cleanup outputs, which #2442 retired with the
+      # fence itself -- there is nothing left to race.
+      # Non-fatal and bounded (Codex P2): this runs on the recovery path, where
+      # an artifact-service error or a slow upload must not fail the job or hold
+      # the production-host-mutation group any longer than necessary --
+      # release-reconcile defers while a matching deploy is unfinished. `warn`
+      # rather than `error` because an empty evidence dir is a legitimate
+      # outcome when the container was already gone.
+      - name: Upload failed candidate startup diagnostics
+        if: ${{ always() && steps.candidate_diagnostics.outcome == 'success' }}
+        continue-on-error: true
+        timeout-minutes: 3
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: candidate-startup-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/candidate-startup-diagnostics
+          if-no-files-found: warn
+          retention-days: 7
 
       - name: Summary
         if: ${{ always() }}

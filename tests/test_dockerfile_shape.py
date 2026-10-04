@@ -57,11 +57,22 @@ def test_dockerfile_builder_has_nodejs_for_npm():
     """Builder stage must include nodejs + npm to run npm install."""
     text = DOCKERFILE.read_text(encoding="utf-8")
     assert "nodesource" in text, (
-        "Dockerfile must use nodesource to install Node.js 20 "
-        "(Debian default nodejs is too old for @openai/codex)"
+        "Dockerfile must use nodesource to install Node.js 22 "
+        "(Debian default nodejs is too old for either vendored CLI)"
     )
-    assert "NODEJS_VERSION=20." in text, (
-        "Dockerfile must pin the exact NodeSource nodejs package version"
+    # Node 22, not 20: @anthropic-ai/claude-code declares engines.node >=22.0.0
+    # from 2.1.288 (it was >=18.0.0 at 2.1.183). @openai/codex asks >=16, so 22
+    # satisfies both. Both stages must agree or the copied native addons break.
+    assert text.count("NODEJS_VERSION=22.") == 2, (
+        "both Dockerfile stages must pin the exact NodeSource nodejs 22 package "
+        "version; claude-code 2.1.288 requires Node >= 22"
+    )
+    assert "node_20.x" not in text, (
+        "the nodesource apt repo must be node_22.x in every stage, or apt "
+        "installs a Node 20 package that cannot satisfy the pin"
+    )
+    assert text.count("deb.nodesource.com/node_22.x") == 2, (
+        "both stages must point at the node_22.x nodesource repo"
     )
 
 
@@ -568,3 +579,28 @@ def test_ta_op_is_built_in_the_builder_stage_and_installed_read_only_outside_app
     # deploy/compose.yml, the keepalive workflows and env-apply (slice 2),
     # asserted by tests/test_drop_first_operational_migration.py.
     assert "ta-op pulse" not in text and "ta-op canary" not in text
+
+
+def test_the_final_stage_ships_the_ui_preview_headless_shell():
+    """custom-ui-assets D6: the agent renders its own UI to see it. The headless
+    shell is installed as root in the FINAL stage (the builder's copy would not
+    carry its apt libraries), readable by uid 1001, at a fixed path, pinned by
+    the exact Playwright version the venv installs."""
+    import tomllib
+
+    text = DOCKERFILE.read_text(encoding="utf-8")
+    final = text.split("# ---------- Stage 2: final ----------", 1)[1]
+    assert "ENV PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright" in final
+    install = final.index("playwright install --with-deps --only-shell chromium")
+    assert install < final.index("USER tinyassets"), "installed as root, before USER"
+    assert "chmod -R a+rX /opt/ms-playwright" in final
+    assert '".[mcp,browser]"' in text
+    extras = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    # One extra, shared with the real-browser CI proof: two names for the same
+    # pin would let the image and the proof drift onto different Chromium builds.
+    optional = extras["project"]["optional-dependencies"]
+    assert optional["browser"] == ["playwright==1.58.0"], (
+        "exact pin: it decides the Chromium build")
+    assert "preview" not in optional, "the image installs `browser`, not a second extra"
+    # Interim placement is written where the box image will look for it.
+    assert "sealed box image" in final
