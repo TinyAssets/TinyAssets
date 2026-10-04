@@ -218,14 +218,12 @@ async def engine_dispatch(server):
         from fastmcp.exceptions import ValidationError as MCPValidationError
         from pydantic import ValidationError
 
-        from tinyassets.engine_result_bounds import bound_tool_text, resolve_ceiling
+        from tinyassets.engine_mcp_server import bounded_tool_error
 
         try:
             result = await server.mcp.call_tool(name, arguments)
         except (ToolError, MCPValidationError, ValidationError) as exc:
-            text = str(exc)
-            bounded = bound_tool_text(text, tool=name, limit=resolve_ceiling())
-            return {"error": text if bounded is None else bounded}
+            return {"error": bounded_tool_error(str(exc), tool=name)}
         blocks = [block.model_dump(exclude_none=True) for block in result.content]
         if len(blocks) == 1 and blocks[0].get("type") == "text":
             try:

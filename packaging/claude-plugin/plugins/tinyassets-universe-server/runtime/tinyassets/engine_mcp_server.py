@@ -386,6 +386,14 @@ def refusal_text(text: object) -> bool:
 _RAW_CONTENT_TOOLS = frozenset({"read", "write", "edit", "bash"})
 
 
+def bounded_tool_error(text: str, *, tool: str) -> str:
+    """Project a tool failure at the model door, including the ta adapter."""
+    from tinyassets.engine_result_bounds import bound_tool_text, resolve_ceiling
+
+    bounded = bound_tool_text(text, tool=tool, limit=resolve_ceiling())
+    return text if bounded is None else bounded
+
+
 class RefusalsAreErrors(Middleware):
     """Mark every refused call ``isError: true``, with its text unchanged.
 
