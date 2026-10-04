@@ -118,6 +118,7 @@ def _bash_has_python3() -> bool:
     ({"layout": 1, "state": "stable"}, True),
     ({"layout": 1, "state": "migrating"}, False),
     ({"layout": 2, "state": "stable"}, False),
+    ({"layout": 2, "state": "migrating"}, False),
     ("garbage", False),
 ])
 def test_the_fail_safe_refuses_an_image_rollback_onto_migrated_data(tmp_path, document, allowed):
@@ -135,10 +136,13 @@ def test_the_fail_safe_checks_the_layout_before_every_image_start():
     """Both the converge of the target image (any mode, --restore-bundle
     included) and the rollback to the previous image pass the guard first."""
     script = (REPO / "deploy" / "deploy_fail_safe.sh").read_text(encoding="utf-8")
-    first = script.index('layout_allows_any_image "$LAYOUT_MARKER"')
+    first = script.index('layout_allows_candidate "$LAYOUT_MARKER" "$NEW_IMAGE"')
     install = script.index("# --- 3b. the runtime bundle")
     restore = script.index('if [ "$RESTORE_BUNDLE" = "1" ]; then\n  # Undoing an install')
     assert first < install < restore
+    explicit_rollback = script.index('layout_allows_any_image "$LAYOUT_MARKER"')
+    assert explicit_rollback < first
+    assert 'if [ "$RESTORE_BUNDLE" = "1" ]; then' in script[explicit_rollback - 60:first]
     second = script.index('layout_allows_any_image "$LAYOUT_MARKER"', first + 1)
     rollback = script.index('if ! set_image "$PREV_IMAGE"; then')
     assert install < second < rollback

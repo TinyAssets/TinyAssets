@@ -96,6 +96,18 @@ existing layout-1-only rollback predicate refuses both too. The later naming
 cutover must use a subsequent version, not reuse layout 2. Image-only rollback
 after this move requires restoring pre-move data under the existing deploy policy.
 
+Normal forward deployment uses a separate candidate compatibility predicate.
+After pulling and import-checking the immutable `NEW_IMAGE`, deploy reads
+`tinyassets.storage_layout.KNOWN_LAYOUTS` from that candidate in an isolated,
+network-disabled container with no data mount. Missing, malformed or unreadable
+declarations refuse deployment. Under the nonblocking shared layout lock, the
+host admits only a `stable` marker whose layout the candidate declares (an
+absent marker means layout 1). Thus this image and compatible successors can
+deploy onto layout 2/stable, while layout-1-only images and layout 2/migrating
+remain refused before any production mutation. Both automatic image rollback
+and explicit `--restore-bundle` retain the layout-1-only unrestricted rollback
+predicate; candidate compatibility never relaxes that rollback fence.
+
 Admission never waits exclusively behind a process that may already have
 finished the move and taken its lifetime shared lock: it attempts exclusive
 access nonblocking and rechecks under shared access on contention. This applies
@@ -273,3 +285,41 @@ The same existing concern tracks these retired-worker/fence failures.
 
 No deployment, PR-body update, auto-merge change or full-suite run is part of
 this repair. Tasks beyond 2.1/2.2 remain open.
+
+### PR #4376 round-2 deployment repair verification (2026-10-03)
+
+Forward deployment now reads the candidate's own layout declaration; rollback
+continues to require layout 1. Real `deploy_fail_safe.sh` executions cover a
+layout-2 candidate and compatible successor deploying onto layout 2/stable,
+an older candidate refusing without production mutation, layout 1/2 migrating
+refusing even a compatible candidate, invalid/missing declarations refusing,
+and automatic plus explicit rollback refusing an older image on layout 2.
+
+Commands run from this worktree (all pytest temp roots outside the repo):
+
+```powershell
+python -m pytest tests/test_storage_layout.py tests/test_deploy_bundle_transaction.py -q --basetemp "$env:TEMP/wf4376-round2-local"
+python -m pytest tests/test_platform_state_outside_command_centers.py tests/test_deploy_bundle_validator.py tests/test_deploy_clears_compose_temp_containers.py tests/test_deploy_drains_in_flight_turns.py tests/test_drop_first_operational_migration.py tests/test_expected_instance_state_preparation.py -q --basetemp "$env:TEMP/wf4376-r2-related"
+python scripts/linux_oracle.py -- tests/test_storage_layout.py tests/test_deploy_bundle_transaction.py tests/test_deploy_bundle_validator.py tests/test_platform_state_outside_command_centers.py tests/test_deploy_clears_compose_temp_containers.py tests/test_deploy_drains_in_flight_turns.py -q --basetemp /tmp/wf4376-r2
+python scripts/linux_oracle.py -- tests/test_deploy_bundle_transaction.py -q -k 'layout or declaration or migration' --basetemp /tmp/wf4376-r2-regression
+python scripts/linux_oracle.py -- tests/test_deploy_prod_workflow.py -q --tb=short --basetemp /tmp/wf4376-r2-heavy
+python scripts/linux_oracle.py -- tests/test_host_uptime_installers.py tests/test_retire_cheat_loop_deploy_fence.py tests/test_drop_first_operational_migration.py tests/test_expected_instance_state_preparation.py -q --tb=short --basetemp /tmp/wf4376-r2-affected
+python -m ruff check tests/test_storage_layout.py tests/test_deploy_bundle_transaction.py
+python scripts/check_mirror_parity.py
+git diff --check
+```
+
+Windows: **15 passed, 87 POSIX skips**, then **120 passed, 1 symlink skip**.
+The focused Linux run had **198 passed, 1 test-harness failure, no skips**:
+the new rollback test expected the Docker stub to update container status on
+`stop`, which that stub does not model. It now asserts the actual recorded
+`docker stop` call; the subsequent Linux regression run is **14 passed,
+61 deselected, no skips**, including that corrected case and all new cases.
+
+The affected workflow/heavy runs reproduce the previously documented failures:
+**47 passed, 44 failed** in `test_deploy_prod_workflow.py`; **335 passed,
+17 failed** in the combined host/retired-worker/operational/instance run, all
+17 failures in `test_retire_cheat_loop_deploy_fence.py`. These are the same
+workflow and retired-worker findings tracked above, with unchanged inputs.
+Ruff, diff whitespace, and **565-file mirror parity** pass. No canonical
+`tinyassets/` file changed, so mirror regeneration was unnecessary.
