@@ -183,7 +183,14 @@ assert(!u.publishPayload(rich,'').ok,'a UI with its own files is not published w
 
 assert.deepEqual(u.readLibrary(null).entries,[]);
 assert(!u.readLibrary({ui_library:{}}).ok);
-assert(!u.readLibrary({ui_library:[bundleOf(),bundleOf()]}).ok);            // duplicate ui_id
+// A duplicate ui_id keeps the FIRST and sets the second aside with its reason,
+// rather than making the whole library unreadable: one bad entry never hides
+// the rest (founder, P1, 2026-10-03). It is still not silently usable twice,
+// and `install` carries it through, so nothing is lost either way.
+const dupes=u.readLibrary({ui_library:[bundleOf(),bundleOf()]});
+assert(dupes.ok&&dupes.entries.length===1,JSON.stringify(dupes));
+assert.equal(dupes.broken.length,1);
+assert(/listed twice/.test(dupes.broken[0].reason),dupes.broken[0].reason);
 // No count cap: a long library reads, every entry kept in order.
 const longLibrary=u.readLibrary({ui_library:Array.from({length:40},(_,i)=>bundleOf({ui_id:'ui-'+i}))});
 assert(longLibrary.ok&&longLibrary.entries.length===40,longLibrary.reason);
@@ -249,9 +256,18 @@ for(const action of ['write_graph','connectHTTP','whoami ','WHOAMI','constructor
 
 // ---- the viewer's identity, and nothing else ------------------------------
 const who=(await ask('whoami',{universe_id:'u-bob'})).result;
-assert.deepEqual(Object.keys(who).sort(),['command_center_id','command_center_name','protocol']);
+assert.deepEqual(Object.keys(who).sort(),['agent_refs','command_center_id','command_center_name','protocol','workflow_refs']);
+assert.deepEqual(who.workflow_refs,{});
+assert.deepEqual(who.agent_refs,{});
 assert.equal(who.command_center_id,HOME);
 assert.equal(who.command_center_name,'Alice universe');
+AppUI.active.agent_refs={scribe:'recipient-private-binding'};
+const aliases=(await ask('whoami',{agent_refs:{scribe:'publisher-binding'}})).result;
+assert.deepEqual(aliases.agent_refs,{scribe:'recipient-private-binding'});
+aliases.agent_refs.scribe='changed-reply';
+assert.equal(AppUI.active.agent_refs.scribe,'recipient-private-binding');
+assert.equal(AppUI.parseBundle({...AppUI.active,agent_refs:{'bad alias':'id'}}).ok,false);
+delete AppUI.active.agent_refs;
 
 // ---- a bundle cannot name a universe: the argument is pinned -------------
 calls=[];
@@ -487,24 +503,35 @@ assert.equal(frameB.posts.filter(m=>m.type==='result'&&m.id==='r1').length,0,
 assert.equal(frameA.posts.length,postsA,'and it is not delivered to a torn-down frame either');
 assert.equal(u.pending,0,"a stale completion must not decrement the new frame's counter");
 
-// ---- installing next to an unreadable library refuses (Codex P1) -------
+// ---- installing beside an entry this app cannot parse (Codex P1) -------
 // One stored bundle is a future version this app cannot parse. Installing must
-// not rebuild the library from a cache that dropped it.
+// not rebuild the library from a cache that dropped it. It used to REFUSE to
+// protect that bundle, which made one bad component hide every UI and disable
+// installing (founder, P1, 2026-10-03). The guarantee is unchanged -- nothing
+// it could not parse is lost -- but it is now kept by carrying the entry
+// through the write instead of by refusing the write.
 const future={...bundleOf({ui_id:'from-tomorrow'}),version:2};
 appUi=stored([bundleOf(),future],null);
 u.adopt(clone(appUi));
-assert(u.unreadable,'an unreadable library is remembered as unreadable, not as empty');
-assert.deepEqual(u.library,[]);
-const storedBefore=JSON.stringify(appUi);
-calls=[];
-const refused=await u.install(bundleOf({ui_id:'newcomer'}));
-assert(!refused.ok,'install must refuse rather than overwrite');
-assert.equal(calls.length,0,'and neither reads nor writes');
-assert.equal(JSON.stringify(appUi),storedBefore,'the bundle it could not parse is still stored');
+assert.equal(u.unreadable,'','one bad entry is not a library-wide refusal');
+assert.deepEqual(u.library.map(b=>b.ui_id),['office'],'the readable UIs are usable');
+assert.equal(u.broken.length,1,'and the unreadable one is remembered, not dropped');
+assert.equal(u.broken[0].ui_id,'from-tomorrow');
+assert(/version/.test(u.broken[0].reason),u.broken[0].reason);
+const installed2=await u.install(bundleOf({ui_id:'newcomer'}));
+assert(installed2.ok,'installing is no longer disabled: '+JSON.stringify(installed2));
+assert.deepEqual(appUi.ui_library.map(e=>e.ui_id),['office','newcomer','from-tomorrow'],
+ 'the installed UI is stored and the unparsable entry is carried through');
+assert.deepEqual(appUi.ui_library.find(e=>e.ui_id==='from-tomorrow'),canonical(future),
+ 'carried through VERBATIM -- a whole-list write destroys anything left out');
 
-// The re-read inside the save is the backstop: even with a clean cache, a
-// library that is unreadable NOW is refused before anything is written.
-u.unreadable='';u.library=[bundleOf()];
+// A library that is not a list at all IS library-wide, and the re-read inside
+// the save is the backstop: nothing is written even with a clean cache.
+appUi={...stored([],null),ui_library:'not a list'};
+const storedBefore=JSON.stringify(appUi);
+u.adopt(clone(appUi));
+assert(u.unreadable,'a non-list library is still remembered as unreadable');
+u.unreadable='';u.library=[bundleOf()];u.broken=[];
 calls=[];
 const sneaky=await u.install(bundleOf({ui_id:'newcomer'}));
 assert(!sneaky.ok,'the mutation re-checks what the save actually read');

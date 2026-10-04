@@ -190,17 +190,22 @@ def test_custom_agent_reads_route_through_graph_handle(monkeypatch) -> None:
         observed.append(kwargs)
         return {"routed": kwargs["action"]}
 
-    # Reads dispatch through the shared domain read (the connector delegates).
+    # Raw public reads stay complete through the domain door; connector public
+    # reads now project metadata (covered by test_agent_read_pages). Private
+    # stage/binding reads still delegate unchanged from the connector.
+    from tinyassets.api.graph_reads import read_graph as complete_read
+
+    # Reads dispatch through the shared domain read.
     # Patched by import path, not a module object held here: a test that reloads
     # tinyassets modules earlier in the run leaves a stale object behind, and the
     # connector resolves the dispatch from sys.modules on every call.
     monkeypatch.setattr("tinyassets.api.graph_reads._custom_agents_impl", fake_custom_agents)
 
     listed = json.loads(
-        read_graph(target="agents", query="coding", tags="agent,coding", limit=5)
+        complete_read(target="agents", query="coding", tags="agent,coding", limit=5)
     )
     exact = json.loads(
-        read_graph(target="agent", agent_definition_id="agent_123")
+        complete_read(target="agent", agent_definition_id="agent_123")
     )
     stage = json.loads(
         read_graph(target="agent", agent_stage_id="agent_stage_123")
@@ -381,7 +386,11 @@ def test_custom_agent_definition_and_binding_round_trip(monkeypatch, tmp_path) -
     public = json.loads(
         read_graph(target="agent", agent_definition_id=definition_id)
     )
-    assert public["agent"]["components"]["workflow"]["kind"] == "branch_set"
+    assert public["agent"]["component_count"] == 2
+    component = json.loads(read_graph(target="agent", agent_definition_id=definition_id,
+                                     field_name="workflow"))
+    assert component["complete"] is True
+    assert json.loads(component["chunk"])["kind"] == "branch_set"
 
     grant_universe_access(
         tmp_path,

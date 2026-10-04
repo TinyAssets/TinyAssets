@@ -67,7 +67,7 @@ _DECLS = (
     # The seat wait line (`universe_seats`).
     r"let seatWait=[^\n]*;", r"let seatLineShown=[^\n]*;",
     # Lines steered into a running turn (harness S2).
-    r"let steeredLines=[^\n]*;", r"let pendingSteers=[^\n]*;",
+    r"let steeredLines=[^\n]*;", r"let pendingSteers=[^\n]*;", r"let watchedActive=[^\n]*;",
     # The tool-activity suffix on the status line (harness S4).
     r"const TOOL_SEP=[^\n]*;", r"const THINKING_LINE=[^\n]*;",
 )
@@ -95,7 +95,9 @@ _NEW_FUNCS = ("isQueuedBubble", "firstQueuedBubble", "markQueued", "unmarkQueued
               "renderStop", "takeInterruptFlush", "flushAfterTurn",
               "drainAfterStop", "takeBatch", "flushBatch",
               "markSteered", "unmarkSteered", "steerOrQueue", "settleSteered",
-              "adoptSteered", "shortModelName", "waitMinutes", "waitDetail",
+              "adoptSteered", "markHeld", "restoreHeldSteers", "readServerTurnRow",
+              "claimHeldLines", "pinLineAgent", "alreadyHandled", "showActiveTurn", "finishActiveTurn",
+              "readPendingTurns", "sendBatch", "shortModelName", "waitMinutes", "waitDetail",
               "renderTryModel", "toolLine", "paintToolLine")
 
 # A real tree. `insertBefore` and a detaching `remove` are the point: thread
@@ -584,10 +586,18 @@ def test_the_pending_update_line_clears(tmp_path, html, transition):
 
 _LOCAL_AND_SERVER = r"""
 setQueueOwner("p-1");
-await pollStatus();                        // the server already reports a turn
+// First show the remote-only line. That earlier turn finishes before this
+// tab starts its own: never manufacture a competing send while it is live.
+readServerTurnRow({active_turn:SCENARIO.activeTurn}); renderWorking();
 const serverOnly=indicator();
+readServerTurnRow({active_turn:null}); renderWorking();
+// This tab's own send starts first; the server then reports a turn too. (A
+// send made while ONLY another window's turn runs no longer starts a turn of
+// its own -- it steers or waits; test_owner_steering covers that, P1 of
+// 2026-10-02.)
 const turn=sendTurn("and one from this tab");
 await settle();
+await pollStatus();                        // the server reports a turn as well
 const both=indicator();
 renderWorking();                           // the 1s repaint tick, mid-turn
 const afterTick=indicator();

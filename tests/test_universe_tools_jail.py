@@ -647,6 +647,68 @@ def test_a_jail_that_fills_the_shared_disk_is_killed(world):
             path.unlink()
 
 
+_MiB = 1024 * 1024
+
+
+def test_a_jail_writing_many_small_files_past_its_budget_is_killed(world, monkeypatch):
+    """Each file is far under RLIMIT_FSIZE; only the per-launch budget stops it."""
+    from tinyassets import jail_disk
+    from tinyassets import universe_tools as tools
+
+    monkeypatch.setattr(jail_disk, "LAUNCH_BYTES_CAP", 24 * _MiB)
+    many = world.universe_a / "notes" / "many"
+    try:
+        out = tools.bash(
+            world.universe_a,
+            "mkdir -p notes/many && for i in $(seq 1 400); do "
+            "head -c 262144 /dev/zero > notes/many/f$i || exit 3; done; echo filled",
+            agent_id="main",
+            timeout=120,
+        )
+        assert "[killed: this call added more than" in out, out[-500:]
+        assert "filled" not in out
+        written = sum(path.stat().st_size for path in many.iterdir())
+        assert 24 * _MiB < written < 100 * _MiB, written
+        # Another universe is untouched by this one's stop.
+        assert tools.bash(
+            world.universe_b, "echo still-runs", agent_id="main",
+        ).startswith("still-runs")
+    finally:
+        shutil.rmtree(many, ignore_errors=True)
+
+
+def test_the_jails_private_tmp_is_capped(world):
+    from tinyassets import jail_disk
+    from tinyassets import universe_tools as tools
+
+    out = tools.bash(
+        world.universe_a,
+        "for i in $(seq 1 12); do head -c 30000000 /dev/zero > /tmp/f$i "
+        "|| { echo full-at-$i; exit 0; }; done; echo all-written",
+        agent_id="main",
+        timeout=120,
+    )
+    assert "all-written" not in out, out[-500:]
+    assert "No space left on device" in out and "full-at-" in out, out[-500:]
+    # 30 MB files: the cap is hit after floor(cap / 30 MB) of them.
+    assert f"full-at-{jail_disk.TMP_BYTES // 30000000 + 1}" in out, out[-500:]
+
+
+def test_a_full_account_can_still_free_space_through_its_agent(world, monkeypatch):
+    from tinyassets import universe_tools as tools
+    from tinyassets.daemon_server import grant_universe_ownership, initialize_author_server
+
+    initialize_author_server(world.data_root)
+    grant_universe_ownership(world.data_root, universe_id="u-alpha", owner_id="workos|alice")
+    # A 1 KiB quota through the real override: the universe is already over it.
+    monkeypatch.setenv("TINYASSETS_FREE_STORAGE_GIB", str(1024 / 1024**3))
+    junk = world.universe_a / "notes" / "junk.bin"
+    junk.write_bytes(b"x" * 64 * 1024)
+    out = tools.bash(world.universe_a, "rm notes/junk.bin && echo removed", agent_id="main")
+    assert "out of cloud storage" in out and "removed" in out, out
+    assert not junk.exists()
+
+
 # ── (b) a skill the agent writes changes its next turn ──────────────────────
 
 _STANDUP = (
@@ -820,3 +882,26 @@ def test_a_background_run_reads_and_writes_its_notes_while_a_database_closes(
     assert seen["root_write"].startswith("wrote"), seen["root_write"]
     assert (a / WORKSPACE_DIR / "root-note.md").read_text(encoding="utf-8") == "lost?\n"
     assert not (a / "root-note.md").exists()
+
+
+def test_read_shows_an_image_in_its_own_universe_and_no_other(world, monkeypatch):
+    """The image path reads through the same jail: its own PNG comes back as
+    image content, another universe's is as unreachable as its text."""
+    import io
+
+    from PIL import Image
+
+    def png(color):
+        buffer = io.BytesIO()
+        Image.new("RGB", (8, 8), color).save(buffer, "PNG")
+        return buffer.getvalue()
+
+    (world.universe_a / "notes" / "own.png").write_bytes(png((1, 2, 3)))
+    (world.universe_b / "secret.png").write_bytes(png((9, 9, 9)))
+    s = _engine(monkeypatch, world)
+    shown = _run(s.read_file(path="notes/own.png"))
+    blocks = shown.content
+    assert [b.type for b in blocks] == ["text", "image"], shown
+    for path in (str(world.universe_b / "secret.png"), "../u-bravo/secret.png"):
+        out = _run(s.read_file(path=path))
+        assert isinstance(out, str) and out.startswith("error:"), (path, out)

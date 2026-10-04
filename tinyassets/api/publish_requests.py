@@ -20,8 +20,15 @@ model):
   automation. Idempotent on the request id, so a retried confirm cannot publish
   a second definition.
 
-What is never published: automation ``inputs``, conversations, files,
-credentials. A copy of anything published runs as whoever installs it.
+What is never published: automation ``inputs``, conversations, credentials.
+Files travel only in a PACKAGE: an optional ``package`` block publishes the
+whole command center's files beside the rest, scrubbed of private items
+(``tinyassets.command_center_packages``; change ``command-center-packages``).
+A copy of anything published runs as whoever installs it.
+
+The consent record is the platform's, not the row's: ``pending_requests._pin_consent`` stores the
+action, its digest and the tab text outside the command-center folder, the rail
+renders the tab from it, and the answer executes it.
 """
 
 from __future__ import annotations
@@ -43,7 +50,7 @@ _MAX_ID = 200
 PUBLIC_SENTENCE = (
     "Anyone will be able to read and copy these. A copy runs in the copier's own "
     "universe on their own compute and never reaches yours. Publishing does not "
-    "share your conversations, files, credentials or automation inputs."
+    "share your conversations, credentials or automation inputs."
 )
 
 
@@ -66,6 +73,8 @@ def _ids(raw: Any, field: str, *, required: bool) -> list[str]:
 
 def validate_action(action: dict[str, Any]) -> dict[str, Any]:
     """Shape only: the fields and their types. Ownership is ``capture_action``'s."""
+    from tinyassets.command_center_agent_templates import selection
+
     name = action.get("name")
     if not isinstance(name, str) or not name.strip() or len(name.strip()) > _MAX_NAME:
         raise ValueError(f"publish needs a public name of 1-{_MAX_NAME} characters")
@@ -77,7 +86,7 @@ def validate_action(action: dict[str, Any]) -> dict[str, Any]:
         ui_id = ""
     if not isinstance(ui_id, str) or len(ui_id) > 64:
         raise ValueError("ui_id must be the id of one UI in the owner's library")
-    return {
+    validated = {
         "type": "publish",
         "name": name.strip(),
         "description": description.strip(),
@@ -85,6 +94,32 @@ def validate_action(action: dict[str, Any]) -> dict[str, Any]:
         "ui_id": ui_id.strip(),
         "automation_ids": _ids(action.get("automation_ids"), "automation_ids", required=False),
     }
+    if "agent_templates" in action:
+        validated["agent_templates"] = selection(action["agent_templates"])
+    if action.get("package") is not None:
+        from tinyassets.command_center_packages import validate_options
+
+        validated["package"] = validate_options(action["package"])
+    kind = action.get("publish_kind")
+    if kind is not None:
+        if kind not in ("command_center", "workflows", "system"):
+            raise ValueError("publish_kind must be command_center, workflows or system")
+        if kind == "command_center" and ("package" not in validated or not validated["ui_id"]):
+            raise ValueError("publishing a command center needs its ui_id and an explicit "
+                             "package object; review the included files before confirming")
+        if kind != "command_center" and "package" in validated:
+            raise ValueError("only command_center intent may include a package")
+        if kind == "workflows" and validated["ui_id"]:
+            raise ValueError("workflow-only publishing cannot include a screen")
+        validated["publish_kind"] = kind
+    return validated
+
+
+def _publication_kind(action: dict[str, Any]) -> str:
+    """Describe the actual payload, including legacy asks; never add content."""
+    if action.get("package") is not None:
+        return "command_center"
+    return "system" if action.get("ui_id") else "workflows"
 
 
 #: Fields of a branch row that publishing itself changes, or pure edit
@@ -101,7 +136,7 @@ UI_PORTABLE_FIELDS = ("kind", "version", "ui_id", "name", "markup", "style", "sc
 #: Optional fields that publish as they are: library names from the public
 #: allowlist and the script type. ``assets`` is NOT one: its bytes live in the
 #: publisher's private UI storage and a published copy could not load them.
-UI_PORTABLE_OPTIONAL_FIELDS = ("libraries", "script_type")
+UI_PORTABLE_OPTIONAL_FIELDS = ("libraries", "script_type", "workflow_refs", "agent_refs")
 
 _CHANGED = (
     "something in this ask changed after you were shown it, so nothing was "
@@ -181,7 +216,10 @@ def _trigger_words(trigger: dict[str, Any]) -> str:
 def tab_text(action: dict[str, Any]) -> tuple[str, str, str]:
     """``(kind, title, body)`` for the tab, written from the pinned action only."""
     shown = action["shown"]
-    lines = [f"Public name: {_shown(action['name'], 120)}"]
+    kind = _publication_kind(action)
+    label = {"command_center": "command center", "system": "workflow and screen bundle",
+             "workflows": "workflows"}[kind]
+    lines = [f"Publication: {label}", f"Public name: {_shown(action['name'], 120)}"]
     if action["description"]:
         lines.append(f"Description: {_shown(action['description'], 400)}")
     lines.append("These become public:")
@@ -192,10 +230,76 @@ def tab_text(action: dict[str, Any]) -> tuple[str, str, str]:
     for a in shown["automations"]:
         lines.append(
             f"- The trigger of \"{a['name']}\": runs {a['when']} (its inputs stay private)")
+    for agent in shown.get("agent_templates", []):
+        lines.append(f"- Public instructions for chat agent \"{_shown(agent['name'])}\" "
+                     "(private settings and model assignments stay here)")
+    package = shown.get("package")
+    if package:
+        lines.extend(_package_lines(package))
+    else:
+        lines.append("No files are included. This appears in the shared systems catalogue, "
+                     "not the command-center package picker; its components copy separately.")
     lines.append("")
     lines.append(PUBLIC_SENTENCE)
-    return ("Publish", f"Publish \"{_shown(action['name'], 120)}\" for anyone to copy?",
+    if package:
+        lines.append(PACKAGE_SENTENCE)
+    return ("Publish", f"Publish {label} \"{_shown(action['name'], 120)}\" for anyone to copy?",
             "\n".join(lines))
+
+
+#: The platform's sentence about what a scrub can and cannot prove (§4.17).
+#:
+#: It now names what TRAVELS, because the contents rule is an allowlist
+#: (``command_center_packages.ROOT_FILES``) and a sentence that lists what was
+#: removed can only ever be as complete as the removal list was. The previous
+#: wording promised "your brain files and platform state were left out" while
+#: ``orgchart.md``, ``requests.json`` and 21 other platform root files
+#: travelled. Describing the carried kinds is a claim the code can keep.
+#:
+#: Two exactness notes kept deliberately: "private" brain files, because
+#: ``identity.md`` travels as the published roster agent's own identity; and
+#: memory as conditional, because entries the owner named do travel.
+PACKAGE_SENTENCE = (
+    "Every file listed above becomes public: your agent and skill files, your "
+    "roster agents, your published wiki pages, your app, and your own folders. "
+    "Your private brain files, your memory unless you named entries, platform "
+    "state, and anything else sitting in the top folder stay home. But "
+    "detection cannot prove a file holds no personal information: read the "
+    "list before you confirm."
+)
+
+
+#: Wider than any package path (``MAX_PATH_CHARS``): a listed path is never cut.
+_FULL = 1000
+
+
+def _package_lines(package: dict[str, Any]) -> list[str]:
+    lines = [f"- These {package['file_count']} files of your command center "
+             f"({package['size']}, version {package['version']}):"]
+    # EVERY path, in full: default-include is acceptable only because the tab
+    # lists all of it (lead, 2026-10-01). Paths are checked package paths, so
+    # flattening cannot change one; the bound is the path limit, never a cut.
+    for path in package["files"]:
+        lines.append(f"  - {_shown(path, _FULL)}")
+    if package["excluded"]:
+        lines.append(f"Left out ({len(package['excluded'])}):")
+        for entry in package["excluded"]:
+            lines.append(f"  - {_shown(entry['path'], _FULL)}: {entry['reason']}")
+    if package.get("flagged"):
+        from tinyassets.command_center_packages import review_groups
+
+        lines.append(f"Worth a look before you confirm ({len(package['flagged'])}): these "
+                     "are included, but hold something that is often private. Leave any "
+                     "out below.")
+        for group in review_groups(package["flagged"]):
+            more = group["count"] - len(group["shown"])
+            tail = f", and {more} more" if more > 0 else ""
+            lines.append(f"  - {group['count']} {group['kind']}: "
+                         + "; ".join(_shown(s, _FULL) for s in group["shown"]) + tail)
+    if package["connections"]:
+        lines.append("Whoever installs it connects their own: "
+                     + ", ".join(_shown(c, 60) for c in package["connections"]))
+    return lines
 
 
 def build_snapshot(uid: str, action: dict[str, Any]) -> dict[str, Any]:
@@ -218,6 +322,7 @@ def build_snapshot(uid: str, action: dict[str, Any]) -> dict[str, Any]:
         AgentValidationError,
         _check_secret_fields,
         _normalize_definition_payload,
+        app_ui_workflow_refs,
         get_app_ui,
     )
     from tinyassets.daemon_server import get_branch_definition
@@ -254,12 +359,27 @@ def build_snapshot(uid: str, action: dict[str, Any]) -> dict[str, Any]:
     for n, (bid, raw) in enumerate(rows.items(), start=1):
         key = f"workflow-{n}"
         keys[bid] = key
-        content_hash = compute_content_hash(_canonical_snapshot(_flipped(raw)))
+        snapshot = _canonical_snapshot(_flipped(raw))
+        content_hash = compute_content_hash(snapshot)
         name = str(raw.get("name") or bid)
         components[key] = {"kind": BRANCH_REF_KIND, "name": name,
                            "published_version_id": f"{bid}@{content_hash[:8]}"}
         shown["workflows"].append({"name": _shown(name),
-                                   "nodes": len(raw.get("graph_nodes") or [])})
+                                   "nodes": len(snapshot.get("graph_nodes") or [])})
+
+    if "ui" in components and action.get("package") is not None:
+        ui = components["ui"]
+        refs = app_ui_workflow_refs(ui)
+        if any(bid not in keys for bid in refs.values()):
+            raise ValueError("workflow_refs must name only workflows selected in this publish ask")
+        if action.get("publish_kind") == "command_center" and any(
+                bid in ui["script"] for bid in keys):
+            raise ValueError(
+                "this screen embeds a source workflow id; use whoami().workflow_refs "
+                "with an explicit workflow_refs alias so installed copies use their own workflows"
+            )
+        if "workflow_refs" in ui:
+            ui["workflow_refs"] = {alias: keys[bid] for alias, bid in refs.items()}
 
     store = AutomationStore(base)
     for n, automation_id in enumerate(action["automation_ids"], start=1):
@@ -283,10 +403,40 @@ def build_snapshot(uid: str, action: dict[str, Any]) -> dict[str, Any]:
         shown["automations"].append({"name": _shown(row.name),
                                      "when": _shown(_trigger_words(trigger))})
 
-    definition = {"schema_version": AGENT_SCHEMA_VERSION, "name": action["name"],
-                  "description": action["description"], "tags": ["tinyassets.system.v1"],
-                  "components": components}
+    from tinyassets.command_center_agent_templates import export_templates, reject_nested_workflows
+    from tinyassets.custom_agents import app_ui_agent_refs
+
+    selected = action.get("agent_templates") or {}
+    templates = export_templates(base, uid, actor, selected)
+    if set(templates) & (set(components) | {"package"}):
+        raise ValueError("an agent template key collides with another published component")
+    components.update(templates)
+    if templates:
+        shown["agent_templates"] = list(templates.values())
+    if "ui" in components:
+        ui = components["ui"]
+        aliases = {binding: key for key, binding in selected.items()}
+        refs = app_ui_agent_refs(ui)
+        if any(binding not in aliases for binding in refs.values()):
+            raise ValueError("agent_refs must name only agents selected in this publish ask")
+        if any(binding in ui["script"] for binding in selected.values()):
+            raise ValueError("this screen embeds a source agent id; use declared agent_refs")
+        if "agent_refs" in ui:
+            ui["agent_refs"] = {alias: aliases[binding] for alias, binding in refs.items()}
+    if "ui" in components:
+        for row in rows.values():
+            reject_nested_workflows(row)
+
     branches = {bid: _public_branch_row(raw) for bid, raw in rows.items()}
+    tags = ["tinyassets.system.v1"]
+    package = None
+    if action.get("package") is not None:
+        package = _package(uid, actor, action, branches, components, shown)
+        components["package"] = package["component"]
+        tags.append(package["tag"])
+    definition = {"schema_version": AGENT_SCHEMA_VERSION, "name": action["name"],
+                  "description": action["description"], "tags": tags,
+                  "components": components}
     try:
         # One scanner for everything that becomes public (astra round 2, P1: a
         # credential in a prompt_template reached a public version while the
@@ -301,13 +451,216 @@ def build_snapshot(uid: str, action: dict[str, Any]) -> dict[str, Any]:
         _canonical({"branches": branches, "definition": definition}).encode("utf-8")
     ).hexdigest()
     return {"branches": branches, "rows": rows, "definition": definition,
-            "digest": digest, "shown": shown}
+            "digest": digest, "shown": shown, "package": package}
+
+
+def _package(uid: str, actor: str, action: dict[str, Any], branches: dict[str, Any],
+             components: dict[str, dict[str, Any]], shown: dict[str, Any]) -> dict[str, Any]:
+    """The package half of a snapshot: the blob, its listing component, the tab.
+
+    The listing component carries the blob's sha256, so the digest the owner
+    approves covers every file. The version is allocated here, inside the
+    digest: a publish of the same name landing first changes it, and this ask
+    then publishes nothing.
+    """
+    from tinyassets.api.helpers import _base_path, _universe_dir
+    from tinyassets.command_center_packages import (
+        FORMAT_VERSION,
+        N_OPAQUE,
+        PACKAGE_KIND,
+        PACKAGE_TAG,
+        PackageError,
+        build_publish_package,
+        human,
+        next_version,
+        scan_public,
+    )
+
+    workflows = [{"key": k, "name": c["name"]} for k, c in components.items()
+                 if c.get("kind") == BRANCH_REF_KIND]
+    automations = [{"key": k, "name": c["name"], "workflow": c["workflow"]}
+                   for k, c in components.items() if c.get("kind") == AUTOMATION_SPEC_KIND]
+    try:
+        built = build_publish_package(
+            _universe_dir(uid), name=action["name"], description=action["description"],
+            options=action["package"], branch_rows=branches, workflows=workflows,
+            ui=str(components.get("ui", {}).get("name", "")), automations=automations)
+        manifest = built["manifest"]
+        component = {
+            "kind": PACKAGE_KIND,
+            "format_version": FORMAT_VERSION,
+            # Allocated at ask time and pinned in the action, so a retry after
+            # the version was recorded still names the same number.
+            "version": int(action.get("package_version")
+                           or next_version(_base_path(), actor, action["name"])),
+            "blob_sha256": built["sha256"],
+            "size_bytes": len(built["blob"]),
+            "file_count": len(manifest["files"]),
+            "agents": manifest["agents"],
+            "needs": manifest["needs"],
+        }
+        # The final-output check: everything that becomes public, paths and
+        # names included, through the same detectors as file content.
+        notes: list[str] = []
+        scan_public({"manifest": {k: v for k, v in manifest.items() if k != "files"},
+                     "paths": [f["path"] for f in manifest["files"]],
+                     "name": action["name"], "description": action["description"],
+                     "components": components, "package": component}, "", notes)
+        for bid, row in branches.items():
+            # Every workflow string through the shared detectors, one by one:
+            # a joined row lets one detection mask another (gpt-6-astra, code r1 #4).
+            scan_public(row, f"workflow {_shown(row.get('name') or bid)}", notes)
+    except PackageError as exc:
+        raise ValueError(str(exc)) from None
+    shown["package"] = {
+        "file_count": component["file_count"], "size": human(component["size_bytes"]),
+        "version": component["version"], "files": [f["path"] for f in manifest["files"]],
+        "excluded": built["excluded"],
+        "flagged": built["flagged"] + [{"path": where, "note": N_OPAQUE}
+                                       for where in dict.fromkeys(notes)],
+        "connections": manifest["needs"]["connections"]}
+    return {"component": component, "tag": PACKAGE_TAG, "blob": built["blob"],
+            "sha256": built["sha256"], "version": component["version"]}
 
 
 def capture_action(uid: str, action: dict[str, Any]) -> dict[str, Any]:
     """Snapshot the public payload now; pin its digest and what the tab shows."""
     snap = build_snapshot(uid, action)
-    return {**action, "snapshot_digest": snap["digest"], "shown": snap["shown"]}
+    captured = {**action, "snapshot_digest": snap["digest"], "shown": snap["shown"]}
+    if snap.get("package"):
+        captured["package_version"] = snap["package"]["version"]
+    return captured
+
+
+#: The owner's per-folder switches on a package tab, and their two answers.
+_INCLUDE, _LEAVE_OUT = "Include", "Leave out"
+_MAX_TOGGLES = 15
+_LEAVE_OUT_FIELD = "leave_out"
+
+
+def toggle_fields(action: dict[str, Any]) -> tuple[list[dict[str, Any]], dict[str, str]]:
+    """The tab's exclude switches: one per top-level folder or file of the
+    package (the largest first), plus a box for any other path.
+
+    Returns ``(fields, toggles)``; ``toggles`` maps each switch to the path it
+    leaves out and rides in the pinned action, so an answer can only ever
+    narrow what the owner was shown.
+    """
+    package = (action.get("shown") or {}).get("package")
+    if not package:
+        return [], {}
+    counts: dict[str, int] = {}
+    for path in package["files"]:
+        head = path.split("/")[0]
+        counts[head] = counts.get(head, 0) + 1
+    groups = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))[:_MAX_TOGGLES]
+    fields: list[dict[str, Any]] = []
+    toggles: dict[str, str] = {}
+    for n, (head, count) in enumerate(sorted(groups), start=1):
+        name = f"out_{n}"
+        folder = any(p.startswith(head + "/") for p in package["files"])
+        label = f"{head}/ ({count} files)" if folder else head
+        fields.append({"name": name, "label": _shown(label, 120), "type": "choice",
+                       "options": [_INCLUDE, _LEAVE_OUT]})
+        toggles[name] = head
+    fields.append({"name": _LEAVE_OUT_FIELD, "type": "text",
+                   "label": "Leave out anything else (file or folder paths, comma-separated)"})
+    return fields, toggles
+
+
+def _left_out(action: dict[str, Any], values: dict[str, Any]) -> list[str]:
+    """The paths the owner switched off on the tab. Only paths the tab listed (or
+    folders holding them) count; anything else is refused, never guessed."""
+    from tinyassets.command_center_packages import PackageError, check_path
+
+    toggles = action.get("toggles") or {}
+    files = (action.get("shown") or {}).get("package", {}).get("files") or []
+    chosen = [toggles[k] for k, v in values.items() if k in toggles and v == _LEAVE_OUT]
+    typed = str(values.get(_LEAVE_OUT_FIELD) or "")
+    for raw in typed.replace("\n", ",").split(","):
+        path = raw.strip().rstrip("/")
+        if not path:
+            continue
+        try:
+            check_path(path)
+        except PackageError as exc:
+            raise ValueError(f"cannot leave out {path!r}: {exc}") from None
+        if not any(f == path or f.startswith(path + "/") for f in files):
+            raise ValueError(f"{path!r} is not in this package, so nothing was published; "
+                             "check the path and confirm again")
+        chosen.append(path)
+    return sorted(set(chosen))
+
+
+def answer_publish(uid: str, pinned: dict[str, Any], values: dict[str, Any], *,
+                   request_id: str) -> dict[str, Any]:
+    """The owner's confirm of a pinned publish, with any switches they turned off.
+
+    Claimed once: a second confirm while one runs is refused, and a confirm of
+    an already-published request returns its receipt.
+    """
+    from tinyassets.api.helpers import _base_path
+    from tinyassets.command_center_packages import PackageError, claim, finish, unclaim
+
+    action = pinned["record"]["action"]
+    unknown = set(values) - set(action.get("toggles") or {}) - {_LEAVE_OUT_FIELD}
+    if unknown:
+        raise ValueError("this tab has no field " + ", ".join(sorted(unknown)))
+    extra = _left_out(action, values) if action.get("package") else []
+    base = _base_path()
+    try:
+        state, token = claim(base, universe_id=uid, pin_id=pinned["pin_id"])
+    except PackageError as exc:
+        raise ValueError(str(exc)) from None
+    if state == "activated":
+        return {**pinned["progress"], "already_published": True}
+    try:
+        receipt = execute_action(uid, action, request_id=request_id, leave_out=extra)
+    except BaseException:
+        unclaim(base, universe_id=uid, pin_id=pinned["pin_id"], token=token)
+        raise
+    try:
+        finish(base, universe_id=uid, pin_id=pinned["pin_id"], progress=receipt, token=token)
+    except PackageError as exc:
+        raise ValueError(str(exc)) from None
+    return receipt
+
+
+def _store_package(actor: str, package: dict[str, Any], name: str) -> None:
+    """Charge, store and list the package's blob, before anything goes public.
+
+    Charged to the publisher's ``packages`` store unless they already own these
+    exact bytes (a retry, or a republish of identical content). Over the quota,
+    the refusal names the package's size, and nothing was written.
+    """
+    from tinyassets import storage_accounting
+    from tinyassets.api.helpers import _base_path
+    from tinyassets.command_center_packages import (
+        PackageError,
+        blob_owned,
+        human,
+        record_version,
+        store_blob,
+    )
+
+    base = _base_path()
+    blob, sha = package["blob"], package["sha256"]
+    try:
+        if blob_owned(base, actor, sha):
+            store_blob(base, author_id=actor, blob=blob)
+        else:
+            account = storage_accounting.account_for_actor(base, actor)
+            with storage_accounting.charged(base, account_id=account, store="packages",
+                                            nbytes=len(blob)):
+                store_blob(base, author_id=actor, blob=blob)
+        record_version(base, author_id=actor, name=name, version=package["version"],
+                       sha256=sha)
+    except storage_accounting.StorageRefused as refused:
+        detail = storage_accounting.visible_record(refused).get("error", "")
+        raise ValueError(f"This package is {human(len(blob))}, more than your storage "
+                         f"has room for, so nothing was published. {detail}") from None
+    except PackageError as exc:
+        raise ValueError(str(exc)) from None
 
 
 def _flip_if_unchanged(snap: dict[str, Any]) -> dict[str, tuple[Any, Any]]:
@@ -357,7 +710,8 @@ def _unflip(prior: dict[str, tuple[Any, Any]]) -> None:
             )
 
 
-def execute_action(uid: str, action: dict[str, Any], *, request_id: str) -> dict[str, Any]:
+def execute_action(uid: str, action: dict[str, Any], *, request_id: str,
+                   leave_out: list[str] | tuple[str, ...] = ()) -> dict[str, Any]:
     """Publish exactly the approved snapshot, or nothing. Raises to leave the ask pending.
 
     Order is what makes it all-or-nothing across three stores (branch rows,
@@ -379,6 +733,58 @@ def execute_action(uid: str, action: dict[str, Any], *, request_id: str) -> dict
        published before it is withdrawn.
     """
     from tinyassets.api import permissions
+    from tinyassets.api.helpers import _base_path
+    from tinyassets.principals import named_principal
+
+    actor = named_principal(permissions.current_actor_id())
+    snap = build_snapshot(uid, action)
+    if snap["digest"] != action.get("snapshot_digest"):
+        raise ValueError(_CHANGED)
+    if leave_out and snap.get("package"):
+        # The owner switched some of it off. Narrowed from THIS verified
+        # snapshot, never rebuilt from the live folder: what remains is
+        # byte-for-byte what they were shown (gpt-6-astra, code r2 #1).
+        snap = _narrowed(snap, list(leave_out))
+
+    package = snap.get("package")
+    if package:
+        # First, before any version is minted: a package refused by quota
+        # publishes nothing, and a blob stored but never listed stays charged.
+        _store_package(actor, package, action["name"])
+    try:
+        return _publish_snapshot(actor, action, snap, request_id=request_id)
+    except BaseException:
+        if package:
+            # Unlisted, and charged until a measurement drops it; a retry
+            # re-records the same pinned version.
+            from tinyassets.command_center_packages import drop_version
+
+            drop_version(_base_path(), author_id=actor, name=action["name"],
+                         version=package["version"])
+        raise
+
+
+def _narrowed(snap: dict[str, Any], leave_out: list[str]) -> dict[str, Any]:
+    from tinyassets.command_center_packages import PackageError, narrow_package
+
+    package = snap["package"]
+    try:
+        narrowed = narrow_package(package["blob"], leave_out)
+    except PackageError as exc:
+        raise ValueError(str(exc)) from None
+    manifest = narrowed["manifest"]
+    component = {**package["component"], "blob_sha256": narrowed["sha256"],
+                 "size_bytes": len(narrowed["blob"]), "file_count": len(manifest["files"]),
+                 "agents": manifest["agents"], "needs": manifest["needs"]}
+    definition = {**snap["definition"],
+                  "components": {**snap["definition"]["components"], "package": component}}
+    return {**snap, "definition": definition,
+            "package": {**package, "component": component, "blob": narrowed["blob"],
+                        "sha256": narrowed["sha256"]}}
+
+
+def _publish_snapshot(actor: str, action: dict[str, Any], snap: dict[str, Any], *,
+                      request_id: str) -> dict[str, Any]:
     from tinyassets.api.custom_agents import custom_agents
     from tinyassets.api.helpers import _base_path
     from tinyassets.branch_versions import (
@@ -386,13 +792,8 @@ def execute_action(uid: str, action: dict[str, Any], *, request_id: str) -> dict
         mark_versions_public,
         publish_branch_version,
     )
-    from tinyassets.principals import named_principal
 
-    actor = named_principal(permissions.current_actor_id())
-    snap = build_snapshot(uid, action)
-    if snap["digest"] != action.get("snapshot_digest"):
-        raise ValueError(_CHANGED)
-
+    package = snap.get("package")
     expected = {c["published_version_id"] for c in snap["definition"]["components"].values()
                 if c.get("kind") == BRANCH_REF_KIND}
     versions: dict[str, str] = {}
@@ -422,8 +823,19 @@ def execute_action(uid: str, action: dict[str, Any], *, request_id: str) -> dict
         mark_versions_public(_base_path(), newly_marked, public=False)
         _unflip(prior)
         raise
-    return {"published": True, "agent_definition_id": agent["agent_definition_id"],
-            "branch_versions": versions}
+    receipt = {"published": True, "agent_definition_id": agent["agent_definition_id"],
+               "branch_versions": versions, "publication_kind": _publication_kind(action),
+               "catalogue": "packages" if package else "agents"}
+    if package:
+        from tinyassets.command_center_packages import set_version_definition
+
+        set_version_definition(_base_path(), author_id=actor, name=action["name"],
+                               version=package["version"],
+                               definition_id=agent["agent_definition_id"])
+        receipt["package"] = {"version": package["version"],
+                              "size_bytes": len(package["blob"]),
+                              "file_count": package["component"]["file_count"]}
+    return receipt
 
 
 __all__ = [
@@ -431,7 +843,9 @@ __all__ = [
     "BRANCH_REF_KIND",
     "build_snapshot",
     "capture_action",
+    "answer_publish",
     "execute_action",
     "tab_text",
+    "toggle_fields",
     "validate_action",
 ]

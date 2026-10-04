@@ -217,7 +217,9 @@ def test_status_shows_only_the_callers_own_thread(tmp_path):
     universe = _universe(tmp_path)
     agent_activity.started(universe, THREAD, "bash", "owner's command")
     agent_activity.started(universe, "thread:principal:collaborator", "bash", "theirs")
-    mine = _thread_tool_activity(universe, "owner-1")
+    # A conversation-memory SESSION, not a bare owner: the main thread's is
+    # `principal:<owner>`, another agent's `agent:<id>:principal:<owner>`.
+    mine = _thread_tool_activity(universe, "principal:owner-1")
     assert [r["summary"] for r in mine] == ["owner's command"]
     assert _thread_tool_activity(universe, "") is None
 

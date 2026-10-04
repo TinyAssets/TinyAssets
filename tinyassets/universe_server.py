@@ -699,6 +699,9 @@ def read_graph(
             by name + branch_def_id), goals, goal, runs, run, run_output,
             branch, automations, automation, connections, compute, agents, agent, agent_bindings,
             agent_binding, app_ui (your own UI library and choice),
+            command_center_packages (working public packages to try in your own command center),
+            command_center_preview (public visual bytes only; no copy or consent),
+            command_center_updates (your copy provenance and explicit replacement choices),
             command_center_files / command_center_file (the owner's own command center folder:
             query=<path under /u>; list a directory, or read a file in chunks
             with file_offset/file_max_bytes),
@@ -723,7 +726,9 @@ def read_graph(
             target=automation. The server assigns it on create and returns it
             in the response; use that value for later reads and controls.
         agent_definition_id: Public agent definition identifier for
-            target=agent. Falls back to graph_id.
+            target=agent. Falls back to graph_id. Returns metadata and a component
+            catalog; field_name selects an exact component key, or @definition
+            for the complete legacy definition as lossless JSON chunks.
         agent_binding_id: Private command center binding identifier for
             target=agent_binding, or your addressed agent for target=conversation.
         agent_stage_id: Private import stage identifier for target=agent.
@@ -733,11 +738,14 @@ def read_graph(
         run_status: Optional run status filter.
         limit: Maximum number of records to return.
         field_name: Output field for target=run_output, or a retained turn id for
-            target=conversation. Omit for a metadata catalog.
+            target=conversation. For agent, an exact component key or @definition.
+            Omit for a metadata/component catalog (no UI bodies).
         output_offset: Unicode code-point offset within a selected output field or
             conversation message, or field index when reading the catalog (for a
             conversation catalogue, the returned before-message-id key). Continue
-            using next_offset.
+            using next_offset. For agents, a filtered definition index; for an agent
+            catalog, a component index; for a selected component, Unicode JSON
+            character offset. Concatenate chunks until next_offset is null.
         output_max_chars: Selected-field chunk length (1..32768, default 8192).
         request_key: Original UUIDv4 for target=conversation_turn; observation never starts work.
         file_id: For target=run_file, an owned opaque reference bound to run_id.
@@ -764,6 +772,33 @@ def read_graph(
         "file_id": file_id, "file_offset": file_offset,
         "file_max_bytes": file_max_bytes,
     }
+    if normalized in {"agents", "agent"} and not agent_stage_id:
+        from tinyassets.api.custom_agents import _base_path, _tags
+        from tinyassets.custom_agents import get_definition, list_definitions
+        from tinyassets.engine_read_views import project_agent, project_agents
+        from tinyassets.engine_result_bounds import resolve_ceiling
+
+        budget = resolve_ceiling() - 1024
+        if type(output_offset) is not int or output_offset < 0:
+            return json.dumps({"error": "output_offset must be a non-negative integer"})
+        if normalized == "agent":
+            row = get_definition(_base_path(), agent_definition_id or graph_id)
+            if row is None:
+                return json.dumps({"error": "not_found", "resource": "agent_definition"})
+            return json.dumps(project_agent(row, field_name=field_name, offset=output_offset,
+                                           max_chars=output_max_chars, budget=budget))
+        if field_name:
+            return json.dumps({"error": "use read_graph target=agent before selecting a component"})
+        if type(limit) is not int or not 1 <= limit <= 100:
+            return json.dumps({"error": "limit must be between 1 and 100"})
+        filters = {"query": query, "tags": _tags(tags), "author_id": author}
+        rows = list_definitions(_base_path(), **filters, limit=limit, offset=output_offset)
+        more = bool(list_definitions(_base_path(), **filters, limit=1,
+                                    offset=output_offset + len(rows)))
+        if output_offset and not rows and not list_definitions(
+                _base_path(), **filters, limit=1, offset=output_offset - 1):
+            return json.dumps({"error": "output_offset is past the definition catalog"})
+        return json.dumps(project_agents(rows, offset=output_offset, more=more, budget=budget))
     if normalized in {"model_options", "model_options_summary"}:
         # One projection for both names, and the same one the engine serves:
         # per source its counts and the head of the existing order, with
@@ -1459,7 +1494,7 @@ def write_graph(
                 )
             )
         if connection_operation in (
-            "request_from_user", "answer_request", "unmute_request",
+            "request_from_user", "answer_request", "unmute_request", "try_package",
             "withdraw_request",
         ):
             # ONE general primitive: the agent asks its user something and waits,
@@ -1472,6 +1507,12 @@ def write_graph(
 
             handler = getattr(_pending, connection_operation)
             return json.dumps(handler(universe_id=graph_id, payload=payload_json))
+        if connection_operation in ("preview_center_update", "answer_center_update",
+                                    "register_center_copy"):
+            from tinyassets.api.command_center_update_surface import write_update
+
+            return json.dumps(write_update(universe_id=graph_id,
+                                           operation=connection_operation, payload=payload_json))
         if connection_operation == "resolve_connection":
             # Owner-scoped, WRITE-FREE proposal: turns the *shape* of pasted
             # credential material (label + public prefix + length, never the
@@ -3127,15 +3168,31 @@ def converse(
     # Lines the owner sent into an earlier turn that its agent never received
     # (harness S2 carryover): the page normally re-sends them as this message;
     # any it did not (a closed or reloaded page) are folded in here.
+    typed = message
     message = _with_carryover(memory_universe_dir, memory_session, message)
     live_id = ""
     try:
         # Registered under the VERIFIED caller and this universe, so the owner's
         # Stop from any of their surfaces reaches it and nobody else's can.
-        with interactive_turn(current_actor_id(), uid) as live_turn:
+        #
+        # Also under the ADDRESSED AGENT (harness §4.18). ``request_interrupt``
+        # already filters by ``live.agent_id`` and ``LiveTurn`` already carries
+        # it, but this caller left it at the ``main`` default, so every turn
+        # registered as main whoever it was addressed to: a Stop aimed at a
+        # custom agent matched nothing and did nothing, while a Stop aimed at
+        # main stopped that custom agent's turn. ``addressed_id`` is the
+        # resolution this turn already did from authenticated ingress, inside
+        # the owner/universe scope, and never a session key parsed back into an
+        # identity: a parsed session may locate or cross-check a record, but it
+        # cannot establish one, so it is not what selects whose controls apply.
+        # (Stated here rather than cited: the change that writes this rule down,
+        # addressed-agent-control-provenance, lands in #4343 and is not in this
+        # checkout, so a reference to it would point at nothing -- Codex refute
+        # of this PR, finding D.)
+        with interactive_turn(current_actor_id(), uid, agent_id=addressed_id) as live_turn:
             live_id = live_turn.live_id
             _open_steering(memory_universe_dir, memory_session, uid, live_id,
-                           current_actor_id())
+                           current_actor_id(), typed)
             reply = _converse_impl(
                 uid,
                 message,
@@ -3279,15 +3336,17 @@ def _with_agent_activity(history, universe_dir, universe_id, owner):
     return sorted([*history, *notices], key=lambda m: m.ts or 0.0)
 
 
-def _open_steering(universe_dir, memory_session, universe_id, live_id, actor_id):
-    """This served turn may now be steered by its owner (harness S2)."""
+def _open_steering(universe_dir, memory_session, universe_id, live_id, actor_id,
+                   message=""):
+    """This served turn may now be steered by its owner (harness S2), and a page
+    reloaded while it runs can show the message it is answering."""
     from tinyassets import agent_steering
     from tinyassets.turn_interrupt import live_ids
 
     try:
         agent_steering.open_turn(
             universe_dir, f"thread:{memory_session}", live_id,
-            live_ids=live_ids(actor_id, universe_id),
+            live_ids=live_ids(actor_id, universe_id), message=message,
         )
     except Exception:  # noqa: BLE001 - steering is never worth a failed turn
         logger.warning("converse: owner steering could not be opened", exc_info=True)
@@ -4943,6 +5002,12 @@ def main(
     # idempotent). For sse/stdio transports there is no Starlette lifespan, so
     # run it here too — a strict-code boot must not serve undeclared universes.
     if transport == "streamable-http":
+        # The credential broker process (S6), before anything that makes an
+        # outbound call: its engine children reach it through the same socket.
+        # No-op unless TINYASSETS_CREDENTIAL_BROKER=process.
+        from tinyassets.broker.supervisor import start_broker
+
+        _credential_broker = start_broker()  # noqa: F841
         # Founder-scoped engine MCP over HTTP: start one loopback server per
         # serving universe so the universe agent's `run_graph`/`read_graph`
         # tools are available on EVERY served turn after a clean boot — no

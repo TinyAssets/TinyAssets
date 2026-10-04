@@ -148,14 +148,25 @@ def render_soul_markdown(soul: UniverseSoul) -> str:
     ])
 
 
-def read_universe_soul(universe_dir: Path) -> UniverseSoul | None:
-    # Through the one safe reader: the agent can write/link in its own folder,
-    # so soul.md is untrusted and a link must not be followed (universe_files).
+def read_universe_soul(universe_dir: Path, *, strict: bool = False) -> UniverseSoul | None:
+    """The parsed soul, or ``None``.
+
+    Through the one safe reader: the agent can write/link in its own folder,
+    so soul.md is untrusted and a link must not be followed (universe_files).
+    By default any unreadable soul reads as ``None``. ``strict`` (for a
+    read-modify-write) returns ``None`` only when soul.md is ABSENT and raises
+    on a refusal, so an update never rebuilds the soul from defaults over a
+    file it could not read.
+    """
     from tinyassets.universe_files import read_universe_text
 
     try:
         text = read_universe_text(universe_dir, SOUL_FILENAME)
+    except FileNotFoundError:
+        return None
     except (OSError, UnicodeDecodeError):
+        if strict:
+            raise
         return None
 
     return UniverseSoul(
@@ -230,7 +241,7 @@ def write_universe_soul(
     # Collapse the persona name to a single line: a multiline name would inject
     # spurious meta lines / corrupt soul.md (Codex review 2026-06-25).
     name = " ".join(name.split())
-    existing = read_universe_soul(universe_dir)
+    existing = read_universe_soul(universe_dir, strict=True)
     if existing is None:
         soul = UniverseSoul(
             name=name,

@@ -110,6 +110,10 @@ CHAPTER_ORDER = (
 #: run_graph step closes it ("Actually RUNNING it ... via run_graph"), and
 #: "File delivery ... not supported here" sits one line above the other.
 #:
+#: 2026-10-03: publishing became a pending-request ask the person confirms.
+#: The old browser-only denial now contradicts that route; only its exact
+#: passage is retired, with the absence marker checked below.
+#:
 #: Each entry is ``(passage, marker)``: the verbatim passage the allowance is
 #: derived from, and a word that occurs ONLY in it, so its absence is a cheap,
 #: direct check that the passage went rather than merely being rephrased.
@@ -131,6 +135,11 @@ REMOVED_PASSAGES = (
     (
         "Exact file delivery is not implemented.",
         "implemented.",
+    ),
+    (
+        "Publishing to the commons, changing visibility to public, and forking "
+        "a foreign shape are NOT available here (they stay in the browser flow);",
+        "forking",
     ),
 )
 DELIBERATELY_REMOVED: Counter = sum(

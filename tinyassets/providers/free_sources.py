@@ -63,6 +63,13 @@ def sign_in_preset(source_id):
                  and "sign_in" in row), None)
 
 
+def model_uses_metered_free_offer(host, model):
+    """Recognize a model tier only when the installed source declares it."""
+    suffix = (_DAILY_CAPS.get(host) or {}).get("free_model_suffix")
+    return (isinstance(suffix, str) and bool(suffix) and isinstance(model, str)
+            and len(model) > len(suffix) and model.endswith(suffix))
+
+
 def daily_cap_for_host(host):
     """The ONE reader of a source's daily limit, by inference host, or None.
 
@@ -74,6 +81,7 @@ def daily_cap_for_host(host):
     if offer is not None:
         return {"requests_per_day": offer.get("free_requests_per_day"),
                 "credit_requests_per_day": offer.get("credit_requests_per_day"),
+                "credit_amount": offer.get("credit_amount"),
                 "reset_timezone": offer.get("reset_timezone"), "name": offer["name"],
                 "credit_url": offer.get("credit_url")}
     row = source_for_host(host)
@@ -86,12 +94,20 @@ def daily_cap_for_host(host):
 
 
 def daily_cap_offers():
-    """Installed daily-limit facts the app words its daily-cap card from."""
-    return [{"host": host, **offer} for host, offer in sorted(_DAILY_CAPS.items())]
+    """Public daily-limit copy; internal model classification stays installed-only."""
+    fields = ("name", "free_requests_per_day", "credit_requests_per_day",
+              "credit_amount", "credit_url", "reset_timezone")
+    return [{"host": host, **{key: deepcopy(offer[key]) for key in fields if key in offer}}
+            for host, offer in sorted(_DAILY_CAPS.items())]
 
 
 def source_for_host(host):
-    return next((row for row in _SOURCES if urlsplit(row["base_url"]).netloc == host), {})
+    source = next((row for row in _SOURCES if urlsplit(row["base_url"]).netloc == host), None)
+    if source is not None:
+        return deepcopy(source)
+    presets = json.loads(Path(__file__).with_name("acquisition_presets.json").read_text("utf-8"))
+    return next((row for row in presets.values()
+                 if urlsplit(row["inference_url"]).netloc == host), {})
 
 
 def billing_url_for_host(host):

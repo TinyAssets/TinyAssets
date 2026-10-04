@@ -182,6 +182,7 @@ def test_an_async_sub_branch_that_runs_first_refreshes_for_itself(
     child on the stale sign-in (Codex round 2 on #4082). The child is minted by
     the real sibling path from a parent session that has not been admitted.
     """
+    from tinyassets import foreground_run_provider
     from tinyassets.daemon_server import save_branch_definition
     from tinyassets.foreground_run_provider import (
         _session_from_provider_call,
@@ -198,31 +199,55 @@ def test_an_async_sub_branch_that_runs_first_refreshes_for_itself(
     monkeypatch.setattr(foreground, "_seed_serving_assignment", seed_then_age)
     spent = _rotating_spend(monkeypatch)
     calls = _counting_refresh(monkeypatch)
-    _, _, captured = foreground._run_branch(
+    child_checks = []
+
+    def prepare_then_run_child_first(provider_call, **kwargs):
+        prepared = prepare_foreground_run_provider(provider_call, **kwargs)
+        if child_checks:
+            return prepared
+        child_checks.append(False)
+        parent = _session_from_provider_call(prepared)
+        assert parent is not None and parent.bound_run_id == kwargs["run_id"]
+        assert parent._receipt is None and parent._claim is None
+        assert not parent._sign_ins_refreshed
+        assert calls == [] and spent == []
+
+        child_branch = foreground._branch(node_count=1)
+        save_branch_definition(tmp_path, branch_def=child_branch.to_dict())
+        child_run_id = create_run(
+            tmp_path, branch_def_id=child_branch.branch_def_id, thread_id="thread-child",
+            inputs={}, actor=f"universe:{UID}",
+        )
+        update_run_status(tmp_path, child_run_id, status="running")
+        # Use the original preparation function so this hook applies only to
+        # the parent, before its first admission or provider invocation.
+        child = _session_from_provider_call(prepare_foreground_run_provider(
+            prepared, run_id=child_run_id, branch=child_branch,
+            branch_version_id=None, allowed_statuses={"running", "queued"},
+        ))
+        assert child is not None and child is not parent
+        try:
+            assert child._receipt is None and child._claim is None
+            assert child._request_budget is parent._request_budget
+            child._refresh_sign_ins()
+
+            assert calls == [OWNER]
+            assert spent == ["r-1"]
+            assert _stored_refresh_token(tmp_path) == "r-2"
+            assert _custody_matches_the_vault(tmp_path)
+            assert not parent._sign_ins_refreshed
+            child_checks[0] = True
+        finally:
+            child.close()
+        return prepared
+
+    monkeypatch.setattr(foreground_run_provider, "prepare_foreground_run_provider",
+                        prepare_then_run_child_first)
+    response, _, _ = foreground._run_branch(
         tmp_path, monkeypatch, authenticate_request, foreground._branch(node_count=1),
     )
-    parent = _session_from_provider_call(captured["provider_call"])
-    # The parent as a child would find it: bound to its run, nothing refreshed.
-    parent._sign_ins_refreshed = False
-    calls.clear()
-    spent.clear()
-    _redeposit_stale(tmp_path)
-
-    child_branch = foreground._branch(node_count=1)
-    save_branch_definition(tmp_path, branch_def=child_branch.to_dict())
-    child_run_id = create_run(
-        tmp_path, branch_def_id=child_branch.branch_def_id, thread_id="thread-child",
-        inputs={}, actor=f"universe:{UID}",
-    )
-    update_run_status(tmp_path, child_run_id, status="running")
-    child = _session_from_provider_call(prepare_foreground_run_provider(
-        captured["provider_call"], run_id=child_run_id, branch=child_branch,
-        branch_version_id=None, allowed_statuses={"running", "queued"},
-    ))
-    assert child is not parent
-    child._refresh_sign_ins()
-
-    assert calls == [OWNER]
+    assert child_checks == [True], "the child refresh assertions must complete"
+    assert response["terminal_status"] == "completed", response
     assert spent == ["r-1"]
     assert _stored_refresh_token(tmp_path) == "r-2"
     assert _custody_matches_the_vault(tmp_path)

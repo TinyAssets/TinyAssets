@@ -206,6 +206,39 @@ html,body{margin:0;padding:0;height:100%;font:15px/1.5 system-ui,sans-serif;colo
     });
   }
 
+  // The app reserves ONE key as the way back to the chat. A focused
+  // cross-origin frame swallows every key, so this frame hands that one back
+  // to the embedder instead of eating it -- otherwise a UI that takes focus is
+  // a trap with no keyboard way out (founder, 2026-10-03).
+  var RESERVED_KEY = "/";
+  function typingHere(node) {
+    if (!node) { return false; }
+    if (node.isContentEditable === true) { return true; }
+    var tag = String(node.tagName || "").toLowerCase();
+    if (tag === "textarea" || tag === "select") { return true; }
+    if (tag !== "input") { return false; }
+    var type = String(node.type || "text").toLowerCase();
+    return ["button", "submit", "checkbox", "radio", "range", "file", "color",
+            "reset", "image"].indexOf(type) < 0;
+  }
+  // Capture, so a UI's own handler cannot swallow the way out first. But only a
+  // REAL keypress: the embedder replays keys into this frame as synthetic
+  // events, and posting those back would be a loop.
+  window.addEventListener("keydown", function (event) {
+    if (!event.isTrusted) { return; }
+    if (event.key !== RESERVED_KEY) { return; }
+    if (event.ctrlKey || event.metaKey || event.altKey) { return; }
+    // A text field in THIS UI keeps it: typing "/" into a game's command box
+    // must stay in the game.
+    if (typingHere(event.target) || typingHere(document.activeElement)) { return; }
+    // TAKEN, not merely defaulted away: window-capture runs before the UI's own
+    // document/element handlers, and stopping here is what makes the key the
+    // app's rather than something a UI can also act on (or swallow).
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    parentWindow.postMessage({ta_ui: PROTOCOL, type: "reserved_key", key: event.key}, "*");
+  }, true);
+
   window.addEventListener("message", function (event) {
     // Only the embedder is heard. A bundle that opens its own channel cannot
     // impersonate the bridge, and no third window can inject a bundle.

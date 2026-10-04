@@ -882,7 +882,8 @@ def _fire_node_effects(
                 )
             from tinyassets.agent_review import bound as review_bound
 
-            with review_bound(chain.review_provider, active=chain.review_active):
+            with review_bound(chain.review_provider, active=chain.review_active,
+                              run_id=chain.run_id):
                 result = adapter(**adapter_kwargs)
         except Exception as exc:  # defensive: never raise from an adapter
             if is_cancellation(exc):
