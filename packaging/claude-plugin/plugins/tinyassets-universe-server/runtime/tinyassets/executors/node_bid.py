@@ -64,7 +64,7 @@ def _scan_dangerous_patterns(source: str) -> str:
     """Return the offending pattern or empty string."""
     try:
         patterns = dangerous_source_patterns(source, _BID_DANGEROUS_PATTERNS)
-    except SyntaxError:
+    except (SyntaxError, ValueError):
         return "invalid_syntax"
     return patterns[0] if patterns else ""
 

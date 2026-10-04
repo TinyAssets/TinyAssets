@@ -1,6 +1,18 @@
 # Founder command-center reports, 2026-10-04
 
-Branch: `fix/app-ui-run-and-code-checks`. Push only, no PR or deployment requested.
+Branch: `fix/app-ui-run-and-code-checks`, PR #4442. Review fixes and push only;
+deployment and real-user verification are still pending.
+
+Review-repair validation: related source-guard, bid, sandbox, branch-runner
+(affected heavy file), approval-description, path-I/O, storage-accounting,
+storage-registry and jail-disk tests: **388 passed / 7 platform skips on Windows;
+395 passed / no skips in the Linux oracle** (Python 3.11.16, bwrap 0.12.0,
+uid 1001). After the final module-registry alias/wildcard cases, the source-guard
+file passed **66 tests on each platform**, no skips. All pytest temp roots were
+outside the repository. Ruff passed for changed canonical/mirror Python and
+tests; the mirror build/import probe and whole-tree parity check passed. Every
+main-branch test name in changed test files was retained. No full suite or
+additional agents were used.
 
 ## Failed run reads
 
@@ -20,11 +32,23 @@ push-only request. Delete this finding once those are proved.
 
 `node_sandbox.NodeSandbox.validate_source` and the bid producer/executor scanned
 raw source for `open(` and other patterns; the compiler's narrower list had the
-same prose false positives. Shared AST
-inspection now examines calls and module/name references, preserving each list.
-Comments, literals and docstrings pass; real calls (including spaced,
-parenthesized, attribute and f-string-expression calls) remain blocked. The
-universe path-I/O test was already AST-based and needed no change.
+same prose false positives. Shared AST inspection examines calls and module/name
+references, preserving each list. Comments, prose literals and docstrings pass;
+direct calls (including spaced, parenthesized, attribute and f-string-expression
+calls) and references to forbidden callables are blocked. The universe path-I/O
+test was already AST-based and needed no change.
+
+PR #4442 cross-family review found that ignoring literals let string-running
+APIs and reflective namespace lookups through. The repair refuses the constructs
+themselves: string-running modules (including aliased imports), namespace and
+attribute reflection, dunder references, module registries and wildcard imports.
+The refusal explains that dynamic execution/reflection is unsupported; inspecting
+literal arguments alone cannot prove dynamically assembled code safe. The OS jail
+remains the authority boundary. `test_source_guard_syntax.py` has a negative for
+each of the five reported bypasses, plus alias, nonliteral argument, reflection
+and module-registry variants; prose remains positive at all four callers.
+Null bytes return syntax diagnostics/reason codes at all four callers, including
+the Python 3.11 `ast.parse` ValueError path.
 
 Red: `test_source_guard_syntax.py` had 8 failures before the fix (3 prose
 rejections, 5 whitespace/parenthesized-call bypasses). Green: all 113 tests in
@@ -43,18 +67,20 @@ for the first three files.
 
 ## Storage accounting
 
-Reproduced a real overcharge in `_universe_files`: 10 KiB of user files plus
-500 KiB of platform consent files produced a 510 KiB charge and refused a
-20 KiB write against a 100 KiB test quota. The consent migration keeps
-`.effector_consents.db.premigration` inside the universe; legacy consent DB,
-WAL, SHM and rollback journal names were charged there too. Exclude those exact
-platform artifact names from account measurement. Jail growth measurement is
-unchanged, so this does not exempt those paths from a running jail's disk bound.
+The initial repair exempted five consent filenames inside a universe. PR #4442
+review correctly identified that names do not prove platform ownership: a jail
+can grow those files across runs without reaching the owner's quota. All five
+exemptions are removed, including `.effector_consents.db.premigration`, because
+the migration backup also remains writable inside the universe. A genuine legacy
+backup is therefore charged conservatively. No migration or deletion is performed.
+The authoritative database in `.universe-sidecars` remains outside the account's
+measured universe, as proved by the retained
+`test_platform_consent_artifacts_do_not_exhaust_the_owners_pool`.
 
-`test_platform_consent_artifacts_do_not_exhaust_the_owners_pool` failed with
-`StorageRefused` before the change, then passed. All 74 storage-accounting,
-registry and jail-disk tests pass in the Linux oracle (no skips); Windows has
-73 passes and one POSIX-only skip.
+`test_consent_lookalike_growth_remains_charged_between_runs` covers every name at
+the root and nested (10 cases): three admitted appends remain charged after
+remeasurement and the fourth reservation is refused. Jail growth accounting is
+unchanged.
 
 Accounting findings:
 
@@ -79,8 +105,8 @@ Accounting findings:
   renewal, delete/retry, scan races and owner separation. No evidence of a
   blanket never-release bug was found.
 
-Production was not inspected; the consent overcharge is proven but not tied to
-the founder's particular refusal. Inspect the effective account type/env quota,
+Production was not inspected; the founder's particular refusal remains
+undiagnosed. Inspect the effective account type/env quota,
 all owner bindings, and the following ledger rows using a read-only connection
 to `<data>/.storage_accounting.db` (bind the actual owner ID; do not delete rows):
 

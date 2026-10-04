@@ -78,10 +78,6 @@ def test_owner_refusal_distinguishes_measurements_and_pending_states(base):
 class TestOnePoolPerAccount:
     def test_platform_consent_artifacts_do_not_exhaust_the_owners_pool(self, base):
         udir = _universe(base, "u-one", A)
-        # The consent move preserves this backup inside the command center.
-        # Legacy SQLite companions can remain there too.
-        for suffix in ("", "-wal", "-shm", "-journal", ".premigration"):
-            _write(udir, ".effector_consents.db" + suffix, 100 * KIB)
         _write(udir, "mine.bin", 10 * KIB)
         sidecar = base / ".universe-sidecars" / udir.name
         sidecar.mkdir(parents=True)
@@ -91,6 +87,25 @@ class TestOnePoolPerAccount:
         reservation = _admit(base, udir.name, 20 * KIB)
         assert sa.usage(base, A).measured_bytes == 10 * KIB
         sa.release(reservation)
+
+    @pytest.mark.parametrize("suffix", ["", "-wal", "-shm", "-journal", ".premigration"])
+    @pytest.mark.parametrize("nested", [False, True])
+    def test_consent_lookalike_growth_remains_charged_between_runs(self, base, suffix, nested):
+        udir = _universe(base, "u-one", A)
+        target = udir / "nested" if nested else udir
+        target.mkdir(exist_ok=True)
+        path = target / (".effector_consents.db" + suffix)
+        # Three individually admitted writes must consume the shared quota even
+        # after their reservations have been reconciled with actual file bytes.
+        for run in range(3):
+            reservation = _admit(base, udir.name, 30 * KIB)
+            with path.open("ab") as stream:
+                stream.write(b"x" * (30 * KIB))
+            sa.commit(reservation)
+            sa.measure(base, udir.name, "universe_files")
+            assert sa.usage(base, A).used_bytes == (run + 1) * 30 * KIB
+        with pytest.raises(sa.StorageRefused):
+            _admit(base, udir.name, 20 * KIB)
 
     def test_bytes_in_two_universes_share_one_quota(self, base):
         _write(_universe(base, "u-one", A), "a.bin", 60 * KIB)

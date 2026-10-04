@@ -2519,7 +2519,7 @@ class NodeSandbox:
 
         try:
             patterns = dangerous_source_patterns(source_code, tuple(FORBIDDEN_PATTERNS))
-        except SyntaxError:
+        except (SyntaxError, ValueError):
             patterns = []  # Report the syntax error below, with its location.
         for pattern in patterns:
             errors.append(f"Forbidden pattern: '{pattern}'")
@@ -2531,7 +2531,7 @@ class NodeSandbox:
         # Basic syntax check
         try:
             compile(source_code, "<node>", "exec")
-        except SyntaxError as exc:
+        except (SyntaxError, ValueError) as exc:
             errors.append(f"Syntax error: {exc}")
 
         return errors

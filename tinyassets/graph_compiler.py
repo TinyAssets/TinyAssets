@@ -618,13 +618,29 @@ _BID_DANGEROUS_PATTERNS = _DANGEROUS_PATTERNS + (
     "compile(", "open(", "importlib", "pickle", "marshal",
 )
 
+# These APIs execute strings or recover capabilities through reflection. Their
+# arguments may be assembled at runtime, so inspecting literal arguments cannot
+# make them safe. Refuse the constructs themselves, including imported aliases,
+# at EVERY source boundary, even the wrapper's otherwise narrower policy.
+_DYNAMIC_SOURCE_MODULES = frozenset({
+    "timeit", "cProfile", "profile", "pdb", "bdb", "code", "codeop",
+    "trace", "doctest", "runpy", "builtins", "inspect", "types",
+})
+_DYNAMIC_SOURCE_NAMES = frozenset({
+    "vars", "globals", "locals", "getattr", "setattr", "delattr",
+    "breakpoint", "attrgetter", "methodcaller", "_getframe",
+    "f_builtins", "f_globals", "f_locals", "gi_frame", "cr_frame", "tb_frame",
+})
+
 
 def dangerous_source_patterns(source: str, patterns: tuple[str, ...]) -> list[str]:
     """Match executable syntax, never comments, docstrings or literal contents.
 
     Keep the existing call-name and module/reference restrictions, including
-    attribute calls. The OS sandbox remains the authority boundary. Parsing
-    also closes the old whitespace/parenthesized-call bypass.
+    attribute calls and references to forbidden callables (which can be aliased).
+    String-running modules and reflection are refused, not speculatively checked:
+    Python cannot statically distinguish their data from dynamically built code.
+    Ordinary prose remains allowed. The OS sandbox is the authority boundary.
     """
     tree = ast.parse(source)
 
@@ -637,17 +653,47 @@ def dangerous_source_patterns(source: str, patterns: tuple[str, ...]) -> list[st
 
     references: set[str] = set()
     calls: set[str] = set()
+    unsupported: set[str] = set()
     for node in ast.walk(tree):
         if isinstance(node, (ast.Name, ast.Attribute)):
             references.add(dotted(node))
+            name = node.id if isinstance(node, ast.Name) else node.attr
+            if name in _DYNAMIC_SOURCE_NAMES or (
+                name.startswith("__") and name.endswith("__") and name != "__name__"
+            ):
+                unsupported.add(name)
+            if isinstance(node, ast.Attribute):
+                root = dotted(node).split(".")[0]
+                if root in _DYNAMIC_SOURCE_MODULES:
+                    unsupported.add(root)
+                # A module registry may be reached through an alias or another
+                # object; its runtime identity cannot be proved by this scan.
+                if node.attr == "modules":
+                    unsupported.add("module registry access (.modules)")
         elif isinstance(node, ast.Call):
             calls.add(dotted(node.func) + "(")
         elif isinstance(node, ast.ImportFrom):
             references.add(node.module or "")
+            root = (node.module or "").split(".")[0]
+            if root in _DYNAMIC_SOURCE_MODULES:
+                unsupported.add(root)
+            for alias in node.names:
+                references.add(f"{node.module}.{alias.name}")
+                if alias.name == "*":
+                    unsupported.add("wildcard imports")
+                if node.module == "sys" and alias.name == "modules":
+                    unsupported.add("sys.modules")
         elif isinstance(node, ast.alias):
             references.update((node.name, node.asname or ""))
-    return [pattern for pattern in patterns
-            if any(pattern in name for name in (calls if pattern.endswith("(") else references))]
+            root = node.name.split(".")[0]
+            if root in _DYNAMIC_SOURCE_MODULES or root in _DYNAMIC_SOURCE_NAMES:
+                unsupported.add(root)
+    # A forbidden callable may be assigned or handed to map/partial before use.
+    calls.update(name + "(" for name in references)
+    found = [pattern for pattern in patterns
+             if any(pattern in name for name in (calls if pattern.endswith("(") else references))]
+    return found + [f"dynamic execution/reflection is not supported: {name}"
+                    for name in sorted(unsupported)]
 
 
 def _is_cancel_exception(exc: BaseException) -> bool:
@@ -1886,7 +1932,7 @@ def source_code_problems(source_code: str, node_id: str) -> list[str]:
     problems: list[str] = []
     try:
         patterns = dangerous_source_patterns(src, _DANGEROUS_PATTERNS)
-    except SyntaxError:
+    except (SyntaxError, ValueError):
         patterns = []  # The syntax diagnostic below retains the compiler's detail.
     for pattern in patterns:
         problems.append(
@@ -1901,7 +1947,7 @@ def source_code_problems(source_code: str, node_id: str) -> list[str]:
         )
     try:
         compile(src, f"<node {node_id}>", "exec")
-    except SyntaxError as exc:
+    except (SyntaxError, ValueError) as exc:
         problems.append(f"Node '{node_id}' source_code does not parse: {exc}")
     return problems
 

@@ -140,7 +140,7 @@ def _walk_bytes(root: Path, *, exclude_top: frozenset[str] = frozenset()) -> int
 
 def _universe_files(base: Path, universe_id: str) -> int:
     """Everything in the universe's own directory except what the user did not put
-    there -- the platform's consent artifacts, provider runtime (``.runtime``)
+    there -- the provider runtime (``.runtime``)
     and transient checkout staging (``.workspace-staging``, platform debris when a checkout fails:
     measured at 2.8 GiB in one production universe, concern
     2026-09-30-workspace-staging-leaks-on-failed-checkouts) -- and permanent
@@ -154,10 +154,9 @@ def _universe_files(base: Path, universe_id: str) -> int:
 #: user's. Counted on the host line, never charged to an account.
 _NOT_USER_BYTES = frozenset({
     ".runtime", ".workspace-staging", "workspaces",
-    # Consent is platform authority, including the evidence kept by the move
-    # into .universe-sidecars. Legacy SQLite companions can remain in place.
-    ".effector_consents.db", ".effector_consents.db-wal", ".effector_consents.db-shm",
-    ".effector_consents.db-journal", ".effector_consents.db.premigration",
+    # Consent authority lives OUTSIDE the universe in .universe-sidecars. Even
+    # the legacy .premigration backup remains jail-writable here: a filename
+    # cannot establish platform ownership, so all in-universe copies are charged.
 })
 
 
