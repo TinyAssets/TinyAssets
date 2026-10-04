@@ -14,8 +14,8 @@ Three rules, all of them about not trusting what is already there:
   exists to prevent. The sidecar database is created EMPTY and the old file is
   renamed aside -- not deleted, so an operator can still read it. Every consent
   is granted again, through the ordinary ask at first use.
-* **Both copies present is a refusal.** That state is either an interrupted run
-  or a planted file, and guessing is how a forged file gets blessed.
+* **Unexplained copies are a refusal.** A durable per-home journal outside the
+  home identifies our own interrupted create/rename, without trusting legacy rows.
 * **It runs under the exclusive data-layout lock before any role opens the
   data**, and marks itself in progress durably first, so a crash leaves a
   resumable marker rather than a half-moved volume.
@@ -23,6 +23,7 @@ Three rules, all of them about not trusting what is already there:
 
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 
@@ -74,36 +75,56 @@ def _move_one(command_center: Path) -> str:
         initialize_consents_db,
         legacy_consents_db_path,
     )
+    from tinyassets.storage_layout import _write_atomically
+    from tinyassets.universe_files import read_data_path
 
     legacy = legacy_consents_db_path(command_center)
     target = consents_db_path(command_center)
     legacy_there = legacy.exists() or legacy.is_symlink()
-    target_there = target.exists()
+    target_there = target.exists() or target.is_symlink()
+    progress = target.with_name(".consents-move.json")
+    raw = read_data_path(progress)
+    journal = json.loads(raw) if raw is not None else None
+    resuming = journal == {"version": 1, "state": MIGRATING}
+    if journal is not None and not resuming and journal != {"version": 1, "state": DONE}:
+        raise MoveRefused(f"{command_center.name}: unrecognized consent move journal")
 
-    if target_there and legacy_there:
+    if target_there and legacy_there and not resuming:
         raise MoveRefused(
             f"{command_center.name}: a consent database exists both inside the "
             f"command center ({legacy}) and in its sidecar folder ({target}). "
-            "That is either an interrupted move or a planted file; neither is "
+            "There is no pending move journal; neither copy is "
             "safe to merge. Move or remove one by hand and start again.")
-    if target_there:
+    if target_there and not resuming:
         return "already-moved"
-
-    # Create the sidecar database EMPTY. Nothing is read from the old one.
-    initialize_consents_db(command_center)
-    if not legacy_there:
-        return "created-empty"
+    if not legacy_there and not resuming:
+        return "unused"
 
     # Keep the old file, renamed, so it can still be inspected. A LINK at the
     # old name is renamed too: it is evidence, and following it to delete or
     # read through it is what this whole change refuses to do.
     superseded = legacy.with_name(legacy.name + SUPERSEDED_SUFFIX)
-    if superseded.exists() or superseded.is_symlink():
+    if legacy_there and (superseded.exists() or superseded.is_symlink()):
         raise MoveRefused(
             f"{command_center.name}: {superseded.name} already exists, so the "
             "old database cannot be set aside without overwriting it. Move it "
             "out of the way by hand and start again.")
-    os.replace(legacy, superseded)
+    # Persist intent BEFORE creating the empty target. Only this platform-owned
+    # journal permits both names on restart. Initialization is idempotent even
+    # if the process died part-way through SQLite's schema transaction.
+    if not resuming:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        _write_atomically(progress, {"version": 1, "state": MIGRATING})
+    initialize_consents_db(command_center)
+    if legacy_there:
+        os.replace(legacy, superseded)
+    if hasattr(os, "O_DIRECTORY"):
+        fd = os.open(command_center, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+    _write_atomically(progress, {"version": 1, "state": DONE})
     return "superseded"
 
 
@@ -118,7 +139,7 @@ def run(base: Path, *, mark) -> dict[str, int]:
     not hide the state of the rest, and an operator wants the whole list.
     """
     mark(MIGRATING)
-    counts = {"already-moved": 0, "created-empty": 0, "superseded": 0}
+    counts = {"already-moved": 0, "unused": 0, "superseded": 0}
     refused: list[str] = []
     for command_center in command_centers(base):
         try:
@@ -128,7 +149,7 @@ def run(base: Path, *, mark) -> dict[str, int]:
     if refused:
         raise MoveRefused(
             f"{len(refused)} command center(s) could not be moved; the data is "
-            "left as it was and the move will resume when they are resolved:\n"
+            "fenced and the move will resume when they are resolved:\n"
             + "\n".join(f"  - {line}" for line in refused))
     mark(DONE)
     return counts

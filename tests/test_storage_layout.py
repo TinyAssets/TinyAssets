@@ -32,18 +32,18 @@ def test_a_fresh_data_dir_gets_the_layout_this_code_writes(tmp_path):
     # The marker also records the one-way moves this data has had, so a fresh
     # root is "already moved" -- it never had platform state in the wrong place.
     moved = {"consents_outside_command_centers": "done"}
-    assert layout.check(tmp_path) == {"layout": 1, "state": "stable", "moves": moved}
+    assert layout.check(tmp_path) == {"layout": 2, "state": "stable", "moves": moved}
     assert json.loads((tmp_path / layout.MARKER).read_text(encoding="utf-8")) == {
-        "layout": 1, "state": "stable", "moves": moved,
+        "layout": 2, "state": "stable", "moves": moved,
     }
     # Idempotent, including the move: a second admission re-reads "done" and
     # does not run it again.
-    assert layout.check(tmp_path) == {"layout": 1, "state": "stable", "moves": moved}
+    assert layout.check(tmp_path) == {"layout": 2, "state": "stable", "moves": moved}
 
 
 @pytest.mark.parametrize("document,reason", [
     ({"layout": 1, "state": "migrating"}, "did not finish"),
-    ({"layout": 2, "state": "stable"}, "understands"),
+    ({"layout": 3, "state": "stable"}, "understands"),
     ({"state": "stable"}, "understands"),
     ("{not json", "not valid JSON"),
     ("[1]", "not a JSON object"),
@@ -223,6 +223,94 @@ def test_concurrent_first_starts_write_one_marker(tmp_path):
         thread.join()
     assert errors == [] and len(docs) == 8
     assert not list(tmp_path.glob(".layout.json.*.tmp"))
+
+
+@pytest.mark.parametrize("existing_marker", [False, True])
+def test_delayed_start_does_not_wait_for_admitted_process_lifetime(
+    tmp_path, monkeypatch, existing_marker,
+):
+    import threading
+
+    if existing_marker:
+        _write(tmp_path, {"layout": 1, "state": "stable"})
+    released, resume, finished = (threading.Event() for _ in range(3))
+    real_unlock = layout._unlock
+    errors = []
+
+    def delayed_unlock(fd):
+        real_unlock(fd)
+        if threading.current_thread().name == "delayed" and not released.is_set():
+            released.set()
+            assert resume.wait(10)
+
+    def start():
+        try:
+            layout.require_layout(tmp_path)
+        except BaseException as exc:
+            errors.append(exc)
+        finally:
+            finished.set()
+
+    monkeypatch.setattr(layout, "_unlock", delayed_unlock)
+    waiter = threading.Thread(target=start, name="delayed", daemon=True)
+    waiter.start()
+    try:
+        assert released.wait(5)
+        layout.require_layout(tmp_path)  # A holds its shared lock for life.
+        resume.set()
+        assert finished.wait(2), "B blocked on A's lifetime lock after A migrated"
+        assert not errors
+    finally:
+        resume.set()
+        layout.release_for_tests()
+        waiter.join(5)
+        layout.release_for_tests()
+
+
+def test_migration_fences_older_admission_before_creating_target(tmp_path, monkeypatch):
+    from tinyassets.storage import effector_consents
+
+    home = tmp_path / "u-alpha"
+    home.mkdir()
+    effector_consents.legacy_consents_db_path(home).write_bytes(b"untrusted")
+    observed = []
+    initialize = effector_consents.initialize_consents_db
+
+    def observe(home):
+        observed.append(layout.read_marker(tmp_path))
+        return initialize(home)
+
+    monkeypatch.setattr(effector_consents, "initialize_consents_db", observe)
+    final = layout.check(tmp_path)
+    # The pre-move image knows only layout 1 and state=stable. Exercise its
+    # admission predicate on BOTH the before-first-write and finished markers.
+    with monkeypatch.context() as old_image:
+        old_image.setattr(layout, "KNOWN_LAYOUTS", frozenset({1}))
+        for document in [*observed, final]:
+            with pytest.raises(layout.LayoutRefused):
+                layout._validated(tmp_path, document)
+    assert observed
+
+
+def test_fail_safe_python_refuses_actual_consent_migration_marker(tmp_path):
+    layout.check(tmp_path)
+    # Execute the actual deployed predicate even on hosts without bash. The
+    # companion shell test also covers flock and the shell's exit propagation.
+    program = _guard_function().split("<<'LAYOUT_PY'\n", 1)[1].split("\nLAYOUT_PY", 1)[0]
+    result = subprocess.run(
+        [sys.executable, "-c", program, str(tmp_path / layout.MARKER)],
+        capture_output=True, text=True,
+    )
+    assert result.returncode != 0, "rollback allowed an older consent reader"
+
+
+@pytest.mark.skipif(not _bash_has_python3(), reason="needs bash with python3")
+def test_fail_safe_refuses_actual_consent_migration_marker(tmp_path):
+    layout.check(tmp_path)
+    marker = tmp_path / layout.MARKER
+    program = _guard_function() + f'layout_allows_any_image "{marker.as_posix()}"\n'
+    result = subprocess.run([_BASH, "-c", program], capture_output=True, text=True)
+    assert result.returncode != 0, "rollback allowed an older consent reader"
 
 
 @pytest.mark.skipif(sys.platform == "win32" or getattr(os, "geteuid", lambda: 1)() == 0,

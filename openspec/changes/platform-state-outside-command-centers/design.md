@@ -75,14 +75,36 @@ rest are a cleanup; this one is the reason.
 For each command center, in one locked pass:
 
 1. If the sidecar database exists and the in-folder one does not, nothing to do.
-2. If the in-folder one exists and the sidecar does not, create an **empty**
+2. If the in-folder one exists and the sidecar does not, durably record a
+   pending move in the daemon-owned sidecar's `.consents-move.json`, create an **empty**
    sidecar database and rename the in-folder file aside to
    `.effector_consents.db.premigration`. No row is copied — see the decision
    below. The old file is renamed rather than deleted so an operator can still
    read what was there.
-3. If both exist, refuse the command center loudly and leave both in place.
-   That state is either an interrupted run (resumable by hand) or something
-   worse, and guessing is how a forged file gets blessed.
+3. If both exist without that pending journal, refuse the command center
+   loudly and leave both in place. With the journal, resume initialization and
+   rename, then durably mark the journal done. A crash after either operation
+   can resume without adopting a legacy row.
+4. If neither exists, leave the store absent. Migration must not make a home
+   that never used consents unresettable by creating an unused database.
+
+PR #4376 repair allocates **layout 2** to this move. Before any per-home write,
+the top-level marker becomes `layout=2,state=migrating`; completion writes
+`layout=2,state=stable`. Only this move's matching nested migrating state may
+resume. Layout-1 images refuse both markers, and `deploy/deploy_fail_safe.sh`'s
+existing layout-1-only rollback predicate refuses both too. The later naming
+cutover must use a subsequent version, not reuse layout 2. Image-only rollback
+after this move requires restoring pre-move data under the existing deploy policy.
+
+Admission never waits exclusively behind a process that may already have
+finished the move and taken its lifetime shared lock: it attempts exclusive
+access nonblocking and rechecks under shared access on contention. This applies
+to both first-start initialization and existing-volume migration.
+
+Deletion stages `.deleting/<home>/home` and `.deleting/<home>/sidecar` as
+separate children of a platform-owned container. It resumes partial staging
+from those names. A staging failure keeps the home binding for retry, records
+unfinished staging/root-row phases, and still runs billing cancellation.
 
 **DECIDED 2026-10-03 (lead; the founder may override): carry nothing.** Step 2
 creates an **empty** sidecar database and renames the in-folder file aside. No
@@ -153,7 +175,7 @@ is derived from the same enumeration as D4 rather than listed separately.
 
 - **The migration is the dangerous part**, not the path change. It touches every
   command center once, it is one-way, and D3's "both exist" refusal means a
-  partially migrated volume needs a human. Mitigated by running under the
+  volume with unexplained duplicate stores needs a human. Mitigated by running under the
   exclusive layout lock before any role starts, by the resumable shape, and by
   the marker refusing a pre-move image.
 - **Every consent must be granted again.** The accepted cost of D3, and the
@@ -186,3 +208,68 @@ is derived from the same enumeration as D4 rather than listed separately.
 - `deployed_sha.py --assert-contains` plus a read-only prod check that the
   sidecar directory holds the consent database and the command-center folders do
   not.
+
+### PR #4376 repair verification (2026-10-03)
+
+The following regression cases fail with canonical code from `33f1265625`
+and pass with this repair. The Linux baseline was an isolated oracle copy:
+a pytest bootstrap replaced only the three changed canonical modules with
+their `git show 33f1265625:<path>` contents before collection. The worktree was
+not reset or switched.
+
+| Finding | Regression test |
+| --- | --- |
+| Crash after target creation | `test_crash_after_target_creation_resumes_without_legacy_grants` |
+| Delayed startup behind a lifetime lock (fresh and existing marker) | `test_delayed_start_does_not_wait_for_admitted_process_lifetime` |
+| Older-image admission | `test_migration_fences_older_admission_before_creating_target` |
+| Real deploy rollback predicate and shell exit | `test_fail_safe_python_refuses_actual_consent_migration_marker`, `test_fail_safe_refuses_actual_consent_migration_marker` |
+| Nonempty user-owned sidecar directory | `test_nonempty_in_home_sidecar_does_not_strand_deletion_or_billing` |
+| Partial staging, receipt, billing and retry | `test_partial_staging_is_receipted_billing_runs_and_retry_resumes` |
+| Previously unused consent store stays resettable | `test_migration_preserves_reset_for_a_home_without_consents` |
+| Cited affected-tests CI failure | `test_no_new_raw_file_io_in_universe_touching_modules` |
+
+Exact related-file commands (PowerShell):
+
+```powershell
+$related = @(
+  'tests/test_platform_state_outside_command_centers.py',
+  'tests/test_storage_layout.py',
+  'tests/test_account_deletion.py',
+  'tests/test_universe_path_io_guard.py',
+  'tests/test_effector_consents.py',
+  'tests/test_extensions_consent_actions.py',
+  'tests/test_served_workspace_consent_not_self_grantable.py',
+  'tests/test_delivery_account_deletion.py',
+  'tests/test_vault_account_deletion_guard.py',
+  'tests/test_scoped_reset_mutation_proof.py',
+  'tests/test_scoped_identity_reset.py'
+)
+python -m pytest @related -q --basetemp "$env:TEMP/wf4376-related"
+python scripts/linux_oracle.py -- @related -q --basetemp /tmp/wf4376-related
+python -m pytest tests/test_platform_state_outside_command_centers.py tests/test_account_deletion.py -q -k 'crash_after_legacy or linked_platform' --basetemp "$env:TEMP/wf4376-additional"
+python scripts/linux_oracle.py -- tests/test_account_deletion.py::test_staging_rejects_linked_platform_parents_without_touching_peer tests/test_deploy_prod_workflow.py -q --basetemp /tmp/wf4376-final
+python scripts/linux_oracle.py -- tests/test_host_uptime_installers.py tests/test_retire_cheat_loop_deploy_fence.py -q --basetemp /tmp/wf4376-heavy
+python packaging/claude-plugin/build_plugin.py
+python scripts/check_mirror_parity.py
+python -m ruff check tinyassets/account_deletion.py tinyassets/storage/platform_state_move.py tinyassets/storage_layout.py tests/test_account_deletion.py tests/test_platform_state_outside_command_centers.py tests/test_storage_layout.py
+```
+
+Related files: Windows **211 passed, 13 skipped**; Linux **225 passed, zero
+skips** (also includes the subsequently added crash-after-rename case).
+Additional Windows cases: **1 passed, 2 symlink skips**. The two linked-parent
+cases pass on Linux. Mirror generation/import probe, all 565-file parity,
+Ruff and `git diff --check` pass.
+
+The extra deployment-workflow file reports **44 failures, 47 passes** both
+with this repair and with original `33f1265625` canonical code; its workflow
+and test inputs are unchanged. The combined extra run including the two
+linked-parent tests is **44 failed, 49 passed**. These existing deployment
+findings are tracked in `docs/concerns/2026-08-27-full-tests-permanently-red.md`
+and `docs/concerns/2026-10-02-deploy-workflow-vs-uptime-spec.md`.
+The affected-heavy run reports **311 passed, 17 failed**, with every failure
+in `test_retire_cheat_loop_deploy_fence.py`; the identical **311/17** result
+was reproduced with original `33f1265625` canonical code in the Linux oracle.
+The same existing concern tracks these retired-worker/fence failures.
+
+No deployment, PR-body update, auto-merge change or full-suite run is part of
+this repair. Tasks beyond 2.1/2.2 remain open.

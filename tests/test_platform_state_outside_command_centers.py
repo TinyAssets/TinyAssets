@@ -175,6 +175,60 @@ def test_an_interrupted_move_resumes(data: Path):
     assert not legacy_consents_db_path(cc).exists()
 
 
+def test_crash_after_target_creation_resumes_without_legacy_grants(data, monkeypatch):
+    from tinyassets.storage import effector_consents
+
+    cc = data / "u-alpha"
+    legacy = _forge(cc)
+    initialize = effector_consents.initialize_consents_db
+
+    def crash(home):
+        initialize(home)
+        raise RuntimeError("crash after target creation")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(effector_consents, "initialize_consents_db", crash)
+        with pytest.raises(RuntimeError, match="crash after target"):
+            layout.check(data)
+    assert legacy.exists() and consents_db_path(cc).exists()
+    layout.check(data)
+    assert not legacy.exists()
+    assert legacy.with_name(legacy.name + psm.SUPERSEDED_SUFFIX).exists()
+    assert not is_consent_active(cc, sink=SINK, destination=DEST)
+    assert _marker(data)[psm.MOVES][psm.CONSENTS] == psm.DONE
+
+
+def test_migration_preserves_reset_for_a_home_without_consents(data):
+    from tinyassets.scoped_reset import _walk_home_without_following
+
+    cc = data / "u-alpha"
+    cc.mkdir()
+    assert not _walk_home_without_following(cc)
+    layout.check(data)
+    assert not consents_db_path(cc).exists()
+    assert not _walk_home_without_following(cc)
+
+
+def test_crash_after_legacy_rename_resumes(data, monkeypatch):
+    cc = data / "u-alpha"
+    legacy = _forge(cc)
+    replace = os.replace
+
+    def crash(source, destination):
+        replace(source, destination)
+        if source == legacy:
+            raise RuntimeError("crash after legacy rename")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(os, "replace", crash)
+        with pytest.raises(RuntimeError, match="crash after legacy"):
+            layout.check(data)
+    layout.check(data)
+    assert not legacy.exists()
+    assert not is_consent_active(cc, sink=SINK, destination=DEST)
+    assert _marker(data)[psm.MOVES][psm.CONSENTS] == psm.DONE
+
+
 def test_a_dot_entry_at_the_root_is_not_a_command_center(data: Path):
     """The sidecar folder itself must not be walked as a command center."""
     (data / UNIVERSE_SIDECARS_DIR).mkdir()
@@ -233,8 +287,8 @@ def test_staging_a_home_for_deletion_takes_its_sidecar_with_it(data: Path):
     assert not cc.exists()
     assert not sidecar.exists(), "the sidecar survived staging"
     # Both are inside the one staged directory, so one rmtree removes both.
-    assert (staged / "note.md").exists()
-    assert (staged / UNIVERSE_SIDECARS_DIR / ".effector_consents.db").exists()
+    assert (staged / "home" / "note.md").exists()
+    assert (staged / "sidecar" / ".effector_consents.db").exists()
 
 
 def test_a_sidecar_with_no_home_left_is_still_staged(data: Path):
