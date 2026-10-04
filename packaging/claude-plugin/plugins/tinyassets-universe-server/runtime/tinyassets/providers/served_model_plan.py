@@ -53,9 +53,8 @@ _LOG = logging.getLogger("universe_server.served_model_plan")
 #: id EXISTS, never permission to use it.
 PUBLIC_LISTED_BASIS = "publicly_listed"
 
-#: Bases that are OFFERS to grant, never admitted candidates. One set, read by the
-#: split below and by api/model_options' legacy plan, so a third basis cannot be added
-#: in one place and admitted in the other.
+#: Evidence alone cannot grant access. Display under an accepted discovery scope
+#: may retain own verified choices; legacy and execution plans keep both as offers.
 _CANDIDATE_ONLY_BASES = frozenset({PUBLIC_LISTED_BASIS, OWN_VERIFIED_BASIS})
 
 
@@ -173,7 +172,7 @@ class ModelSourceUnavailable(PermissionError):
         self.reason = reason
 
 
-def _native_models(base, universe, owner, member, *, native_snapshot=None):
+def _native_models(base, universe, owner, member, *, native_snapshot=None, display_only=False):
     from tinyassets.providers.call import get_provider_router
     from tinyassets.providers.model_selection import _native_default
 
@@ -200,7 +199,8 @@ def _native_models(base, universe, owner, member, *, native_snapshot=None):
     if native_snapshot is not None:
         if member.access.model_scope != "discovered":
             raise PermissionError("native discovery cannot widen an explicit model scope")
-        native_snapshot.assert_fresh()
+        if not display_only:
+            native_snapshot.assert_fresh()
         if (native_snapshot.provider != member.provider or native_snapshot.owner_id != owner
                 or native_snapshot.universe != Path(universe).resolve()
                 or native_snapshot.custody.reference_digest != member.credential_reference_digest):
@@ -258,8 +258,9 @@ def _own_verified_candidates(base, source_kind, owner, *, already, excluded=froz
 
     Carries its own basis so the list can be honest about the difference between
     "you have run this" and "two owners elsewhere have run this". Like the
-    published rows, these are candidates and NOT admitted: the owner may have
-    narrowed their model access since, and re-granting is the existing one-tap path.
+    published rows, these do not grant access: the owner may have narrowed their
+    scope since. Display can retain them under a current discovery grant; other
+    scopes still require an explicit grant, and execution needs fresh discovery.
     """
     from tinyassets.storage.learned_models import OwnModelHistory
 
@@ -450,6 +451,7 @@ def prepare_owned_model_plan(
         try:
             if provider in _PROVIDER_SERVICE:
                 native_snapshot = None
+                pending = ""
                 if member.access.model_scope == "discovered":
                     # A DISPLAY read takes whatever is warm and asks for a
                     # refresh in the background; it never runs discovery. That
@@ -467,8 +469,9 @@ def prepare_owned_model_plan(
                         native_snapshot, pending = SHORTLIST_CACHE.get(
                             base=base, owner=owner, universe_id=universe.name,
                             provider=provider,
+                            display_only=True,
                         )
-                        if native_snapshot is None:
+                        if pending:
                             rejected.append(Ineligible(ModelRef(provider, ""), pending,
                                                        scope="source"))
                     else:
@@ -494,34 +497,37 @@ def prepare_owned_model_plan(
                                 scope="source"))
                 catalog = _native_models(
                     base, universe, owner, member, native_snapshot=native_snapshot,
+                    display_only=allow_empty,
                 )
-                # A LEARNED id is a candidate to GRANT, never an admitted one.
-                # `catalog` is what a client may SEE; `filtered` is what may be
-                # selected and executed, and the two are deliberately different
-                # here -- the same split the HTTP branch below already makes.
-                #
-                # Codex on #4028 found these identical: one object went to both, so
-                # a learned id arrived with in_candidate_catalog=true, the dropdown
-                # offered it, selection succeeded and only EXECUTION refused it.
-                # Selectable choices that fail are worse than absent ones.
+                # Public claims remain offers to grant. Display may retain this
+                # owner's history under accepted discovery scope; execution still
+                # requires fresh enumeration, and explicit scope stays exact.
+                candidate_only = _CANDIDATE_ONLY_BASES
+                if allow_empty and member.access.model_scope == "discovered":
+                    # Auto-detect already grants this scope. An owner's verified
+                    # history remains pickable during discovery; it does not
+                    # attest fresh execution facts or widen explicit/legacy scope.
+                    candidate_only = candidate_only - {OWN_VERIFIED_BASIS}
                 contributed = tuple(
                     model for model in catalog.models
-                    if model.availability_basis in _CANDIDATE_ONLY_BASES
+                    if model.availability_basis in candidate_only
                 )
                 filtered = replace(catalog, models=tuple(
                     model for model in catalog.models
-                    if model.availability_basis not in _CANDIDATE_ONLY_BASES
+                    if model.availability_basis not in candidate_only
                 ))
-                # Said, not merely withheld: the reason is what puts it under the
-                # dropdown's "Needs access" group with the one-tap grant, so the
-                # owner can turn a learned id into a real choice.
+                # Unknown rows under a pending discovery grant need a catalogue
+                # result, not another consent request. Other offers need access.
                 rejected.extend(
                     Ineligible(ModelRef(provider, model.model_id),
-                               "model_access_optin_required")
+                               pending or "model_access_optin_required")
                     for model in contributed
                 )
-                if native_snapshot is not None:
+                if native_snapshot is not None and not allow_empty:
                     snapshots.append(native_snapshot)
+                # Display rechecks current member/custody through chains below,
+                # without interpreting catalogue age as a revoked source. The
+                # resulting PreparedPlan is sealed display_only.
                 required, caps = interaction, member.access.cost_caps
             else:
                 from tinyassets.providers.discovery_snapshot import refresh_model_discovery

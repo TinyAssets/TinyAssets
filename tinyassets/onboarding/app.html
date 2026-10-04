@@ -3354,6 +3354,11 @@
       $("model-menu").appendChild(note);
       return note;
     },
+    refreshLabel(reason){
+      return {catalogue_refresh_pending:"checking… (showing last known models)",
+        catalogue_refresh_unavailable:"couldn't refresh (showing last known models)",
+        native_catalogue_unavailable:"couldn't refresh (showing last known models)"}[reason];
+    },
     renderMenu(){
       const menu=$("model-menu");if(!menu||menu.hidden) return;
       menu.replaceChildren();
@@ -3364,8 +3369,9 @@
       // Everything the command center can actually use, then - only if there are any -
       // the ones that cannot be used yet, greyed under one small divider with
       // their reason. A model is never silently absent.
-      const usable=[],blocked=[];
-      for(const row of this.rows()) (this.usable(row)?usable:blocked).push(row);
+      const usable=[],blocked=[],refreshing=[];
+      for(const row of this.rows()) (this.usable(row)?usable:
+        (row.reasons||[]).some(r=>this.refreshLabel(r.reason))?refreshing:blocked).push(row);
       const isCurrent=key=>!!current&&this.key(current)===key;
       for(const row of usable){
         const key=this.key(row.reference);
@@ -3383,6 +3389,15 @@
       }
       if(!this.fresh()) this.menuNote(this.busy?"Loading your models…":"This list needs a refresh.");
       else if(!usable.length) this.menuNote("No model is available to choose yet.");
+      for(const source of (this.snapshot&&this.snapshot.source_failures||[])){
+        const labels=source.reasons.map(r=>this.refreshLabel(r.reason)).filter(Boolean);
+        if(labels.length) this.menuNote(source.provider_ref+" — "+labels.join(", "));
+      }
+      if(refreshing.length){
+        this.menuNote("Checking availability","model-menu-divider");
+        for(const row of refreshing) this.menuRow(this.label(row.reference),false,null,
+          "— "+row.reasons.map(r=>this.refreshLabel(r.reason)||r.reason.replaceAll("_"," ")).join(", "));
+      }
       if(blocked.length){
         this.menuNote("Needs access","model-menu-divider");
         for(const row of blocked){
@@ -3555,7 +3570,7 @@
         inventory.appendChild(li);
       }
       for(const source of (this.snapshot&&this.snapshot.source_failures||[])){
-        const li=document.createElement("li");li.textContent=source.provider_ref+" — "+source.reasons.map(r=>r.reason.replaceAll("_"," ")).join(", ");inventory.appendChild(li);
+        const li=document.createElement("li");li.textContent=source.provider_ref+" — "+source.reasons.map(r=>this.refreshLabel(r.reason)||r.reason.replaceAll("_"," ")).join(", ");inventory.appendChild(li);
       }
       const accessList=$("model-access-sources");accessList.replaceChildren();
       for(const source of (this.snapshot&&this.snapshot.sources||[])){

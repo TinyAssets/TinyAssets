@@ -15,12 +15,10 @@ Two properties that concern asks for, both structural here rather than tuned:
   warm and asks for a refresh in the background. So the slowest source costs
   a dict lookup, not its own latency.
 
-What this deliberately does NOT do: serve stale choices. An entry past
-:data:`USABLE_AGE` is withheld and reported as refreshing, because
-``NativeDiscoverySnapshot.assert_fresh`` would refuse it at execution anyway —
-offering it would be a choice that fails on use, which is worse than a
-truthful "not yet". That is also the concern's own warning: this is not solved
-by "enabling stale choices globally".
+Fresh reads withhold entries past :data:`USABLE_AGE`. Display-only reads retain
+the last known catalogue with a refresh diagnostic: catalogue age must not be
+mistaken for revoked consent. The display caller rechecks current membership
+and custody, and cannot use these display facts to authorize a launch.
 
 Execution is untouched. ``prepare_selected_model`` still discovers fresh at
 launch, with its own custody and freshness checks, so nothing here participates
@@ -155,13 +153,13 @@ class ShortlistCache:
 
     # -- reads ----------------------------------------------------------
 
-    def get(self, *, base, owner, universe_id, provider):
+    def get(self, *, base, owner, universe_id, provider, display_only=False):
         """The warm snapshot for this source, or ``(None, reason)``.
 
-        Never blocks and never discovers. A cold or aged-out entry schedules a
-        refresh and reports a truthful pending reason, so the caller can keep
-        the source's own default usable while saying the catalogue is not in
-        yet -- rather than inventing availability or hanging the read.
+        Never blocks and never discovers. Display-only callers may retain the
+        last known snapshot, but must validate its custody and report the
+        returned diagnostic separately from consent. Other callers get only
+        snapshots inside the usable window.
         """
         key = _Key(str(base), owner, universe_id, provider)
         with self._lock:
@@ -171,7 +169,7 @@ class ShortlistCache:
                 if entry is None:
                     return None, "catalogue_refresh_unavailable"
             age = self._snapshot_age(entry)
-            usable = age is not None and age <= USABLE_AGE
+            usable = age is not None and 0 <= age <= USABLE_AGE
             needs = age is None or age >= REFRESH_AGE
             reason = entry.reason
             snapshot = entry.snapshot
@@ -179,10 +177,12 @@ class ShortlistCache:
             self.schedule(base=base, owner=owner, universe_id=universe_id,
                           provider=provider)
         if usable:
-            return snapshot, ""
+            diagnostic = reason or ("catalogue_refresh_pending" if needs else "")
+            return snapshot, diagnostic if display_only else ""
         # A failed attempt reports ITS reason; a cold one reports pending. The
         # two are different facts and a client should not have to guess which.
-        return None, reason or "catalogue_refresh_pending"
+        retained = snapshot if display_only and age is not None and age >= 0 else None
+        return retained, reason or "catalogue_refresh_pending"
 
     # -- refresh --------------------------------------------------------
 
@@ -276,7 +276,7 @@ class ShortlistCache:
             elif reason:
                 # A failure does NOT discard a still-usable warm snapshot: a
                 # transient refresh error should not empty a picker that was
-                # working a minute ago. It ages out on its own.
+                # working a minute ago. Fresh reads still enforce its age.
                 pass
 
     # -- lifecycle ------------------------------------------------------

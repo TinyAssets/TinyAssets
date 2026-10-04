@@ -12,6 +12,18 @@ import json
 import sqlite3
 from dataclasses import dataclass, fields
 
+MODEL_ACCESS_FORMAT = (
+    'model_access must map provider names to objects with exactly these fields: '
+    'model_scope ("legacy", "explicit", or "discovered"), '
+    'model_ids (a nonempty array of unique model IDs for explicit; [] otherwise), '
+    'cost_caps (null for free-only, or a nonempty object mapping cost components '
+    'to nonnegative integer ceilings). Use "" as the native provider-default ID. '
+    'Example: {"codex":{"model_scope":"explicit",'
+    '"model_ids":["gpt-6-astra"],"cost_caps":null}}. '
+    'For auto-detect use model_scope="discovered", model_ids=[]. '
+    'Preserve other accepted providers and existing cost_caps.'
+)
+
 
 def _text(value: object) -> bool:
     return (
@@ -87,10 +99,10 @@ class ModelAccess:
             "model_ids",
             "cost_caps",
         }:
-            raise ValueError("invalid model access document")
+            raise ValueError("invalid model access document: " + MODEL_ACCESS_FORMAT)
         models, caps = document["model_ids"], document["cost_caps"]
         if not isinstance(models, list) or (caps is not None and not isinstance(caps, dict)):
-            raise ValueError("invalid model access fields")
+            raise ValueError("invalid model access fields: " + MODEL_ACCESS_FORMAT)
         return cls(
             document["model_scope"],
             tuple(models),

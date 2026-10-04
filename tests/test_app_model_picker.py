@@ -48,6 +48,23 @@ def test_declared_models_are_not_labelled_verified_available(tmp_path):
     assert "full model list not yet verified" in rows[1]["text"]
 
 
+@pytest.mark.parametrize("reason,label", [
+    ("catalogue_refresh_pending", "checking…"),
+    ("native_catalogue_unavailable", "couldn't refresh"),
+])
+def test_catalogue_refresh_is_visible_without_disabling_known_choices(tmp_path, reason, label):
+    doc = catalogue()
+    doc["source_failures"] = [{"provider_ref": "owned:future-source",
+                               "reasons": [{"reason": reason}]}]
+    doc["options"][2].update(in_candidate_catalog=False, reasons=[{"reason": reason}])
+    result = run_picker(tmp_path, "", doc)
+    rows = result["ui"]["model-menu"]["children"]
+    assert any(label in row["text"] for row in rows)
+    assert not any("Needs access" in row["text"] for row in rows)
+    assert any("first" in row["text"] and not row["disabled"] for row in rows)
+    assert any("third" in row["text"] and row["disabled"] for row in rows)
+
+
 def test_choosing_closes_the_dropdown_and_reuses_the_fresh_catalogue(tmp_path):
     """One click applies and closes; reopening does not re-read the catalogue."""
     result = run_picker(tmp_path, """
