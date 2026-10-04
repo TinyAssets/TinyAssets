@@ -61,8 +61,7 @@ def _approve(prompt, system, role="writer"):
 
 @pytest.fixture(autouse=True)
 def _a_reviewer_that_approves():
-    """These tests drive the effector itself, not a run: they bind an explicit
-    approving reviewer (harness D1d holds a consequential action with none)."""
+    """A bound reviewer grants no authority and does not opt the owner in."""
     with agent_review.bound(_approve, active=True):
         yield
 
@@ -308,6 +307,34 @@ def test_generic_call_succeeds_with_exact_wire_request_and_worker_applied_creden
     assert "real-vault-http-token" not in json.dumps(packet)
     assert "real-vault-http-token" not in json.dumps(evidence)
     assert proxy.closed is True  # the effector always tears the proxy down
+
+
+def test_owner_allowed_issue_post_reaches_broker_without_a_review(tmp_path, monkeypatch):
+    from tinyassets import agent_rules
+
+    monkeypatch.setenv(_HTTP_FLAG, "1")
+    path = "/repos/owner/project/issues"
+    _, universe, db = _setup(tmp_path, destination="api.github.com", endpoints=[{
+        "host": "api.github.com", "path_template": path, "methods": ["POST"]}])
+    agent_rules.set_rule(universe, "app.write", agent_rules.DO,
+                         connection="conn-http", operation="POST")
+    loop = _Loopback()
+    _install_loopback_driver(monkeypatch, loop.port)
+    _install_inprocess_proxy(monkeypatch, db_path=db, universe_dir=universe,
+                             grant_id="grant-http", provider="http",
+                             destination="api.github.com", runtime_root=tmp_path / "rt")
+    packet = {"sink": EXTERNAL_WRITE_SINK_AUTHENTICATED_CALL,
+              "connection_id": "conn-http", "grant_id": "grant-http", "verb": "POST",
+              "request": {"path": path, "body": {"title": "Owner's issue"}}}
+    try:
+        with agent_review.bound(None, active=False):
+            result = run_authenticated_external_call_effector(
+                node_id="n", output_keys=["out"], run_state={"out": json.dumps(packet)},
+                base_path=str(universe), run_id="r")
+    finally:
+        loop.stop()
+    assert result.get("delivered"), result
+    assert len(loop.recorded) == 1 and loop.recorded[0]["path"] == path
 
 
 # --------------------------------------------------------------------------- #

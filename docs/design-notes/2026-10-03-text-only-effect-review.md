@@ -1,5 +1,13 @@
 # Code-only effect review: restrictive execution contract
 
+> Superseded in scope by founder direction, 2026-10-04: writes through an owner's
+> own connections do not require platform review. The owner must explicitly
+> enable review per action class; unavailable configured reviews still hold
+> with their cause. The text-only execution restrictions below remain in force
+> for those reviews. Connection ownership, grants, operation scope, consent and
+> shared-host isolation remain mandatory and independent of any model verdict.
+> See `openspec/specs/http-connections-and-outbound-authority/spec.md`.
+
 The run's transient review purpose binds its owner, run, provider wrapper,
 action digest and fixed prompt/system. It admits no ordinary no-prompt call.
 The existing receipt reserves at most two attempts per declared external effect

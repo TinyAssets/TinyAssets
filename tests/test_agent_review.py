@@ -1,9 +1,7 @@
 """Harness D1d: a check on the universe's own model before a consequential action.
 
-Design #4172 §4.9 (founder-approved 2026-10-01): dots' auto-review. On by
-default for every consequential action a rule lets proceed; tool-free, on the
-run's own provider call, admitted like any agent call; tighten-only; fails closed; a
-per-class off switch the owner confirms, never for the hand-back classes.
+Owner-configured reviews are tool-free, on the run's own provider call,
+admitted like any agent call, tighten-only and fail closed. Review is opt-in.
 """
 from __future__ import annotations
 
@@ -20,6 +18,7 @@ from tinyassets import agent_review, agent_rules
 def _universe(tmp_path: Path) -> Path:
     path = tmp_path / "data" / "u-alpha"
     path.mkdir(parents=True)
+    agent_review.set_review(path, "app.write", True)
     return path
 
 
@@ -47,7 +46,7 @@ def _review(universe, model, *, action=ACTION, evidence=""):
                                            evidence=evidence)
 
 
-def test_outside_a_runner_a_consequential_action_is_held(tmp_path):
+def test_outside_a_runner_an_owner_configured_review_is_held(tmp_path):
     universe = _universe(tmp_path)
     refusal = agent_review.review_refusal(universe, action=ACTION, rule="r")
     assert refusal["error_kind"] == "auto_review_unavailable"
@@ -157,10 +156,14 @@ def test_switching_the_check_off_needs_confirmation(tmp_path):
     assert agent_review.switched_off(universe) == set()
 
 
-@pytest.mark.parametrize("action_class", sorted(agent_review.ALWAYS_REVIEWED))
-def test_the_handback_classes_keep_the_check(tmp_path, action_class):
-    with pytest.raises(agent_review.ReviewSwitchRefused):
-        agent_review.set_review(_universe(tmp_path), action_class, False, confirm=True)
+@pytest.mark.parametrize("action_class", ["money.move", "security.change", "access.grant"])
+def test_the_owner_controls_review_for_handback_classes(tmp_path, action_class):
+    universe = _universe(tmp_path)
+    agent_review.set_review(universe, action_class, True)
+    assert action_class in agent_review.switched_on(universe)
+    agent_review.set_review(universe, action_class, False, confirm=True)
+    assert agent_review.review_refusal(
+        universe, action={**ACTION, "action_class": action_class}, rule="owner allows") is None
 
 
 # -- wiring -----------------------------------------------------------------------------
@@ -247,8 +250,11 @@ def test_the_owner_door_switches_the_check(monkeypatch, tmp_path):
                         "confirm": True})
     assert status == 200 and doc["review_off"] == ["app.write"]
     assert agent_review.switched_off(universe) == {"app.write"}
+    assert doc["review_on"] == []
+    status, doc = post({"review": {"action_class": "app.write", "enabled": True}})
+    assert status == 200 and doc["review_on"] == ["app.write"]
     assert post({"review": {"action_class": "money.move", "enabled": False},
-                 "confirm": True})[0] == 409
+                 "confirm": True})[0] == 200
 
 
 def test_switches_are_per_agent_and_an_old_table_becomes_mains(tmp_path):
@@ -257,7 +263,8 @@ def test_switches_are_per_agent_and_an_old_table_becomes_mains(tmp_path):
 
     from tinyassets import agent_sessions
 
-    universe = _universe(tmp_path)
+    universe = tmp_path / "data" / "u-alpha"
+    universe.mkdir(parents=True)
     db = agent_sessions._records_dir(universe) / "rules.db"
     with sqlite3.connect(db) as conn:  # the shape #4200 shipped
         conn.execute("CREATE TABLE review_off (action_class TEXT PRIMARY KEY, "
@@ -265,6 +272,7 @@ def test_switches_are_per_agent_and_an_old_table_becomes_mains(tmp_path):
         conn.execute("INSERT INTO review_off VALUES ('app.write', 1.0)")
     assert agent_review.switched_off(universe) == {"app.write"}
     assert agent_review.switched_off(universe, "researcher") == set()
+    assert agent_review.switched_on(universe) == set(), "legacy absence is not opt-in"
     agent_review.set_review(universe, "people.message", False, confirm=True,
                             agent="researcher")
     assert agent_review.switched_off(universe, "researcher") == {"people.message"}
@@ -275,6 +283,32 @@ def test_switches_are_per_agent_and_an_old_table_becomes_mains(tmp_path):
             universe, action={**ACTION, "action_class": "people.message"}, rule="r",
             agent="researcher") is None
     assert model.prompts == [], "switched off for that agent only"
+
+
+def test_review_opt_in_is_persisted_and_scoped_to_the_owner_agent(tmp_path):
+    universe = tmp_path / "data" / "owner"
+    action = {**ACTION, "action_class": "people.message"}
+    assert agent_review.review_refusal(universe, action=action, rule="r") is None
+    agent_review.set_review(universe, "people.message", True, agent="researcher")
+    assert agent_review.review_refusal(universe, action=action, rule="r") is None
+    refusal = agent_review.review_refusal(universe, action=action, rule="r", agent="researcher")
+    assert refusal["error_kind"] == "auto_review_unavailable"
+    assert agent_review.review_refusal(
+        tmp_path / "data" / "other", action=action, rule="r", agent="researcher") is None
+    agent_review.set_review(universe, "people.message", False, confirm=True, agent="researcher")
+    assert agent_review.switched_on(universe, "researcher") == set()
+
+
+def test_unreadable_review_settings_hold_with_the_cause(tmp_path, monkeypatch):
+    import sqlite3
+
+    def unreadable(*args):
+        raise sqlite3.OperationalError("unreadable")
+
+    monkeypatch.setattr(agent_review, "switched_on", unreadable)
+    refusal = agent_review.review_refusal(tmp_path, action=ACTION, rule="r")
+    assert refusal["error_kind"] == "auto_review_unavailable"
+    assert "review settings could not be read" in refusal["review"]["reason"]
 
 
 def test_authority_diagnostic_is_scrubbed_before_returning_to_owner(tmp_path):

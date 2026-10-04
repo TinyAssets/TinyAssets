@@ -6,16 +6,16 @@ against the user's instructions, Custom Rules and OpenAI's built-in safety
 requirements before determining whether the work can proceed autonomously or
 requires approval" (design #4172 §1.2, §4.9). Here:
 
-* **When.** Only for an action the owner's rules already let proceed (``do``),
-  and only when its class is consequential: everything but the agent's own
-  workspace and reading a connected app. A per-class off switch belongs to the
-  owner; the hand-back classes keep it on.
+* **When.** Only for an action the owner's rules already let proceed (``do``)
+  and whose class the owner explicitly enabled for review. No class requires a
+  platform review by default (founder direction, 2026-10-04). Cross-user and
+  host isolation, connection grants and consent are enforced independently.
 * **On whose model.** The run's own provider call -- the universe's model, on
   its own credentials. There is no platform model. The runner hands it in
   (``bound``); the call itself goes through the same seat-aware executor every
   agent call uses, re-entering the run's seat when the run holds one, with its
   own deadline.
-* **Only inside a run.** A consequential action with no runner bound -- no
+* **Only inside a run.** An owner-configured review with no runner bound -- no
   model to check it with -- is held, not sent: the check is enforced where the
   action leaves, not assumed of its caller.
 * **Tool-free and tighten-only.** A single text call that returns
@@ -55,8 +55,8 @@ logger = logging.getLogger(__name__)
 NOT_CONSEQUENTIAL = frozenset({
     "workspace.files", "workspace.shell", "workspace.workflows", "app.read",
 })
-#: The review cannot be switched off for these, whatever their rule says.
-ALWAYS_REVIEWED = frozenset({"money.move", "security.change", "access.grant"})
+#: Compatibility for the owner-door response; no class mandates a model review.
+ALWAYS_REVIEWED: frozenset[str] = frozenset()
 
 OFF_CONSEQUENCE = ("Actions of this kind will then proceed on your rule alone, "
                    "without a check against your instructions first.")
@@ -88,7 +88,7 @@ def bound(provider_call: Any, *, active: bool, run_id: str = ""):
     """The runner's provider call, for reviews made while its effects fire.
 
     ``active`` is False on the legacy post-run dispatcher, which has no run
-    model: a consequential action reaching the effector from there is held
+    model: an action with an owner-configured review reaching the effector is held
     (``review_refusal`` refuses without a bound runner), never sent unchecked.
     """
     token = _CTX.set((provider_call, run_id) if active else None)
@@ -129,6 +129,9 @@ _FILE = "rules.db"
 _SCHEMA = """CREATE TABLE IF NOT EXISTS review_off (
     agent TEXT NOT NULL DEFAULT 'main', action_class TEXT NOT NULL,
     updated_at REAL NOT NULL, PRIMARY KEY (agent, action_class))"""
+_ON_SCHEMA = """CREATE TABLE IF NOT EXISTS review_on (
+    agent TEXT NOT NULL, action_class TEXT NOT NULL,
+    updated_at REAL NOT NULL, PRIMARY KEY (agent, action_class))"""
 
 
 class ReviewSwitchRefused(ValueError):
@@ -141,6 +144,8 @@ def _connect(universe_dir: Path) -> sqlite3.Connection:
     conn.execute("PRAGMA busy_timeout = 10000")
     _migrate(conn)
     conn.execute(_SCHEMA)
+    # Old versions only stored off rows: absence cannot prove an owner opt-in.
+    conn.execute(_ON_SCHEMA)
     return conn
 
 
@@ -173,6 +178,13 @@ def switched_off(universe_dir: Path, agent: str = "main") -> set[str]:
             "SELECT action_class FROM review_off WHERE agent = ?", (agent,))}
 
 
+def switched_on(universe_dir: Path, agent: str = "main") -> set[str]:
+    """Explicit owner opt-ins, outside the agent-writable universe files."""
+    with closing(_connect(universe_dir)) as conn:
+        return {row[0] for row in conn.execute(
+            "SELECT action_class FROM review_on WHERE agent = ?", (agent,))}
+
+
 def set_review(universe_dir: Path, action_class: str, enabled: bool, *,
                confirm: bool = False, agent: str = "main") -> None:
     """The owner turns the review on or off for one class (the owner door only)."""
@@ -180,16 +192,18 @@ def set_review(universe_dir: Path, action_class: str, enabled: bool, *,
 
     if action_class not in ACTION_CLASSES or action_class in NOT_CONSEQUENTIAL:
         raise ReviewSwitchRefused(f"{action_class!r} is not a reviewed kind of action")
-    if not enabled and action_class in ALWAYS_REVIEWED:
-        raise ReviewSwitchRefused("This check stays on for moving money, security "
-                                  "changes and giving others access.")
     if not enabled and not confirm:
         raise ReviewSwitchRefused(OFF_CONSEQUENCE + " Confirm to switch it off.")
-    with closing(_connect(universe_dir)) as conn:
+    with closing(_connect(universe_dir)) as conn, conn:
+        conn.execute("BEGIN IMMEDIATE")
         if enabled:
             conn.execute("DELETE FROM review_off WHERE agent = ? AND action_class = ?",
                          (agent, action_class))
+            conn.execute("INSERT OR REPLACE INTO review_on (agent, action_class, updated_at) "
+                         "VALUES (?, ?, ?)", (agent, action_class, time.time()))
         else:
+            conn.execute("DELETE FROM review_on WHERE agent = ? AND action_class = ?",
+                         (agent, action_class))
             conn.execute("INSERT OR REPLACE INTO review_off (agent, action_class, updated_at) "
                          "VALUES (?, ?, ?)", (agent, action_class, time.time()))
 
@@ -264,14 +278,19 @@ def _ask(universe_dir: Path, provider_call: Any, prompt: str) -> Any:
 
 
 def _refusal(reason: str, *, kind: str, digest: str) -> dict:
+    hint = ("A check before this action asked for your owner's approval: "
+            f"{reason} Raise one request describing the action and continue "
+            "other work until they answer.")
+    if kind == "auto_review_unavailable":
+        hint = (f"Your configured review could not complete: {reason} "
+                "The owner can restore review capability or change their review setting "
+                "before retrying; approving the action alone does not complete the review.")
     return {
         "dry_run": True,
         "reason": kind,
         "error_kind": kind,
         "review": {"verdict": "needs_approval", "reason": reason, "action_sha256": digest},
-        "hint": ("A check before this action asked for your owner's approval: "
-                 f"{reason} Raise one request describing the action and continue "
-                 "other work until they answer."),
+        "hint": hint,
     }
 
 
@@ -286,12 +305,12 @@ def review_refusal(universe_dir: Path, *, action: dict, rule: str,
     action_class = str(action.get("action_class") or "")
     if action_class in NOT_CONSEQUENTIAL:
         return None
-    if action_class not in ALWAYS_REVIEWED:
-        try:
-            if action_class in switched_off(universe_dir, agent):
-                return None
-        except (OSError, sqlite3.Error):
-            pass  # an unreadable switch leaves the review on
+    try:
+        if action_class not in switched_on(universe_dir, agent):
+            return None
+    except (OSError, sqlite3.Error):
+        return _refusal("your review settings could not be read, so nothing was sent.",
+                        kind="auto_review_unavailable", digest=action_digest(action))
     digest = action_digest(action)
     context = _CTX.get()
     if context is None:

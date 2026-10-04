@@ -694,8 +694,8 @@ def _rule_refusal(universe_dir: Path, connection_id: str, verb: str,
             "hint": "Your rules could not be read, so nothing was sent.",
         }
     if decision.proceeds:
-        # Allowed by the rules: a consequential action is still checked on the
-        # run's own model first (harness D1d), which can only hold it.
+        # Only an explicit owner-configured review adds a model check. Grants,
+        # consent and cross-user isolation remain independent mandatory checks.
         from tinyassets.agent_review import review_refusal
 
         return review_refusal(

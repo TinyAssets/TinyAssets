@@ -7231,17 +7231,14 @@
         });
         pick.addEventListener("change",()=>saveRule(rule,pick.value,false));
         row.appendChild(what); row.appendChild(pick);
-        // The check before acting (harness D1d): on unless the owner switched it
-        // off for this kind; the hand-back kinds keep it.
+        // A check runs only for kinds the owner explicitly enabled.
         const never=(doc.review_never||[]).indexOf(rule.action_class)>=0;
         if(!never && !rule.connection && !rule.operation){
-          const on=(doc.review_off||[]).indexOf(rule.action_class)<0;
-          const always=(doc.review_always||[]).indexOf(rule.action_class)>=0;
+          const on=(doc.review_on||[]).indexOf(rule.action_class)>=0;
           const check=document.createElement("button");
           check.type="button"; check.className="btn btn--link";
           check.textContent=on?"Checks first":"Check is off";
-          if(always){ check.disabled=true; check.title="Always checked first"; }
-          else check.addEventListener("click",()=>sendConfirmed({review:{
+          check.addEventListener("click",()=>sendConfirmed({review:{
             action_class:rule.action_class,enabled:!on}}));
           row.appendChild(check);
         }
