@@ -40,10 +40,15 @@ def test_current_model_choice_is_forwarded_without_becoming_saved_state(monkeypa
         return msg
 
     monkeypatch.setattr(ui, "converse", capture)
+    # Sent at version 1 on purpose: a client predating per-model effort must
+    # keep working. `converse` validates and re-emits the CANONICAL document,
+    # so what is forwarded is the normalized form -- which is the point of
+    # normalizing at ingress, and still carries no saved state.
     choice = {"version": 1, "mode": "automatic", "saved_default": None, "fallbacks": []}
+    forwarded = {**choice, "version": 2, "efforts": []}
     assert json.loads(us.converse(message="one", graph_id="u-x", model_choice=choice))["reply"]
     assert json.loads(us.converse(message="two", graph_id="u-x"))["reply"]
-    assert seen == [choice, None]
+    assert seen == [forwarded, None]
 
 
 @pytest.mark.parametrize("choice", [{}, {"version": True}, {"owner": "forged"}])
@@ -66,9 +71,11 @@ def test_mcp_current_model_choice_preserves_both_response_channels(monkeypatch, 
     choice = {"version": 1, "mode": "explicit", "saved_default": {
         "provider_ref": "owned:future", "model_id": "opaque",
     }, "fallbacks": []}
+    # Accepted at version 1, forwarded canonical. See the note above.
+    forwarded = {**choice, "version": 2, "efforts": []}
 
     def capture(uid, msg, **kwargs):
-        assert kwargs["model_choice"] == choice
+        assert kwargs["model_choice"] == forwarded
         return "exact reply"
 
     monkeypatch.setattr(ui, "converse", capture)

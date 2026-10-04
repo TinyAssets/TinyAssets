@@ -751,6 +751,10 @@ def test_manual_screen_replacement_needs_consent_retains_components_and_refuses_
                 page.get_by_role("button", name="Open updated screen", exact=True).click()
                 expect(page.frame_locator("#ui-frame").locator("#updated-boot")).to_have_text(
                     "New screen code ran")
+                # choose() mounts immediately, then persists the selection. The
+                # frame alone cannot prove the revision is ready to snapshot.
+                expect(page.locator("#ui-status")).to_have_text(
+                    f"Now using {updated['name']}.")
                 after = get_app_ui(home, owner_user_id=BOB, universe_id=BOB_UNIVERSE)
                 assert after["ui_selection"] == before["ui_selection"]
             page.locator("#btn-ui-close").click()

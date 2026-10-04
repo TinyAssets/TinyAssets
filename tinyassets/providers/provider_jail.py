@@ -91,6 +91,7 @@ __all__ = [
     "default_view",
     "jail_argv",
     "hidden_root_masks",
+    "launch_is_confined",
     "provider_launch_scope",
 ]
 
@@ -149,6 +150,21 @@ def provider_launch_scope(
         yield
     finally:
         _SCOPE.reset(token)
+
+
+def launch_is_confined() -> bool:
+    """Whether a provider process launched right now would be OS-jailed.
+
+    True exactly when the active scope names an owning universe -- the same
+    condition under which :func:`confine_launch` builds a jail (a scope with no
+    universe is refused, not jailed). An adapter reads this to drop its OWN,
+    nested sandbox when ours is the boundary: a second sandbox inside this one
+    only adds attack surface, and a nested bubblewrap is what would force this
+    jail's seccomp filter to keep user namespaces and symlinks open
+    (``tinyassets.providers.jail_seccomp``).
+    """
+    scope = _SCOPE.get()
+    return scope is not None and scope.universe_dir is not None
 
 
 @dataclass(frozen=True, slots=True)
@@ -397,19 +413,43 @@ def hidden_root_masks(universe_dir: Path) -> list[JailMount]:
 
 #: Daemon-owned files that belong to one universe but must not live inside
 #: it (its egress proxy socket): ``<data root>/.universe-sidecars/<universe>``.
-#: No jail binds that directory, so nothing a universe runs can replace them.
+#:
+#: A jail binds exactly two things from here and nothing else: the egress proxy
+#: socket, and the engine relay socket when a launch has one. Both are
+#: constructed by :func:`_network` for that launch and passed to
+#: :func:`jail_argv` as ``platform_sources``, which :func:`_validated_view`
+#: admits as an EXACT set.
+#:
+#: This comment used to say "No jail binds that directory, so nothing a
+#: universe runs can replace them". That was false, and a design was approved on
+#: it: the validator allowed any source resolving under this folder, so a
+#: provider could rename a directory the tool jail was about to bind read-write
+#: and leave a link here in its place, landing a writable handle on daemon-owned
+#: state. Corrected 2026-10-03 along with the rule itself. A directory prefix is
+#: not a capability; the exact paths are.
 UNIVERSE_SIDECARS_DIR = ".universe-sidecars"
 
 
-def _sidecars(root: Path) -> Path:
-    return root.parent / UNIVERSE_SIDECARS_DIR / root.name
-
-
-def _validated_view(view: UniverseView) -> UniverseView:
+def _validated_view(
+    view: UniverseView, *, platform_sources: frozenset[Path] = frozenset()
+) -> UniverseView:
     """``view`` with every bind source resolved ONCE and checked, or refuse.
 
     The argv binds the resolved path it was checked as, never a second
     resolution of the original name.
+
+    ``platform_sources`` are the resolved paths THIS MODULE just constructed
+    for the launch -- the egress proxy socket and, when there is one, the
+    engine relay socket. They are the only sources outside the command center
+    a view may bind. Everything else must resolve inside the command center.
+
+    It is an exact set, not a directory prefix, and that distinction is the
+    whole point: the sidecar folder used to be allowed wholesale, so a view
+    whose source resolved anywhere under it was accepted. A provider could
+    rename a directory the tool jail was about to bind read-write and leave a
+    link to the sidecar folder in its place; the resolution landed inside the
+    allowed prefix, and the command center got a writable handle on platform
+    state -- including the consent database that decides what it may do.
     """
     root = view.universe_dir.resolve(strict=False)
     checked: list[JailMount] = []
@@ -433,7 +473,7 @@ def _validated_view(view: UniverseView) -> UniverseView:
             source = mount.source.resolve(strict=not mount.op.endswith("-try"))
         except OSError:
             raise _refuse("a bind source does not exist") from None
-        if not (_within(source, root) or _within(source, _sidecars(root))):
+        if not (_within(source, root) or source in platform_sources):
             raise _refuse("a view may only bind paths inside its own command center")
         checked.append(JailMount(mount.op, dest, source))
     for name, _value in view.setenv:
@@ -540,6 +580,7 @@ def jail_argv(
     env: Mapping[str, str] | None = None,
     clearenv: bool = False,
     seccomp_fd: int | None = None,
+    platform_sources: frozenset[Path] = frozenset(),
     tmp_bytes: int = jail_disk.TMP_BYTES,
 ) -> list[str]:
     """The bubblewrap argv that runs ``argv`` inside ``view``. Pure of policy.
@@ -561,7 +602,7 @@ def jail_argv(
     defaults to half of it -- on a shared box that is one jail's scratch space
     competing with every user's daemon memory.
     """
-    view = _validated_view(view)
+    view = _validated_view(view, platform_sources=platform_sources)
     out: list[str] = [
         bwrap_path,
         "--die-with-parent",
@@ -709,6 +750,7 @@ def confine_launch(
     env: Mapping[str, str] | None = None,
     view: UniverseView | None = None,
     install_mounts: Callable[[], Iterable[Path]] | None = None,
+    nested_sandbox: bool = False,
 ) -> ConfinedLaunch | None:
     """The jailed launch, ``None`` when no jail applies, or refuse.
 
@@ -716,6 +758,12 @@ def confine_launch(
     reads only the bound scope and the adapter's optional view -- never the
     vendor, the config or the command. Inside the jail the command runs under
     ``prlimit``, behind the egress forwarder, with the seccomp filter loaded.
+
+    ``nested_sandbox=True`` is the adapter declaring that its CLI builds its
+    own sandbox inside this one (a served codex turn keeps ``--sandbox
+    workspace-write`` for its ``apply_patch`` helper). That launch gets the
+    filter profile keeping new user namespaces and symlinks open; every other
+    launch gets the full deny profile (:mod:`tinyassets.providers.jail_seccomp`).
     """
     scope = _SCOPE.get()
     if scope is None and view is None:
@@ -749,6 +797,14 @@ def confine_launch(
     python, python_paths = _forwarder_python()
     install_paths.extend(python_paths)
     net_mounts, engine_port = _network(view, scope)
+    # The ONLY sources outside the command center a view may bind: the sockets
+    # this module just constructed for this launch. An exact set, resolved the
+    # same way the validator resolves a source, so a link that merely lands
+    # under the sidecar folder is not one of them.
+    platform_sources = frozenset(
+        mount.source.resolve(strict=False) for mount in net_mounts
+        if mount.source is not None
+    )
     # The proxy environment goes LAST, so nothing the provider env carried (an
     # inherited HTTPS_PROXY or NO_PROXY) can point around the forwarder.
     view = UniverseView(
@@ -761,13 +817,17 @@ def confine_launch(
         prlimit, *_limit_args(), "--",
         *universe_egress.forwarder_argv(python, list(argv), engine_port=engine_port),
     ]
-    # A provider CLI may build its own sandbox inside this one (codex does), so
-    # user namespaces and symlinks stay open (tinyassets.providers.jail_seccomp).
-    filter_fd = program_fd(nested_sandbox=True)
+    # The full deny profile (no new user namespaces, no symlinks) unless the
+    # adapter declared a nested sandbox: a non-served codex call runs its
+    # commands directly here with its own sandbox off, and claude has none, so
+    # neither can plant a link the daemon would follow out of the universe. A
+    # served codex turn keeps its own sandbox (apply_patch needs it); its link
+    # residual is the daemon-side link-refusing reader/writer's (#4254).
+    filter_fd = program_fd(nested_sandbox=nested_sandbox)
     try:
         jailed = jail_argv(
             inner, view, bwrap_path=bwrap_path, install_paths=install_paths, env=env,
-            seccomp_fd=filter_fd,
+            seccomp_fd=filter_fd, platform_sources=platform_sources,
         )
     except BaseException:
         os.close(filter_fd)

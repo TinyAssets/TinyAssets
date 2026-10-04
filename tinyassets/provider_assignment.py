@@ -1430,11 +1430,16 @@ async def authorize_served_provider_call_async(
                 m for m in chain[0].candidates if m.provider == model_selection.connection_id
             )
         # No assignment fence or SQL transaction spans the remote request.
+        from tinyassets.providers.model_selection import saved_effort_level
+
+        effort = saved_effort_level(
+            base_path, capability.principal_id, universe.name, model_selection,
+        )
         selected, recheck = await prepare_selected_model_async(
             base_path=Path(base_path), owner_user_id=capability.principal_id,
             universe_id=universe.name, provider=member.provider,
             model_id=model_selection.model_id, access=member.access,
-            needs_tools=agent_turn,
+            needs_tools=agent_turn, effort=effort,
         )
     except ProviderAuthorityHeldError:
         raise
@@ -1538,7 +1543,10 @@ def _authorize_served_provider_call(
             selection_recheck = None
             selected_chain = None
             if model_selection is not None:
-                from tinyassets.providers.model_selection import prepare_selected_model
+                from tinyassets.providers.model_selection import (
+                    prepare_selected_model,
+                    saved_effort_level,
+                )
 
                 selected_chain = _selected_chain(
                     store, base_path, universe, capability, agent, model_selection
@@ -1557,6 +1565,9 @@ def _authorize_served_provider_call(
                         provider=member.provider, model_id=model_selection.model_id,
                         access=member.access,
                         needs_tools=agent_turn,
+                        effort=saved_effort_level(
+                            base_path, capability.principal_id, uid, model_selection,
+                        ),
                     )
                 else:
                     (before_agent, before_chain, selected_model,

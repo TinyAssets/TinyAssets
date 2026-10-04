@@ -414,9 +414,19 @@ def tool_jail_argv(
         raise UniverseToolError("the command center folder does not exist")
     bwrap = provider_jail.BWRAP_RESOLVER()
     view = _universe_view(root, egress_socket, agent_id=agent_id)
+    # The egress socket lives in the daemon-owned sidecar folder, outside the
+    # command center, so it has to be declared as the exact path this jail is
+    # allowed to bind from there. A directory prefix is not a capability: the
+    # validator used to admit anything resolving under that folder, which let a
+    # swapped link turn one of the binds below into a writable handle on
+    # daemon-owned state (provider_jail.UNIVERSE_SIDECARS_DIR).
+    platform_sources = (
+        frozenset({Path(egress_socket).resolve(strict=False)})
+        if egress_socket is not None else frozenset()
+    )
     return jail_argv(
         list(inner), view, bwrap_path=bwrap, clearenv=True,
-        seccomp_fd=seccomp_fd,
+        seccomp_fd=seccomp_fd, platform_sources=platform_sources,
     )
 
 

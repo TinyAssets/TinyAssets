@@ -195,3 +195,96 @@ def test_every_full_suite_trigger_exists_in_the_repo():
     """A renamed trigger silently stops forcing the full run."""
     missing = [rel for rel in at.FULL_SUITE_TRIGGERS if not (at.REPO_ROOT / rel).is_file()]
     assert not missing, missing
+
+
+# ---- the conservative GATE mode -------------------------------------------
+#
+# `select` is advisory: a miss only defers a failure to the queue, which runs
+# everything. `gate_selection` IS the queue, so it may only trust a diff whose
+# selection can be argued complete. Cross-family review on #4359 reproduced two
+# real omissions in the import graph, which is why this is a whitelist.
+
+
+def test_a_code_change_has_no_completeness_argument():
+    """The headline property: production code always runs the whole suite."""
+    for rel in (
+        "tinyassets/run_file_erasure.py",
+        "tinyassets/providers/daily_quota_shapes.json",
+        "scripts/ci_required_tests.py",
+        "pyproject.toml",
+        ".github/workflows/tests.yml",
+        "tinyassets/onboarding/app.html",
+    ):
+        assert at.provable_shape([rel]) is None, rel
+
+
+def test_no_change_under_tests_is_a_provable_shape():
+    """The `tests`-only shape was tried and REMOVED in round 3.
+
+    Its argument leaned on the import graph being complete for test files, and
+    review showed deleting a shared test module omits all four modules that
+    import it -- the same class of hole that disqualified code changes. One
+    shape, not two.
+    """
+    for rel in ("tests/test_a.py", "tests/conftest.py", "tests/__init__.py",
+                "tests/engine_authority_helpers.py", "tests/fixtures/thing.py"):
+        assert at.provable_shape([rel]) is None, rel
+
+
+def test_prose_is_the_only_provable_shape():
+    assert at.provable_shape(["docs/concerns/x.md", "openspec/specs/y/spec.md"]) == "prose"
+    assert at.provable_shape(["README.md"]) == "prose"
+    assert at.provable_shape(["ideas/INBOX.md"]) == "prose"
+    assert at.provable_shape([]) is None
+
+
+def test_a_nested_md_outside_the_prose_trees_is_not_prose():
+    """Only a TOP-LEVEL .md. `tinyassets/x/README.md` could be packaged data."""
+    assert at.provable_shape(["tinyassets/plugin/README.md"]) is None
+    assert at.provable_shape([".github/PULL_REQUEST_TEMPLATE.md"]) is None
+
+
+def test_one_code_path_poisons_an_otherwise_provable_diff():
+    """A whitelist over EVERY path, not a majority vote."""
+    assert at.provable_shape(["docs/a.md", "tinyassets/runs.py"]) is None
+    assert at.provable_shape(["docs/a.md", "tests/test_a.py"]) is None
+
+
+def test_gate_selection_runs_everything_for_a_code_change(tmp_path):
+    root = _repo(
+        tmp_path,
+        {"tinyassets/core.py": "", "tests/test_a.py": "import tinyassets.core\n"},
+    )
+    selected, reasons = at.gate_selection(["tinyassets/core.py"], root)
+    assert selected is None
+    assert "completeness" in reasons[0]
+
+
+def test_gate_selection_adds_every_tree_walker(tmp_path):
+    """A test that enumerates a tree can be broken by a file it never names.
+
+    `select` only adds walkers that name the changed path's top-level root as a
+    string; the gate adds every walker, which is what shrinks the "reads a file
+    it does not name" residual for the prose shape.
+    """
+    root = _repo(
+        tmp_path,
+        {
+            "docs/note.md": "x",
+            "tests/test_named.py": 'open("docs/note.md")\n',
+            "tests/test_walks_elsewhere.py": 'import pathlib\npathlib.Path("other").rglob("*")\n',
+            "tests/test_plain.py": "assert True\n",
+        },
+    )
+    selected, _ = at.gate_selection(["docs/note.md"], root)
+    assert selected is not None
+    assert "tests/test_named.py" in selected
+    assert "tests/test_walks_elsewhere.py" in selected, "every walker, not just matching roots"
+    assert "tests/test_plain.py" not in selected
+
+
+def test_gate_selection_still_returns_all_when_select_does(tmp_path):
+    """A prose diff that trips a full-suite trigger stays ALL."""
+    root = _repo(tmp_path, {"docs/a.md": "x"})
+    selected, _ = at.gate_selection(["tests/conftest.py"], root)
+    assert selected is None

@@ -77,6 +77,11 @@ def model_options_document(
                 "freshness": connection.freshness,
                 "provider_default": connection.default_model_id == model.model_id,
                 "tools": model.tools,
+                # What the SOURCE said this model accepts, so a client renders
+                # an effort control only where one exists and offers exactly
+                # the levels that model takes. An empty list means no control.
+                "effort_levels": list(model.effort_levels),
+                "effort": plan.policy.effort_for(ref),
                 "context_tokens": model.context_tokens,
                 "input_modalities": sorted(model.modalities),
                 "output_modalities": sorted(model.output_modalities),

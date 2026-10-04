@@ -607,6 +607,7 @@ async def aspawn_owned(
     universe_view=None,
     install_mounts=None,
     require_confinement: bool = False,
+    nested_sandbox=False,
     **kwargs,
 ):
     """Spawn ``cmd`` as an owned family and return the ``asyncio`` process.
@@ -625,7 +626,9 @@ async def aspawn_owned(
     adapter narrow what the universe looks like inside the jail;
     ``install_mounts`` is a callable naming install trees the generic command
     resolution cannot see (a wrapper script that execs a binary elsewhere).
-    Both are only read when a jail applies.
+    ``nested_sandbox`` declares that the CLI builds its own sandbox inside the
+    jail, which selects the jail's permissive seccomp profile. All three are only
+    read when a jail applies.
 
     ``require_confinement`` refuses even an unbound call instead of using the
     non-provider fallback. Metadata transport sets this alongside its view.
@@ -645,6 +648,7 @@ async def aspawn_owned(
         env=kwargs.get("env"),
         view=universe_view,
         install_mounts=install_mounts,
+        nested_sandbox=nested_sandbox,
     )
     if require_confinement and jailed is None:
         raise ProviderConfinementError(ProviderConfinementError.MESSAGE)

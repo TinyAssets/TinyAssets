@@ -538,13 +538,23 @@ def _confine_workflow_node(config: ModelConfig) -> ModelConfig:
     The served universe turn already runs this way (``sandbox_workspace``);
     this applies the existing rule to workflow nodes. Web tools, subagents and
     every other owner-level capability are untouched: only
-    :data:`HOST_REACH_TOOLS` are denied. No timeout, cap or retry changes.
+    :data:`HOST_REACH_TOOLS` and :data:`ACCOUNT_REACH_TOOLS` are denied. No
+    timeout, cap or retry changes.
+
+    ``ACCOUNT_REACH_TOOLS`` is denied for a different reason than the host
+    tools, not as latency control: those act on the DAEMON HOST'S claude.ai
+    account, so no amount of jailing or ``--strict-mcp-config`` contains them,
+    and a node that published an artifact or messaged another session would be
+    reaching outside its owner's command center entirely. The engine turn
+    already denied them; a node did not, which is the gap this closes.
     """
     from dataclasses import replace
 
-    from tinyassets.providers.base import HOST_REACH_TOOLS
+    from tinyassets.providers.base import ACCOUNT_REACH_TOOLS, HOST_REACH_TOOLS
 
-    denied = tuple(dict.fromkeys((*(config.disallowed_tools or ()), *HOST_REACH_TOOLS)))
+    denied = tuple(dict.fromkeys((
+        *(config.disallowed_tools or ()), *HOST_REACH_TOOLS, *ACCOUNT_REACH_TOOLS,
+    )))
     return replace(config, sandbox_workspace=True, disallowed_tools=denied)
 
 
@@ -639,6 +649,38 @@ def _sandbox_cli_args(
     return flags, run_cwd
 
 
+#: Flags that make the CLI answer a metadata request and nothing else: print
+#: mode, a typed control stream both ways, and no session written to disk for a
+#: read that is not a conversation. ``--verbose`` is required by the CLI
+#: alongside ``--output-format stream-json`` in print mode.
+#:
+#: Deliberately NOT ``--bare``: it documents that "Anthropic auth is strictly
+#: ANTHROPIC_API_KEY or apiKeyHelper (OAuth and keychain are never read)", which
+#: would make a subscription-backed catalogue read fail as unauthenticated.
+_METADATA_ARGUMENTS = (
+    "-p",
+    "--input-format", "stream-json",
+    "--output-format", "stream-json",
+    "--verbose",
+    "--no-session-persistence",
+)
+
+
+def _effort_args(effort: str | None) -> list[str]:
+    """Map a generic ModelConfig.reasoning_effort to Claude Code's own flag.
+
+    The CLI's real setting is ``--effort <low|medium|high|xhigh|max>``. An empty
+    value yields no flag, which leaves the CLI on its own default rather than
+    this platform choosing one. The level is NOT validated against a hardcoded
+    set here: the admitted set is whatever the model advertised through
+    discovery, and the caller has already held the choice to it.
+    """
+    normalized = (effort or "").strip().lower()
+    if not normalized:
+        return []
+    return ["--effort", normalized]
+
+
 class ClaudeProvider(BaseProvider):
     """Calls Claude via the ``claude -p`` CLI binary."""
 
@@ -647,6 +689,42 @@ class ClaudeProvider(BaseProvider):
     name = "claude-code"
     family = "anthropic"
     native_credential_service = "claude"
+    native_command_resolver = staticmethod(lambda: _resolve_claude_cmd())
+    native_process_options = staticmethod(_no_window_kwargs)
+    native_metadata_arguments = _METADATA_ARGUMENTS
+    from tinyassets.providers.native_jsonrpc_discovery import NativeControlProtocol
+
+    #: The CLI's own selectable catalogue, which is what makes a newly released
+    #: model a normal choice without a platform release. Before this, Claude
+    #: declared custody but no metadata protocol, so enumeration returned None
+    #: and the picker fell back to the reviewed static list -- where every row
+    #: is a candidate to GRANT, so the founder's current flagship read
+    #: "model access opt-in required" instead of being selectable (2026-10-02).
+    #:
+    #: Keyed on ``resolvedModel``, not ``value``: the alias rows (``opus``,
+    #: ``default``) resolve differently between CLI versions, which is exactly
+    #: how "claude-code · opus" came to mean an older model than the owner
+    #: expected. Storing the resolved id makes a saved preference mean one thing.
+    #: The default is the distinguished ``default`` alias row.
+    native_discovery_protocol = NativeControlProtocol(
+        list_method="list_models", items_key="models", model_key="resolvedModel",
+        default_key="value", default_match_value="default",
+        modalities_key="inputModalities", hidden_key="disabled",
+        effort_key="supportsEffort", effort_levels_key="supportedEffortLevels",
+        # This metadata contract is text-in/text-out and reports no modalities.
+        # Unreported must not read as "accepts nothing", which would make every
+        # enumerated row fail the text requirement and vanish from the picker.
+        assumed_input_modalities=frozenset({"text"}),
+        # Production pins an older CLI than the one that added `list_models`
+        # (2.1.183 today; #4351 moves it to 2.1.288). An older build answers
+        # "Unsupported control request subtype: list_models" in 0.6s, measured
+        # 2026-10-02, and this marker turns that into the honest
+        # `native_enumeration_unsupported` instead of a broken-source reason.
+        # The provider default and the reviewed list keep working meanwhile, so
+        # the fallback is the pre-change behaviour exactly.
+        unsupported_error_marker="unsupported control request",
+        list_params_json="{}",
+    )
 
     @classmethod
     def is_available(cls) -> bool:
@@ -669,12 +747,15 @@ class ClaudeProvider(BaseProvider):
         ``ProviderUnavailableError`` / ``ProviderError``).
         """
         self.require_text_only_support(config)
-        base_cmd, use_shell = _resolve_claude_cmd()
+        base_cmd, use_shell = self.native_command_resolver()
         from tinyassets.providers.native_model_selection import native_model_arguments
 
         cmd = [
             *base_cmd, "-p",
             *native_model_arguments(config.native_model_id, "--model"),
+            # The owner's per-model effort choice, carried as the CLI's real
+            # setting rather than a prompt hint. Empty leaves the CLI default.
+            *_effort_args(getattr(config, "reasoning_effort", "")),
             "--output-format", "stream-json",
             "--verbose",
             "--include-partial-messages",
@@ -1177,7 +1258,7 @@ class ClaudeProvider(BaseProvider):
     ) -> ProviderResponse:
         """Call with ``--output-format json`` for structured output."""
         self.require_text_only_support(config)
-        base_cmd, use_shell = _resolve_claude_cmd()
+        base_cmd, use_shell = self.native_command_resolver()
         cmd = [*base_cmd, "-p", "--output-format", "json"]
         from tinyassets.providers.native_model_selection import native_model_arguments
 

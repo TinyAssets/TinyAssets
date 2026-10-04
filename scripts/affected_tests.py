@@ -313,6 +313,92 @@ def select(
     return sorted(selected), reasons
 
 
+#: Trees that hold prose and specs: never imported, never executed.
+_PROSE_DIRS = ("docs/", "openspec/", "ideas/")
+
+
+def provable_shape(changed: list[str]) -> str | None:
+    """``prose``, or ``None`` when no argument covers the diff. ONE shape.
+
+    This is the whole safety story of the merge gate, so it is a WHITELIST, and
+    it is as short as it can be.
+
+    The static import graph is not sound and cannot cheaply be made so: it
+    counts only import-time statements outside ``tests/``, because following
+    lazy imports made each test reach ~470 of the 525 modules in
+    ``tinyassets/`` (see ``_imports``) -- a graph that selects everything
+    selects nothing. Measured holes, all real and all found by cross-family
+    review: changing ``tinyassets/run_file_erasure.py`` does not select
+    ``tests/test_account_deletion.py`` (the import is inside a function);
+    changing ``tinyassets/providers/daily_quota_shapes.json`` selects none of
+    the six quota tests (a data file is not an edge); DELETING
+    ``tests/test_agent_turn_journal.py`` omits all four test modules that
+    import it. No digest or coverage check can see an OMISSION.
+
+    ``prose`` is the one shape with an argument: every path is under docs/,
+    openspec/, ideas/, or is a top-level ``.md``. Nothing imports or executes
+    it, so it can only affect a test that READS it -- by name
+    (``_mention_keys``) or by walking its directory (``_WALKS``).
+
+    A ``tests``-only shape was tried and REMOVED in round 3 (2026-10-03). Its
+    argument was that a changed ``tests/test_*.py`` can only affect the tests
+    importing it, which the graph captures in full for test files -- but that
+    leans on the import graph being complete, which is the exact class of claim
+    the deletion hole above breaks. Not worth 8% of merges.
+
+    Residual, stated rather than hidden: a test that reaches a prose file
+    through a path it builds without naming the file or its directory. The
+    tree-walking superset in ``gate_selection`` is what shrinks that. It is not
+    a proof, and it is why this list has one entry.
+    """
+    if not changed:
+        return None
+    for raw in changed:
+        rel = raw.replace("\\", "/")
+        if not (rel.startswith(_PROSE_DIRS) or (rel.endswith(".md") and "/" not in rel)):
+            return None
+    return "prose"
+
+
+def walking_tests(graph: Graph) -> set[str]:
+    """Every test that enumerates a tree, so a file it never names still reaches it."""
+    return {
+        rel for rel in graph.files
+        if is_test_file(rel) and _WALKS.search(_PATHLIB_JOIN.sub("/", graph.files[rel]))
+    }
+
+
+def gate_selection(
+    changed: list[str],
+    root: Path = REPO_ROOT,
+    graph: Graph | None = None,
+    shared: set[str] | None = None,
+) -> tuple[list[str] | None, list[str]]:
+    """A selection a MERGE GATE may rely on. ``None`` means run the whole suite.
+
+    Conservative where ``select`` is advisory: ``select`` may under-select
+    because a miss there only defers a failure to the queue, and the queue runs
+    everything. Here there is no later run to catch it, so anything without a
+    completeness argument is ALL.
+    """
+    shape = provable_shape(changed)
+    if shape is None:
+        return None, [
+            "no completeness argument covers this diff shape: running the whole suite"
+        ]
+    graph = graph or Graph(root)
+    selected, reasons = select(changed, root, graph, shared)
+    if selected is None:
+        return None, reasons
+    walkers = walking_tests(graph)
+    added = walkers - set(selected)
+    return sorted(set(selected) | walkers), [
+        f"shape: {shape}",
+        *reasons,
+        f"+{len(added)} tree-walking test file(s), added unconditionally",
+    ]
+
+
 def changed_files(base: str) -> list[str]:
     out = subprocess.run(
         ["git", "diff", "--name-only", f"{base}...HEAD"],
@@ -326,14 +412,28 @@ def main() -> int:
     ap.add_argument("--base", help="git ref to diff against (merge-base ...HEAD)")
     ap.add_argument("--changed", nargs="*", help="explicit changed paths instead of --base")
     ap.add_argument("--out", help="write the selection here; ALL means the whole suite")
+    ap.add_argument(
+        "--gate",
+        action="store_true",
+        help=(
+            "Conservative mode for the MERGE GATE: ALL unless the diff shape "
+            "carries a completeness argument (see provable_shape). Without it "
+            "this is the advisory PR-time selection, where under-selecting only "
+            "defers a failure to the queue."
+        ),
+    )
     args = ap.parse_args()
     if (args.base is None) == (args.changed is None):
         raise SystemExit("pass exactly one of --base or --changed")
     changed = args.changed if args.changed is not None else changed_files(args.base)
     try:
-        selected, reasons = select(changed)
+        selected, reasons = (gate_selection if args.gate else select)(changed)
     except RuntimeError as exc:
-        # Unsure what is shared -> run everything, and say why.
+        # Unsure what is shared -> run everything, and say why. On the gate path
+        # this is the ONLY safe direction, and it is loud: the reason is printed
+        # and the workflow puts it in the step summary. A clean runner with no
+        # dependencies installed lands here -- the conftest import probe needs
+        # pytest -- which is why the select job installs before asking.
         selected, reasons = None, [f"selection failed, running the whole suite: {exc}"]
     body = "ALL\n" if selected is None else "".join(f"{t}\n" for t in selected)
     for line in reasons:

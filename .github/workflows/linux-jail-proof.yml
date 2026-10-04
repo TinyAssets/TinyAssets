@@ -20,6 +20,9 @@ name: linux-jail-proof
 #   * tests/test_provider_jail_root_masks.py proves a provider cannot read,
 #     write or re-link the per-universe platform state kept in hidden root files
 #     (the credential vault, the run/consent/usage databases);
+#   * tests/test_provider_jail_codex_nested.py proves a real codex command runs
+#     with its own sandbox off inside our jail and that the jail then refuses a
+#     planted symlink, with a detection control on the permissive profile;
 #   * tests/test_provider_universe_jail.py runs the shipping claude and codex
 #     adapters, and a jail-unaware command adapter through the router, inside
 #     the shared provider jail (tinyassets/providers/provider_jail.py) and
@@ -121,6 +124,7 @@ on:
       - "tests/test_provider_universe_jail.py"
       - "tests/test_provider_jail_network.py"
       - "tests/test_provider_jail_root_masks.py"
+      - "tests/test_provider_jail_codex_nested.py"
       - "tinyassets/providers/provider_jail.py"
       - "tinyassets/providers/jail_seccomp.py"
       - "tinyassets/providers/owned_process.py"
@@ -150,6 +154,10 @@ on:
       - "tinyassets/universe_intelligence.py"
       - "tinyassets/universe_egress.py"
       - "tinyassets/workspace_fs.py"
+      - "tinyassets/jail_disk.py"
+      - "tinyassets/storage_accounting.py"
+      - "tests/test_jail_disk.py"
+      - "tests/test_storage_accounting.py"
   workflow_dispatch:
 
 permissions:

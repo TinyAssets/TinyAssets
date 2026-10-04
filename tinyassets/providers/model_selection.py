@@ -91,6 +91,7 @@ def prepare_selected_model(
     model_id: str,
     access: ModelAccess,
     needs_tools: bool = False,
+    effort: str = "",
 ) -> tuple[SelectedModel | NativeSelection | None, Callable[[], None] | None]:
     """Prepare an accepted source; native defaults carry no HTTP model facts.
 
@@ -114,6 +115,7 @@ def prepare_selected_model(
         )
         return _validate_native_snapshot(
             snapshot, base_path, owner_user_id, universe_id, provider, model_id, access,
+            effort,
         )
     if _native_default(provider, model_id, access):
         return None, None
@@ -133,7 +135,7 @@ def prepare_selected_model(
 async def prepare_selected_model_async(
     *, base_path: Path, owner_user_id: str, universe_id: str,
     provider: str, model_id: str, access: ModelAccess,
-    needs_tools: bool = False,
+    needs_tools: bool = False, effort: str = "",
 ) -> tuple[SelectedModel | NativeSelection | None, Callable[[], None] | None]:
     """Refresh without blocking ingress; the caller re-fences authority afterward.
 
@@ -155,6 +157,7 @@ async def prepare_selected_model_async(
         )
         return _validate_native_snapshot(
             snapshot, base_path, owner_user_id, universe_id, provider, model_id, access,
+            effort,
         )
     if _native_default(provider, model_id, access):
         return None, None
@@ -171,6 +174,24 @@ async def prepare_selected_model_async(
     )
 
 
+def saved_effort_level(base_path, owner_user_id, universe_id, ref):
+    """The owner's stored effort level for exactly this model, or empty.
+
+    READ from storage at launch rather than accepted as a parameter: effort
+    changes what a turn costs, so letting a caller supply it would be a way to
+    raise a served turn's effort without the owner choosing it -- the same
+    reason the model id comes from validated authority and not ModelConfig.
+
+    An unreadable preference row is NOT swallowed into "no effort": it raises,
+    and the caller holds the launch, because running at a different level than
+    the owner saved while reporting success is the silent failure to avoid.
+    """
+    from tinyassets.storage.model_preferences import ModelPreferenceStore
+
+    policy = ModelPreferenceStore(base_path).get(owner_user_id, universe_id).policy
+    return "" if policy is None else policy.effort_for(ref)
+
+
 def _native_discovery_needed(provider, model_id, access):
     from tinyassets.provider_serving_binding import _PROVIDER_SERVICE
 
@@ -178,7 +199,8 @@ def _native_discovery_needed(provider, model_id, access):
             and type(access) is ModelAccess and access.model_scope == "discovered")
 
 
-def _validate_native_snapshot(snapshot, base, owner, uid, provider, model_id, access):
+def _validate_native_snapshot(snapshot, base, owner, uid, provider, model_id, access,
+                              effort=""):
     from tinyassets.providers.native_discovery import NativeDiscoverySnapshot
 
     if type(snapshot) is not NativeDiscoverySnapshot:
@@ -186,7 +208,7 @@ def _validate_native_snapshot(snapshot, base, owner, uid, provider, model_id, ac
     snapshot.assert_current()
     selected = snapshot.select(
         provider=provider, owner=owner, universe=Path(base) / uid, custody=snapshot.custody,
-        model_id=model_id, access=access,
+        model_id=model_id, access=access, effort=effort,
     )
     return selected, snapshot.assert_current
 
