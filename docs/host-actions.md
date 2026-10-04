@@ -278,12 +278,19 @@ records the session to `.mp4`. Checked 2026-10-04:
 [TestFlight on App Live](https://browserstack.com/docs/app-live/app-source/testflight)
 (iPhone 14 or newer only) and
 [session recording](https://browserstack.com/docs/app-live/session-debugging/record-session)
-(Chrome only, up to 20 minutes, download as `.mp4`). A free trial or one month of the
-individual plan is enough.
+(Chrome only, up to 20 minutes, download as `.mp4`). Step 5 also needs
+[file injection](https://www.browserstack.com/docs/app-live/media/file-injection),
+which is available only on **Team Pro or Enterprise Pro**. Confirm that entitlement,
+enough uninterrupted session time for all six steps, and a qualifying device before
+purchasing access. The [trial limits](https://www.browserstack.com/support/faq/plans-pricing/plans/what-do-i-get-with-a-free-trial)
+do not establish that the full recording can be completed on a trial.
 
-AWS Device Farm also has real iPhones, but it needs an ad-hoc-signed `.ipa` and re-signs
-it with a wildcard profile ([FAQ](https://aws.amazon.com/device-farm/faqs/)). That's
-more setup and changes what Apple sees, so use BrowserStack unless it fails.
+AWS Device Farm also has real iPhones. Its shared-device service re-signs the
+uploaded app with a wildcard profile and removes entitlements
+([FAQ](https://aws.amazon.com/device-farm/faqs/)). An ad-hoc-signed `.ipa` is a possible
+fallback preparation path, not a requirement established by that FAQ. Re-signing
+changes what Apple sees, so confirm that a fallback recording can satisfy the review
+request before using it.
 
 **Before you start:**
 - Do the OpenRouter key renewal above first. Step 4 needs a real reply.
@@ -296,8 +303,10 @@ more setup and changes what Apple sees, so use BrowserStack unless it fails.
 **Set up the cloud iPhone:**
 1. Sign in at browserstack.com → **App Live**.
 2. In **Select Source**, choose **Install via TestFlight**.
-3. Pick an iPhone 14 or newer on the **newest iOS version listed** (Apple asked for the
-   latest iOS).
+3. Verify that an iPhone 14 or newer with TestFlight is available on the **latest
+   public iOS version required by Apple's request**. Check its actual OS version;
+   the newest version in the vendor's list may be older. If no qualifying device
+   exists, report that blocker rather than substituting an older iOS.
 4. On the cloud phone, open TestFlight and sign in with **your** Apple ID. That's the
    Account Holder, already invited to the `Internal` group with build 3. Install
    **TinyAssets**.
@@ -314,7 +323,7 @@ steps in order, without cutting. They're the shot list from the 2.1 response pac
 | 2 | Choose email and password and sign in with the App Review account. Type the password in the masked field only, never in a visible notes app. | A normal sign-in into the reviewer's account. |
 | 3 | Wait for the reviewer's private universe to load. | You're inside the app. No API key, subscription or payment step appears. |
 | 4 | Send: `Give me a three-step plan to launch a small bakery's online orders, and keep it short.` Wait for the full reply. Then swipe TinyAssets away (force quit), relaunch it, and show the same conversation still there. | A real AI reply, and the conversation surviving a force quit. |
-| 5 | Attach `app-store-review-sample.txt` (upload it to the cloud phone through App Live's file/media upload, then pick it in the attach sheet). Send: `What is the project, target storefront, and review deadline in this file?` | An answer grounded in the file's contents. |
+| 5 | Attach `app-store-review-sample.txt` (use App Live's **Files & Media ? File ? Upload new file**, then pick it under **Files ? Chrome ? Injected Files** in the attach sheet). Send: `What is the project, target storefront, and review deadline in this file?` | An answer grounded in the file's contents. |
 | 6 | Open Account / Privacy and show the **Delete my account** path. **Do not** confirm deletion. | That account deletion is reachable in the app. |
 
 Click **End Recording**, then **Download** to save the `.mp4`.
@@ -327,7 +336,8 @@ Click **End Recording**, then **Download** to save the `.mp4`.
   video with the drafted written answers and resubmits build 3 only on the lead's
   explicit go.
 - If App Live has no iPhone with TestFlight available, or the recording fails, say so.
-  The fallback is AWS Device Farm with an ad-hoc build, which the agent can prepare.
+  The agent can prepare an AWS Device Farm fallback, but must first verify its OS,
+  signing and recording behavior against the same review request.
 
 ---
 
