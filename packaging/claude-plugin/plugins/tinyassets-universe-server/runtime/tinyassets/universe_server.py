@@ -30,6 +30,7 @@ from __future__ import annotations
 import json
 import logging
 import math
+import os
 import re
 import uuid
 from contextlib import AsyncExitStack, asynccontextmanager
@@ -4816,6 +4817,29 @@ def create_streamable_http_app() -> Starlette:
     return app
 
 
+def _serve_configs(app, host: str, port: int, socket_path: str):
+    """Keep TCP defaults; only the additional socket bypasses lifespan."""
+    import uvicorn
+
+    from tinyassets.owner_socket import OwnerSocketMiddleware
+
+    return (
+        uvicorn.Config(app, host=host, port=port,
+                       timeout_graceful_shutdown=GRACEFUL_SHUTDOWN_S),
+        uvicorn.Config(OwnerSocketMiddleware(app), uds=socket_path, lifespan="off",
+                       proxy_headers=False,
+                       timeout_graceful_shutdown=GRACEFUL_SHUTDOWN_S),
+    )
+
+
+async def _serve_owner_listeners(configs):
+    import asyncio
+
+    import uvicorn
+
+    await asyncio.gather(*(uvicorn.Server(config).serve() for config in configs))
+
+
 def main(
     host: str = "0.0.0.0",
     port: int = 8001,
@@ -5037,10 +5061,18 @@ def main(
             assigned_consumer = AssignedQueueConsumer(assigned_data_dir())
             assigned_consumer.start()
         try:
-            uvicorn.run(
-                app, host=host, port=port,
-                timeout_graceful_shutdown=GRACEFUL_SHUTDOWN_S,
-            )
+            socket_path = os.environ.get("TINYASSETS_OWNER_SOCKET")
+            if socket_path:
+                import asyncio
+
+                asyncio.run(_serve_owner_listeners(
+                    _serve_configs(app, host, port, socket_path)
+                ))
+            else:
+                uvicorn.run(
+                    app, host=host, port=port,
+                    timeout_graceful_shutdown=GRACEFUL_SHUTDOWN_S,
+                )
         finally:
             if assigned_consumer is not None:
                 assigned_consumer.stop()
