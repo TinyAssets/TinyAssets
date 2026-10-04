@@ -296,10 +296,10 @@ def test_the_engine_relay_rereads_the_route_for_every_connection(short_root, rou
     client = socket.socket(socket.AF_UNIX)
     client.settimeout(10)
     client.connect(str(path))
-    client.sendall(b"hello")
     try:
+        client.sendall(b"hello")
         reply = client.recv(4096)
-    except ConnectionResetError:  # closed with our bytes unread: also nothing relayed
+    except (BrokenPipeError, ConnectionResetError):  # revoked before send or recv
         reply = b""
     assert reply == b""
     client.close()
