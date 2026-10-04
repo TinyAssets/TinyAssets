@@ -272,8 +272,9 @@ def consent_lines(agents: list[dict], *, has_screen: bool) -> list[str]:
         ]
         if has_screen:
             lines.append(
-                "The screen's agent list uses your own roster and will be empty until you "
-                "add your own agents or the publisher includes them. Workflows and agent "
+                "The screen's agent list uses your own roster; if you have none, it stays "
+                "empty until you add your own agents or the publisher includes them. "
+                "Workflows and agent "
                 "instruction files do not create chat agents."
             )
         lines.append(

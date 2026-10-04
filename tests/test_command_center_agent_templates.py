@@ -183,7 +183,7 @@ def test_screen_without_published_agents_reports_empty_roster_before_copy(home, 
                        binding_id=original["agent_binding_id"]) == original
     assert "no chat agents will be copied" in body
     assert body.count("No public chat-agent templates are included") == 1
-    assert "The screen's agent list uses your own roster and will be empty" in body
+    assert "uses your own roster; if you have none, it stays empty" in body
     assert "empty" in body and "republish" in body
     assert original["agent_binding_id"] not in body
 
