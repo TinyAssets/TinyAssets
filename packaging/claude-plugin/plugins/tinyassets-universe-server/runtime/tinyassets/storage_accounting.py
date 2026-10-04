@@ -140,8 +140,8 @@ def _walk_bytes(root: Path, *, exclude_top: frozenset[str] = frozenset()) -> int
 
 def _universe_files(base: Path, universe_id: str) -> int:
     """Everything in the universe's own directory except what the user did not put
-    there -- the platform's provider runtime (``.runtime``) and transient checkout
-    staging (``.workspace-staging``, platform debris when a checkout fails:
+    there -- the platform's consent artifacts, provider runtime (``.runtime``)
+    and transient checkout staging (``.workspace-staging``, platform debris when a checkout fails:
     measured at 2.8 GiB in one production universe, concern
     2026-09-30-workspace-staging-leaks-on-failed-checkouts) -- and permanent
     workspaces, which are their own store."""
@@ -152,7 +152,13 @@ def _universe_files(base: Path, universe_id: str) -> int:
 
 #: Top-level entries of a universe directory that are the PLATFORM's, not the
 #: user's. Counted on the host line, never charged to an account.
-_NOT_USER_BYTES = frozenset({".runtime", ".workspace-staging", "workspaces"})
+_NOT_USER_BYTES = frozenset({
+    ".runtime", ".workspace-staging", "workspaces",
+    # Consent is platform authority, including the evidence kept by the move
+    # into .universe-sidecars. Legacy SQLite companions can remain in place.
+    ".effector_consents.db", ".effector_consents.db-wal", ".effector_consents.db-shm",
+    ".effector_consents.db-journal", ".effector_consents.db.premigration",
+})
 
 
 def _account_actors(base: Path, account_id: str) -> list[str]:

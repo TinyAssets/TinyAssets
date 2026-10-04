@@ -37,3 +37,64 @@ string and comment before the sandbox change. It now uses the same AST helper
 with its original, wider forbidden list. The affected heavy file is
 `test_branch_runner.py`; `test_node_sandbox.py` exercises actual execution and
 the Linux jail. Windows skips for those six jail cases are not Linux proof.
+Final runtime checks: 179 passes on Linux, no skips (syntax regressions,
+sandbox, branch runner, path-I/O guard); 169 passes / 6 POSIX skips on Windows
+for the first three files.
+
+## Storage accounting
+
+Reproduced a real overcharge in `_universe_files`: 10 KiB of user files plus
+500 KiB of platform consent files produced a 510 KiB charge and refused a
+20 KiB write against a 100 KiB test quota. The consent migration keeps
+`.effector_consents.db.premigration` inside the universe; legacy consent DB,
+WAL, SHM and rollback journal names were charged there too. Exclude those exact
+platform artifact names from account measurement. Jail growth measurement is
+unchanged, so this does not exempt those paths from a running jail's disk bound.
+
+`test_platform_consent_artifacts_do_not_exhaust_the_owners_pool` failed with
+`StorageRefused` before the change, then passed. All 74 storage-accounting,
+registry and jail-disk tests pass in the Linux oracle (no skips); Windows has
+73 passes and one POSIX-only skip.
+
+Accounting findings:
+
+- The pool belongs to the owner, across every `universe_owner` binding. Defaults
+  are 2 GiB free / 20 GiB paid, with deployment env overrides. Volume pressure
+  uses a separate 1 GiB free-space floor and inode floor: 24 GiB free says nothing
+  about the account's available quota.
+- Files, permanent workspaces, agent activities and owner-attributed shared
+  rows/blobs count: run records/events/receipts, checkpoints, uploads, branches,
+  project memory, UI assets/library, daemon memory, commons pages, automations,
+  packages. These can live outside the command center's folder. Other owners'
+  files/rows are excluded by scope/owner predicates.
+- Root `.universe-sidecars`, consent DBs and platform logs/cache/runtime are not
+  charged. Inside a universe, `.runtime` and `.workspace-staging` are excluded;
+  ordinary cache/log files elsewhere remain part of that universe's files.
+  Other in-folder metadata remains counted according to `UNIVERSE_ENTRIES`.
+- In-flight reservations count in addition to measured bytes. Each jail can
+  reserve up to 1 GiB, leaves 16 MiB headroom, renews every 120 seconds, and
+  releases on settle. A successful measurement reaps reservations older than
+  600 seconds and committed rows covered by its start sequence. Refusal rescans
+  dirty/missing or >60-second-old stores. Existing tests cover release, expiry,
+  renewal, delete/retry, scan races and owner separation. No evidence of a
+  blanket never-release bug was found.
+
+Production was not inspected; the consent overcharge is proven but not tied to
+the founder's particular refusal. Inspect the effective account type/env quota,
+all owner bindings, and the following ledger rows using a read-only connection
+to `<data>/.storage_accounting.db` (bind the actual owner ID; do not delete rows):
+
+```sql
+SELECT scope_id, store, state, SUM(bytes), MIN(created_at), MAX(created_at)
+FROM pending WHERE account_id = ? GROUP BY scope_id, store, state;
+SELECT scope_id, store, bytes, measured_at, dirty, start_seq
+FROM measurements ORDER BY bytes DESC;
+```
+
+Filter measurements to that account and its owned universe IDs. Compare the
+largest stores with `storage_accounting.usage(base, owner)`'s measured/reserved/
+committed components and the refusal's requested bytes. Inspect the exact
+consent artifact sizes under each owned folder; compare reservations with live
+processes/renewal times and measurement failures in service logs. A deleted
+115 MiB file does not cancel a live jail's reservation or remove retained
+checkpoints, outputs and uploads elsewhere. Do not remove reservations by hand.

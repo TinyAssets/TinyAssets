@@ -76,6 +76,22 @@ def test_owner_refusal_distinguishes_measurements_and_pending_states(base):
 
 
 class TestOnePoolPerAccount:
+    def test_platform_consent_artifacts_do_not_exhaust_the_owners_pool(self, base):
+        udir = _universe(base, "u-one", A)
+        # The consent move preserves this backup inside the command center.
+        # Legacy SQLite companions can remain there too.
+        for suffix in ("", "-wal", "-shm", "-journal", ".premigration"):
+            _write(udir, ".effector_consents.db" + suffix, 100 * KIB)
+        _write(udir, "mine.bin", 10 * KIB)
+        sidecar = base / ".universe-sidecars" / udir.name
+        sidecar.mkdir(parents=True)
+        _write(sidecar, ".effector_consents.db", 200 * KIB)
+        _write(_universe(base, "u-other", B), "other.bin", 500 * KIB)
+
+        reservation = _admit(base, udir.name, 20 * KIB)
+        assert sa.usage(base, A).measured_bytes == 10 * KIB
+        sa.release(reservation)
+
     def test_bytes_in_two_universes_share_one_quota(self, base):
         _write(_universe(base, "u-one", A), "a.bin", 60 * KIB)
         _write(_universe(base, "u-two", A), "b.bin", 30 * KIB)
