@@ -3120,11 +3120,13 @@
     // What the reply's own call asked for, when the source reports no model.
     // Shown only NAMED as a request: it is not evidence of what answered.
     const requested=executionLabel(receipt&&receipt.requested_model,200);
+    const configured=executionLabel(receipt&&receipt.configured_model,200);
     const detail=document.createElement("div"); detail.className="msg-execution";
     // Reply-owned observation only: never substitute a default, speech voice,
     // previous answer or alias. textContent keeps remote labels inert.
     detail.textContent=provider
-      ?"Answered by "+(display||provider)+" · "+(model||(requested
+      ?"Answered by "+(display||provider)+" · "+(model||(configured
+        ?"Configured "+configured+" · answering model not reported":requested
         ?"Requested "+requested+" · answering model not reported":"Model not reported"))
       :"Provider and model not reported";
     if(typeof ModelPicker!=="undefined") ModelPicker.observe(detail.textContent);

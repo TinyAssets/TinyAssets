@@ -1962,6 +1962,13 @@ def test_answer_model_receipt_is_visible_on_typed_and_spoken_reply(tmp_path, kin
 
 
 @pytest.mark.parametrize("execution,expected", [
+    ({"provider": "codex", "model": "", "model_status": "unknown",
+      "configured_model": "cli-selected"},
+     "Answered by codex · Configured cli-selected · answering model not reported"),
+    ({"provider": "codex", "model": "actual", "model_status": "reported",
+      "configured_model": "cli-selected"}, "Answered by codex · actual"),
+    ({"provider": "codex", "model": "", "model_status": "unknown",
+      "configured_model": "bad\nlabel"}, "Answered by codex · Model not reported"),
     (None, "Provider and model not reported"),
     ([], "Provider and model not reported"),
     ("alias", "Provider and model not reported"),

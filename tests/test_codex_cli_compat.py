@@ -276,6 +276,7 @@ async def test_recorded_stream_carries_the_request_never_a_reported_model(
         assert receipt.projection() == {
             "provider": "codex", "model": "", "model_status": "unknown",
             "requested_model": requested,
+            "configured_model": requested,
         }
     else:
         # The source's own default is a position, not a model: nothing to name.
