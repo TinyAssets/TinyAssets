@@ -106,7 +106,11 @@ def test_every_marked_file_retriggers_the_proof():
 def test_the_browser_is_installed_from_the_pinned_extra():
     wf = _load()
     assert "'.[dev,browser]'" in _step(wf, "Install the project")["run"]
-    assert "playwright install --with-deps chromium" in _step(wf, "Install Chromium")["run"]
+    # Chromium itself is in the oracle image, where the proofs run.
+    assert "playwright install --with-deps chromium" in (
+        _REPO / "docker" / "linux-oracle.Dockerfile"
+    ).read_text(encoding="utf-8")
+    assert all("playwright install" not in s.get("run", "") for s in _job(wf)["steps"])
     pyproject = (_REPO / "pyproject.toml").read_text(encoding="utf-8")
     assert re.search(r'browser = \[\s*"playwright==\d+\.\d+\.\d+"', pyproject)
 
@@ -122,10 +126,75 @@ def test_assertion_step_always_runs_over_the_marker():
 
 
 def test_junit_uploaded_even_on_failure():
-    step = _step(_load(), "actions/upload-artifact@")
+    step = _step(_load(), "Upload junit")
     assert step["if"] == "always()"
     assert step["with"]["path"].endswith("/junit-real-browser.xml")
 
 
 def test_not_the_required_context():
     assert _job(_load())["name"] == _JOB != "required-tests"
+
+
+def _code(steps: list[dict]) -> str:
+    return "\n".join(
+        ln for s in steps for ln in s.get("run", "").splitlines()
+        if not ln.lstrip().startswith("#")
+    )
+
+
+def test_the_proofs_run_in_the_jail_proofs_venue_and_nowhere_weaker():
+    wf = _load()
+    steps = _job(wf)["steps"]
+    profile = _step(wf, "Allow user namespaces for the jail container only")
+    jail = yaml.safe_load(
+        (_REPO / ".github/workflows/linux-jail-proof.yml").read_text(encoding="utf-8")
+    )
+    expected = next(s for s in jail["jobs"]["linux-jail-proof"]["steps"]
+                    if s.get("name") == profile["name"])
+    # The SAME named profile, byte for byte; not a second, wider one.
+    assert profile == expected
+    assert "if" not in profile and not profile.get("continue-on-error", False)
+    assert steps.index(profile) < steps.index(_step(wf, "Run the real-browser proofs"))
+    for name in ("Run the real-browser proofs", "Run the complete preview containment module"):
+        step = _step(wf, name)
+        run = step["run"]
+        assert 'python scripts/linux_oracle.py --out "$OUT_DIR" --apparmor ta-jail-userns' in run
+        assert "--env TINYASSETS_DATA_DIR=/tmp/ta-data" in run
+        assert "--basetemp /tmp/b" in run
+        assert "set -euo pipefail" in run
+        assert "if" not in step and not step.get("continue-on-error", False)
+        for weaker in ("--no-bwrap", "--as-root", "--shell", "|| true", "python -m pytest"):
+            assert weaker not in run, weaker
+    code = _code(steps)
+    for forbidden in ("sysctl", "--privileged", "--cap-add", "--no-sandbox", "docker run"):
+        assert forbidden not in code, forbidden
+    assert "secrets." not in _WORKFLOW.read_text(encoding="utf-8")
+    assert code.count("sudo") == 1 and "sudo apparmor_parser -r" in code  # the profile load
+    paths = _triggers(wf)["pull_request"]["paths"]
+    assert "scripts/linux_oracle.py" in paths and "docker/linux-oracle.Dockerfile" in paths
+
+
+def test_ordinary_pull_requests_still_trigger_it():
+    assert _job(_load())["if"] == (
+        "github.event_name != 'pull_request' || github.event.pull_request.draft == false"
+    )
+
+
+def test_the_whole_preview_module_runs_and_every_collected_case_is_asserted():
+    wf = _load()
+    run = _step(wf, "Run the complete preview containment module")
+    assert "-- tests/test_ui_preview.py -q" in run["run"]
+    pytest_args = run["run"].split("-- tests/test_ui_preview.py", 1)[1]
+    assert " -m " not in pytest_args and " -k " not in pytest_args
+    assert "--junitxml /out/junit-preview.xml" in pytest_args
+    check = _step(wf, "Assert every preview case executed")
+    assert check["if"] == "always()"
+    assert "tests/test_ui_preview.py --collect-only" in check["run"]
+    assert '"${#cases[@]}" -eq 0' in check["run"] and "exit 1" in check["run"]
+    assert 'args+=(--nodeid "$case")' in check["run"]
+    assert 'ci_assert_junit_case.py --junit "$JUNIT_PATH"' in check["run"]
+    assert "|| true" not in check["run"] and not check.get("continue-on-error", False)
+    assert check["env"]["JUNIT_PATH"] == run["env"]["OUT_DIR"] + "/junit-preview.xml"
+    artifact = _step(wf, "Upload preview junit")
+    assert artifact["if"] == "always()"
+    assert artifact["with"]["path"].endswith("/junit-preview.xml")

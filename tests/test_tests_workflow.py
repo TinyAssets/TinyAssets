@@ -73,56 +73,173 @@ def _load() -> dict:
     return yaml.safe_load(_WORKFLOW.read_text(encoding="utf-8"))
 
 
-def test_required_shards_install_the_browser_before_running_tests():
-    """Install precedes every step that runs tests, and covers every such step.
+_ORACLE_RUNNER = "python scripts/linux_oracle.py --required-runner"
+_PROFILE_STEP = "Allow user namespaces for the jail container only"
 
-    The install is conditional now (a shard owning no selected file skips it,
-    which is the whole saving), so "has no `if`" is no longer the invariant.
-    What must hold is that NO run-tests step can execute without it: the
-    install's condition is the weakest one, and every run step's condition
-    includes it. A run step reachable while the install is skipped would fail on
-    a missing pytest, not on the code under test.
+
+def _shard_steps() -> list[dict]:
+    return _load()["jobs"]["required-tests-shard"]["steps"]
+
+
+def _shard_runners(steps: list[dict]) -> list[tuple[int, dict]]:
+    """Every step that RUNS tests (not the stdlib-only planning step)."""
+    return [(i, s) for i, s in enumerate(steps) if _ORACLE_RUNNER in s.get("run", "")]
+
+
+def _runner_argv(step: dict) -> tuple[list[str], list[str]]:
+    """(oracle flags, ci_required_tests arguments) as the shell would split them."""
+    import shlex
+
+    text = step["run"]
+    command = text[text.index(_ORACLE_RUNNER):].replace("\\\n", " ")
+    command = re.sub(r"\$\{\{\s*([^}]*?)\s*\}\}", r"<\1>", command)
+    argv = shlex.split(command)[3:]
+    split = argv.index("--")
+    return argv[:split], argv[split + 1:]
+
+
+def test_required_shards_install_the_browser_before_running_tests():
+    """The venue's setup precedes every step that runs tests, and covers each.
+
+    The setup is conditional (a shard owning no selected file skips it), so
+    what must hold is that NO run-tests step can execute without it: the
+    profile step's condition is the weakest one, and every run step's
+    condition includes it. The image, not the host, carries the dependencies
+    and Chromium, so the host installs nothing.
     """
-    steps = _load()["jobs"]["required-tests-shard"]["steps"]
-    install = next(i for i, s in enumerate(steps)
-                   if "playwright install --with-deps chromium" in s.get("run", ""))
-    assert "'.[dev,browser]'" in steps[install]["run"]
-    assert not steps[install].get("continue-on-error", False)
+    steps = _shard_steps()
+    setup = next(i for i, s in enumerate(steps) if s.get("name") == _PROFILE_STEP)
+    assert not steps[setup].get("continue-on-error", False)
+    jail = yaml.safe_load(
+        (_REPO / ".github/workflows/linux-jail-proof.yml").read_text(encoding="utf-8")
+    )
+    expected = next(s for s in jail["jobs"]["linux-jail-proof"]["steps"]
+                    if s.get("name") == _PROFILE_STEP)
+    # The SAME named profile as linux-jail-proof, not a second, wider one.
+    assert {k: v for k, v in steps[setup].items() if k != "if"} == expected
+    dockerfile = (_REPO / "docker" / "linux-oracle.Dockerfile").read_text(encoding="utf-8")
+    assert "playwright install --with-deps chromium" in dockerfile
+    assert ".get('browser', [])" in dockerfile
+    assert all("pip install" not in s.get("run", "") for s in steps)
+
     # The implication is checked over the only three values `--plan-shard` can
     # print: ALL, 0, or a positive count. Spelling the conditions out means a
     # change to any of them fails here and has to be re-reasoned rather than
-    # silently widening what runs without an install.
+    # silently widening what runs without the venue.
     accepts = {
         "steps.plan.outputs.count != '0'": {"ALL", "n"},
         "steps.plan.outputs.count == 'ALL'": {"ALL"},
         "steps.plan.outputs.count != '0' && steps.plan.outputs.count != 'ALL'": {"n"},
     }
-    install_if = _expr(steps[install].get("if", ""))
-    assert install_if in accepts, install_if
+    setup_if = _expr(steps[setup].get("if", ""))
+    assert setup_if in accepts, setup_if
 
-    # Every step that RUNS tests (not the stdlib-only planning step).
-    runners = [
-        (i, s) for i, s in enumerate(steps)
-        if "ci_required_tests.py" in s.get("run", "") and "--plan-shard" not in s["run"]
-    ]
+    runners = _shard_runners(steps)
     assert len(runners) == 2, [s.get("name") for _, s in runners]
     for index, step in runners:
-        assert install < index, f"{step.get('name')} runs before the install"
+        assert setup < index, f"{step.get('name')} runs before the venue is set up"
         condition = _expr(step.get("if", ""))
         assert condition in accepts, condition
-        assert accepts[condition] <= accepts[install_if], (
-            f"{step.get('name')} can run while the install is skipped: {condition}"
+        assert accepts[condition] <= accepts[setup_if], (
+            f"{step.get('name')} can run while the venue setup is skipped: {condition}"
         )
-    # Together they must cover every value that installs, or a shard with work
-    # would install and then run nothing while reporting success.
+        assert not step.get("continue-on-error", False)
+    # Together they must cover every value that sets the venue up, or a shard
+    # with work would set up and then run nothing while reporting success.
     assert set().union(*(accepts[_expr(s.get("if", ""))] for _, s in runners)) == accepts[
-        install_if
+        setup_if
     ]
 
-    # The planning step must come FIRST and must not need the install: knowing
-    # the slice is empty is what lets the install be skipped at all.
+    # The planning step must come FIRST and must not need the venue: knowing
+    # the slice is empty is what lets the image build be skipped at all.
     plan = next(i for i, s in enumerate(steps) if "--plan-shard" in s.get("run", ""))
-    assert plan < install
+    assert plan < setup
+    assert _ORACLE_RUNNER not in steps[plan]["run"]
+    # No test step is left on the bare runner, where the jail tests skip.
+    for step in steps:
+        if "--plan-shard" not in step.get("run", ""):
+            assert "python scripts/ci_required_tests.py" not in step.get("run", "")
+            assert "python -m pytest" not in step.get("run", "")
+
+
+def test_both_shard_paths_hand_the_runner_its_unchanged_command_in_one_venue():
+    whole, selective = (s for _, s in _shard_runners(_shard_steps()))
+    whole_flags, whole_args = _runner_argv(whole)
+    sel_flags, sel_args = _runner_argv(selective)
+    # ONE venue for both paths: identical oracle flags.
+    assert whole_flags == sel_flags == [
+        "--out", "shard-out", "--apparmor", "ta-jail-userns",
+        "--env", "TINYASSETS_DATA_DIR=/tmp/ta-data",
+        "--env", "CI=true", "--env", "GITHUB_ACTIONS=true",
+        "--env", "GITHUB_STEP_SUMMARY=/out/summary-shard-<matrix.shard>.md",
+    ]
+    # The runner's own command lines: what ran on the bare runner, with the
+    # junit under the bound directory and nothing else moved.
+    assert whole_args == [
+        "--junit", "/out/junit-shard-<matrix.shard>.xml",
+        "--exclude-from", ".github/heavy-test-files.txt",
+        "--shard", "<matrix.shard>/6", "--profile", "shard",
+    ]
+    assert sel_args == [
+        "--junit", "/out/junit-shard-<matrix.shard>.xml",
+        "--exclude-from", ".github/heavy-test-files.txt",
+        "--affected", "affected.txt", "--shard", "<matrix.shard>/6",
+        "--profile", "affected", "--selection", "<needs.select.outputs.digest>",
+    ]
+    # The arguments the workflow passes are ones the oracle accepts.
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "linux_oracle_for_workflow", _REPO / "scripts" / "linux_oracle.py"
+    )
+    oracle = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(oracle)
+    for flags, args in ((whole_flags, whole_args), (sel_flags, sel_args)):
+        parsed = oracle.build_parser().parse_args(["--required-runner", *flags, "--", *args])
+        cmd = oracle.docker_command(parsed, _REPO, "img:tag")
+        assert [cmd[i + 1] for i, part in enumerate(cmd) if part == "--security-opt"] == [
+            "seccomp=unconfined", "apparmor=ta-jail-userns", "systempaths=unconfined",
+        ]
+    for step in (whole, selective):
+        code = "\n".join(
+            ln for ln in step["run"].splitlines() if not ln.lstrip().startswith("#")
+        )
+        assert "set -euo pipefail" in code
+        for weaker in ("--no-bwrap", "--as-root", "--shell", "|| true", "--pytest-arg",
+                       "--deselect", "--ignore", " -k ", " -m "):
+            assert weaker not in code, weaker
+
+
+def test_shard_outputs_keep_their_names_and_destination():
+    steps = _shard_steps()
+    plan = next(s for s in steps if "--plan-shard" in s.get("run", ""))
+    # The empty-shard path still writes the same file the oracle path writes.
+    assert '--junit "shard-out/junit-shard-${{ matrix.shard }}.xml"' in plan["run"]
+    upload = next(s for s in steps if "upload-artifact" in s.get("uses", ""))
+    assert upload["if"] == "always()"
+    assert upload["with"]["path"] == "shard-out/"
+    assert upload["with"]["name"] == "junit-required-shard-${{ matrix.shard }}"
+    summary = next(s for s in steps if s.get("name") == "Publish the runner's summary")
+    assert _expr(summary["if"]).startswith("always()")
+    assert "shard-out/summary-shard-${{ matrix.shard }}.md" in summary["run"]
+    # A summary beside the junit must not look like a manifest to the aggregate.
+    assert ".json" not in summary["run"]
+
+
+def test_the_shard_venue_adds_no_host_privilege_and_no_secret():
+    job = _load()["jobs"]["required-tests-shard"]
+    assert job["runs-on"] == "ubuntu-latest"
+    assert job["strategy"]["matrix"]["shard"] == [1, 2, 3, 4, 5, 6]
+    assert job["strategy"]["fail-fast"] is False
+    code = "\n".join(
+        ln for s in job["steps"] for ln in s.get("run", "").splitlines()
+        if not ln.lstrip().startswith("#")
+    )
+    for forbidden in ("sysctl", "--privileged", "--cap-add", "--no-sandbox",
+                      "docker run", "docker exec"):
+        assert forbidden not in code, forbidden
+    assert code.count("sudo") == 1 and "sudo apparmor_parser -r" in code
+    assert "secrets." not in yaml.safe_dump(job)
 
 
 def test_affected_shards_install_browser_before_running_selected_tests():

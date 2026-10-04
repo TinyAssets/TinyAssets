@@ -295,25 +295,45 @@ jobs:
           echo "this shard owns: $COUNT"
           echo "count=$COUNT" >> "$GITHUB_OUTPUT"
 
-      - name: Install
+      # WHERE THE SHARD RUNS: the Linux oracle container, as uid 1001 -- the
+      # venue linux-jail-proof already uses (its header has the why). On the
+      # bare runner bubblewrap cannot make a jail, so every jail-backed test in
+      # the required surface skips. The browser no-skip assertion rejects the
+      # preview skips; ordinary jail cases count toward the skip budget.
+      # The image carries the dependencies, the
+      # `browser` extra and Chromium (docker/linux-oracle.Dockerfile), so the
+      # host installs nothing. The container gets linux-jail-proof's
+      # per-container exceptions and nothing more: seccomp and systempaths
+      # unconfined plus the named `ta-jail-userns` AppArmor profile. Those are
+      # broad for that one throwaway container, not an allowlist; no host
+      # sysctl, no privileged container, no added capability. If no jail can be
+      # made the oracle exits 3 before the runner starts: no manifest, the
+      # aggregate reports the shard missing, the gate is red. Nothing retries.
+      - name: Allow user namespaces for the jail container only
         if: steps.plan.outputs.count != '0'
+        env:
+          PROFILE: ${{ runner.temp }}/ta-jail-userns
         run: |
-          python -m pip install --upgrade pip
-          pip install -e '.[dev,browser]'
-          python -m playwright install --with-deps chromium
+          set -euo pipefail
+          # Unconfined like Docker's apparmor=unconfined, plus the one permission
+          # the kernel's userns restriction withholds. Applied only to the
+          # containers below, by name.
+          printf '%s\n' \
+            'abi <abi/4.0>,' \
+            'include <tunables/global>' \
+            'profile ta-jail-userns flags=(unconfined) {' \
+            '  userns,' \
+            '}' > "$PROFILE"
+          sudo apparmor_parser -r "$PROFILE"
 
       # The whole-surface path, unchanged from before the selection existed:
       # same command, same `shard` profile, same 1000-test floor. A push,
       # schedule or dispatch run always lands here.
       - name: Run this shard of the required test surface
         if: steps.plan.outputs.count == 'ALL'
-        env:
-          # Keep the suite off the real repo tree and off any host state. The
-          # conftest already forces mock providers and sqlite_only storage; this
-          # is belt-and-braces for anything that reads the env directly.
-          TINYASSETS_DATA_DIR: ${{ runner.temp }}/ta-data
         run: |
-          mkdir -p "$TINYASSETS_DATA_DIR" shard-out
+          set -euo pipefail
+          mkdir -p shard-out
           # The shard applies the same quarantine comparison to its own tests
           # (a red shard names its new failures), but the AGGREGATE is the gate.
           #
@@ -323,8 +343,19 @@ jobs:
           # exclusion run reported was also failing in the same-tree full run.
           # NOT "on every main push" — app-performed merges raise no push
           # event. See the `schedule:` trigger comment.
-          python scripts/ci_required_tests.py \
-            --junit "shard-out/junit-shard-${{ matrix.shard }}.xml" \
+          #
+          # Everything after `--` is the runner's own command line, unchanged;
+          # shard-out is bound at /out, so the junit and the manifest beside it
+          # land where they always did. TINYASSETS_DATA_DIR keeps the suite off
+          # the tree and off any host state, as before (the conftest already
+          # forces mock providers and sqlite_only storage).
+          python scripts/linux_oracle.py --required-runner --out shard-out \
+            --apparmor ta-jail-userns \
+            --env TINYASSETS_DATA_DIR=/tmp/ta-data \
+            --env CI=true --env GITHUB_ACTIONS=true \
+            --env "GITHUB_STEP_SUMMARY=/out/summary-shard-${{ matrix.shard }}.md" \
+            -- \
+            --junit "/out/junit-shard-${{ matrix.shard }}.xml" \
             --exclude-from .github/heavy-test-files.txt \
             --shard "${{ matrix.shard }}/6" --profile shard
 
@@ -334,15 +365,30 @@ jobs:
       # and it is exact: every selected file must report a case.
       - name: Run this shard of the selection
         if: steps.plan.outputs.count != '0' && steps.plan.outputs.count != 'ALL'
-        env:
-          TINYASSETS_DATA_DIR: ${{ runner.temp }}/ta-data
         run: |
-          mkdir -p "$TINYASSETS_DATA_DIR" shard-out
-          python scripts/ci_required_tests.py \
-            --junit "shard-out/junit-shard-${{ matrix.shard }}.xml" \
+          set -euo pipefail
+          mkdir -p shard-out
+          # affected.txt sits in the checkout, so the oracle's tree copy carries
+          # it to /work beside the runner.
+          python scripts/linux_oracle.py --required-runner --out shard-out \
+            --apparmor ta-jail-userns \
+            --env TINYASSETS_DATA_DIR=/tmp/ta-data \
+            --env CI=true --env GITHUB_ACTIONS=true \
+            --env "GITHUB_STEP_SUMMARY=/out/summary-shard-${{ matrix.shard }}.md" \
+            -- \
+            --junit "/out/junit-shard-${{ matrix.shard }}.xml" \
             --exclude-from .github/heavy-test-files.txt \
             --affected affected.txt --shard "${{ matrix.shard }}/6" \
             --profile affected --selection "${{ needs.select.outputs.digest }}"
+
+      - name: Publish the runner's summary
+        # The runner wrote it inside the container; always(), so a red shard
+        # still says why on the run page.
+        if: always() && steps.plan.outputs.count != '0'
+        run: |
+          if [ -f "shard-out/summary-shard-${{ matrix.shard }}.md" ]; then
+            cat "shard-out/summary-shard-${{ matrix.shard }}.md" >> "$GITHUB_STEP_SUMMARY"
+          fi
 
       - name: Upload shard result
         # always(): a red shard's junit and manifest are what let the aggregate

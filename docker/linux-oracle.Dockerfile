@@ -16,10 +16,15 @@ FROM python:3.11-slim
 # bubblewrap: the node sandbox jail - the two proofs that skip everywhere else.
 # nodejs/npm: the provisioning grammar's fixtures, and the codex CLI below.
 # build-essential: source-only wheels in the dependency tree.
+# libtk8.6: python:3.11-slim builds _tkinter but does not ship the Tk/Tcl
+# runtime, so `import tkinter` fails and the desktop launcher's tk is None
+# (96 test_desktop failures in merge group run 37238225257). Fail the build
+# here rather than in the suite.
 RUN apt-get update -qq \
     && apt-get install -y -qq --no-install-recommends \
-        git bubblewrap nodejs npm build-essential ca-certificates curl \
-    && rm -rf /var/lib/apt/lists/*
+        git bubblewrap nodejs npm build-essential ca-certificates curl libtk8.6 \
+    && rm -rf /var/lib/apt/lists/* \
+    && python -c "import tkinter; from tkinter import filedialog, ttk"
 
 # The codex CLI, at production's version and production's path.
 #
@@ -50,11 +55,17 @@ RUN mkdir -p /opt/codex-install \
 COPY pyproject.toml /tmp/oracle/pyproject.toml
 # One normal shell RUN works with both classic builders and BuildKit. A Docker
 # heredoc is silently skipped by some classic builders, leaving an empty file.
-RUN python -c "import tomllib; p = tomllib.load(open('/tmp/oracle/pyproject.toml', 'rb')).get('project', {}); print('\n'.join(p.get('dependencies', []) + p.get('optional-dependencies', {}).get('dev', [])))" > /tmp/oracle/requirements.txt \
+RUN python -c "import tomllib; p = tomllib.load(open('/tmp/oracle/pyproject.toml', 'rb')).get('project', {}); print('\n'.join(p.get('dependencies', []) + p.get('optional-dependencies', {}).get('dev', []) + p.get('optional-dependencies', {}).get('browser', [])))" > /tmp/oracle/requirements.txt \
     && test -s /tmp/oracle/requirements.txt
 RUN pip install --no-cache-dir --upgrade pip \
     && pip install --no-cache-dir -r /tmp/oracle/requirements.txt \
     && python -m pytest --version
+
+# Chromium for the real-browser and custom-UI preview proofs, at the Playwright
+# version the `browser` extra pins. Outside /root so the oracle's uid 1001 can
+# read it; Chromium keeps its own sandbox (nothing here passes --no-sandbox).
+ENV PLAYWRIGHT_BROWSERS_PATH=/opt/playwright
+RUN python -m playwright install --with-deps chromium     && chmod -R a+rX /opt/playwright
 
 # The suite refuses a temp root inside the repo (tests/conftest.py), so give it
 # one outside and make it explicit rather than inherited.
