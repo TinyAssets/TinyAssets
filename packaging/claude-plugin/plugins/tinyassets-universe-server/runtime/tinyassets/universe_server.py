@@ -3243,6 +3243,9 @@ def converse(
             "history_saved": saved,
         }
         if held is not None:
+            from tinyassets.api.pending_requests import _connect_llm_request
+
+            held["needs_connection"] = _connect_llm_request()
             return json.dumps(_with_unsettled_steering(
                 {**held, **history}, memory_universe_dir, memory_session, live_id,
             ))

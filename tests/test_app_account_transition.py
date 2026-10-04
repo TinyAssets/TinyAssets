@@ -254,7 +254,9 @@ const UPLOAD_KEY_A=UPLOAD_RECORDS_KEY+":"+JSON.stringify(["principal-a","univers
 def _script(html: str, body: str) -> str:
     # Lifted page source FIRST: the harness below builds its recovery key from
     # the page's own UPLOAD_RECORDS_KEY, so that constant has to exist by then.
-    return _lifted(html) + "\n" + _HARNESS + "\n" + body
+    inline = "const InlineConnection=" + html.split("  const InlineConnection=", 1)[1].split(
+        "  const HostedModelConnect=", 1)[0]
+    return _lifted(html) + "\n" + _HARNESS + "\n" + inline + "\n" + body
 
 
 pytestmark = pytest.mark.skipif(

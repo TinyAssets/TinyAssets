@@ -1110,6 +1110,27 @@ def test_setup_required_reply_is_platform_authored_not_the_universe_voice(
     assert out["missing"] == ["compute", "model_access"]
 
 
+def test_fresh_owner_gets_inline_connection_without_model_call(data_dir, monkeypatch):
+    from tinyassets.providers import call as provider_call
+    from tinyassets.providers.base import BaseProvider
+    from tinyassets.providers.router import ProviderRouter
+    from tinyassets.universe_server import converse
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("a new account must not call a model")
+
+    monkeypatch.setattr(BaseProvider, "complete", forbidden)
+    monkeypatch.setattr(provider_call, "_force_mock", False)
+    monkeypatch.setattr(provider_call, "_real_router", ProviderRouter({}))
+    _login("brand-new-model-owner")
+    out = json.loads(converse(message="Help me plan my day"))
+    assert out["status"] == "held", out
+    assert out["reason"] == "setup_required"
+    assert out["turn_failure"]["effects"] == "none"
+    assert out["needs_connection"]["action"]["type"] == "connect"
+    assert out["needs_connection"]["action"]["setup"]["primary"]["name"] == "OpenRouter"
+
+
 def test_credentialed_universe_still_surfaces_transient_exhaustion_honestly(
     data_dir, monkeypatch
 ):
