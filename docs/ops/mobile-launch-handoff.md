@@ -47,21 +47,19 @@ needs no in-app purchase.
 
 ## What is left, in order
 
-Founder rows, step by step: `docs/host-actions.md` → "Store launch: four founder steps
-(2026-09-29)".
+Founder rows, step by step: `docs/host-actions.md` → "Store launch: two founder steps
+(2026-10-04)".
 
 **Apple**
 
-1. Founder turns on Sign in with Apple in WorkOS (see Guideline 4.8 below).
-   `python scripts/authkit_login_parity_probe.py` fails (exit 1) until Apple is
-   offered.
-2. Founder renews the App Review account's OpenRouter key, which expires
-   **2026-10-10**, and confirms that one reviewer turn gets a reply.
-3. Founder records the six-step physical-iPhone video.
-4. Agent attaches the video and written answers (`app-store-submission-packet.md`,
+1. Agent verifies the real inline connect flow with the reviewer account and confirms a
+   substantive reply before recording. The founder rejected an interim review key;
+   the inline-connect proposal is not evidence of a working deployed flow.
+2. Founder records the six-step physical-iPhone video.
+3. Agent attaches the video and written answers (`app-store-submission-packet.md`,
    "Guideline 2.1 response packet") and resubmits build 3, only on the lead's explicit
    go. No rebuild is needed: sign-in is the hosted AuthKit page.
-5. On approval the release goes out automatically (`AFTER_APPROVAL`). Verify the US
+4. On approval the release goes out automatically (`AFTER_APPROVAL`). Verify the US
    product page offers the install before calling the launch done.
 
 **Google Play**
@@ -80,10 +78,10 @@ transfer, so it is slower than 14 days unless recruiting stalls.
 
 Sources: Apple App Review Guidelines, last updated 2026-06-08; Play Help article 14151465.
 
-- **4.8 Login Services — open.** The AuthKit page offers Google, password and SSO, but
-  no Apple. An app offering Google sign-in must also offer an equivalent private login.
-  The "own sign-in only" exemption does not apply while Google is offered. The fix is
-  WorkOS and Apple portal configuration, which is a founder row.
+- **4.8 Login Services: provider availability verified 2026-10-04.** The live
+  parity probe reports Apple and Google. The key backup and a real Apple
+  sign-in were reported complete in commit `85a6d7b24c` on 2026-10-04.
+  The probe itself verifies availability; neither proof establishes App Review acceptance.
 - **4.2 Minimum Functionality — watched, not acted on.** The shell loads the hosted
   SPA. Apple did not cite 4.2 on the first review. Answer 2.1 first, and build native
   value only if 4.2 is actually raised

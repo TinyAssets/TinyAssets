@@ -17,8 +17,9 @@
 # reaches it via Docker's default bridge at daemon:8001. Only the
 # loopback is exposed for host-side canary probes.
 #
-# Secrets: sourced from /etc/tinyassets/env (the env_file below). Host
-# provisions that file with chmod 600 per HETZNER-DEPLOY.md. Never
+# Secrets: /etc/tinyassets/env is the interpolation source (`--env-file`);
+# the daemon loads the rendered /etc/tinyassets/daemon.env, which is that file
+# minus the platform's own secrets (see the daemon's env_file below). Never
 # commit real values to this repo.
 #
 # Log forwarding uses Docker's asynchronous Fluent driver to a loopback-only
@@ -180,8 +181,17 @@ services:
       # deep hardening is post-live per AGENTS.md § Review sequencing).
       TINYASSETS_ONBOARDING_APP: "1"
       TINYASSETS_ALLOW_CLAUDE_SERVING: "1"
+    # NOT /etc/tinyassets/env. That file is the box's whole secret store and
+    # this file's interpolation source (`--env-file`): the tunnel token, the
+    # log-shipping token and an account-wide DigitalOcean token have all lived
+    # there, and the daemon read every one of them and handed them to its engine
+    # MCP children. daemon.env is the same file with those removed, rendered by
+    # deploy/install-tinyassets-env.sh on every write to the source;
+    # deploy_fail_safe.sh refuses a bundle that wires the source back in and a
+    # running daemon that holds any of them
+    # (docs/concerns/2026-10-02-platform-secrets-in-daemon-env.md).
     env_file:
-      - /etc/tinyassets/env
+      - /etc/tinyassets/daemon.env
       - /etc/tinyassets/agent-interchange.env
       - /etc/tinyassets/request-idempotency.env
       - /etc/tinyassets/app-ingress.env

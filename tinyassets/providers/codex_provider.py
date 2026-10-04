@@ -15,6 +15,7 @@ import re
 import shutil
 import sys
 import time
+from datetime import datetime
 from pathlib import Path
 
 from tinyassets import agent_sessions
@@ -238,6 +239,46 @@ def _native_session_exists(store: Path, thread_id: str) -> bool:
         return agent_sessions.native_file_exists(store, f"{thread_id}.jsonl")
     except OSError:
         return False
+
+
+def _configured_rollout_model(
+    universe_dir: Path, store: Path, thread_id: str, started_at: float,
+) -> str:
+    """Read this launch's configured model from its own native turn context.
+
+    The pinned CLI's JSONL omits the model, but its saved rollout records it in
+    turn_context.payload.model. That is configuration, not response-model
+    verification. Never borrow an earlier resumed turn or another thread.
+    """
+    from tinyassets.providers.execution_receipt import _label
+    from tinyassets.universe_files import read_universe_text
+
+    if not _THREAD_ID.fullmatch(thread_id or ""):
+        return ""
+    model = ""
+    for directory, _, files in os.walk(store, followlinks=False):
+        for name in files:
+            if not name.endswith(f"-{thread_id}.jsonl"):
+                continue
+            try:
+                relative = (Path(directory) / name).relative_to(universe_dir)
+                content = read_universe_text(universe_dir, str(relative))
+                for line in content.splitlines():
+                    event = json.loads(line)
+                    if not isinstance(event, dict) or event.get("type") != "turn_context":
+                        continue
+                    stamp = datetime.fromisoformat(
+                        event.get("timestamp", "").replace("Z", "+00:00"),
+                    )
+                    if stamp.tzinfo is None or stamp.timestamp() < started_at:
+                        continue
+                    payload = event.get("payload")
+                    model = _label(payload.get("model"), 200) if isinstance(payload, dict) else ""
+            except (OSError, ValueError, TypeError, AttributeError):
+                # Optional display evidence: absent, old, oversized or unreadable
+                # rollouts must not make a completed answer fail or invent a name.
+                continue
+    return model
 
 
 def _codex_home_file_mounts(codex_home: Path) -> list[JailMount]:
@@ -1026,6 +1067,7 @@ class CodexProvider(BaseProvider):
         # The shared spawn point jails every launch made for a universe; this
         # adapter only names where its own install lives (the wrapper script
         # execs a binary the generic command lookup cannot see).
+        started_at = time.time()
         try:
             proc = await aspawn_owned(
                 launch_cmd,
@@ -1140,6 +1182,7 @@ class CodexProvider(BaseProvider):
             input_tokens = None
             output_tokens = None
             cost_microunits = None
+            configured_model = model
             if machine_accounting:
                 messages: list[str] = []
                 usage: dict[str, object] | None = None
@@ -1180,6 +1223,10 @@ class CodexProvider(BaseProvider):
                     raise ProviderError("codex accounting output contained invalid usage")
                 cost_microunits = (input_tokens + output_tokens) * 100
                 text = messages[-1].strip()
+                if session_store is not None and thread_id:
+                    configured_model = _configured_rollout_model(
+                        universe_root, session_store, thread_id, started_at,
+                    ) or model
                 if persist and thread_id:
                     agent_sessions.save(
                         session_ref, adapter=self.name, model=model or "",
@@ -1212,13 +1259,12 @@ class CodexProvider(BaseProvider):
             return ProviderResponse(
                 text=text,
                 provider=self.name,
-                # JSONL does not report the resolved model (checked against the
-                # CLI's `exec --json` stream at 0.153.3: thread.started carries only
-                # a thread id, turn.completed only usage). Do not invent an exact
-                # model name or scrape unstructured stderr to fill this field; the
-                # id passed to -m is carried as a REQUEST, never as reported.
+                # CLI 0.153.4 drops model verification from exec's JSONL. The
+                # rollout / -m value is labelled configuration, never actual
+                # answering-model evidence. Ephemeral defaults remain unknown.
                 model=model or "provider-default",
                 requested_model=model,
+                configured_model=configured_model,
                 family=self.family,
                 latency_ms=elapsed_ms,
                 input_tokens=input_tokens,

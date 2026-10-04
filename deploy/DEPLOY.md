@@ -23,8 +23,11 @@ this runbook gets you to the single-host green state.
 - Cloudflare Zero Trust tunnel `tinyassets-daemon-prod` already created
   (or a new tunnel you'll create at step 3). Token in hand.
 - Supabase project provisioned (for Track A schema + auth).
-- GitHub OAuth app registered with callback
-  `https://tinyassets.io/authorize/github/callback`.
+- GitHub OAuth app: **not required.** No code serves that callback, so the env
+  slots were removed on 2026-10-03 (founder: "all unused secrets get removed").
+  Register the app, and re-add the names, together with the code that reads
+  them — `WebSite/03-shipping-plan.md` defers `/connect`'s GitHub sign-in to a
+  later phase.
 
 ## Step 1 — Provision the Droplet (~5 min)
 
@@ -99,8 +102,6 @@ documents each):
 | `CLOUDFLARE_TUNNEL_TOKEN` | Cloudflare dashboard → Zero Trust → Networks → Tunnels → (tunnel) → Connectors → Install → "Token" field. |
 | `SUPABASE_DB_URL` | Supabase dashboard → Project Settings → Database → Connection string → **Pooled** (port 6543). |
 | `SUPABASE_SERVICE_ROLE_KEY` | Supabase dashboard → Project Settings → API → service_role key (keep secret; never ship to clients). |
-| `GITHUB_OAUTH_CLIENT_ID` | GitHub → Settings → Developer settings → OAuth Apps → TinyAssets → Client ID. |
-| `GITHUB_OAUTH_CLIENT_SECRET` | Same page → "Generate a new client secret" → copy once. |
 | `TINYASSETS_IMAGE` | Required immutable GHCR digest ref. `deploy-prod.yml` resolves the short-SHA tag from `.github/workflows/build-image.yml` to `ghcr.io/tinyassets/tinyassets-daemon@sha256:<digest>` before writing `/etc/tinyassets/env`. |
 | `BACKUP_DEST` | Optional until offsite backup is provisioned; a root-configured rclone destination such as `storagebox:tinyassets-backups`. |
 
@@ -556,8 +557,11 @@ cd /opt/tinyassets && git pull --ff-only origin main
 sudo install -m 0644 -o tinyassets -g tinyassets \
   /opt/tinyassets/deploy/compose.yml /opt/tinyassets/compose.yml
 
-# B — a host-only env value (image pin, secret, quick flag): edit the env file.
+# B — a host-only env value (image pin, secret, quick flag): edit the env file,
+#     then re-render the daemon's copy (it loads daemon.env, which is env minus
+#     the platform's own secrets; the unit refuses to start on a stale copy).
 printf '\nTINYASSETS_SOME_FLAG=value\n' >> /etc/tinyassets/env
+sudo tinyassets-env render-daemon-env     # the env helper, installed by every deploy
 
 # Recreate ONLY the daemon so it re-reads config (brief MCP-surface blip):
 systemctl restart tinyassets-daemon

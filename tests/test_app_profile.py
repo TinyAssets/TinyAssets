@@ -10,7 +10,7 @@ import pytest
 from starlette.requests import Request
 
 from tinyassets import onboarding
-from tinyassets.api import helpers, status
+from tinyassets.api import status
 from tinyassets.auth import middleware
 from tinyassets.storage import pending_requests
 
@@ -30,7 +30,8 @@ def profile(tmp_path, monkeypatch):
     monkeypatch.setattr(middleware, "current_identity", lambda: identity)
     monkeypatch.setattr(onboarding, "_read_home",
                         lambda who: "u-home" if who.user_id == "owner" else "")
-    monkeypatch.setattr(helpers, "_base_path", lambda: tmp_path)
+    # Keep lazy imports bound to the real resolver after this fixture ends.
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     monkeypatch.setattr(status, "_universe_active_turn", lambda _u: None)
     return universe, identity
 

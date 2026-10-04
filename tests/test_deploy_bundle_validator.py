@@ -47,12 +47,16 @@ from pathlib import Path
 
 import pytest
 
+from tinyassets.platform_secrets import DAEMON_FORBIDDEN_ENV
+
 REPO = Path(__file__).resolve().parent.parent
 SCRIPT = REPO / "deploy" / "deploy_fail_safe.sh"
 REAL_COMPOSE = REPO / "deploy" / "compose.yml"
 
 RUNTIME = "/opt/tinyassets"
 ENV_FILE = "/etc/tinyassets/env"
+# What the daemon loads instead: ENV_FILE minus the platform's own secrets.
+DAEMON_ENV_FILE = "/etc/tinyassets/daemon.env"
 IMAGE = "ghcr.io/tinyassets/tinyassets-daemon@sha256:" + "b" * 64
 
 
@@ -180,7 +184,7 @@ def _render_no_interpolate() -> dict:
                 "container_name": "tinyassets-daemon",
                 "image": "${TINYASSETS_IMAGE:?Set TINYASSETS_IMAGE ...}",
                 "env_file": [
-                    {"path": ENV_FILE, "required": True},
+                    {"path": DAEMON_ENV_FILE, "required": True},
                     {"path": "/etc/tinyassets/agent-interchange.env", "required": True},
                     {"path": "/etc/tinyassets/request-idempotency.env", "required": True},
                 ],
@@ -221,6 +225,8 @@ def _validate(
             "RUNTIME_DIR": RUNTIME,
             "EXPECT_IMAGE": IMAGE,
             "ENV_FILE": ENV_FILE,
+            "DAEMON_ENV_FILE": DAEMON_ENV_FILE,
+            "DAEMON_FORBIDDEN_ENV": " ".join(sorted(DAEMON_FORBIDDEN_ENV)),
             # Read from the script, never a literal here: the validator reads it
             # with `os.environ[...]` on purpose, so a shell that forgets to export
             # it fails loudly, and a test that hard-coded the number would keep
@@ -289,7 +295,7 @@ def test_no_env_file_in_either_render_is_refused(tmp_path: Path):
 def test_a_plain_string_env_file_list_is_accepted(tmp_path: Path):
     """Older Compose emits plain strings, not `{path, required}` mappings."""
     raw = _render_no_interpolate()
-    raw["services"]["daemon"]["env_file"] = [ENV_FILE]
+    raw["services"]["daemon"]["env_file"] = [DAEMON_ENV_FILE]
     result = _validate(tmp_path, _render(), _source(), uninterpolated=raw)
     assert result.returncode == 0, result.stderr
 
@@ -299,9 +305,56 @@ def test_env_file_falls_back_to_the_interpolated_render(tmp_path: Path):
     raw = _render_no_interpolate()
     del raw["services"]["daemon"]["env_file"]
     config = _render()
-    config["services"]["daemon"]["env_file"] = [ENV_FILE]
+    config["services"]["daemon"]["env_file"] = [DAEMON_ENV_FILE]
     result = _validate(tmp_path, config, _source(), uninterpolated=raw)
     assert result.returncode == 0, result.stderr
+
+
+# ---------------------------------------------------------------------------
+# platform secrets stay out of the daemon
+# (docs/concerns/2026-10-02-platform-secrets-in-daemon-env.md)
+# ---------------------------------------------------------------------------
+
+
+def test_wiring_the_host_env_file_back_into_the_daemon_is_refused(tmp_path: Path):
+    """Listing the source beside the rendered copy restores every secret."""
+    raw = _render_no_interpolate()
+    raw["services"]["daemon"]["env_file"].append({"path": ENV_FILE, "required": True})
+    result = _validate(tmp_path, _render(), _source(), uninterpolated=raw)
+    assert result.returncode == 1
+    assert "the host env file" in result.stderr
+
+
+@pytest.mark.parametrize("name", sorted(DAEMON_FORBIDDEN_ENV))
+def test_a_forbidden_name_in_the_daemon_environment_is_refused(tmp_path: Path, name):
+    """Compose v5 resolves env_file into `environment`: this is the container's
+    environment as it will be created, whichever file put the name there."""
+    config = _render()
+    config["services"]["daemon"]["environment"][name] = "placeholder-value"
+    result = _validate(tmp_path, config, _source())
+    assert result.returncode == 1
+    assert name in result.stderr
+    assert "placeholder-value" not in result.stderr
+
+
+def test_an_empty_forbidden_list_refuses_rather_than_passing(tmp_path: Path):
+    (tmp_path / "validator.py").write_text(_validator_source(), encoding="utf-8")
+    (tmp_path / "config.json").write_text(json.dumps(_render()), encoding="utf-8")
+    (tmp_path / "compose.yml").write_text(_source(), encoding="utf-8")
+    (tmp_path / "raw.json").write_text(json.dumps(_render_no_interpolate()), encoding="utf-8")
+    result = subprocess.run(
+        [sys.executable, str(tmp_path / "validator.py"), str(tmp_path / "config.json"),
+         str(tmp_path / "compose.yml"), str(tmp_path / "raw.json")],
+        capture_output=True, text=True,
+        env={
+            "RUNTIME_DIR": RUNTIME, "EXPECT_IMAGE": IMAGE, "ENV_FILE": ENV_FILE,
+            "DAEMON_ENV_FILE": DAEMON_ENV_FILE, "DAEMON_FORBIDDEN_ENV": " ",
+            "MAX_DAEMON_STOP_GRACE_S": str(MAX_STOP_GRACE_S),
+            "SYSTEMROOT": "C:/Windows", "PATH": "",
+        },
+    )
+    assert result.returncode != 0
+    assert "DAEMON_FORBIDDEN_ENV is empty" in result.stderr
 
 
 def test_environment_is_still_checked_on_the_interpolated_render(tmp_path: Path):

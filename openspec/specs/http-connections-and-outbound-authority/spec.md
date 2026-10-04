@@ -7,13 +7,74 @@ per-service platform code: what a connection declares, how its credential is
 applied, and what the egress boundary admits.
 
 **As-built and PARTIAL by construction.** This file grows as each change
-touching the capability archives. Today it carries the capability-URL
-requirements (change `capability-url-connections`, landed 2026-09-30, PR #4115).
+touching the capability is proven. It carries the owner-configured review
+contract (2026-10-04) and capability-URL requirements (change
+`capability-url-connections`, landed 2026-09-30, PR #4115).
 The `exact` / `full` access-mode requirements live in the still-open
 `openspec/changes/full-channel-access/` delta and join here when that change
 archives.
 
 ## Requirements
+
+### Requirement: Owner connection writes follow owner rules without mandatory model review
+
+An authenticated external call through the owner's connection SHALL proceed
+when the owner's declared rules, active connection grant, allowed operations
+and destination consent allow it, subject to the existing deterministic egress
+and isolation checks. The platform SHALL NOT require a model review by default,
+including for money, security or access action classes. Owner hand-off and
+ask-first rules SHALL continue to hold actions before review or sending.
+
+#### Scenario: a subscription model cannot perform text-only review
+- **WHEN** the owner's rule allows a GitHub-style POST on their granted connection, consent is active, and the owner has not enabled review for that action class
+- **THEN** the effector sends through the scoped connection proxy without invoking a reviewer or returning `auto_review_unavailable`, including when the run uses only a subscription provider
+
+#### Scenario: owner rules deny an otherwise granted write
+- **WHEN** a matching owner rule asks first or hands the action off
+- **THEN** the effector holds the action without spending a review call or sending the request
+
+### Requirement: Only explicit owner review choices require a review
+
+The owner SHALL be able to enable review per agent and consequential action class through
+the authenticated owner rules surface. Enabled choices SHALL persist in
+`review_on` in the owner-controlled rules store outside the agent workspace.
+The Rules UI SHALL show these explicit choices and allow changing each class.
+Legacy `review_off` rows SHALL remain readable; absence from that old table
+SHALL NOT be treated as opt-in, because the old storage did not distinguish
+explicit enabling from its platform default. Disabling a review SHALL still
+explain the consequence and require the owner's confirmation.
+
+Configured reviews SHALL use the run's own model with the existing text-only,
+owner/run-bound admission, finite budget and attempt checks. A review SHALL
+only tighten the owner's rule, never confer connection or cross-user authority.
+An unavailable model, unsupported text-only provider, unreadable review setting
+or unclear verdict SHALL hold with a clear cause. No platform model or provider
+substitution SHALL be introduced to obtain a verdict.
+
+#### Scenario: an owner-configured review cannot run
+- **WHEN** the owner explicitly enables review and the selected subscription provider cannot enforce text-only execution
+- **THEN** the action is held with `auto_review_unavailable` naming the text-only restriction, and no external request is sent
+
+#### Scenario: review choices are local to the owner and agent
+- **WHEN** an owner enables review for one agent's action class
+- **THEN** that choice persists for that agent alone and does not enable review for another agent or owner
+
+### Requirement: Cross-user and shared-host boundaries remain independent of review
+
+Every external call SHALL still require a live grant bound to the executing
+universe and named connection. The scoped proxy SHALL enforce the authenticated
+principal, grant and connection owners, revocation, operation scope and endpoint
+allowlist. Destination consent and soul denials SHALL still apply. Credential
+custody, SSRF restrictions and shared-host isolation SHALL NOT depend on an
+optional model review or be bypassable by an owner rule or review verdict.
+
+#### Scenario: another universe's grant is named in an allowed write
+- **WHEN** an owner rule allows the action but the packet names a grant bound to another universe
+- **THEN** the effector refuses before opening the proxy, regardless of review settings
+
+#### Scenario: consent or connection authority is missing
+- **WHEN** the owner has not enabled review but destination consent is absent or revoked, or the grant or operation scope does not allow the request
+- **THEN** the existing consent or grant check refuses the call before external egress
 
 ### Requirement: A capability URL's secret is a path segment in the vault
  An `http` connection MAY declare `auth_scheme: "url_secret"`, whose credential is a path segment rather than a header. Its endpoints SHALL each carry exactly one reserved placeholder — `{secret}` for a single segment or `{secret+}` for the final tail of one or more segments — and the vault SHALL hold the segment text alone.

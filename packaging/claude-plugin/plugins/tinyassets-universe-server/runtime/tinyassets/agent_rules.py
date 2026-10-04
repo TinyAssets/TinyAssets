@@ -218,6 +218,12 @@ def list_rules(universe_dir: Path, agent: str = MAIN_AGENT) -> list[Rule]:
     return [_rule(row) for row in rows]
 
 
+def configured_agents(universe_dir: Path) -> set[str]:
+    """Agents with stored rules, for conservative checks without run provenance."""
+    with closing(_connect(universe_dir)) as conn:
+        return {row[0] for row in conn.execute("SELECT DISTINCT agent FROM rules")}
+
+
 def _specificity(rule: Rule) -> int:
     """How many dimensions a rule narrows. Connection and operation count the
     same: neither outranks the other, so overlapping narrow rules go to the

@@ -48,7 +48,65 @@ def _admit(base, uid, n, account=A):
     return sa.reserve(base, account_id=account, scope_id=uid, store="universe_files", nbytes=n)
 
 
+def test_owner_refusal_distinguishes_measurements_and_pending_states(base):
+    root = _universe(base, "u-private", A)
+    _write(root, "private.bin", 10 * KIB)
+    active = _admit(base, root.name, 60 * KIB)
+    committed = _admit(base, root.name, 20 * KIB)
+    sa.commit(committed)
+    with pytest.raises(sa.StorageRefused) as caught:
+        _admit(base, root.name, 11 * KIB)
+    refused = caught.value
+    record = sa.visible_record(refused, A)
+    assert record["measured_bytes"] == 10 * KIB
+    assert record["reserved_bytes"] == 60 * KIB
+    assert record["committed_bytes"] == 20 * KIB
+    assert record["used_bytes"] == 90 * KIB
+    assert "measured" in record["error"]
+    assert "reserved for in-flight writes" in record["error"]
+    assert "committed pending remeasurement" in record["error"]
+    assert "retry then" in record["error"]
+    for viewer in (B, "", "unknown"):
+        assert sa.visible_record(refused, viewer) == sa._OTHER_ACCOUNT_FULL
+    sa.release(active)
+    sa.measure(base, root.name, "universe_files")
+    current = sa.usage(base, A)
+    assert current.reserved_bytes == current.committed_bytes == 0
+    assert "retry then" not in sa.refusal_record(current, 100 * KIB, universes=1)["error"]
+
+
 class TestOnePoolPerAccount:
+    def test_platform_consent_artifacts_do_not_exhaust_the_owners_pool(self, base):
+        udir = _universe(base, "u-one", A)
+        _write(udir, "mine.bin", 10 * KIB)
+        sidecar = base / ".universe-sidecars" / udir.name
+        sidecar.mkdir(parents=True)
+        _write(sidecar, ".effector_consents.db", 200 * KIB)
+        _write(_universe(base, "u-other", B), "other.bin", 500 * KIB)
+
+        reservation = _admit(base, udir.name, 20 * KIB)
+        assert sa.usage(base, A).measured_bytes == 10 * KIB
+        sa.release(reservation)
+
+    @pytest.mark.parametrize("suffix", ["", "-wal", "-shm", "-journal", ".premigration"])
+    @pytest.mark.parametrize("nested", [False, True])
+    def test_consent_lookalike_growth_remains_charged_between_runs(self, base, suffix, nested):
+        udir = _universe(base, "u-one", A)
+        target = udir / "nested" if nested else udir
+        target.mkdir(exist_ok=True)
+        path = target / (".effector_consents.db" + suffix)
+        # Three individually admitted writes must consume the shared quota even
+        # after their reservations have been reconciled with actual file bytes.
+        for run in range(3):
+            reservation = _admit(base, udir.name, 30 * KIB)
+            with path.open("ab") as stream:
+                stream.write(b"x" * (30 * KIB))
+            sa.commit(reservation)
+            sa.measure(base, udir.name, "universe_files")
+            assert sa.usage(base, A).used_bytes == (run + 1) * 30 * KIB
+        with pytest.raises(sa.StorageRefused):
+            _admit(base, udir.name, 20 * KIB)
+
     def test_bytes_in_two_universes_share_one_quota(self, base):
         _write(_universe(base, "u-one", A), "a.bin", 60 * KIB)
         _write(_universe(base, "u-two", A), "b.bin", 30 * KIB)

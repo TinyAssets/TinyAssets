@@ -54,6 +54,43 @@ def _text() -> str:
     return _WORKFLOW.read_text(encoding="utf-8")
 
 
+def test_oauth_provider_credentials_step_sources_and_order():
+    wf = _load()
+    steps = _steps(wf)
+    validation = _step_named(wf, "Validate OAuth provider credentials")
+    step = _step_named(wf, "Install OAuth provider client credentials")
+    credentials = {
+        "TINYASSETS_OAUTH_GOOGLE_CLIENT_ID":
+            "${{ vars.TINYASSETS_OAUTH_GOOGLE_CLIENT_ID }}",
+        "TINYASSETS_OAUTH_GOOGLE_CLIENT_SECRET":
+            "${{ secrets.TINYASSETS_OAUTH_GOOGLE_CLIENT_SECRET }}",
+    }
+    assert validation["id"] == "oauth"
+    assert validation["env"] == {
+        "TINYASSETS_OAUTH_CREDENTIALS_INSTALL":
+            "${{ vars.TINYASSETS_OAUTH_CREDENTIALS_INSTALL }}",
+        **credentials,
+        "TARGET_REVISION": "${{ steps.tag.outputs.revision }}",
+    }
+    assert validation["run"] == "python scripts/validate_oauth_provider_credentials.py"
+    assert step["env"] == {
+        **credentials,
+        "OAUTH_ACTION": "${{ steps.oauth.outputs.action }}",
+        "PREV_IMAGE": "${{ steps.capture.outputs.prev_image }}",
+    }
+    assert steps.index(validation) < steps.index(_step_named(wf, "Install SSH key"))
+    assert steps.index(_step_named(
+        wf, "Install daemon-only request idempotency HMAC secret",
+    )) < steps.index(step) < steps.index(_step_named(
+        wf, "Run fail-safe deploy on the droplet",
+    ))
+    script = step["run"]
+    assert "${{ secrets." not in script
+    assert "set +x" in script
+    assert "set -x" not in script
+    assert "sudo flock -w 120 /var/lock/tinyassets-host-mutation.lock" in script
+
+
 def _triggers(wf: dict) -> dict:
     return wf.get(True, {}) or {}
 
@@ -939,6 +976,42 @@ def test_deploy_preserves_host_owned_log_destination():
     run_script = scrub_step.get("run", "") or ""
 
     assert "LOG_DEST" not in run_script
+
+
+def test_deploy_deletes_the_retired_github_oauth_pair_and_proves_it_took():
+    """The retired OAuth pair is DELETED from the shared env, not just withheld.
+
+    GITHUB_OAUTH_CLIENT_ID / GITHUB_OAUTH_CLIENT_SECRET were retired on
+    2026-10-03: no reader anywhere, and no route serves the callback the
+    template used to describe. ``RETIRED_ENV`` in
+    ``deploy/install-tinyassets-env.sh`` withholds them from daemon.env at the
+    renderer, which covers every writer; that is deliberately a different job
+    from making the key go away. Without the delete below, a stale assignment
+    sits on the host forever -- withheld, but still a credential at rest in
+    ``/etc/tinyassets/env``.
+
+    Asserted as an ORDERED pair. A delete whose effect is never checked is the
+    failure mode this guards: the step would stay green while the key survived.
+    """
+    wf = _load()
+    scrub_step = _step_named(wf, "Scrub stale cloud env overrides")
+    run_script = scrub_step.get("run", "") or ""
+
+    delete_at = run_script.find("delete TINYASSETS_WIKI_PATH")
+    assert delete_at != -1, "the scrub step no longer issues a delete"
+    delete_line_end = run_script.find("\n", delete_at)
+    delete_line = run_script[delete_at:delete_line_end]
+    for name in ("GITHUB_OAUTH_CLIENT_ID", "GITHUB_OAUTH_CLIENT_SECRET"):
+        assert name in delete_line, f"the scrub step must delete the retired {name}"
+
+    assert_at = run_script.find("assert-absent GITHUB_OAUTH_CLIENT_SECRET")
+    assert assert_at != -1, (
+        "deleting the secret without asserting it absent leaves the step green "
+        "while the key survives on the host"
+    )
+    assert assert_at > delete_line_end, (
+        "assert-absent must run AFTER the delete, or it proves nothing"
+    )
 
 
 # Three fleet-only cases were deleted here on 2026-08-29:

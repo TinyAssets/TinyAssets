@@ -366,8 +366,14 @@ def test_compose_env_file_covers_daemon_service():
         ef if isinstance(ef, str) else ef.get("path", "")
         for ef in daemon_env_files
     ]
-    assert any("/etc/tinyassets/env" in v for v in env_file_values), (
-        "daemon service env_file must include /etc/tinyassets/env"
+    # The daemon loads the rendered copy without the platform's own secrets,
+    # never the host secret store itself
+    # (docs/concerns/2026-10-02-platform-secrets-in-daemon-env.md).
+    assert "/etc/tinyassets/daemon.env" in env_file_values, (
+        "daemon service env_file must include /etc/tinyassets/daemon.env"
+    )
+    assert "/etc/tinyassets/env" not in env_file_values, (
+        "daemon service env_file must not load the host secret store"
     )
 
 

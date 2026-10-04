@@ -132,6 +132,7 @@ def system_server(home):
                             "active": agent_steering.active(home / BOB_UNIVERSE, key)}
                         operation = "pending:" + args.get("agent_id", "main")
                     elif self.path == "/app/api/status":
+                        assert args.pop("universe_id", BOB_UNIVERSE) == BOB_UNIVERSE
                         result = json.loads(get_status(universe_id=BOB_UNIVERSE, **args))
                         operation = "status:" + args.get("conversation_agent", "main")
                     elif self.path == "/app/ui-prefs":
@@ -361,6 +362,9 @@ def test_shipped_frame_previews_system_trusted_rail_copies_and_navigation_persis
         expect(accept).to_be_visible()
         expect(tab).to_contain_text("Component-only copy")
         expect(tab).to_contain_text("No public chat-agent templates are included")
+        expect(tab).to_contain_text("no chat agents will be copied")
+        expect(tab).to_contain_text("shows only your own agents")
+        expect(tab).to_contain_text("republish")
         accept.click()  # actual trusted parent-document confirmation, never frame approval
         expect(tab).to_have_count(0)
         assert any(op == "answer_request" and result.get("installed") for op, result in calls)

@@ -106,6 +106,7 @@ import pytest
 REPO = Path(__file__).resolve().parent.parent
 SCRIPT = REPO / "deploy" / "deploy_fail_safe.sh"
 REAL_COMPOSE = REPO / "deploy" / "compose.yml"
+REAL_ENV_HELPER = REPO / "deploy" / "install-tinyassets-env.sh"
 
 _BASH = shutil.which("bash")
 
@@ -265,6 +266,11 @@ def inline_env_files(service):
     merged = {}
     for entry in paths:
         path = entry if isinstance(entry, str) else (entry or {}).get("path", "")
+        required = True if isinstance(entry, str) else (entry or {}).get("required", True)
+        if path and required and not os.path.isfile(path):
+            # The real CLI refuses a missing env_file. Skipping it here is what
+            # would let a deploy that never rendered daemon.env pass this suite.
+            raise RuntimeError("env file %s not found" % path)
         if path:
             merged.update(read_env_file(path))
     merged.update(service.get("environment") or {})
@@ -388,8 +394,20 @@ def main(argv):
             print(container.get("image_id", ""))
         elif "{{.Config.Image}}" in fmt:
             print(container.get("image_ref", ""))
+        elif ".Config.Env" in fmt:
+            print(json.dumps(container.get("config_env") or []))
         else:
             print("")
+        return 0
+
+    if argv[:1] == ["top"]:
+        container = (state.get("containers") or {}).get(argv[1])
+        if container is None:
+            sys.stderr.write("Error: No such container: %s\n" % argv[1])
+            return 1
+        print("PID")
+        for pid in container.get("pids") or []:
+            print(pid)
         return 0
 
     if argv[:1] == ["compose"]:
@@ -434,12 +452,43 @@ def main(argv):
             # unhealthy while the previous image comes back healthy.
             if ref in (state.get("unhealthy_images") or []):
                 health = state.get("unhealthy_health", "starting")
+            # The environment the created container holds: Config.Env is the
+            # compose render's `environment` (env files inlined), and the
+            # daemon process holds that plus whatever the image or entrypoint
+            # adds (`extra_process_env`). Written as a procfs environ file so
+            # the script reads it the way it reads the real one.
+            rendered = compose_config(compose_file, env_values, interpolate_values=True)
+            daemon_env = dict(
+                ((rendered.get("services") or {}).get("daemon") or {}).get("environment") or {}
+            )
+            daemon_env.update(state.get("extra_config_env") or {})
+            process_env = dict(daemon_env)
+            process_env.update(state.get("extra_process_env") or {})
+            pid = 4242
+            environ = os.path.join(os.environ["PROC_ROOT"], str(pid), "environ")
+            os.makedirs(os.path.dirname(environ), exist_ok=True)
+            if state.get("environ_unreadable"):
+                if os.path.exists(environ):
+                    os.remove(environ)
+            else:
+                with open(environ, "w", encoding="utf-8") as handle:
+                    handle.write("".join("%s=%s\0" % item for item in process_env.items()))
+            # More processes: "unreadable" leaves a live pid whose environ
+            # cannot be read; "gone" lists a pid that exited before the read.
+            pids = [pid]
+            for extra_pid, kind in (state.get("extra_pids") or {}).items():
+                pids.append(int(extra_pid))
+                extra_dir = os.path.join(os.environ["PROC_ROOT"], str(extra_pid))
+                if kind == "unreadable":
+                    os.makedirs(os.path.join(extra_dir, "environ"), exist_ok=True)
             containers = state.setdefault("containers", {})
             containers["tinyassets-daemon"] = {
                 "status": "running",
                 "health": health,
                 "image_id": image_id(ref),
                 "image_ref": ref,
+                "config_env": ["%s=%s" % item for item in daemon_env.items()],
+                "pids": pids,
             }
             containers.setdefault(
                 "tinyassets-tunnel",
@@ -531,6 +580,12 @@ exec /usr/bin/install "$@"
 # under test is the bundle, not the env write.
 FAKE_ENV_HELPER = r'''#!/usr/bin/env bash
 set -euo pipefail
+# The daemon-env rendering is the REAL helper's code, run unprivileged: it is
+# part of what this suite proves, not scaffolding around it.
+real() { TINYASSETS_ENV_OWNER= TINYASSETS_ENV_READ_USER= bash "$REAL_ENV_HELPER" "$@"; }
+case "${1:-}" in
+  daemon-forbidden-names|render-daemon-env) real "$@"; exit $? ;;
+esac
 if [ "${FAKE_ENV_HELPER_FAIL:-0}" = "1" ]; then
   echo "fake env helper: refusing" >&2
   exit 3
@@ -542,6 +597,12 @@ grep -v -E "^${key}=" "$ENV_FILE" > "$tmp" || true
 printf '%s=%s\n' "$key" "$value" >> "$tmp"
 cat "$tmp" > "$ENV_FILE"
 rm -f "$tmp"
+# As the real helper does: a write to the source re-renders the daemon's copy,
+# unless the caller turned rendering off with an empty TINYASSETS_DAEMON_ENV_FILE.
+if [ "${TINYASSETS_DAEMON_ENV_FILE-unset}" != "" ]; then
+  TINYASSETS_DAEMON_ENV_SOURCE="$ENV_FILE" TINYASSETS_DAEMON_ENV_FILE="$DAEMON_ENV_FILE" \
+    TINYASSETS_ENV_FILE="$DAEMON_ENV_FILE" real render-daemon-env >/dev/null
+fi
 '''
 
 
@@ -578,6 +639,9 @@ class Box:
         self.install_calls = root / "install-calls.log"
         self.env_helper = root / "tmp" / "install-tinyassets-env.sh"
         self.lock = root / "host-mutation.lock"
+        self.daemon_env_file = self.env_file.parent / "daemon.env"
+        self.proc = root / "proc"
+        self.helper_install_path = root / "usr" / "local" / "sbin" / "tinyassets-env"
 
     # -- live state ------------------------------------------------------
     @property
@@ -697,6 +761,12 @@ class Box:
             **os.environ,
             "PATH": f"{self.bin}{os.pathsep}{os.environ.get('PATH', '')}",
             "ENV_FILE": str(self.env_file),
+            "DAEMON_ENV_FILE": str(self.daemon_env_file),
+            "PROC_ROOT": str(self.proc),
+            "REAL_ENV_HELPER": str(REAL_ENV_HELPER),
+            "HELPER_INSTALL_PATH": str(self.helper_install_path),
+            "HELPER_INSTALL_OWNER": str(os.getuid()),
+            "HELPER_INSTALL_GROUP": str(os.getgid()),
             "ENV_HELPER": str(self.env_helper),
             "RUNTIME_DIR": str(self.runtime),
             "UNIT_FILE": str(self.unit_file),
@@ -777,6 +847,7 @@ def box(tmp_path: Path) -> Box:
         path.write_text(body, encoding="utf-8", newline="\n")
         path.chmod(path.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
 
+    fake.helper_install_path.parent.mkdir(parents=True)
     fake.env_helper.write_text(FAKE_ENV_HELPER, encoding="utf-8", newline="\n")
     fake.env_helper.chmod(0o755)
 
@@ -898,8 +969,13 @@ def _mutate(compose_text: str, old: str, new: str) -> str:
         ),
         (
             "daemon loses its env_file",
-            "    env_file:\n      - /etc/tinyassets/env\n",
+            "    env_file:\n      - /etc/tinyassets/daemon.env\n",
             "    env_file:\n",
+        ),
+        (
+            "daemon loads the host secret store again",
+            "    env_file:\n      - /etc/tinyassets/daemon.env\n",
+            "    env_file:\n      - /etc/tinyassets/env\n",
         ),
         (
             "daemon loses its /data volume",
@@ -1982,3 +2058,224 @@ def test_logs_that_exits_after_being_seen_running_fails_the_deploy(box: Box):
     assert completed.returncode != 0, completed.stdout
     assert _result(completed) != "deployed", "a dead log sidecar is not a green deploy"
     assert box.live() == before
+
+
+# ---------------------------------------------------------------------------
+# (z) platform secrets stay out of the daemon
+#     (docs/concerns/2026-10-02-platform-secrets-in-daemon-env.md)
+# ---------------------------------------------------------------------------
+
+
+def _seed_platform_secrets(box: Box) -> None:
+    box.env_file.write_text(
+        f"TINYASSETS_IMAGE={OLD_IMAGE}\n"
+        "DO_API_TOKEN=placeholder-do\n"
+        "CLOUDFLARE_TUNNEL_TOKEN=placeholder-cf\n"
+        "STRIPE_SECRET_KEY=placeholder-stripe\n",
+        encoding="utf-8",
+    )
+
+
+def _config_env_names(box: Box) -> set[str]:
+    daemon = box.docker_state_json()["containers"]["tinyassets-daemon"]
+    return {entry.split("=", 1)[0] for entry in daemon.get("config_env") or []}
+
+
+def test_a_deploy_leaves_platform_secrets_out_of_the_daemon(box: Box):
+    _seed_platform_secrets(box)
+    box.stage_bundle()
+
+    completed = box.run(NEW_IMAGE)
+
+    assert completed.returncode == 0, completed.stderr
+    assert _result(completed) == "deployed"
+    rendered = box.daemon_env_file.read_text(encoding="utf-8")
+    assert "DO_API_TOKEN=" not in rendered
+    assert "CLOUDFLARE_TUNNEL_TOKEN=" not in rendered
+    names = _config_env_names(box)
+    assert "DO_API_TOKEN" not in names and "CLOUDFLARE_TUNNEL_TOKEN" not in names
+    # The daemon still gets what its own routes need.
+    assert "STRIPE_SECRET_KEY" in names
+    # Nothing was destroyed: the host file keeps every value for the host and
+    # the tunnel's interpolation.
+    assert "DO_API_TOKEN=placeholder-do" in box.env_file.read_text(encoding="utf-8")
+    assert "placeholder" not in completed.stdout + completed.stderr
+
+
+@pytest.mark.parametrize("where", ["extra_process_env", "extra_config_env"])
+def test_a_daemon_holding_a_platform_secret_is_rolled_back(box: Box, where):
+    """Checked on the running container, not on the files meant to produce it:
+    an image ENV or an entrypoint can put a name back that no env file holds."""
+    box.stage_bundle()
+    box.set_docker_state(**{where: {"DO_API_TOKEN": "placeholder-do"}})
+
+    completed = box.run(NEW_IMAGE)
+
+    assert completed.returncode == 2, completed.stderr
+    assert _result(completed) == "rolled_back"
+    assert _deployed_image(completed) == OLD_IMAGE
+    assert "DO_API_TOKEN" in completed.stderr
+    assert "placeholder" not in completed.stdout + completed.stderr
+
+
+def test_a_daemon_whose_processes_cannot_be_read_is_not_accepted(box: Box):
+    """No environment read is not the same as a clean one."""
+    box.stage_bundle()
+    box.set_docker_state(environ_unreadable=True)
+
+    completed = box.run(NEW_IMAGE)
+
+    assert completed.returncode == 2, completed.stderr
+    assert _result(completed) == "rolled_back"
+    assert "pid 4242 of tinyassets-daemon has no readable environment" in completed.stderr
+
+
+def test_a_refused_render_leaves_production_untouched(box: Box):
+    box.env_file.write_text(
+        f'TINYASSETS_IMAGE={OLD_IMAGE}\nDO_API_TOKEN="placeholder-start\nplaceholder-rest"\n',
+        encoding="utf-8",
+    )
+    before = box.live()
+    box.stage_bundle()
+
+    completed = box.run(NEW_IMAGE)
+
+    assert completed.returncode == 1
+    assert _result(completed) == "daemon_env_render_failed"
+    assert box.live() == before
+    assert "compose" not in box.docker_calls_text()
+
+
+def test_the_env_helper_is_kept_where_the_unit_points_an_operator(box: Box):
+    box.stage_bundle()
+
+    completed = box.run(NEW_IMAGE)
+
+    assert completed.returncode == 0, completed.stderr
+    assert box.helper_install_path.read_bytes() == box.env_helper.read_bytes()
+
+
+def test_a_permitted_value_that_looks_like_a_forbidden_name_is_not_a_leak(box: Box):
+    """Record boundaries are kept: a newline inside a permitted value is not a
+    new variable (Codex on the first draft, which split on newlines)."""
+    box.stage_bundle()
+    box.set_docker_state(
+        extra_config_env={"NOTES": "line one\nDO_API_TOKEN=looks-like-one"},
+        extra_process_env={"MORE_NOTES": "x\nCLOUDFLARE_TUNNEL_TOKEN=also"},
+    )
+
+    completed = box.run(NEW_IMAGE)
+
+    assert completed.returncode == 0, completed.stderr
+    assert _result(completed) == "deployed"
+
+
+def test_one_unreadable_live_process_is_not_skipped(box: Box):
+    box.stage_bundle()
+    box.set_docker_state(extra_pids={"4243": "unreadable"})
+
+    completed = box.run(NEW_IMAGE)
+
+    assert completed.returncode == 2, completed.stderr
+    assert _result(completed) == "rolled_back"
+    assert "pid 4243" in completed.stderr
+
+
+def test_a_process_that_exited_before_the_read_is_not_a_failure(box: Box):
+    box.stage_bundle()
+    box.set_docker_state(extra_pids={"4244": "gone"})
+
+    completed = box.run(NEW_IMAGE)
+
+    assert completed.returncode == 0, completed.stderr
+    assert _result(completed) == "deployed"
+
+
+def test_restore_bundle_onto_a_pre_split_bundle_restores_the_previous_image(box: Box):
+    """The public-canary rollback must land on the image it was given.
+
+    The bundle it restores predates the split and loads the host env file, so
+    the previous daemon holds the platform's secrets again. Checking scope on
+    that path failed it and re-converged the image the canary had just
+    rejected (Codex on the first draft).
+    """
+    pre_split = box.valid_compose().replace(
+        str(box.daemon_env_file), str(box.env_file)
+    )
+    assert pre_split != box.valid_compose(), "precondition: the live bundle is pre-split"
+    (box.runtime / "compose.yml").write_text(pre_split, encoding="utf-8")
+    (box.runtime / "deploy" / "compose.yml").write_text(pre_split, encoding="utf-8")
+    _seed_platform_secrets(box)
+    box.stage_bundle()
+    forward = box.run(NEW_IMAGE)
+    assert forward.returncode == 0, forward.stderr
+
+    restored = box.run("--restore-bundle", OLD_IMAGE)
+
+    assert restored.returncode == 0, restored.stderr
+    assert box.env_image() == OLD_IMAGE
+    daemon = box.docker_state_json()["containers"]["tinyassets-daemon"]
+    assert daemon["image_ref"] == OLD_IMAGE
+    assert "DO_API_TOKEN" in _config_env_names(box), (
+        "precondition: the restored bundle really does load the host env file"
+    )
+
+
+def test_the_first_deploy_after_the_split_renders_daemon_env_before_compose(box: Box):
+    """The box has only /etc/tinyassets/env. The fake refuses a missing
+    env_file as the real CLI does, so this fails if anything reads daemon.env
+    before the render."""
+    _seed_platform_secrets(box)
+    assert not box.daemon_env_file.exists(), "precondition: a box that predates the split"
+    box.stage_bundle()
+
+    completed = box.run(NEW_IMAGE)
+
+    assert completed.returncode == 0, completed.stderr
+    assert _result(completed) == "deployed"
+    assert box.daemon_env_file.is_file()
+    assert "DO_API_TOKEN" not in _config_env_names(box)
+
+
+def test_the_fake_refuses_a_missing_daemon_env_like_the_real_cli(box: Box):
+    """Guards the test above: without the render, the same deploy must fail."""
+    box.stage_bundle()
+    box.set_docker_state()
+    helper = box.env_helper.read_text(encoding="utf-8").replace(
+        "daemon-forbidden-names|render-daemon-env) real",
+        "daemon-forbidden-names) real",
+    )
+    helper = helper.replace(
+        'case "${1:-}" in',
+        'case "${1:-}" in\n  render-daemon-env) exit 0 ;;',
+    )
+    helper = helper.replace(
+        "TINYASSETS_ENV_FILE=\"$DAEMON_ENV_FILE\" real render-daemon-env >/dev/null",
+        "true",
+    )
+    assert "render-daemon-env) exit 0" in helper
+    assert "real render-daemon-env" not in helper, "precondition: every render is disabled"
+    box.env_helper.write_text(helper, encoding="utf-8", newline="\n")
+
+    completed = box.run(NEW_IMAGE)
+
+    assert completed.returncode == 1, completed.stderr
+    assert _result(completed) == "bundle_invalid"
+    assert not box.daemon_env_file.exists()
+
+
+def test_restore_bundle_is_not_blocked_by_a_failed_render(box: Box):
+    """A rollback must run even when the source cannot be rendered."""
+    box.stage_bundle()
+    assert box.run(NEW_IMAGE).returncode == 0
+    box.env_file.write_text(
+        f'TINYASSETS_IMAGE={NEW_IMAGE}\nDO_API_TOKEN="placeholder-start\nplaceholder-rest"\n',
+        encoding="utf-8",
+    )
+
+    restored = box.run("--restore-bundle", OLD_IMAGE)
+
+    assert restored.returncode == 0, restored.stderr
+    assert box.env_image() == OLD_IMAGE
+    assert "continuing the restore" in restored.stderr
+    assert "placeholder" not in restored.stdout + restored.stderr

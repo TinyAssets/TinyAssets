@@ -4,9 +4,9 @@ Founder, 2026-09-24: "Our generic connector should prefer OAuth when the
 provider allows for what the request is trying to accomplish, as that is less
 actions for the user." There is no table of providers here.
 
-**Trust root: the connection's own declared host(s), and nothing else.** The
-endpoints a code, a PKCE verifier and every refresh token are sent to come ONLY
-from standard discovery rooted there:
+Trust roots are the daemon-owned provider directory and standards discovery
+rooted at the connection's declared hosts. An active directory entry wins;
+otherwise endpoints come from standard discovery:
 
 * RFC 9728 protected-resource metadata on a connection host
   (``/.well-known/oauth-protected-resource``, whose ``resource`` must be that
@@ -31,6 +31,7 @@ key paste.
 
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass
 from typing import Any
@@ -42,12 +43,13 @@ from tinyassets.connection_oauth.transport import OAuthError, request_json, vali
 #: (``tests/conftest.py``) so no test reaches a real host, and a test that
 #: exercises discovery turns it back on against its own local fake server.
 DISCOVERY_ENABLED = True
+logger = logging.getLogger(__name__)
 
 _SCOPE_RE = re.compile(r"[\x21\x23-\x5B\x5D-\x7E]{1,128}\Z")
 _CLIENT_ID_RE = re.compile(r"[\x21-\x7E]{1,256}\Z")
 _MAX_SCOPES = 32
 _MAX_ISSUERS = 2
-_REQUEST_KEYS = frozenset({"client_id", "scopes"})
+_REQUEST_KEYS = frozenset({"client_id", "scopes", "use"})
 #: Endpoint fields a requester may NOT supply: they are discovered, never told.
 _ENDPOINT_KEYS = frozenset({
     "issuer", "authorize_url", "authorization_endpoint", "token_url", "token_endpoint",
@@ -112,7 +114,7 @@ def validate_request(raw: Any) -> dict[str, Any]:
     unknown = set(raw) - _REQUEST_KEYS
     if unknown:
         raise ValueError("oauth has unknown fields: " + ", ".join(sorted(unknown))
-                         + " (only scopes and a public client_id; a client secret "
+                         + " (only scopes, use and a public client_id; a client secret "
                          "never goes through an ask)")
     out: dict[str, Any] = {}
     client_id = raw.get("client_id")
@@ -121,6 +123,11 @@ def validate_request(raw: Any) -> dict[str, Any]:
             raise ValueError("oauth.client_id must be 1-256 printable characters")
         out["client_id"] = client_id
     out["scopes"] = validate_scopes(raw.get("scopes"))
+    if "use" in raw:
+        use = raw["use"]
+        if not isinstance(use, str) or not re.fullmatch(r"[a-z0-9_-]{1,64}", use):
+            raise ValueError("oauth.use must be a named scope set")
+        out["use"] = use
     return out
 
 
@@ -222,11 +229,30 @@ def _covers(metadata: ServerMetadata, scopes: list[str]) -> str:
 def resolve_offer(requested: dict[str, Any], hosts: list[str]) -> tuple[dict[str, Any] | None, str]:
     """``(offer, "")`` when OAuth covers this connection, else ``(None, reason)``.
 
-    Every endpoint in the offer was discovered from ``hosts`` (the connection's
-    own declared hosts). The offer is recorded on the ask, so what the owner is
+    Endpoints come from the trusted directory or discovery rooted at ``hosts``.
+    The offer is recorded on the ask, so what the owner is
     shown (every endpoint host) is exactly what the sign-in uses.
     """
     scopes = list(requested.get("scopes") or [])
+    from tinyassets.connection_oauth import directory, service
+
+    try:
+        remote = service.inherited_config()
+        if remote:
+            offer = service.call(remote, {
+                "op": "resolve", "requested": requested, "hosts": hosts,
+            }).get("offer")
+        else:
+            offer = directory.resolve(requested, hosts)
+        if offer:
+            return offer, ""
+    except OAuthError as exc:
+        if exc.code not in {"oauth_directory_invalid", "platform_client_unavailable"}:
+            raise
+        # A missing usable platform registration says nothing about whether
+        # the host supports the existing public-client flow. No raw RPC/config
+        # exception contents belong in logs.
+        logger.warning("Optional OAuth directory unavailable: %s", exc.code)
     if not DISCOVERY_ENABLED:
         return None, "discovery_unavailable"
     try:

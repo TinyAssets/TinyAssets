@@ -130,9 +130,10 @@ def test_public_picker_unknown_metadata_keeps_default(picker, native, monkeypatc
 
 
 @pytest.mark.parametrize("native", ["discovered"], indirect=True)
-@pytest.mark.parametrize("failure", ["expired", "revoked"])
+@pytest.mark.parametrize("failure", ["expired", "future", "revoked"])
 def test_native_public_picker_rechecks_after_metadata_io(picker, native, monkeypatch, failure):
     prepare = model_options.prepare_owned_model_plan
+    captured = []
 
     def changed_after_prepare(**kwargs):
         prepared = prepare(**kwargs)
@@ -140,15 +141,37 @@ def test_native_public_picker_rechecks_after_metadata_io(picker, native, monkeyp
             write_credential_vault(native.universe, [], owner_user_id="owner-1",
                                    universe_id=native.universe.name)
             return prepared
-        return replace(prepared, snapshots=tuple(
+        if failure == "future":
+            return replace(prepared, snapshots=tuple(
+                replace(snapshot, completed_at=snapshot.completed_at + timedelta(minutes=6))
+                for snapshot in prepared.snapshots
+            ))
+        aged = replace(prepared, snapshots=tuple(
             replace(snapshot, observed_at=snapshot.observed_at - timedelta(minutes=6))
             for snapshot in prepared.snapshots
         ))
+        captured.extend(aged.snapshots)
+        return aged
 
     monkeypatch.setattr(model_options, "prepare_owned_model_plan", changed_after_prepare)
     result = picker()
     assert result["kind"] == "advisory_model_options"
-    assert not result["options"] and not result["order"]
     source = next(row for row in result["sources"] if row["provider_ref"] == "codex")
-    assert source["reasons"] and "observed_at" not in source
+    if failure in ("revoked", "future"):
+        assert not result["options"] and not result["order"]
+        assert source["reasons"] and "observed_at" not in source
+    else:
+        # Catalogue expiry affects launch freshness, not the owner's retained
+        # display choices. Preserve the actual timestamps rather than hiding or
+        # refreshing their age, and prove the same snapshot cannot authorize use.
+        assert captured
+        own = [row for row in result["options"]
+               if row["availability_basis"] in ("executor_default", "executor_enumerated")]
+        assert {row["reference"]["model_id"] for row in own} == {"", "new-account-model"}
+        assert all(row["in_candidate_catalog"] and not row["reasons"] for row in own)
+        assert source["warnings"] == []
+        assert source["expires_at"] < source["completed_at"]
+        for snapshot in captured:
+            with pytest.raises(ProviderError, match="expired"):
+                snapshot.assert_fresh()
     assert native.provider.calls == 0

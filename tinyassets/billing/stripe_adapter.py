@@ -42,6 +42,10 @@ PLAN_INTERVAL = "month"
 _KEY_VAR = "STRIPE_SECRET_KEY"
 _WEBHOOK_SECRET_VAR = "STRIPE_WEBHOOK_SECRET"
 
+#: The environment names holding this adapter's own secrets, so a caller can
+#: keep them out of a child process without naming the processor.
+SECRET_ENV_NAMES: frozenset[str] = frozenset({_KEY_VAR, _WEBHOOK_SECRET_VAR})
+
 #: Version 1 signed the entitlement claim with the STRIPE WEBHOOK SECRET -- a key
 #: Stripe tells you to roll periodically, and one you MUST roll the moment it leaks.
 #: Rolling it silently invalidates the claim on every subscription already sold, and

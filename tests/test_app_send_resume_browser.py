@@ -201,3 +201,22 @@ def test_stream_failure_after_visibility_event_also_checks(recovery_page):
         ["Please finish the checklist", "The checklist is finished."])
     assert page.evaluate("wire.sends.length") == 1
     assert page.evaluate("!!readInflight()")
+
+
+def test_restored_send_observes_reply_on_resume_without_replay(recovery_page):
+    from playwright.sync_api import expect
+
+    page = recovery_page
+    page.evaluate("""async () => {
+        wire.hidden=true;
+        rememberInflight('Please finish the checklist','Please finish the checklist',Date.now());
+        liveInflight=null; inflightRestored=false;
+        await restoreInflight([]);
+    }""")
+    expect(page.get_by_text("This message was never confirmed", exact=False)).to_be_visible()
+    expect(page.get_by_role("button", name="Check saved conversation", exact=True)).to_be_visible()
+    _complete_and_resume(page)
+    expect(page.locator("#thread pre")).to_contain_text(
+        ["Please finish the checklist", "The checklist is finished."])
+    assert page.evaluate("wire.sends.length") == 0
+    assert page.evaluate("readInflight().message") == "Please finish the checklist"

@@ -743,6 +743,12 @@ def test_validated_runtime_image_is_persisted_into_exactly_one_fresh_assignment(
     run = step["run"]
     assert "ghcr\\.io/tinyassets/tinyassets-daemon@sha256:[0-9a-f]{64}" in run
     assert 'Path("/etc/tinyassets/env")' in run
+    # The daemon loads the rendered copy of env, so the edit must re-render it,
+    # after the write and only if the write succeeded.
+    assert (
+        "python3 - ${quoted_runtime_image} && bash "
+        "/opt/tinyassets/deploy/install-tinyassets-env.sh render-daemon-env"
+    ) in run
     assert "env_path.is_symlink()" in run
     assert 'line.startswith("TINYASSETS_IMAGE=")' in run
     assert "len(matches) != 1" in run

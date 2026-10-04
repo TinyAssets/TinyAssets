@@ -87,7 +87,12 @@ MIN_RAN_FLOORS = {
 # across the six shards 1,431-1,509, with one noisy-runner outlier at 1,856.
 # The seconds cap sits well above that noise so a slow runner never fails a
 # merge; it catches a change that makes the suite materially slower.
-MAX_REQUIRED_SKIPPED = 127
+# 2026-10-04: #4404 adds one real_jail metadata-isolation proof. Comparing
+# passing main run 37187949417 with combined run 37188645443 gives exactly one
+# new skip in the ordinary shards: test_native_metadata_snapshot_cannot_read_
+# foreign_or_platform_state. It executes in linux-jail-proof, whose no-skip
+# assertion covers every real_jail case. Existing skip conditions are unchanged.
+MAX_REQUIRED_SKIPPED = 128
 MAX_TEST_SECONDS = 2400
 #: Entries in the quarantine ledger, flaky or not. A quarantine that only grows
 #: is how a red build gets normalised.

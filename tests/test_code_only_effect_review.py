@@ -13,7 +13,7 @@ from tests.test_run_provider_session import (
     _seed_open_serving_assignment,
     _seed_serving_assignment,
 )
-from tinyassets import agent_rules, effectors
+from tinyassets import agent_review, agent_rules, effectors
 from tinyassets.daemon_server import set_founder_home
 from tinyassets.effectors import authenticated_external_call as aec
 from tinyassets.foreground_run_provider import _ForegroundRunProviderSession
@@ -105,6 +105,8 @@ def rig(tmp_path, monkeypatch, request):
         _seed_serving_assignment(
             tmp_path, model_access={"codex": ModelAccess("explicit", ("",))} if manifest else None)
     universe = tmp_path / "universe_alice"
+    if getattr(request, "param", "legacy") != "owner":
+        agent_review.set_review(universe, "app.write", True)
     branch = _branch(node_count=1)
     node = branch.node_defs[0]
     node.prompt_template = ""
@@ -170,6 +172,61 @@ def rig(tmp_path, monkeypatch, request):
 
     yield locals()
     session.close()
+
+
+@pytest.mark.parametrize("rig", ["owner"], indirect=True)
+@pytest.mark.parametrize("family", ["codex", "claude"])
+def test_owner_connection_write_needs_no_subscription_review(rig, family):
+    """A subscription's lack of text-only review is irrelevant without opt-in."""
+    terminal = rig["terminal"]
+    terminal.family = family
+    terminal.supports_text_only = False
+    agent_rules.set_rule(rig["universe"], "app.write", agent_rules.DO,
+                         connection="synthetic-http", operation="POST")
+    rig["packet"]["request"] = {
+        "path": "/repos/owner/project/issues", "body": {"title": "An issue"}}
+    result = rig["fire"]()
+    assert result.get("delivered"), result
+    assert len(rig["sends"]) == 1
+    assert not terminal.calls
+
+
+@pytest.mark.parametrize("rig", ["owner"], indirect=True)
+def test_owner_configured_subscription_review_holds_with_cause(rig):
+    from tinyassets import agent_review
+
+    rig["terminal"].supports_text_only = False
+    agent_review.set_review(rig["universe"], "app.write", True)
+    result = rig["fire"]()
+    assert result["error_kind"] == "auto_review_unavailable"
+    assert "text-only" in result["review"]["reason"]
+    assert not rig["terminal"].calls and not rig["sends"]
+
+
+@pytest.mark.parametrize("rig", ["owner"], indirect=True)
+@pytest.mark.parametrize("guard,kind", [
+    ("rule", "rule_ask_first"), ("hand_off", "rule_hand_off"),
+    ("consent", "missing_consent"), ("foreign_grant", "grant_not_for_universe"),
+    ("revoked_grant", "revoked_grant"),
+])
+def test_owner_write_without_review_still_enforces_authority(rig, guard, kind):
+    if guard in {"rule", "hand_off"}:
+        agent_rules.set_rule(rig["universe"], "app.write",
+                             agent_rules.ASK_FIRST if guard == "rule" else agent_rules.HAND_OFF)
+    elif guard == "consent":
+        from tinyassets.storage.effector_consents import revoke_consent
+
+        revoke_consent(rig["universe"], sink=aec.EXTERNAL_WRITE_SINK_AUTHENTICATED_CALL,
+                       destination="example.com")
+    else:
+        with sqlite3.connect(rig["tmp_path"] / "outbound.db") as conn:
+            if guard == "foreign_grant":
+                conn.execute("UPDATE outbound_connection_grants SET universe_id='other'")
+            else:
+                conn.execute("UPDATE outbound_connection_grants SET revoked_at=1")
+    result = rig["fire"]()
+    assert result["error_kind"] == kind, result
+    assert not rig["terminal"].calls and not rig["sends"]
 
 
 @pytest.mark.parametrize("rig", ["legacy", "manifest", "http"], indirect=True)

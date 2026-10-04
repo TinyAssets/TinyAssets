@@ -350,6 +350,14 @@ The app SHALL expose model choices from the universe owner's authorized connecti
 - **AND** the app labels the enumeration gap rather than claiming a complete model list
 - **AND** a nonempty discovered choice is refused without silently substituting the default
 
+#### Scenario: A native catalogue refresh is pending or fails
+- **WHEN** an accepted source has a previous owned catalogue and its background refresh is pending or fails
+- **THEN** its previously enumerated, non-hidden choices remain visible and selectable as advisory choices under current scope and custody
+- **AND** the app reports the refresh diagnostic and preserves actual source timestamps without turning catalogue age into a new consent requirement
+- **AND** a fresh picker read remains usable even when native catalogue timestamps have expired; HTTP discovery expiry still gates its choices
+- **AND** a display-only plan cannot authorize activation, while actual native execution still requires fresh metadata and current authority
+- **AND** history alone cannot restore a withdrawn model or transfer a choice between providers
+
 #### Scenario: Native metadata uses a launcher with child processes
 - **WHEN** a registered native metadata executor launches inherited-pipe children on POSIX
 - **THEN** the transport isolates and terminates its invocation's process group on success, refusal, timeout or cancellation, including after launcher exit
@@ -359,7 +367,7 @@ The app SHALL expose model choices from the universe owner's authorized connecti
 #### Scenario: Native discovery reaches the public picker
 - **WHEN** native metadata discovery succeeds for an accepted source
 - **THEN** the public model-options read lists its provider default and eligible discovered models without assuming HTTP-only metadata fields
-- **AND** freshness and exact custody are rechecked before display without opening another credential-store connection inside the admission transaction
+- **AND** exact current custody is rechecked before display without opening another credential-store connection inside the admission transaction; source timestamps retain their actual age
 - **AND** native revocation removes that source without hiding independently authorized HTTP choices
 
 #### Scenario: Discovery fails
@@ -447,3 +455,21 @@ The typed-chat interface SHALL show a clickable active provider/model control, d
 - **WHEN** storing conversation history fails after a successful model reply
 - **THEN** the immediate answer and its observed receipt remain available without repeating inference
 - **AND** an unavailable optional receipt migration permits otherwise-valid text-only storage
+
+### Requirement: Native metadata subprocesses are confined to their launch snapshot
+Native metadata transport SHALL use the shared confined owned-process launcher with the explicit owning command center, only its exact ephemeral credential snapshot and private temporary runtime storage. It SHALL NOT inherit an ambient engine route, expose sibling command centers or snapshots, or fall back to an unconfined process. Existing custody revalidation, fixed registered protocol, output bounds and cancellation semantics SHALL remain enforced.
+
+#### Scenario: A metadata executable attempts a foreign read
+- **WHEN** an owned metadata launch attempts to read another command center, another snapshot, platform source or a host process environment
+- **THEN** the OS jail denies those reads while allowing its own synthetic credential and bounded metadata response
+- **AND** the result grants no inference or effect authority
+
+#### Scenario: Confinement cannot be established
+- **WHEN** the owning directory or snapshot is absent, foreign or redirected, or the existing OS jail is unavailable
+- **THEN** discovery fails before the provider is started with sanitized unavailable prose
+- **AND** no host launch, new permission or persistent grant is substituted
+
+#### Scenario: A metadata launcher leaves inherited-pipe children
+- **WHEN** discovery succeeds, refuses, times out or is cancelled after starting an owned process family
+- **THEN** the existing owned-family teardown terminates descendants even after launcher exit
+- **AND** pipe cleanup is bounded and cancellation propagates

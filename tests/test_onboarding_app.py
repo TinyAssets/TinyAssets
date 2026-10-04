@@ -1962,6 +1962,13 @@ def test_answer_model_receipt_is_visible_on_typed_and_spoken_reply(tmp_path, kin
 
 
 @pytest.mark.parametrize("execution,expected", [
+    ({"provider": "codex", "model": "", "model_status": "unknown",
+      "configured_model": "cli-selected"},
+     "Answered by codex · Configured cli-selected · answering model not reported"),
+    ({"provider": "codex", "model": "actual", "model_status": "reported",
+      "configured_model": "cli-selected"}, "Answered by codex · actual"),
+    ({"provider": "codex", "model": "", "model_status": "unknown",
+      "configured_model": "bad\nlabel"}, "Answered by codex · Model not reported"),
     (None, "Provider and model not reported"),
     ([], "Provider and model not reported"),
     ("alias", "Provider and model not reported"),
@@ -2237,7 +2244,7 @@ def test_a_held_message_is_restored_on_an_empty_thread(tmp_path):
     assert [m["role"] for m in out["messages"]] == ["founder"]          # once, not twice
     notes = [n for n in out["notes"] if "msg--system" in n["cls"]]
     assert len(notes) == 1 and "never confirmed" in notes[0]["text"]
-    assert notes[0]["buttons"] == ["Send it again"]
+    assert notes[0]["buttons"] == ["Send it again", "Check saved conversation"]
 
 
 def test_a_held_message_is_restored_when_the_peek_fails(tmp_path):
@@ -2637,7 +2644,9 @@ def test_an_offer_below_an_unconfirmed_turn_leaves_that_turn_alone(tmp_path):
                               "payload": {"reply": "on it"}, "clickAfterRestore": "Send it now"})
     assert out["callsAfterRestore"] == []
     unconfirmed = [n for n in out["notes"] if "never confirmed" in n["text"]]
-    assert unconfirmed and unconfirmed[0]["buttons"] == ["Send it again"]
+    assert unconfirmed and unconfirmed[0]["buttons"] == [
+        "Send it again", "Check saved conversation",
+    ]
     assert out["converseCalls"] == [line]
     assert out["inflight"]["message"] == "first"                # A's record survived B's send
     assert any("never confirmed" in t for t in out["notesAfterClick"])

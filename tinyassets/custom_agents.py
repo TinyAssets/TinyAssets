@@ -944,6 +944,7 @@ def list_definitions(
     *,
     query: str = "",
     tags: list[str] | tuple[str, ...] = (),
+    exclude_tags: list[str] | tuple[str, ...] = (),
     author_id: str = "",
     limit: int = 30,
     offset: int = 0,
@@ -954,6 +955,7 @@ def list_definitions(
     bounded_limit = max(1, min(int(limit), 100))
     wanted_query = (query or "").strip().casefold()
     wanted_tags = {str(tag).strip() for tag in tags if str(tag).strip()}
+    excluded_tags = {str(tag).strip() for tag in exclude_tags if str(tag).strip()}
     wanted_author = (author_id or "").strip()
 
     with _agent_connect(base_path) as conn:
@@ -970,6 +972,8 @@ def list_definitions(
                 continue
             row_tags = set(json.loads(str(row["tags_json"])))
             if wanted_tags and not wanted_tags.issubset(row_tags):
+                continue
+            if excluded_tags.intersection(row_tags):
                 continue
             if wanted_query:
                 haystack = f"{row['name']} {row['description']}".casefold()

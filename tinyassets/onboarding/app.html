@@ -776,6 +776,7 @@
         <p>What your agent may do on its own. For each kind of action, choose: take action
         without asking, take action if you asked for exactly that, ask you first, or hand
         it to you. Your agent can suggest a change; only you can make one.</p>
+        <p id="rules-review-notice" class="muted"></p>
         <div id="rules-list"></div>
         <h4>What a connection's operations mean</h4>
         <p class="muted">Your agent treats any call to a connected app as a change unless you
@@ -3120,11 +3121,13 @@
     // What the reply's own call asked for, when the source reports no model.
     // Shown only NAMED as a request: it is not evidence of what answered.
     const requested=executionLabel(receipt&&receipt.requested_model,200);
+    const configured=executionLabel(receipt&&receipt.configured_model,200);
     const detail=document.createElement("div"); detail.className="msg-execution";
     // Reply-owned observation only: never substitute a default, speech voice,
     // previous answer or alias. textContent keeps remote labels inert.
     detail.textContent=provider
-      ?"Answered by "+(display||provider)+" · "+(model||(requested
+      ?"Answered by "+(display||provider)+" · "+(model||(configured
+        ?"Configured "+configured+" · answering model not reported":requested
         ?"Requested "+requested+" · answering model not reported":"Model not reported"))
       :"Provider and model not reported";
     if(typeof ModelPicker!=="undefined") ModelPicker.observe(detail.textContent);
@@ -3354,6 +3357,11 @@
       $("model-menu").appendChild(note);
       return note;
     },
+    refreshLabel(reason){
+      return {catalogue_refresh_pending:"checking… (showing last known models)",
+        catalogue_refresh_unavailable:"couldn't refresh (showing last known models)",
+        native_catalogue_unavailable:"couldn't refresh (showing last known models)"}[reason];
+    },
     renderMenu(){
       const menu=$("model-menu");if(!menu||menu.hidden) return;
       menu.replaceChildren();
@@ -3364,8 +3372,9 @@
       // Everything the command center can actually use, then - only if there are any -
       // the ones that cannot be used yet, greyed under one small divider with
       // their reason. A model is never silently absent.
-      const usable=[],blocked=[];
-      for(const row of this.rows()) (this.usable(row)?usable:blocked).push(row);
+      const usable=[],blocked=[],refreshing=[];
+      for(const row of this.rows()) (this.usable(row)?usable:
+        (row.reasons||[]).some(r=>this.refreshLabel(r.reason))?refreshing:blocked).push(row);
       const isCurrent=key=>!!current&&this.key(current)===key;
       for(const row of usable){
         const key=this.key(row.reference);
@@ -3383,6 +3392,15 @@
       }
       if(!this.fresh()) this.menuNote(this.busy?"Loading your models…":"This list needs a refresh.");
       else if(!usable.length) this.menuNote("No model is available to choose yet.");
+      for(const source of (this.snapshot&&this.snapshot.source_failures||[])){
+        const labels=source.reasons.map(r=>this.refreshLabel(r.reason)).filter(Boolean);
+        if(labels.length) this.menuNote(source.provider_ref+" — "+labels.join(", "));
+      }
+      if(refreshing.length){
+        this.menuNote("Checking availability","model-menu-divider");
+        for(const row of refreshing) this.menuRow(this.label(row.reference),false,null,
+          "— "+row.reasons.map(r=>this.refreshLabel(r.reason)||r.reason.replaceAll("_"," ")).join(", "));
+      }
       if(blocked.length){
         this.menuNote("Needs access","model-menu-divider");
         for(const row of blocked){
@@ -3490,7 +3508,10 @@
         }
         this.snapshot=doc;this.stale=false;
         if(!this.draft) this.draft=copyModelChoice(modelChoiceForNextTurn||doc.preferences.policy||this.automatic());
-        const expiries=(doc.sources||[]).map(source=>Date.parse(source.expires_at)).filter(Number.isFinite);
+        // Native catalogue age is displayed separately from the freshness of
+        // this owner-authorized picker read. HTTP discovery keeps its expiry gate.
+        const expiries=(doc.sources||[]).filter(source=>source.access_method!=="subscription_cli")
+          .map(source=>Date.parse(source.expires_at)).filter(Number.isFinite);
         this.expires=Math.min(Date.now()+300000,...expiries);
         clearTimeout(this.timer);
         this.timer=setTimeout(()=>{this.stale=true;this.status("Model availability needs a refresh. Your choices are unchanged.");this.render();},Math.max(0,this.expires-Date.now()));
@@ -3555,7 +3576,7 @@
         inventory.appendChild(li);
       }
       for(const source of (this.snapshot&&this.snapshot.source_failures||[])){
-        const li=document.createElement("li");li.textContent=source.provider_ref+" — "+source.reasons.map(r=>r.reason.replaceAll("_"," ")).join(", ");inventory.appendChild(li);
+        const li=document.createElement("li");li.textContent=source.provider_ref+" — "+source.reasons.map(r=>this.refreshLabel(r.reason)||r.reason.replaceAll("_"," ")).join(", ");inventory.appendChild(li);
       }
       const accessList=$("model-access-sources");accessList.replaceChildren();
       for(const source of (this.snapshot&&this.snapshot.sources||[])){
@@ -7216,6 +7237,8 @@
     }
     function rulesSay(text){ $("rules-status").textContent=text||""; }
     function renderRules(doc){
+      $("rules-review-notice").textContent=(doc.review_on||[]).length ? "" :
+        "Checks are now off unless you turn them on";
       const list=$("rules-list"); list.textContent="";
       (doc.rules||[]).forEach(rule=>{
         const row=document.createElement("div"); row.className="rule-row";
@@ -7231,17 +7254,14 @@
         });
         pick.addEventListener("change",()=>saveRule(rule,pick.value,false));
         row.appendChild(what); row.appendChild(pick);
-        // The check before acting (harness D1d): on unless the owner switched it
-        // off for this kind; the hand-back kinds keep it.
+        // A check runs only for kinds the owner explicitly enabled.
         const never=(doc.review_never||[]).indexOf(rule.action_class)>=0;
         if(!never && !rule.connection && !rule.operation){
-          const on=(doc.review_off||[]).indexOf(rule.action_class)<0;
-          const always=(doc.review_always||[]).indexOf(rule.action_class)>=0;
+          const on=(doc.review_on||[]).indexOf(rule.action_class)>=0;
           const check=document.createElement("button");
           check.type="button"; check.className="btn btn--link";
           check.textContent=on?"Checks first":"Check is off";
-          if(always){ check.disabled=true; check.title="Always checked first"; }
-          else check.addEventListener("click",()=>sendConfirmed({review:{
+          check.addEventListener("click",()=>sendConfirmed({review:{
             action_class:rule.action_class,enabled:!on}}));
           row.appendChild(check);
         }
@@ -9624,7 +9644,11 @@
          modelChoice:copyModelChoice(pending.modelChoice)});
     });
     const note=appendMessage("system",
-      "This message was never confirmed — the reply did not arrive. ",again);
+      "This message was never confirmed — the reply did not arrive here. The request may already have acted. ",again);
+    // A reload must retain the same read-only recovery as a live transport
+    // failure. The server can finish after this history/active-turn snapshot;
+    // foreground/online events then refresh the saved conversation here too.
+    attachSavedConversationCheck(note);
     // A line queued behind the unconfirmed turn (an approval, typically) is
     // offered below it, never sent on its own: the founder decides what goes
     // out, and in what order, once they see both.

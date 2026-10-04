@@ -29,7 +29,7 @@
 #
 # Post-bootstrap host action:
 #   1. Fill /etc/tinyassets/env with real secrets (CLOUDFLARE_TUNNEL_TOKEN,
-#      SUPABASE_*, GITHUB_OAUTH_*).
+#      SUPABASE_*).
 #   2. systemctl start tinyassets-daemon
 #   3. Verify: python3 /opt/tinyassets-host-uptime/current/scripts/mcp_public_canary.py
 #      --url https://tinyassets.io/mcp --verbose
@@ -214,10 +214,15 @@ if [[ ! -f "${ENV_DIR}/env" ]]; then
     cp "${TINYASSETS_HOME}/deploy/tinyassets-env.template" "${ENV_DIR}/env"
     chown "root:${TINYASSETS_USER}" "${ENV_DIR}/env"
     chmod 640 "${ENV_DIR}/env"
-    log "  → edit ${ENV_DIR}/env and fill in CLOUDFLARE_TUNNEL_TOKEN + SUPABASE_* + GITHUB_OAUTH_* before starting the service"
+    log "  → edit ${ENV_DIR}/env and fill in CLOUDFLARE_TUNNEL_TOKEN + SUPABASE_* before starting the service"
 else
     log "${ENV_DIR}/env already present; leaving contents alone"
 fi
+# The daemon loads a copy of env with the platform's own secrets removed. The
+# helper that renders it is installed where every deploy re-installs it.
+install -m 0755 -o root -g root \
+    "${TINYASSETS_HOME}/deploy/install-tinyassets-env.sh" /usr/local/sbin/tinyassets-env
+/usr/local/sbin/tinyassets-env render-daemon-env
 
 if [[ ! -f "${ENV_DIR}/agent-interchange.env" ]]; then
     log "creating ${ENV_DIR}/agent-interchange.env from daemon-only template..."
@@ -311,8 +316,10 @@ cat <<EOF
 
 Next steps (host action required):
 
-  1. Fill in secrets:
+  1. Fill in secrets, then render the daemon's copy (the unit refuses to
+     start on a copy older than the source):
        sudo nano ${ENV_DIR}/env
+       sudo tinyassets-env render-daemon-env
      (See deploy/DEPLOY.md for which values go where.)
 
   2. Generate the daemon-only agent interchange key:

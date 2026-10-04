@@ -488,14 +488,14 @@ def _validated_connect(action: dict[str, Any]) -> dict[str, Any]:
 
 
 def _has_sign_in(action: dict[str, Any]) -> bool:
-    """A connect ask whose sign-in endpoints were DISCOVERED from its own host.
+    """A connect ask resolved through trusted directory data or host discovery.
 
     ``source`` is written only by ``resolve_offer`` (a requester cannot supply
     it), so an offer without it is never trusted.
     """
     offer = action.get("oauth") if isinstance(action, dict) else None
     return (action.get("type") == "connect" and isinstance(offer, dict)
-            and offer.get("source") == "discovered"
+            and offer.get("source") in ("discovered", "directory")
             and bool(offer.get("authorize_url")) and bool(offer.get("token_url")))
 
 

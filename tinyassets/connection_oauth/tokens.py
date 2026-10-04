@@ -30,11 +30,13 @@ stale, how to spend it, and what record to write.
 
 from __future__ import annotations
 
+import base64
 import json
 import time
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote_plus
 
 from tinyassets.connection_oauth.transport import (
     OAuthError,
@@ -59,6 +61,7 @@ class TokenBundle:
     expires_at: float | None = None
     scope: str = ""
     token_type: str = "Bearer"
+    provider_id: str = ""
 
     def expiring(self, now: float | None = None) -> bool:
         if self.expires_at is None:
@@ -75,6 +78,7 @@ def encode(bundle: TokenBundle) -> str:
         "token_type": bundle.token_type, "expires_at": bundle.expires_at,
         "refresh_token": bundle.refresh_token, "token_url": bundle.token_url,
         "client_id": bundle.client_id, "scope": bundle.scope,
+        **({"provider_id": bundle.provider_id} if bundle.provider_id else {}),
     }, sort_keys=True, separators=(",", ":"))
 
 
@@ -112,6 +116,7 @@ def decode(text: str) -> TokenBundle:
         expires_at=float(expires) if expires is not None else None,
         scope=str(doc.get("scope") or ""),
         token_type=str(doc.get("token_type") or "Bearer"),
+        provider_id=str(doc.get("provider_id") or ""),
     )
 
 
@@ -127,7 +132,7 @@ def _token_response(status: int, doc: Any, *, secrets: tuple[str, ...]) -> dict[
     if token_type.lower() != "bearer":
         # A sender-constrained type (DPoP, MAC) needs proof the broker does not
         # build. Refused loudly rather than sent as something it is not.
-        raise OAuthError("unsupported_token_type", f"token_type {token_type[:32]}")
+        raise OAuthError("unsupported_token_type", "token_type must be Bearer")
     return doc
 
 
@@ -140,19 +145,59 @@ def _expires_at(doc: dict[str, Any], now: float) -> float | None:
     return now + float(value)
 
 
+def _request_token(token_url: str, client_id: str, provider_id: str,
+                   form: dict[str, str], secrets: tuple[str, ...]) -> dict[str, Any]:
+    """Authenticate only at a re-pinned directory token endpoint, daemon-side."""
+    basic_auth = None
+    sensitive: tuple[str, ...] = ()
+    if provider_id:
+        from tinyassets.connection_oauth.directory import registered, secret
+
+        row = registered(provider_id, client_id=client_id, token_url=token_url)
+        value = secret(row["client_secret_env"])
+        encoded = base64.b64encode(
+            f"{quote_plus(client_id)}:{quote_plus(value)}".encode()).decode()
+        sensitive = (value, quote_plus(value), encoded)
+        if row["token_endpoint_auth_method"] == "client_secret_basic":
+            basic_auth = (quote_plus(client_id), quote_plus(value))
+            form.pop("client_id", None)
+        else:
+            form["client_secret"] = value
+    status, doc = request_json("POST", token_url, form=form, secrets=secrets + sensitive,
+                               **({"basic_auth": basic_auth} if basic_auth else {}))
+    if provider_id:
+        # A confidential endpoint's response is untrusted: even a success can
+        # echo the client credential in a token, scope, or an error description.
+        # No provider prose is needed to diagnose a confidential exchange.
+        if status != 200 or not isinstance(doc, dict):
+            raise OAuthError("token_request_failed", f"HTTP {status}", status=status)
+        def echoes(value: Any) -> bool:
+            if isinstance(value, str):
+                return any(s and s in value for s in sensitive)
+            if isinstance(value, dict):
+                return any(echoes(k) or echoes(v) for k, v in value.items())
+            if isinstance(value, list):
+                return any(echoes(v) for v in value)
+            return False
+
+        if echoes(doc):
+            raise OAuthError("token_response_invalid")
+    return _token_response(status, doc, secrets=secrets + sensitive)
+
+
 def exchange_code(*, token_url: str, client_id: str, code: str, verifier: str,
-                  redirect_uri: str) -> TokenBundle:
+                  redirect_uri: str, provider_id: str = "") -> TokenBundle:
     """RFC 6749 §4.1.3 with the RFC 7636 verifier; exactly one attempt."""
     now = time.time()
-    status, doc = request_json("POST", token_url, form={
+    doc = _request_token(token_url, client_id, provider_id, {
         "grant_type": "authorization_code", "code": code, "redirect_uri": redirect_uri,
         "client_id": client_id, "code_verifier": verifier,
-    }, secrets=(code, verifier))
-    doc = _token_response(status, doc, secrets=(code, verifier))
+    }, (code, verifier))
     return TokenBundle(
         access_token=doc["access_token"], token_url=token_url, client_id=client_id,
         refresh_token=_token(doc["refresh_token"]) if doc.get("refresh_token") else "",
         expires_at=_expires_at(doc, now), scope=str(doc.get("scope") or ""),
+        provider_id=provider_id,
     )
 
 
@@ -161,11 +206,10 @@ def refresh(bundle: TokenBundle) -> TokenBundle:
     does not leaves the old one valid, so it is kept."""
     now = time.time()
     secrets = bundle.secret_values()
-    status, doc = request_json("POST", bundle.token_url, form={
+    doc = _request_token(bundle.token_url, bundle.client_id, bundle.provider_id, {
         "grant_type": "refresh_token", "refresh_token": bundle.refresh_token,
         "client_id": bundle.client_id,
-    }, secrets=secrets)
-    doc = _token_response(status, doc, secrets=secrets)
+    }, secrets)
     rotated = doc.get("refresh_token")
     return replace(
         bundle, access_token=doc["access_token"],
@@ -190,9 +234,11 @@ class ConnectionTokens:
     the token endpoint's own words as its detail.
     """
 
-    def __init__(self, *, universe_dir: str | Path, owner_user_id: str) -> None:
+    def __init__(self, *, universe_dir: str | Path, owner_user_id: str,
+                 oauth_service: dict[str, Any] | None = None) -> None:
         self._universe_dir = Path(universe_dir)
         self._owner = str(owner_user_id)
+        self._oauth_service = oauth_service
 
     # The vault seam: read and write the ONE record, by its destination.
     def _read(self, destination: str) -> str:
@@ -239,6 +285,17 @@ class ConnectionTokens:
             raise self._failed("the stored authorization is unreadable; reconnect") from None
         if not rejected and not bundle.expiring():
             return bundle
+        if bundle.provider_id:
+            from tinyassets.connection_oauth import service
+
+            remote = self._oauth_service or service.inherited_config()
+            if remote:
+                try:
+                    service.call(remote, {"op": "refresh", "destination": destination,
+                                          "rejected": rejected})
+                    return decode(self._read(destination))
+                except (OAuthError, LookupError, ValueError):
+                    raise self._failed("platform authorization refresh failed; reconnect") from None
 
         def read() -> TokenBundle:
             # Re-read INSIDE the locks: the holder before us may have rotated it.

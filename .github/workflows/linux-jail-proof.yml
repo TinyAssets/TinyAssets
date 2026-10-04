@@ -13,6 +13,10 @@ name: linux-jail-proof
 #   * tests/test_native_refresh_jail.py runs the argv the shipping codex
 #     provider builds for a coding turn (tinyassets/providers/codex_provider.py)
 #     and proves the launch-credential mask holds, with a detection control;
+#   * tests/test_native_metadata_jail.py runs native model discovery
+#     (tinyassets/providers/native_jsonrpc_discovery.py) in the real jail and
+#     proves its metadata child reads only its own launch credential snapshot --
+#     not a sibling launch's, and not the platform's own state;
 #   * tests/test_provider_jail_root_masks.py proves a provider cannot read,
 #     write or re-link the per-universe platform state kept in hidden root files
 #     (the credential vault, the run/consent/usage databases);
@@ -111,6 +115,9 @@ on:
       # The codex coding-turn jail proof and the provider whose argv it runs.
       - "tests/test_native_refresh_jail.py"
       - "tinyassets/providers/codex_provider.py"
+      # Native metadata discovery's own snapshot confinement.
+      - "tests/test_native_metadata_jail.py"
+      - "tinyassets/providers/native_jsonrpc_discovery.py"
       # The provider universe jail, the shared spawn point that applies it, the
       # router that binds the owning universe, the adapters it launches and the
       # environment builder whose paths must resolve inside it.

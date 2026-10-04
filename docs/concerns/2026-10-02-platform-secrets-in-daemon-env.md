@@ -2,7 +2,7 @@
 severity: P1
 title: The daemon and its engine MCP children held the platform's own secrets
 filed: '2026-10-02'
-summary: the account-wide DigitalOcean token, the live Stripe key, the tunnel token and the WorkOS key are in the environment of the daemon and every engine MCP child; a daemon RCE or an env leak is the whole cloud account plus live billing. STILL LIVE ON MAIN — the fix is an env split written but unmerged in PR #4267 (security/platform-secrets-scope); the DO token also needs rotating by the founder.
+summary: The env split removes unnecessary inheritance of host and daemon credentials. Production verification and DO token rotation remain outstanding; same-UID engine credential recovery is a separate unresolved concern.
 ---
 
 # The daemon and its engine MCP children held the platform's own secrets
@@ -17,34 +17,6 @@ was not installed. All folded in.
 dumps the environment, `/proc/<pid>/environ` read by anything at uid 1001)
 yields an **account-wide** DigitalOcean token and a **live** Stripe secret key:
 every droplet, volume and DNS record, plus charges and refunds.
-
-## Status on `main` — the finding is open, the fix is not merged
-
-This file was authored on the fix's own branch, so until 2026-10-02 the only
-record of a live P1 sat where a fresh checkout of `main` could not see it. It is
-carried onto `main` for that reason. Everything below the next heading is the
-original text, unedited; the front-matter summary and this section are the only
-additions.
-
-**Re-verified 2026-10-02 against `origin/main` `342ab4101`.** Both causes in
-*Why it happened* are still present:
-
-1. `deploy/compose.yml:184` still gives the daemon `env_file: /etc/tinyassets/env`,
-   the box's whole secret store. `deploy/install-tinyassets-env.sh` on `main` has
-   no `render-daemon-env`, so `/etc/tinyassets/daemon.env` does not exist.
-2. `tinyassets/engine_mcp_http.py:270` is still `env = dict(os.environ)` inside
-   `_EngineServer.start`.
-
-So no part of *The fix* below is on `main`: no env split, no deploy-time scope
-refusal, no `tinyassets-env` helper, no unit refusal. Read that section as the
-**proposed** fix, which is written and reviewed on branch
-`security/platform-secrets-scope` (PR #4267).
-
-**When #4267 lands,** it carries its own copy of this file. Whoever lands it
-should drop that copy and keep this one, deleting this status section — or adopt
-its copy and delete this file. One file, either way; `git` holds the other.
-Resolution is still what *How to resolve* / the verification block below says,
-plus the founder's DO-token rotation.
 
 ## Source (verbatim)
 
@@ -81,7 +53,8 @@ Who reads what, by grep of `tinyassets/` (names only):
 | `DO_API_TOKEN` | nothing; workflows use the GitHub secret | nowhere on the box |
 | `CLOUDFLARE_TUNNEL_TOKEN` | compose interpolation into `cloudflared` | tunnel only |
 | `BETTERSTACK_SOURCE_TOKEN` | compose interpolation into `logs` | logs sidecar only |
-| `SUPABASE_DB_URL`, `GITHUB_OAUTH_CLIENT_SECRET` | nothing | nowhere |
+| `SUPABASE_DB_URL` | nothing under `tinyassets/`; `compose.yml` and `docker-entrypoint.sh` name it | nowhere |
+| ~~`GITHUB_OAUTH_CLIENT_SECRET`~~ | nothing, anywhere | **deleted 2026-10-03** — no reader and no OAuth flow, so the name is gone from the template, the deny-lists and the host env rather than guarded |
 | `SUPABASE_SERVICE_ROLE_KEY` | `host_pool/client.py`, which nothing imports | nowhere |
 | `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `TINYASSETS_BILLING_ENTITLEMENT_KEY` | `billing/stripe_adapter.py`, called only by daemon HTTP routes in `onboarding/` | daemon process, no child |
 | `WORKOS_API_KEY` | `account_deletion.py`, called only by an `onboarding/` route | daemon process, no child |
@@ -103,7 +76,11 @@ Least privilege by deploy config, nothing done by hand on the host:
   `apply-daemon-env`) keeps it current and cannot leave it stale. The tunnel still gets its token by
   interpolation from the untouched source, so the public surface is unchanged.
 - **Engine MCP children get `platform_secrets.child_env(os.environ)`**, which
-  also removes the Stripe and WorkOS names the daemon itself still needs.
+  also removes billing, WorkOS, request/interchange signing, app-ingress,
+  canary and session-seal credentials. The complete deployment inventory,
+  reader evidence and three engine-required exceptions are in
+  [the env catalog](../reference/environment-variables.md#credential-scope-at-engine-launch).
+  This reduces inherited exposure; it does not isolate engines from daemon secrets.
 - **The deploy refuses a daemon holding any forbidden name,** twice:
   `validate_bundle` rejects a staged compose whose daemon `env_file` lists the
   source, or whose rendered `environment` names a forbidden secret (before any
@@ -140,12 +117,15 @@ reads `/etc/tinyassets/env` as before; `daemon.env` left behind is inert.
 
 ## Known residuals
 
+- Engine MCP children launch directly as the daemon's UID, in its PID namespace.
+  An engine compromise can still recover daemon credentials through
+  `/proc/1/environ` or the daemon's environ. See the separately filed
+  [engine UID concern](2026-10-04-engine-mcp-shares-daemon-uid.md).
 - `STRIPE_*` and `WORKOS_API_KEY` remain in the daemon's `Config.Env`, so a
-  `docker exec` into the daemon sees them. That process runs as the same uid
-  as the daemon, which already holds them: no new exposure.
+  `docker exec` into the daemon sees them, as can a compromised same-UID engine.
 - `PID 1` is `tini`, started with `Config.Env`, so its environ matches the
-  container config. The split removes the names from that config; the
-  entrypoint's own strip list would not reach PID 1.
+  container config. The split removes host/sidecar names from that config;
+  daemon-only credentials remain. The entrypoint's strip list cannot reach PID 1.
 - `cloudflared` receives its token on the command line (`tunnel run --token
   ...`), visible to host `ps`. `TUNNEL_TOKEN` in its environment would not be.
   Host-only exposure; separate change.
@@ -163,14 +143,14 @@ reads `/etc/tinyassets/env` as before; `daemon.env` left behind is inert.
 The deploy prints `daemon environment holds none of: ...` only after reading
 the live container. Independently, on the host as root, names only:
 
-    forbidden='DO_API_TOKEN|CLOUDFLARE_TUNNEL_TOKEN|BETTERSTACK_SOURCE_TOKEN|SUPABASE_DB_URL|SUPABASE_SERVICE_ROLE_KEY|GITHUB_OAUTH_CLIENT_SECRET'
+    forbidden='DO_API_TOKEN|CLOUDFLARE_TUNNEL_TOKEN|BETTERSTACK_SOURCE_TOKEN|SUPABASE_DB_URL|SUPABASE_SERVICE_ROLE_KEY'
     for p in $(docker top tinyassets-daemon -eo pid | tail -n +2); do
       tr '\0' '\n' < /proc/$p/environ | cut -d= -f1 | grep -xE "$forbidden" | sed "s/^/pid $p: /"
     done
-    # engine MCP children additionally must not hold the Stripe or WorkOS names:
+    # engine MCP children additionally must not inherit daemon-only credentials:
     for p in $(pgrep -f tinyassets.engine_mcp_server); do
       tr '\0' '\n' < /proc/$p/environ | cut -d= -f1 \
-        | grep -xE "$forbidden|STRIPE_SECRET_KEY|STRIPE_WEBHOOK_SECRET|TINYASSETS_BILLING_ENTITLEMENT_KEY|WORKOS_API_KEY" \
+        | grep -xE "$forbidden|STRIPE_SECRET_KEY|STRIPE_WEBHOOK_SECRET|TINYASSETS_BILLING_ENTITLEMENT_KEY|WORKOS_API_KEY|TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY|TINYASSETS_AGENT_INTERCHANGE_HMAC_KEY|TINYASSETS_APP_INGRESS_HMAC_KEY|TINYASSETS_WIKI_CANARY_TOKEN|TINYASSETS_SESSION_SEAL_KEY" \
         | sed "s/^/engine pid $p: /"
     done
 

@@ -357,9 +357,9 @@ Use one physical-iPhone recording that begins at a cold launch and shows, in ord
 1. TinyAssets launch, native splash, and the signed-out screen.
 2. Email-and-password sign-in with the dedicated App Review account already stored in
    App Store Connect. Do not expose the password in the recording.
-3. Entry into the pre-provisioned private reviewer universe. The reviewer account
-   already has a working review-only AI connection; no API key, subscription, or
-   payment setup is required.
+3. Entry into the private reviewer universe, followed by the real inline connect
+   flow when a connection is needed. Verify that path before recording; do not
+   promise a preconfigured review-only connection or renew an interim key.
 4. A substantive text request and the universe's response, followed by a force-quit,
    relaunch, and proof that the same conversation remains.
 5. Attachment of `docs/ops/app-store-review-sample.txt`, followed by the prompt
@@ -369,7 +369,8 @@ Use one physical-iPhone recording that begins at a cold launch and shows, in ord
    complete deletion in the primary recording; use a second disposable account if Apple
    requires proof of the destructive final step.
 
-Written response facts:
+Written response facts (draft: the agent must rewrite Access from live verified
+connection steps before submitting this response to Apple):
 
 - **Purpose / audience / value:** TinyAssets is an 18+ productivity app for adults who
   want one persistent, private AI workspace for substantive multi-step projects across
@@ -377,9 +378,10 @@ Written response facts:
   setup by keeping one signed-in universe, conversation, memory, and work history.
 - **Access:** use the dedicated Email + Password credentials in App Review Information.
   The review account has no organization, founder data, or public content attached.
-  It is pre-provisioned with a capped, expiring review-only inference connection, so
-  the reviewer can send a message immediately after sign-in without entering a key or
-  payment information. A rendered production turn was verified on 2026-09-10.
+  The reviewer uses the real inline connect flow when a connection is needed;
+  the founder rejected the interim review-only inference-key workaround. Before
+  submission, verify that flow and a substantive reply live with the review account.
+  The 2026-09-10 turn predates this decision and does not prove the new path.
 - **External services:** WorkOS AuthKit provides authentication; Cloudflare provides the
   public HTTPS edge/tunnel; TinyAssets' hosted daemon stores the user's private universe;
   and the user-selected AI connection supplies inference (OpenAI, Anthropic/Claude, or

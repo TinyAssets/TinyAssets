@@ -18,12 +18,16 @@ import os
 import sys
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import pytest
 
 from tests.cloud_runtime_fixture import cloud_runtime  # noqa: F401
 from tests.test_native_discovery_integration import install_discovery
 from tests.test_native_model_authority import _call, native  # noqa: F401
+from tests.test_native_model_discovery import (
+    metadata_transport_processes,  # noqa: F401 - a fixture, requested by name below
+)
 from tinyassets.exceptions import ProviderAuthorityHeldError
 from tinyassets.providers.claude_provider import ClaudeProvider
 from tinyassets.providers.model_options import model_options_document
@@ -317,13 +321,52 @@ print(json.dumps({{"type": "control_response", "response": {{
 '''
 
 
+def metadata_snapshot(universe):
+    """The one launch-credential snapshot the metadata jail will bind.
+
+    `read_native_catalogue` refuses without its owning command center and an
+    exact snapshot under it (`provider_jail.metadata_view`), so a transport
+    test has to stand one up or it never reaches the decoder -- a negative
+    case would then pass on the confinement refusal instead of the behaviour
+    it names.
+    """
+    snapshot = universe / ".runtime" / "provider-launch-credentials" / "metadata-test"
+    snapshot.mkdir(parents=True, exist_ok=True)
+    return str(snapshot)
+
+
+#: Every case below that spawns a real metadata child. The transport requires
+#: confinement, so without this seam each one refuses on "no OS sandbox on this
+#: host" wherever bubblewrap is absent -- which is most CI runners and every
+#: Windows box. `metadata_transport_processes` (tests/test_native_model_discovery.py)
+#: substitutes `confine_launch` with one that still asserts the launch scope
+#: and view bind to the same command center, so the protocol, the decoder and
+#: the owned-process family are all real.
+#:
+#: It drops more than the isolation, so do not read it as "only the sandbox is
+#: stubbed": the bwrap argv, the launch disk budget and bwrap's own
+#: cwd/environment setup go with it, and the child runs from `/` rather than the
+#: snapshot. Those live where they belong -- tests/test_native_metadata_jail.py
+#: runs the real jail under `linux-jail-proof`, and
+#: tests/test_native_metadata_confinement.py proves a missing, redirected or
+#: foreign snapshot refuses before any process is created.
+#:
+#: The NEGATIVE cases need it most: they assert
+#: `ProviderError("native model discovery unavailable")`, which the confinement
+#: refusal also raises, so without the seam they pass on a jail that never ran
+#: instead of the refusal they name.
+real_metadata_child = pytest.mark.usefixtures("metadata_transport_processes")
+
+
 def run_control(tmp_path, reply, *, noise=(), protocol=CLAUDE_PROTOCOL):
     return asyncio.run(read_native_catalogue(
         [sys.executable, "-u", "-c", control_peer(reply, noise=noise)],
-        env=os.environ.copy(), cwd=str(tmp_path), protocol=protocol, timeout=10,
+        env=os.environ.copy(), cwd=metadata_snapshot(tmp_path),
+        universe_dir=tmp_path, protocol=protocol, timeout=10,
     ))
 
 
+@real_metadata_child
 def test_control_envelope_reads_alias_rows_and_per_model_effort(tmp_path):
     """The real CLI shape: alias rows, a default marker, unreported modalities."""
     result = run_control(tmp_path, {"models": CLI_ROWS})
@@ -344,6 +387,7 @@ def test_control_envelope_reads_alias_rows_and_per_model_effort(tmp_path):
     assert all(m.input_modalities == frozenset({"text"}) for m in result.models)
 
 
+@real_metadata_child
 def test_control_envelope_skips_unrelated_stream_traffic(tmp_path):
     """These streams carry session/system lines before the answer."""
     result = run_control(tmp_path, {"models": [CLI_ROWS[1]]}, noise=(
@@ -368,6 +412,7 @@ def test_control_envelope_skips_unrelated_stream_traffic(tmp_path):
     {"models": {}},
     {},
 ])
+@real_metadata_child
 def test_malformed_control_catalogue_refuses(tmp_path, reply):
     from tinyassets.exceptions import ProviderError
 
@@ -375,8 +420,16 @@ def test_malformed_control_catalogue_refuses(tmp_path, reply):
         run_control(tmp_path, reply)
 
 
+@real_metadata_child
 def test_control_error_subtype_is_not_an_empty_catalogue(tmp_path):
-    """An upstream refusal must not read as "this account has no models"."""
+    """An upstream refusal must not read as "this account has no models".
+
+    The error envelope carries an otherwise VALID empty-catalogue payload on
+    purpose. Without it the refusal also satisfies the decoder's
+    `response`-is-a-dict check, so the case passed even with subtype validation
+    removed and proved nothing (Codex review 2026-10-04, DISAGREE_EVIDENCE).
+    The subtype is now the only thing left to refuse on.
+    """
     from tinyassets.exceptions import ProviderError
 
     script = '''
@@ -384,15 +437,18 @@ import json, sys
 request = json.loads(sys.stdin.readline())
 print(json.dumps({"type": "control_response", "response": {
     "subtype": "error", "request_id": request["request_id"], "error": "nope",
+    "response": {"models": []},
 }}), flush=True)
 '''
     with pytest.raises(ProviderError, match="^native model discovery unavailable$"):
         asyncio.run(read_native_catalogue(
             [sys.executable, "-u", "-c", script], env=os.environ.copy(),
-            cwd=str(tmp_path), protocol=CLAUDE_PROTOCOL, timeout=10,
+            cwd=metadata_snapshot(tmp_path), universe_dir=tmp_path,
+            protocol=CLAUDE_PROTOCOL, timeout=10,
         ))
 
 
+@real_metadata_child
 def test_control_response_for_another_request_is_refused(tmp_path):
     from tinyassets.exceptions import ProviderError
 
@@ -407,7 +463,8 @@ print(json.dumps({"type": "control_response", "response": {
     with pytest.raises(ProviderError, match="^native model discovery unavailable$"):
         asyncio.run(read_native_catalogue(
             [sys.executable, "-u", "-c", script], env=os.environ.copy(),
-            cwd=str(tmp_path), protocol=CLAUDE_PROTOCOL, timeout=10,
+            cwd=metadata_snapshot(tmp_path), universe_dir=tmp_path,
+            protocol=CLAUDE_PROTOCOL, timeout=10,
         ))
 
 
@@ -508,6 +565,7 @@ def test_claude_argv_carries_the_effort_from_its_model_config(monkeypatch):
            "runs-in=a host with the Claude Code CLI installed and "
            "TINYASSETS_LIVE_CLI_DISCOVERY=1 (not CI)",
 )
+@real_metadata_child
 def test_installed_cli_advertises_a_shortlist_with_effort(tmp_path):
     """The claim this whole change rests on, against the real binary.
 
@@ -530,7 +588,8 @@ def test_installed_cli_advertises_a_shortlist_with_effort(tmp_path):
     catalogue = asyncio.run(read_native_catalogue(
         [*base_cmd, *_METADATA_ARGUMENTS],
         protocol=ClaudeProvider.native_discovery_protocol,
-        env=os.environ.copy(), cwd=str(tmp_path),
+        env=os.environ.copy(), cwd=metadata_snapshot(tmp_path),
+        universe_dir=tmp_path,
         spawn_kwargs=ClaudeProvider.native_process_options(), timeout=60,
     ))
     assert catalogue.models, "the CLI advertised no models"
@@ -707,6 +766,7 @@ def test_select_refuses_a_withdrawn_model_at_launch():
 # --------------------------------------------------------------------------
 
 
+@real_metadata_child
 def test_an_older_cli_reads_as_unsupported_not_broken(tmp_path):
     """The path production takes today, until the CLI pin moves (#4351).
 
@@ -731,7 +791,8 @@ print(json.dumps({"type": "control_response", "response": {
     with pytest.raises(NativeMetadataUnsupported):
         asyncio.run(read_native_catalogue(
             [sys.executable, "-u", "-c", script], env=os.environ.copy(),
-            cwd=str(tmp_path), protocol=CLAUDE_PROTOCOL, timeout=10,
+            cwd=metadata_snapshot(tmp_path), universe_dir=tmp_path,
+            protocol=CLAUDE_PROTOCOL, timeout=10,
         ))
 
 
@@ -756,6 +817,37 @@ def test_unsupported_enumeration_becomes_the_unknown_contract(monkeypatch, tmp_p
     snapshot.mkdir()
     assert asyncio.run(ClaudeProvider().enumerate_models(
         universe_dir=tmp_path, credential_snapshot_dir=snapshot,
+    )) is None
+
+
+@real_metadata_child
+def test_the_unsupported_answer_survives_the_real_transport(monkeypatch, tmp_path):
+    """Through the REAL transport, not a stub, into `enumerate_models`.
+
+    The test above replaces `read_native_catalogue`, so it cannot see the
+    transport widening the answer. It did: the sanitizing handler catches
+    `ProviderError`, which `NativeMetadataUnsupported` subclasses, so an
+    executor's truthful "I do not implement this" came back as a generic
+    failure and the honest unknown was lost (Codex review 2026-10-04,
+    DISAGREE_EVIDENCE). Only a real child answering the real decoder proves it.
+    """
+    from tinyassets.providers.claude_provider import ClaudeProvider
+
+    script = '''
+import json, sys
+request = json.loads(sys.stdin.readline())
+print(json.dumps({"type": "control_response", "response": {
+    "subtype": "error", "request_id": request["request_id"],
+    "error": "Unsupported control request subtype: list_models",
+}}), flush=True)
+'''
+    monkeypatch.setattr(
+        ClaudeProvider, "native_command_resolver",
+        staticmethod(lambda: ([sys.executable, "-u", "-c", script], False)))
+    monkeypatch.setattr(ClaudeProvider, "native_metadata_arguments", ())
+    snapshot = metadata_snapshot(tmp_path)
+    assert asyncio.run(ClaudeProvider().enumerate_models(
+        universe_dir=tmp_path, credential_snapshot_dir=Path(snapshot),
     )) is None
 
 
