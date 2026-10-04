@@ -554,7 +554,8 @@ def test_public_instruction_template_copies_private_agent_and_opens_its_chat_wit
     _unselected_definition, unselected = _agent(home, name="Unselected agent")
     _existing_definition, existing = _agent(home, BOB, BOB_UNIVERSE, "Bob's existing agent")
     source_ui = {**UI, "agent_refs": {"scout": source_binding["agent_binding_id"]},
-                 "markup": '<h1>Agent village</h1><button id="scout">Talk to Scout</button>'
+                 "markup": '<h1>Agent village</h1>'
+                           '<button id="scout" disabled>Talk to Scout</button>'
                            '<p id="opened"></p>',
                  "script": """(async()=>{
                    const identity=await tinyassets.whoami();
@@ -562,6 +563,7 @@ def test_public_instruction_template_copies_private_agent_and_opens_its_chat_wit
                      const opened=await tinyassets.openChat(identity.agent_refs.scout);
                      document.getElementById('opened').textContent=opened.agent_id;
                    };
+                   document.getElementById('scout').disabled=false;
                  })();"""}
     row = get_app_ui(home, owner_user_id=OWNER, universe_id=UNIVERSE)
     save_app_ui(home, owner_user_id=OWNER, universe_id=UNIVERSE,
