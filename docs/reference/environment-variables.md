@@ -80,6 +80,56 @@ user. Getting the id is a founder step: `docs/host-actions.md`.
 | `TINYASSETS_SESSION_SEAL_KEY` | AES-GCM key sealing the onboarding app's server-side AuthKit refresh-token store (`tinyassets/onboarding/session_store.py`, `$TINYASSETS_DATA_DIR/.runtime/app_refresh_sessions/`), and the HMAC key for the record filenames. **Strictly** 32 bytes as 43-char base64url (one optional `=`) or 64-char hex — standard base64 (`+`/`/`) is rejected, because a lenient decoder turned junk like a `$`-containing value into a key nobody chose. Generate: `python -c "import secrets,base64;print(base64.urlsafe_b64encode(secrets.token_bytes(32)).decode())"`. Read and popped from `os.environ` at **import time** of the store module (`arm()`, also called as the first statement of `universe_server.main()`), so no provider subprocess inherits it — never re-export it into a child env. **Set but malformed = `RuntimeError` at startup**, deliberately: an ephemeral fallback would look healthy while logging every user out on each restart. Rotating it invalidates every live session (users re-login once). Vault-first: production supplies it through `/etc/tinyassets/env`; never a committed plaintext file. | Unset — an ephemeral `secrets.token_bytes(32)` per process, with one logged warning: sessions do not survive a daemon restart. |
 | `WORKOS_API_KEY` | WorkOS management key (`sk_…`). Used by account deletion to delete the user record (`tinyassets/account_deletion.py`); unset → deletion reports `identity: not_configured` and the host finishes it by hand. |
 
+## Credential scope at engine launch
+
+PR #4267 classifies deployment credentials by their actual readers (2026-10-04).
+Compose injects `daemon.env` (rendered from `tinyassets-env.template`),
+`request-idempotency.env`, `agent-interchange.env`, and `app-ingress.env`.
+The latter three use their matching `*-env.template` files. Optional credentials
+from this catalog are also declared as commented assignments in the shared
+template, so the Compose-derived inventory test covers them even when unset.
+The daemon's explicit Compose `environment` block contains configuration only.
+
+| Credential | Source | Engine inheritance and reader evidence |
+|---|---|---|
+| `STRIPE_SECRET_KEY` | shared env | Removed; `billing/stripe_adapter.py`, daemon onboarding checkout. |
+| `STRIPE_WEBHOOK_SECRET` | shared env | Removed; `billing/stripe_adapter.py`, daemon webhook verification. |
+| `TINYASSETS_BILLING_ENTITLEMENT_KEY` | shared env | Removed; `billing/stripe_adapter.py`, subscription metadata signing. |
+| `WORKOS_API_KEY` | shared env | Removed; `account_deletion.py`, daemon account deletion. |
+| `TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY` | request-idempotency.env | Removed; `storage/request_admissions.py:mint_idempotency_key_hash`, called by `api/universe.py` admission, plus the interchange fallback below. Engine `run_graph` admission uses `engine_admissions`, not this minter. |
+| `TINYASSETS_AGENT_INTERCHANGE_HMAC_KEY` | agent-interchange.env | Removed; `agent_interchange.py:_source_commitment`, used by `api/custom_agents.py` import. The engine exposes neither custom-agent import nor protocol-v2 request admission. |
+| `TINYASSETS_APP_INGRESS_HMAC_KEY` | app-ingress.env | Removed; template reserves it for daemon ingress and the slack-agent caller. No Python reader remains under `tinyassets/` at this head, including the engine. Compose still injects it. |
+| `TINYASSETS_WIKI_CANARY_TOKEN` | shared env | Removed; `auth/wiki_canary.py` verifies the daemon's canary principal, and external health probes send it. Engine HTTP uses a fresh per-engine bearer and binds its owner directly. |
+| `TINYASSETS_SESSION_SEAL_KEY` | shared env | Removed even before `session_store.arm()` pops it; `onboarding/session_store.py` seals daemon app refresh sessions. |
+| `TINYASSETS_IDENTITY_FINGERPRINT_KEY` | shared env | Retained with an explicit reason: engine `get_status` delegates to `api/status.py`, which computes the principal fingerprint; `engine_read_views.py` preserves identity evidence. |
+| `TINYASSETS_FCM_SERVICE_ACCOUNT_JSON` | shared env, optional | Retained with an explicit reason: engine `write_graph` request-from-user calls `api/pending_requests.py:request_from_user` → `_notify_owner` → `owner_notifications.py` → `notify.resolve_transports` → FCM. |
+| `TINYASSETS_WEBPUSH_VAPID_PRIVATE_KEY` | shared env, optional | Retained for the same owner-notification path through `notify.resolve_transports` → Web Push. |
+| `CLOUDFLARE_TUNNEL_TOKEN` | shared source, excluded from daemon.env | Tunnel sidecar only; also removed from child environments as defense in depth. |
+| `BETTERSTACK_SOURCE_TOKEN` | shared source, excluded from daemon.env | Logs sidecar only; also removed from child environments. |
+| `SUPABASE_DB_URL` | shared source, excluded from daemon.env | Legacy connection-string placeholder; no daemon/engine reader. Removed from child environments. |
+| `SUPABASE_SERVICE_ROLE_KEY` | shared source, excluded from daemon.env | Only the unimported `host_pool/client.py` reads it. Removed from child environments. |
+
+`DO_API_TOKEN` is not declared by these templates; the renderer and child filter
+still deny historical host copies. GitHub OAuth names are retired. GitHub and
+model credentials are stripped by the entrypoint; `ANDROID_GOOGLE_SERVICES_JSON_B64`
+is a build secret, not daemon configuration. Public client IDs, the derived Web
+Push public key, URLs, image references and backup remote names are not credentials.
+
+The filter remains a deny list because `child_env` also serves the broker and
+engine tools delegate to shared handlers with runtime configuration throughout
+the package. A complete configuration allowlist needs a separate consumer audit.
+`tests/test_engine_secret_inventory.py` derives names from every Compose daemon
+env file and the explicit environment block, including optional template entries.
+It requires every surviving name to be classified as non-secret configuration or
+an `ENGINE_REQUIRED_SECRET_ENV` exception with a reader reason. An additional
+catalog check keeps the credential table covered by that deployment inventory.
+
+This is an inheritance boundary, **not process isolation**. Engine MCP children,
+the daemon and `tini` still share a UID and PID namespace. An engine compromise
+can recover daemon credentials from `/proc/1/environ` or the daemon's environ
+under the existing Linux access rules, even when its own env is filtered. See
+[the engine UID concern](../concerns/2026-10-04-engine-mcp-shares-daemon-uid.md).
+
 ## Feature flags
 
 Each flag reads as a string; truthy = `"on"`, `"1"`, `"true"`, `"yes"` (case-insensitive). Defaults chosen so out-of-the-box behavior matches current tier-1 contract.

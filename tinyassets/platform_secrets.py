@@ -6,7 +6,7 @@ it to the per-universe engine MCP children (``engine_mcp_http``). A daemon RCE
 or an environment leak then meant the whole DigitalOcean account and live
 billing (docs/concerns/2026-10-02-platform-secrets-in-daemon-env.md).
 
-Two tiers, each the smallest set proved by reading the code:
+Credential groups classified by their readers:
 
 ``DAEMON_FORBIDDEN_ENV``
     Nothing under ``tinyassets/`` reads these. The host and the sidecars do
@@ -21,6 +21,15 @@ Two tiers, each the smallest set proved by reading the code:
     account deletion, all in ``tinyassets/onboarding``). No child does, so
     :func:`child_env` removes them before any child launch that inherits the
     daemon's environment.
+
+``DAEMON_AUTH_ENV``
+    Admission/interchange signing, ingress, canary and session credentials.
+    Engine tools do not serve these daemon authentication surfaces.
+
+This limits environment inheritance, not credential recovery after an engine
+compromise: engines still share the daemon's UID and PID namespace, including
+access to its exec-time environment through procfs. See
+docs/concerns/2026-10-04-engine-mcp-shares-daemon-uid.md.
 """
 from __future__ import annotations
 
@@ -54,9 +63,36 @@ DAEMON_ONLY_ENV: frozenset[str] = frozenset({
     "WORKOS_API_KEY",
 }) | _BILLING_SECRET_ENV  # the payment processor's keys, named by its adapter
 
-CHILD_FORBIDDEN_ENV: frozenset[str] = DAEMON_FORBIDDEN_ENV | DAEMON_ONLY_ENV
+DAEMON_AUTH_ENV: frozenset[str] = frozenset({
+    "TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY",
+    "TINYASSETS_AGENT_INTERCHANGE_HMAC_KEY",
+    "TINYASSETS_APP_INGRESS_HMAC_KEY",
+    "TINYASSETS_WIKI_CANARY_TOKEN",
+    # Normally popped by session_store.arm(); also protect launches before arm.
+    "TINYASSETS_SESSION_SEAL_KEY",
+})
+
+# Explicit exceptions in the deployment-inventory test, with actual engine
+# consumers. These are inherited credentials, not an isolation guarantee.
+ENGINE_REQUIRED_SECRET_ENV: Mapping[str, str] = {
+    "TINYASSETS_IDENTITY_FINGERPRINT_KEY":
+        "engine get_status -> api.status principal fingerprint",
+    "TINYASSETS_FCM_SERVICE_ACCOUNT_JSON":
+        "engine request_from_user -> pending_requests -> owner_notifications -> FCM",
+    "TINYASSETS_WEBPUSH_VAPID_PRIVATE_KEY":
+        "engine request_from_user -> pending_requests -> owner_notifications -> web push",
+}
+
+CHILD_FORBIDDEN_ENV: frozenset[str] = (
+    DAEMON_FORBIDDEN_ENV | DAEMON_ONLY_ENV | DAEMON_AUTH_ENV
+)
 
 
 def child_env(source: Mapping[str, str]) -> dict[str, str]:
-    """A copy of *source* with every platform secret a child must not hold removed."""
+    """Remove classified unnecessary credentials; preserve runtime configuration.
+
+    Shared by engine and broker launches. Engine handlers delegate throughout
+    the package, so a runtime-config allowlist needs a separate consumer audit.
+    The Compose/template inventory test rejects unclassified injected names.
+    """
     return {name: value for name, value in source.items() if name not in CHILD_FORBIDDEN_ENV}
