@@ -40,6 +40,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from tinyassets import agent_sessions
+from tinyassets.owner_control import serialized
 
 DO = "do"
 DO_IF_PREAPPROVED = "do_if_preapproved"
@@ -252,6 +253,7 @@ def decide(universe_dir: Path, action_class: str, *, connection: str = "",
                     + (f" {best.operation}" if best.operation else "") + ")")
 
 
+@serialized
 def set_rule(universe_dir: Path, action_class: str, behaviour: str, *, connection: str = "",
              operation: str = "", note: str = "", agent: str = MAIN_AGENT,
              confirm_handback: bool = False) -> Rule:
@@ -290,6 +292,7 @@ def set_rule(universe_dir: Path, action_class: str, behaviour: str, *, connectio
     return _rule(row)
 
 
+@serialized
 def delete_rule(universe_dir: Path, rule_id: int, *, agent: str = MAIN_AGENT,
                 confirm_handback: bool = False) -> bool:
     """Remove one narrowed rule. A class-wide rule is changed, never removed, so
@@ -374,6 +377,7 @@ def _loosening_words(scope: str, before: Decision, after: Decision) -> str:
             f"{before.reason}. Confirm to save this.")
 
 
+@serialized
 def declare_kind(universe_dir: Path, connection: str, kind: str, *,
                  method: str = "", path_prefix: str = "/",
                  confirm: bool = False) -> OperationKind:
@@ -426,6 +430,7 @@ def list_kinds(universe_dir: Path) -> list[OperationKind]:
         return _kind_rows(conn)
 
 
+@serialized
 def delete_kind(universe_dir: Path, kind_id: int, *, confirm: bool = False) -> bool:
     """Remove one declaration; a removal that loosens its calls needs confirming."""
     target = next((k for k in list_kinds(universe_dir) if k.id == int(kind_id)), None)

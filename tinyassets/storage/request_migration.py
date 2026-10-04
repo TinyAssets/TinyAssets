@@ -34,7 +34,7 @@ def _rows(conn, table, columns):
     return sorted(conn.execute(f"SELECT {columns} FROM {table}").fetchall(), key=repr)
 
 
-def ensure_protected(universe_dir: Path) -> Path:
+def ensure_protected(universe_dir: Path, *, recover: bool = False) -> Path:
     from tinyassets.storage import pending_requests as requests
 
     destination = agent_activities.store_path(universe_dir)
@@ -50,9 +50,13 @@ def ensure_protected(universe_dir: Path) -> Path:
         control(universe_dir),
         closing(agent_activities._connect(universe_dir, create=True)) as dst,
     ):
-        if _marker(dst) == "complete":
+        state = _marker(dst)
+        if state == "complete":
             return destination
+        if state == "paused" and not recover:
+            raise MigrationUnavailable("Request migration is paused; wait for recovery.")
         dst.execute("INSERT OR REPLACE INTO request_storage_migration VALUES (1,'paused')")
+        dst.commit()  # Persist the pause even if opening/draining the legacy file fails.
         source = Path(universe_dir) / requests._DB_NAME
         try:
             with closing(sqlite3.connect(source, timeout=0)) as src:

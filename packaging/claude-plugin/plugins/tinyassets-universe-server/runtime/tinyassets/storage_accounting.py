@@ -576,6 +576,7 @@ ROOT_ENTRIES: dict[str, str] = {
         "the session files themselves live in the command center and count there)"
     ),
     "history.db": "platform: harness history inside .agent-sessions/<universe>/ (D7a)",
+    "owner-sessions.db": "platform: interactive owner sign-in and approval sessions in .runtime",
     "rules.db": (
         "platform: the owner's Custom Rules for their agents, inside "
         ".agent-sessions/<universe>/ (harness D1a)"

@@ -506,7 +506,20 @@ def _projected(conn: sqlite3.Connection, rows: list[Any]) -> list[dict[str, Any]
     out = []
     for row in rows:
         has_items = bool(row[13] and row[13] not in ("[]", "null"))
-        out.append(_project(row, _item_answers(conn, str(row[0])) if has_items else None))
+        projected = _project(row, _item_answers(conn, str(row[0])) if has_items else None)
+        if projected['action'].get('type') == 'approve_action':
+            from tinyassets.bound_requests import RequestRefused, card
+            original_factory = conn.row_factory
+            conn.row_factory = sqlite3.Row
+            try:
+                projected.update(card(conn, projected['request_id']))
+                projected['body'] = ''
+            except (RequestRefused, sqlite3.OperationalError, IndexError):
+                projected.update(title='A fresh protected preview is required', body='',
+                                 action={'type': 'approve_action'}, phase='preview_required')
+            finally:
+                conn.row_factory = original_factory
+        out.append(projected)
     return out
 
 
@@ -536,11 +549,14 @@ def list_pending(universe_dir: Path) -> list[dict[str, Any]]:
     A universe that has never had a request has no store yet, and that one IS
     empty.
     """
-    if not (Path(universe_dir) / _DB_NAME).exists():
+    from tinyassets.agent_activities import store_path
+
+    if not (Path(universe_dir) / _DB_NAME).exists() and not store_path(universe_dir).is_file():
         return []
     with _db(universe_dir) as conn:
         rows = conn.execute(
-            f"{_SELECT} WHERE status = 'pending' ORDER BY created_at ASC"
+            f"{_SELECT} WHERE status IN ('pending','approved','unresolved','deferred') "
+            "ORDER BY created_at ASC"
         ).fetchall()
         return _projected(conn, rows)
 

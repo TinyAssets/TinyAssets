@@ -1,14 +1,13 @@
-Implementation lane: `feat/inline-connect-and-approve`. First slice targets once-only
-bound HTTP approvals, inline cards and server continuation. Wider task/always grants,
-server-completed provider OAuth (2.3), and deployed acceptance (3.2) remain deferred.
-Boxes remain unchecked until every part of the original task is verified.
+Implementation lane: `feat/inline-connect-and-approve`. The authorized first
+coherent slice is implemented: once-only generic HTTP approval in the bubble,
+protected owner-session decisions that execute, and server-side continuation.
+See [delivery.md](delivery.md) for behavior, evidence and the remaining work in
+each original task. Original boxes stay unchecked where their broader contracts
+are not fully implemented or verified; this is not full change acceptance.
 
-Task 1.1 progress: requests now cut over to protected activity storage under an
-OS-backed cross-worker owner-control lock. Copy verification and the cutover marker
-commit together; legacy write-refusal triggers retain the original file for recovery.
-134 targeted tests passed, including legacy migration, items, activity records,
-restart recovery, disjoint owners and lock exclusion. Schema extensions and shared
-dispatch/policy/Stop integration continue in the next slice commit.
+- [x] S1 Deliver the first coherent slice: protected literal HTTP action envelopes,
+  owner-session once approval that executes through ordinary enforcement, inline
+  thread cards/read-only history, durable bound-answer wakes and server recovery.
 
 ## 1. Bound requests and owner authority
 

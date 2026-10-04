@@ -163,6 +163,15 @@ def test_the_effector_checks_rules_before_the_standing_grant():
 
 class _Request:
     def __init__(self, method: str, body: dict | None = None, query: dict | None = None):
+        import time
+
+        from tinyassets.auth.middleware import current_identity
+        from tinyassets.onboarding import owner_sessions
+        self.cookies = {owner_sessions.COOKIE: 'interactive-test-owner'}
+        with owner_sessions.store() as conn:
+            conn.execute('INSERT OR REPLACE INTO owner_sessions VALUES (?,?,?)',
+                         (owner_sessions.hashed('interactive-test-owner'),
+                          json.dumps({'user_id': current_identity().user_id}), time.time()+300))
         self.method = method
         self._body = json.dumps(body or {}).encode("utf-8")
         self.headers = {"content-type": "application/json", "origin": "https://tinyassets.io",

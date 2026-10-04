@@ -579,7 +579,7 @@ def _auth_challenge_path(path: str) -> bool:
 
         if is_callback_path(path):
             return False  # Shell only; authenticated exchange remains challenged.
-    if path == "/app" or path == "/app/token":
+    if path in {"/app", "/app/token", "/app/owner-sign-in"}:
         # The onboarding SPA (tinyassets/onboarding) is a public page that MUST
         # load before sign-in, and /app/token is its same-origin PKCE
         # token-exchange proxy — both run BEFORE any bearer exists, so neither may
