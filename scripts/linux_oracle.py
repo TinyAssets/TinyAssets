@@ -49,6 +49,15 @@ profile on runners that restrict user namespaces; ``--env KEY=VALUE`` sets
 suite environment; the exit code is pytest's, or 3 when bubblewrap cannot
 make a jail as the suite's user (a skip is not a pass); stdout is one
 ``[oracle] ...`` banner line, then pytest's output.
+
+THE REQUIRED-TESTS RUNNER. ``--required-runner`` hands the arguments after
+``--`` to ``scripts/ci_required_tests.py`` instead of pytest, so the merge
+gate's shards run in this same venue with the gate's own selection, sharding,
+floors and quarantine comparison. It is one fixed script, not a command: the
+mode refuses ``--shell``, ``--no-bwrap`` and ``--as-root`` (a shard must never
+fall back to a venue where the jail tests skip), and requires ``--out`` with a
+``--junit`` under ``/out`` so the junit and the manifest the runner writes
+beside it reach the caller.
 """
 from __future__ import annotations
 
@@ -127,6 +136,9 @@ if ! bwrap --die-with-parent --new-session --unshare-all \
     exit 3
 fi
 """
+
+#: The one script ``--required-runner`` may run, relative to ``/work``.
+REQUIRED_RUNNER = "scripts/ci_required_tests.py"
 
 #: Unprivileged user the suite runs as by default.
 ORACLE_UID = 1001
@@ -215,6 +227,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="set an environment variable for the suite (repeatable)",
     )
     parser.add_argument(
+        "--required-runner", action="store_true",
+        help=f"run {REQUIRED_RUNNER} with the arguments after -- instead of pytest "
+             "(needs --out and a --junit under /out)",
+    )
+    parser.add_argument(
         "pytest_args", nargs="*",
         help="passed to pytest (put them after --); default: the whole suite, quiet",
     )
@@ -250,9 +267,34 @@ def main(argv: list[str] | None = None) -> int:
     return subprocess.run(docker_command(args, root, tag)).returncode
 
 
+def _required_runner_command(args: argparse.Namespace) -> str:
+    """The in-container command for ``--required-runner``, or refuse."""
+    for flag in ("shell", "no_bwrap", "as_root"):
+        if getattr(args, flag):
+            raise SystemExit(
+                f"[oracle] --required-runner refuses --{flag.replace('_', '-')}: the "
+                "gate runs unprivileged, behind the jail probe, or not at all"
+            )
+    runner_args = list(args.pytest_args)
+    junit = [a.split("=", 1)[1] for a in runner_args if a.startswith("--junit=")]
+    junit += [
+        runner_args[i + 1] for i, a in enumerate(runner_args[:-1]) if a == "--junit"
+    ]
+    if not args.out or len(junit) != 1 or not junit[0].startswith("/out/"):
+        raise SystemExit(
+            "[oracle] --required-runner wants --out DIR and exactly one "
+            "--junit /out/<name>.xml, so the junit and its manifest reach DIR"
+        )
+    if not any(a.startswith("--pytest-arg=--basetemp") for a in runner_args):
+        runner_args.append(f"--pytest-arg=--basetemp={DEFAULT_BASETEMP}")
+    return shlex.join(["python", REQUIRED_RUNNER, *runner_args])
+
+
 def docker_command(args: argparse.Namespace, root: Path, tag: str) -> list[str]:
     """The ``docker run`` argv for parsed ``args``."""
-    if args.shell:
+    if getattr(args, "required_runner", False):
+        command = _required_runner_command(args)
+    elif args.shell:
         command = "bash"
     else:
         pytest_args = list(args.pytest_args or ["-q", "tests"])

@@ -50,11 +50,17 @@ RUN mkdir -p /opt/codex-install \
 COPY pyproject.toml /tmp/oracle/pyproject.toml
 # One normal shell RUN works with both classic builders and BuildKit. A Docker
 # heredoc is silently skipped by some classic builders, leaving an empty file.
-RUN python -c "import tomllib; p = tomllib.load(open('/tmp/oracle/pyproject.toml', 'rb')).get('project', {}); print('\n'.join(p.get('dependencies', []) + p.get('optional-dependencies', {}).get('dev', [])))" > /tmp/oracle/requirements.txt \
+RUN python -c "import tomllib; p = tomllib.load(open('/tmp/oracle/pyproject.toml', 'rb')).get('project', {}); print('\n'.join(p.get('dependencies', []) + p.get('optional-dependencies', {}).get('dev', []) + p.get('optional-dependencies', {}).get('browser', [])))" > /tmp/oracle/requirements.txt \
     && test -s /tmp/oracle/requirements.txt
 RUN pip install --no-cache-dir --upgrade pip \
     && pip install --no-cache-dir -r /tmp/oracle/requirements.txt \
     && python -m pytest --version
+
+# Chromium for the real-browser and custom-UI preview proofs, at the Playwright
+# version the `browser` extra pins. Outside /root so the oracle's uid 1001 can
+# read it; Chromium keeps its own sandbox (nothing here passes --no-sandbox).
+ENV PLAYWRIGHT_BROWSERS_PATH=/opt/playwright
+RUN python -m playwright install --with-deps chromium     && chmod -R a+rX /opt/playwright
 
 # The suite refuses a temp root inside the repo (tests/conftest.py), so give it
 # one outside and make it explicit rather than inherited.
