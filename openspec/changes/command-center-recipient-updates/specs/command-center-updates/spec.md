@@ -121,6 +121,12 @@ The owner SHALL see release histories only from exact registered immutable-defin
 - **THEN** its private adoption, policy, application receipt and status records are removed across former homes
 - **AND** another owner's records remain, including records naming the deleted owner's former home
 
+#### Scenario: Publisher deletes their account
+- **WHEN** a publisher deletes their account with its original home, a changed home or no home
+- **THEN** private release source identity hashes, publisher home IDs and publication request IDs are erased by publisher owner ID
+- **AND** public release records and their valid content hashes remain unchanged, as do another owner's adoption and receipt rows
+- **AND** another publisher cannot reuse the retained series ID
+
 ### Requirement: Stored presentation grants authorize only fenced data updates
 An automatic executor SHALL load a real accepted owner/home/adoption policy, preserve its original consent evidence, and select only the next verified release. It SHALL recheck ACL, home, account deletion, source publication, immutable pin targets, dependencies, local baseline, policy revision and storage admission under actual store write reservations. Only eligible name/style changes SHALL update the existing UI. UI, adoption, policy progress and receipt SHALL commit together in the main database without actor impersonation, manual acceptance fabrication, model calls or automation state changes.
 

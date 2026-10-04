@@ -168,6 +168,9 @@ INDIRECTLY_SCOPED_TABLES = frozenset({
 PRESERVED_TABLES = frozenset({
     "author_definitions",
     "branch_definitions",
+    # Immutable public release history is referenced by other owners. Private
+    # series ownership and release evidence use owner_id and are swept normally.
+    "command_center_releases",
     "goals",
     "goal_canonicals",
     # Which branch is canonical for a goal is a COMMONS pointer other people

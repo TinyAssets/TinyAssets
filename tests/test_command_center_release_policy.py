@@ -297,7 +297,7 @@ def test_publication_hook_requires_activated_pin_and_pinned_release_display(publ
 
     with _agent_connect(published["base"]) as conn:
         row = conn.execute(
-            "SELECT request_id FROM command_center_releases WHERE release_id=?",
+            "SELECT request_id FROM command_center_release_evidence WHERE release_id=?",
             (published["first"]["release_id"],),
         ).fetchone()
     actual = command_center_packages.pin_for_request
@@ -594,7 +594,7 @@ def test_publish_release_hook_checks_author_even_with_home_admin_access(publishe
 
     with _agent_connect(published["base"]) as conn:
         request = conn.execute(
-            "SELECT request_id FROM command_center_releases WHERE release_id=?",
+            "SELECT request_id FROM command_center_release_evidence WHERE release_id=?",
             (published["first"]["release_id"],),
         ).fetchone()[0]
         conn.execute(

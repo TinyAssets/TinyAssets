@@ -17,12 +17,15 @@ from tinyassets.custom_agents import _check_secret_fields, _normalize_definition
 
 _SCHEMA = (
     """CREATE TABLE IF NOT EXISTS command_center_release_series (
-        series_id TEXT PRIMARY KEY, author_id TEXT NOT NULL, publisher_home TEXT NOT NULL,
+        series_id TEXT PRIMARY KEY, owner_id TEXT NOT NULL, publisher_home TEXT NOT NULL,
         head_release_id TEXT NOT NULL)""",
     """CREATE TABLE IF NOT EXISTS command_center_releases (
         release_id TEXT PRIMARY KEY, series_id TEXT NOT NULL, sequence INTEGER NOT NULL,
-        definition_id TEXT NOT NULL, publisher_home TEXT NOT NULL, request_id TEXT NOT NULL,
-        record_json TEXT NOT NULL, UNIQUE(series_id,sequence), UNIQUE(series_id,definition_id),
+        definition_id TEXT NOT NULL, record_json TEXT NOT NULL,
+        UNIQUE(series_id,sequence), UNIQUE(series_id,definition_id))""",
+    """CREATE TABLE IF NOT EXISTS command_center_release_evidence (
+        release_id TEXT PRIMARY KEY, owner_id TEXT NOT NULL, publisher_home TEXT NOT NULL,
+        request_id TEXT NOT NULL, identity_hashes_json TEXT NOT NULL,
         UNIQUE(publisher_home,request_id))""",
 )
 
@@ -82,12 +85,14 @@ def _parent(conn, *, series_id, parent_id, author, uid, identities):
         "SELECT * FROM command_center_release_series WHERE series_id=?", (series_id,)
     ).fetchone()
     if not parent_id:
-        if row is not None:
+        if row is not None or conn.execute(
+            "SELECT 1 FROM command_center_releases WHERE series_id=?", (series_id,)
+        ).fetchone():
             raise ValueError("existing series requires its exact current parent release")
         return None
     if (
         row is None
-        or row["author_id"] != author
+        or row["owner_id"] != author
         or row["publisher_home"] != uid
         or row["head_release_id"] != parent_id
     ):
@@ -97,7 +102,14 @@ def _parent(conn, *, series_id, parent_id, author, uid, identities):
     # Otherwise remove/re-add could silently rebind recipients to another source.
     prior = {}
     for historic in _chain(conn, series_id):
-        prior.update(historic["identity_hashes"])
+        evidence = conn.execute(
+            "SELECT identity_hashes_json FROM command_center_release_evidence "
+            "WHERE release_id=? AND owner_id=? AND publisher_home=?",
+            (historic["release_id"], author, uid),
+        ).fetchone()
+        if evidence is None:
+            raise ValueError("publisher release evidence is unavailable")
+        prior.update(json.loads(evidence[0]))
     reverse = {value: key for key, value in prior.items()}
     for key, identity in identities.items():
         if (key in prior and prior[key] != identity) or (
@@ -211,9 +223,9 @@ def record_release(*, universe_id, request_id):
         registry.require_owner(conn, owner=author, uid=uid)
         ensure_schema(conn)
         existing = conn.execute(
-            "SELECT release_id FROM command_center_releases "
-            "WHERE publisher_home=? AND request_id=?",
-            (uid, request_id),
+            "SELECT release_id FROM command_center_release_evidence "
+            "WHERE owner_id=? AND publisher_home=? AND request_id=?",
+            (author, uid, request_id),
         ).fetchone()
         if existing:
             return _public(_record(conn, existing[0]))
@@ -233,11 +245,10 @@ def record_release(*, universe_id, request_id):
             identities=identities,
         )
         record = {
-            **link,
+            **_public(link),
             "definition_id": definition_id,
             "definition_fingerprint": definition["content_fingerprint"],
             "sequence": 1 if parent is None else parent["sequence"] + 1,
-            "request_id": request_id,
             "components": {
                 key: {"kind": value["kind"], "digest": digest(value)}
                 for key, value in normalized["components"].items()
@@ -245,16 +256,20 @@ def record_release(*, universe_id, request_id):
         }
         record["release_id"] = digest(record)
         conn.execute(
-            "INSERT INTO command_center_releases VALUES (?,?,?,?,?,?,?)",
+            "INSERT INTO command_center_releases VALUES (?,?,?,?,?)",
             (
                 record["release_id"],
                 link["series_id"],
                 record["sequence"],
                 definition_id,
-                uid,
-                request_id,
                 json.dumps(record, sort_keys=True),
             ),
+        )
+        # Private publication evidence is erasable by principal independently of
+        # the publisher's current home. It is never part of the public hash.
+        conn.execute(
+            "INSERT INTO command_center_release_evidence VALUES (?,?,?,?,?)",
+            (record["release_id"], author, uid, request_id, json.dumps(identities, sort_keys=True)),
         )
         if parent is None:
             conn.execute(
