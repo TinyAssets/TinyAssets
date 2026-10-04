@@ -37,7 +37,8 @@ class ExecutionContext:
 
 class Capabilities:
     def __init__(self, root: Path, context: ExecutionContext, platform: list[dict],
-                 call_platform, check_authority: Callable, *, connections_granted: bool = True):
+                 call_platform, check_authority: Callable, *,
+                 connections_granted: bool = True, review_provider=None):
         if (root.name != context.universe or not context.owner
                 or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", context.initiating_agent)
                 or context.initiating_agent == "unresolved-agent"):
@@ -46,6 +47,7 @@ class Capabilities:
         self.platform = {item["name"]: item for item in platform}
         self.call_platform, self.check_authority = call_platform, check_authority
         self.connections_granted = connections_granted
+        self.review_provider = review_provider
 
     def connections(self):
         # A launch whose grant withholds connections neither lists nor calls one.
@@ -103,19 +105,29 @@ class Capabilities:
         if set(arguments) != {"request"} or not isinstance(arguments["request"], dict):
             return {"error": "connection arguments require only a request object"}
         grant, view, verb = match
+        from tinyassets.agent_review import bound as review_bound
         from tinyassets.effectors.authenticated_external_call import (
             run_authenticated_external_call_effector,
         )
 
-        result = await asyncio.to_thread(
-            run_authenticated_external_call_effector,
-            node_id="ta", output_keys=["call"], base_path=self.root,
-            execution_context=self.context,
-            run_state={"call": {"sink": "authenticated_external_call",
-                               "connection_id": view.connection_id,
-                               "grant_id": grant.grant_id, "verb": verb,
-                               "request": arguments["request"]}},
-        )
+        with review_bound(self.review_provider, active=self.review_provider is not None):
+            result = await asyncio.to_thread(
+                run_authenticated_external_call_effector,
+                node_id="ta", output_keys=["call"], base_path=self.root,
+                execution_context=self.context,
+                run_state={"call": {"sink": "authenticated_external_call",
+                                   "connection_id": view.connection_id,
+                                   "grant_id": grant.grant_id, "verb": verb,
+                                   "request": arguments["request"]}},
+            )
+        response = result.get("response")
+        if isinstance(response, dict) and isinstance(response.get("headers"), dict):
+            # Same custody rule as bounded_evidence: even a non-secret-looking
+            # header can carry a rotated cookie or an encoded credential echo.
+            # Scripts retain the full body, but no response header values.
+            response = dict(response)
+            response["header_names"] = sorted(str(k) for k in response.pop("headers"))
+            result = {**result, "response": response}
         return {"result": result}
 
 
@@ -202,7 +214,18 @@ async def engine_dispatch(server):
                 for tool in await server.mcp.list_tools() if tool.name in allowed]
 
     async def call_platform(name, arguments):
-        result = await server.mcp.call_tool(name, arguments)
+        from fastmcp.exceptions import ToolError
+        from fastmcp.exceptions import ValidationError as MCPValidationError
+        from pydantic import ValidationError
+
+        from tinyassets.engine_result_bounds import bound_tool_text, resolve_ceiling
+
+        try:
+            result = await server.mcp.call_tool(name, arguments)
+        except (ToolError, MCPValidationError, ValidationError) as exc:
+            text = str(exc)
+            bounded = bound_tool_text(text, tool=name, limit=resolve_ceiling())
+            return {"error": text if bounded is None else bounded}
         blocks = [block.model_dump(exclude_none=True) for block in result.content]
         if len(blocks) == 1 and blocks[0].get("type") == "text":
             try:
@@ -211,10 +234,11 @@ async def engine_dispatch(server):
                 return blocks[0]["text"]
         return {"content": blocks}
 
+    loop = asyncio.get_running_loop()
     backend = Capabilities(_universe_dir(context.universe), context, platform,
                            call_platform, server._binding_error,
+                           review_provider=_turn_reviewer(loop),
                            connections_granted=connections_granted(granted))
-    loop = asyncio.get_running_loop()
 
     def dispatch(message):
         future = asyncio.run_coroutine_threadsafe(backend.dispatch(message), loop)
@@ -225,3 +249,41 @@ async def engine_dispatch(server):
             return {"error": "ta call timed out; outcome may be unknown; do not retry blindly"}
 
     return dispatch
+
+
+def _turn_reviewer(loop):
+    """Use only this MCP caller's model; never a daemon/host model fallback.
+
+    The engine is a separate process from the turn. MCP sampling is its
+    provider connection. Clients without sampling leave owner-enabled review
+    unavailable, which the same graph review gate reports as a clear hold.
+    Capture the session before the bridge changes threads / nests tool calls.
+    """
+    from fastmcp.server.dependencies import get_context
+    from mcp.types import ClientCapabilities, SamplingCapability, SamplingMessage, TextContent
+
+    from tinyassets.agent_review import REVIEW_TIMEOUT_S
+
+    try:
+        session = get_context().session
+    except RuntimeError:
+        return None
+    if not session.check_client_capability(ClientCapabilities(sampling=SamplingCapability())):
+        return None
+
+    async def sample(prompt, system):
+        answer = await session.create_message(
+            [SamplingMessage(role="user", content=TextContent(type="text", text=prompt))],
+            system_prompt=system, max_tokens=512, include_context="none",
+        )
+        return answer.content.text if isinstance(answer.content, TextContent) else ""
+
+    def review(prompt, system, **_kwargs):
+        future = asyncio.run_coroutine_threadsafe(sample(prompt, system), loop)
+        try:
+            return future.result(timeout=REVIEW_TIMEOUT_S)
+        except TimeoutError:
+            future.cancel()
+            raise
+
+    return review

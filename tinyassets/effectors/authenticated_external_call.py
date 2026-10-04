@@ -1129,11 +1129,12 @@ def _run(
     # its grant would allow. Every call here counts as a write until connections
     # declare their operation kinds (D1b). A rule store that cannot be read
     # refuses the call; it never falls back to allowing it.
-    rule_refusal = _rule_refusal(universe_dir, connection_id, verb, _request_path(request),
-                                 evidence=_review_evidence(request),
-                                 agent=execution_context.initiating_agent
-                                 if execution_context is not None
-                                 else _initiating_agent(universe_dir))
+    rule_refusal = _rule_refusal(
+        universe_dir, connection_id, verb, _request_path(request),
+        evidence=_review_evidence(request),
+        agent=(execution_context.initiating_agent if execution_context is not None
+               else _initiating_agent(universe_dir)),
+    )
     if rule_refusal is not None:
         return {
             **rule_refusal,
