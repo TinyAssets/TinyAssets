@@ -8,6 +8,7 @@ from mcp.types import ListToolsResult, Tool
 
 from tests import test_free_account_run_provider_parity as parity
 from tests.cloud_runtime_fixture import cloud_runtime  # noqa: F401
+from tests.inference_usage_helpers import accounting_resolver
 
 wires = parity.wires
 pytestmark = pytest.mark.usefixtures("cloud_runtime")
@@ -57,7 +58,7 @@ def pool(tmp_path, monkeypatch, authenticate_request, wires):
             assert kwargs["universe_id"] == parity.A_HOME
             return second_wire
         return wires[self._definition.owner_user_id]
-    monkeypatch.setattr(ApiKeyHttpProvider, "_resolve_proxy", resolve)
+    monkeypatch.setattr(ApiKeyHttpProvider, "_resolve_proxy", accounting_resolver(resolve))
     # Explicit source order makes the exhaustion test independent of ranking.
     from tinyassets.providers.model_policy import ModelRef
     from tinyassets.providers.model_preferences import ModelPreferences

@@ -7,18 +7,37 @@ step must produce.
 
 ## E1. Read-only first: the inventory is a deliverable
 
-`scripts/command_center_inventory.py` runs read-only against a data root and
-prints a machine-readable report:
+**R1 folded (2026-10-02, #4273).** The scanner never reads its source twice over:
+it copies the root into a private artifact outside it -- regular files only, no
+symlink or reparse traversal, bounded, with the descriptor re-checked after
+opening -- and runs SQLite's online backup API on *that copy* to get the
+standalone database it scans. No source database or LanceDB store is opened by a
+library, and `immutable=1` is gone. A source file that changes while it is being
+copied fails the run -- a measured fact, not an assertion. It is NOT a refusal of
+a live root: a writer that holds still for the copy is indistinguishable from an
+idle one, which is why the report calls itself consistent per database and never
+a proven cross-store snapshot.
 
-- every SQLite table, column, `CHECK` / index / trigger / view clause, and TEXT
-  or BLOB value naming `universe` or holding a `u-<ulid>`, decoded per
-  encoding (D7.1, D11);
-- LanceDB schemas, checkpoint payloads (via serde), JSON keys and values, and
-  marker files and folders;
-- derived identities: length-prefixed lease keys, hashed connection and grant
-  ids, content digests over records that contain an id;
-- the exempt verbatim stores (uploads, run outputs, conversation text, brain
-  files), listed by name so the scan's skips are explicit.
+`scripts/command_center_inventory.py` prints a machine-readable report:
+
+- every SQLite table, column (including generated ones, via `table_xinfo`),
+  `CHECK` / index / trigger / view clause, and TEXT or BLOB value naming
+  `universe` or holding a `u-<ulid>` (D7.1, D11);
+- LanceDB schemas and id rows, JSON keys and values, and marker files;
+- the exempt verbatim stores (uploads, run outputs, the agent's workspace, brain
+  files), listed by name so the scan's skips are explicit;
+- what it CANNOT see, as `deferred` rather than as a zero: derived identities --
+  length-prefixed lease keys, hashed connection and grant ids, content digests
+  over records that contain an id. Raw byte matching cannot discover a digest of
+  an id, so that discovery belongs to tasks 3/4 (E4b).
+
+The report is fail-closed. `complete`, `coverage`, `exemptions`, `unscanned` and
+`deferred` are separate keys; an unknown home entry, an unreadable store, an
+exhausted limit or `--no-values` makes it incomplete and exits nonzero with no
+flag to opt in; and `migration_ready` stays false while `deferred` is non-empty,
+so this round cannot claim readiness by construction. Checkpoint serde decoding
+and the trusted-acquisition fence in
+[the inventory repair contract](inventory-repair-contract.md) remain open there.
 
 Run it first on a production copy. Its counts are what the migration must
 bring to zero, and what the dry run compares.
@@ -120,8 +139,7 @@ and error-text fixes ship in the cutover image.
 ## E6. The target on-disk layout: storage moves once
 
 *Agreed with openshell-spike on 2026-10-02 and written as the shared text in
-`target-architecture` design §"Target on-disk layout (agreed with
-command-center-cutover)" (#4263). The founder's rule: "do things correct the
+`target-architecture` design D8a (#4263). The founder's rule: "do things correct the
 first time". This cutover moves storage straight into the target layout, so
 the later sealed-box slice is an image build, not a second data migration.*
 
@@ -150,6 +168,21 @@ trust about them is the edit **policy**, `soul.edit.md`, and that moves to
 platform state, so the agent can change its soul but not the rules for changing
 it.
 
+**`config.yaml` is split: authority moves to platform state** (#4263 D8a
+refute round 3). Today `config.yaml` also holds server-owned authority:
+`engine_assignment_state`, `engine_assignment_generation` and
+`provider_authority_bindings` (`config.py:60-66`), plus `allowed_providers`,
+the routing ceiling the router enforces (`providers/router.py:158-177`). A
+file the agent can write must not hold what the daemon trusts. So phase 1
+moves those fields into `.platform/cc-<ulid>/assignment.json`, a
+platform-owned assignment record. Every consumer then reads authority only
+from that record. `config.yaml` keeps only the agent's preferences, read as
+untrusted. A test fails if an authority field is read from `config.yaml`, or
+if writing one there changes routing. **Ordering:** the split ships standalone
+before the cutover (tasks.md prerequisite). It is a hard prerequisite of any
+change that makes `config.yaml` agent-writable, so the self-improving harness
+cannot open the file to the agent while it still carries authority.
+
 **Mixed consumers get both roots explicitly** (refute #1). These readers span
 both sides and are adapted, then tested end to end:
 
@@ -157,7 +190,7 @@ both sides and are adapted, then tested end to end:
   files under `command_center_dir(id)` (`soul_edit.py:149`, `:375`);
 - **self-model and persona** read `soul.md` from `command_center_dir(id)`
   (`universe_self_model.py:46`);
-- **config** reads `config.yaml` from `command_center_dir(id)` (`config.py:158`);
+- **config** reads preferences from `config.yaml` in `command_center_dir(id)` (`config.py:158`), and authority (assignment state, provider bindings, `allowed_providers`) from `platform_dir(id)/assignment.json`;
 - **the dispatcher** reads `dispatcher_config.yaml` from `platform_dir(id)`;
 - **vault ownership lookup** finds the root database through the resolver, not
   `universe.parent`, which would become `.platform`

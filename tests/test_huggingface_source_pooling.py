@@ -15,6 +15,7 @@ import pytest
 from tests import test_daily_source_pooling as pooling
 from tests import test_free_account_run_provider_parity as parity
 from tests.cloud_runtime_fixture import cloud_runtime  # noqa: F401
+from tests.inference_usage_helpers import accounting_resolver
 
 wires = parity.wires
 pytestmark = pytest.mark.usefixtures("cloud_runtime")
@@ -87,7 +88,7 @@ def hf_pool(tmp_path, monkeypatch, authenticate_request, wires):
             assert kwargs["universe_id"] == parity.A_HOME
             return hf_wire
         return wires[self._definition.owner_user_id]
-    monkeypatch.setattr(ApiKeyHttpProvider, "_resolve_proxy", resolve)
+    monkeypatch.setattr(ApiKeyHttpProvider, "_resolve_proxy", accounting_resolver(resolve))
     ModelPreferenceStore(tmp_path).save(
         parity.A_OWNER, parity.A_HOME, expected_generation=0,
         policy=ModelPreferences("explicit", ModelRef(first, parity.LIVE_MODELS[0]), (

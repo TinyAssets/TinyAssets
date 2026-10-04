@@ -114,6 +114,77 @@ def _universe_active_turn(udir: Path) -> dict[str, Any] | None:
         return {"state": "unreadable", "reason": type(exc).__name__}
 
 
+def _turn_started_epoch(turn_row: dict[str, Any]) -> float | None:
+    """The running turn's own start (``started_at``), as epoch seconds."""
+    from datetime import datetime
+
+    started = turn_row.get("started_at")
+    if not isinstance(started, str) or not started.endswith("Z"):
+        return None
+    try:
+        return datetime.fromisoformat(started[:-1] + "+00:00").timestamp()
+    except ValueError:
+        return None
+
+
+def _thread_tool_activity(
+    udir: Path, session: str, *, since: float | None = None,
+) -> list[dict[str, Any]] | None:
+    """The latest tool calls in the ``session`` thread since ``since`` (the
+    running turn's start), newest first, or ``None`` when there is no caller or
+    the log cannot be read.
+
+    ``session`` is a conversation-memory session (``principal:<owner>`` for the
+    main thread, ``agent:<id>:principal:<owner>`` for another agent), which is
+    what the engine records a call under -- ``universe_server`` passes
+    ``thread:<memory_session>`` as the engine route's session key. Keying this
+    read on the owner alone would read the main thread during another agent's
+    turn and show no activity at all.
+    """
+    key = str(session or "").strip()
+    if not key:
+        return None
+    from tinyassets import agent_activity
+
+    try:
+        return agent_activity.recent(
+            udir, f"thread:{key}", limit=5, since=since)
+    except Exception as exc:  # noqa: BLE001 - the view is never worth a failed status
+        _LOGGER.warning("tool activity unreadable: %s", type(exc).__name__)
+        return None
+
+
+def _tool_activity_session(udir: Path, uid: str, agent_id: str = "") -> str:
+    """The conversation-memory session whose tool calls this read reports: the
+    addressed agent's, defaulting to the caller's main thread.
+
+    Never raises. An unresolvable or unknown agent falls back to the main
+    thread, which is a read the caller is already entitled to -- the view is
+    never worth a failed status, and a wrong agent id must not become a way to
+    read some other thread.
+    """
+    from tinyassets.api import permissions
+
+    try:
+        actor = str(permissions.current_actor_id() or "").strip()
+    except Exception:  # noqa: BLE001 - no caller, no thread
+        return ""
+    if not actor:
+        return ""
+    if not str(agent_id or "").strip():
+        return f"principal:{actor}"
+    from tinyassets import addressed_agents
+
+    try:
+        addressed = addressed_agents.resolve(
+            udir.parent, universe_id=uid, owner=actor, agent_id=agent_id)
+        return addressed_agents.memory_session(
+            actor, addressed.agent_id if addressed is not None else addressed_agents.MAIN_AGENT)
+    except Exception as exc:  # noqa: BLE001 - an unknown agent reads as the main thread
+        _LOGGER.warning("tool activity agent unresolved: %s", type(exc).__name__)
+        return f"principal:{actor}"
+
+
 def _reader_owns(uid: str) -> bool:
     """Is the verified caller the universe's owning account? False on any doubt."""
     from tinyassets.api import permissions
@@ -1849,6 +1920,19 @@ def get_status(
         if isinstance(active, dict) and "model" in active and not _reader_owns(uid):
             active = {key: value for key, value in active.items() if key != "model"}
         response["active_turn"] = active
+        # What the agent's tools are doing in the CALLER'S OWN thread (harness
+        # S4): only that thread's calls, so a collaborator with write never sees
+        # the owner's commands, and the owner sees their agent work live. Which
+        # thread is the ADDRESSED agent's (harness §4.18), defaulting to main --
+        # the engine records a call under the running turn's session, so asking
+        # for the main thread during another agent's turn shows nothing.
+        turn_row = response["active_turn"]
+        if isinstance(turn_row, dict) and turn_row.get("state") != "unreadable":
+            since = _turn_started_epoch(turn_row)
+            tools = _thread_tool_activity(
+                udir, _tool_activity_session(udir, uid, conversation_agent), since=since)
+            if tools:
+                turn_row["tools"] = tools
 
     # persona — the universe brain speaking as itself. Its self-understanding
     # comes from its learned self-model (an OKF bundle the brain authors about

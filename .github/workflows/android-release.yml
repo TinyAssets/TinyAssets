@@ -23,6 +23,17 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  # One group per PR, so a new push to a `mobile/**` PR cancels the superseded
+  # AAB build. Every non-PR run gets its OWN group via `run_id`, and
+  # `cancel-in-progress` is conditional on top of that. Two layers here matter
+  # more than anywhere else in this repo: a `push: tags: mobile-v*` run BUILDS
+  # AND SIGNS the release bundle Play receives. Cancelling one mid-jarsigner
+  # would leave a tag with no artifact and no error anyone reads, so neither a
+  # PR nor a second tag may ever interrupt it.
+  group: android-release-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   build-release-aab:
     runs-on: ubuntu-latest

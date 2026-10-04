@@ -1,0 +1,65 @@
+name: Main red
+
+# After every Tests run on main (push or schedule), act on the REQUIRED surface
+# only (scripts/main_red.py). Red once: re-run the failed jobs. Red twice on a
+# merge whose parent was green: open a revert PR and raise the `main-red` alarm
+# issue. Otherwise red twice: alarm only. Green on main's tip: close the alarm.
+# `heavy-tests` (a red baseline) and quarantined/flaky tests never trigger it.
+#
+# This is the safety net that lets the merge-group gate run only the tests a
+# group can affect (docs/design-notes/2026-10-02-affected-only-merge-gate.md):
+# the full suite still runs on every merge, here, and a break is acted on.
+#
+# Runs default-branch code only and never executes the commit under test. The
+# revert branch and PR use MERGE_ATTRIBUTION_TOKEN (a user token) so CI runs on
+# the revert PR; a GITHUB_TOKEN-opened PR starts no workflows.
+
+on:
+  workflow_run:
+    workflows: [Tests]
+    types: [completed]
+    branches: [main]
+
+permissions: {}
+
+concurrency:
+  # A shared pending slot drops older events. Isolate every run attempt so
+  # unrelated SHAs/runs cannot replace each other's queued red notification.
+  # Concurrent reds may create duplicate alarms; a green tip closes open alarms.
+  group: main-red-${{ github.event.workflow_run.head_sha }}-${{ github.event.workflow_run.id }}-${{ github.event.workflow_run.run_attempt }}
+  cancel-in-progress: false
+
+jobs:
+  react:
+    name: main-red
+    if: github.event.workflow_run.event == 'push' || github.event.workflow_run.event == 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      actions: write
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: React to the required-test result
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REVERT_TOKEN: ${{ secrets.MERGE_ATTRIBUTION_TOKEN }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+          SHA: ${{ github.event.workflow_run.head_sha }}
+          EVENT: ${{ github.event.workflow_run.event }}
+          ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
+          RUN_URL: ${{ github.event.workflow_run.html_url }}
+        run: |
+          python scripts/main_red.py --repo "$REPO" --run-id "$RUN_ID" --sha "$SHA" \
+            --event "$EVENT" --attempt "$ATTEMPT" --run-url "$RUN_URL"

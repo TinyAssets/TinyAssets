@@ -4898,6 +4898,15 @@ def _invoke_graph(
                 run_id=run_id, status=RUN_STATUS_CANCELLED,
                 output={}, error=msg,
             )
+        budget_stop = _request_budget_failure(exc)
+        if budget_stop is not None:
+            update_run_status(
+                base_path, run_id, status=RUN_STATUS_FAILED,
+                error=budget_stop, finished_at=_now(),
+            )
+            return RunOutcome(
+                run_id=run_id, status=RUN_STATUS_FAILED, output={}, error=budget_stop,
+            )
         # #61: surface node timeouts with a distinct reason so the user
         # can tell "your evidence-intake node hit the 300s cap" from a
         # generic crash. The NodeTimeoutError message carries the
@@ -5333,6 +5342,20 @@ def _find_empty_response_exception(exc: BaseException) -> EmptyResponseError | N
             return cur
         seen.add(id(cur))
         cur = cur.__cause__ or cur.__context__
+    return None
+
+
+def _request_budget_failure(exc: BaseException) -> str | None:
+    """A wrapped typed budget hold remains terminal, never an approval request."""
+    from tinyassets.request_budget import RequestBudgetExceeded
+
+    seen: set[int] = set()
+    current = exc
+    while current is not None and id(current) not in seen:
+        if isinstance(current, RequestBudgetExceeded):
+            return "[request_budget_exhausted] " + current.continuation
+        seen.add(id(current))
+        current = current.__cause__ or current.__context__
     return None
 
 
@@ -6678,7 +6701,11 @@ def _invoke_graph_resume(
                 run_id=run_id, status=RUN_STATUS_CANCELLED,
                 output={}, error=msg,
             )
-        msg = f"Resume execution failed: {exc}"
+        effect_stop = _find_effect_failed_exception(exc)
+        if effect_stop is not None and effect_stop.error_kind == "request_budget_exhausted":
+            msg = str(effect_stop)
+        else:
+            msg = _request_budget_failure(exc) or f"Resume execution failed: {exc}"
         update_run_status(
             base_path, run_id,
             status=RUN_STATUS_FAILED,
@@ -7396,6 +7423,7 @@ ACTIONABLE_BY: dict[str, str] = {
     "error": "user",
     # none — terminal by design; no fix exists, no escalation needed
     "cancelled": "none",
+    "request_budget_exhausted": "none",
 }
 
 
@@ -7496,6 +7524,11 @@ AUTO_REVIEW_UNAVAILABLE_ACTION = (
     "nothing was sent. Make sure a model is connected, then raise one request "
     "describing the action; do not retry it blindly."
 )
+REQUEST_BUDGET_EXHAUSTED_ACTION = (
+    "The parent turn reached its request budget. The action was not sent. "
+    "Preserve recorded progress and report the stop. The owner can request a "
+    "continuation; do not retry, schedule a continuation, or ask for approval."
+)
 RULES_UNREADABLE_ACTION = (
     "Your owner's rules could not be read, so nothing was sent. Nothing in the "
     "branch is wrong; report it and try again later."
@@ -7506,6 +7539,7 @@ _RULE_REFUSAL_CLASSES = (
     # remedy as an ask-first rule.
     ("auto_review_needs_approval", "rule_requires_approval"),
     ("auto_review_unavailable", "auto_review_unavailable"),
+    ("request_budget_exhausted", "request_budget_exhausted"),
     ("rule_ask_first", "rule_requires_approval"),
     ("rule_hand_off", "rule_hand_off"),
     ("rules_unreadable", "rules_unreadable"),
@@ -7704,6 +7738,8 @@ def external_write_suggested_action(failure_class: str) -> str:
         return RULE_HAND_OFF_ACTION
     if failure_class == "rules_unreadable":
         return RULES_UNREADABLE_ACTION
+    if failure_class == "request_budget_exhausted":
+        return REQUEST_BUDGET_EXHAUSTED_ACTION
     if failure_class == "auto_review_unavailable":
         return AUTO_REVIEW_UNAVAILABLE_ACTION
     if failure_class == "destination_blocked_client":
@@ -7737,6 +7773,8 @@ def _classify_failure(run: dict) -> str:
     if not error:
         return ""
     lower = error.lower()
+    if lower.startswith("[request_budget_exhausted] "):
+        return "request_budget_exhausted"
     if lower.startswith("external write failed"):
         return _classify_external_write(lower)
     from tinyassets.exceptions import WorkModelExhaustedError
@@ -7747,6 +7785,11 @@ def _classify_failure(run: dict) -> str:
         # this narrow known prefix must precede every substring net below: a
         # model id containing "timeout" is not a timed-out run.
         return "work_model_exhausted"
+    from tinyassets.providers.model_pins import PIN_REFUSAL_MARKER
+
+    if PIN_REFUSAL_MARKER in lower:
+        # A node pin naming no single source; the same class `api.runs` gives.
+        return "permission_denied:provider_not_bound"
     from tinyassets.exceptions import AllProvidersExhaustedError, ProviderAuthorityHeldError
     from tinyassets.providers.diagnostics import CHAIN_STATE_MARKER, held_attempt_diagnosis
 
@@ -7883,7 +7926,8 @@ def list_recent_runs(
             )
         elif failure_class in ("external_write_failed", "external_write_refused",
                                "rule_requires_approval", "rule_hand_off",
-                               "rules_unreadable", "auto_review_unavailable"):
+                               "rules_unreadable", "auto_review_unavailable",
+                               "request_budget_exhausted"):
             suggested_action = external_write_suggested_action(failure_class)
         elif failure_class == "error":
             suggested_action = "Check error field for details; re-run after fixing root cause."

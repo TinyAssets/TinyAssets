@@ -22,17 +22,33 @@ if TYPE_CHECKING:
 class AgentInferenceRequest:
     tools_json: str = field(repr=False)
     history: tuple[codec.CapturedToolRound, ...] = field(repr=False)
+    tool_choice: str
 
-    def __init__(self, *, tools, history=()) -> None:
+    def __init__(self, *, tools, history=(), tool_choice="auto") -> None:
         if not isinstance(history, tuple) or any(
             not isinstance(item, codec.CapturedToolRound) for item in history
         ):
             raise ValueError("captured immutable agent history required")
-        object.__setattr__(self, "tools_json", codec._dump({"tools": codec._definitions(tools)}))
+        text_only = isinstance(tools, (tuple, list)) and not tools and tool_choice == "none"
+        if text_only and history:
+            raise ValueError("text-only inference cannot carry tool history")
+        definitions = () if text_only else codec._definitions(tools)
+        object.__setattr__(self, "tools_json", codec._dump({"tools": definitions}))
         object.__setattr__(self, "history", history)
+        if tool_choice not in {"auto", "none", "required"}:
+            raise ValueError("invalid agent tool choice")
+        object.__setattr__(self, "tool_choice", tool_choice)
 
     def tools(self) -> tuple[dict[str, Any], ...]:
-        return codec._definitions(codec._object(self.tools_json)["tools"])
+        definitions = codec._object(self.tools_json)["tools"]
+        return () if definitions == [] and self.tool_choice == "none" else codec._definitions(
+            definitions,
+        )
+
+    @property
+    def text_only(self) -> bool:
+        """An explicit empty, non-continuing request carries no tool permission."""
+        return not self.tools() and not self.history and self.tool_choice == "none"
 
     def encode(
         self,
@@ -43,11 +59,20 @@ class AgentInferenceRequest:
         temperature: float | None,
         max_tokens: int | None,
     ) -> tuple[str, dict[str, Any]]:
-        from tinyassets.providers.protocol_encoders import agent_codec_for
+        from tinyassets.providers.protocol_encoders import ENCODERS, agent_codec_for
 
-        if selection is None or not selection.supports_tools:
+        if selection is None or not (self.text_only or selection.supports_tools):
             raise PermissionError("selected model lacks admitted agent tool support")
         contract = selection.contract()
+        if self.text_only:
+            encoder = ENCODERS.get(contract.inference_protocol)
+            if encoder is None:
+                raise PermissionError("text inference protocol is unsupported")
+            path, body = encoder[0](
+                prompt=prompt, system=system, model=selection.model_id,
+                temperature=temperature, max_tokens=max_tokens,
+            )
+            return path, {**contract.constrain_inference(body, selection.cost_caps), "stream": True}
         agent_codec = agent_codec_for(contract.inference_protocol)
         if agent_codec is None:
             raise PermissionError("agent inference protocol is unsupported")
@@ -58,6 +83,7 @@ class AgentInferenceRequest:
             model=selection.model_id,
             tools=self.tools(),
             history=self.history,
+            tool_choice=self.tool_choice,
             temperature=temperature,
             max_tokens=max_tokens,
         )

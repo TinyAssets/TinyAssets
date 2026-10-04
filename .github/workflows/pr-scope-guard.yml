@@ -196,6 +196,40 @@ jobs:
 
           TOTAL="$(printf '%s\n' "$CHANGED" | sed '/^$/d' | wc -l | tr -d ' ')"
 
+          # Paths no PR may touch at all (scripts/check_forbidden_pr_paths.py).
+          # Checked FIRST, and on purpose, even though the receipt check below
+          # deliberately reports its own complaint together with the label one:
+          # fixing this is mechanical and takes seconds, and the fix is a PUSH,
+          # which voids a head-pinned receipt anyway. Telling the author now
+          # means they fix it and get stamped once; bundling it with the receipt
+          # failure would have them get stamped and then void it.
+          #
+          # The `-f` guard is REQUIRED, not defensive. Under
+          # pull_request_target this workflow is the trusted copy from the
+          # default branch, but the CHECKOUT above is the PR's own base sha --
+          # so for any PR whose base predates the script, the workflow calls a
+          # file that is not there. Without this, python exited 2 ("can't open
+          # file"), the `if !` read that as "a forbidden path was found", and
+          # the REQUIRED `Diff scope declared` check failed every such PR with
+          # a message naming the wrong cause. The step above does exactly this
+          # for scripts/test_hygiene_gate.py and I did not copy it.
+          if [ ! -f scripts/check_forbidden_pr_paths.py ]; then
+            echo "::notice::base predates scripts/check_forbidden_pr_paths.py; nothing to check"
+          elif ! printf '%s\n' "$CHANGED" \
+              | python scripts/check_forbidden_pr_paths.py \
+                2> "$RUNNER_TEMP/forbidden-paths.txt"; then
+            echo "::error::this PR changes a path no PR may change"
+            {
+              echo "### PR scope guard"
+              echo ""
+              echo "**Blocked — this PR changes a path no PR may change.**"
+              echo ""
+              sed 's/^/> /' "$RUNNER_TEMP/forbidden-paths.txt"
+            } >> "$GITHUB_STEP_SUMMARY"
+            cat "$RUNNER_TEMP/forbidden-paths.txt"
+            exit 1
+          fi
+
           # The endpoint caps at 3000 files and says nothing when it truncates.
           # An earlier version of this comment claimed the read above already
           # failed closed on truncation; it did not, and a cross-family review

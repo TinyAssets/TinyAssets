@@ -201,7 +201,7 @@ def test_a_runner_chain_binds_its_model_while_an_effect_fires(tmp_path, monkeypa
     effectors._fire_node_effects(node, {}, chain=chain, schema_defaulted=set(), node_key="n")
     legacy = effectors.EffectChain(run_id="r2", base_path=str(_universe(tmp_path / "b")))
     effectors._fire_node_effects(node, {}, chain=legacy, schema_defaulted=set(), node_key="n")
-    assert seen == [(model,), None]
+    assert seen == [(model, "r"), None]
 
 
 def test_both_runner_chains_carry_the_run_model():
@@ -275,3 +275,14 @@ def test_switches_are_per_agent_and_an_old_table_becomes_mains(tmp_path):
             universe, action={**ACTION, "action_class": "people.message"}, rule="r",
             agent="researcher") is None
     assert model.prompts == [], "switched off for that agent only"
+
+
+def test_authority_diagnostic_is_scrubbed_before_returning_to_owner(tmp_path):
+    from tinyassets.exceptions import ProviderAuthorityHeldError
+
+    secret = "sk-" + "s" * 32
+    model = _Model(ProviderAuthorityHeldError("provider budget exhausted; token=" + secret))
+    refusal = _review(_universe(tmp_path), model)
+    assert "provider budget exhausted" in refusal["review"]["reason"]
+    assert secret not in json.dumps(refusal)
+    assert len(model.prompts) == 1

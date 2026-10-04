@@ -9,6 +9,10 @@ on:
       - "packaging/**"
       - ".github/workflows/build-bundle.yml"
   pull_request:
+    # `ready_for_review` is NOT a default type, and `stage-and-probe` skips on a
+    # draft; without it a PR marked ready keeps the draft run's skip until its
+    # next push.
+    types: [opened, reopened, synchronize, ready_for_review]
     paths:
       - "tinyassets/**"
       - "packaging/**"
@@ -19,9 +23,28 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  # One group per PR, so a new push cancels the superseded run. Every non-PR run
+  # gets its OWN group via `run_id`, and `cancel-in-progress` is conditional on
+  # top of that -- two layers, because a cancelled run here would be a
+  # `release: published` run that packs and publishes the .mcpb, or the `push:
+  # main` build of what landed. Neither may ever be interrupted by a PR or by a
+  # later release. tests.yml adopted the same two layers after grouping non-PR
+  # runs by ref let each push kill the previous main run.
+  group: build-bundle-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   stage-and-probe:
     name: Stage + import-probe both bundle and plugin
+    # Drafts do not spend a runner here; `ready_for_review` above runs it for
+    # real as soon as the PR is ready. Not a branch-protection context, which is
+    # what makes skipping safe -- a skipped job reports `conclusion=skipped` and
+    # branch protection accepts that as satisfied (see tests.yml's note on
+    # `required-tests`). `release` and `push` are unaffected: the condition's
+    # first clause is true for every non-PR event, so `pack-mcpb`'s `needs:` on
+    # this job still resolves on a tagged release.
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

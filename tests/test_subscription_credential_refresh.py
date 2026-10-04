@@ -681,7 +681,10 @@ def _coordinator(candidate, *, execution_kind="engine_inference"):
     from tinyassets.agent_turn_coordinator import AgentTurnCoordinator
 
     coordinator = AgentTurnCoordinator.__new__(AgentTurnCoordinator)
-    coordinator.plan = SimpleNamespace(next_candidate=lambda owner, uid, exhaustion: candidate)
+    coordinator.plan = SimpleNamespace(order=lambda owner, uid, exhaustion: SimpleNamespace(
+        candidates=() if candidate is None else (SimpleNamespace(ref=candidate),),
+    ))
+    coordinator._budget_skipped = set()
     coordinator.adapter = SimpleNamespace(has_candidate_order=False)
     coordinator.owner = OWNER
     from dataclasses import make_dataclass
