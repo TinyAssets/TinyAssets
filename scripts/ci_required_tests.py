@@ -92,7 +92,12 @@ MIN_RAN_FLOORS = {
 # new skip in the ordinary shards: test_native_metadata_snapshot_cannot_read_
 # foreign_or_platform_state. It executes in linux-jail-proof, whose no-skip
 # assertion covers every real_jail case. Existing skip conditions are unchanged.
-MAX_REQUIRED_SKIPPED = 128
+# 2026-10-04: #4439 adds six real_jail ta-capability proofs. Set comparison
+# of main run 37227391997 and merge-group 37231265315 shows exactly these six
+# new skips, with no other change. All six execute and pass in the same head's
+# linux-jail-proof run 37231177806 (100 cases, zero skips); its marker assertion
+# requires every real_jail case. Ordinary shards still have no bubblewrap.
+MAX_REQUIRED_SKIPPED = 134
 MAX_TEST_SECONDS = 2400
 #: Entries in the quarantine ledger, flaky or not. A quarantine that only grows
 #: is how a red build gets normalised.
