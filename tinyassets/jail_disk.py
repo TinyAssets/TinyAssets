@@ -152,21 +152,26 @@ class DiskBudget:
     _last_walk: float = 0.0
     _last_renew: float = 0.0
     _settled: bool = field(default=False, repr=False)
+    _lease_lost: bool = field(default=False, repr=False)
 
     def __post_init__(self) -> None:
         self._volume_baseline = used_bytes(self.root)
         self._last_walk = self._last_renew = time.monotonic()
 
-    def _renew(self) -> None:
-        """Re-stamp the reservation well inside its TTL while the process runs:
-        a ledger measurement would otherwise drop it as a crashed writer's and
-        let a concurrent launch spend the same headroom again."""
-        if self.reservation is None or time.monotonic() - self._last_renew < RENEW_SECONDS:
-            return
-        self._last_renew = time.monotonic()
+    def _renew(self) -> bool:
+        """Keep capacity held, stopping permanently if the ledger loses it."""
+        if self._settled or self._lease_lost:
+            return False
+        now = time.monotonic()
+        if self.reservation is None or now - self._last_renew < RENEW_SECONDS:
+            return True
         from tinyassets import storage_accounting
 
-        storage_accounting.renew(self.reservation)
+        if not storage_accounting.renew_checked(self.reservation):
+            self._lease_lost = True
+            return False
+        self._last_renew = now
+        return True
 
     def growth(self) -> int:
         """Bytes everything this jail can write grew by since launch (a walk)."""
@@ -174,7 +179,8 @@ class DiskBudget:
 
     def breach(self) -> str | None:
         """``disk_limit``, ``storage_limit`` or None. Cheap unless triggered."""
-        self._renew()
+        if not self._renew():
+            return STORAGE_LIMIT
         if floor_breach(
             self.root, min_free_bytes=self.min_free_bytes,
             min_free_inodes=self.min_free_inodes,
