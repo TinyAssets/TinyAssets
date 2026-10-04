@@ -552,3 +552,43 @@ class TestFittedAdmissionConcurrency:
                 base, account_id=A, scope_id="u-one", store="universe_files", cap=KIB,
             )
         assert refused.value.record["failure_class"] == sa.FAILURE_UNAVAILABLE
+
+
+class TestRawWriteMeasurementOrdering:
+    @pytest.mark.parametrize("newer_fails", [False, True])
+    def test_an_older_scan_cannot_replace_a_newer_successful_raw_write_scan(
+        self, base, monkeypatch, newer_fails,
+    ):
+        udir = _universe(base, "u-one", A)
+        sa.release(_admit(base, "u-one", 0))
+        _write(udir, "before.bin", 10 * KIB)
+        real = sa.STORES["universe_files"].measure
+        nested = False
+
+        def overlapping_scan(root, scope):
+            nonlocal nested
+            if nested and newer_fails:
+                raise OSError("incomplete newer scan")
+            size = real(root, scope)
+            if not nested:
+                nested = True
+                # Raw jailed writes do not commit an accounting reservation.
+                _write(udir, "raw.bin", 40 * KIB)
+                if newer_fails:
+                    with pytest.raises(OSError, match="incomplete newer scan"):
+                        sa.measure(base, scope, "universe_files")
+                else:
+                    sa.measure(base, scope, "universe_files")
+            return size
+
+        monkeypatch.setitem(
+            sa.STORES, "universe_files",
+            sa.Store("universe_files", sa.SCOPE_UNIVERSE, overlapping_scan),
+        )
+        sa.measure(base, "u-one", "universe_files")
+        assert sa.usage(base, A).used_bytes == (10 if newer_fails else 50) * KIB
+        monkeypatch.setitem(
+            sa.STORES, "universe_files", sa.Store("universe_files", sa.SCOPE_UNIVERSE, real),
+        )
+        sa.measure(base, "u-one", "universe_files")
+        assert sa.usage(base, A).used_bytes == 50 * KIB

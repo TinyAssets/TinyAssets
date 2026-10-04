@@ -764,13 +764,13 @@ def _scopes(base: Path, account_id: str) -> list[tuple[str, str]]:
 def measure(base_path: str | Path, scope_id: str, store: str, *, now: float | None = None) -> int:
     """Measure one store for one scope and retire the pending rows it covers.
 
-    The sequence is read BEFORE scanning; only committed rows at or below it are
+    A unique sequence is allocated BEFORE scanning; only committed rows at or below it are
     retired, because only those were provably on disk when the scan began.
     """
     base = Path(base_path)
     spec = STORES[store]
     with _txn(base) as conn:
-        start_seq = int(conn.execute("SELECT seq FROM counter WHERE id = 1").fetchone()[0])
+        start_seq = _next_seq(conn)
     started = time.time() if now is None else float(now)
     size = int(spec.measure(base, scope_id))
     if size < 0:

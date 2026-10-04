@@ -27,3 +27,21 @@ different owners, retained bytes, minimum refusal, replacement credit, over-full
 accounts, commit-during-scan and failed-newer-scan ordering. Retain all existing
 test definitions. Run accounting, jail/recovery and workspace quota tests;
 check mirrors, lint, and independent exact-head review before handoff.
+
+## Evidence
+
+On unchanged main the new regressions produced two failures: concurrent fitted
+requests both selected 60 KiB and one refused despite 40 KiB remaining; an older
+raw-write scan replaced a newer 40 KiB result with zero. Independent-owner and
+failed-newer-scan controls passed. The latter test was then strengthened with
+10 KiB present only when the old scan starts, proving it actually publishes.
+
+After implementation: 73 accounting, workspace slice-gate and jail-disk cases
+passed. The strengthened ordering pair and both #4408 provider startup-recovery
+cases passed with imports pinned to this worktree. Original tests are retained.
+No call-site/runtime policy change is enabled. Current main does not yet contain
+#4410; that separately reviewed lease-loss prerequisite remains independent.
+
+Current integration contracts are recorded at
+https://github.com/TinyAssets/TinyAssets/pull/4403#issuecomment-5974858398.
+Code approval does not authorize deployment of a new confinement policy.
