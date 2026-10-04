@@ -392,7 +392,14 @@ def test_malformed_control_catalogue_refuses(tmp_path, reply):
 
 
 def test_control_error_subtype_is_not_an_empty_catalogue(tmp_path):
-    """An upstream refusal must not read as "this account has no models"."""
+    """An upstream refusal must not read as "this account has no models".
+
+    The error envelope carries an otherwise VALID empty-catalogue payload on
+    purpose. Without it the refusal also satisfies the decoder's
+    `response`-is-a-dict check, so the case passed even with subtype validation
+    removed and proved nothing (Codex review 2026-10-04, DISAGREE_EVIDENCE).
+    The subtype is now the only thing left to refuse on.
+    """
     from tinyassets.exceptions import ProviderError
 
     script = '''
@@ -400,6 +407,7 @@ import json, sys
 request = json.loads(sys.stdin.readline())
 print(json.dumps({"type": "control_response", "response": {
     "subtype": "error", "request_id": request["request_id"], "error": "nope",
+    "response": {"models": []},
 }}), flush=True)
 '''
     with pytest.raises(ProviderError, match="^native model discovery unavailable$"):
