@@ -72,6 +72,29 @@ Retain every unprocessed wake, its payload and dedupe/attempt record beyond ordi
 
 ## Server-completed OAuth, web and native
 
+### First web sign-in follow-up (2026-10-04)
+
+Normal web app sign-in uses the existing document-only `/app/owner-sign-in`
+flow with an app-login purpose encoded in its server-minted, persisted state.
+The browser-bound, single-use callback exchanges server-held PKCE, resolves the
+identity, and establishes both the protected owner cookie and the existing app
+refresh cookie. A non-secret completion marker returns to `/app`; the page
+discards stale app credentials and renews from the new HttpOnly refresh cookie.
+The token proxy, refresh handles and app/MCP bearers cannot mint owner sessions.
+Pending logout must finish before starting web login; the public completion
+marker cannot clear logout intent. Owner proof retains its eight-hour expiry,
+independent of seven-day app renewal; expired proof requires protected sign-in.
+Protected-view-only sign-in keeps its existing return behavior and does not
+replace the app's refresh identity. No approval or model-flow binding changes.
+
+Native retains its existing app-held PKCE exchange: the system-browser callback
+bounces to the WebView, where the verifier lives. That browser has no owner cookie
+from this login. Its first inline Connect still requires protected TinyAssets
+sign-in before OpenRouter; subsequent connects reuse the live browser cookie.
+An absent/expired cookie or a different browser requires sign-in again. Removing
+this requires a separately designed browser-bound login and secure app handoff;
+neither a copied launch URL nor a WebView bearer can replace browser proof.
+
 Reuse `/app/model-connect/{operation}` and `/app/model-callback/{flow}`. Every new inline Connect first opens a top-level TinyAssets hop in the popup/system browser. Before generating provider state or redirecting, that hop authenticates the owner's interactive browser session and checks it owns the initiating request/home. Native flows establish this session by interactive sign-in in that system-browser context if absent; a launch URL or native/API bearer cannot establish it or transfer another session's flow. Bind the state at creation to that exact browser session ID and owner/home (and the initiating native session where applicable). Never rebind an existing flow to a session supplied at callback.
 
 Generate PKCE on the SERVER and store the verifier encrypted through existing credential custody; the existing flow row holds only ciphertext/reference. Extend it with server-completion mode, custody reference, initiating browser session reference, flow-cookie binding digest, request revision/digest, task generation and completion/deposit state. Bind state handle digest, owner/home, issuer, redirect URI, client, consent and existing ten-minute flow expiry. The hop sets a flow-specific `__Host-` cookie, Secure, HttpOnly, SameSite=Lax, Path=/, no Domain, with expiry capped by the flow; its opaque server-validated value binds the state digest to that same session. Separate flow cookies permit concurrent flows. The owner-session cookie used here is also Secure, HttpOnly and SameSite=Lax; use a top-level GET callback so both cookies accompany the provider redirect. Only the authorization URL/challenge reaches the provider; neither popup nor system browser needs a verifier or app bearer.

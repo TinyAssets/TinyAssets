@@ -13,12 +13,26 @@ data-loss hole. Fix them after the live user pass ("shape before hardening").
 
 ## First-run model connect (#4452)
 
-1. **Double sign-in on a fresh account.** The `__Host-ta-owner` cookie is set only
-   by `/app/owner-sign-in`, so a brand-new account's first Connect detours through a
-   TinyAssets sign-in before OpenRouter (in the popup on web, in the system browser
-   on native). The App Store reviewer does two sign-ins in Safari and then switches
-   back by hand. Either remove the detour (set the owner session at app sign-in) or
-   say so in the review notes.
+1. **Double sign-in: fixed for fresh web sign-in; native remains.** Normal web
+   sign-in now uses `/app/owner-sign-in?app=1`: the existing server-PKCE,
+   browser-cookie-bound callback sets both `__Host-ta-owner` and the app refresh
+   cookie. The first inline Connect goes directly to OpenRouter. Client-PKCE
+   exchanges, refresh handles and app/MCP/CLI bearers still cannot mint owner
+   proof; copied callbacks, cross-user launches and CSRF remain rejected.
+   Existing signed-in sessions without owner proof still need protected sign-in,
+   as do web sessions after the eight-hour owner cookie expires (app renewal can
+   last seven days). A pending failed logout is completed before new web sign-in.
+   Native app sign-in still opens the system browser, returns the code to the
+   WebView and exchanges it with the WebView-held verifier. Its cookies do not
+   establish owner proof in the system browser. With no live owner cookie there,
+   first Connect still requires TinyAssets sign-in followed by OpenRouter; the
+   completion page tells the user to return to chat manually. This applies to
+   the separate browser context on Android/iOS; this patch adds no iOS handoff
+   support (the existing app-login bounce emits an Android package intent).
+   Later connects reuse a live owner cookie in that same browser. Eliminating
+   the native detour needs a separately designed browser-bound login/app handoff,
+   not a bearer or launch-URL upgrade. Record this remaining flow in App Store
+   review notes. Implementation/test evidence: `tests/test_app_owner_sign_in.py`.
 2. **The second tab looks stuck.** The tab that loses the atomic `take` keeps
    `needsConnection` in memory, polls `/app/me` every 1.5 s, never shows Connected,
    and queues every new message until a reload. `save()` matches only on message
