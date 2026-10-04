@@ -185,6 +185,12 @@ def switched_on(universe_dir: Path, agent: str = "main") -> set[str]:
             "SELECT action_class FROM review_on WHERE agent = ?", (agent,))}
 
 
+def configured_agents(universe_dir: Path) -> set[str]:
+    """Agents with explicit opt-ins, including ones without stored custom rules."""
+    with closing(_connect(universe_dir)) as conn:
+        return {row[0] for row in conn.execute("SELECT DISTINCT agent FROM review_on")}
+
+
 def set_review(universe_dir: Path, action_class: str, enabled: bool, *,
                confirm: bool = False, agent: str = "main") -> None:
     """The owner turns the review on or off for one class (the owner door only)."""

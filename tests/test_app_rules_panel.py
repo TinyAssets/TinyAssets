@@ -129,7 +129,7 @@ _CHECKS = r"""
 """
 
 
-def test_each_consequential_rule_shows_the_owners_review_choice(tmp_path):
+def test_each_consequential_rule_shows_its_check_and_handbacks_keep_it(tmp_path):
     """Reviews default off and every consequential kind is owner-controlled."""
     page, _csp = onboarding.render_app_html()
     funcs = "\n".join(_js_function(page, name) for name in _FUNCS)
@@ -141,3 +141,23 @@ def test_each_consequential_rule_shows_the_owners_review_choice(tmp_path):
     assert proc.returncode == 0, proc.stderr
     assert json.loads(proc.stdout) == [{"check": "Check is off", "disabled": False},
                                        {"check": "Checks first", "disabled": False}]
+
+
+def test_review_default_notice_tracks_explicit_opt_ins(tmp_path):
+    page, _csp = onboarding.render_app_html()
+    funcs = "\n".join(_js_function(page, name) for name in _FUNCS)
+    script = tmp_path / "rules_notice.js"
+    script.write_text(_SHIM + 'const SCENARIO={"confirm": false};\n' + funcs + r'''
+      const notices=[];
+      for(const review_on of [[], ["app.write"], []]){
+        renderRules({...LISTING, review_on});
+        notices.push($("rules-review-notice").textContent);
+      }
+      console.log(JSON.stringify(notices));
+    ''', encoding="utf-8")
+    proc = subprocess.run([_NODE, str(script)], capture_output=True, text=True,
+                          encoding="utf-8", timeout=60)
+    assert proc.returncode == 0, proc.stderr
+    notice = "Checks are now off unless you turn them on"
+    assert json.loads(proc.stdout) == [notice, "", notice]
+    assert 'id="rules-review-notice"' in page

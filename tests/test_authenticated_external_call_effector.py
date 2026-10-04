@@ -337,6 +337,104 @@ def test_owner_allowed_issue_post_reaches_broker_without_a_review(tmp_path, monk
     assert len(loop.recorded) == 1 and loop.recorded[0]["path"] == path
 
 
+@pytest.mark.parametrize("origin", ["live", "session", "unknown", "other-universe", "bad-session"])
+def test_custom_agent_review_holds_external_post(tmp_path, monkeypatch, origin):
+    """An owner opt-in must survive the real effector, including lost provenance."""
+    from contextlib import nullcontext
+    from types import SimpleNamespace
+
+    from tinyassets import engine_steering, turn_interrupt
+    from tinyassets.auth import middleware
+
+    _, universe, _ = _setup(tmp_path, grant_consent_for=False)
+    agent_review.set_review(universe, "app.write", True, agent="researcher")
+    # No custom rule row: the fallback must also find review-only agent settings.
+    # Packet/state fields cannot impersonate main to evade researcher's check.
+    packet = _packet({"message": "hello"})
+    packet["agent_id"] = "main"
+    session = {"session": "thread:agent:researcher:principal:user-1",
+               "bad-session": "thread:agent:main:principal:another-owner"}.get(origin, "")
+    monkeypatch.setattr(engine_steering, "_session_key", lambda: session)
+    monkeypatch.setattr(middleware, "current_identity_or_none",
+                        lambda: SimpleNamespace(user_id="user-1"))
+    context = (turn_interrupt.interactive_turn(
+        "user-1", "another-universe" if origin == "other-universe" else universe.name,
+        agent_id="researcher" if origin == "live" else "main")
+        if origin in {"live", "other-universe"} else nullcontext())
+    with context, agent_review.bound(None, active=False):
+        result = run_authenticated_external_call_effector(
+            node_id="n", output_keys=["out"], run_state={"out": packet, "agent_id": "main"},
+            base_path=universe, run_id="r")
+    assert result.get("error_kind") == "auto_review_unavailable", result
+
+
+@pytest.mark.parametrize("setting", ["review", "rule"])
+def test_custom_agent_settings_do_not_leak_from_main(tmp_path, monkeypatch, setting):
+    from tinyassets import agent_rules, turn_interrupt
+
+    _, universe, _ = _setup(tmp_path, grant_consent_for=False)
+    if setting == "review":
+        agent_review.set_review(universe, "app.write", True)
+    else:
+        agent_rules.set_rule(universe, "app.write", agent_rules.ASK_FIRST)
+    with turn_interrupt.interactive_turn("user-1", universe.name, agent_id="researcher"), \
+            agent_review.bound(None, active=False):
+        result = run_authenticated_external_call_effector(
+            node_id="n", output_keys=["out"], run_state={"out": _packet({})},
+            base_path=universe, run_id="r")
+    assert result.get("error_kind") == "missing_consent", result
+
+
+@pytest.mark.parametrize("agent", ["researcher", None])
+def test_custom_agent_rule_holds_external_post(tmp_path, agent):
+    from tinyassets import agent_rules, turn_interrupt
+
+    _, universe, _ = _setup(tmp_path, grant_consent_for=False)
+    agent_rules.set_rule(universe, "app.write", agent_rules.ASK_FIRST, agent="researcher")
+    live = turn_interrupt.LiveTurn("user-1", universe.name, agent) if agent else None
+    with turn_interrupt.bound(live):
+        result = run_authenticated_external_call_effector(
+            node_id="n", output_keys=["out"], run_state={"out": _packet({})},
+            base_path=universe, run_id="r")
+    assert result.get("error_kind") == "rule_ask_first", result
+
+
+def test_owner_door_opt_in_holds_researcher_post(tmp_path, monkeypatch):
+    import asyncio
+    from types import SimpleNamespace
+
+    from tests.test_agent_rules import _Request
+    from tinyassets import addressed_agents, onboarding, turn_interrupt
+    from tinyassets.api import helpers
+    from tinyassets.auth import middleware
+
+    _, universe, _ = _setup(tmp_path, grant_consent_for=False)
+    monkeypatch.setattr(helpers, "_base_path", lambda: tmp_path)
+    monkeypatch.setattr(onboarding, "onboarding_enabled", lambda: True)
+    monkeypatch.setattr(onboarding, "_app_identity_required", lambda: None)
+    monkeypatch.setattr(onboarding, "app_config", lambda: {"resource": "https://tinyassets.io"})
+    monkeypatch.setattr(middleware, "current_identity",
+                        lambda: SimpleNamespace(user_id="user-1"))
+    monkeypatch.setattr(onboarding, "_read_home", lambda identity, **_kw: universe.name)
+
+    def resolve(_base, *, universe_id, owner, agent_id):
+        assert (universe_id, owner, agent_id) == (universe.name, "user-1", "researcher")
+        return SimpleNamespace(agent_id="researcher")
+
+    monkeypatch.setattr(addressed_agents, "resolve", resolve)
+    response = asyncio.run(onboarding._handle_rules(_Request("POST", {
+        "agent_id": "researcher", "review": {"action_class": "app.write", "enabled": True}})))
+    assert response.status_code == 200
+    assert json.loads(response.body)["review_on"] == ["app.write"]
+    assert agent_review.switched_on(universe, "main") == set()
+    with turn_interrupt.interactive_turn("user-1", universe.name, agent_id="researcher"), \
+            agent_review.bound(None, active=False):
+        result = run_authenticated_external_call_effector(
+            node_id="n", output_keys=["out"], run_state={"out": _packet({})},
+            base_path=universe, run_id="r")
+    assert result.get("error_kind") == "auto_review_unavailable", result
+
+
 # --------------------------------------------------------------------------- #
 # (c) out-of-allowlist path is refused BEFORE any socket
 # --------------------------------------------------------------------------- #

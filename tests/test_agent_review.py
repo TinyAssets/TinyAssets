@@ -46,7 +46,7 @@ def _review(universe, model, *, action=ACTION, evidence=""):
                                            evidence=evidence)
 
 
-def test_outside_a_runner_an_owner_configured_review_is_held(tmp_path):
+def test_outside_a_runner_a_consequential_action_is_held(tmp_path):
     universe = _universe(tmp_path)
     refusal = agent_review.review_refusal(universe, action=ACTION, rule="r")
     assert refusal["error_kind"] == "auto_review_unavailable"
@@ -157,7 +157,7 @@ def test_switching_the_check_off_needs_confirmation(tmp_path):
 
 
 @pytest.mark.parametrize("action_class", ["money.move", "security.change", "access.grant"])
-def test_the_owner_controls_review_for_handback_classes(tmp_path, action_class):
+def test_the_handback_classes_keep_the_check(tmp_path, action_class):
     universe = _universe(tmp_path)
     agent_review.set_review(universe, action_class, True)
     assert action_class in agent_review.switched_on(universe)
