@@ -651,7 +651,8 @@ def _source_without_literals(source: str) -> str:
 def dangerous_source_patterns(source: str, patterns: tuple[str, ...]) -> list[str]:
     """Pre-check with the original substring rules, excluding literal/comment text.
 
-    This is not a Python security analysis: the OS jail is the boundary.
+    This is not a Python security analysis: sandboxed code uses the OS jail
+    as its boundary. Node bids run in-process behind approval/hash checks.
     If tokenization fails, scan the unmodified source (fail closed on masking).
     """
     if "\x00" in source:
@@ -1912,7 +1913,7 @@ def source_code_problems(source_code: str, node_id: str) -> list[str]:
         )
     try:
         compile(src, f"<node {node_id}>", "exec")
-    except (SyntaxError, ValueError) as exc:
+    except (SyntaxError, ValueError, RecursionError) as exc:
         problems.append(f"Node '{node_id}' source_code does not parse: {exc}")
     return problems
 

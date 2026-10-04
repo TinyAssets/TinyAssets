@@ -154,3 +154,37 @@ def test_legacy_compile_value_error_is_reported(monkeypatch):
         monkeypatch.setattr(module, "compile", null_byte_compile, raising=False)
     assert "null bytes" in " ".join(NodeSandbox().validate_source("pass"))
     assert "null bytes" in " ".join(source_code_problems("pass", "n"))
+
+
+@pytest.mark.parametrize("source", [
+    "profile = state['profile']; profile.get('name')",
+    "code = 'text'; code.strip()", "trace = []; trace.append(1)",
+    "types = 'a'; types.count('a')", "course.modules",
+    "retrieval = 1", "is_open = True", "recompile = 1",
+    "class Child(Base):\n    def __init__(self): super().__init__()",
+])
+def test_ordinary_names_and_constructors_remain_allowed(source):
+    test_prose_is_allowed_at_every_source_boundary(source)
+
+
+def test_deep_attribute_source_does_not_escape_validation():
+    source = "x = a" + ".a" * 3000
+    node = SimpleNamespace(approved=True, source_code=source)
+    # Interpreter versions differ in whether this valid expression exceeds
+    # their parser/compiler depth. Either validation result must be returned.
+    assert isinstance(NodeSandbox().validate_source(source), list)
+    assert isinstance(source_code_problems(source, "n"), list)
+    assert isinstance(_scan_dangerous_patterns(source), str)
+    assert isinstance(_producer_sandbox_reject("n", lambda _: node), str)
+
+
+def test_compiler_exhaustion_returns_diagnostics(monkeypatch):
+    from tinyassets import graph_compiler, node_sandbox
+
+    def exhausted(*args, **kwargs):
+        raise RecursionError("too deeply nested")
+
+    monkeypatch.setattr(graph_compiler, "compile", exhausted, raising=False)
+    monkeypatch.setattr(node_sandbox, "compile", exhausted, raising=False)
+    assert "too deeply nested" in " ".join(NodeSandbox().validate_source("x = 1"))
+    assert "too deeply nested" in " ".join(source_code_problems("x = 1", "n"))

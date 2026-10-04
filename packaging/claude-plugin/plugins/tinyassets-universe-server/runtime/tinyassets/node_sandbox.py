@@ -2520,6 +2520,8 @@ class NodeSandbox:
 
         try:
             patterns = dangerous_source_patterns(source_code, tuple(FORBIDDEN_PATTERNS))
+        except RecursionError:
+            return ["Source code is too deeply nested"]
         except (SyntaxError, ValueError):
             patterns = []  # Report the syntax error below, with its location.
         for pattern in patterns:
@@ -2532,7 +2534,7 @@ class NodeSandbox:
         # Basic syntax check
         try:
             compile(source_code, "<node>", "exec")
-        except (SyntaxError, ValueError) as exc:
+        except (SyntaxError, ValueError, RecursionError) as exc:
             errors.append(f"Syntax error: {exc}")
 
         return errors

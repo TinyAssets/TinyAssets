@@ -55,7 +55,8 @@ def _producer_sandbox_reject(
     Layer 1: node must resolve in the registry with ``approved=True``.
     Layer 2: pre-check the source outside literals/comments for
     any pattern in ``_BID_DANGEROUS_PATTERNS`` (wider than the
-    wrapper-node list used by Phase D). The OS jail is the boundary.
+    wrapper-node list used by Phase D). This scan is not a security boundary;
+    the in-process bid executor requires approval and a matching source hash.
 
     ``node_lookup_fn`` is ``None`` or a callable
     ``(node_def_id) -> NodeDefinition | None``. If ``None``, the
@@ -77,7 +78,7 @@ def _producer_sandbox_reject(
     source = getattr(node, "source_code", "") or ""
     try:
         patterns = dangerous_source_patterns(source, _BID_DANGEROUS_PATTERNS)
-    except (SyntaxError, ValueError):
+    except (SyntaxError, ValueError, RecursionError):
         return "invalid_syntax"
     if patterns:
         return f"dangerous_pattern:{patterns[0]}"

@@ -3,13 +3,13 @@
 Branch: `fix/app-ui-run-and-code-checks`, PR #4442. Review fixes and push only;
 deployment and real-user verification are still pending.
 
-Final revision validation: **580 passed / 6 POSIX skips on Windows** (Python
+Before concurrent-commit reconciliation: **580 passed / 6 POSIX skips on Windows** (Python
 3.14.3), including all 16 browser recovery cases; **570 passed / no skips in the
 Linux oracle** (Python 3.11.16, bwrap 0.12.0, uid 1001). Both runs cover source
 guards, bids, sandbox, the affected heavy branch-runner file, approval receipts,
 path-I/O, storage accounting, failed-run reads, onboarding and owner-door reads.
-All pytest base temp directories were outside the repository. The 82 source-scan
-regressions pass on both interpreters. Ruff, mirror regeneration/import probe,
+All pytest base temp directories were outside the repository. The initial 82 source-scan
+regressions passed on both interpreters. Ruff, mirror regeneration/import probe,
 whole-tree mirror parity and diff whitespace checks pass. Pattern-list ASTs were
 compared against `origin/main` and are identical. The other three fixes are
 unchanged; no full suite or sub-agents were used. Deployment and real-user
@@ -38,7 +38,9 @@ Python `tokenize` STRING, COMMENT and f-string literal-part tokens are replaced
 with equal-length whitespace, preserving line endings and all code offsets.
 Tokenization failures (including ERRORTOKEN) scan the unmodified source instead;
 null bytes still return syntax diagnostics/reason codes at all four callers.
-This is a pre-check, not a Python security analysis. The OS jail is the boundary.
+This is a pre-check, not a Python security analysis. The OS jail is the boundary
+for sandboxed code nodes; the existing node-bid executor runs in-process behind
+approval and source-hash checks, and this scan cannot make it a Python jail.
 
 All nine round-2 ordinary-code examples pass: `is_open = True`, `retrieval = []`,
 `super().__init__()`, `x.__class__`, `code = s['code']; code.strip()`,
@@ -159,3 +161,21 @@ terminal_json) and the corresponding run. For native sends, correlate `/mcp`
 access/edge request IDs, SSE/5xx diagnostics, provider completion and service
 restart logs in the same windows. Native history can establish what was saved,
 but cannot prove a particular identical send's receipt without that correlation.
+
+## Concurrent source revision reconciliation
+
+The first push was rejected because `11e62cd03c` reached the branch during
+validation. Its AST-matcher changes are superseded by this requested token/raw
+scan; its ordinary-code and compiler-exhaustion regressions are retained, as
+are RecursionError diagnostics for compilation. The AST-parser monkeypatch test
+is removed with the AST parser. The documentation retains its correction that
+node bids execute in-process behind approval/hash checks. Both commits remain
+in history; the other three fixes remain unchanged.
+
+After reconciliation: **335 passed / 6 POSIX skips on Windows; 341 passed / no
+skips in the Linux oracle**, including all 93 source-scan cases on each Python
+version. Rechecked all four source callers, the affected heavy branch runner,
+approval receipts and path-I/O tests, with external base temp directories.
+Mirror regeneration/import probe, full parity, Ruff and whitespace checks pass
+again. The earlier storage and app proofs remain applicable: those files and
+tests are unchanged by either source revision.

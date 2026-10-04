@@ -61,10 +61,10 @@ def _strip_producer_keys(inputs: dict) -> dict:
 
 
 def _scan_dangerous_patterns(source: str) -> str:
-    """Return the first pre-check failure; the OS jail is the boundary."""
+    """Return the first pre-check failure; this is not a security boundary."""
     try:
         patterns = dangerous_source_patterns(source, _BID_DANGEROUS_PATTERNS)
-    except (SyntaxError, ValueError):
+    except (SyntaxError, ValueError, RecursionError):
         return "invalid_syntax"
     return patterns[0] if patterns else ""
 
