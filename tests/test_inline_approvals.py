@@ -157,13 +157,17 @@ def test_secrets_and_forged_provenance_are_rejected(case):
         bound.validate_action(raw)
 
 
-def test_wake_retries_until_ack_and_retains_tombstone(case):
+def test_wake_retries_until_ack_and_retains_tombstone(case, monkeypatch):
     from tinyassets.request_continuations import recover
 
     home, card, session, _ = case
     preview = bound.preview(home, card["request_id"], session)
     bound.decide(home, decision(preview, "deny"), session)
+    now = time.time()
+    monkeypatch.setattr(time, "time", lambda: now)
     assert recover(home, lambda *a: {"error": "no_power"}) == 0
+    assert recover(home, lambda *a: pytest.fail("Retry backoff bypassed")) == 0
+    now += 60
     assert recover(home, lambda *a: {"reply": "Continued"}) == 1
     assert recover(home, lambda *a: pytest.fail("Duplicate computation")) == 0
     with closing(bound.connect(home)) as conn:
@@ -272,11 +276,14 @@ def test_bearer_answer_alias_cannot_execute_bound_action(case, monkeypatch):
         assert result["error"] == "interactive_approval_required"
 
 
-def test_interrupted_and_fenced_wake_attempts_do_not_ack(case):
+def test_interrupted_and_fenced_wake_attempts_do_not_ack(case, monkeypatch):
     from tinyassets.request_continuations import recover
 
     home, card, session, _ = case
     bound.decide(home, decision(bound.preview(home, card["request_id"], session), "deny"), session)
+
+    now = time.time()
+    monkeypatch.setattr(time, "time", lambda: now)
 
     def interrupted(*args):
         raise RuntimeError("process interrupted before processed ack")
@@ -296,7 +303,10 @@ def test_interrupted_and_fenced_wake_attempts_do_not_ack(case):
             conn.commit()
         return {"reply": "cannot commit"}
 
+    assert recover(home, lambda *a: pytest.fail("Crash backoff bypassed")) == 0
+    now += 60
     assert recover(home, fenced) == 0
+    now += 120
     assert recover(home, lambda *a: {"reply": "recovered"}) == 1
     with closing(bound.connect(home)) as conn:
         row = conn.execute("SELECT * FROM activity_events WHERE wake_required=1").fetchone()
@@ -356,3 +366,85 @@ def test_review_setting_revision_invalidates_even_if_switched_back(case):
     agent_review.set_review(home, "app.write", False, confirm=True)
     with pytest.raises(bound.RequestRefused, match="Authority changed"):
         bound.decide(home, decision(preview), session)
+
+
+@pytest.mark.parametrize("stale", ["expiry", "stop", "policy"])
+def test_stale_card_can_be_skipped_but_never_approved(case, stale):
+    home, card, session, _ = case
+    if stale == "expiry":
+        with closing(bound.connect(home)) as conn:
+            conn.execute("UPDATE activities SET task_expires_at=1")
+            conn.commit()
+    elif stale == "stop":
+        bound.stop(home, "user-1", "main")
+    else:
+        agent_rules.set_rule(home, "app.write", "hand_off")
+    preview = bound.preview(home, card["request_id"], session)
+    assert preview["approval_unavailable"]
+    with pytest.raises(bound.RequestRefused):
+        bound.decide(home, decision(preview), session)
+    result = bound.decide(home, decision(preview, "skip"), session)
+    assert result["status"] == "answered"
+    assert not pending_requests.list_pending(home)
+    with closing(bound.connect(home)) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM effect_intents").fetchone()[0] == 0
+
+
+@pytest.mark.parametrize(
+    "failure", [{"status": "failed"}, {"error": "no_power"}, {"interrupted": True}]
+)
+def test_failed_wake_persists_backoff_before_running_again(case, monkeypatch, failure):
+    from tinyassets import request_continuations as wakes
+
+    home, card, session, _ = case
+    bound.decide(home, decision(bound.preview(home, card["request_id"], session), "deny"), session)
+    now = time.time()
+    monkeypatch.setattr(wakes.time, "time", lambda: now)
+    calls = []
+
+    def fail(*args):
+        calls.append(now)
+        return failure
+
+    assert wakes.recover(home, fail) == 0
+    for _ in range(5):
+        assert wakes.recover(home, fail) == 0
+    assert len(calls) == 1
+    with closing(bound.connect(home)) as conn:
+        row = conn.execute("SELECT * FROM activity_events WHERE wake_required=1").fetchone()
+        assert row["attempt_count"] == 1
+        assert row["next_attempt_at"] == now + 60
+        assert row["processed_at"] is None
+    now += 60
+    assert wakes.recover(home, fail) == 0
+    assert len(calls) == 2
+    now += 119
+    assert wakes.recover(home, fail) == 0
+    assert len(calls) == 2
+    now += 1
+    assert wakes.recover(home, lambda *a: {"reply": "recovered"}) == 1
+
+
+def test_stop_interrupts_live_turn_even_when_approval_store_is_busy(case, monkeypatch):
+    import asyncio
+
+    from tests.test_turn_interrupt import _Request
+    from tinyassets import onboarding
+    from tinyassets.auth import middleware
+    from tinyassets.owner_control import control
+
+    home, _, _, _ = case
+    monkeypatch.setattr(onboarding, "onboarding_enabled", lambda: True)
+    monkeypatch.setattr(onboarding, "_app_identity_required", lambda: None)
+    monkeypatch.setattr(
+        middleware, "current_identity", lambda: Identity(user_id="user-1", username="owner")
+    )
+    with control(home), turn_interrupt.interactive_turn("user-1", home.name) as live:
+        response = asyncio.run(
+            onboarding._handle_turn_interrupt(_Request({"universe_id": home.name}))
+        )
+        assert live.requested()
+        assert response.status_code == 503
+        payload = json.loads(response.body)
+        assert payload["interrupted"] == 1
+        assert payload["retryable"] is True

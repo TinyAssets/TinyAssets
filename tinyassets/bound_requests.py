@@ -60,6 +60,8 @@ def _schema(conn):
             "payload_json": "TEXT NOT NULL DEFAULT '{}'",
             "wake_required": "INTEGER NOT NULL DEFAULT 0",
             "attempt_ref": "TEXT NOT NULL DEFAULT ''",
+            "attempt_count": "INTEGER NOT NULL DEFAULT 0",
+            "next_attempt_at": "REAL NOT NULL DEFAULT 0",
             "processed_at": "REAL",
             "result_json": "TEXT",
         },
@@ -364,12 +366,19 @@ def card(conn, request_id):
     }
 
 
-def _current(home, conn, request_id, owner):
+def _owned(home, conn, request_id, owner):
     result = card(conn, request_id)
     env = result["action"]["envelope"]
     subject = env["subject"]
     if subject["owner"] != owner or subject["home"] != home.name:
         raise RequestRefused("Request not found.")
+    return result
+
+
+def _current(home, conn, request_id, owner):
+    result = _owned(home, conn, request_id, owner)
+    env = result["action"]["envelope"]
+    subject = env["subject"]
     task = conn.execute(
         "SELECT * FROM activities WHERE activity_id=?", (subject["task_id"],)
     ).fetchone()
@@ -404,12 +413,16 @@ def stop(home, owner, agent):
 def preview(home, request_id, session, *, draft=None, edit=False):
     owner = json.loads(session["identity_json"])["user_id"]
     with control(home), closing(connect(home)) as conn:
-        current = card(conn, request_id)
-        if current["action"]["envelope"]["subject"]["owner"] != owner:
-            raise RequestRefused("Request not found.")
+        current = _owned(home, conn, request_id, owner)
         if current["status"] not in ("pending", "deferred", "unresolved"):
             return current
-        current = _current(home, conn, request_id, owner)
+        unavailable = ""
+        try:
+            current = _current(home, conn, request_id, owner)
+        except RequestRefused as exc:
+            if edit:
+                raise
+            unavailable = str(exc)
         if edit and current["status"] == "unresolved":
             raise RequestRefused("An uncertain action cannot be edited and resent.")
         if edit:
@@ -431,14 +444,18 @@ def preview(home, request_id, session, *, draft=None, edit=False):
             "revision": current["revision"],
             "action_sha256": current["action_sha256"],
             "scope": "once",
-            "expires_at": min(time.time() + 300, session["expires_at"], current["expires_at"]),
+            "dismiss_only": bool(unavailable),
+            "expires_at": min(
+                time.time() + 300, session["expires_at"],
+                time.time() + 300 if unavailable else current["expires_at"],
+            ),
         }
         conn.execute(
             "UPDATE pending_requests SET decision_json=? WHERE request_id=?",
             (json.dumps(decision), request_id),
         )
         conn.commit()
-        return {**current, "approval_token": token}
+        return {**current, "approval_token": token, "approval_unavailable": unavailable}
 
 
 def _wake(conn, current, outcome):
@@ -495,14 +512,13 @@ def _decide(home, data, session):
     owner = json.loads(session["identity_json"])["user_id"]
     request_id = data.get("request_id", "")
     with control(home), closing(connect(home)) as conn:
-        current = card(conn, request_id)
+        current = _owned(home, conn, request_id, owner)
         env = current["action"]["envelope"]
-        if env["subject"]["owner"] != owner:
-            raise RequestRefused("Request not found.")
         # Duplicate clicks may observe the committed state, never reserve again.
         if current["status"] not in ("pending", "deferred", "unresolved"):
             return current
-        current = _current(home, conn, request_id, owner)
+        if data.get("decision") == "approve":
+            current = _current(home, conn, request_id, owner)
         if (
             data.get("expected_revision") != current["revision"]
             or data.get("action_sha256") != current["action_sha256"]
@@ -535,6 +551,7 @@ def _decide(home, data, session):
                 or stored.get("expires_at", 0) <= time.time()
                 or stored.get("revision") != current["revision"]
                 or stored.get("choice")
+                or (choice == "approve" and stored.get("dismiss_only"))
             ):
                 raise RequestRefused(
                     "Approval expired or belongs to another session. Preview again."

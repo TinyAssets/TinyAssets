@@ -62,7 +62,8 @@ def _recover(home, run):
                 continue
         conn.commit()
         wakes = conn.execute(
-            "SELECT * FROM activity_events WHERE wake_required=1 AND processed_at IS NULL"
+            "SELECT * FROM activity_events WHERE wake_required=1 AND processed_at IS NULL "
+            "AND next_attempt_at<=?", (time.time(),)
         ).fetchall()
     for wake in wakes:
         payload = json.loads(wake["payload_json"])
@@ -81,19 +82,24 @@ def _recover(home, run):
                 ):
                     continue  # Retained, visibly held. Stop is never a processed ack.
                 attempt = secrets.token_hex(16)
+                delay = min(3600, 60 * 2 ** min(wake["attempt_count"], 6))
+                # Reserve retry time before computation: crashes and exceptions
+                # obey the same persisted backoff as returned failures.
                 conn.execute(
-                    "UPDATE activity_events SET attempt_ref=? "
+                    "UPDATE activity_events SET attempt_ref=?,attempt_count=attempt_count+1,"
+                    "next_attempt_at=?,line='Continuation pending; retry scheduled if interrupted' "
                     "WHERE dedupe_key=? AND processed_at IS NULL",
-                    (attempt, wake["dedupe_key"]),
+                    (attempt, time.time() + delay, wake["dedupe_key"]),
                 )
                 conn.commit()
             result = run(home, payload)
             if (
                 result is None
                 or result.get("error")
+                or result.get("interrupted")
                 or result.get("status") in ("failed", "interrupted")
             ):
-                continue  # No power/context stays eligible. A failure is not completion.
+                continue  # Retained for its scheduled retry; failure is not completion.
             with control(home), closing(bound_requests.connect(home)) as conn:
                 conn.execute("BEGIN IMMEDIATE")
                 count += conn.execute(
