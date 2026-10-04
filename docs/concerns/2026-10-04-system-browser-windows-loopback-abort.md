@@ -1,0 +1,36 @@
+---
+severity: P2
+title: System-copy browser proof records a Windows loopback abort
+filed: '2026-10-04'
+summary: 'Two Windows browser runs reached the warning and copy assertions but failed on connection aborts. Linux hosted proof must distinguish platform transport behavior from product regressions.'
+---
+
+# System-copy browser proof records a Windows loopback abort
+
+On 2026-10-04 in `fix/copied-system-brings-its-agents`, Python 3.14 / Windows,
+`test_shipped_frame_previews_system_trusted_rail_copies_and_navigation_persists`
+failed twice at its final `assert not failures`. All preceding browser checks,
+including the new no-chat-agents warning, actual copy, and persisted navigation,
+completed. The fixture recorded `ConnectionAbortedError: [WinError 10053]` while
+writing an HTTP response in `system_server.Handler.reply`; its error reply also
+hit the closed socket. This is not recorded as a passing browser test.
+
+The second run used only that test and a fresh external basetemp:
+
+```powershell
+python -m pytest tests/test_command_center_system_browser.py::test_shipped_frame_previews_system_trusted_rail_copies_and_navigation_persists -q --tb=short --basetemp C:/Users/Jonathan/AppData/Local/Temp/ta-copied-agents-browser-retry
+```
+
+The neighboring `test_public_instruction_template_copies_private_agent_and_opens_its_chat_without_model`
+passed. No fixture workaround or relaxed assertion was added. Per AGENTS.md's
+same-finding-twice rule, hand this transport failure to a separate investigation;
+establish baseline behavior and distinguish navigation-cancelled requests from
+failed application requests before changing the fixture. Delete this concern
+when the Windows browser proof passes with that distinction verified.
+
+The PR #4434 consent wording follow-up reproduced this in both the test above
+and `test_visual_preview_has_no_owner_bridge_and_copy_requires_visible_consent`.
+The four related test files finished with 193 passed, 1 POSIX-only skip, and
+these 2 failures. A focused retry of both tests with a fresh external basetemp
+failed at the same final `assert not failures`, again after their UI assertions
+completed. No test assertion or transport handling was relaxed.
