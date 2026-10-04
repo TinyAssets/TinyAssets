@@ -177,12 +177,12 @@ If billing is not switched on, there is nothing to do.
 
 ---
 
-## Store launch: three founder steps (2026-10-04)
+## Store launch: two founder steps (2026-10-04)
 
 Play needs founder testing actions; Apple also needs a verified live connection flow.
 Apple asked for more information
 (Guideline 2.1) and has build 3; Play approved build 4 on the closed track. The map is
-`docs/ops/mobile-launch-handoff.md`. The three steps are independent, so do them in any
+`docs/ops/mobile-launch-handoff.md`. The two steps are independent, so do them in any
 order. Only the Play one is on a 14-day clock, so it goes first.
 
 ### Google Play: opt in and recruit the 12 testers
