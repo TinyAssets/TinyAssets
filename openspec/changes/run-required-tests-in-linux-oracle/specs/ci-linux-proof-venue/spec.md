@@ -1,8 +1,8 @@
 ## ADDED Requirements
 
 ### Requirement: Jail-backed tests execute in the Linux oracle, never skip
-The `real-browser-proof` job and both paths of the `required-tests-shard` job
-SHALL run their tests inside the Linux oracle container as the unprivileged
+The browser-proof job and both required-test shard paths SHALL run their tests
+inside the Linux oracle container as the unprivileged
 oracle user, behind the oracle's bubblewrap probe. A venue in which bubblewrap
 cannot create a jail SHALL fail the job before any test runs.
 

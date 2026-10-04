@@ -64,11 +64,12 @@ from __future__ import annotations
 import argparse
 import hashlib
 import os
+import posixpath
 import shlex
 import shutil
 import subprocess
 import sys
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 IMAGE_REPO = "tinyassets-linux-oracle"
 DOCKERFILE = Path("docker/linux-oracle.Dockerfile")
@@ -241,6 +242,8 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    if args.required_runner:
+        _required_runner_command(args)  # refuse before Docker or filesystem effects
 
     if shutil.which("docker") is None:
         raise SystemExit("[oracle] docker is not on PATH")
@@ -280,7 +283,9 @@ def _required_runner_command(args: argparse.Namespace) -> str:
     junit += [
         runner_args[i + 1] for i, a in enumerate(runner_args[:-1]) if a == "--junit"
     ]
-    if not args.out or len(junit) != 1 or not junit[0].startswith("/out/"):
+    output = PurePosixPath(posixpath.normpath(junit[0])) if len(junit) == 1 else None
+    if (not args.out or output is None or not output.is_relative_to("/out")
+            or output == PurePosixPath("/out") or junit[0].endswith("/")):
         raise SystemExit(
             "[oracle] --required-runner wants --out DIR and exactly one "
             "--junit /out/<name>.xml, so the junit and its manifest reach DIR"

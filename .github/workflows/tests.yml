@@ -298,8 +298,9 @@ jobs:
       # WHERE THE SHARD RUNS: the Linux oracle container, as uid 1001 -- the
       # venue linux-jail-proof already uses (its header has the why). On the
       # bare runner bubblewrap cannot make a jail, so every jail-backed test in
-      # the required surface, the custom-UI preview proofs among them, SKIPPED
-      # and the gate read green. The image carries the dependencies, the
+      # the required surface skips. The browser no-skip assertion rejects the
+      # preview skips; ordinary jail cases count toward the skip budget.
+      # The image carries the dependencies, the
       # `browser` extra and Chromium (docker/linux-oracle.Dockerfile), so the
       # host installs nothing. The container gets linux-jail-proof's
       # per-container exceptions and nothing more: seccomp and systempaths

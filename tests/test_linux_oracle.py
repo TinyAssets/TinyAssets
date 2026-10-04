@@ -299,9 +299,34 @@ def test_required_runner_refuses_outputs_the_caller_would_never_see():
     with pytest.raises(SystemExit, match="--out DIR"):
         _runner_command()  # no --out
     for bad in (["--shard", "1/6"], ["--junit", "shard-out/j.xml"],
+                ["--junit", "/out/../tmp/lost.xml"], ["--junit", "/out"],
+                ["--junit", "/out/a/.."], ["--junit", "/out/dir/"],
                 ["--junit", "/out/a.xml", "--junit=/out/b.xml"]):
         with pytest.raises(SystemExit, match="--out DIR"):
             _runner_command("--out", "/o", runner_args=bad)
+
+
+def test_invalid_required_runner_refuses_before_any_docker_or_output_effect(monkeypatch):
+    import pytest
+
+    def unexpected(*_args, **_kwargs):
+        pytest.fail("invalid required runner reached a Docker or output side effect")
+
+    monkeypatch.setattr(linux_oracle.shutil, "which", unexpected)
+    monkeypatch.setattr(linux_oracle.subprocess, "run", unexpected)
+    monkeypatch.setattr(linux_oracle, "_build", unexpected)
+    monkeypatch.setattr(Path, "mkdir", unexpected)
+    for bad in ("--no-bwrap", "--as-root", "--shell"):
+        with pytest.raises(SystemExit, match="--required-runner refuses"):
+            linux_oracle.main([
+                "--required-runner", "--build", "--out", "/o", bad,
+                "--", "--junit", "/out/j.xml",
+            ])
+    with pytest.raises(SystemExit, match="--out DIR"):
+        linux_oracle.main([
+            "--required-runner", "--build", "--out", "/o",
+            "--", "--junit", "/out/../lost.xml",
+        ])
 
 
 def test_default_mode_is_still_pytest():

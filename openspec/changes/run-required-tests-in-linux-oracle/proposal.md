@@ -20,8 +20,9 @@ those tests skip:
   cases of `tests/test_ui_preview.py`, 0 skipped.
 
 The same is true of the merge gate. `required-tests` runs its six shards on the
-bare runner, so every jail-backed test in the required surface skips there and
-the gate reads green without executing them. A skip is not a pass.
+bare runner, so jail-backed tests skip there. The required browser no-skip
+assertion rejects the skipped preview cases; ordinary jail cases count toward
+the skip budget. The current venue cannot supply the required preview proof.
 
 `linux-jail-proof` already runs in the oracle for exactly this reason. This
 change moves the two remaining venues onto it.
