@@ -94,8 +94,11 @@ def daily_cap_for_host(host):
 
 
 def daily_cap_offers():
-    """Installed daily-limit facts the app words its daily-cap card from."""
-    return [{"host": host, **offer} for host, offer in sorted(_DAILY_CAPS.items())]
+    """Public daily-limit copy; internal model classification stays installed-only."""
+    fields = ("name", "free_requests_per_day", "credit_requests_per_day",
+              "credit_amount", "credit_url", "reset_timezone")
+    return [{"host": host, **{key: deepcopy(offer[key]) for key in fields if key in offer}}
+            for host, offer in sorted(_DAILY_CAPS.items())]
 
 
 def source_for_host(host):
