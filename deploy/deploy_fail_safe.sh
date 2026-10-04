@@ -322,6 +322,39 @@ sys.exit(0 if ok else 1)
 LAYOUT_PY
   )
 }
+layout_allows_candidate() {  # $1 = marker path; $2 = immutable candidate image
+  local marker="$1" candidate="$2" dir supported
+  # Query the pulled candidate's own declaration, never the host checkout or
+  # the running image. No data mount: this probe must not run a migration.
+  supported="$(timeout 90 docker run --rm --memory=512m --memory-swap=512m --network=none \
+    --entrypoint python "$candidate" -c 'import json; from tinyassets.storage_layout import KNOWN_LAYOUTS; print(json.dumps(sorted(KNOWN_LAYOUTS)))')" || return 1
+  dir="$(dirname "$marker")"
+  [ -d "$dir" ] || return 1
+  (
+    exec 8>>"$dir/.layout.lock" || exit 1
+    flock -s -n 8 || exit 1
+    python3 - "$marker" "$supported" <<'CANDIDATE_LAYOUT_PY'
+import json
+import sys
+
+try:
+    supported = json.loads(sys.argv[2])
+    if (not isinstance(supported, list) or not supported
+            or any(type(n) is not int or n < 1 for n in supported)):
+        sys.exit(1)
+    try:
+        with open(sys.argv[1], encoding="utf-8") as handle:
+            doc = json.load(handle)
+    except FileNotFoundError:
+        doc = {"layout": 1, "state": "stable"}
+except (OSError, ValueError):
+    sys.exit(1)
+ok = (isinstance(doc, dict) and type(doc.get("layout")) is int
+      and doc["layout"] in supported and doc.get("state") == "stable")
+sys.exit(0 if ok else 1)
+CANDIDATE_LAYOUT_PY
+  )
+}
 # Refuse and leave the service DOWN: the remedy is restore-from-backup, and an
 # older image serving on newer data is the failure this guard exists to stop.
 refuse_on_layout() {  # $1 = what was about to start
@@ -1302,12 +1335,18 @@ if ! timeout 90 docker run --rm --memory=512m --memory-swap=512m --network=none 
 fi
 log "candidate image loads cleanly"
 
-# --- 3a. the data layout must be one every image understands --------------
-# (tinyassets/storage_layout.py). Checked before anything is mutated, for every
-# mode: --restore-bundle converges an OLDER image too.
+# --- 3a. the candidate must understand the stable data layout -------------
+# A normal deploy reads the candidate's declaration. Explicit bundle rollback
+# keeps the unrestricted rollback guard, as does automatic rollback below.
 LAYOUT_MARKER="$(layout_marker_path)" || LAYOUT_MARKER=""
-if [ -z "$LAYOUT_MARKER" ] || ! layout_allows_any_image "$LAYOUT_MARKER"; then
-  err "data layout check failed before converging ${NEW_IMAGE}: the marker is not layout 1 / stable, cannot be read, or a migration holds the layout lock; prod untouched"
+if [ -z "$LAYOUT_MARKER" ] || ! {
+  if [ "$RESTORE_BUNDLE" = "1" ]; then
+    layout_allows_any_image "$LAYOUT_MARKER"
+  else
+    layout_allows_candidate "$LAYOUT_MARKER" "$NEW_IMAGE"
+  fi
+}; then
+  err "data layout check failed before converging ${NEW_IMAGE}: incompatible or unreadable candidate/layout, unfinished or locked migration, or rollback requires layout 1 / stable; prod untouched"
   echo "deploy_result=layout_refused"
   exit 1
 fi

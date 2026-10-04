@@ -1020,7 +1020,36 @@ def _walk_home_without_following(home: Path) -> tuple[str, ...]:
                         "unclassified home operational store: "
                         f"{path.relative_to(home)}"
                     )
+    blockers.extend(_relocated_home_store_blockers(home))
     return tuple(blockers)
+
+
+def _relocated_home_store_blockers(home: Path) -> list[str]:
+    """Stores that belong to this home but no longer live inside it.
+
+    Platform state that decides what a command center may do moved out of the
+    command-center folder on 2026-10-03 (``storage/platform_state_move.py``),
+    because the command center could write it. This walk only sees inside the
+    home, so without this the relocated stores would simply stop being noticed:
+    today ``.effector_consents.db`` raises a "no scoped-reset adapter" blocker,
+    and after the move the walk would find nothing and the reset would proceed
+    while leaving the consents untouched.
+
+    That turns a loud refusal into a silent incompleteness, which is the worse
+    of the two. So the blocker is raised from the new location instead, keeping
+    today's behaviour exactly until a reset adapter exists for it.
+    """
+    from tinyassets.storage.effector_consents import consents_db_path
+
+    out: list[str] = []
+    relocated = consents_db_path(home)
+    if relocated.exists():
+        out.append(
+            "home operational store has no scoped-reset adapter: "
+            f"{relocated.name} (relocated outside the home, see "
+            "storage/platform_state_move.py)"
+        )
+    return out
 
 
 def _reset_state_digest(
