@@ -38,6 +38,7 @@ on:
       # headers, and the page that hosts it.
       - "tinyassets/onboarding/app_ui.js"
       - "tinyassets/onboarding/ui_frame.py"
+      - "tinyassets/ui_preview.py"
       - "tinyassets/onboarding/app.html"
       - "pyproject.toml"
       # The proofs.
@@ -48,6 +49,7 @@ on:
       - "tests/test_app_two_surfaces_browser.py"
       - "tests/test_command_center_system_browser.py"
       - "tests/test_custom_ui_real_browser.py"
+      - "tests/test_ui_preview.py"
       - "tests/test_connect_free_ai_real_browser.py"
   workflow_dispatch:
 
