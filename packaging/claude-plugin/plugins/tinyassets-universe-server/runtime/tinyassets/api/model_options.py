@@ -278,7 +278,11 @@ def _collect(base, owner, uid):
                     failed[provider] = "source_revoked"
             for provider, snapshot in snapshots.items():
                 try:
-                    _assert_plan_snapshot(snapshot)
+                    _assert_plan_snapshot(
+                        snapshot,
+                        display_only=(prepared is not None and prepared.display_only
+                                      and provider in dict(prepared.chains)),
+                    )
                     if (type(snapshot) is NativeDiscoverySnapshot
                             and current_native.get(provider) != snapshot.custody):
                         failed[provider] = "source_revoked"

@@ -238,7 +238,7 @@ def tab_text(action: dict[str, Any]) -> tuple[str, str, str]:
         lines.append(f"The screen \"{_shown(plan['ui'].get('name'))}\", added to your screens")
     from tinyassets.command_center_agent_templates import consent_lines
 
-    lines.extend(consent_lines(plan.get("agent_templates", [])))
+    lines.extend(consent_lines(plan.get("agent_templates", []), has_screen=bool(plan["ui"])))
     if plan["automations"]:
         lines.append("Automations, paused until you resume them:")
         lines.extend(f"- {_shown(a['name'])}" for a in plan["automations"])

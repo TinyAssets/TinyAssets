@@ -3128,6 +3128,14 @@ def write_graph(
             agent_binding_id, expected_revision, provider and complete
             model_access. No fields: the owner sees the exact change and
             reconnect warning, and must confirm in their app.
+            model_access maps provider names to objects with exactly model_scope
+            (legacy, explicit, discovered), model_ids (unique string array;
+            nonempty only for explicit), cost_caps (null for free-only, or a
+            nonempty cost-component object with nonnegative integer ceilings).
+            Example: {"codex":{"model_scope":"explicit",
+            "model_ids":["gpt-6-astra"],"cost_caps":null}}.
+            Auto-detect uses model_scope="discovered", model_ids=[].
+            Native provider default uses model_scope="explicit", model_ids=[""].
             Other accepted sources and spending ceilings must be preserved.
         patch_request send: required title (1-120 chars, one line) and details (1-8000 chars).
         payload_json: for create, a complete Branch spec (JSON object); for patch, a

@@ -224,7 +224,7 @@ def tab_text(action: dict) -> tuple[str, str, str]:
     lines.extend(f"- {_shown(w['name'])}" for w in plan["workflows"])
     from tinyassets.command_center_agent_templates import consent_lines
 
-    lines.extend(consent_lines(plan.get("agent_templates", [])))
+    lines.extend(consent_lines(plan.get("agent_templates", []), has_screen=bool(plan["ui"])))
     if plan["automations"]:
         lines.append("Your automations, paused until you resume them:")
         lines.extend(f"- {_shown(a['name'])}" for a in plan["automations"])

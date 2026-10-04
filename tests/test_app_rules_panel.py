@@ -40,7 +40,7 @@ const LISTING={rules:[{id:1,action_class:"money.move",connection:"",operation:""
   classes:{"money.move":"Moving money or making a payment","app.write":"Changing an app"},
   operation_kinds:[{id:9,connection:"stripe",method:"POST",path_prefix:"/v1/charges",
     kind:"payment"}], kinds:{read:"app.read",payment:"money.move"},
-  review_off:[], review_never:["app.read"], review_always:["money.move"]};
+  review_on:["app.write"], review_off:[], review_never:["app.read"], review_always:[]};
 async function fetch(url, init){
   const body=init.body?JSON.parse(init.body):null;
   if(body) posts.push(body);
@@ -130,8 +130,7 @@ _CHECKS = r"""
 
 
 def test_each_consequential_rule_shows_its_check_and_handbacks_keep_it(tmp_path):
-    """Harness D1d: the check before acting shows per kind; the hand-back kinds
-    cannot switch it off from the page."""
+    """Reviews default off and every consequential kind is owner-controlled."""
     page, _csp = onboarding.render_app_html()
     funcs = "\n".join(_js_function(page, name) for name in _FUNCS)
     script = tmp_path / "rules_checks.js"
@@ -140,5 +139,25 @@ def test_each_consequential_rule_shows_its_check_and_handbacks_keep_it(tmp_path)
     proc = subprocess.run([_NODE, str(script)], capture_output=True, text=True,
                           encoding="utf-8", timeout=60)
     assert proc.returncode == 0, proc.stderr
-    assert json.loads(proc.stdout) == [{"check": "Checks first", "disabled": True},
+    assert json.loads(proc.stdout) == [{"check": "Check is off", "disabled": False},
                                        {"check": "Checks first", "disabled": False}]
+
+
+def test_review_default_notice_tracks_explicit_opt_ins(tmp_path):
+    page, _csp = onboarding.render_app_html()
+    funcs = "\n".join(_js_function(page, name) for name in _FUNCS)
+    script = tmp_path / "rules_notice.js"
+    script.write_text(_SHIM + 'const SCENARIO={"confirm": false};\n' + funcs + r'''
+      const notices=[];
+      for(const review_on of [[], ["app.write"], []]){
+        renderRules({...LISTING, review_on});
+        notices.push($("rules-review-notice").textContent);
+      }
+      console.log(JSON.stringify(notices));
+    ''', encoding="utf-8")
+    proc = subprocess.run([_NODE, str(script)], capture_output=True, text=True,
+                          encoding="utf-8", timeout=60)
+    assert proc.returncode == 0, proc.stderr
+    notice = "Checks are now off unless you turn them on"
+    assert json.loads(proc.stdout) == [notice, "", notice]
+    assert 'id="rules-review-notice"' in page

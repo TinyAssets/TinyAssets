@@ -147,7 +147,7 @@ Platform bookkeeping (session journal, output spills and usage accounting) MAY s
 
 #### Scenario: a proposal is approved
 - **WHEN** a research turn proposes sending an unsent invoice and the owner approves it
-- **THEN** an activity starts in which sending that invoice is pre-approved and still passes auto-review
+- **THEN** an activity starts in which sending that invoice is pre-approved and passes auto-review only if the owner enabled it
 
 #### Scenario: events do not multiply research
 - **WHEN** a connected source reports ten new items within one cadence window
@@ -171,7 +171,7 @@ The platform SHALL mint an execution context for every execution and SHALL NOT a
 Work an agent creates or delegates SHALL run with at most that agent's authority. An activity one agent starts on another SHALL run with the lesser of the two agents' authority unless the owner grants more. Editing another agent's harness SHALL be its own action class.
 
 Before executing, every enforcement point SHALL call one decision function with the action's class and the context. The enforcement points are the tool layer, the platform command, the credential-blind effectors, channels, the egress proxy and the browser broker. The function returns the behaviour of the most specific matching rule for the initiating agent; when two rules are equally specific, it returns the stricter one. There are four behaviours:
-- **do:** proceed, after auto-review when the action is consequential.
+- **do:** proceed, after auto-review only when the owner enabled it for the action class.
 - **do if pre-approved:** proceed only when an authenticated owner message in the session or an approved proposal names exactly this action. Otherwise the action is treated as ask first.
 - **ask first:** raise one app request and set the activity to waiting on you.
 - **hand off:** raise a request for the owner to perform the action. The agent SHALL NOT execute it.
@@ -194,17 +194,17 @@ Seed rules SHALL allow every workspace action, the agent's own harness edits, sh
 - **WHEN** the agent writes to its rules from any tool or environment
 - **THEN** the write is refused and the agent may instead raise a rule-change request
 
-### Requirement: Consequential actions pass an auto-review that can only tighten
-By default, before any consequential action whose rule is do or do if pre-approved, the platform SHALL run a review. A consequential action is any class other than workspace actions, the agent's own harness edits and connected-app reads. The owner MAY switch the review off per class, and the app SHALL state what that means.
+### Requirement: Owner-configured consequential-action reviews can only tighten
+Before a consequential action whose rule allows it, the platform SHALL run a review only when the owner explicitly enabled review for its action class and agent. Review SHALL be off by default, including for money, security and access classes; owner rules, connection grants, consent and cross-user isolation remain authoritative. A consequential action is any class other than workspace actions, the agent's own harness edits and connected-app reads. The owner MAY switch the review off per class, and the app SHALL state what that means.
 
-The review SHALL be a tool-free call on the universe's own model, admitted like any agent call: it SHALL re-enter the activity's seat when the activity holds one, and otherwise queue for the account's own. It SHALL have its own deadline. It SHALL itself not be reviewed, and SHALL be retried at most once. A consequential action that reaches the send boundary with no run model bound to review it SHALL be held, not sent. Its inputs SHALL be:
+The review SHALL be a tool-free call on the universe's own model, admitted like any agent call: it SHALL re-enter the activity's seat when the activity holds one, and otherwise queue for the account's own. It SHALL have its own deadline. It SHALL itself not be reviewed, and SHALL be retried at most once. An action with an owner-configured review that reaches the send boundary with no run model bound to review it SHALL be held, not sent. Its inputs SHALL be:
 - trusted: the structured planned action, the matching rules, the built-in safety requirements and authenticated owner messages;
 - untrusted evidence: action text, page content and agent-editable harness files.
 
 It SHALL return proceed, or needs approval with a reason, as exactly one JSON object with exactly those fields; any other reply SHALL count as no answer. The result SHALL be bound to the exact action and rule-set version. The review SHALL only convert an action to ask first; it SHALL NOT create grants, loosen rules or override hand off. If the review cannot run, the action SHALL become a request naming the cause, and the activity SHALL release its seat while waiting.
 
 #### Scenario: review blocks an off-instruction send
-- **WHEN** a do rule covers a channel but the planned message contradicts the owner's stated instructions
+- **WHEN** the owner enabled review and a do rule covers a channel but the planned message contradicts the owner's stated instructions
 - **THEN** the review returns needs approval and the owner receives a request with the reason
 
 #### Scenario: hostile content cannot approve itself
@@ -216,7 +216,7 @@ It SHALL return proceed, or needs approval with a reason, as exactly one JSON ob
 - **THEN** the reply counts as no answer and the action is held
 
 #### Scenario: review cannot run
-- **WHEN** the universe's model is unavailable at review time
+- **WHEN** an owner-configured review cannot run on the universe's model, including a provider that cannot enforce text-only execution
 - **THEN** the action becomes a request naming that cause and is not executed
 
 ### Requirement: Hand-backs ship on by default as editable rules
