@@ -700,6 +700,7 @@ def read_graph(
             branch, automations, automation, connections, compute, agents, agent, agent_bindings,
             agent_binding, app_ui (your own UI library and choice),
             command_center_packages (working public packages to try in your own command center),
+            command_center_preview (public visual bytes only; no copy or consent),
             command_center_files / command_center_file (the owner's own command center folder:
             query=<path under /u>; list a directory, or read a file in chunks
             with file_offset/file_max_bytes),

@@ -277,6 +277,14 @@
     code{background:var(--surface-2);padding:.1rem .35rem;border-radius:6px;font-size:.85em}
     .ui-dialog{width:min(40rem,94vw);max-height:90vh;overflow:auto;background:var(--bg);color:var(--text);padding:1.2rem;border:1px solid var(--line);border-radius:12px}
     .ui-dialog li{margin:.35rem 0}.ui-dialog-actions{display:flex;flex-wrap:wrap;gap:.5rem}
+    .ui-catalogue{display:flex;gap:1rem;overflow-x:auto;scroll-snap-type:x mandatory;padding:.5rem 0 1rem}
+    .ui-catalogue-card{flex:0 0 min(85%,25rem);scroll-snap-align:start;border:1px solid var(--line);border-radius:12px;padding:1rem;background:var(--surface)}
+    .ui-preview-frame{display:block;width:100%;height:24rem;border:1px solid var(--line);border-radius:8px;background:var(--bg)}
+    .ui-preview-viewport{touch-action:pan-y}.ui-preview-viewport iframe{pointer-events:none}
+    #ui-preview{margin:1rem 0}#ui-preview[hidden]{display:none}
+    .chat-discovery{padding:.35rem .7rem;border-bottom:1px solid var(--line);flex:0 0 auto}
+    #btn-bubble-browse{position:absolute;z-index:4;max-width:10rem;border-radius:16px;background:var(--surface)}
+    #ui-install-receipt{padding:.6rem;max-height:12rem;overflow:auto;border-bottom:1px solid var(--line)}
     #ui-mode{font-size:.8rem} .chat-actions{flex-wrap:wrap}
     /* A custom UI replaces the chat body rather than sitting beside it, and the
        frame itself carries no border: whatever is inside is somebody's own
@@ -419,6 +427,8 @@
       <div id="ui-frame-host" hidden></div>
       <section id="chat-cloud" class="chat-cloud" data-agent="main" data-mode="open"
                aria-label="Chat with your agent">
+      <div class="chat-discovery"><button id="btn-chat-browse" class="btn btn--link" type="button">Browse / Switch command centers</button></div>
+      <div id="ui-install-receipt" role="status" aria-live="polite" hidden></div>
       <div id="chat-cloud-bar" class="chat-cloud-bar" tabindex="0"
            aria-label="Chat window. Arrow keys move it; Shift and arrow keys resize it."
            aria-describedby="chat-cloud-title">
@@ -651,13 +661,14 @@
         <span class="chat-cloud-bubble-icon" aria-hidden="true">&#128172;</span>
         <span id="chat-cloud-badge" class="chat-cloud-badge" hidden></span>
       </button>
+      <button id="btn-bubble-browse" class="btn" type="button" hidden>Browse / Switch</button>
       </div>
     </section>
 
     <dialog id="ui-dialog" class="ui-dialog" aria-labelledby="ui-title">
-      <h2 id="ui-title">Switch command center</h2>
-      <p>Switch between the default chat and any UI installed in this command center.
-      Ask your agent for any screen you like and it builds one. A custom UI
+      <h2 id="ui-title">Browse and switch command centers</h2>
+      <p>Preview shared designs, open one of your screens, or talk to your agent to build or change your space. Browsing and previews never send a message.</p>
+      <details><summary>What a copied screen can access</summary><p>A custom UI
       runs isolated: it cannot read your sign-in, your other tabs, or anything
       outside this command center. It acts as you, in this command center only: it can read
       your command center's name, your agents, this conversation, your automations,
@@ -665,8 +676,9 @@
       to change which conversation design answers you.</p>
       <p class="muted">What it can read, it could keep. Someone else's UI is
       someone else's code: running it shows it this conversation. Switch back to
-      default chat to stop that.</p>
+      default chat to stop that. Visual previews have no access to your data.</p></details>
       <p id="ui-status" role="status" aria-live="polite"></p>
+      <section id="ui-preview" aria-label="Visual preview" hidden></section>
       <ul id="ui-list"></ul>
       <h3>Conversation</h3><div id="ui-conversation"></div>
       <div class="ui-dialog-actions">
@@ -5362,6 +5374,12 @@
     // hidden window: it moves to the command center.
     const strand=s.mode==="bubble" && bubble.hidden && document.activeElement && cloud.contains(document.activeElement);
     bubble.hidden=s.mode!=="bubble";
+    const browse=$("btn-bubble-browse");
+    if(browse){
+      browse.hidden=s.mode!=="bubble";
+      browse.style.left=Math.max(0,Math.min(s.bubble.x,stage.w-170))+"px";
+      browse.style.top=Math.max(0,Math.min(s.bubble.y+size+6,stage.h-46))+"px";
+    }
     if(strand && typeof focusCommandCenter === "function") focusCommandCenter();
     $("btn-cloud-shrink").setAttribute("aria-expanded", String(s.mode==="open"));
     if(s.mode==="open") setCloudUnread(false);
@@ -9118,6 +9136,9 @@
 
   async function answerRail(req, mode, note, buttons){
     let itemAnswered=false;
+    const installAsk=!!(req.action&&req.action.type==="install");
+    const installEpoch=typeof AppUI!=="undefined"?AppUI.epoch:0;
+    const installHome=typeof AppUI!=="undefined"?AppUI.home:"";
     const fbEl = $("fb_" + req.request_id), muteEl = $("mute_" + req.request_id);
     const text = fbEl && fbEl.value.trim() ? fbEl.value.trim() : "";
     if(mode === "reply" && !req.item_id){
@@ -9147,6 +9168,7 @@
     note.textContent = mode === "clear" ? "Clearing..." : mode === "deny" ? "Denying..." : "Sending...";
     try{
       const r = await MCP.answerRequest(payload);
+      if(installAsk&&typeof AppUI!=="undefined"&&!AppUI.fence(installEpoch,installHome))return;
       if(r && r.error){
         const actionAsk = req.action && req.action.type && req.action.type !== "answer";
         if(mode === "accept" && r.request_pending === true){
@@ -9154,7 +9176,7 @@
           // here; do not promise an unpowered agent has received a relay.
           note.textContent = "Setup is not confirmed: " + (r.detail || r.error)
             + ". This request stays open. You can retry it after checking the problem.";
-        } else if(mode === "accept" && actionAsk){
+        } else if(mode === "accept" && actionAsk && !installAsk){
           note.textContent = "This ask can't be granted as written. Your agent has been told why.";
           sendTurn(refusedGrantLine(req, r.detail || r.error), undefined,
             {relay:true, keepComposer:true, inputMethod:"app_action"});
@@ -9176,8 +9198,14 @@
           + (busy ? " Your agent will see it when its current turn ends." : "");
         if(!req.item_id || r.request_status !== "pending") railOpen = null;
         await refreshRail();
-        sendTurn(answerLine(req, mode, payload), undefined,
-          {relay:true, keepComposer:true, inputMethod:"app_action"});
+        if(installAsk){
+          note.textContent=r.receipt||(mode==="accept"?"Copied. No message was sent.":"Closed. No message was sent.");
+          if(mode==="accept"&&r.installed&&typeof AppUI!=="undefined"&&AppUI.fence(installEpoch,installHome))
+            await AppUI.installedCopy(r);
+        }else{
+          sendTurn(answerLine(req, mode, payload), undefined,
+            {relay:true, keepComposer:true, inputMethod:"app_action"});
+        }
       }
     }catch(err){
       if(err.authRequired) return enterSignedOut();
@@ -9191,6 +9219,20 @@
   // outcome is drawn: the list, or a line saying it could not be loaded (above
   // whatever loaded before, so a half-typed answer is not wiped). The 15-second
   // poll retries on its own; the button retries now.
+  async function openInstallRequest(requestId){
+    const epoch=AppUI.epoch,home=AppUI.home;
+    railOpen=requestId;
+    setChatCloudMode("open");
+    $("request-rail").classList.add("rail--open");
+    await refreshRail();
+    if(!AppUI.fence(epoch,home))return;
+    paintRailChip();
+    const entry=railNodes.get(requestId);
+    if(entry&&entry.node){
+      entry.node.scrollIntoView({block:"nearest"});
+      const button=entry.node.querySelector(".rtab-btn");if(button)button.focus();
+    }
+  }
   async function refreshRail(){
     if(!token()) return;
     let r=null, failure=null;

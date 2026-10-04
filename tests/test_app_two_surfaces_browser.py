@@ -682,6 +682,10 @@ def test_shared_system_preview_and_permanent_trusted_switcher(app_url, browser, 
             fetchMe=async()=>({principal_id:'owner-1',universe_id:'home-1',setup:'connected'});
             Owner.read=async args=>{
                 if(args.target==='command_center_packages')return structuredClone(catalogue);
+                if(args.target==='command_center_preview')return {
+                    agent_definition_id:'public-village',name:'Fantasy Village',
+                    description:'Shared village',
+                    ui:own,assets:[]};
                 if(args.target==='app_ui')return {app_ui:structuredClone(window.testRow)};
                 if(args.target==='agent_bindings')return {bindings:[]};
                 throw Error('unexpected read '+args.target);
@@ -707,7 +711,9 @@ def test_shared_system_preview_and_permanent_trusted_switcher(app_url, browser, 
         expect(frame.locator("#packages")).to_contain_text("Public system")
         expect(frame.locator("#packages")).to_contain_text("Components only; no files")
         frame.get_by_role("button", name="Preview copy", exact=True).click()
-        expect(frame.locator("#message")).to_contain_text("preview and confirm")
+        expect(page.locator("#ui-preview")).to_contain_text("Visual preview")
+        assert len(page.evaluate("window.copyAsks")) == 0
+        page.get_by_role("button", name="Copy into my command center", exact=True).click()
         assert len(page.evaluate("window.copyAsks")) == 1
         page.evaluate("AppUI.open()")
         menu = page.locator("#ui-dialog")
@@ -720,9 +726,11 @@ def test_shared_system_preview_and_permanent_trusted_switcher(app_url, browser, 
         page.evaluate("AppUI.open()")
         menu.get_by_role("button", name="Try someone else's", exact=True).click()
         expect(menu).to_contain_text("Fantasy Village")
-        menu.get_by_role("button", name="Preview component copy", exact=True).click()
-        expect(page.locator("#ui-status")).to_contain_text("Nothing installs before you confirm")
+        menu.get_by_role("button", name="Preview Fantasy Village", exact=True).click()
+        expect(page.locator("#ui-status")).to_contain_text("Copy asks for your confirmation")
+        page.get_by_role("button", name="Copy into my command center", exact=True).click()
         assert len(page.evaluate("window.copyAsks")) == 2
+        page.evaluate("AppUI.open()")
         menu.get_by_role("button", name="Blank command center", exact=True).click()
         expect(page.frame_locator("#ui-frame").get_by_role(
             "button", name="Build your own", exact=True)).to_be_visible()
