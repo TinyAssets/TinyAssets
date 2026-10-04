@@ -198,26 +198,6 @@ order. Only the Play one is on a 14-day clock, so it goes first.
 The clock starts when 12 people are actually opted in, and it runs for 14 days. Tell the
 lead the day it starts. The full engagement plan is in that section below.
 
-### Apple: Sign in with Apple is live; store the key backup, then try it once
-
-Set up 2026-10-04 by the lead in the founder's browser: App ID `io.tinyassets.app` has
-Sign in with Apple as the primary App ID. Services ID `io.tinyassets.signin` uses domain
-`auth.workos.com`, which is the host of the WorkOS redirect URI; an older draft said
-`api.workos.com`, which was wrong. The return URL is the WorkOS Production redirect URI.
-Key `TinyAssets Sign in with Apple` (Key ID `8925BK5HWC`, Team `6SFDJZ6RKT`) is entered in
-WorkOS Production. Email relay source `workos-mail.com` is registered (SPF passes).
-`python scripts/authkit_login_parity_probe.py` returns `PASS: providers: apple, google`.
-
-Left for the founder:
-
-1. **Back up the key:** Control Panel → **Credential Manager → Windows Credentials → Add
-   a generic credential**. Internet address `TinyAssets Apple SIWA key`, user name
-   `8925BK5HWC`, password = the whole contents of `Downloads\AuthKey_8925BK5HWC.p8`.
-   Then delete the `.p8` and empty the Recycle Bin. Apple will not let it be downloaded again.
-2. Sign in once with **Continue with Apple** on `https://tinyassets.io/app`. It needs
-   your Apple ID, so the agent cannot do it. Tell the lead whether it landed you in your
-   account.
-
 ### Apple: record the review video on a physical iPhone
 
 This is Apple's actual ask (Guideline 2.1). Install build 3 from the TestFlight invite
