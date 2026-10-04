@@ -15,6 +15,7 @@ from pathlib import Path
 
 from tinyassets import agent_sessions
 from tinyassets.singleton_lock import _lock_fd, _unlock_fd
+from tinyassets.universe_files import open_lock_file
 
 _held = threading.local()
 
@@ -34,8 +35,8 @@ def control(universe_dir: Path):
         os.fstat(held[key])  # A closed descriptor cannot authorize a nested write.
         yield
         return
-    path = agent_sessions._records_dir(root) / "owner-control.lock"
-    fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
+    relpath = f"{agent_sessions.RECORDS_DIR}/{root.name}/owner-control.lock"
+    fd = open_lock_file(root.parent, relpath, mode=0o600)
     if not _lock_fd(fd):
         os.close(fd)
         raise ControlUnavailable("Owner controls are busy; retry the operation.")
