@@ -323,7 +323,7 @@ steps in order, without cutting. They're the shot list from the 2.1 response pac
 | 2 | Choose email and password and sign in with the App Review account. Type the password in the masked field only, never in a visible notes app. | A normal sign-in into the reviewer's account. |
 | 3 | Wait for the reviewer's private universe to load. | You're inside the app. No API key, subscription or payment step appears. |
 | 4 | Send: `Give me a three-step plan to launch a small bakery's online orders, and keep it short.` Wait for the full reply. Then swipe TinyAssets away (force quit), relaunch it, and show the same conversation still there. | A real AI reply, and the conversation surviving a force quit. |
-| 5 | Attach `app-store-review-sample.txt` (use App Live's **Files & Media ? File ? Upload new file**, then pick it under **Files ? Chrome ? Injected Files** in the attach sheet). Send: `What is the project, target storefront, and review deadline in this file?` | An answer grounded in the file's contents. |
+| 5 | Attach `app-store-review-sample.txt` (use App Live's **Files & Media → File → Upload new file**, then pick it under **Files → Chrome → Injected Files** in the attach sheet). Send: `What is the project, target storefront, and review deadline in this file?` | An answer grounded in the file's contents. |
 | 6 | Open Account / Privacy and show the **Delete my account** path. **Do not** confirm deletion. | That account deletion is reachable in the app. |
 
 Click **End Recording**, then **Download** to save the `.mp4`.
