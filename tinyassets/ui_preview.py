@@ -23,9 +23,11 @@ them from ``blob:`` URLs. Only the parent is a stand-in, playing the app's part:
   spliced into its HTML (Codex, 2026-10-02: a ``</script>`` in stored markup
   would otherwise have run in the unrestricted parent).
 * **Read-only bridge.** ``whoami`` answers with the command center's id and the
-  reads answer empty, so a UI renders its empty state. Every call that would act
-  (``sendMessage``, ``emit``, ``setConversationDesign``) is refused as a preview,
-  and each call is reported so the agent sees what its UI tried.
+  component's own alias maps, and the reads answer with every key the live
+  bridge returns and no data behind them, so a UI renders its empty state rather
+  than failing on a missing key. Every call that would act (``sendMessage``,
+  ``emit``, ``setConversationDesign``) is refused as a preview, and each call is
+  reported so the agent sees what its UI tried.
 
 It runs as a short-lived subprocess tree (``python -m tinyassets.ui_preview``, its
 Playwright driver and Chromium) in a PID namespace, watched from outside: a
@@ -86,6 +88,18 @@ class PreviewUnavailable(RuntimeError):
     """This host cannot render (no Playwright Chromium), or the slot is busy."""
 
 
+def _refs(value: Any) -> dict[str, str]:
+    """A stored alias map, as the live bridge hands one over.
+
+    The app's ``whoami`` does ``this.active.workflow_refs||{}``: a component
+    that declared none gets an empty map rather than a missing key. Anything
+    stored that is not a map of names is the same empty map here.
+    """
+    if not isinstance(value, dict):
+        return {}
+    return {str(key): str(target) for key, target in value.items()}
+
+
 # The app's part, played from memory. The bridge answers as a read-only preview:
 # the reads a UI starts with answer empty, every action is refused by name.
 _PARENT = """<!doctype html><html><head><meta charset="utf-8">
@@ -93,9 +107,23 @@ _PARENT = """<!doctype html><html><head><meta charset="utf-8">
 iframe{border:0;width:100%;height:100%;display:block}</style>
 </head><body><script nonce="__NONCE__">
 window.__preview={calls:Object.create(null),dropped:0,delivered:false,error:""};
-const EMPTY_FOR=uid=>({whoami:{protocol:1,command_center_id:uid,command_center_name:'Preview'},
+// Every key the app's bridge returns, with empty data behind it, so a UI
+// renders its empty state instead of failing on a key that is only missing
+// here. A key the app answers and this does not is a UI that works in the app
+// and throws in preview (Codex, 2026-10-03: `readLive()` was refused outright
+// and `whoami().workflow_refs` was undefined). The alias maps are the
+// COMPONENT's own declaration -- the app reads them off the active component,
+// not off the server -- so the preview answers with the real ones and a UI
+// resolves its aliases here exactly as it will in the app. Keep this literal
+// free of comments and of `//`: tests derive its key sets by parsing it.
+const EMPTY_FOR=spec=>({whoami:{protocol:1,command_center_id:spec.universe_id,
+    command_center_name:'Preview',
+    workflow_refs:Object.assign({},spec.workflow_refs||{}),
+    agent_refs:Object.assign({},spec.agent_refs||{})},
   list_agents:{agents:[]},read_conversation:{turns:[],has_more:false,next_before:null},
   list_automations:{automations:[]},list_runs:{runs:[],has_more:false},
+  read_live:{as_of:new Date().toISOString(),agents:[]},
+  'packages.list_tryable':{packages:[],systems:[],build_prompt:'',can_try:false},
   list_files:{path:'',entries:[],truncated:false},
   conversation_design:{state:'default',agent_definition_id:'',component_key:''}});
 const bytes=async path=>(await (await fetch(path)).arrayBuffer());
@@ -109,7 +137,7 @@ const count=action=>{
   // The UI arrives as DATA: a JSON document this page fetches. Nothing stored
   // is ever spliced into this page's HTML.
   const SPEC=await (await fetch('/__preview/spec.json')).json();
-  const EMPTY=EMPTY_FOR(SPEC.universe_id);
+  const EMPTY=EMPTY_FOR(SPEC);
   const frame=document.createElement('iframe');
   frame.setAttribute('sandbox','__SANDBOX__');
   frame.setAttribute('referrerpolicy','no-referrer');
@@ -188,6 +216,8 @@ def _spec_for(
         "width": width, "height": height,
         "libraries": [[name, manifest[name]["format"]] for name in names],
         "files": [[path, ref["media_type"]] for path, ref in assets.items()],
+        "workflow_refs": _refs(entry.get("workflow_refs")),
+        "agent_refs": _refs(entry.get("agent_refs")),
         "hashes": {path: ref["sha256"] for path, ref in assets.items()},
         "bundle": {"markup": entry.get("markup", ""), "style": entry.get("style", ""),
                    "script": entry.get("script", ""),
@@ -458,7 +488,8 @@ def _child(spec: dict[str, Any]) -> dict[str, Any]:
     parent = (_PARENT.replace("__NONCE__", nonce).replace("__SANDBOX__", FRAME_SANDBOX)
               .replace("__ACTION_CHARS__", "64").replace("__MAX_ACTIONS__", str(MAX_ACTIONS))
               .replace("__MAX_PER_ACTION__", str(MAX_CALLS_PER_ACTION)))
-    spec_json = json.dumps({k: spec[k] for k in ("universe_id", "libraries", "files", "bundle")})
+    spec_json = json.dumps({k: spec[k] for k in (
+        "universe_id", "libraries", "files", "bundle", "workflow_refs", "agent_refs")})
     parent_headers = {
         # The parent runs only this fixed script; it fetches its own origin and
         # frames its own origin, and nothing else is possible from it.

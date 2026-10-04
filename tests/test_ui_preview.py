@@ -299,6 +299,195 @@ def test_the_preview_frame_sandbox_is_the_apps():
     assert re.search(r'SANDBOX:"([^"]+)"', app).group(1) == ui_preview.FRAME_SANDBOX
 
 
+# ---- the preview bridge answers what the app's bridge answers ----------------
+# Both sides are parsed out of the shipped source rather than restated here: a
+# key list written down in a test is one more copy to drift (Codex 2026-10-03
+# found two live keys the preview had never heard of).
+
+
+def _app_ui_source() -> str:
+    from pathlib import Path
+
+    path = Path(__file__).resolve().parents[1] / "tinyassets" / "onboarding" / "app_ui.js"
+    return path.read_text(encoding="utf-8")
+
+
+def _object_at(source: str, start: int) -> str:
+    """The brace-balanced object literal beginning at ``source[start] == '{'``."""
+    assert source[start] == "{", source[start:start + 60]
+    depth = 0
+    for index in range(start, len(source)):
+        if source[index] == "{":
+            depth += 1
+        elif source[index] == "}":
+            depth -= 1
+            if depth == 0:
+                return source[start:index + 1]
+    raise AssertionError(f"unbalanced object literal at {source[start:start + 60]!r}")
+
+
+def _entries(literal: str) -> dict[str, str]:
+    """Top-level ``name -> value text`` of a JS object literal.
+
+    Shorthand (``{agents}``) maps to ``""``. Depth counts brackets and parens
+    too, so a comma inside ``Object.assign({},x)`` is not a separator.
+    """
+    import re
+
+    assert "://" not in literal, "a URL would be eaten by the comment strip"
+    body = re.sub(r"//[^\n]*", "", literal[1:-1])
+    pairs: dict[str, str] = {}
+
+    def flush(part: str) -> None:
+        head, level, cut = [], 0, None
+        for index, char in enumerate(part):
+            if char in "{[(":
+                level += 1
+            elif char in "}])":
+                level -= 1
+            elif char == ":" and level == 0:
+                cut = index
+                break
+            head.append(char)
+        name = "".join(head).strip().strip("'\"")
+        if name:
+            assert re.fullmatch(r"[a-z][a-z0-9_.]*", name), f"parse failed on {part[:60]!r}"
+            pairs[name] = part[cut + 1:].strip() if cut is not None else ""
+
+    depth, current = 0, []
+    for char in body:
+        if char in "{[(":
+            depth += 1
+        elif char in "}])":
+            depth -= 1
+        if char == "," and depth == 0:
+            flush("".join(current))
+            current = []
+            continue
+        current.append(char)
+    flush("".join(current))
+    return pairs
+
+
+def _bridge_actions() -> dict[str, str]:
+    """The app's frozen allowlist: bridge action -> the handler that answers it."""
+    source = _app_ui_source()
+    literal = _object_at(source, source.index("{", source.index("ACTIONS:Object.freeze(")))
+    actions = {name: value.strip("'\"") for name, value in _entries(literal).items()}
+    assert actions["read_live"] == "readLive", actions
+    return actions
+
+
+def _live_return_keys(method: str) -> set[str]:
+    """Keys the app's own handler returns, read out of app_ui.js.
+
+    The body is delimited by this file's method indentation, so a brace inside a
+    string or a comment cannot mis-slice it, and only the handler's own returns
+    are counted -- six spaces in. A return nested in a callback (which
+    ``listTryablePackages`` has, shaping a row rather than its answer) is
+    indented further and is not the handler's contract.
+    """
+    import re
+
+    source = _app_ui_source()
+    start = source.index(f"\n    async {method}(")
+    body = source[start:source.index("\n    },", start)]
+    keys: set[str] = set()
+    for match in re.finditer(r"\n      (?! )[^\n]*?return (\{)", body):
+        keys |= set(_entries(_object_at(body, match.start(1))))
+    assert keys, f"no handler return parsed for {method}"
+    return keys
+
+
+def _preview_reads() -> dict[str, set[str]]:
+    """What the preview bridge answers: action -> the keys behind it."""
+    source = ui_preview._PARENT
+    literal = _object_at(source, source.index("{", source.index("const EMPTY_FOR=")))
+    return {action: set(_entries(value)) for action, value in _entries(literal).items()}
+
+
+def test_the_preview_bridge_answers_every_startup_read_with_the_apps_keys():
+    """Codex 2026-10-03 (P1, twice): the preview refused ``readLive()`` outright,
+    and its ``whoami`` had neither ``workflow_refs`` nor ``agent_refs``, so a UI
+    that renders in the app threw in preview only -- the one place the agent
+    looks to decide whether its UI works.
+
+    A zero-argument action is one a UI calls with nothing to go on: exactly the
+    call it awaits before it can draw anything. Every one of them has to answer,
+    carrying at least the keys the app's own handler returns. Both sets come out
+    of app_ui.js, so the app growing a key fails this until the preview follows.
+    """
+    source = _app_ui_source()
+    actions = _bridge_actions()
+    preview = _preview_reads()
+    startup = {action for action, method in actions.items()
+               if f"\n    async {method}()" in source}
+
+    assert {"whoami", "read_live"} <= startup, sorted(startup)
+    assert startup <= set(preview), f"answered by the app, refused here: {sorted(startup - set(preview))}"
+    for action in sorted(startup):
+        live = _live_return_keys(actions[action])
+        assert live <= preview[action], f"{action} is missing {sorted(live - preview[action])}"
+
+    # The two the review found, named so the regression stays readable.
+    assert {"workflow_refs", "agent_refs"} <= preview["whoami"]
+    assert {"as_of", "agents"} <= preview["read_live"]
+
+
+def test_the_preview_whoami_hands_over_the_components_own_alias_maps(tmp_path):
+    """The app's ``whoami`` reads the alias maps off the active component, not off
+    the server, so the preview can answer with the real ones: a UI that resolves
+    ``workflow_refs['board']`` draws its real board here too. Anything stored
+    that is not a map of names answers as the app's ``||{}`` does -- empty."""
+    _add(tmp_path, "aliased", workflow_refs={"board": "wf-1"}, agent_refs={"scout": "ag-1"})
+    _add(tmp_path, "plain")
+
+    def spec(ui_id):
+        return ui_preview._spec_for(tmp_path, OWNER, HOME, ui_id, 320, 240)
+
+    assert spec("aliased")["workflow_refs"] == {"board": "wf-1"}
+    assert spec("aliased")["agent_refs"] == {"scout": "ag-1"}
+    assert spec("plain")["workflow_refs"] == {} and spec("plain")["agent_refs"] == {}
+    # The store refuses a non-map, so this branch is reached only by a row that
+    # predates that check: it answers empty rather than handing the frame junk.
+    assert ui_preview._refs("not-a-map") == {} and ui_preview._refs(None) == {}
+    # The maps reach the frame as data on the spec the parent fetches.
+    assert "spec.workflow_refs" in ui_preview._PARENT
+    assert "spec.agent_refs" in ui_preview._PARENT
+
+
+@pytest.mark.real_browser
+def test_a_ui_that_awaits_the_live_reads_renders_in_the_preview(tmp_path):
+    """The whole point of the preview is that it answers like the app, so the
+    proof is a render: a UI that awaits ``readLive()`` and reads the alias maps
+    off ``whoami()`` paints green only if both answered in the shape it expects.
+    Before the fix it painted red -- ``read_live`` was refused by name."""
+    _need_browser()
+    _add(tmp_path, "awaits", workflow_refs={"board": "wf-1"}, agent_refs={"scout": "ag-1"},
+         markup="<p id=out>pending</p>",
+         style="html,body{margin:0;height:100%}",
+         script="(async()=>{try{"
+                "const live=await tinyassets.readLive();"
+                "if(typeof live.as_of!=='string'||!Array.isArray(live.agents))"
+                "throw new Error('read_live shape: '+JSON.stringify(live));"
+                "const me=await tinyassets.whoami();"
+                "if(Object.keys(me.workflow_refs).join()!=='board')"
+                "throw new Error('workflow_refs: '+JSON.stringify(me.workflow_refs));"
+                "if(Object.keys(me.agent_refs).join()!=='scout')"
+                "throw new Error('agent_refs: '+JSON.stringify(me.agent_refs));"
+                "document.body.style.background='#20a040';"
+                "}catch(err){document.body.style.background='#c02020';throw err;}})();")
+    try:
+        report = ui_preview.preview_app_ui(tmp_path, owner_user_id=OWNER, universe_id=HOME,
+                                           ui_id="awaits", width=320, height=240)
+    except ui_preview.PreviewUnavailable as exc:
+        pytest.skip(str(exc))
+
+    assert report["uncaught_errors"] == [], report["uncaught_errors"]
+    assert _pixel(report["png"], 160, 120) == (32, 160, 64), "both reads answered in shape"
+    assert report["bridge_calls"] == {"read_live": 1, "whoami": 1}
+
+
 @pytest.mark.real_browser
 def test_a_hostile_ui_cannot_break_out_or_flood_the_report(tmp_path):
     _need_browser()
