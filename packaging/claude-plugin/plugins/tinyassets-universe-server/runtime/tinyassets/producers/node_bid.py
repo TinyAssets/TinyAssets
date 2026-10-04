@@ -77,7 +77,7 @@ def _producer_sandbox_reject(
     source = getattr(node, "source_code", "") or ""
     try:
         patterns = dangerous_source_patterns(source, _BID_DANGEROUS_PATTERNS)
-    except (SyntaxError, ValueError):
+    except (SyntaxError, ValueError, RecursionError):
         return "invalid_syntax"
     if patterns:
         return f"dangerous_pattern:{patterns[0]}"

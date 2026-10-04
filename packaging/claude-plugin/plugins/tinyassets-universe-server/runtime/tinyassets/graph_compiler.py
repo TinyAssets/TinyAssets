@@ -640,17 +640,26 @@ def dangerous_source_patterns(source: str, patterns: tuple[str, ...]) -> list[st
     attribute calls and references to forbidden callables (which can be aliased).
     String-running modules and reflection are refused, not speculatively checked:
     Python cannot statically distinguish their data from dynamically built code.
-    Ordinary prose remains allowed. The OS sandbox is the authority boundary.
+    Ordinary prose remains allowed. Sandboxed code nodes use the OS boundary;
+    the node-bid executor runs in-process, gated by approval, source hash and
+    this scan. This static check cannot establish a Python security sandbox.
     """
     tree = ast.parse(source)
 
     def dotted(node: ast.AST) -> str:
-        if isinstance(node, ast.Name):
-            return node.id
-        if isinstance(node, ast.Attribute):
-            return dotted(node.value) + "." + node.attr
-        return ""
+        parts: list[str] = []
+        while isinstance(node, ast.Attribute):
+            parts.append(node.attr)
+            node = node.value
+        parts.append(node.id if isinstance(node, ast.Name) else "")
+        return ".".join(reversed(parts))
 
+    imports_sys = any(
+        (isinstance(node, ast.Import) and any(
+            alias.name == "sys" for alias in node.names
+        )) or (isinstance(node, ast.ImportFrom) and node.module == "sys")
+        for node in ast.walk(tree)
+    )
     references: set[str] = set()
     calls: set[str] = set()
     unsupported: set[str] = set()
@@ -659,16 +668,14 @@ def dangerous_source_patterns(source: str, patterns: tuple[str, ...]) -> list[st
             references.add(dotted(node))
             name = node.id if isinstance(node, ast.Name) else node.attr
             if name in _DYNAMIC_SOURCE_NAMES or (
-                name.startswith("__") and name.endswith("__") and name != "__name__"
+                name.startswith("__") and name.endswith("__")
+                and name not in {"__name__", "__init__"}
             ):
                 unsupported.add(name)
             if isinstance(node, ast.Attribute):
-                root = dotted(node).split(".")[0]
-                if root in _DYNAMIC_SOURCE_MODULES:
-                    unsupported.add(root)
-                # A module registry may be reached through an alias or another
-                # object; its runtime identity cannot be proved by this scan.
-                if node.attr == "modules":
+                # Imports establish the module capability. Ordinary data may
+                # use names such as profile, code, or course.modules too.
+                if imports_sys and node.attr == "modules":
                     unsupported.add("module registry access (.modules)")
         elif isinstance(node, ast.Call):
             calls.add(dotted(node.func) + "(")
@@ -689,9 +696,17 @@ def dangerous_source_patterns(source: str, patterns: tuple[str, ...]) -> list[st
             if root in _DYNAMIC_SOURCE_MODULES or root in _DYNAMIC_SOURCE_NAMES:
                 unsupported.add(root)
     # A forbidden callable may be assigned or handed to map/partial before use.
-    calls.update(name + "(" for name in references)
-    found = [pattern for pattern in patterns
-             if any(pattern in name for name in (calls if pattern.endswith("(") else references))]
+    found = []
+    for pattern in patterns:
+        if pattern.endswith("("):
+            stem = pattern[:-1]
+            matches = any(pattern in name for name in calls) or any(
+                name == stem or name.endswith("." + stem) for name in references
+            )
+        else:
+            matches = any(pattern in name for name in references)
+        if matches:
+            found.append(pattern)
     return found + [f"dynamic execution/reflection is not supported: {name}"
                     for name in sorted(unsupported)]
 
@@ -1932,6 +1947,8 @@ def source_code_problems(source_code: str, node_id: str) -> list[str]:
     problems: list[str] = []
     try:
         patterns = dangerous_source_patterns(src, _DANGEROUS_PATTERNS)
+    except RecursionError:
+        return [f"Node '{node_id}' source_code is too deeply nested"]
     except (SyntaxError, ValueError):
         patterns = []  # The syntax diagnostic below retains the compiler's detail.
     for pattern in patterns:
@@ -1947,7 +1964,7 @@ def source_code_problems(source_code: str, node_id: str) -> list[str]:
         )
     try:
         compile(src, f"<node {node_id}>", "exec")
-    except (SyntaxError, ValueError) as exc:
+    except (SyntaxError, ValueError, RecursionError) as exc:
         problems.append(f"Node '{node_id}' source_code does not parse: {exc}")
     return problems
 

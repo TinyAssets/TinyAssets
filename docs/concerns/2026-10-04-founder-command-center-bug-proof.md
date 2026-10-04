@@ -43,8 +43,8 @@ APIs and reflective namespace lookups through. The repair refuses the constructs
 themselves: string-running modules (including aliased imports), namespace and
 attribute reflection, dunder references, module registries and wildcard imports.
 The refusal explains that dynamic execution/reflection is unsupported; inspecting
-literal arguments alone cannot prove dynamically assembled code safe. The OS jail
-remains the authority boundary. `test_source_guard_syntax.py` has a negative for
+literal arguments alone cannot prove dynamically assembled code safe. For sandboxed code nodes the OS jail is the authority boundary. The node-bid
+executor runs in-process; approval, source hash and this scan are its gates. `test_source_guard_syntax.py` has a negative for
 each of the five reported bypasses, plus alias, nonliteral argument, reflection
 and module-registry variants; prose remains positive at all four callers.
 Null bytes return syntax diagnostics/reason codes at all four callers, including
@@ -167,3 +167,22 @@ terminal_json) and the corresponding run. For native sends, correlate `/mcp`
 access/edge request IDs, SSE/5xx diagnostics, provider completion and service
 restart logs in the same windows. Native history can establish what was saved,
 but cannot prove a particular identical send's receipt without that correlation.
+
+## Queue review closure (2026-10-04)
+
+Claude review of 73d0ff6d16 found ordinary-name false positives and uncaught
+parser recursion. The queue patch distinguishes forbidden callable references
+from harmless substring names, permits ordinary module-like data names and
+constructors, and only treats `.modules` as a registry when `sys` is imported.
+Dynamic/reflection imports and real forbidden calls remain refused. The three
+original no-import string-runner probes now include their required imports.
+
+The dotted-name walk is iterative. Parser/compiler RecursionError becomes a
+validation diagnostic at all four boundaries, including runtimes whose parser
+itself exhausts. This is source validation, not a Python security sandbox:
+node-bid execution remains in-process behind approval and source-hash checks.
+
+Windows/Python3.14: `python -m pytest tests/test_source_guard_syntax.py -q`
+passes 78 cases; original bypass and alias cases remain. Independent final
+closure and hosted Linux checks are pending. Neither the founder's original
+storage refusal nor interrupted-send incident is claimed fully diagnosed.
