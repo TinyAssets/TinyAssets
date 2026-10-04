@@ -762,7 +762,8 @@ def test_restoring_the_servers_lines_keeps_the_devices_own(tmp_path):
 _RELOAD_MID_TURN = r"""
 globalThis.authHeaders=()=>({});
 globalThis.fetch=()=>Promise.resolve({ok:true,status:200,json:async()=>(
-  {pending:[], active:{text:"build the village map", started_at:Date.now()/1000-30}})});
+  {pending:[], active:{text:"build the village map", started_at:Date.now()/1000-30,
+    client_send_id:"village-send"}})});
 const working={active_turn:{turn_id:"t9",state:"inference_started",age_s:30,stale:false}};
 readServerTurn(working);
 setQueueOwner("p-1"); setQueueScope("u-1");
@@ -784,7 +785,8 @@ def test_a_reload_mid_turn_shows_the_message_being_worked_on_then_its_reply(tmp_
     assert _NODE is not None, "node is required"
     page, _csp = onboarding.render_app_html()
     out = _run(tmp_path, page, {"history": [
-        {"speaker": "founder", "text": "build the village map", "ts": 1},
+        {"speaker": "founder", "text": "build the village map", "ts": 1,
+         "client_send_id": "village-send"},
         {"speaker": "universe", "text": "Here is the village map.", "ts": 2}]},
         _RELOAD_MID_TURN)
     assert out["during"] == ["build the village map|working"]

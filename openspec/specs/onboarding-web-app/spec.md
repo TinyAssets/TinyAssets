@@ -70,16 +70,16 @@ retry automatically; an ambiguous conversation or connection write SHALL NOT.
 ### Requirement: Unconfirmed recovery offers observation and explicit queue resumption
 For an unconfirmed default conversation, the app SHALL offer an owner/home/agent/
 login-fenced, read-only saved-conversation check, also run on return online or to
-the foreground. It SHALL preserve the draft and never replay a send automatically.
-Delivery is confirmed only if the NEWEST founder turn equals the sent message,
-is not truncated, and has a numeric timestamp in seconds whose milliseconds are
-at least the send timestamp minus 60 seconds. Missing timestamps prove nothing.
+the foreground or window focus. It SHALL preserve the draft and never replay a send
+automatically. Recovery SHALL check the active turn first and confirm only a
+nonempty client_send_id equal to the saved send identity. Saved history uses the
+same identity rule. Missing IDs, text matches and timestamps prove nothing.
 Messages queued behind an unconfirmed turn SHALL remain held until explicitly
 resumed, even after confirming that first turn or sending a separate question.
 
 #### Scenario: Inspect progress before deciding whether to send again
-- **WHEN** saved history proves delivery by that newest-turn rule
-- **THEN** the app draws subsequent replies, forgets only that inflight record,
+- **WHEN** saved history proves delivery by that identity rule
+- **THEN** the app draws only that exchange's reply, forgets only that inflight record,
   and removes the unconfirmed notice and resend button
 - **WHEN** instead the pending-turn endpoint shows this message actively running
 - **THEN** the app shows it as working and removes the notice
@@ -246,3 +246,27 @@ was shrunk.
 #### Scenario: A bubble is dragged
 - **WHEN** the owner drags the bubble to a new place
 - **THEN** it moves there and does not also open
+
+### Requirement: causal return-to-app confirmation (PR 4458 round 2)
+
+The app MUST mint a unique `client_send_id` for each send and retain it in its
+inflight record and uncertainty notice. `converse` accepts an optional ASCII
+identifier (1–128 letters, digits, underscores or hyphens; empty means legacy).
+It echoes it on the scoped active turn and persists it on the saved founder row.
+This additive metadata grants no authority and is not an idempotency key.
+Legacy rows remain readable without migration on read.
+
+Recovery MUST check the running turn first and match only nonempty equal IDs,
+never text or timestamps. Missing IDs retain the cautious resend offer. Only
+the matched exchange's reply is drawn. Focus, visibility and online events
+retry observations without replaying requests. Optional connection suggestions
+MUST NOT appear as Open requests.
+
+#### Scenario: repeated short prompt
+- **WHEN** an identical prompt finished ten seconds before a new interrupted send
+- **THEN** neither notice nor reload recovery confirms that new send from the old row
+- **AND** an exact ID match confirms only its own exchange within the caller's thread
+
+Design: nullable/empty-default columns in conversation and steering stores,
+validated at the converse boundary; all owner, home and agent resolution stays
+unchanged. No lookup, Stop, or replay operation accepts this ID as authority.

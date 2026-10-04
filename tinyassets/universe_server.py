@@ -2843,7 +2843,8 @@ def _announce_owner_message(universe_dir) -> None:
         logger.warning("converse: owner_message event failed", exc_info=True)
 
 
-def _interrupted_turn_payload(uid, universe_dir, session, message, exc, *, owner_stopped) -> dict:
+def _interrupted_turn_payload(uid, universe_dir, session, message, exc, *, owner_stopped,
+                              client_send_id="") -> dict:
     """What a turn the owner stopped leaves in the thread and returns.
 
     Recorded exactly where every other ended turn is (``record_failure``: the
@@ -2869,7 +2870,9 @@ def _interrupted_turn_payload(uid, universe_dir, session, message, exc, *, owner
         ref=ref if isinstance(ref, str) and ref else uuid.uuid4().hex[:16],
     )
     try:
-        saved = record_failure(universe_dir, session, message, record)
+        saved = record_failure(
+            universe_dir, session, message, record, client_send_id=client_send_id,
+        )
     except Exception:  # noqa: BLE001 - the stop still happened; memory is best-effort
         logger.warning("converse: interrupted-turn history could not be saved")
         saved = False
@@ -2960,6 +2963,7 @@ def converse(
     model_choice: dict | None = None,
     consumer_request: dict | None = None,
     agent_id: str = "",
+    client_send_id: str = "",
 ) -> str:
     """Relay a message to your command center's intelligence and return its reply.
 
@@ -2974,6 +2978,8 @@ def converse(
     loads that seed soul/persona before forwarding the opening message.
 
     Args:
+        client_send_id: Optional correlation echo (ASCII letters, digits, underscore,
+            hyphen; at most 128 characters). Never authority or an idempotency key.
         message: The founder's turn to send to the command center intelligence.
         graph_id: Optional target command center identifier. Defaults to the founder's
             home command center.
@@ -3019,6 +3025,13 @@ def converse(
             "error": "Sign in as this command center's founder to talk with it.",
             "auth_required": True,
         })
+    # Correlation only: never used for lookup, authorization or deduplication.
+    import re
+
+    if not isinstance(client_send_id, str) or (
+        client_send_id and re.fullmatch(r"[A-Za-z0-9_-]{1,128}", client_send_id) is None
+    ):
+        return json.dumps({"error": "invalid_client_send_id"})
     if model_choice is not None:
         from tinyassets.providers.model_preferences import ModelPreferences
 
@@ -3199,7 +3212,7 @@ def converse(
         with interactive_turn(current_actor_id(), uid, agent_id=addressed_id) as live_turn:
             live_id = live_turn.live_id
             _open_steering(memory_universe_dir, memory_session, uid, live_id,
-                           current_actor_id(), typed)
+                           current_actor_id(), typed, client_send_id)
             reply = _converse_impl(
                 uid,
                 message,
@@ -3220,6 +3233,7 @@ def converse(
             _interrupted_turn_payload(
                 uid, memory_universe_dir, memory_session, message, exc,
                 owner_stopped=live_turn is not None and live_turn.requested(),
+                client_send_id=client_send_id,
             ),
             memory_universe_dir, memory_session, live_id,
         ))
@@ -3236,7 +3250,9 @@ def converse(
 
         record = _served_failure_record(exc, held=held is not None)
         try:
-            saved = record_failure(memory_universe_dir, memory_session, message, record)
+            saved = record_failure(
+                memory_universe_dir, memory_session, message, record, client_send_id=client_send_id,
+            )
         except Exception:  # Original failure remains usable even if memory fails.
             logger.warning("converse: failed-turn history could not be saved")
             saved = False
@@ -3271,6 +3287,7 @@ def converse(
         recorded = record_exchange_turns(
             memory_universe_dir, memory_session, message, str(reply), execution=execution,
             interjections=[(item.text, item.created_at) for item in delivered],
+            client_send_id=client_send_id,
         )
         if recorded is not None:
             _announce_owner_message(memory_universe_dir)
@@ -3351,7 +3368,7 @@ def _with_agent_activity(history, universe_dir, universe_id, owner):
 
 
 def _open_steering(universe_dir, memory_session, universe_id, live_id, actor_id,
-                   message=""):
+                   message="", client_send_id=""):
     """This served turn may now be steered by its owner (harness S2), and a page
     reloaded while it runs can show the message it is answering."""
     from tinyassets import agent_steering
@@ -3361,6 +3378,7 @@ def _open_steering(universe_dir, memory_session, universe_id, live_id, actor_id,
         agent_steering.open_turn(
             universe_dir, f"thread:{memory_session}", live_id,
             live_ids=live_ids(actor_id, universe_id), message=message,
+            client_send_id=client_send_id,
         )
     except Exception:  # noqa: BLE001 - steering is never worth a failed turn
         logger.warning("converse: owner steering could not be opened", exc_info=True)

@@ -1787,6 +1787,7 @@ __APP_FUNCTIONS__
       inputMethod:SCENARIO.pendingInputMethod,
       modelChoice:SCENARIO.pendingModelChoice,
       consumerRequest:SCENARIO.pendingConsumerRequest,
+      client_send_id:SCENARIO.pendingSendId,
       owner: SCENARIO.pendingOwner===null?undefined:(SCENARIO.pendingOwner||"p-1"),
       // The record is universe-scoped like a saved queue line. A scenario that
       // wants the LEGACY unscoped shape asks for it explicitly.
@@ -2317,11 +2318,13 @@ def test_an_older_identical_prompt_does_not_count_as_delivery(tmp_path):
 
 
 def test_a_message_delivered_while_away_is_not_restored(tmp_path):
-    """The newest founder turn IS the held message and is stamped after the
-    send: the reply landed, the local copy is stale and is dropped."""
+    """The saved founder row carries the held send identity: the reply landed,
+    so the local recovery record is stale and is dropped."""
     out = _run_app(tmp_path, {
         "kind": "restore", "pending": "continue", "pendingAgeS": 120,
-        "history": [_turn("founder", "continue", 60), _turn("universe", "done", 60)],
+        "pendingSendId": "continue-send",
+        "history": [{**_turn("founder", "continue", 60), "client_send_id": "continue-send"},
+                    _turn("universe", "done", 60)],
     })
     assert out["inflight"] is None
     assert [m["role"] for m in out["messages"]] == ["founder", "universe"]
@@ -2356,11 +2359,11 @@ def test_an_unconfirmed_message_survives_a_reload_and_says_so():
 
     html, _csp = render_app_html()
     assert "ta_inflight_turn" in html
-    # `agent` is last and defaulted: a claimed held line names the agent it was
+    # `agent` remains optional and defaulted: a claimed held line names the agent it was
     # sent to, because the owner may have switched since (#4290 P1).
     assert ("rememberInflight(message, display, sentAt, inputMethod, modelChoice, "
             "consumerRequest=null,") in html
-    assert "agent=null)" in html
+    assert 'agent=null,clientSendId="")' in html
     assert "inputMethod:turnInputMethod(inputMethod)" in html
     # Cleared on success, KEPT on failure — a failed send is still the user's.
     assert "forgetInflight();" in html
@@ -2658,7 +2661,9 @@ def test_an_offer_below_an_unconfirmed_turn_leaves_that_turn_alone(tmp_path):
 def test_an_offer_after_a_turn_delivered_while_away(tmp_path):
     line = 'Approved: "Extend my github access"'
     out = _run_app(tmp_path, {"kind": "restore", "pending": "first",
-                              "history": [{"speaker": "founder", "text": "first", "ts": 2e9},
+                              "pendingSendId": "first-send",
+                              "history": [{"speaker": "founder", "text": "first", "ts": 2e9,
+                                           "client_send_id": "first-send"},
                                           {"speaker": "universe", "text": "ok", "ts": 2e9 + 1}],
                               "queued": [{"message": line, "display": line, "ts": _NOW_MS,
                                           "owner": "p-1", "scope": "u-1"}],

@@ -86,7 +86,8 @@ def _send_and_interrupt(page, mode="cut"):
 
 def _complete_and_resume(page):
     page.evaluate("""() => {
-        wire.turns=[{speaker:'founder',text:'Please finish the checklist',ts:Date.now()/1000},
+        wire.turns=[{speaker:'founder',text:'Please finish the checklist',ts:Date.now()/1000,
+            client_send_id:readInflight()?.client_send_id},
             {speaker:'universe',text:'The checklist is finished.',ts:Date.now()/1000}];
         wire.hidden=false; document.dispatchEvent(new Event('visibilitychange'));
     }""")
@@ -212,7 +213,8 @@ def test_restored_send_observes_reply_on_resume_without_replay(recovery_page):
     page = recovery_page
     page.evaluate("""async () => {
         wire.hidden=true;
-        rememberInflight('Please finish the checklist','Please finish the checklist',Date.now());
+        rememberInflight('Please finish the checklist','Please finish the checklist',Date.now(),
+            'typed',null,null,'main',crypto.randomUUID());
         liveInflight=null; inflightRestored=false;
         await restoreInflight([]);
     }""")
@@ -268,7 +270,8 @@ def test_resume_shows_a_matching_active_turn_without_resending(recovery_page, re
     else:
         _send_and_interrupt(page)
     page.evaluate("""() => {
-        wire.active={text:'Please finish the checklist',started_at:Date.now()/1000};
+        wire.active={text:'Please finish the checklist',started_at:Date.now()/1000,
+            client_send_id:readInflight().client_send_id};
         wire.hidden=false;document.dispatchEvent(new Event('visibilitychange'));
     }""")
     expect(page.get_by_text("Your agent is working on this.", exact=True)).to_be_visible()
@@ -286,7 +289,7 @@ def test_request_chat_keeps_history_open_and_nudges_decisions(recovery_page, tex
     page = recovery_page
     page.evaluate("""() => {
         wire.answers=[];wire.chat=[];
-        const req={request_id:'publish-1',title:'Publish the page',fields:[],
+        const req={request_id:'publish-1',title:'Publish the page',fields:[],status:'pending',
             action:{type:'publish'}};
         window.testRequest=req;
         MCP.answerRequest=async payload=>{wire.answers.push(payload);return {status:'answered'};};
@@ -333,3 +336,136 @@ def test_confirming_delivery_keeps_queued_approval_offered(recovery_page):
     assert page.evaluate("sendQueue.length") == 1
     assert page.evaluate("wire.sends.length") == 1
     assert page.evaluate("readInflight()") is None
+
+@pytest.mark.parametrize("restored", [False, True])
+@pytest.mark.parametrize("identity", ["different", "missing_row", "missing_record", "match"])
+def test_recent_old_identical_prompt_does_not_confirm_new_send(recovery_page, restored, identity):
+    """Port of queue_recent_identical_prompt_probe.py, plus restore and causal controls."""
+    from playwright.sync_api import expect
+
+    page = recovery_page
+    _send_and_interrupt(page)
+    sent = page.evaluate("readInflight()")
+    assert sent["client_send_id"] == page.evaluate(
+        "wire.sends[0].params.arguments.client_send_id")
+    page.evaluate("""async ({restored,identity}) => {
+        const sent=readInflight(), before=(sent.ts-10000)/1000;
+        const old={speaker:'founder',text:sent.message,ts:before,client_send_id:'previous-send'};
+        const row={speaker:'founder',text:sent.message,ts:before,
+            client_send_id:identity==='match'?sent.client_send_id:'other-device-send'};
+        if(identity==='missing_row') delete row.client_send_id;
+        if(identity==='missing_record'){
+            delete sent.client_send_id;
+            localStorage.setItem(INFLIGHT_KEY,JSON.stringify(sent));
+        }
+        wire.turns=[old,{speaker:'universe',text:'OLD REPLY FROM THE PREVIOUS SEND',ts:before+1},
+            row,{speaker:'universe',text:'Only the matching reply',ts:before+2},
+            {speaker:'founder',text:'later send',client_send_id:'later-send'},
+            {speaker:'universe',text:'UNRELATED LATER REPLY'}];
+        // Also exercise the active-turn matcher against identical text with no causal ID.
+        wire.active={text:sent.message,started_at:before};
+        if(restored){
+            document.getElementById('thread').replaceChildren();
+            liveInflight=null; inflightRestored=false;
+            await restoreInflight(wire.turns);
+        }else if(identity==='missing_record'){
+            for(const note of document.getElementById('thread').children)
+                if(note.unconfirmed) delete note.unconfirmed.client_send_id;
+        }
+        wire.hidden=false; window.dispatchEvent(new Event('focus'));
+    }""", {"restored": restored, "identity": identity})
+    if identity == "match":
+        page.wait_for_function("readInflight()===null")
+        expect(page.get_by_role("button", name="Send it again", exact=True)).to_have_count(0)
+        if not restored:
+            expect(page.locator("#thread .msg--universe .msg-body")).to_have_text(
+                "Only the matching reply")
+    else:
+        expect(page.get_by_text("Not confirmed yet", exact=False)).to_be_visible()
+        assert page.evaluate("readInflight().ts") == sent["ts"]
+        expect(page.get_by_role("button", name="Send it again", exact=True)).to_have_count(1)
+        expect(page.locator("#thread .msg--universe")).to_have_count(0)
+    expect(page.locator("#thread")).not_to_contain_text("OLD REPLY FROM THE PREVIOUS SEND")
+    expect(page.locator("#thread")).not_to_contain_text("UNRELATED LATER REPLY")
+    assert page.evaluate("wire.sends.length") == 1
+
+
+@pytest.mark.parametrize("restored", [False, True])
+def test_running_identity_precedes_saved_history(recovery_page, restored):
+    from playwright.sync_api import expect
+
+    page = recovery_page
+    _send_and_interrupt(page)
+    page.evaluate("""async restored => {
+        const sent=readInflight();
+        wire.active={text:sent.message,started_at:Date.now()/1000,client_send_id:sent.client_send_id};
+        wire.turns=[{speaker:'founder',text:sent.message,client_send_id:sent.client_send_id},
+            {speaker:'universe',text:'Do not draw while still running'}];
+        if(restored){
+            document.getElementById('thread').replaceChildren();
+            liveInflight=null; inflightRestored=false;
+            await restoreInflight(wire.turns);
+        }else{
+            wire.hidden=false;window.dispatchEvent(new Event('focus'));
+        }
+    }""", restored)
+    expect(page.get_by_text("Your agent is working on this.", exact=True)).to_be_visible()
+    assert page.evaluate("!!readInflight()")
+    expect(page.locator("#thread .msg--universe")).to_have_count(0)
+
+
+def test_desktop_focus_rechecks_after_initial_gap(recovery_page):
+    from playwright.sync_api import expect
+
+    page = recovery_page
+    _send_and_interrupt(page)
+    page.evaluate("wire.hidden=false;window.dispatchEvent(new Event('focus'))")
+    expect(page.get_by_text("Not confirmed yet", exact=False)).to_be_visible()
+    page.evaluate("""() => {
+        const sent=readInflight();
+        wire.turns=[{speaker:'founder',text:sent.message,client_send_id:sent.client_send_id},
+            {speaker:'universe',text:'Finished after the gap'}];
+        window.dispatchEvent(new Event('focus'));
+    }""")
+    expect(page.locator("#thread .msg--universe .msg-body")).to_have_text("Finished after the gap")
+    assert page.evaluate("readInflight()") is None
+    assert page.evaluate("wire.sends.length") == 1
+
+
+def test_optional_connection_suggestion_is_not_open_history(recovery_page):
+    from playwright.sync_api import expect
+
+    page = recovery_page
+    page.evaluate("""() => InlineApprovals.history([], [
+        {request_id:'optional',title:'Connect another LLM',status:'optional'},
+        {request_id:'real',title:'Publish page',status:'pending'}])""")
+    expect(page.locator('#request-history')).to_contain_text('Publish page · Open')
+    expect(page.locator('#request-history')).not_to_contain_text('Connect another LLM')
+
+
+def test_watched_send_keeps_recovery_when_only_an_earlier_reply_is_saved(recovery_page):
+    from playwright.sync_api import expect
+
+    page = recovery_page
+    _send_and_interrupt(page)
+    page.evaluate("""() => {
+        const sent=readInflight();
+        wire.active={text:sent.message,client_send_id:sent.client_send_id};
+        wire.hidden=false;window.dispatchEvent(new Event('focus'));
+    }""")
+    expect(page.get_by_text("Your agent is working on this.", exact=True)).to_be_visible()
+    page.evaluate("""async () => {
+        const sent=readInflight(); wire.active=null;
+        wire.turns=[{speaker:'founder',text:sent.message,client_send_id:'previous-send',
+            ts:(sent.ts-10000)/1000},{speaker:'universe',text:'Wrong previous reply'}];
+        await finishActiveTurn();
+    }""")
+    expect(page.get_by_text("Not confirmed yet", exact=False)).to_be_visible()
+    expect(page.get_by_role("button", name="Send it again", exact=True)).to_be_visible()
+    expect(page.locator("#thread .msg--universe")).to_have_count(0)
+    assert page.evaluate("!!readInflight()")
+    _complete_and_resume(page)
+    expect(page.locator("#thread .msg--universe .msg-body")).to_have_text(
+        "The checklist is finished.")
+    assert page.evaluate("readInflight()") is None
+    assert page.evaluate("wire.sends.length") == 1

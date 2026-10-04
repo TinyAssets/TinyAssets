@@ -362,10 +362,10 @@ def test_a_reload_after_a_failed_peek_is_offered_by_the_heartbeat_once(tmp_path,
 
 
 def test_a_delivered_message_found_in_history_clears_the_stale_record(tmp_path, html):
-    out = _run(tmp_path, html, _prior_page_record("continue") + r"""
+    out = _run(tmp_path, html, _prior_page_record("continue", client_send_id="send-continue") + r"""
     setQueueOwner("p-1");
     Owner.getConversation=async()=>({universe_id:"u-1", recent_conversation:{turns:[
-      {speaker:"founder",text:"continue",ts:1700000100},
+      {speaker:"founder",text:"continue",ts:1700000100,client_send_id:"send-continue"},
       {speaker:"universe",text:"Continuing.",ts:1700000101}]}});
     await loadHistory(); await pollStatus(); await settle();
     console.log(JSON.stringify(snapshot()));
@@ -549,13 +549,14 @@ def test_an_unconfirmed_turn_holds_the_queue_and_offers_a_read_only_check(tmp_pa
 def test_restored_unconfirmed_send_can_observe_a_server_accepted_reply(tmp_path, html):
     out = _run(tmp_path, html, r'''
 setQueueOwner("p-1"); setQueueScope("u-1");
-rememberInflight("run the deploy", "run the deploy", Date.now());
+rememberInflight("run the deploy", "run the deploy", Date.now(),
+  "typed",null,null,"main","deploy-send");
 liveInflight=null; // Reload: the previous page no longer owns this send.
 await restoreInflight([]);
 const note=els.thread.children.find(n=>/never confirmed/.test(n.textContent));
 const check=note.children.find(c=>c.tagName==="BUTTON"&&c.textContent==="Check saved conversation");
 Owner.getConversation=async()=>({recent_conversation:{turns:[
-  {speaker:"founder",text:"run the deploy",ts:Date.now()/1000},
+  {speaker:"founder",text:"run the deploy",ts:Date.now()/1000,client_send_id:"deploy-send"},
   {speaker:"universe",text:"The deployment finished while you were away.",ts:Date.now()/1000}
 ]}});
 if(check)check.click();
