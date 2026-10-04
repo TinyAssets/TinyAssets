@@ -151,7 +151,7 @@ def test_copy_agents_maps_references_preserves_existing_and_source(home, package
 
 
 @pytest.mark.parametrize("package", [False, True])
-def test_screen_without_published_agents_reports_empty_roster_before_copy(home, package):
+def test_screen_without_published_agents_reports_recipient_roster_before_copy(home, package):
     from tinyassets.storage.pending_requests import get_request
 
     _definition, original = _agent(home)
@@ -183,8 +183,8 @@ def test_screen_without_published_agents_reports_empty_roster_before_copy(home, 
                        binding_id=original["agent_binding_id"]) == original
     assert "no chat agents will be copied" in body
     assert body.count("No public chat-agent templates are included") == 1
-    assert "The screen's agent list uses your own roster and will be empty" in body
-    assert "empty" in body and "republish" in body
+    assert "The screen's agent list shows only your own agents, not the publisher's." in body
+    assert "republish" in body
     assert original["agent_binding_id"] not in body
 
 
@@ -196,7 +196,7 @@ def test_agent_consent_screen_line_is_conditional_and_domain_neutral(has_screen)
     assert "village" not in body.lower() and "house" not in body.lower()
     assert body.count("No public chat-agent templates are included") == 1
     if has_screen:
-        assert "add your own agents or the publisher includes them" in body
+        assert "shows only your own agents, not the publisher" in body
 
 
 def test_package_without_screen_omits_screen_consent(home):
@@ -225,7 +225,7 @@ def test_publish_screen_without_templates_warns_agents_are_not_included(home, pa
     body = get_request(home / UNIVERSE, asked["request_id"])["body"]
     assert "No chat agents are included" in body
     assert "select the agents" in body
-    assert "empty" in body
+    assert "see only their own agents, not yours" in body
 
 
 @pytest.mark.parametrize("package", [False, True])
