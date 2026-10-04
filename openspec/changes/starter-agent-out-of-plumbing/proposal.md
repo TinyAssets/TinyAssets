@@ -1,29 +1,28 @@
 ## Why
 
-Founder direction (2026-10-04): minimal, replaceable plumbing; an editable OpenClaw/Hermes/dots-style starter built on it; user command centers may replace even the main agent. The founder's measurement on `b2bcfca0ef` is ~12–14K resident tokens per round versus pi's reported <1K; starter policy is still embedded in Python.
+Founder direction (2026-10-04): minimal, replaceable plumbing and an editable starter, including a replaceable main agent. Reviewed movable starter text totals roughly 9-13K characters, about 2.5-3.5K tokens: a ceiling of about 20-25% of the reported 13-15K resident tokens per round, not 70%. D6 separately owns 30,096 characters of served tool descriptions (roughly 8.5-9K tokens). These estimates require per-adapter reproduction before claims of savings.
 
 ## What Changes
 
-- Move starter behavior into versioned seed files and on-demand skills; remove redundant prompt inventories and the extra learning call.
-- Preserve identity/first-person/honesty, the untrusted-envelope rule, disclosure filtering in code, and the four tool definitions in plumbing.
-- **BREAKING:** existing centers adopt through a non-overwriting, resumable migration; customized files and owner-selected replacements win. New centers use the same starter bundle (D10).
-- Measure this slice separately from D6's tool-description savings and prove remembering, asking, and onboarding through the founder's live agent.
+- Move starter behavior into editable seeds and on-demand skills; retain a minimal resident memory trigger and factual clock context for reliability.
+- Map all resident fragments, remove per-turn AGENTS.md reseeding/default substitution, and preserve cross-user and untrusted-data plumbing.
+- **BREAKING:** switch every center to the new renderer using D10's single starter-seed-lifecycle mechanism. Stock files upgrade automatically; customized files stay intact with a visible offer. No owner review gates cutover and no compatibility renderer remains.
+- Prove resident savings and full-task cost against D6-only per adapter, plus memory write/recall non-regression per supported model family.
 
 ## Capabilities
 
 ### New Capabilities
 
-- `starter-agent-files`: editable starter content, safe seed adoption, and resident-cost/capability acceptance.
+- `starter-agent-files`: editable starter content, complete section mapping, resident-cost and capability acceptance.
 
 ### Modified Capabilities
 
-- `universe-personification-and-relay`: retire mandatory separate learning extraction.
-- `deferred-turn-learning`: retire platform learning nudges, cursor-driven extraction, and its proposed background stages; preserve pending source material during cutover.
+None. Learning extraction and both learning-removal deltas belong exclusively to parent universe-agent-harness D7, after memory IDs, history and Undo. Seed receipts, automatic upgrades and file Undo belong exclusively to starter-seed-lifecycle (D10).
 
 ## Impact
 
-This commit is proposal only. Later implementation touches `universe_intelligence.py`, `onboarding_note.py`, `universe_tools.py`, seed provisioning and `tests/test_converse_turn_cost.py`. No public tools, grants, jail or tool-description changes here: D6 (`feat/d6-ta-capabilities`) owns those ~8.5–9K tokens.
+Design only; no product code. Future work touches prompt assembly in universe_intelligence.py, onboarding_note.py, _HARNESS_HEAD in universe_tools.py, starter content and converse-cost tests. D6 owns tool schemas/discovery and the platform-versioned handbook; seeds link to those references, never copy the handbook.
 
-Separate change justified: the migration is one bounded, hard-to-reverse slice of `universe-agent-harness`, which already spans D1–D11. This change refines its persona/learning removal and D10 seed content; it does not duplicate their rollout. At sync, the parent must reference this migration and not restore its superseded learning requirements.
+One intent: move resident starter policy into owner-editable files while preserving behavior and reducing cost. Parent ownership is reconciled in this revision, not deferred to sync. D7 removal is independent of renderer selection and contributes no savings claimed by this slice. D10's seed mechanism is a prerequisite reused here, not reimplemented here.
 
-Owner: Codex. Branch: `spec/starter-agent-out-of-plumbing`. No PR requested or opened; implementation remains unstarted.
+Owner: Codex. Branch: spec/starter-agent-out-of-plumbing. This is the requested planning revision; no implementation or PR is opened. Future implementation lanes remain separate and merge serially.

@@ -1,23 +1,20 @@
-Implementation backlog only; no product work is performed by this proposal.
-Proposal checks (2026-10-04): strict OpenSpec validation passes; repository-wide
-`python -m ruff check .` reports 59 existing errors outside this OpenSpec-only diff.
+Implementation backlog only; this revision changes no product code. D7 owns extraction retirement; starter-seed-lifecycle owns D10 seed machinery. Validation evidence is recorded in review-response.md.
 
 ## 1. Prepare
 
-- [ ] 1.1 Capture reproducible baseline and D6-only request components/calls with pinned tokenizer, fixture and SHA in the converse-cost ratchet.
-- [ ] 1.2 Verify deployed D6 discovery and governed invocation for every recipe; prove the intermediate old starter still works or coordinate its four-tool cutover with activation.
-- [ ] 1.3 Publish versioned starter bundle and manifest with the design's section mapping; check each skill's trigger and on-demand references.
+- [ ] 1.1 Capture reproducible baseline and D6-only costs per adapter with pinned fixtures, model/tokenizer and SHAs, including extraction state and full-task tokens/calls.
+- [ ] 1.2 Verify deployed D6 recipes, permissions, handbook links and its <1,000-token core precondition; coordinate handle removal so no intermediate release strands the starter.
+- [ ] 1.3 Publish the mapped starter bundle content with resident editable memory hook, five on-demand skills and handbook links; use the single D10 mechanism.
 
-## 2. Adopt
+## 2. Move policy
 
-- [ ] 2.1 Build receipt/proposal preparation; verify modified/empty/unreadable/linked files remain untouched and offers deduplicate.
-- [ ] 2.2 Build accepted activation and conditional rollback; verify collisions, concurrent edits, crashes, retry, decline and owner-deleted seeds with a data-loss mutation matrix.
-- [ ] 2.3 Preserve unresolved lesson sources and verify skill review/deduplication, failed writes and no-fact outcomes without extractor calls.
-- [ ] 2.4 Route new provisioning/D10 to the bundle; migrate the founder's customized center with reviewed file hashes and no unintended changes.
+- [ ] 2.1 Remove read_operating_instructions per-turn seeding and DEFAULT_OPERATING_INSTRUCTIONS runtime fallback; verify empty, deleted, linked and unreadable files are never replaced or substituted.
+- [ ] 2.2 Move all mapped resident fragments, retaining factual clock data, identity, disclosure, founder-only exposure, nonce history framing and input-method provenance; leave D7's learning path unchanged.
+- [ ] 2.3 Integrate starter-seed-lifecycle at the single all-center release boundary; verify stock automatic upgrades, custom/deleted preservation, visible offers and dormant-center activation without owner review or a legacy renderer.
 
-## 3. Cut over and prove
+## 3. Prove and close
 
-- [ ] 3.1 Remove hard-coded sections and learning call once all legacy dependencies are resolved; verify generic file loading, selected-main replacement and unchanged disclosure/untrusted-envelope/four-tool floors.
-- [ ] 3.2 Meet component token targets and lower ratchets; run affected tests/heavy files and ruff, recording full task token/call costs as well as resident savings.
-- [ ] 3.3 Assert deployed SHA and complete the design's natural live founder memory/access/onboarding and replacement-main proofs with skill traces and receipts.
-- [ ] 3.4 Sync these deltas, reconcile the parent harness's overlapping learning removal and D10 references, then archive only after live acceptance.
+- [ ] 3.1 Meet all per-adapter resident and full-task <= D6-only targets, lower measured ratchets and report calls without crediting D6/D7 savings.
+- [ ] 3.2 Pass N>=10 paired write/recall trials per supported model family against extraction-on baseline, plus clock and failure/negative-control cases; run affected tests/heavy files and ruff.
+- [ ] 3.3 Assert deployed SHA and complete natural customized-tiny memory/access/clock and disposable onboarding proofs, replacement-main behavior and unauthorized-tier refusal.
+- [ ] 3.4 Sync only starter-agent-files, confirm D7/D10 sole ownership remains intact, and archive only after live acceptance.

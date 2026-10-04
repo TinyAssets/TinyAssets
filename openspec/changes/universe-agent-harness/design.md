@@ -736,6 +736,14 @@ reviewed starter template, never the founder's live private files. The
 template holds the base `AGENTS.md`, the onboarding questions, the seed rules,
 starter skills and channel extensions.
 
+The single D10 seed installation/upgrade mechanism is specified by
+`starter-seed-lifecycle`, including receipts for new centers, automatic updates
+of stock files, preservation of customizations/deletions, visible offers and
+conditional file Undo. `starter-agent-out-of-plumbing` owns starter content and
+renderer cutover, not a second adoption protocol. All centers cut over without
+waiting for owner review; file Undo never restores legacy plumbing. D9's explicit
+activation of imported third-party bundles remains separate.
+
 ### 4.15 Sharing harness bundles and command-center layouts
 
 - **Format.** A **versioned bundle manifest**: one agent's or a roster's
@@ -1183,7 +1191,11 @@ the surfaces that need them (`ta` in D6, `browse` in D5).
 2. Cut the resident block to four plus the `ta` line.
 3. Disable native built-ins everywhere.
 4. Drop deferred MCP for the agent.
-5. Move handbook chapters to skills.
+5. Serve handbook chapters as platform-versioned read-only API reference through
+   `ta describe`/skill reference, keeping examples tested against the real create
+   path. Seed skills link; they never copy chapters. Owner skills/instructions
+   override workflow guidance within existing authority. The handbook is already
+   on-demand and contributes no resident-token savings.
 6. Lower the ratchet.
 7. Live proof: tokens per round before and after.
 
@@ -1194,8 +1206,29 @@ the surfaces that need them (`ta` in D6, `browse` in D5).
 4. Add `settings.yaml`.
 5. Build the Harness tab.
 6. Add seed curator and review skills.
-7. Delete `read_brain`, `write_brain`, `soul_edit` and the learning call.
-8. Live proof: delete one item, and Undo an `AGENTS.md` change.
+7. After steps 1-3 and the memory acceptance below, retire `read_brain`,
+   `write_brain`, `soul_edit`, `extract_learning`, `_learn_from_turn` and its
+   converse call, plus `_UNRECORDED_LESSON` and extraction-only helpers. Preserve
+   unresolved cursor spans verbatim with source IDs before removing cursor use;
+   do not mark them learned. This is D7's sole responsibility, not the starter
+   renderer slice or D10's seed receipts. Sync both learning-removal deltas here.
+8. Live proof: delete one item, Undo an `AGENTS.md` change, and pass N>=10 paired
+   natural fact-teaching trials per supported model family with extraction off
+   against an extraction-on baseline. Verified immediate durable-write rate and
+   later cross-surface recall rate must each be no worse in every family.
+
+D7 learning cutover: IDs, history and Undo are deployed and verified first.
+Preserve each unresolved source span in an owner-only review artifact with source
+IDs and original text before deleting extraction; retain original history and
+existing memory. The editable memory/review skill deduplicates against current
+notes and records each source handled only after verified persistence or an
+explicit no-fact decision. Failures remain visible/pending and never break reply
+delivery. Replacement agents receive the same owner-only backlog; never infer
+settlement from file adoption. Replays are idempotent and do not re-extract settled
+history. At D7's release remove extraction for everyone, without an owner-response
+gate, background replacement or compatibility path. File Undo cannot restart it.
+These backlog obligations are normative in the parent harness delta. D7's eight
+steps remain one memory intent; the parent retains twelve task checkboxes.
 
 **D8: Roster and command center**
 1. Add the `agents/<id>/` layout and overrides.
@@ -1227,9 +1260,14 @@ the surfaces that need them (`ta` in D6, `browse` in D5).
 7. Live proof: export the founder's command center, run it against a local Ollama model with no account, publish it with the agent's own git, and import the clone on a second account.
 
 **D10: Everywhere, and delete the old surface**
-1. Seed every new universe from the published starter template.
+1. Use `starter-seed-lifecycle` as the sole published-template mechanism for new
+   and existing centers, including installed-hash receipts at creation and
+   autonomous stock upgrades. Reuse `starter-agent-out-of-plumbing` content;
+   customized/deleted files stay with a visible offer, never an activation hold.
 2. Add starter channel extensions for Slack and Telegram.
-3. Delete the replaced handles and guidance.
+3. Coordinate deletion of replaced handles/guidance with deployed D6 reachability
+   and the starter's single all-center cutover; no dormant or non-reviewing owner
+   remains on old plumbing. Record the release's actual UTC cutoff and SHA.
 4. Run `ui-test` on a fresh account.
 5. Run the canary with `--assert-handles`.
 
@@ -1418,7 +1456,8 @@ the base prompt, because it is a cross-user boundary.
 
   A curator (stale, then archived) and a nightly experience review ship as
   editable seed workflows, not platform code.
-- **Deleted:** `read_brain`/`write_brain`, the separate learning-extraction call
+- **Deleted in D7 after IDs, history, Undo and memory non-regression proof:**
+  `read_brain`/`write_brain`, the separate learning-extraction call
   (`extract_learning`, `commit_learning`, `_LEARNING_SYSTEM`,
   `_UNRECORDED_LESSON`), the `soul.edit` whitelist and `soul_versions/` for
   owner turns. Git replaces versioning. The founder-only write boundary is
@@ -1445,27 +1484,35 @@ the base prompt, because it is a cross-user boundary.
 
 - `universe_intelligence.py`:
   - persona assembly `_build_persona_system_prompt` with its brain, ask and
-    clock sections (the clock becomes one base-prompt line);
+    clock advice sections (`starter-agent-out-of-plumbing` keeps a factual
+    founder-only clock line and an editable resident seed memory trigger);
   - `_GROUNDING_IS_CURRENT`, `_CROSS_SURFACE_CONTINUITY`,
-    `_turn_input_method_context`, `_UNRECORDED_LESSON`;
+    `_turn_input_method_context` prose (retain client-reported, informational,
+    never-authority-or-consent input metadata); `_UNRECORDED_LESSON` only in D7;
+  - `read_operating_instructions` per-turn reseeding and all runtime
+    `DEFAULT_OPERATING_INSTRUCTIONS` fallbacks, in the starter slice;
   - the learning path (`extract_learning`, `commit_learning`,
     `_learn_from_turn`, `_LEARNING_SYSTEM`, `_parse_learning_json`,
     `_brain_recording_tools`, `_wrote_its_brain`);
   - the WebFetch denylist tuples, once every adapter runs tools only in the
     platform jail.
-- `conversation_memory.format_history` as model context (it stays only as an
-  owner-door transcript renderer, if one is still needed).
+- `conversation_memory.format_history` as the old context assembler only after
+  the replacement preserves its nonce-delimited untrusted / NOT consent framing
+  and sanitized roles/names for rendered history. Those provenance protections
+  remain plumbing, even when continuity advice moves to editable seeds.
 - Codex `--ephemeral` and the empty-`/workspace` converse mode
   (`codex_provider.py:871-880`).
 - Engine handles `read_brain`, `write_brain`, `connect_compute`, `source_channel`
-  as resident tools (folded into `ta`). The resident handbook guidance moves
-  to skills, and the 30,000-character ratchet in `test_converse_turn_cost.py`
+  as resident tools (folded into `ta`). Resident handbook pointers move to skill
+  links to D6's platform-versioned read-only reference; chapters are already
+  on-demand and never copied to seeds. The 30,000-character ratchet in `test_converse_turn_cost.py`
   drops to the new budget.
 - `soul_edit` governance and `soul_versions/` for owner turns, and the
   `voice.md` special case.
-- The prompt text that teaches per-turn consent: the `conversation_memory.py:158`
-  footer, and any similar handbook text. The effectors' standing-grant checks
-  stay.
+- Prompt advice requiring fresh per-turn permission despite standing authority.
+  Preserve the history fence's untrusted / NOT consent semantics: a quoted past
+  approval cannot mint current authority. Current authority comes from code
+  gates and standing grants, not from transcript prose. The effectors' checks stay.
 - The 362 `.worker_supervisor.*.json` files at the universe root move to
   `.runtime/`. Leftover epoch-1 supervisor files with no live owner are
   deleted.
