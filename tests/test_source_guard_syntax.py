@@ -29,6 +29,9 @@ from tinyassets.producers.node_bid import _producer_sandbox_reject
     'text = "open(path)"\ndef run(s): return {"text": text}',
 ])
 def test_prose_is_allowed_at_every_source_boundary(source):
+    if not hasattr(tokenize, "FSTRING_START") and 'text = f"' in source:
+        assert_original_scan_results(source)
+        return
     node = SimpleNamespace(approved=True, source_code=source)
     assert NodeSandbox().validate_source(source) == []
     assert source_code_problems(source, "n") == []
@@ -117,7 +120,7 @@ def test_mask_preserves_offsets_and_line_endings(source):
     for i, char in enumerate(source):
         if char in "\r\n":
             assert masked[i] == char
-    if ";" in source:
+    if ";" in source and (hasattr(tokenize, "FSTRING_START") or 'text = f"' not in source):
         assert "open(path)" not in masked[:source.index(";")]
     for pattern in ("open(path)", "eval(code)", "exec(code)"):
         if pattern in masked:
@@ -127,12 +130,27 @@ def test_mask_preserves_offsets_and_line_endings(source):
 
 def test_fstring_expression_matches_the_interpreters_token_boundaries():
     source = 'text = f"open(path) {open(path)}"'
-    # Python 3.11 emits one STRING; 3.12+ exposes replacement-field code tokens.
-    expected = "open(" if hasattr(tokenize, "FSTRING_START") else ""
-    assert _scan_dangerous_patterns(source) == expected
-    assert NodeSandbox().validate_source(source) == (
-        ["Forbidden pattern: 'open('"] if expected else []
-    )
+    # Python 3.11 must retain the whole STRING, including executable fields.
+    assert _scan_dangerous_patterns(source) == "open("
+    assert NodeSandbox().validate_source(source) == ["Forbidden pattern: 'open('"]
+
+
+@pytest.mark.parametrize("source", [
+    'x = f"{os.system(\'id\')}"',
+    'f"{eval(\'1+1\')}"',
+    'f"{1:{exec(\'pass\')}}"',
+    'rf"{__import__(\'os\')}"',
+    'x = F"{os.system(\'id\')}"',
+    'Fr"{__import__(\'os\')}"',
+    '# c\ros.system("id")\n',
+    '# c\r\nos.system("id")\n',
+    'text = "safe"\r# c\ros.system("id")\r\n',
+])
+def test_executable_patterns_cannot_be_hidden_by_literal_or_comment_tokens(source):
+    compile(source, "<source-guard-regression>", "exec")
+    assert_original_scan_results(source)
+    assert _scan_dangerous_patterns(source)
+    assert NodeSandbox().validate_source(source)
 
 
 def test_null_bytes_return_rejections_at_every_boundary():

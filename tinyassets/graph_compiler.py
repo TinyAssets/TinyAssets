@@ -625,8 +625,12 @@ def _source_without_literals(source: str) -> str:
 
     Tokenization errors retain the original text for the conservative raw scan.
     On Python 3.12+, f-string expression tokens remain code; earlier tokenizers
-    expose an entire f-string as one STRING token.
+    expose an entire f-string as one STRING token, which must remain unmasked.
+    Lone carriage returns also retain the raw scan: compile treats them as
+    newlines, whereas StringIO.readline does not.
     """
+    if "\r" in source.replace("\r\n", ""):
+        return source
     offsets = [0]
     for line in io.StringIO(source):
         offsets.append(offsets[-1] + len(line))
@@ -635,6 +639,10 @@ def _source_without_literals(source: str) -> str:
         for token in tokenize.generate_tokens(io.StringIO(source).readline):
             if token.type == tokenize.ERRORTOKEN:
                 return source
+            if token.type == tokenize.STRING and not hasattr(tokenize, "FSTRING_START"):
+                prefix = token.string.split('"', 1)[0].split("'", 1)[0]
+                if "f" in prefix.lower():
+                    continue
             if token.type in (tokenize.STRING, tokenize.COMMENT) or (
                 tokenize.tok_name[token.type].startswith(("FSTRING_", "TSTRING_"))
             ):

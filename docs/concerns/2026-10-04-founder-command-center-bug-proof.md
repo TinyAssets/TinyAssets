@@ -58,9 +58,12 @@ while `open (...)`, `(open)(...)`, `os . system(...)` and callable aliases do no
 acquire new AST-based refusals. Strings holding API names are exempt regardless
 of how a caller might later use them; the scan makes no reflection-safety claim.
 
-Python 3.11 tokenizes a whole f-string as STRING, so the whole token is blanked.
-Python 3.12+ exposes FSTRING literal parts separately and leaves expression code
-available to the original scan. Tests record that interpreter-defined behavior,
+Python 3.11 tokenizes a whole f-string as STRING, so it now stays unmasked:
+blanking it hid executable expressions from the original scan. Python 3.12+
+exposes FSTRING literal parts separately and leaves expression code available
+to the original scan. Source containing a lone carriage return also retains the
+raw scan, because compile treats it as a newline while StringIO.readline does
+not. Tests record these conservative fallbacks and interpreter-defined behavior,
 along with nested f-strings, format text, multiline/Unicode/CRLF offsets, every
 original forbidden pattern, raw fallback and legacy compile ValueError handling.
 The AST-only tests removed in this revision were all introduced by this PR;
@@ -186,3 +189,37 @@ approval receipts and path-I/O tests, with external base temp directories.
 Mirror regeneration/import probe, full parity, Ruff and whitespace checks pass
 again. The earlier storage and app proofs remain applicable: those files and
 tests are unchanged by either source revision.
+
+## Source masking review repair
+
+On `fix/source-guard-literal-masking`, after merging `origin/main`:
+
+- **AGREE — Python 3.11 f-string masking:** retain STRING tokens with an f/F
+  prefix when FSTRING_START is unavailable. The existing expression-boundary
+  test now requires rejection on every interpreter; original test names remain.
+- **AGREE — lone carriage returns:** retain the entire raw source if it contains
+  a lone CR. This conservative fallback preserves offsets and prevents comment
+  tokenization from hiding statements that compile treats as a new line.
+
+Nine parametrized regressions cover all reported inputs, uppercase prefixes,
+CRLF and mixed newline forms. Each compiles and preserves the original scan's
+results at all four callers. Original pattern constants match `origin/main`.
+
+Validation covers `test_source_guard_syntax.py`, `test_node_bid.py`,
+`test_node_bid_claim_stress.py`, `test_node_sandbox.py`,
+`test_node_sandbox_workspace.py`, and the affected heavy `test_branch_runner.py`:
+
+| Platform | Interpreter | Passed | Skipped |
+| --- | --- | ---: | ---: |
+| Windows | Python 3.11.15 | 447 | 17 |
+| Windows | Python 3.12.13 | 447 | 17 |
+| Windows | Python 3.14.3 | 447 | 17 |
+| Linux oracle | Python 3.11.16 | 464 | 0 |
+
+Each interpreter passed all 102 source-guard cases. Windows skips require POSIX,
+bubblewrap, or symlink privileges; the Linux oracle ran them with bwrap 0.12.0
+as uid 1001. Python 3.14's totals combine 398 passes in the guard/bid/sandbox
+run and 49 in the branch-runner run. All pytest base temp directories were
+outside the repository. Plugin regeneration/import probe, mirror byte parity,
+Ruff on changed Python files, and diff whitespace checks passed. This repair
+is commit-and-push only; no PR or deployment is requested.
