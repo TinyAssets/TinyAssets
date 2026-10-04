@@ -19,15 +19,15 @@ The bubble thread SHALL render one revision-aware card per request beside its or
 - **AND** missing protected data disables approval instead of falling back to the agent text
 
 ### Requirement: Sign-in completes server-side without the parent app
-Connect SHALL launch the bound OAuth flow in a popup or system in-app browser without replacing the thread. The server SHALL generate and retain the PKCE verifier in credential custody and the callback server SHALL exchange the code, deposit credentials and durably wake the saved active task as specified in design.md. Neither browser SHALL need an app bearer, verifier, parent relay or deep-link return. Tokens, secrets and codes SHALL NOT enter transcripts, agent context, event payloads or callback output/logs.
+Connect SHALL first open a top-level TinyAssets hop in the popup or system browser without replacing the thread. The hop SHALL authenticate the initiating owner's interactive browser session, bind state to that exact session and owner/home, and set a Secure, HttpOnly, SameSite=Lax, flow-specific __Host- binding cookie before redirecting to the provider. Native flows SHALL establish that browser session by interactive sign-in if absent; a launch URL or bearer SHALL NOT confer it. The server SHALL generate and retain the PKCE verifier in credential custody. Before exchange, the callback SHALL require the same live browser session and matching flow cookie on the callback request, validate all flow bindings, and recheck authority before deposit as specified in design.md. On valid completion, the callback server SHALL exchange the code, deposit credentials only into the immutable initiating owner/home and persist the saved task's outcome/wake. Neither browser SHALL need an app bearer, verifier, parent relay or deep-link return. Tokens, secrets and codes SHALL NOT enter transcripts, agent context, event payloads or callback output/logs.
 
 #### Scenario: Parent page closes before sign-in finishes
-- **WHEN** the owner completes valid provider sign-in with the parent closed but the initiating session still valid
-- **THEN** the callback server validates the bound flow and uses its server-held verifier to complete exchange/deposit and persist the wake
+- **WHEN** the owner completes valid provider sign-in with the parent closed and the callback itself carries the matching live initiating browser session and flow cookie
+- **THEN** the callback server validates those session/flow bindings and uses its server-held verifier to complete exchange/deposit and persist the wake
 - **AND** the initiating agent continues the original active task without a page message or client completion call
 
 #### Scenario: Native app is suspended
-- **WHEN** the system browser returns from the provider while the native app is suspended
+- **WHEN** the system browser returns from the provider while the native app is suspended, carrying the matching browser session and flow cookie established at the TinyAssets hop
 - **THEN** the same server callback completes sign-in and records the result/wake without native bearer access or app-link return
 - **AND** the resumed app reads the safe result using its normal owner session
 
@@ -35,6 +35,16 @@ Connect SHALL launch the bound OAuth flow in a popup or system in-app browser wi
 - **WHEN** callback state is replayed/expired, the owner logged out/switched accounts, or task/request/consent bindings changed
 - **THEN** no unauthorized exchange/deposit/wake is admitted and no other owner/request can receive the connection
 - **AND** stopped work cannot resume automatically
+
+#### Scenario: Authorization URL completed in a different browser
+- **WHEN** an attacker starts Connect and a victim completes the copied provider authorization URL in another browser while the attacker's session remains valid
+- **THEN** the callback lacks the exact initiating session/flow-cookie binding and refuses code exchange, credential deposit and completion wake
+- **AND** the victim's provider credential cannot enter the attacker's vault; signing in as the same TinyAssets owner in a different session also cannot complete that flow
+
+#### Scenario: Callback lacks or replaces its initiating session
+- **WHEN** callback state is valid but the request lacks either required cookie, supplies another session, or the bound owner session is revoked/switched before deposit
+- **THEN** completion is refused without rebinding the flow or depositing into either the old or replacement account
+- **AND** a bearer, copied TinyAssets launch URL or valid session stored only on the server cannot replace browser-session proof
 
 #### Scenario: Deploy after credential deposit
 - **WHEN** credentials were deposited but the request/wake commit was interrupted

@@ -5,11 +5,11 @@ The bubble is always-present plumbing: emergency control and conversation with e
 ## What Changes
 
 - Put request cards in the bubble thread; demote the rail to history and consolidate connect entry points, retaining existing refresh transport.
-- Bind previews to protected normalized actions; Approve executes server-side and Edit revalidates. Once is a decision; task/always reuse owner rules with explicit scope and expiry.
+- Bind previews to protected normalized actions; Approve executes server-side and Edit revalidates. Once is a decision; task/always reuse owner rules with explicit scope and expiry. All scopes recheck the applicable policy digest at dispatch and refuse stale approval.
 - Authenticate approval through protected interactive owner sessions and single-use bound tokens; an owner's bearer-holding chatbot cannot approve.
-- Resume the saved active agent/task server-side after answers/results, with Stop/expiry invalidation and boot recovery through existing activity events.
-- Keep provider sign-in in a popup/system browser while the callback server uses server-held PKCE to exchange, deposit and wake without the parent app.
-- Reuse pending requests, rules, effect intents and activity events with one protected request authority and explicit migration/crash behavior.
+- Resume the saved active agent/task server-side after answers/results, with Stop/expiry invalidation and boot recovery through existing activity events until processed-ack, yielding one committed processing result per answer.
+- Keep provider sign-in in a popup/system browser while the callback server uses server-held PKCE to exchange, deposit and wake without the parent app. A top-level TinyAssets hop binds state to the initiating owner browser session; the callback itself must carry that exact session and flow cookie.
+- Reuse pending requests, rules, effect intents and activity events with one protected request authority, a named owner-control lock owner, explicit mutation refusal during migration pause and recovery on either side of cutover.
 
 ## Capabilities
 
@@ -40,4 +40,6 @@ Owner: Codex. Branch: `spec/inline-connect-and-approve`. One intent: complete co
 
 The Claude ADAPT review's eight DISAGREE findings are incorporated in design.md and the acceptance scenarios: server callback completion, interactive approval provenance, stable applicable-policy digests, reused tables/once decisions, protected rendering, task expiry/Stop, boot wake recovery and narrowed transport/error scope. The Muse flow in finding 9 remains intact. Ten implementation boxes intentionally remain open; no implementation or live verification is claimed.
 
-Revision verification (2026-10-04): `openspec validate inline-connect-and-approve --strict` and `git diff --check` passed. `python -m ruff check .` reported 59 existing errors in unchanged Python files; this revision changes only six Markdown artifacts in this change. No product code was edited and no sub-agents were used.
+Final round-2 review: A is addressed by callback-carried initiating owner-session and flow-cookie checks, including rejection of copied authorization URLs; B by durable processed-ack, boot redelivery of admitted-but-unprocessed wakes and dedupe retention beyond replay sources; C by dispatch-time policy comparison/refusal for once; F by coordinator-owned cross-worker serialization, retryable refusal during a durable migration pause and explicit cutover/grant recovery. Design, normative scenarios and future implementation tasks carry these requirements. No further review agents are dispatched.
+
+Final revision verification (2026-10-04): `openspec validate inline-connect-and-approve --strict` and `git diff --check` passed. `python -m ruff check .` again reported 59 existing errors in unchanged Python files; this revision changes only five Markdown artifacts in this change. No product code was edited and no sub-agents were used.
