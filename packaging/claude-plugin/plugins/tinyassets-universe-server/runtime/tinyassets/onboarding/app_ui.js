@@ -686,15 +686,18 @@
         !Object.prototype.hasOwnProperty.call(b.configuration,"turn_consumer"));
     },
     async listAgents(){
+      // A name lookup is optional; losing it must not hide the roster.
+      const own=await Owner.status({universe_id:this.home}).catch(()=>null);
+      return this.agentRoster(own);
+    },
+    async agentRoster(own){
       const doc=await this.readWhole({target:"agent_bindings",graph_id:this.home},"bindings");
       if(!doc||doc.error||!Array.isArray(doc.bindings)) throw new Error("your agents are unavailable");
       const current=typeof addressedAgentId==="function"?addressedAgentId():"main";
-      const own=await Owner.status({universe_id:this.home});
-      if(!own||own.error) throw new Error("your agent's name is unavailable");
-      if(String(own.universe_id||"")!==this.home)
+      if(own&&!own.error&&String(own.universe_id||"")!==this.home)
         throw new Error("that state belongs to another command center; this UI's access ended");
       // The agent's learned name is distinct from the command center's title.
-      const name=own.persona&&typeof own.persona.name==="string"?own.persona.name.trim():"";
+      const name=own&&!own.error&&own.persona&&typeof own.persona.name==="string"?own.persona.name.trim():"";
       const agents=[{agent_id:"main",name:name||"Your agent",selected:current==="main"}];
       for(const b of doc.bindings){
         if(!this.conversable(b)) continue;
@@ -878,13 +881,13 @@
       // The live turn is the selected conversation agent's; every other agent
       // is idle until per-agent turns arrive (design §4.18).
       //
-      // listAgents() is the ONE source of the roster. It already seeds the
+      // agentRoster() is the ONE source of the roster. It already seeds the
       // command center's own agent as "main", so nothing is prepended here: a
       // second "main" entry carrying a different name would draw that agent
       // twice on a screen that animates one villager per agent. When nothing is
       // selected -- the addressed agent stopped being conversable -- no agent
       // claims the turn, rather than one being invented to hold it.
-      const roster=await this.listAgents();
+      const roster=await this.agentRoster(doc);
       const agents=roster.agents.map(a=>a.selected&&working
         ? {agent_id:a.agent_id,name:a.name,state:"working",
            since:typeof turn.started_at==="string"?turn.started_at:null,steps}

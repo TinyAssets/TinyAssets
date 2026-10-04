@@ -172,7 +172,7 @@ def test_a_custom_ui_reads_a_whole_list_not_a_first_page():
     out = json.loads(run.stdout)
     assert out["rows"] == 437
     assert out["calls"] == [100, 400, 1600]
-    for reader in ("async listAgents(){", "async listAutomations(){"):
+    for reader in ("async agentRoster(own){", "async listAutomations(){"):
         body = _method_source(html, reader)
         assert "this.readWhole(" in body and "limit:" not in body, reader
 

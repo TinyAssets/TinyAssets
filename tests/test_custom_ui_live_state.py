@@ -15,6 +15,8 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+import pytest
+
 from tests.test_custom_ui_bridge import _run
 
 LIVE_DOUBLE = r'''
@@ -248,6 +250,54 @@ def test_main_agent_live_name_is_its_own_name_not_the_command_center(tmp_path):
 })().catch(e=>{console.error(e);process.exit(1);});
 ''')
     assert "main agent name checks passed" in out
+
+
+@pytest.mark.parametrize("failure", ["throw new Error('status offline')", "return {error:'status offline'}", "return null"])
+def test_status_failure_keeps_the_agent_roster_available(tmp_path, failure):
+    out = _run(tmp_path, "agent_name_unavailable.js", r'''
+(async()=>{
+ AppUI.home=HOME; AppUI.principal=PRINCIPAL;
+ binding={agent_binding_id:'b9',universe_id:HOME,agent_definition_id:'d1',
+  status:'configured',created_by:PRINCIPAL,configuration:{name:'Weaver',role:'writer'}};
+ const original=MCP.callTool.bind(MCP);
+ MCP.callTool=async (tool,args,opts)=>{
+  if(tool==='get_status'){STATUS_FAILURE;}
+  return original(tool,args,opts);
+ };
+ const roster=await AppUI.listAgents();
+ assert.deepEqual(roster.agents,[
+  {agent_id:'main',name:'Your agent',selected:true},
+  {agent_id:'b9',name:'Weaver',selected:false}]);
+ console.log('unavailable name roster checks passed');
+})().catch(e=>{console.error(e);process.exit(1);});
+'''.replace("STATUS_FAILURE", failure))
+    assert "unavailable name roster checks passed" in out
+
+
+def test_each_live_poll_reads_status_once_and_uses_that_name(tmp_path):
+    out = _run(tmp_path, "live_status_once.js", r'''
+(async()=>{
+ AppUI.home=HOME; AppUI.principal=PRINCIPAL;
+ const original=MCP.callTool.bind(MCP);
+ let statusCalls=0;
+ MCP.callTool=async (tool,args,opts)=>{
+  if(tool==='get_status'){
+   statusCalls++;
+   return {universe_id:HOME,persona:{name:'Ada '+statusCalls},
+    active_turn:{state:'tool',started_at:'now',tools:[]}};
+  }
+  return original(tool,args,opts);
+ };
+ for(let poll=1;poll<=2;poll++){
+  const live=await AppUI.readLive();
+  assert.equal(statusCalls,poll,'one status call per live poll');
+  assert.equal(live.agents.find(a=>a.agent_id==='main').name,'Ada '+poll);
+  assert.equal(live.agents.find(a=>a.agent_id==='main').state,'working');
+ }
+ console.log('single status read checks passed');
+})().catch(e=>{console.error(e);process.exit(1);});
+''')
+    assert "single status read checks passed" in out
 
 
 def test_the_frame_client_exposes_exactly_the_allowlisted_actions():
