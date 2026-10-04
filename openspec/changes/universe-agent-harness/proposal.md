@@ -152,12 +152,28 @@ and adapter-specific behaviour is a declared capability (`resume`,
 
 ### Modified Capabilities
 
+- `deferred-turn-learning`: D7 alone retires cursor-driven extraction/nudges and
+  proposed background stages, after IDs, history, Undo and memory non-regression
+  proof, preserving unresolved sources verbatim with source IDs.
 - `universe-personification-and-relay`: `converse` continues the thread's
   session instead of running one stateless turn. The separate learning
   extraction and the WebFetch-only denylist sandbox are removed. The OS tool
   jail and git-versioned files replace them.
 
 ## Impact
+
+Ownership clarified 2026-10-04: `starter-agent-out-of-plumbing` solely owns editable
+starter content, consumer/renderer cutover wiring and all-center/dormant-center
+proof (task 2.3); `starter-seed-lifecycle` is D10's prerequisite transaction API
+and single installation/upgrade/receipt mechanism, with its owner/center-bound
+sidecar SQLite storage contract. Resident hooks and skills arrive alongside
+untouched custom AGENTS.md with visible former-defaults diagnostics. D7 keeps both learning-removal
+deltas and backlog preservation here. D6 keeps the platform-versioned read-only
+handbook, with owner skills taking precedence over workflow recommendations.
+No duplicated adoption or learning-retirement implementation is assigned to the
+starter slice, and no owner review holds a center on legacy plumbing. Both the
+starter move and D7 require N>=10 paired write/recall trials per model-family x
+stock/customized-AGENTS fixture cell; the factual no-tools line stays in plumbing.
 
 Code: `tinyassets/universe_intelligence.py` (persona and learning paths deleted),
 `conversation_memory.py` (replaced by the session log),
