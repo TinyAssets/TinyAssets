@@ -6066,7 +6066,7 @@
   const InlineConnection={
     card:null,record:null,timer:null,busy:false,epoch:0,
     current(record=this.record){
-      return !!record&&ownsSavedRow(record)&&record.agent===addressedAgentId()&&this.epoch===MCP._loginEpoch;
+      return !!record&&record===this.record&&ownsSavedRow(record)&&record.agent===addressedAgentId()&&this.epoch===MCP._loginEpoch;
     },
     waiting(){return this.current()&&!!this.record.needsConnection;},
     hold(request,restored=null){

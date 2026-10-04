@@ -67,6 +67,7 @@ def page(app_url, request):
                         request:{request_id:'free-request',action:{type:'bind_model_access'}}
                     }:{status:wire.flow});
                 if(url==='/app/model-connect/inline_cancel'){
+                    if(wire.delayCancel)await new Promise(resolve=>wire.releaseCancel=resolve);
                     wire.flow='cancelled';return Response.json({status:'cancelled'});}
                 if(url==='/app/me')return Response.json({
                     setup:wire.connected?'connected':'empty',
@@ -209,3 +210,20 @@ def test_native_browser_handoff_returns_to_original_message(page):
     expect(page.get_by_text("Your day is planned.", exact=True)).to_be_visible(timeout=10000)
     assert page.evaluate("wire.sends.map(s=>s.message)") == ["Help me plan my day"] * 2
     assert page.evaluate("wire.answers") == 1
+
+
+def test_late_cancel_cannot_replace_connected_card(page):
+    from playwright.sync_api import expect
+
+    send(page)
+    with page.expect_popup():
+        page.get_by_role("button", name="Connect OpenRouter", exact=True).click()
+    page.evaluate("wire.delayCancel=true")
+    page.get_by_role("button", name="Cancel sign-in", exact=True).click()
+    # Another connection finishes while the cancellation response is in flight.
+    page.evaluate("wire.connected=true")
+    expect(page.get_by_text("Your day is planned.", exact=True)).to_be_visible(timeout=10000)
+    page.evaluate("wire.releaseCancel()")
+    card = page.get_by_role("region", name="Needs a connection")
+    expect(card.get_by_role("status")).to_have_text("Connected")
+    assert page.evaluate("wire.sends.length") == 2
