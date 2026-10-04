@@ -15,12 +15,20 @@ from tests.test_authenticated_external_call_effector import (
     _Loopback,
     _setup,
 )
-from tests.test_universe_tools_jail import _engine
+from tests.test_ta_capabilities import signed_launch
+from tests.test_universe_tools_jail import _engine as _bare_engine
 from tests.test_universe_tools_jail import world as world
 from tinyassets import agent_review, agent_rules, universe_tools
 
 pytestmark = [pytest.mark.real_jail, pytest.mark.skipif(
     sys.platform != "linux" or not shutil.which("bwrap"), reason="requires Linux + bubblewrap")]
+
+
+def _engine(monkeypatch, world, *, tools=None, **pins):
+    """The engine on the platform-signed route of one launch (default: every tool)."""
+    server = _bare_engine(monkeypatch, world, **pins)
+    signed_launch(monkeypatch, tools)
+    return server
 
 
 def bash(server, command, exit_code=0):
@@ -116,3 +124,16 @@ def test_bridge_is_revoked_after_bash(world, monkeypatch):
     monkeypatch.setattr(universe_tools, "RUNNER", observe)
     bash(server, "ta search")
     assert sockets and all(not path.exists() for path in sockets)
+
+
+def test_node_grant_bounds_ta_inside_the_jail(world, monkeypatch):
+    server = _engine(monkeypatch, world, tools=["read", "read_graph", "bash"])
+    names = [item["name"] for item in json.loads(bash(server, "ta search"))]
+    assert "read_graph" in names
+    assert not {"write_graph", "run_graph", "write_brain", "source_channel",
+                "connect_compute"} & set(names)
+    denied = asyncio.run(server.run_bash(command="ta write_graph --json '{}'"))
+    assert "unknown capability" in denied and "[exit code 1]" in denied
+    # An unsigned launch still runs bash, with no ta socket bound.
+    signed_launch(monkeypatch, url="http://127.0.0.1:8790/mcp")
+    assert "NO-TA" in bash(server, "test -e /tmp/ta.sock || echo NO-TA")

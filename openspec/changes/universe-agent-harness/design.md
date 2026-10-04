@@ -1227,6 +1227,25 @@ is diagnostic output. Programs inherit the same jail and socket, can compose
 manifest. No registration or deploy is needed. Existing read-only root mounts
 still apply; this slice does not widen the roster's harness-edit permissions.
 
+**`ta` never exceeds the launch's tool grant (2026-10-04, PR #4439 review).**
+An agent node's `tools_allowed` narrows its served tools, and before `ta` that
+narrowing held only in the provider's own tool list. `ta` now carries it to the
+engine. Each engine server holds a second random key beside its bearer, published
+on the same private route record and never given to a provider launch. Every
+launch's route carries its served tools signed with that key over the launch's
+session and turn. `ta` serves the platform capabilities in that signed grant and
+nothing else; with no signed grant, or one without `bash`, bash runs with no
+`ta`. Connections are callable through `ta` only when the grant holds both
+`write_graph` and `run_graph`, the tools that already reached a connection by
+building and running an effect node. The unnarrowed default (the owner's chat,
+or a node naming no tool) signs the whole served set, so it keeps every
+capability. Nothing in a `ta` request, a manifest or the request route is a
+grant unless the signature verifies. The key lives and dies with its engine
+server; there is no table and no public handle. Not covered: the grant has no
+expiry within one server's life, and a direct call on the engine's MCP route by
+a holder of the bearer is still narrowed only by the provider's tool list, as
+it was before D6a.
+
 **Attached MCP follow-up (deferred, no partial adapter).** Reserve
 `mcp:<attachment>:<tool>` for tools/list descriptions and tools/call. An owner
 attachment should declare either `stdio: {argv, cwd}` (executed inside the

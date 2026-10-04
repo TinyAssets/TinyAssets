@@ -117,6 +117,10 @@ class EngineMcpRoute:
     graph_id: str
     url: str
     secret: str = field(repr=False)
+    #: Signs each launch's tool grant (``served_tools.launch_grant``). Held by the
+    #: daemon and the engine server only; a provider launch receives the bearer
+    #: and a signed grant, never this key.
+    grant_key: str = field(default="", repr=False)
 
 
 def _unique_route_keys(pairs):
@@ -167,7 +171,14 @@ def read_engine_mcp_route(
             return None
         if not isinstance(secret, str) or re.fullmatch(r"[A-Za-z0-9_-]{32,}", secret) is None:
             return None
-        return EngineMcpRoute(actor_id, graph_id, f"http://127.0.0.1:{port}/mcp", secret)
+        grant_key = entry.get("grant_key", "")
+        if not isinstance(grant_key, str) or (
+            grant_key and re.fullmatch(r"[A-Za-z0-9_-]{32,}", grant_key) is None
+        ):
+            return None
+        return EngineMcpRoute(
+            actor_id, graph_id, f"http://127.0.0.1:{port}/mcp", secret, grant_key,
+        )
     except (OSError, ValueError, TypeError, RecursionError):
         # No raw record/exception logging: the private file contains bearers.
         return None
@@ -256,13 +267,14 @@ def _serving_universe_owners(base: Path, *, graph_id: str | None = None) -> list
 class _EngineServer:
     """One pinned loopback engine MCP server subprocess, with a stable secret."""
 
-    __slots__ = ("universe_id", "owner", "port", "secret", "_data_dir", "proc")
+    __slots__ = ("universe_id", "owner", "port", "secret", "grant_key", "_data_dir", "proc")
 
     def __init__(self, universe_id, owner, port, data_dir_env):
         self.universe_id = universe_id
         self.owner = owner
         self.port = port
         self.secret = secrets.token_urlsafe(32)
+        self.grant_key = secrets.token_urlsafe(32)
         self._data_dir = data_dir_env
         self.proc = None
 
@@ -278,6 +290,7 @@ class _EngineServer:
         env["TINYASSETS_DATA_DIR"] = self._data_dir
         env["TINYASSETS_ENGINE_MCP_HTTP_PORT"] = str(self.port)
         env["TINYASSETS_ENGINE_MCP_HTTP_SECRET"] = self.secret
+        env["TINYASSETS_ENGINE_MCP_GRANT_KEY"] = self.grant_key
         # The engine acts for this owner: it joins the owner tree, so its death
         # is part of the proof a successor needs (execution-owner-lease D2).
         from tinyassets.owner_lease import TREE_ENV
@@ -322,6 +335,8 @@ def _write_routes(root: Path, servers) -> None:
             "port": s.port,
             "url": f"http://127.0.0.1:{s.port}/mcp",
             "secret": s.secret,
+            # No key publishes no key: that server's launches then hold no ``ta``.
+            "grant_key": getattr(s, "grant_key", ""),
         }
         for s in servers
     }

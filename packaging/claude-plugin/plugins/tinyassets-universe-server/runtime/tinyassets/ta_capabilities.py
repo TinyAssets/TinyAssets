@@ -37,7 +37,7 @@ class ExecutionContext:
 
 class Capabilities:
     def __init__(self, root: Path, context: ExecutionContext, platform: list[dict],
-                 call_platform, check_authority: Callable):
+                 call_platform, check_authority: Callable, *, connections_granted: bool = True):
         if (root.name != context.universe or not context.owner
                 or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", context.initiating_agent)
                 or context.initiating_agent == "unresolved-agent"):
@@ -45,8 +45,12 @@ class Capabilities:
         self.root, self.context = root, context
         self.platform = {item["name"]: item for item in platform}
         self.call_platform, self.check_authority = call_platform, check_authority
+        self.connections_granted = connections_granted
 
     def connections(self):
+        # A launch whose grant withholds connections neither lists nor calls one.
+        if not self.connections_granted:
+            return {}
         ledger = ConnectionLedger(self.root.parent / "outbound.db")
         found = {}
         # No catalogue truncation. Existing ledger API has no cursor.
@@ -175,15 +179,24 @@ class JailBridge:
 
 
 async def engine_dispatch(server):
-    """Capture the engine launch and schedule nested calls on its existing loop."""
-    from tinyassets.api.helpers import _universe_dir
-    from tinyassets.engine_steering import _session_key
-    from tinyassets.research_capability import is_research_session
-    from tinyassets.served_tools import SERVED_ENGINE_MCP_TOOLS
+    """Capture the engine launch and schedule nested calls on its existing loop.
 
+    ``ta`` reaches exactly the launch's own grant: the served tools the platform
+    signed onto this launch's route (an agent node's ``tools_allowed``, else the
+    whole served set). A launch with no signed grant, or one without ``bash``,
+    gets no ``ta`` at all (``None``); delegation never increases authority.
+    """
+    from tinyassets.api.helpers import _universe_dir
+    from tinyassets.engine_steering import _session_key, launch_tools
+    from tinyassets.research_capability import is_research_session
+    from tinyassets.served_tools import connections_granted
+
+    granted = launch_tools()
+    if granted is None or "bash" not in granted:
+        return None
     context = ExecutionContext(server._GRAPH_ID, server._ACTOR_ID, server._acting_agent(),
                                research=is_research_session(_session_key()))
-    allowed = set(SERVED_ENGINE_MCP_TOOLS) - {"read", "write", "edit", "bash"}
+    allowed = set(granted) - {"read", "write", "edit", "bash"}
     platform = [{"name": tool.name, "description": tool.description or "",
                  "arguments": tool.parameters}
                 for tool in await server.mcp.list_tools() if tool.name in allowed]
@@ -199,7 +212,8 @@ async def engine_dispatch(server):
         return {"content": blocks}
 
     backend = Capabilities(_universe_dir(context.universe), context, platform,
-                           call_platform, server._binding_error)
+                           call_platform, server._binding_error,
+                           connections_granted=connections_granted(granted))
     loop = asyncio.get_running_loop()
 
     def dispatch(message):

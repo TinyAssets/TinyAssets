@@ -51,6 +51,14 @@ findings in untouched files**; no unrelated lint edits. Attached MCP, resident
 cutover and D1 durable workflow provenance remain explicitly deferred in
 design §6 D6a. Existing tests were neither removed nor renamed.
 
+**D6a grant binding (2026-10-04, PR #4439 review finding 2).** `ta` is bounded by
+the launch's signed tool grant (design §6 D6a). Windows:
+`tests/test_ta_capabilities.py` covers the default, narrowed nodes, connections,
+forged, absent, cross-launch and cross-server grants. **Pending the hosted Linux
+run**: `tests/test_ta_capabilities_jail.py`, whose engine helper now launches on
+a signed route and which adds `test_node_grant_bounds_ta_inside_the_jail`; it
+was not run for this change. Independent cross-family review is still owed.
+
 **Next integration step.** Once S7 (#4282/#4292), S6 (#4299) and the box tools
 land, the founder's account is switched (per account) onto the thin loop, the
 four tools and the sealed box. It is judged in his live conversation: does it
