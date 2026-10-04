@@ -26,7 +26,9 @@ CARD = {
 
 @pytest.fixture
 def page():
-    sync = pytest.importorskip("playwright.sync_api")
+    sync = pytest.importorskip(
+        "playwright.sync_api", reason="runs-in=real-browser-proof; Chromium controller tests"
+    )
     html, _ = render_app_html()
     start = html.index("  // Begin protected inline approval cards.")
     end = html.index("  // End protected inline approval cards.")
@@ -99,3 +101,15 @@ def test_history_is_read_only(page):
     rail = page.locator("#request-rail")
     assert "Request history" in rail.inner_text()
     assert rail.locator("button,input,textarea").count() == 0
+
+
+def test_stale_preview_disables_effects_but_allows_skip(page):
+    page.evaluate("window.card.approval_unavailable='This task stopped or expired'")
+    page.get_by_role("button", name="Review / Try again").click()
+    assert page.get_by_text("This task stopped or expired", exact=True).is_visible()
+    assert page.get_by_role("button", name="Approve once").is_disabled()
+    assert page.get_by_role("button", name="Preview edit").is_disabled()
+    page.get_by_role("textbox", name="Action draft").fill("Even an edit cannot reenable approval")
+    assert page.get_by_role("button", name="Approve once").is_disabled()
+    page.get_by_role("button", name="Skip", exact=True).click()
+    assert page.evaluate("window.calls.at(-1).payload.decision") == "skip"

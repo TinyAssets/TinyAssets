@@ -1732,12 +1732,22 @@ async def _handle_turn_interrupt(request: Any) -> Any:
             {"error": "agent_not_found", "detail": str(exc)},
             status_code=404, headers=_NO_STORE,
         )
+    from tinyassets.owner_control import ControlUnavailable
+
     try:
         from tinyassets.api.helpers import _universe_dir
         from tinyassets.bound_requests import stop
+        # The live turn must stop even when durable approval controls are busy.
+        count = request_interrupt(identity.user_id, universe_id, agent_id=agent_id)
         if (_base_path() / universe_id).is_dir():
             await _in_thread(stop, _universe_dir(universe_id), identity.user_id, agent_id)
-        count = request_interrupt(identity.user_id, universe_id, agent_id=agent_id)
+    except ControlUnavailable as exc:
+        return JSONResponse(
+            {"error": exc.kind, "retryable": True, "interrupted": count,
+             "detail": "Turn interrupted; retry Stop to pause pending approvals.",
+             "universe_id": universe_id},
+            status_code=503, headers=_NO_STORE,
+        )
     except ValueError:
         return JSONResponse({"error": "invalid_universe"}, status_code=400, headers=_NO_STORE)
     return JSONResponse(

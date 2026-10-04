@@ -111,6 +111,7 @@ def request_json(
     form: dict[str, str] | None = None,
     json_body: dict[str, Any] | None = None,
     secrets: tuple[str, ...] = (),
+    basic_auth: tuple[str, str] | None = None,
 ) -> tuple[int, Any]:
     """One bounded request; returns ``(status, parsed JSON or None)``.
 
@@ -137,7 +138,9 @@ def request_json(
     )
     try:
         result = driver(
-            bundle=oc.ConnectionSecretBundle(), auth_scheme="none", method=method,
+            bundle=(oc.ConnectionSecretBundle(username=basic_auth[0], password=basic_auth[1])
+                    if basic_auth else oc.ConnectionSecretBundle()),
+            auth_scheme="basic" if basic_auth else "none", method=method,
             url=url, headers=headers, body=body, allowed_endpoints=endpoints,
         )
     except oc.SsrfValidationError:

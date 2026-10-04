@@ -8759,11 +8759,12 @@
           draft.value=originalDraft;
         }
         details.textContent='Requested by '+value.agent+' · This action only · Expires '+new Date(value.expires_at*1000).toLocaleString();
-        note.textContent=value.result?JSON.stringify(value.result):'';
+        note.textContent=value.approval_unavailable||(value.result?JSON.stringify(value.result):'');
         for(const [key,button] of Object.entries(buttons)){
           const canAct=['pending','deferred'].includes(value.status) ||
             (value.status==='unresolved'&&['deny','skip','alternative'].includes(key));
-          button.disabled=busy||(key!=='preview'&&!canAct)||(key==='approve'&&dirty);
+          button.disabled=busy||(key!=='preview'&&!canAct)||(key==='approve'&&dirty)||
+            (!!value.approval_unavailable&&['approve','edit'].includes(key));
         }
         if(value.phase==='unknown') note.textContent='The action may have completed. Check its outcome before trying again.';
       }
@@ -8804,7 +8805,7 @@
       button('defer','Not now',()=>perform('decide',{decision:'defer'}));
       button('alternative','Find an alternative',()=>perform('decide',{decision:'alternative'}));
       button('skip','Skip',()=>perform('decide',{decision:'skip'}));
-      draft.addEventListener('input',()=>{dirty=draft.value!==originalDraft;buttons.approve.disabled=dirty||busy||!preview||!['pending','deferred'].includes(preview.status);});
+      draft.addEventListener('input',()=>{dirty=draft.value!==originalDraft;buttons.approve.disabled=dirty||busy||!preview||!!preview.approval_unavailable||!['pending','deferred'].includes(preview.status);});
       // Until the protected endpoint responds, agent-supplied text is no preview.
       title.textContent='Review the requested action'; note.textContent='Loading protected preview…';
       buttons.preview.disabled=false;
