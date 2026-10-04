@@ -25,6 +25,9 @@ import pytest
 from tests.cloud_runtime_fixture import cloud_runtime  # noqa: F401
 from tests.test_native_discovery_integration import install_discovery
 from tests.test_native_model_authority import _call, native  # noqa: F401
+from tests.test_native_model_discovery import (
+    metadata_transport_processes,  # noqa: F401 - a fixture, requested by name below
+)
 from tinyassets.exceptions import ProviderAuthorityHeldError
 from tinyassets.providers.claude_provider import ClaudeProvider
 from tinyassets.providers.model_options import model_options_document
@@ -332,6 +335,23 @@ def metadata_snapshot(universe):
     return str(snapshot)
 
 
+#: Every case below that spawns a real metadata child. The transport requires
+#: confinement, so without this seam each one refuses on "no OS sandbox on this
+#: host" wherever bubblewrap is absent -- which is most CI runners and every
+#: Windows box. `metadata_transport_processes` (tests/test_native_model_discovery.py)
+#: substitutes `confine_launch` with one that still asserts the launch scope
+#: and view bind to the same command center, so the protocol, the decoder and
+#: the owned-process family are all real and only the OS isolation is stubbed.
+#: That isolation has its own proof in tests/test_native_metadata_jail.py, which
+#: runs under a real jail in `linux-jail-proof`.
+#:
+#: The NEGATIVE cases need it most: they assert
+#: `ProviderError("native model discovery unavailable")`, which the confinement
+#: refusal also raises, so without the seam they pass on a jail that never ran
+#: instead of the refusal they name.
+real_metadata_child = pytest.mark.usefixtures("metadata_transport_processes")
+
+
 def run_control(tmp_path, reply, *, noise=(), protocol=CLAUDE_PROTOCOL):
     return asyncio.run(read_native_catalogue(
         [sys.executable, "-u", "-c", control_peer(reply, noise=noise)],
@@ -340,6 +360,7 @@ def run_control(tmp_path, reply, *, noise=(), protocol=CLAUDE_PROTOCOL):
     ))
 
 
+@real_metadata_child
 def test_control_envelope_reads_alias_rows_and_per_model_effort(tmp_path):
     """The real CLI shape: alias rows, a default marker, unreported modalities."""
     result = run_control(tmp_path, {"models": CLI_ROWS})
@@ -360,6 +381,7 @@ def test_control_envelope_reads_alias_rows_and_per_model_effort(tmp_path):
     assert all(m.input_modalities == frozenset({"text"}) for m in result.models)
 
 
+@real_metadata_child
 def test_control_envelope_skips_unrelated_stream_traffic(tmp_path):
     """These streams carry session/system lines before the answer."""
     result = run_control(tmp_path, {"models": [CLI_ROWS[1]]}, noise=(
@@ -384,6 +406,7 @@ def test_control_envelope_skips_unrelated_stream_traffic(tmp_path):
     {"models": {}},
     {},
 ])
+@real_metadata_child
 def test_malformed_control_catalogue_refuses(tmp_path, reply):
     from tinyassets.exceptions import ProviderError
 
@@ -391,6 +414,7 @@ def test_malformed_control_catalogue_refuses(tmp_path, reply):
         run_control(tmp_path, reply)
 
 
+@real_metadata_child
 def test_control_error_subtype_is_not_an_empty_catalogue(tmp_path):
     """An upstream refusal must not read as "this account has no models".
 
@@ -418,6 +442,7 @@ print(json.dumps({"type": "control_response", "response": {
         ))
 
 
+@real_metadata_child
 def test_control_response_for_another_request_is_refused(tmp_path):
     from tinyassets.exceptions import ProviderError
 
@@ -534,6 +559,7 @@ def test_claude_argv_carries_the_effort_from_its_model_config(monkeypatch):
            "runs-in=a host with the Claude Code CLI installed and "
            "TINYASSETS_LIVE_CLI_DISCOVERY=1 (not CI)",
 )
+@real_metadata_child
 def test_installed_cli_advertises_a_shortlist_with_effort(tmp_path):
     """The claim this whole change rests on, against the real binary.
 
@@ -734,6 +760,7 @@ def test_select_refuses_a_withdrawn_model_at_launch():
 # --------------------------------------------------------------------------
 
 
+@real_metadata_child
 def test_an_older_cli_reads_as_unsupported_not_broken(tmp_path):
     """The path production takes today, until the CLI pin moves (#4351).
 
@@ -787,6 +814,7 @@ def test_unsupported_enumeration_becomes_the_unknown_contract(monkeypatch, tmp_p
     )) is None
 
 
+@real_metadata_child
 def test_the_unsupported_answer_survives_the_real_transport(monkeypatch, tmp_path):
     """Through the REAL transport, not a stub, into `enumerate_models`.
 
