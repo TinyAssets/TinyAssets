@@ -361,6 +361,9 @@ def test_shipped_frame_previews_system_trusted_rail_copies_and_navigation_persis
         expect(accept).to_be_visible()
         expect(tab).to_contain_text("Component-only copy")
         expect(tab).to_contain_text("No public chat-agent templates are included")
+        expect(tab).to_contain_text("No chat agents will be copied")
+        expect(tab).to_contain_text("empty")
+        expect(tab).to_contain_text("republish")
         accept.click()  # actual trusted parent-document confirmation, never frame approval
         expect(tab).to_have_count(0)
         assert any(op == "answer_request" and result.get("installed") for op, result in calls)

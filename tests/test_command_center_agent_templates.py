@@ -150,6 +150,92 @@ def test_copy_agents_maps_references_preserves_existing_and_source(home, package
         resolve(home, universe_id=BOB_UNIVERSE, owner=OWNER, agent_id=target)
 
 
+@pytest.mark.parametrize("package", [False, True])
+def test_screen_without_published_agents_reports_empty_roster_before_copy(home, package):
+    from tinyassets.storage.pending_requests import get_request
+
+    _definition, original = _agent(home)
+    row = get_app_ui(home, owner_user_id=OWNER, universe_id=UNIVERSE)
+    # A roster-driven screen works for its publisher without declaring any
+    # portable agent_refs, as in the published Village/House designs.
+    save_app_ui(
+        home, owner_user_id=OWNER, universe_id=UNIVERSE,
+        expected_revision=row["revision"],
+        changes={"ui_library": [{**UI, "script": "tinyassets.call('agents.list', {})"}]},
+    )
+    action = _publish_action()
+    if not package:
+        del action["package"]
+    asked = _ask(OWNER, UNIVERSE, action)
+    published = _answer(OWNER, UNIVERSE, asked["request_id"])
+    source = published["agent_definition_id"]
+    before = list_bindings(home, universe_id=BOB_UNIVERSE, limit=None)
+    request_id = _copy_request(source)
+    body = get_request(home / BOB_UNIVERSE, request_id)["body"]
+    result = _answer(BOB, BOB_UNIVERSE, request_id)
+    # Reproduce the original symptom through the real handlers and stores:
+    # working screen, no copied chat bindings, even with public instructions
+    # behind a binding in the publisher's command center.
+    assert result.get("installed"), result
+    assert get_app_ui(home, owner_user_id=BOB, universe_id=BOB_UNIVERSE)["ui_library"]
+    assert list_bindings(home, universe_id=BOB_UNIVERSE, limit=None) == before
+    assert get_binding(home, universe_id=UNIVERSE,
+                       binding_id=original["agent_binding_id"]) == original
+    assert "No chat agents will be copied" in body
+    assert "publisher did not include any public chat-agent templates" in body
+    assert "empty" in body and "republish" in body
+    assert original["agent_binding_id"] not in body
+
+
+@pytest.mark.parametrize("package", [False, True])
+def test_publish_screen_without_templates_warns_agents_are_not_included(home, package):
+    from tinyassets.storage.pending_requests import get_request
+
+    _agent(home)
+    action = _publish_action()
+    if not package:
+        del action["package"]
+    asked = _ask(OWNER, UNIVERSE, action)
+    body = get_request(home / UNIVERSE, asked["request_id"])["body"]
+    assert "No chat agents are included" in body
+    assert "select the agents" in body
+    assert "empty" in body
+
+
+@pytest.mark.parametrize("package", [False, True])
+def test_missing_declared_agents_are_named_before_any_copy(home, package):
+    source, _definition, _binding = _publish(home, package=package)
+    public = get_definition(home, source)
+    components = dict(public["components"])
+    components["ui"] = {
+        **components["ui"],
+        "agent_refs": {"scout": "village-scout", "housemate": "missing-cat",
+                       "villager": "missing-baker"},
+    }
+    broken = publish_definition(home, author_id=OWNER, payload={
+        "schema_version": 1, "name": "Missing residents", "description": "",
+        "tags": public["tags"], "components": components,
+    })
+    before = list_bindings(home, universe_id=BOB_UNIVERSE, limit=None)
+    result = _ask(BOB, BOB_UNIVERSE, {
+        "type": "install", "agent_definition_id": broken["agent_definition_id"],
+    })
+    assert result.get("error"), result
+    detail = json.dumps(result)
+    assert "housemate" in detail and "villager" in detail
+    assert "not included" in detail and "republish" in detail
+    if not package:
+        from tinyassets.api.system_copy_requests import list_systems
+
+        card = next(row for row in list_systems()
+                    if row["agent_definition_id"] == broken["agent_definition_id"])
+        assert not card["available"]
+        assert "housemate" in card["unavailable_reason"]
+    assert list_bindings(home, universe_id=BOB_UNIVERSE, limit=None) == before
+    assert _bobs_branches(home) == []
+    assert not get_app_ui(home, owner_user_id=BOB, universe_id=BOB_UNIVERSE)["ui_library"]
+
+
 def test_export_refuses_wrong_owner_serving_and_consumer_bindings(home):
     _definition, binding = _agent(home)
     with pytest.raises(ValueError, match="not one of your"):

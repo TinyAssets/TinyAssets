@@ -251,6 +251,14 @@ def tab_text(action: dict[str, Any]) -> tuple[str, str, str]:
     for agent in shown.get("agent_templates", []):
         lines.append(f"- Public instructions for chat agent \"{_shown(agent['name'])}\" "
                      "(private settings and model assignments stay here)")
+    if shown["ui"] and not shown.get("agent_templates"):
+        lines.append(
+            "No chat agents are included. Publishing this screen does not include the "
+            "agents in your command center, even if the screen lists them. Someone "
+            "without their own chat agents will see an empty roster. To include yours, "
+            "ask your agent to select the agents' public instruction templates in a new "
+            "publish request. Workflows and instruction files alone do not create chat agents."
+        )
     package = shown.get("package")
     if package:
         lines.extend(_package_lines(package))

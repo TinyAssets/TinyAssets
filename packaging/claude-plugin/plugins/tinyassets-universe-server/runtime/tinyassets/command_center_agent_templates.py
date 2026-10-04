@@ -108,8 +108,15 @@ def templates(base: Any, components: dict, *, readers=None) -> list[dict]:
 def resolve_ui_refs(ui: dict | None, included: set[str]) -> None:
     from tinyassets.custom_agents import app_ui_agent_refs
 
-    if ui is not None and any(key not in included for key in app_ui_agent_refs(ui).values()):
-        raise ValueError("agent_refs must name only included public agent templates")
+    missing = sorted(alias for alias, key in app_ui_agent_refs(ui or {}).items()
+                     if key not in included)
+    if missing:
+        raise ValueError(
+            "Cannot copy the screen's chat agents: " + ", ".join(missing)
+            + ". Their agent_refs point to public agent templates not included in this "
+            "publication. Ask the publisher to include those agents and republish; "
+            "private agents cannot be copied."
+        )
 
 
 def reject_nested_workflows(snapshot: Any) -> None:
@@ -259,7 +266,17 @@ def consent_lines(agents: list[dict]) -> list[str]:
     from tinyassets.api.publish_requests import _shown
 
     if not agents:
-        return ["No public chat-agent templates are included; existing agents stay yours."]
+        return [
+            "No chat agents will be copied: the publisher did not include any public "
+            "chat-agent templates in this publication.",
+            "No public chat-agent templates are included; existing agents stay yours.",
+            "A screen that lists agents uses your own roster. If you have no chat agents, "
+            "its village or house will be empty. Workflows and agent instruction files "
+            "do not create chat agents.",
+            "To bring the publisher's agents, ask them to select the agents' public "
+            "instruction templates and republish. Their private agents and settings "
+            "cannot come with this copy.",
+        ]
     return [
         "Chat agents, as new private bindings to these public instructions:",
         *(f"- {_shown(a['name'])}" for a in agents),
