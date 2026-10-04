@@ -131,8 +131,9 @@ def test_a_row_a_dead_boot_left_native_started_is_settled_and_stops_reading_as_a
     assert stored.rounds[-1].reply == NativeTerminal("indeterminate")
     assert stored.rounds[-1].cost_microusd is None
     assert _blockers(journal) == ["active or ambiguous agent turn references exact home"]
-    # Nothing reports it now.
+    # Neither the original nor a fresh boot registry can revive the terminal row.
     assert _working(journal) is None
+    assert _working(journal, boot=BootTurns()) is None
 
 
 def test_a_turn_the_current_owner_is_running_is_never_reaped(journal):
