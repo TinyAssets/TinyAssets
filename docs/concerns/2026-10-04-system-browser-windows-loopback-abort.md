@@ -1,3 +1,10 @@
+---
+severity: P2
+title: System-copy browser proof records a Windows loopback abort
+filed: '2026-10-04'
+summary: 'Two Windows browser runs reached the warning and copy assertions but failed on connection aborts. Linux hosted proof must distinguish platform transport behavior from product regressions.'
+---
+
 # System-copy browser proof records a Windows loopback abort
 
 On 2026-10-04 in `fix/copied-system-brings-its-agents`, Python 3.14 / Windows,

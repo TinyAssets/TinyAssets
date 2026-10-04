@@ -1,3 +1,10 @@
+---
+severity: P1
+title: Published Village and House omit chat agents
+filed: '2026-10-04'
+summary: 'Published screen bundles contain no public agent templates; copy cannot supply their chat roster. Warnings clarify the outcome, while consent-based inclusion and live acceptance remain outstanding.'
+---
+
 # Published Village and House omit chat agents
 
 Read-only production catalogue inspection on 2026-10-04 found:
