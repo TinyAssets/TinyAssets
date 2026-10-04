@@ -4589,10 +4589,20 @@ async def run_bash(command: str, timeout: int = 0) -> str:
     """Run a bash command in /u. Public internet goes through HTTP(S)_PROXY
     (pip, npm, git, urllib); memory, processes and time are limited.
     timeout: seconds (default 120, max 600)."""
+    import sys
+
     from tinyassets import universe_tools
+    from tinyassets.ta_capabilities import engine_dispatch
+
+    err = _binding_error()
+    if err is not None:
+        return err
+    # The tool jail itself is Linux-only; non-POSIX callers retain its refusal.
+    dispatch = await engine_dispatch(sys.modules[__name__]) if os.name == "posix" else None
 
     return await _universe_tool(
         universe_tools.bash, agent_id=_acting_agent(), command=command, timeout=timeout,
+        ta_dispatch=dispatch,
     )
 
 

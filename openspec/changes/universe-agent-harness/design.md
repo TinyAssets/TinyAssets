@@ -1186,6 +1186,65 @@ the surfaces that need them (`ta` in D6, `browse` in D5).
 5. Move handbook chapters to skills.
 6. Lower the ratchet.
 7. Live proof: tokens per round before and after.
+8. Implement owner-attached MCP servers using the D6a follow-up interface below,
+   after resolving attachment authority/storage and transport lifecycle.
+
+**D6a implementation (2026-10-04; additive, not the four-tool cutover).**
+`ta` is a dependency-free executable mounted read-only in each bash jail.
+A private, invocation-scoped Unix socket reaches the existing engine handlers
+and connection effector; it is removed when bash returns. No bearer or vault
+reference enters the jail. The engine captures the owner, universe, initiating
+agent and research flag from its platform launch, and rechecks serving-owner
+authority on every socket request. Client JSON cannot set that context.
+Connection calls re-read active owner/universe grants and use the existing
+effector's soul authority, per-agent rules, auto-review, consent and credential
+broker, including endpoint/method scope and response secret filtering.
+Approval ids are absent in this slice: `do_if_preapproved` still asks first.
+The generic HTTP connection definition works for any platform without a patch.
+
+Discovery uses `ta search <words>` and `ta describe <name>`; calls use
+`ta <name> --json '<object>'`. Platform names are the existing served engine
+handles (which call the connector implementations under the existing pins).
+Connected operations are `connection:<connection-id>:<scope>` and accept
+`{"request":{"path":"/v1/items","body":{}}}`. The scope supplies the HTTP
+verb, and describe includes the connection's allowed endpoints. Refusals print
+JSON and exit nonzero. No new public MCP handle or storage table is added.
+
+An extension unit is a folder beneath `extensions/<package>/` or
+`agents/<initiating-agent>/extensions/<package>/`, containing an executable
+and `extension.json`, for example:
+
+```json
+{"executable":"run","tools":[{"name":"hello","description":"Greet a person",
+ "arguments":{"type":"object","properties":{"name":{"type":"string"}}}}]}
+```
+
+The CLI reads these files inside the jail on each invocation. Tools are named
+`ext:shared:<package>:<tool>` or `ext:agent:<package>:<tool>`; executable argv is
+`[executable, tool-name, arguments-json]`, stdout is one JSON value, and stderr
+is diagnostic output. Programs inherit the same jail and socket, can compose
+`ta` calls, and gain no authority. Nothing executes on the daemon from a
+manifest. No registration or deploy is needed. Existing read-only root mounts
+still apply; this slice does not widen the roster's harness-edit permissions.
+
+**Attached MCP follow-up (deferred, no partial adapter).** Reserve
+`mcp:<attachment>:<tool>` for tools/list descriptions and tools/call. An owner
+attachment should declare either `stdio: {argv, cwd}` (executed inside the
+same jail with its cleared environment), or `http: {connection_id, endpoint}`
+(a credential-blind transport using that connection's rules, grants and scope).
+The interface must bind the same platform execution context for its entire
+session, never accept credentials or actor/context overrides in the attachment,
+and close children/sessions with the invocation. Before implementing, settle
+owner-authenticated attachment storage/activation and MCP initialization,
+streaming, cancellation and reconnect semantics. The existing connection
+broker buffers one HTTP request/response, so treating it as a persistent MCP
+transport now would only half-build the capability. This work remains in D6;
+any new table or public owner door needs its own delta before code.
+
+Resident-tool removal, native-tool changes, handbook migration and the token
+ratchet remain D6 follow-ups. Durable workflow/automation context propagation
+remains D1's separate work; D6a binds mid-turn connection effects. No deployment
+or live-user acceptance is claimed by this branch.
 
 **D7: Memory and harness editing**
 1. Give memory items stable ids.

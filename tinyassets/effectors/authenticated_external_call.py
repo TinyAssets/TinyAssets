@@ -670,8 +670,10 @@ def _review_evidence(request: dict[str, Any]) -> str:
     return (text or "")[:2000]
 
 
-def _rule_refusal(universe_dir: Path, connection_id: str, verb: str,
-                  path: str = "/", *, evidence: str = "") -> dict[str, Any] | None:
+def _rule_refusal(
+    universe_dir: Path, connection_id: str, verb: str,
+    path: str = "/", *, evidence: str = "", agent: str = "main",
+) -> dict[str, Any] | None:
     """``None`` when the owner's rules let this call proceed, else a refusal.
 
     What the call MEANS comes from the owner's declarations for this connection
@@ -684,6 +686,7 @@ def _rule_refusal(universe_dir: Path, connection_id: str, verb: str,
             universe_dir, connection_id, verb, path)
         decision = agent_rules.decide(
             universe_dir, action_class, connection=connection_id, operation=operation,
+            agent=agent,
         )
     except Exception:
         logger.exception("authenticated_external_call rule lookup crashed")
@@ -702,7 +705,7 @@ def _rule_refusal(universe_dir: Path, connection_id: str, verb: str,
             universe_dir,
             action={"action_class": action_class, "connection": connection_id,
                     "operation": operation, "path": path},
-            rule=decision.reason, evidence=evidence,
+            rule=decision.reason, evidence=evidence, agent=agent,
         )
     if decision.behaviour == agent_rules.HAND_OFF:
         return {
@@ -951,6 +954,7 @@ def run_authenticated_external_call_effector(
     dry_run: bool | None = None,
     allowed_state_keys: list[str] | set[str] | None = None,
     prior_effects: dict[str, Any] | None = None,
+    execution_context=None,
 ) -> dict[str, Any]:
     """Dispatch one ``authenticated_external_call`` packet. NEVER raises.
 
@@ -968,6 +972,7 @@ def run_authenticated_external_call_effector(
             run_id=run_id,
             allowed_state_keys=allowed_state_keys,
             prior_effects=prior_effects,
+            execution_context=execution_context,
         )
     except Exception as exc:  # defensive — never raise from the completion path
         logger.exception(
@@ -988,6 +993,7 @@ def _run(
     run_id: str,
     allowed_state_keys: list[str] | set[str] | None = None,
     prior_effects: dict[str, Any] | None = None,
+    execution_context=None,
 ) -> dict[str, Any]:
     matched_key, packet = _find_packet(output_keys=output_keys, run_state=run_state)
     if packet is None:
@@ -1030,6 +1036,12 @@ def _run(
 
     universe_id = _universe_id(base_path)
     db_path = _ledger_db_path(base_path)
+    if execution_context is not None:
+        if (execution_context.universe != universe_id or not execution_context.owner
+                or not execution_context.initiating_agent):
+            return {"error_kind": "execution_context_mismatch"}
+        if execution_context.research:
+            return {"error_kind": "research_is_read_only"}
     if not universe_id or db_path is None:
         # No trusted universe context ⇒ fail closed (never borrow a default).
         return {
@@ -1053,6 +1065,11 @@ def _run(
             "grant_id": grant_id,
             "universe_id": universe_id,
         }
+    if execution_context is not None and (
+        grant.owner_user_id != execution_context.owner
+        or view.owner_user_id != execution_context.owner
+    ):
+        return {"error_kind": "connection_owner_mismatch"}
 
     # Authorization gates — parity with every prior per-channel effector. The
     # connection grant above proves the universe MAY use this connection, but a
@@ -1084,7 +1101,9 @@ def _run(
     # declare their operation kinds (D1b). A rule store that cannot be read
     # refuses the call; it never falls back to allowing it.
     rule_refusal = _rule_refusal(universe_dir, connection_id, verb, _request_path(request),
-                                 evidence=_review_evidence(request))
+                                 evidence=_review_evidence(request),
+                                 agent=execution_context.initiating_agent
+                                 if execution_context is not None else "main")
     if rule_refusal is not None:
         return {
             **rule_refusal,
