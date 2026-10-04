@@ -511,6 +511,8 @@ class AgentTurnCoordinator:
         elif self.turn.state != "ready" or self.turn.rounds:
             raise JournalUnavailable("agent turn cannot be replayed")
 
+        self.request_budget.persist(self.context.universe_dir.parent)
+        self.request_budget.link("turn", self.turn.turn_id)
         timeout = self.config.stream_timeout_profile().absolute_cap_s
         # Every round is told what is LEFT of the turn, not the whole cap again:
         # a provider that cannot be cancelled mid-request (the HTTP broker) is

@@ -435,6 +435,8 @@ class _ForegroundRunProviderSession:
             self._branch_snapshot = snapshot
             self._branch_digest = _content_digest(snapshot)
             self._validate_run(allowed_statuses=allowed_statuses)
+            self._request_budget.persist(self._base_path)
+            self._request_budget.link("run", self._run_id)
         except ProviderAuthorityHeldError:
             raise
         except Exception as exc:

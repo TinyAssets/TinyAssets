@@ -163,3 +163,42 @@ def test_credit_suggestion_uses_installed_amount_and_url(tmp_path):
     assert "700" in suggestion and "$10" not in suggestion
     assert "local free-request estimate" in suggestion
     assert "your account may already qualify" in suggestion
+
+
+def test_durable_dispatch_times_include_internal_failures_and_survive_journal_deletion(tmp_path):
+    from tinyassets.request_budget import TurnRequestBudget
+
+    midnight = NOW.replace(hour=0)
+    clock = [midnight - timedelta(microseconds=1)]
+    parent = TurnRequestBudget("owner", "seed-universe", wall_clock=lambda: clock[0],
+                               failure_limit=None)
+    parent.persist(tmp_path)
+    parent.link("turn", "linked")
+    seed_requests(tmp_path, 20, turn_id="linked")
+    for source, free, purpose, outcome in [
+        ("connection", True, "reply", "failed"),  # Yesterday, not today.
+        ("connection", True, "reply", "failed"),
+        ("connection", True, "review", "succeeded"),
+        ("connection", True, "helper", "unknown"),
+        ("connection", False, "learning", "succeeded"),  # Paid: separate policy.
+        ("other", True, "reply", "failed"),
+    ]:
+        ordinal = parent.reserve(owner="owner", universe="seed-universe", source_ref=source,
+                                 model="model", free=free, purpose=purpose)
+        parent.dispatched(ordinal)
+        parent.settle(ordinal, outcome)
+        clock[0] = midnight
+    # No grant or effect occurs for a reserved but never dispatched request.
+    ordinal = parent.reserve(owner="owner", universe="seed-universe", source_ref="connection",
+                             model="model", free=True)
+    parent.settle(ordinal, "not_sent")
+    assert requests_today(tmp_path, "owner", "connection", reset_timezone="UTC", now=NOW) == (3, 2)
+    seed_requests(tmp_path, 1, turn_id="legacy")
+    assert requests_today(tmp_path, "owner", "connection", reset_timezone="UTC", now=NOW) == (4, 4)
+    with sqlite3.connect(tmp_path / DB_FILENAME) as conn:
+        conn.execute("DELETE FROM agent_turn_rounds")
+        conn.execute("DELETE FROM agent_turns")
+    assert requests_today(tmp_path, "owner", "connection", reset_timezone="UTC", now=NOW) == (3, 2)
+    assert requests_today(tmp_path, "other-owner", "connection",
+                          reset_timezone="UTC", now=NOW) == (0, 0)
+    parent.close()

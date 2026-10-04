@@ -80,7 +80,7 @@ class TurnRequestBudget:
         self.max_requests, self.free_limit = max_requests, free_limit
         self.free_pool_limit = free_pool_limit
         self.failure_limit, self.deadline, self.clock = failure_limit, deadline, clock
-        self.wall_clock = wall_clock or (lambda: datetime.now(timezone.utc))
+        self.wall_clock = wall_clock or _now
         self.source_limits = dict(source_limits or {})
         for limit in self.source_limits.values():
             if limit is not None and (type(limit) is not int or limit < 1):
@@ -89,6 +89,54 @@ class TurnRequestBudget:
         self._attempts = []
         self._failures = {}
         self._closed = False
+        self._store = None
+        self.usage_id = None
+        self._lease = None
+
+    @property
+    def _scope(self):
+        return self.owner, self.universe, self.usage_id
+
+    def persist(self, base_path):
+        """Attach once, using the router/session's trusted owner data root."""
+        from tinyassets.storage.agent_request_usage import UsageStore
+
+        with self._lock:
+            if self._store is not None:
+                if self._store.base != Path(base_path).resolve():
+                    raise ProviderAuthorityHeldError("parent request budget data root changed")
+                return
+            store = UsageStore(base_path)
+            import weakref
+
+            self.usage_id, self._lease = store.create(self)
+            weakref.finalize(self, self._lease.close)
+            self._store = store
+
+    def link(self, kind, subject_id):
+        with self._lock:
+            if self._store is not None:
+                self._store.link(self._scope, kind, subject_id)
+
+    def issue_reference(self, ordinal, **kwargs):
+        with self._lock:
+            if self._store is None:
+                raise ProviderAuthorityHeldError("HTTP inference requires durable usage accounting")
+            return self._store.issue_reference(self._scope, ordinal, **kwargs)
+
+    def settle_invocation(self, ordinal, outcome):
+        with self._lock:
+            if self._store is not None:
+                return self._store.settle_invocation(self._scope, ordinal, outcome)
+            attempt = self._attempts[ordinal - 1]
+            if attempt.state == "reserved":
+                return self.settle(ordinal, "not_sent")
+            if attempt.state == "dispatched":
+                return self.settle(ordinal, outcome)
+
+    def _stored(self, operation, *args, **kwargs):
+        return self._store.mutate(self._scope, operation, *args, clock=self.clock,
+                                  wall_clock=self.wall_clock, **kwargs)
 
     def check_scope(self, owner, universe):
         if (owner, universe) != (self.owner, self.universe):
@@ -120,6 +168,9 @@ class TurnRequestBudget:
 
     def check_available(self, *, source_ref, free, purpose="reply"):
         with self._lock:
+            if self._store is not None:
+                return self._stored("check_available", source_ref=source_ref,
+                                    free=free, purpose=purpose)
             self._check(source_ref=source_ref, free=free, purpose=purpose)
 
     def reserve(self, *, owner, universe, source_ref, model, free, purpose="reply"):
@@ -136,6 +187,9 @@ class TurnRequestBudget:
         if type(free) is not bool or not source_ref or not model:
             raise ValueError("admitted source, model and price classification required")
         with self._lock:
+            if self._store is not None:
+                return self._stored("reserve", owner=owner, universe=universe,
+                                    source_ref=source_ref, model=model, free=free, purpose=purpose)
             self._check(source_ref=source_ref, free=free, purpose=purpose)
             attempt = RequestAttempt(len(self._attempts) + 1, source_ref, model, purpose,
                                      free, "reserved", self.clock())
@@ -146,6 +200,8 @@ class TurnRequestBudget:
         from dataclasses import replace
 
         with self._lock:
+            if self._store is not None:
+                return self._stored("dispatched", ordinal)
             if type(ordinal) is not int or not 1 <= ordinal <= len(self._attempts):
                 raise ValueError("unknown request reservation")
             attempt = self._attempts[ordinal - 1]
@@ -164,6 +220,8 @@ class TurnRequestBudget:
         from dataclasses import replace
 
         with self._lock:
+            if self._store is not None:
+                return self._stored("settle", ordinal, outcome)
             if type(ordinal) is not int or not 1 <= ordinal <= len(self._attempts):
                 raise ValueError("unknown request reservation")
             attempt = self._attempts[ordinal - 1]
@@ -173,20 +231,35 @@ class TurnRequestBudget:
             if outcome not in allowed:
                 raise ValueError("invalid request settlement")
             self._attempts[ordinal - 1] = replace(attempt, state=outcome)
-            if attempt.free and outcome in {"failed", "unknown"}:
-                self._failures[attempt.source_ref] = self._failures.get(attempt.source_ref, 0) + 1
-            elif attempt.free and outcome == "succeeded":
-                self._failures[attempt.source_ref] = 0
+            if attempt.free:
+                # Settlement completion order is not request order: an older
+                # success arriving late must not erase newer failed requests.
+                failures = 0
+                for item in reversed(self._attempts):
+                    if item.source_ref != attempt.source_ref or not item.free:
+                        continue
+                    if item.state == "succeeded":
+                        break
+                    if item.state in {"failed", "unknown"}:
+                        failures += 1
+                self._failures[attempt.source_ref] = failures
 
     def close(self):
         with self._lock:
             self._closed = True
+            if self._lease is not None:
+                self._lease.close()
+            if self._store is not None:
+                return self._stored("close")
 
     def receipt(self):
         """Detached source/purpose counters; no prompts, results or credentials."""
         from dataclasses import asdict
 
         with self._lock:
+            if self._store is not None:
+                return self._store.receipt(self._scope, clock=self.clock,
+                                           wall_clock=self.wall_clock)
             groups = {}
             for attempt in self._attempts:
                 group = groups.setdefault((attempt.source_ref, attempt.purpose), {
@@ -226,9 +299,11 @@ def request_budget_scope(budget, *, close_on_exit=True):
     try:
         yield budget
     finally:
-        if current is None and close_on_exit:
-            budget.close()
-        _TURN_REQUEST_BUDGET.reset(token)
+        try:
+            if current is None and close_on_exit:
+                budget.close()
+        finally:
+            _TURN_REQUEST_BUDGET.reset(token)
 
 
 def selection_is_free(selection):
@@ -303,7 +378,8 @@ class PooledBudget:
         return (
             f"Compute today: local estimate of about {self.remaining} requests left "
             f"across {split}. "
-            "This estimate uses installed limits and local journal counts, not a confirmed "
+            "This estimate uses installed limits, local dispatch records and historical journal "
+            "estimates, not a confirmed "
             "account quota. A higher allowance or usage elsewhere may change it. "
             "Even at zero I continue the requested work while the provider accepts requests; "
             "this is not a final-request signal. I save progress to notes/<project>-progress.md "
@@ -322,46 +398,67 @@ def _read_only(path):
 
 def requests_today(base_path, owner, source_ref, *, reset_timezone,
                    zero_priced_models=(), now=None):
-    """Return (requests, latest successful request ordinal), or None if unreadable.
+    """Local dispatch evidence plus legacy round estimates, never remote quota.
 
-    Every free-model round counts, including failed and in-flight requests.
-    Rounds have no timestamp: bucket by their turn's created_at, including turns
-    spanning midnight. Source refs are the journal's opaque connection selectors.
-    Price-zero IDs come from the captured catalogue; suffix :free needs no price.
+    Durable attempts use their own UTC dispatch time, including failed/helper
+    requests and midnight crossings. Linked journal rounds are excluded, so the
+    same request is not counted twice. Older unlinked rounds remain estimates
+    bucketed by turn creation because they have no dispatch timestamp.
     """
     try:
         current = now or _now()
         reset = current.astimezone(ZoneInfo(reset_timezone)).replace(
             hour=0, minute=0, second=0, microsecond=0,
         ).astimezone(timezone.utc)
-        count = successful = 0
+        events = []
         with closing(_read_only(Path(base_path) / DB_FILENAME)) as conn:
-            rows = conn.execute(
-                "SELECT t.created_at, r.candidate_json, r.state, r.reply_json "
-                "FROM agent_turns t JOIN agent_turn_rounds r "
-                "ON (t.owner_user_id = r.owner_user_id AND t.universe_id = r.universe_id "
-                "AND t.turn_id = r.turn_id) WHERE t.owner_user_id = ? "
-                "AND julianday(t.created_at) >= julianday(?) "
-                "AND julianday(t.created_at) <= julianday(?) "
-                "ORDER BY t.created_at, t.turn_id, r.ordinal",
-                (owner, reset.isoformat(), current.isoformat()),
-            )
-            for created_at, raw, state, reply in rows:
-                # SQLite date arithmetic rounds sub-millisecond timestamps. Keep
-                # the SQL range as a coarse filter, then honor the exact reset.
-                instant = datetime.fromisoformat(created_at)
-                if not reset <= instant <= current:
-                    continue
-                candidate = json.loads(raw)
-                if candidate.get("source_ref") != source_ref:
-                    continue
-                model = candidate.get("model", "")
-                if not (model.endswith(":free") or model in zero_priced_models):
-                    continue
-                count += 1
-                if reply is not None and state not in {"failed", "inference_started"}:
-                    successful = count
-        return count, successful
+            tables = {row[0] for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'",
+            )}
+            if "agent_request_attempts" in tables:
+                rows = conn.execute(
+                    "SELECT usage_id, ordinal, attempt_json FROM agent_request_attempts "
+                    "WHERE owner=? AND source_ref=? AND dispatched_at IS NOT NULL "
+                    "AND julianday(dispatched_at) >= julianday(?) "
+                    "AND julianday(dispatched_at) <= julianday(?)",
+                    (owner, source_ref, reset.isoformat(), current.isoformat()),
+                )
+                for usage_id, ordinal, raw in rows:
+                    attempt = json.loads(raw)
+                    instant = datetime.fromisoformat(attempt["dispatched_at"])
+                    if attempt["free"] is True and reset <= instant <= current:
+                        events.append((instant, usage_id, ordinal, attempt["state"] == "succeeded"))
+            if "agent_turns" in tables:
+                unlinked = (
+                    "AND NOT EXISTS (SELECT 1 FROM agent_request_usage_links u "
+                    "WHERE u.owner=t.owner_user_id AND u.universe=t.universe_id "
+                    "AND u.kind='turn' AND u.subject_id=t.turn_id) "
+                    if "agent_request_usage_links" in tables else ""
+                )
+                rows = conn.execute(
+                    "SELECT t.created_at, t.turn_id, r.ordinal, r.candidate_json, r.state, "
+                    "r.reply_json FROM agent_turns t JOIN agent_turn_rounds r "
+                    "ON (t.owner_user_id=r.owner_user_id AND t.universe_id=r.universe_id "
+                    "AND t.turn_id=r.turn_id) WHERE t.owner_user_id=? "
+                    "AND julianday(t.created_at) >= julianday(?) "
+                    "AND julianday(t.created_at) <= julianday(?) " + unlinked,
+                    (owner, reset.isoformat(), current.isoformat()),
+                )
+                for created_at, turn_id, ordinal, raw, state, reply in rows:
+                    instant = datetime.fromisoformat(created_at)
+                    candidate = json.loads(raw)
+                    model = candidate.get("model", "")
+                    if (reset <= instant <= current and candidate.get("source_ref") == source_ref
+                            and (model.endswith(":free") or model in zero_priced_models)):
+                        events.append((instant, turn_id, ordinal, reply is not None
+                                       and state not in {"failed", "inference_started"}))
+            elif "agent_request_attempts" not in tables:
+                return None
+        successful = 0
+        for count, event in enumerate(sorted(events), 1):
+            if event[3]:
+                successful = count
+        return len(events), successful
     except Exception:  # noqa: BLE001 - unavailable advisory evidence never breaks a turn
         return None
 

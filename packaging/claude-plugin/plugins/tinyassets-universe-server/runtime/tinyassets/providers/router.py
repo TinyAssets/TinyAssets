@@ -1275,6 +1275,8 @@ class ProviderRouter:
                             accounting_context = replace(universe_context, model_selection=ModelRef(
                                 provider_name, selected_id,
                             ))
+                            request_budget.check_scope(owner, universe_dir.name)
+                            request_budget.persist(universe_dir.parent)
                             request_attempt = request_budget.reserve(
                                 owner=owner, universe=universe_dir.name,
                                 source_ref=provider_name, model=selected_id,

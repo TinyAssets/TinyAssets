@@ -497,6 +497,14 @@ def test_ordinary_chat_uses_one_tool_incapable_accepted_http_call(
     assert observations[0].request_receipt["dispatched"] == 1
     assert observations[0].request_receipt["sources"][0]["purpose"] == "reply"
     assert agent.latest().state == "completed"
+    from tinyassets.storage.agent_request_usage import UsageStore
+
+    stored = UsageStore(root.parent).for_subject("owner", root.name, "turn", agent.latest().turn_id)
+    assert len(stored) == 1 and stored[0]["dispatched"] == 1 and stored[0]["closed"]
+    assert stored[0]["usage_id"] == observations[0].request_receipt["usage_id"]
+    assert [(a["purpose"], a["state"]) for a in stored[0]["attempts"]] == [
+        ("reply", "succeeded"),
+    ]
 
 
 def test_free_pool_cannot_multiply_default_budget_across_fifty_accepted_sources():
