@@ -259,6 +259,9 @@ def test_the_jail_loads_a_filter_refusing_links_and_special_files(tmp_path, monk
     # The tool jail runs no CLI sandbox of its own, so it gets the full filter:
     # links, special files, io_uring, new user namespaces and the kernel
     # interfaces. What each one decides is asserted in tests/test_jail_seccomp.py.
+    # nested_sandbox is named explicitly even though False is its default: this
+    # asserts the tool jail gets the RESTRICTIVE profile, so flipping that
+    # default has to fail here rather than quietly handing it the permissive one.
     from tinyassets.providers.jail_seccomp import deny_program
 
     assert universe_tools.seccomp_program() == deny_program(nested_sandbox=False)

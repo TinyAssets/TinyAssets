@@ -127,6 +127,10 @@ def test_triggers_are_pull_request_paths_plus_dispatch_only():
         "tests/test_universe_tools_jail.py",
         "tinyassets/universe_tools.py",
         "tinyassets/engine_mcp_server.py",
+        "tinyassets/jail_disk.py",
+        "tinyassets/storage_accounting.py",
+        "tests/test_jail_disk.py",
+        "tests/test_storage_accounting.py",
     ):
         assert required in paths, f"{required} must retrigger the proof"
 
@@ -480,3 +484,88 @@ def test_assertion_helper_absent_second_case_fails(tmp_path):
 def test_assertion_helper_rejects_malformed_nodeid(tmp_path):
     with pytest.raises(SystemExit):
         _assert.check(_junit(tmp_path, _CASE.format(inner="")), "not-a-nodeid")
+
+
+# ---- --only-files: the selective merge-group browser proof ------------------
+#
+# Finding 4 from the #4359 review. A selective merge group must still refuse a
+# SKIPPED browser proof for a file it selected, but the marked cases OUTSIDE the
+# selection are legitimately absent from that union -- and absence is exit 1.
+
+
+def _marked_browser() -> list[str]:
+    return _assert.marked_cases(_REPO, "real_browser")
+
+
+def _only(tmp_path: Path, *paths: str) -> Path:
+    path = tmp_path / "affected.txt"
+    path.write_text("".join(f"{p}\n" for p in paths), encoding="utf-8")
+    return path
+
+
+def test_only_files_ignores_a_marked_case_outside_the_selection(tmp_path):
+    """The absent-case exit 1 that made this step unusable on a selective run."""
+    marked = _marked_browser()
+    assert marked, "no test carries real_browser; this contract would be vacuous"
+    empty = _junit(tmp_path)
+    assert _assert.main(["--junit", str(empty), "--marker", "real_browser"]) == 1
+    assert _assert.main([
+        "--junit", str(empty), "--marker", "real_browser",
+        "--only-files", str(_only(tmp_path, "tests/test_not_a_browser_file.py")),
+    ]) == 0
+
+
+def test_only_files_still_refuses_a_skip_inside_the_selection(tmp_path):
+    """The property the whole step exists for: a selected proof may not skip.
+
+    These tests call `pytest.skip` when Chromium will not launch, and coverage
+    accepts a skip. Without this, a selective UI change could pass its gate
+    having executed no browser proof at all.
+    """
+    nodeid = _marked_browser()[0]
+    file_, name = nodeid.split("::")[0], nodeid.split("::")[-1]
+    classname = file_[:-3].replace("/", ".")
+    skipped = (
+        f'<testcase classname="{classname}" name="{name}"><skipped/></testcase>'
+    )
+    args = [
+        "--junit", str(_junit(tmp_path, skipped)), "--marker", "real_browser",
+        "--only-files", str(_only(tmp_path, file_)),
+    ]
+    assert _assert.main(args) == 1
+
+
+def test_only_files_passes_a_clean_selected_proof(tmp_path):
+    """EVERY marked case in a selected file, not just one of them.
+
+    The restriction is by FILE, so selecting a file asks for all of its proofs.
+    One clean case does not cover its eight siblings -- which is the same
+    "no case covers for another" property the unrestricted mode has.
+    """
+    file_ = _marked_browser()[0].split("::")[0]
+    classname = file_[:-3].replace("/", ".")
+    in_file = [n for n in _marked_browser() if n.split("::")[0] == file_]
+    assert len(in_file) > 1, "pick a file with several cases or this proves less"
+    clean = "".join(
+        f'<testcase classname="{classname}" name="{n.split("::")[-1]}"/>' for n in in_file
+    )
+    assert _assert.main([
+        "--junit", str(_junit(tmp_path, clean)), "--marker", "real_browser",
+        "--only-files", str(_only(tmp_path, file_)),
+    ]) == 0
+    # Drop one and it fails: a sibling never covers for a missing proof.
+    partial = "".join(
+        f'<testcase classname="{classname}" name="{n.split("::")[-1]}"/>' for n in in_file[1:]
+    )
+    assert _assert.main([
+        "--junit", str(_junit(tmp_path, partial)), "--marker", "real_browser",
+        "--only-files", str(_only(tmp_path, file_)),
+    ]) == 1
+
+
+def test_only_files_needs_a_marker(tmp_path):
+    with pytest.raises(SystemExit):
+        _assert.main([
+            "--junit", str(_junit(tmp_path)), "--nodeid", "tests/a.py::t",
+            "--only-files", str(_only(tmp_path, "tests/a.py")),
+        ])

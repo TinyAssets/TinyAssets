@@ -354,15 +354,19 @@ def test_a_provider_launch_has_no_host_network_only_its_universe_proxy(wired):
 
 
 @posix_paths
-def test_the_seccomp_filter_is_handed_to_the_jail_and_released(wired):
+@pytest.mark.parametrize("nested", [False, True], ids=["deny", "served"])
+def test_the_seccomp_filter_is_handed_to_the_jail_and_released(wired, nested):
+    """Every launch gets the full deny profile unless its adapter declared a
+    nested sandbox (a served codex turn), which gets the permissive one."""
     universe, *_ = wired
     with provider_launch_scope(universe):
-        launch = confine_launch(["cli"])
+        launch = (confine_launch(["cli"], nested_sandbox=True) if nested
+                  else confine_launch(["cli"]))
     (fd,) = launch.pass_fds
     assert launch.argv[launch.argv.index("--seccomp") + 1] == str(fd)
     from tinyassets.providers.jail_seccomp import deny_program
 
-    assert os.read(fd, 1 << 16) == deny_program(nested_sandbox=True)
+    assert os.read(fd, 1 << 16) == deny_program(nested_sandbox=nested)
     launch.close()
     with pytest.raises(OSError):
         os.fstat(fd)

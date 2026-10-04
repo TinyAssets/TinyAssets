@@ -109,6 +109,13 @@ def _compact_row(row: dict) -> dict:
     pricing, modality lists, benchmark scores, freshness stamps and eligibility
     prose -- available in the full read.
 
+    ``effort_levels``/``effort`` are dropped DELIBERATELY, not overlooked. They
+    are a per-model list this view exists to keep out, and effort is a separate
+    setting from which model to run: the owner's picker reads the full
+    ``model_options`` and has them. If an agent is ever given its own effort
+    control, this is the line to revisit -- the data is one read away, so the
+    omission is a size decision rather than a missing capability.
+
     ``availability_basis`` is kept deliberately and not for size reasons: the
     shared learned catalogue (#4028) adds rows this universe has NOT verified
     itself, carrying ``platform_verified_elsewhere`` with

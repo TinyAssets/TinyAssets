@@ -17,6 +17,20 @@ def validate_model_id(value):
     return value
 
 
+def validate_effort_level(value):
+    """Shape only. The admissible SET is whatever the model advertised.
+
+    There is no cross-family vocabulary to check against: Claude Code offers
+    ``max`` and no ``minimal``, Codex the reverse, and one model may drop a
+    level its siblings carry. Membership is enforced where the catalogue is in
+    hand (:meth:`NativeDiscoverySnapshot.select`), never from a constant here.
+    """
+    if (type(value) is not str or len(value) > 100 or value != value.strip()
+            or (value and not value.isprintable())):
+        raise ValueError("invalid native effort level")
+    return value
+
+
 @dataclass(frozen=True, slots=True)
 class NativeSelection:
     provider: str
@@ -26,18 +40,28 @@ class NativeSelection:
     observed_at: str = ""
     completed_at: str = ""
     source_digest: str = ""
+    #: The owner's effort level for THIS model, already checked against the
+    #: levels the executor advertised for it. Empty means the executor's own
+    #: default -- this platform never picks a level on the owner's behalf.
+    effort: str = ""
 
     def __post_init__(self):
         if type(self.provider) is not str or not self.provider:
             raise ValueError("invalid native source")
         validate_model_id(self.requested_model_id)
         validate_model_id(self.default_model_id)
+        validate_effort_level(self.effort)
         if not self.requested_model_id:
             raise ValueError("native selection requires a requested model")
         if self.basis == "owner_declared":
             if any((self.default_model_id, self.observed_at,
                     self.completed_at, self.source_digest)):
                 raise ValueError("owner declaration cannot attest discovery facts")
+            # A declared id carries no advertised level list, so nothing could
+            # have validated the level. Offering it anyway would be a control
+            # whose value the executor never promised to accept.
+            if self.effort:
+                raise ValueError("owner declaration cannot attest an effort level")
         elif self.basis == "executor_enumerated":
             observed, completed = self.discovery_times()
             if (observed > completed or type(self.source_digest) is not str
@@ -79,6 +103,10 @@ class NativeSelection:
         if self.basis == "executor_enumerated":
             value.update(version=2, observed_at=self.observed_at,
                          completed_at=self.completed_at, source_digest=self.source_digest)
+            # Version 3 only when a level was actually chosen, so every
+            # already-stored version-2 evidence row keeps parsing unchanged.
+            if self.effort:
+                value.update(version=3, effort=self.effort)
         return value
 
     @classmethod
@@ -89,16 +117,19 @@ class NativeSelection:
         if type(value) is not dict:
             raise ValueError("native selection fields do not match schema")
         version = value.get("version")
-        if type(version) is not int or version not in (1, 2):
+        if type(version) is not int or version not in (1, 2, 3):
             raise ValueError("unknown native selection version")
-        if version == 2:
+        if version in (2, 3):
             fields |= {"observed_at", "completed_at", "source_digest"}
+        if version == 3:
+            fields |= {"effort"}
         if (set(value) != fields or value["kind"] != "native"
                 or value["basis"] != ("owner_declared" if version == 1 else "executor_enumerated")):
             raise ValueError("native selection fields do not match schema")
         return cls(value["provider"], value["requested_model_id"],
                    value["default_model_id"], value["basis"], value.get("observed_at", ""),
-                   value.get("completed_at", ""), value.get("source_digest", ""))
+                   value.get("completed_at", ""), value.get("source_digest", ""),
+                   value.get("effort", ""))
 
 
 def accepted_native_selection(provider, model_id, access):

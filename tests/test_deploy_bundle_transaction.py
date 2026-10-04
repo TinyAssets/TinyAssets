@@ -337,6 +337,13 @@ def main(argv):
         return 0
 
     if argv[:1] == ["run"]:
+        if "KNOWN_LAYOUTS" in argv[-1]:
+            if not state.get("layout_probe_ok", True):
+                return 1
+            # Declarations belong to the requested image, not the running one.
+            target = argv[argv.index("--entrypoint") + 2]
+            declaration = state.get("known_layouts", {}).get(target, [1])
+            print(state.get("layout_probe_output", json.dumps(declaration)))
         return 0 if state.get("preflight_ok", True) else 1
 
     if argv[:2] == ["volume", "inspect"]:
@@ -1338,12 +1345,16 @@ def test_unhealthy_candidate_restores_the_bundle_and_the_previous_image(box: Box
     assert box.env_image() == OLD_IMAGE
 
 
-def test_no_image_converges_onto_data_a_migration_has_touched(box: Box):
+@pytest.mark.parametrize("version", [1, 2])
+def test_no_image_converges_onto_data_a_migration_has_touched(box: Box, version):
     """The data layout guard (design D7.2), before anything is mutated: an image
-    must never start on data marked ``migrating`` or moved to a newer layout."""
+    must never start on data marked ``migrating``, even if it knows the layout."""
     volume = box.root / "data-volume"
     volume.mkdir()
-    (volume / ".layout.json").write_text('{"layout": 1, "state": "migrating"}', encoding="utf-8")
+    (volume / ".layout.json").write_text(
+        json.dumps({"layout": version, "state": "migrating"}), encoding="utf-8",
+    )
+    box.set_docker_state(known_layouts={NEW_IMAGE: [1, 2]})
     before = box.live()
     box.stage_bundle()
 
@@ -1352,6 +1363,73 @@ def test_no_image_converges_onto_data_a_migration_has_touched(box: Box):
     assert completed.returncode == 1, completed.stderr
     assert _result(completed) == "layout_refused"
     assert box.env_image() == OLD_IMAGE and box.live() == before, "prod must be untouched"
+
+
+@pytest.mark.parametrize("supported,allowed", [([1, 2], True), ([1, 2, 3], True), ([1], False)])
+def test_forward_deploy_uses_the_candidate_layout_declaration(box: Box, supported, allowed):
+    volume = box.root / "data-volume"
+    volume.mkdir()
+    (volume / ".layout.json").write_text('{"layout": 2, "state": "stable"}', encoding="utf-8")
+    # The running image remains layout-1-only in both cases.
+    box.set_docker_state(known_layouts={NEW_IMAGE: supported, OLD_IMAGE: [1]})
+    before = box.live()
+    box.stage_bundle()
+
+    completed = box.run(NEW_IMAGE, FAKE_DOCKER_VOLUME_DIR=str(volume))
+
+    assert completed.returncode == (0 if allowed else 1), completed.stderr
+    assert _result(completed) == ("deployed" if allowed else "layout_refused")
+    if allowed:
+        assert _deployed_image(completed) == NEW_IMAGE
+        assert box.env_image() == NEW_IMAGE
+    else:
+        assert box.env_image() == OLD_IMAGE and box.live() == before
+        assert "compose up" not in box.docker_calls_text()
+    probe = next(line for line in box.docker_calls_text().splitlines() if "KNOWN_LAYOUTS" in line)
+    assert f"--entrypoint python {NEW_IMAGE} -c" in probe
+    assert "--network=none" in probe and "--volume" not in probe and "--mount" not in probe
+
+
+@pytest.mark.parametrize("probe_state", [
+    {"layout_probe_ok": False},
+    {"layout_probe_output": ""},
+    {"layout_probe_output": "garbage"},
+    {"layout_probe_output": "{}"},
+    {"layout_probe_output": "[]"},
+    {"layout_probe_output": '["1", "2"]'},
+    {"layout_probe_output": "[true, 2]"},
+])
+def test_missing_or_invalid_candidate_declaration_refuses_without_mutation(box: Box, probe_state):
+    box.set_docker_state(**probe_state)
+    before = box.live()
+    box.stage_bundle()
+
+    completed = box.run(NEW_IMAGE)
+
+    assert completed.returncode == 1, completed.stderr
+    assert _result(completed) == "layout_refused"
+    assert box.env_image() == OLD_IMAGE and box.live() == before
+    assert "compose up" not in box.docker_calls_text()
+
+
+@pytest.mark.parametrize("explicit", [False, True])
+def test_layout_two_still_refuses_rollback_to_an_older_image(box: Box, explicit):
+    volume = box.root / "data-volume"
+    volume.mkdir()
+    (volume / ".layout.json").write_text('{"layout": 2, "state": "stable"}', encoding="utf-8")
+    box.set_docker_state(known_layouts={NEW_IMAGE: [1, 2]}, unhealthy_images=[NEW_IMAGE])
+    box.stage_bundle()
+
+    args = ("--restore-bundle", OLD_IMAGE) if explicit else (NEW_IMAGE,)
+    completed = box.run(*args, FAKE_DOCKER_VOLUME_DIR=str(volume))
+
+    assert completed.returncode == (1 if explicit else 3), completed.stderr
+    assert _result(completed) == ("layout_refused" if explicit else "rollback_needs_restore")
+    if explicit:
+        assert "compose up" not in box.docker_calls_text()
+    else:
+        assert box.env_image() == NEW_IMAGE, "automatic rollback must not start the old image"
+        assert "stop tinyassets-daemon" in box.docker_calls_text()
 
 
 def test_no_image_rollback_onto_data_the_failed_candidate_began_migrating(box: Box):

@@ -190,6 +190,58 @@ HOST_REACH_TOOLS: tuple[str, ...] = (
     "Glob", "Grep", "LS",
 )
 
+#: Claude CLI builtins whose effect leaves the platform or outlives the turn --
+#: the DAEMON HOST'S logged-in claude.ai account, the outside world, or a clock.
+#: Separate from :data:`HOST_REACH_TOOLS` because the boundary is a different
+#: one: these touch nothing on disk and start no shell, so the OS jail does not
+#: bound them, and they are not MCP servers, so ``--strict-mcp-config`` does not
+#: either.
+#:
+#: **Scheduling, push and remote runs belong to the user's own platform-side
+#: automations -- the channels they build -- never to the CLI's account-side
+#: features** (host decision 2026-10-03). A turn that scheduled its own wakeup
+#: or fired its own push would be running work the owner never built and cannot
+#: see, on the host's account rather than theirs.
+#:
+#: Verified against the installed CLI 2.1.288 and its changelog (2026-10-03).
+#: Account-side effects:
+#:   Artifact         publishes pages, uploads assets and reads other people's
+#:                    artifacts; artifact-database writes are visible to every
+#:                    viewer of the artifact.
+#:   SendMessage      messages another session on the machine.
+#:   ListAgents       enumerates those sessions -- SendMessage's discovery half,
+#:                    which is why they belong to one constant.
+#:   SendFeedback     drafts and sends a report off-box.
+#:   ListPlugins      reads the plugins enabled on the claude.ai account.
+#:   EndConversation  can end the turn from inside it.
+#: Scheduled, pushed or remote:
+#:   ScheduleWakeup   starts work after the turn ends, outside any automation.
+#:   PushNotification notifies out of band, not through the owner's channel.
+#:   RemoteTrigger    reaches a remote runner.
+#:   Cron*            Create/Delete/List: a schedule the owner never authored
+#:                    and cannot see in their automations.
+#:   DesignSync*      DesignSync/DesignSyncTool: remote design I/O.
+#:
+#: Deliberately NOT here, and still callable on a node: ``Task*`` (session-local
+#: bookkeeping), ``ReportFindings`` (reports into the turn, not out of it), and
+#: the MCP resource readers (already bounded by ``--strict-mcp-config``).
+#:
+#: The ONE definition, denied on BOTH confined paths: the universe engine's
+#: denylist splats it (``universe_intelligence._ENGINE_DISALLOWED_TOOLS``) and a
+#: workflow node call denies it (``ModelConfig.workflow_node``). A workflow node
+#: keeps every owner-level capability on purpose -- web tools, subagents, plans
+#: -- but it has no business acting on the host's account or on a clock, and
+#: before this it could (it denied only ``HOST_REACH_TOOLS``).
+ACCOUNT_REACH_TOOLS: tuple[str, ...] = (
+    # account-side
+    "Artifact", "SendMessage", "ListAgents", "SendFeedback", "ListPlugins",
+    "EndConversation",
+    # scheduled / pushed / remote
+    "ScheduleWakeup", "PushNotification", "RemoteTrigger",
+    "CronCreate", "CronDelete", "CronList",
+    "DesignSync", "DesignSyncTool",
+)
+
 
 @dataclass(frozen=True, slots=True)
 class ModelConfig:
@@ -250,7 +302,7 @@ class ModelConfig:
     every provider launch made for a command center is OS-jailed to that command center by
     the shared spawn point, whatever its config (``provider_jail``). A provider
     may use the mark to narrow further, e.g. pin cwd to the command center and deny
-    :data:`HOST_REACH_TOOLS`."""
+    :data:`HOST_REACH_TOOLS` and :data:`ACCOUNT_REACH_TOOLS`."""
 
     text_only: bool = False
     """Restrictive per-invocation mode: no tools, agent request or session resume.
@@ -1476,13 +1528,25 @@ class BaseProvider(abc.ABC):
         base_cmd, use_shell = self.native_command_resolver()
         if use_shell:
             raise ProviderError("native model discovery requires a direct executable")
+        from tinyassets.providers.native_jsonrpc_discovery import NativeMetadataUnsupported
+
         env = subprocess_env_for_provider(
             self.name, universe_dir=universe_dir, credential_snapshot_dir=credential_snapshot_dir,
         )
-        return await read_native_catalogue(
-            [*base_cmd, *self.native_metadata_arguments], protocol=self.native_discovery_protocol,
-            env=env, cwd=str(credential_snapshot_dir), spawn_kwargs=self.native_process_options(),
-        )
+        try:
+            return await read_native_catalogue(
+                [*base_cmd, *self.native_metadata_arguments],
+                protocol=self.native_discovery_protocol,
+                env=env, cwd=str(credential_snapshot_dir),
+                spawn_kwargs=self.native_process_options(),
+            )
+        except NativeMetadataUnsupported:
+            # An installed executor that ANSWERED "I do not implement this"
+            # is the same honest unknown as one declaring no protocol at all:
+            # None, so the source reads `native_enumeration_unsupported` and
+            # its own default stays usable. This is the feature detection --
+            # by asking, never by a version table.
+            return None
 
     @classmethod
     def is_available(cls) -> bool:

@@ -34,15 +34,48 @@ from __future__ import annotations
 
 import sqlite3
 import time
+from contextlib import closing
 from pathlib import Path
 from typing import Any
 
 _DB_FILENAME = ".effector_consents.db"
 
 
-def consents_db_path(universe_dir: str | Path) -> Path:
-    """Resolve the per-universe consents DB path."""
+def legacy_consents_db_path(universe_dir: str | Path) -> Path:
+    """Where this database lived until 2026-10-03, INSIDE the command center.
+
+    Only the migration and its tests may read this. Nothing that decides
+    authority may: a file here is writable by the command center the consent is
+    about, so whoever created it first decided what the owner had consented to.
+    """
     return Path(universe_dir) / _DB_FILENAME
+
+
+def consents_db_path(universe_dir: str | Path) -> Path:
+    """The consents database, in the daemon-owned sidecar folder.
+
+    NOT inside the command center. The command center's own processes can write
+    that folder -- a workflow provider jail binds it read-write and permits
+    ``symlink`` -- and this module's schema is ``CREATE TABLE IF NOT EXISTS``,
+    so a database that already existed was adopted rather than refused. The
+    external-call gate reads the result (``effectors/
+    authenticated_external_call.py``), so whichever party created the file
+    first decided what the owner had consented to. Two attempts to tell a
+    forged file from a real one in place both failed (``?nofollow=1`` is
+    ignored by SQLite; per-database provenance records collected three P1
+    defects), because that is a hard problem when the adversary writes the same
+    directory.
+
+    ``<data>/.universe-sidecars/<command center>/`` is the existing answer, and
+    says so where it is defined: "daemon-owned files that belong to one
+    universe but must not live inside it ... No jail binds that directory, so
+    nothing a universe runs can replace them"
+    (``providers/provider_jail.UNIVERSE_SIDECARS_DIR``).
+    """
+    from tinyassets.providers.provider_jail import UNIVERSE_SIDECARS_DIR
+
+    root = Path(universe_dir)
+    return root.parent / UNIVERSE_SIDECARS_DIR / root.name / _DB_FILENAME
 
 
 def _connect(universe_dir: str | Path) -> sqlite3.Connection:
@@ -74,7 +107,7 @@ CREATE INDEX IF NOT EXISTS idx_consents_active
 def initialize_consents_db(universe_dir: str | Path) -> Path:
     """Ensure the consents DB exists and is migrated. Returns the DB path."""
     path = consents_db_path(universe_dir)
-    with _connect(universe_dir) as conn:
+    with closing(_connect(universe_dir)) as conn, conn:
         conn.executescript(_SCHEMA)
         conn.commit()
     return path
@@ -108,7 +141,7 @@ def grant_consent(
         raise ValueError("grant_consent requires non-empty granted_by")
     initialize_consents_db(universe_dir)
     ts = granted_at if granted_at is not None else time.time()
-    with _connect(universe_dir) as conn:
+    with closing(_connect(universe_dir)) as conn, conn:
         conn.execute(
             """
             INSERT INTO effector_consents (
@@ -151,7 +184,7 @@ def revoke_consent(
         return False
     initialize_consents_db(universe_dir)
     ts = revoked_at if revoked_at is not None else time.time()
-    with _connect(universe_dir) as conn:
+    with closing(_connect(universe_dir)) as conn, conn:
         cur = conn.execute(
             """
             UPDATE effector_consents
@@ -226,7 +259,7 @@ def revoke_consents_for_connection(
     # The connection id is the SECOND colon-separated field. Matching on the
     # exact position, not a substring, so a repository or host that happens to
     # contain another connection's name cannot be swept in.
-    with _connect(universe_dir) as conn:
+    with closing(_connect(universe_dir)) as conn, conn:
         rows = conn.execute(
             "SELECT sink, destination FROM effector_consents WHERE revoked_at IS NULL"
         ).fetchall()
@@ -261,7 +294,7 @@ def is_consent_active(
     if not sink or not destination:
         return False
     initialize_consents_db(universe_dir)
-    with _connect(universe_dir) as conn:
+    with closing(_connect(universe_dir)) as conn, conn:
         row = conn.execute(
             """
             SELECT 1 FROM effector_consents
@@ -293,7 +326,7 @@ def list_consents(
     if active_only:
         clauses.append("revoked_at IS NULL")
     where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
-    with _connect(universe_dir) as conn:
+    with closing(_connect(universe_dir)) as conn, conn:
         rows = conn.execute(
             f"""
             SELECT sink, destination, granted_at, granted_by, revoked_at

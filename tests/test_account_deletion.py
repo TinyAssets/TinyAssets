@@ -149,11 +149,13 @@ def two_users(tmp_path: Path) -> Path:
 @pytest.mark.parametrize("has_home", [True, False])
 def test_shared_copy_provenance_deletes_by_owner_across_home_changes(two_users: Path, has_home):
     from tinyassets import command_center_update_registry as registry
+    from tinyassets.command_center_update_executor import _RECEIPTS, _STATUS
+    from tinyassets.command_center_update_policy import _SCHEMA as policy_schema
     from tinyassets.storage import db_path
 
     path = db_path(two_users)
     with sqlite3.connect(path) as conn:
-        for statement in registry._SCHEMA:
+        for statement in registry._SCHEMA + policy_schema + (_RECEIPTS, _STATUS):
             conn.execute(statement)
         for owner, home in ((A, HOME_A), (A, "former-home"), (B, HOME_A), (B, HOME_B)):
             key = owner + home
@@ -165,15 +167,35 @@ def test_shared_copy_provenance_deletes_by_owner_across_home_changes(two_users: 
                 "INSERT INTO command_center_update_requests VALUES (?,?,?,?,?,?)",
                 (owner, home, key, "request-" + key, "digest", '{}'),
             )
+            conn.execute(
+                "INSERT INTO command_center_update_policies VALUES (?,?,?,?,?,?,?,?)",
+                (owner, home, key, 1, 1, '{}', "grant-" + key, "digest"),
+            )
+            conn.execute(
+                "INSERT INTO command_center_policy_requests VALUES (?,?,?,?,?,?)",
+                (owner, home, key, "policy-request-" + key, '{}', "digest"),
+            )
+            conn.execute(
+                "INSERT INTO command_center_auto_receipts VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                ("auto-" + key, owner, home, key, "grant-" + key, '{}', None, 0,
+                 "pending", "", 1.0),
+            )
+            conn.execute(
+                "INSERT INTO command_center_auto_status VALUES (?,?,?,?,?,?)",
+                (owner, home, key, "auto-" + key, '{}', 1.0),
+            )
         if not has_home:
             conn.execute("DELETE FROM founder_home WHERE founder_sub=?", (A,))
         plan = account_deletion.deletion_plan(
             conn, principal=A, home=HOME_A if has_home else "")
-        for table in ("command_center_adoptions", "command_center_update_requests"):
+        tables = ("command_center_adoptions", "command_center_update_requests",
+                  "command_center_update_policies", "command_center_policy_requests",
+                  "command_center_auto_receipts", "command_center_auto_status")
+        for table in tables:
             assert plan[table] == [("owner_id", "principal")]
     delete_account(two_users, founder_sub=A, cancel_billing=lambda home: "cancelled",
                    delete_identity=lambda sub: "deleted")
-    for table in ("command_center_adoptions", "command_center_update_requests"):
+    for table in tables:
         assert _rows(path, f'SELECT owner_id, universe_id FROM "{table}" ORDER BY universe_id') == [
             (B, HOME_A), (B, HOME_B)]
 
@@ -885,6 +907,85 @@ def test_a_failed_row_phase_still_cancels_the_billing(two_users: Path, monkeypat
     assert receipt["identity"] == "deleted"
     assert receipt["unfinished_phases"] == ["store:auth", "store:outbound"]
     assert receipt["host_receipt_path"]
+
+
+def test_nonempty_in_home_sidecar_does_not_strand_deletion_or_billing(two_users):
+    from tinyassets.storage.effector_consents import consents_db_path, initialize_consents_db
+
+    home = two_users / HOME_A
+    planted = home / ".universe-sidecars"
+    planted.mkdir()
+    (planted / "owned.txt").write_text("user content", encoding="utf-8")
+    initialize_consents_db(home)
+    billed = []
+    receipt = delete_account(
+        two_users, founder_sub=A,
+        cancel_billing=lambda h: billed.append(h) or "cancelled",
+        delete_identity=lambda _: "deleted",
+    )
+    assert billed == [HOME_A]
+    assert receipt["home_removed"] and not receipt["unfinished_phases"]
+    assert not home.exists() and not consents_db_path(home).parent.exists()
+    assert not (two_users / ".deleting").exists()
+    assert (two_users / HOME_B / "soul.md").exists()
+
+
+def test_partial_staging_is_receipted_billing_runs_and_retry_resumes(two_users, monkeypatch):
+    from tinyassets.storage.effector_consents import consents_db_path, initialize_consents_db
+
+    home = two_users / HOME_A
+    initialize_consents_db(home)
+    sidecar = consents_db_path(home).parent
+    rename = Path.rename
+    billed = []
+
+    def fail_sidecar(path, target):
+        if path == sidecar:
+            raise OSError("injected sidecar staging failure")
+        return rename(path, target)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(Path, "rename", fail_sidecar)
+        receipt = delete_account(
+            two_users, founder_sub=A,
+            cancel_billing=lambda h: billed.append(h) or "cancelled",
+            delete_identity=lambda _: "deleted",
+        )
+    assert billed == [HOME_A]
+    assert not receipt["home_removed"]
+    assert "home_staging" in receipt["unfinished_phases"]
+    assert Path(receipt["home_staged_path"]).is_dir()
+    assert account_deletion.pending_deletions(two_users)
+    retry = delete_account(
+        two_users, founder_sub=A, cancel_billing=lambda _: "none",
+        delete_identity=lambda _: "deleted",
+    )
+    assert retry["home_removed"] and not retry["unfinished_phases"]
+    assert not sidecar.exists() and not (two_users / ".deleting").exists()
+    assert (two_users / HOME_B / "soul.md").exists()
+
+
+@pytest.mark.parametrize("linked_parent", [".deleting", ".universe-sidecars"])
+def test_staging_rejects_linked_platform_parents_without_touching_peer(
+    two_users, linked_parent,
+):
+    peer = two_users / HOME_B
+    try:
+        (two_users / linked_parent).symlink_to(peer, target_is_directory=True)
+    except OSError:
+        pytest.skip("this host cannot create a directory symlink")
+    billed = []
+    receipt = delete_account(
+        two_users, founder_sub=A,
+        cancel_billing=lambda h: billed.append(h) or "cancelled",
+        delete_identity=lambda _: "deleted",
+    )
+    assert billed == [HOME_A]
+    assert "home_staging" in receipt["unfinished_phases"]
+    assert not receipt["home_removed"]
+    assert (two_users / HOME_A / "soul.md").exists()
+    assert (peer / "soul.md").read_text(encoding="utf-8") == "# soul\n"
+    assert not (peer / HOME_A).exists()
 
 
 def test_a_second_deletion_of_the_same_principal_is_a_clean_noop(two_users: Path):

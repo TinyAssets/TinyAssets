@@ -124,6 +124,18 @@ def main(argv: list[str] | None = None) -> int:
                         help="the job name its verdict lines carry")
     parser.add_argument("--summary", type=Path, default=None,
                         help="append a one-line markdown verdict per case here")
+    parser.add_argument(
+        "--only-files", type=Path, default=None,
+        help=(
+            "With --marker: keep only cases whose file is listed in this file "
+            "(one path per line). For a SELECTIVE merge-group run, where the "
+            "marked cases outside the selection are legitimately absent from "
+            "the report but the selected ones must still not read as a skip. "
+            "An empty intersection exits 0 -- nothing marked was selected, so "
+            "there is nothing to prove, which is different from a marker "
+            "nobody carries."
+        ),
+    )
     ns = parser.parse_args(argv)
     nodeids = ns.nodeid or marked_cases(ns.root, ns.marker)
     if not nodeids:
@@ -131,6 +143,18 @@ def main(argv: list[str] | None = None) -> int:
         print(f"{ns.label} FAIL: no test carries pytest.mark.{ns.marker}",
               file=sys.stderr)
         return 2
+    if ns.only_files is not None:
+        if not ns.marker:
+            parser.error("--only-files needs --marker")
+        keep = {
+            line.strip().replace("\\", "/")
+            for line in ns.only_files.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        }
+        nodeids = [n for n in nodeids if n.split("::")[0].replace("\\", "/") in keep]
+        if not nodeids:
+            print(f"{ns.label} OK: no pytest.mark.{ns.marker} case is in the selection")
+            return 0
     if ns.list_files:
         if not ns.marker:
             parser.error("--list-files needs --marker")

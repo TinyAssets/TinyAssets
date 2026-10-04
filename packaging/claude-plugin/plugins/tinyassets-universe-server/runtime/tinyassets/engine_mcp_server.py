@@ -2361,6 +2361,13 @@ _WRITE_GRAPH_SYSTEMS_CHAPTER = """\
       credentials, memory and private agent configuration never travel. A UI
       villager label or workflow name alone is not an exported agent template.
       Unsupported agent kinds and nested dependencies are refused before copy.
+      For explicit version history on a component-system screen, add
+      ``release: {"summary": "One-line changes"}`` for its first release, or
+      include the exact returned ``series_id`` and ``parent_release_id`` for
+      its successor. The platform shows this linkage in the owner's publish
+      consent. Matching names and old publications do not establish history.
+      Release linkage does not opt recipients into updates or authorize new
+      code, components, permissions or model calls for them.
       Script text stays unchanged. Existing named ``emit`` events remain owner
       broadcasts; this does not grant direct workflow execution or exclusive routing.
     * **Sharing workflows only** uses ``publish_kind: "workflows"`` and
@@ -3029,7 +3036,9 @@ def write_graph(
         target: ``branch``, ``automation``, ``webhook``, ``pending_request``, ``patch_request``,
             ``model_preferences`` or ``connection``. model_preferences/save takes the existing
             {expected_generation, policy} document: save a default and complete
-            fallback order from model_options. This grants no model access.
+            fallback order from model_options, plus optional per-model
+            ``efforts`` (provider_ref/model_id/level) using only the levels that
+            model advertised in model_options. This grants no model access.
             connection/configure_provider_capability accepts model_discovery
             metadata only, on an already owned registered compute definition.
             connection/configure sets constant headers on a held connection:
@@ -4479,6 +4488,17 @@ async def run_bash(command: str, timeout: int = 0) -> str:
 
 
 if __name__ == "__main__":
+    # An engine acts for the owner that spawned it: join its tree BEFORE serving
+    # anything, so even an effect-only run is covered by the owner's death proof,
+    # and refuse to start if that owner is already gone (execution-owner-lease D2).
+    from tinyassets.owner_lease import LeaseLost as _LeaseLost
+    from tinyassets.owner_lease import join_inherited_tree as _join_inherited_tree
+    from tinyassets.storage import data_dir as _engine_data_dir
+
+    try:
+        _join_inherited_tree(_engine_data_dir())
+    except _LeaseLost as _gone:
+        raise SystemExit(f"engine MCP refuses to start: {_gone}") from None
     # Transport: HTTP when a port is pinned (the reliable path — claude CLI's
     # stdio-MCP spawn is flaky in the headless served subprocess, HTTP is not),
     # else stdio (spawned by claude -p via --mcp-config). Identity stays pinned

@@ -118,6 +118,8 @@ def test_it_starts_medium_and_can_be_dragged_resized_and_remembered(app_url, bro
 
 
 def test_shrink_to_a_bubble_that_drags_without_opening_and_opens_on_click(app_url, browser):
+    from playwright.sync_api import expect
+
     page = browser.new_page(viewport={"width": 1280, "height": 800})
     _enter_chat(page, app_url)
 
@@ -127,6 +129,7 @@ def test_shrink_to_a_bubble_that_drags_without_opening_and_opens_on_click(app_ur
     # Focus left the chat. There is no in-document stand-in to name any more:
     # the command center is a mounted bundle, and with none mounted here the
     # point is simply that the shrunk chat does not keep the keyboard.
+    expect(page.locator("#chat-cloud:focus, #chat-cloud :focus")).to_have_count(0)
     assert page.evaluate("document.activeElement.closest('#chat-cloud') === null")
 
     before = _box(page, "#chat-cloud-bubble")
