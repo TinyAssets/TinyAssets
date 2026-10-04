@@ -1877,6 +1877,8 @@ def _run_app(tmp_path, scenario: dict) -> dict:
                     r"let watchedActive=[^\n]*;",
                     r"let pendingSteers=[^\n]*;")
     )
+    decls += "\nconst InlineConnection=" + html.split("  const InlineConnection=", 1)[1].split(
+        "  const HostedModelConnect=", 1)[0]
     funcs = "\n".join(_js_function(html, f) for f in (
         "turnInputMethod", "rememberInflight", "forgetInflight", "readInflight", "renderConverse",
         "sameInflight", "forgetInflightIf",

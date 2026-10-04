@@ -46,7 +46,9 @@ async def handle_model_connect(request):
     if not allowed:
         return JSONResponse({"error": "same_origin_json_required"}, 403, headers=_HEADERS)
     operation = request.path_params.get("operation")
-    fields = {"begin": {"preset_id", "code_challenge"},
+    fields = {"inline_begin": {"preset_id"}, "inline_poll": {"flow"},
+              "inline_cancel": {"flow"},
+              "begin": {"preset_id", "code_challenge"},
               "exchange": {"flow", "code", "code_verifier"}, "resume": {"preset_id"},
               "deposit_key": {"preset_id", "key"},
               "oauth_begin": {"request_id", "code_challenge"},
@@ -176,7 +178,30 @@ async def handle_model_connect(request):
     from tinyassets.connection_oauth.flow import FlowError
 
     try:
-        if operation == "oauth_begin":
+        if operation in {"inline_begin", "inline_poll", "inline_cancel"}:
+            from tinyassets.onboarding import inline_model_connect as inline
+
+            def inline_operation():
+                with identity_context(identity):
+                    if operation == "inline_begin":
+                        hosted.load_preset(data["preset_id"])
+                        _, home = scope(create=True, empty=True)
+                        return inline.begin(owner=identity.user_id, home=home,
+                                            preset_id=data["preset_id"], resource=resource)
+                    _, home = scope()
+                    return inline.take(owner=identity.user_id, home=home, handle=data["flow"],
+                                       cancel=operation == "inline_cancel")
+
+            result = await run_in_threadpool(inline_operation)
+            if result.get("status") == "ready":
+                verifier, code = result["verifier"], result["code"]
+                data.update(code_verifier=verifier)
+                flow = await run_in_threadpool(take)
+                key = await hosted.exchange_key(flow=flow, code=code, verifier=verifier)
+                result = await run_in_threadpool(complete, hosted.load_preset(flow.preset_id),
+                                                 expected=flow.universe_id,
+                                                 expected_digest=flow.preset_digest, key=key)
+        elif operation == "oauth_begin":
             result = await run_in_threadpool(oauth_begin)
         elif operation == "source_sign_in":
             result = await run_in_threadpool(source_sign_in)
@@ -215,6 +240,12 @@ async def handle_model_callback(request):
 
     if not hosted.is_callback_path(request.url.path):
         return PlainTextResponse("Not Found", 404, headers=_HEADERS)
+    if onboarding.onboarding_enabled():
+        from tinyassets.onboarding.inline_model_connect import callback
+
+        inline = await run_in_threadpool(callback, request)
+        if inline is not None:
+            return inline
     response = await onboarding._handle_app(request)
     response.headers.update(_HEADERS)
     return response
