@@ -18,6 +18,7 @@ from types import SimpleNamespace
 import pytest
 
 from tests import test_discovery_snapshot as snapshot_tests
+from tests.inference_usage_helpers import accounting_resolver
 from tinyassets.auth import middleware as auth
 from tinyassets.config import load_universe_config
 from tinyassets.custom_agents import (
@@ -127,7 +128,8 @@ def served(rig, reader, monkeypatch):
                 ),
             }
 
-    monkeypatch.setattr(ApiKeyHttpProvider, "_resolve_proxy", lambda *args, **kwargs: Proxy())
+    monkeypatch.setattr(ApiKeyHttpProvider, "_resolve_proxy",
+                        accounting_resolver(lambda *args, **kwargs: Proxy()))
     result = SimpleNamespace(
         rig=rig,
         context=context,
@@ -817,7 +819,8 @@ def test_cancelled_http_inference_keeps_slot_and_reservation_until_worker_finish
             state["closed"] += 1
 
     monkeypatch.setattr(routing, "_provider_slot", slot)
-    monkeypatch.setattr(ApiKeyHttpProvider, "_resolve_proxy", lambda *a, **k: WaitingProxy())
+    monkeypatch.setattr(ApiKeyHttpProvider, "_resolve_proxy",
+                        accounting_resolver(lambda *a, **k: WaitingProxy()))
 
     def reservations():
         with SQLiteProviderWorkAuthorityStore(served.rig.base).connection() as conn:

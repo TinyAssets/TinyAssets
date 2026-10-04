@@ -133,3 +133,20 @@ def test_receipt_normalizer_copies_valid_unicode_and_unknown():
                     {**RECEIPT, "model": "模型 <literal>"}):
         result = normalize_execution_receipt(receipt)
         assert result == receipt and result is not receipt
+
+
+def test_usage_only_stop_round_trips_without_answer_labels_or_delivery_changes(tmp_path):
+    from tinyassets.providers.execution_receipt import normalize_execution_receipt
+
+    usage = dict(reserved=0, dispatched=0, closed=True, sources=[], sources_omitted=0,
+                 quota_authoritative=False, count_basis="local_provider_dispatch",
+                 usage_id="a" * 32)
+    assert store.record_exchange(tmp_path, "a", "question", "bounded stop",
+                                 execution={"usage": usage})
+    for read in (store.load_recent, store.load_recent_readonly):
+        founder, answer = read(tmp_path, "a")
+        assert founder.execution is None
+        assert answer.text == "bounded stop"
+        assert normalize_execution_receipt(answer.execution) == {"usage": usage}
+        assert answer.execution.provider == answer.execution.model == ""
+        assert isinstance(hash(answer), int)

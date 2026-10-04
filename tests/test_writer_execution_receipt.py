@@ -155,3 +155,85 @@ def test_interleaved_requests_capture_only_their_own_response(router):
         assert text == "reply"
         assert receipt["provider"] == identity
         assert receipt["model"] == f"actual-{identity}"
+
+
+def test_usage_projection_includes_failures_and_internal_work_without_an_answer(tmp_path):
+    from tinyassets.providers.execution_receipt import ExecutionReceipt, normalize_execution_receipt
+    from tinyassets.request_budget import TurnRequestBudget
+    from tinyassets.storage.agent_request_usage import UsageStore
+
+    budget = TurnRequestBudget("owner", "home")
+    budget.persist(tmp_path)
+    for source, purpose, outcome in (("source-a", "reply", "failed"),
+                                     ("source-b", "review", "unknown")):
+        ordinal = budget.reserve(owner="owner", universe="home", source_ref=source,
+                                 model="model", free=True, purpose=purpose)
+        budget.dispatched(ordinal)
+        budget.settle(ordinal, outcome)
+    collector = WriterExecutionReceipt()
+    collector.observe(replace(response(), degraded=True, request_receipt=budget.receipt()))
+    projection = collector.projection()
+    assert set(projection) == {"usage"}
+    assert projection["usage"]["dispatched"] == 2
+    assert projection["usage"]["quota_authoritative"] is False
+    assert [(source["source_ref"], source["purpose"], source["failed"], source["unknown"])
+            for source in projection["usage"]["sources"]] == [
+        ("source-a", "reply", 1, 0), ("source-b", "review", 0, 1),
+    ]
+    assert normalize_execution_receipt(ExecutionReceipt(**projection)) == projection
+    projection["usage"]["sources"][0]["failed"] = 123
+    assert collector.projection()["usage"]["sources"][0]["failed"] == 1
+    durable = UsageStore(tmp_path).receipt(budget._scope)
+    assert durable["usage_id"] == collector.projection()["usage"]["usage_id"]
+    assert len(durable["attempts"]) == 2
+    budget.close()
+
+
+def test_answer_labels_survive_usage_and_later_learning_cannot_replace_them():
+    from tinyassets.request_budget import TurnRequestBudget
+
+    budget = TurnRequestBudget("owner", "home")
+    ordinal = budget.reserve(owner="owner", universe="home", source_ref="local",
+                             model="model", free=False)
+    budget.dispatched(ordinal)
+    budget.settle(ordinal, "succeeded")
+    collector = WriterExecutionReceipt()
+    collector.observe(replace(response(), request_receipt=budget.receipt()))
+    collector.observe(response("learning", "learning-model"))
+    projected = collector.projection()
+    assert (projected["provider"], projected["model"]) == ("owned", "actual")
+    assert projected["usage"]["dispatched"] == 1
+
+
+def test_large_paid_usage_preserves_totals_without_overflowing_history_metadata():
+    import json
+
+    from tinyassets.providers.execution_receipt import normalize_execution_receipt
+    from tinyassets.request_budget import TurnRequestBudget
+
+    budget = TurnRequestBudget("owner", "home")
+    for number in range(100):
+        ordinal = budget.reserve(owner="owner", universe="home", source_ref=f"paid-{number}",
+                                 model="model", free=False)
+        budget.dispatched(ordinal)
+        budget.settle(ordinal, "succeeded")
+    collector = WriterExecutionReceipt()
+    collector.observe(replace(response(), request_receipt=budget.receipt()))
+    projected = collector.projection()
+    assert projected["usage"]["dispatched"] == 100
+    assert projected["usage"]["sources_omitted"] > 0
+    assert len(projected["usage"]["sources"]) + projected["usage"]["sources_omitted"] == 100
+    assert len(json.dumps(projected)) < 4096
+    assert normalize_execution_receipt(projected) == projected
+
+
+@pytest.mark.parametrize("change", [
+    {"quota_authoritative": True}, {"dispatched": True}, {"dispatched": -1},
+    {"sources": [{"prompt": "must not retain"}]}, {"usage_id": "wrong"},
+])
+def test_usage_projection_rejects_malformed_optional_evidence(change):
+    from tinyassets.providers.execution_receipt import normalize_execution_receipt
+
+    usage = dict(reserved=0, dispatched=0, closed=True, sources=[], sources_omitted=0,
+                 quota_authoritative=False, count_basis="local_provider_dispatch")
+    assert normalize_execution_receipt({"usage": {**usage, **change}}) is None

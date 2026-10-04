@@ -268,7 +268,7 @@ def test_a_credential_split_across_streamed_deltas_is_refused(broker):  # noqa: 
         'data: {"choices":[{"delta":{"content":"nonsecret"}}]}', "",
         "data: [DONE]", "",
     ])
-    instance._network_request = lambda **_kw: {"status": 200, "body": split}
+    outcome["response"] = {"status": 200, "body": split}
     with pytest.raises(ProxyRequestError, match="unsafe destination response"):
         instance.dispatch("grant-model", "POST", {"url": INFERENCE_URL, "body": {}})
 
