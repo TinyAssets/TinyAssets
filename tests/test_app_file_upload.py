@@ -79,7 +79,7 @@ def headers(body=b"", *, owner=A, header=None, length=True, **updates):
 def app(tmp_path, monkeypatch):
     monkeypatch.setenv("TINYASSETS_ONBOARDING_APP", "1")
     monkeypatch.setenv("TINYASSETS_RUN_FILE_CUSTODY_MAX_BYTES", str(64 * MIB))
-    monkeypatch.setattr("tinyassets.api.helpers._base_path", lambda: tmp_path)
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     monkeypatch.setattr(onboarding, "app_config", lambda: {"resource": "https://tinyassets.io/mcp"})
     monkeypatch.setattr(mw, "_provider", Auth())
     daemon_server.initialize_author_server(tmp_path)

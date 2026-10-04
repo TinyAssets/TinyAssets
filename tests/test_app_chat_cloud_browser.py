@@ -127,6 +127,7 @@ def test_shrink_to_a_bubble_that_drags_without_opening_and_opens_on_click(app_ur
     # Focus left the chat. There is no in-document stand-in to name any more:
     # the command center is a mounted bundle, and with none mounted here the
     # point is simply that the shrunk chat does not keep the keyboard.
+    page.wait_for_function("document.activeElement.closest('#chat-cloud') === null")
     assert page.evaluate("document.activeElement.closest('#chat-cloud') === null")
 
     before = _box(page, "#chat-cloud-bubble")

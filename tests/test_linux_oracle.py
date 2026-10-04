@@ -33,6 +33,30 @@ def test_classic_builder_gets_real_dependency_generation():
     assert "python -m pytest --version" in dockerfile
 
 
+def test_the_oracle_pins_the_image_s_codex():
+    """The jail proofs run the REAL codex, so the oracle must carry the version
+    the daemon image ships: a different one would prove the jail's behaviour for
+    a codex we do not run. They are two files, so assert they agree.
+
+    tests/test_provider_jail_codex_nested.py also reaches past the npm shim for
+    the vendored native binary, and linux-jail-proof fails on any skip -- so the
+    build checks both the shim and that binary rather than trusting the install.
+    """
+    root = Path(__file__).resolve().parents[1]
+    oracle = (root / linux_oracle.DOCKERFILE).read_text(encoding="utf-8")
+    shipped = (root / "Dockerfile").read_text(encoding="utf-8")
+    pin = r"ARG CODEX_CLI_VERSION=(\d+\.\d+\.\d+)"
+    here, there = re.search(pin, oracle), re.search(pin, shipped)
+    assert here and there, "both images pin the codex CLI by ARG"
+    assert here.group(1) == there.group(1), (
+        f"the oracle pins codex {here.group(1)}, the daemon image ships "
+        f"{there.group(1)}; the jail proof must run what production runs")
+    # Production's path, because the test resolves `codex` on exactly that dir.
+    assert '--prefix /opt/codex-install "@openai/codex@${CODEX_CLI_VERSION}"' in oracle
+    assert "/opt/codex-install/node_modules/.bin/codex --version" in oracle
+    assert "-path '*/vendor/*/bin/codex'" in oracle
+
+
 def test_snapshot_preserves_container_ownership_without_trusting_host_git():
     assert ".git" in linux_oracle.COPY_EXCLUDES
     assert "tar -C /work --no-same-owner -xf -" in linux_oracle._RUN_SCRIPT

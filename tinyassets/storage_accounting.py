@@ -766,13 +766,13 @@ def _scopes(base: Path, account_id: str) -> list[tuple[str, str]]:
 def measure(base_path: str | Path, scope_id: str, store: str, *, now: float | None = None) -> int:
     """Measure one store for one scope and retire the pending rows it covers.
 
-    The sequence is read BEFORE scanning; only committed rows at or below it are
+    A unique sequence is allocated BEFORE scanning; only committed rows at or below it are
     retired, because only those were provably on disk when the scan began.
     """
     base = Path(base_path)
     spec = STORES[store]
     with _txn(base) as conn:
-        start_seq = int(conn.execute("SELECT seq FROM counter WHERE id = 1").fetchone()[0])
+        start_seq = _next_seq(conn)
     started = time.time() if now is None else float(now)
     size = int(spec.measure(base, scope_id))
     if size < 0:
@@ -838,30 +838,46 @@ def reserve_fitted(
     account = named_principal(account_id or "")
     if not account:
         return Reservation(base, None, None, 0), int(cap)
+    if store not in STORES:
+        raise KeyError(f"unregistered store {store!r}")
     quota, tier = _quota(base, account)
     pairs = _scopes(base, account)
+    if (scope_id, store) not in pairs:
+        raise ValueError(f"{store}/{scope_id} is not part of this account's storage")
+    credit = max(0, int(credit))
     try:
         stale = _stale_pairs(base, pairs)
         if stale:
             _measure_many(base, stale)
-        conn = _connect(base)
-        try:
+        # Fitting and reserving are one decision: a concurrent admission must
+        # fit the capacity left by earlier writers, not reuse a stale bound.
+        with _txn(base) as conn:
             current = _usage_in(conn, account, pairs, quota, tier)
-        finally:
-            conn.close()
+            bound = min(int(cap), quota - current.used_bytes + credit)
+            # Replaced bytes remain measured until discard, so only their
+            # increment is new pending capacity.
+            incremental = max(0, bound - credit)
+            if bound < minimum or current.used_bytes + incremental > quota:
+                universes = len({
+                    scope for scope, st in pairs if STORES[st].scope == SCOPE_UNIVERSE
+                })
+                raise StorageRefused(
+                    refusal_record(current, minimum, universes=universes), account,
+                )
+            cursor = conn.execute(
+                "INSERT INTO pending (account_id, scope_id, store, bytes, state, created_at) "
+                "VALUES (?, ?, ?, ?, 'reserved', ?)",
+                (account, scope_id, store, incremental, time.time()),
+            )
+            reservation = Reservation(base, int(cursor.lastrowid), account, incremental)
     except sqlite3.Error:
         _log.exception("storage ledger unavailable for a fitted reservation")
         raise StorageRefused(_unavailable_record(minimum)) from None
-    bound = min(int(cap), quota - current.used_bytes + max(0, int(credit)))
-    if bound < minimum:
-        universes = len({scope for scope, st in pairs if STORES[st].scope == SCOPE_UNIVERSE})
-        raise StorageRefused(refusal_record(current, minimum, universes=universes), account)
-    # The replaced bytes are still measured until their discard lands, so only
-    # the part beyond them is new pending.
-    reservation = reserve(
-        base, account_id=account, scope_id=scope_id, store=store,
-        nbytes=max(0, bound - max(0, int(credit))),
-    )
+    if current.unmeasured:
+        _log.warning(
+            "storage decided with unmeasured stores %s (counted as 0)",
+            list(current.unmeasured),
+        )
     return reservation, bound
 
 
@@ -1256,22 +1272,31 @@ def commit(reservation: Reservation, actual_bytes: int | None = None) -> None:
         )
 
 
-def renew(reservation: Reservation) -> None:
-    """Keep a still-running write's reservation from expiring.
+def renew_checked(reservation: Reservation) -> bool:
+    """Renew an existing lease, reporting whether its capacity is still held.
 
-    A measurement drops a reserved row older than `RESERVED_TTL_S` as a crashed
-    writer's. A write that is genuinely still running (a long jailed provider
-    turn) re-stamps its row so its headroom stays spent. Never raises."""
+    Never recreates a lost reservation. An old but still-present reserved row
+    may renew: its capacity remains charged until a measurement reaps it.
+    Unattributed writes have no ledger lease. Ledger failures fail closed.
+    """
     if reservation.id is None:
-        return
+        return True
     try:
         with _txn(reservation.base) as conn:
-            conn.execute(
-                "UPDATE pending SET created_at = ? WHERE id = ? AND state = 'reserved'",
-                (time.time(), reservation.id),
+            cursor = conn.execute(
+                "UPDATE pending SET created_at = ? WHERE id = ? "
+                "AND account_id = ? AND bytes = ? AND state = 'reserved'",
+                (time.time(), reservation.id, reservation.account_id, reservation.bytes),
             )
-    except Exception:  # noqa: BLE001 -- worst case the row expires as before
+            return cursor.rowcount == 1
+    except Exception:  # noqa: BLE001 -- callers must stop on a lost lease
         _log.warning("storage renew failed for reservation %s", reservation.id, exc_info=True)
+        return False
+
+
+def renew(reservation: Reservation) -> None:
+    """Best-effort compatibility API; supervisors should use `renew_checked`."""
+    renew_checked(reservation)
 
 
 def release(reservation: Reservation) -> None:

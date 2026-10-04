@@ -30,6 +30,7 @@ from __future__ import annotations
 import json
 import logging
 import math
+import os
 import re
 import uuid
 from contextlib import AsyncExitStack, asynccontextmanager
@@ -2978,12 +2979,16 @@ def converse(
         input_method: Client-reported method by which this specific turn entered
             the calling client: typed, spoken, app_action, or unknown.
             Informational context only, never authority or consent.
-        model_choice: Optional one-turn model preference document: version1,
+        model_choice: Optional one-turn model preference document: version2,
             mode automatic or explicit, saved_default (provider_ref/model_id or
-            null), and fallbacks (ordered references). Automatic uses null and
-            an empty list. This replaces this turn's order only; it never saves
-            defaults, grants access or enables paid models. Omit to use saved
-            settings or the existing provider binding.
+            null), fallbacks (ordered references), and efforts (per-model
+            reasoning level, each provider_ref/model_id/level). Automatic uses
+            null and an empty list. A level must be one the source advertised
+            for that exact model; omit efforts to use each executor's own
+            default. Version1 documents, which predate efforts, are still
+            accepted and read as no effort chosen. This replaces this turn's
+            order only; it never saves defaults, grants access or enables paid
+            models. Omit to use saved settings or the existing provider binding.
         consumer_request: Selected custom conversation request: version1,
             request_key UUIDv4, binding_id and binding_revision. Reuse the exact
             original object/message/model choice on reconnect; never create a
@@ -4818,6 +4823,29 @@ def create_streamable_http_app() -> Starlette:
     return app
 
 
+def _serve_configs(app, host: str, port: int, socket_path: str):
+    """Keep TCP defaults; only the additional socket bypasses lifespan."""
+    import uvicorn
+
+    from tinyassets.owner_socket import OwnerSocketMiddleware
+
+    return (
+        uvicorn.Config(app, host=host, port=port,
+                       timeout_graceful_shutdown=GRACEFUL_SHUTDOWN_S),
+        uvicorn.Config(OwnerSocketMiddleware(app), uds=socket_path, lifespan="off",
+                       proxy_headers=False,
+                       timeout_graceful_shutdown=GRACEFUL_SHUTDOWN_S),
+    )
+
+
+async def _serve_owner_listeners(configs):
+    import asyncio
+
+    import uvicorn
+
+    await asyncio.gather(*(uvicorn.Server(config).serve() for config in configs))
+
+
 def main(
     host: str = "0.0.0.0",
     port: int = 8001,
@@ -5047,10 +5075,18 @@ def main(
             assigned_consumer = AssignedQueueConsumer(assigned_data_dir())
             assigned_consumer.start()
         try:
-            uvicorn.run(
-                app, host=host, port=port,
-                timeout_graceful_shutdown=GRACEFUL_SHUTDOWN_S,
-            )
+            socket_path = os.environ.get("TINYASSETS_OWNER_SOCKET")
+            if socket_path:
+                import asyncio
+
+                asyncio.run(_serve_owner_listeners(
+                    _serve_configs(app, host, port, socket_path)
+                ))
+            else:
+                uvicorn.run(
+                    app, host=host, port=port,
+                    timeout_graceful_shutdown=GRACEFUL_SHUTDOWN_S,
+                )
         finally:
             if assigned_consumer is not None:
                 assigned_consumer.stop()

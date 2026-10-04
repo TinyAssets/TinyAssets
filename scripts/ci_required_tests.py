@@ -504,7 +504,13 @@ def evaluate(
 
 
 def aggregate(
-    directory: Path, expected: int, junit_out: Path, min_ran: int, shard_job_result: str
+    directory: Path,
+    expected: int,
+    junit_out: Path,
+    min_ran: int,
+    shard_job_result: str,
+    expect_selection: str | None = None,
+    must_cover: list[str] | None = None,
 ) -> int:
     """Merge shard results and decide the gate. Every shard must be accounted for.
 
@@ -513,6 +519,19 @@ def aggregate(
     comparison cannot see (its tests are simply absent from `ran`, and 5 of 6
     shards clear the union floor). So the shard set is checked BEFORE any
     comparison, and each shard's truncation signals fail the whole gate.
+
+    For a SELECTIVE run (an affected-only merge group) two further things are
+    checked, because the vacuity floor cannot be:
+
+    * ``expect_selection`` -- every shard must report the digest the `select`
+      job published, so shards cannot each run a different selection;
+    * ``must_cover`` -- every selected file must appear in the union with at
+      least one case. This REPLACES a numeric floor rather than lowering one: a
+      selection can honestly be a single test, so no count is meaningful, but
+      "the files we chose all reported" is exact. Any outcome counts, skip
+      included, so a platform-guarded file is not a failure; a file that
+      reported nothing at all is a collapse (a collection error, a bad slice,
+      or a shard that silently ran something else) and is NAMED.
     """
     problems: list[str] = []
     if shard_job_result != "success":
@@ -533,6 +552,16 @@ def aggregate(
         if index in manifests:
             problems.append(f"{path.name}: shard {index} reported twice")
             continue
+        if expect_selection is not None:
+            # A missing key reads as "" and fails here, deliberately: a shard
+            # from before this contract existed must not satisfy it silently.
+            reported = str(data.get("selection") or "")
+            if reported != expect_selection:
+                problems.append(
+                    f"{path.name}: shard {index} ran selection {reported or '<none>'}, "
+                    f"expected {expect_selection}"
+                )
+                continue
         manifests[index] = {"exit": code, "junit": path.with_suffix(".xml")}
 
     missing = sorted(set(range(1, expected + 1)) - set(manifests))
@@ -578,6 +607,19 @@ def aggregate(
     # --emit-quarantine and duration measurements read) keeps its old shape.
     ET.ElementTree(merged).write(junit_out, encoding="utf-8", xml_declaration=True)
 
+    if must_cover:
+        reported = {
+            (case.get("file") or "").replace("\\", "/") for case in merged.iter("testcase")
+        }
+        absent = sorted(rel for rel in must_cover if rel not in reported)
+        if absent:
+            shown = ", ".join(absent[:10])
+            more = f" (+{len(absent) - 10} more)" if len(absent) > 10 else ""
+            problems.append(
+                f"{len(absent)} of {len(must_cover)} selected test file(s) reported no "
+                f"case at all: {shown}{more}"
+            )
+
     if problems:
         summarise(
             ["### Required tests - SHARD SET INCOMPLETE", "", "The gate fails closed:", ""]
@@ -606,6 +648,136 @@ def _shard_label(args: argparse.Namespace) -> str:
     return f" - shard {args.shard[0]}/{args.shard[1]}" if args.shard else ""
 
 
+def selection_entries(path: Path) -> list[str] | None:
+    """The selection a `select` job published; ``None`` is the whole surface.
+
+    One reader for the digest, the shard slice and the aggregate's coverage
+    check, so the three cannot disagree about what the selection IS.
+    """
+    entries = Path(path).read_text(encoding="utf-8").split()
+    if entries == ["ALL"]:
+        return None
+    if "ALL" in entries:
+        raise SystemExit(f"{path}: ALL must be the only entry")
+    return entries
+
+
+def selection_digest(entries: list[str] | None) -> str:
+    """Pin WHICH selection a run used, so shards cannot each run a different one.
+
+    Order- and duplicate-insensitive, because the digest answers "the same set
+    of files?" and nothing else. ``ALL`` has its own digest rather than an empty
+    one: "the whole surface" and "a selection I could not read" must never
+    compare equal.
+    """
+    body = "ALL" if entries is None else "\n".join(sorted(set(entries)))
+    return "sha256:" + hashlib.sha256(body.encode("utf-8")).hexdigest()
+
+
+def excluded_prefixes(exclude_from: str | None) -> list[str]:
+    if not exclude_from:
+        return []
+    return [
+        line.strip().rstrip("/")
+        for line in Path(exclude_from).read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.strip().startswith("#")
+    ]
+
+
+def gating_selection(entries: list[str], exclude_from: str | None) -> list[str]:
+    """The files a selective run must actually cover: selection minus the heavy list.
+
+    The heavy list is red at baseline and belongs to `heavy-tests`, so a
+    selected file that lives there is legitimately not run here and must not
+    count against the coverage check.
+    """
+    excluded = excluded_prefixes(exclude_from)
+    return [
+        rel
+        for rel in dict.fromkeys(entries)
+        if not any(rel == e or rel.startswith(e + "/") for e in excluded)
+        and (REPO_ROOT / rel).is_file()
+    ]
+
+
+def _files_collected(files: list[str], marker: str | None) -> set[str]:
+    """Which of `files` yield at least one node id under `marker`. Collection only."""
+    proc = subprocess.run(
+        [
+            sys.executable, "-m", "pytest", "--collect-only", "-q", "--no-header",
+            "-p", "no:cacheprovider", "--continue-on-collection-errors",
+            *(["-m", marker] if marker else []),
+            *files,
+        ],
+        cwd=REPO_ROOT, capture_output=True, text=True,
+    )
+    seen: set[str] = set()
+    for line in (proc.stdout or "").splitlines():
+        head = line.strip().split("::", 1)[0].replace("\\", "/")
+        if head.endswith(".py"):
+            seen.add(head)
+    return seen
+
+
+def collectible_under_gate(files: list[str]) -> tuple[list[str], list[str]]:
+    """Split a selection into (files the gate keeps, files positively proven slow-only).
+
+    KEEP IS THE DEFAULT. A file leaves the selection only on POSITIVE proof that
+    it collects cases and that none of them is non-slow: it must appear with no
+    marker filter AND be absent under ``-m "not slow"``. Absence of node ids is
+    never enough.
+
+    That asymmetry is the fix for a real escape found in round-3 cross-family
+    review. The `select` job installs only ``.[dev]``, so a browser test whose
+    ``pytest.importorskip`` sits at MODULE scope collects nothing there. The
+    earlier version read "no node ids" as "all slow" and dropped the file; the
+    shards (which DO have Playwright) then never saw it, and the browser no-skip
+    assertion filters against the pruned selection and accepts an empty
+    intersection -- so a broken non-slow browser test could land, with
+    `slow-tests` skipping the module too for the same missing dependency.
+
+    Keeping such a file costs nothing and is self-correcting: the shards have
+    the full extras, so they collect and run it, and if nothing reports it the
+    coverage check fails and names it. The same reasoning covers an unimportable
+    file and any module-level skip -- a collection error is a failure the gate
+    must report, not a reason to stop looking.
+
+    Collecting here with the shards' extras installed would also close the
+    specific Playwright case, but it is the weaker fix: it only moves the line,
+    since any other module-level skip reintroduces the same hole.
+    """
+    if not files:
+        return [], []
+    collected = _files_collected(files, None)
+    fast = _files_collected(files, "not slow")
+    prunable = [rel for rel in files if rel in collected and rel not in fast]
+    return [rel for rel in files if rel not in prunable], prunable
+
+
+def _write_shard_manifest(
+    manifest: Path, args: argparse.Namespace, slice_: list[str] | None, pytest_exit: int
+) -> None:
+    """The shard's receipt. `selection` is what makes the aggregate able to refuse.
+
+    Without a digest here a shard could run a DIFFERENT (or older, or smaller)
+    selection than its siblings and the union would still look complete. The
+    aggregate compares every manifest's digest to the one the `select` job
+    published, so disagreement fails the gate instead of narrowing it.
+    """
+    manifest.write_text(
+        json.dumps(
+            {
+                "shard": args.shard[0],
+                "total": args.shard[1],
+                "pytest_exit": pytest_exit,
+                "selection": args.selection or "",
+                "slice": -1 if slice_ is None else len(slice_),
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
 def _read_selection(args: argparse.Namespace) -> list[str] | None:
     """This run's slice of an affected-tests selection; None means the whole surface.
 
@@ -615,29 +787,16 @@ def _read_selection(args: argparse.Namespace) -> list[str] | None:
     the same way the required shards drop them: the heavy list is red at
     baseline and belongs to `heavy-tests`.
     """
-    entries = Path(args.affected).read_text(encoding="utf-8").split()
-    if entries == ["ALL"]:
+    entries = selection_entries(Path(args.affected))
+    if entries is None:
         return None
-    if "ALL" in entries:
-        raise SystemExit(f"{args.affected}: ALL must be the only entry")
-    excluded: list[str] = []
-    if args.exclude_from:
-        excluded = [
-            line.strip().rstrip("/")
-            for line in Path(args.exclude_from).read_text(encoding="utf-8").splitlines()
-            if line.strip() and not line.strip().startswith("#")
-        ]
-    picked = []
     for rel in entries:
-        if any(rel == e or rel.startswith(e + "/") for e in excluded):
-            continue
-        if args.shard and shard_of(rel, args.shard[1]) != args.shard[0]:
-            continue
         if not (REPO_ROOT / rel).is_file():
             print(f"WARNING: {args.affected} lists a missing path: {rel}", flush=True)
-            continue
-        picked.append(rel)
-    return picked
+    gating = gating_selection(entries, args.exclude_from)
+    if not args.shard:
+        return gating
+    return [rel for rel in gating if shard_of(rel, args.shard[1]) == args.shard[0]]
 
 
 def main() -> int:
@@ -747,7 +906,79 @@ def main() -> int:
             "`success` fails the gate, whatever the shard files say."
         ),
     )
+    ap.add_argument(
+        "--selection",
+        metavar="DIGEST",
+        help=(
+            "The digest the `select` job published for this run's selection. On "
+            "a shard it is recorded in the manifest; with --aggregate every "
+            "shard must report exactly this digest, so shards cannot each run "
+            "a different selection and still look like a complete union."
+        ),
+    )
+    ap.add_argument(
+        "--print-selection-digest",
+        metavar="FILE",
+        help=(
+            "Print the digest of an affected_tests.py output and exit. ONE "
+            "implementation, so the `select` job, the shards and the aggregate "
+            "cannot disagree about what the selection is."
+        ),
+    )
+    ap.add_argument(
+        "--prune-to-collectible",
+        metavar="FILE",
+        help=(
+            "Rewrite an affected_tests.py selection in place, dropping files "
+            "that collect NOTHING under this gate's `-m \"not slow\"`. Run once "
+            "by the `select` job, before the digest: a slow-only file would "
+            "otherwise fail the coverage check and make its shard exit 5, "
+            "neither of which is a regression (`slow-tests` runs those)."
+        ),
+    )
+    ap.add_argument(
+        "--plan-shard",
+        action="store_true",
+        help=(
+            "Run no tests. Print how many selected files this shard owns (or "
+            "ALL), and when it owns NONE write the empty junit and manifest the "
+            "aggregate needs. Lets the workflow skip install for a shard with "
+            "nothing to do -- the install is the cost, not the tests."
+        ),
+    )
     args = ap.parse_args()
+
+    if args.print_selection_digest:
+        print(selection_digest(selection_entries(Path(args.print_selection_digest))))
+        return 0
+    if args.prune_to_collectible:
+        path = Path(args.prune_to_collectible)
+        entries = selection_entries(path)
+        if entries is None:
+            print("ALL: nothing to prune")
+            return 0
+        runnable, dropped = collectible_under_gate(gating_selection(entries, args.exclude_from))
+        path.write_text("".join(f"{rel}\n" for rel in runnable), encoding="utf-8")
+        summarise(
+            [
+                "### Selection pruned to what this gate runs",
+                "",
+                f"- kept **{len(runnable)}** of {len(entries)} selected file(s)",
+                f"- dropped **{len(dropped)}** that collect nothing under "
+                f'`-m \"not slow\"` (they run in `slow-tests`): '
+                + (", ".join(f"`{rel}`" for rel in dropped[:10]) or "none"),
+            ]
+        )
+        if not runnable:
+            # Nothing left to run and nothing to cover. The gate must not judge
+            # this as a selective pass with an empty union, so fall back to ALL.
+            path.write_text("ALL\n", encoding="utf-8")
+            print("no collectible file left: falling back to ALL")
+        return 0
+    if args.plan_shard and not (args.affected and args.shard):
+        raise SystemExit("--plan-shard needs --affected FILE and --shard I/N.")
+    if args.selection and not (args.affected or args.aggregate):
+        raise SystemExit("--selection belongs to an --affected run or --aggregate.")
 
     if args.shard and args.profile not in ("shard", "affected"):
         raise SystemExit("--shard requires --profile shard (the per-shard floor).")
@@ -793,13 +1024,54 @@ def main() -> int:
             print(nid)
         return 0
 
+    if args.plan_shard:
+        junit = Path(args.junit)
+        slice_ = _read_selection(args)
+        if slice_ is None:
+            print("ALL")
+            return 0
+        print(len(slice_))
+        if not slice_:
+            junit.parent.mkdir(parents=True, exist_ok=True)
+            _write_shard_manifest(junit.with_suffix(".json"), args, slice_, pytest_exit=0)
+            ET.ElementTree(ET.Element("testsuites")).write(
+                junit, encoding="utf-8", xml_declaration=True,
+            )
+        return 0
+
     if args.aggregate:
+        # On a selective run the aggregate reads the SAME selection file the
+        # shards did, and refuses if the digest it was told does not match what
+        # it can actually read -- otherwise "every shard reported the expected
+        # digest" would be a statement about a file nobody here verified.
+        covered: list[str] | None = None
+        if args.affected:
+            entries = selection_entries(Path(args.affected))
+            if entries is None:
+                # `--affected` forces `--profile affected`, whose floor is 0.
+                # That is right for a selection and WRONG for the whole
+                # surface, which must keep its 10,700-test floor -- so the
+                # whole-surface aggregate takes the same command it always did,
+                # with no --affected at all. Refuse rather than quietly judge
+                # the full suite with the vacuity check switched off.
+                raise SystemExit(
+                    f"{args.affected} says ALL: aggregate the whole surface with "
+                    "--profile full --min-ran, not --affected (which zeroes the floor)."
+                )
+            covered = gating_selection(entries, args.exclude_from)
+            if args.selection and args.selection != selection_digest(entries):
+                raise SystemExit(
+                    f"--selection {args.selection} does not match {args.affected}; "
+                    "refusing to judge a selection this job cannot read."
+                )
         return aggregate(
             Path(args.aggregate),
             args.expect_shards,
             Path(args.junit),
             args.min_ran,
             args.shard_job_result,
+            expect_selection=args.selection,
+            must_cover=covered,
         )
 
     junit = Path(args.junit)
@@ -931,6 +1203,15 @@ def main() -> int:
     selection = _read_selection(args) if args.affected else None
     if selection is not None:
         if not selection:
+            # This slice owns no selected file. Write the manifest AND an empty
+            # junit before returning: without them the aggregate reports this
+            # shard as missing and fails the gate closed, which is exactly what
+            # it should do for a shard that vanished -- so a shard that
+            # legitimately has nothing to do has to say so in the same shape.
+            _write_shard_manifest(manifest, args, selection, pytest_exit=0)
+            ET.ElementTree(ET.Element("testsuites")).write(
+                junit, encoding="utf-8", xml_declaration=True,
+            )
             summarise(
                 [
                     f"### Affected tests{_shard_label(args)}",
@@ -957,12 +1238,7 @@ def main() -> int:
         # Written unconditionally, BEFORE any verdict: the aggregate needs to
         # know this shard ran and how pytest exited even when the junit is
         # missing or this shard's own verdict is red.
-        manifest.write_text(
-            json.dumps(
-                {"shard": args.shard[0], "total": args.shard[1], "pytest_exit": proc.returncode}
-            ),
-            encoding="utf-8",
-        )
+        _write_shard_manifest(manifest, args, selection, proc.returncode)
 
     # Exit 3 = INTERNALERROR (e.g. a crashed xdist worker). When that happens the
     # run is TRUNCATED: tests are silently dropped from the report, so a

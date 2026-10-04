@@ -27,18 +27,23 @@ What it refuses, and why
   ``clone3`` passes its flags in memory a filter cannot read, so it answers
   ``ENOSYS``: glibc then falls back to ``clone``, whose flags ARE checked.
 
-One exception, measured: the PROVIDER jail (``nested_sandbox=True``) keeps
-new user namespaces and ``symlink``/``symlinkat``. Codex CLI 0.153 runs every
-shell command it is given inside its own bubblewrap sandbox (``--sandbox
-workspace-write``), and a seccomp filter is inherited by everything the jailed
-process starts. That inner bubblewrap needs a nested user namespace ("bwrap: No
-permissions to create a new namespace") and symlinks for its own ``/dev``
-("bwrap: Can't create symlink /dev/stdin"), both measured in the Linux oracle on
-2026-10-01; codex's deprecated landlock fallback panics on the same profile.
-So a provider can still plant a link in its universe, as before this filter
-existed, and the daemon-side safe reader (:mod:`tinyassets.universe_files`)
-remains what refuses to follow one. The universe tool jail runs no CLI sandbox
-and refuses both.
+Two profiles, chosen per launch. The default denies everything above. The
+``nested_sandbox=True`` profile keeps new user namespaces and
+``symlink``/``symlinkat`` open, and is used ONLY for a launch whose CLI builds
+its own sandbox inside ours: today, a SERVED codex turn. It keeps codex's
+``--sandbox workspace-write``, whose native ``apply_patch`` tool runs through a
+filesystem sandbox helper that requests ``--unshare-user`` (codex 0.153.4) and
+symlinks its own ``/dev``. A seccomp filter is inherited by everything the
+jailed process starts, so the deny profile would break that edit. Measured in
+the Linux oracle on 2026-10-01; codex's deprecated landlock fallback panics on
+the same profile.
+
+Every other launch gets the deny profile: the universe tool jail, claude, and a
+non-served codex call (which runs its commands directly in our jail, with its
+own sandbox off). On the served path a provider can still create a link in its
+universe; the daemon-side link-refusing reader and writer (#4254) is what
+refuses to follow one, until platform state moves out of the universe dir
+(concern ``2026-10-01-platform-state-inside-the-universe-dir``).
 
 Unknown architectures and the x32 ABI get ``EPERM`` for every call, so a filter
 this module cannot vouch for never runs as ALLOW.
@@ -113,8 +118,8 @@ def deny_program(*, nested_sandbox: bool = False) -> bytes:
     """The compiled cBPF program bubblewrap loads with ``--seccomp``.
 
     ``nested_sandbox=True`` keeps new user namespaces and symlinks open, for a
-    jailed program that builds its own sandbox (the provider jail; see the
-    module docstring for why).
+    launch whose CLI builds its own sandbox inside ours (a served codex turn;
+    see the module docstring for why).
     """
     # Jump targets are symbolic here and resolved to forward offsets below.
     prog: list[tuple[int, object, object, int]] = [

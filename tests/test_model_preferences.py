@@ -21,6 +21,19 @@ from tinyassets.providers.model_preferences import (
 
 def policy(**updates):
     result = {
+        "version": 2,
+        "mode": "explicit",
+        "saved_default": {"provider_ref": "owned:FutureProvider", "model_id": "Model/未来"},
+        "fallbacks": [],
+        "efforts": [],
+    }
+    result.update(updates)
+    return result
+
+
+def legacy_policy(**updates):
+    """A stored document from before per-model effort existed."""
+    result = {
         "version": 1,
         "mode": "explicit",
         "saved_default": {"provider_ref": "owned:FutureProvider", "model_id": "Model/未来"},
@@ -53,6 +66,95 @@ def test_empty_order_is_not_automatic_and_roundtrips():
 def test_automatic_is_explicitly_represented():
     doc = policy(mode="automatic", saved_default=None)
     assert ModelPreferences.from_document(doc).document() == doc
+
+
+def test_stored_version_one_still_reads_as_no_effort_choice():
+    """A saved default from before effort existed must not become unreadable.
+
+    The store HOLDS an unparseable row rather than defaulting it, so refusing
+    version 1 would not quietly lose the owner's choice -- it would wedge their
+    picker. Reading it as "no effort saved" is the truthful interpretation.
+    """
+    prefs = ModelPreferences.from_document(legacy_policy())
+    assert prefs.efforts == ()
+    assert prefs.effort_for(ModelRef("owned:FutureProvider", "Model/未来")) == ""
+    # Rewriting it upgrades the document in place, without inventing a level.
+    assert prefs.document() == policy()
+
+
+@pytest.mark.parametrize("version", [0, 3, 4, -1, "2", 1.0, True, None])
+def test_unknown_preference_version_refuses(version):
+    with pytest.raises(ValueError):
+        ModelPreferences.from_document(policy(version=version))
+
+
+def test_effort_is_kept_per_model_and_survives_switching_away():
+    doc = policy(efforts=[
+        {"provider_ref": "claude-code", "model_id": "claude-opus-5-5", "level": "xhigh"},
+        {"provider_ref": "claude-code", "model_id": "claude-sonnet-5-5", "level": "low"},
+    ])
+    prefs = ModelPreferences.from_document(doc)
+    assert prefs.document() == doc
+    assert prefs.effort_for(ModelRef("claude-code", "claude-opus-5-5")) == "xhigh"
+    # The level for a model that is NOT the saved default is still remembered,
+    # which is what makes switching away and back non-destructive.
+    assert prefs.saved_default != ModelRef("claude-code", "claude-sonnet-5-5")
+    assert prefs.effort_for(ModelRef("claude-code", "claude-sonnet-5-5")) == "low"
+    # An unset model carries no level; the executor's own default applies.
+    assert prefs.effort_for(ModelRef("claude-code", "claude-haiku-4-5-20251001")) == ""
+    assert prefs.effort_for(None) == ""
+
+
+@pytest.mark.parametrize("efforts", [
+    # Two levels for one model: no way to say which the turn would use.
+    [{"provider_ref": "p", "model_id": "m", "level": "low"},
+     {"provider_ref": "p", "model_id": "m", "level": "high"}],
+    [{"provider_ref": "p", "model_id": "m", "level": ""}],       # empty is "unset", not a row
+    [{"provider_ref": "p", "model_id": "m", "level": " high"}],  # unnormalized
+    [{"provider_ref": "p", "model_id": "m", "level": "hi\ngh"}],
+    [{"provider_ref": "p", "model_id": "m", "level": 1}],
+    [{"provider_ref": "", "model_id": "m", "level": "low"}],
+    [{"provider_ref": "p", "model_id": "m"}],                    # missing level
+    [{"provider_ref": "p", "model_id": "m", "level": "low", "extra": 1}],
+    ["high"],
+    {"p": "high"},
+])
+def test_malformed_effort_choice_refuses(efforts):
+    with pytest.raises(ValueError):
+        ModelPreferences.from_document(policy(efforts=efforts))
+
+
+def test_automatic_mode_still_carries_per_model_effort():
+    """Effort is a per-model setting, so it is not an "explicit order" field.
+
+    An automatic plan still lands on some model, and the owner's level for that
+    model is the level the turn should run at.
+    """
+    doc = policy(mode="automatic", saved_default=None, efforts=[
+        {"provider_ref": "claude-code", "model_id": "claude-opus-5-5", "level": "max"},
+    ])
+    prefs = ModelPreferences.from_document(doc)
+    assert prefs.mode == "automatic" and prefs.saved_default is None
+    assert prefs.effort_for(ModelRef("claude-code", "claude-opus-5-5")) == "max"
+    captured = capture_preference_policy(saved=prefs, observed_generation=4)
+    assert captured is not None
+    assert captured[0].effort_for(ModelRef("claude-code", "claude-opus-5-5")) == "max"
+
+
+def test_per_turn_override_without_effort_keeps_saved_levels():
+    """Switching model for one message is not a decision about effort."""
+    saved = ModelPreferences.from_document(policy(efforts=[
+        {"provider_ref": "claude-code", "model_id": "claude-opus-5-5", "level": "xhigh"},
+    ]))
+    current = ModelPreferences.from_document(policy(
+        saved_default={"provider_ref": "claude-code", "model_id": "claude-sonnet-5-5"},
+    ))
+    captured = capture_preference_policy(saved=saved, observed_generation=9, current=current)
+    assert captured is not None
+    policy_out, source = captured
+    assert source == "current"
+    assert policy_out.current_selection == ModelRef("claude-code", "claude-sonnet-5-5")
+    assert policy_out.effort_for(ModelRef("claude-code", "claude-opus-5-5")) == "xhigh"
 
 
 def test_absent_preferences_preserve_legacy_path():
@@ -112,7 +214,9 @@ def test_inconsistent_saved_capture_is_not_defaulted(saved, generation):
     [
         {"version": True},
         {"version": 1.0},
-        {"version": 2},
+        # 2 is now the CURRENT version and 1 is the readable legacy one, so the
+        # "unknown version" case has to be a version that really is unknown.
+        {"version": 3},
         {"version": None},
         {"mode": "latest"},
         {"mode": []},

@@ -74,6 +74,17 @@ PIN = {"version": 1, "mode": "explicit", "fallbacks": [],
        "saved_default": {"provider_ref": "future-source", "model_id": "new-model"}}
 
 
+def stored(policy):
+    """What the server stores for a given CLIENT document.
+
+    The documents above are deliberately left at version 1 -- a client that
+    predates per-model effort must keep working -- and the server normalizes
+    them to the current version on the way in. So the input proves back-compat
+    and this is the expected output.
+    """
+    return {**policy, "version": 2, "efforts": []}
+
+
 def save(policy=AUTO, generation=0):
     return json.loads(engine.write_graph(
         target="model_preferences", operation="save",
@@ -85,11 +96,11 @@ def test_real_preference_save_conflict_and_no_inference_grant(home):
     from tinyassets.storage.provider_work_authority import SQLiteProviderWorkAuthorityStore
 
     first = save(PIN)
-    assert first["generation"] == 1 and first["policy"] == PIN
+    assert first["generation"] == 1 and first["policy"] == stored(PIN)
     stale = save()
     assert stale["error"] == "model_preferences_conflict"
-    assert stale["generation"] == 1 and stale["policy"] == PIN
-    assert save(generation=1)["policy"] == AUTO
+    assert stale["generation"] == 1 and stale["policy"] == stored(PIN)
+    assert save(generation=1)["policy"] == stored(AUTO)
     with SQLiteProviderWorkAuthorityStore(home).connection() as conn:
         assert conn.execute("SELECT count(*) FROM provider_work_bindings").fetchone()[0] == 0
 
@@ -196,7 +207,7 @@ def test_canonical_preference_save_uses_same_home_and_generation(home, through_a
         # Through the MCP adapter the reply carries the public spelling (C1).
         key = "command_center_id" if through_adapter else "universe_id"
         assert value[key] == "u-setup"
-        assert value["policy"] == PIN and value["generation"] == 1
+        assert value["policy"] == stored(PIN) and value["generation"] == 1
         assert json.loads(universe_server.write_graph(**args))["error"] == (
             "model_preferences_conflict"
         )
