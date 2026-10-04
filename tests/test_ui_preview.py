@@ -26,6 +26,12 @@ from tinyassets.api import app_ui as _app_ui  # noqa: F401
 OWNER, HOME = "alice", "u-alice"
 
 
+@pytest.fixture(autouse=True)
+def _isolate_preview_data_dir(tmp_path, monkeypatch):
+    """Keep the real host-slot lock in this test's existing data directory."""
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+
+
 def _png(rgb=(32, 160, 64), size=8) -> bytes:
     def chunk(kind: bytes, data: bytes) -> bytes:
         return (struct.pack(">I", len(data)) + kind + data
@@ -45,7 +51,8 @@ def _add(base, ui_id, **fields):
 
 
 def _pixel(png: bytes, x: int, y: int) -> tuple[int, int, int]:
-    image = pytest.importorskip("PIL.Image")
+    image = pytest.importorskip(
+        "PIL.Image", reason="Pillow required for preview pixel proof; owner=Jonnyton expires=2026-10-10")
     return image.open(io.BytesIO(png)).convert("RGB").getpixel((x, y))
 
 
@@ -71,7 +78,7 @@ def test_the_agent_sees_its_ui_as_rendered_with_its_assets(tmp_path):
         report = ui_preview.preview_app_ui(tmp_path, owner_user_id=OWNER, universe_id=HOME,
                                            ui_id="village", width=400, height=300)
     except ui_preview.PreviewUnavailable as exc:
-        pytest.skip(str(exc))
+        pytest.skip(f"{exc}; owner=Jonnyton expires=2026-10-10")
 
     assert report["png"].startswith(b"\x89PNG"), "a real screenshot, not a placeholder"
     assert _pixel(report["png"], 200, 40) == (32, 80, 192), "the sky is the UI's own style"
@@ -95,7 +102,7 @@ def test_a_broken_ui_reports_its_error_and_its_blocked_egress(tmp_path):
         report = ui_preview.preview_app_ui(tmp_path, owner_user_id=OWNER, universe_id=HOME,
                                            ui_id="broken", width=320, height=240)
     except ui_preview.PreviewUnavailable as exc:
-        pytest.skip(str(exc))
+        pytest.skip(f"{exc}; owner=Jonnyton expires=2026-10-10")
 
     assert any("village exploded at r170" in line
                for line in report["uncaught_errors"] + report["console"]), report
@@ -810,7 +817,7 @@ def test_a_ui_that_awaits_the_live_reads_renders_in_the_preview(tmp_path):
         report = ui_preview.preview_app_ui(tmp_path, owner_user_id=OWNER, universe_id=HOME,
                                            ui_id="awaits", width=320, height=240)
     except ui_preview.PreviewUnavailable as exc:
-        pytest.skip(str(exc))
+        pytest.skip(f"{exc}; owner=Jonnyton expires=2026-10-10")
 
     assert report["uncaught_errors"] == [], report["uncaught_errors"]
     assert _pixel(report["png"], 160, 120) == (32, 160, 64), "both reads answered in shape"
@@ -830,7 +837,7 @@ def test_a_hostile_ui_cannot_break_out_or_flood_the_report(tmp_path):
         report = ui_preview.preview_app_ui(tmp_path, owner_user_id=OWNER, universe_id=HOME,
                                            ui_id="hostile", width=320, height=240)
     except ui_preview.PreviewUnavailable as exc:
-        pytest.skip(str(exc))
+        pytest.skip(f"{exc}; owner=Jonnyton expires=2026-10-10")
     for name in ("constructor", "__proto__", "toString"):
         assert report["bridge_calls"][name] == 1
     assert len(report["bridge_calls"]) <= ui_preview.MAX_ACTIONS
