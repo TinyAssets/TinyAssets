@@ -508,30 +508,72 @@ def _bridge_actions(masked: str) -> dict[str, str]:
     return {name: value.strip("'\"") for name, value in _entries(literal).items()}
 
 
-def _handler_return_keys(masked: str, method: str) -> set[str]:
-    """Keys the handler itself returns: every ``return {`` in its own body.
+def _function_depth(masked: str, body: int, at: int) -> int:
+    """How many nested function bodies are open between ``body`` and ``at``."""
+    functions, stack = 0, []
+    for index in range(body + 1, at):
+        if masked[index] == "{":
+            stack.append(_opens_a_function(masked, index))
+            functions += stack[-1]
+        elif masked[index] == "}":
+            functions -= stack.pop() if stack else 0
+    return functions
 
-    A conditional early return counts -- it is one of the shapes a caller can
-    receive. A return inside a nested function does not; it belongs to that
-    function.
+
+def _response_keys(masked: str, method: str,
+                   seen: tuple[str, ...] = ()) -> tuple[set[str], list[str]]:
+    """Keys ``method`` can answer with, and any return this cannot classify.
+
+    Every return in the method's own body is one of the shapes a caller can
+    receive, so each has to be accounted for:
+
+    * ``return {...}`` contributes its keys;
+    * ``return this.other(...)`` (``await`` optional) is followed into
+      ``other``, recursively -- ``conversationDesign`` answers
+      ``{state:"ambiguous"}`` on one branch and delegates the NORMAL response
+      to ``this.describe(...)``, so reading only the literal described a
+      contract missing most of its fields (Codex round 3);
+    * anything else is REPORTED, never skipped. One recognised branch must not
+      be able to vouch for an unread one.
+
+    A return inside a nested function belongs to that function and is not
+    counted. Delegation that comes back around is reported rather than walked.
     """
     import re
 
-    _params_start, _params_end, body = _handler(masked, method)
+    if method in seen:
+        return set(), [f"{method} delegates back into {' -> '.join(seen)}"]
+    spots = _handler_spots(masked, method)
+    if len(spots) != 1:
+        return set(), [f"{method} is defined {len(spots)} times, so its shape is ambiguous"]
+    body = spots[0][2]
     end = _closes(masked, body)
     keys: set[str] = set()
-    for match in re.finditer(r"\breturn\s*(\{)", masked[body:end]):
-        at = body + match.start(1)
-        functions, stack = 0, []
-        for index in range(body + 1, at):
-            if masked[index] == "{":
-                stack.append(_opens_a_function(masked, index))
-                functions += stack[-1]
-            elif masked[index] == "}":
-                functions -= stack.pop() if stack else 0
-        if functions == 0:
-            keys |= set(_entries(_object_at(masked, at)))
-    assert keys, f"no handler return parsed for {method}"
+    problems: list[str] = []
+    for match in re.finditer(r"\breturn\b", masked[body:end]):
+        at = body + match.end()
+        if _function_depth(masked, body, body + match.start()) != 0:
+            continue  # a nested function's own answer
+        rest = masked[at:end].lstrip()
+        where = f"{method} returns {rest[:48].splitlines()[0] if rest else '(nothing)'}"
+        if rest.startswith("{"):
+            keys |= set(_entries(_object_at(masked, end - len(rest))))
+            continue
+        delegate = re.match(r"(?:await\s+)?this\.([A-Za-z_$][\w$]*)\s*\(", rest)
+        if not delegate:
+            problems.append(where)
+            continue
+        inherited, trouble = _response_keys(masked, delegate.group(1), seen + (method,))
+        keys |= inherited
+        problems += trouble
+    return keys, problems
+
+
+def _handler_return_keys(masked: str, method: str) -> set[str]:
+    """The response shape of ``method``; an unread return is a failure, not a gap."""
+    keys, problems = _response_keys(masked, method)
+    assert not problems, problems
+    assert keys, f"no response shape parsed for {method}"
     return keys
 
 
@@ -557,9 +599,10 @@ def _params(masked: str, spot: tuple[int, int, int]) -> str:
 def _parity_violations(source: str, preview: dict[str, set[str]]) -> list[str]:
     """Every way ``source``'s bridge asks for more than ``preview`` answers.
 
-    Fails closed in both directions: an allowlisted action with no handler is a
-    violation rather than a silently skipped row, and so is a zero-argument
-    action the preview has never heard of.
+    Fails closed in every direction: an allowlisted action with no handler is a
+    violation rather than a silently skipped row, so is a zero-argument action
+    the preview has never heard of, and so is a return whose shape this cannot
+    read -- otherwise an unread branch passes as agreement.
     """
     masked = _masked(source)
     problems: list[str] = []
@@ -572,7 +615,11 @@ def _parity_violations(source: str, preview: dict[str, set[str]]) -> list[str]:
         if action not in preview:
             problems.append(f"{action}: answered by the app with no arguments, refused here")
             continue
-        missing = _handler_return_keys(masked, method) - preview[action]
+        keys, unread = _response_keys(masked, method)
+        problems += [f"{action}: unread response shape -- {note}" for note in unread]
+        if not keys and not unread:
+            problems.append(f"{action}: no response shape parsed from {method}")
+        missing = keys - preview[action]
         if missing:
             problems.append(f"{action}: the preview omits {sorted(missing)}")
     return problems
@@ -606,6 +653,13 @@ def test_the_preview_bridge_answers_every_startup_read_with_the_apps_keys():
     # ...and nothing if it counted a callback's row shape as the answer.
     assert _handler_return_keys(masked, "listTryablePackages") == {
         "packages", "systems", "build_prompt", "can_try"}
+    # Delegation is followed: `conversationDesign` answers `{state:"ambiguous"}`
+    # itself and hands its normal response to `describe`, whose three branches
+    # are the rest of the contract.
+    assert _handler_return_keys(masked, "conversationDesign") == {
+        "state", "agent_definition_id", "component_key"}
+    assert _handler_return_keys(masked, "describe") == {
+        "state", "agent_definition_id", "component_key"}
 
     # The two the review found, named so the regression stays readable.
     assert {"workflow_refs", "agent_refs"} <= preview["whoami"]
@@ -658,6 +712,40 @@ def test_the_parity_check_catches_the_drifts_that_slipped_past_it():
     # row shape `listTryablePackages` builds in a `.map` must stay out of it.
     assert "agent_definition_id" not in _handler_return_keys(_masked(source),
                                                              "listTryablePackages")
+
+    # (5) Codex round 3: a key added to the DELEGATE's response. Reading only
+    # `conversationDesign`'s own literal reported {"state"} and called this
+    # clean, so a UI could read `component_key` in the app and not in preview.
+    delegated = source.replace(
+        'return {state:"active",agent_definition_id:String(b.agent_definition_id),'
+        'component_key:t.component_key}',
+        'return {state:"active",agent_definition_id:String(b.agent_definition_id),'
+        'component_key:t.component_key,revision:b.revision}', 1)
+    assert delegated != source
+    assert any("revision" in problem for problem in _parity_violations(delegated, preview)), \
+        _parity_violations(delegated, preview)
+
+    # (6) An unclassifiable return fails CLOSED. `conversationDesign` keeps its
+    # recognised `{state:"ambiguous"}` branch, so this proves one read branch
+    # cannot vouch for an unread one.
+    opaque = source.replace("      return this.describe(rows[0]||null);",
+                            "      return rows[0]||null;", 1)
+    assert opaque != source
+    assert any("unread response shape" in problem
+               for problem in _parity_violations(opaque, preview)), \
+        _parity_violations(opaque, preview)
+
+    # ...including delegation to something that is not there, and delegation
+    # that comes back around rather than answering.
+    missing_target = source.replace("return this.describe(rows[0]||null)",
+                                    "return this.shapeOf(rows[0])", 1)
+    assert any("conversation_design" in problem
+               for problem in _parity_violations(missing_target, preview))
+    looping = source.replace("return this.describe(rows[0]||null)",
+                             "return this.conversationDesign()", 1)
+    assert any("delegates back into" in problem
+               for problem in _parity_violations(looping, preview)), \
+        _parity_violations(looping, preview)
 
 
 def test_the_mask_survives_what_javascript_puts_in_strings_and_comments():
