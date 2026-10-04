@@ -361,7 +361,7 @@ def _write_all(fd: int, data: bytes) -> None:
         view = view[os.write(fd, view):]
 
 
-def open_lock_file(universe_dir: Path | str, relpath: str) -> int:
+def open_lock_file(universe_dir: Path | str, relpath: str, *, mode: int = 0o644) -> int:
     """A descriptor for the sidecar lock ``universe_dir/relpath``, link-free.
 
     A lock is opened ``O_RDWR|O_CREAT`` and never read or written, so the
@@ -383,11 +383,11 @@ def open_lock_file(universe_dir: Path | str, relpath: str) -> int:
         target = _windows_parent(root, parts, create=True) / parts[-1]
         if target.is_symlink():
             raise UniverseFileError(f"{relpath!r} is a link; the lock is opened link-free")
-        return os.open(str(target), os.O_RDWR | os.O_CREAT, 0o644)
+        return os.open(str(target), os.O_RDWR | os.O_CREAT, mode)
     nofollow = getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
     dir_fd = _parent_dir_fd(root, parts, create=True)
     try:
-        return os.open(parts[-1], os.O_RDWR | os.O_CREAT | nofollow, 0o644, dir_fd=dir_fd)
+        return os.open(parts[-1], os.O_RDWR | os.O_CREAT | nofollow, mode, dir_fd=dir_fd)
     finally:
         os.close(dir_fd)
 

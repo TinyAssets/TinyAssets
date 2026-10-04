@@ -44,6 +44,11 @@ SITES: dict[str, tuple[str, str]] = {
         "the owner lease; per-universe heartbeat/.pause still touch the universe "
         "directory until the cutover (#4262) moves them to .platform/",
     ),
+    "tinyassets/universe_server.py::main._resume_request_loop": (
+        CONTROL_PLANE,
+        "server-owned protected request recovery and due owner-bound continuations; "
+        "per-home control/attempt locks serialize work, not a box timer",
+    ),
     "tinyassets/universe_server.py::main._served_budget_lease_loop": (
         CONTROL_PLANE,
         "run-file retention, admitted-run, delivery, budget-lease reconciliation "

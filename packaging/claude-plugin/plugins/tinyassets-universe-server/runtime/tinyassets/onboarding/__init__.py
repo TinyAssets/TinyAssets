@@ -288,6 +288,9 @@ async def _handle_app(request: Any) -> Any:
 
     if not onboarding_enabled():
         return PlainTextResponse("Not Found", status_code=404)
+    if getattr(request, "query_params", {}).get("state", "").startswith("oa_"):
+        from tinyassets.onboarding.owner_sessions import callback
+        return await callback(request)
     return app_response()
 
 
@@ -378,6 +381,9 @@ async def _handle_token(request: Any) -> Any:
     session_ref = str(data.get("session_ref", "")).strip()
     if not _valid_handle(session_ref):
         session_ref = ""
+    if grant in ("logout", "authorization_code"):
+        from tinyassets.onboarding.owner_sessions import COOKIE, revoke
+        revoke(request.cookies.get(COOKIE, ""))
     if grant == "logout":
         # Sign-out must end the renewable session too, not just the page's
         # access token: clear the cookie AND drop the server-side handle so
@@ -1370,6 +1376,14 @@ async def _handle_rules(request: Any) -> Any:
     if denied is not None:
         return denied
     identity = current_identity()
+    if request.method == "POST":
+        from tinyassets.onboarding.owner_sessions import require
+        try:
+            require(request, owner=identity.user_id)
+        except PermissionError:
+            return JSONResponse({"error": "interactive_approval_required"},
+                                status_code=403, headers=_NO_STORE)
+
     home = await run_in_threadpool(_read_home, identity)
     if not home:
         return JSONResponse({"error": "no_home"}, status_code=404, headers=_NO_STORE)
@@ -1718,8 +1732,22 @@ async def _handle_turn_interrupt(request: Any) -> Any:
             {"error": "agent_not_found", "detail": str(exc)},
             status_code=404, headers=_NO_STORE,
         )
+    from tinyassets.owner_control import ControlUnavailable
+
     try:
+        from tinyassets.api.helpers import _universe_dir
+        from tinyassets.bound_requests import stop
+        # The live turn must stop even when durable approval controls are busy.
         count = request_interrupt(identity.user_id, universe_id, agent_id=agent_id)
+        if (_base_path() / universe_id).is_dir():
+            await _in_thread(stop, _universe_dir(universe_id), identity.user_id, agent_id)
+    except ControlUnavailable as exc:
+        return JSONResponse(
+            {"error": exc.kind, "retryable": True, "interrupted": count,
+             "detail": "Turn interrupted; retry Stop to pause pending approvals.",
+             "universe_id": universe_id},
+            status_code=503, headers=_NO_STORE,
+        )
     except ValueError:
         return JSONResponse({"error": "invalid_universe"}, status_code=400, headers=_NO_STORE)
     return JSONResponse(
@@ -2036,6 +2064,8 @@ async def _handle_account_delete(request: Any) -> Any:
             status_code=409,
             headers=_NO_STORE,
         )
+    from tinyassets.onboarding.owner_sessions import revoke_owner
+    await run_in_threadpool(revoke_owner, identity.user_id)
     # The account is gone; end this device's renewable session the way logout
     # does. Other devices' refresh handles die with the identity or expire.
     if session_ref:
@@ -2501,6 +2531,7 @@ def onboarding_routes() -> list[Any]:
     from tinyassets.onboarding.app_modules import handle_app_module
     from tinyassets.onboarding.connections import handle_connections
     from tinyassets.onboarding.file_upload import handle_file_upload
+    from tinyassets.onboarding.inline_requests import handle_approval
     from tinyassets.onboarding.model_connect import (
         handle_client_metadata,
         handle_model_callback,
@@ -2512,11 +2543,14 @@ def onboarding_routes() -> list[Any]:
         handle_notify_settings,
         handle_service_worker,
     )
+    from tinyassets.onboarding.owner_sessions import begin as owner_sign_in
     from tinyassets.onboarding.ui_frame import handle_ui_frame
     from tinyassets.owner_door import owner_door_routes
 
     return [
         Route("/app", _handle_app, methods=["GET", "HEAD"]),
+        Route("/app/owner-sign-in", owner_sign_in, methods=["GET"]),
+        Route("/app/approvals/{operation}", handle_approval, methods=["POST"]),
         Route("/app/ui-frame", handle_ui_frame, methods=["GET", "HEAD"]),
         Route("/app/model-connect/{operation}", handle_model_connect, methods=["POST"]),
         Route("/app/model-callback/{flow}", handle_model_callback, methods=["GET", "HEAD"]),

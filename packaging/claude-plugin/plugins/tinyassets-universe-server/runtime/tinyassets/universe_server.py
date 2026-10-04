@@ -5061,6 +5061,18 @@ def main(
 
     start_owner_tree(_owner_data_dir())
     _ensure_runs_recovery()
+    def _resume_request_loop():
+        import time
+
+        from tinyassets.request_continuations import tick
+        while True:
+            try:
+                tick(_owner_data_dir())
+            except Exception:
+                logger.exception("request continuation sweep failed")
+            time.sleep(5)
+    import threading
+    threading.Thread(target=_resume_request_loop, name="request-continuations", daemon=True).start()
     # And keep recovering: an engine child that dies mid-run while this server
     # lives is found within one tick, by proof that it died.
     start_run_owner_watcher()

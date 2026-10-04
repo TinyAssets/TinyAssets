@@ -30,6 +30,7 @@ BOB = "workos|bob-routes"
 PUBLIC_APP_PATHS = {
     "/app",              # the SPA shell, loads before sign-in
     "/app/token",        # its same-origin PKCE exchange
+    "/app/owner-sign-in",  # document navigation begins interactive owner PKCE
     "/app/billing/webhook",  # Stripe POSTs with no bearer
     # The OAuth return lands in the browser with no bearer; only the shell is
     # open and the authenticated exchange after it is still challenged.
@@ -120,6 +121,14 @@ def test_the_client_metadata_carve_out_is_exactly_one_path(app_env):
     assert not _auth_challenge_path("/app/oauth/client-metadata.json")
     for near in ("/app/oauth/client-metadata.json/x", "/app/oauth/client-metadata.jsonx",
                  "/app/oauth"):
+        assert _auth_challenge_path(near), near
+
+
+def test_the_owner_sign_in_carve_out_is_exactly_one_path(app_env):
+    from tinyassets.auth.middleware import _auth_challenge_path
+
+    assert not _auth_challenge_path("/app/owner-sign-in")
+    for near in ("/app/owner-sign-in/x", "/app/owner-sign-ins", "/app/owner-sign-in.js"):
         assert _auth_challenge_path(near), near
 
 
