@@ -15,12 +15,17 @@ provider directory, then existing RFC 9728, RFC 8414/OIDC discovery and public
 dynamic registration, then key paste. A directory match SHALL cover every
 declared host by exact case-insensitive hostname comparison; a subdomain or
 unrelated additional host SHALL NOT match. Entries lacking their client ID or
-secret SHALL be inactive. Invalid configuration SHALL fail with a fixed error.
+secret SHALL be inactive. Invalid optional configuration SHALL be logged with a
+fixed code and its entries unavailable, without blocking engine or broker launch.
+Unavailable directory/RPC lookups SHALL fall through to discovery and key paste;
+unexpected errors and confidential exchange/refresh failures SHALL still fail.
 
 The request MAY supply `oauth.scopes`, `oauth.use` (a named default scope set),
 and a public `oauth.client_id`. It SHALL NOT supply endpoints, provider IDs,
 secret names, client secrets or offer provenance. An active directory match
 SHALL take precedence over an agent-supplied client ID.
+Explicit scopes SHALL be a subset of the union of the entry's declared scope
+sets; an out-of-policy request SHALL NOT use the platform registration.
 
 #### Scenario: Registered service without discovery
 - **WHEN** the declared hosts match an active directory entry
@@ -77,9 +82,9 @@ SHALL continue without confidential authentication.
 
 Only the trusted directory SHALL select a client secret by name. Names SHALL
 use `TINYASSETS_OAUTH_*_SECRET`; the entire OAuth configuration namespace SHALL
-be filtered from engine child environments, and the example secret SHALL be
-in `CHILD_FORBIDDEN_ENV`. Before engine or scoped broker spawn, the daemon
-SHALL remove platform OAuth secrets from its inherited environment into
+be filtered from engine child environments without provider-specific Python
+inventory entries. At daemon startup and again before engine or scoped broker
+spawn, the daemon SHALL remove platform OAuth secrets from its inherited environment into
 process-local memory. Bundles and offers SHALL contain only the provider ID,
 never a secret value or a secret-name reference. The client ID and token URL
 SHALL be rechecked against current directory data before secret resolution.
@@ -103,11 +108,16 @@ requests, vault bundles, audit records, logs, or jail environments.
 The broker SHALL refresh before expiry and once after a 401. Confidential
 refresh from a child SHALL use a private loopback daemon service with a random
 capability bound by the launcher to one owner and universe. The daemon SHALL
-recheck admin authority and deposit ownership and load the named connection
-from that universe's vault itself. The child SHALL NOT supply a path, owner,
+recheck canonical admin access or the founder-home binding, verify deposit
+ownership, and load the named connection from that universe's vault itself.
+The child SHALL NOT supply a path, owner,
 endpoint, secret name or token bundle. The service SHALL return success only;
 the broker SHALL reread its own vault. Public-client refresh SHALL retain its
 existing path.
+Each daemon launch SHALL receive a separate capability, revoked when its engine
+stops/restarts or its proxy closes/fails startup. Child-launched proxies reuse
+the parent engine capability. Owner code can request its own refreshes while
+that capability is live; it grants no broader owner or connection access.
 
 Refresh SHALL use the existing per-connection thread/process locks, reread
 inside the locks, and vault admission before spending a refresh token. Rotated

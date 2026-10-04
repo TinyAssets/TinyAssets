@@ -62,7 +62,6 @@ DAEMON_FORBIDDEN_ENV: frozenset[str] = frozenset({
 # security/retire-github-oauth-workflow-secret.
 
 DAEMON_ONLY_ENV: frozenset[str] = frozenset({
-    "TINYASSETS_OAUTH_GOOGLE_CLIENT_SECRET",
     "TINYASSETS_BILLING_ENTITLEMENT_KEY",
     "WORKOS_API_KEY",
 }) | _BILLING_SECRET_ENV  # the payment processor's keys, named by its adapter
@@ -98,6 +97,8 @@ def child_env(source: Mapping[str, str]) -> dict[str, str]:
     Shared by engine and broker launches. Engine handlers delegate throughout
     the package, so a runtime-config allowlist needs a separate consumer audit.
     The Compose/template inventory test rejects unclassified injected names.
+    OAuth credentials/configuration are classified by namespace, including
+    providers added only in directory data; they need no DAEMON_ONLY_ENV row.
     """
     return {name: value for name, value in source.items()
             if name not in CHILD_FORBIDDEN_ENV and not name.startswith("TINYASSETS_OAUTH_")

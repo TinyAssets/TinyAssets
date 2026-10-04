@@ -31,6 +31,7 @@ key paste.
 
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass
 from typing import Any
@@ -42,6 +43,7 @@ from tinyassets.connection_oauth.transport import OAuthError, request_json, vali
 #: (``tests/conftest.py``) so no test reaches a real host, and a test that
 #: exercises discovery turns it back on against its own local fake server.
 DISCOVERY_ENABLED = True
+logger = logging.getLogger(__name__)
 
 _SCOPE_RE = re.compile(r"[\x21\x23-\x5B\x5D-\x7E]{1,128}\Z")
 _CLIENT_ID_RE = re.compile(r"[\x21-\x7E]{1,256}\Z")
@@ -245,7 +247,12 @@ def resolve_offer(requested: dict[str, Any], hosts: list[str]) -> tuple[dict[str
         if offer:
             return offer, ""
     except OAuthError as exc:
-        return None, exc.code
+        if exc.code not in {"oauth_directory_invalid", "platform_client_unavailable"}:
+            raise
+        # A missing usable platform registration says nothing about whether
+        # the host supports the existing public-client flow. No raw RPC/config
+        # exception contents belong in logs.
+        logger.warning("Optional OAuth directory unavailable: %s", exc.code)
     if not DISCOVERY_ENABLED:
         return None, "discovery_unavailable"
     try:

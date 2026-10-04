@@ -15,7 +15,7 @@ containerized deploys don't drift based on where the process was launched from.
 |-----|---------|---------|
 | `TINYASSETS_OAUTH_DIRECTORY` | Absolute path to daemon-owned provider JSON; replaces the packaged directory. No secrets in this file. | `tinyassets/connection_oauth/providers.json` |
 | `TINYASSETS_OAUTH_GOOGLE_CLIENT_ID` | Platform's registered Web application OAuth client ID. | Unset; entry inactive |
-| `TINYASSETS_OAUTH_GOOGLE_CLIENT_SECRET` | Daemon-only platform client secret. Included in `CHILD_FORBIDDEN_ENV`. | Unset; entry inactive |
+| `TINYASSETS_OAUTH_GOOGLE_CLIENT_SECRET` | Daemon-only platform client secret. Filtered by the OAuth namespace. | Unset; entry inactive |
 
 The directory is `{"providers": [entry, ...]}`. Every entry requires a stable
 `id`, exact API `hosts`, HTTPS `authorization_endpoint` and `token_endpoint`,
@@ -36,19 +36,26 @@ The packaged Google entry matches `gmail.googleapis.com`,
 `prompt=consent`, per [Google's web server OAuth documentation](https://developers.google.com/identity/protocols/oauth2/web-server).
 Register `https://tinyassets.io/app/model-callback/connect` as its redirect URI.
 Gmail and Calendar defaults are read-only. Explicit `oauth.scopes` take
-precedence; `oauth.use: "gmail"` or `"calendar"` selects a default set. Dedicated
+precedence but must stay within the entry's declared scope sets;
+`oauth.use: "gmail"` or `"calendar"` selects a default set. Dedicated
 hosts infer the use; `www.googleapis.com` needs explicit scopes or a use.
 
 Set credentials in the daemon's environment through the platform secret
 configuration, never in a connect ask, agent prompt, or directory JSON. Missing
 credentials deactivate an entry and preserve discovery/key-paste fallback.
-Before child spawn, OAuth secrets move into daemon process-local memory; rotate
-or remove them by updating the daemon environment and restarting the daemon.
+An invalid optional directory is logged with a fixed code and offers no entries;
+engine and broker launch continue. Unavailable directory/RPC lookups fall through
+to discovery and key paste. Exchange/refresh still refuse unusable registrations.
+At daemon startup and before child spawn, OAuth secrets move into daemon
+process-local memory; rotate or remove them by updating the daemon environment
+and restarting the daemon.
 All `TINYASSETS_OAUTH_*` variables are filtered from engine children. A private
 loopback service resolves offers and performs refreshes for the launcher's
 fixed owner/universe; its internal `TINYASSETS_CONNECTION_OAUTH_SERVICE`
 capability is installed only for that engine and is not a user configuration
-variable. The service returns no tokens or client secrets. Jails clear their
+variable. Each daemon launch gets a separate capability, revoked at engine
+stop/restart or proxy close/startup failure. An engine's child proxies share its
+capability. The service returns no tokens or client secrets. Jails clear their
 environment. This follows #4267's inheritance boundary; it does not replace
 the separately tracked daemon/engine UID and procfs isolation work.
 
