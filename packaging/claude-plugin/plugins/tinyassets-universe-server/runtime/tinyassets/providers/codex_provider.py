@@ -426,7 +426,8 @@ def _codex_engine_mcp_args(config: ModelConfig, proc_env: dict[str, str]) -> lis
     # The route names this launch's session and live turn, so the engine steers
     # only the owner's chat thread, in this turn, with a message sent mid-turn
     # (harness S2).
-    url = route_with_session(route.url, session_of(config), turn_of())
+    url = route_with_session(route.url, session_of(config), turn_of(),
+                             grant_key=getattr(route, "grant_key", ""), tools=granted_tools(config))
     server = (
         "mcp_servers.tinyassets={"
         f'url="{url}",bearer_token_env_var="{_ENGINE_MCP_BEARER_ENV}",'

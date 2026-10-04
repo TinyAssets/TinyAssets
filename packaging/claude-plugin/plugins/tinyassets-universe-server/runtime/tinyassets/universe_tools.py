@@ -347,6 +347,7 @@ def _clear_link_mountpoint(workspace: Path, name: str) -> None:
 
 def _universe_view(
     root: Path, egress_socket: Path | None = None, *, agent_id: str,
+    ta_socket: Path | None = None,
 ) -> UniverseView:
     """The tool jail's view of ``root``: the agent's own workspace at ``/u``,
     read-write, with the visible root entries bound on top at their names
@@ -391,6 +392,13 @@ def _universe_view(
 
         mounts.append(JailMount("bind", universe_egress.JAIL_SOCKET, egress_socket))
         setenv = _JAIL_ENV + universe_egress.PROXY_ENV
+    if ta_socket is not None:
+        from tinyassets.ta_capabilities import CLIENT_SOURCE, JAIL_CLIENT, JAIL_SOCKET
+
+        mounts.extend((JailMount("bind", JAIL_SOCKET, ta_socket),
+                       JailMount("ro-bind", JAIL_CLIENT, CLIENT_SOURCE)))
+        setenv = tuple((key, "/ta/bin:" + value if key == "PATH" else value)
+                       for key, value in setenv)
     return UniverseView(
         universe_dir=root,
         mounts=tuple(mounts),
@@ -402,6 +410,7 @@ def _universe_view(
 def tool_jail_argv(
     universe_dir: Path, inner: Sequence[str], *, agent_id: str, seccomp_fd: int | None = None,
     egress_socket: Path | None = None,
+    ta_socket: Path | None = None,
 ) -> list[str]:
     """The bubblewrap argv running ``inner`` in ``universe_dir``'s tool jail."""
     if not agent_id.strip():
@@ -413,7 +422,7 @@ def tool_jail_argv(
     if not root.is_dir():
         raise UniverseToolError("the command center folder does not exist")
     bwrap = provider_jail.BWRAP_RESOLVER()
-    view = _universe_view(root, egress_socket, agent_id=agent_id)
+    view = _universe_view(root, egress_socket, agent_id=agent_id, ta_socket=ta_socket)
     # The egress socket lives in the daemon-owned sidecar folder, outside the
     # command center, so it has to be declared as the exact path this jail is
     # allowed to bind from there. A directory prefix is not a capability: the
@@ -424,6 +433,10 @@ def tool_jail_argv(
         frozenset({Path(egress_socket).resolve(strict=False)})
         if egress_socket is not None else frozenset()
     )
+    if ta_socket is not None:
+        from tinyassets.ta_capabilities import CLIENT_SOURCE
+
+        platform_sources |= frozenset({ta_socket.resolve(), CLIENT_SOURCE.resolve()})
     return jail_argv(
         list(inner), view, bwrap_path=bwrap, clearenv=True,
         seccomp_fd=seccomp_fd, platform_sources=platform_sources,
@@ -636,6 +649,7 @@ def run_jailed(
     output_bytes: int | None = None,
     on_wait: Callable[[float], None] | None = None,
     egress_socket: Path | None = None,
+    ta_socket: Path | None = None,
 ) -> ToolRun:
     """Run ``inner`` in the command center's tool jail under ``limits``.
 
@@ -664,6 +678,8 @@ def run_jailed(
     filter_fd = _seccomp_fd()
     try:
         egress = {} if egress_socket is None else {"egress_socket": egress_socket}
+        if ta_socket is not None:
+            egress["ta_socket"] = ta_socket
         argv = TOOL_JAIL_ARGV(root, limited, agent_id=agent_id, seccomp_fd=filter_fd, **egress)
         with _slot(root, on_wait=on_wait, waited=queued):
             try:
@@ -1084,7 +1100,7 @@ def _egress_socket(universe_dir: Path) -> Path | None:
 
 def bash(
     universe_dir: Path, command: str, timeout: float = 0,
-    *, agent_id: str, limits: ToolLimits = DEFAULT_LIMITS,
+    *, agent_id: str, limits: ToolLimits = DEFAULT_LIMITS, ta_dispatch=None,
 ) -> str:
     """Run ``command`` with bash in ``/u``; stdout and stderr, then the outcome."""
     from tinyassets.research_capability import research_refusal
@@ -1109,7 +1125,15 @@ def bash(
 
         inner = universe_egress.forwarder_argv(python, inner)
         egress = {"egress_socket": socket_path}
-    run = RUNNER(universe_dir, inner, agent_id=agent_id, limits=limits, wall_seconds=wall, **egress)
+    if ta_dispatch is None:
+        run = RUNNER(universe_dir, inner, agent_id=agent_id, limits=limits,
+                     wall_seconds=wall, **egress)
+    else:
+        from tinyassets.ta_capabilities import JailBridge
+
+        with JailBridge(ta_dispatch) as bridge:
+            run = RUNNER(universe_dir, inner, agent_id=agent_id, limits=limits,
+                         wall_seconds=wall, ta_socket=bridge.path, **egress)
     body = _text(run.output)
     if body and not body.endswith("\n"):
         body += "\n"
@@ -1195,13 +1219,14 @@ _HARNESS_HEAD = (
     "command center, never a service hosted elsewhere -- handbook chapter "
     "write_graph.systems; relative paths are under /u, nothing outside is reachable. "
     "/u is my own workspace: I create, change and delete anything in it, "
-    "including new top-level folders; only a few platform files such as "
+    "including folders; platform files like "
     "soul.md and config.yaml are read-only.\n"
+    "In bash, `ta search <words>` discovers capabilities, `ta describe <name>` "
+    "lists args; `ta <name> --json '<args>'` calls them.\n"
     "Skills are `skills/<name>/SKILL.md` with frontmatter `name:` and a one-line "
     "`description:`; I read and follow matching skills, and write that file "
     "to change them next turn.\n"
-    "When I need several independent reads or checks, I make those tool calls "
-    "together in one reply, not one per reply.\n"
+    "I call independent reads or checks together in one reply, not one per reply.\n"
     "I install an app UI as one component with `write_graph target=\"app_ui\" "
     "operation=\"add_ui\"` and `payload_json={\"component\": {...}}` (handbook "
     "write_graph.interfaces), in one call rather than staging "
