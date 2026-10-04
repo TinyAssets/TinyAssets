@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, get_args
 
+from tinyassets.addressed_agents import MAIN_AGENT
 from tinyassets.ttl_memo import TTLMemo as _TTLMemo
 
 if TYPE_CHECKING:
@@ -27,6 +28,7 @@ if TYPE_CHECKING:
     from tinyassets.providers.agent_model_plan import AgentModelPlan
     from tinyassets.providers.model_policy import ModelRef
     from tinyassets.providers.model_selection import SelectedModel
+    from tinyassets.request_budget import TurnRequestBudget
 
 logger = logging.getLogger(__name__)
 
@@ -148,6 +150,28 @@ class UniverseContext:
     """Requested candidate, not authority; revalidated by the serving boundary."""
     agent_model_plan: AgentModelPlan | None = None
     """Captured advisory owner policy; never a grant or a tool-replay instruction."""
+    agent_id: str = MAIN_AGENT
+    """WHICH of the owner's agents this work belongs to (harness §4.18).
+
+    The one carrier for the addressed agent through a turn. Set ONLY at
+    authenticated ingress, from the resolution that ingress already performed
+    (``universe_intelligence.converse`` passes the ``addressed_agent`` it was
+    handed, which ``universe_server.converse`` resolved inside the owner/universe
+    scope). It is ``MAIN_AGENT`` only where ingress genuinely had no addressed
+    agent -- the main agent, or a caller with no conversation at all.
+
+    Deliberately NOT derived anywhere downstream. Not from
+    ``turn_interrupt.current()``, which is in-process state a workflow-node turn
+    does not have and which would make the journal's attribution depend on
+    whether a Stop happened to be registrable; and not from a session key, which
+    may locate or cross-check a record but can never establish one, so it is not
+    what may select whose controls apply. A downstream reader that cannot see
+    this field is missing a thread, not licensed to guess.
+
+    The per-launch snapshot that change ``addressed-agent-control-provenance``
+    proposes reads THIS field rather than introducing a second source, so
+    extending provenance later does not mean replacing this carrier.
+    """
 
 
 #: Claude CLI builtins that reach the host through its filesystem or a shell.
@@ -227,6 +251,13 @@ class ModelConfig:
     the shared spawn point, whatever its config (``provider_jail``). A provider
     may use the mark to narrow further, e.g. pin cwd to the command center and deny
     :data:`HOST_REACH_TOOLS`."""
+
+    text_only: bool = False
+    """Restrictive per-invocation mode: no tools, agent request or session resume.
+
+    Only an executor explicitly implementing this contract may accept it.
+    This is a restriction, never authority to call a model or access credentials.
+    """
 
     sandbox_workspace: bool = False
     # A chat turn (converse): still OS-isolated, but NOT handed the universe as a
@@ -314,6 +345,12 @@ class ModelConfig:
 
     agent_request: AgentInferenceRequest | None = field(default=None, repr=False)
     """Internal tool inventory/completed history, never execution authority."""
+
+    request_budget: TurnRequestBudget | None = field(default=None, repr=False, compare=False)
+    """Server-owned parent ledger; not wire data, quota evidence or authority."""
+    request_purpose: str = "reply"
+    request_attempt: int | None = field(default=None, repr=False, compare=False)
+    """Router-owned ordinal. The HTTP broker consumes it; never caller authority."""
 
     secondary_call: bool = False
     """This call is the platform's own bookkeeping beside a founder turn, not the
@@ -446,6 +483,8 @@ class ProviderResponse:
 
     agent_reply: AgentReply | None = field(default=None, repr=False)
     """One inference's validated result; requested tools have not been executed."""
+    request_receipt: dict | None = field(default=None, repr=False, compare=False)
+    """Detached local dispatch accounting, never a confirmed provider quota."""
     native_evidence: NativeCompletionEvidence | None = field(default=None, repr=False)
     """Local execution evidence, not provider-reported billing or HTTP progress."""
 
@@ -1382,6 +1421,31 @@ class BaseProvider(abc.ABC):
 
     agent_execution_kind: str | None = None
     """Installed execution capability; unknown executors cannot claim an agent lane."""
+
+    supports_text_only: bool = False
+    """Adapter enforces tool-free requests, including at its direct call boundary."""
+
+    def require_text_only_support(self, config: ModelConfig) -> None:
+        """Refuse unsupported or conflicting restrictions before any provider IO."""
+        from tinyassets.exceptions import ProviderAuthorityHeldError
+
+        mode = getattr(config, "text_only", False)
+        if type(mode) is not bool:
+            raise ProviderAuthorityHeldError("invalid text-only provider restriction")
+        if not mode:
+            return
+        if self.supports_text_only is not True:
+            raise ProviderAuthorityHeldError(
+                "selected provider does not support enforced text-only review; "
+                "nothing was launched"
+            )
+        if any(getattr(config, key, None) for key in (
+            "engine_mcp_enabled", "engine_mcp_actor_id", "engine_mcp_graph_id",
+            "allowed_tools", "engine_tool_grant", "agent_node_id", "agent_node_key",
+        )) or any(getattr(config, key, None) is not None for key in (
+            "agent_request", "agent_session",
+        )):
+            raise ProviderAuthorityHeldError("text-only provider restriction conflicts with tools")
 
     native_credential_service: str | None = None
     """Native custody service declared by this executor; not a model identifier."""

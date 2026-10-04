@@ -870,7 +870,9 @@ def sync_source_synthesis_priorities(
 ) -> tuple[list[HardPriorityItem], list[dict[str, Any]]]:
     """Mirror synthesize_source signals into explicit hard priorities."""
     universe_dir = Path(universe_path)
-    raw_signals = load_enrichment_signals(universe_dir)
+    # Strict: the rehydration below can write the queue back, so an unreadable
+    # or refused signal file must stop here, not be rebuilt from [].
+    raw_signals = load_enrichment_signals(universe_dir, strict=True)
     raw_signals = _rehydrate_missing_synthesis_signals(
         universe_dir, raw_signals,
     )

@@ -30,6 +30,7 @@ from mcp.types import CallToolResult, TextContent
 from tests import test_agent_chat_codec as codec_tests
 from tests import test_interactive_http_agent as integration
 from tests import test_provider_model_refusal as refusal
+from tests.inference_usage_helpers import accounting_resolver
 from tests.test_agent_chat_codec import definitions
 from tinyassets.agent_turn_coordinator import AgentTurnCoordinator
 from tinyassets.exceptions import AllProvidersExhaustedError
@@ -290,7 +291,7 @@ def test_a_slow_reply_is_never_retried_or_moved_off(agent, monkeypatch):
         proxy.request = request
         return proxy
 
-    monkeypatch.setattr(ApiKeyHttpProvider, "_resolve_proxy", resolve)
+    monkeypatch.setattr(ApiKeyHttpProvider, "_resolve_proxy", accounting_resolver(resolve))
     with pytest.raises(AllProvidersExhaustedError) as error:
         integration.run(agent)
     assert len(agent.wires) == 2 and len(agent.tools) == 1
@@ -325,7 +326,7 @@ def test_a_reply_timeout_names_the_budget_that_actually_ended_it(agent):
         return proxy
 
     with pytest.MonkeyPatch.context() as patch:
-        patch.setattr(ApiKeyHttpProvider, "_resolve_proxy", resolve)
+        patch.setattr(ApiKeyHttpProvider, "_resolve_proxy", accounting_resolver(resolve))
         with pytest.raises(AllProvidersExhaustedError) as error:
             integration.run(agent)
     detail = error.value.attempts[-1].detail
@@ -597,7 +598,8 @@ def test_an_agent_request_streams_and_asks_for_an_inactivity_window(agent):
 def test_a_stalled_stream_is_asked_again_and_the_turn_finishes(agent, monkeypatch):
     from tinyassets.providers.api_key_http_provider import ApiKeyHttpProvider
 
-    monkeypatch.setattr(ApiKeyHttpProvider, "_resolve_proxy", _stall(agent, {2}))
+    monkeypatch.setattr(ApiKeyHttpProvider, "_resolve_proxy",
+                        accounting_resolver(_stall(agent, {2})))
     assert integration.run(agent) == "finished exact answer"
     assert [r.state for r in agent.latest().rounds] == ["received", "failed", "received"]
     assert len(agent.tools) == 1
@@ -608,7 +610,8 @@ def test_a_persistent_stall_keeps_what_the_model_wrote_and_says_what_it_cost(
 ):
     from tinyassets.providers.api_key_http_provider import ApiKeyHttpProvider
 
-    monkeypatch.setattr(ApiKeyHttpProvider, "_resolve_proxy", _stall(agent, set(range(2, 9))))
+    monkeypatch.setattr(ApiKeyHttpProvider, "_resolve_proxy",
+                        accounting_resolver(_stall(agent, set(range(2, 9)))))
     with pytest.raises(AllProvidersExhaustedError) as error:
         integration.run(agent)
     assert len(agent.wires) == 3  # one tool round, one stall, one same-model retry

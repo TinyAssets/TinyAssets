@@ -37,6 +37,7 @@ from tinyassets.providers.base import (
 )
 from tinyassets.providers.owned_process import (
     aspawn_owned,
+    disk_stop_note,
     kill_owned_tree,
     no_window_kwargs,
 )
@@ -765,6 +766,7 @@ class CodexProvider(BaseProvider):
     native_credential_service = name
     native_command_resolver = staticmethod(lambda: _resolve_codex_cmd())
     native_process_options = staticmethod(_no_window_kwargs)
+    native_install_mounts = staticmethod(lambda command: _codex_sandbox_mounts(command))
     native_metadata_arguments = ("app-server",)
     from tinyassets.providers.native_jsonrpc_discovery import NativeJsonRpcProtocol
 
@@ -797,6 +799,10 @@ class CodexProvider(BaseProvider):
         *,
         universe_dir: Path | None = None,
     ) -> ProviderResponse:
+        # Local codex-cli 0.159.0-alpha.3 exec help documents individual
+        # feature/sandbox switches, not a verified all-tools-off contract.
+        # Until that contract is proven, reviews never reach env/argv/spawn.
+        self.require_text_only_support(config)
         full_input = f"{system}\n\n{prompt}" if system else prompt
 
         base_cmd, use_shell = self.native_command_resolver()
@@ -1015,7 +1021,7 @@ class CodexProvider(BaseProvider):
                 limit=_STDOUT_READER_LIMIT,
                 env=proc_env,
                 universe_view=universe_view,
-                install_mounts=lambda: _codex_sandbox_mounts(base_cmd),
+                install_mounts=lambda: self.native_install_mounts(base_cmd),
             )
         except BaseException:
             session_hold.close()
@@ -1105,7 +1111,8 @@ class CodexProvider(BaseProvider):
                 )
             elif proc.returncode != 0:
                 raise ProviderError(
-                    f"codex exec exit {proc.returncode}: {failure_excerpt}"
+                    f"codex exec exit {proc.returncode}{disk_stop_note(proc)}: "
+                    f"{failure_excerpt}"
                 )
 
             stdout_text = stdout.decode("utf-8", errors="replace").strip()

@@ -24,6 +24,7 @@ from tinyassets.custom_agents import (
     AgentValidationError,
     app_ui_etag,
     app_ui_index,
+    app_ui_renderability,
     change_app_ui_entry,
     get_app_ui,
     put_app_ui_asset,
@@ -63,7 +64,9 @@ def read_app_ui(
         return {"error": "app_ui_validation_error", "detail": str(exc)}
     selector = (ui_id or "").strip()
     if not selector:
-        return {"app_ui": document}
+        from tinyassets.command_center_picker import PLATFORM_DEFAULT_UI
+
+        return {"app_ui": {**document, "platform_default": PLATFORM_DEFAULT_UI}}
     if selector == INDEX:
         return {"app_ui": app_ui_index(document)}
     entry = next((e for e in document["ui_library"]
@@ -73,7 +76,15 @@ def read_app_ui(
                 "installed": [u["ui_id"] for u in app_ui_index(document)["uis"]]}
     field = (field_name or "").strip()
     if not field:
-        return {"ui": entry, "etag": app_ui_etag(entry), "revision": document["revision"]}
+        reply = {"ui": entry, "etag": app_ui_etag(entry), "revision": document["revision"]}
+        # Why the app refuses this one, if it does, next to the body that causes
+        # it -- so a read of the broken UI answers the question it raises.
+        refusal = app_ui_renderability(entry)
+        reply["renderable"] = not refusal
+        if refusal:
+            reply["reason"] = refusal["reason"]
+            reply["fix"] = refusal["hint"]
+        return reply
     text = entry.get(field)
     if not isinstance(text, str):
         return {"error": "app_ui_field_not_found", "ui_id": selector, "field_name": field}

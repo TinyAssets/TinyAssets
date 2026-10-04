@@ -535,7 +535,7 @@ def test_the_caller_reads_past_a_nonzero_exit_after_turn_completed():
     src = inspect.getsource(codex_provider.CodexProvider.complete)
     guard = src.index("_codex_turn_completed(stdout)")
     assert guard < src.index("codex exec returned exit code 1 quickly")
-    assert guard < src.index('f"codex exec exit {proc.returncode}: {failure_excerpt}"')
+    assert guard < src.index('f"codex exec exit {proc.returncode}{disk_stop_note(proc)}: "')
     assert "keeping the finished turn" in src
 
 

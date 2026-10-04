@@ -552,3 +552,150 @@ def project_automation(
         size = max(1, size * budget // len(render(document).encode("utf-8")) - 1)
         document = chunk(size)
     return document
+
+
+# Public immutable definitions: metadata first; exact bodies remain pageable.
+def _agent_json(value):
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+
+
+def _agent_bytes(value):
+    # Both served doors may escape non-ASCII when wrapping the result.
+    return len(json.dumps(value).encode("utf-8"))
+
+
+def agent_summary(row, *, compact=False):
+    """A bounded preview, never component bodies or private import-stage data."""
+    components = row.get("components") or {}
+    result = {key: row.get(key) for key in (
+        "agent_definition_id", "author_id", "name", "description", "tags",
+        "content_fingerprint", "created_at",
+    )}
+    result["component_count"] = len(components)
+    result["component_kinds"] = sorted({str(c.get("kind", ""))[:64]
+                                        for c in components.values()})[:8]
+    package = components.get("package") or {}
+    result["publication_kind"] = (
+        "command_center" if "tinyassets.command-center-package.v1" in (row.get("tags") or [])
+        and package.get("kind") == "tinyassets.package.v1" else
+        "workflows" if components and all(c.get("kind") == "tinyassets.branch-ref.v1"
+                                          for c in components.values()) else "system"
+    )
+    if package.get("kind") == "tinyassets.package.v1":
+        result["package"] = {k: (package.get(k) if type(package.get(k)) in (int, float)
+                                  else str(package.get(k) or "")[:64]) for k in
+                             ("version", "size_bytes", "file_count", "blob_sha256")}
+        agents = package.get("agents")
+        result["package"]["agent_count"] = len(agents) if isinstance(agents, list) else 0
+        needs = package.get("needs")
+        needs = needs if isinstance(needs, dict) else {}
+        connections = needs.get("connections")
+        connections = connections if isinstance(connections, list) else []
+        result["package"]["needs"] = {
+            "model": str(needs.get("model") or "")[:64],
+            "connection_count": len(connections),
+            "connections": [str(x)[:32] for x in connections[:4]],
+        }
+    # Every shortened preview is explicitly named; @definition recovers all data.
+    clipped = []
+    for key, size in (("name", 64), ("description", 96)):
+        value = str(result.get(key) or "")
+        result[key] = value[:size]
+        if len(value) > size:
+            clipped.append(key)
+    tags = result.get("tags") or []
+    result["tags"] = [str(t)[:32] for t in tags[:4]]
+    result["tag_count"] = len(tags)
+    if result["tags"] != tags:
+        clipped.append("tags")
+    result["summary_only"] = True
+    result["clipped_fields"] = clipped
+    result["read_with"] = {"target": "agent", "agent_definition_id": row["agent_definition_id"]}
+    result["full_definition_field"] = "@definition"
+    if compact:
+        for key in ("name", "description"):
+            if len(result[key]) > 24:
+                result[key] = result[key][:24]
+                clipped.append(key)
+        result["tags"] = [str(t)[:16] for t in tags[:2]]
+        result["component_kinds"] = [kind[:24] for kind in result["component_kinds"][:2]]
+        if "package" in result:
+            result["package"]["needs"]["model"] = result["package"]["needs"]["model"][:24]
+            result["package"]["needs"]["connections"] = []
+        result["compact_preview"] = True
+    return result
+
+
+def project_agent(row, *, field_name="", offset=0, max_chars=8192, budget=23000):
+    """Component catalog or lossless JSON chunk; offsets never silently reset."""
+    if type(offset) is not int or offset < 0:
+        return {"error": "output_offset must be a non-negative integer"}
+    if type(max_chars) is not int or not 1 <= max_chars <= 32768:
+        return {"error": "output_max_chars must be between 1 and 32768"}
+    components = row.get("components") or {}
+    if field_name:
+        if field_name != "@definition" and field_name not in components:
+            return {"error": "unknown_agent_component", "field_name": field_name}
+        text = _agent_json(row if field_name == "@definition" else components[field_name])
+        if offset > len(text):
+            return {"error": "output_offset is past the selected component"}
+        size = min(max_chars, len(text) - offset)
+        while True:
+            end = offset + size
+            result = {"agent_definition_id": row["agent_definition_id"],
+                      "field_name": field_name, "encoding": "json",
+                      "chunk": text[offset:end], "offset": offset,
+                      "offset_unit": "unicode_code_points", "total_chars": len(text),
+                      "next_offset": end if end < len(text) else None,
+                      "complete": end == len(text)}
+            if _agent_bytes(result) <= budget:
+                return result
+            if size <= 1:
+                return {"error": "agent_read_budget_too_small"}
+            size = max(1, size // 2)
+    names = sorted(components)
+    if offset > len(names):
+        return {"error": "output_offset is past the component catalog"}
+    summary = agent_summary(row, compact=budget < 8192)
+    page = []
+
+    def build(end):
+        return {"agent": summary, "components": page, "offset": offset,
+                "offset_unit": "components", "total_components": len(names),
+                "next_offset": end if end < len(names) else None,
+                "complete": end == len(names)}
+
+    for index in range(offset, len(names)):
+        key = names[index]
+        component = components[key]
+        item = {"key": key, "kind": str(component.get("kind", ""))[:64],
+                "name": str(component.get("name", ""))[:64],
+                "total_chars": len(_agent_json(component)),
+                "field_name": key}
+        page.append(item)
+        if _agent_bytes(build(index + 1)) > budget:
+            page.pop()
+            if not page:
+                return {"error": "agent_read_budget_too_small"}
+            break
+    return build(offset + len(page))
+
+
+def project_agents(rows, *, offset=0, budget=23000, more=False):
+    """Page summaries by encoded size without skipping any definition."""
+    page = []
+
+    def build():
+        next_offset = offset + len(page) if more or len(page) < len(rows) else None
+        return {"agents": page, "count": len(page), "offset": offset,
+                "offset_unit": "definitions", "next_offset": next_offset,
+                "complete": next_offset is None}
+
+    for row in rows:
+        page.append(agent_summary(row, compact=budget < 8192))
+        if _agent_bytes(build()) > budget:
+            page.pop()
+            if not page:
+                return {"error": "agent_read_budget_too_small"}
+            break
+    return build()

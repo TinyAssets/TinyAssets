@@ -1,9 +1,8 @@
 """Focused shared-self checks; runnable with stdlib unittest in the workspace."""
 import contextlib
 import dataclasses
-import tinyassets
-import json
 import importlib.util
+import json
 import sqlite3
 import sys
 import tempfile
@@ -12,9 +11,13 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+import tinyassets
 from tinyassets.conversation_retrieval import read_conversation_page
 from tinyassets.shared_self import (
-    agent_node, agent_node_key, prepare_shared_self_turn, require_founder_home,
+    agent_node,
+    agent_node_key,
+    prepare_shared_self_turn,
+    require_founder_home,
     shared_self_requested,
 )
 
@@ -27,19 +30,24 @@ class ConversationPagingTests(unittest.TestCase):
         self.db = self.root / ".conversation_memory.db"
         with contextlib.closing(sqlite3.connect(self.db)) as conn, conn:
             conn.execute("CREATE TABLE conversation_turns "
-                         "(id INTEGER PRIMARY KEY, session_id TEXT, speaker TEXT, content TEXT, ts REAL)")
+                         "(id INTEGER PRIMARY KEY, session_id TEXT, speaker TEXT, "
+                         "content TEXT, ts REAL)")
             for i in range(1, 48):
-                conn.execute("INSERT INTO conversation_turns VALUES (?, ?, ?, ?, ?)",
+                conn.execute("INSERT INTO conversation_turns "
+                         "VALUES (?, ?, ?, ?, ?)",
                              (i, "principal:owner", "founder", f"message {i}", float(i)))
-            conn.execute("INSERT INTO conversation_turns VALUES (100, 'principal:other', 'founder', 'private', 100)")
-            conn.execute("INSERT INTO conversation_turns VALUES (101, 'principal:owner', 'universe', ?, 101)",
+            conn.execute("INSERT INTO conversation_turns "
+                         "VALUES (100, 'principal:other', 'founder', 'private', 100)")
+            conn.execute("INSERT INTO conversation_turns "
+                         "VALUES (101, 'principal:owner', 'universe', ?, 101)",
                          ("α🙂\\n\x00tail",))
         self.before = self.db.read_bytes()
 
     def test_pages_cover_all_retained_messages_despite_new_arrival(self):
         first = read_conversation_page(self.root, "principal:owner")
         with contextlib.closing(sqlite3.connect(self.db)) as conn, conn:
-            conn.execute("INSERT INTO conversation_turns VALUES (102, 'principal:owner', 'founder', 'new', 102)")
+            conn.execute("INSERT INTO conversation_turns "
+                         "VALUES (102, 'principal:owner', 'founder', 'new', 102)")
         ids = [r["id"] for r in first["messages"]]
         cursor = first["next_offset"]
         while cursor is not None:
@@ -86,6 +94,7 @@ class ConversationPagingTests(unittest.TestCase):
                          "engine dependencies are not installed in this workspace")
     def test_engine_route_pins_owner_and_returns_untrusted_history(self):
         from unittest.mock import Mock
+
         from tinyassets import engine_mcp_server as engine
         self.assertIn("conversation", engine._PINNED_READ_TARGETS)
         reset = Mock()
@@ -96,7 +105,8 @@ class ConversationPagingTests(unittest.TestCase):
              patch("tinyassets.auth.middleware._current_identity",
                    types.SimpleNamespace(reset=reset)), \
              patch("tinyassets.api.branches._base_path", return_value=self.root.parent), \
-             patch("tinyassets.shared_self.require_founder_home", return_value=self.root) as owner, \
+             patch("tinyassets.shared_self.require_founder_home",
+                   return_value=self.root) as owner, \
              patch("tinyassets.universe_server.read_graph") as delegated:
             payload = json.loads(engine.read_graph(target="conversation", field_name="101"))
             self.assertTrue(payload["untrusted"])
@@ -187,21 +197,26 @@ class SharedSelfTests(unittest.TestCase):
         intelligence = types.ModuleType("tinyassets.universe_intelligence")
         intelligence.interlocutor = types.SimpleNamespace(FOUNDER="founder")
         seen = []
-        intelligence._build_persona_system_prompt = lambda root, **kw: seen.append(("persona", kw)) or "current brain"
+        intelligence._build_persona_system_prompt = (
+            lambda root, **kw: seen.append(("persona", kw)) or "current brain"
+        )
         intelligence._conversation_history_block = lambda history: "history:" + history[0]
         intelligence._CROSS_SURFACE_CONTINUITY = "continuity"
         intelligence._turn_input_method_context = lambda method: "input:" + method
         def config(ctx, **kwargs):
             seen.append(("tools", kwargs))
-            return ModelConfig(engine_mcp_enabled=True, engine_mcp_actor_id=kwargs["founder_principal"],
+            return ModelConfig(engine_mcp_enabled=True,
+                               engine_mcp_actor_id=kwargs["founder_principal"],
                                engine_mcp_graph_id=kwargs["universe_id"], sandbox_chat=True,
                                allowed_tools=("same",))
         intelligence._sandboxed_config = config
         with patch.object(tinyassets, "universe_intelligence", intelligence, create=True), \
              patch.dict(sys.modules, {"tinyassets.universe_intelligence": intelligence}), \
-             patch("tinyassets.shared_self.require_founder_home", return_value=Path("/tmp/u-own")), \
+             patch("tinyassets.shared_self.require_founder_home",
+                   return_value=Path("/tmp/u-own")), \
              patch("tinyassets.config.load_universe_config", return_value=None), \
-             patch("tinyassets.conversation_store.load_recent_readonly", side_effect=[["old"], ["new"], ["new"]]) as history:
+             patch("tinyassets.conversation_store.load_recent_readonly",
+                   side_effect=[["old"], ["new"], ["new"]]) as history:
             first = prepare_shared_self_turn(Path("/tmp"), "u-own", "owner", "direction")
             second = prepare_shared_self_turn(Path("/tmp"), "u-own", "owner", "direction")
             self.assertEqual(first[0], "history:olddirection")
@@ -264,7 +279,8 @@ class ProviderSeamTests(unittest.TestCase):
             # Unchanged except the provider-agnostic workflow-node mark every
             # node call carries (2026-09-24 provider latency root cause).
             self.assertEqual(
-                received[-1], ("plain", "", dataclasses.replace(plain, workflow_node=True)),
+                received[-1], ("plain", "", dataclasses.replace(
+                    plain, workflow_node=True, request_purpose="helper")),
             )
             session._branch_snapshot["node_defs"][0]["tools_allowed"] = ["universe_self"]
             shared = ModelConfig(engine_mcp_enabled=True)

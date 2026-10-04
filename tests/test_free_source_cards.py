@@ -171,6 +171,7 @@ def test_key_cards_are_ordered_by_daily_allowance_and_one_reader_serves_caps():
     assert [c["id"] for c in source_cards()] == ["groq", "google_ai_studio", "mistral", "cerebras"]
     assert daily_cap_for_host("openrouter.ai") == {
         "requests_per_day": 50, "credit_requests_per_day": 1000, "reset_timezone": "UTC",
+        "credit_amount": "$10",
         "name": "OpenRouter", "credit_url": "https://openrouter.ai/settings/credits"}
     assert daily_cap_for_host("api.groq.com") == {
         "requests_per_day": 1000, "credit_requests_per_day": None, "reset_timezone": None,

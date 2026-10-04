@@ -436,6 +436,32 @@ _LATENCY_STATUS_RESP = _sse({
 })
 
 
+def _pin_clock(monkeypatch, times):
+    """Replace the clock `_cmd_latency` reads, and nothing else.
+
+    NOT `monkeypatch.setattr(mcp_probe.time, "monotonic", ...)`, which is what
+    these tests used to do. `mcp_probe` does `import time`, so `mcp_probe.time`
+    IS the `time` module: that patched `time.monotonic` process-wide, against a
+    sequence sized for this one function's two calls. Any other code in the
+    process consulting the clock inside the patch window -- a lingering worker
+    thread, a `ThreadPoolExecutor` queue wait -- stole a value and the test died
+    with `StopIteration`. It was a recurring CI flake, and it got likelier as
+    the repo added background work.
+
+    An exactly-sized iterator is the right fake NOW that nothing else reads the
+    seam: if `_cmd_latency` ever changes how many times it reads the clock, this
+    fails loudly instead of quietly measuring the wrong interval.
+
+    The general rule, which is the transferable part: a replacement installed on
+    a SHARED module must be stateless, because you do not control who else
+    calls it. `lambda: cell[0]` is fine and is what most of this suite already
+    does. Anything that consumes a sequence, counts calls, appends, or raises
+    needs a seam only the code under test reads -- either a module attribute
+    like this one, or `setattr(module, "time", SimpleNamespace(...))`.
+    """
+    monkeypatch.setattr(mcp_probe, "_clock", lambda: next(times))
+
+
 class TestSubcommands:
     def _run(self, monkeypatch, argv, urlopen_seq):
         monkeypatch.setattr(sys, "argv", ["tinyassets-probe"] + argv)
@@ -514,7 +540,7 @@ class TestSubcommands:
             (_LATENCY_STATUS_RESP, None),
         )
         times = iter([10.0, 10.125])
-        monkeypatch.setattr(mcp_probe.time, "monotonic", lambda: next(times))
+        _pin_clock(monkeypatch, times)
         rc = self._run(monkeypatch, ["--url", "http://fake", "latency"], seq)
         out = capsys.readouterr().out
         assert rc == 0
@@ -529,7 +555,7 @@ class TestSubcommands:
             (_LATENCY_STATUS_RESP, None),
         )
         times = iter([20.0, 20.05])
-        monkeypatch.setattr(mcp_probe.time, "monotonic", lambda: next(times))
+        _pin_clock(monkeypatch, times)
         rc = self._run(monkeypatch, ["--url", "http://fake", "--raw", "latency"], seq)
         out = capsys.readouterr().out
         parsed = json.loads(out)

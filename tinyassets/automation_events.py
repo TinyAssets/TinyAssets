@@ -433,6 +433,11 @@ def emit_owner_message(universe_dir: str | Path, *, principal_id: str) -> list[s
     when ``universe_dir`` is that home. A visitor's message wakes nothing.
     """
     udir = Path(universe_dir)
+    # The owner interacted: their proactive cadence returns to engaged (design
+    # D7). Only the trigger's own owner counts; never raises.
+    from tinyassets.control_plane.scheduler import note_owner_engagement
+
+    note_owner_engagement(udir.parent, command_center_id=udir.name, principal_id=principal_id)
     return emit(
         udir.parent,
         event_type=EVENT_OWNER_MESSAGE,

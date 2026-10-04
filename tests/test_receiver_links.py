@@ -9,7 +9,11 @@ import json
 import multiprocessing
 import os
 import sqlite3
+import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
+from pathlib import Path
 
 import pytest
 
@@ -27,6 +31,45 @@ from tinyassets.storage import db_path
 from tinyassets.storage import receiver_links as store
 
 
+@contextmanager
+def _receiver_delivery_workers(base, monkeypatch):
+    """Own actual delivery Futures until this fixture's patches can be undone."""
+    from tinyassets import delivery_runtime, runs
+    from tinyassets.storage import deliveries
+
+    dispatch = delivery_runtime.dispatch_accepted_delivery
+    futures = set()
+    lock = threading.Lock()
+
+    def tracked(base_path, *, delivery_id, attempt=1):
+        submitted = dispatch(base_path, delivery_id=delivery_id, attempt=attempt)
+        if Path(base_path).resolve() == base.resolve():
+            with deliveries.transaction(base) as conn:
+                row = conn.execute(
+                    "SELECT run_id FROM graph_delivery_attempts "
+                    "WHERE delivery_id=? AND attempt=?", (delivery_id, attempt),
+                ).fetchone()
+            future = runs.get_future(row["run_id"]) if row is not None else None
+            if future is not None:
+                with lock:
+                    futures.add(future)
+        return submitted
+
+    monkeypatch.setattr(delivery_runtime, "dispatch_accepted_delivery", tracked)
+    try:
+        yield
+    finally:
+        deadline = time.monotonic() + 10
+        while True:
+            with lock:
+                pending = list(futures)
+                futures.clear()
+            if not pending:
+                break
+            for future in pending:
+                future.result(timeout=max(0, deadline - time.monotonic()))
+
+
 @pytest.fixture
 def env(tmp_path, monkeypatch, authenticate_request):
     base = tmp_path / "data"
@@ -41,7 +84,10 @@ def env(tmp_path, monkeypatch, authenticate_request):
             permission="admin",
         )
         _seed(base, owner)
-    return base, authenticate_request
+    # Provider doubles and the data-root environment belong to the shared
+    # monkeypatch fixture. Drain before that dependency restores either one.
+    with _receiver_delivery_workers(base, monkeypatch):
+        yield base, authenticate_request
 
 
 def _seed(base, owner, *, schema=None, author=None):
