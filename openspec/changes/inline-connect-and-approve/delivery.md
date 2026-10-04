@@ -103,3 +103,41 @@ OpenSpec checks passed. Hosted and live acceptance remain separate requirements.
 The full change remains open for the unchecked work above.
 
 Implemented S1 requirements are now recorded in `openspec/specs/inline-connect-and-approve/spec.md` during the PR drain. This partial as-built sync does not mark the broader unchecked change complete or assert deployment.
+
+## First web sign-in follow-up (2026-10-04)
+
+Branch `fix/single-signin-first-connect` fixes concern item 1 for fresh web
+sign-in. Normal web login reuses the existing protected server-PKCE callback,
+establishing owner proof and app renewal together. The token proxy and native
+login do not mint owner proof. The native browser still needs its own protected
+login before OpenRouter when it has no live owner cookie; completion still asks
+the user to return to chat. Eight-hour owner expiry is unchanged on both paths.
+The as-built web-login requirement is synced to `onboarding-web-app` only;
+broader server-completed model-connect work remains unfinished.
+
+One Claude cross-family review via `peer-agents`: **ADAPT**, no floor findings.
+**AGREE** with the pending-logout correctness finding: finish a previously failed
+logout before starting web login, rather than letting it revoke new cookies.
+The public completion marker deliberately cannot clear logout intent. New Node
+regressions cover successful and failed cleanup plus marker non-authority.
+**AGREE** with the expiry documentation finding: distinguish eight-hour owner
+proof from seven-day app renewal in the concern and design. Existing owner,
+CSRF, cross-user, action-binding and copied-URL tests remain unchanged.
+
+This lane is commit-and-push only by user instruction: no PR, deployment, or
+real-user production pass is claimed.
+
+Final verification: Windows **432 passed, 6 skipped** (four protected-lock POSIX
+cases and two POSIX-mode cases); Linux oracle Python **3.11.16**, uid 1001,
+bwrap 0.12.0: **438 passed, no skips**. The selected files were
+`test_app_owner_sign_in`, `test_inline_owner_sessions`, `test_inline_model_connect`,
+`test_inline_approvals`, `test_inline_request_storage`, `test_agent_rules`,
+`test_onboarding_app`, `test_onboarding_session_refresh`,
+`test_refresh_session_hardening`, `test_refresh_session_seal`,
+`test_onboarding_auth_boundary`, `test_app_notification_routes`,
+`test_onboarding_model_connect`, `test_app_url_is_apex_app`,
+`test_mirror_parity_gate`, and `test_pre_commit_mirror_parity` under `tests/`.
+Windows used external basetemp `C:/Users/Jonathan/AppData/Local/Temp/ta-single-signin-final`;
+`python scripts/linux_oracle.py -- <same files> -q -ra` used external `/tmp/b`.
+All 15 new regressions passed. Plugin rebuild/import, changed-Python Ruff,
+strict OpenSpec validation (`--type change`), and `git diff --check` passed.

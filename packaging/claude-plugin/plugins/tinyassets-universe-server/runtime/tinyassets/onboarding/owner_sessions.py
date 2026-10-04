@@ -116,8 +116,9 @@ async def begin(request):
         return JSONResponse(
             {"error": "interactive_sign_in_required"}, status_code=403, headers=HEADERS
         )
+    app_login = getattr(request, "query_params", {}).get("app") == "1"
     state, cookie, verifier = (
-        "oa_" + secrets.token_urlsafe(32),
+        ("oa_app_" if app_login else "oa_") + secrets.token_urlsafe(32),
         secrets.token_urlsafe(32),
         secrets.token_urlsafe(48),
     )
@@ -172,6 +173,8 @@ async def callback(request):
         return response
 
     state = request.query_params.get("state", "")
+    # Purpose is part of the server-minted, persisted state, not a callback flag.
+    app_login = state.startswith("oa_app_")
     cookie = request.cookies.get(FLOW_COOKIE, "")
     with store() as conn:
         conn.execute("BEGIN IMMEDIATE")
@@ -199,10 +202,12 @@ async def callback(request):
                 },
             )
         result.raise_for_status()
-        identity = await run_in_threadpool(
-            _get_provider().resolve_token, result.json()["access_token"]
-        )
+        tokens = result.json()
+        identity = await run_in_threadpool(_get_provider().resolve_token, tokens["access_token"])
         if identity is None or not identity.user_id:
+            return refused()
+        refresh = tokens.get("refresh_token")
+        if app_login and (not isinstance(refresh, str) or not 0 < len(refresh) <= 4096):
             return refused()
     except (httpx.HTTPError, ValueError, KeyError, InvalidTag):
         return refused()
@@ -216,8 +221,20 @@ async def callback(request):
     # No tokens/codes in callback output or browser scripts. Strip the query.
     from tinyassets.onboarding.inline_model_connect import RETURN_COOKIE, return_path
 
-    response = RedirectResponse(return_path(request, identity.user_id), status_code=303,
+    destination = "/app?owner_login=1" if app_login else return_path(request, identity.user_id)
+    response = RedirectResponse(destination, status_code=303,
                                 headers=HEADERS)
+    if app_login:
+        from tinyassets.onboarding import (
+            _REFRESH_COOKIE,
+            _REFRESH_COOKIE_MAX_AGE,
+            _REFRESH_COOKIE_PATH,
+        )
+
+        response.set_cookie(
+            _REFRESH_COOKIE, refresh, max_age=_REFRESH_COOKIE_MAX_AGE,
+            path=_REFRESH_COOKIE_PATH, secure=True, httponly=True, samesite="strict",
+        )
     response.delete_cookie(RETURN_COOKIE, secure=True, httponly=True, samesite="lax")
     response.delete_cookie(FLOW_COOKIE, secure=True, httponly=True, samesite="lax")
     response.set_cookie(

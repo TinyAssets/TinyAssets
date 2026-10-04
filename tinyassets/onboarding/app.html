@@ -888,6 +888,23 @@
         "This app isn't configured yet (missing WorkOS client). Ask the host to set it.";
       return;
     }
+    if(!NATIVE){
+      // Finish a failed sign-out BEFORE replacing its cookies. Do not clear
+      // logout intent from the public callback marker: it proves nothing.
+      let pendingLogout=logoutPending;
+      try{ pendingLogout=pendingLogout || localStorage.getItem("ta_logout_pending")==="1"; }catch(_e){}
+      if(pendingLogout){
+        if(!(await endServerSession())){
+          document.getElementById("signin-notice").textContent =
+            "Sign-out could not finish. Try signing in again when connected.";
+          return;
+        }
+      }
+      // One browser-bound, server-PKCE login establishes app renewal AND owner
+      // proof. Never upgrade a page/MCP bearer into an approval session.
+      window.location.href = "/app/owner-sign-in?app=1";
+      return;
+    }
     const verifier = randToken(48);
     // An app-initiated sign-in is marked in `state` so the callback page (which
     // lands in the in-app tab, NOT the WebView) knows to bounce the code back.
@@ -988,6 +1005,16 @@
 
   async function completeSignInIfCallback(){
     const q = new URLSearchParams(window.location.search);
+    if(!NATIVE && q.get("owner_login")==="1"){
+      history.replaceState({}, "", redirectUri());
+      // This is only a completion signal, never a credential. Discard the old
+      // account's token/handle and use the HttpOnly cookie from the callback.
+      sessionStorage.removeItem(TOKEN_KEY);
+      sessionStorage.removeItem(EXP_KEY);
+      sessionStorage.removeItem("ta_force_login");
+      clearSessionRef();
+      return (await refreshAccessToken(true))===true;
+    }
     if(q.get("error")){
       document.getElementById("signin-notice").textContent =
         q.get("error_description") || q.get("error");
@@ -1070,7 +1097,7 @@
   // connection, a proxy page). Only false may sign anyone out. Treating null as
   // false turned a transient edge 503 on a tab resumed from sleep into a
   // sign-out that erased the message being sent (live, 2026-09-24).
-  async function refreshAccessToken(){
+  async function refreshAccessToken(cookieOnly=false){
     if(refreshing) return refreshing;
     let pendingLogout = logoutPending;
     try{ pendingLogout = pendingLogout || localStorage.getItem("ta_logout_pending")==="1"; }catch(_e){}
@@ -1085,7 +1112,7 @@
       try{
         const r = await fetch("/app/token", {method:"POST", credentials:"same-origin",
           headers:{"Content-Type":"application/json"},
-          body: JSON.stringify({grant_type:"refresh_token", session_ref: sessionRef() || undefined})});
+          body: JSON.stringify({grant_type:"refresh_token", session_ref: cookieOnly ? undefined : sessionRef() || undefined})});
         if(!r.ok) return (r.status>=500 || r.status===429 || r.status===408) ? null : false;
         let doc;
         try{ doc = await r.json(); }catch(_e){ return null; }   // a 200 that is not our JSON
