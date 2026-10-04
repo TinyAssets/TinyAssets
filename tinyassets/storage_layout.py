@@ -4,8 +4,9 @@ The universe -> command center cutover (`openspec/changes/rename-universe-to-
 command-center`, design D7.2 / D10) renames tables, columns, files and ids in one
 locked migration run. An image built for the old layout must never start against
 renamed data: it would find no ``universes`` table and could create a blank home
-for a person who already has one. So this marker ships first (C4a), alone, and is
-the production baseline before any migration exists:
+for a person who already has one. The marker shipped first (C4a) as the
+production baseline; layout 2 now records the consent sidecar move, before
+the naming cutover:
 
 * ``data_dir()/.layout.json`` holds ``{"layout": <n>, "state": "stable"}``,
   written the first time an image that knows layout 1 finds none.
@@ -37,13 +38,17 @@ import json
 import os
 import sys
 import tempfile
+import time
 from pathlib import Path
 from typing import Any
 
-#: The layout this code reads and writes. The cutover's image bumps it to 2.
-LAYOUT = 1
+from tinyassets.storage import platform_state_move as psm
+
+#: Layout 2 moves consent authority outside homes. The naming cutover must use
+#: a subsequent version; reusing 2 would admit this image onto renamed data.
+LAYOUT = 2
 #: Layouts this code understands. A newer one means "migrated past me".
-KNOWN_LAYOUTS = frozenset({1})
+KNOWN_LAYOUTS = frozenset({1, 2})
 STABLE = "stable"
 MARKER = ".layout.json"
 LOCK = ".layout.lock"
@@ -88,10 +93,14 @@ if sys.platform == "win32":  # pragma: no cover - exercised on Windows installs
     _kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
     _LOCKFILE_EXCLUSIVE = 0x2
 
-    def _lock(fd: int, exclusive: bool) -> None:
+    def _lock(fd: int, exclusive: bool, *, blocking: bool = True) -> None:
         handle = msvcrt.get_osfhandle(fd)
         flags = _LOCKFILE_EXCLUSIVE if exclusive else 0
+        if not blocking:
+            flags |= 0x1  # LOCKFILE_FAIL_IMMEDIATELY
         if not _kernel32.LockFileEx(handle, flags, 0, 1, 0, ctypes.byref(_Overlapped())):
+            if not blocking and ctypes.get_last_error() == 33:  # ERROR_LOCK_VIOLATION
+                raise BlockingIOError("layout lock held")
             raise OSError(ctypes.get_last_error(), "LockFileEx failed on the layout lock")
 
     def _unlock(fd: int) -> None:
@@ -100,8 +109,9 @@ if sys.platform == "win32":  # pragma: no cover - exercised on Windows installs
 else:
     import fcntl
 
-    def _lock(fd: int, exclusive: bool) -> None:
-        fcntl.flock(fd, fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH)
+    def _lock(fd: int, exclusive: bool, *, blocking: bool = True) -> None:
+        flags = fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH
+        fcntl.flock(fd, flags | (0 if blocking else fcntl.LOCK_NB))
 
     def _unlock(fd: int) -> None:
         fcntl.flock(fd, fcntl.LOCK_UN)
@@ -166,27 +176,63 @@ def _validated(base: Path, document: dict[str, Any]) -> dict[str, Any]:
     return document
 
 
+def _mark_move(base: Path, state: str) -> None:
+    """Record a one-way move's state in the marker, durably, before it changes
+    anything. A crash between the two writes leaves ``migrating``, which the
+    next admission sees and resumes from."""
+    document = read_marker(base) or {"layout": LAYOUT, "state": STABLE}
+    moves = dict(document.get(psm.MOVES) or {})
+    moves[psm.CONSENTS] = state
+    _write_atomically(marker_path(base), {
+        **document, "layout": LAYOUT,
+        "state": psm.MIGRATING if state == psm.MIGRATING else STABLE,
+        psm.MOVES: moves,
+    })
+
+
+def _validate_for_move(base: Path, document: dict[str, Any]) -> None:
+    # Only OUR interrupted move is resumable. Other migrations still refuse.
+    if (document.get("layout") == LAYOUT
+            and document.get("state") == psm.MIGRATING
+            and (document.get(psm.MOVES) or {}).get(psm.CONSENTS) == psm.MIGRATING):
+        return
+    _validated(base, document)
+
+
 def _admit(base: Path, *, hold: bool) -> dict[str, Any]:
     """Lock shared, then read and validate; initialise under the exclusive lock."""
     base = Path(base)
     base.mkdir(parents=True, exist_ok=True)
     fd = _open_lock(base)
     try:
-        _lock(fd, exclusive=False)
-        document = read_marker(base)
-        if document is None:
-            # First start: only one process may write the marker.
-            _unlock(fd)
-            _lock(fd, exclusive=True)
-            if read_marker(base) is None:
-                _write_atomically(marker_path(base), {"layout": LAYOUT, "state": STABLE})
-            _unlock(fd)
+        while True:
             _lock(fd, exclusive=False)
-            # Re-read under the shared lock: whatever ran in the gap is what counts.
             document = read_marker(base)
-            if document is None:
-                raise LayoutRefused(f"{marker_path(base)} vanished during first start")
-        _validated(base, document)
+            if document is not None:
+                _validate_for_move(base, document)
+                if not psm.move_needed(document) and document.get("layout") == LAYOUT:
+                    _validated(base, document)
+                    break
+            _unlock(fd)
+            # Never queue an exclusive waiter behind an admitted process's
+            # lifetime shared lock. It may have completed the move since our
+            # read. Reacquire shared and inspect its result on every retry.
+            try:
+                _lock(fd, exclusive=True, blocking=False)
+            except BlockingIOError:
+                time.sleep(0.05)
+                continue
+            try:
+                document = read_marker(base)
+                if document is not None:
+                    _validate_for_move(base, document)
+                if psm.move_needed(document):
+                    psm.run(base, mark=lambda state: _mark_move(base, state))
+                else:
+                    # Fence volumes already moved by the unfenced PR image.
+                    _mark_move(base, psm.DONE)
+            finally:
+                _unlock(fd)
     except BaseException:
         os.close(fd)
         raise

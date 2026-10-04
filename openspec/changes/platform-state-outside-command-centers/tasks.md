@@ -10,12 +10,12 @@
 
 ## 2. Move the consent database (closes the live authority hole)
 
-- [ ] 2.1 `storage/effector_consents.py`: `consents_db_path` returns
+- [x] 2.1 `storage/effector_consents.py`: `consents_db_path` returns
       `<data>/.universe-sidecars/<cc>/.effector_consents.db`. Nothing else in
       the module changes.
-- [ ] 2.2 Migration in `storage_layout.py`, under the exclusive lock, with the
+- [x] 2.2 Migration in `storage_layout.py`, under the exclusive lock, with the
       marker refusing a pre-move image: idempotent, resumable, and refusing a
-      command center that has both copies (design D3). The in-folder file is
+      command center that has unexplained copies (design D3). The in-folder file is
       renamed aside, not deleted.
 - [ ] 2.3 The re-ask wording: the ordinary consent ask, raised at first use of
       each effect, saying it is a one-time re-confirmation after a security

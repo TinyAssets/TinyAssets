@@ -151,11 +151,12 @@ SUPABASE_SERVICE_ROLE_KEY=
 # GitHub OAuth (Row A — tier-1 user auth)
 # ---------------------------------------------------------------------
 
-# GitHub OAuth App created for the TinyAssets connector. Callback URL
-# registered on the OAuth app must match the canonical:
-#   https://tinyassets.io/authorize/github/callback
-GITHUB_OAUTH_CLIENT_ID=
-GITHUB_OAUTH_CLIENT_SECRET=
+# Removed 2026-10-03 (founder: "all unused secrets get removed"):
+# GITHUB_OAUTH_CLIENT_ID / GITHUB_OAUTH_CLIENT_SECRET. Nothing read either --
+# no route serves the callback they describe, and `git grep authorize/github`
+# finds no flow anywhere under tinyassets/, WebSite/ or scripts/. The deploy
+# deletes both from /etc/tinyassets/env and asserts the secret absent, so they
+# are gone rather than guarded; re-add them WITH the code that reads them.
 
 
 # ---------------------------------------------------------------------

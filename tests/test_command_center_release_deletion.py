@@ -3,6 +3,9 @@
 import gc
 import json
 import sqlite3
+import threading
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 
 import pytest
 
@@ -15,6 +18,127 @@ from tinyassets import command_center_packages as packages
 from tinyassets import command_center_release_series as releases
 from tinyassets.command_center_updates import digest
 from tinyassets.custom_agents import _agent_connect
+from tinyassets.storage import db_path
+from tinyassets.storage.current_home import CurrentHomeChanged
+
+
+@pytest.mark.parametrize("home_state", ["original", "changed", "none"])
+def test_inflight_consent_pin_refuses_after_account_deletion(published, monkeypatch, home_state):
+    from tinyassets.api.pending_requests import _pin_consent
+
+    data = published
+    package_db = packages.database_path(data["base"])
+    with packages._db(data["base"]) as conn:
+        record = json.loads(conn.execute(
+            "SELECT record_json FROM pins WHERE owner_id=? AND kind='publish'",
+            (data["publisher"],),
+        ).fetchone()[0])
+    assert record["action"]["release_link"]["identity_hashes"]
+    with _agent_connect(data["base"]) as conn:
+        if home_state == "changed":
+            conn.execute("UPDATE founder_home SET universe_id=? WHERE founder_sub=?",
+                         ("changed-publisher-home", data["publisher"]))
+        elif home_state == "none":
+            conn.execute("DELETE FROM founder_home WHERE founder_sub=?", (data["publisher"],))
+
+    entered, resume = threading.Event(), threading.Event()
+    original_db = packages._db
+
+    @contextmanager
+    def paused_db(base):
+        # The real adapter has already retained its caller and captured link.
+        # Pause before acquiring any database/admission fence, without sleeps.
+        entered.set()
+        assert resume.wait(20), "test did not resume pin writer"
+        with original_db(base) as conn:
+            yield conn
+
+    def write():
+        with _as(data["publisher"]):
+            tab = record["tab"]
+            return _pin_consent(data["publisher_home"], record["action"],
+                                (tab["kind"], tab["title"], tab["body"]), tab["fields"])
+
+    monkeypatch.setattr(packages, "_db", paused_db)
+    gc.collect()  # Release fixture SQLite handles before Windows stages the home.
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        writing = pool.submit(write)
+        try:
+            assert entered.wait(20), "pin writer did not reach database entry"
+            receipt = account_deletion.delete_account(
+                data["base"], founder_sub=data["publisher"],
+                cancel_billing=lambda home: "cancelled", delete_identity=lambda sub: "deleted",
+            )
+            assert receipt["unfinished_phases"] == []
+            with _agent_connect(data["base"]) as conn:
+                assert conn.execute(
+                    "SELECT 1 FROM deleted_principals WHERE founder_sub=?",
+                    (account_deletion.principal_digest(data["publisher"]),),
+                ).fetchone() is not None
+        finally:
+            resume.set()
+        refusal = writing.exception(timeout=20)
+
+    with sqlite3.connect(package_db) as conn:
+        remaining = conn.execute(
+            "SELECT record_json FROM pins WHERE owner_id=?", (data["publisher"],),
+        ).fetchall()
+    assert remaining == [], "in-flight consent restored publisher-private evidence after deletion"
+    assert isinstance(refusal, CurrentHomeChanged), f"writer did not refuse loudly: {refusal!r}"
+    assert "deleted" in str(refusal)
+
+
+@pytest.mark.parametrize("kind", ["publish", "install"])
+def test_consent_pin_holds_tombstone_exclusion_through_commit(published, monkeypatch, kind):
+    data = published
+    original_db = packages._db
+    observed = []
+
+    def assert_deletion_excluded():
+        # A real independent canonical writer cannot tombstone between the
+        # authority check and pin commit. No timing assertion or mocked lock.
+        contender = sqlite3.connect(db_path(data["base"]), timeout=0)
+        try:
+            with pytest.raises(sqlite3.OperationalError, match="locked"):
+                contender.execute(
+                    "INSERT INTO deleted_principals (founder_sub, deleted_at) VALUES (?, ?)",
+                    (account_deletion.principal_digest(data["publisher"]), 1),
+                )
+        finally:
+            contender.close()
+        observed.append("excluded")
+
+    class ObservedConnection:
+        def __init__(self, conn):
+            self.conn = conn
+
+        def execute(self, sql, parameters):
+            assert sql.startswith("INSERT INTO pins")
+            assert_deletion_excluded()
+            result = self.conn.execute(sql, parameters)
+            assert not self.conn.in_transaction, "pin must commit before releasing exclusion"
+            assert_deletion_excluded()
+            return result
+
+    @contextmanager
+    def observed_db(base):
+        with original_db(base) as conn:
+            yield ObservedConnection(conn)
+
+    monkeypatch.setattr(packages, "_db", observed_db)
+    request_id = packages.pin(
+        data["base"], universe_id=data["publisher_home"], owner_id=data["publisher"],
+        kind=kind, agent="main", digest="in-flight", record={"private": "evidence"},
+    )
+    assert observed == ["excluded", "excluded"]
+    gc.collect()
+    receipt = account_deletion.delete_account(
+        data["base"], founder_sub=data["publisher"],
+        cancel_billing=lambda home: "cancelled", delete_identity=lambda sub: "deleted",
+    )
+    assert receipt["unfinished_phases"] == []
+    with sqlite3.connect(packages.database_path(data["base"])) as conn:
+        assert conn.execute("SELECT 1 FROM pins WHERE request_id=?", (request_id,)).fetchall() == []
 
 
 @pytest.mark.parametrize("home_state", ["original", "changed", "none"])
