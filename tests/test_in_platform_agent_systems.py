@@ -347,7 +347,7 @@ def test_the_tab_is_the_platforms_account_of_what_goes_public(home: Path) -> Non
     out = _ask_publish(home, automation_ids=[beat.automation_id])
     assert out.get("request_id"), out
     assert out["kind"] == "Publish"
-    assert out["title"] == 'Publish "Village" for anyone to copy?'
+    assert out["title"] == 'Publish workflow and screen bundle "Village" for anyone to copy?'
     body = out["body"]
     for needle in ("Automation demo", "The screen \"Village\"", "scout heartbeat",
                    "every 300 seconds", "its inputs stay private",

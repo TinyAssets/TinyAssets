@@ -424,8 +424,7 @@ def _page_run(tmp_path, scenario):
     from tests.test_app_working_indicator import _NODE, _run
     from tinyassets import onboarding
 
-    if _NODE is None:
-        pytest.skip("node is required to execute the page's own source")
+    assert _NODE is not None, "node is required to execute the page's own source"
     page, _csp = onboarding.render_app_html()
     return _run(tmp_path, page, scenario, _STEER_PAGE)
 
@@ -467,3 +466,457 @@ def test_an_answer_that_never_arrives_requeues_every_steered_line(tmp_path):
     out = _page_run(tmp_path, {"lost": True})
     assert out["stillQueued"] == 1
     assert out["sent"] == ["start the long job"]
+
+
+
+# -- P1, live 2026-10-02: a line sent while ANOTHER window's turn ran was lost --
+#
+# The founder's desktop app showed "Your agent is thinking... started in another
+# window"; a message sent then went out as a second, competing turn, never
+# reached the saved thread, and a reload a few seconds later left nothing to
+# recover. A mid-turn send must be saved on the SERVER before the page says it
+# was sent, must survive a reload, and must show in the thread.
+
+
+def test_a_line_with_no_open_turn_is_held_on_the_server_and_listed(monkeypatch, tmp_path):
+    from tests.test_turn_interrupt import _Request
+    from tinyassets import onboarding
+    from tinyassets.api import helpers
+    from tinyassets.auth import middleware
+
+    universe = _universe(tmp_path)
+    monkeypatch.setattr(helpers, "_base_path", lambda: tmp_path / "data")
+    monkeypatch.setattr(onboarding, "onboarding_enabled", lambda: True)
+    monkeypatch.setattr(onboarding, "_app_identity_required", lambda: None)
+    caller = SimpleNamespace(user_id="owner-1")
+    monkeypatch.setattr(middleware, "current_identity", lambda: caller)
+    from tinyassets.api import permissions
+
+    monkeypatch.setattr(permissions, "universe_access_allows",
+                        lambda uid, write=False: caller.user_id == "owner-1" and uid == "u-alpha")
+
+    response = asyncio.run(onboarding._handle_turn_steer(
+        _Request({"universe_id": "u-alpha", "text": "also check the invoice"})))
+    body = json.loads(response.body)
+    assert body["steered"] is False and body["held"] is True and body["steer_id"] > 0
+    assert [(m.text, m.state) for m in agent_steering.pending(universe, THREAD)] == [
+        ("also check the invoice", "held")]
+    # The next served turn folds it in, and a page that re-sends it is not repeated.
+    assert agent_steering.take_carryover(universe, THREAD, "also check the invoice") == []
+
+    listed = asyncio.run(onboarding._handle_turn_pending(
+        _Request({"universe_id": "u-alpha"})))
+    assert json.loads(listed.body)["pending"] == []  # taken by the turn above
+    asyncio.run(onboarding._handle_turn_steer(
+        _Request({"universe_id": "u-alpha", "text": "and the receipt"})))
+    listed = json.loads(asyncio.run(onboarding._handle_turn_pending(
+        _Request({"universe_id": "u-alpha"}))).body)["pending"]
+    assert [(p["text"], p["state"]) for p in listed] == [("and the receipt", "held")]
+    caller.user_id = "intruder"
+    other = json.loads(asyncio.run(onboarding._handle_turn_pending(
+        _Request({"universe_id": "u-alpha"}))).body)
+    assert other.get("pending", []) == []
+    refused = json.loads(asyncio.run(onboarding._handle_turn_steer(
+        _Request({"universe_id": "u-alpha", "text": "plant this"}))).body)
+    assert refused == {"steered": False, "universe_id": "u-alpha"}, "nothing saved for a stranger"
+
+
+def test_a_line_held_for_another_agent_comes_back_for_that_agent(monkeypatch, tmp_path):
+    """A line typed to one of the owner's OTHER agents is held under THAT
+    agent's thread, and the reload that asks for that agent gets it back.
+
+    The steer path routes per agent (harness §4.18) while the hold is what makes
+    a line survive (S2). Reading the main thread regardless -- which is what the
+    pending route did -- lost every line held for another agent on reload: held
+    on the server, invisible to the page, never sent.
+    """
+    from tests.conftest import own_universe
+    from tests.test_turn_interrupt import _Request
+    from tinyassets import addressed_agents, onboarding
+    from tinyassets.api import helpers, permissions
+    from tinyassets.auth import middleware
+    from tinyassets.custom_agents import create_binding, publish_definition
+    from tinyassets.daemon_server import ensure_universe_registered
+
+    base = tmp_path / "data"
+    universe = _universe(tmp_path)
+    own_universe(base, "u-alpha")
+    ensure_universe_registered(base, universe_id="u-alpha", universe_path=universe)
+    monkeypatch.setattr(helpers, "_base_path", lambda: base)
+    monkeypatch.setattr(onboarding, "onboarding_enabled", lambda: True)
+    monkeypatch.setattr(onboarding, "_app_identity_required", lambda: None)
+    caller = SimpleNamespace(user_id="owner-1")
+    monkeypatch.setattr(middleware, "current_identity", lambda: caller)
+    monkeypatch.setattr(permissions, "universe_access_allows",
+                        lambda uid, write=False: caller.user_id == "owner-1" and uid == "u-alpha")
+
+    definition = publish_definition(base, author_id="owner-1", payload={
+        "schema_version": 1, "name": "Evidence Weaver",
+        "components": {"identity": {"kind": "soul", "config": {"instructions": "Weave."}}},
+    })
+    weaver = create_binding(
+        base, universe_id="u-alpha", definition_id=definition["agent_definition_id"],
+        created_by="owner-1", payload={"schema_version": 1, "name": "Evidence Weaver"},
+    )["agent_binding_id"]
+
+    held = json.loads(asyncio.run(onboarding._handle_turn_steer(
+        _Request({"universe_id": "u-alpha", "agent_id": weaver,
+                  "text": "check the methods section"}))).body)
+    assert held["steered"] is False and held["held"] is True
+
+    # Held under the WEAVER's thread, which is where its turn will look.
+    weaver_thread = f"thread:{addressed_agents.memory_session('owner-1', weaver)}"
+    assert [m.text for m in agent_steering.pending(universe, weaver_thread)] == [
+        "check the methods section"]
+    assert agent_steering.pending(universe, THREAD) == [], "not on the main thread"
+
+    # The reload: the page asks for the agent it is showing and gets it back.
+    listed = json.loads(asyncio.run(onboarding._handle_turn_pending(
+        _Request({"universe_id": "u-alpha", "agent_id": weaver}))).body)
+    assert [(p["text"], p["state"]) for p in listed["pending"]] == [
+        ("check the methods section", "held")]
+
+    # The main thread's reload does not show another agent's line...
+    on_main = json.loads(asyncio.run(onboarding._handle_turn_pending(
+        _Request({"universe_id": "u-alpha"}))).body)
+    assert on_main["pending"] == []
+    # ...and claiming it from the main thread does not take it.
+    claimed = json.loads(asyncio.run(onboarding._handle_turn_pending(
+        _Request({"universe_id": "u-alpha", "claim": [listed["pending"][0]["id"]]}))).body)
+    assert claimed["claimed"] == []
+    assert [m.text for m in agent_steering.pending(universe, weaver_thread)] == [
+        "check the methods section"], "still held for its own agent"
+
+    # Claimed once, by the agent it was held for.
+    claimed = json.loads(asyncio.run(onboarding._handle_turn_pending(
+        _Request({"universe_id": "u-alpha", "agent_id": weaver,
+                  "claim": [listed["pending"][0]["id"]]}))).body)
+    assert claimed["claimed"] == [listed["pending"][0]["id"]]
+
+    # An id that is not one of the owner's agents is refused by name, never
+    # answered with the main thread's lines.
+    unknown = asyncio.run(onboarding._handle_turn_pending(
+        _Request({"universe_id": "u-alpha", "agent_id": "not-an-agent"})))
+    assert unknown.status_code == 404
+    assert json.loads(unknown.body)["error"] == "agent_not_found"
+
+
+_OTHER_WINDOW = r"""
+globalThis.authHeaders=()=>({});
+const posts=[];
+globalThis.fetch=(url,init)=>{
+  const method=(init&&init.method)||"GET";
+  posts.push({url, method, body:init&&init.body?JSON.parse(init.body):null});
+  const body=init&&init.body?JSON.parse(init.body):{};
+  const doc=url==="/app/turn/steer"?SCENARIO.post
+    :(body.claim?(SCENARIO.claim||{claimed:body.claim}):(SCENARIO.pending||{pending:[]}));
+  return Promise.resolve({ok:true,status:200,json:async()=>doc});
+};
+// The page learns its account and home with the server answering, as on load.
+setQueueOwner("p-1"); setQueueScope("u-1");
+// Which agent the page is showing, when the scenario names one. Injected as
+// the global collaborator the page asks for through `typeof`, which is how the
+// agent switcher reaches this code; with none, the page is on the main agent.
+if(SCENARIO.agent) globalThis.addressedAgentId=()=>SCENARIO.agent.agent_id;
+const working={active_turn:{turn_id:"t9",state:"inference_started",age_s:5,stale:false}};
+readServerTurn(working);
+if(SCENARIO.reload){ queueRestored=false; restoreQueue(); }
+else { sendTurn("also check the invoice"); }
+await settle(); await settle(); await settle();
+const during={converse:converseCalls.slice(), queued:sendQueue.length,
+  posts:posts.filter(p=>p.url==="/app/turn/steer").map(p=>p.body&&p.body.text),
+  pending:posts.filter(p=>p.url==="/app/turn/pending").map(p=>p.body),
+  thread:bubbles().map(b=>b.text)};
+readServerTurn({active_turn:null});
+await settle(); await settle(); await settle();
+console.log(JSON.stringify({during, sent:converseCalls.slice(), queuedAfter:sendQueue.length}));
+"""
+
+
+def _other_window(tmp_path, scenario, script=None):
+    from tests.test_app_working_indicator import _NODE, _run
+    from tinyassets import onboarding
+
+    assert _NODE is not None, "node is required to execute the page's own source"
+    page, _csp = onboarding.render_app_html()
+    return _run(tmp_path, page, scenario, script or _OTHER_WINDOW)
+
+
+def test_a_send_during_another_windows_turn_is_held_not_a_competing_turn(tmp_path):
+    out = _other_window(tmp_path, {"post": {"steered": False, "held": True, "steer_id": 3}})
+    assert out["during"]["converse"] == [], "no second turn while one is running"
+    assert out["during"]["posts"] == ["also check the invoice"], "saved on the server first"
+    assert "also check the invoice" in out["during"]["thread"], "it shows in the thread"
+    assert out["during"]["queued"] == 1
+    assert out["sent"] == ["also check the invoice"], "it goes out when the turn ends"
+
+
+def test_a_send_into_another_windows_open_turn_steers_it(tmp_path):
+    out = _other_window(tmp_path, {"post": {"steered": True, "steer_id": 3}})
+    assert out["during"]["converse"] == [] and out["during"]["queued"] == 0
+    assert out["sent"] == [], "the running turn heard it: no second turn"
+
+
+def test_a_held_line_survives_a_reload_and_still_goes_out(tmp_path):
+    held = {"pending": [{"id": 3, "text": "also check the invoice", "state": "held"}]}
+    out = _other_window(tmp_path, {"reload": True, "pending": held})
+    assert "also check the invoice" in out["during"]["thread"], "back on screen after reload"
+    assert out["during"]["queued"] == 1 and out["during"]["converse"] == []
+    assert out["sent"] == ["also check the invoice"]
+    # The read names the agent it is for, so the server can answer from that
+    # agent's thread; the main agent is "main".
+    assert [p["agent_id"] for p in out["during"]["pending"]] == ["main"]
+
+
+def test_a_reload_showing_another_agent_asks_for_that_agents_held_line(tmp_path):
+    """The reload of a page showing one of the owner's other agents asks for
+    THAT agent's held lines, and puts them back on screen.
+
+    Without the agent id on the read the server answers from the main thread,
+    so a line held for this agent stays on the server and is never sent."""
+    held = {"pending": [{"id": 4, "text": "check the methods section", "state": "held"}]}
+    out = _other_window(tmp_path, {
+        "reload": True, "pending": held,
+        "agent": {"agent_id": "w1", "name": "Evidence Weaver"}})
+
+    assert [p["agent_id"] for p in out["during"]["pending"]] == ["w1"]
+    assert "check the methods section" in out["during"]["thread"], "back on screen"
+    assert out["during"]["queued"] == 1 and out["during"]["converse"] == []
+    assert out["sent"] == ["check the methods section"]
+
+
+# -- gpt-6-astra on #4290: ids, not text, decide what is sent once -------------
+
+
+def test_a_held_line_is_claimed_once_whatever_its_shape(tmp_path):
+    universe = _universe(tmp_path)
+    held = agent_steering.hold(universe, THREAD, "first part\n\nsecond part")
+    assert agent_steering.claim(universe, THREAD, [held.id]) == [held.id]
+    assert agent_steering.claim(universe, THREAD, [held.id]) == [], "a second tab gets nothing"
+    assert agent_steering.take_carryover(universe, THREAD, "anything") == [], "and no repeat"
+    other = agent_steering.hold(universe, "thread:principal:someone-else", "theirs")
+    assert agent_steering.claim(universe, THREAD, [other.id]) == [], "only your own thread"
+
+
+def test_the_running_turns_message_is_known_for_a_reload(tmp_path):
+    universe = _universe(tmp_path)
+    agent_steering.open_turn(universe, THREAD, "live-1", message="build the village map")
+    active = agent_steering.active(universe, THREAD)
+    assert active["text"] == "build the village map" and active["started_at"] > 0
+    agent_steering.settle(universe, THREAD, "live-1")
+    assert agent_steering.active(universe, THREAD) is None
+
+
+def test_a_held_line_another_tab_already_sent_is_not_sent_again(tmp_path):
+    held = {"pending": [{"id": 3, "text": "also check the invoice", "state": "held"}]}
+    out = _other_window(tmp_path, {"reload": True, "pending": held, "claim": {"claimed": []}})
+    assert out["sent"] == [], "the claim failed: someone else already sent it"
+
+
+_IDLE_FLUSH = r"""
+globalThis.authHeaders=()=>({});
+globalThis.fetch=()=>Promise.resolve({ok:true,status:200,json:async()=>({pending:[],claimed:[]})});
+setQueueOwner("p-1"); setQueueScope("u-1");
+queueTurn("waiting line","waiting line",{inputMethod:"typed"});
+// The busy window was never seen live by this page (a poll gap), then idle.
+readServerTurn({active_turn:null});
+await settle(); await settle();
+console.log(JSON.stringify({sent:converseCalls.slice()}));
+"""
+
+
+def test_an_idle_answer_sends_what_waits_even_without_seeing_the_turn_end(tmp_path):
+    from tests.test_app_working_indicator import _NODE, _run
+    from tinyassets import onboarding
+
+    assert _NODE is not None, "node is required"
+    page, _csp = onboarding.render_app_html()
+    out = _run(tmp_path, page, {}, _IDLE_FLUSH)
+    assert out["sent"] == ["waiting line"]
+
+
+_KEEP_LOCAL = r"""
+globalThis.authHeaders=()=>({});
+globalThis.fetch=()=>Promise.resolve({ok:true,status:200,json:async()=>(
+  {pending:[{id:3,text:"from the server",state:"held"}]})});
+localStorage.setItem(QUEUE_KEY, JSON.stringify([{message:"only on this device",
+  display:"only on this device", owner:"p-1", scope:"u-1", ts:Date.now(), inputMethod:"typed"}]));
+readServerTurn({active_turn:{turn_id:"t9",state:"inference_started",age_s:5,stale:false}});
+setQueueOwner("p-1"); setQueueScope("u-1");
+queueRestored=false; restoreQueue();
+await settle(); await settle(); await settle();
+console.log(JSON.stringify({saved:readSavedQueue().map(i=>i.message).sort()}));
+"""
+
+
+def test_restoring_the_servers_lines_keeps_the_devices_own(tmp_path):
+    from tests.test_app_working_indicator import _NODE, _run
+    from tinyassets import onboarding
+
+    assert _NODE is not None, "node is required"
+    page, _csp = onboarding.render_app_html()
+    out = _run(tmp_path, page, {}, _KEEP_LOCAL)
+    assert out["saved"] == ["from the server", "only on this device"]
+
+
+_RELOAD_MID_TURN = r"""
+globalThis.authHeaders=()=>({});
+globalThis.fetch=()=>Promise.resolve({ok:true,status:200,json:async()=>(
+  {pending:[], active:{text:"build the village map", started_at:Date.now()/1000-30}})});
+const working={active_turn:{turn_id:"t9",state:"inference_started",age_s:30,stale:false}};
+readServerTurn(working);
+setQueueOwner("p-1"); setQueueScope("u-1");
+queueRestored=false; restoreQueue();
+await settle(); await settle(); await settle();
+const during=bubbles().map(b=>b.text+"|"+(els.thread.children.find(n=>n.workingNote)?"working":""));
+readServerTurn({active_turn:null});
+await settle(); await settle(); await settle();
+console.log(JSON.stringify({during, after:bubbles().map(b=>b.text), sent:converseCalls.slice()}));
+"""
+
+
+def test_a_reload_mid_turn_shows_the_message_being_worked_on_then_its_reply(tmp_path):
+    """P2, live 2026-10-02: the reloaded page showed neither the message nor that
+    it was being worked on, so the owner sent it again."""
+    from tests.test_app_working_indicator import _NODE, _run
+    from tinyassets import onboarding
+
+    assert _NODE is not None, "node is required"
+    page, _csp = onboarding.render_app_html()
+    out = _run(tmp_path, page, {"history": [
+        {"speaker": "founder", "text": "build the village map", "ts": 1},
+        {"speaker": "universe", "text": "Here is the village map.", "ts": 2}]},
+        _RELOAD_MID_TURN)
+    assert out["during"] == ["build the village map|working"]
+    assert out["after"] == ["build the village map", "Here is the village map."]
+    assert out["sent"] == [], "nothing sent again"
+
+
+# -- gpt-6-astra on #4290, P1: an agent switch while a claim is in flight ------
+
+_SWITCH_DURING_CLAIM = r"""
+globalThis.authHeaders=()=>({});
+// The page is showing one of the owner's OTHER agents, injected the way the
+// agent switcher reaches this code.
+let liveAgent="w1";
+globalThis.addressedAgentId=()=>liveAgent;
+const claims=[]; let releaseClaim=null;
+globalThis.fetch=(url,init)=>{
+  const body=init&&init.body?JSON.parse(init.body):{};
+  if(body.claim){
+    claims.push(body);
+    // Held open, so the owner can switch agents while the claim is on the wire.
+    return new Promise(resolve=>{ releaseClaim=()=>resolve({ok:true,status:200,
+      json:async()=>({claimed:body.claim})}); });
+  }
+  return Promise.resolve({ok:true,status:200,json:async()=>(
+    {pending:[{id:7,text:"check the methods section",state:"held"}]})});
+};
+// Which agent each converse went to; converseCalls keeps its own shape.
+const agentCalls=[], realConverse=MCP.converse;
+MCP.converse=async(m,im,mc,cr,agentId)=>{ agentCalls.push({m,agentId});
+  return realConverse(m,im,mc,cr,agentId); };
+setQueueOwner("p-1"); setQueueScope("u-1");
+queueRestored=false; restoreQueue();
+await settle(); await settle();
+// The claim is on the wire and the line is already OUT of the queue: with no
+// active turn, no queued line and no pending steer, this is exactly the state
+// in which addressAgent permits a switch.
+const during={claims:claims.slice(), queued:sendQueue.length,
+  sent:converseCalls.slice()};
+liveAgent="w2";                       // the owner switches agents, as allowed
+releaseClaim();
+await settle(); await settle();
+console.log(JSON.stringify({during, agentCalls, sent:converseCalls.slice(),
+  inflightAgent:(readInflight()||{}).agent||null}));
+"""
+
+
+def test_an_agent_switch_while_a_claim_is_in_flight_does_not_redirect_the_line(tmp_path):
+    """A held line claimed for one agent is SENT to that agent, even if the
+    owner switches agents while the claim is on the wire.
+
+    The claim deletes the server's copy and the line is already out of the
+    queue -- which is what lets ``addressAgent`` switch at all. Re-reading the
+    live agent after the claim spoke one agent's held line to another
+    (gpt-6-astra on #4290, P1). Dropping the line instead would lose it: its
+    server copy is gone by then.
+    """
+    out = _other_window(tmp_path, {}, _SWITCH_DURING_CLAIM)
+
+    # The window is real: the line left the queue before the claim answered.
+    assert out["during"]["queued"] == 0 and out["during"]["sent"] == []
+    # The claim named the agent the line was held for.
+    assert [c["agent_id"] for c in out["during"]["claims"]] == ["w1"]
+    # ...and so does the send that follows it, after the switch to w2.
+    assert out["sent"] == ["check the methods section"]
+    assert [c["agentId"] for c in out["agentCalls"]] == ["w1"]
+    # The recovery record describes the turn on the wire, not the screen.
+    assert out["inflightAgent"] == "w1"
+
+
+_RESTORED_LINE_KEEPS_ITS_AGENT = r"""
+globalThis.authHeaders=()=>({});
+let liveAgent="w1";
+globalThis.addressedAgentId=()=>liveAgent;
+// No flush: a turn is running, so the restored line stays queued and saved.
+globalThis.fetch=(url,init)=>{
+  const body=init&&init.body?JSON.parse(init.body):{};
+  if(body.claim) return Promise.resolve({ok:true,status:200,
+    json:async()=>({claimed:body.claim})});
+  return Promise.resolve({ok:true,status:200,json:async()=>(
+    {pending:[{id:7,text:"check the methods section",state:"held"}]})});
+};
+setQueueOwner("p-1"); setQueueScope("u-1");
+readServerTurn({active_turn:{turn_id:"t9",state:"inference_started",age_s:5,stale:false}});
+queueRestored=false; restoreQueue();
+await settle(); await settle();
+console.log(JSON.stringify({queued:sendQueue.length,
+  opts:sendQueue.map(q=>q.opts.agentId),
+  saved:(JSON.parse(store[QUEUE_KEY]||"[]")).map(r=>r.agent)}));
+"""
+
+
+def test_a_restored_held_line_is_saved_under_the_agent_it_was_held_for(tmp_path):
+    """A line restored for one agent records THAT agent on disk.
+
+    ``savedItem`` reads the agent off ``opts.agentId``; without it a line held
+    for another agent is written as the main agent's, and the next reload
+    offers it on the wrong thread."""
+    out = _other_window(tmp_path, {}, _RESTORED_LINE_KEEPS_ITS_AGENT)
+
+    assert out["queued"] == 1, "a running turn keeps it queued"
+    assert out["opts"] == ["w1"]
+    assert out["saved"] == ["w1"], "the saved row names the agent, not 'main'"
+
+
+_CLAIM_PINS_AN_UNPINNED_LINE = r"""
+globalThis.authHeaders=()=>({});
+let liveAgent="w1";
+globalThis.addressedAgentId=()=>liveAgent;
+const claims=[];
+globalThis.fetch=(url,init)=>{
+  const body=init&&init.body?JSON.parse(init.body):{};
+  claims.push(body);
+  return Promise.resolve({ok:true,status:200,json:async()=>({claimed:body.claim})});
+};
+setQueueOwner("p-1"); setQueueScope("u-1");
+// A held line that reached the queue WITHOUT an agent of its own.
+const item={message:"m", display:"m", owner:"p-1", scope:"u-1", bubble:null,
+  heldId:11, opts:{echoed:true}, ts:Date.now()};
+const kept=await claimHeldLines([item]);
+liveAgent="w2";                       // the switch lands after the claim
+console.log(JSON.stringify({claims, kept:kept.length, pinned:item.opts.agentId}));
+"""
+
+
+def test_the_claim_pins_the_agent_onto_a_line_that_had_none(tmp_path):
+    """The claim writes the agent it claimed for onto the line.
+
+    This is the invariant the send depends on: whatever agent the claim named,
+    the line now carries, so no later reader can resolve a different one."""
+    out = _other_window(tmp_path, {}, _CLAIM_PINS_AN_UNPINNED_LINE)
+
+    assert [c["agent_id"] for c in out["claims"]] == ["w1"]
+    assert out["kept"] == 1
+    assert out["pinned"] == "w1", "pinned at claim time, before the switch"

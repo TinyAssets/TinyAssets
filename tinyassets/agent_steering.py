@@ -82,6 +82,13 @@ def _connect(universe_dir: Path) -> sqlite3.Connection:
     conn.execute("PRAGMA busy_timeout = 10000")
     for statement in _SCHEMA:
         conn.execute(statement)
+    # The message a running turn is answering, for a page reloaded mid-turn.
+    if "message" not in {row[1] for row in conn.execute("PRAGMA table_info(open_turns)")}:
+        try:
+            conn.execute("ALTER TABLE open_turns ADD COLUMN message TEXT NOT NULL DEFAULT ''")
+        except sqlite3.OperationalError as exc:  # another process added it first
+            if "duplicate column" not in str(exc):
+                raise
     return conn
 
 
@@ -98,7 +105,7 @@ def _row(row) -> Steer:
 
 
 def open_turn(universe_dir: Path, session_key: str, live_id: str,
-              *, live_ids: Iterable[str] = ()) -> None:
+              *, live_ids: Iterable[str] = (), message: str = "") -> None:
     """A served turn of ``session_key`` starts and may be steered.
 
     ``live_ids`` are the turns of this session still running in this process.
@@ -122,8 +129,9 @@ def open_turn(universe_dir: Path, session_key: str, live_id: str,
                          "AND delivered_at IS NOT NULL", (key, dead))
             conn.execute("UPDATE steer SET live_id = NULL WHERE session_key = ? "
                          "AND live_id = ?", (key, dead))
-        conn.execute("INSERT OR REPLACE INTO open_turns VALUES (?, ?, ?)",
-                     (key, live, time.time()))
+        conn.execute("INSERT OR REPLACE INTO open_turns (session_key, live_id, opened_at, "
+                     "message) VALUES (?, ?, ?, ?)",
+                     (key, live, time.time(), str(message or "")[:MAX_STEER_CHARS]))
         conn.execute("COMMIT")
 
 
@@ -161,6 +169,91 @@ def enqueue(universe_dir: Path, session_key: str, text: str) -> Steer | None:
         )
         conn.execute("COMMIT")
     return Steer(int(cursor.lastrowid), body, now)
+
+
+@dataclass(frozen=True, slots=True)
+class Pending:
+    """A line the owner sent that no turn has handled yet, as the page shows it."""
+    id: int
+    text: str
+    created_at: float
+    state: str  # "steered": bound to the running turn; "held": the next turn takes it
+
+
+def hold(universe_dir: Path, session_key: str, text: str) -> Steer:
+    """Keep ``text`` for the next turn of ``session_key`` (no turn is open to
+    steer). Saved here before the page is told, so a reload or a closed page
+    loses nothing: the next served turn folds it in, and a page that re-sends it
+    as that turn's own message is not repeated (``take_carryover``)."""
+    key = _key(session_key)
+    body = str(text or "").strip()
+    if not body:
+        raise SteeringRefused("the message is empty")
+    if len(body) > MAX_STEER_CHARS:
+        raise SteeringRefused(f"the message is over {MAX_STEER_CHARS} characters")
+    now = time.time()
+    with closing(_connect(universe_dir)) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        waiting = conn.execute(
+            "SELECT COUNT(*) FROM steer WHERE session_key = ?", (key,),
+        ).fetchone()[0]
+        if waiting >= MAX_PENDING:
+            conn.execute("ROLLBACK")
+            raise SteeringRefused(f"{MAX_PENDING} messages are already waiting")
+        cursor = conn.execute(
+            "INSERT INTO steer (session_key, live_id, text, created_at) VALUES (?, NULL, ?, ?)",
+            (key, body, now),
+        )
+        conn.execute("COMMIT")
+    return Steer(int(cursor.lastrowid), body, now)
+
+
+def pending(universe_dir: Path, session_key: str) -> list[Pending]:
+    """Every line of ``session_key`` no turn has handled yet, oldest first."""
+    key = _key(session_key)
+    with closing(_connect(universe_dir)) as conn:
+        rows = conn.execute(
+            "SELECT id, text, created_at, live_id FROM steer WHERE session_key = ? "
+            "AND delivered_at IS NULL ORDER BY id", (key,),
+        ).fetchall()
+    return [Pending(int(r[0]), r[1], float(r[2]), "steered" if r[3] else "held")
+            for r in rows]
+
+
+def active(universe_dir: Path, session_key: str) -> dict | None:
+    """The message the newest open turn of ``session_key`` is answering, so a
+    page reloaded mid-turn can show it with the turn's working state."""
+    key = _key(session_key)
+    with closing(_connect(universe_dir)) as conn:
+        row = conn.execute(
+            "SELECT message, opened_at FROM open_turns WHERE session_key = ? "
+            "ORDER BY opened_at DESC LIMIT 1", (key,),
+        ).fetchone()
+    if row is None or not row[0]:
+        return None
+    return {"text": row[0], "started_at": float(row[1])}
+
+
+def claim(universe_dir: Path, session_key: str, ids: Iterable[int]) -> list[int]:
+    """The page is about to send held lines ``ids`` as a turn of its own: each is
+    removed here first, atomically, and only the ids actually removed come back.
+    A line another tab claimed, or a turn already folded in, is not returned, so
+    it is never sent twice."""
+    key = _key(session_key)
+    wanted = sorted({int(i) for i in ids if isinstance(i, int) and i > 0})
+    if not wanted:
+        return []
+    claimed = []
+    with closing(_connect(universe_dir)) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        for steer_id in wanted:
+            cursor = conn.execute(
+                "DELETE FROM steer WHERE id = ? AND session_key = ? AND live_id IS NULL "
+                "AND delivered_at IS NULL", (steer_id, key))
+            if cursor.rowcount == 1:
+                claimed.append(steer_id)
+        conn.execute("COMMIT")
+    return claimed
 
 
 def take(universe_dir: Path, session_key: str, live_id: str,

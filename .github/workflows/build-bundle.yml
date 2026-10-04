@@ -23,6 +23,17 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  # One group per PR, so a new push cancels the superseded run. Every non-PR run
+  # gets its OWN group via `run_id`, and `cancel-in-progress` is conditional on
+  # top of that -- two layers, because a cancelled run here would be a
+  # `release: published` run that packs and publishes the .mcpb, or the `push:
+  # main` build of what landed. Neither may ever be interrupted by a PR or by a
+  # later release. tests.yml adopted the same two layers after grouping non-PR
+  # runs by ref let each push kill the previous main run.
+  group: build-bundle-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   stage-and-probe:
     name: Stage + import-probe both bundle and plugin

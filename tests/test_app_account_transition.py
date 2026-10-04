@@ -38,7 +38,7 @@ _OPTIONAL = ("clearAccountScopedState", "clearThread", "clearComposerState",
              # so a 15-second poll cannot delete what the user typed into a
              # card, which makes clearing them an account-change step rather
              # than a side effect of the next rebuild.
-             "clearRailCards", "clearTypedValues")
+             "clearRailCards", "clearTypedValues", "clearMemoryState")
 
 
 def _run_node(script: str):

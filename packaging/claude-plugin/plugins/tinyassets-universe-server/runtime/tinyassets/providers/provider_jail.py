@@ -78,6 +78,7 @@ from contextvars import ContextVar
 from dataclasses import dataclass
 from pathlib import Path
 
+from tinyassets import jail_disk
 from tinyassets.exceptions import ProviderAuthorityHeldError
 
 __all__ = [
@@ -489,6 +490,7 @@ def jail_argv(
     env: Mapping[str, str] | None = None,
     clearenv: bool = False,
     seccomp_fd: int | None = None,
+    tmp_bytes: int = jail_disk.TMP_BYTES,
 ) -> list[str]:
     """The bubblewrap argv that runs ``argv`` inside ``view``. Pure of policy.
 
@@ -503,6 +505,11 @@ def jail_argv(
     the jailed process from an empty environment plus ``view.setenv``.
     ``seccomp_fd`` is an inherited descriptor holding a compiled seccomp filter
     for the jailed process.
+
+    Every tmpfs is sized: the private ``/tmp`` to ``tmp_bytes`` and each view
+    tmpfs to ``jail_disk.MASK_TMPFS_BYTES``. A tmpfs is RAM, and an unsized one
+    defaults to half of it -- on a shared box that is one jail's scratch space
+    competing with every user's daemon memory.
     """
     view = _validated_view(view)
     out: list[str] = [
@@ -518,7 +525,7 @@ def jail_argv(
     out.extend((
         "--dev", "/dev",
         "--proc", "/proc",
-        "--tmpfs", "/tmp",
+        "--size", str(int(tmp_bytes)), "--tmpfs", "/tmp",
     ))
     bound: list[str] = []
     for system_path in _SYSTEM_RO_PATHS:
@@ -528,7 +535,9 @@ def jail_argv(
     out.extend(_install_binds(install_paths, view, bound))
     out.extend(_ca_file_binds(env, view, bound))
     for mount in view.mounts:
-        if mount.op in ("tmpfs", "remount-ro"):
+        if mount.op == "tmpfs":
+            out.extend(("--size", str(jail_disk.MASK_TMPFS_BYTES), "--tmpfs", mount.dest))
+        elif mount.op == "remount-ro":
             out.extend((f"--{mount.op}", mount.dest))
         else:
             # Resolved and checked by _validated_view; a ``-try`` source that
@@ -553,6 +562,9 @@ class ConfinedLaunch:
 
     argv: list[str]
     pass_fds: tuple[int, ...] = ()
+    #: The command center directory the jail confines it to: the spawn point
+    #: opens the launch's disk budget there (`tinyassets.jail_disk`).
+    universe_dir: Path | None = None
 
     def close(self) -> None:
         for fd in self.pass_fds:
@@ -710,4 +722,4 @@ def confine_launch(
     except BaseException:
         os.close(filter_fd)
         raise
-    return ConfinedLaunch(jailed, (filter_fd,))
+    return ConfinedLaunch(jailed, (filter_fd,), view.universe_dir.resolve(strict=False))

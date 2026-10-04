@@ -1182,6 +1182,23 @@ def open_pins(base_path: str | Path, *, universe_id: str, kind: str, agent: str,
     return [str(r["request_id"]) for r in rows]
 
 
+def completed_system_copies(base_path: str | Path, *, universe_id: str) -> list[dict]:
+    """Stored install evidence only; callers must establish owner/home authority."""
+    with _db(base_path) as conn:
+        rows = conn.execute(
+            "SELECT request_id,record_json FROM pins WHERE universe_id=? "
+            "AND kind='install' AND state='activated' ORDER BY activated_at DESC LIMIT 100",
+            (universe_id,),
+        ).fetchall()
+    result = []
+    for row in rows:
+        plan = json.loads(row["record_json"]).get("action", {}).get("plan", {})
+        if plan.get("publication_kind") == "system":
+            result.append({"request_id": row["request_id"], "name": plan.get("name", ""),
+                           "source_definition_id": plan.get("definition_id", "")})
+    return result
+
+
 def pin_for_request(base_path: str | Path, *, universe_id: str,
                     request_id: str) -> dict[str, Any] | None:
     """The consent record bound to ``request_id`` in this command center, or None."""

@@ -162,11 +162,14 @@ def test_the_effector_checks_rules_before_the_standing_grant():
 
 
 class _Request:
-    def __init__(self, method: str, body: dict | None = None):
+    def __init__(self, method: str, body: dict | None = None, query: dict | None = None):
         self.method = method
         self._body = json.dumps(body or {}).encode("utf-8")
         self.headers = {"content-type": "application/json", "origin": "https://tinyassets.io",
                         "host": "tinyassets.io", "content-length": str(len(self._body))}
+        # GET carries the addressed agent in the query, as a real Starlette
+        # request does; the handler reads it the same way on both.
+        self.query_params = dict(query or {})
 
     async def stream(self):
         yield self._body
@@ -377,3 +380,144 @@ def test_removing_a_payment_declaration_needs_confirmation(tmp_path):
         agent_rules.delete_kind(universe, declared.id)
     assert agent_rules.list_kinds(universe), "nothing removed without confirmation"
     assert agent_rules.delete_kind(universe, declared.id, confirm=True) is True
+
+
+def test_the_owner_door_reads_and_edits_the_ADDRESSED_agents_rules(monkeypatch, tmp_path):
+    """Harness §4.18: the panel edits the rules of the agent being talked to.
+
+    Every per-agent store already keys on the agent and defaults to ``main``;
+    this door passed nothing, so the panel read and wrote MAIN's rules whoever
+    the conversation was with -- an owner could switch a custom agent's review
+    off in the UI and silently change main instead.
+
+    ``addressed_agents.resolve`` is stubbed to its contract (a binding for the
+    owner's own agent, ``AgentNotAddressable`` for anything else); the real
+    resolution is covered by tests/test_converse_addressed_agent.py. The RULE
+    stores here are the real ones.
+    """
+    from types import SimpleNamespace as NS
+
+    from tinyassets import addressed_agents, agent_review, onboarding
+    from tinyassets.api import helpers
+    from tinyassets.auth import middleware
+
+    _universe(tmp_path)
+    monkeypatch.setattr(helpers, "_base_path", lambda: tmp_path / "data")
+    monkeypatch.setattr(onboarding, "onboarding_enabled", lambda: True)
+    monkeypatch.setattr(onboarding, "_app_identity_required", lambda: None)
+    monkeypatch.setattr(onboarding, "app_config",
+                        lambda: {"resource": "https://tinyassets.io"})
+    monkeypatch.setattr(middleware, "current_identity",
+                        lambda: NS(user_id="owner-1"))
+    monkeypatch.setattr(onboarding, "_read_home", lambda identity, **_kw: "u-alpha")
+
+    def resolve(_base, *, universe_id, owner, agent_id):
+        assert (universe_id, owner) == ("u-alpha", "owner-1"), "resolved outside the caller's home"
+        wanted = "" if agent_id is None else str(agent_id)
+        if wanted in ("", "main"):
+            return None                      # the main agent, as the real one does
+        if wanted == "a-weaver":
+            return NS(agent_id="a-weaver", name="Evidence Weaver")
+        raise addressed_agents.AgentNotAddressable(f"no agent {wanted!r} here")
+
+    monkeypatch.setattr(addressed_agents, "resolve", resolve)
+
+    def call(method, body=None, query=None):
+        response = asyncio.run(onboarding._handle_rules(_Request(method, body, query)))
+        return response.status_code, json.loads(response.body)
+
+    # The listing says whose rules it is, on both the default and the addressed read.
+    assert call("GET")[1]["agent_id"] == "main"
+    assert call("GET", query={"agent_id": "a-weaver"})[1]["agent_id"] == "a-weaver"
+
+    # Switching the weaver's review off must not touch main's.
+    status, saved = call("POST", {"agent_id": "a-weaver", "confirm": True,
+                                  "review": {"action_class": "people.message", "enabled": False}})
+    assert status == 200 and saved["agent_id"] == "a-weaver"
+    assert "people.message" in saved["review_off"]
+    assert "people.message" not in call("GET")[1]["review_off"], (
+        "switching a custom agent's review off changed MAIN's review")
+    universe = tmp_path / "data" / "u-alpha"
+    assert "people.message" in agent_review.switched_off(universe, "a-weaver")
+    assert "people.message" not in agent_review.switched_off(universe, "main")
+
+    # A saved rule lands on the addressed agent and leaves main's behaviour alone.
+    def behaviours(query=None):
+        return {r["action_class"]: r["behaviour"] for r in call("GET", query=query)[1]["rules"]}
+
+    before = behaviours()
+    assert before["app.read"] != "ask_first", "the fixture already had the saved value"
+    status, saved = call("POST", {"agent_id": "a-weaver", "action_class": "app.read",
+                                  "behaviour": "ask_first"})
+    assert status == 200 and saved["saved"]["behaviour"] == "ask_first"
+    assert behaviours() == before, "a rule saved for a custom agent changed main's rules"
+    # The LISTING must read the addressed agent's rules, not just echo its id:
+    # without this the handler can return main's rules under agent_id=a-weaver,
+    # which is the silent wrong-agent bug this slice exists to fix.
+    assert behaviours({"agent_id": "a-weaver"})["app.read"] == "ask_first", (
+        "the addressed listing returned another agent's rules")
+    assert saved["rules"], "the save's own listing came back empty"
+    assert {r["action_class"]: r["behaviour"] for r in saved["rules"]}["app.read"] == "ask_first"
+    weaver = {r.action_class: r.behaviour for r in agent_rules.list_rules(universe, "a-weaver")}
+    assert weaver["app.read"] == "ask_first"
+
+    # A NARROWED rule the owner then removes. delete_rule scopes by
+    # `id AND agent`, so a delete that forgets the agent finds no row and
+    # returns False: the owner simply cannot remove a custom agent's narrowed
+    # rule, and the panel reports success on a rule that is still there.
+    status, narrowed = call("POST", {"agent_id": "a-weaver", "action_class": "app.read",
+                                     "behaviour": "ask_first", "connection": "notion"})
+    assert status == 200
+    rule_id = narrowed["saved"]["id"]
+    assert any(r["id"] == rule_id for r in call("GET", query={"agent_id": "a-weaver"})[1]["rules"])
+    status, removed = call("POST", {"agent_id": "a-weaver", "delete": rule_id})
+    assert status == 200 and removed["deleted"] is True, (
+        "the owner could not delete their custom agent's narrowed rule")
+    assert not any(r["id"] == rule_id
+                   for r in call("GET", query={"agent_id": "a-weaver"})[1]["rules"])
+
+    # And the scoping holds in the other direction: MAIN cannot delete the
+    # weaver's rule by its id. Proving deletion WORKS is not the same as
+    # proving it is agent-scoped (Codex refute of this PR, finding E).
+    status, mine = call("POST", {"agent_id": "a-weaver", "action_class": "app.read",
+                                 "behaviour": "ask_first", "connection": "linear"})
+    assert status == 200
+    weaver_rule = mine["saved"]["id"]
+    status, refused = call("POST", {"delete": weaver_rule})      # addressed to main
+    assert status == 200 and refused["deleted"] is False, (
+        "main deleted a custom agent's rule by id")
+    assert any(r["id"] == weaver_rule
+               for r in call("GET", query={"agent_id": "a-weaver"})[1]["rules"]), (
+        "the weaver's rule was removed by a delete addressed to main")
+
+
+def test_an_agent_that_is_not_the_owners_is_refused_by_name_not_treated_as_main(
+        monkeypatch, tmp_path):
+    """A LookupError, so without its own arm this left the door as a 500."""
+    from types import SimpleNamespace as NS
+
+    from tinyassets import addressed_agents, onboarding
+    from tinyassets.api import helpers
+    from tinyassets.auth import middleware
+
+    _universe(tmp_path)
+    monkeypatch.setattr(helpers, "_base_path", lambda: tmp_path / "data")
+    monkeypatch.setattr(onboarding, "onboarding_enabled", lambda: True)
+    monkeypatch.setattr(onboarding, "_app_identity_required", lambda: None)
+    monkeypatch.setattr(onboarding, "app_config",
+                        lambda: {"resource": "https://tinyassets.io"})
+    monkeypatch.setattr(middleware, "current_identity", lambda: NS(user_id="owner-1"))
+    monkeypatch.setattr(onboarding, "_read_home", lambda identity, **_kw: "u-alpha")
+
+    def resolve(_base, *, universe_id, owner, agent_id):
+        raise addressed_agents.AgentNotAddressable(f"no agent {agent_id!r} here")
+
+    monkeypatch.setattr(addressed_agents, "resolve", resolve)
+
+    for method, body, query in (("GET", None, {"agent_id": "someone-elses"}),
+                                ("POST", {"agent_id": "someone-elses",
+                                          "action_class": "app.read",
+                                          "behaviour": "ask_first"}, None)):
+        response = asyncio.run(onboarding._handle_rules(_Request(method, body, query)))
+        assert response.status_code == 404, f"{method} did not refuse by name"
+        assert json.loads(response.body)["error"] == "agent_not_found"

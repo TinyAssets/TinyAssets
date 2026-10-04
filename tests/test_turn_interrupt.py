@@ -493,3 +493,62 @@ def test_a_stop_reaches_the_addressed_agent_and_stop_all_reaches_every_one():
         assert other.requested() and not main_turn.requested()
         assert ti.request_interrupt("owner-x", "u-x") == 2
         assert main_turn.requested()
+
+
+def test_the_route_stops_the_addressed_agent_and_leaves_the_others_running(monkeypatch):
+    """Harness §4.18: Stop belongs to the conversation it was pressed in.
+
+    With no ``agent_id`` the route is explicit stop-all, which is what it has
+    always been and what a caller that wants everything still gets. With one,
+    it must reach only that agent's live turn -- otherwise ending a main chat
+    ends a custom agent's background turn too.
+    """
+    from types import SimpleNamespace as NS
+
+    from tinyassets import addressed_agents, onboarding
+    from tinyassets.api import helpers
+    from tinyassets.auth import middleware
+
+    monkeypatch.setattr(onboarding, "onboarding_enabled", lambda: True)
+    monkeypatch.setattr(onboarding, "_app_identity_required", lambda: None)
+    monkeypatch.setattr(middleware, "current_identity", lambda: NS(user_id="owner"))
+    monkeypatch.setattr(helpers, "_base_path", lambda: Path("/nonexistent-base"))
+
+    def resolve(_base, *, universe_id, owner, agent_id):
+        assert (universe_id, owner) == ("u-1", "owner")
+        wanted = "" if agent_id is None else str(agent_id)
+        if wanted in ("", "main"):
+            return None
+        if wanted == "a-weaver":
+            return NS(agent_id="a-weaver", name="Evidence Weaver")
+        raise addressed_agents.AgentNotAddressable(f"no agent {wanted!r} here")
+
+    monkeypatch.setattr(addressed_agents, "resolve", resolve)
+
+    def post(body):
+        response = asyncio.run(onboarding._handle_turn_interrupt(_Request(body)))
+        return response.status_code, json.loads(response.body)
+
+    with interactive_turn("owner", "u-1") as main_turn, \
+            interactive_turn("owner", "u-1", agent_id="a-weaver") as weaver:
+        status, answer = post({"universe_id": "u-1", "agent_id": "a-weaver"})
+        assert status == 200
+        assert answer == {"interrupted": 1, "universe_id": "u-1", "agent_id": "a-weaver"}
+        assert weaver.requested(), "the addressed agent's turn was not stopped"
+        assert not main_turn.requested(), "the main turn was stopped as well"
+
+        # main is an agent, not a wildcard.
+        assert post({"universe_id": "u-1", "agent_id": "main"})[1]["interrupted"] == 1
+        assert main_turn.requested()
+
+    # An id that is not the owner's own is refused by name, never widened to all.
+    with interactive_turn("owner", "u-1") as mine:
+        status, refused = post({"universe_id": "u-1", "agent_id": "someone-elses"})
+        assert status == 404 and refused["error"] == "agent_not_found"
+        assert not mine.requested(), "a refused agent id stopped a turn anyway"
+
+    # No agent_id at all stays the explicit stop-all this route has always been.
+    with interactive_turn("owner", "u-1") as a, \
+            interactive_turn("owner", "u-1", agent_id="a-weaver") as b:
+        assert post({"universe_id": "u-1"})[1] == {"interrupted": 2, "universe_id": "u-1"}
+        assert a.requested() and b.requested()
