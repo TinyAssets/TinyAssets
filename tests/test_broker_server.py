@@ -293,10 +293,10 @@ def test_an_unmapped_uid_is_dropped_before_any_frame(broker):
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
         sock.settimeout(5)
         sock.connect(str(broker.path))
-        sock.sendall(rf.control(rf.CONNECTION, {"op": "STATUS", "op_id": new_op_id()}))
         try:
+            sock.sendall(rf.control(rf.CONNECTION, {"op": "STATUS", "op_id": new_op_id()}))
             answer = rf.read_frame_blocking(sock)
-        except ConnectionResetError:  # closed with our frame unread: also a drop
+        except (BrokenPipeError, ConnectionResetError):  # dropped before send or read
             answer = None
         assert answer is None
 
