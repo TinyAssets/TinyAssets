@@ -253,22 +253,38 @@ A request reaches its owner's registered devices as a notification. Each channel
 | `TINYASSETS_OAUTH_GOOGLE_CLIENT_SECRET` | GitHub Actions **secret**, entered by the founder through the repository's web form. | Daemon-only client secret; #4441 adds it to `CHILD_FORBIDDEN_ENV` and filters the entire `TINYASSETS_OAUTH_` namespace from engine children. |
 
 `deploy-prod.yml` installs each configured pair through
-`deploy/install-tinyassets-env.sh set` into `/etc/tinyassets/env`, under the shared
-host mutation flock. The helper also renders `daemon.env`; the subsequent
-fail-safe recreate loads the credentials. Values travel on SSH stdin, never in
-command arguments or log messages. Both values must be single-line. Both absent
-means a silent no-op (existing host values are retained); only one present fails
-the deploy before this step contacts the host. Repeated deploys converge on the
-configured pair, including rotations, without duplicate assignments.
+`deploy/install-tinyassets-env.sh set-pair` into `/etc/tinyassets/env`, under the
+shared host mutation flock. Each atomic rename installs both keys together,
+including the rendered `daemon.env`; a failure between the two file commits can
+leave a complete old pair in `daemon.env` and a complete new pair in `env`, but
+never introduces a partial pair. The subsequent fail-safe recreate loads them.
+Values travel on SSH stdin, never in command arguments or log messages.
 
-**Rollout dependency:** deploy #4441 (`feat/platform-oauth-clients`) before
-enabling this pair, so both the candidate and the previous image available to
-fail-safe rollback exclude these credentials from engine children. This workflow
-branch does not change `tinyassets/platform_secrets.py`. Once credentials are
-installed, do not roll back to an image predating that filtering. The client ID
-variable is already configured; until the founder adds its matching secret,
-this step deliberately fails as half-configured. To add a provider, add its two
-Actions env bindings and one entry in the step's provider-pair list.
+The runner's **Validate OAuth provider credentials** step precedes every host
+contact. Both absent skips installation; only one present warns and skips without
+failing deployment. A complete pair must be single-line and use portable unquoted
+characters (`A-Z a-z 0-9 . _ ~ : / + = , @ % -`). Quotes, whitespace, comments,
+backslashes and interpolation characters are refused with key-name-only errors.
+Existing values are retained on skip only when both images below are protected.
+The GitHub secret was added on 2026-10-04 at 17:35Z.
+
+**Target and rollback protection:** the runner reads the resolved target revision
+(the same revision as the stop-writer gate), requiring the provider registry and
+the OAuth namespace exclusion in `platform_secrets.child_env` from #4441. Missing
+or unrecognized protection warns and selects removal instead of installation.
+Under the host lock, `install-oauth-credentials.sh` also probes `child_env` in the
+captured immutable rollback image, with no host env, mounts or network. Missing,
+unavailable or unprotected rollback images warn and select removal too. Removal
+deletes both keys from the shared env and re-renders `daemon.env` before any
+image swap. This applies even when the repository pair is absent/half-configured.
+
+The existing automatic and public-canary rollback paths retain the env file.
+Requiring protection in the captured previous image makes both safe without
+changing rollback. The first deployment of #4441 therefore proceeds with OAuth
+disabled; the next deploy can install credentials once the rollback image is
+also protected. An explicit deployment targeting older code removes the pair.
+This workflow does not alter `tinyassets/platform_secrets.py` or claim process
+isolation beyond that code's environment filtering.
 
 ## Local secrets — vault-first
 

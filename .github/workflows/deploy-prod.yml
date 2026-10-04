@@ -175,6 +175,14 @@ jobs:
           TINYASSETS_AGENT_INTERCHANGE_HMAC_KEY: ${{ secrets.TINYASSETS_AGENT_INTERCHANGE_HMAC_KEY }}
         run: python scripts/validate_request_idempotency_hmac.py
 
+      - name: Validate OAuth provider credentials
+        id: oauth
+        env:
+          TARGET_REVISION: ${{ steps.tag.outputs.revision }}
+          TINYASSETS_OAUTH_GOOGLE_CLIENT_ID: ${{ vars.TINYASSETS_OAUTH_GOOGLE_CLIENT_ID }}
+          TINYASSETS_OAUTH_GOOGLE_CLIENT_SECRET: ${{ secrets.TINYASSETS_OAUTH_GOOGLE_CLIENT_SECRET }}
+        run: python scripts/validate_oauth_provider_credentials.py
+
       - name: Install SSH key
         env:
           SSH_KEY: ${{ secrets.DO_SSH_KEY }}
@@ -252,47 +260,25 @@ jobs:
         env:
           TINYASSETS_OAUTH_GOOGLE_CLIENT_ID: ${{ vars.TINYASSETS_OAUTH_GOOGLE_CLIENT_ID }}
           TINYASSETS_OAUTH_GOOGLE_CLIENT_SECRET: ${{ secrets.TINYASSETS_OAUTH_GOOGLE_CLIENT_SECRET }}
+          OAUTH_ACTION: ${{ steps.oauth.outputs.action }}
+          PREV_IMAGE: ${{ steps.capture.outputs.prev_image }}
         run: |
           set +x
           set -euo pipefail
-          # Add each provider's env bindings above and one pair below. Validate
-          # ALL pairs on the runner before sending anything to the host.
-          providers=(
-            'TINYASSETS_OAUTH_GOOGLE_CLIENT_ID TINYASSETS_OAUTH_GOOGLE_CLIENT_SECRET'
-          )
-          credentials=()
-          for pair in "${providers[@]}"; do
-            read -r id_key secret_key <<< "${pair}"
-            client_id="${!id_key:-}"
-            client_secret="${!secret_key:-}"
-            if [ -z "${client_id}" ] && [ -z "${client_secret}" ]; then
-              continue
-            fi
-            if [ -z "${client_id}" ] || [ -z "${client_secret}" ]; then
-              echo "::error::configure both repository variable ${id_key} and repository secret ${secret_key}, or neither"
-              exit 1
-            fi
-            for key in "${id_key}" "${secret_key}"; do
-              value="${!key}"
-              if [[ "${value}" == *$'\n'* || "${value}" == *$'\r'* ]]; then
-                echo "::error::${key} must be single-line"
-                exit 1
-              fi
-              credentials+=("${key}" "${value}")
-            done
-          done
-          [ "${#credentials[@]}" -gt 0 ] || exit 0
-          # The HMAC step installed this helper. Values travel only on stdin;
-          # one shared host lock covers every set and its daemon.env render.
-          # The following fail-safe deploy recreates the daemon with this env.
-          printf '%s\n' "${credentials[@]}" | \
+          # Decisions and image references are the only remote arguments.
+          case "${OAUTH_ACTION}" in install|skip|remove) ;; *) exit 1 ;; esac
+          if [[ -n "${PREV_IMAGE}" && ! "${PREV_IMAGE}" =~ ^[a-zA-Z0-9./_-]+@sha256:[0-9a-f]{64}$ ]]; then
+            echo "::warning::unrecognized rollback image; removing OAuth keys"
+            OAUTH_ACTION=remove
+            PREV_IMAGE=''
+          fi
+          scp -i ~/.ssh/do_deploy -o BatchMode=yes deploy/install-oauth-credentials.sh \
+            "${DO_SSH_USER}@${DO_DROPLET_HOST}:/tmp/install-oauth-credentials.sh"
+          # The HMAC step installed the env helper. The lock covers the rollback
+          # proof and the whole-pair write/delete, including daemon.env rendering.
+          printf '%s\n' "${TINYASSETS_OAUTH_GOOGLE_CLIENT_ID}" "${TINYASSETS_OAUTH_GOOGLE_CLIENT_SECRET}" | \
             ssh -i ~/.ssh/do_deploy -o BatchMode=yes "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-              "sudo flock -w 120 /var/lock/tinyassets-host-mutation.lock bash -c '
-                set -euo pipefail
-                while IFS= read -r key; do
-                  IFS= read -r value
-                  printf \"%s\" \"\${value}\" | env TINYASSETS_ENV_FILE=/etc/tinyassets/env bash /tmp/install-tinyassets-env.sh set \"\${key}\"
-                done'"
+              "sudo flock -w 120 /var/lock/tinyassets-host-mutation.lock bash /tmp/install-oauth-credentials.sh '${OAUTH_ACTION}' '${PREV_IMAGE}'"
 
       - name: Install daemon-only agent interchange HMAC secret
         env:
