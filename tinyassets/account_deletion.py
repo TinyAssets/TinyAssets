@@ -1100,6 +1100,16 @@ def delete_account(
                     return
                 if path.is_symlink() or not path.is_dir():
                     raise AccountDeletionError(f"{path.name} is not a plain directory")
+            # Activities first (harness D2), once the directories are proven
+            # plain: fail each one, supersede its runner and cancel its runs, so
+            # nothing still running can act for the deleted account.
+            from tinyassets.agent_activities import fence_all
+            from tinyassets.runs import request_cancel
+
+            store = records / "agent-activities.db"
+            if store.is_file() and not store.is_symlink():
+                for run_id in fence_all(root / records.name, outcome="failed:account_deleted"):
+                    request_cancel(root, run_id)
             _rmtree(records)
 
         _phase("agent_session_records", _session_records)

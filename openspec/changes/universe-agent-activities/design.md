@@ -234,6 +234,18 @@ that exact action (D2/D3), so the next run's identical action proceeds under
 **Pause and stop** take effect at the activity run's next tool boundary.
 `holds(generation)` fails, and the run ends. Stop keeps `result_summary`.
 
+Implementation status (2026-10-03): the HTTP workflow coordinator enforces
+the captured activity/run/generation at its tool and inference boundaries,
+including an owner-request yield followed by another tool in the same model
+reply. Native agents' internal tool loops still lack this boundary, so an
+activity run REFUSES a native executor -- `WorkAgentAdapter.infer` raises
+`ProviderAuthorityHeldError` for any `native_agent` round of an activity run,
+first selection or mid-turn switch, before any launch. That is fail-closed, not
+completion of the cross-provider requirement above: lifting the refusal needs
+the native pre-tool boundary that
+`docs/concerns/2026-10-03-native-activity-yield-needs-a-tool-boundary.md`
+still tracks.
+
 ### 5. Effects: a platform intent recorded before the wire
 
 External effects fire in the activity's runs, and in runs those runs start.

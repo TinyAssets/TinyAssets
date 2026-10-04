@@ -181,6 +181,24 @@ def _sum_sql(db: Path, sql: str, params: tuple) -> int:
     return int(row[0] or 0) if row else 0
 
 
+def _agent_activities(base: Path, universe_id: str) -> int:
+    """The universe agent's activity records (harness D2): briefs, results and
+    effect intents the owner's agent wrote, kept outside the universe so no
+    jail can forge them, and charged to that universe like its files."""
+    if not universe_id or Path(universe_id).name != universe_id or universe_id.startswith("."):
+        raise ValueError(f"not a universe id: {universe_id!r}")
+    from tinyassets.agent_activities import store_path
+
+    path = store_path(base / universe_id)
+    total = 0
+    for suffix in ("", "-wal", "-shm"):
+        try:
+            total += path.with_name(path.name + suffix).lstat().st_size
+        except FileNotFoundError:
+            continue
+    return total
+
+
 def _project_memory(base: Path, account_id: str) -> int:
     """Project memory lives at the data root, keyed by project, and records its
     WRITER on every row and every history row. Charged to the writer's account."""
@@ -512,6 +530,7 @@ STORES: dict[str, Store] = {
         Store("commons_pages", SCOPE_ACCOUNT, _commons_pages),
         Store("automations", SCOPE_ACCOUNT, _automations),
         Store("workspaces", SCOPE_UNIVERSE, _workspaces),
+        Store("agent_activities", SCOPE_UNIVERSE, _agent_activities),
         Store("packages", SCOPE_ACCOUNT, _packages),
     )
 }
@@ -560,6 +579,9 @@ ROOT_ENTRIES: dict[str, str] = {
     "rules.db": (
         "platform: the owner's Custom Rules for their agents, inside "
         ".agent-sessions/<universe>/ (harness D1a)"
+    ),
+    "agent-activities.db": (
+        "agent_activities (inside .agent-sessions/<universe>/, harness D2)"
     ),
     ".universe-sidecars": "platform: per-universe daemon sockets (egress proxy)",
     "steering.db": (

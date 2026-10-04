@@ -1728,6 +1728,61 @@ async def _handle_turn_interrupt(request: Any) -> Any:
     )
 
 
+async def _handle_live(request: Any) -> Any:
+    """The signed-in owner's command center projects and live activities."""
+    import time
+
+    from starlette.concurrency import run_in_threadpool
+    from starlette.responses import JSONResponse, PlainTextResponse
+
+    from tinyassets import live_view
+    from tinyassets.api.helpers import _base_path, _universe_dir
+    from tinyassets.api.permissions import universe_access_allows
+    from tinyassets.auth.middleware import current_identity
+
+    if not onboarding_enabled():
+        return PlainTextResponse("Not Found", status_code=404)
+    denied = _app_identity_required()
+    if denied is not None:
+        return denied
+    cfg = app_config()
+    if not _same_origin_json(request, str(cfg.get("resource") or "")):
+        return JSONResponse(
+            {"error": "cross_origin_rejected"}, status_code=403, headers=_NO_STORE
+        )
+    data = await _read_small_json(request)
+    if data is None:
+        return JSONResponse({"error": "invalid_json"}, status_code=400, headers=_NO_STORE)
+    identity = current_identity()
+    universe_id = str(data.get("universe_id", "") or "").strip()
+    if not universe_id:
+        try:
+            universe_id = await run_in_threadpool(_read_home, identity, raise_errors=True)
+        except Exception:  # noqa: BLE001 - an unreadable home exposes no live data
+            universe_id = ""
+    if not universe_id:
+        return JSONResponse({"error": "not_found"}, status_code=404, headers=_NO_STORE)
+
+    def _read():
+        if not universe_access_allows(universe_id, write=True):
+            return None
+        udir = _universe_dir(universe_id)
+        activities = live_view.activity_rows(udir)
+        return {
+            "universe_id": universe_id, "as_of": time.time(),
+            "projects": live_view.projects(_base_path(), universe_id),
+            "activities": activities, "agent_states": live_view.agent_states(activities),
+        }
+
+    try:
+        result = await run_in_threadpool(_read)
+    except ValueError:
+        return JSONResponse({"error": "invalid_universe"}, status_code=400, headers=_NO_STORE)
+    if result is None:
+        return JSONResponse({"error": "not_found"}, status_code=404, headers=_NO_STORE)
+    return JSONResponse(result, headers=_NO_STORE)
+
+
 async def _handle_turn_steer(request: Any) -> Any:
     """Send the signed-in user's message into their own RUNNING turn (harness S2).
 
@@ -2490,6 +2545,7 @@ def onboarding_routes() -> list[Any]:
         Route("/app/memory", _handle_memory, methods=["GET", "POST"]),
         Route("/app/profile", _handle_profile, methods=["GET"]),
         Route("/app/turn/interrupt", _handle_turn_interrupt, methods=["POST"]),
+        Route("/app/live", _handle_live, methods=["POST"]),
         Route("/app/turn/steer", _handle_turn_steer, methods=["POST"]),
         Route("/app/turn/pending", _handle_turn_pending, methods=["POST"]),
         Route("/app/connections", handle_connections, methods=["GET", "POST"]),
