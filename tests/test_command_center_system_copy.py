@@ -82,6 +82,25 @@ def test_zero_legacy_and_mixed_catalogues_are_explicit(home):
     assert [p["agent_definition_id"] for p in mixed["systems"]] == [legacy]
 
 
+def test_published_screen_bundle_is_findable_in_commons(home, monkeypatch):
+    from tests.engine_authority_helpers import mock_engine_admission
+    from tinyassets import engine_mcp_server as engine
+
+    legacy = _legacy(home)
+    package = _published(home)["done"]["agent_definition_id"]
+    definition = get_definition(home, legacy)
+    monkeypatch.setattr(engine, "_ACTOR_ID", BOB)
+    monkeypatch.setattr(engine, "_GRAPH_ID", BOB_UNIVERSE)
+    mock_engine_admission(monkeypatch, {BOB_UNIVERSE})
+    result = json.loads(engine.browse_commons(kind="systems", query=definition["name"]))
+    assert "error" not in result, result
+    [row] = result["content"]["systems"]
+    assert row["agent_definition_id"] == legacy
+    assert row["publication_kind"] == "system"
+    packages = json.loads(engine.browse_commons(kind="packages"))["content"]["packages"]
+    assert [row["agent_definition_id"] for row in packages] == [package]
+
+
 def test_preview_and_cancel_do_not_copy_any_components_or_files(home):
     definition_id = _legacy(home)
     before = _bob_files(home)

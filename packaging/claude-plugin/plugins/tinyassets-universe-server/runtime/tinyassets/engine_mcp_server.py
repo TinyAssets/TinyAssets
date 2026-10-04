@@ -2393,8 +2393,11 @@ _WRITE_GRAPH_SYSTEMS_CHAPTER = """\
       broadcasts; this does not grant direct workflow execution or exclusive routing.
     * **Sharing workflows only** uses ``publish_kind: "workflows"`` and
       ``branch_ids`` without ``ui_id`` or ``package``. A legacy screen-and-workflow
-      system without ``package`` appears in agents and the supported system
-      picker; it never silently exports files.
+      system without ``package`` appears in ``browse_commons kind="systems"``
+      and the supported system picker; it never silently exports files.
+      ``systems`` lists non-package bundles (screen + workflows or workflows
+      only); ``agents`` is the broad public-definition catalog and includes
+      these bundles and whole command-center packages too.
     * **Sharing the WHOLE command center** uses the explicit ``package``
       block, ``"package": {}``: the files travel too (agents' instructions and
       skills, workspace files, ``wiki/pages``) as one versioned package. The
@@ -2412,7 +2415,7 @@ _WRITE_GRAPH_SYSTEMS_CHAPTER = """\
       its automations PAUSED, its files written beside theirs (never over one),
       its agent's instructions under ``agents/<name>/``. Tell them to resume the
       automations they want.
-    * **Installing someone else's** single system: ``browse_commons kind="agents"``, then
+    * **Installing someone else's** single system: ``browse_commons kind="systems"``, then
       ``read_commons_shape agent_definition_id=...`` for metadata and component
       keys. Read each component with ``field_name=<key>`` and concatenate its
       JSON ``chunk`` pages using ``output_offset=next_offset`` until null, then
@@ -3495,7 +3498,7 @@ def write_graph(
 # gated by the same current-owner admission + rate-limit as run_graph.
 # PUBLISH to the global commons is a separate,
 # consent-gated slice — deliberately NOT exposed here.
-_COMMONS_LIST_KINDS = frozenset({"branches", "agents", "goals", "packages"})
+_COMMONS_LIST_KINDS = frozenset({"branches", "agents", "goals", "packages", "systems"})
 #: Hard server-side cap on a commons browse (Codex ADAPT 2026-08-22 #7): the
 #: branch catalog is global and unbounded, so cap the rows we return to the agent
 #: to protect its context window as the commons grows. (Cursor pagination is a
@@ -3717,13 +3720,16 @@ def browse_commons(
 
     Args:
         kind: ``branches`` (published workflow shapes; each row's
-            ``published_version_id`` goes to ``remix_shape``), ``agents`` (public
-            agent definitions), ``packages`` (whole command centers; install via
-            an ``install`` ask) or ``goals``. Defaults to ``branches``.
+            ``published_version_id`` goes to ``remix_shape``), ``systems``
+            (non-package bundles: screen + workflows or workflows only; rows
+            carry ``publication_kind``), ``packages`` (whole command centers
+            including files; install via an ``install`` ask), ``agents`` (all
+            public definitions, including systems and packages) or ``goals``.
+            Defaults to ``branches``.
         query: Optional search text (not branches).
         author: Optional author filter.
         limit: Max records (not branches).
-        output_offset: For agents/packages, the returned next_offset (matching row index).
+        output_offset: For agents/packages/systems, the returned next_offset (matching row index).
             Other kinds currently do not support paging.
     """
     import json
@@ -3740,8 +3746,8 @@ def browse_commons(
             ),
         })
 
-    if normalized not in {"agents", "packages"} and output_offset != 0:
-        return json.dumps({"error": "output_offset is supported only for agents/packages"})
+    if normalized not in {"agents", "packages", "systems"} and output_offset != 0:
+        return json.dumps({"error": "output_offset is supported only for agents/packages/systems"})
 
     from tinyassets.auth.middleware import _current_identity
 
@@ -3777,6 +3783,35 @@ def browse_commons(
             # published rows come back beside it under `own`, so the notice is
             # true for everything under `content`.
             foreign, own = _split_own_rows(raw)
+            return _untrusted(f"commons:browse:{normalized}", foreign, own=own)
+        if normalized == "systems":
+            from tinyassets.api.helpers import _base_path
+            from tinyassets.api.system_copy_requests import SYSTEM_TAG
+            from tinyassets.command_center_packages import PACKAGE_TAG
+            from tinyassets.custom_agents import list_definitions
+            from tinyassets.engine_read_views import project_agents
+            from tinyassets.engine_result_bounds import resolve_ceiling
+
+            if type(output_offset) is not int or output_offset < 0:
+                return json.dumps({"error": "output_offset must be a non-negative integer"})
+            if type(limit) is not int or not 1 <= limit <= 100:
+                return json.dumps({"error": "limit must be between 1 and 100"})
+            filters = {"query": (query or "").strip(), "author_id": (author or "").strip(),
+                       "tags": [SYSTEM_TAG], "exclude_tags": [PACKAGE_TAG]}
+            base = _base_path()
+            rows = list_definitions(base, **filters, limit=min(limit, _COMMONS_BROWSE_MAX),
+                                    offset=output_offset)
+            more = bool(list_definitions(base, **filters, limit=1,
+                                         offset=output_offset + len(rows)))
+            if output_offset and not rows and not list_definitions(
+                    base, **filters, limit=1, offset=output_offset - 1):
+                return json.dumps({"error": "output_offset is past the system catalog"})
+            result = project_agents(rows, offset=output_offset, more=more,
+                                    budget=resolve_ceiling() - 2048)
+            if "error" in result:
+                return json.dumps(result)
+            result["systems"] = result.pop("agents")
+            foreign, own = _split_own_rows(json.dumps(result))
             return _untrusted(f"commons:browse:{normalized}", foreign, own=own)
         if normalized == "packages":
             from tinyassets.api.package_requests import list_packages

@@ -251,3 +251,54 @@ def test_branch_read_never_ignores_component_selectors(published):
     from tinyassets import engine_mcp_server as engine
     result = json.loads(engine.read_commons_shape(branch_id="branch", output_offset=10))
     assert result["error"] == "component selectors apply only to agent_definition_id"
+
+
+@pytest.mark.asyncio
+async def test_browse_systems_filters_before_paging(published, monkeypatch):
+    publish, _ = published
+    from tinyassets import engine_mcp_server as engine
+
+    monkeypatch.setenv("TINYASSETS_ENGINE_RESULT_CEILING_BYTES", "4096")
+    components = {
+        "ui": {"kind": "tinyassets.ui.v1", "html": "screen" * 6000},
+        "workflow": {"kind": "tinyassets.branch-ref.v1", "branch_def_id": "branch-123"},
+    }
+    system_tag = "tinyassets.system.v1"
+    ids = {publish(name=f"Furry House {i}", tags=[system_tag], components=components,
+                   author="publisher")["agent_definition_id"] for i in range(3)}
+    publish(name="Furry House package", tags=[system_tag, TAG])
+    publish(name="Furry House untagged", tags=[], components=components)
+    publish(name="Furry House other author", tags=[system_tag], author="other")
+    publish(name="Different screen", tags=[system_tag], components=components)
+    async with Client(engine.mcp) as client:
+        offset, seen = 0, []
+        while True:
+            response = await client.call_tool("browse_commons", {
+                "kind": "systems", "query": " FURRY house ", "author": " publisher ",
+                "limit": 1, "output_offset": offset,
+            })
+            result = json.loads(response.content[0].text)
+            assert "error" not in result, result
+            assert result["untrusted"] is True
+            assert len(response.content[0].text.encode()) <= 4096
+            page = result["content"]
+            [row] = page["systems"]
+            assert row["publication_kind"] == "system"
+            assert row["summary_only"] and "components" not in row
+            assert TAG not in row["tags"]
+            seen.append(row["agent_definition_id"])
+            if page["next_offset"] is None:
+                break
+            assert page["next_offset"] > offset
+            offset = page["next_offset"]
+        assert len(seen) == len(ids) and set(seen) == ids
+
+
+def test_browse_systems_excludes_packages_even_without_query(published):
+    publish, _ = published
+    from tinyassets import engine_mcp_server as engine
+
+    publish(tags=["tinyassets.system.v1", TAG])
+    result = json.loads(engine.browse_commons(kind="systems"))
+    assert "error" not in result, result
+    assert result["content"]["systems"] == []
