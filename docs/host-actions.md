@@ -198,67 +198,25 @@ order. Only the Play one is on a 14-day clock, so it goes first.
 The clock starts when 12 people are actually opted in, and it runs for 14 days. Tell the
 lead the day it starts. The full engagement plan is in that section below.
 
-### Apple: turn on Sign in with Apple
+### Apple: Sign in with Apple is live; store the key backup, then try it once
 
-**Why:** the sign-in page offers **Continue with Google**. Apple Guideline 4.8 requires
-any app offering Google sign-in to also offer an equivalent private login, and Sign in
-with Apple is it. TinyAssets' own email/password does not count while Google is offered
-too. Apple has not cited this yet, but a full review would. Sign-in is the hosted WorkOS
-page, so this is dashboard setup only: no app rebuild, and build 3 stays as submitted.
+Set up 2026-10-04 by the lead in the founder's browser: App ID `io.tinyassets.app` has
+Sign in with Apple as the primary App ID. Services ID `io.tinyassets.signin` uses domain
+`auth.workos.com`, which is the host of the WorkOS redirect URI; an older draft said
+`api.workos.com`, which was wrong. The return URL is the WorkOS Production redirect URI.
+Key `TinyAssets Sign in with Apple` (Key ID `8925BK5HWC`, Team `6SFDJZ6RKT`) is entered in
+WorkOS Production. Email relay source `workos-mail.com` is registered (SPF passes).
+`python scripts/authkit_login_parity_probe.py` returns `PASS: providers: apple, google`.
 
-You need two browser tabs. In both, stay in the **Production** environment on the WorkOS
-side.
+Left for the founder:
 
-1. **WorkOS** (`dashboard.workos.com`, Production) → **Authentication → OAuth providers
-   → Sign in with Apple → Enable**. Leave the dialog open. It shows a **Redirect URI**
-   and **Outbound email domains**; you paste both into Apple below.
-2. **Apple Developer** (`developer.apple.com/account` → Certificates, IDs & Profiles):
-   1. Note the **Team ID** shown under your name (top right).
-   2. **Identifiers** → `io.tinyassets.app` → tick **Sign in with Apple** (leave it
-      as *Enable as a primary App ID*) → **Save**. If Apple warns that profiles will be
-      invalidated, accept. Build 3 is already signed and is unaffected. Only a *future*
-      iOS build needs its profile regenerated, and the agent will ask when that comes up.
-   3. **Identifiers → +** → **Services IDs** → Description `TinyAssets Sign In`,
-      Identifier `io.tinyassets.signin` → **Register**. Open it, tick **Sign in with
-      Apple → Configure**: Primary App ID `io.tinyassets.app`; Domains and Subdomains
-      `api.workos.com`; Return URLs = the WorkOS **Redirect URI** from step 1 →
-      **Done → Continue → Save**.
-   4. **Keys → +** → Key Name `TinyAssets Sign in with Apple`, tick **Sign in with
-      Apple → Configure** → `io.tinyassets.app` → **Save → Continue → Register**.
-      Note the **Key ID** and click **Download**. Apple allows only one download.
-   5. **Services → Sign in with Apple for Email Communication → Configure → +**. Enter
-      the WorkOS **Outbound email domains** from step 1 → **Next → Register**. Without
-      this, users who choose *Hide My Email* never receive TinyAssets email.
-3. Back in the **WorkOS** dialog, choose **Your app's credentials** and enter: Apple Team
-   ID = the value from 2.1, Apple Service ID = `io.tinyassets.signin`, Private Key ID =
-   the Key ID from 2.4, Private Key = open the downloaded `AuthKey_<KeyID>.p8` in Notepad
-   and paste its whole contents. Toggle **Enable** on and save.
-4. **Where the key file goes:** Control Panel → **Credential Manager → Windows
-   Credentials → Add a generic credential**. Internet address `TinyAssets Apple SIWA
-   key`, user name = the Key ID, password = the whole `.p8` contents. Then delete the
-   `.p8` from Downloads and empty the Recycle Bin. Never paste it into chat or commit it.
-   The Team ID, Services ID and Key ID are not secret and can be sent to the lead.
-5. Tell the lead it's done. The agent runs `python scripts/authkit_login_parity_probe.py`
-   (it fails today, exit 1, and passes once Apple is offered). Then it checks one real
-   **Continue with Apple** sign-in on `https://tinyassets.io/app`.
-
-### Apple: renew the App Review inference key before 2026-10-10
-
-The dedicated App Review account (`play-review@tinyassets.io`, password in Windows
-Credential Manager) answers through a review-only OpenRouter key that **expires
-2026-10-10**. If Apple reviews after that date, the reviewer signs in to a universe that
-cannot reply, which is a certain rejection. The key must be renewed before resubmission.
-
-1. **OpenRouter** (the account that owns the current review key) → **Keys → Create
-   key**. Name `tinyassets-app-review`, credit limit **$5**, expiry at least
-   2026-12-31. Copy the key; do not save it anywhere else.
-2. In a private browser window, sign in to `https://tinyassets.io/app` as the review
-   account. Open **Connect**, choose OpenRouter, paste the key into **Paste only the
-   key**, and tap **Connect**.
-3. Send one message, for example "What can you help me with?", and confirm a reply
-   appears. This also proves the reviewer universe still answers after the September
-   prune.
-4. Back in OpenRouter, delete the old review key. Tell the lead the new expiry date.
+1. **Back up the key:** Control Panel → **Credential Manager → Windows Credentials → Add
+   a generic credential**. Internet address `TinyAssets Apple SIWA key`, user name
+   `8925BK5HWC`, password = the whole contents of `Downloads\AuthKey_8925BK5HWC.p8`.
+   Then delete the `.p8` and empty the Recycle Bin. Apple will not let it be downloaded again.
+2. Sign in once with **Continue with Apple** on `https://tinyassets.io/app`. It needs
+   your Apple ID, so the agent cannot do it. Tell the lead whether it landed you in your
+   account.
 
 ### Apple: record the review video on a physical iPhone
 
