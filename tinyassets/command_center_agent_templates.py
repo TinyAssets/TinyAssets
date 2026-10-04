@@ -108,8 +108,15 @@ def templates(base: Any, components: dict, *, readers=None) -> list[dict]:
 def resolve_ui_refs(ui: dict | None, included: set[str]) -> None:
     from tinyassets.custom_agents import app_ui_agent_refs
 
-    if ui is not None and any(key not in included for key in app_ui_agent_refs(ui).values()):
-        raise ValueError("agent_refs must name only included public agent templates")
+    missing = sorted(alias for alias, key in app_ui_agent_refs(ui or {}).items()
+                     if key not in included)
+    if missing:
+        raise ValueError(
+            "Cannot copy the screen's chat agents: " + ", ".join(missing)
+            + ". Their agent_refs point to public agent templates not included in this "
+            "publication. Ask the publisher to include those agents and republish; "
+            "private agents cannot be copied."
+        )
 
 
 def reject_nested_workflows(snapshot: Any) -> None:
@@ -255,11 +262,26 @@ def install(base: Any, uid: str, actor: str, pin_id: str, template: dict) -> str
     return intended
 
 
-def consent_lines(agents: list[dict]) -> list[str]:
+def consent_lines(agents: list[dict], *, has_screen: bool) -> list[str]:
     from tinyassets.api.publish_requests import _shown
 
     if not agents:
-        return ["No public chat-agent templates are included; existing agents stay yours."]
+        lines = [
+            "No public chat-agent templates are included, so no chat agents will be copied; "
+            "existing agents stay yours.",
+        ]
+        if has_screen:
+            lines.append(
+                "The screen's agent list shows only your own agents, not the publisher's. "
+                "Workflows and agent "
+                "instruction files do not create chat agents."
+            )
+        lines.append(
+            "To bring the publisher's agents, ask them to select the agents' public "
+            "instruction templates and republish. Their private agents and settings "
+            "cannot come with this copy."
+        )
+        return lines
     return [
         "Chat agents, as new private bindings to these public instructions:",
         *(f"- {_shown(a['name'])}" for a in agents),
