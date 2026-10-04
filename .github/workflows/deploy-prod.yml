@@ -583,8 +583,11 @@ jobs:
           # earlier `|| echo 000` appended to curl's own "000" on a connect
           # failure, producing 000000, which matched no branch and failed the
           # deploy -- breaking the advisory band it was written to provide.
-          http_code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "${direct_url}")"
-          curl_rc=$?
+          # The step runs under Actions' default `bash -e`, and `set -uo
+          # pipefail` does not clear errexit: a bare failing assignment would
+          # exit here before curl_rc was read. `|| curl_rc=$?` keeps it.
+          curl_rc=0
+          http_code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "${direct_url}")" || curl_rc=$?
           echo "curl exit ${curl_rc}, HTTP status '${http_code}'"
           if [ "${curl_rc}" != "0" ]; then
             echo "::warning::could not reach the direct origin (curl exit ${curl_rc}); the Access gate was not proved this run. Public MCP is served through the canonical endpoint, which was proved green above."

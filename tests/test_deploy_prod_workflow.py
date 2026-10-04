@@ -421,6 +421,37 @@ def test_access_gate_step_present():
     assert "access" not in str(rollback.get("if", "")).lower()
 
 
+@pytest.mark.skipif(shutil.which("bash") is None, reason="needs bash to execute the step")
+@pytest.mark.parametrize(
+    "curl_rc,http_out,want_rc",
+    [(6, "000", 0), (28, "000", 0), (0, "403", 0), (0, "401", 1), (0, "200", 1)],
+)
+def test_access_gate_step_executes_under_errexit(tmp_path, curl_rc, http_out, want_rc):
+    """Run the step's script the way Actions does (`bash -e`), curl stubbed.
+
+    String assertions passed while a transfer failure aborted the step before
+    `curl_rc` was read: `set -uo pipefail` does not clear the inherited errexit.
+    """
+    wf = _load()
+    gate = _step_named(wf, "Verify CF Access gates the direct origin (expects 403)")
+    stub = tmp_path / "curl"
+    # LF endings: a CRLF script breaks bash on a Windows checkout.
+    stub.write_bytes(f"#!/usr/bin/env bash\nprintf '%s' '{http_out}'\nexit {curl_rc}\n".encode())
+    stub.chmod(0o755)
+    script = tmp_path / "step.sh"
+    # Set inside the script, not via env=: a Windows `bash` may be WSL, which
+    # does not inherit the caller's environment.
+    prelude = 'export DIRECT_ORIGIN=origin.invalid\nexport PATH="$(pwd):$PATH"\n'
+    script.write_bytes((prelude + str(gate.get("run", ""))).encode())
+    proc = subprocess.run(
+        ["bash", "--noprofile", "--norc", "-e", "-o", "pipefail", script.name],
+        cwd=tmp_path, capture_output=True, text=True, timeout=30,
+    )
+    assert proc.returncode == want_rc, proc.stdout + proc.stderr
+    if curl_rc:
+        assert "could not reach the direct origin" in proc.stdout
+
+
 def test_access_gate_treats_our_own_401_as_an_open_gate():
     """401 is a FAILURE here, which is the whole point of the step.
 
@@ -464,6 +495,10 @@ def test_access_gate_treats_our_own_401_as_an_open_gate():
     # 000000, which matched no branch and failed the deploy -- breaking the
     # advisory band the step was written to provide.
     assert "curl_rc=$?" in run_script
+    assert "|| curl_rc=$?" in run_script, (
+        "a bare `x=$(curl ...)` exits under Actions' default `bash -e` before "
+        "curl_rc is read; capture it with `|| curl_rc=$?`"
+    )
     assert '[ "${curl_rc}" != "0" ]' in run_script
     code_lines = [
         line for line in run_script.splitlines() if not line.strip().startswith("#")
