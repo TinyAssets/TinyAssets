@@ -30,8 +30,8 @@ This slice does not claim support for every approved payload representation.
 | 2.1 | Bound action-result/denial wakes in existing activity_events; durable dedupe/attempt/result/ack; runtime/boot sweep; saved-agent resume; stopped/busy/no-power hold; retained tombstones | Ordinary answers, OAuth/background origins, inherited continuation task identity, full admission-before-recovery barrier and every deployment crash boundary |
 | 2.2 | Bubble inline protected approvals, draft edits, once/deadline display, sign-in/review/failure choices, read-only rail, account epoch guard, existing refresh transport, phone Chromium proof | Beside-original-turn positioning across history/reload, task/always controls, full connect card unification and real-user native/emergency-bubble proof |
 | 2.3 | No provider-connect implementation claimed; owner approval login independently uses server PKCE | Entire provider OAuth custody/deposit/recovery and active-task continuation contract |
-| 3.1 | Related tests, affected heavy tests, Linux oracle, Chromium tests, mirror regeneration/parity, Ruff and strict spec validation | Cross-family floor review (no sub-agents were used, as instructed), comprehensive guard mutation campaign |
-| 3.2 | None | Deployed SHA assertion, public canary, real-user connect/approve/edit/deny/retry/Stop pass and spec sync |
+| 3.1 | Related tests, affected heavy tests, Linux oracle, Chromium tests, mirror regeneration/parity, Ruff and strict spec validation | Comprehensive guard mutation campaign beyond the independently reviewed S1 slice |
+| 3.2 | None | Deployed SHA assertion, public canary, real-user connect/approve/edit/deny/retry/Stop pass and full-change spec sync |
 
 ## Approval receipt low notes
 
@@ -101,3 +101,5 @@ test_inline_request_storage and test_mirror_parity_gate via `python -m pytest`
 with an external basetemp. Changed Python Ruff, plugin import/parity and strict
 OpenSpec checks passed. Hosted and live acceptance remain separate requirements.
 The full change remains open for the unchecked work above.
+
+Implemented S1 requirements are now recorded in `openspec/specs/inline-connect-and-approve/spec.md` during the PR drain. This partial as-built sync does not mark the broader unchecked change complete or assert deployment.
