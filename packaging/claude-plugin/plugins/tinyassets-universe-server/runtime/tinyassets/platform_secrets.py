@@ -62,6 +62,7 @@ DAEMON_FORBIDDEN_ENV: frozenset[str] = frozenset({
 # security/retire-github-oauth-workflow-secret.
 
 DAEMON_ONLY_ENV: frozenset[str] = frozenset({
+    "TINYASSETS_OAUTH_GOOGLE_CLIENT_SECRET",
     "TINYASSETS_BILLING_ENTITLEMENT_KEY",
     "WORKOS_API_KEY",
 }) | _BILLING_SECRET_ENV  # the payment processor's keys, named by its adapter
@@ -98,4 +99,6 @@ def child_env(source: Mapping[str, str]) -> dict[str, str]:
     the package, so a runtime-config allowlist needs a separate consumer audit.
     The Compose/template inventory test rejects unclassified injected names.
     """
-    return {name: value for name, value in source.items() if name not in CHILD_FORBIDDEN_ENV}
+    return {name: value for name, value in source.items()
+            if name not in CHILD_FORBIDDEN_ENV and not name.startswith("TINYASSETS_OAUTH_")
+            and name != "TINYASSETS_CONNECTION_OAUTH_SERVICE"}

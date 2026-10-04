@@ -4947,6 +4947,7 @@ def _build_credential_broker_dispatch(
         oauth_tokens=ConnectionTokens(
             universe_dir=config["universe_dir"],
             owner_user_id=config["owner_user_id"],
+            oauth_service=config.get("oauth_service"),
         ),
     )
     return broker.dispatch
@@ -6103,6 +6104,11 @@ class ConnectionLedger:
         # Resolve the budget BEFORE spawning: a validation failure here must not
         # leak an already-started child (Codex FIX C).
         timeout = _proxy_startup_timeout_seconds()
+        from tinyassets.connection_oauth.service import client_config
+
+        factory_config["oauth_service"] = client_config(
+            Path(factory_config["universe_dir"]), owner_user_id,
+        )
         context = multiprocessing.get_context("spawn")
         client_channel, server_channel = context.Pipe(duplex=True)
         worker = context.Process(

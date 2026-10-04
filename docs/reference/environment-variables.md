@@ -9,6 +9,49 @@
 The daemon reads configuration from env vars. Defaults are CWD-independent so
 containerized deploys don't drift based on where the process was launched from.
 
+## Platform-registered connection OAuth
+
+| Var | Purpose | Default |
+|-----|---------|---------|
+| `TINYASSETS_OAUTH_DIRECTORY` | Absolute path to daemon-owned provider JSON; replaces the packaged directory. No secrets in this file. | `tinyassets/connection_oauth/providers.json` |
+| `TINYASSETS_OAUTH_GOOGLE_CLIENT_ID` | Platform's registered Web application OAuth client ID. | Unset; entry inactive |
+| `TINYASSETS_OAUTH_GOOGLE_CLIENT_SECRET` | Daemon-only platform client secret. Included in `CHILD_FORBIDDEN_ENV`. | Unset; entry inactive |
+
+The directory is `{"providers": [entry, ...]}`. Every entry requires a stable
+`id`, exact API `hosts`, HTTPS `authorization_endpoint` and `token_endpoint`,
+`client_id_env`, `client_secret_env`, and `token_endpoint_auth_method`
+(`client_secret_post` or `client_secret_basic`). Optional fields are `issuer`,
+`revocation_endpoint` (metadata only), `default_scopes` (use name to scope list),
+`host_uses` (host to use name), and `extra_auth_params` (string parameters).
+Reserved parameters such as state, redirect URI and PKCE cannot be overridden.
+Use the packaged JSON as a complete example. A replacement file can add any
+provider without Python changes. Secret names must follow
+`TINYASSETS_OAUTH_*_SECRET`; client ID names use the `TINYASSETS_OAUTH_` namespace.
+
+The packaged Google entry matches `gmail.googleapis.com`,
+`calendar.googleapis.com` and `www.googleapis.com`. It uses
+`https://accounts.google.com/o/oauth2/v2/auth`,
+`https://oauth2.googleapis.com/token`, and the optional
+`https://oauth2.googleapis.com/revoke`, with `access_type=offline` and
+`prompt=consent`, per [Google's web server OAuth documentation](https://developers.google.com/identity/protocols/oauth2/web-server).
+Register `https://tinyassets.io/app/model-callback/connect` as its redirect URI.
+Gmail and Calendar defaults are read-only. Explicit `oauth.scopes` take
+precedence; `oauth.use: "gmail"` or `"calendar"` selects a default set. Dedicated
+hosts infer the use; `www.googleapis.com` needs explicit scopes or a use.
+
+Set credentials in the daemon's environment through the platform secret
+configuration, never in a connect ask, agent prompt, or directory JSON. Missing
+credentials deactivate an entry and preserve discovery/key-paste fallback.
+Before child spawn, OAuth secrets move into daemon process-local memory; rotate
+or remove them by updating the daemon environment and restarting the daemon.
+All `TINYASSETS_OAUTH_*` variables are filtered from engine children. A private
+loopback service resolves offers and performs refreshes for the launcher's
+fixed owner/universe; its internal `TINYASSETS_CONNECTION_OAUTH_SERVICE`
+capability is installed only for that engine and is not a user configuration
+variable. The service returns no tokens or client secrets. Jails clear their
+environment. This follows #4267's inheritance boundary; it does not replace
+the separately tracked daemon/engine UID and procfs isolation work.
+
 ## Data + paths
 
 | Var | Purpose | Default |

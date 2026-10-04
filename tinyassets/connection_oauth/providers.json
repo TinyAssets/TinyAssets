@@ -1,0 +1,21 @@
+{
+  "providers": [
+    {
+      "id": "google",
+      "hosts": ["gmail.googleapis.com", "calendar.googleapis.com", "www.googleapis.com"],
+      "issuer": "https://accounts.google.com",
+      "authorization_endpoint": "https://accounts.google.com/o/oauth2/v2/auth",
+      "token_endpoint": "https://oauth2.googleapis.com/token",
+      "revocation_endpoint": "https://oauth2.googleapis.com/revoke",
+      "client_id_env": "TINYASSETS_OAUTH_GOOGLE_CLIENT_ID",
+      "client_secret_env": "TINYASSETS_OAUTH_GOOGLE_CLIENT_SECRET",
+      "token_endpoint_auth_method": "client_secret_post",
+      "default_scopes": {
+        "gmail": ["https://www.googleapis.com/auth/gmail.readonly"],
+        "calendar": ["https://www.googleapis.com/auth/calendar.readonly"]
+      },
+      "host_uses": {"gmail.googleapis.com": "gmail", "calendar.googleapis.com": "calendar"},
+      "extra_auth_params": {"access_type": "offline", "prompt": "consent"}
+    }
+  ]
+}
