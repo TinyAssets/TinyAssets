@@ -1,3 +1,10 @@
+---
+severity: P2
+title: Two founder command-center reports are fixed in code but not yet proven against the live incidents
+filed: '2026-10-04'
+summary: PR 4442 fixes the storage-charge and lost-send paths; the founder's actual storage refusal still needs production attribution, and the original lost send is unproven
+---
+
 # Founder command-center reports, 2026-10-04
 
 Branch: `fix/app-ui-run-and-code-checks`, PR #4442. Review fixes and push only;
