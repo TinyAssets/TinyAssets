@@ -56,6 +56,9 @@ def base(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     # Shrunk so the numbers stay in kilobytes; the logic is unchanged.
     monkeypatch.setattr(jail_disk, "LAUNCH_BYTES_CAP", 50 * KIB)
     monkeypatch.setattr(jail_disk, "GRACE_BYTES", 4 * KIB)
+    # Existing budget/renewal/grace cases isolate those contracts; the dedicated
+    # admission-headroom suite exercises the production 16 MiB holdback.
+    monkeypatch.setattr(jail_disk, "WRITE_HEADROOM_BYTES", 0)
     return root
 
 

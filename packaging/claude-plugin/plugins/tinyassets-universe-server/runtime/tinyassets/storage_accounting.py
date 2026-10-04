@@ -844,11 +844,15 @@ def reserve_fitted(
     cap: int,
     credit: int = 0,
     minimum: int = MIN_WORKSPACE_BYTES,
+    headroom: int = 0,
 ) -> tuple[Reservation, int]:
     """Reserve a write whose size is unknown up front, sized to what FITS.
 
     Returns ``(reservation, bound)``: the caller must not let the write exceed
-    ``bound`` = min(``cap``, headroom + ``credit``). ``credit`` is bytes the
+    ``bound`` = min(``cap``, available - ``headroom`` + ``credit``).
+    ``headroom`` leaves capacity unreserved at admission for other write paths;
+    it does not protect that capacity against later growth or remeasurement.
+    ``credit`` is bytes the
     write replaces and that are already owed deletion (a published workspace
     generation this checkout supersedes), so a re-checkout of the same repo
     fits the quota it already occupies. Raises `StorageRefused` when the bound
@@ -867,6 +871,7 @@ def reserve_fitted(
     if (scope_id, store) not in pairs:
         raise ValueError(f"{store}/{scope_id} is not part of this account's storage")
     credit = max(0, int(credit))
+    headroom = max(0, int(headroom))
     try:
         stale = _stale_pairs(base, pairs)
         if stale:
@@ -875,7 +880,7 @@ def reserve_fitted(
         # fit the capacity left by earlier writers, not reuse a stale bound.
         with _txn(base) as conn:
             current = _usage_in(conn, account, pairs, quota, tier)
-            bound = min(int(cap), quota - current.used_bytes + credit)
+            bound = min(int(cap), quota - current.used_bytes - headroom + credit)
             # Replaced bytes remain measured until discard, so only their
             # increment is new pending capacity.
             incremental = max(0, bound - credit)
