@@ -1086,3 +1086,31 @@ The system SHALL request every engine-inference agent reply as a stream and SHAL
 #### Scenario: The turn outgrows its only model
 - **WHEN** the next request would exceed the selected model's window and no accepted model is larger
 - **THEN** older tool results are sent clipped with a marker saying the tool can be called again for the whole result, and only when clipping no longer shrinks the request is the record `context_window_exceeded`
+
+### Requirement: Request economy uses advisory daily compute estimates
+The served conversation coordinator SHALL NOT impose a per-turn or per-step request ceiling. It SHALL read daily cap facts through `daily_cap_for_host`, using the connect-screen's installed data, and count the owner's journaled free-model requests, including failed attempts. Successful requests beyond the declared free cap SHALL retain the existing credit-tier self-correction. The accepted `AgentModelPlan` order, including capacity exclusions, SHALL determine which sources contribute, counted once per connection. Any usable uncapped source, non-free candidate, or unreadable evidence SHALL make the pool UNBOUNDED; an unbounded pool SHALL add no budget prompt.
+
+Installed cap facts and local counts SHALL be advisory, not proof of this account's applicable quota. A zero or low estimate SHALL NOT exclude a source, force `tool_choice="none"`, or truncate accepted work. The provider must remain reachable beyond the estimated free cap so a successful request can correct the tier. Genuine provider capacity failures SHALL retain the existing scoped exhaustion, retry, fallback, and journal behavior.
+
+For a finite estimate, the prompt SHALL describe its total and per-source remaining requests and installed midnight reset timezones, explicitly distinguishing them from confirmed account limits and recovery times. It SHALL ask the agent to save progress to `notes/<project>-progress.md` as it works, without claiming an unsaved file exists or an automatic wake is armed. On every `list_requests` read, an estimate below ten SHALL derive pending status and a short advisory suggestion on the existing `sys_connect_llm` card, using credit amount and URL from `daily_cap_for_host` when present and acknowledging that the account may already qualify. The card SHALL never be stored. The next rail read SHALL clear budget urgency when the estimate rises or becomes unbounded, without requiring a turn. Optional learning extraction SHALL still skip a capped selected source below ten estimated remaining; accepted user work SHALL continue.
+
+#### Scenario: A higher-tier account reaches its fifty-first request
+- **WHEN** local evidence reaches the installed free cap of fifty but the provider accepts further requests
+- **THEN** the next request retains tools, its success updates the tier estimate, and the task continues through its normal journaled completion
+
+#### Scenario: A long task has enough compute
+- **WHEN** fifteen tool rounds are needed and the local estimate is low, high, or unbounded
+- **THEN** all fifteen tool rounds and the final reply remain permitted while the provider accepts them
+
+#### Scenario: A source really refuses for capacity
+- **WHEN** a provider reports a capacity refusal after earlier tools completed
+- **THEN** existing scoped capacity handling applies and completed tools remain journaled without replay
+
+#### Scenario: A low estimate spans two turns
+- **WHEN** successive turns observe fewer than ten estimated requests remaining
+- **THEN** the app receives one advisory pending `sys_connect_llm` card rather than duplicate requests or a claim that work cannot continue
+
+#### Scenario: A conversation needs to continue after confirmed exhaustion
+- **WHEN** an interactive conversation encounters a real provider capacity refusal
+- **THEN** known progress remains journaled without claiming an automatic resume or treating an installed reset estimate as confirmed recovery
+- **AND** no new scheduler or owner-authored Branch is invented: activity start awaits #4221; the one-shot control-plane WakeTarget integration is tracked in `docs/concerns/2026-10-02-budget-exhaustion-auto-resume.md`

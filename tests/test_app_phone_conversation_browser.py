@@ -113,3 +113,75 @@ def test_wide_cloud_menu(app_url, browser, width):
     # Desktop and the Electron app keep 100dvh: no visual-viewport height.
     assert page.evaluate("document.documentElement.style.getPropertyValue('--app-h')") == ''
     page.close()
+
+
+@pytest.mark.parametrize('width', [390, 1280])
+@pytest.mark.parametrize('changed', ['epoch', 'owner', 'home'])
+@pytest.mark.parametrize('late_error', [False, True])
+def test_profile_response_cannot_cross_account_context(app_url, browser, width,
+                                                     changed, late_error):
+    """Actual Account navigation and DOM; only the profile transport is delayed."""
+    from playwright.sync_api import expect
+
+    context = browser.new_context(viewport={'width': width, 'height': 844},
+                                  is_mobile=width == 390, has_touch=width == 390)
+    page = context.new_page()
+    _enter_chat(page, app_url)
+    page.evaluate("""() => {
+        setQueueScope('home-a');
+        const original = window.fetch;
+        window.profileRequests = [];
+        window.fetch = (url, options) => {
+            if(url !== '/app/profile') return original(url, options);
+            return new Promise((resolve, reject) => {
+                profileRequests.push({resolve, reject, options});
+            });
+        };
+    }""")
+
+    def account():
+        page.locator('#btn-cloud-menu').click()
+        page.locator('#btn-account').click()
+        expect(page.locator('#view-account')).to_be_visible()
+
+    account()
+    page.wait_for_function('profileRequests.length === 1')
+    assert page.evaluate('profileRequests[0].options.credentials') == 'same-origin'
+    # Show A, then begin a second A read which remains pending across the switch.
+    page.evaluate("""() => profileRequests[0].resolve({ok:true, json:async()=>({
+        name:'Agent A', responsibility:'Private A', status:'working'})})""")
+    expect(page.locator('#profile-name')).to_have_text('Agent A')
+    page.evaluate("showView('chat'); refreshChatCloud();")
+    account()
+    page.wait_for_function('profileRequests.length === 2')
+    # Each independent fence must reject A; a combined switch could hide a missing guard.
+    page.evaluate("""changed => {
+        if(changed === 'epoch') MCP._loginEpoch++;
+        if(changed === 'owner') setQueueOwner('owner-b');
+        if(changed === 'home') setQueueScope('home-b');
+    }""", changed)
+    page.evaluate("showView('chat'); refreshChatCloud();")
+    account()
+    page.wait_for_function('profileRequests.length === 3')
+    page.evaluate("""() => profileRequests[2].resolve({ok:true, json:async()=>({
+        name:'<b>Agent B</b>', responsibility:'Private B', status:'waiting_on_you'})})""")
+    expect(page.locator('#profile-name')).to_have_text('<b>Agent B</b>')
+    assert page.locator('#profile-name b').count() == 0
+    page.evaluate("""async lateError => {
+        if(lateError) profileRequests[1].reject(new Error('late A failure'));
+        else profileRequests[1].resolve({ok:true, json:async()=>({
+            name:'Agent A', responsibility:'Private A', status:'working'})});
+        await new Promise(resolve => setTimeout(resolve, 0));
+    }""", late_error)
+    expect(page.locator('#profile-name')).to_have_text('<b>Agent B</b>')
+    expect(page.locator('#profile-responsibility')).to_have_text('Private B')
+    expect(page.locator('#profile-status')).to_have_text('Waiting on you')
+    # Exercise the exact merged reset function, including both parents' hooks.
+    page.evaluate("""() => {
+        addressedAgent={agent_id:'private-agent',name:'Private agent'};
+        clearAccountScopedState();
+    }""")
+    for field in ('name', 'responsibility', 'status'):
+        expect(page.locator('#profile-' + field)).to_have_text('')
+    assert page.evaluate('addressedAgentId()') == 'main'
+    context.close()

@@ -31,6 +31,7 @@ import subprocess
 import pytest
 
 from tests import test_model_bootstrap as _bootstrap
+from tests.inference_usage_helpers import accounting_resolver
 from tests.test_onboarding_app import _js_function
 from tinyassets.onboarding import render_app_html
 
@@ -103,7 +104,7 @@ def no_llm(monkeypatch):
         calls.append("model call")
         raise AssertionError("a model was called during setup")
 
-    monkeypatch.setattr(ApiKeyHttpProvider, "_resolve_proxy", forbidden)
+    monkeypatch.setattr(ApiKeyHttpProvider, "_resolve_proxy", accounting_resolver(forbidden))
     return calls
 
 

@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import base64
+import contextlib
 import hashlib
 import hmac
 import http.client
 import io
 import ipaddress
 import json
+import logging
 import math
 import multiprocessing
 import os
@@ -36,6 +38,7 @@ from tinyassets.storage.workspace_authority import (
 )
 
 AuthenticatedPrincipalVerifier = Callable[[], str]
+_LOG = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -418,6 +421,31 @@ class ProxyRequestError(RuntimeError):
 
 class AmbiguousProxyOutcome(RuntimeError):
     """The destination may have applied the request before transport failed."""
+
+
+class BrokerStreamStop(Exception):
+    """The broker stopped a stream (cancelled, past its deadline, fenced).
+
+    Raised from the broker's own checks inside a send. Never converted into a
+    destination failure by the transport, so the broker reports its real cause.
+    """
+
+
+class _InferenceAccountingStop(BrokerStreamStop):
+    """Carry the typed parent stop through transport cleanup without flattening it."""
+
+    def __init__(self, cause):
+        self.cause = cause
+        super().__init__("parent inference accounting stopped")
+
+
+def _settle_usage_after_error(usage, outcome):
+    if usage is None:
+        return
+    try:
+        usage.settle(outcome)
+    except Exception:  # noqa: BLE001 - durable dispatched state remains conservative
+        _LOG.warning("could not finalize inference usage after transport cleanup")
 
 
 class SsrfValidationError(ProxyRequestError):
@@ -889,6 +917,9 @@ def _run_proxy_worker(
     scopes: tuple[str, ...],
 ) -> None:
     """Run the trusted dispatcher in a separate spawned process."""
+    from tinyassets.exceptions import ProviderAuthorityHeldError
+    from tinyassets.request_budget import RequestBudgetExceeded
+
     _sanitize_child_environment()
     try:
         dispatch = _load_dispatch_factory(dispatch_factory, dispatch_config)
@@ -946,7 +977,17 @@ def _run_proxy_worker(
                 )
                 continue
             try:
-                result = dispatch(grant_id, verb, message.get("request"))
+                accounting = ({"inference_usage": message["inference_usage"],
+                               "operation_id": message.get("operation_id")}
+                              if "inference_usage" in message else {})
+                result = dispatch(grant_id, verb, message.get("request"), **accounting)
+            except RequestBudgetExceeded as exc:
+                _send_message(channel, {"ok": False, "error_type": "InferenceUsageStopped",
+                                        "reason": exc.reason,
+                                        "usage_id": exc.request_receipt.get("usage_id")})
+            except ProviderAuthorityHeldError:
+                _send_message(channel, {"ok": False, "error_type": "ProviderAuthorityHeldError",
+                                        "message": "inference usage authority refused"})
             except ConnectionAuthorizationError as exc:
                 _send_message(
                     channel,
@@ -999,13 +1040,16 @@ class _ProxyChannel:
         self._lock = threading.Lock()
         self._process = process
 
-    def request(self, verb: str, request: object) -> Any:
+    def request(self, verb: str, request: object, *, inference_usage=None) -> Any:
         with self._lock:
             if self._closed:
                 raise ProxyRequestError("outbound proxy is closed")
             _send_message(
                 self._channel,
-                {"op": "request", "verb": verb, "request": request},
+                {"op": "request", "verb": verb, "request": request,
+                 **({"inference_usage": inference_usage.document(),
+                     "operation_id": inference_usage.operation_id}
+                    if inference_usage is not None else {})},
             )
             response = _receive_message(self._channel)
         if not isinstance(response, dict):
@@ -1014,6 +1058,14 @@ class _ProxyChannel:
             return response.get("result")
         message = str(response.get("message") or "outbound request failed")
         error_type = response.get("error_type")
+        if error_type == "InferenceUsageStopped":
+            from tinyassets.storage.agent_request_usage import InferenceUsageStopped
+
+            raise InferenceUsageStopped(response.get("reason"), response.get("usage_id"))
+        if error_type == "ProviderAuthorityHeldError":
+            from tinyassets.exceptions import ProviderAuthorityHeldError
+
+            raise ProviderAuthorityHeldError("inference usage authority refused")
         if error_type == "PermissionError":
             raise PermissionError(message)
         if error_type == "GrantResolutionError":
@@ -1044,6 +1096,65 @@ class _ProxyChannel:
             self._process.join(timeout=1.0)
 
 
+class _BrokerChannel:
+    """``ScopedConnectionProxy``'s channel when the broker process serves it.
+
+    Each ``request`` is one broker stream, collected (``BrokerClient``), with a
+    fresh ``op_id``: the same document and typed errors as the worker's
+    channel. Holds no credential.
+    """
+
+    __slots__ = ("_client", "_closed", "_connection_id", "_grant_id")
+
+    def __init__(self, client: Any, *, grant_id: str, connection_id: str) -> None:
+        self._client = client
+        self._grant_id = grant_id
+        self._connection_id = connection_id
+        self._closed = False
+
+    def request(self, verb: str, request: object, *, inference_usage=None) -> Any:
+        from tinyassets.broker.ops import new_op_id
+
+        if self._closed:
+            raise ProxyRequestError("outbound proxy is closed")
+        if not isinstance(request, dict):
+            raise ProxyRequestError("outbound proxy rejected an invalid request")
+        return self._client.request(grant_id=self._grant_id, connection_id=self._connection_id,
+                                    verb=verb, request=request,
+                                    op_id=(inference_usage.operation_id
+                                           if inference_usage is not None else new_op_id()),
+                                    **({"inference_usage": inference_usage.document()}
+                                       if inference_usage is not None else {}))
+
+    def close(self) -> None:
+        self._closed = True
+
+
+def _broker_channel(data_root: Path, *, principal: str, command_center: str, grant_id: str,
+                    connection_id: str) -> _BrokerChannel | None:
+    """The broker's channel when the broker is selected; ``None`` keeps the worker.
+
+    Selected but not running is a loud refusal, never a silent fall back to the
+    worker: a switch that quietly does nothing cannot be proven on.
+    """
+    from tinyassets.broker.supervisor import broker_selected, read_owner
+
+    if not broker_selected():
+        return None
+    owner = read_owner(Path(data_root))
+    if owner is None:
+        raise ProxyRequestError("the credential broker is selected but not running")
+    from tinyassets.broker.client import BrokerClient
+
+    def fence() -> tuple[int, str]:
+        current = read_owner(Path(data_root)) or owner
+        return int(current["generation"]), str(current["token"])
+
+    client = BrokerClient(Path(owner["socket"]), principal=principal,
+                          command_center=command_center, fence=fence)
+    return _BrokerChannel(client, grant_id=grant_id, connection_id=connection_id)
+
+
 @dataclass(frozen=True, slots=True)
 class ScopedConnectionProxy:
     """Credential-blind adapter surface bound to one exact grant."""
@@ -1059,15 +1170,85 @@ class ScopedConnectionProxy:
     access_mode: str = ACCESS_EXACT
     _channel: _ProxyChannel = field(repr=False, compare=False, default=None)  # type: ignore[assignment]
 
-    def request(self, verb: str, request: object) -> Any:
+    def request(self, verb: str, request: object, *, inference_usage=None) -> Any:
         if not _verb_within_scopes(verb, self.scopes, self.access_mode):
             raise PermissionError(
                 f"verb {verb!r} is outside the granted connection scope"
             )
-        return self._channel.request(verb, request)
+        return self._channel.request(
+            verb, request, **({"inference_usage": inference_usage}
+                             if inference_usage is not None else {}),
+        )
 
     def close(self) -> None:
         self._channel.close()
+
+
+def _status_of(response: Any) -> int | None:
+    if isinstance(response, dict):
+        return response.get("status")
+    return getattr(response, "status", None)
+
+
+class BrokerStream:
+    """A streamed response as the broker hands it out (I14 decisions 3 and 5).
+
+    The status, reason and headers were already scanned by the driver; they
+    are scanned again here against the broker's own held values, which include
+    the OAuth tokens the driver never saw. The body goes through a
+    :class:`~tinyassets.broker.scan.StreamScanner` over the union of both sets,
+    so :meth:`read` only ever returns bytes that cannot belong to a held value,
+    and raises once one appears. Holds no credential itself.
+    """
+
+    __slots__ = ("_on_unsafe", "_scanner", "_upstream", "headers", "reason", "redirect_count",
+                 "status", "_usage", "_finished")
+
+    def __init__(self, upstream: UpstreamStream, held: tuple[str, ...],
+                 on_unsafe: Callable[[], None] = lambda: None, usage=None) -> None:
+        from tinyassets.broker.scan import StreamScanner, contains_sensitive
+
+        values = tuple(dict.fromkeys((*held, *upstream.sensitive)))
+        head = {"status": upstream.status, "reason": upstream.reason,
+                "headers": upstream.headers}
+        if contains_sensitive(head, values):
+            upstream.close()
+            raise ProxyRequestError("outbound request failed: unsafe destination response")
+        self._upstream = upstream
+        self._usage, self._finished = usage, False
+        self._on_unsafe = on_unsafe
+        self._scanner = StreamScanner(values)
+        self.status = upstream.status
+        self.reason = upstream.reason
+        self.headers = dict(upstream.headers)
+        self.redirect_count = upstream.redirect_count
+
+    def read(self, max_bytes: int) -> bytes | None:
+        """Scanned body bytes; ``b""`` while held back, ``None`` at the end."""
+        from tinyassets.broker.scan import SensitiveValueInResponse
+
+        try:
+            piece = self._upstream.read(max_bytes)
+            released = self._scanner.feed(piece) if piece else self._scanner.finish()
+        except SensitiveValueInResponse:
+            self.close()
+            self._on_unsafe()
+            raise ProxyRequestError(
+                "outbound request failed: unsafe destination response") from None
+        except BaseException:
+            self.close()
+            raise
+        if not piece and not released:
+            self._finished = True
+            return None
+        return released
+
+    def close(self) -> None:
+        try:
+            self._upstream.close()
+        finally:
+            if not self._finished:
+                _settle_usage_after_error(self._usage, "unknown")
 
 
 class CredentialBlindBroker:
@@ -1075,6 +1256,7 @@ class CredentialBlindBroker:
 
     __slots__ = (
         "_audit", "_ledger", "_network_request", "_oauth_tokens", "_resolve_credential",
+        "_resolve_inference_usage",
     )
 
     def __init__(
@@ -1085,7 +1267,9 @@ class CredentialBlindBroker:
         network_request: Callable[..., Any],
         audit: Callable[[dict[str, object]], None] | None = None,
         oauth_tokens: Any = None,
+        resolve_inference_usage: Callable[..., Any] | None = None,
     ) -> None:
+        self._resolve_inference_usage = resolve_inference_usage
         self._ledger = ledger
         self._resolve_credential = resolve_credential
         self._network_request = network_request
@@ -1094,7 +1278,16 @@ class CredentialBlindBroker:
         # expiry and once on 401, single-flight). None refuses oauth2 loudly.
         self._oauth_tokens = oauth_tokens
 
-    def dispatch(self, grant_id: str, verb: str, request: object) -> Any:
+    def dispatch(self, grant_id: str, verb: str, request: object, *,
+                 stream: bool = False, idle_s: float | None = None,
+                 guard: Callable[[], Any] | None = None,
+                 on_connect: Callable[[Any], None] | None = None,
+                 checkpoint: Callable[[], None] | None = None,
+                 deadline_at: float | None = None, inference_usage=None,
+                 operation_id: str | None = None) -> Any:
+        """One request on the grant. ``stream=True`` returns a :class:`BrokerStream`
+        whose body is read as it arrives (I14); every check before the response
+        is identical, and the body is scanned byte by byte instead of whole."""
         resource = self._ledger._active_resource_for_grant(grant_id)
         if resource is None:
             raise GrantResolutionError("absent or revoked outbound connection grant")
@@ -1117,6 +1310,21 @@ class CredentialBlindBroker:
             raise PermissionError(
                 f"verb {verb!r} is outside the granted connection scope"
             )
+        usage = None
+        if self._resolve_inference_usage is not None:
+            usage = self._resolve_inference_usage(
+                resource, grant_id, verb, request, inference_usage, operation_id,
+            )
+        else:
+            from tinyassets.storage.agent_request_usage import resolve_inference_usage
+
+            grant = self._ledger.require_active_grant(grant_id)
+            usage = resolve_inference_usage(
+                self._ledger._db_path.parent, grant.owner_user_id, grant.universe_id,
+                self._ledger, resource, grant_id, verb, request, inference_usage, operation_id,
+            )
+        if usage is not None:
+            usage.check()
         try:
             # Re-validate the CURRENT row's type<->credential-scheme match (the row
             # was just re-read and may have been mutated after proxy start), then
@@ -1178,22 +1386,78 @@ class CredentialBlindBroker:
         ):
             secrets_held = url_secret_sensitive_values(credential)
         wire_credential = credential
+
+        def oauth_bundle(*, rejected: str = "") -> Any:
+            if usage is not None:
+                usage.check()
+            if guard is not None:
+                with guard():
+                    if deadline_at is not None and time.monotonic() >= deadline_at:
+                        raise OutboundDeadlineExceeded("outbound request exceeded its time budget")
+                    return self._oauth_bundle(resource, grant_id, verb, credential,
+                                              rejected=rejected)
+            return self._oauth_bundle(resource, grant_id, verb, credential, rejected=rejected)
+
         if oauth:
-            bundle = self._oauth_bundle(resource, grant_id, verb, credential)
+            from tinyassets.connection_oauth.tokens import decode
+
+            bundle = oauth_bundle()
+            original = decode(credential)
             wire_credential = bundle.access_token
-            secrets_held = bundle.secret_values()
+            secrets_held = tuple(dict.fromkeys(
+                (*original.secret_values(), *bundle.secret_values())))
+        streaming = {"stream": True, "idle_s": idle_s, "on_connect": on_connect,
+                     "checkpoint": checkpoint} if stream else {}
+        if checkpoint is not None and revalidate_authority is not None:
+            # Each redirect hop re-checks the caller's cancellation and fence too.
+            authority_check = revalidate_authority
+
+            def revalidate_authority(deadline: float) -> None:
+                authority_check(deadline)
+                checkpoint()
+        if deadline_at is not None:
+            streaming["deadline_at"] = deadline_at
         response = self._send(resource, grant_id, verb, request, wire_credential,
-                              revalidate_authority, reply_budget_s, reply_stream)
-        if oauth and isinstance(response, dict) and response.get("status") == 401:
+                              revalidate_authority, reply_budget_s, reply_stream=reply_stream,
+                              guard=guard, inference_usage=usage, **streaming)
+        if oauth and _status_of(response) == 401:
             # The service rejected the token before doing anything: refresh
             # once (unless another holder already did) and send once more.
-            bundle = self._oauth_bundle(resource, grant_id, verb, credential,
-                                        rejected=wire_credential)
-            if bundle.access_token != wire_credential:
-                wire_credential = bundle.access_token
-                secrets_held = tuple(dict.fromkeys((*secrets_held, *bundle.secret_values())))
-                response = self._send(resource, grant_id, verb, request, wire_credential,
-                                      revalidate_authority, reply_budget_s, reply_stream)
+            # A stream's status is known before any body byte is read, so the
+            # resend happens before anything reaches the caller.
+            if usage is not None:
+                usage.settle("failed")
+            try:
+                if usage is not None:
+                    usage.reserve_retry()  # Before refresh, not just before the second send.
+                bundle = oauth_bundle(rejected=wire_credential)
+                if bundle.access_token != wire_credential:
+                    wire_credential = bundle.access_token
+                    secrets_held = tuple(dict.fromkeys((*secrets_held, *bundle.secret_values())))
+                    if stream:
+                        response.close()
+                    response = self._send(resource, grant_id, verb, request, wire_credential,
+                                          revalidate_authority, reply_budget_s,
+                                          reply_stream=reply_stream, guard=guard,
+                                          inference_usage=usage, **streaming)
+                elif usage is not None:
+                    usage.settle("not_sent")
+            except BaseException:
+                if stream:
+                    response.close()
+                _settle_usage_after_error(usage, "not_sent")
+                raise
+        if stream:
+            def unsafe_body() -> None:
+                self._record_error(resource, grant_id, verb,
+                                   "destination response contained credential material")
+
+            try:
+                return BrokerStream(response, secrets_held, on_unsafe=unsafe_body, usage=usage)
+            except ProxyRequestError:
+                self._record_error(resource, grant_id, verb,
+                                   "destination response contained credential material")
+                raise
         joined = _streamed_text(response)
         if any(
             _contains_secret(response, secret) or (joined and secret in joined)
@@ -1284,6 +1548,74 @@ class CredentialBlindBroker:
         self, resource: ConnectionResource, grant_id: str, verb: str, request: object,
         credential: str, revalidate_authority: Any, reply_budget_s: float | None = None,
         reply_stream: tuple[float, float] | None = None,
+        guard: Callable[[], Any] | None = None, deadline_at: float | None = None,
+        inference_usage=None, **streaming: Any,
+    ) -> Any:
+        """One network send. ``guard`` (the broker's fence and cancellation check)
+        is held across it, so every send -- the first, an OAuth resend -- is
+        re-checked immediately before it leaves. ``deadline_at`` (monotonic) is
+        the stream's one absolute deadline: every send gets only what is left
+        of it, so a resend never starts a fresh budget."""
+        if deadline_at is not None:
+            remaining = deadline_at - time.monotonic()
+            if remaining <= 0:
+                raise OutboundDeadlineExceeded("outbound request exceeded its time budget")
+            # Never wider than what was granted: no extended budget means the
+            # ordinary one, now cut to what is left of the stream.
+            granted = _SSRF_MAX_TOTAL_SECONDS if reply_budget_s is None else reply_budget_s
+            reply_budget_s = min(granted, remaining)
+        marked = False
+        if inference_usage is not None:
+            from tinyassets.request_budget import RequestBudgetExceeded
+
+            prior_connect, prior_check = streaming.get("on_connect"), streaming.get("checkpoint")
+
+            def connected(sock):
+                nonlocal marked
+                if prior_connect is not None:
+                    prior_connect(sock)
+                try:
+                    inference_usage.dispatched()
+                except RequestBudgetExceeded as exc:
+                    raise _InferenceAccountingStop(exc) from None
+                marked = True
+
+            def checkpoint():
+                if prior_check is not None:
+                    prior_check()
+                # Closure fences a request still in DNS/connect, while already
+                # dispatched replies retain their existing cancellation policy.
+                if not marked:
+                    try:
+                        inference_usage.check()
+                    except RequestBudgetExceeded as exc:
+                        raise _InferenceAccountingStop(exc) from None
+
+            streaming.update(on_connect=connected, checkpoint=checkpoint)
+        with guard() if guard is not None else contextlib.nullcontext():
+            if inference_usage is not None:
+                inference_usage.check()
+            try:
+                response = self._send_unguarded(resource, grant_id, verb, request, credential,
+                                                revalidate_authority, reply_budget_s,
+                                                reply_stream=reply_stream, **streaming)
+                if inference_usage is not None and not marked:
+                    from tinyassets.exceptions import ProviderAuthorityHeldError
+
+                    raise ProviderAuthorityHeldError(
+                        "inference transport omitted dispatch evidence")
+                return response
+            except BaseException as exc:
+                _settle_usage_after_error(inference_usage, "unknown" if marked else "not_sent")
+                if isinstance(exc, _InferenceAccountingStop):
+                    raise exc.cause from None
+                raise
+
+    def _send_unguarded(
+        self, resource: ConnectionResource, grant_id: str, verb: str, request: object,
+        credential: str, revalidate_authority: Any, reply_budget_s: float | None = None,
+        reply_stream: tuple[float, float] | None = None,
+        **streaming: Any,
     ) -> Any:
         try:
             return self._network_request(
@@ -1298,8 +1630,11 @@ class CredentialBlindBroker:
                 request=request,
                 **({"revalidate_authority": revalidate_authority} if revalidate_authority else {}),
                 **({"reply_budget_s": reply_budget_s} if reply_budget_s is not None else {}),
+                **streaming,
                 **({"reply_stream": reply_stream} if reply_stream is not None else {}),
             )
+        except BrokerStreamStop:
+            raise
         except AmbiguousProxyOutcome:
             self._record_error(
                 resource,
@@ -3103,12 +3438,14 @@ class _DeadlineSocket:
     deadline inside the stdlib parser too, not only in the body loop.
     """
 
-    __slots__ = ("_deadline", "_per_op_timeout", "_sock", "bound_by_total")
+    __slots__ = ("_deadline", "_per_op_timeout", "_sock", "_checkpoint", "bound_by_total")
 
-    def __init__(self, sock: Any, *, deadline: float, per_op_timeout: float | None) -> None:
+    def __init__(self, sock: Any, *, deadline: float, per_op_timeout: float | None,
+                 checkpoint: Callable[[], None] | None = None) -> None:
         self._sock = sock
         self._deadline = deadline
         self._per_op_timeout = per_op_timeout
+        self._checkpoint = checkpoint
         #: Whether the LAST armed read was limited by the total deadline rather
         #: than the per-read window: a timeout then is the deadline, not a stall.
         self.bound_by_total = True
@@ -3122,6 +3459,8 @@ class _DeadlineSocket:
         self._deadline = deadline
 
     def _arm(self) -> None:
+        if self._checkpoint is not None:
+            self._checkpoint()
         remaining = self._deadline - time.monotonic()
         if remaining <= 0:
             raise _TotalDeadlineExceeded
@@ -3195,6 +3534,8 @@ class _PinnedHTTPSConnection(http.client.HTTPSConnection):
         pinned_address: str,
         open_socket: Callable[..., socket.socket],
         deadline: float,
+        on_connect: Callable[[Any], None] | None = None,
+        checkpoint: Callable[[], None] | None = None,
         sockets: list | None = None,
         **kwargs: Any,
     ) -> None:
@@ -3202,6 +3543,8 @@ class _PinnedHTTPSConnection(http.client.HTTPSConnection):
         self._pinned_address = pinned_address
         self._open_socket = open_socket
         self._deadline = deadline
+        self._on_connect = on_connect
+        self._checkpoint = checkpoint
         self._sockets = sockets
 
     def connect(self) -> None:  # noqa: D102 - overrides http.client
@@ -3246,7 +3589,11 @@ class _PinnedHTTPSConnection(http.client.HTTPSConnection):
             tls,
             deadline=self._deadline,
             per_op_timeout=self.timeout,
+            checkpoint=self._checkpoint,
         )
+        if self._on_connect is not None:
+            # Record the connection before the first request write.
+            self._on_connect(tls)
         if self._sockets is not None:
             self._sockets.append(self.sock)
 
@@ -3261,12 +3608,16 @@ class _PinnedHTTPSHandler(urllib.request.HTTPSHandler):
         pinned_address: str,
         open_socket: Callable[..., socket.socket],
         deadline: float,
+        on_connect: Callable[[Any], None] | None = None,
+        checkpoint: Callable[[], None] | None = None,
         sockets: list | None = None,
     ) -> None:
         super().__init__(context=context)
         self._pinned_address = pinned_address
         self._open_socket = open_socket
         self._deadline = deadline
+        self._on_connect = on_connect
+        self._checkpoint = checkpoint
         self._sockets = sockets
 
     def https_open(self, req: Any) -> Any:
@@ -3286,6 +3637,8 @@ class _PinnedHTTPSHandler(urllib.request.HTTPSHandler):
             pinned_address=self._pinned_address,
             open_socket=self._open_socket,
             deadline=self._deadline,
+            on_connect=self._on_connect,
+            checkpoint=self._checkpoint,
             sockets=self._sockets,
         )
 
@@ -3417,6 +3770,8 @@ def _execute_pinned_https_request(
     max_header_bytes: int,
     absolute_deadline: float | None = None,
     hop_metadata: _HttpHopMetadata | None = None,
+    on_connect: Callable[[Any], None] | None = None,
+    checkpoint: Callable[[], None] | None = None,
     body_idle_timeout: float | None = None,
 ) -> dict[str, Any]:
     """Fire ONE request: no ambient proxies, no redirects, bounded response.
@@ -3458,6 +3813,8 @@ def _execute_pinned_https_request(
             pinned_address=pinned_address,
             open_socket=open_socket,
             deadline=deadline,
+            on_connect=on_connect,
+            checkpoint=checkpoint,
             sockets=sockets,
         )
     )
@@ -3471,7 +3828,7 @@ def _execute_pinned_https_request(
         response = opener.open(request, timeout=min(timeout, remaining))
     except _TotalDeadlineExceeded:
         deadline_exceeded = True
-    except (SsrfValidationError, GrantResolutionError):
+    except (SsrfValidationError, GrantResolutionError, BrokerStreamStop):
         raise
     except Exception as exc:
         # A deadline breach during the status-line/header parse surfaces as a
@@ -3547,6 +3904,8 @@ def _execute_pinned_https_request(
                         },
                         "body": body_bytes.decode("utf-8", errors="replace"),
                     }
+    except BrokerStreamStop:
+        raise
     except _TotalDeadlineExceeded:
         read_deadline_exceeded = True
     except Exception as exc:
@@ -3656,6 +4015,243 @@ def _default_ssl_context() -> ssl.SSLContext:
     return context
 
 
+@dataclass(repr=False)
+class _PreparedRequest:
+    """One request, validated and authenticated, not yet sent. Never returned."""
+
+    verb: str
+    canonical: _CanonicalOutboundUrl
+    headers: dict[str, str]
+    auth_headers: dict[str, str]
+    sensitive: list[str]
+    body: bytes | None
+    redirect_enabled: bool
+
+
+class UpstreamStream:
+    """One streamed upstream response (I14). Status, reason and headers are set
+    and already scanned when it is returned; the body is read with :meth:`read`.
+
+    It carries no credential. ``sensitive`` is the driver's own set of values to
+    keep out of the body (raw bundle members and the exact auth material it put
+    on the wire); the broker adds its own and scans every byte before release.
+    Every error :meth:`read` raises is one of the module's fixed, secret-free
+    classes, raised outside any handler so no exception context carries a
+    destination's words.
+    """
+
+    __slots__ = ("_closed", "_done", "_lifetime", "_max_body", "_queued", "_read_bytes",
+                 "_reading", "_response", "_deadline", "headers", "reason",
+                 "redirect_count", "sensitive", "status")
+
+    def __init__(self, *, status: int, reason: str, headers: dict[str, str],
+                 sensitive: tuple[str, ...], response: Any = None, max_body_bytes: int = 0,
+                 deadline: float = 0.0, queued: bytes = b"", redirect_count: int = 0,
+                 sock: Any = None) -> None:
+        self.status = status
+        self.reason = reason
+        self.headers = headers
+        self.sensitive = sensitive
+        self.redirect_count = redirect_count
+        self._response = response
+        self._max_body = max_body_bytes
+        self._deadline = deadline
+        self._read_bytes = 0
+        self._queued = queued
+        self._done = response is None
+        self._closed = False
+        self._reading = False
+        del sock  # accepted for callers that pass it; nothing acts on it any more
+        self._lifetime = threading.Lock()
+
+    @classmethod
+    def complete(cls, result: dict[str, Any], sensitive: tuple[str, ...]) -> UpstreamStream:
+        """A collected response (already scanned whole) presented as a stream."""
+        body = result.get("body")
+        payload = body.encode("utf-8") if isinstance(body, str) else bytes(body or b"")
+        return cls(status=int(result["status"]), reason=str(result.get("reason", "")),
+                   headers=dict(result.get("headers") or {}), sensitive=sensitive,
+                   queued=payload, redirect_count=int(result.get("redirect_count", 0) or 0))
+
+    @property
+    def done(self) -> bool:
+        return self._done and not self._queued
+
+    def read(self, max_bytes: int) -> bytes:
+        """Up to ``max_bytes`` of body; ``b""`` only at the end of the body."""
+        if self._closed:
+            raise ProxyRequestError("outbound stream is closed")
+        if max_bytes < 1:
+            raise ValueError("read at least one byte")
+        if self._queued:
+            piece, self._queued = self._queued[:max_bytes], self._queued[max_bytes:]
+            return piece
+        if self._done:
+            return b""
+        failure: BaseException | None = None
+        piece = b""
+        self._reading = True
+        try:
+            piece = self._response.read1(min(max_bytes, _SSRF_READ_CHUNK))
+        except BrokerStreamStop as exc:
+            failure = exc
+        except _TotalDeadlineExceeded:
+            failure = OutboundDeadlineExceeded("outbound request exceeded the total deadline")
+        except Exception as exc:
+            if _looks_like_deadline_breach(exc, self._deadline):
+                failure = OutboundDeadlineExceeded(
+                    "outbound request exceeded its time budget")
+            else:
+                failure = ProxyRequestError("outbound request failed at destination")
+        finally:
+            self._reading = False
+        if self._closed:
+            self._release()  # closed from another thread while this read ran
+            raise ProxyRequestError("outbound stream is closed")
+        if failure is not None:
+            self.close()
+            raise failure
+        if not piece:
+            self._done = True
+            self._release()
+            return b""
+        self._read_bytes += len(piece)
+        if self._read_bytes > self._max_body:
+            self.close()
+            raise SsrfValidationError("outbound response exceeds the size bound")
+        return piece
+
+    def _release(self) -> None:
+        with self._lifetime:
+            response, self._response = self._response, None
+            if response is not None:
+                try:
+                    response.close()
+                except Exception:
+                    pass
+
+    def close(self) -> None:
+        """Stop the stream without blocking. Safe from any thread, any number of times."""
+        self._closed = True
+        self._queued = b""
+        self._done = True
+        if not self._reading:
+            self._release()
+        # A read in progress is NOT interrupted: it returns within its bound
+        # (the idle timeout, under the total deadline) and then releases the
+        # response itself. Acting on the socket from another thread raced the
+        # descriptor's lifetime (a reused descriptor could be shut down).
+
+
+def _open_pinned_https_stream(
+    *,
+    method: str,
+    canonical: _CanonicalOutboundUrl,
+    pinned_address: str,
+    headers: dict[str, str],
+    body: bytes | None,
+    ssl_context: Any,
+    open_socket: Callable[..., socket.socket],
+    timeout: float,
+    max_total_seconds: float,
+    max_body_bytes: int,
+    max_header_count: int,
+    max_header_bytes: int,
+    sensitive: tuple[str, ...],
+    on_connect: Callable[[Any], None] | None = None,
+    checkpoint: Callable[[], None] | None = None,
+) -> UpstreamStream:
+    """``_execute_pinned_https_request`` up to the response headers, then a stream.
+
+    The same opener (no ambient proxies, no redirects, a pinned and peer-checked
+    socket under the total deadline), the same header bounds, and the same scan
+    of everything returned so far (status line reason and headers) before the
+    stream exists. ``timeout`` is the per-read bound: silence longer than it ends
+    the stream as a deadline.
+    """
+    deadline = time.monotonic() + max_total_seconds
+    url = _canonical_request_url(canonical)
+    request = urllib.request.Request(url, data=body, method=method, headers=headers)
+    opener = urllib.request.OpenerDirector()
+    opener.add_handler(urllib.request.ProxyHandler({}))
+    connected: list[Any] = []
+
+    def remember(sock: Any) -> None:
+        connected.append(sock)
+        if on_connect is not None:
+            on_connect(sock)
+
+    opener.add_handler(
+        _PinnedHTTPSHandler(
+            context=ssl_context,
+            pinned_address=pinned_address,
+            open_socket=open_socket,
+            deadline=deadline,
+            on_connect=remember,
+            checkpoint=checkpoint,
+        )
+    )
+    response = None
+    deadline_exceeded = False
+    try:
+        response = opener.open(request, timeout=min(timeout, max_total_seconds))
+    except _TotalDeadlineExceeded:
+        deadline_exceeded = True
+    except (SsrfValidationError, GrantResolutionError, BrokerStreamStop):
+        raise
+    except Exception as exc:
+        if _looks_like_deadline_breach(exc, deadline):
+            deadline_exceeded = True
+        else:
+            response = None
+    if deadline_exceeded:
+        raise OutboundDeadlineExceeded("outbound request exceeded the total deadline")
+    if response is None:
+        raise ProxyRequestError("outbound request failed at destination")
+    violation: str | None = None
+    stream: UpstreamStream | None = None
+    try:
+        status = int(response.status)
+        reason = str(getattr(response, "reason", "") or "")
+        raw_headers = list(response.getheaders())
+        declared = response.getheader("Content-Length")
+        if len(raw_headers) > max_header_count:
+            violation = "outbound response has too many headers"
+        elif sum(len(str(k)) + len(str(v)) for k, v in raw_headers) > max_header_bytes:
+            violation = "outbound response headers exceed the bound"
+        elif declared is not None and declared.strip().isdigit() \
+                and int(declared) > max_body_bytes:
+            violation = "outbound response exceeds the size bound"
+        else:
+            stream = UpstreamStream(
+                status=status, reason=reason,
+                headers={str(name).lower(): str(value) for name, value in raw_headers},
+                sensitive=sensitive, response=response, max_body_bytes=max_body_bytes,
+                deadline=deadline, sock=connected[-1] if connected else None,
+            )
+    except BrokerStreamStop:
+        raise
+    except Exception:
+        stream = None
+    if stream is None:
+        try:
+            response.close()
+        except Exception:
+            pass
+        if violation is not None:
+            raise SsrfValidationError(violation)
+        raise ProxyRequestError("outbound request failed at destination")
+    try:
+        _declassify_response(
+            {"status": stream.status, "reason": stream.reason, "headers": stream.headers},
+            sensitive,
+        )
+    except ProxyRequestError:
+        stream.close()
+        raise
+    return stream
+
+
 class _SsrfHardenedHttpDriver:
     """Credential-blind general HTTP driver (design.md D3/D4/D5).
 
@@ -3750,8 +4346,145 @@ class _SsrfHardenedHttpDriver:
         access_mode: str = ACCESS_EXACT,
         revalidate_authority: Callable[[float], None] | None = None,
         reply_budget_s: float | None = None,
+        on_connect: Callable[[Any], None] | None = None,
+        checkpoint: Callable[[], None] | None = None,
         reply_stream: tuple[float, float] | None = None,
     ) -> dict[str, Any]:
+        prepared = self._prepare(
+            bundle=bundle, auth_scheme=auth_scheme, method=method, url=url,
+            headers=headers, body=body, header_name=header_name,
+            allowed_endpoints=allowed_endpoints, access_mode=access_mode,
+        )
+        if prepared.redirect_enabled:
+            if revalidate_authority is None:
+                raise GrantResolutionError("redirects require current connection authority")
+            return self._redirect_chain(
+                canonical=prepared.canonical, bundle=bundle, auth_scheme=auth_scheme,
+                header_name=header_name, initial_headers=prepared.headers,
+                initial_auth=prepared.auth_headers,
+                sensitive=prepared.sensitive, allowed_endpoints=allowed_endpoints or (),
+                access_mode=access_mode, revalidate_authority=revalidate_authority,
+                on_connect=on_connect, checkpoint=checkpoint,
+            )
+        result = _execute_pinned_https_request(
+            method=prepared.verb,
+            canonical=prepared.canonical,
+            pinned_address=self._pin(prepared.canonical),
+            headers=prepared.headers,
+            body=prepared.body,
+            ssl_context=self._ssl_context,
+            open_socket=self._open_socket,
+            # The broker decided ``reply_budget_s`` (and only for inference);
+            # the redirect chain above never takes it. A streamed reply keeps
+            # that budget for its headers, then waits per read, not in total.
+            timeout=self._timeout if reply_budget_s is None else reply_budget_s,
+            max_total_seconds=(
+                self._max_total_seconds if reply_budget_s is None
+                else reply_budget_s if reply_stream is None else reply_stream[1]
+            ),
+            body_idle_timeout=None if reply_stream is None else reply_stream[0],
+            # Event framing costs ~150-250 bytes per token, so a long streamed
+            # reply outgrows the ordinary cap; the larger one still fits one
+            # proxy frame once JSON-escaped.
+            max_body_bytes=(
+                self._max_body_bytes if reply_stream is None
+                else max(self._max_body_bytes, INFERENCE_STREAM_MAX_BODY_BYTES)
+            ),
+            max_header_count=self._max_header_count,
+            max_header_bytes=self._max_header_bytes,
+            on_connect=on_connect,
+            checkpoint=checkpoint,
+        )
+        _declassify_response(result, tuple(prepared.sensitive))
+        return result
+
+    def open_stream(
+        self,
+        *,
+        bundle: ConnectionSecretBundle,
+        auth_scheme: str,
+        method: str,
+        url: str,
+        headers: Any = None,
+        body: Any = None,
+        header_name: str = "",
+        allowed_endpoints: tuple[OutboundEndpoint, ...] | None = None,
+        access_mode: str = ACCESS_EXACT,
+        revalidate_authority: Callable[[float], None] | None = None,
+        reply_budget_s: float | None = None,
+        idle_s: float | None = None,
+        on_connect: Callable[[Any], None] | None = None,
+        checkpoint: Callable[[], None] | None = None,
+    ) -> UpstreamStream:
+        """:meth:`__call__`, but the body is read as it arrives (I14).
+
+        Every guarantee up to the response headers is the request/close path's
+        own: the same preparation, pin, endpoint allowlist, header bounds, and
+        the same scan of the status, reason and headers before anything is
+        returned. The body is then read incrementally under the same total
+        deadline and the same cumulative size bound; ``idle_s`` bounds silence
+        between reads. A redirecting download (``public_https_get``) keeps the
+        collected path and is returned as an already-complete stream: held
+        whole (as request/close holds it today, within the 5 MiB bound) and in
+        request/close's decoded form. Redirecting downloads are not streamed in
+        this version.
+        """
+        prepared = self._prepare(
+            bundle=bundle, auth_scheme=auth_scheme, method=method, url=url,
+            headers=headers, body=body, header_name=header_name,
+            allowed_endpoints=allowed_endpoints, access_mode=access_mode,
+        )
+        if prepared.redirect_enabled:
+            result = self(
+                bundle=bundle, auth_scheme=auth_scheme, method=method, url=url,
+                headers=headers, body=body, header_name=header_name,
+                allowed_endpoints=allowed_endpoints, access_mode=access_mode,
+                revalidate_authority=revalidate_authority,
+                on_connect=on_connect, checkpoint=checkpoint,
+            )
+            return UpstreamStream.complete(result, tuple(prepared.sensitive))
+        budget = self._max_total_seconds if reply_budget_s is None else reply_budget_s
+        return _open_pinned_https_stream(
+            method=prepared.verb,
+            canonical=prepared.canonical,
+            pinned_address=self._pin(prepared.canonical),
+            headers=prepared.headers,
+            body=prepared.body,
+            ssl_context=self._ssl_context,
+            open_socket=self._open_socket,
+            timeout=self._timeout if idle_s is None else min(float(idle_s), budget),
+            max_total_seconds=budget,
+            max_body_bytes=self._max_body_bytes,
+            max_header_count=self._max_header_count,
+            max_header_bytes=self._max_header_bytes,
+            sensitive=tuple(prepared.sensitive),
+            on_connect=on_connect,
+            checkpoint=checkpoint,
+        )
+
+    def _pin(self, canonical: _CanonicalOutboundUrl) -> str:
+        if canonical.is_ip_literal:
+            return self._validator(canonical.hostname)
+        return _resolve_pinned_addresses(
+            canonical.hostname,
+            canonical.port,
+            resolver=self._resolver,
+            validator=self._validator,
+        )[0]
+
+    def _prepare(
+        self,
+        *,
+        bundle: ConnectionSecretBundle,
+        auth_scheme: str,
+        method: str,
+        url: str,
+        headers: Any,
+        body: Any,
+        header_name: str,
+        allowed_endpoints: tuple[OutboundEndpoint, ...] | None,
+        access_mode: str,
+    ) -> _PreparedRequest:
         if not isinstance(bundle, ConnectionSecretBundle):
             raise SsrfValidationError("a typed connection secret bundle is required")
         verb = (method or "").strip().upper()
@@ -3820,12 +4553,9 @@ class _SsrfHardenedHttpDriver:
         # Everything to scrub from the response: raw bundle members AND the exact
         # auth values placed on the wire (e.g. the base64 blob of a Basic
         # credential, which matches no raw member).
-        sensitive = list(bundle.secret_values())
-        for header_value in auth_headers.values():
-            sensitive.append(header_value)
-            scheme_split = header_value.split(" ", 1)
-            if len(scheme_split) == 2:
-                sensitive.append(scheme_split[1])
+        # `_redirect_auth_material` is the full set: each header value, its
+        # payload after the scheme, and an OAuth signature encoded and decoded.
+        sensitive = list(bundle.secret_values()) + _redirect_auth_material(auth_headers)
         encoded_body = _encode_request_body(body, request_headers)
         approved_sources = tuple(
             endpoint for endpoint in (allowed_endpoints or ())
@@ -3838,54 +4568,11 @@ class _SsrfHardenedHttpDriver:
                 redirect_enabled = True
             except SsrfValidationError:
                 pass  # Full access alone does not opt in arbitrary source paths.
-        if redirect_enabled:
-            if revalidate_authority is None:
-                raise GrantResolutionError("redirects require current connection authority")
-            return self._redirect_chain(
-                canonical=canonical, bundle=bundle, auth_scheme=auth_scheme,
-                header_name=header_name, initial_headers=request_headers,
-                initial_auth=auth_headers,
-                sensitive=sensitive, allowed_endpoints=allowed_endpoints or (),
-                access_mode=access_mode, revalidate_authority=revalidate_authority,
-            )
-        if canonical.is_ip_literal:
-            pinned = self._validator(canonical.hostname)
-        else:
-            pinned = _resolve_pinned_addresses(
-                canonical.hostname,
-                canonical.port,
-                resolver=self._resolver,
-                validator=self._validator,
-            )[0]
-        result = _execute_pinned_https_request(
-            method=verb,
-            canonical=canonical,
-            pinned_address=pinned,
-            headers=request_headers,
-            body=encoded_body,
-            ssl_context=self._ssl_context,
-            open_socket=self._open_socket,
-            # The broker decided ``reply_budget_s`` (and only for inference);
-            # the redirect chain above never takes it. A streamed reply keeps
-            # that budget for its headers, then waits per read, not in total.
-            timeout=self._timeout if reply_budget_s is None else reply_budget_s,
-            max_total_seconds=(
-                self._max_total_seconds if reply_budget_s is None
-                else reply_budget_s if reply_stream is None else reply_stream[1]
-            ),
-            body_idle_timeout=None if reply_stream is None else reply_stream[0],
-            # Event framing costs ~150-250 bytes per token, so a long streamed
-            # reply outgrows the ordinary cap; the larger one still fits one
-            # proxy frame once JSON-escaped.
-            max_body_bytes=(
-                self._max_body_bytes if reply_stream is None
-                else max(self._max_body_bytes, INFERENCE_STREAM_MAX_BODY_BYTES)
-            ),
-            max_header_count=self._max_header_count,
-            max_header_bytes=self._max_header_bytes,
+        return _PreparedRequest(
+            verb=verb, canonical=canonical, headers=request_headers,
+            auth_headers=auth_headers, sensitive=sensitive, body=encoded_body,
+            redirect_enabled=redirect_enabled,
         )
-        _declassify_response(result, tuple(sensitive))
-        return result
 
     def _redirect_chain(
         self, *, canonical: _CanonicalOutboundUrl, bundle: ConnectionSecretBundle,
@@ -3893,6 +4580,8 @@ class _SsrfHardenedHttpDriver:
         initial_auth: dict[str, str],
         sensitive: list[str], allowed_endpoints: tuple[OutboundEndpoint, ...],
         access_mode: str, revalidate_authority: Callable[[float], None],
+        on_connect: Callable[[Any], None] | None = None,
+        checkpoint: Callable[[], None] | None = None,
     ) -> dict[str, Any]:
         deadline = time.monotonic() + self._max_total_seconds  # before INITIAL DNS
         initial_origin = (canonical.hostname, canonical.port)
@@ -3909,6 +4598,11 @@ class _SsrfHardenedHttpDriver:
             _remaining_redirect_seconds(deadline)
             return self._open_socket(*args)
 
+        def connected(sock: Any) -> None:
+            revalidate_authority(deadline)
+            if on_connect is not None:
+                on_connect(sock)
+
         while True:
             revalidate_authority(deadline)
             pinned = self._redirect_address(canonical, deadline)
@@ -3921,6 +4615,9 @@ class _SsrfHardenedHttpDriver:
                 max_total_seconds=self._max_total_seconds, max_body_bytes=remaining_bytes,
                 max_header_count=self._max_header_count, max_header_bytes=self._max_header_bytes,
                 absolute_deadline=deadline, hop_metadata=metadata,
+                # Connected, not yet written: authority (and a broker's
+                # cancellation and fence) re-checked once more before the request.
+                on_connect=connected, checkpoint=checkpoint,
             )
             remaining_bytes -= metadata.body_bytes
             _declassify_response(result, tuple(sensitive))  # ALL raw response fields
@@ -4115,9 +4812,17 @@ class _TrustedNetworkDriver:
         access_mode = kwargs.pop("access_mode", ACCESS_EXACT)
         revalidate_authority = kwargs.pop("revalidate_authority", None)
         reply_budget_s = kwargs.pop("reply_budget_s", None)
+        stream = bool(kwargs.pop("stream", False))
+        idle_s = kwargs.pop("idle_s", None)
+        on_connect = kwargs.pop("on_connect", None)
+        checkpoint = kwargs.pop("checkpoint", None)
         reply_stream = kwargs.pop("reply_stream", None)
         if connection_type == "http":
             return self._dispatch_http(
+                stream=stream,
+                idle_s=idle_s,
+                on_connect=on_connect,
+                checkpoint=checkpoint,
                 auth_scheme=auth_scheme,
                 allowed_endpoints=tuple(allowed_endpoints),
                 access_mode=access_mode,
@@ -4133,7 +4838,10 @@ class _TrustedNetworkDriver:
             # never to any real network destination.
             provider = str(kwargs.get("provider", ""))
             if provider.startswith("test-fixture."):
-                return self._fixture(**kwargs)
+                result = self._fixture(**kwargs)
+                if stream:
+                    return UpstreamStream.complete(result, ())
+                return result
             raise ProxyRequestError("outbound provider has no trusted transport")
         # Unknown / unsupported connection_type: FAIL CLOSED.
         raise ProxyRequestError("outbound connection type is not supported")
@@ -4149,6 +4857,10 @@ class _TrustedNetworkDriver:
         access_mode: str = ACCESS_EXACT,
         revalidate_authority: Callable[[float], None] | None = None,
         reply_budget_s: float | None = None,
+        stream: bool = False,
+        idle_s: float | None = None,
+        on_connect: Callable[[Any], None] | None = None,
+        checkpoint: Callable[[], None] | None = None,
         reply_stream: tuple[float, float] | None = None,
     ) -> Any:
         if not self._allow_http:
@@ -4171,7 +4883,19 @@ class _TrustedNetworkDriver:
             auth_scheme, allowed_endpoints, access_mode=access_mode
         )
         bundle = _build_http_secret_bundle(auth_scheme, credential)
-        return self._http(
+        send = self._http.open_stream if stream else self._http
+        extra: dict[str, Any] = {}
+        if on_connect is not None:
+            extra["on_connect"] = on_connect
+        if checkpoint is not None:
+            extra["checkpoint"] = checkpoint
+        if stream:
+            if idle_s is not None:
+                extra["idle_s"] = idle_s
+        elif reply_stream is not None:
+            extra["reply_stream"] = reply_stream
+        return send(
+            **extra,
             bundle=bundle,
             auth_scheme=auth_scheme,
             method=str(verb),
@@ -4183,7 +4907,6 @@ class _TrustedNetworkDriver:
             access_mode=access_mode,
             **({"revalidate_authority": revalidate_authority} if revalidate_authority else {}),
             **({"reply_budget_s": reply_budget_s} if reply_budget_s is not None else {}),
-            **({"reply_stream": reply_stream} if reply_stream is not None else {}),
         )
 
 
@@ -4204,9 +4927,20 @@ def _build_credential_broker_dispatch(
     runtime_root = Path(config["runtime_root"])
     runtime_root.mkdir(parents=True, exist_ok=True)
     from tinyassets.connection_oauth.tokens import ConnectionTokens
+    from tinyassets.storage.agent_request_usage import resolve_inference_usage
+
+    ledger = ConnectionLedger(config["ledger_db_path"])
+    universe = Path(config["universe_dir"])
+
+    def accounting(resource, grant_id, verb, request, envelope, operation_id):
+        return resolve_inference_usage(
+            Path(config["ledger_db_path"]).parent, config["owner_user_id"], universe.name,
+            ledger, resource, grant_id, verb, request, envelope, operation_id,
+        )
 
     broker = CredentialBlindBroker(
-        ConnectionLedger(config["ledger_db_path"]),
+        ledger,
+        resolve_inference_usage=accounting,
         resolve_credential=_TrustedCredentialResolver(config),
         network_request=_TrustedNetworkDriver(config, runtime_root),
         audit=_JsonlAuditWriter(str(runtime_root / "audit.jsonl")),
@@ -5276,6 +6010,43 @@ class ConnectionLedger:
         connection_id: str,
     ) -> ScopedConnectionProxy:
         """Resolve one named current grant and connection for the principal."""
+        grant, resource = self.authorize_exact(
+            universe_id=universe_id, grant_id=grant_id, connection_id=connection_id,
+        )
+        # The broker serves http connections, the only production type; the
+        # legacy untyped test fixture keeps its worker.
+        channel = None if resource.connection_type != "http" else _broker_channel(
+            self._db_path.parent, principal=resource.owner_user_id,
+            command_center=grant.universe_id, grant_id=grant.grant_id,
+            connection_id=resource.connection_id,
+        )
+        if channel is not None:
+            # The broker process serves it (S6): no per-proxy worker is spawned.
+            return ScopedConnectionProxy(
+                grant_id=grant.grant_id, provider=resource.provider,
+                destination=resource.destination, scopes=resource.scopes,
+                _channel=channel,
+            )
+        return self._start_scoped_proxy(
+            grant_id=grant.grant_id,
+            universe_id=grant.universe_id,
+            provider=resource.provider,
+            destination=resource.destination,
+            scopes=resource.scopes,
+            owner_user_id=resource.owner_user_id,
+            connection_type=resource.connection_type,
+        )
+
+    def authorize_exact(
+        self, *, universe_id: str, grant_id: str, connection_id: str,
+    ) -> tuple[ConnectionGrant, ConnectionResource]:
+        """The exact checks every broker request runs (I14 decision 2).
+
+        The authenticated principal, an active grant, the grant's owner and
+        command center, the connection's identity and owner, and revocation.
+        ``resolve_exact_scoped_proxy`` and the broker process both call this one
+        definition.
+        """
         owner_user_id = self.require_authenticated_principal_id()
         grant = self.require_active_grant(_required("grant_id", grant_id))
         resource = self._get_connection_resource(_required("connection_id", connection_id))
@@ -5290,15 +6061,27 @@ class ConnectionLedger:
         )
         if not all(exact):
             raise GrantResolutionError("outbound connection grant identity mismatch")
-        return self._start_scoped_proxy(
-            grant_id=grant.grant_id,
-            universe_id=grant.universe_id,
-            provider=resource.provider,
-            destination=resource.destination,
-            scopes=resource.scopes,
-            owner_user_id=resource.owner_user_id,
-            connection_type=resource.connection_type,
-        )
+        return grant, resource
+
+    def broker_dispatch_config(
+        self, *, grant_id: str, universe_id: str, provider: str, destination: str,
+        owner_user_id: str, connection_type: str = "",
+    ) -> dict[str, Any]:
+        """The trusted dispatcher's configuration for one grant (worker or broker)."""
+        grant_runtime_id = hashlib.sha256(grant_id.encode("utf-8")).hexdigest()
+        return {
+            "allow_test_fixtures": self._allow_test_fixtures,
+            "allow_http_connections": _outbound_http_enabled(),
+            "ledger_db_path": str(self._db_path.resolve()),
+            "universe_dir": str((self._db_path.parent / universe_id).resolve()),
+            "provider": provider,
+            "destination": destination,
+            "connection_type": (connection_type or "").strip().lower(),
+            "owner_user_id": owner_user_id,
+            "runtime_root": str(
+                (self._db_path.parent / ".outbound-proxy" / grant_runtime_id).resolve()
+            ),
+        }
 
     def _start_scoped_proxy(
         self,
@@ -5312,26 +6095,11 @@ class ConnectionLedger:
         connection_type: str = "",
     ) -> ScopedConnectionProxy:
         factory_reference = "credential_broker_v1"
-        grant_runtime_id = hashlib.sha256(
-            grant_id.encode("utf-8")
-        ).hexdigest()
-        factory_config = {
-            "allow_test_fixtures": self._allow_test_fixtures,
-            "allow_http_connections": _outbound_http_enabled(),
-            "ledger_db_path": str(self._db_path.resolve()),
-            "universe_dir": str((self._db_path.parent / universe_id).resolve()),
-            "provider": provider,
-            "destination": destination,
-            "connection_type": (connection_type or "").strip().lower(),
-            "owner_user_id": owner_user_id,
-            "runtime_root": str(
-                (
-                    self._db_path.parent
-                    / ".outbound-proxy"
-                    / grant_runtime_id
-                ).resolve()
-            ),
-        }
+        factory_config = self.broker_dispatch_config(
+            grant_id=grant_id, universe_id=universe_id, provider=provider,
+            destination=destination, owner_user_id=owner_user_id,
+            connection_type=connection_type,
+        )
         # Resolve the budget BEFORE spawning: a validation failure here must not
         # leak an already-started child (Codex FIX C).
         timeout = _proxy_startup_timeout_seconds()

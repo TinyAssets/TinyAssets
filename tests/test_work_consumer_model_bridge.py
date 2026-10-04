@@ -114,7 +114,12 @@ def test_selected_work_agent_changes_model_inside_same_journal_without_repeating
             "SELECT detail_json FROM run_events WHERE run_id=? AND status='ran'",
             (result["run_id"],),
         ).fetchone()[0])
-    assert detail["execution"] == {
+    execution = dict(detail["execution"])
+    usage = execution.pop("usage")
+    assert usage["dispatched"] == 3
+    assert usage["quota_authoritative"] is False
+    assert sum(source["failed"] for source in usage["sources"]) == 1
+    assert execution == {
         "provider": sessions[0]._work_candidates.order[0].connection_id,
         # The owner's own name for the connection that answered, beside the
         # routing identity (never instead of it).
@@ -271,7 +276,12 @@ def test_public_selected_reusable_graph_uses_reserved_run_and_exact_reply_projec
     result = json.loads(universe_server.converse("Hello", home, "typed", choice, request))
     assert result["consumer_turn"]["state"] == "completed", (result, work_agent.errors)
     assert result["reply"] == "work completed"
-    assert result["execution"] == {"provider": provider, "model": "actual-work-model",
+    execution = dict(result["execution"])
+    usage = execution.pop("usage")
+    assert usage["dispatched"] == 3
+    assert usage["quota_authoritative"] is False
+    assert sum(source["failed"] for source in usage["sources"]) == 1
+    assert execution == {"provider": provider, "model": "actual-work-model",
                                     "provider_display": "compute:synthetic",
                                     "model_status": "reported"}
     assert len(work_agent.wires) == 3 and len(work_agent.tools) == 1

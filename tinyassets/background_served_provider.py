@@ -743,6 +743,12 @@ class _BackgroundAssignedProviderSession:
         self._sign_ins_refreshed = False
         self._consumer_lease = consumer_lease
         self._provider_call = provider_call
+        from tinyassets.request_budget import TurnRequestBudget, current_request_budget
+
+        self._request_budget = current_request_budget() or TurnRequestBudget(
+            task.actor_id, task.universe_id,
+        )
+        self._request_budget.check_scope(task.actor_id, task.universe_id)
         self._call_index = 0
         self._lock = threading.Lock()
 
@@ -806,6 +812,15 @@ class _BackgroundAssignedProviderSession:
                           "agent_model_plan", "model_selection")
         ):
             raise PermissionError("background provider authority cannot be substituted")
+        from tinyassets.providers.base import ModelConfig
+
+        if config is None:
+            config = ModelConfig()
+        if isinstance(config, ModelConfig):
+            if config.request_budget not in (None, self._request_budget):
+                raise PermissionError("background parent request budget cannot be substituted")
+            config = replace(config, request_budget=self._request_budget,
+                             request_purpose="helper")
         declared_providers = self._declared_policy_providers(policy)
         # Enforcement site (C), served half (design.md § Enforcement sites).
         # Both public entries land here — `__call__` (raw prompt/system) and

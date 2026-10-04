@@ -30,6 +30,7 @@ import errno
 import os
 import stat
 import uuid
+from itertools import islice
 from pathlib import Path
 
 from tinyassets import workspace_fs as fs
@@ -43,6 +44,7 @@ __all__ = [
     "UniverseFileError",
     "is_data_path",
     "list_universe_dir",
+    "list_universe_entries",
     "load_untrusted_yaml",
     "open_runtime_dir",
     "read_data_path",
@@ -153,6 +155,13 @@ def list_universe_dir(universe_dir: Path | str, relpath: str) -> list[str]:
     component is a link or not a directory. Names only: read each entry with
     :func:`read_universe_file`, which re-checks it.
     """
+    return [name for name, _ in list_universe_entries(universe_dir, relpath)]
+
+
+def list_universe_entries(
+    universe_dir: Path | str, relpath: str, *, limit: int | None = None,
+) -> list[tuple[str, os.stat_result]]:
+    """Sorted no-follow metadata, optionally scanning only the first limit entries."""
     root = Path(universe_dir)
     if getattr(fs, "_POSIX", False):
         root_fd = fs.open_dir_nofollow(root.resolve(strict=False))
@@ -164,7 +173,11 @@ def list_universe_dir(universe_dir: Path | str, relpath: str) -> list[str]:
                     _check_component(part)
                     current = fs.open_subdir_nofollow(current, part)
                     opened.append(current)
-                return sorted(os.listdir(current))
+                with os.scandir(current) as entries:
+                    return sorted(
+                        (entry.name, entry.stat(follow_symlinks=False))
+                        for entry in islice(entries, limit)
+                    )
             finally:
                 for handle in opened:
                     os.close(handle)
@@ -173,7 +186,11 @@ def list_universe_dir(universe_dir: Path | str, relpath: str) -> list[str]:
     directory = _lstat_nofollow_windows(root, relpath)
     if not directory.is_dir():
         raise UniverseFileError("not a directory")
-    return sorted(entry.name for entry in os.scandir(directory))
+    with os.scandir(directory) as entries:
+        return sorted(
+            (entry.name, entry.stat(follow_symlinks=False))
+            for entry in islice(entries, limit)
+        )
 
 
 def open_runtime_dir(universe_dir: Path | str, *parts: str) -> int:
@@ -282,6 +299,9 @@ def write_universe_file(
         parent = _windows_parent(root, parts, create=make_parents)
         target = parent / name
         if mode != "replace":
+            if mode == "exclusive" and os.path.lexists(target):
+                # Same contract as POSIX O_EXCL: anything there, a link included.
+                raise FileExistsError(str(target))
             if os.path.islink(target):
                 raise UniverseFileError(f"{relpath!r} is a link; nothing was written")
             with open(target, "xb" if mode == "exclusive" else "ab") as handle:  # noqa: PTH123
@@ -337,6 +357,37 @@ def _write_all(fd: int, data: bytes) -> None:
     view = memoryview(data)
     while view:
         view = view[os.write(fd, view):]
+
+
+def open_lock_file(universe_dir: Path | str, relpath: str) -> int:
+    """A descriptor for the sidecar lock ``universe_dir/relpath``, link-free.
+
+    A lock is opened ``O_RDWR|O_CREAT`` and never read or written, so the
+    link-free writer does not fit it -- but the open itself is the exposure.
+    ``os.open(str(path), O_RDWR | O_CREAT)`` on a name the universe's own
+    processes can replace follows a planted link, and with ``O_CREAT`` it
+    *creates* the link's target: an empty file at a path of the universe's
+    choosing, outside its own directory. That is a cross-universe primitive
+    even though nothing is written through it -- occupying a name another
+    component expects to create exclusively is enough.
+
+    So the leaf is opened with ``O_NOFOLLOW`` through a parent descriptor whose
+    every component was opened the same way. The caller closes the descriptor.
+    """
+    root = Path(universe_dir)
+    parts = _split(relpath)
+    if not getattr(fs, "_POSIX", False):
+        # Check-then-use, as everywhere else on this host (see _windows_parent).
+        target = _windows_parent(root, parts, create=True) / parts[-1]
+        if target.is_symlink():
+            raise UniverseFileError(f"{relpath!r} is a link; the lock is opened link-free")
+        return os.open(str(target), os.O_RDWR | os.O_CREAT, 0o644)
+    nofollow = getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
+    dir_fd = _parent_dir_fd(root, parts, create=True)
+    try:
+        return os.open(parts[-1], os.O_RDWR | os.O_CREAT | nofollow, 0o644, dir_fd=dir_fd)
+    finally:
+        os.close(dir_fd)
 
 
 def unlink_universe_file(universe_dir: Path | str, relpath: str) -> None:

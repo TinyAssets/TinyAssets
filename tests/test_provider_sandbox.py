@@ -141,3 +141,72 @@ def test_workflow_node_call_without_a_universe_fails_closed():
 
     with pytest.raises(ProviderError):
         _sandbox_cli_args(ModelConfig(workflow_node=True), None)
+
+
+def test_confined_turns_state_the_permission_mode_explicitly(tmp_path):
+    """An unspecified mode is upstream's to change (CLI 2.1.285, Codex ADAPT).
+
+    2.1.285 starts ``claude -p`` in AUTO mode when no mode is configured on
+    third-party providers or with telemetry off. A confined turn must therefore
+    SAY which mode it runs in rather than inherit one that could begin
+    auto-approving tools it never pre-approved.
+    """
+    configs = (
+        ModelConfig(sandbox_workspace=True, allowed_tools=("WebFetch",)),
+        ModelConfig(sandbox_workspace=True, disallowed_tools=("Bash",)),
+        ModelConfig(workflow_node=True),
+    )
+    for cfg in configs:
+        flags, _cwd = _sandbox_cli_args(cfg, tmp_path)
+        assert "--permission-mode" in flags, flags
+        assert flags[flags.index("--permission-mode") + 1] == "default"
+        # Before the variadic tool flags: --allowedTools/--disallowedTools take
+        # every following token, so a flag after them would be read as a tool
+        # name instead of a flag.
+        for variadic in ("--allowedTools", "--disallowedTools"):
+            if variadic in flags:
+                assert flags.index("--permission-mode") < flags.index(variadic)
+
+
+def test_host_trusted_roles_keep_their_permission_mode(tmp_path):
+    # The explicit mode is scoped to confined turns; a plain config stays a no-op.
+    flags, _cwd = _sandbox_cli_args(ModelConfig(), tmp_path)
+    assert flags == []
+
+
+def test_claude_ai_account_tools_are_denied_to_the_engine():
+    """Artifact and friends reach the DAEMON HOST's claude.ai account.
+
+    The OS jail bounds the filesystem and ``--strict-mcp-config`` bounds MCP
+    servers; neither contains a tool that publishes an artifact, enumerates
+    other live sessions or sends feedback off-box. Re-checked against the CLI
+    changelog for 2.1.184-2.1.288 (Codex ADAPT 2026-10-03).
+    """
+    from tinyassets.universe_intelligence import (
+        _ENGINE_DISALLOWED_TOOLS,
+        _ENGINE_DISALLOWED_TOOLS_WITH_MCP,
+    )
+
+    account_reach = ("Artifact", "ListAgents", "SendFeedback", "ListPlugins",
+                     "EndConversation")
+    for tool in account_reach:
+        assert tool in _ENGINE_DISALLOWED_TOOLS, tool
+        # Denied on the engine-MCP turn too: that turn only drops the ``mcp__*``
+        # wildcard and ``ToolSearch``, never a builtin.
+        assert tool in _ENGINE_DISALLOWED_TOOLS_WITH_MCP, tool
+
+
+def test_engine_mcp_turn_drops_only_the_wildcard_and_toolsearch():
+    """The relaxation stays exactly two names wide.
+
+    ``mcp__*`` would deny the tinyassets handles and ``ToolSearch`` is how the
+    CLI loads their schemas, so both must go -- and nothing else may, or a
+    builtin silently becomes callable on the founder's turn.
+    """
+    from tinyassets.universe_intelligence import (
+        _ENGINE_DISALLOWED_TOOLS,
+        _ENGINE_DISALLOWED_TOOLS_WITH_MCP,
+    )
+
+    dropped = set(_ENGINE_DISALLOWED_TOOLS) - set(_ENGINE_DISALLOWED_TOOLS_WITH_MCP)
+    assert dropped == {"mcp__*", "ToolSearch"}

@@ -198,7 +198,9 @@ again by pointer, touch or keyboard. It SHALL start open and filling the stage
 for an owner with no command-center layout, and as a bubble when a layout is
 active. Once the owner moves, resizes, shrinks or expands it, the app SHALL
 restore that last state instead, remembered per owner, per agent (`main` by
-default) and per viewport class (`phone` below 760 px, `wide` otherwise). The
+default) and per viewport class (`phone` below 760 px, `wide` otherwise), in
+the owner's UI-preference record (`owner-ui-preferences`) with this device's
+copy as the fallback. The
 cloud and the bubble SHALL stay wholly on the stage whenever it resizes. The
 bubble SHALL show when the agent is working and when a reply arrived while it
 was shrunk.

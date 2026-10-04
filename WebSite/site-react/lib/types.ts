@@ -1,5 +1,5 @@
-/** The checked-in public snapshot: the public universe list, dated. */
-export type SnapshotUniverse = {
+/** The checked-in public snapshot: the public command center list, dated. */
+export type SnapshotCommandCenter = {
   id: string;
   visibility: "public" | "metadata_only";
   phase: string;
@@ -10,5 +10,5 @@ export type SnapshotUniverse = {
 export type Snapshot = {
   fetched_at: string;
   source: string;
-  universes: SnapshotUniverse[];
+  command_centers: SnapshotCommandCenter[];
 };
