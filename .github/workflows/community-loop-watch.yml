@@ -153,9 +153,9 @@ jobs:
         with:
           script: |
             const overall = process.env.OVERALL || 'unknown';
-            // Incomplete/yellow evidence is not recovery and authorizes no
-            // issue, label, or dispatch mutation. Real red still takes priority.
-            if (overall !== 'red' && overall !== 'green') {
+            // Unknown evidence authorizes no mutation. Yellow may refresh a
+            // stale canary below, but must never mutate incident state.
+            if (!['red', 'green', 'yellow'].includes(overall)) {
               core.warning(`Community monitoring ${overall}; preserving incident state.`);
               return;
             }
@@ -219,7 +219,7 @@ jobs:
                 const workflowId = stage?.details?.workflow_id;
                 const summary = String(stage?.summary || '');
                 if (
-                  stage?.status === 'red' &&
+                  ['red', 'yellow'].includes(stage?.status) &&
                   staleDispatchable.has(workflowId) &&
                   summary.includes('has not run successfully')
                 ) {
@@ -254,6 +254,11 @@ jobs:
               } catch (error) {
                 core.warning(`Could not dispatch community-loop-watch.yml self-heal follow-up: ${error.message}`);
               }
+            }
+
+            if (overall === 'yellow') {
+              core.warning('Community monitoring yellow; preserving incident state.');
+              return;
             }
 
             try {

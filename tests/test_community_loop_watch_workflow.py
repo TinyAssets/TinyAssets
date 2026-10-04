@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -91,3 +93,53 @@ def test_alarm_sink_retries_transient_issue_api_failures():
     assert "githubCall('open RED alarm issue'" in script
     assert "githubCall('append recovered alarm comment'" in script
     assert "githubCall('close recovered alarm issue'" in script
+
+
+@pytest.mark.parametrize("overall,stage_status,workflow,summary,followup,expected", [
+    ("yellow", "yellow", "uptime-canary.yml", "has not run successfully", False,
+     ["uptime-canary.yml", "community-loop-watch.yml"]),
+    ("yellow", "yellow", "uptime-canary.yml", "has not run successfully", True,
+     ["uptime-canary.yml"]),
+    ("yellow", "yellow", "deploy-prod.yml", "has not run successfully", False, []),
+    ("yellow", "yellow", "uptime-canary.yml", "latest run is in_progress", False, []),
+    ("yellow", "unknown", "uptime-canary.yml", "has not run successfully", False, []),
+    ("unknown", "yellow", "uptime-canary.yml", "has not run successfully", False, []),
+])
+def test_yellow_stale_canary_recovers_without_incident_mutations(
+    overall, stage_status, workflow, summary, followup, expected,
+):
+    """Execute the actual alarm sink with recording GitHub stubs, no network."""
+    env = {
+        "OVERALL": overall,
+        "PROBE_MSG": json.dumps({"stages": [{
+            "status": stage_status, "summary": summary,
+            "details": {"workflow_id": workflow},
+        }]}),
+    }
+    harness = r"""
+const fs = require('fs');
+const input = JSON.parse(fs.readFileSync(0, 'utf8'));
+const calls = [];
+const github = {rest: {
+  actions: {createWorkflowDispatch: async (args) => calls.push(args)},
+  issues: new Proxy({}, {get() {throw new Error('unexpected incident mutation');}}),
+}};
+const context = {repo: {owner: 'fixture', repo: 'fixture'}, payload: {
+  inputs: {self_heal_followup: input.followup ? 'true' : 'false'},
+}};
+const AsyncFunction = Object.getPrototypeOf(async function(){}).constructor;
+new AsyncFunction('github', 'context', 'core', 'process', 'console', input.script)(
+  github, context, {warning(){}}, {env: input.env}, {log(){}},
+).then(() => process.stdout.write(JSON.stringify(calls)))
+ .catch(error => {console.error(error); process.exitCode = 1;});
+"""
+    result = subprocess.run(
+        ["node", "-e", harness],
+        input=json.dumps({"script": _alarm_script(_load()), "env": env, "followup": followup}),
+        text=True, capture_output=True, timeout=10, check=True,
+    )
+    calls = json.loads(result.stdout)
+    assert [call["workflow_id"] for call in calls] == expected
+    assert all(call["ref"] == "main" for call in calls)
+    if "community-loop-watch.yml" in expected:
+        assert calls[-1]["inputs"] == {"self_heal_followup": "true"}
