@@ -303,6 +303,17 @@ def test_the_preview_frame_sandbox_is_the_apps():
 # Both sides are parsed out of the shipped source rather than restated here: a
 # key list written down in a test is one more copy to drift (Codex 2026-10-03
 # found two live keys the preview had never heard of).
+#
+# The parse is STRUCTURAL -- strings and comments masked, then brace matching
+# that tells a function body from a plain block -- because a parse that keys on
+# spelling or on indentation fails OPEN. Codex round 2 reproduced both ways
+# out: whitespace before a parameter list made an action undiscoverable, and a
+# return one block deeper went uncounted, each hiding a key the preview lacked.
+# Discovery now fails CLOSED, and the two drifts are regression cases below.
+
+_IN_STRING_STRUCTURE = frozenset("{}[]()<>:;,=/*'\"`!?|&\\")
+_BLOCK_HEADS = frozenset({"if", "for", "while", "switch", "catch", "else", "do",
+                          "try", "finally", "with"})
 
 
 def _app_ui_source() -> str:
@@ -312,30 +323,114 @@ def _app_ui_source() -> str:
     return path.read_text(encoding="utf-8")
 
 
-def _object_at(source: str, start: int) -> str:
-    """The brace-balanced object literal beginning at ``source[start] == '{'``."""
-    assert source[start] == "{", source[start:start + 60]
+def _masked(source: str) -> str:
+    """``source`` with comments and string innards neutralised, length preserved.
+
+    Indices still line up with ``source``, so everything below can match braces
+    and split on commas without a quoted ``{`` or a comma in an English comment
+    steering it. A string keeps its ordinary characters because a key may be
+    quoted (``'packages.list_tryable'``); a comment blanks to WHITESPACE, which
+    the splitters strip -- blanked to anything else its words run into the next
+    key, because the comma that separated them was inside the comment.
+    """
+    out: list[str] = []
+    state, quote, index = "code", "", 0
+    while index < len(source):
+        char, pair = source[index], source[index:index + 2]
+        if state == "code":
+            if pair in ("//", "/*"):
+                state = "line" if pair == "//" else "block"
+                out += [" ", " "]
+                index += 2
+                continue
+            if char in "'\"`":
+                state, quote = "string", char
+            out.append(char)
+        elif state == "line":
+            out.append(char if char == "\n" else " ")
+            if char == "\n":
+                state = "code"
+        elif state == "block":
+            if pair == "*/":
+                state = "code"
+                out += [" ", " "]
+                index += 2
+                continue
+            out.append(char if char == "\n" else " ")
+        elif char == "\\":  # an escape, so the next character closes nothing
+            out += ["_"] * min(2, len(source) - index)
+            index += 2
+            continue
+        elif char == quote:
+            state, quote = "code", ""
+            out.append(char)
+        else:
+            out.append("_" if char in _IN_STRING_STRUCTURE else char)
+        index += 1
+    masked = "".join(out)
+    assert len(masked) == len(source), "the mask moved an index"
+    # A regex literal would be read as code and could unbalance this; none ships
+    # in app_ui.js today, and this is how that would stop being true quietly.
+    assert masked.count("{") == masked.count("}"), "masked source has unbalanced braces"
+    return masked
+
+
+def _closes(masked: str, start: int) -> int:
+    """Index of the bracket closing the one at ``masked[start]``."""
+    opening, closing = masked[start], {"{": "}", "(": ")", "[": "]"}[masked[start]]
     depth = 0
-    for index in range(start, len(source)):
-        if source[index] == "{":
+    for index in range(start, len(masked)):
+        if masked[index] == opening:
             depth += 1
-        elif source[index] == "}":
+        elif masked[index] == closing:
             depth -= 1
             if depth == 0:
-                return source[start:index + 1]
-    raise AssertionError(f"unbalanced object literal at {source[start:start + 60]!r}")
+                return index
+    raise AssertionError(f"unbalanced {opening} at {masked[start:start + 60]!r}")
+
+
+def _opens(masked: str, start: int) -> int:
+    """Index of the bracket opening the one at ``masked[start]`` (scanning back)."""
+    closing, opening = masked[start], {"}": "{", ")": "(", "]": "["}[masked[start]]
+    depth = 0
+    for index in range(start, -1, -1):
+        if masked[index] == closing:
+            depth += 1
+        elif masked[index] == opening:
+            depth -= 1
+            if depth == 0:
+                return index
+    raise AssertionError(f"unbalanced {closing} before {masked[:start][-60:]!r}")
+
+
+def _opens_a_function(masked: str, brace: int) -> bool:
+    """Whether the ``{`` at ``brace`` starts a function body, not a plain block.
+
+    This is the distinction indentation was standing in for, and the one that
+    matters: a ``return`` inside ``if(...){...}`` is the handler's own answer,
+    while a ``return`` inside ``.map(row=>{...})`` shapes a row. The grammar
+    tells them apart -- a function body follows ``=>``, or follows a parameter
+    list whose ``(`` is not introduced by a block keyword.
+    """
+    import re
+
+    head = masked[:brace].rstrip()
+    if head.endswith("=>"):
+        return True
+    if not head.endswith(")"):
+        return False  # `try {`, `else {`, or an object literal
+    word = re.search(r"([A-Za-z_$][\w$]*)\s*$", masked[:_opens(masked, len(head) - 1)])
+    return not (word and word.group(1) in _BLOCK_HEADS)
 
 
 def _entries(literal: str) -> dict[str, str]:
-    """Top-level ``name -> value text`` of a JS object literal.
+    """Top-level ``name -> value text`` of a masked JS object literal.
 
     Shorthand (``{agents}``) maps to ``""``. Depth counts brackets and parens
     too, so a comma inside ``Object.assign({},x)`` is not a separator.
     """
     import re
 
-    assert "://" not in literal, "a URL would be eaten by the comment strip"
-    body = re.sub(r"//[^\n]*", "", literal[1:-1])
     pairs: dict[str, str] = {}
 
     def flush(part: str) -> None:
@@ -355,7 +450,7 @@ def _entries(literal: str) -> dict[str, str]:
             pairs[name] = part[cut + 1:].strip() if cut is not None else ""
 
     depth, current = 0, []
-    for char in body:
+    for char in literal[1:-1]:
         if char in "{[(":
             depth += 1
         elif char in "}])":
@@ -369,41 +464,118 @@ def _entries(literal: str) -> dict[str, str]:
     return pairs
 
 
-def _bridge_actions() -> dict[str, str]:
-    """The app's frozen allowlist: bridge action -> the handler that answers it."""
-    source = _app_ui_source()
-    literal = _object_at(source, source.index("{", source.index("ACTIONS:Object.freeze(")))
-    actions = {name: value.strip("'\"") for name, value in _entries(literal).items()}
-    assert actions["read_live"] == "readLive", actions
-    return actions
+def _object_at(masked: str, start: int) -> str:
+    """The brace-balanced object literal beginning at ``masked[start] == '{'``."""
+    assert masked[start] == "{", masked[start:start + 60]
+    return masked[start:_closes(masked, start) + 1]
 
 
-def _live_return_keys(method: str) -> set[str]:
-    """Keys the app's own handler returns, read out of app_ui.js.
+def _handler_spots(masked: str, method: str) -> list[tuple[int, int, int]]:
+    """Every definition of ``method``: (params start, params end, body brace).
 
-    The body is delimited by this file's method indentation, so a brace inside a
-    string or a comment cannot mis-slice it, and only the handler's own returns
-    are counted -- six spaces in. A return nested in a callback (which
-    ``listTryablePackages`` has, shaping a row rather than its answer) is
-    indented further and is not the handler's contract.
+    A definition is the name at the start of its line, optionally ``async``,
+    whose parameter list is followed by a body. Found by the grammar, so
+    spacing cannot hide one -- ``foo ()`` and ``foo()`` are the same handler,
+    which is drift (1) below. ``async`` is optional because ``prefillChat`` is
+    not async, and the line anchor is what keeps the call site
+    ``this.prefillChat({...})`` from reading as a second definition.
     """
     import re
 
-    source = _app_ui_source()
-    start = source.index(f"\n    async {method}(")
-    body = source[start:source.index("\n    },", start)]
+    spots: list[tuple[int, int, int]] = []
+    pattern = rf"(?m)^[ \t]*(?:async[ \t]+)?{re.escape(method)}[ \t]*\("
+    for match in re.finditer(pattern, masked):
+        paren = match.end() - 1
+        close = _closes(masked, paren)
+        probe = close + 1
+        while probe < len(masked) and masked[probe].isspace():
+            probe += 1
+        if probe < len(masked) and masked[probe] == "{":
+            spots.append((paren + 1, close, probe))
+    return spots
+
+
+def _handler(masked: str, method: str) -> tuple[int, int, int]:
+    """The one definition of ``method``; two of them is not a contract."""
+    spots = _handler_spots(masked, method)
+    assert len(spots) == 1, f"{method} is defined {len(spots)} times"
+    return spots[0]
+
+
+def _bridge_actions(masked: str) -> dict[str, str]:
+    """The app's frozen allowlist: bridge action -> the handler that answers it."""
+    literal = _object_at(masked, masked.index("{", masked.index("ACTIONS:Object.freeze(")))
+    return {name: value.strip("'\"") for name, value in _entries(literal).items()}
+
+
+def _handler_return_keys(masked: str, method: str) -> set[str]:
+    """Keys the handler itself returns: every ``return {`` in its own body.
+
+    A conditional early return counts -- it is one of the shapes a caller can
+    receive. A return inside a nested function does not; it belongs to that
+    function.
+    """
+    import re
+
+    _params_start, _params_end, body = _handler(masked, method)
+    end = _closes(masked, body)
     keys: set[str] = set()
-    for match in re.finditer(r"\n      (?! )[^\n]*?return (\{)", body):
-        keys |= set(_entries(_object_at(body, match.start(1))))
+    for match in re.finditer(r"\breturn\s*(\{)", masked[body:end]):
+        at = body + match.start(1)
+        functions, stack = 0, []
+        for index in range(body + 1, at):
+            if masked[index] == "{":
+                stack.append(_opens_a_function(masked, index))
+                functions += stack[-1]
+            elif masked[index] == "}":
+                functions -= stack.pop() if stack else 0
+        if functions == 0:
+            keys |= set(_entries(_object_at(masked, at)))
     assert keys, f"no handler return parsed for {method}"
     return keys
 
 
 def _preview_reads() -> dict[str, set[str]]:
     """What the preview bridge answers: action -> the keys behind it."""
-    source = ui_preview._PARENT
-    literal = _object_at(source, source.index("{", source.index("const EMPTY_FOR=")))
+    masked = _masked(ui_preview._PARENT)
+    literal = _object_at(masked, masked.index("{", masked.index("const EMPTY_FOR=")))
     return {action: set(_entries(value)) for action, value in _entries(literal).items()}
+
+
+def _startup_actions(masked: str) -> set[str]:
+    """Allowlisted actions whose handler takes no arguments."""
+    return {action for action, method in _bridge_actions(masked).items()
+            if _handler_spots(masked, method)
+            and not _params(masked, _handler(masked, method)).strip()}
+
+
+def _params(masked: str, spot: tuple[int, int, int]) -> str:
+    """The parameter-list text of a handler ``spot``."""
+    return masked[spot[0]:spot[1]]
+
+
+def _parity_violations(source: str, preview: dict[str, set[str]]) -> list[str]:
+    """Every way ``source``'s bridge asks for more than ``preview`` answers.
+
+    Fails closed in both directions: an allowlisted action with no handler is a
+    violation rather than a silently skipped row, and so is a zero-argument
+    action the preview has never heard of.
+    """
+    masked = _masked(source)
+    problems: list[str] = []
+    for action, method in sorted(_bridge_actions(masked).items()):
+        if not _handler_spots(masked, method):
+            problems.append(f"{action}: allowlisted as {method}, which no handler defines")
+            continue
+        if _params(masked, _handler(masked, method)).strip():
+            continue  # takes arguments: not a call a UI makes before it can draw
+        if action not in preview:
+            problems.append(f"{action}: answered by the app with no arguments, refused here")
+            continue
+        missing = _handler_return_keys(masked, method) - preview[action]
+        if missing:
+            problems.append(f"{action}: the preview omits {sorted(missing)}")
+    return problems
 
 
 def test_the_preview_bridge_answers_every_startup_read_with_the_apps_keys():
@@ -418,20 +590,89 @@ def test_the_preview_bridge_answers_every_startup_read_with_the_apps_keys():
     of app_ui.js, so the app growing a key fails this until the preview follows.
     """
     source = _app_ui_source()
-    actions = _bridge_actions()
+    masked = _masked(source)
     preview = _preview_reads()
-    startup = {action for action, method in actions.items()
-               if f"\n    async {method}()" in source}
 
-    assert {"whoami", "read_live"} <= startup, sorted(startup)
-    assert startup <= set(preview), f"answered by the app, refused here: {sorted(startup - set(preview))}"
-    for action in sorted(startup):
-        live = _live_return_keys(actions[action])
-        assert live <= preview[action], f"{action} is missing {sorted(live - preview[action])}"
+    assert _parity_violations(source, preview) == []
+
+    # The rule is worth nothing if the parse found nothing, so pin what it saw.
+    startup = _startup_actions(masked)
+    assert {"whoami", "read_live", "list_agents", "list_automations",
+            "conversation_design", "packages.list_tryable"} <= startup, sorted(startup)
+    assert _handler_return_keys(masked, "readLive") == {"as_of", "agents"}
+    assert _handler_return_keys(masked, "whoami") == {
+        "protocol", "command_center_id", "command_center_name",
+        "workflow_refs", "agent_refs"}
+    # ...and nothing if it counted a callback's row shape as the answer.
+    assert _handler_return_keys(masked, "listTryablePackages") == {
+        "packages", "systems", "build_prompt", "can_try"}
 
     # The two the review found, named so the regression stays readable.
     assert {"workflow_refs", "agent_refs"} <= preview["whoami"]
     assert {"as_of", "agents"} <= preview["read_live"]
+
+
+def test_the_parity_check_catches_the_drifts_that_slipped_past_it():
+    """Codex round 2 (P2): the first version of the check above could pass while
+    drift existed. Both reproductions are replayed here against mutated source
+    text -- never the shipped file -- so the check has to fail on each.
+    """
+    source = _app_ui_source()
+    preview = _preview_reads()
+    assert _parity_violations(source, preview) == [], "the baseline must be clean"
+
+    # (1) Spacing before the parameter list once hid the action entirely, and
+    # with it a key the preview does not answer.
+    spaced = source.replace("async listTryablePackages()",
+                            "async listTryablePackages  ()", 1)
+    assert spaced != source
+    spaced_drift = spaced.replace("build_prompt:doc.build_prompt,can_try:doc.can_try}",
+                                  "build_prompt:doc.build_prompt,can_try:doc.can_try,"
+                                  "quota:doc.quota}", 1)
+    assert spaced_drift != spaced
+    assert "packages.list_tryable" in _startup_actions(_masked(spaced)), "spacing hid the action"
+    assert any("quota" in problem for problem in _parity_violations(spaced_drift, preview)), \
+        _parity_violations(spaced_drift, preview)
+
+    # (2) A conditional return one block deeper than the handler's last one.
+    nested = source.replace(
+        "      const turn=(doc.active_turn",
+        "      if(doc.cold){\n"
+        "        return {as_of:null,agents:[],degraded:true};\n"
+        "      }\n"
+        "      const turn=(doc.active_turn", 1)
+    assert nested != source
+    assert _handler_return_keys(_masked(nested), "readLive") == {
+        "as_of", "agents", "degraded"}, "a conditional return is one of the shapes"
+    assert any("degraded" in problem for problem in _parity_violations(nested, preview)), \
+        _parity_violations(nested, preview)
+
+    # (3) Discovery fails closed: an allowlisted action with no handler is a
+    # violation, not a row quietly skipped.
+    renamed = source.replace("async readLive()", "async readLiveRenamed()", 1)
+    assert renamed != source
+    assert any(problem.startswith("read_live:") for problem in
+               _parity_violations(renamed, preview)), _parity_violations(renamed, preview)
+
+    # (4) A nested function's return is still not the handler's contract: the
+    # row shape `listTryablePackages` builds in a `.map` must stay out of it.
+    assert "agent_definition_id" not in _handler_return_keys(_masked(source),
+                                                             "listTryablePackages")
+
+
+def test_the_mask_survives_what_javascript_puts_in_strings_and_comments():
+    """The structural parse is only as good as the mask: a quoted brace, an
+    apostrophe in a comment, or a comma in English all used to be able to steer
+    it, and a quoted key still has to come through as a key."""
+    sample = """const x={'a.b':1,
+  // a comment's braces { } and commas, here
+  c:"a{b,c}d",  /* block } brace */
+  d:`t${1+1}u`,e:2};"""
+    masked = _masked(sample)
+    assert len(masked) == len(sample)
+    entries = _entries(_object_at(masked, masked.index("{")))
+    assert set(entries) == {"a.b", "c", "d", "e"}, entries
+    assert entries["e"] == "2", entries
 
 
 def test_the_preview_whoami_hands_over_the_components_own_alias_maps(tmp_path):

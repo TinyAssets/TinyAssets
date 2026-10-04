@@ -114,8 +114,8 @@ window.__preview={calls:Object.create(null),dropped:0,delivered:false,error:""};
 // and `whoami().workflow_refs` was undefined). The alias maps are the
 // COMPONENT's own declaration -- the app reads them off the active component,
 // not off the server -- so the preview answers with the real ones and a UI
-// resolves its aliases here exactly as it will in the app. Keep this literal
-// free of comments and of `//`: tests derive its key sets by parsing it.
+// resolves its aliases here exactly as it will in the app. Keep every key here
+// spelled out rather than computed: tests derive the key sets by parsing this.
 const EMPTY_FOR=spec=>({whoami:{protocol:1,command_center_id:spec.universe_id,
     command_center_name:'Preview',
     workflow_refs:Object.assign({},spec.workflow_refs||{}),
