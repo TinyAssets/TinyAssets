@@ -807,7 +807,14 @@ def test_a_background_run_reads_and_writes_its_notes_while_a_database_closes(
 
     Driven through the owner's claimed background run (the path an automation
     takes), with the real consent store open during the scan and closed before
-    the launch -- the exact interleaving -- and the shipping tool handlers."""
+    the launch -- the exact interleaving -- and the shipping tool handlers.
+
+    The live consent store now lives outside the command center. Keep a
+    synthetic legacy WAL database in the old location too: observing only the
+    new sidecar would no longer exercise a root entry vanishing after the scan.
+    Neither database is exposed to the jailed tools."""
+    import sqlite3
+
     from tinyassets import universe_tools
     from tinyassets.daemon_server import claim_founder_home, ensure_universe_registered
     from tinyassets.runtime.claimed_branch_execution import (
@@ -822,20 +829,28 @@ def test_a_background_run_reads_and_writes_its_notes_while_a_database_closes(
     ensure_universe_registered(world.data_root, universe_id="u-alpha", universe_path=a)
     claim_founder_home(world.data_root, owner, "u-alpha")
     (a / "notes" / "background-self.md").write_text(OWN_MARKER + "\n", encoding="utf-8")
-    effector_consents.initialize_consents_db(a)
-    shm = a / ".effector_consents.db-shm"
+    db = effector_consents.initialize_consents_db(a)
+    shm = Path(str(db) + "-shm")
+    legacy_db = effector_consents.legacy_consents_db_path(a)
+    legacy_shm = Path(str(legacy_db) + "-shm")
     raced: list[bool] = []
     real_argv = universe_tools.TOOL_JAIL_ARGV
 
     def argv_while_a_connection_closes(*args, **kwargs):
         conn = effector_consents._connect(a)
         conn.execute("SELECT count(*) FROM effector_consents").fetchone()
+        legacy_conn = sqlite3.connect(legacy_db)
         try:
+            legacy_conn.execute("PRAGMA journal_mode = WAL")
+            legacy_conn.execute("CREATE TABLE IF NOT EXISTS synthetic_legacy (value TEXT)")
+            legacy_conn.commit()
             assert shm.exists(), "precondition: the sidecar exists at the scan"
+            assert legacy_shm.exists(), "precondition: the legacy sidecar exists at the scan"
             return real_argv(*args, **kwargs)
         finally:
             conn.close()
-            raced.append(not shm.exists())
+            legacy_conn.close()
+            raced.append(not shm.exists() and not legacy_shm.exists())
 
     monkeypatch.setattr(universe_tools, "TOOL_JAIL_ARGV", argv_while_a_connection_closes)
     seen: dict = {}
