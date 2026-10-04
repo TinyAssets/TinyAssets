@@ -984,6 +984,7 @@ def run_authenticated_external_call_effector(
     dry_run: bool | None = None,
     allowed_state_keys: list[str] | set[str] | None = None,
     prior_effects: dict[str, Any] | None = None,
+    execution_context=None,
 ) -> dict[str, Any]:
     """Dispatch one ``authenticated_external_call`` packet. NEVER raises.
 
@@ -1001,6 +1002,7 @@ def run_authenticated_external_call_effector(
             run_id=run_id,
             allowed_state_keys=allowed_state_keys,
             prior_effects=prior_effects,
+            execution_context=execution_context,
         )
     except Exception as exc:  # defensive — never raise from the completion path
         logger.exception(
@@ -1021,6 +1023,7 @@ def _run(
     run_id: str,
     allowed_state_keys: list[str] | set[str] | None = None,
     prior_effects: dict[str, Any] | None = None,
+    execution_context=None,
 ) -> dict[str, Any]:
     matched_key, packet = _find_packet(output_keys=output_keys, run_state=run_state)
     if packet is None:
@@ -1063,6 +1066,12 @@ def _run(
 
     universe_id = _universe_id(base_path)
     db_path = _ledger_db_path(base_path)
+    if execution_context is not None:
+        if (execution_context.universe != universe_id or not execution_context.owner
+                or not execution_context.initiating_agent):
+            return {"error_kind": "execution_context_mismatch"}
+        if execution_context.research:
+            return {"error_kind": "research_is_read_only"}
     if not universe_id or db_path is None:
         # No trusted universe context ⇒ fail closed (never borrow a default).
         return {
@@ -1086,6 +1095,11 @@ def _run(
             "grant_id": grant_id,
             "universe_id": universe_id,
         }
+    if execution_context is not None and (
+        grant.owner_user_id != execution_context.owner
+        or view.owner_user_id != execution_context.owner
+    ):
+        return {"error_kind": "connection_owner_mismatch"}
 
     # Authorization gates — parity with every prior per-channel effector. The
     # connection grant above proves the universe MAY use this connection, but a
@@ -1117,11 +1131,18 @@ def _run(
     # declare their operation kinds (D1b). A rule store that cannot be read
     # refuses the call; it never falls back to allowing it.
     from tinyassets.bound_requests import dispatch_agent
+
     approved_agent = dispatch_agent(universe_dir, packet)
-    rule_refusal = _rule_refusal(universe_dir, connection_id, verb, _request_path(request),
-                                 evidence=_review_evidence(request),
-                                 agent=approved_agent or _initiating_agent(universe_dir),
-                                 preapproved=approved_agent is not None)
+    context_agent = (execution_context.initiating_agent if execution_context is not None
+                     else _initiating_agent(universe_dir))
+    if approved_agent and execution_context is not None and approved_agent != context_agent:
+        return {"error_kind": "execution_context_mismatch", "dry_run": True}
+    rule_agent = approved_agent or context_agent
+    rule_refusal = _rule_refusal(
+        universe_dir, connection_id, verb, _request_path(request),
+        evidence=_review_evidence(request), agent=rule_agent,
+        preapproved=approved_agent is not None,
+    )
     if rule_refusal is not None:
         # Pin the actual attempted packet at the point of need. A continuation
         # never has to reconstruct it from the agent's description of a refusal.
@@ -1129,7 +1150,11 @@ def _run(
             from tinyassets.auth.middleware import current_identity_or_none
             from tinyassets.bound_requests import RequestRefused, capture
 
-            if current_identity_or_none() is not None and _initiating_agent(universe_dir):
+            # capture binds the ambient turn. A signed ta launch must not
+            # create a card attributed to another agent's ambient conversation.
+            ambient_agent = _initiating_agent(universe_dir)
+            if (current_identity_or_none() is not None and ambient_agent
+                    and ambient_agent == rule_agent):
                 try:
                     pending = capture(universe_dir, {
                         "executor": EXTERNAL_WRITE_SINK_AUTHENTICATED_CALL,

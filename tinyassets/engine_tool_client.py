@@ -217,7 +217,8 @@ async def open_engine_tools(
         # verified route itself, which the session checks against, is unchanged.
         from tinyassets.engine_steering import route_with_session
 
-        dialled = replace(route, url=route_with_session(route.url, session_key, turn))
+        dialled = replace(route, url=route_with_session(
+            route.url, session_key, turn, grant_key=getattr(route, "grant_key", ""), tools=enabled))
         client = _make_client(dialled, timeout)
     except Exception:
         raise EngineToolError("engine_tools_unavailable") from None
