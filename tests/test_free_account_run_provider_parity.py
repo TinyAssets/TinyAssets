@@ -42,6 +42,7 @@ from typing import Any
 import pytest
 
 from tests.cloud_runtime_fixture import cloud_runtime  # noqa: F401
+from tests.inference_usage_helpers import accounting_resolver
 from tinyassets.branches import (
     BranchDefinition,
     EdgeDefinition,
@@ -156,7 +157,7 @@ def wires(tmp_path, monkeypatch):
 
     monkeypatch.setattr(call_module, "_real_router", ProviderRouter(), raising=False)
     monkeypatch.setattr(discovery_snapshot, "read_http_discovery_document", read)
-    monkeypatch.setattr(ApiKeyHttpProvider, "_resolve_proxy", resolve_proxy)
+    monkeypatch.setattr(ApiKeyHttpProvider, "_resolve_proxy", accounting_resolver(resolve_proxy))
     monkeypatch.setattr("tinyassets.providers.call._force_mock", False)
     return registry
 

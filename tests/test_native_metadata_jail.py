@@ -14,7 +14,11 @@ from tinyassets.providers.codex_provider import CodexProvider
 
 
 @pytest.mark.real_jail
-@pytest.mark.skipif(sys.platform != 'linux' or not shutil.which('bwrap'),
+# `which("bwrap")` is spelled with double quotes because
+# tests/test_linux_jail_proof_workflow.py greps every real_jail case for exactly
+# that text: a marked case with no bwrap condition would run, and fail,
+# everywhere the jail does not exist instead of skipping.
+@pytest.mark.skipif(sys.platform != 'linux' or not shutil.which("bwrap"),
                     reason='real metadata isolation requires Linux and bubblewrap')
 def test_native_metadata_snapshot_cannot_read_foreign_or_platform_state(monkeypatch):
     import tinyassets

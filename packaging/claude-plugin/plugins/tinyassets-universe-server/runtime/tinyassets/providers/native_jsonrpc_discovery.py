@@ -102,13 +102,16 @@ def parse_model_page(result, protocol):
 
 async def read_native_catalogue(
     argv, *, protocol, env, cwd, universe_dir=None, timeout=30,
-    spawn_kwargs=None, install_mounts=None,
+    spawn_kwargs=None, install_mounts=None, auth_env_names=(),
 ):
     """Read the complete bounded list or fail with sanitized fixed prose.
 
     Resource ceilings are transport guards, never silent list truncation. New
     optional fields and notifications are tolerated; invalid required facts,
     duplicate models, repeated cursors and upstream errors refuse the result.
+
+    ``auth_env_names`` carries the caller's own auth directory variable names
+    down to the jail, which is channel-agnostic and names no vendor itself.
     """
     proc = None
     try:
@@ -116,7 +119,7 @@ async def read_native_catalogue(
             raise ValueError("native metadata requires a registered protocol")
         if universe_dir is None:
             raise ValueError("native metadata requires its owning command center")
-        view = metadata_view(universe_dir, cwd, env)
+        view = metadata_view(universe_dir, cwd, env, auth_env_names)
         process_options = dict(spawn_kwargs or {})
         # Session ownership belongs to the shared family launcher. Adapters
         # cannot replace its view, scope, shell mode or confinement requirement.

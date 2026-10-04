@@ -311,6 +311,16 @@ def read_graph(
         from tinyassets.command_center_picker import read_packages
 
         return json.dumps(read_packages(universe_id=graph_id))
+    if normalized == "command_center_updates":
+        from tinyassets.api.command_center_update_surface import read_updates
+
+        return json.dumps(read_updates(universe_id=graph_id))
+    if normalized == "command_center_preview":
+        from tinyassets.command_center_preview import read_preview
+
+        return json.dumps(read_preview(
+            universe_id=graph_id, definition_id=agent_definition_id,
+        ))
     if normalized == "app_ui":
         # The caller's own UI library + choice; keyed by the authenticated caller.
         from tinyassets.api.app_ui import read_app_ui
@@ -363,6 +373,8 @@ def read_graph(
             "agent_binding",
             "app_ui",
             "command_center_packages",
+            "command_center_preview",
+            "command_center_updates",
             "command_center_file",
             "command_center_files",
             "receiver",

@@ -73,6 +73,8 @@ def _ids(raw: Any, field: str, *, required: bool) -> list[str]:
 
 def validate_action(action: dict[str, Any]) -> dict[str, Any]:
     """Shape only: the fields and their types. Ownership is ``capture_action``'s."""
+    from tinyassets.command_center_agent_templates import selection
+
     name = action.get("name")
     if not isinstance(name, str) or not name.strip() or len(name.strip()) > _MAX_NAME:
         raise ValueError(f"publish needs a public name of 1-{_MAX_NAME} characters")
@@ -92,6 +94,8 @@ def validate_action(action: dict[str, Any]) -> dict[str, Any]:
         "ui_id": ui_id.strip(),
         "automation_ids": _ids(action.get("automation_ids"), "automation_ids", required=False),
     }
+    if "agent_templates" in action:
+        validated["agent_templates"] = selection(action["agent_templates"])
     if action.get("package") is not None:
         from tinyassets.command_center_packages import validate_options
 
@@ -132,7 +136,7 @@ UI_PORTABLE_FIELDS = ("kind", "version", "ui_id", "name", "markup", "style", "sc
 #: Optional fields that publish as they are: library names from the public
 #: allowlist and the script type. ``assets`` is NOT one: its bytes live in the
 #: publisher's private UI storage and a published copy could not load them.
-UI_PORTABLE_OPTIONAL_FIELDS = ("libraries", "script_type", "workflow_refs")
+UI_PORTABLE_OPTIONAL_FIELDS = ("libraries", "script_type", "workflow_refs", "agent_refs")
 
 _CHANGED = (
     "something in this ask changed after you were shown it, so nothing was "
@@ -226,6 +230,9 @@ def tab_text(action: dict[str, Any]) -> tuple[str, str, str]:
     for a in shown["automations"]:
         lines.append(
             f"- The trigger of \"{a['name']}\": runs {a['when']} (its inputs stay private)")
+    for agent in shown.get("agent_templates", []):
+        lines.append(f"- Public instructions for chat agent \"{_shown(agent['name'])}\" "
+                     "(private settings and model assignments stay here)")
     package = shown.get("package")
     if package:
         lines.extend(_package_lines(package))
@@ -395,6 +402,30 @@ def build_snapshot(uid: str, action: dict[str, Any]) -> dict[str, Any]:
             "workflow": keys[row.branch_def_id], "trigger": trigger, "overlap": row.overlap}
         shown["automations"].append({"name": _shown(row.name),
                                      "when": _shown(_trigger_words(trigger))})
+
+    from tinyassets.command_center_agent_templates import export_templates, reject_nested_workflows
+    from tinyassets.custom_agents import app_ui_agent_refs
+
+    selected = action.get("agent_templates") or {}
+    templates = export_templates(base, uid, actor, selected)
+    if set(templates) & (set(components) | {"package"}):
+        raise ValueError("an agent template key collides with another published component")
+    components.update(templates)
+    if templates:
+        shown["agent_templates"] = list(templates.values())
+    if "ui" in components:
+        ui = components["ui"]
+        aliases = {binding: key for key, binding in selected.items()}
+        refs = app_ui_agent_refs(ui)
+        if any(binding not in aliases for binding in refs.values()):
+            raise ValueError("agent_refs must name only agents selected in this publish ask")
+        if any(binding in ui["script"] for binding in selected.values()):
+            raise ValueError("this screen embeds a source agent id; use declared agent_refs")
+        if "agent_refs" in ui:
+            ui["agent_refs"] = {alias: aliases[binding] for alias, binding in refs.items()}
+    if "ui" in components:
+        for row in rows.values():
+            reject_nested_workflows(row)
 
     branches = {bid: _public_branch_row(raw) for bid, raw in rows.items()}
     tags = ["tinyassets.system.v1"]

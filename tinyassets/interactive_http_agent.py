@@ -24,6 +24,12 @@ class ServedChatAgentAdapter:
 
     def check(self, context, config):
         owner = check_served_agent_tool_authority(context)
+        from tinyassets.providers.agent_inference import AgentInferenceRequest
+
+        if type(config.agent_request) is AgentInferenceRequest and config.agent_request.text_only:
+            # The same fresh owner/binding fence above applies, with no tool
+            # identity or engine session required for an empty inventory.
+            return owner
         if (
             not config.engine_mcp_enabled
             or config.engine_mcp_actor_id != owner

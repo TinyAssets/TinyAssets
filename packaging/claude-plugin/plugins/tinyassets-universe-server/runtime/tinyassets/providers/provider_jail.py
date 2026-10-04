@@ -303,12 +303,31 @@ def default_view(
     return UniverseView(universe_dir=root, mounts=tuple(mounts), chdir=chdir)
 
 
-def metadata_view(universe_dir: Path, snapshot_dir: Path, env: Mapping[str, str]) -> UniverseView:
+#: Host runtime directories every jailed child gets a disposable value for.
+#: Operating-system names only: the jail knows no vendor, so an executor's own
+#: auth directory variables arrive as ``auth_env_names``
+#: (``scripts/check_channel_agnostic.py``).
+_DISPOSABLE_RUNTIME_ENV: tuple[str, ...] = (
+    "APPDATA", "LOCALAPPDATA", "XDG_CONFIG_HOME", "XDG_CACHE_HOME",
+    "XDG_DATA_HOME", "XDG_STATE_HOME", "XDG_RUNTIME_DIR",
+)
+
+
+def metadata_view(
+    universe_dir: Path, snapshot_dir: Path, env: Mapping[str, str],
+    auth_env_names: Sequence[str] = (),
+) -> UniverseView:
     """Only this owned launch snapshot, with disposable homes inside the jail.
 
     Custody is established by native_discovery before this call. Path checks
     here prevent a missing, redirected or broad snapshot from becoming a bind.
     Ordinary universe content and sibling launch snapshots are never mounted.
+
+    ``auth_env_names`` are the executor's auth DIRECTORY variables, supplied by
+    the provider layer because this module is channel-agnostic and must not name
+    a vendor. Each is given a disposable path unless it already names the exact
+    snapshot bound below, so an inherited host auth directory cannot reach the
+    child whichever executor declared it.
     """
     snapshot = Path(os.path.abspath(snapshot_dir))
     try:
@@ -326,9 +345,7 @@ def metadata_view(universe_dir: Path, snapshot_dir: Path, env: Mapping[str, str]
     # an auth directory only when it names the exact snapshot mounted below.
     private_env = {"HOME": "/tmp", "USERPROFILE": "/tmp",
                    "TMPDIR": "/tmp", "TMP": "/tmp", "TEMP": "/tmp"}
-    for name in ("APPDATA", "LOCALAPPDATA", "XDG_CONFIG_HOME", "XDG_CACHE_HOME",
-                 "XDG_DATA_HOME", "XDG_STATE_HOME", "XDG_RUNTIME_DIR",
-                 "CLAUDE_CONFIG_DIR", "CODEX_HOME"):
+    for name in (*_DISPOSABLE_RUNTIME_ENV, *auth_env_names):
         private_env[name] = str(snapshot) if env.get(name) == str(snapshot) else f"/tmp/{name}"
     return UniverseView(
         universe_dir=root, mounts=(JailMount("bind", str(snapshot), snapshot),),

@@ -1572,6 +1572,70 @@ async def _handle_account_timezone(request: Any) -> Any:
     return JSONResponse({"timezone": stored}, headers=_NO_STORE)
 
 
+async def _handle_ui_prefs(request: Any) -> Any:
+    """``GET``/``POST`` the signed-in owner's own UI preferences.
+
+    The chat cloud's placement, so it follows the owner to every browser and
+    app install they sign into (openspec/changes/owner-ui-prefs). The owner is
+    the authenticated subject and nothing else: no query or body field names
+    one. A refused value leaves the stored one alone.
+    """
+    from starlette.concurrency import run_in_threadpool
+    from starlette.responses import JSONResponse, PlainTextResponse
+
+    from tinyassets.auth.middleware import current_identity, identity_context
+    from tinyassets.storage.owner_ui_prefs import PrefRefused, read_prefs, write_pref
+
+    if not onboarding_enabled():
+        return PlainTextResponse("Not Found", status_code=404)
+    denied = _app_identity_required()
+    if denied is not None:
+        return denied
+    identity = current_identity()
+
+    def _base() -> str:
+        from tinyassets.api.helpers import _base_path
+
+        return _base_path()
+
+    if request.method == "GET":
+        agent = str(request.query_params.get("agent") or "main")
+        viewport = str(request.query_params.get("viewport") or "")
+
+        def _read() -> dict[str, Any]:
+            with identity_context(identity):
+                return read_prefs(_base(), owner_user_id=identity.user_id,
+                                  agent_id=agent, viewport=viewport)
+        try:
+            prefs = await run_in_threadpool(_read)
+        except PrefRefused as exc:
+            return JSONResponse({"error": "ui_prefs_invalid", "detail": str(exc)},
+                                status_code=400, headers=_NO_STORE)
+        return JSONResponse({"prefs": prefs}, headers=_NO_STORE)
+
+    cfg = app_config()
+    if not _same_origin_json(request, str(cfg.get("resource") or "")):
+        return JSONResponse(
+            {"error": "cross_origin_rejected"}, status_code=403, headers=_NO_STORE
+        )
+    data = await _read_small_json(request)
+    if data is None:
+        return JSONResponse({"error": "invalid_json"}, status_code=400, headers=_NO_STORE)
+
+    def _write() -> None:
+        with identity_context(identity):
+            write_pref(_base(), owner_user_id=identity.user_id,
+                       agent_id=str(data.get("agent") or "main"),
+                       viewport=str(data.get("viewport") or ""),
+                       key=str(data.get("key") or ""), value=data.get("value"))
+    try:
+        await run_in_threadpool(_write)
+    except PrefRefused as exc:
+        return JSONResponse({"error": "ui_prefs_invalid", "detail": str(exc)},
+                            status_code=400, headers=_NO_STORE)
+    return JSONResponse({"saved": True}, headers=_NO_STORE)
+
+
 async def _handle_turn_interrupt(request: Any) -> Any:
     """Stop the signed-in user's own running conversation turn (the Stop button).
 
@@ -2414,6 +2478,7 @@ def onboarding_routes() -> list[Any]:
         Route("/app/billing/webhook", _handle_billing_webhook, methods=["POST"]),
         Route("/app/account/delete", _handle_account_delete, methods=["POST"]),
         Route("/app/account/timezone", _handle_account_timezone, methods=["POST"]),
+        Route("/app/ui-prefs", _handle_ui_prefs, methods=["GET", "POST"]),
         Route("/app/rules", _handle_rules, methods=["GET", "POST"]),
         Route("/app/memory", _handle_memory, methods=["GET", "POST"]),
         Route("/app/profile", _handle_profile, methods=["GET"]),

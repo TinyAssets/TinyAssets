@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from tinyassets.exceptions import ProviderError
+from tinyassets.providers import base as provider_base
 from tinyassets.providers import native_jsonrpc_discovery as transport
 from tinyassets.providers import owned_process, provider_jail
 from tinyassets.providers.codex_provider import CodexProvider
@@ -21,12 +22,76 @@ def snapshot(universe):
 
 def test_metadata_view_binds_only_exact_snapshot_and_private_runtime(tmp_path):
     own = snapshot(tmp_path)
-    view = provider_jail.metadata_view(tmp_path, own, {'CODEX_HOME': str(own)})
+    auth_names = provider_base.auth_directory_env_names()
+    view = provider_jail.metadata_view(
+        tmp_path, own,
+        {'CODEX_HOME': str(own), 'CLAUDE_CONFIG_DIR': '/host/.claude'}, auth_names)
     assert view.mounts == (provider_jail.JailMount('bind', str(own), own),)
     assert view.chdir == str(own)
     assert dict(view.setenv)['HOME'] == '/tmp'
     assert dict(view.setenv)['CODEX_HOME'] == str(own)
+    # An inherited host auth directory never reaches the child, whichever
+    # executor declared the variable.
     assert dict(view.setenv)['CLAUDE_CONFIG_DIR'].startswith('/tmp/')
+
+
+def test_the_jail_names_no_vendor_and_still_covers_every_auth_directory():
+    """The names come from the provider layer, so the jail stays agnostic.
+
+    `scripts/check_channel_agnostic.py` forbids a vendor name reaching the
+    runtime in the substrate, and `provider_jail` is substrate. A future
+    executor is covered by declaring its auth directory in the overlay
+    allow-list once -- not by editing the jail.
+    """
+    names = provider_base.auth_directory_env_names()
+    assert names, 'the provider layer must declare its auth directories'
+    declared = {n for group in provider_base._PROVIDER_AUTH_OVERLAY_ENV_VARS.values()
+                for n in group}
+    # Every declared auth DIRECTORY is passed down; token variables are not,
+    # because a credential must never be handed a disposable path as its value.
+    assert set(names) == {n for n in declared if n.endswith(('_HOME', '_CONFIG_DIR'))}
+    source = Path(provider_jail.__file__).read_text(encoding='utf-8')
+    for name in names:
+        assert name not in source, f'{name} must not be written into the jail'
+
+
+def test_discovery_passes_the_auth_directory_names_to_the_jail(tmp_path, monkeypatch):
+    """A jail asked for no auth names would silently stop neutralising them."""
+    own = snapshot(tmp_path)
+    seen = {}
+
+    async def record(argv, **kwargs):
+        seen.update(kwargs)
+        return None
+
+    monkeypatch.setattr(transport, 'read_native_catalogue', record)
+    monkeypatch.setattr(
+        CodexProvider, 'native_command_resolver',
+        staticmethod(lambda: ([str(tmp_path / 'vendor')], False)))
+    asyncio.run(CodexProvider().enumerate_models(
+        universe_dir=tmp_path, credential_snapshot_dir=own))
+    assert seen['auth_env_names'] == provider_base.auth_directory_env_names()
+
+
+def test_the_transport_hands_the_names_straight_to_the_view(tmp_path, monkeypatch):
+    """The transport forwards them unchanged; it declares none of its own."""
+    own = snapshot(tmp_path)
+    seen = {}
+
+    def record(universe_dir, snapshot_dir, env, auth_env_names=()):
+        seen['names'] = tuple(auth_env_names)
+        raise ProviderError('native model discovery unavailable')
+
+    monkeypatch.setattr(transport, 'metadata_view', record)
+    monkeypatch.setattr(
+        transport, 'aspawn_owned',
+        AsyncMock(side_effect=AssertionError('must refuse before process creation')))
+    with pytest.raises(ProviderError, match='^native model discovery unavailable$'):
+        asyncio.run(transport.read_native_catalogue(
+            ['synthetic'], protocol=CodexProvider.native_discovery_protocol,
+            env={}, cwd=str(own), universe_dir=tmp_path,
+            auth_env_names=('VENDOR_HOME',)))
+    assert seen['names'] == ('VENDOR_HOME',)
 
 
 @pytest.mark.parametrize('kind', ['none', 'root', 'parent', 'foreign', 'missing', 'symlink'])

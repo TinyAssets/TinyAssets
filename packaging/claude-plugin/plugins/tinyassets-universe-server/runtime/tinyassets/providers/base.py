@@ -28,6 +28,7 @@ if TYPE_CHECKING:
     from tinyassets.providers.agent_model_plan import AgentModelPlan
     from tinyassets.providers.model_policy import ModelRef
     from tinyassets.providers.model_selection import SelectedModel
+    from tinyassets.request_budget import TurnRequestBudget
 
 logger = logging.getLogger(__name__)
 
@@ -251,6 +252,13 @@ class ModelConfig:
     may use the mark to narrow further, e.g. pin cwd to the command center and deny
     :data:`HOST_REACH_TOOLS`."""
 
+    text_only: bool = False
+    """Restrictive per-invocation mode: no tools, agent request or session resume.
+
+    Only an executor explicitly implementing this contract may accept it.
+    This is a restriction, never authority to call a model or access credentials.
+    """
+
     sandbox_workspace: bool = False
     # A chat turn (converse): still OS-isolated, but NOT handed the universe as a
     # coding workspace. Codex `exec` mounted at the universe with -C /workspace
@@ -337,6 +345,12 @@ class ModelConfig:
 
     agent_request: AgentInferenceRequest | None = field(default=None, repr=False)
     """Internal tool inventory/completed history, never execution authority."""
+
+    request_budget: TurnRequestBudget | None = field(default=None, repr=False, compare=False)
+    """Server-owned parent ledger; not wire data, quota evidence or authority."""
+    request_purpose: str = "reply"
+    request_attempt: int | None = field(default=None, repr=False, compare=False)
+    """Router-owned ordinal. The HTTP broker consumes it; never caller authority."""
 
     secondary_call: bool = False
     """This call is the platform's own bookkeeping beside a founder turn, not the
@@ -469,6 +483,8 @@ class ProviderResponse:
 
     agent_reply: AgentReply | None = field(default=None, repr=False)
     """One inference's validated result; requested tools have not been executed."""
+    request_receipt: dict | None = field(default=None, repr=False, compare=False)
+    """Detached local dispatch accounting, never a confirmed provider quota."""
     native_evidence: NativeCompletionEvidence | None = field(default=None, repr=False)
     """Local execution evidence, not provider-reported billing or HTTP progress."""
 
@@ -562,6 +578,20 @@ _PROVIDER_AUTH_OVERLAY_ENV_VARS: dict[str, frozenset[str]] = {
     }),
     "codex": frozenset({"CODEX_HOME", "OPENAI_API_KEY"}),
 }
+
+
+def auth_directory_env_names() -> tuple[str, ...]:
+    """Every executor auth DIRECTORY variable name, for jails that name none.
+
+    Derived from the overlay allow-list above rather than written out again, so
+    a new executor's auth directory is covered by declaring it there once. Only
+    directory-shaped names are returned: a token variable is a credential, not a
+    path, and must never be handed a disposable directory as its value. The jail
+    (``tinyassets.providers.provider_jail``) is channel-agnostic and takes these
+    as data (``scripts/check_channel_agnostic.py``).
+    """
+    names = {name for group in _PROVIDER_AUTH_OVERLAY_ENV_VARS.values() for name in group}
+    return tuple(sorted(n for n in names if n.endswith(("_HOME", "_CONFIG_DIR"))))
 
 
 def subprocess_env_without_api_keys() -> dict[str, str] | None:
@@ -1406,6 +1436,31 @@ class BaseProvider(abc.ABC):
     agent_execution_kind: str | None = None
     """Installed execution capability; unknown executors cannot claim an agent lane."""
 
+    supports_text_only: bool = False
+    """Adapter enforces tool-free requests, including at its direct call boundary."""
+
+    def require_text_only_support(self, config: ModelConfig) -> None:
+        """Refuse unsupported or conflicting restrictions before any provider IO."""
+        from tinyassets.exceptions import ProviderAuthorityHeldError
+
+        mode = getattr(config, "text_only", False)
+        if type(mode) is not bool:
+            raise ProviderAuthorityHeldError("invalid text-only provider restriction")
+        if not mode:
+            return
+        if self.supports_text_only is not True:
+            raise ProviderAuthorityHeldError(
+                "selected provider does not support enforced text-only review; "
+                "nothing was launched"
+            )
+        if any(getattr(config, key, None) for key in (
+            "engine_mcp_enabled", "engine_mcp_actor_id", "engine_mcp_graph_id",
+            "allowed_tools", "engine_tool_grant", "agent_node_id", "agent_node_key",
+        )) or any(getattr(config, key, None) is not None for key in (
+            "agent_request", "agent_session",
+        )):
+            raise ProviderAuthorityHeldError("text-only provider restriction conflicts with tools")
+
     native_credential_service: str | None = None
     """Native custody service declared by this executor; not a model identifier."""
     native_discovery_protocol = None
@@ -1445,6 +1500,7 @@ class BaseProvider(abc.ABC):
             spawn_kwargs=self.native_process_options(),
             install_mounts=(None if self.native_install_mounts is None else
                             lambda: self.native_install_mounts(base_cmd)),
+            auth_env_names=auth_directory_env_names(),
         )
 
     @classmethod

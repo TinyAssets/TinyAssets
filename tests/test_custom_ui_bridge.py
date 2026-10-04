@@ -256,10 +256,18 @@ for(const action of ['write_graph','connectHTTP','whoami ','WHOAMI','constructor
 
 // ---- the viewer's identity, and nothing else ------------------------------
 const who=(await ask('whoami',{universe_id:'u-bob'})).result;
-assert.deepEqual(Object.keys(who).sort(),['command_center_id','command_center_name','protocol','workflow_refs']);
+assert.deepEqual(Object.keys(who).sort(),['agent_refs','command_center_id','command_center_name','protocol','workflow_refs']);
 assert.deepEqual(who.workflow_refs,{});
+assert.deepEqual(who.agent_refs,{});
 assert.equal(who.command_center_id,HOME);
 assert.equal(who.command_center_name,'Alice universe');
+AppUI.active.agent_refs={scribe:'recipient-private-binding'};
+const aliases=(await ask('whoami',{agent_refs:{scribe:'publisher-binding'}})).result;
+assert.deepEqual(aliases.agent_refs,{scribe:'recipient-private-binding'});
+aliases.agent_refs.scribe='changed-reply';
+assert.equal(AppUI.active.agent_refs.scribe,'recipient-private-binding');
+assert.equal(AppUI.parseBundle({...AppUI.active,agent_refs:{'bad alias':'id'}}).ok,false);
+delete AppUI.active.agent_refs;
 
 // ---- a bundle cannot name a universe: the argument is pinned -------------
 calls=[];

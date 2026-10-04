@@ -1362,9 +1362,9 @@ def register_automation(
 ) -> Automation:
     """Store one automation, or refuse with a named reason (D4).
 
-    Every precondition a due run needs is checked HERE, in the owner's own
-    request, where a refusal is a message they can act on. Storing a row that
-    cannot fire would move the failure onto a background thread they never see.
+    Active registration checks execution readiness in the owner's request.
+    Explicitly paused copies need no connected provider: they are dormant
+    metadata, and the run path still rechecks authority before every launch.
 
     ``event_key`` names an event wake: the wake already stored for that key is
     returned instead of a second one, before anything is charged. A package
@@ -1387,7 +1387,7 @@ def register_automation(
     uid = str(universe_id or "").strip()
     owner = named_principal(owner_principal_id)
 
-    if not assigned_queue_consumer_enabled():
+    if not paused_reason and not assigned_queue_consumer_enabled():
         raise AutomationUnavailable("consumer_disabled")
     if not owner:
         raise AutomationUnavailable("authentication_required")
@@ -1395,9 +1395,10 @@ def register_automation(
         raise AutomationUnavailable("owner_not_admin")
     if get_founder_home(base, owner) != uid:
         raise AutomationUnavailable("not_owner_home")
-    assignment = load_provider_assignment(base, universe_id=uid)
-    if assignment is None or assignment.state != "ready":
-        raise AutomationUnavailable("no_serving_assignment")
+    if not paused_reason:
+        assignment = load_provider_assignment(base, universe_id=uid)
+        if assignment is None or assignment.state != "ready":
+            raise AutomationUnavailable("no_serving_assignment")
     # An OPEN (api_key_http) assignment is the owner's own source like any
     # other: foreground admission stopped refusing open providers on 2026-09-03
     # (0f96c04d), and the runtime check (_runtime_authority_reason) never did.
@@ -1929,9 +1930,9 @@ def skip_overlapping(
 def _runtime_authority_reason(base_path: Path, automation: Automation) -> str:
     """'' when this automation may run right now, else the refusal token (D3).
 
-    Re-derived from live state on every run. Registration proved the owner held
-    admin over their own home with a ready assignment; between two ticks any of
-    the three can be revoked, and the RUN has to notice, not the row.
+    Re-derived from live state on every run. Active registration proved all
+    three; a paused copy may never have had an assignment. Between two ticks
+    any authority can be revoked, and the RUN has to notice, not the row.
     """
     from tinyassets.daemon_server import get_founder_home, universe_access_permission
     from tinyassets.provider_assignment import load_provider_assignment
