@@ -67,7 +67,7 @@ def system_server(home):
             try:
                 self.end_headers()
                 self.wfile.write(raw)
-            except (BrokenPipeError, ConnectionResetError):
+            except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
                 # Real reload/account transitions cancel in-flight responses.
                 # Handler errors still reach failures; a closed client does not.
                 return
@@ -178,7 +178,8 @@ def system_server(home):
                 self.reply({"error": "fixture_transport_failure", "detail": str(exc)}, status=500)
 
     server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread = threading.Thread(target=server.serve_forever,
+                              kwargs={"poll_interval": 0.01}, daemon=True)
     thread.start()
     try:
         yield f"http://127.0.0.1:{server.server_port}", calls, failures
@@ -350,7 +351,15 @@ def test_shipped_frame_previews_system_trusted_rail_copies_and_navigation_persis
         frame.get_by_role("button", name="Preview copy", exact=True).click()
         expect(page.locator("#ui-preview")).to_contain_text("Visual preview")
         assert not any(op == "try_package" for op, _ in calls)
-        page.get_by_role("button", name="Copy into my command center", exact=True).click()
+        # Do not race the copy with our own explicit refresh below: owner-control
+        # operations intentionally refuse concurrent mutations rather than queue.
+        with page.expect_response(lambda response: (
+            response.url == origin + "/fixture/mcp"
+            and response.request.post_data_json.get("args", {}).get("operation")
+            == "try_package"
+        )) as copied:
+            page.get_by_role("button", name="Copy into my command center", exact=True).click()
+        assert copied.value.json().get("request_id"), copied.value.json()
         assert not _bobs_branches(home) and _bob_files(home) == before
         assert AutomationStore(home).list(universe_id=BOB_UNIVERSE) == []
         page.evaluate("async()=>{await refreshRail();}")
