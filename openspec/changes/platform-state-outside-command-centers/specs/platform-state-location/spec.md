@@ -27,7 +27,7 @@ A test SHALL assert that no platform path helper resolves inside a command-cente
 
 ### Requirement: The move is one-way, resumable, and refuses an unaccountable state
 
-The migration SHALL run under the exclusive data-layout lock before any role opens the data, and the layout marker SHALL refuse an image that predates the move. For each command center it SHALL be idempotent. Where both the in-folder and the sidecar database exist it SHALL refuse that command center loudly and change nothing, because that state is either an interrupted run or a planted file and guessing is how a forged file gets blessed. A migrated in-folder file SHALL be renamed aside rather than deleted, so the prior state is recoverable.
+The migration SHALL run under the exclusive data-layout lock before any role opens the data, and the layout marker SHALL refuse an image that predates the move, both during and after migration. For each command center it SHALL be idempotent. Where both the in-folder and the sidecar database exist without a durable platform-owned pending journal it SHALL refuse that command center loudly and change nothing. A matching pending journal SHALL permit resuming the migration's own interrupted create/rename without carrying any legacy rows forward. A migrated in-folder file SHALL be renamed aside rather than deleted, so the prior state is recoverable.
 
 #### Scenario: Running the migration twice changes nothing
 - **WHEN** the migration runs on a volume it has already migrated
@@ -38,8 +38,20 @@ The migration SHALL run under the exclusive data-layout lock before any role ope
 - **THEN** the layout marker records that the move is in progress, and the next start resumes it before any role opens the data
 
 #### Scenario: Both copies present is a refusal, not a merge
-- **WHEN** a command center has both an in-folder and a sidecar database
+- **WHEN** a command center has both an in-folder and a sidecar database without a platform-owned pending migration journal
 - **THEN** the migration refuses that command center by name and leaves both files untouched
+
+#### Scenario: A delayed startup observes another startup's completed migration
+- **WHEN** one process completes the move while another is between shared and exclusive lock acquisition
+- **THEN** the delayed process rechecks under the shared lock and is admitted without waiting for the first process to exit
+
+#### Scenario: A home that never used consent remains resettable
+- **WHEN** migration visits a home with no legacy or sidecar consent database
+- **THEN** no consent database is created and its reset eligibility is unchanged
+
+#### Scenario: Partial deletion staging does not skip cancellation
+- **WHEN** the home contains a nonempty `.universe-sidecars` directory, or staging fails between the home and sidecar renames
+- **THEN** platform staging keeps home and sidecar as separate children, billing cancellation still runs, and unfinished staging is recoverable and recorded in a durable receipt
 
 ### Requirement: No consent survives the move, and the re-grant is one click at first use
 

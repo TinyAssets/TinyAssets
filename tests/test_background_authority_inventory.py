@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
+from scripts import check_background_authority_inventory as inventory
 from scripts.check_background_authority_inventory import (
     CANONICAL_READ_INTERFACES,
     EXPECTED_SENSITIVE_CALL_SITES,
@@ -120,6 +123,7 @@ def test_repository_scan_detects_an_unreviewed_root(tmp_path: Path) -> None:
 
 def test_inventory_covers_every_required_source_family() -> None:
     assert set(REQUIRED_BACKGROUND_ROOTS) == {
+        "activities",
         "schedule_and_event",
         "goal_subscription",
         "soul_and_compiled_cycle",
@@ -199,3 +203,67 @@ def test_inventory_closes_indirect_and_packaged_execution_boundaries() -> None:
 def test_sensitive_call_manifest_is_nonempty_and_duplicate_free() -> None:
     assert EXPECTED_SENSITIVE_CALL_SITES
     assert len(EXPECTED_SENSITIVE_CALL_SITES) == len(set(EXPECTED_SENSITIVE_CALL_SITES))
+
+
+@pytest.mark.parametrize("path", [
+    "tinyassets/activity_runner.py",
+    "packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/tinyassets/activity_runner.py",
+])
+def test_activity_registration_refuses_an_extra_launch(tmp_path: Path, path: str) -> None:
+    expected = {call for call in EXPECTED_SENSITIVE_CALL_SITES if call.path == path}
+    assert expected == {CallSite(path, "start", "execute_branch_async")}
+    source = tmp_path / path
+    source.parent.mkdir(parents=True)
+    original = (REPO_ROOT / path).read_text(encoding="utf-8")
+    source.write_text(original, encoding="utf-8")
+    assert scan_python_calls(source, SENSITIVE_EXECUTION_CALLS, relative_to=tmp_path) == expected
+    # A second call in the registered function must not inherit its registration.
+    source.write_text(original.replace(
+        "    outcome = execute_branch_async(",
+        "    execute_branch_async(base_path, branch=branch)\n"
+        "        outcome = execute_branch_async(",
+        1,
+    ), encoding="utf-8")
+    observed = scan_python_calls(source, SENSITIVE_EXECUTION_CALLS, relative_to=tmp_path)
+    assert CallSite(path, "start", "execute_branch_async", count=2) in observed
+    assert any("unreviewed sensitive callsite" in error
+               for error in compare_call_sites(observed, expected))
+
+
+@pytest.mark.parametrize(("guard", "replacement"), [
+    ("_bind_automation_provider_call(base_path, who)", "None"),
+    ("owner_run_identity(base_path, universe_id, owner)", "unrelated_context()"),
+    ("if not bound:", "if False:"),
+    ("owner_user_id=owner,", "owner_user_id=None,"),
+    ("on_node_status=_authority_guard(base_path, who),", "on_node_status=None,"),
+    ('activities.bind_run(universe_dir, record["activity_id"], generation, run_id)', "True"),
+    ("stop(base_path, run_id)", "pass"),
+    ("activities.activity_for_run(universe_dir, run_id)", "None"),
+    ("raise PermissionError(\n                \"activity_run_unlinked:",
+     "raise RuntimeError(\n                \"activity_run_unlinked:"),
+    ("activity_runner.linked_activity(", "activity_runner.unrelated_lookup("),
+    ("activity_runner.is_activities_branch(", "activity_runner.unrelated_branch_check("),
+])
+def test_activity_guard_removal_fails_inventory(
+    tmp_path: Path, monkeypatch, guard: str, replacement: str,
+) -> None:
+    references = REQUIRED_BACKGROUND_ROOTS["activities"]
+    paths = {ref.path for ref in references} | set(inventory._WIKI_NEGATIVE_PATHS)
+    for path in paths:
+        target = tmp_path / path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text((REPO_ROOT / path).read_text(encoding="utf-8"), encoding="utf-8")
+    # Isolate this source family in the fixture; retain the real AST scanner and
+    # source-marker validator. The repository-wide test above checks every root.
+    monkeypatch.setattr(inventory, "REQUIRED_BACKGROUND_ROOTS", {"activities": references})
+    monkeypatch.setattr(inventory, "CANONICAL_READ_INTERFACES", {})
+    monkeypatch.setattr(inventory, "EXPECTED_SENSITIVE_CALL_SITES",
+                        tuple(collect_sensitive_call_sites(tmp_path)))
+    assert validate_inventory(tmp_path) == []
+    matching = [tmp_path / path for path in paths
+                if guard in (tmp_path / path).read_text(encoding="utf-8")]
+    assert len(matching) == 1
+    target = matching[0]
+    target.write_text(target.read_text(encoding="utf-8").replace(guard, replacement, 1),
+                      encoding="utf-8")
+    assert any("activities missing marker" in error for error in validate_inventory(tmp_path))

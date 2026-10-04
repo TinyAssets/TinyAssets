@@ -1298,8 +1298,21 @@ class _ForegroundRunProviderSession:
             node_key=getattr(config, "agent_node_key", ""),
         )
         if node is not None:
+            from tinyassets import activity_runner
+
+            # A run of the universe's Activities branch continues the activity
+            # whose record names this run -- found by run id, never from inputs
+            # -- and an unlinked one is refused here, before the agent acts.
+            activity = (
+                activity_runner.linked_activity(
+                    self._base_path, self._universe_id, self._run_id)
+                if activity_runner.is_activities_branch(
+                    self._branch_snapshot, self._universe_id)
+                else None
+            )
             prompt, system, config = prepare_shared_self_turn(
                 self._base_path, self._universe_id, self._principal_id, prompt, config, node,
+                **({"activity": activity} if activity is not None else {}),
             )
             if config.engine_mcp_enabled:
                 from tinyassets.workflow_agent import call_foreground_work_agent
@@ -1310,6 +1323,10 @@ class _ForegroundRunProviderSession:
                     raise PermissionError("workflow agent call cannot substitute execution context")
                 return call_foreground_work_agent(
                     self, prompt=prompt, system=system, config=config, policy=policy,
+                    **({"activity_binding": activity_runner.ActivityRunBinding(
+                        self._universe_dir, activity["activity_id"],
+                        activity["runner_generation"], self._run_id,
+                    )} if activity is not None else {}),
                     **({"response_observer": response_observer}
                        if response_observer is not None else {}),
                     **({"metadata_observer": metadata_observer}

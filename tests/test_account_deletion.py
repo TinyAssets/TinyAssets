@@ -277,6 +277,30 @@ def test_agent_session_records_and_rules_go_with_the_account_and_no_one_elses(
             if r.action_class == "app.read"] == [agent_rules.ASK_FIRST]
 
 
+def test_account_deletion_stops_the_accounts_activities_first(two_users: Path, monkeypatch):
+    """Harness D2: a running activity is fenced and its run cancelled before its
+    store is removed, so it cannot act for the deleted account."""
+    from tinyassets import agent_activities, runs
+    from tinyassets.agent_sessions import RECORDS_DIR
+
+    cancelled = []
+    monkeypatch.setattr(runs, "request_cancel", lambda base, run_id: cancelled.append(run_id))
+    aid = agent_activities.create(two_users / HOME_A, owner_principal=A, title="t", brief="b",
+                                  origin_kind="ask")["activity_id"]
+    generation = agent_activities.claim(two_users / HOME_A, aid, replaceable=lambda r: False)
+    agent_activities.bind_run(two_users / HOME_A, aid, generation, "run-a")
+    other = agent_activities.create(two_users / HOME_B, owner_principal=B, title="t", brief="b",
+                                    origin_kind="ask")["activity_id"]
+
+    receipt = delete_account(two_users, founder_sub=A, cancel_billing=lambda home: "cancelled",
+                             delete_identity=lambda sub: "deleted")
+
+    assert cancelled == ["run-a"]
+    assert not (two_users / RECORDS_DIR / HOME_A).exists()
+    assert receipt["unfinished_phases"] == []
+    assert agent_activities.get(two_users / HOME_B, other)["status"] == "scheduled"
+
+
 def test_a_symlinked_records_root_is_refused_and_reported_not_followed(
     two_users: Path, tmp_path: Path,
 ):
@@ -907,6 +931,85 @@ def test_a_failed_row_phase_still_cancels_the_billing(two_users: Path, monkeypat
     assert receipt["identity"] == "deleted"
     assert receipt["unfinished_phases"] == ["store:auth", "store:outbound"]
     assert receipt["host_receipt_path"]
+
+
+def test_nonempty_in_home_sidecar_does_not_strand_deletion_or_billing(two_users):
+    from tinyassets.storage.effector_consents import consents_db_path, initialize_consents_db
+
+    home = two_users / HOME_A
+    planted = home / ".universe-sidecars"
+    planted.mkdir()
+    (planted / "owned.txt").write_text("user content", encoding="utf-8")
+    initialize_consents_db(home)
+    billed = []
+    receipt = delete_account(
+        two_users, founder_sub=A,
+        cancel_billing=lambda h: billed.append(h) or "cancelled",
+        delete_identity=lambda _: "deleted",
+    )
+    assert billed == [HOME_A]
+    assert receipt["home_removed"] and not receipt["unfinished_phases"]
+    assert not home.exists() and not consents_db_path(home).parent.exists()
+    assert not (two_users / ".deleting").exists()
+    assert (two_users / HOME_B / "soul.md").exists()
+
+
+def test_partial_staging_is_receipted_billing_runs_and_retry_resumes(two_users, monkeypatch):
+    from tinyassets.storage.effector_consents import consents_db_path, initialize_consents_db
+
+    home = two_users / HOME_A
+    initialize_consents_db(home)
+    sidecar = consents_db_path(home).parent
+    rename = Path.rename
+    billed = []
+
+    def fail_sidecar(path, target):
+        if path == sidecar:
+            raise OSError("injected sidecar staging failure")
+        return rename(path, target)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(Path, "rename", fail_sidecar)
+        receipt = delete_account(
+            two_users, founder_sub=A,
+            cancel_billing=lambda h: billed.append(h) or "cancelled",
+            delete_identity=lambda _: "deleted",
+        )
+    assert billed == [HOME_A]
+    assert not receipt["home_removed"]
+    assert "home_staging" in receipt["unfinished_phases"]
+    assert Path(receipt["home_staged_path"]).is_dir()
+    assert account_deletion.pending_deletions(two_users)
+    retry = delete_account(
+        two_users, founder_sub=A, cancel_billing=lambda _: "none",
+        delete_identity=lambda _: "deleted",
+    )
+    assert retry["home_removed"] and not retry["unfinished_phases"]
+    assert not sidecar.exists() and not (two_users / ".deleting").exists()
+    assert (two_users / HOME_B / "soul.md").exists()
+
+
+@pytest.mark.parametrize("linked_parent", [".deleting", ".universe-sidecars"])
+def test_staging_rejects_linked_platform_parents_without_touching_peer(
+    two_users, linked_parent,
+):
+    peer = two_users / HOME_B
+    try:
+        (two_users / linked_parent).symlink_to(peer, target_is_directory=True)
+    except OSError:
+        pytest.skip("this host cannot create a directory symlink")
+    billed = []
+    receipt = delete_account(
+        two_users, founder_sub=A,
+        cancel_billing=lambda h: billed.append(h) or "cancelled",
+        delete_identity=lambda _: "deleted",
+    )
+    assert billed == [HOME_A]
+    assert "home_staging" in receipt["unfinished_phases"]
+    assert not receipt["home_removed"]
+    assert (two_users / HOME_A / "soul.md").exists()
+    assert (peer / "soul.md").read_text(encoding="utf-8") == "# soul\n"
+    assert not (peer / HOME_A).exists()
 
 
 def test_a_second_deletion_of_the_same_principal_is_a_clean_noop(two_users: Path):

@@ -2973,6 +2973,8 @@ def test_packaged_runtime_mirrors_exist_and_are_byte_identical() -> None:
 
 
 def test_custody_adds_no_public_handle_or_production_consumer() -> None:
+    import ast
+
     import tinyassets.universe_server as universe_server
 
     advertised = {
@@ -2995,7 +2997,22 @@ def test_custody_adds_no_public_handle_or_production_consumer() -> None:
     }
     consumers = []
     for path in (root / "tinyassets").rglob("*.py"):
-        if path not in owners and "conversation_custody" in path.read_text(encoding="utf-8"):
+        source = path.read_text(encoding="utf-8")
+        if path == root / "tinyassets" / "owner_stores.py":
+            # The pending-fence inventory names stores as data; it does not use
+            # them. Exclude only that literal declaration, keeping imports and
+            # every other reference in this module subject to the same guard.
+            for node in ast.parse(source).body:
+                if (isinstance(node, ast.AnnAssign)
+                        and isinstance(node.target, ast.Name)
+                        and node.target.id == "FENCE_BEFORE_C2"):
+                    assert isinstance(node.value, ast.Call)
+                    assert isinstance(node.value.func, ast.Name)
+                    assert node.value.func.id == "frozenset"
+                    assert len(node.value.args) == 1 and not node.value.keywords
+                    assert isinstance(ast.literal_eval(node.value.args[0]), set)
+                    source = source.replace(ast.get_source_segment(source, node), "", 1)
+        if path not in owners and "conversation_custody" in source:
             consumers.append(path.relative_to(root).as_posix())
     # The two former consumers (app_conversation_authority.py, app_reply_authority.py)
     # were deleted in the channel-agnostic rip; conversation_custody now has ZERO

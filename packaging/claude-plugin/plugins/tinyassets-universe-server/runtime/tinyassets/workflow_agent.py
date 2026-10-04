@@ -8,6 +8,7 @@ import json
 import logging
 from dataclasses import replace
 
+from tinyassets.activity_runner import ActivityYielded
 from tinyassets.agent_turn_coordinator import AgentTurnCoordinator
 from tinyassets.exceptions import AllProvidersExhaustedError, ProviderAuthorityHeldError
 from tinyassets.providers.agent_capacity_boundary import capacity_boundary
@@ -24,10 +25,11 @@ class WorkAgentEffectHeld(ProviderAuthorityHeldError):
 
 
 class WorkAgentAdapter:
-    def __init__(self, session, initial_launch, policy):
+    def __init__(self, session, initial_launch, policy, *, activity_binding=None):
         self.session = session
         self.initial_launch = initial_launch
         self.initial_pending = True
+        self.activity_binding = activity_binding
         self.carrier = initial_launch[0]
         self.receipt = self.carrier._receipt
         self.policy = dict(policy or {})
@@ -51,7 +53,10 @@ class WorkAgentAdapter:
 
     def check(self, context, config):
         self._identity(context, config, self.selection)
-        return self.session._check_agent_authority(self.carrier)
+        owner = self.session._check_agent_authority(self.carrier)
+        if self.activity_binding is not None:
+            self.activity_binding.check()
+        return owner
 
     def _identity(self, context, config, selection):
         """Pure prelude only; never substitute it for active invocation/tool authority."""
@@ -135,6 +140,19 @@ class WorkAgentAdapter:
         )
 
     async def infer(self, *, router, prompt, system, config, context, observer, kind):
+        if self.activity_binding is not None and kind == "native_agent":
+            # Fail closed rather than promise a boundary that does not exist: a
+            # native CLI runs its own tool loop inside ONE provider call, so the
+            # coordinator's between-step ``check`` cannot stop it after the
+            # activity yields -- only the hint text in ``_yield_activity`` asks
+            # it to. Engine inference IS fenced (``check`` before every round
+            # and every tool), so an activity run needs that executor until a
+            # cross-provider pre-tool fence exists. Refused HERE, before any
+            # launch, and because ``infer`` runs every round this also refuses a
+            # mid-turn switch onto a native candidate.
+            raise ProviderAuthorityHeldError(
+                "activity runs need an engine-inference executor until native yield is fenced",
+            )
         changing = context.model_selection != self.selection
         if changing:
             if self._staged_next is None or self.initial_pending:
@@ -215,6 +233,27 @@ class WorkflowAgentTurn(AgentTurnCoordinator):
     async def run(self):
         try:
             return await super().run()
+        except ActivityYielded:
+            # A model can batch an ask and a later action in the same reply.
+            # Preserve the ask's committed result and explicitly mark the next
+            # planned call unsent; never dispatch it or request another round.
+            if self.turn is not None and self.turn.state == "tools_pending":
+                for call_ordinal, tool in enumerate(self.turn.rounds[-1].tools, 1):
+                    if tool.state == "planned":
+                        uid = self.context.universe_dir.name
+                        self._accept(self.journal.start_tool(
+                            self.owner, uid, self.turn.turn_id,
+                            expected_generation=self.turn.generation,
+                            ordinal=len(self.turn.rounds), call_ordinal=call_ordinal,
+                        ))
+                        self._accept(self.journal.finish_tool(
+                            self.owner, uid, self.turn.turn_id,
+                            expected_generation=self.turn.generation,
+                            ordinal=len(self.turn.rounds), call_ordinal=call_ordinal,
+                            request=tool.request, failure="not_sent",
+                        ))
+                        break
+            raise
         except AllProvidersExhaustedError as exc:
             rounds = () if self.turn is None else self.turn.rounds
             effects = any(tool.state not in {"planned", "not_sent"}
@@ -249,13 +288,14 @@ class WorkflowAgentTurn(AgentTurnCoordinator):
 
 
 def call_foreground_work_agent(session, *, prompt, system, config, policy, response_observer=None,
-                               metadata_observer=None):
+                               metadata_observer=None, activity_binding=None):
     """Enter once from immutable work opt-in, never through a fake served request."""
     return _call_work_agent(
         session, prompt=prompt, system=system, config=config, policy=policy,
         principal_id=session._principal_id, universe_id=session._universe_id,
         response_observer=response_observer,
         metadata_observer=metadata_observer,
+        activity_binding=activity_binding,
     )
 
 
@@ -268,7 +308,7 @@ def call_background_work_agent(session, *, prompt, system, config, policy):
 
 
 def _call_work_agent(session, *, prompt, system, config, policy, principal_id, universe_id,
-                     response_observer=None, metadata_observer=None):
+                     response_observer=None, metadata_observer=None, activity_binding=None):
     from tinyassets.config import load_universe_config
     from tinyassets.engine_mcp_http import engine_tools_authorized
     from tinyassets.provider_work_authority import ProviderInvocationReservationState
@@ -304,7 +344,10 @@ def _call_work_agent(session, *, prompt, system, config, policy, principal_id, u
             receipt = initial[0]._receipt
             if receipt.principal_id != principal_id or receipt.universe_id != universe_id:
                 raise ProviderAuthorityHeldError("workflow agent admitted identity changed")
-            adapter = WorkAgentAdapter(session, initial, policy)
+            adapter = WorkAgentAdapter(
+                session, initial, policy,
+                **({"activity_binding": activity_binding} if activity_binding is not None else {}),
+            )
             context = UniverseContext(
                 universe_dir=session._universe_dir,
                 config=load_universe_config(session._universe_dir),
@@ -313,7 +356,13 @@ def _call_work_agent(session, *, prompt, system, config, policy, principal_id, u
             register_universe_open_providers(router, receipt.universe_id)
             turn = WorkflowAgentTurn(adapter=adapter, router=router, prompt=prompt, system=system,
                                      universe_context=context, config=config)
-            response = asyncio.run(turn.run())
+            try:
+                response = asyncio.run(turn.run())
+            except ActivityYielded:
+                # Platform lifecycle output, not a fabricated provider answer.
+                # The committed inference/tool evidence remains in the journal.
+                # Returning normally completes the run and releases its claim.
+                return "Activity yielded to an owner request.", adapter.selection.connection_id
             if metadata_observer is not None:
                 metadata = router._call_meta(response, len(turn.turn.rounds))
                 # Keep the selected request separate from answer telemetry.

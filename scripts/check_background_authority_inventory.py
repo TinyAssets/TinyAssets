@@ -55,6 +55,15 @@ SENSITIVE_EXECUTION_CALLS = frozenset(
 # Populated from the reviewed current-main scan.  Any addition/removal is a
 # review event: update the audit and this exact set together.
 EXPECTED_SENSITIVE_CALL_SITES: tuple[CallSite, ...] = (
+    # D2 Activities launches through the existing owner-bound run entrypoint.
+    # Keep canonical and shipped copies exact; the activities root below records
+    # the owner/provider checks, generation fence, and agent start barrier.
+    CallSite("tinyassets/activity_runner.py", "start", "execute_branch_async"),
+    CallSite(
+        "packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/tinyassets/activity_runner.py",
+        "start",
+        "execute_branch_async",
+    ),
     # Reviewed 2026-08-26 while restoring this checker (PR #2561 deleted it as a
     # "dead script" -- it was not dead, it is the CI closure assertion for
     # `harden-background-branch-execution-authority`). All six were ALREADY
@@ -358,6 +367,44 @@ EXPECTED_SENSITIVE_CALL_SITES: tuple[CallSite, ...] = (
 
 
 REQUIRED_BACKGROUND_ROOTS: Mapping[str, tuple[SourceReference, ...]] = {
+    "activities": (
+        SourceReference(
+            "tinyassets/activity_runner.py",
+            "provider_call = _bind_automation_provider_call(base_path, who)",
+        ),
+        SourceReference(
+            "tinyassets/activity_runner.py",
+            "with owner_run_identity(base_path, universe_id, owner) as bound:",
+        ),
+        SourceReference(
+            "tinyassets/activity_runner.py",
+            "if not bound:\n            raise activities.ActivityRefused(",
+        ),
+        SourceReference("tinyassets/activity_runner.py", "owner_user_id=owner,"),
+        SourceReference(
+            "tinyassets/activity_runner.py", "on_node_status=_authority_guard(base_path, who),",
+        ),
+        SourceReference(
+            "tinyassets/activity_runner.py",
+            'if not activities.bind_run(universe_dir, record["activity_id"], generation, run_id):'
+            "\n        stop(base_path, run_id)",
+        ),
+        SourceReference(
+            "tinyassets/activity_runner.py",
+            "record = activities.activity_for_run(universe_dir, run_id)",
+        ),
+        SourceReference(
+            "tinyassets/activity_runner.py",
+            'raise PermissionError(\n                "activity_run_unlinked:',
+        ),
+        SourceReference(
+            "tinyassets/foreground_run_provider.py",
+            "activity_runner.linked_activity(\n"
+            "                    self._base_path, self._universe_id, self._run_id)\n"
+            "                if activity_runner.is_activities_branch(\n"
+            "                    self._branch_snapshot, self._universe_id)",
+        ),
+    ),
     "schedule_and_event": (
         SourceReference(
             "tinyassets/scheduler.py",

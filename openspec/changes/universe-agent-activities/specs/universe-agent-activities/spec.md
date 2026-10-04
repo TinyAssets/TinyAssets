@@ -22,6 +22,13 @@ An activity SHALL execute as runs of one owner-authored agent-node branch per un
 - **WHEN** the owner edits the Activities branch's agent node instructions
 - **THEN** the next activity run uses the edited branch
 
+### Requirement: An activity runs only on an executor whose tool boundary the platform enforces
+An activity's owner-request yield, pause and stop SHALL take effect at the run's next tool boundary, so an activity run SHALL execute only where the platform enforces that boundary. Engine inference carries it: the run's captured activity, generation and run id are re-checked before every inference and every tool. A native executor runs its own tool loop inside one provider call and reaches tools outside the engine route, so the platform cannot enforce the boundary there; an activity run SHALL refuse a native round before any launch, for a first selection and for a mid-turn switch alike. The refusal SHALL NOT change native tool policy for runs that are not activities.
+
+#### Scenario: an activity's order reaches a native candidate
+- **WHEN** an activity run's selected model resolves to a native executor, on the first round or after an engine-inference round
+- **THEN** the round is refused before that executor launches, and the run ends held rather than acting with no enforceable yield boundary
+
 ### Requirement: Activities are dispatched durably with one live run each
 A dispatcher SHALL run on the automation pump's cadence and whenever an activity is created or answered, and SHALL select queued activities and in-progress activities whose run has ended without settling it or was interrupted; a live run, or one whose owner is alive or unknown, SHALL NOT be replaced. Claiming SHALL advance the runner generation by compare-and-set, reserve a run without executing it, bind that run to the record under the generation, and only then release it; a run SHALL execute only if, at its start, the record names it under a current generation. Every runner write SHALL carry its generation so a superseded run's writes change nothing. An activity over the seat count SHALL wait visibly and never be refused. Waiting on the owner SHALL be a yield: once the run's effects have settled, the agent's request SHALL be bound to the exact pending action, and the run SHALL end as completed (never as interrupted), releasing its seat; an owner answer SHALL re-queue the activity only if it answers the request the activity is waiting on.
 
@@ -33,7 +40,13 @@ A dispatcher SHALL run on the automation pump's cadence and whenever an activity
 - **WHEN** an activity's run is alive but slow
 - **THEN** no second run is started for it
 
+#### Scenario: A durable answer outlives its immediate wake
+- **WHEN** an owner request is resolved before the activity records its wait, or its immediate activity-wake hook fails after the answer commits
+- **THEN** a later dispatcher tick SHALL reconcile waiting activities against the durable request status and requeue only the activity still waiting on that exact resolved request
+- **AND** repeated reconciliation SHALL make no additional transition, a paused or stopped activity SHALL remain so, and the retiring run SHALL end before a replacement can claim the activity
+
 ### Requirement: Schedules start activities through ordinary automations
+
 An automation targeting the Activities branch with a title and brief SHALL start one activity per firing. The record SHALL be created only from a platform-owned firing context (the claimed attempt's owner, automation id and due time), never from run inputs, idempotent on the automation id and due time, so re-firing the same attempt after a crash returns the same activity. A run of the Activities branch that no activity record names SHALL be refused before it executes. Automations SHALL need no new target kind.
 
 #### Scenario: a weekly report

@@ -181,6 +181,24 @@ def _sum_sql(db: Path, sql: str, params: tuple) -> int:
     return int(row[0] or 0) if row else 0
 
 
+def _agent_activities(base: Path, universe_id: str) -> int:
+    """The universe agent's activity records (harness D2): briefs, results and
+    effect intents the owner's agent wrote, kept outside the universe so no
+    jail can forge them, and charged to that universe like its files."""
+    if not universe_id or Path(universe_id).name != universe_id or universe_id.startswith("."):
+        raise ValueError(f"not a universe id: {universe_id!r}")
+    from tinyassets.agent_activities import store_path
+
+    path = store_path(base / universe_id)
+    total = 0
+    for suffix in ("", "-wal", "-shm"):
+        try:
+            total += path.with_name(path.name + suffix).lstat().st_size
+        except FileNotFoundError:
+            continue
+    return total
+
+
 def _project_memory(base: Path, account_id: str) -> int:
     """Project memory lives at the data root, keyed by project, and records its
     WRITER on every row and every history row. Charged to the writer's account."""
@@ -512,6 +530,7 @@ STORES: dict[str, Store] = {
         Store("commons_pages", SCOPE_ACCOUNT, _commons_pages),
         Store("automations", SCOPE_ACCOUNT, _automations),
         Store("workspaces", SCOPE_UNIVERSE, _workspaces),
+        Store("agent_activities", SCOPE_UNIVERSE, _agent_activities),
         Store("packages", SCOPE_ACCOUNT, _packages),
     )
 }
@@ -542,6 +561,8 @@ ROOT_ENTRIES: dict[str, str] = {
     "scratch": "platform: shared scratch pool, never charged (storage-permanent-vs-scratch)",
     ".workspace-staging": "platform: transient checkout staging, swept by liveness",
     ".consumer_liveness": "platform: process liveness locks",
+    ".owner_leases.db": "platform: execution-owner leases and fences (owner_lease)",
+    ".owner_tree": "platform: execution-owner tree member locks (owner_lease)",
     ".deploy-pending.json": "platform: a waiting deploy's expiring status marker",
     ".runtime": "platform: provider runtime",
     ".universe_seats.db": "platform: seat leases",
@@ -558,6 +579,9 @@ ROOT_ENTRIES: dict[str, str] = {
     "rules.db": (
         "platform: the owner's Custom Rules for their agents, inside "
         ".agent-sessions/<universe>/ (harness D1a)"
+    ),
+    "agent-activities.db": (
+        "agent_activities (inside .agent-sessions/<universe>/, harness D2)"
     ),
     ".universe-sidecars": "platform: per-universe daemon sockets (egress proxy)",
     "steering.db": (
@@ -820,11 +844,15 @@ def reserve_fitted(
     cap: int,
     credit: int = 0,
     minimum: int = MIN_WORKSPACE_BYTES,
+    headroom: int = 0,
 ) -> tuple[Reservation, int]:
     """Reserve a write whose size is unknown up front, sized to what FITS.
 
     Returns ``(reservation, bound)``: the caller must not let the write exceed
-    ``bound`` = min(``cap``, headroom + ``credit``). ``credit`` is bytes the
+    ``bound`` = min(``cap``, available - ``headroom`` + ``credit``).
+    ``headroom`` leaves capacity unreserved at admission for other write paths;
+    it does not protect that capacity against later growth or remeasurement.
+    ``credit`` is bytes the
     write replaces and that are already owed deletion (a published workspace
     generation this checkout supersedes), so a re-checkout of the same repo
     fits the quota it already occupies. Raises `StorageRefused` when the bound
@@ -843,6 +871,7 @@ def reserve_fitted(
     if (scope_id, store) not in pairs:
         raise ValueError(f"{store}/{scope_id} is not part of this account's storage")
     credit = max(0, int(credit))
+    headroom = max(0, int(headroom))
     try:
         stale = _stale_pairs(base, pairs)
         if stale:
@@ -851,7 +880,7 @@ def reserve_fitted(
         # fit the capacity left by earlier writers, not reuse a stale bound.
         with _txn(base) as conn:
             current = _usage_in(conn, account, pairs, quota, tier)
-            bound = min(int(cap), quota - current.used_bytes + credit)
+            bound = min(int(cap), quota - current.used_bytes - headroom + credit)
             # Replaced bytes remain measured until discard, so only their
             # increment is new pending capacity.
             incremental = max(0, bound - credit)

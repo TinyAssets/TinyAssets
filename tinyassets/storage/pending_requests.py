@@ -689,7 +689,21 @@ def resolve_request(
     from tinyassets.owner_notifications import clear_for_universe_dir
 
     clear_for_universe_dir(universe_dir, request_id=request_id)
+    # An activity waiting on this request goes back in the queue (harness D2).
+    _requeue_waiting_activity(universe_dir, request_id)
     return True
+
+
+def _requeue_waiting_activity(universe_dir: Path, request_id: str) -> None:
+    try:
+        from tinyassets import agent_activities
+
+        if agent_activities.answered_request(universe_dir, request_id):
+            from tinyassets.activity_dispatcher import tick_in_background
+
+            tick_in_background(Path(universe_dir).parent)
+    except Exception:  # noqa: BLE001 - the answer stands; the tick re-queues later
+        logger.warning("pending_requests: activity re-queue failed", exc_info=True)
 
 
 def resolve_item(
