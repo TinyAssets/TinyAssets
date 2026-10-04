@@ -20,7 +20,7 @@ from pathlib import Path
 
 from tinyassets.bid.node_bid import read_node_bids, validate_node_bid_inputs
 from tinyassets.branch_tasks import BranchTask
-from tinyassets.graph_compiler import _BID_DANGEROUS_PATTERNS, dangerous_source_patterns
+from tinyassets.graph_compiler import _BID_DANGEROUS_PATTERNS
 from tinyassets.producers.branch_task import register_branch_task_producer
 from tinyassets.producers.goal_pool import repo_root_path
 
@@ -53,10 +53,9 @@ def _producer_sandbox_reject(
     (defense-in-depth). This is the producer side of layers 1 + 2.
 
     Layer 1: node must resolve in the registry with ``approved=True``.
-    Layer 2: pre-check the source outside literals/comments for
+    Layer 2: the resolved node's ``source_code`` must NOT contain
     any pattern in ``_BID_DANGEROUS_PATTERNS`` (wider than the
-    wrapper-node list used by Phase D). This scan is not a security boundary;
-    the in-process bid executor requires approval and a matching source hash.
+    wrapper-node list used by Phase D).
 
     ``node_lookup_fn`` is ``None`` or a callable
     ``(node_def_id) -> NodeDefinition | None``. If ``None``, the
@@ -76,12 +75,9 @@ def _producer_sandbox_reject(
     if not getattr(node, "approved", False):
         return "unapproved_node"
     source = getattr(node, "source_code", "") or ""
-    try:
-        patterns = dangerous_source_patterns(source, _BID_DANGEROUS_PATTERNS)
-    except (SyntaxError, ValueError, RecursionError):
-        return "invalid_syntax"
-    if patterns:
-        return f"dangerous_pattern:{patterns[0]}"
+    for pattern in _BID_DANGEROUS_PATTERNS:
+        if pattern in source:
+            return f"dangerous_pattern:{pattern}"
     return ""
 
 

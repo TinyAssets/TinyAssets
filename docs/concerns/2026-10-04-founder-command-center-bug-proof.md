@@ -5,6 +5,18 @@ filed: '2026-10-04'
 summary: PR 4442 fixes the storage-charge and lost-send paths; the founder's actual storage refusal still needs production attribution, and the original lost send is unproven
 ---
 
+> **Update 2026-10-04 (split):** the source-code guard change ("`open(` in a string is
+> rejected") was taken OUT of PR #4442 after the round-3 cross-family review (cap reached)
+> returned BLOCK on Python 3.11, the production runtime. Literal masking lets through
+> code main's raw scan blocked: f-string expressions (`f"{os.system('id')}"`, which 3.11
+> tokenizes as one STRING) and a lone `` inside a comment (`compile()` splits on it,
+> while the `StringIO.readline` tokenizer feed does not). Suggested fixes: on 3.11
+> (no `FSTRING_START`), leave f-prefixed STRING tokens unmasked, and feed the tokenizer
+> `compile()`-equivalent line splitting. The work is preserved on branch
+> `fix/source-guard-literal-masking`. #4442 still ships the failed-run, storage and
+> lost-send fixes. The source guard is unchanged from main, so the founder's
+> `open(`-in-a-string rejection still happens until that branch lands.
+
 # Founder command-center reports, 2026-10-04
 
 Branch: `fix/app-ui-run-and-code-checks`, PR #4442. Review fixes and push only;

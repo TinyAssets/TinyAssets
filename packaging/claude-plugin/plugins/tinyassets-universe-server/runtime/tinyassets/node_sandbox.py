@@ -428,7 +428,7 @@ ALLOWED_IMPORTS = {
     "operator", "heapq", "bisect", "time",
 }
 
-# Pre-check patterns for source outside literals/comments; the OS jail is the boundary.
+# Patterns that are never allowed in node source code
 FORBIDDEN_PATTERNS = [
     "os.system",
     "os.popen",
@@ -2511,21 +2511,13 @@ class NodeSandbox:
     def validate_source(self, source_code: str) -> list[str]:
         """Pre-validate source code before execution.
 
-        Returns pre-check errors (empty if these checks pass).
-        The OS jail is the security boundary.
+        Returns a list of validation errors (empty if valid).
         """
         errors = []
 
-        from tinyassets.graph_compiler import dangerous_source_patterns
-
-        try:
-            patterns = dangerous_source_patterns(source_code, tuple(FORBIDDEN_PATTERNS))
-        except RecursionError:
-            return ["Source code is too deeply nested"]
-        except (SyntaxError, ValueError):
-            patterns = []  # Report the syntax error below, with its location.
-        for pattern in patterns:
-            errors.append(f"Forbidden pattern: '{pattern}'")
+        for pattern in FORBIDDEN_PATTERNS:
+            if pattern in source_code:
+                errors.append(f"Forbidden pattern: '{pattern}'")
 
         # Check for excessive code size
         if len(source_code) > 50_000:
@@ -2534,7 +2526,7 @@ class NodeSandbox:
         # Basic syntax check
         try:
             compile(source_code, "<node>", "exec")
-        except (SyntaxError, ValueError, RecursionError) as exc:
+        except SyntaxError as exc:
             errors.append(f"Syntax error: {exc}")
 
         return errors
