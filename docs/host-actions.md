@@ -270,6 +270,65 @@ answers and resubmits only after the lead's explicit go. Do the key renewal abov
 or step 4 of the recording (a real reply) will fail after 2026-10-10. Full history is item
 12 under "Apple App Store: enroll" below.
 
+#### No iPhone? Record it on a cloud real iPhone (2026-10-04)
+
+Apple asks for a **physical** device, not your own device. BrowserStack App Live
+rents real iPhones you drive from your browser, with TestFlight preinstalled, and
+records the session to `.mp4`. Checked 2026-10-04:
+[TestFlight on App Live](https://browserstack.com/docs/app-live/app-source/testflight)
+(iPhone 14 or newer only) and
+[session recording](https://browserstack.com/docs/app-live/session-debugging/record-session)
+(Chrome only, up to 20 minutes, download as `.mp4`). A free trial or one month of the
+individual plan is enough.
+
+AWS Device Farm also has real iPhones, but it needs an ad-hoc-signed `.ipa` and re-signs
+it with a wildcard profile ([FAQ](https://aws.amazon.com/device-farm/faqs/)). That's
+more setup and changes what Apple sees, so use BrowserStack unless it fails.
+
+**Before you start:**
+- Do the OpenRouter key renewal above first. Step 4 needs a real reply.
+- Have the App Review account's email and password ready: Windows Credential Manager,
+  the `play-review@tinyassets.io` entry. You type them on the cloud phone. Never show the
+  password on screen (step 2).
+- Save `docs/ops/app-store-review-sample.txt` somewhere you can upload from (step 5).
+- Use **Chrome** on your PC. Recording only works there.
+
+**Set up the cloud iPhone:**
+1. Sign in at browserstack.com → **App Live**.
+2. In **Select Source**, choose **Install via TestFlight**.
+3. Pick an iPhone 14 or newer on the **newest iOS version listed** (Apple asked for the
+   latest iOS).
+4. On the cloud phone, open TestFlight and sign in with **your** Apple ID. That's the
+   Account Holder, already invited to the `Internal` group with build 3. Install
+   **TinyAssets**.
+5. Before recording, open TinyAssets once and close it so the first-run install
+   prompts are out of the way. Then swipe it away so the recording starts from a cold
+   launch.
+
+**Record:** click **Record Session** in the App Live toolbar, then perform these six
+steps in order, without cutting. They're the shot list from the 2.1 response packet.
+
+| # | Do | Apple must see |
+|---|---|---|
+| 1 | Tap the TinyAssets icon. | The native splash, then the signed-out screen. |
+| 2 | Choose email and password and sign in with the App Review account. Type the password in the masked field only, never in a visible notes app. | A normal sign-in into the reviewer's account. |
+| 3 | Wait for the reviewer's private universe to load. | You're inside the app. No API key, subscription or payment step appears. |
+| 4 | Send: `Give me a three-step plan to launch a small bakery's online orders, and keep it short.` Wait for the full reply. Then swipe TinyAssets away (force quit), relaunch it, and show the same conversation still there. | A real AI reply, and the conversation surviving a force quit. |
+| 5 | Attach `app-store-review-sample.txt` (upload it to the cloud phone through App Live's file/media upload, then pick it in the attach sheet). Send: `What is the project, target storefront, and review deadline in this file?` | An answer grounded in the file's contents. |
+| 6 | Open Account / Privacy and show the **Delete my account** path. **Do not** confirm deletion. | That account deletion is reachable in the app. |
+
+Click **End Recording**, then **Download** to save the `.mp4`.
+
+**After:**
+- Sign out of TestFlight and of your Apple ID on the cloud phone before ending the
+  session.
+- Hand the `.mp4` to the lead (drop it in the chat or a shared folder). The agent
+  checks all six steps are visible and the password never is. Then it attaches the
+  video with the drafted written answers and resubmits build 3 only on the lead's
+  explicit go.
+- If App Live has no iPhone with TestFlight available, or the recording fails, say so.
+  The fallback is AWS Device Farm with an ad-hoc build, which the agent can prepare.
+
 ---
 
 ## Clear the ACL-locked sandbox temp directories (2026-09-26)
