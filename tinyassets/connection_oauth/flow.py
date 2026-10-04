@@ -1,9 +1,9 @@
-"""The sign-in half of a ``connect`` request: authorization code + PKCE, public client.
+"""The sign-in half of a ``connect`` request: authorization code + PKCE.
 
 This is the hosted first-power PKCE transport, generalized. The same store
 (``pkce.flows_db``), handle grammar and callback route serve both; what changes
 is that endpoints come from the offer recorded on the owner's pending request
-(discovered from the connection's own host, never supplied), and the
+(from the platform directory or the connection's own host, never supplied), and the
 exchange is standard RFC 6749 §4.1.
 
 1. **begin** (the owner tapped "Sign in"): the browser made a verifier and sends
@@ -142,6 +142,7 @@ def begin(*, owner: str, universe_id: str, request_id: str, challenge: str,
              now + pkce.FLOW_TTL_SECONDS),
         )
     query = {
+        **offer.get("extra_auth_params", {}),
         "response_type": "code", "client_id": client_id, "redirect_uri": callback,
         "state": handle, "code_challenge": challenge, "code_challenge_method": "S256",
     }
@@ -195,7 +196,8 @@ def complete(*, owner: str, universe_id: str, handle: str, code: str,
         raise FlowError("issuer_missing", 409)
     try:
         bundle = exchange_code(token_url=offer["token_url"], client_id=flow["client_id"],
-                               code=code, verifier=verifier, redirect_uri=flow["redirect_uri"])
+                               code=code, verifier=verifier, redirect_uri=flow["redirect_uri"],
+                               provider_id=offer.get("provider_id", ""))
     except OAuthError as exc:
         raise FlowError(exc.code, 502, exc.detail) from None
     from tinyassets.api.pending_requests import answer_connect_with_token

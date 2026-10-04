@@ -5,7 +5,7 @@ Cross-family review is owed before landing.
 
 - [x] 1. `connection_oauth.pkce`: the shared PKCE store, handle grammar,
   S256 check and callback test. The first-power preset flow imports them, and
-  the fixed generic callback `/mcp/app/model-callback/connect` is added.
+  the fixed generic callback `/app/model-callback/connect` is added.
 - [x] 2. `connection_oauth.transport`: every OAuth request goes through the
   SSRF-hardened driver, allowlisted to one URL, bounded, with RFC 6749 error
   detail scrubbed.
