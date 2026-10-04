@@ -17,7 +17,7 @@ def _label(value: object, maximum: int) -> str:
 #: ``requested_model`` are optional and ABSENT when nothing resolved, so a row
 #: stored before they existed still normalizes and renders no blank label.
 _REQUIRED_FIELDS = {"provider", "model", "model_status"}
-_OPTIONAL_FIELDS = ("provider_display", "requested_model")
+_OPTIONAL_FIELDS = ("provider_display", "requested_model", "configured_model")
 
 
 _USAGE_COUNTS = ("reserved", "dispatched", "succeeded", "failed", "unknown", "not_sent")
@@ -98,6 +98,7 @@ class ExecutionReceipt:
     model_status: str = ""
     provider_display: str = ""
     requested_model: str = ""
+    configured_model: str = ""
     usage: dict[str, Any] | None = field(default=None, compare=False, hash=False)
 
 
@@ -153,7 +154,7 @@ class WriterExecutionReceipt:
     prompts, response text, credentials, tool output or mutable provider objects.
     """
 
-    _receipt: tuple[str, str, str, str] | None = field(default=None, init=False)
+    _receipt: tuple[str, str, str, str, str] | None = field(default=None, init=False)
     _usage: dict[str, Any] | None = field(default=None, init=False)
 
     def observe(self, response: ProviderResponse) -> None:
@@ -175,18 +176,20 @@ class WriterExecutionReceipt:
             # evidence of what answered, so it never turns `unknown` into
             # `reported` (a source that reports nothing still says so).
             _label(getattr(response, "requested_model", ""), 200),
+            _label(response.configured_model, 200),
         )
 
     def projection(self) -> dict[str, Any] | None:
         usage = normalize_request_usage(self._usage)
         if self._receipt is None:
             return {"usage": usage} if usage is not None else None
-        provider, model, display, requested = self._receipt
+        provider, model, display, requested, configured = self._receipt
         return {
             "provider": provider,
             "model": model,
             "model_status": "reported" if model else "unknown",
             **({"provider_display": display} if display else {}),
             **({"requested_model": requested} if requested else {}),
+            **({"configured_model": configured} if configured else {}),
             **({"usage": usage} if usage is not None else {}),
         }

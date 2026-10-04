@@ -514,6 +514,12 @@ class ProviderResponse:
     requested, beside an unknown ``reported_model`` -- never in its place.
     """
 
+    configured_model: str = ""
+    """This launch's model configuration, never proof of the answering model.
+
+    Render only with an explicit configured label when reported_model is absent.
+    """
+
     provider_display: str = ""
     """The owner's own name for the connection that answered, for display only.
 

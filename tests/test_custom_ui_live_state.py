@@ -37,7 +37,7 @@ MCP.callTool=async function(tool,args,opts){
  if(tool==='get_status'&&liveTurn!==null){
   calls.push({tool,args:JSON.parse(JSON.stringify(args||{}))});
   return {universe_id:liveUniverseOverride||args.universe_id,active_turn:liveTurn,
-    persona:{name:'PRIVATE PERSONA'},recent_conversation:{turns:[{speaker:'founder',text:'SECRET'}]}};
+    persona:{name:'Ada',purpose:'PRIVATE PERSONA'},recent_conversation:{turns:[{speaker:'founder',text:'SECRET'}]}};
  }
  if(tool==='read_graph'&&['automations','runs','run','run_output'].includes(args.target)){
   calls.push({tool,args:JSON.parse(JSON.stringify(args||{}))});
@@ -205,7 +205,7 @@ for(const [who,label] of [['main','the command center\'s own agent is selected']
  assert.equal(new Set(ids).size,ids.length,'no agent listed twice: '+label);
  assert.deepEqual(ids.slice().sort(),['b9','main'],'the roster is listAgents(): '+label);
  const own=roster.result.agents.find(a=>a.agent_id==='main');
- assert.equal(own.name,'Your agent','the own agent keeps one label: '+label);
+ assert.equal(own.name,'Ada','the own agent keeps one label: '+label);
  const working=roster.result.agents.filter(a=>a.state==='working');
  assert(working.length<=1,'at most one agent holds the turn: '+label);
  assert.equal(working.map(a=>a.agent_id).join(','),who==='ghost-b0'?'':who,
@@ -227,6 +227,27 @@ console.log('custom-ui live state checks passed');
 def test_a_bundle_reads_the_viewers_own_automations_runs_and_output(tmp_path):
     out = _run(tmp_path, "custom_ui_live_state.js", CHECKS, extra=LIVE_DOUBLE)
     assert "custom-ui live state checks passed" in out
+
+
+def test_main_agent_live_name_is_its_own_name_not_the_command_center(tmp_path):
+    out = _run(tmp_path, "main_agent_name.js", r'''
+(async()=>{
+ AppUI.home=HOME; AppUI.principal=PRINCIPAL;
+ const original=Owner.status;
+ let name='Ada';
+ Owner.status=async args=>({...await original(args),persona:{name,secret:'private self-model'}});
+ for(const [value,expected] of [['Ada','Ada'],['  Ada  ','Ada'],['','Your agent']]){
+  name=value;
+  const roster=await AppUI.listAgents();
+  const live=await AppUI.readLive();
+  assert.equal(roster.agents.find(a=>a.agent_id==='main').name,expected);
+  assert.equal(live.agents.find(a=>a.agent_id==='main').name,expected);
+  assert(!JSON.stringify(live).includes('private self-model'));
+ }
+ console.log('main agent name checks passed');
+})().catch(e=>{console.error(e);process.exit(1);});
+''')
+    assert "main agent name checks passed" in out
 
 
 def test_the_frame_client_exposes_exactly_the_allowlisted_actions():

@@ -689,7 +689,13 @@
       const doc=await this.readWhole({target:"agent_bindings",graph_id:this.home},"bindings");
       if(!doc||doc.error||!Array.isArray(doc.bindings)) throw new Error("your agents are unavailable");
       const current=typeof addressedAgentId==="function"?addressedAgentId():"main";
-      const agents=[{agent_id:"main",name:"Your agent",selected:current==="main"}];
+      const own=await Owner.status({universe_id:this.home});
+      if(!own||own.error) throw new Error("your agent's name is unavailable");
+      if(String(own.universe_id||"")!==this.home)
+        throw new Error("that state belongs to another command center; this UI's access ended");
+      // The agent's learned name is distinct from the command center's title.
+      const name=own.persona&&typeof own.persona.name==="string"?own.persona.name.trim():"";
+      const agents=[{agent_id:"main",name:name||"Your agent",selected:current==="main"}];
       for(const b of doc.bindings){
         if(!this.conversable(b)) continue;
         // Picked fields only. A configuration is private operational data and
