@@ -313,13 +313,12 @@ def test_shipped_frame_previews_system_trusted_rail_copies_and_navigation_persis
         assert not _bobs_branches(home) and _bob_files(home) == before
         assert AutomationStore(home).list(universe_id=BOB_UNIVERSE) == []
         page.evaluate("async()=>{await refreshRail();}")
-        if page.locator("#chat-cloud-bubble").is_visible():
-            page.locator("#chat-cloud-bubble").click()
+        # Copy opens this exact request. Await its visible consent instead of
+        # racing the outgoing bubble animation with a second toggle.
         tab = page.locator("#rail-items .rtab").filter(has_text="GTM Village")
         expect(tab).to_have_count(1)
         accept = tab.get_by_role("button", name="Accept", exact=True)
-        if not accept.is_visible():
-            tab.locator(".rtab-btn").click()
+        expect(accept).to_be_visible()
         expect(tab).to_contain_text("Component-only copy")
         accept.click()  # actual trusted parent-document confirmation, never frame approval
         expect(tab).to_have_count(0)
