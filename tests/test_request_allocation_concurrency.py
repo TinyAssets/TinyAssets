@@ -118,7 +118,10 @@ def _fork_and_close_copy(base):
         budget.close()
 
 
-@pytest.mark.skipif("fork" not in multiprocessing.get_all_start_methods(), reason="requires fork")
+@pytest.mark.skipif(
+    "fork" not in multiprocessing.get_all_start_methods(),
+    reason="requires fork; owner=codex runs-in=GitHub-Actions/affected-tests/Linux",
+)
 def test_fork_copy_cannot_close_or_extend_parent_allocation(tmp_path):
     # Spawn first so the actual fork occurs in a fresh single-threaded process.
     _run_bounded(_fork_and_close_copy, tmp_path)
