@@ -182,7 +182,36 @@ assert(staleLive.result.agents.every(a=>a.state==='idle'),'a stale turn is not w
 liveUniverseOverride='u-bob';
 const foreignLive=await ask('read_live',{});
 assert(foreignLive.error,'another universe\'s state is refused');
-liveUniverseOverride='';liveTurn=null;
+liveUniverseOverride='';
+
+// ---- the roster carries exactly one "main", selected or not --------------
+// listAgents() already seeds the command center's own agent as "main", so
+// readLive must never add a second one. It used to prepend its own, named from
+// whoami(), whenever nothing was selected -- which drew that agent twice under
+// two different names on a screen that animates one villager per agent.
+binding={agent_binding_id:'b9',universe_id:HOME,agent_definition_id:'d1',
+ status:'configured',revision:1,created_by:PRINCIPAL,updated_by:PRINCIPAL,
+ configuration:{schema_version:1,name:'Weaver',role:'writer'}};
+liveTurn={turn_id:'t2',state:'tool',started_at:'2026-10-01T11:00:00+00:00',age_s:1,stale:false,
+ tools:[{tool:'read',summary:'read notes/plan.md',state:'done',age_s:1}]};
+for(const [who,label] of [['main','the command center\'s own agent is selected'],
+                          ['b9','an installed agent is selected'],
+                          ['ghost-b0','nothing is selected']]){
+ addressed=who;
+ const roster=await ask('read_live',{});
+ assert.equal(roster.ok,true,label);
+ const ids=roster.result.agents.map(a=>a.agent_id);
+ assert.equal(ids.filter(id=>id==='main').length,1,'exactly one "main": '+label);
+ assert.equal(new Set(ids).size,ids.length,'no agent listed twice: '+label);
+ assert.deepEqual(ids.slice().sort(),['b9','main'],'the roster is listAgents(): '+label);
+ const own=roster.result.agents.find(a=>a.agent_id==='main');
+ assert.equal(own.name,'Your agent','the own agent keeps one label: '+label);
+ const working=roster.result.agents.filter(a=>a.state==='working');
+ assert(working.length<=1,'at most one agent holds the turn: '+label);
+ assert.equal(working.map(a=>a.agent_id).join(','),who==='ghost-b0'?'':who,
+  'the selected agent holds the turn, and nobody holds it when none is: '+label);
+}
+addressed='main'; binding=installed(); liveTurn=null;
 
 // ---- a home change ends the grant for these reads too ---------------------
 me={principal_id:PRINCIPAL,universe_id:'u-bob',setup:'connected'};

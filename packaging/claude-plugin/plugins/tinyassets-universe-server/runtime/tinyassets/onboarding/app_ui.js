@@ -871,14 +871,15 @@
       }
       // The live turn is the selected conversation agent's; every other agent
       // is idle until per-agent turns arrive (design §4.18).
+      //
+      // listAgents() is the ONE source of the roster. It already seeds the
+      // command center's own agent as "main", so nothing is prepended here: a
+      // second "main" entry carrying a different name would draw that agent
+      // twice on a screen that animates one villager per agent. When nothing is
+      // selected -- the addressed agent stopped being conversable -- no agent
+      // claims the turn, rather than one being invented to hold it.
       const roster=await this.listAgents();
-      // With no installed agent selected, the conversation is the universe's own
-      // agent: it gets the seeded id "main" (design §4.18), named as the app
-      // names the universe.
-      const listed=roster.agents.some(a=>a.selected) ? roster.agents
-        : [{agent_id:"main",name:(await this.whoami()).universe_name||"Your agent",selected:true}]
-            .concat(roster.agents);
-      const agents=listed.map(a=>a.selected&&working
+      const agents=roster.agents.map(a=>a.selected&&working
         ? {agent_id:a.agent_id,name:a.name,state:"working",
            since:typeof turn.started_at==="string"?turn.started_at:null,steps}
         : {agent_id:a.agent_id,name:a.name,state:"idle",since:null,steps:[]});
