@@ -40,6 +40,15 @@ land, the founder's account is switched (per account) onto the thin loop, the
 four tools and the sealed box. It is judged in his live conversation: does it
 act, verify visually, iterate, stay always on, and run long?
 
+**Per-agent controls follow-up (2026-10-03):** #4287/#4228 are reviewed
+foundations with accepted D8 control-wiring residuals. The design-only
+[addressed-agent-control-provenance](../addressed-agent-control-provenance/proposal.md)
+owns that integration and its proof matrix. No complete per-agent controls,
+runtime mitigation or live acceptance is claimed by that design. Its first
+Claude ADAPT fold retains native D2 and unproved launch-isolation holds, and adds
+explicit legacy recurring-work reconfirmation. [Claude design acceptance](https://github.com/TinyAssets/TinyAssets/pull/4343#issuecomment-5965426542)
+is recorded at 6bf7923597983ec9af61968b99001745a981f2a7; implementation proofs remain pending.
+
 ## 1. Design
 
 - [x] 1.1 Research the four reference harnesses and ChatGPT dots from current sources, and audit tiny's code paths, production turns and files (design.md §1-3). The first version was approved 2026-10-01, with the gpt-6-astra ADAPT folded in.

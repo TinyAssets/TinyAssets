@@ -49,6 +49,16 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  # One group per PR, so a new push cancels the superseded run. Every non-PR run
+  # gets its OWN group via `run_id`, so the `push: main` smoke of what landed
+  # has nothing to cancel and cannot be cancelled by a PR; `cancel-in-progress`
+  # is conditional on top of that, as defence in depth. Both layers, because
+  # tests.yml grouped non-PR runs by ref and each push then killed the previous
+  # main run.
+  group: docker-build-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   build-smoke:
     # Drafts do not spend a runner here (this was the single largest

@@ -50,7 +50,7 @@ _MAX_ID = 200
 PUBLIC_SENTENCE = (
     "Anyone will be able to read and copy these. A copy runs in the copier's own "
     "universe on their own compute and never reaches yours. Publishing does not "
-    "share your conversations, files, credentials or automation inputs."
+    "share your conversations, credentials or automation inputs."
 )
 
 
@@ -73,6 +73,8 @@ def _ids(raw: Any, field: str, *, required: bool) -> list[str]:
 
 def validate_action(action: dict[str, Any]) -> dict[str, Any]:
     """Shape only: the fields and their types. Ownership is ``capture_action``'s."""
+    from tinyassets.command_center_agent_templates import selection
+
     name = action.get("name")
     if not isinstance(name, str) or not name.strip() or len(name.strip()) > _MAX_NAME:
         raise ValueError(f"publish needs a public name of 1-{_MAX_NAME} characters")
@@ -92,11 +94,32 @@ def validate_action(action: dict[str, Any]) -> dict[str, Any]:
         "ui_id": ui_id.strip(),
         "automation_ids": _ids(action.get("automation_ids"), "automation_ids", required=False),
     }
+    if "agent_templates" in action:
+        validated["agent_templates"] = selection(action["agent_templates"])
     if action.get("package") is not None:
         from tinyassets.command_center_packages import validate_options
 
         validated["package"] = validate_options(action["package"])
+    kind = action.get("publish_kind")
+    if kind is not None:
+        if kind not in ("command_center", "workflows", "system"):
+            raise ValueError("publish_kind must be command_center, workflows or system")
+        if kind == "command_center" and ("package" not in validated or not validated["ui_id"]):
+            raise ValueError("publishing a command center needs its ui_id and an explicit "
+                             "package object; review the included files before confirming")
+        if kind != "command_center" and "package" in validated:
+            raise ValueError("only command_center intent may include a package")
+        if kind == "workflows" and validated["ui_id"]:
+            raise ValueError("workflow-only publishing cannot include a screen")
+        validated["publish_kind"] = kind
     return validated
+
+
+def _publication_kind(action: dict[str, Any]) -> str:
+    """Describe the actual payload, including legacy asks; never add content."""
+    if action.get("package") is not None:
+        return "command_center"
+    return "system" if action.get("ui_id") else "workflows"
 
 
 #: Fields of a branch row that publishing itself changes, or pure edit
@@ -113,7 +136,7 @@ UI_PORTABLE_FIELDS = ("kind", "version", "ui_id", "name", "markup", "style", "sc
 #: Optional fields that publish as they are: library names from the public
 #: allowlist and the script type. ``assets`` is NOT one: its bytes live in the
 #: publisher's private UI storage and a published copy could not load them.
-UI_PORTABLE_OPTIONAL_FIELDS = ("libraries", "script_type")
+UI_PORTABLE_OPTIONAL_FIELDS = ("libraries", "script_type", "workflow_refs", "agent_refs")
 
 _CHANGED = (
     "something in this ask changed after you were shown it, so nothing was "
@@ -193,7 +216,10 @@ def _trigger_words(trigger: dict[str, Any]) -> str:
 def tab_text(action: dict[str, Any]) -> tuple[str, str, str]:
     """``(kind, title, body)`` for the tab, written from the pinned action only."""
     shown = action["shown"]
-    lines = [f"Public name: {_shown(action['name'], 120)}"]
+    kind = _publication_kind(action)
+    label = {"command_center": "command center", "system": "workflow and screen bundle",
+             "workflows": "workflows"}[kind]
+    lines = [f"Publication: {label}", f"Public name: {_shown(action['name'], 120)}"]
     if action["description"]:
         lines.append(f"Description: {_shown(action['description'], 400)}")
     lines.append("These become public:")
@@ -204,14 +230,20 @@ def tab_text(action: dict[str, Any]) -> tuple[str, str, str]:
     for a in shown["automations"]:
         lines.append(
             f"- The trigger of \"{a['name']}\": runs {a['when']} (its inputs stay private)")
+    for agent in shown.get("agent_templates", []):
+        lines.append(f"- Public instructions for chat agent \"{_shown(agent['name'])}\" "
+                     "(private settings and model assignments stay here)")
     package = shown.get("package")
     if package:
         lines.extend(_package_lines(package))
+    else:
+        lines.append("No files are included. This appears in the shared systems catalogue, "
+                     "not the command-center package picker; its components copy separately.")
     lines.append("")
     lines.append(PUBLIC_SENTENCE)
     if package:
         lines.append(PACKAGE_SENTENCE)
-    return ("Publish", f"Publish \"{_shown(action['name'], 120)}\" for anyone to copy?",
+    return ("Publish", f"Publish {label} \"{_shown(action['name'], 120)}\" for anyone to copy?",
             "\n".join(lines))
 
 
@@ -290,6 +322,7 @@ def build_snapshot(uid: str, action: dict[str, Any]) -> dict[str, Any]:
         AgentValidationError,
         _check_secret_fields,
         _normalize_definition_payload,
+        app_ui_workflow_refs,
         get_app_ui,
     )
     from tinyassets.daemon_server import get_branch_definition
@@ -326,12 +359,27 @@ def build_snapshot(uid: str, action: dict[str, Any]) -> dict[str, Any]:
     for n, (bid, raw) in enumerate(rows.items(), start=1):
         key = f"workflow-{n}"
         keys[bid] = key
-        content_hash = compute_content_hash(_canonical_snapshot(_flipped(raw)))
+        snapshot = _canonical_snapshot(_flipped(raw))
+        content_hash = compute_content_hash(snapshot)
         name = str(raw.get("name") or bid)
         components[key] = {"kind": BRANCH_REF_KIND, "name": name,
                            "published_version_id": f"{bid}@{content_hash[:8]}"}
         shown["workflows"].append({"name": _shown(name),
-                                   "nodes": len(raw.get("graph_nodes") or [])})
+                                   "nodes": len(snapshot.get("graph_nodes") or [])})
+
+    if "ui" in components and action.get("package") is not None:
+        ui = components["ui"]
+        refs = app_ui_workflow_refs(ui)
+        if any(bid not in keys for bid in refs.values()):
+            raise ValueError("workflow_refs must name only workflows selected in this publish ask")
+        if action.get("publish_kind") == "command_center" and any(
+                bid in ui["script"] for bid in keys):
+            raise ValueError(
+                "this screen embeds a source workflow id; use whoami().workflow_refs "
+                "with an explicit workflow_refs alias so installed copies use their own workflows"
+            )
+        if "workflow_refs" in ui:
+            ui["workflow_refs"] = {alias: keys[bid] for alias, bid in refs.items()}
 
     store = AutomationStore(base)
     for n, automation_id in enumerate(action["automation_ids"], start=1):
@@ -354,6 +402,30 @@ def build_snapshot(uid: str, action: dict[str, Any]) -> dict[str, Any]:
             "workflow": keys[row.branch_def_id], "trigger": trigger, "overlap": row.overlap}
         shown["automations"].append({"name": _shown(row.name),
                                      "when": _shown(_trigger_words(trigger))})
+
+    from tinyassets.command_center_agent_templates import export_templates, reject_nested_workflows
+    from tinyassets.custom_agents import app_ui_agent_refs
+
+    selected = action.get("agent_templates") or {}
+    templates = export_templates(base, uid, actor, selected)
+    if set(templates) & (set(components) | {"package"}):
+        raise ValueError("an agent template key collides with another published component")
+    components.update(templates)
+    if templates:
+        shown["agent_templates"] = list(templates.values())
+    if "ui" in components:
+        ui = components["ui"]
+        aliases = {binding: key for key, binding in selected.items()}
+        refs = app_ui_agent_refs(ui)
+        if any(binding not in aliases for binding in refs.values()):
+            raise ValueError("agent_refs must name only agents selected in this publish ask")
+        if any(binding in ui["script"] for binding in selected.values()):
+            raise ValueError("this screen embeds a source agent id; use declared agent_refs")
+        if "agent_refs" in ui:
+            ui["agent_refs"] = {alias: aliases[binding] for alias, binding in refs.items()}
+    if "ui" in components:
+        for row in rows.values():
+            reject_nested_workflows(row)
 
     branches = {bid: _public_branch_row(raw) for bid, raw in rows.items()}
     tags = ["tinyassets.system.v1"]
@@ -752,7 +824,8 @@ def _publish_snapshot(actor: str, action: dict[str, Any], snap: dict[str, Any], 
         _unflip(prior)
         raise
     receipt = {"published": True, "agent_definition_id": agent["agent_definition_id"],
-               "branch_versions": versions}
+               "branch_versions": versions, "publication_kind": _publication_kind(action),
+               "catalogue": "packages" if package else "agents"}
     if package:
         from tinyassets.command_center_packages import set_version_definition
 

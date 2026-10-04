@@ -562,15 +562,29 @@ def _result_projection(raw: dict[str, Any]) -> dict[str, Any]:
     return _object(_dump(raw))
 
 
+#: What a text-only connection is told in place of an image block. The exact
+#: result (image included) stays in the turn journal; only the model's view of
+#: it is this line, so the agent knows it could not see it. Mapped ONCE, in
+#: ``tool_outcome``; every later boundary (the body builder, history validation)
+#: still accepts text only, so unprojected image bytes cannot reach a model.
+IMAGE_NOT_SHOWN = "[image not shown: this model connection carries text only]"
+
+
+def _presented(block: Any) -> Any:
+    if isinstance(block, dict) and block.get("type") == "image":
+        return {"type": "text", "text": IMAGE_NOT_SHOWN}
+    return block
+
+
 def tool_outcome(request: ToolRequest, result: CallToolResult) -> ToolOutcome:
     if not isinstance(request, ToolRequest) or not _identifier(request.call_id):
         raise _bad("tool request identity required")
     if not isinstance(result, CallToolResult):
         raise _bad("MCP tool result required")
     projected = {
-        "content": [block.model_dump(
+        "content": [_presented(block.model_dump(
             mode="json", by_alias=True, exclude_none=True, include={"type", "text", "annotations"},
-        ) for block in result.content],
+        )) for block in result.content],
         "structuredContent": result.structuredContent,
         "isError": result.isError,
     }

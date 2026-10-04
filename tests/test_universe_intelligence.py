@@ -229,7 +229,7 @@ def test_converse_receipt_observer_is_not_passed_to_later_learning(tmp_path, mon
     monkeypatch.setattr(ui, "_universe_dir", lambda uid: udir)
     monkeypatch.setattr(ui, "call_provider", fake_provider)
     receipt = WriterExecutionReceipt()
-    assert ui.converse("u-test", "hello", tier=interlocutor.FOUNDER,
+    assert ui.converse("u-test", "Remember my preference", tier=interlocutor.FOUNDER,
                        response_observer=receipt.observe) == "writer reply"
     assert len(seen) == 2 and seen[0] is not None and seen[1] is None
     assert receipt.projection()["model"] == "actual-writer"
@@ -464,7 +464,7 @@ def test_converse_sandboxes_both_engine_turns(tmp_path, monkeypatch):
     # Founder tier, because this asserts BOTH turns happen — and the second
     # (learning-extraction) turn only runs for a founder now that the write
     # gate matches the read gate.
-    ui.converse("u-test", "hello", tier=interlocutor.FOUNDER)
+    ui.converse("u-test", "Remember my preference", tier=interlocutor.FOUNDER)
 
     # BOTH the reply turn and the learning-extraction turn run sandboxed.
     assert len(configs) >= 2
@@ -654,7 +654,7 @@ def test_continuity_directive_rides_founder_turn_with_history(tmp_path, monkeypa
     cap = _capture_writer_call(monkeypatch, udir)
     history = [("You", "we were reshaping the website to be app-first"),
                ("Universe", "yes — open the web app first")]
-    ui.converse("u-test", "hi", tier=interlocutor.FOUNDER,
+    ui.converse("u-test", "Continue the website", tier=interlocutor.FOUNDER,
                 conversation_history=history)
     # Directive is appended to the TRUSTED system prompt...
     assert _CONTINUITY_MARKER in cap["system"]
