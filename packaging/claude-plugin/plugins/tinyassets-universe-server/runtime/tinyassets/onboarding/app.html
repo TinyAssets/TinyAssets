@@ -4742,10 +4742,13 @@
   // read with no correlation id; it is reported, not papered over.
   async function offerSavedConversationCheck(note){
     const epoch=MCP._loginEpoch, owner=queueOwner, scope=queueScope;
-    const stillOwner=()=>epoch===MCP._loginEpoch&&owner===queueOwner&&scope===queueScope;
-    const line=document.createElement("div");
+    const agent=typeof addressedAgentId==="function"?addressedAgentId():"main";
+    const stillOwner=()=>epoch===MCP._loginEpoch&&owner===queueOwner&&scope===queueScope&&
+      agent===(typeof addressedAgentId==="function"?addressedAgentId():"main");
+    const line=note.savedConversationLine||document.createElement("div");
+    note.savedConversationLine=line;
     line.className="muted"; line.textContent="Checking your saved conversation...";
-    note.appendChild(line);
+    if(!line.parentNode) note.appendChild(line);
     let r=null;
     try{ r=await Owner.getConversation(); }
     catch(e){
@@ -4776,6 +4779,34 @@
     }
   }
 
+  // A resume is an observation, never permission to replay a possibly accepted
+  // command. Bind each check to the thread that created its notice; a late read
+  // or an old button cannot read another account/home/agent's conversation.
+  function attachSavedConversationCheck(note){
+    const epoch=MCP._loginEpoch, owner=queueOwner, scope=queueScope;
+    const agent=typeof addressedAgentId==="function"?addressedAgentId():"main";
+    const look=document.createElement("button");
+    look.className="btn btn--link"; look.textContent="Check saved conversation";
+    note.checkSavedConversation=async()=>{
+      if(look.disabled||!owner||!scope||epoch!==MCP._loginEpoch||owner!==queueOwner||
+         scope!==queueScope||agent!==(typeof addressedAgentId==="function"?addressedAgentId():"main")) return;
+      look.disabled=true;
+      try{ await offerSavedConversationCheck(note); }finally{ look.disabled=false; }
+    };
+    look.addEventListener("click",note.checkSavedConversation);
+    note.appendChild(document.createTextNode(" ")); note.appendChild(look);
+    // A background watchdog can settle just AFTER the visibility event. Check
+    // then too, otherwise that return to the app still leaves the reply hidden.
+    if(document.visibilityState==="visible" && navigator.onLine!==false)
+      note.checkSavedConversation().catch(()=>{});
+  }
+  function resumeUnconfirmedTurns(){
+    if(document.visibilityState!=="visible"||navigator.onLine===false||views.chat.hidden) return;
+    for(const note of $("thread").children){
+      if(typeof note.checkSavedConversation==="function") note.checkSavedConversation().catch(()=>{});
+    }
+  }
+
   function offerResend(message, display, err, opts){
     // A request that provably never ran is NOT SENT - its text stays in the
     // bubble above and one click sends it. Only an unconfirmed outcome gets the
@@ -4802,14 +4833,7 @@
     // failure already has its own saved record, and the consumer path has an
     // exact request_key receipt that beats any observation this could make.
     if(err&&err.transport&&!unsent&&!(opts&&opts.consumerRequest)){
-      const look=document.createElement("button");
-      look.className="btn btn--link"; look.textContent="Check saved conversation";
-      look.addEventListener("click", ()=>{
-        look.disabled=true;
-        offerSavedConversationCheck(note).finally(()=>{look.disabled=false;});
-      });
-      note.appendChild(document.createTextNode(" "));
-      note.appendChild(look);
+      attachSavedConversationCheck(note);
     }
   }
 
@@ -9548,9 +9572,12 @@
     refreshRail();
     document.addEventListener("visibilitychange", ()=>{
       if(document.visibilityState==="visible" && token()) ensureFreshToken().catch(()=>{});
-      if(document.visibilityState==="visible") checkForNewBuild();
+      if(document.visibilityState==="visible"){
+        resumeUnconfirmedTurns(); checkForNewBuild();
+      }
       if(document.visibilityState!=="visible") Voice.stop(false);
     });
+    window.addEventListener("online",resumeUnconfirmedTurns);
     window.addEventListener("pagehide",()=>Voice.stop(false));
     setInterval(checkForNewBuild, 10*60*1000);
   }
