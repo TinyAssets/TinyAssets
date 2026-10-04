@@ -437,6 +437,21 @@ def _reset_runtime():
 
 
 @pytest.fixture(autouse=True)
+def _restore_owner_tree_advertisement(monkeypatch):
+    """A serving lifespan's child-process identity belongs to its own test.
+
+    Startup writes this variable directly. A later test with another data root
+    must not inherit that tree and correctly fail its missing-founder check.
+    Keep the incoming value during the test and let monkeypatch restore it;
+    explicit inherited-owner tests can still set and exercise their own value.
+    """
+    name = "TINYASSETS_OWNER_TREE"
+    # An empty advertisement means no inherited owner. setenv also registers
+    # teardown when the name was absent; delenv(missing) would not do that.
+    monkeypatch.setenv(name, os.environ.get(name, ""))
+
+
+@pytest.fixture(autouse=True)
 def _stop_workspace_sweepers_between_tests():
     """No test may leave a process-global periodic worker for the next test."""
     import sys
