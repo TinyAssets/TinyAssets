@@ -4873,6 +4873,12 @@ def main(
 
     _session_seal.arm()
 
+    # Scrub all registered-client secret names before any startup child, even
+    # if the optional directory is broken or engine MCP is disabled.
+    from tinyassets.connection_oauth.directory import prepare_children
+
+    prepare_children()
+
     # Second: refuse to run against data this image does not understand, before
     # anything opens a database (design D7.2: the cutover's layout guard). It
     # also holds the shared layout lock a migration needs exclusively.
