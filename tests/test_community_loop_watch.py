@@ -124,7 +124,7 @@ def test_observation_canary_mild_staleness_warns_yellow(monkeypatch) -> None:
     assert status["overall"] == "yellow"
 
 
-def test_observation_canary_extreme_staleness_still_goes_red(monkeypatch) -> None:
+def test_observation_canary_staleness_still_goes_red(monkeypatch) -> None:
     # Past the red tier the monitor itself looks dead: still pages.
     monkeypatch.setattr(
         watch,
