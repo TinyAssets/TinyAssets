@@ -2843,7 +2843,7 @@ def _announce_owner_message(universe_dir) -> None:
         logger.warning("converse: owner_message event failed", exc_info=True)
 
 
-def _interrupted_turn_payload(uid, universe_dir, session, message, exc) -> dict:
+def _interrupted_turn_payload(uid, universe_dir, session, message, exc, *, owner_stopped) -> dict:
     """What a turn the owner stopped leaves in the thread and returns.
 
     Recorded exactly where every other ended turn is (``record_failure``: the
@@ -2862,9 +2862,9 @@ def _interrupted_turn_payload(uid, universe_dir, session, message, exc) -> dict:
     effects, stage, ref = evidence if evidence is not None else ("unknown", None, None)
     completed = tuple(getattr(exc, "completed_tools", ()) or ())
     record = turn_failure(
-        "interrupted", stage=stage, effects=effects,
+        "interrupted" if owner_stopped else "unknown", stage=stage, effects=effects,
         provider_detail=(
-            "Completed before the stop: " + ", ".join(completed) if completed else ""
+            "Completed before the turn ended: " + ", ".join(completed) if completed else ""
         ),
         ref=ref if isinstance(ref, str) and ref else uuid.uuid4().hex[:16],
     )
@@ -2876,10 +2876,10 @@ def _interrupted_turn_payload(uid, universe_dir, session, message, exc) -> dict:
     if saved:
         _announce_owner_message(universe_dir)
     notice = failure_notice(record)
-    logger.info("converse: owner interrupted turn %s in %s", record.ref, uid)
+    logger.info("converse: turn %s ended in %s (owner_stopped=%s)", record.ref, uid, owner_stopped)
     return {
         "error": notice,
-        "interrupted": True,
+        "interrupted": owner_stopped,
         "universe_id": uid,
         "turn_failure": normalize_turn_failure(record),
         "failure_notice": notice,
@@ -3177,6 +3177,7 @@ def converse(
     typed = message
     message = _with_carryover(memory_universe_dir, memory_session, message)
     live_id = ""
+    live_turn = None
     try:
         # Registered under the VERIFIED caller and this universe, so the owner's
         # Stop from any of their surfaces reaches it and nobody else's can.
@@ -3213,9 +3214,13 @@ def converse(
                 **({} if model_choice is None else {"model_choice": model_choice}),
             )
     except TurnInterrupted as exc:
-        # The owner stopped it: no provider failure to diagnose, log or cool.
+        # An exception name alone is not proof the owner pressed Stop.
+        # Disconnect/cancellation must never fabricate an owner decision.
         return json.dumps(_with_unsettled_steering(
-            _interrupted_turn_payload(uid, memory_universe_dir, memory_session, message, exc),
+            _interrupted_turn_payload(
+                uid, memory_universe_dir, memory_session, message, exc,
+                owner_stopped=live_turn is not None and live_turn.requested(),
+            ),
             memory_universe_dir, memory_session, live_id,
         ))
     except Exception as exc:  # noqa: BLE001 - surface honestly, never fake a reply

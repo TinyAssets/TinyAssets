@@ -1593,8 +1593,8 @@ class El{
     this.textContent=""; this.value=""; this.style={}; this.disabled=false;
     this.listeners={}; this.scrollTop=0; this.scrollHeight=0;
   }
-  appendChild(c){ this.children.push(c); return c; }
-  remove(){ this.removed=true; }
+  appendChild(c){ this.children.push(c); c.parentNode=this; return c; }
+  remove(){ this.removed=true; this.parentNode=null; }
   addEventListener(n,f){ this.listeners[n]=f; }
   click(){ (this.listeners.click||(()=>{}))(); }
 }
@@ -1885,7 +1885,7 @@ def _run_app(tmp_path, scenario: dict) -> dict:
         "copyModelChoice", "captureTurnOptions",
         "sendConversationRequest",
         "executionLabel", "answerExecutionDetail", "servedFailureError", "appendFailureNotice",
-        "offerResend", "noteHeldQueue", "offerSavedConversationCheck",
+        "offerResend", "noteHeldQueue", "offerSavedConversationCheck", "savedSendIndex",
         "attachSavedConversationCheck",
         "sendTurn", "sendVoiceTurn", "checkForNewBuild", "loadHistory",
         "drawHistoryTurns", "offerEarlier", "loadEarlier", "historyFailed",

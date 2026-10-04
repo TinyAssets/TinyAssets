@@ -67,7 +67,7 @@ _FUNCS = (
     "offerSavedLine", "clearComposerState", "clearAccountScopedState", "clearThread",
 )
 _OPTIONAL_FUNCS = ("sameInflight", "forgetInflightIf", "noteHeldQueue",
-                   "offerSavedConversationCheck", "attachSavedConversationCheck",
+                   "offerSavedConversationCheck", "savedSendIndex", "attachSavedConversationCheck",
                    # Collaborators `clearAccountScopedState` gained on
                    # 2026-09-30: rail card nodes are now kept across a refresh
                    # so a 15-second poll cannot delete what the user typed into
@@ -539,9 +539,9 @@ def test_an_unconfirmed_turn_holds_the_queue_and_offers_a_read_only_check(tmp_pa
     # saved turn is this message's answer.
     assert out["hadCheck"] is True, "no read-only way to look at saved progress"
     assert out["peeks"] == 2, "the check must reuse the existing history read once"
-    assert "Saved conversation snapshot" in out["checkText"]
-    assert "cannot tell which saved reply" in out["checkText"]
-    assert out["savedTexts"] == ["an older line", "an older reply"]
+    assert "Not confirmed yet" in out["checkText"]
+    assert "snapshot" not in out["checkText"]
+    assert out["savedTexts"] == []
     assert "Delivery could not be confirmed" in out["noteText"]
     assert out["converseCalls"] == ["run the deploy"], "the check sent something"
 
@@ -561,13 +561,16 @@ Owner.getConversation=async()=>({recent_conversation:{turns:[
 if(check)check.click();
 await settle(); await settle();
 console.log(JSON.stringify({hadCheck:!!check, calls:converseCalls,
-  inflight:readInflight(), texts:note.children.filter(c=>c.className==="muted")
-    .flatMap(c=>c.children).filter(c=>c.tagName==="PRE").map(c=>c.textContent)}));
+  inflight:readInflight(), removed:!!note.removed, texts:snapshot().messages}));
 ''')
     assert out["hadCheck"], "reload loses the read-only recovery offered by a live send"
-    assert out["texts"] == ["run the deploy", "The deployment finished while you were away."]
+    assert out["removed"]
+    assert out["texts"] == [
+        {"role": "founder", "text": "run the deploy"},
+        {"role": "universe", "text": "The deployment finished while you were away."},
+    ]
     assert out["calls"] == []
-    assert out["inflight"]["message"] == "run the deploy"
+    assert out["inflight"] is None
 
 
 def test_a_new_manual_question_does_not_resume_held_commands(tmp_path, html):

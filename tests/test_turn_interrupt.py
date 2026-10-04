@@ -552,3 +552,46 @@ def test_the_route_stops_the_addressed_agent_and_leaves_the_others_running(monke
             interactive_turn("owner", "u-1", agent_id="a-weaver") as b:
         assert post({"universe_id": "u-1"})[1] == {"interrupted": 2, "universe_id": "u-1"}
         assert a.requested() and b.requested()
+
+
+@pytest.mark.parametrize("failure", [
+    TurnInterrupted("connection ended"), ConnectionError("connection lost"),
+])
+def test_disconnect_never_records_an_owner_stop(monkeypatch, tmp_path, failure):
+    import tinyassets.universe_intelligence as ui
+    import tinyassets.universe_server as us
+    from tests.test_converse_handle import _founder_auth
+    from tinyassets.conversation_store import load_recent
+
+    _founder_auth(monkeypatch, base=tmp_path)
+
+    def disconnected(uid, msg, **kwargs):
+        assert not turn_interrupt.current().requested()
+        raise failure
+
+    monkeypatch.setattr(ui, "converse", disconnected)
+    out = json.loads(us.converse(message="do the thing", graph_id="u-x"))
+    assert not out.get("interrupted")
+    assert out["history_saved"]
+    assert out["turn_failure"]["code"] != "interrupted"
+    rows = load_recent(tmp_path / "u-x", "principal:founder-1")
+    assert "you stopped" not in rows[-1].text
+
+
+def test_cancelling_a_live_connection_does_not_request_stop():
+    async def scenario():
+        live = turn_interrupt.LiveTurn("owner", "u-1")
+        started = asyncio.Event()
+
+        async def work():
+            started.set()
+            await asyncio.Event().wait()
+
+        task = asyncio.create_task(live.run(work()))
+        await started.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert not live.requested()
+
+    asyncio.run(scenario())

@@ -68,16 +68,38 @@ retry automatically; an ambiguous conversation or connection write SHALL NOT.
 - **THEN** the client continues to wait for its matching terminal response
 
 ### Requirement: Unconfirmed recovery offers observation and explicit queue resumption
-For an unconfirmed default conversation, the app SHALL offer an owner-fenced,
-read-only saved-conversation snapshot preserving the draft and pending request.
-It SHALL NOT attribute a saved reply to the request by matching text or time.
+For an unconfirmed default conversation, the app SHALL offer an owner/home/agent/
+login-fenced, read-only saved-conversation check, also run on return online or to
+the foreground. It SHALL preserve the draft and never replay a send automatically.
+Delivery is confirmed only if the NEWEST founder turn equals the sent message,
+is not truncated, and has a numeric timestamp in seconds whose milliseconds are
+at least the send timestamp minus 60 seconds. Missing timestamps prove nothing.
 Messages queued behind an unconfirmed turn SHALL remain held until explicitly
-resumed, including when the user sends a separate inspection question.
+resumed, even after confirming that first turn or sending a separate question.
 
 #### Scenario: Inspect progress before deciding whether to send again
-- **WHEN** the user selects the saved-conversation check
-- **THEN** saved messages and their available timestamps are shown as an uncorrelated snapshot
-- **AND** no conversation is invoked and no pending request is marked complete
+- **WHEN** saved history proves delivery by that newest-turn rule
+- **THEN** the app draws subsequent replies, forgets only that inflight record,
+  and removes the unconfirmed notice and resend button
+- **WHEN** instead the pending-turn endpoint shows this message actively running
+- **THEN** the app shows it as working and removes the notice
+- **WHEN** neither observation proves delivery or active work
+- **THEN** one short line preserves uncertainty without dumping saved history
+- **AND** no conversation is invoked or queued approval resumed by these reads
+
+#### Scenario: A disconnected turn is not an owner Stop
+- **WHEN** a connection drops, a stream times out, or the app changes visibility
+- **THEN** no Stop request is issued
+- **AND** the server SHALL attribute an interruption to the owner only when the
+  registered live turn has an explicit Stop request
+
+#### Scenario: Chat about a request does not decide it
+- **WHEN** the founder sends a chat message about an open request
+- **THEN** request history continues to show it as open until Accept, Deny or Clear
+- **AND** the chat button labels that it keeps the request open
+- **WHEN** the proposed chat is an obvious yes/no decision
+- **THEN** an inline nudge directs the founder to Accept or Deny without sending
+  the text or granting approval
 
 #### Scenario: A manual question follows an uncertain outcome
 - **WHEN** the user asks another question while older queued messages remain held
