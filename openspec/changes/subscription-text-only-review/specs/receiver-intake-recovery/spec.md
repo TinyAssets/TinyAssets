@@ -4,7 +4,7 @@
 The system SHALL make every accepted receiver delivery visible from its durable `graph_deliveries` record before downstream execution. It SHALL persist independent operation outcomes in receiver-scoped `graph_delivery_operations` records in the runs database, retaining input digests, snapshot identity, attempt history, safe failure reasons, and linked run/review/effect receipts. Acceptance SHALL NOT be displayed as successful external filing.
 
 #### Scenario: Worker never starts
-- **WHEN** a patch request is accepted but no receiver worker can start
+- **WHEN** a delivery is accepted but no receiver worker can start
 - **THEN** the receiving command center's inbox shows the pending request from the acceptance record
 - **AND** no external issue or completed assessment is claimed
 
@@ -13,13 +13,17 @@ The system SHALL make every accepted receiver delivery visible from its durable 
 - **THEN** the request and filing operation remain visible with the exact safe remedy and retry eligibility
 - **AND** logs are not the only failure surface
 
-### Requirement: Assessment and notification are independent of filing success
-The system SHALL support owner-authored receiver workflows in which assessment, notification, and external filing persist separate outcomes and filing failure does not suppress assessment or an internal receipt notification. It SHALL expose this composition through ordinary graph authoring and SHALL NOT silently rewrite existing owner workflows. The patch intake instance SHALL be considered repaired only after its owner-authored graph adopts this composition through the app.
+### Requirement: One connection-write failure preserves later independent receiver steps
+The system SHALL support ordinary owner-authored receiver workflows in which every connection write has a durable outcome and its failure does not terminate later independent steps. Success-dependent steps SHALL retain visible pending dependencies; assessment, failure handling and internal receipt notification SHALL proceed independently where their inputs are available. It SHALL expose this composition through ordinary graph authoring and SHALL NOT silently rewrite existing owner workflows. Existing receivers SHALL retain visible accepted/failed state even before adoption; a workflow repair SHALL require its owner to adopt the composition through ordinary app graph authoring. The founder SHALL use the same mechanism as any receiver owner.
 
-#### Scenario: GitHub filing fails in the founder's intake
-- **WHEN** the dogfood intake's filing operation fails before send while assessment capacity is available
-- **THEN** assessment runs and the founder receives an internal notification identifying the request and filing failure
-- **AND** this uses the same receiver behavior available to any user's connected destination
+#### Scenario: An ordinary owner's connection write fails
+- **WHEN** a receiver's custom tool write fails before send while later assessment and notification have their required inputs
+- **THEN** assessment and notification run, and the receiving owner sees the failed write and can retry it
+- **AND** a step requiring the missing external reference stays visibly pending instead of being lost
+
+#### Scenario: Founder receives a patch request
+- **WHEN** another user sends a patch request to the founder's receiver and its GitHub filing fails
+- **THEN** the same durable outcomes, later-step behavior and owner inbox apply without platform-specific routing or credentials
 
 #### Scenario: Another user's project platform refuses filing
 - **WHEN** a non-GitHub destination refuses a different owner's intake filing
@@ -30,16 +34,16 @@ The system SHALL support owner-authored receiver workflows in which assessment, 
 - **THEN** their failures are recorded independently and the durable inbox/internal receipt notice remains available
 - **AND** the outbound notification is not exempted from required review
 
-### Requirement: Receiver owners and authorized maintainers can list pending intake
-The system SHALL expose a paginated receiver-scoped inbox through `read_graph target="deliveries"`, with receiver and state filters and stable cursors. Existing `read_graph target="delivery" query=<delivery_id>` SHALL expose authorized receiver operation detail and recovery guidance. The receiver detail's "Received requests" view SHALL project these records, with "Patch requests" for the configured intake, and the existing pending-requests rail SHALL expose actionable holds. Access SHALL use the receiving command center's existing owner/admin authorization, not repository membership or a platform-wide maintainer privilege.
+### Requirement: Every receiver owner can list pending and failed deliveries
+The system SHALL expose a paginated owner-scoped inbox through `read_graph target="deliveries"`, with authorized receiver and state filters and stable cursors. Existing `read_graph target="delivery" query=<delivery_id>` SHALL expose authorized receiver operation detail and recovery guidance. The receiver detail's "Received requests" view SHALL project these records, with optional owner-chosen labels such as "Patch requests", and the existing pending-requests rail SHALL expose actionable holds. Every receiver owner SHALL have access to their own deliveries without maintainer status. Existing explicit receiver administration grants may delegate access; repository membership SHALL confer none.
 
-#### Scenario: Maintainer inspects pending requests
-- **WHEN** an authorized admin opens the receiving command center's Patch requests view or lists deliveries
+#### Scenario: Ordinary receiver owner inspects pending requests
+- **WHEN** the receiver owner opens Received requests or lists deliveries
 - **THEN** accepted, pending, held, failed, and unknown filing outcomes are discoverable with assessment and notification status
 - **AND** opening an item identifies the safe next action without requiring log access
 
 #### Scenario: Sender attempts receiver-wide reads
-- **WHEN** a sender or unrelated repository maintainer lacks receiver command-center authorization
+- **WHEN** a sender or another owner lacks receiver command-center authorization
 - **THEN** the inbox and private operation detail are refused
 - **AND** the sender's existing individual receipt retains only its authorized coarse status without other requests, private assessment, or destination secrets
 
@@ -49,7 +53,7 @@ The system SHALL expose a paginated receiver-scoped inbox through `read_graph ta
 - **AND** neither filing success nor a safe automatic retry is inferred
 
 ### Requirement: Intake retries resume only known unfinished operations
-The system SHALL support receiver-authorized `write_graph target="delivery" operation="retry_operation"` using a delivery ID, operation key, and expected operation version. It SHALL serialize claims, preserve completed operation results, and recheck current receiver, destination, cancellation, rule, consent, and review authority. Known pre-send failures SHALL be retryable without replaying successful work. Unknown post-send outcomes SHALL require destination idempotency or read-only reconciliation before resending; without either, they SHALL remain held for owner reconciliation.
+The system SHALL support receiver-owner-authorized (or explicitly delegated) `write_graph target="delivery" operation="retry_operation"` using a delivery ID, operation key, and expected operation version. It SHALL serialize claims, preserve completed operation results, and recheck current receiver, destination, cancellation, rule, consent, and review authority. Known pre-send failures SHALL be retryable without replaying successful work. Unknown post-send outcomes SHALL require destination idempotency or read-only reconciliation before resending; without either, they SHALL remain held for owner reconciliation.
 
 #### Scenario: Reviewer connection is repaired
 - **WHEN** the owner resolves a filing review hold and retries that operation

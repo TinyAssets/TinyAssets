@@ -1,7 +1,7 @@
 ## MODIFIED Requirements
 
 ### Requirement: Every role chain terminates at the local model
-The provider router (`tinyassets/providers/router.py`) SHALL define a fallback chain for each ordinary LLM role (`writer`, `judge`, `extract`, `embed`) that ends at the `ollama-local` provider, so an ordinary role call keeps producing output with zero cloud providers reachable subject to its existing owner authority. Roles with no explicit chain SHALL default to the `writer` chain. For ordinary role calls, the system SHALL only stop for provider unavailability when the local model itself is also unavailable. Required external-write review SHALL be an explicit exception: it SHALL route only within the command center's authorized, different-family, enforced-text-only review candidates, SHALL NOT enter a generic role chain, and SHALL hold if that eligible set is empty even if another model is reachable.
+The provider router (`tinyassets/providers/router.py`) SHALL define a fallback chain for each ordinary LLM role (`writer`, `judge`, `extract`, `embed`) that ends at the `ollama-local` provider, so an ordinary role call keeps producing output with zero cloud providers reachable subject to its existing owner authority. Roles with no explicit chain SHALL default to the `writer` chain. For ordinary role calls, the system SHALL only stop for provider unavailability when the local model itself is also unavailable. Required external-write review SHALL be an explicit exception: it SHALL route only within the command center's authorized, different-family review candidates with proven `enforced_text_only` or `contained` execution, SHALL NOT enter a generic role chain, and SHALL hold if that eligible set is empty even if another model is reachable.
 
 #### Scenario: writer routes to local when all cloud providers are gone
 - **WHEN** an ordinary `writer` call is routed and every non-local provider is unregistered, in cooldown, or filtered out
@@ -14,11 +14,16 @@ The provider router (`tinyassets/providers/router.py`) SHALL define a fallback c
 - **AND** an unknown ordinary role name resolves to the `writer` chain
 
 #### Scenario: Required review has no eligible candidate
-- **WHEN** a required external-write review has no currently authorized different-family source with enforced text-only support
+- **WHEN** a required external-write review has no currently authorized different-family source with either accepted review tier
 - **THEN** it holds the external write with an actionable owner remedy
 - **AND** neither the conversation's writer chain nor a reachable local model is used to bypass eligibility
 
 #### Scenario: An owner-connected local model qualifies
-- **WHEN** a local model is explicitly authorized for this command center's review, has a different verified family, and has enforced text-only execution
+- **WHEN** a local model is explicitly authorized for this command center's review, has a different verified family, and has proven text-only or contained execution
 - **THEN** it can be selected as a review candidate on the same terms as any other source
 - **AND** local availability alone grants no review authority
+
+#### Scenario: Cross-family subscription reviewer is contained
+- **WHEN** an owner-authorized different-family subscription reviewer has a current contained launch proof
+- **THEN** the review selector can choose it without requiring an HTTP API key or changing the conversation provider
+- **AND** the run records the actual reviewer provider, model, family and contained tier
