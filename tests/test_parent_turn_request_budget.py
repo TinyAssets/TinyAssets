@@ -456,13 +456,20 @@ def test_receipt_buckets_by_actual_dispatch_time_instead_of_parent_creation():
 
 @pytest.mark.parametrize("message", ["hi", "What is a tuple?", "Explain recursion"])
 @pytest.mark.parametrize("choice", [None, "explicit"])
+@pytest.mark.parametrize("transport", ["synthetic", "broker"])
 def test_ordinary_chat_uses_one_tool_incapable_accepted_http_call(
-    agent, monkeypatch, signed_in, message, choice,
+    agent, monkeypatch, signed_in, message, choice, transport,
 ):
     from tinyassets import daemon_server, universe_intelligence
     from tinyassets.providers import discovery_snapshot
 
     root = agent.served.context.universe_dir
+    if transport == "broker":
+        from tests.inference_usage_helpers import broker_accounting_resolver
+        from tinyassets.providers.api_key_http_provider import ApiKeyHttpProvider
+
+        monkeypatch.setattr(ApiKeyHttpProvider, "_resolve_proxy",
+                            broker_accounting_resolver(ApiKeyHttpProvider._resolve_proxy))
     monkeypatch.setattr(daemon_server, "get_founder_home", economy.get_founder_home)
     monkeypatch.setattr(universe_intelligence, "_universe_dir", lambda uid: root)
     monkeypatch.setenv("TINYASSETS_ENGINE_MCP_TOOLS", "0")
@@ -687,3 +694,49 @@ def test_run_and_resume_persist_budget_hold_without_retry(tmp_path, monkeypatch,
     assert runs._classify_failure(stored) == "request_budget_exhausted"
     assert runs.ACTIONABLE_BY[runs._classify_failure(stored)] == "none"
     assert len(calls) == 1 and budget.receipt()["dispatched"] == 1
+
+
+@pytest.mark.parametrize("host,model,owner,expected", [
+    ("openrouter.ai", "lab/model:free", "owner", True),
+    ("openrouter.ai", "lab/paid", "owner", False),
+    ("openrouter.ai", "lab/model:free", "different-owner", False),
+    ("local.example", "lab/model:free", "owner", False),
+    ("api.groq.com", "lab/unknown", "owner", False),
+])
+def test_legacy_free_classification_requires_exact_owned_host_and_model(
+    agent, host, model, owner, expected,
+):
+    import json
+
+    from tinyassets.providers.model_policy import ModelRef
+    from tinyassets.request_budget import metered_free_source
+
+    ledger = agent.served.rig.ledger
+    with ledger._connect() as conn:
+        conn.execute("UPDATE outbound_connections SET allowed_endpoints_json=? "
+                     "WHERE connection_id='conn-models'", (json.dumps([
+                         {"host": host, "path_template": "/chat", "methods": ["POST"]},
+                     ]),))
+        conn.commit()
+    context = replace(agent.served.context, model_selection=ModelRef(
+        agent.served.context.model_selection.connection_id, model,
+    ))
+    assert metered_free_source(context, None, owner=owner) is expected
+
+
+@pytest.mark.parametrize("billing", ["free", "flat"])
+def test_declared_unmetered_contract_overrides_host_free_offer(agent, billing):
+    from tinyassets.providers.declared_models import declared_model_contract
+    from tinyassets.request_budget import metered_free_source
+
+    contract = declared_model_contract({
+        "wire": "openai_chat", "billing": billing,
+        "models": [{"id": "lab/model:free", "tools": False, "context": 10000}],
+    }, auth_scheme="bearer")
+    selected = SelectedModel(
+        provider=agent.served.context.model_selection.connection_id, model_id="lab/model:free",
+        discovery_protocol="", cost_caps=(("request_usd", 0),),
+        source_digest="a" * 64, context_tokens=10000, execution_contract=contract,
+    )
+    assert not selection_is_free(selected)
+    assert not metered_free_source(agent.served.context, selected, owner="owner")

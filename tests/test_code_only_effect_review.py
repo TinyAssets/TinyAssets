@@ -7,6 +7,7 @@ from dataclasses import replace
 
 import pytest
 
+from tests.inference_usage_helpers import accounting_resolver
 from tests.test_run_provider_session import (
     _branch,
     _seed_open_serving_assignment,
@@ -98,7 +99,8 @@ def rig(tmp_path, monkeypatch, request):
                 pass
 
         monkeypatch.setattr(ApiKeyHttpProvider, "_complete_sync", capture_http)
-        monkeypatch.setattr(ApiKeyHttpProvider, "_resolve_proxy", lambda *a, **k: ModelProxy())
+        monkeypatch.setattr(ApiKeyHttpProvider, "_resolve_proxy",
+                            accounting_resolver(lambda *a, **k: ModelProxy()))
     else:
         _seed_serving_assignment(
             tmp_path, model_access={"codex": ModelAccess("explicit", ("",))} if manifest else None)

@@ -10,6 +10,7 @@ import pytest
 
 from tests import test_api_key_http_provider as http_tests
 from tests.cloud_runtime_fixture import cloud_runtime  # noqa: F401
+from tests.inference_usage_helpers import accounting_resolver
 from tinyassets.exceptions import ProviderProtocolError, ProviderRateLimitedError
 from tinyassets.providers.api_key_http_provider import ApiKeyHttpProvider
 
@@ -51,7 +52,7 @@ class Proxy:
 def provider_with_owned_proxy(base, monkeypatch, proxy):
     http_tests._seed(base)
     provider = ApiKeyHttpProvider(http_tests._definition())
-    monkeypatch.setattr(provider, "_resolve_proxy", lambda **kwargs: proxy)
+    monkeypatch.setattr(provider, "_resolve_proxy", accounting_resolver(lambda **kwargs: proxy))
     return provider
 
 
@@ -330,7 +331,8 @@ def test_served_http_cancellation_holds_slot_and_budget_until_request_finishes(
 
     proxy = Waiting()
     monkeypatch.setattr(routing, "_provider_slot", slot)
-    monkeypatch.setattr(ApiKeyHttpProvider, "_resolve_proxy", lambda *a, **k: proxy)
+    monkeypatch.setattr(ApiKeyHttpProvider, "_resolve_proxy",
+                        accounting_resolver(lambda *a, **k: proxy))
 
     def reservations():
         with SQLiteProviderWorkAuthorityStore(tmp_path).connection() as conn:

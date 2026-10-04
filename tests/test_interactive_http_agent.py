@@ -9,6 +9,7 @@ import pytest
 from mcp.types import CallToolResult, ListToolsResult, TextContent, Tool
 
 from tests import test_selected_model_authority as authority_tests
+from tests.inference_usage_helpers import accounting_resolver
 from tinyassets import engine_mcp_http, engine_tool_client, universe_intelligence
 from tinyassets.providers import call as provider_calls
 from tinyassets.providers.api_key_http_provider import ApiKeyHttpProvider
@@ -164,7 +165,8 @@ def agent(served, monkeypatch):
             }
 
     monkeypatch.setattr(engine_tool_client, "_make_client", lambda *_: Client())
-    monkeypatch.setattr(ApiKeyHttpProvider, "_resolve_proxy", lambda *args, **kwargs: Proxy())
+    monkeypatch.setattr(ApiKeyHttpProvider, "_resolve_proxy",
+                        accounting_resolver(lambda *args, **kwargs: Proxy()))
     monkeypatch.setattr(provider_calls, "_real_router", served.router)
     monkeypatch.setattr(provider_calls, "_force_mock", False)
     return state

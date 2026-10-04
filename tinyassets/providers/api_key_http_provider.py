@@ -389,6 +389,19 @@ class ApiKeyHttpProvider(BaseProvider):
         if static_headers:
             wire_request["headers"] = static_headers
 
+        usage = None
+        budget = getattr(config, "request_budget", None)
+        if budget is not None:
+            from tinyassets.broker.ops import new_op_id
+
+            budget.check_scope(owner_user_id, universe_id)
+            usage = budget.issue_reference(
+                getattr(config, "request_attempt", None), grant_id=grant_id,
+                connection_id=connection_id, verb="POST", request=wire_request,
+                operation_id=new_op_id(),
+            )
+        from tinyassets.storage.agent_request_usage import InferenceUsageStopped
+
         started = time.monotonic()
         try:
             proxy = self._resolve_proxy(
@@ -399,7 +412,10 @@ class ApiKeyHttpProvider(BaseProvider):
                 owner_user_id=owner_user_id,
             )
             try:
-                result = proxy.request("POST", wire_request)
+                result = proxy.request(
+                    "POST", wire_request,
+                    **({"inference_usage": usage} if usage is not None else {}),
+                )
                 # Inference latency excludes the owned worker's cleanup/join.
                 latency_ms = (time.monotonic() - started) * 1000.0
             finally:
@@ -408,6 +424,13 @@ class ApiKeyHttpProvider(BaseProvider):
                         proxy.close()
                     except Exception:  # noqa: BLE001 - preserve result and secret-free diagnostics
                         _LOG.warning("HTTP inference proxy cleanup failed")
+        except InferenceUsageStopped as exc:
+            from tinyassets.exceptions import ProviderAuthorityHeldError
+            from tinyassets.request_budget import RequestBudgetExceeded
+
+            if budget is None or exc.usage_id != budget.usage_id:
+                raise ProviderAuthorityHeldError("inference usage stop scope changed") from None
+            raise RequestBudgetExceeded(exc.reason, budget.receipt()) from None
         except GrantResolutionError as exc:
             raise ProviderUnavailableError(
                 f"compute grant resolution failed: {exc}"

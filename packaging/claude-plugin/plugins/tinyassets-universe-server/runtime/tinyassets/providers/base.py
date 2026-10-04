@@ -349,6 +349,8 @@ class ModelConfig:
     request_budget: TurnRequestBudget | None = field(default=None, repr=False, compare=False)
     """Server-owned parent ledger; not wire data, quota evidence or authority."""
     request_purpose: str = "reply"
+    request_attempt: int | None = field(default=None, repr=False, compare=False)
+    """Router-owned ordinal. The HTTP broker consumes it; never caller authority."""
 
     secondary_call: bool = False
     """This call is the platform's own bookkeeping beside a founder turn, not the

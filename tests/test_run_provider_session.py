@@ -9,6 +9,7 @@ from typing import Any
 import pytest
 
 import tinyassets.platform_runtime_provenance as platform_runtime_provenance
+from tests.inference_usage_helpers import accounting_resolver
 from tinyassets.branches import (
     BranchDefinition,
     EdgeDefinition,
@@ -243,6 +244,8 @@ def _seed_open_serving_assignment(
     universe_id: str = "universe_alice",
     select_for_serving: bool = True,
     model_access=None,
+    model="synthetic-model",
+    host="api.example.com",
 ) -> str:
     """Select one synthetic owner-bound HTTP provider for foreground runs."""
     from tinyassets.custom_agents import create_binding, publish_definition
@@ -270,11 +273,11 @@ def _seed_open_serving_assignment(
         destination="compute:synthetic",
         credential_ref="vault://http/compute:synthetic",
         allowed_endpoints=[{
-            "host": "api.example.com",
+            "host": host,
             "path_template": "/v1/chat/completions",
             "methods": ["POST"],
         }] + ([{
-            "host": "api.example.com", "path_template": "/api/v1/models/user", "methods": ["GET"],
+            "host": host, "path_template": "/api/v1/models/user", "methods": ["GET"],
             "allowed_query": ["output_modalities"], "required_query": ["output_modalities"],
             "query_patterns": {"output_modalities": "^all$"},
         }] if model_access is not None else []),
@@ -291,7 +294,7 @@ def _seed_open_serving_assignment(
         owner_user_id=owner_user_id,
         access_method="api_key_http",
         protocol="openai_chat",
-        model="synthetic-model",
+        model=model,
         ref=grant_id,
     )
     if model_access is not None:
@@ -356,6 +359,8 @@ def _run_branch(
     authority_case: str = "active",
     mock_provider: bool = False,
     open_provider: bool = False,
+    open_model: str = "synthetic-model",
+    open_host: str = "api.example.com",
     open_router_resolution_refusal: bool = False,
     model_access=None,
     services=("codex",),
@@ -392,7 +397,7 @@ def _run_branch(
                 tmp_path,
                 monkeypatch,
                 select_for_serving=authority_case != "registered_only",
-                model_access=model_access,
+                model_access=model_access, model=open_model, host=open_host,
             )
         else:
             _seed_serving_assignment(tmp_path, model_access=model_access, services=services)
@@ -984,7 +989,7 @@ def test_foreground_run_launches_selected_open_provider_and_settles_once(
     monkeypatch.setattr(
         ApiKeyHttpProvider,
         "_resolve_proxy",
-        lambda _self, **_kwargs: proxy,
+        accounting_resolver(lambda _self, **_kwargs: proxy),
     )
     monkeypatch.setattr(
         "tinyassets.credential_vault.snapshot_llm_subscription_credential",
@@ -1444,3 +1449,36 @@ def test_foreground_claude_node_runs_in_its_universe_without_host_tools(
     # Only host reach is removed: web tools and subagents are not the host's.
     for kept in ("WebSearch", "WebFetch", "Agent"):
         assert kept not in denied
+
+
+@pytest.mark.parametrize("host,model,expected_calls", [
+    ("openrouter.ai", "synthetic-model:free", 6),
+    ("openrouter.ai", "synthetic-model", 8),
+    ("api.example.com", "synthetic-model:free", 8),
+])
+def test_legacy_run_free_policy_uses_owned_source_and_exact_model(
+    tmp_path, monkeypatch, authenticate_request, host, model, expected_calls,
+):
+    from tinyassets.providers.api_key_http_provider import ApiKeyHttpProvider
+    from tinyassets.storage.agent_request_usage import UsageStore
+
+    proxy = _OpenProxy()
+    monkeypatch.setattr(ApiKeyHttpProvider, "_resolve_proxy",
+                        accounting_resolver(lambda _self, **_kwargs: proxy))
+    response, substituted, captured = _run_branch(
+        tmp_path, monkeypatch, authenticate_request, _branch(node_count=8),
+        open_provider=True, open_model=model, open_host=host,
+    )
+    assert len(proxy.calls) == expected_calls
+    assert not substituted.calls
+    if expected_calls == 6:
+        assert response["terminal_status"] == "failed"
+        assert "request budget" in response["terminal_error"]
+        assert captured["effects"] == []
+    else:
+        assert response["terminal_status"] == "completed", response["terminal_error"]
+    stored = UsageStore(tmp_path).for_subject(
+        "acct_alice", "universe_alice", "run", response["run_id"],
+    )
+    assert len(stored) == 1 and stored[0]["dispatched"] == expected_calls
+    assert all(a["free"] is (expected_calls == 6) for a in stored[0]["attempts"])

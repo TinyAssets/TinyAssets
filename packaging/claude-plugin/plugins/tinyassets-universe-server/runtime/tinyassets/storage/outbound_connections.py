@@ -10,6 +10,7 @@ import http.client
 import io
 import ipaddress
 import json
+import logging
 import math
 import multiprocessing
 import os
@@ -37,6 +38,7 @@ from tinyassets.storage.workspace_authority import (
 )
 
 AuthenticatedPrincipalVerifier = Callable[[], str]
+_LOG = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -427,6 +429,23 @@ class BrokerStreamStop(Exception):
     Raised from the broker's own checks inside a send. Never converted into a
     destination failure by the transport, so the broker reports its real cause.
     """
+
+
+class _InferenceAccountingStop(BrokerStreamStop):
+    """Carry the typed parent stop through transport cleanup without flattening it."""
+
+    def __init__(self, cause):
+        self.cause = cause
+        super().__init__("parent inference accounting stopped")
+
+
+def _settle_usage_after_error(usage, outcome):
+    if usage is None:
+        return
+    try:
+        usage.settle(outcome)
+    except Exception:  # noqa: BLE001 - durable dispatched state remains conservative
+        _LOG.warning("could not finalize inference usage after transport cleanup")
 
 
 class SsrfValidationError(ProxyRequestError):
@@ -898,6 +917,9 @@ def _run_proxy_worker(
     scopes: tuple[str, ...],
 ) -> None:
     """Run the trusted dispatcher in a separate spawned process."""
+    from tinyassets.exceptions import ProviderAuthorityHeldError
+    from tinyassets.request_budget import RequestBudgetExceeded
+
     _sanitize_child_environment()
     try:
         dispatch = _load_dispatch_factory(dispatch_factory, dispatch_config)
@@ -955,7 +977,17 @@ def _run_proxy_worker(
                 )
                 continue
             try:
-                result = dispatch(grant_id, verb, message.get("request"))
+                accounting = ({"inference_usage": message["inference_usage"],
+                               "operation_id": message.get("operation_id")}
+                              if "inference_usage" in message else {})
+                result = dispatch(grant_id, verb, message.get("request"), **accounting)
+            except RequestBudgetExceeded as exc:
+                _send_message(channel, {"ok": False, "error_type": "InferenceUsageStopped",
+                                        "reason": exc.reason,
+                                        "usage_id": exc.request_receipt.get("usage_id")})
+            except ProviderAuthorityHeldError:
+                _send_message(channel, {"ok": False, "error_type": "ProviderAuthorityHeldError",
+                                        "message": "inference usage authority refused"})
             except ConnectionAuthorizationError as exc:
                 _send_message(
                     channel,
@@ -1008,13 +1040,16 @@ class _ProxyChannel:
         self._lock = threading.Lock()
         self._process = process
 
-    def request(self, verb: str, request: object) -> Any:
+    def request(self, verb: str, request: object, *, inference_usage=None) -> Any:
         with self._lock:
             if self._closed:
                 raise ProxyRequestError("outbound proxy is closed")
             _send_message(
                 self._channel,
-                {"op": "request", "verb": verb, "request": request},
+                {"op": "request", "verb": verb, "request": request,
+                 **({"inference_usage": inference_usage.document(),
+                     "operation_id": inference_usage.operation_id}
+                    if inference_usage is not None else {})},
             )
             response = _receive_message(self._channel)
         if not isinstance(response, dict):
@@ -1023,6 +1058,14 @@ class _ProxyChannel:
             return response.get("result")
         message = str(response.get("message") or "outbound request failed")
         error_type = response.get("error_type")
+        if error_type == "InferenceUsageStopped":
+            from tinyassets.storage.agent_request_usage import InferenceUsageStopped
+
+            raise InferenceUsageStopped(response.get("reason"), response.get("usage_id"))
+        if error_type == "ProviderAuthorityHeldError":
+            from tinyassets.exceptions import ProviderAuthorityHeldError
+
+            raise ProviderAuthorityHeldError("inference usage authority refused")
         if error_type == "PermissionError":
             raise PermissionError(message)
         if error_type == "GrantResolutionError":
@@ -1069,7 +1112,7 @@ class _BrokerChannel:
         self._connection_id = connection_id
         self._closed = False
 
-    def request(self, verb: str, request: object) -> Any:
+    def request(self, verb: str, request: object, *, inference_usage=None) -> Any:
         from tinyassets.broker.ops import new_op_id
 
         if self._closed:
@@ -1077,7 +1120,11 @@ class _BrokerChannel:
         if not isinstance(request, dict):
             raise ProxyRequestError("outbound proxy rejected an invalid request")
         return self._client.request(grant_id=self._grant_id, connection_id=self._connection_id,
-                                    verb=verb, request=request, op_id=new_op_id())
+                                    verb=verb, request=request,
+                                    op_id=(inference_usage.operation_id
+                                           if inference_usage is not None else new_op_id()),
+                                    **({"inference_usage": inference_usage.document()}
+                                       if inference_usage is not None else {}))
 
     def close(self) -> None:
         self._closed = True
@@ -1123,12 +1170,15 @@ class ScopedConnectionProxy:
     access_mode: str = ACCESS_EXACT
     _channel: _ProxyChannel = field(repr=False, compare=False, default=None)  # type: ignore[assignment]
 
-    def request(self, verb: str, request: object) -> Any:
+    def request(self, verb: str, request: object, *, inference_usage=None) -> Any:
         if not _verb_within_scopes(verb, self.scopes, self.access_mode):
             raise PermissionError(
                 f"verb {verb!r} is outside the granted connection scope"
             )
-        return self._channel.request(verb, request)
+        return self._channel.request(
+            verb, request, **({"inference_usage": inference_usage}
+                             if inference_usage is not None else {}),
+        )
 
     def close(self) -> None:
         self._channel.close()
@@ -1152,10 +1202,10 @@ class BrokerStream:
     """
 
     __slots__ = ("_on_unsafe", "_scanner", "_upstream", "headers", "reason", "redirect_count",
-                 "status")
+                 "status", "_usage", "_finished")
 
     def __init__(self, upstream: UpstreamStream, held: tuple[str, ...],
-                 on_unsafe: Callable[[], None] = lambda: None) -> None:
+                 on_unsafe: Callable[[], None] = lambda: None, usage=None) -> None:
         from tinyassets.broker.scan import StreamScanner, contains_sensitive
 
         values = tuple(dict.fromkeys((*held, *upstream.sensitive)))
@@ -1165,6 +1215,7 @@ class BrokerStream:
             upstream.close()
             raise ProxyRequestError("outbound request failed: unsafe destination response")
         self._upstream = upstream
+        self._usage, self._finished = usage, False
         self._on_unsafe = on_unsafe
         self._scanner = StreamScanner(values)
         self.status = upstream.status
@@ -1180,16 +1231,24 @@ class BrokerStream:
             piece = self._upstream.read(max_bytes)
             released = self._scanner.feed(piece) if piece else self._scanner.finish()
         except SensitiveValueInResponse:
-            self._upstream.close()
+            self.close()
             self._on_unsafe()
             raise ProxyRequestError(
                 "outbound request failed: unsafe destination response") from None
+        except BaseException:
+            self.close()
+            raise
         if not piece and not released:
+            self._finished = True
             return None
         return released
 
     def close(self) -> None:
-        self._upstream.close()
+        try:
+            self._upstream.close()
+        finally:
+            if not self._finished:
+                _settle_usage_after_error(self._usage, "unknown")
 
 
 class CredentialBlindBroker:
@@ -1197,6 +1256,7 @@ class CredentialBlindBroker:
 
     __slots__ = (
         "_audit", "_ledger", "_network_request", "_oauth_tokens", "_resolve_credential",
+        "_resolve_inference_usage",
     )
 
     def __init__(
@@ -1207,7 +1267,9 @@ class CredentialBlindBroker:
         network_request: Callable[..., Any],
         audit: Callable[[dict[str, object]], None] | None = None,
         oauth_tokens: Any = None,
+        resolve_inference_usage: Callable[..., Any] | None = None,
     ) -> None:
+        self._resolve_inference_usage = resolve_inference_usage
         self._ledger = ledger
         self._resolve_credential = resolve_credential
         self._network_request = network_request
@@ -1221,7 +1283,8 @@ class CredentialBlindBroker:
                  guard: Callable[[], Any] | None = None,
                  on_connect: Callable[[Any], None] | None = None,
                  checkpoint: Callable[[], None] | None = None,
-                 deadline_at: float | None = None) -> Any:
+                 deadline_at: float | None = None, inference_usage=None,
+                 operation_id: str | None = None) -> Any:
         """One request on the grant. ``stream=True`` returns a :class:`BrokerStream`
         whose body is read as it arrives (I14); every check before the response
         is identical, and the body is scanned byte by byte instead of whole."""
@@ -1247,6 +1310,21 @@ class CredentialBlindBroker:
             raise PermissionError(
                 f"verb {verb!r} is outside the granted connection scope"
             )
+        usage = None
+        if self._resolve_inference_usage is not None:
+            usage = self._resolve_inference_usage(
+                resource, grant_id, verb, request, inference_usage, operation_id,
+            )
+        else:
+            from tinyassets.storage.agent_request_usage import resolve_inference_usage
+
+            grant = self._ledger.require_active_grant(grant_id)
+            usage = resolve_inference_usage(
+                self._ledger._db_path.parent, grant.owner_user_id, grant.universe_id,
+                self._ledger, resource, grant_id, verb, request, inference_usage, operation_id,
+            )
+        if usage is not None:
+            usage.check()
         try:
             # Re-validate the CURRENT row's type<->credential-scheme match (the row
             # was just re-read and may have been mutated after proxy start), then
@@ -1310,6 +1388,8 @@ class CredentialBlindBroker:
         wire_credential = credential
 
         def oauth_bundle(*, rejected: str = "") -> Any:
+            if usage is not None:
+                usage.check()
             if guard is not None:
                 with guard():
                     if deadline_at is not None and time.monotonic() >= deadline_at:
@@ -1339,28 +1419,41 @@ class CredentialBlindBroker:
             streaming["deadline_at"] = deadline_at
         response = self._send(resource, grant_id, verb, request, wire_credential,
                               revalidate_authority, reply_budget_s, reply_stream=reply_stream,
-                              guard=guard, **streaming)
+                              guard=guard, inference_usage=usage, **streaming)
         if oauth and _status_of(response) == 401:
             # The service rejected the token before doing anything: refresh
             # once (unless another holder already did) and send once more.
             # A stream's status is known before any body byte is read, so the
             # resend happens before anything reaches the caller.
-            bundle = oauth_bundle(rejected=wire_credential)
-            if bundle.access_token != wire_credential:
-                wire_credential = bundle.access_token
-                secrets_held = tuple(dict.fromkeys((*secrets_held, *bundle.secret_values())))
+            if usage is not None:
+                usage.settle("failed")
+            try:
+                if usage is not None:
+                    usage.reserve_retry()  # Before refresh, not just before the second send.
+                bundle = oauth_bundle(rejected=wire_credential)
+                if bundle.access_token != wire_credential:
+                    wire_credential = bundle.access_token
+                    secrets_held = tuple(dict.fromkeys((*secrets_held, *bundle.secret_values())))
+                    if stream:
+                        response.close()
+                    response = self._send(resource, grant_id, verb, request, wire_credential,
+                                          revalidate_authority, reply_budget_s,
+                                          reply_stream=reply_stream, guard=guard,
+                                          inference_usage=usage, **streaming)
+                elif usage is not None:
+                    usage.settle("not_sent")
+            except BaseException:
                 if stream:
                     response.close()
-                response = self._send(resource, grant_id, verb, request, wire_credential,
-                                      revalidate_authority, reply_budget_s,
-                                      reply_stream=reply_stream, guard=guard, **streaming)
+                _settle_usage_after_error(usage, "not_sent")
+                raise
         if stream:
             def unsafe_body() -> None:
                 self._record_error(resource, grant_id, verb,
                                    "destination response contained credential material")
 
             try:
-                return BrokerStream(response, secrets_held, on_unsafe=unsafe_body)
+                return BrokerStream(response, secrets_held, on_unsafe=unsafe_body, usage=usage)
             except ProxyRequestError:
                 self._record_error(resource, grant_id, verb,
                                    "destination response contained credential material")
@@ -1456,7 +1549,7 @@ class CredentialBlindBroker:
         credential: str, revalidate_authority: Any, reply_budget_s: float | None = None,
         reply_stream: tuple[float, float] | None = None,
         guard: Callable[[], Any] | None = None, deadline_at: float | None = None,
-        **streaming: Any,
+        inference_usage=None, **streaming: Any,
     ) -> Any:
         """One network send. ``guard`` (the broker's fence and cancellation check)
         is held across it, so every send -- the first, an OAuth resend -- is
@@ -1471,10 +1564,52 @@ class CredentialBlindBroker:
             # ordinary one, now cut to what is left of the stream.
             granted = _SSRF_MAX_TOTAL_SECONDS if reply_budget_s is None else reply_budget_s
             reply_budget_s = min(granted, remaining)
+        marked = False
+        if inference_usage is not None:
+            from tinyassets.request_budget import RequestBudgetExceeded
+
+            prior_connect, prior_check = streaming.get("on_connect"), streaming.get("checkpoint")
+
+            def connected(sock):
+                nonlocal marked
+                if prior_connect is not None:
+                    prior_connect(sock)
+                try:
+                    inference_usage.dispatched()
+                except RequestBudgetExceeded as exc:
+                    raise _InferenceAccountingStop(exc) from None
+                marked = True
+
+            def checkpoint():
+                if prior_check is not None:
+                    prior_check()
+                # Closure fences a request still in DNS/connect, while already
+                # dispatched replies retain their existing cancellation policy.
+                if not marked:
+                    try:
+                        inference_usage.check()
+                    except RequestBudgetExceeded as exc:
+                        raise _InferenceAccountingStop(exc) from None
+
+            streaming.update(on_connect=connected, checkpoint=checkpoint)
         with guard() if guard is not None else contextlib.nullcontext():
-            return self._send_unguarded(resource, grant_id, verb, request, credential,
-                                        revalidate_authority, reply_budget_s,
-                                        reply_stream=reply_stream, **streaming)
+            if inference_usage is not None:
+                inference_usage.check()
+            try:
+                response = self._send_unguarded(resource, grant_id, verb, request, credential,
+                                                revalidate_authority, reply_budget_s,
+                                                reply_stream=reply_stream, **streaming)
+                if inference_usage is not None and not marked:
+                    from tinyassets.exceptions import ProviderAuthorityHeldError
+
+                    raise ProviderAuthorityHeldError(
+                        "inference transport omitted dispatch evidence")
+                return response
+            except BaseException as exc:
+                _settle_usage_after_error(inference_usage, "unknown" if marked else "not_sent")
+                if isinstance(exc, _InferenceAccountingStop):
+                    raise exc.cause from None
+                raise
 
     def _send_unguarded(
         self, resource: ConnectionResource, grant_id: str, verb: str, request: object,
@@ -4792,9 +4927,20 @@ def _build_credential_broker_dispatch(
     runtime_root = Path(config["runtime_root"])
     runtime_root.mkdir(parents=True, exist_ok=True)
     from tinyassets.connection_oauth.tokens import ConnectionTokens
+    from tinyassets.storage.agent_request_usage import resolve_inference_usage
+
+    ledger = ConnectionLedger(config["ledger_db_path"])
+    universe = Path(config["universe_dir"])
+
+    def accounting(resource, grant_id, verb, request, envelope, operation_id):
+        return resolve_inference_usage(
+            Path(config["ledger_db_path"]).parent, config["owner_user_id"], universe.name,
+            ledger, resource, grant_id, verb, request, envelope, operation_id,
+        )
 
     broker = CredentialBlindBroker(
-        ConnectionLedger(config["ledger_db_path"]),
+        ledger,
+        resolve_inference_usage=accounting,
         resolve_credential=_TrustedCredentialResolver(config),
         network_request=_TrustedNetworkDriver(config, runtime_root),
         audit=_JsonlAuditWriter(str(runtime_root / "audit.jsonl")),

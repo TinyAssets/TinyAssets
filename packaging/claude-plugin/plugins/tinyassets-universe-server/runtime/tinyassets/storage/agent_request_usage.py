@@ -90,7 +90,7 @@ class ParentUsageLease:
 
 def request_digest(grant_id, connection_id, verb, request):
     raw = json.dumps([grant_id, connection_id, verb, request], sort_keys=True,
-                     separators=(",", ":"), allow_nan=False)
+                     separators=(",", ":"), allow_nan=True)
     return hashlib.sha256(raw.encode()).hexdigest()
 
 
@@ -120,6 +120,58 @@ class InferenceUsageReference:
             raise ProviderAuthorityHeldError("invalid inference usage envelope")
         _reference_hash(value["reference"])
         return cls(**value)
+
+
+class InferenceUsageStopped(ProviderAuthorityHeldError):
+    """Fixed private IPC stop. The caller reloads its own durable receipt."""
+
+    REASONS = frozenset({"parent_closed", "dispatch_closed", "dispatch_deadline",
+                         "automatic_learning_disabled", "turn_attempt_limit",
+                         "free_pool_attempt_limit", "free_attempt_limit", "consecutive_failures"})
+
+    def __init__(self, reason, usage_id):
+        if (not isinstance(reason, str) or reason not in self.REASONS
+                or not isinstance(usage_id, str) or len(usage_id) != 32
+                or any(c not in "0123456789abcdef" for c in usage_id)):
+            raise ProviderAuthorityHeldError("invalid inference accounting stop")
+        self.reason, self.usage_id = reason, usage_id
+        super().__init__("parent inference request allocation stopped")
+
+
+def resolve_inference_usage(base, owner, universe, ledger, resource, grant_id, verb, request,
+                            envelope, operation_id):
+    """Trusted factory binding; wire fields cannot turn accounting off or buy capacity."""
+    store = UsageStore(base)
+    root = (store.base / universe).resolve()
+    if root.parent != store.base:
+        raise ProviderAuthorityHeldError("inference accounting command center changed")
+    if envelope is None:
+        if resource.connection_type != "http" or str(verb).upper() != "POST":
+            return None
+        # Both installed capabilities and registered compute descriptors identify
+        # inference sources; a request cannot evade this by omitting model/body.
+        is_model = any(ledger.get_connection_capability(resource.connection_id, kind) is not None
+                       for kind in ("model_use", "model_discovery"))
+        path = root / "provider_definitions.json"
+        if path.exists():
+            from tinyassets.providers.definition import _verified_definition
+
+            definitions = json.loads(path.read_text())
+            is_model = is_model or any(
+                (definition := _verified_definition(row, expect_universe=universe)).ref == grant_id
+                and definition.owner_user_id == owner and definition.access_method == "api_key_http"
+                for row in definitions
+            )
+        if is_model:
+            raise ProviderAuthorityHeldError("HTTP inference requires a parent usage reference")
+        return None
+    ref = InferenceUsageReference.from_document(envelope)
+    if ref.operation_id != operation_id:
+        raise ProviderAuthorityHeldError("inference usage operation changed")
+    return store.claim_reference(ref.reference, owner=owner, universe=universe,
+                                 usage_id=ref.usage_id, grant_id=grant_id,
+                                 connection_id=resource.connection_id, verb=verb, request=request,
+                                 operation_id=operation_id)
 
 
 class UsageStore:
@@ -307,7 +359,7 @@ class UsageStore:
             budget = self._load(conn, scope)
             try:
                 if budget._closed:
-                    raise RequestBudgetExceeded("parent_closed", budget.receipt())
+                    raise RequestBudgetExceeded("dispatch_closed", budget.receipt())
                 if type(ordinal) is not int or not 1 <= ordinal <= len(budget._attempts):
                     raise ProviderAuthorityHeldError("inference usage reservation is unavailable")
                 if budget._attempts[ordinal - 1].state != "reserved":
@@ -384,6 +436,8 @@ class UsageStore:
                 elif attempt.state == "dispatched":
                     budget.settle(item, outcome)
             self._save(conn, scope, budget)
+            return sum(budget._attempts[item - 1].dispatched_at is not None
+                       for item in set(ordinals))
 
 
 class UsageDispatch:
@@ -435,6 +489,7 @@ class UsageDispatch:
                 error = exc
             self.store._save(conn, self.scope, budget)
         if error is not None:
+            error.request_receipt["usage_id"] = self.scope[2]
             raise error
 
     def check(self):

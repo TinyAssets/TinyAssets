@@ -130,9 +130,10 @@ class TurnRequestBudget:
                 return self._store.settle_invocation(self._scope, ordinal, outcome)
             attempt = self._attempts[ordinal - 1]
             if attempt.state == "reserved":
-                return self.settle(ordinal, "not_sent")
+                self.settle(ordinal, "not_sent")
             if attempt.state == "dispatched":
-                return self.settle(ordinal, outcome)
+                self.settle(ordinal, outcome)
+            return int(attempt.dispatched_at is not None)
 
     def _stored(self, operation, *args, **kwargs):
         return self._store.mutate(self._scope, operation, *args, clock=self.clock,
@@ -308,6 +309,12 @@ def request_budget_scope(budget, *, close_on_exit=True):
 
 def selection_is_free(selection):
     """Use admitted ceilings; never infer this from an account name or balance."""
+    from tinyassets.providers.declared_models import DeclaredModelContract
+
+    if isinstance(getattr(selection, "execution_contract", None), DeclaredModelContract):
+        # Declared free/flat contracts are explicitly unmetered. A host's
+        # separate free-tier offer cannot turn that plan into a metered one.
+        return False
     caps = getattr(selection, "cost_caps", ())
     return bool(caps) and all(type(value) is int and value == 0 for _, value in caps)
 
@@ -490,7 +497,7 @@ def request_budget(base_path, owner, source_ref, model, *, preset, zero_priced_m
         return None
 
 
-def _source_budget_facts(context, *, owner=None):
+def _source_budget_facts(context, *, owner=None, require_known_free_model=False):
     """Resolve installed source facts and captured prices locally, with no IO to a model."""
     try:
         from tinyassets.providers.definition import get_definition
@@ -519,16 +526,26 @@ def _source_budget_facts(context, *, owner=None):
         hosts = {ep["host"] for ep in json.loads(row[0])}
         if len(hosts) != 1:
             return None
-        preset = daily_cap_for_host(hosts.pop())
+        host = hosts.pop()
+        if require_known_free_model and not (
+            host == "openrouter.ai" and selection.model_id.endswith(":free")
+            and len(selection.model_id) > len(":free")
+        ):
+            return None
+        preset = daily_cap_for_host(host)
         return owner, preset
     except Exception:  # noqa: BLE001 - unavailable source facts do not invent limits
         return None
 
 
 def metered_free_source(context, selection, *, owner):
-    if context is None or not selection_is_free(selection):
+    if context is None or selection is not None and not selection_is_free(selection):
         return False
-    facts = _source_budget_facts(context, owner=owner)
+    # Legacy admitted calls have no captured price selection. Only exact
+    # source-specific free model identities supply missing price evidence;
+    # a provider's free tier never classifies its paid/default models.
+    facts = _source_budget_facts(context, owner=owner,
+                                 require_known_free_model=selection is None)
     return bool(facts and facts[1] and facts[1].get("requests_per_day"))
 
 

@@ -41,6 +41,14 @@ def _raise_for(end: dict[str, Any]) -> None:
 
     error_class = end.get("error_class")
     outcome = end.get("outcome")
+    if error_class == "InferenceUsageStopped":
+        from tinyassets.storage.agent_request_usage import InferenceUsageStopped
+
+        raise InferenceUsageStopped(end.get("reason"), end.get("usage_id"))
+    if error_class == "ProviderAuthorityHeldError":
+        from tinyassets.exceptions import ProviderAuthorityHeldError
+
+        raise ProviderAuthorityHeldError("inference usage authority refused")
     if outcome == "refused":
         if error_class == "GrantResolutionError":
             raise GrantResolutionError("outbound connection grant identity mismatch")
@@ -78,7 +86,8 @@ class BrokerClient:
         self._lock = threading.Lock()
 
     def request(self, *, grant_id: str, connection_id: str, verb: str, request: dict[str, Any],
-                op_id: str, idle_s: float | None = None) -> dict[str, Any]:
+                op_id: str, idle_s: float | None = None,
+                inference_usage: dict[str, Any] | None = None) -> dict[str, Any]:
         generation, token = self._fence()
         open_doc = {
             "op": "OPEN", "op_id": op_id, "generation": generation, "token": token,
@@ -86,6 +95,8 @@ class BrokerClient:
             "grant_id": grant_id, "connection_id": connection_id, "verb": verb,
             "request": request, "credit": MAX_WINDOW,
         }
+        if inference_usage is not None:
+            open_doc["inference_usage"] = inference_usage
         if idle_s is not None:
             open_doc["idle_s"] = idle_s
         from tinyassets.storage.outbound_connections import (
