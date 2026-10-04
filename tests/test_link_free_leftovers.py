@@ -172,8 +172,13 @@ def test_branch_task_queue_refuses_links_and_planted_temp_names(data):
 
 
 def test_wiki_write_back_never_writes_through_a_swapped_parent(data, monkeypatch):
-    from tinyassets.api import helpers
+    # Load the consumer before patching its imported helper. Otherwise its first
+    # lazy import inside write-back permanently captures this test's fake reader.
+    from tinyassets.api import helpers, wiki
     from tinyassets.effectors import wiki_write_back
+
+    original_read = helpers._read_text
+    assert wiki._read_text is original_read
 
     bravo_pages = data / "u-bravo" / "wiki" / "pages"
     bravo_pages.mkdir(parents=True)
@@ -187,6 +192,7 @@ def test_wiki_write_back_never_writes_through_a_swapped_parent(data, monkeypatch
             _alpha(data) / "wiki" / "pages" / "page.md", "section", "hint",
         )
     assert (bravo_pages / "page.md").read_text(encoding="utf-8") == FOREIGN
+    assert wiki._read_text is original_read
 
 
 def test_a_planted_soul_lock_link_does_not_create_a_file_outside_the_universe(data):
