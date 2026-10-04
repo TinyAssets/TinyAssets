@@ -160,7 +160,7 @@ def test_the_socket_lives_outside_every_universe_folder(tmp_path, monkeypatch):
     assert not path.is_relative_to(tmp_path / "u-one")
 
 
-def test_the_jail_binds_its_own_sidecar_socket_and_nothing_else_outside(tmp_path):
+def test_the_jail_binds_its_own_sidecar_and_nothing_else_outside(tmp_path):
     """The allowance is the exact socket the launch constructed, not its folder.
 
     It used to be the whole ``<data>/.universe-sidecars/<cc>/`` directory, so any
