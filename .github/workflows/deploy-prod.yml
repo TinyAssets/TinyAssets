@@ -248,6 +248,52 @@ jobs:
               "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
               "sudo env TINYASSETS_ENV_FILE=/etc/tinyassets/request-idempotency.env TINYASSETS_LEGACY_ENV_FILE=/etc/tinyassets/no-request-idempotency-legacy bash /tmp/install-tinyassets-env.sh '${REQUEST_HMAC_INSTALL_MODE}' TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY"
 
+      - name: Install OAuth provider client credentials
+        env:
+          TINYASSETS_OAUTH_GOOGLE_CLIENT_ID: ${{ vars.TINYASSETS_OAUTH_GOOGLE_CLIENT_ID }}
+          TINYASSETS_OAUTH_GOOGLE_CLIENT_SECRET: ${{ secrets.TINYASSETS_OAUTH_GOOGLE_CLIENT_SECRET }}
+        run: |
+          set +x
+          set -euo pipefail
+          # Add each provider's env bindings above and one pair below. Validate
+          # ALL pairs on the runner before sending anything to the host.
+          providers=(
+            'TINYASSETS_OAUTH_GOOGLE_CLIENT_ID TINYASSETS_OAUTH_GOOGLE_CLIENT_SECRET'
+          )
+          credentials=()
+          for pair in "${providers[@]}"; do
+            read -r id_key secret_key <<< "${pair}"
+            client_id="${!id_key:-}"
+            client_secret="${!secret_key:-}"
+            if [ -z "${client_id}" ] && [ -z "${client_secret}" ]; then
+              continue
+            fi
+            if [ -z "${client_id}" ] || [ -z "${client_secret}" ]; then
+              echo "::error::configure both repository variable ${id_key} and repository secret ${secret_key}, or neither"
+              exit 1
+            fi
+            for key in "${id_key}" "${secret_key}"; do
+              value="${!key}"
+              if [[ "${value}" == *$'\n'* || "${value}" == *$'\r'* ]]; then
+                echo "::error::${key} must be single-line"
+                exit 1
+              fi
+              credentials+=("${key}" "${value}")
+            done
+          done
+          [ "${#credentials[@]}" -gt 0 ] || exit 0
+          # The HMAC step installed this helper. Values travel only on stdin;
+          # one shared host lock covers every set and its daemon.env render.
+          # The following fail-safe deploy recreates the daemon with this env.
+          printf '%s\n' "${credentials[@]}" | \
+            ssh -i ~/.ssh/do_deploy -o BatchMode=yes "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+              "sudo flock -w 120 /var/lock/tinyassets-host-mutation.lock bash -c '
+                set -euo pipefail
+                while IFS= read -r key; do
+                  IFS= read -r value
+                  printf \"%s\" \"\${value}\" | env TINYASSETS_ENV_FILE=/etc/tinyassets/env bash /tmp/install-tinyassets-env.sh set \"\${key}\"
+                done'"
+
       - name: Install daemon-only agent interchange HMAC secret
         env:
           TINYASSETS_AGENT_INTERCHANGE_HMAC_KEY: ${{ secrets.TINYASSETS_AGENT_INTERCHANGE_HMAC_KEY }}

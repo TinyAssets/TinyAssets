@@ -245,6 +245,31 @@ A request reaches its owner's registered devices as a notification. Each channel
 
 `TINYASSETS_WEBPUSH_VAPID_PUBLIC_KEY` is printed by the same script for the **client** to pass to `pushManager.subscribe({applicationServerKey})`. The server never reads it — it is derived from the private key, and storing it twice is how two copies of one fact drift.
 
+## Deploying platform OAuth client credentials
+
+| Variable | Repository configuration | Daemon use |
+|---|---|---|
+| `TINYASSETS_OAUTH_GOOGLE_CLIENT_ID` | GitHub Actions **variable** (non-secret). | Platform Google Web application client ID, consumed by the provider directory in #4441. |
+| `TINYASSETS_OAUTH_GOOGLE_CLIENT_SECRET` | GitHub Actions **secret**, entered by the founder through the repository's web form. | Daemon-only client secret; #4441 adds it to `CHILD_FORBIDDEN_ENV` and filters the entire `TINYASSETS_OAUTH_` namespace from engine children. |
+
+`deploy-prod.yml` installs each configured pair through
+`deploy/install-tinyassets-env.sh set` into `/etc/tinyassets/env`, under the shared
+host mutation flock. The helper also renders `daemon.env`; the subsequent
+fail-safe recreate loads the credentials. Values travel on SSH stdin, never in
+command arguments or log messages. Both values must be single-line. Both absent
+means a silent no-op (existing host values are retained); only one present fails
+the deploy before this step contacts the host. Repeated deploys converge on the
+configured pair, including rotations, without duplicate assignments.
+
+**Rollout dependency:** deploy #4441 (`feat/platform-oauth-clients`) before
+enabling this pair, so both the candidate and the previous image available to
+fail-safe rollback exclude these credentials from engine children. This workflow
+branch does not change `tinyassets/platform_secrets.py`. Once credentials are
+installed, do not roll back to an image predating that filtering. The client ID
+variable is already configured; until the founder adds its matching secret,
+this step deliberately fails as half-configured. To add a provider, add its two
+Actions env bindings and one entry in the step's provider-pair list.
+
 ## Local secrets — vault-first
 
 Local operator secrets (Cloudflare tokens, DigitalOcean token, Hetzner creds, OpenAI key) load from a password manager, not a plaintext file. Vendor is chosen via `TINYASSETS_SECRETS_VENDOR` — `1password` (default), `bitwarden`, or `plaintext` (migration-period opt-out, to be retired after cutover).
