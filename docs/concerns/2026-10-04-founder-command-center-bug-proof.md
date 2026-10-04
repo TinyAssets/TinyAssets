@@ -98,3 +98,46 @@ consent artifact sizes under each owned folder; compare reservations with live
 processes/renewal times and measurement failures in service logs. A deleted
 115 MiB file does not cancel a live jail's reservation or remove retained
 checkpoints, outputs and uploads elsewhere. Do not remove reservations by hand.
+
+## Unconfirmed send
+
+`onboarding/app.html:9519` restores the browser's durable in-flight record.
+Without a consumer request key, it only recognizes the latest matching founder
+message in the fetched history, or a matching active turn; otherwise line 9647
+emits the reported notice. A live transport failure already attached the
+read-only saved-conversation check (`:4929`); the reload path omitted it. The fix
+attaches that same check at `:9651`, including foreground/online refresh, and says
+the reply did not arrive *here* and the request may already have acted.
+
+Red: `test_restored_unconfirmed_send_can_observe_a_server_accepted_reply` failed
+because the restored notice had no check. Green: 68 targeted recovery,
+not-delivered and conversation-admission tests; all 16 Chromium recovery cases,
+including the added restored-send/resume scenario. The recovered reply is
+visible, the local request remains, and no new converse is sent.
+Additional app checks: 81 addressed-agent/account-transition/message-expansion/
+working-indicator cases passed. Onboarding and owner-read cases had 156 passes
+and two old exact-button-list assertions; both existing tests were retained,
+updated for the added read-only button, and passed on rerun (alongside the
+served-error case, whose button list stays unchanged).
+
+The reported timestamp alone cannot prove a server drop. A native `converse`
+can be accepted and perform work, then lose its response to a disconnected SSE
+stream, watchdog or deploy/edge failure (`app.html:1625`). Unlike the consumer
+workflow path (`app.html:3927`, `storage/conversation_run_admissions.py:29`), it
+has no durable per-send request key. `universe_server.py:3263` persists the native
+founder/reply pair only after completion; exceptions record a failure at `:3234`.
+A process death before either write can leave no terminal conversation row.
+No automatic replay or text-based attribution was added: it could duplicate
+effects or associate an older identical message with this send.
+
+To distinguish the actual October 4 sends, inspect the owner's exact home and
+agent session in `.conversation_memory.db`, `conversation_turns` (session_id,
+turn_no, speaker, content, ts, execution_json, failure_json) around **10:19 UTC**
+and **10:42 UTC**, then through the **17:04 UTC** observation. Compare the saved
+browser in-flight record's timestamp, scope, agent and consumerRequest. If it
+has a request key, inspect the owner/session-matching admission in `.runs.db`
+(`conversation_run_admissions`: run_id, created_at, updated_at, projection_state,
+terminal_json) and the corresponding run. For native sends, correlate `/mcp`
+access/edge request IDs, SSE/5xx diagnostics, provider completion and service
+restart logs in the same windows. Native history can establish what was saved,
+but cannot prove a particular identical send's receipt without that correlation.
