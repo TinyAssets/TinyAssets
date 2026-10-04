@@ -453,3 +453,102 @@ def test_a_wal_switch_that_is_not_busy_fails_on_the_first_attempt():
     with pytest.raises(sqlite3.OperationalError, match="disk I/O error"):
         sa._enable_wal(Broken())
     assert len(attempts) == 1
+
+
+class TestFittedAdmissionConcurrency:
+    @pytest.mark.parametrize("separate_owners", [False, True])
+    def test_concurrent_requests_fit_the_capacity_at_admission(
+        self, base, monkeypatch, separate_owners,
+    ):
+        from concurrent.futures import ThreadPoolExecutor
+
+        owners = (A, B if separate_owners else A)
+        for uid, owner in zip(("u-one", "u-two"), owners):
+            _universe(base, uid, owner)
+            sa.release(_admit(base, uid, 0, owner))
+        real_usage = sa._usage_in
+        stale_reads = threading.Barrier(2)
+        seen = threading.local()
+
+        def synchronize_unlocked_reads(conn, *args, **kwargs):
+            result = real_usage(conn, *args, **kwargs)
+            # Force the old read-then-reserve race. Atomic decisions do not
+            # enter this barrier while holding the serialized transaction.
+            if not conn.in_transaction and not getattr(seen, "read", False):
+                seen.read = True
+                stale_reads.wait(timeout=10)
+            return result
+
+        monkeypatch.setattr(sa, "_usage_in", synchronize_unlocked_reads)
+
+        def fit(item):
+            uid, owner = item
+            return sa.reserve_fitted(
+                base, account_id=owner, scope_id=uid, store="universe_files",
+                cap=60 * KIB, minimum=1,
+            )
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            admitted = list(pool.map(fit, zip(("u-one", "u-two"), owners)))
+        monkeypatch.setattr(sa, "_usage_in", real_usage)
+        assert sorted(bound for _, bound in admitted) == (
+            [60 * KIB, 60 * KIB] if separate_owners else [40 * KIB, 60 * KIB]
+        )
+        for owner in set(owners):
+            assert sa.usage(base, owner).used_bytes <= 100 * KIB
+        for reservation, bound in admitted:
+            assert reservation.bytes == bound
+            sa.release(reservation)
+
+    @pytest.mark.parametrize(
+        "retained,credit,minimum,expected",
+        [(30, 0, 1, 70), (90, 50, 1, 60), (100, 30, 1, 30),
+         (100, 0, 0, 0), (101, 50, 0, None), (90, 0, 11, None)],
+    )
+    def test_fitted_bounds_preserve_quota_and_replacement_credit(
+        self, base, retained, credit, minimum, expected,
+    ):
+        udir = _universe(base, "u-one", A)
+        _write(udir, "retained.bin", retained * KIB)
+        kwargs = dict(
+            account_id=A, scope_id=udir.name, store="universe_files",
+            cap=100 * KIB, credit=credit * KIB, minimum=minimum * KIB,
+        )
+        if expected is None:
+            with pytest.raises(sa.StorageRefused) as refused:
+                sa.reserve_fitted(base, **kwargs)
+            assert refused.value.record["failure_class"] == sa.FAILURE_QUOTA
+        else:
+            reservation, bound = sa.reserve_fitted(base, **kwargs)
+            assert bound == expected * KIB
+            assert reservation.bytes == max(0, expected - credit) * KIB
+            assert sa.usage(base, A).used_bytes <= 100 * KIB
+            sa.release(reservation)
+
+    def test_fitted_admission_preserves_account_membership_and_unattributed_policy(self, base):
+        _universe(base, "u-bob", B)
+        with pytest.raises(ValueError, match="not part of this account"):
+            sa.reserve_fitted(
+                base, account_id=A, scope_id="u-bob", store="universe_files", cap=KIB,
+            )
+        with pytest.raises(KeyError, match="unregistered store"):
+            sa.reserve_fitted(base, account_id=A, scope_id="u-one", store="missing", cap=KIB)
+        reservation, bound = sa.reserve_fitted(
+            base, account_id=None, scope_id="u-unowned", store="universe_files", cap=KIB,
+        )
+        assert reservation.id is None and bound == KIB
+
+    def test_a_fitted_admission_ledger_error_is_not_reported_as_quota(self, base, monkeypatch):
+        import sqlite3
+
+        _universe(base, "u-one", A)
+
+        def unavailable(_base):
+            raise sqlite3.OperationalError("disk I/O error")
+
+        monkeypatch.setattr(sa, "_connect", unavailable)
+        with pytest.raises(sa.StorageRefused) as refused:
+            sa.reserve_fitted(
+                base, account_id=A, scope_id="u-one", store="universe_files", cap=KIB,
+            )
+        assert refused.value.record["failure_class"] == sa.FAILURE_UNAVAILABLE

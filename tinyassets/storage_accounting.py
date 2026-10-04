@@ -836,30 +836,46 @@ def reserve_fitted(
     account = named_principal(account_id or "")
     if not account:
         return Reservation(base, None, None, 0), int(cap)
+    if store not in STORES:
+        raise KeyError(f"unregistered store {store!r}")
     quota, tier = _quota(base, account)
     pairs = _scopes(base, account)
+    if (scope_id, store) not in pairs:
+        raise ValueError(f"{store}/{scope_id} is not part of this account's storage")
+    credit = max(0, int(credit))
     try:
         stale = _stale_pairs(base, pairs)
         if stale:
             _measure_many(base, stale)
-        conn = _connect(base)
-        try:
+        # Fitting and reserving are one decision: a concurrent admission must
+        # fit the capacity left by earlier writers, not reuse a stale bound.
+        with _txn(base) as conn:
             current = _usage_in(conn, account, pairs, quota, tier)
-        finally:
-            conn.close()
+            bound = min(int(cap), quota - current.used_bytes + credit)
+            # Replaced bytes remain measured until discard, so only their
+            # increment is new pending capacity.
+            incremental = max(0, bound - credit)
+            if bound < minimum or current.used_bytes + incremental > quota:
+                universes = len({
+                    scope for scope, st in pairs if STORES[st].scope == SCOPE_UNIVERSE
+                })
+                raise StorageRefused(
+                    refusal_record(current, minimum, universes=universes), account,
+                )
+            cursor = conn.execute(
+                "INSERT INTO pending (account_id, scope_id, store, bytes, state, created_at) "
+                "VALUES (?, ?, ?, ?, 'reserved', ?)",
+                (account, scope_id, store, incremental, time.time()),
+            )
+            reservation = Reservation(base, int(cursor.lastrowid), account, incremental)
     except sqlite3.Error:
         _log.exception("storage ledger unavailable for a fitted reservation")
         raise StorageRefused(_unavailable_record(minimum)) from None
-    bound = min(int(cap), quota - current.used_bytes + max(0, int(credit)))
-    if bound < minimum:
-        universes = len({scope for scope, st in pairs if STORES[st].scope == SCOPE_UNIVERSE})
-        raise StorageRefused(refusal_record(current, minimum, universes=universes), account)
-    # The replaced bytes are still measured until their discard lands, so only
-    # the part beyond them is new pending.
-    reservation = reserve(
-        base, account_id=account, scope_id=scope_id, store=store,
-        nbytes=max(0, bound - max(0, int(credit))),
-    )
+    if current.unmeasured:
+        _log.warning(
+            "storage decided with unmeasured stores %s (counted as 0)",
+            list(current.unmeasured),
+        )
     return reservation, bound
 
 
