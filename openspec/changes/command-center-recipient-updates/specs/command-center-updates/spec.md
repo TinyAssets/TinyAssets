@@ -128,6 +128,12 @@ The owner SHALL see release histories only from exact registered immutable-defin
 - **AND** public release records and their valid content hashes remain unchanged, as do another owner's adoption and receipt rows
 - **AND** another publisher cannot reuse the retained series ID
 
+#### Scenario: Captured publisher consent races account deletion
+- **WHEN** a consent writer captured private release evidence before account deletion
+- **THEN** pin persistence holds the existing canonical writer exclusion and rechecks the authenticated owner's tombstone inside it through the pin commit
+- **AND** a writer admitted first completes before deletion's sweep, while a writer resumed after deletion refuses loudly without restoring a publisher-owned pin
+- **AND** this ordering holds with the original home, a changed home or no home
+
 ### Requirement: Stored presentation grants authorize only fenced data updates
 An automatic executor SHALL load a real accepted owner/home/adoption policy, preserve its original consent evidence, and select only the next verified release. It SHALL recheck ACL, home, account deletion, source publication, immutable pin targets, dependencies, local baseline, policy revision and storage admission under actual store write reservations. Only eligible name/style changes SHALL update the existing UI. UI, adoption, policy progress and receipt SHALL commit together in the main database without actor impersonation, manual acceptance fabrication, model calls or automation state changes.
 

@@ -1184,14 +1184,26 @@ def pin(base_path: str | Path, *, universe_id: str, kind: str, agent: str, diges
     """
     import uuid
 
+    from tinyassets.storage import _connect as author_connection
+    from tinyassets.storage.current_home import check_principal_not_deleted
+
     request_id = "req_" + uuid.uuid4().hex[:24]
     pin_id = hashlib.sha256(f"{universe_id}\x00{request_id}".encode()).hexdigest()[:32]
     with _db(base_path) as conn:
-        conn.execute(
-            "INSERT INTO pins (universe_id, owner_id, pin_id, kind, agent_id, digest, "
-            "request_id, record_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (universe_id, owner_id, pin_id, kind, agent, digest, request_id,
-             json.dumps(record, sort_keys=True), time.time()))
+        # As in run-file custody, hold the canonical writer exclusion from the
+        # tombstone check through destination commit. Deletion's tombstone uses
+        # this same writer, even after a home rebind/removal. Package schema
+        # initialization above finishes before acquiring the canonical fence;
+        # the INSERT below autocommits before releasing it.
+        with author_connection(base_path) as author:
+            author.execute("BEGIN IMMEDIATE")
+            if owner_id:
+                check_principal_not_deleted(author, owner_id)
+            conn.execute(
+                "INSERT INTO pins (universe_id, owner_id, pin_id, kind, agent_id, digest, "
+                "request_id, record_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (universe_id, owner_id, pin_id, kind, agent, digest, request_id,
+                 json.dumps(record, sort_keys=True), time.time()))
     return request_id
 
 
