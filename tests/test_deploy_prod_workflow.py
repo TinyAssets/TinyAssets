@@ -19,6 +19,7 @@ import base64
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -396,14 +397,28 @@ def test_canary_step_only_probes_canonical():
 
 
 def test_access_gate_step_present():
-    """A separate advisory step must verify the direct URL still returns 403/401."""
+    """A post-deploy step must prove Cloudflare Access still gates the origin.
+
+    #2442 deleted it, so for six weeks a change that opened the Access-gated
+    internal origin would have deployed green: the public canary goes through
+    the Worker and says nothing about the origin behind it.
+    """
     wf = _load()
     steps = _steps(wf)
     access_steps = [s for s in steps if "access" in (s.get("name") or "").lower()]
     assert access_steps, (
-        "deploy job must have a CF Access gate verification step "
-        "(expects 403/401 from direct URL — advisory, not blocking)"
+        "deploy job must have a CF Access gate verification step"
     )
+    gate = _step_named(wf, "Verify CF Access gates the direct origin (expects 403)")
+    assert gate.get("id") == "access-gate"
+    # After the public surfaces, before the rollback, and only on a green run.
+    canary = _step_named(wf, "Public MCP canary (--assert-handles)")
+    rollback = _step_named(wf, "Roll back if the public canary is red")
+    assert steps.index(canary) < steps.index(gate) < steps.index(rollback)
+    assert "if" not in gate, "the gate runs only when the deploy is otherwise green"
+    # A red gate must NOT revert a healthy image: an image rollback cannot
+    # restore a missing Cloudflare policy. Detection, not containment.
+    assert "access" not in str(rollback.get("if", "")).lower()
 
 
 def test_access_gate_blocks_on_200():
@@ -427,11 +442,99 @@ def test_access_gate_blocks_on_200():
     pytest.fail("Access gate step not found")
 
 
-# ---------------------------------------------------------------------------
-# (g) Rollback step present and conditioned on failure
-# ---------------------------------------------------------------------------
+@pytest.mark.skipif(shutil.which("bash") is None, reason="needs bash to execute the step")
+@pytest.mark.parametrize(
+    "curl_rc,http_out,want_rc",
+    [(6, "000", 0), (28, "000", 0), (0, "403", 0), (0, "401", 1), (0, "200", 1)],
+)
+def test_access_gate_step_executes_under_errexit(tmp_path, curl_rc, http_out, want_rc):
+    """Run the step's script the way Actions does (`bash -e`), curl stubbed.
+
+    String assertions passed while a transfer failure aborted the step before
+    `curl_rc` was read: `set -uo pipefail` does not clear the inherited errexit.
+    """
+    wf = _load()
+    gate = _step_named(wf, "Verify CF Access gates the direct origin (expects 403)")
+    stub = tmp_path / "curl"
+    # LF endings: a CRLF script breaks bash on a Windows checkout.
+    stub.write_bytes(f"#!/usr/bin/env bash\nprintf '%s' '{http_out}'\nexit {curl_rc}\n".encode())
+    stub.chmod(0o755)
+    script = tmp_path / "step.sh"
+    # Set inside the script, not via env=: a Windows `bash` may be WSL, which
+    # does not inherit the caller's environment.
+    prelude = 'export DIRECT_ORIGIN=origin.invalid\nexport PATH="$(pwd):$PATH"\n'
+    script.write_bytes((prelude + str(gate.get("run", ""))).encode())
+    proc = subprocess.run(
+        ["bash", "--noprofile", "--norc", "-e", "-o", "pipefail", script.name],
+        cwd=tmp_path, capture_output=True, text=True, timeout=30,
+    )
+    assert proc.returncode == want_rc, proc.stdout + proc.stderr
+    if curl_rc:
+        assert "could not reach the direct origin" in proc.stdout
 
 
+def test_access_gate_treats_our_own_401_as_an_open_gate():
+    """401 is a FAILURE here, which is the whole point of the step.
+
+    The Access policy is service-token, non-identity
+    (``scripts/cf_access_cutover.py``), so Cloudflare denies an unauthenticated
+    request with **403** and no login redirect. Our own application answers an
+    anonymous GET on ``/mcp`` with **401**
+    (``tinyassets/auth/middleware.py``). So a 401 proves the request reached the
+    application and Access did not stop it -- the exact hole this step exists to
+    catch. The deleted original, and the first version of this restore, both
+    accepted 401 and so certified the failure as a pass (Codex, 2026-10-03).
+    """
+    wf = _load()
+    gate = _step_named(wf, "Verify CF Access gates the direct origin (expects 403)")
+    run_script = str(gate.get("run", ""))
+
+    # The pass branch is 403 and only 403.
+    pass_branch = re.search(r'elif \[ "\$\{http_code\}" = "([0-9]{3})" \]; then\n\s*echo "Access gate confirmed',
+                            run_script)
+    assert pass_branch, "the step has a single, identifiable pass branch"
+    assert pass_branch.group(1) == "403", (
+        f"only 403 proves Access denied the request; found {pass_branch.group(1)}"
+    )
+
+    # 401 is named explicitly, and it exits non-zero.
+    assert '"${http_code}" = "401"' in run_script, (
+        "401 must be handled explicitly, not swept into a generic branch, so the "
+        "message can say it is OUR middleware answering rather than Access"
+    )
+    assert "our application, which answered 401 itself" in run_script
+    assert run_script.count("exit 1") >= 2, "401 and every other non-403 fail"
+
+    # The advisory band is transfer failures and codes that prove nothing.
+    for code in ("429", "502", "503", "504", "530"):
+        assert f'"${{http_code}}" = "{code}"' in run_script, (
+            f"{code} proves nothing about the policy and must stay advisory"
+        )
+
+    # curl's exit status is read SEPARATELY from the status code. The earlier
+    # `|| echo 000` appended to curl's own "000" on a connect failure, giving
+    # 000000, which matched no branch and failed the deploy -- breaking the
+    # advisory band the step was written to provide.
+    assert "curl_rc=$?" in run_script
+    assert "|| curl_rc=$?" in run_script, (
+        "a bare `x=$(curl ...)` exits under Actions' default `bash -e` before "
+        "curl_rc is read; capture it with `|| curl_rc=$?`"
+    )
+    assert '[ "${curl_rc}" != "0" ]' in run_script
+    code_lines = [
+        line for line in run_script.splitlines() if not line.strip().startswith("#")
+    ]
+    assert not any("|| echo 000" in line for line in code_lines), (
+        "concatenating a fallback onto curl's own output produced 000000 "
+        "(the step's comment may describe the old bug; the code may not have it)"
+    )
+    # A missing curl is not an advisory pass: the check could not run at all.
+    assert "command -v curl" in run_script
+
+    # Still satisfies the original contract: 200 blocks, and the exit is guarded
+    # rather than unconditional.
+    assert "exit 1" in run_script
+    assert run_script.count("exit 1") < run_script.count("if [")
 def test_rollback_step_present():
     wf = _load()
     names = [s.get("name", "") for s in _steps(wf)]
@@ -441,139 +544,172 @@ def test_rollback_step_present():
 
 
 def test_failed_candidate_diagnostics_are_preserved_before_rollback():
+    """Evidence outlives the rollback, and never delays it.
+
+    Two landmarks this test used to key on are gone for different reasons, and
+    the difference is the finding:
+
+    * ``Wait for daemon health`` was REPLACED, not dropped. #2442 moved the wait
+      into ``deploy/deploy_fail_safe.sh``, which reaches 'healthy' within
+      ``HEALTH_TIMEOUT`` or rolls itself back (rc 2); the workflow proves the
+      PUBLIC surfaces separately afterwards. Asserted through the step that now
+      owns it.
+    * ``Rollback on failure``, the task 2.1 cleanup and the ``terminal`` receipt
+      outputs belonged to the stop-writer fence the same PR retired, so their
+      orderings are not re-asserted.
+
+    What did NOT survive was the diagnostics path: #2442 took the capture and
+    upload with it and left ``scripts/sanitize_startup_diagnostics.py`` with no
+    caller, so a failed prod deploy kept nothing.
+
+    The split into snapshot-then-rollback-then-sanitize is a Codex P1 finding on
+    the first version of this restore: collecting evidence over two SSH calls
+    before the rollback left the broken candidate serving while it ran. Only the
+    fast raw-bytes snapshot may precede the rollback.
+    """
     wf = _load()
     steps = _steps(wf)
-    health = _step_named(wf, "Wait for daemon health")
-    capture = _step_named(wf, "Capture failed candidate startup diagnostics")
+    deploy = _step_named(wf, "Run fail-safe deploy on the droplet")
+    snapshot = _step_named(wf, "Snapshot failed candidate evidence (before rollback)")
+    sanitize = _step_named(wf, "Sanitize failed candidate diagnostics")
     upload = _step_named(wf, "Upload failed candidate startup diagnostics")
-    rollback = _step_named(wf, "Rollback on failure")
-    cleanup = _step_named(wf, "Transitional task 2.1 restore restart racers when safe")
+    rollback = _step_named(wf, "Roll back if the public canary is red")
     terminal = _step_named(wf, "Publish release-state receipt")
 
-    assert steps.index(health) < steps.index(capture) < steps.index(rollback)
-    assert steps.index(rollback) < steps.index(cleanup) < steps.index(terminal)
+    # The ONLY thing between the deploy and the rollback is the raw snapshot.
+    assert steps.index(deploy) < steps.index(snapshot) < steps.index(rollback)
+    # Everything that costs time happens after production is recovered.
+    assert steps.index(rollback) < steps.index(sanitize) < steps.index(terminal)
     assert steps.index(terminal) < steps.index(upload)
-    assert health.get("id") == "candidate_health"
-    assert capture.get("id") == "candidate_diagnostics"
-    capture_condition = str(capture.get("if", "")).strip()
-    assert capture_condition == (
-        "${{ always() && steps.deploy.outputs.image_mutation_started == 'true' "
+    assert deploy.get("id") == "deploy"
+    assert snapshot.get("id") == "candidate_snapshot"
+    assert sanitize.get("id") == "candidate_diagnostics"
+
+    # The health wait is the fail-safe script's, bounded and self-rolling-back,
+    # which is why no workflow step polls for it any more.
+    deploy_run = str(deploy.get("run", ""))
+    assert "HEALTH_TIMEOUT=180" in deploy_run
+    assert "deploy_fail_safe.sh" in deploy_run
+    assert "snapshot_candidate_evidence.sh" in deploy_run, (
+        "the snapshot script ships in the same scp as the deploy script"
+    )
+
+    # ---- the snapshot must be cheap and bounded -------------------------
+    snapshot_condition = str(snapshot.get("if", "")).strip()
+    assert snapshot_condition == (
+        "${{ always() && steps.deploy.outputs.rc == '0' "
         "&& (failure() || cancelled()) }}"
     )
-    assert "always()" in capture_condition
-    assert "failure()" in capture_condition
-    assert "cancelled()" in capture_condition
-    assert "steps.deploy.outputs.image_mutation_started == 'true'" in capture_condition
-    assert "steps.candidate_health.outcome" not in capture_condition, (
-        "post-mutation deploy and env-assert failures skip health but still "
-        "need identity-bound diagnostics"
+    assert "steps.deploy.outputs.rc == '0'" in snapshot_condition, (
+        "rc 2 was already rolled back inside the script, so its container is "
+        "the PREVIOUS image; reading it would mislabel the evidence"
     )
+    assert "steps.canary.outcome" not in snapshot_condition, (
+        "a cancellation, or any later failure after a good swap, still needs "
+        "identity-bound evidence -- not only a red canary"
+    )
+    assert snapshot.get("continue-on-error") is True, (
+        "the rollback must run even if the snapshot fails"
+    )
+    assert 0 < int(snapshot["timeout-minutes"]) <= 2, (
+        "an unbounded snapshot step is an unbounded delay before rollback"
+    )
+    snapshot_run = str(snapshot.get("run", ""))
+    assert snapshot_run.count("ssh ") == 1, (
+        "ONE round trip: two sequential SSH calls is what delayed the rollback"
+    )
+    assert "timeout 25s ssh" in snapshot_run
+    assert "ConnectTimeout=10" in snapshot_run
+    assert "ServerAliveInterval=5" in snapshot_run
+    assert "ServerAliveCountMax=2" in snapshot_run
+    assert "exit 0" in snapshot_run
+    # No sanitizing, no artifact work, no local python on the critical path.
+    assert "sanitize_startup_diagnostics.py" not in snapshot_run
+    assert "scp" not in snapshot_run
+
+    # ---- the snapshot script binds both reads to one container id -------
+    script = Path("deploy/snapshot_candidate_evidence.sh").read_text(encoding="utf-8")
+    assert "--format '{{.Id}}'" in script, "the id is resolved first"
+    assert script.count('"${cid}"') >= 3, (
+        "inspect and logs must read the ID, not the mutable container NAME: "
+        "a replacement between two name reads can supply the rollback "
+        "container's logs under a matching manifest"
+    )
+    assert "docker logs --tail" in script
+    assert 'tail -c "${LOG_BYTES}"' in script
+    assert "LOG_BYTES=131072" in script
+    assert "STATE_BYTES=16385" in script
+    assert "rm -f" in script, "a stale file from an earlier deploy is not evidence"
+    assert script.count("timeout ") >= 3, "every docker call is bounded"
+    assert "exit 0" in script
+    assert "org.opencontainers.image.revision" in script
+    assert ".Config.Image" in script
+    assert ".Config.Env" not in script
+    assert "/etc/tinyassets/env" not in script
+    assert "docker compose" not in script
+    state_template_match = re.search(r"--format '(\{\{\.State\.Status\}\}[^']+)'", script)
+    assert state_template_match is not None, "the inspect template is quoted once"
+    state_template = state_template_match.group(1)
+    assert state_template.split("|")[:6] == [
+        "{{.State.Status}}",
+        "{{.State.Running}}",
+        "{{.State.Restarting}}",
+        "{{.State.ExitCode}}",
+        "{{.State.OOMKilled}}",
+        "{{if .State.Health}}{{.State.Health.Status}}{{end}}",
+    ], state_template
+    assert state_template.endswith("{{json .State.Error}}")
+
+    # ---- sanitizing is after recovery, non-fatal, and fails closed -----
+    sanitize_condition = str(sanitize.get("if", "")).strip()
+    assert sanitize_condition == (
+        "${{ always() && steps.candidate_snapshot.outcome != 'skipped' }}"
+    )
+    assert sanitize.get("continue-on-error") is True
+    assert 0 < int(sanitize["timeout-minutes"]) <= 5
+    sanitize_run = str(sanitize.get("run", ""))
+    assert "scripts/sanitize_startup_diagnostics.py" in sanitize_run
+    assert '--target-revision "${TARGET_REVISION}"' in sanitize_run
+    assert '--target-image-ref "${TARGET_IMAGE_REF}"' in sanitize_run
+    assert "TARGET_REVISION" in (sanitize.get("env") or {})
+    assert "TARGET_IMAGE_REF" in (sanitize.get("env") or {})
+    assert '"capture":"unavailable"' in sanitize_run, (
+        "a vanished container produces unavailable evidence, not a manifest "
+        "that implies the logs were the candidate's"
+    )
+    assert '"candidate_identity_match":false' in sanitize_run, "the default is no match"
+    assert '"container_id"' in sanitize_run, "the manifest records which container"
+    assert 'rm -f "${raw_log}"' in sanitize_run, "raw bytes never reach the artifact"
+    assert "exit 0" in sanitize_run
+    assert "deploy_fail_safe.sh" not in sanitize_run, "it must not touch production"
+
+    # ---- the upload is non-fatal and bounded ---------------------------
+    upload_with = upload.get("with") or {}
     upload_condition = str(upload.get("if", "")).strip()
     assert upload_condition == (
-        "${{ always() && steps.candidate_diagnostics.outcome == 'success' "
-        "&& steps.terminal.outputs.terminal_receipt_result == 'published' "
-        "&& (steps.stop-writer-cleanup.outputs.cleanup_restored == 'true' "
-        "|| steps.stop-writer-cleanup.outputs.cleanup_safely_fenced == 'true') }}"
+        "${{ always() && steps.candidate_diagnostics.outcome == 'success' }}"
     )
-    assert "always()" in upload_condition
-    assert "steps.candidate_diagnostics.outcome == 'success'" in upload_condition
-    assert (
-        "steps.terminal.outputs.terminal_receipt_result == 'published'"
-        in upload_condition
+    assert upload.get("continue-on-error") is True, (
+        "an artifact-service error on the recovery path must not fail the job"
     )
-    assert (
-        "steps.stop-writer-cleanup.outputs.cleanup_restored == 'true'"
-        in upload_condition
+    assert 0 < int(upload["timeout-minutes"]) <= 5, (
+        "a slow upload holds the production-host-mutation group"
     )
-    assert (
-        "steps.stop-writer-cleanup.outputs.cleanup_safely_fenced == 'true'"
-        in upload_condition
-    )
-    assert "steps.candidate_health.outcome" not in upload_condition
-
-    capture_script = str(capture.get("run", ""))
-    assert "docker inspect --type container tinyassets-daemon" in capture_script
-    assert "docker logs --tail 200 tinyassets-daemon" in capture_script
-    assert "tail -c 131072" in capture_script
-    assert "scripts/sanitize_startup_diagnostics.py" in capture_script
-    assert "ConnectTimeout=10" in capture_script
-    assert "ServerAliveInterval=5" in capture_script
-    assert "ServerAliveCountMax=2" in capture_script
-    assert capture_script.count("timeout 25s ssh") >= 2
-    assert capture_script.count("timeout 15s sudo docker") >= 2
-    assert "head -c 16385" in capture_script
-    assert 'rm -f "${raw_log}"' in capture_script
-    assert "TARGET_REVISION" in (capture.get("env") or {})
-    assert "TARGET_IMAGE_REF" in (capture.get("env") or {})
-    assert "org.opencontainers.image.revision" in capture_script
-    assert ".Config.Image" in capture_script
-    assert r"\t" not in capture_script
-    state_template_match = re.search(r"--format '([^']+)'", capture_script)
-    assert state_template_match is not None
-    state_template = state_template_match.group(1)
-    expected_state_template = STATE_SEPARATOR.join(
-        (
-            "{{.State.Status}}",
-            "{{.State.Running}}",
-            "{{.State.Restarting}}",
-            "{{.State.ExitCode}}",
-            "{{.State.OOMKilled}}",
-            "{{if .State.Health}}{{.State.Health.Status}}{{end}}",
-            r'{{index .Config.Labels \"org.opencontainers.image.revision\"}}',
-            "{{.Config.Image}}",
-            "{{json .State.Error}}",
-        )
-    )
-    assert state_template == expected_state_template
-    assert state_template.count(STATE_SEPARATOR) == 8
-    revision = "a" * 40
-    image_ref = f"ghcr.io/tinyassets/tinyassets-daemon@sha256:{'b' * 64}"
-    rendered_state = STATE_SEPARATOR.join(
-        (
-            "exited",
-            "false",
-            "false",
-            "1",
-            "false",
-            "unhealthy",
-            revision,
-            image_ref,
-            json.dumps(""),
-        )
-    ).encode()
-    assert (
-        sanitize_candidate_state(
-            rendered_state,
-            target_revision=revision,
-            target_image_ref=image_ref,
-        )["candidate_identity_match"]
-        is True
-    )
-    assert "candidate_identity_match" in capture_script
-    assert "--state" in capture_script
-    assert '--target-revision "${TARGET_REVISION}"' in capture_script
-    assert '--target-image-ref "${TARGET_IMAGE_REF}"' in capture_script
-    assert 'if [ "${candidate_identity_match}" = "true" ]' in capture_script
-    assert "GITHUB_SHA" not in capture_script
-    assert "docker compose" not in capture_script
-    assert "compose-ps" not in capture_script
-    assert "daemon.log" not in capture_script
-    assert "/etc/tinyassets/env" not in capture_script
-    assert ".Config.Env" not in capture_script
-    assert "{{json .State.Error}}" in capture_script
-
-    upload_with = upload.get("with") or {}
     assert (
         upload.get("uses")
         == "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02"
     )
+    # The invariant is that every upload is pinned to the reviewed commit, not
+    # how many uploads there are: the count was 3 when two of them belonged to
+    # the stop-writer artifacts #2442 retired.
     assert "actions/upload-artifact@v4" not in _text()
-    assert _text().count(
-        "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02"
-    ) == 3
-    assert upload_with.get("if-no-files-found") == "error"
+    uploads = re.findall(r"actions/upload-artifact@(\S+)", _text())
+    assert uploads, "the diagnostics upload is the one artifact this job writes"
+    assert set(uploads) == {"ea165f8d65b6e75b540449e92b4886f43607fa02"}, uploads
+    assert upload_with.get("if-no-files-found") == "warn", (
+        "an empty evidence dir is legitimate when the container was gone"
+    )
     assert 0 < int(upload_with["retention-days"]) <= 7
-
 
 def test_rollback_runs_always_and_eligibility_keys_to_image_marker():
     wf = _load()
@@ -980,24 +1116,90 @@ def test_rollback_emits_safe_defaults_and_final_outputs_before_exit():
             )
 
 
-def test_rollback_identity_failure_preserves_the_passed_canary_tuple():
-    wf = _load()
-    rollback_step = _step_named(wf, "Rollback on failure")
-    run_script = rollback_step.get("run", "") or ""
+def test_rollback_identity_failure_preserves_the_passed_canary_tuple(tmp_path):
+    """A healthy rollback with the wrong image must never report success.
 
-    passed_idx = run_script.find("rollback_canary_status=passed")
-    identity_check_idx = run_script.find('if [ "${identity_status}" -ne 0 ]')
-    assert 0 <= passed_idx < identity_check_idx
-    pre_identity = run_script[passed_idx:identity_check_idx]
-    assert "rollback_result=succeeded" in pre_identity, (
-        "a passed rollback canary must retain the valid succeeded/passed tuple "
-        "so terminal classification can record rollback_failed when the "
-        "separate identity proof fails"
+    The old workflow emitted a separate canary/identity tuple. Its classifier
+    matrix remains in test_deploy_terminal_receipt; the active producer is now
+    deploy_fail_safe.sh. Execute its rollback branch and real acceptance/output
+    functions, faking only host operations. No Docker, host files or network.
+    """
+    git_bash = Path(r"C:\Program Files\Git\bin\bash.exe")
+    bash = str(git_bash) if sys.platform == "win32" and git_bash.exists() else shutil.which("bash")
+    assert bash is not None and not (sys.platform == "win32" and "system32" in bash.lower()), (
+        "this rollback contract requires a POSIX bash executable (Git Bash on Windows)"
     )
-    identity_failure = run_script[identity_check_idx : run_script.find("fi", identity_check_idx)]
-    assert "rollback_result=failed" not in identity_failure, (
-        "failed/passed is a contradictory tuple rejected by the pure builder"
-    )
+    source = (_REPO / "deploy" / "deploy_fail_safe.sh").read_text(encoding="utf-8")
+    functions = []
+    for name in ("container_state", "health_ok", "tunnel_up",
+                 "running_image_matches", "accept", "finish"):
+        match = re.search(rf"^{name}\(\) \{{[^\n]*\n.*?^\}}\n", source, re.M | re.S)
+        assert match, f"cannot find current rollback collaborator {name}"
+        functions.append(match.group(0))
+    marker = "# --- 6. unhealthy -> restore the bundle, then roll back the image"
+    assert source.count(marker) == 1
+    rollback = source[source.index(marker):]
+    harness = tmp_path / "rollback.sh"
+    harness.write_text(r'''
+set -uo pipefail
+PREV_IMAGE="ghcr.io/tinyassets/tinyassets-daemon@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+RUNNING_ID="$1"
+CALLS="$2"
+: > "$CALLS"
+DAEMON_CONTAINER=tinyassets-daemon
+TUNNEL_CONTAINER=tinyassets-tunnel
+LOGS_CONTAINER=tinyassets-logs
+INSTALLED_THIS_RUN=0
+MARKER_STALE=0
+HEALTH_TIMEOUT=10
+HEALTH_INTERVAL=0
+INSPECT_ERR_TOLERANCE=1
+HEALTH_FORMAT='{{if .State.Health}}{{.State.Health.Status}}'
+HEALTH_FORMAT+='{{else}}{{.State.Status}}{{end}}'
+log() { :; }
+err() { printf '%s\n' "$*" >&2; }
+layout_marker_path() { echo fixture-layout; }
+layout_allows_any_image() { return 0; }
+set_image() { printf 'set_image:%s\n' "$1" >> "$CALLS"; }
+restart_stack() { echo restart_stack >> "$CALLS"; }
+docker() {
+  printf 'docker:%s\n' "$*" >> "$CALLS"
+  case "$*" in
+    "inspect -f ${HEALTH_FORMAT} tinyassets-daemon") echo healthy ;;
+    "image inspect -f {{.Id}} ${PREV_IMAGE}") echo sha256:previous ;;
+    "inspect -f {{.Image}} tinyassets-daemon") echo "$RUNNING_ID" ;;
+    "inspect -f {{.Config.Image}} tinyassets-daemon") echo "$RUNNING_ID" ;;
+    "inspect -f {{.State.Status}} tinyassets-tunnel"|\
+    "inspect -f {{.State.Status}} tinyassets-logs") echo running ;;
+    *) echo "unexpected docker call: $*" >> "$CALLS"; return 97 ;;
+  esac
+}
+''' + "\n".join(functions) + rollback, encoding="utf-8", newline="\n")
+    for identity, expected_code, expected_result in (
+        ("sha256:previous", 2, "rolled_back"),
+        ("sha256:other", 3, "rollback_unhealthy"),
+    ):
+        calls = tmp_path / "rollback-calls.txt"
+        result = subprocess.run(
+            [bash, harness.as_posix(), identity, calls.as_posix()],
+            capture_output=True, text=True, check=False, timeout=30,
+        )
+        assert result.returncode == expected_code, result.stderr
+        assert f"deploy_result={expected_result}\n" in result.stdout
+        # Both scenarios reached real health AND identity checks after converge;
+        # a refusal in fixture setup would not exercise the guarantee.
+        trace = calls.read_text(encoding="utf-8")
+        assert "unexpected docker call" not in trace
+        assert trace.index("set_image:") < trace.index("restart_stack\n")
+        assert trace.index("restart_stack\n") < trace.index("{{.State.Health.Status}}")
+        assert trace.index("{{.State.Health.Status}}") < trace.index("{{.Image}}")
+        if identity == "sha256:previous":
+            assert "deployed_image=ghcr.io/tinyassets/tinyassets-daemon@sha256:" in result.stdout
+            assert "{{.State.Status}} tinyassets-logs" in trace
+        else:
+            assert "daemon is healthy but NOT running" in result.stderr
+            assert "deploy_result=rolled_back" not in result.stdout
+            assert "deployed_image=" not in result.stdout
 
 
 def test_terminal_receipt_invokes_pure_helper_and_preserves_atomic_writer():
@@ -1072,7 +1274,15 @@ def test_terminal_receipt_summary_python_is_executable(tmp_path):
 def test_terminal_receipt_does_not_assign_manual_image_source_from_github_sha():
     text = _text()
     assert "github.event.workflow_run.head_sha || github.sha" not in text
-    assert "org.opencontainers.image.revision" in text
+    # The deploy identifies an image by its OCI revision label, never by the
+    # run's own sha. The label is read in the script the workflow ships to the
+    # host (deploy/snapshot_candidate_evidence.sh) rather than inline, so the
+    # assertion covers the deploy CHAIN -- grepping only the workflow text would
+    # pass or fail on where the string happens to live.
+    chain = text + Path("deploy/snapshot_candidate_evidence.sh").read_text(
+        encoding="utf-8"
+    )
+    assert "org.opencontainers.image.revision" in chain
 
 
 def test_terminal_writer_outputs_are_visible_before_fallible_work():

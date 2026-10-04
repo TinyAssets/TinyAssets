@@ -31,8 +31,14 @@ const RUNS={
   output:{secret:'BOBS SECRET OUTPUT'}},
 };
 let automationsUniverseOverride='';
+let liveTurn=null, liveUniverseOverride='';
 const baseCall=MCP.callTool.bind(MCP);
 MCP.callTool=async function(tool,args,opts){
+ if(tool==='get_status'&&liveTurn!==null){
+  calls.push({tool,args:JSON.parse(JSON.stringify(args||{}))});
+  return {universe_id:liveUniverseOverride||args.universe_id,active_turn:liveTurn,
+    persona:{name:'PRIVATE PERSONA'},recent_conversation:{turns:[{speaker:'founder',text:'SECRET'}]}};
+ }
  if(tool==='read_graph'&&['automations','runs','run','run_output'].includes(args.target)){
   calls.push({tool,args:JSON.parse(JSON.stringify(args||{}))});
   allCalls.push({tool,args:JSON.parse(JSON.stringify(args||{}))});
@@ -150,6 +156,62 @@ for(const action of ['read_run','read_run_output']){
 const noField=await ask('read_run_output',{run_id:'run-a'});
 assert.equal(noField.ok,false); assert(/field is required/.test(noField.error),noField.error);
 assert.equal(calls.length,0,'refused arguments reach no tool');
+
+// ---- live state: which agent is working, on what, keyed by agent ---------
+binding=installed();
+liveTurn={turn_id:'t1',state:'tool',started_at:'2026-10-01T10:00:00+00:00',age_s:4,stale:false,
+ tools:[{tool:'bash',summary:'ran a command (git status)',state:'running',age_s:1.2,
+   command:'cat ~/.ssh/id_rsa',arguments:{x:1},result:'SECRET RESULT'},
+  {tool:'read',summary:'read notes/plan.md',state:'done',age_s:3,took_s:0.1}]};
+calls=[];
+const live=await ask('read_live',hostile);
+const liveCall=calls.find(c=>c.tool==='get_status');
+assert.equal(liveCall.args.universe_id,HOME,'pinned to the granted home');
+const agentsLive=live.result.agents;
+assert(agentsLive.length>=1);
+const worker=agentsLive.find(a=>a.state==='working');
+assert(worker,'the selected agent shows as working');
+assert.equal(worker.since,'2026-10-01T10:00:00+00:00');
+assert.deepEqual(worker.steps.map(s=>Object.keys(s).sort()),
+ [['age_s','state','summary','tool'],['age_s','state','summary','tool']]);
+assert(!JSON.stringify(live.result).includes('SECRET')&&!JSON.stringify(live.result).includes('id_rsa')
+ &&!JSON.stringify(live.result).includes('PRIVATE PERSONA'),'only picked fields cross');
+liveTurn={turn_id:'t1',state:'tool',started_at:'x',stale:true,tools:[]};
+const staleLive=await ask('read_live',{});
+assert(staleLive.result.agents.every(a=>a.state==='idle'),'a stale turn is not working');
+liveUniverseOverride='u-bob';
+const foreignLive=await ask('read_live',{});
+assert(foreignLive.error,'another universe\'s state is refused');
+liveUniverseOverride='';
+
+// ---- the roster carries exactly one "main", selected or not --------------
+// listAgents() already seeds the command center's own agent as "main", so
+// readLive must never add a second one. It used to prepend its own, named from
+// whoami(), whenever nothing was selected -- which drew that agent twice under
+// two different names on a screen that animates one villager per agent.
+binding={agent_binding_id:'b9',universe_id:HOME,agent_definition_id:'d1',
+ status:'configured',revision:1,created_by:PRINCIPAL,updated_by:PRINCIPAL,
+ configuration:{schema_version:1,name:'Weaver',role:'writer'}};
+liveTurn={turn_id:'t2',state:'tool',started_at:'2026-10-01T11:00:00+00:00',age_s:1,stale:false,
+ tools:[{tool:'read',summary:'read notes/plan.md',state:'done',age_s:1}]};
+for(const [who,label] of [['main','the command center\'s own agent is selected'],
+                          ['b9','an installed agent is selected'],
+                          ['ghost-b0','nothing is selected']]){
+ addressed=who;
+ const roster=await ask('read_live',{});
+ assert.equal(roster.ok,true,label);
+ const ids=roster.result.agents.map(a=>a.agent_id);
+ assert.equal(ids.filter(id=>id==='main').length,1,'exactly one "main": '+label);
+ assert.equal(new Set(ids).size,ids.length,'no agent listed twice: '+label);
+ assert.deepEqual(ids.slice().sort(),['b9','main'],'the roster is listAgents(): '+label);
+ const own=roster.result.agents.find(a=>a.agent_id==='main');
+ assert.equal(own.name,'Your agent','the own agent keeps one label: '+label);
+ const working=roster.result.agents.filter(a=>a.state==='working');
+ assert(working.length<=1,'at most one agent holds the turn: '+label);
+ assert.equal(working.map(a=>a.agent_id).join(','),who==='ghost-b0'?'':who,
+  'the selected agent holds the turn, and nobody holds it when none is: '+label);
+}
+addressed='main'; binding=installed(); liveTurn=null;
 
 // ---- a home change ends the grant for these reads too ---------------------
 me={principal_id:PRINCIPAL,universe_id:'u-bob',setup:'connected'};

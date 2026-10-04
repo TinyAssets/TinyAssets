@@ -154,6 +154,93 @@ jobs:
   # aggregate — and test_tests_workflow pins them equal. A shard added to one
   # and not the other is either a missing shard (gate red) or an unowned file
   # set (tests silently never run); the test is what stops the second.
+  # What this run must cover, decided ONCE so six shards and the aggregate
+  # cannot disagree about it (lean-CI lever L1,
+  # docs/design-notes/2026-10-02-affected-only-merge-gate.md).
+  #
+  # On `merge_group` the queue branch is base_sha + this entry's commits, so
+  # `affected_tests.py --base <base_sha>` is exactly the entry's own diff. On
+  # EVERY other event -- push to main, schedule, dispatch -- the answer is ALL,
+  # unconditionally: the post-merge run is the one that sees the whole surface,
+  # and `main-red.yml` acts on it. That split is the whole design; a selective
+  # push run would leave nothing covering the rest.
+  #
+  # It publishes the selection as an artifact AND its digest as an output. The
+  # digest is what makes the shards' agreement checkable: every shard records
+  # the digest it ran, and the aggregate refuses a union whose shards do not all
+  # report this one. If this job fails, the shards are skipped and the aggregate
+  # fails closed on `needs.required-tests-shard.result` -- it never reads a
+  # missing selection as "nothing to do".
+  select:
+    name: select
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      digest: ${{ steps.pick.outputs.digest }}
+      scope: ${{ steps.pick.outputs.scope }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # affected_tests.py diffs against the group's base commit.
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      # REQUIRED, not an optimisation. Selection imports every conftest to see
+      # what they load at runtime, and tests/conftest.py needs pytest and
+      # langgraph; on a bare runner that raises and affected_tests.py falls back
+      # to ALL. That fallback is correct (it is the only safe direction) but it
+      # made the whole gate inert while costing the overhead -- caught by
+      # cross-family review, which reproduced the missing-pytest failure.
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e '.[dev]'
+
+      - name: Pick what this run must cover
+        id: pick
+        env:
+          BASE: ${{ github.event.merge_group.base_sha }}
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "merge_group" ] && [ -n "${BASE:-}" ]; then
+            # --gate, not the advisory PR-time selection: ALL unless the diff
+            # shape carries a completeness argument (affected_tests.provable_shape).
+            python scripts/affected_tests.py --gate --base "$BASE" --out affected.txt
+            # Drop files that collect nothing under this gate's -m "not slow",
+            # BEFORE the digest, so a slow-only file neither fails coverage nor
+            # makes its shard exit 5.
+            python scripts/ci_required_tests.py \
+              --exclude-from .github/heavy-test-files.txt \
+              --prune-to-collectible affected.txt
+          else
+            echo ALL > affected.txt
+          fi
+          DIGEST="$(python scripts/ci_required_tests.py --print-selection-digest affected.txt)"
+          if [ "$(cat affected.txt)" = "ALL" ]; then SCOPE=ALL; else SCOPE=affected; fi
+          echo "digest=$DIGEST" >> "$GITHUB_OUTPUT"
+          echo "scope=$SCOPE" >> "$GITHUB_OUTPUT"
+          {
+            echo "### Selection: $SCOPE"
+            echo ""
+            echo "\`$DIGEST\`"
+            echo ""
+            echo '```'
+            head -c 60000 affected.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: affected-selection
+          path: affected.txt
+          if-no-files-found: error
+
   required-tests-shard:
     # Deliberately NOT `required-tests`: only the aggregate may carry the
     # protection context, or a green shard could satisfy it alone.
@@ -165,6 +252,7 @@ jobs:
     # ~10-17 min of every PR's wall clock. The aggregate below still REPORTS on
     # the PR (it cannot be skipped), explicitly deferring to the queue.
     if: github.event_name != 'pull_request'
+    needs: select
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
@@ -183,13 +271,42 @@ jobs:
           cache: pip
           cache-dependency-path: pyproject.toml
 
+      - uses: actions/download-artifact@v4
+        with:
+          name: affected-selection
+
+      # BEFORE the install, which is the cost: ~48 s a shard, paid six times a
+      # group even by a shard that owns two tests. Needs only the stdlib and the
+      # checkout, so it is free. Prints ALL, or this shard's selected-file
+      # count; when the count is 0 it also writes the empty junit and manifest
+      # the aggregate needs, so a shard with nothing to do still reports in the
+      # same shape as one that ran (a shard that simply vanished must keep
+      # failing the gate).
+      - name: Does this shard own any selected test
+        id: plan
+        run: |
+          mkdir -p shard-out
+          COUNT="$(python scripts/ci_required_tests.py \
+            --junit "shard-out/junit-shard-${{ matrix.shard }}.xml" \
+            --exclude-from .github/heavy-test-files.txt \
+            --affected affected.txt --shard "${{ matrix.shard }}/6" \
+            --profile affected --selection "${{ needs.select.outputs.digest }}" \
+            --plan-shard)"
+          echo "this shard owns: $COUNT"
+          echo "count=$COUNT" >> "$GITHUB_OUTPUT"
+
       - name: Install
+        if: steps.plan.outputs.count != '0'
         run: |
           python -m pip install --upgrade pip
           pip install -e '.[dev,browser]'
           python -m playwright install --with-deps chromium
 
+      # The whole-surface path, unchanged from before the selection existed:
+      # same command, same `shard` profile, same 1000-test floor. A push,
+      # schedule or dispatch run always lands here.
       - name: Run this shard of the required test surface
+        if: steps.plan.outputs.count == 'ALL'
         env:
           # Keep the suite off the real repo tree and off any host state. The
           # conftest already forces mock providers and sqlite_only storage; this
@@ -210,6 +327,22 @@ jobs:
             --junit "shard-out/junit-shard-${{ matrix.shard }}.xml" \
             --exclude-from .github/heavy-test-files.txt \
             --shard "${{ matrix.shard }}/6" --profile shard
+
+      # The selective path: this shard's slice of the entry's own selection.
+      # The `affected` profile's floor is 0 because a selection can honestly be
+      # one test -- the aggregate's COVERAGE check is what replaces the floor,
+      # and it is exact: every selected file must report a case.
+      - name: Run this shard of the selection
+        if: steps.plan.outputs.count != '0' && steps.plan.outputs.count != 'ALL'
+        env:
+          TINYASSETS_DATA_DIR: ${{ runner.temp }}/ta-data
+        run: |
+          mkdir -p "$TINYASSETS_DATA_DIR" shard-out
+          python scripts/ci_required_tests.py \
+            --junit "shard-out/junit-shard-${{ matrix.shard }}.xml" \
+            --exclude-from .github/heavy-test-files.txt \
+            --affected affected.txt --shard "${{ matrix.shard }}/6" \
+            --profile affected --selection "${{ needs.select.outputs.digest }}"
 
       - name: Upload shard result
         # always(): a red shard's junit and manifest are what let the aggregate
@@ -289,7 +422,7 @@ jobs:
     # with the `gh api` protection update in
     # docs/decisions/ADR-003-required-test-aggregator.md.
     name: required-tests
-    needs: required-tests-shard
+    needs: [select, required-tests-shard]
     # `always()` is the ONE condition this job may carry, and it is required,
     # not optional. Without it a failed or cancelled shard makes GitHub SKIP
     # this job, and a skipped required check is accepted by branch protection
@@ -321,8 +454,18 @@ jobs:
           path: shards/
           merge-multiple: true
 
-      - name: Decide the gate over the union of all shards
+      # Not read from the `select` output: the aggregate judges the selection it
+      # can actually READ, and then checks that file against the digest `select`
+      # published. If `select` failed there is no artifact, this step fails, and
+      # the gate is red -- a missing selection never reads as "nothing to do".
+      - name: Download the selection
         if: github.event_name != 'pull_request'
+        uses: actions/download-artifact@v4
+        with:
+          name: affected-selection
+
+      - name: Decide the gate over the union of all shards
+        if: github.event_name != 'pull_request' && needs.select.outputs.scope == 'ALL'
         env:
           SHARD_RESULT: ${{ needs.required-tests-shard.result }}
         run: |
@@ -334,14 +477,53 @@ jobs:
             --expect-shards 6 --shard-job-result "$SHARD_RESULT" \
             --junit junit.xml --min-ran 10700
 
+      # The selective verdict. Everything above still applies -- shard set,
+      # truncation, overlap, the quarantine comparison -- plus two checks that
+      # exist because the 10,700 floor cannot: every shard must report the
+      # digest `select` published, and every selected file must appear in the
+      # union with at least one case (any outcome, skip included). A file that
+      # reported nothing is a collapse and is named. `!= 'ALL'` rather than
+      # `== 'affected'` so a `select` job that produced no output at all still
+      # lands on a branch that fails closed.
+      - name: Decide the gate over this entry's selection
+        if: github.event_name != 'pull_request' && needs.select.outputs.scope != 'ALL'
+        env:
+          SHARD_RESULT: ${{ needs.required-tests-shard.result }}
+        run: |
+          python scripts/ci_required_tests.py --aggregate shards/ \
+            --expect-shards 6 --shard-job-result "$SHARD_RESULT" \
+            --junit junit.xml \
+            --exclude-from .github/heavy-test-files.txt \
+            --affected affected.txt --profile affected \
+            --selection "${{ needs.select.outputs.digest }}"
+
+      # The browser proofs must never read as satisfied by a SKIP, and these
+      # tests skip themselves when Chromium will not launch
+      # (`pytest.skip(f"Chromium is not available here: ...")`). Coverage
+      # accepts a skip -- it has to, for platform-guarded files -- so without
+      # this step a selective UI change could pass its gate without ever
+      # executing its browser proof. Caught by cross-family review.
+      #
+      # Two steps rather than one because `ci_assert_junit_case` exits 1 on an
+      # ABSENT case: on a selective union the marked cases OUTSIDE the selection
+      # are legitimately absent, so there the assertion is restricted to the
+      # selected files, and an empty intersection is an honest pass.
       - name: Require every browser proof in the shard union
-        if: github.event_name != 'pull_request'
+        if: github.event_name != 'pull_request' && needs.select.outputs.scope == 'ALL'
         run: |
           # Collection discovers the current marker set. The report must show
           # each case passed; an unavailable browser must never become a skip.
           pip install -e '.[dev,browser]'
           python scripts/ci_assert_junit_case.py --junit junit.xml \
             --marker real_browser --label required-browser-proof
+
+      - name: Require every SELECTED browser proof in the shard union
+        if: github.event_name != 'pull_request' && needs.select.outputs.scope != 'ALL'
+        run: |
+          pip install -e '.[dev,browser]'
+          python scripts/ci_assert_junit_case.py --junit junit.xml \
+            --marker real_browser --only-files affected.txt \
+            --label required-browser-proof
 
       - name: Upload junit
         if: always()

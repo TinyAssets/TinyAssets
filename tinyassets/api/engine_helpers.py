@@ -53,6 +53,7 @@ from typing import Any
 
 from tinyassets.api.helpers import _base_path, _read_json
 from tinyassets.catalog import CommitFailedError, DirtyFileError, get_backend
+from tinyassets.universe_files import write_data_path
 
 logger = logging.getLogger("universe_server.engine_helpers")
 
@@ -116,10 +117,7 @@ def _append_ledger(
         if not isinstance(existing, list):
             existing = []
         existing.append(entry)
-        ledger_path.write_text(
-            json.dumps(existing, indent=2, default=str),
-            encoding="utf-8",
-        )
+        write_data_path(ledger_path, json.dumps(existing, indent=2, default=str))
     except OSError as exc:
         logger.warning("Failed to append ledger entry at %s: %s", ledger_path, exc)
 

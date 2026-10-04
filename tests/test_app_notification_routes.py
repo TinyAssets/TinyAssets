@@ -38,6 +38,7 @@ PUBLIC_APP_PATHS = {
     "/app/oauth/client-metadata.json",
     "/app/sw.js",        # the browser fetches a service worker with no bearer
     "/app/ui-frame",     # an <iframe src> carries no bearer; the frame holds no identity
+    "/app/m/b0/main.js",  # the app's ES modules load before sign-in; static, no identity
 }
 
 
@@ -76,6 +77,7 @@ def _app_route_paths() -> list[str]:
             continue
         paths.append(
             path.replace("{operation}", "probe").replace("{flow}", "connect")
+            .replace("{build}", "b0").replace("{name}", "main.js")
         )
     return paths
 

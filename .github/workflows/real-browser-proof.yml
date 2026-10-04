@@ -26,6 +26,10 @@ name: real-browser-proof
 
 on:
   pull_request:
+    # `ready_for_review` is NOT a default type, and the job below skips on a
+    # draft; without it a PR marked ready keeps the draft run's skip until its
+    # next push.
+    types: [opened, reopened, synchronize, ready_for_review]
     paths:
       # This job and its assertion helper.
       - ".github/workflows/real-browser-proof.yml"
@@ -39,8 +43,11 @@ on:
       # The proofs.
       - "tests/test_custom_ui_forms_browser.py"
       - "tests/test_app_chat_cloud_browser.py"
+      - "tests/test_owner_ui_prefs_browser.py"
       - "tests/test_app_phone_conversation_browser.py"
+      - "tests/test_app_send_resume_browser.py"
       - "tests/test_app_two_surfaces_browser.py"
+      - "tests/test_command_center_system_browser.py"
       - "tests/test_custom_ui_real_browser.py"
       - "tests/test_connect_free_ai_real_browser.py"
   workflow_dispatch:
@@ -55,6 +62,14 @@ concurrency:
 jobs:
   real-browser-proof:
     name: real-browser-proof
+    # Drafts do not spend a runner here; `ready_for_review` above runs it for
+    # real as soon as the PR is ready, and `workflow_dispatch` is unaffected
+    # (the condition's first clause is true for every non-PR event).
+    # Deliberately NOT a branch-protection context (see the header and
+    # test_not_the_required_context), which is what makes skipping safe: a
+    # skipped job reports `conclusion=skipped` and branch protection accepts
+    # that as satisfied.
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     # Ephemeral GitHub-hosted VM only, never self-hosted.
     runs-on: ubuntu-latest
     timeout-minutes: 15

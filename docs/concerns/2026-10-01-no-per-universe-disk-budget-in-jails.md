@@ -2,7 +2,7 @@
 severity: P1
 title: A jailed process can fill the shared disk; the storage quota only counts its writes afterwards
 filed: '2026-10-01'
-summary: 'The account storage quota is enforced only on platform-mediated writes. Bytes written inside the tool jail or the provider jail are never gated, and are counted only when the owner''s next gated write re-measures. The tool jail stops at a volume-wide 1 GiB floor, and the provider jail has no disk limit at all. /data is a Docker volume on the droplet''s root ext4, so one universe can fill the disk that every user, Docker and the OS share. Fix by construction: kernel project quotas, one project per account, on a dedicated data volume. Interim in-repo gates are listed below.'
+summary: 'The account storage quota is enforced only on platform-mediated writes. Bytes written inside the tool jail or the provider jail are never gated, and are counted only when the owner''s next gated write re-measures. The tool jail stops at a volume-wide 1 GiB floor, and the provider jail has no disk limit at all. /data is a Docker volume on the droplet''s root ext4, so one universe can fill the disk that every user, Docker and the OS share. Fix by construction: the sealed box (per-command-center disk), founder-approved 2026-10-01. Interim per-launch guards shipped in tinyassets/jail_disk.py.'
 ---
 
 # A jailed process can fill the shared disk
@@ -34,30 +34,33 @@ A provider CLI run is bounded only by its own turn.
 **In production, the shared disk is the root disk.**
 `/data` is the Docker volume `tinyassets-data` at `/var/lib/docker/volumes/tinyassets-data/_data`, on `/dev/vda1`: ext4, 49 GiB, 40% used on 2026-10-01, kernel 6.1. The same filesystem holds the OS, journald and Docker's images. A fill does more than refuse other users' writes: it can stop the host (no room to pull an image, write a log, or run SQLite WAL checkpoints for every user). Compare `2026-09-24-p0-disk-full-repair-uses-broad-prune.md`.
 
-## Fix by construction (recommended)
+## Fix by construction: the sealed box (superseded the volume plan)
 
-Use **kernel project quotas, one project ID per account, on a dedicated data volume.** The account quota already exists as `usage_policy.limits_for(...).storage_bytes`. The kernel then refuses the write with `EDQUOT` for every process, jailed or not, platform or user, and enforces an inode limit too. Nothing has to poll or walk the tree.
+Founder-approved 2026-10-01: every command center owns its own fixed-size disk
+inside its own box. A box filling its disk then affects only itself, which is
+the cross-user floor by construction. The earlier proposal here (per-account
+kernel project quotas on a dedicated data volume) is superseded and will not
+be built.
 
-1. Attach a DigitalOcean block volume, formatted ext4 with `-O project,quota` and mounted with `prjquota`, or XFS mounted with `prjquota`. Move `tinyassets-data` onto it.
-   - This also takes user data off the root disk, so a fill can no longer stop the host.
-   - Root ext4 cannot gain the `project` feature while mounted. That is why a new volume beats retrofitting `/dev/vda1`.
-   - Cost: about $0.10/GiB/month, plus a single migration with a short downtime to copy `/data` and repoint the volume.
-2. Give each account a project ID. When a universe directory is created, set that ID on it with inherit (`chattr -p <id> +P`, i.e. `FS_IOC_FSSETXATTR`), so every file a jail creates under it inherits the ID.
-   - Setting project IDs and limits needs host `CAP_SYS_ADMIN`. The daemon runs as uid 1001, so a small root-side step does it: the container entrypoint before it drops privileges, or a host unit. It runs `setquota -P` from the ledger's per-account quota, and runs again when an account changes tier.
-3. Map `EDQUOT` to the existing visible refusal (`storage_quota_exceeded`, with the inline upgrade link) in the jail result trailer.
-4. Size `/tmp` in `jail_argv` with `--size` (bubblewrap 0.12 supports it), so jail scratch space is bounded RAM. A one-line change, independent of the rest.
+## Interim guards (shipped; delete with the box)
 
-Expected cost: about a day for steps 2–4 plus tests, and the host migration in step 1 recorded as a `docs/host-actions.md` row.
+All in `tinyassets/jail_disk.py`, so it goes in one place:
 
-## Interim (in-repo, no host change; narrows the window, does not close it)
+- every tmpfs a jail mounts is sized (`/tmp` 256 MiB, masks 16 MiB);
+- both jails refuse to start below the volume floor (1 GiB / 4096 inodes) and
+  are killed when a run crosses it -- the provider jail had neither;
+- each launch measures its command center fresh and reserves what still fits
+  in the owning account, capped at 1 GiB per launch, renewed while it runs;
+- a run is killed (`storage_limit`) once everything it can write (including
+  `.runtime` and `workspaces/`) grew past that bound; a volume-growth signal or
+  a 5 s timer triggers the walk;
+- a full account still runs, on a 16 MiB grace budget with a visible notice, so
+  the owner can free space through their own agent.
 
-1. **Gate before launch.** The tool jail and the provider launch refuse to start when the owning account is at its quota, judged on a fresh measurement of its `universe_files` store (re-measure the account's stale rows the way `reserve` does with `_stale_pairs`/`_measure_many`, then compare. `usage()` alone only reads the ledger).
-2. **Give the provider jail the tool jail's floor.** Check free bytes and inodes before launch, and add a supervisor poll that kills the run below the floor. Today it has neither.
-3. **Kill on headroom crossed.** The tool jail already polls `statvfs` every 0.2 s, so it can kill when the volume's used bytes have grown since launch by more than the account's remaining headroom. Concurrent writers are attributed to this jail, which can over-kill; that errs toward refusing, which is the safe direction.
-4. `--size` on `/tmp` (as in step 4 above).
-
-What the interim leaves open: a single call can still overshoot by its own write rate times the poll interval. The volume-wide floor still lets one account consume the shared space down to 1 GiB before anything stops it. Only the project quota makes the per-account limit a property of the filesystem.
+What it does not close: one call can overshoot by its write rate times the
+poll interval, and the volume floor still lets one account consume shared
+space down to 1 GiB before anything stops it.
 
 ## Resolution
 
-This concern is resolved when a jailed write past the owning account's quota fails with `EDQUOT`. The proof is a real-jail test that writes many small files and stops at the quota, with other universes' writes unaffected. Delete this file in the PR that lands it.
+Resolved when command centers run in their sealed boxes: a box that fills its own disk leaves every other box writable (proof: a real test that fills one box and writes in another). Delete this file, and `tinyassets/jail_disk.py` with it, in that PR.

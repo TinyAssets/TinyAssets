@@ -53,7 +53,7 @@ _DECLS = (
     # The Stop control's state (a turn's cleanup reads it).
     r"let interruptRequested=[^\n]*;",
     # Lines steered into a running turn (harness S2).
-    r"let steeredLines=[^\n]*;", r"let pendingSteers=[^\n]*;",
+    r"let steeredLines=[^\n]*;", r"let pendingSteers=[^\n]*;", r"let watchedActive=[^\n]*;",
 )
 _FUNCS = (
     "turnInputMethod", "rememberInflight", "forgetInflight", "readInflight", "renderConverse",
@@ -67,26 +67,30 @@ _FUNCS = (
     "offerSavedLine", "clearComposerState", "clearAccountScopedState", "clearThread",
 )
 _OPTIONAL_FUNCS = ("sameInflight", "forgetInflightIf", "noteHeldQueue",
-                   "offerSavedConversationCheck",
+                   "offerSavedConversationCheck", "attachSavedConversationCheck",
                    # Collaborators `clearAccountScopedState` gained on
                    # 2026-09-30: rail card nodes are now kept across a refresh
                    # so a 15-second poll cannot delete what the user typed into
                    # a card, which makes clearing them an account-change step.
                    # Optional like their siblings, so these harnesses stay green
                    # against a tree without the change.
-                   "clearRailCards", "clearTypedValues",
+                   "clearRailCards", "clearTypedValues", "clearMemoryState",
                    # The Stop control: a turn's cleanup asks whether the queue
                    # goes out as one batch.
                    "takeInterruptFlush", "flushAfterTurn", "drainAfterStop",
                    "takeBatch", "flushBatch",
                    # Harness S2: steering a running turn, and settling it.
                    "markSteered", "unmarkSteered", "steerOrQueue", "settleSteered",
-                   "adoptSteered")
+                   "adoptSteered", "markHeld", "restoreHeldSteers", "readServerTurnRow",
+                   "claimHeldLines", "pinLineAgent", "alreadyHandled", "showActiveTurn",
+                   "finishActiveTurn", "readPendingTurns", "sendBatch")
 
 # The shim above stops at `__APP_FUNCTIONS__`; this test supplies the
 # collaborators `pollStatus` reaches that the send/restore scenarios never did.
 _EXTRA_SHIM = r"""
 els["dot"]=new El("div"); els["universe-name"]=new El("div");
+for(const id of ["profile-name","profile-responsibility","profile-status"])
+  els[id]=new El("div");
 let healed=[]; async function healServing(s){ healed.push(s); }
 let uploadRestores=0; function restoreUploadRecords(){ uploadRestores++; }
 ModelPicker.reset=()=>{}; ModelPicker.snapshot=null;

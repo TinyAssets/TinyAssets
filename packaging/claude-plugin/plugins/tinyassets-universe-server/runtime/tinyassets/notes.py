@@ -70,28 +70,31 @@ def _notes_path(universe_path: str | Path) -> Path:
 
 def _load_notes(universe_path: str | Path) -> list[Note]:
     """Load all notes from notes.json."""
+    from tinyassets.universe_files import MAX_PLATFORM_FILE_BYTES, read_data_path
+
     path = _notes_path(universe_path)
-    if not path.exists():
+    # Link-free. A REFUSED read raises: reading it as [] would let the next
+    # _save_notes replace the file with one note.
+    raw = read_data_path(path, max_bytes=MAX_PLATFORM_FILE_BYTES)
+    if raw is None:
         return []
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(raw.decode("utf-8"))
         if not isinstance(data, list):
             return []
         return [Note.from_dict(d) for d in data if isinstance(d, dict)]
-    except (json.JSONDecodeError, OSError) as e:
+    except ValueError as e:
         logger.warning("Failed to load notes: %s", e)
         return []
 
 
 def _save_notes(universe_path: str | Path, notes: list[Note]) -> None:
     """Save all notes to notes.json."""
+    from tinyassets.universe_files import write_data_path
+
     path = _notes_path(universe_path)
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(
-            json.dumps([n.to_dict() for n in notes], indent=2) + "\n",
-            encoding="utf-8",
-        )
+        write_data_path(path, json.dumps([n.to_dict() for n in notes], indent=2) + "\n")
     except OSError as e:
         logger.warning("Failed to save notes: %s", e)
 

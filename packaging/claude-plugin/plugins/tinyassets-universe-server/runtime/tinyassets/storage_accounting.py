@@ -505,6 +505,14 @@ def _automations(base: Path, account_id: str) -> int:
     )
 
 
+def _packages(base: Path, account_id: str) -> int:
+    """Published command-center package content, by the author who owns each blob
+    (listed or not: ownership is recorded before the blob is written)."""
+    from tinyassets.command_center_packages import measure_packages
+
+    return measure_packages(base, _account_actors(base, account_id))
+
+
 #: THE registry. Every place user bytes live is either here, or named in
 #: `PLATFORM_ENTRIES` with why it is not the user's;
 #: `tests/test_storage_registry_complete.py` fails on any store that is neither.
@@ -523,6 +531,7 @@ STORES: dict[str, Store] = {
         Store("automations", SCOPE_ACCOUNT, _automations),
         Store("workspaces", SCOPE_UNIVERSE, _workspaces),
         Store("agent_activities", SCOPE_UNIVERSE, _agent_activities),
+        Store("packages", SCOPE_ACCOUNT, _packages),
     )
 }
 
@@ -541,6 +550,14 @@ ROOT_ENTRIES: dict[str, str] = {
     "daemon_wikis": "daemon_memory",
     "wiki": "commons_pages",
     ".storage_accounting.db": "platform: this ledger",
+    ".command-center-packages": (
+        "packages (published package blobs, by author); its consent pins and "
+        "version index are platform"
+    ),
+    "packages.db": (
+        "platform: package versions and consent pins, inside "
+        ".command-center-packages/ (blob bytes are charged as packages)"
+    ),
     "scratch": "platform: shared scratch pool, never charged (storage-permanent-vs-scratch)",
     ".workspace-staging": "platform: transient checkout staging, swept by liveness",
     ".consumer_liveness": "platform: process liveness locks",
@@ -550,11 +567,13 @@ ROOT_ENTRIES: dict[str, str] = {
     ".account_seats.db": "platform: per-account seat leases",
     ".engine_run_admissions.db": "platform: admission ledger",
     ".automations.db": "automations (user inputs by owner; schedule bookkeeping is platform)",
+    ".control_plane.db": "platform: control-plane trigger table and fire ledger (design D7)",
     ".universe-tool-slots": "platform: tool jail slots",
     ".agent-sessions": (
         "platform: which native session each thread resumes (bytes per thread; "
         "the session files themselves live in the command center and count there)"
     ),
+    "history.db": "platform: harness history inside .agent-sessions/<universe>/ (D7a)",
     "rules.db": (
         "platform: the owner's Custom Rules for their agents, inside "
         ".agent-sessions/<universe>/ (harness D1a)"
@@ -567,11 +586,17 @@ ROOT_ENTRIES: dict[str, str] = {
         "platform: the owner's mid-turn messages, inside .agent-sessions/<universe>/ "
         "(harness S2); emptied at every turn end"
     ),
+    "activity.db": (
+        "platform: the agent's recent tool calls for its owner's live view, inside "
+        ".agent-sessions/<universe>/ (harness S4); the latest 200 per session"
+    ),
     ".auth.db": "platform: sessions (never gated)",
     ".hosted-model-auth.db": "platform: credential vault (never gated)",
     ".owner_devices.db": "platform: device registrations",
     ".effector_consents.db": "platform: consent records",
     ".outbound-proxy": "platform: egress proxy state",
+    ".broker": "platform: credential broker socket, owner fence and operation bookkeeping",
+    "ops.db": "platform: bounded broker idempotency records under .broker/state",
     ".run-execution-locks": "platform: locks",
     ".run-file-operation-locks": "platform: locks",
     ".connect": "platform: connection handshakes",
@@ -607,6 +632,7 @@ UNIVERSE_ENTRIES: frozenset[str] = frozenset({
     ".subscription_state.db", ".pending_requests.db", ".usage_ledger.db",
     ".wiki_write_back_destination_markers.db", ".authoring.db", ".lock",
     ".effector_consents.db", ".external_write_receipts.db", ".idempotency.db",
+    ".manifest.json",  # canon/.manifest.json, inside the universe walk
     # The agent's own workspace (harness W2): user bytes, counted by the walk.
     ".agent-workspace",
 })
@@ -617,6 +643,9 @@ UNIVERSE_ENTRIES: frozenset[str] = frozenset({
 #: directory is named here.
 ELSEWHERE_ENTRIES: frozenset[str] = frozenset({
     ".git", ".agents", ".author_server.db", ".workflow.db",
+    # The box host's control-plane record (boxes/local.py), kept in the box
+    # driver's own state_dir, never inside a universe or charged to a user.
+    "boxhost.db",
 })
 
 
@@ -757,13 +786,13 @@ def _scopes(base: Path, account_id: str) -> list[tuple[str, str]]:
 def measure(base_path: str | Path, scope_id: str, store: str, *, now: float | None = None) -> int:
     """Measure one store for one scope and retire the pending rows it covers.
 
-    The sequence is read BEFORE scanning; only committed rows at or below it are
+    A unique sequence is allocated BEFORE scanning; only committed rows at or below it are
     retired, because only those were provably on disk when the scan began.
     """
     base = Path(base_path)
     spec = STORES[store]
     with _txn(base) as conn:
-        start_seq = int(conn.execute("SELECT seq FROM counter WHERE id = 1").fetchone()[0])
+        start_seq = _next_seq(conn)
     started = time.time() if now is None else float(now)
     size = int(spec.measure(base, scope_id))
     if size < 0:
@@ -829,30 +858,46 @@ def reserve_fitted(
     account = named_principal(account_id or "")
     if not account:
         return Reservation(base, None, None, 0), int(cap)
+    if store not in STORES:
+        raise KeyError(f"unregistered store {store!r}")
     quota, tier = _quota(base, account)
     pairs = _scopes(base, account)
+    if (scope_id, store) not in pairs:
+        raise ValueError(f"{store}/{scope_id} is not part of this account's storage")
+    credit = max(0, int(credit))
     try:
         stale = _stale_pairs(base, pairs)
         if stale:
             _measure_many(base, stale)
-        conn = _connect(base)
-        try:
+        # Fitting and reserving are one decision: a concurrent admission must
+        # fit the capacity left by earlier writers, not reuse a stale bound.
+        with _txn(base) as conn:
             current = _usage_in(conn, account, pairs, quota, tier)
-        finally:
-            conn.close()
+            bound = min(int(cap), quota - current.used_bytes + credit)
+            # Replaced bytes remain measured until discard, so only their
+            # increment is new pending capacity.
+            incremental = max(0, bound - credit)
+            if bound < minimum or current.used_bytes + incremental > quota:
+                universes = len({
+                    scope for scope, st in pairs if STORES[st].scope == SCOPE_UNIVERSE
+                })
+                raise StorageRefused(
+                    refusal_record(current, minimum, universes=universes), account,
+                )
+            cursor = conn.execute(
+                "INSERT INTO pending (account_id, scope_id, store, bytes, state, created_at) "
+                "VALUES (?, ?, ?, ?, 'reserved', ?)",
+                (account, scope_id, store, incremental, time.time()),
+            )
+            reservation = Reservation(base, int(cursor.lastrowid), account, incremental)
     except sqlite3.Error:
         _log.exception("storage ledger unavailable for a fitted reservation")
         raise StorageRefused(_unavailable_record(minimum)) from None
-    bound = min(int(cap), quota - current.used_bytes + max(0, int(credit)))
-    if bound < minimum:
-        universes = len({scope for scope, st in pairs if STORES[st].scope == SCOPE_UNIVERSE})
-        raise StorageRefused(refusal_record(current, minimum, universes=universes), account)
-    # The replaced bytes are still measured until their discard lands, so only
-    # the part beyond them is new pending.
-    reservation = reserve(
-        base, account_id=account, scope_id=scope_id, store=store,
-        nbytes=max(0, bound - max(0, int(credit))),
-    )
+    if current.unmeasured:
+        _log.warning(
+            "storage decided with unmeasured stores %s (counted as 0)",
+            list(current.unmeasured),
+        )
     return reservation, bound
 
 
@@ -1247,6 +1292,33 @@ def commit(reservation: Reservation, actual_bytes: int | None = None) -> None:
         )
 
 
+def renew_checked(reservation: Reservation) -> bool:
+    """Renew an existing lease, reporting whether its capacity is still held.
+
+    Never recreates a lost reservation. An old but still-present reserved row
+    may renew: its capacity remains charged until a measurement reaps it.
+    Unattributed writes have no ledger lease. Ledger failures fail closed.
+    """
+    if reservation.id is None:
+        return True
+    try:
+        with _txn(reservation.base) as conn:
+            cursor = conn.execute(
+                "UPDATE pending SET created_at = ? WHERE id = ? "
+                "AND account_id = ? AND bytes = ? AND state = 'reserved'",
+                (time.time(), reservation.id, reservation.account_id, reservation.bytes),
+            )
+            return cursor.rowcount == 1
+    except Exception:  # noqa: BLE001 -- callers must stop on a lost lease
+        _log.warning("storage renew failed for reservation %s", reservation.id, exc_info=True)
+        return False
+
+
+def renew(reservation: Reservation) -> None:
+    """Best-effort compatibility API; supervisors should use `renew_checked`."""
+    renew_checked(reservation)
+
+
 def release(reservation: Reservation) -> None:
     """The write did not happen. Never raises: the caller is already failing."""
     if reservation.id is None:
@@ -1356,6 +1428,7 @@ __all__ = [
     "measure",
     "refusal_record",
     "release",
+    "renew",
     "reserve",
     "touch",
     "usage",

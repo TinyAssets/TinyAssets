@@ -85,6 +85,7 @@ import os
 import re
 import shutil
 import signal
+import stat
 import subprocess
 import threading
 import time
@@ -92,6 +93,7 @@ from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath
 
+from tinyassets import jail_disk
 from tinyassets.addressed_agents import MAIN_AGENT
 from tinyassets.providers import provider_jail
 from tinyassets.providers.provider_jail import (
@@ -99,6 +101,12 @@ from tinyassets.providers.provider_jail import (
     JailMount,
     UniverseView,
     jail_argv,
+)
+from tinyassets.tool_images import (
+    MAX_IMAGE_SOURCE_BYTES,
+    ToolImage,
+    bound_image,
+    is_image_path,
 )
 
 __all__ = [
@@ -137,7 +145,7 @@ MOUNT_POINT = "/u"
 #: would read as "learned"); the harness directories are created first.
 AGENT_BRAIN_FILES: tuple[str, ...] = (
     "identity.md", "founder.md", "origin.md", "body.md", "orgchart.md",
-    "projects.md", "goals.md", "index.md", "log.md", "voice.md", "AGENTS.md",
+    "projects.md", "goals.md", "index.md", "log.md", "voice.md", "AGENTS.md", "MEMORY.md",
 )
 AGENT_HARNESS_DIRS: tuple[str, ...] = (
     "skills", "prompts", "extensions", "workflows", "bin", "notes", "wiki",
@@ -228,10 +236,10 @@ class ToolLimits:
     tree_memory_bytes: int = 768 * _MiB
     #: Free space the shared data volume must keep: a call is refused below it,
     #: and a running jail is killed when its writes take the volume below it.
-    min_free_disk_bytes: int = 1024 * _MiB
+    min_free_disk_bytes: int = jail_disk.MIN_FREE_DISK_BYTES
     #: Free inodes the shared data volume must keep: a full inode table is a
     #: cross-user outage that free BYTES do not show (many tiny files).
-    min_free_inodes: int = 4096
+    min_free_inodes: int = jail_disk.MIN_FREE_INODES
     #: ``nice`` increment for jail processes: they yield to the daemon's own
     #: work on the shared 1 vCPU box.
     nice_increment: int = 10
@@ -263,13 +271,18 @@ class ToolRun:
     exit_code: int | None
     output: bytes
     #: ``timeout``, ``output_limit``, ``memory_limit``, ``process_limit``,
-    #: ``disk_limit`` or None.
+    #: ``disk_limit``, ``storage_limit`` or None.
     killed: str | None
     elapsed: float
     #: Seconds this call spent QUEUED for a host tool slot before it started.
     #: Reported in the result trailer: every tool here answers with text, and a
     #: wait the caller cannot see is indistinguishable from a hang.
     waited: float = 0.0
+    #: Said before the tool's answer: the owner is out of storage (the call
+    #: still ran, on a small grace budget -- see `jail_disk`).
+    notice: str = ""
+    #: Bytes this call could add to the universe before ``storage_limit``.
+    disk_bound: int = 0
 
 
 # ── the jail ────────────────────────────────────────────────────────────────
@@ -401,9 +414,19 @@ def tool_jail_argv(
         raise UniverseToolError("the command center folder does not exist")
     bwrap = provider_jail.BWRAP_RESOLVER()
     view = _universe_view(root, egress_socket, agent_id=agent_id)
+    # The egress socket lives in the daemon-owned sidecar folder, outside the
+    # command center, so it has to be declared as the exact path this jail is
+    # allowed to bind from there. A directory prefix is not a capability: the
+    # validator used to admit anything resolving under that folder, which let a
+    # swapped link turn one of the binds below into a writable handle on
+    # daemon-owned state (provider_jail.UNIVERSE_SIDECARS_DIR).
+    platform_sources = (
+        frozenset({Path(egress_socket).resolve(strict=False)})
+        if egress_socket is not None else frozenset()
+    )
     return jail_argv(
         list(inner), view, bwrap_path=bwrap, clearenv=True,
-        seccomp_fd=seccomp_fd,
+        seccomp_fd=seccomp_fd, platform_sources=platform_sources,
     )
 
 
@@ -436,26 +459,8 @@ def _seccomp_fd() -> int:
     return program_fd()
 
 
-def _statvfs(path: Path) -> os.statvfs_result | None:
-    try:
-        return os.statvfs(path)
-    except (AttributeError, OSError):
-        return None
-
-
-def _free_disk(path: Path) -> int:
-    stats = _statvfs(path)
-    return -1 if stats is None else int(stats.f_bavail) * int(stats.f_frsize)
-
-
-def _free_inodes(path: Path) -> int:
-    stats = _statvfs(path)
-    if stats is None:
-        return -1
-    favail = getattr(stats, "f_favail", -1)
-    # Some filesystems (e.g. btrfs) report 0 inodes: they have no fixed table,
-    # so the inode floor does not apply -- treat as "unmeasurable", never full.
-    return -1 if favail in (-1, 0) and getattr(stats, "f_files", 0) == 0 else int(favail)
+_free_disk = jail_disk.free_bytes
+_free_inodes = jail_disk.free_inodes
 
 
 #: Set from the parent right after spawn: no ``preexec_fn`` (the daemon is
@@ -661,29 +666,33 @@ def run_jailed(
         egress = {} if egress_socket is None else {"egress_socket": egress_socket}
         argv = TOOL_JAIL_ARGV(root, limited, agent_id=agent_id, seccomp_fd=filter_fd, **egress)
         with _slot(root, on_wait=on_wait, waited=queued):
-            free = _free_disk(root)
-            if 0 <= free < limits.min_free_disk_bytes:
+            try:
+                budget = jail_disk.open_budget(
+                    root, min_free_bytes=limits.min_free_disk_bytes,
+                    min_free_inodes=limits.min_free_inodes,
+                )
+            except jail_disk.DiskFloorRefused as below:
                 raise UniverseToolError(
-                    "the shared disk is nearly full, so the tool jail will not start; "
-                    "nothing ran"
-                )
-            inodes = _free_inodes(root)
-            if 0 <= inodes < limits.min_free_inodes:
-                raise UniverseToolError(
-                    "the shared disk is nearly out of inodes, so the tool jail will "
-                    "not start; nothing ran"
-                )
-            with _root_cgroup(limits, process_cap) as cgroup:
-                if cgroup is not None:
-                    # The shell joins the cgroup, THEN becomes bwrap: nothing of
-                    # the jail ever runs outside it. A failed join never execs.
-                    argv = ["/bin/sh", "-c", 'echo $$ > "$0" && exec "$@"',
-                            str(cgroup / "cgroup.procs"), *argv]
-                run = _supervise(
-                    argv, root, filter_fd, stdin=stdin, limits=limits, wall=wall,
-                    cap=cap, process_cap=process_cap,
-                )
-                return replace(run, waited=queued[0] if queued else 0.0)
+                    f"{below}, so the tool jail will not start; nothing ran"
+                ) from None
+            try:
+                with _root_cgroup(limits, process_cap) as cgroup:
+                    if cgroup is not None:
+                        # The shell joins the cgroup, THEN becomes bwrap: nothing
+                        # of the jail ever runs outside it. A failed join never
+                        # execs.
+                        argv = ["/bin/sh", "-c", 'echo $$ > "$0" && exec "$@"',
+                                str(cgroup / "cgroup.procs"), *argv]
+                    run = _supervise(
+                        argv, root, filter_fd, stdin=stdin, limits=limits, wall=wall,
+                        cap=cap, process_cap=process_cap, budget=budget,
+                    )
+            finally:
+                budget.settle()
+            return replace(
+                run, waited=queued[0] if queued else 0.0, notice=budget.notice,
+                disk_bound=budget.bound,
+            )
     finally:
         os.close(filter_fd)
 
@@ -771,6 +780,7 @@ def _remove_cgroup(path: Path) -> None:
 def _supervise(
     argv: list[str], root: Path, filter_fd: int, *, stdin: bytes | None,
     limits: ToolLimits, wall: float, cap: int, process_cap: int,
+    budget: jail_disk.DiskBudget,
 ) -> ToolRun:
     """Start the jail and watch it until it ends or a limit kills it."""
     started = time.monotonic()
@@ -800,7 +810,7 @@ def _supervise(
         feeder.start()
     killed = None
     try:
-        killed = _watch(proc, out, root, limits=limits, wall=wall,
+        killed = _watch(proc, out, budget, limits=limits, wall=wall,
                         process_cap=process_cap, started=started)
     finally:
         try:
@@ -831,8 +841,8 @@ def _supervise(
 
 
 def _watch(
-    proc: subprocess.Popen, out: _Drain, root: Path, *, limits: ToolLimits,
-    wall: float, process_cap: int, started: float,
+    proc: subprocess.Popen, out: _Drain, budget: jail_disk.DiskBudget, *,
+    limits: ToolLimits, wall: float, process_cap: int, started: float,
 ) -> str | None:
     """Poll the running jail; kill it and name the limit the moment one breaks."""
     next_tree = 0.0
@@ -846,16 +856,12 @@ def _watch(
         elif now >= next_tree:
             next_tree = now + 0.2
             count, rss = _tree(proc.pid)
-            free = _free_disk(root)
-            inodes = _free_inodes(root)
             if count > process_cap:
                 killed = "process_limit"
             elif rss > limits.tree_memory_bytes:
                 killed = "memory_limit"
-            elif 0 <= free < limits.min_free_disk_bytes:
-                killed = "disk_limit"
-            elif 0 <= inodes < limits.min_free_inodes:
-                killed = "disk_limit"
+            else:
+                killed = budget.breach()
         if killed:
             _kill(proc)
             return killed
@@ -902,9 +908,10 @@ def _waited_note(run: ToolRun) -> str:
     caller learns that its 40-second read was 38 seconds of queueing is if the
     answer says so.
     """
+    notice = f"{run.notice}\n" if run.notice else ""
     if run.waited < 1.0:
-        return ""
-    return f"[waited {run.waited:.0f}s for a free tool slot on this host]\n"
+        return notice
+    return notice + f"[waited {run.waited:.0f}s for a free tool slot on this host]\n"
 
 
 def _trailer(run: ToolRun, limits: ToolLimits, wall: float) -> str:
@@ -918,6 +925,11 @@ def _trailer(run: ToolRun, limits: ToolLimits, wall: float) -> str:
         return f"[killed: more than {limits.processes} processes]"
     if run.killed == "disk_limit":
         return "[killed: the shared disk was nearly full]"
+    if run.killed == "storage_limit":
+        return (
+            f"[killed: this call added more than {run.disk_bound} bytes to the command center, "
+            "all the owner's cloud storage had room for]"
+        )
     if run.exit_code == 128 + _SIGXCPU:
         return "[killed: cpu time limit]"
     if run.exit_code == 128 + _SIGKILL:
@@ -928,11 +940,14 @@ def _trailer(run: ToolRun, limits: ToolLimits, wall: float) -> str:
 def read_file(
     universe_dir: Path, path: str, offset: int = 0, limit: int = 0,
     *, agent_id: str, limits: ToolLimits = DEFAULT_LIMITS,
-) -> str:
-    """Up to ``limit`` lines of a file from line ``offset`` (1-based)."""
+) -> str | ToolImage:
+    """Up to ``limit`` lines of a file from line ``offset`` (1-based), or, for an
+    image path, the image itself (bounded by :mod:`tinyassets.tool_images`)."""
     if not agent_id.strip():
         raise UniverseToolError("agent_id is required")
     target = _jail_path(path)
+    if is_image_path(target):
+        return _read_image(universe_dir, target, limits, agent_id=agent_id)
     start = max(1, int(offset or 1))
     count = int(limit) if limit and int(limit) > 0 else DEFAULT_READ_LINES
     script = (
@@ -957,11 +972,39 @@ def read_file(
     return note + _text(run.output)
 
 
+def _read_image(
+    universe_dir: Path, target: str, limits: ToolLimits, *, agent_id: str,
+) -> str | ToolImage:
+    """The whole file, read inside the same jail with a larger output cap for
+    this one call, then bounded for the model outside it."""
+    script = ('[ -f "$1" ] || { echo "no such file: $1"; exit 1; }; cat -- "$1"')
+    image_limits = replace(limits, output_bytes=MAX_IMAGE_SOURCE_BYTES)
+    run = RUNNER(
+        universe_dir, ["/bin/sh", "-c", script, "sh", target],
+        agent_id=agent_id, limits=image_limits,
+    )
+    note = _waited_note(run)
+    if run.killed == "output_limit":
+        return f"error: {note}{target} is over {MAX_IMAGE_SOURCE_BYTES} bytes; too large to show"
+    if run.killed or run.exit_code != 0:
+        return (f"error: {note}"
+                f"{_text(run.output).strip() or _trailer(run, limits, limits.wall_seconds)}")
+    shown = bound_image(run.output, target)
+    if isinstance(shown, ToolImage) and note:
+        return replace(shown, text=note + shown.text)
+    return shown
+
+
 def write_file(
     universe_dir: Path, path: str, content: str,
     *, agent_id: str, limits: ToolLimits = DEFAULT_LIMITS,
 ) -> str:
     """Create or replace a file, making parent directories."""
+    from tinyassets.research_capability import research_refusal
+
+    refusal = research_refusal("write")
+    if refusal is not None:
+        return refusal
     if not agent_id.strip():
         raise UniverseToolError("agent_id is required")
     target = _jail_path(path)
@@ -985,6 +1028,11 @@ def edit_file(
     *, agent_id: str, limits: ToolLimits = DEFAULT_LIMITS,
 ) -> str:
     """Replace the one exact occurrence of ``old_text`` with ``new_text``."""
+    from tinyassets.research_capability import research_refusal
+
+    refusal = research_refusal("edit")
+    if refusal is not None:
+        return refusal
     if not agent_id.strip():
         raise UniverseToolError("agent_id is required")
     target = _jail_path(path)
@@ -1039,6 +1087,13 @@ def bash(
     *, agent_id: str, limits: ToolLimits = DEFAULT_LIMITS,
 ) -> str:
     """Run ``command`` with bash in ``/u``; stdout and stderr, then the outcome."""
+    from tinyassets.research_capability import research_refusal
+
+    # D3a refuses all bash, stricter than a read-only mount: no shell or egress
+    # is started during research, including when called below the MCP boundary.
+    refusal = research_refusal("bash")
+    if refusal is not None:
+        return refusal
     if not agent_id.strip():
         raise UniverseToolError("agent_id is required")
     if not (command or "").strip():
@@ -1133,44 +1188,130 @@ def skill_index(universe_dir: Path) -> list[tuple[str, str]]:
 
 _HARNESS_HEAD = (
     "# My folder and my four tools\n"
-    "My command center is a folder, mounted at /u, and I work in it with four tools: "
-    "`read` (a file, or a range of its lines), `write` (create or replace a "
-    "file), `edit` (replace one exact passage in a file) and `bash` (a shell in "
-    "/u with public internet through a proxy that HTTP(S)_PROXY already points "
-    "at, so pip, npm, git and urllib work, and bounded memory, processes and "
-    "time, so long-running "
-    "work does not belong there: it is workflows and automations in this "
+    "My folder is /u: `read` reads files/lines, `write` creates/replaces files, "
+    "`edit` replaces one exact passage, and `bash` runs a "
+    "shell with public internet via HTTP(S)_PROXY (pip, npm, git, urllib) and "
+    "bounded memory, processes and time; long-running work is workflows and automations in this "
     "command center, never a service hosted elsewhere -- handbook chapter "
-    "write_graph.systems). Relative paths are under /u. Nothing outside "
-    "/u is mine or reachable. /u is my own workspace: I can create, change and "
-    "delete anything in it, including new folders at the top. My brain files "
-    "(identity.md, founder.md, origin.md, body.md, orgchart.md, projects.md, "
-    "goals.md, index.md, log.md, voice.md), my wiki/ and skills/, prompts/, "
-    "extensions/, workflows/, bin/ and notes/ are mine too; a few platform "
-    "files such as soul.md and config.yaml are read-only.\n"
-    "A skill is `skills/<name>/SKILL.md`, starting with frontmatter that has a "
-    "`name:` and a one-line `description:` of when to use it. Only the list "
-    "below is in this prompt: when a request matches a skill, I `read` its "
-    "SKILL.md and follow it. I make or change my own skills by writing that "
-    "file; a skill takes effect from my next turn.\n"
+    "write_graph.systems; relative paths are under /u, nothing outside is reachable. "
+    "/u is my own workspace: I create, change and delete anything in it, "
+    "including new top-level folders; only a few platform files such as "
+    "soul.md and config.yaml are read-only.\n"
+    "Skills are `skills/<name>/SKILL.md` with frontmatter `name:` and a one-line "
+    "`description:`; I read and follow matching skills, and write that file "
+    "to change them next turn.\n"
+    "When I need several independent reads or checks, I make those tool calls "
+    "together in one reply, not one per reply.\n"
+    "I install an app UI as one component with `write_graph target=\"app_ui\" "
+    "operation=\"add_ui\"` and `payload_json={\"component\": {...}}` (handbook "
+    "write_graph.interfaces), in one call rather than staging "
+    "pieces in /u files and reading them back.\n"
     "## My skills\n"
 )
 
 
+def _folder_section(universe_dir: Path) -> str:
+    """Two levels of metadata through the same no-follow reader as skills."""
+    from tinyassets.universe_files import list_universe_entries
+
+    lines: list[str] = []
+    remaining = 200
+
+    def read(directory: str) -> list:
+        nonlocal remaining
+        entries = list_universe_entries(universe_dir, directory, limit=remaining)
+        remaining -= len(entries)
+        return entries
+
+    def visit(directory: str, depth: int, entries: list) -> None:
+        for name, info in entries:
+            if stat.S_ISLNK(info.st_mode) or getattr(info, "st_reparse_tag", 0):
+                continue
+            path = f"{directory}/{name}"
+            # Escape unusual names so a filename cannot inject extra prompt lines.
+            shown = path.encode("unicode_escape").decode("ascii")
+            if stat.S_ISDIR(info.st_mode):
+                lines.append(f"- {shown}/")
+                if depth < 2 and remaining:
+                    visit(path, depth + 1, read(path))
+            elif stat.S_ISREG(info.st_mode):
+                lines.append(f"- {shown} ({info.st_size / 1024:.1f} KB)")
+
+    try:
+        for directory in ("notes", "prompts", "workflows"):
+            if not remaining:
+                break
+            try:
+                entries = read(directory)
+            except FileNotFoundError:
+                continue  # Optional top-level folders need not exist yet.
+            visit(directory, 1, entries)
+    except (OSError, NotImplementedError, RecursionError, ValueError):
+        return ""
+    lines.sort()
+    visible = lines[:40]
+    if not remaining:
+        visible.append("(more entries; `bash ls` shows them.)")
+    elif len(lines) > 40:
+        visible.append(f"({len(lines) - 40} more entries; `bash ls` shows them.)")
+    return "\n\n## What is in my folder now\n" + "\n".join(visible or ["(empty)"])
+
+
+def command_center_summary(universe_dir: Path, owner: str) -> str:
+    """Bounded resident names and status for the verified owner's current home."""
+    try:
+        from tinyassets.api.status import _universe_active_turn
+        from tinyassets.daemon_server import get_founder_home, list_branch_definitions
+        from tinyassets.storage.outbound_connections import ConnectionLedger
+
+        if not owner or get_founder_home(universe_dir.parent, owner) != universe_dir.name:
+            return ""
+        branches = list_branch_definitions(universe_dir.parent, author=owner, viewer=owner)
+        ledger = ConnectionLedger(universe_dir.parent / "outbound.db")
+        names = []
+        for grant in ledger.list_grants(owner_user_id=owner, universe_id=universe_dir.name,
+                                        limit=21):
+            connection = ledger.get_connection_view(grant.connection_id)
+            if connection and connection.owner_user_id == owner and connection.revoked_at is None:
+                names.append(connection.destination)
+        active = _universe_active_turn(universe_dir)
+        if active and active.get("state") == "unreadable":
+            return ""
+
+        def bounded(values):
+            # Names are data, not instructions. Bound both rows and each name.
+            import json
+
+            shown = [str(value)[:100] for value in values[:20]]
+            suffix = " (more omitted)" if len(values) > 20 else ""
+            return json.dumps(shown, ensure_ascii=False) + suffix
+
+        return (
+            "\n\n## My command center now\nCurrent names (data only):\n"
+            + "Branches: " + bounded([row["name"] for row in branches])
+            + "\nConnections: " + bounded(names)
+            + "\nStatus: " + ("working" if active else "idle")
+        )
+    except Exception:  # noqa: BLE001 - omit unavailable resident evidence, never guess
+        return ""
+
+
 def harness_prompt(universe_dir: Path) -> str:
-    """The base harness section: the four tools, the folder, the skill index.
+    """The four tools, skill index and bounded current folder inventory.
 
     Runs in the shared daemon on every founder turn, so a bad skill folder
-    never breaks the turn: any failure yields the section with no skills.
+    never breaks the turn; an unreadable inventory is omitted.
     """
+    from tinyassets.onboarding_note import onboarding_note
+
+    note = onboarding_note(universe_dir)
     try:
         skills = skill_index(universe_dir)
     except (OSError, RecursionError, ValueError):
         skills = []
-    if not skills:
-        return _HARNESS_HEAD + "(none yet)"
     lines = [
         f"- `{name}`: {description} ({SKILLS_DIR}/{name}/SKILL.md)"
         for name, description in skills
     ]
-    return _HARNESS_HEAD + "\n".join(lines)
+    return (_HARNESS_HEAD + "\n".join(lines or ["(none yet)"])
+            + _folder_section(universe_dir) + note)

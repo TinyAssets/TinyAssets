@@ -100,15 +100,45 @@ test("pull-request build has one unprivileged static-export job", () => {
   });
 });
 
-test("preview trust-boundary contract is an unfiltered required-check candidate", () => {
+test("preview trust-boundary contract never narrows below the default PR events", () => {
   assert.deepEqual(Object.keys(securityWorkflow.on), ["pull_request", "push"]);
-  assert.equal(securityWorkflow.on.pull_request, null);
+  // This used to assert `on.pull_request === null` as a proxy for "unfiltered".
+  // #4352 added `types:` to skip drafts and did not update this test, so the
+  // two contradicted each other and the check went red on main.
+  //
+  // The proxy was the wrong thing to pin: a types list is not automatically a
+  // narrowing, and #4352's is the three GitHub defaults plus
+  // `ready_for_review` -- strictly more triggering than before.
+  //
+  // What this file pins is PATH scope, which is what "unfiltered" means for a
+  // trust boundary: no `paths`, `paths-ignore` or `branches` may appear under
+  // `pull_request`, or the job stops covering PRs by what they touch. The
+  // ACTIVITY-type contract (defaults present, `ready_for_review` present for
+  // the draft skip to be recoverable) and the exact draft condition are owned
+  // by `tests/test_ci_runner_budget.py` -- which #4352 did add, and which is
+  // strictly stronger than anything assertable here. Deliberately not
+  // duplicated: two authorities for one fact drift apart, and that file also
+  // checks the branch-protection-context rule this one cannot see.
+  const triggered = securityWorkflow.on.pull_request;
+  if (triggered !== null) {
+    assert.deepEqual(
+      Object.keys(triggered),
+      ["types"],
+      "only activity types may narrow this trigger -- a path or branch " +
+        "filter would stop the boundary running on every pull request",
+    );
+  }
   assert.deepEqual(securityWorkflow.on.push, { branches: ["main"] });
   assert.deepEqual(securityWorkflow.permissions, { contents: "read" });
   assert.deepEqual(Object.keys(securityWorkflow.jobs), ["contract"]);
   const { contract } = securityWorkflow.jobs;
   assert.equal(contract.environment, undefined);
   assert.deepEqual(contract.permissions, undefined);
+  // The job's `if:` is NOT asserted here. `tests/test_ci_runner_budget.py`
+  // pins it to an exact string, which catches `if: false` and every other
+  // rewrite; a shape check here would be weaker and would invite the two to
+  // disagree. Cross-family review found exactly that: `if: false` passed a
+  // prefix match while skipping every run.
   assert.doesNotMatch(
     securityWorkflowText,
     /\bsecrets\s*(?:\.|\[)|\b(?:issues|pull-requests|actions):\s*write\b|\bcache\b|\bwrangler\b/i,

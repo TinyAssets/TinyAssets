@@ -47,3 +47,90 @@ def test_mobile_builds_do_not_run_on_pull_requests() -> None:
         assert "pull_request" not in triggers, name
         assert "main" in triggers["push"]["branches"], name
         assert "workflow_dispatch" in triggers, name
+
+
+#: Heavy `pull_request` workflows that skip while a PR is a draft, mapped to the
+#: job that carries the condition. Measured 2026-10-03 over the last 100
+#: completed PR runs: these five spent 311 of 436 runner-minutes, and
+#: merge-group runs queue behind them.
+_DRAFT_SKIPPING = {
+    "preview-security.yml": "contract",
+    "build-bundle.yml": "stage-and-probe",
+    "docker-build.yml": "build-smoke",
+    "real-browser-proof.yml": "real-browser-proof",
+    "linux-jail-proof.yml": "linux-jail-proof",
+}
+
+#: Branch-protection contexts on `main`, read 2026-10-03. A job whose name is
+#: one of these may NEVER carry a draft condition: a skipped job reports
+#: `conclusion=skipped` and branch protection accepts that as satisfied, so the
+#: gate would pass without running. tests.yml states this at length for
+#: `required-tests`, verified empirically on PR #2197.
+_REQUIRED_CONTEXTS = frozenset(
+    {"Diff scope declared", "required-tests", "invariants", "slow-tests"},
+)
+
+_DRAFT_CONDITION = (
+    "github.event_name != 'pull_request' "
+    "|| github.event.pull_request.draft == false"
+)
+
+
+def _job(name: str, job_id: str) -> dict:
+    wf = yaml.safe_load((_WORKFLOWS / name).read_text(encoding="utf-8"))
+    return wf["jobs"][job_id]
+
+
+def test_heavy_pull_request_jobs_skip_drafts() -> None:
+    """The cut itself: a draft push must not spend a runner on these."""
+    for name, job_id in _DRAFT_SKIPPING.items():
+        assert _job(name, job_id).get("if") == _DRAFT_CONDITION, name
+
+
+def test_draft_skipping_workflows_rerun_when_a_pr_becomes_ready() -> None:
+    """Without `ready_for_review` the skip survives until the next push.
+
+    `ready_for_review` is not one of the default `pull_request` types, so this
+    is the half of the change that makes the skip recoverable rather than
+    sticky. Dropping it would leave a ready PR showing a draft-era skip.
+    """
+    for name in _DRAFT_SKIPPING:
+        types = _triggers(name)["pull_request"]["types"]
+        assert "ready_for_review" in types, name
+        # The default set still has to be there, or ordinary pushes stop testing.
+        for default in ("opened", "reopened", "synchronize"):
+            assert default in types, f"{name} dropped {default}"
+
+
+def test_draft_skipping_never_lands_on_a_required_context() -> None:
+    """A skipped required check is accepted as satisfied, so it would fail OPEN."""
+    for name, job_id in _DRAFT_SKIPPING.items():
+        job = _job(name, job_id)
+        declared = job.get("name") or job_id
+        assert declared not in _REQUIRED_CONTEXTS, (
+            f"{name}:{job_id} reports as required context {declared!r}; a draft "
+            "skip there merges untested code"
+        )
+
+
+def test_the_required_gates_still_run_on_drafts() -> None:
+    """The other half of the same invariant, from the required side.
+
+    `invariants` and `Diff scope declared` are cheap and stay on every draft
+    push; `required-tests` keeps `always()` so no condition can skip it.
+    """
+    assert "if" not in _job("invariants.yml", "invariants")
+    assert _job("pr-scope-guard.yml", "scope").get("if") != _DRAFT_CONDITION
+    assert _job("tests.yml", "required-tests")["if"] == "always()"
+
+
+def test_draft_condition_does_not_reach_non_pull_request_events() -> None:
+    """merge_group, push, schedule, release and dispatch must be unaffected.
+
+    The first clause is what preserves them. A condition of only
+    `github.event.pull_request.draft == false` evaluates false off a PR, which
+    would silently stop the post-merge and release paths.
+    """
+    for name, job_id in _DRAFT_SKIPPING.items():
+        condition = _job(name, job_id)["if"]
+        assert condition.startswith("github.event_name != 'pull_request'"), name

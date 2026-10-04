@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, get_args
 
+from tinyassets.addressed_agents import MAIN_AGENT
 from tinyassets.ttl_memo import TTLMemo as _TTLMemo
 
 if TYPE_CHECKING:
@@ -27,6 +28,7 @@ if TYPE_CHECKING:
     from tinyassets.providers.agent_model_plan import AgentModelPlan
     from tinyassets.providers.model_policy import ModelRef
     from tinyassets.providers.model_selection import SelectedModel
+    from tinyassets.request_budget import TurnRequestBudget
 
 logger = logging.getLogger(__name__)
 
@@ -148,6 +150,28 @@ class UniverseContext:
     """Requested candidate, not authority; revalidated by the serving boundary."""
     agent_model_plan: AgentModelPlan | None = None
     """Captured advisory owner policy; never a grant or a tool-replay instruction."""
+    agent_id: str = MAIN_AGENT
+    """WHICH of the owner's agents this work belongs to (harness §4.18).
+
+    The one carrier for the addressed agent through a turn. Set ONLY at
+    authenticated ingress, from the resolution that ingress already performed
+    (``universe_intelligence.converse`` passes the ``addressed_agent`` it was
+    handed, which ``universe_server.converse`` resolved inside the owner/universe
+    scope). It is ``MAIN_AGENT`` only where ingress genuinely had no addressed
+    agent -- the main agent, or a caller with no conversation at all.
+
+    Deliberately NOT derived anywhere downstream. Not from
+    ``turn_interrupt.current()``, which is in-process state a workflow-node turn
+    does not have and which would make the journal's attribution depend on
+    whether a Stop happened to be registrable; and not from a session key, which
+    may locate or cross-check a record but can never establish one, so it is not
+    what may select whose controls apply. A downstream reader that cannot see
+    this field is missing a thread, not licensed to guess.
+
+    The per-launch snapshot that change ``addressed-agent-control-provenance``
+    proposes reads THIS field rather than introducing a second source, so
+    extending provenance later does not mean replacing this carrier.
+    """
 
 
 #: Claude CLI builtins that reach the host through its filesystem or a shell.
@@ -164,6 +188,58 @@ HOST_REACH_TOOLS: tuple[str, ...] = (
     # filesystem
     "Read", "Write", "Edit", "MultiEdit", "NotebookEdit", "NotebookRead",
     "Glob", "Grep", "LS",
+)
+
+#: Claude CLI builtins whose effect leaves the platform or outlives the turn --
+#: the DAEMON HOST'S logged-in claude.ai account, the outside world, or a clock.
+#: Separate from :data:`HOST_REACH_TOOLS` because the boundary is a different
+#: one: these touch nothing on disk and start no shell, so the OS jail does not
+#: bound them, and they are not MCP servers, so ``--strict-mcp-config`` does not
+#: either.
+#:
+#: **Scheduling, push and remote runs belong to the user's own platform-side
+#: automations -- the channels they build -- never to the CLI's account-side
+#: features** (host decision 2026-10-03). A turn that scheduled its own wakeup
+#: or fired its own push would be running work the owner never built and cannot
+#: see, on the host's account rather than theirs.
+#:
+#: Verified against the installed CLI 2.1.288 and its changelog (2026-10-03).
+#: Account-side effects:
+#:   Artifact         publishes pages, uploads assets and reads other people's
+#:                    artifacts; artifact-database writes are visible to every
+#:                    viewer of the artifact.
+#:   SendMessage      messages another session on the machine.
+#:   ListAgents       enumerates those sessions -- SendMessage's discovery half,
+#:                    which is why they belong to one constant.
+#:   SendFeedback     drafts and sends a report off-box.
+#:   ListPlugins      reads the plugins enabled on the claude.ai account.
+#:   EndConversation  can end the turn from inside it.
+#: Scheduled, pushed or remote:
+#:   ScheduleWakeup   starts work after the turn ends, outside any automation.
+#:   PushNotification notifies out of band, not through the owner's channel.
+#:   RemoteTrigger    reaches a remote runner.
+#:   Cron*            Create/Delete/List: a schedule the owner never authored
+#:                    and cannot see in their automations.
+#:   DesignSync*      DesignSync/DesignSyncTool: remote design I/O.
+#:
+#: Deliberately NOT here, and still callable on a node: ``Task*`` (session-local
+#: bookkeeping), ``ReportFindings`` (reports into the turn, not out of it), and
+#: the MCP resource readers (already bounded by ``--strict-mcp-config``).
+#:
+#: The ONE definition, denied on BOTH confined paths: the universe engine's
+#: denylist splats it (``universe_intelligence._ENGINE_DISALLOWED_TOOLS``) and a
+#: workflow node call denies it (``ModelConfig.workflow_node``). A workflow node
+#: keeps every owner-level capability on purpose -- web tools, subagents, plans
+#: -- but it has no business acting on the host's account or on a clock, and
+#: before this it could (it denied only ``HOST_REACH_TOOLS``).
+ACCOUNT_REACH_TOOLS: tuple[str, ...] = (
+    # account-side
+    "Artifact", "SendMessage", "ListAgents", "SendFeedback", "ListPlugins",
+    "EndConversation",
+    # scheduled / pushed / remote
+    "ScheduleWakeup", "PushNotification", "RemoteTrigger",
+    "CronCreate", "CronDelete", "CronList",
+    "DesignSync", "DesignSyncTool",
 )
 
 
@@ -226,7 +302,14 @@ class ModelConfig:
     every provider launch made for a command center is OS-jailed to that command center by
     the shared spawn point, whatever its config (``provider_jail``). A provider
     may use the mark to narrow further, e.g. pin cwd to the command center and deny
-    :data:`HOST_REACH_TOOLS`."""
+    :data:`HOST_REACH_TOOLS` and :data:`ACCOUNT_REACH_TOOLS`."""
+
+    text_only: bool = False
+    """Restrictive per-invocation mode: no tools, agent request or session resume.
+
+    Only an executor explicitly implementing this contract may accept it.
+    This is a restriction, never authority to call a model or access credentials.
+    """
 
     sandbox_workspace: bool = False
     # A chat turn (converse): still OS-isolated, but NOT handed the universe as a
@@ -314,6 +397,12 @@ class ModelConfig:
 
     agent_request: AgentInferenceRequest | None = field(default=None, repr=False)
     """Internal tool inventory/completed history, never execution authority."""
+
+    request_budget: TurnRequestBudget | None = field(default=None, repr=False, compare=False)
+    """Server-owned parent ledger; not wire data, quota evidence or authority."""
+    request_purpose: str = "reply"
+    request_attempt: int | None = field(default=None, repr=False, compare=False)
+    """Router-owned ordinal. The HTTP broker consumes it; never caller authority."""
 
     secondary_call: bool = False
     """This call is the platform's own bookkeeping beside a founder turn, not the
@@ -446,6 +535,8 @@ class ProviderResponse:
 
     agent_reply: AgentReply | None = field(default=None, repr=False)
     """One inference's validated result; requested tools have not been executed."""
+    request_receipt: dict | None = field(default=None, repr=False, compare=False)
+    """Detached local dispatch accounting, never a confirmed provider quota."""
     native_evidence: NativeCompletionEvidence | None = field(default=None, repr=False)
     """Local execution evidence, not provider-reported billing or HTTP progress."""
 
@@ -1383,6 +1474,31 @@ class BaseProvider(abc.ABC):
     agent_execution_kind: str | None = None
     """Installed execution capability; unknown executors cannot claim an agent lane."""
 
+    supports_text_only: bool = False
+    """Adapter enforces tool-free requests, including at its direct call boundary."""
+
+    def require_text_only_support(self, config: ModelConfig) -> None:
+        """Refuse unsupported or conflicting restrictions before any provider IO."""
+        from tinyassets.exceptions import ProviderAuthorityHeldError
+
+        mode = getattr(config, "text_only", False)
+        if type(mode) is not bool:
+            raise ProviderAuthorityHeldError("invalid text-only provider restriction")
+        if not mode:
+            return
+        if self.supports_text_only is not True:
+            raise ProviderAuthorityHeldError(
+                "selected provider does not support enforced text-only review; "
+                "nothing was launched"
+            )
+        if any(getattr(config, key, None) for key in (
+            "engine_mcp_enabled", "engine_mcp_actor_id", "engine_mcp_graph_id",
+            "allowed_tools", "engine_tool_grant", "agent_node_id", "agent_node_key",
+        )) or any(getattr(config, key, None) is not None for key in (
+            "agent_request", "agent_session",
+        )):
+            raise ProviderAuthorityHeldError("text-only provider restriction conflicts with tools")
+
     native_credential_service: str | None = None
     """Native custody service declared by this executor; not a model identifier."""
     native_discovery_protocol = None
@@ -1412,13 +1528,25 @@ class BaseProvider(abc.ABC):
         base_cmd, use_shell = self.native_command_resolver()
         if use_shell:
             raise ProviderError("native model discovery requires a direct executable")
+        from tinyassets.providers.native_jsonrpc_discovery import NativeMetadataUnsupported
+
         env = subprocess_env_for_provider(
             self.name, universe_dir=universe_dir, credential_snapshot_dir=credential_snapshot_dir,
         )
-        return await read_native_catalogue(
-            [*base_cmd, *self.native_metadata_arguments], protocol=self.native_discovery_protocol,
-            env=env, cwd=str(credential_snapshot_dir), spawn_kwargs=self.native_process_options(),
-        )
+        try:
+            return await read_native_catalogue(
+                [*base_cmd, *self.native_metadata_arguments],
+                protocol=self.native_discovery_protocol,
+                env=env, cwd=str(credential_snapshot_dir),
+                spawn_kwargs=self.native_process_options(),
+            )
+        except NativeMetadataUnsupported:
+            # An installed executor that ANSWERED "I do not implement this"
+            # is the same honest unknown as one declaring no protocol at all:
+            # None, so the source reads `native_enumeration_unsupported` and
+            # its own default stays usable. This is the feature detection --
+            # by asking, never by a version table.
+            return None
 
     @classmethod
     def is_available(cls) -> bool:

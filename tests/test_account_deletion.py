@@ -146,6 +146,60 @@ def two_users(tmp_path: Path) -> Path:
 # --------------------------------------------------------------------------- #
 
 
+@pytest.mark.parametrize("has_home", [True, False])
+def test_shared_copy_provenance_deletes_by_owner_across_home_changes(two_users: Path, has_home):
+    from tinyassets import command_center_update_registry as registry
+    from tinyassets.command_center_update_executor import _RECEIPTS, _STATUS
+    from tinyassets.command_center_update_policy import _SCHEMA as policy_schema
+    from tinyassets.storage import db_path
+
+    path = db_path(two_users)
+    with sqlite3.connect(path) as conn:
+        for statement in registry._SCHEMA + policy_schema + (_RECEIPTS, _STATUS):
+            conn.execute(statement)
+        for owner, home in ((A, HOME_A), (A, "former-home"), (B, HOME_A), (B, HOME_B)):
+            key = owner + home
+            conn.execute(
+                "INSERT INTO command_center_adoptions VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                (owner, home, key, "install-" + key, "source", "source", "ui", "hash", 1, "", ""),
+            )
+            conn.execute(
+                "INSERT INTO command_center_update_requests VALUES (?,?,?,?,?,?)",
+                (owner, home, key, "request-" + key, "digest", '{}'),
+            )
+            conn.execute(
+                "INSERT INTO command_center_update_policies VALUES (?,?,?,?,?,?,?,?)",
+                (owner, home, key, 1, 1, '{}', "grant-" + key, "digest"),
+            )
+            conn.execute(
+                "INSERT INTO command_center_policy_requests VALUES (?,?,?,?,?,?)",
+                (owner, home, key, "policy-request-" + key, '{}', "digest"),
+            )
+            conn.execute(
+                "INSERT INTO command_center_auto_receipts VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                ("auto-" + key, owner, home, key, "grant-" + key, '{}', None, 0,
+                 "pending", "", 1.0),
+            )
+            conn.execute(
+                "INSERT INTO command_center_auto_status VALUES (?,?,?,?,?,?)",
+                (owner, home, key, "auto-" + key, '{}', 1.0),
+            )
+        if not has_home:
+            conn.execute("DELETE FROM founder_home WHERE founder_sub=?", (A,))
+        plan = account_deletion.deletion_plan(
+            conn, principal=A, home=HOME_A if has_home else "")
+        tables = ("command_center_adoptions", "command_center_update_requests",
+                  "command_center_update_policies", "command_center_policy_requests",
+                  "command_center_auto_receipts", "command_center_auto_status")
+        for table in tables:
+            assert plan[table] == [("owner_id", "principal")]
+    delete_account(two_users, founder_sub=A, cancel_billing=lambda home: "cancelled",
+                   delete_identity=lambda sub: "deleted")
+    for table in tables:
+        assert _rows(path, f'SELECT owner_id, universe_id FROM "{table}" ORDER BY universe_id') == [
+            (B, HOME_A), (B, HOME_B)]
+
+
 def test_model_preferences_removed_for_current_and_former_home_only_for_owner(two_users: Path):
     from tinyassets.providers.model_policy import ModelRef
     from tinyassets.providers.model_preferences import ModelPreferences

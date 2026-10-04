@@ -25,6 +25,17 @@ def _utc(stamp: float | None) -> str | None:
 
 @contextlib.contextmanager
 def _readonly(db: Path):
+    """A read-only connection to a per-universe database, link-free.
+
+    The `is_symlink` checks below were check-then-use: they look at the name and
+    then `sqlite3.connect` resolves it again. With a link planted in between,
+    the daemon reads AND WRITES another universe's database -- measured, not
+    theorised. `connect_guarded` holds the opened inode and re-compares it
+    around the connect, which is detection in a narrow window rather than a
+    no-follow guarantee; read its docstring for what it does and does not give.
+    The checks below are kept: they refuse a linked sidecar, which the identity
+    comparison on the database file itself does not cover.
+    """
     if not db.is_file() or any(
         path.is_symlink() for path in (db, Path(str(db) + "-wal"), Path(str(db) + "-shm"))
     ):
@@ -33,7 +44,10 @@ def _readonly(db: Path):
     # Keep normal locking/change detection: a missing WAL now is not proof the
     # database stays immutable while we read it (especially the ownership ACL).
     # mode=ro/query_only forbid database/schema/record writes, not SQLite locks.
-    conn = sqlite3.connect(db.as_uri() + "?mode=ro", uri=True, timeout=0.2)
+    from tinyassets.universe_files import connect_guarded
+
+    conn = connect_guarded(
+        db, lambda: sqlite3.connect(db.as_uri() + "?mode=ro", uri=True, timeout=0.2))
     try:
         conn.execute("PRAGMA query_only=ON")
         deadline = time.monotonic() + 0.2

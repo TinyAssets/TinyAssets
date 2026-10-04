@@ -488,28 +488,96 @@ def send_patch_request(universe_id: str, principal_id: str, title: Any, details:
     return {"sent": True, "delivery_id": receipt["delivery_id"], "to": intake["label"]}
 
 
+#: Declared input names that mean "the one-line summary".
+_TITLE_NAMES = frozenset({"title", "summary", "subject", "reporttitle", "requesttitle"})
+#: Keep the shipped aliases separate: recognizing a new optional input can
+#: change an existing sender's output keys even when its contract already worked.
+_LEGACY_DETAIL_NAMES = frozenset({
+    "details", "description", "body", "reportdetails", "requestdetails",
+})
+#: Declared input names that mean "the body of the report". ``tried``/``missing``
+#: and ``broken`` are here because the intake this platform actually offers asks
+#: ``what_they_tried`` / ``what_was_missing_or_broken`` (docs/host-actions.md):
+#: both are asking for the body, in the owner's own wording.
+_DETAIL_NAMES = _LEGACY_DETAIL_NAMES | frozenset({
+    "whattheytried", "whattried", "tried",
+    "whatwasmissingorbroken", "whatwasmissing", "missing", "broken",
+})
+
+
 def _report_outputs(contract: list[dict], title: str, details: str) -> dict[str, str]:
-    """Map only declared text inputs; unsupported required inputs fail loudly."""
+    """Map the report onto the receiver's declared inputs.
+
+    The mapping that shipped is used UNCHANGED wherever it worked, because the
+    sender branch is created once per (command center, principal) and a later
+    send refuses outright if the output KEY SET no longer matches the stored
+    one (``set(owned.node_defs[0].output_keys) != set(outputs)`` below). So
+    anyone whose channel already worked must keep getting the same keys; only a
+    contract the old mapping REFUSED may be mapped differently.
+
+    What it refused: it placed the whole report in ONE field when no name
+    matched, then failed the contract because the other required inputs were
+    empty. The intake this platform offers declares three required inputs
+    (``what_they_tried``/``what_was_missing_or_broken``/``request_type``), so
+    every patch request came back ``invalid_patch_request`` -- the agent's one
+    channel for telling us something is broken was itself broken (live
+    2026-10-03).
+
+    For those, and only those: every required text input is filled, a named one
+    with its own part and an unnamed one with the full report, which is accurate
+    rather than invented. Both halves of the report always reach the receiver --
+    an input matched to the title alone never leaves the details unsent. A
+    required input that is NOT text cannot be filled from a text report, and
+    that refusal names it so the owner can see which input to relax.
+    """
     text_fields = [field for field in contract if field["type"] in {"str", "string"}]
+    whole = title + "\n\n" + details
     if len(contract) == len(text_fields) == 1:
-        return {text_fields[0]["name"]: title + "\n\n" + details}
-    outputs = {}
-    for field in text_fields:
-        name = re.sub(r"[^a-z0-9]", "", field["name"].lower())
-        if name in {"title", "summary", "subject", "reporttitle", "requesttitle"}:
-            outputs[field["name"]] = title
-        elif name in {"details", "description", "body", "reportdetails", "requestdetails"}:
-            outputs[field["name"]] = details
+        return {text_fields[0]["name"]: whole}
+
+    def _named(detail_names: frozenset[str]) -> dict[str, str]:
+        found: dict[str, str] = {}
+        for field in text_fields:
+            name = re.sub(r"[^a-z0-9]", "", field["name"].lower())
+            if name in _TITLE_NAMES:
+                found[field["name"]] = title
+            elif name in detail_names:
+                found[field["name"]] = details
+        return found
+
+    # --- exactly what shipped, for every contract it could satisfy ---
+    outputs = _named(_LEGACY_DETAIL_NAMES)
     if title not in outputs.values() or details not in outputs.values():
-        # Names that say neither title nor details: the whole report goes into one
-        # text input (a required one first), so an intake's own wording never
-        # makes a report unsendable.
         target = next((f for f in text_fields if f["required"]),
                       text_fields[0] if text_fields else None)
-        outputs = {target["name"]: title + "\n\n" + details} if target else {}
-    if not outputs or any(field["required"] and field["name"] not in outputs
-                          for field in contract):
-        raise ValueError("patch intake contract must accept one text input or title/details inputs")
+        outputs = {target["name"]: whole} if target else {}
+    if outputs and not any(field["required"] and field["name"] not in outputs
+                           for field in contract):
+        return outputs
+
+    # --- only now: a contract the mapping above refuses ---
+    unfillable = sorted(field["name"] for field in contract
+                        if field["required"] and field["type"] not in {"str", "string"})
+    if unfillable:
+        raise ValueError(
+            "patch intake declares required non-text input(s) a text report cannot "
+            f"fill: {', '.join(unfillable)}. Make them optional or text."
+        )
+    if not text_fields:
+        raise ValueError("patch intake contract declares no text input to report into")
+    outputs = _named(_DETAIL_NAMES)
+    for field in text_fields:
+        if field["required"] and field["name"] not in outputs:
+            outputs[field["name"]] = whole
+    if not outputs:
+        outputs = {text_fields[0]["name"]: whole}
+    # No half of the report may be dropped: if one of them is nowhere, the field
+    # that would carry it least surprisingly carries the whole thing instead.
+    if not any(title in value for value in outputs.values()) or not any(
+            details in value for value in outputs.values()):
+        carrier = next((f["name"] for f in text_fields if f["required"]),
+                       text_fields[0]["name"])
+        outputs[carrier] = whole
     return outputs
 
 

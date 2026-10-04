@@ -59,14 +59,17 @@ def test_http_activity_yield_stops_tools_and_inference_and_releases_claim(
     monkeypatch.setattr(shared_self, "prepare_shared_self_turn", prepare_activity)
     monkeypatch.setattr(engine_mcp_server, "_GRAPH_ID", universe.name)
     monkeypatch.setattr(engine_mcp_server, "_calling_session", lambda: f"activity:{aid}")
-    proxy = ApiKeyHttpProvider._resolve_proxy(None)
+    resolve_proxy = ApiKeyHttpProvider._resolve_proxy
 
     class AskThenAct:
-        def close(self):
-            proxy.close()
+        def __init__(self, proxy):
+            self.proxy = proxy
 
-        def request(self, verb, document):
-            result = proxy.request(verb, document)
+        def close(self):
+            self.proxy.close()
+
+        def request(self, verb, document, **kwargs):
+            result = self.proxy.request(verb, document, **kwargs)
             body = json.loads(result["body"])
             message = body["choices"][0]["message"]
             if "tool_calls" in message:
@@ -83,7 +86,8 @@ def test_http_activity_yield_stops_tools_and_inference_and_releases_claim(
                     })
             return {**result, "body": json.dumps(body)}
 
-    monkeypatch.setattr(ApiKeyHttpProvider, "_resolve_proxy", lambda *a, **k: AskThenAct())
+    monkeypatch.setattr(ApiKeyHttpProvider, "_resolve_proxy",
+                        lambda *a, **k: AskThenAct(resolve_proxy(*a, **k)))
 
     def yield_after_ask():
         assert work_agent.tools[-1][1]["target"] == "pending_request"

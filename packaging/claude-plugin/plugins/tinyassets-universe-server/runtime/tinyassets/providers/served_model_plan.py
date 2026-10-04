@@ -182,6 +182,12 @@ def _native_models(base, universe, owner, member, *, native_snapshot=None):
 
     declared = member.access.model_ids if member.access.model_scope == "explicit" else ("",)
     models = []
+    #: Ids the executor advertised AND marked unselectable. Withheld from the
+    #: choices, and also withheld from the candidate sources below: Codex found
+    #: that filtering them out of enumeration alone let the same id return as a
+    #: learned or reviewed-list candidate, because dedupe only saw the rows that
+    #: were kept. A source saying "not this one" outranks our own history of it.
+    withdrawn = set()
     for model_id in declared:
         if model_id:
             accepted_native_selection(member.provider, model_id, member.access)
@@ -199,10 +205,16 @@ def _native_models(base, universe, owner, member, *, native_snapshot=None):
                 or native_snapshot.universe != Path(universe).resolve()
                 or native_snapshot.custody.reference_digest != member.credential_reference_digest):
             raise PermissionError("native catalogue is outside current member custody")
+        # A row the executor itself marked unselectable must not become a normal
+        # choice. Offering it would hand the owner a pick that fails at launch,
+        # which is worse than not listing it (see the learned-id split below).
+        withdrawn.update(model.model_id for model in native_snapshot.catalogue.models
+                         if model.hidden)
         models.extend(Model(
             model.model_id, True, model.input_modalities,
             pricing=Pricing("fresh", unmetered=True), availability_basis="executor_enumerated",
-        ) for model in native_snapshot.catalogue.models)
+            effort_levels=model.effort_levels,
+        ) for model in native_snapshot.catalogue.models if not model.hidden)
     # What the PLATFORM has seen work on this KIND of source, newest of each class.
     # Without this the list is only what this owner typed into their own access
     # grant, so a newly released model was invisible until someone shipped a patch
@@ -220,11 +232,12 @@ def _native_models(base, universe, owner, member, *, native_snapshot=None):
     # picker as soon as they stopped declaring it. Keeping a row nobody reads is not
     # keeping it.
     models.extend(_own_verified_candidates(base, LEARNED_SOURCE_KIND, owner,
-                                          already=models))
+                                          already=models, excluded=withdrawn))
     # ...then the reviewed public list for this kind of source, which is how a newly
     # released model reaches everyone without a patch: a PR adds the id, review is the
     # moderation, and every universe on that source kind sees it next read.
-    models.extend(_listed_candidates(LEARNED_SOURCE_KIND, already=models))
+    models.extend(_listed_candidates(LEARNED_SOURCE_KIND, already=models,
+                                     excluded=withdrawn))
     router = get_provider_router()
     provider = None if router is None else router._providers.get(member.provider)
     if provider is None or not provider.is_available():
@@ -236,7 +249,7 @@ def _native_models(base, universe, owner, member, *, native_snapshot=None):
     )
 
 
-def _own_verified_candidates(base, source_kind, owner, *, already):
+def _own_verified_candidates(base, source_kind, owner, *, already, excluded=frozenset()):
     """Ids THIS owner has already made work on this kind of source.
 
     Their own history, not anyone else's: read from the private evidence table
@@ -250,7 +263,7 @@ def _own_verified_candidates(base, source_kind, owner, *, already):
     """
     from tinyassets.storage.learned_models import OwnModelHistory
 
-    have = {model.model_id for model in already}
+    have = {model.model_id for model in already} | set(excluded)
     try:
         rows = OwnModelHistory(base).ids_for(source_kind, owner)
     except (OSError, sqlite3.DatabaseError, ValueError) as exc:
@@ -264,7 +277,7 @@ def _own_verified_candidates(base, source_kind, owner, *, already):
     )
 
 
-def _listed_candidates(source_kind, *, already):
+def _listed_candidates(source_kind, *, already, excluded=frozenset()):
     """Newest-per-class ids from the reviewed public list for one source kind.
 
     A UNION, never a filter: an id this universe already has keeps its own row and its
@@ -277,7 +290,7 @@ def _listed_candidates(source_kind, *, already):
     """
     from tinyassets.providers.public_model_lists import newest_listed_cached
 
-    have = {model.model_id for model in already}
+    have = {model.model_id for model in already} | set(excluded)
     return tuple(
         Model(model_id, True, frozenset({"text"}),
               pricing=Pricing("fresh", unmetered=True),
@@ -287,7 +300,7 @@ def _listed_candidates(source_kind, *, already):
     )
 
 
-def _http_models(owner, uid, member, *, snapshot=None):
+def _http_models(owner, uid, member, *, snapshot=None, needs_tools=True):
     from tinyassets.providers.definition import get_definition
     from tinyassets.providers.discovery_snapshot import refresh_model_discovery
 
@@ -308,7 +321,7 @@ def _http_models(owner, uid, member, *, snapshot=None):
         caps = tuple((name, 0) for name in sorted(contract.price_components))
     if {name for name, _ in caps} != contract.price_components:
         raise ModelSourceUnavailable("price_components_unenforceable")
-    interaction = replace(contract.text_interaction, needs_tools=True)
+    interaction = replace(contract.text_interaction, needs_tools=needs_tools)
     order = order_models(
         Catalog(owner, uid, (snapshot.models,)),
         ModelPolicy(0, "automatic", (), cost_caps=tuple(Charge(k, v, True) for k, v in caps)),
@@ -359,7 +372,7 @@ def _refused_models(base, owner, chains):
 
 def prepare_owned_model_plan(
     *, base, universe, owner, agent, current=None, config=None, allow_empty=False,
-    preference_snapshot=None,
+    preference_snapshot=None, needs_tools=True,
 ):
     """Private composition for authenticated ingress and serving readiness.
 
@@ -368,6 +381,8 @@ def prepare_owned_model_plan(
     absent preferences on an existing legacy assignment leave its path unchanged.
     allow_empty permits advisory display, never invocation without a candidate.
     """
+    if type(needs_tools) is not bool:
+        raise ValueError("invalid conversation tool mode")
     base, universe = Path(base), Path(universe)
     store = SQLiteProviderWorkAuthorityStore(base)
     if preference_snapshot is None:
@@ -424,7 +439,7 @@ def prepare_owned_model_plan(
         captured = ModelPolicy(0, "automatic", ()), "automatic"
     policy, source = captured
     all_models, admitted, snapshots, source_policies = [], [], [], []
-    interaction = Interaction(True, frozenset({"text"}), frozenset())
+    interaction = Interaction(needs_tools, frozenset({"text"}), frozenset())
     ranking_sources = set()
     from tinyassets.provider_authority import current as current_authority
 
@@ -436,23 +451,47 @@ def prepare_owned_model_plan(
             if provider in _PROVIDER_SERVICE:
                 native_snapshot = None
                 if member.access.model_scope == "discovered":
-                    from tinyassets.providers.native_discovery import discover_native_models_sync
+                    # A DISPLAY read takes whatever is warm and asks for a
+                    # refresh in the background; it never runs discovery. That
+                    # is what stops one slow or expired source delaying the
+                    # selection of a different accepted one
+                    # (concerns/2026-09-16-model-picker-global-discovery-delay).
+                    #
+                    # A served turn still discovers inline: it is about to
+                    # launch, and a plan built from a catalogue it has not
+                    # confirmed is not a saving. Execution's own fresh check in
+                    # `prepare_selected_model` is unchanged either way.
+                    if allow_empty:
+                        from tinyassets.providers.shortlist_refresh import SHORTLIST_CACHE
 
-                    try:
-                        native_snapshot = discover_native_models_sync(
-                            base_path=base, owner_user_id=owner,
-                            universe_id=universe.name, provider=provider,
+                        native_snapshot, pending = SHORTLIST_CACHE.get(
+                            base=base, owner=owner, universe_id=universe.name,
+                            provider=provider,
                         )
                         if native_snapshot is None:
+                            rejected.append(Ineligible(ModelRef(provider, ""), pending,
+                                                       scope="source"))
+                    else:
+                        from tinyassets.providers.native_discovery import (
+                            discover_native_models_sync,
+                        )
+
+                        try:
+                            native_snapshot = discover_native_models_sync(
+                                base_path=base, owner_user_id=owner,
+                                universe_id=universe.name, provider=provider,
+                            )
+                            if native_snapshot is None:
+                                rejected.append(Ineligible(
+                                    ModelRef(provider, ""), "native_enumeration_unsupported",
+                                    scope="source",
+                                ))
+                        except ProviderError:
+                            # Enumeration is not necessary to run the provider's
+                            # own default. Preserve that lane and expose the gap.
                             rejected.append(Ineligible(
-                                ModelRef(provider, ""), "native_enumeration_unsupported",
-                                scope="source",
-                            ))
-                    except ProviderError:
-                        # Enumeration is not necessary to run the provider's
-                        # own default. Preserve that lane and expose the gap.
-                        rejected.append(Ineligible(ModelRef(provider, ""),
-                                                   "native_catalogue_unavailable", scope="source"))
+                                ModelRef(provider, ""), "native_catalogue_unavailable",
+                                scope="source"))
                 catalog = _native_models(
                     base, universe, owner, member, native_snapshot=native_snapshot,
                 )
@@ -496,11 +535,11 @@ def prepare_owned_model_plan(
                 all_models.append(snapshot.models)
                 snapshots.append(snapshot)
                 snapshot, filtered, required, caps, denied = _http_models(
-                    owner, universe.name, member, snapshot=snapshot,
+                    owner, universe.name, member, snapshot=snapshot, needs_tools=needs_tools,
                 )
                 from tinyassets.universe_intelligence import _engine_mcp_enabled
 
-                if not _engine_mcp_enabled():
+                if needs_tools and not _engine_mcp_enabled():
                     denied.extend(Ineligible(ModelRef(provider, model.model_id),
                                              "engine_tools_unavailable")
                                   for model in filtered.models)
@@ -572,7 +611,7 @@ def prepare_owned_model_plan(
     return result
 
 
-def apply_served_model_preferences(context, *, model_choice=None):
+def apply_served_model_preferences(context, *, model_choice=None, needs_tools=True):
     """Capture preferences only from a genuine current owned conversation."""
     from tinyassets.daemon_server import get_founder_home
     from tinyassets.exceptions import ProviderAuthorityHeldError
@@ -593,7 +632,7 @@ def apply_served_model_preferences(context, *, model_choice=None):
             return context
         prepared = prepare_owned_model_plan(
             base=universe.parent, universe=universe, owner=capability.principal_id,
-            agent=agent, current=current, config=context.config,
+            agent=agent, current=current, config=context.config, needs_tools=needs_tools,
         )
         if prepared is None:
             return context

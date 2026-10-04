@@ -1440,15 +1440,46 @@ def test_an_owners_automation_runs_its_own_unpublished_pinned_child(
         tmp_path,
         **_registration_kwargs(name="versioned", branch_def_id="branch_parent_version"),
     )
+    import threading
+
+    from tinyassets.foreground_run_provider import _ForegroundRunProviderSession
+    from tinyassets.storage.agent_request_usage import UsageStore
+
+    parent_finished = threading.Event()
+    child_entered = threading.Event()
+    call = _ForegroundRunProviderSession._call
+
+    def after_parent(self, *args, **kwargs):
+        if self._branch_def_id == "branch_child_version":
+            child_entered.set()
+            assert parent_finished.wait(10), "parent failed to release its run session"
+        return call(self, *args, **kwargs)
+
+    monkeypatch.setattr(_ForegroundRunProviderSession, "_call", after_parent)
     fake = _CountingProvider()
     with _real_providers(codex=fake):
-        run_due_automation(tmp_path, versioned, "2026-08-29T12:10:00+00:00", now=NOW)
+        try:
+            result = run_due_automation(
+                tmp_path, versioned, "2026-08-29T12:10:00+00:00", now=NOW,
+            )
+            assert child_entered.wait(10), "the admitted child never reached its provider call"
+            parent_id = result.removeprefix("ok:ran:")
+            assert get_run(tmp_path, parent_id)["status"] == "completed"
+            parent_usage = UsageStore(tmp_path).for_subject(OWNER, UNIVERSE, "run", parent_id)
+            assert len(parent_usage) == 1 and not parent_usage[0]["closed"]
+            assert parent_usage[0]["dispatched"] == 0
+        finally:
+            parent_finished.set()
         child_ids = _child_run_ids(tmp_path, "branch_child_version")
         for child_id in child_ids:
             wait_for(child_id, timeout=30)
 
     assert child_ids, "the owner's own pinned child never started"
     assert (get_run(tmp_path, child_ids[0]) or {}).get("status") == "completed"
+    child_usage = UsageStore(tmp_path).for_subject(OWNER, UNIVERSE, "run", child_ids[0])
+    assert len(child_usage) == 1 and child_usage[0]["closed"]
+    assert child_usage[0]["usage_id"] == parent_usage[0]["usage_id"]
+    assert child_usage[0]["dispatched"] == len(fake.calls) == 1
 
 
 def test_the_run_row_names_the_authority_loss_not_a_generic_cancel(

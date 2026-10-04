@@ -488,6 +488,7 @@ jobs:
           set -euo pipefail
           scp -i ~/.ssh/do_deploy -o BatchMode=yes \
               deploy/deploy_fail_safe.sh deploy/install-tinyassets-env.sh \
+              deploy/snapshot_candidate_evidence.sh \
               "${DO_SSH_USER}@${DO_DROPLET_HOST}:/tmp/"
           set +e
           out="$(ssh -i ~/.ssh/do_deploy -o BatchMode=yes "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
@@ -526,6 +527,113 @@ jobs:
           set -euo pipefail
           python scripts/probe_app_surface.py --verbose
 
+      # Hard Rule 11: tinyassets.io/mcp is the ONLY public endpoint, and the
+      # direct origin is an Access-gated internal one that must never answer an
+      # unauthenticated request. This step PROVES the gate; it does not make the
+      # origin usable, and the name stays out of user-facing docs.
+      #
+      # #2442 dropped this check with the rest of the post-canary block, so
+      # since then a change that opened the internal origin would deploy green:
+      # the public canary goes through the Worker and says nothing about the
+      # origin behind it.
+      #
+      # Non-mutating: one unauthenticated GET, no credentials, 10s cap.
+      #
+      # The pass condition is exactly ONE status, and 401 is a FAILURE. That is
+      # the opposite of what this step's name used to promise, and it is the
+      # point (Codex, 2026-10-03).
+      #
+      # The Access policy is service-token, non-identity
+      # (scripts/cf_access_cutover.py: decision="non_identity",
+      # include=[{service_token}], allowed_idps=[]), so Cloudflare denies an
+      # unauthenticated request with 403 and no login redirect.
+      #
+      # Our own application answers an anonymous GET on /mcp with 401
+      # (tinyassets/auth/middleware.py: no bearer on the MCP endpoint -> 401
+      # challenge). So a 401 PROVES the request reached the application, which
+      # means Access did not stop it -- the exact hole this step exists to
+      # catch. Accepting 401, as the deleted original and my first version both
+      # did, certifies the failure as a pass.
+      #
+      #   403                      -> pass: Access denied it, origin unreached
+      #   401, 200, 404, 405, ...  -> fail: something answered FOR us
+      #   transfer error, 5xx/530  -> advisory: nothing was proved either way
+      #
+      # If the policy is ever changed to an identity-based one (which redirects
+      # to a login page instead), this fails loudly and names the code rather
+      # than quietly accepting a redirect our own origin could also produce.
+      #
+      # No rollback either way. The rollback below keys on the canary and
+      # app-probe outcomes, not on this step, so a red gate stops the deploy
+      # without swapping a healthy image back out of production. That is
+      # detection, not containment: an image rollback would not restore a
+      # missing Cloudflare policy.
+      - name: Verify CF Access gates the direct origin (expects 403)
+        id: access-gate
+        env:
+          DIRECT_ORIGIN: ${{ vars.TINYASSETS_INTERNAL_ORIGIN_NAME || 'mcp.tinyassets.io' }}
+        run: |
+          set -uo pipefail
+          if ! command -v curl >/dev/null 2>&1; then
+            echo "::error::curl is unavailable on the runner, so the Access gate cannot be checked at all"
+            exit 1
+          fi
+          direct_url="https://${DIRECT_ORIGIN}/mcp"
+          # curl's exit status is captured SEPARATELY from the status code. The
+          # earlier `|| echo 000` appended to curl's own "000" on a connect
+          # failure, producing 000000, which matched no branch and failed the
+          # deploy -- breaking the advisory band it was written to provide.
+          # The step runs under Actions' default `bash -e`, and `set -uo
+          # pipefail` does not clear errexit: a bare failing assignment would
+          # exit here before curl_rc was read. `|| curl_rc=$?` keeps it.
+          curl_rc=0
+          http_code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "${direct_url}")" || curl_rc=$?
+          echo "curl exit ${curl_rc}, HTTP status '${http_code}'"
+          if [ "${curl_rc}" != "0" ]; then
+            echo "::warning::could not reach the direct origin (curl exit ${curl_rc}); the Access gate was not proved this run. Public MCP is served through the canonical endpoint, which was proved green above."
+          elif [ "${http_code}" = "403" ]; then
+            echo "Access gate confirmed: Cloudflare denied an unauthenticated request with 403 and the origin was never reached"
+          elif [ "${http_code}" = "429" ] || [ "${http_code}" = "502" ] || [ "${http_code}" = "503" ] || [ "${http_code}" = "504" ] || [ "${http_code}" = "530" ]; then
+            # Rate limiting and the edge/tunnel errors say nothing about the
+            # policy: the request never reached a decision about identity.
+            echo "::warning::the edge returned ${http_code} for the direct origin; nothing was proved about the Access policy this run"
+          elif [ "${http_code}" = "401" ]; then
+            echo "::error::Cloudflare Access is NOT gating the direct origin: the request reached our application, which answered 401 itself. A 401 here is our own auth middleware, not Access."
+            echo "::error::Fix: Cloudflare dashboard -> Access -> Applications -> confirm the service-token policy is active and covers this hostname."
+            exit 1
+          else
+            echo "::error::Cloudflare Access is NOT gating the direct origin: an unauthenticated request got HTTP ${http_code}, so something answered for us instead of Access denying it with 403."
+            echo "::error::Fix: Cloudflare dashboard -> Access -> Applications -> confirm the service-token policy is active and covers this hostname."
+            exit 1
+          fi
+
+      # Evidence BEFORE the rollback destroys it, WITHOUT delaying the
+      # rollback (Codex P1 on #4367: two 25s SSH calls plus local sanitizing ran
+      # while the broken candidate was still serving). This step is one SSH
+      # round trip that writes raw bytes to host temp files and nothing else;
+      # the rollback runs next; fetch, sanitize and upload happen after it.
+      #
+      # #2442 dropped this path along with the stop-writer fence it was written
+      # beside, leaving scripts/sanitize_startup_diagnostics.py with no caller
+      # at all -- so a failed prod deploy kept no container state and no logs.
+      #
+      # Scope: rc 0 only -- the swap succeeded and a public surface then went
+      # red, the one window where the candidate container still exists. An
+      # unhealthy candidate (rc 2) was rolled back inside deploy_fail_safe.sh
+      # before control returned, so reading logs then would mislabel the
+      # restored image's output --
+      # docs/concerns/2026-10-03-unhealthy-candidate-rollback-keeps-no-diagnostics.md
+      - name: Snapshot failed candidate evidence (before rollback)
+        id: candidate_snapshot
+        if: ${{ always() && steps.deploy.outputs.rc == '0' && (failure() || cancelled()) }}
+        continue-on-error: true
+        timeout-minutes: 1
+        run: |
+          set +e
+          timeout 25s ssh -i ~/.ssh/do_deploy               -o BatchMode=yes               -o ConnectTimeout=10               -o ServerAliveInterval=5               -o ServerAliveCountMax=2               "${DO_SSH_USER}@${DO_DROPLET_HOST}"               "sudo bash /tmp/snapshot_candidate_evidence.sh"
+          echo "ssh_rc=$?" >> "$GITHUB_OUTPUT"
+          exit 0
+
       # Name kept verbatim: three test files key on this step by name
       # (test_deploy_prod_workflow, test_expected_instance_state_preparation,
       # test_prune_units). The CONDITION is what had to change — the app probe
@@ -550,6 +658,90 @@ jobs:
           # is undoing.
           ssh -i ~/.ssh/do_deploy -o BatchMode=yes "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
             "sudo HEALTH_TIMEOUT=180 bash /tmp/deploy_fail_safe.sh --restore-bundle '${PREV_IMAGE}'"
+
+      # AFTER the rollback: nothing here touches production, so none of it can
+      # delay recovery. Fetches what the snapshot wrote, sanitizes locally, and
+      # records the evidence as unavailable when the container was already gone
+      # (Codex P2) rather than leaving a manifest that implies a match.
+      - name: Sanitize failed candidate diagnostics
+        id: candidate_diagnostics
+        if: ${{ always() && steps.candidate_snapshot.outcome != 'skipped' }}
+        continue-on-error: true
+        timeout-minutes: 2
+        env:
+          TARGET_IMAGE_REF: ${{ steps.tag.outputs.image_ref }}
+          TARGET_REVISION: ${{ steps.tag.outputs.revision }}
+        run: |
+          set +e
+          evidence_dir="${RUNNER_TEMP}/candidate-startup-diagnostics"
+          state_raw="${RUNNER_TEMP}/ta-candidate.state"
+          raw_log="${RUNNER_TEMP}/ta-candidate.log"
+          cid_file="${RUNNER_TEMP}/ta-candidate.cid"
+          mkdir -p "${evidence_dir}"
+          printf '{"candidate_identity_match":false,"capture":"unavailable"}\n' \
+              > "${evidence_dir}/daemon-state.json"
+          : > "${raw_log}"
+          : > "${cid_file}"
+
+          timeout 40s scp -i ~/.ssh/do_deploy -o BatchMode=yes \
+              -o ConnectTimeout=10 \
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}:/tmp/ta-candidate.cid" \
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}:/tmp/ta-candidate.state" \
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}:/tmp/ta-candidate.log" \
+              "${RUNNER_TEMP}/" 2>/dev/null
+
+          container_id="$(head -c 128 "${cid_file}" 2>/dev/null | tr -dc 'a-f0-9')"
+          candidate_identity_match=false
+          if [ -n "${container_id}" ] && [ -s "${state_raw}" ]; then
+            if python scripts/sanitize_startup_diagnostics.py \
+                --state \
+                --target-revision "${TARGET_REVISION}" \
+                --target-image-ref "${TARGET_IMAGE_REF}" \
+                < "${state_raw}" \
+                > "${evidence_dir}/daemon-state.json" 2>/dev/null; then
+              candidate_identity_match=true
+            fi
+          fi
+          if [ "${candidate_identity_match}" != "true" ]; then
+            : > "${raw_log}"
+          fi
+          python scripts/sanitize_startup_diagnostics.py \
+              < "${raw_log}" \
+              > "${evidence_dir}/daemon-signals.json"
+          rm -f "${raw_log}" "${state_raw}" "${cid_file}"
+
+          CONTAINER_ID="${container_id}" python - \
+              "${evidence_dir}/manifest.json" \
+              "${evidence_dir}/daemon-state.json" <<'PY'
+          import datetime
+          import json
+          import os
+          import pathlib
+          import re
+          import sys
+
+          revision = os.environ["TARGET_REVISION"]
+          if not re.fullmatch(r"[0-9a-f]{40}", revision):
+              revision = "unavailable"
+          container_id = os.environ.get("CONTAINER_ID") or ""
+          if not re.fullmatch(r"[0-9a-f]{12,64}", container_id):
+              container_id = "unavailable"
+          state = json.loads(pathlib.Path(sys.argv[2]).read_text(encoding="utf-8"))
+          manifest = {
+              "schema_version": 2,
+              "run_id": int(os.environ["GITHUB_RUN_ID"]),
+              "run_attempt": int(os.environ["GITHUB_RUN_ATTEMPT"]),
+              "target_revision": revision,
+              "container_id": container_id,
+              "candidate_identity_match": state.get("candidate_identity_match") is True,
+              "captured_utc": datetime.datetime.now(datetime.UTC).isoformat(),
+          }
+          pathlib.Path(sys.argv[1]).write_text(
+              json.dumps(manifest, sort_keys=True, separators=(",", ":")) + "\n",
+              encoding="utf-8",
+          )
+          PY
+          exit 0
 
       - name: Publish release-state receipt
         if: ${{ success() }}
@@ -661,6 +853,29 @@ jobs:
             --title "deploy-failed: run ${{ github.run_id }}" \
             --label "deploy-failed" \
             --body "Fail-safe deploy did not fully succeed. deploy rc=${{ steps.deploy.outputs.rc }}, result=${{ steps.deploy.outputs.result }}, deployed_image=${{ steps.deploy.outputs.deployed_image }}. Run: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}. Prod is NOT left at zero (the script restores the previous image), but the target release did not become healthy — investigate before retrying." 2>&1 | tail -2 || true
+
+      # After every rollback and bookkeeping step, so the artifact is written
+      # once the deploy has finished moving. Gated on the capture SUCCEEDING,
+      # not on the deploy failing: `if-no-files-found: error` would otherwise
+      # fail a green run that never captured anything. The old gate also
+      # required the stop-writer cleanup outputs, which #2442 retired with the
+      # fence itself -- there is nothing left to race.
+      # Non-fatal and bounded (Codex P2): this runs on the recovery path, where
+      # an artifact-service error or a slow upload must not fail the job or hold
+      # the production-host-mutation group any longer than necessary --
+      # release-reconcile defers while a matching deploy is unfinished. `warn`
+      # rather than `error` because an empty evidence dir is a legitimate
+      # outcome when the container was already gone.
+      - name: Upload failed candidate startup diagnostics
+        if: ${{ always() && steps.candidate_diagnostics.outcome == 'success' }}
+        continue-on-error: true
+        timeout-minutes: 3
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: candidate-startup-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/candidate-startup-diagnostics
+          if-no-files-found: warn
+          retention-days: 7
 
       - name: Summary
         if: ${{ always() }}

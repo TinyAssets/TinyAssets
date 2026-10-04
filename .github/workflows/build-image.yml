@@ -51,6 +51,11 @@ on:
       # is a change that never builds and never deploys, so the probe would go
       # on asserting the old contract while looking green.
       - 'scripts/probe_app_surface.py'
+      # Same reason: deploy-prod.yml runs it on the runner to sanitize a failed
+      # candidate's state and logs, so a change to what it redacts has to reach
+      # a deploy. It was orphaned while the diagnostics step was missing, which
+      # is why it only becomes a runtime input now.
+      - 'scripts/sanitize_startup_diagnostics.py'
       - 'deploy/**'
       # Other Dockerfile COPY sources.
       - 'scripts/_canary_common.py'
@@ -82,6 +87,14 @@ on:
       - 'scripts/runtime_paths.py'
       - 'scripts/pushover_page.py'
       - 'scripts/triage_classify.py'
+      # deploy-prod.yml's "Verify CF Access gates the direct origin" step passes
+      # on 403 and ONLY 403, and the reason it can is the policy shape this
+      # script creates (decision="non_identity", allowed_idps=[]). Switch it to
+      # an identity policy and the gate's pass condition is wrong, so a change
+      # here has to reach a deploy. emergency_dns_flip.py comes with it: the
+      # cutover script imports it (python_import_closure).
+      - 'scripts/cf_access_cutover.py'
+      - 'scripts/emergency_dns_flip.py'
       # The deploy chain itself and every workflow that writes to the host
       # (scripts/runtime_paths.py deploy_chain_workflows): an edit to one is
       # inert until the next deploy, so it deploys itself.

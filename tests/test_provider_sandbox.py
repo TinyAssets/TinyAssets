@@ -121,15 +121,18 @@ def test_workflow_node_call_is_pinned_to_its_universe_with_host_tools_denied(tmp
     # A workflow node call (2026-09-24 latency root cause): cwd pinned to the
     # universe, project-only settings, shell/filesystem builtins denied, and
     # the node's own denies kept. Web tools are not the host's and stay.
-    from tinyassets.providers.base import HOST_REACH_TOOLS
+    from tinyassets.providers.base import ACCOUNT_REACH_TOOLS, HOST_REACH_TOOLS
 
-    cfg = ModelConfig(workflow_node=True, disallowed_tools=("CronCreate",))
+    # ReportFindings is deliberately in NEITHER constant (it reports into the
+    # turn, not out of it), so it pins "the node's own denies are kept, first"
+    # without colliding with the dedupe that the next test covers.
+    cfg = ModelConfig(workflow_node=True, disallowed_tools=("ReportFindings",))
     flags, run_cwd = _sandbox_cli_args(cfg, tmp_path)
 
     assert run_cwd == str(tmp_path)
     assert flags[flags.index("--setting-sources") + 1] == "project"
     denied = flags[flags.index("--disallowedTools") + 1:]
-    assert denied == ["CronCreate", *HOST_REACH_TOOLS]
+    assert denied == ["ReportFindings", *HOST_REACH_TOOLS, *ACCOUNT_REACH_TOOLS]
     assert "--allowedTools" not in flags
     assert "WebSearch" not in denied and "WebFetch" not in denied
 
@@ -141,3 +144,191 @@ def test_workflow_node_call_without_a_universe_fails_closed():
 
     with pytest.raises(ProviderError):
         _sandbox_cli_args(ModelConfig(workflow_node=True), None)
+
+
+def test_confined_turns_state_the_permission_mode_explicitly(tmp_path):
+    """An unspecified mode is upstream's to change (CLI 2.1.285, Codex ADAPT).
+
+    2.1.285 starts ``claude -p`` in AUTO mode when no mode is configured on
+    third-party providers or with telemetry off. A confined turn must therefore
+    SAY which mode it runs in rather than inherit one that could begin
+    auto-approving tools it never pre-approved.
+    """
+    configs = (
+        ModelConfig(sandbox_workspace=True, allowed_tools=("WebFetch",)),
+        ModelConfig(sandbox_workspace=True, disallowed_tools=("Bash",)),
+        ModelConfig(workflow_node=True),
+    )
+    for cfg in configs:
+        flags, _cwd = _sandbox_cli_args(cfg, tmp_path)
+        assert "--permission-mode" in flags, flags
+        assert flags[flags.index("--permission-mode") + 1] == "default"
+        # Before the variadic tool flags: --allowedTools/--disallowedTools take
+        # every following token, so a flag after them would be read as a tool
+        # name instead of a flag.
+        for variadic in ("--allowedTools", "--disallowedTools"):
+            if variadic in flags:
+                assert flags.index("--permission-mode") < flags.index(variadic)
+
+
+def test_host_trusted_roles_keep_their_permission_mode(tmp_path):
+    # The explicit mode is scoped to confined turns; a plain config stays a no-op.
+    flags, _cwd = _sandbox_cli_args(ModelConfig(), tmp_path)
+    assert flags == []
+
+
+def test_claude_ai_account_tools_are_denied_to_the_engine():
+    """Artifact and friends reach the DAEMON HOST's claude.ai account.
+
+    The OS jail bounds the filesystem and ``--strict-mcp-config`` bounds MCP
+    servers; neither contains a tool that publishes an artifact, enumerates
+    other live sessions or sends feedback off-box. Re-checked against the CLI
+    changelog for 2.1.184-2.1.288 (Codex ADAPT 2026-10-03).
+    """
+    from tinyassets.universe_intelligence import (
+        _ENGINE_DISALLOWED_TOOLS,
+        _ENGINE_DISALLOWED_TOOLS_WITH_MCP,
+    )
+
+    account_reach = ("Artifact", "ListAgents", "SendFeedback", "ListPlugins",
+                     "EndConversation")
+    for tool in account_reach:
+        assert tool in _ENGINE_DISALLOWED_TOOLS, tool
+        # Denied on the engine-MCP turn too: that turn only drops the ``mcp__*``
+        # wildcard and ``ToolSearch``, never a builtin.
+        assert tool in _ENGINE_DISALLOWED_TOOLS_WITH_MCP, tool
+
+
+def test_engine_mcp_turn_drops_only_the_wildcard_and_toolsearch():
+    """The relaxation stays exactly two names wide.
+
+    ``mcp__*`` would deny the tinyassets handles and ``ToolSearch`` is how the
+    CLI loads their schemas, so both must go -- and nothing else may, or a
+    builtin silently becomes callable on the founder's turn.
+    """
+    from tinyassets.universe_intelligence import (
+        _ENGINE_DISALLOWED_TOOLS,
+        _ENGINE_DISALLOWED_TOOLS_WITH_MCP,
+    )
+
+    dropped = set(_ENGINE_DISALLOWED_TOOLS) - set(_ENGINE_DISALLOWED_TOOLS_WITH_MCP)
+    assert dropped == {"mcp__*", "ToolSearch"}
+
+
+def test_account_reach_tools_are_denied_on_both_confined_paths(tmp_path):
+    """One constant, both call paths -- the gap found reviewing CLI 2.1.288.
+
+    These act on the DAEMON HOST'S claude.ai account, so neither the OS jail
+    (nothing touches disk, no shell starts) nor ``--strict-mcp-config`` (they
+    are builtins, not MCP servers) bounds them. The engine turn denied them; a
+    WORKFLOW NODE denied only ``HOST_REACH_TOOLS``, so a node could publish an
+    artifact or message another session on the host's account.
+    """
+    from tinyassets.providers.base import ACCOUNT_REACH_TOOLS
+    from tinyassets.universe_intelligence import (
+        _ENGINE_DISALLOWED_TOOLS,
+        _ENGINE_DISALLOWED_TOOLS_WITH_MCP,
+    )
+
+    assert ACCOUNT_REACH_TOOLS, "the constant must not be empty"
+
+    node_flags, _cwd = _sandbox_cli_args(ModelConfig(workflow_node=True), tmp_path)
+    node_denied = node_flags[node_flags.index("--disallowedTools") + 1:]
+    for tool in ACCOUNT_REACH_TOOLS:
+        assert tool in node_denied, f"{tool} callable on a workflow node"
+        assert tool in _ENGINE_DISALLOWED_TOOLS, f"{tool} callable on an engine turn"
+        # Also denied when engine MCP is on: that turn drops only the ``mcp__*``
+        # wildcard and ``ToolSearch``, never a builtin.
+        assert tool in _ENGINE_DISALLOWED_TOOLS_WITH_MCP, f"{tool} callable with MCP on"
+
+
+def test_the_two_reach_constants_stay_separate_and_disjoint():
+    """Host reach and account reach are different boundaries, not one list.
+
+    ``HOST_REACH_TOOLS`` is bounded by the OS jail and is also a latency
+    control on nodes; ``ACCOUNT_REACH_TOOLS`` is bounded by neither the jail
+    nor strict MCP. Merging them would lose the reason either exists.
+    """
+    from tinyassets.providers.base import ACCOUNT_REACH_TOOLS, HOST_REACH_TOOLS
+
+    assert not set(HOST_REACH_TOOLS) & set(ACCOUNT_REACH_TOOLS)
+    assert len(set(ACCOUNT_REACH_TOOLS)) == len(ACCOUNT_REACH_TOOLS), "no duplicates"
+    # SendMessage lives in the account constant, not as a second literal in the
+    # engine list: one definition is the point.
+    assert "SendMessage" in ACCOUNT_REACH_TOOLS
+
+
+def test_the_engine_denylist_has_no_duplicate_names(tmp_path):
+    """Splatting a shared constant must not leave a name listed twice."""
+    from tinyassets.universe_intelligence import _ENGINE_DISALLOWED_TOOLS
+
+    duplicated = sorted({
+        t for t in _ENGINE_DISALLOWED_TOOLS
+        if _ENGINE_DISALLOWED_TOOLS.count(t) > 1
+    })
+    assert duplicated == [], duplicated
+
+    node_flags, _cwd = _sandbox_cli_args(
+        ModelConfig(workflow_node=True, disallowed_tools=("Artifact",)), tmp_path,
+    )
+    node_denied = node_flags[node_flags.index("--disallowedTools") + 1:]
+    # A node that already denied one of them by name keeps exactly one copy.
+    assert node_denied.count("Artifact") == 1
+
+
+def test_scheduling_push_and_remote_leave_the_platform_so_they_are_denied():
+    """Host decision 2026-10-03, recorded so the reason outlives the list.
+
+    Scheduling, push and remote runs belong to the user's own platform-side
+    automations -- the channels they build -- never to the CLI's account-side
+    features. A turn that scheduled its own wakeup or fired its own push would
+    run work the owner never authored and cannot see in their automations.
+    """
+    from tinyassets.providers.base import ACCOUNT_REACH_TOOLS
+
+    for tool in ("ScheduleWakeup", "PushNotification", "RemoteTrigger",
+                 "CronCreate", "CronDelete", "CronList",
+                 "DesignSync", "DesignSyncTool"):
+        assert tool in ACCOUNT_REACH_TOOLS, tool
+
+
+def test_session_local_and_strict_mcp_bounded_tools_stay_allowed_on_a_node(tmp_path):
+    """The same decision's other half: do NOT sweep in what is already bounded.
+
+    ``Task*`` is the turn's own bookkeeping and ``ReportFindings`` reports into
+    the turn; the MCP resource readers are already bounded by
+    ``--strict-mcp-config``. A node keeps them, as it keeps web tools, subagents
+    and plans -- narrowing a node is about effects that ESCAPE it.
+    """
+    from tinyassets.providers.base import ACCOUNT_REACH_TOOLS
+
+    node_flags, _cwd = _sandbox_cli_args(ModelConfig(workflow_node=True), tmp_path)
+    node_denied = node_flags[node_flags.index("--disallowedTools") + 1:]
+    still_allowed = (
+        "TaskCreate", "TaskUpdate", "TaskGet", "TaskList", "TaskStop", "TaskOutput",
+        "ReportFindings",
+        "ReadMcpResourceTool", "ReadMcpResourceDirTool", "ListMcpResourcesTool",
+        # Owner-level capability a node has always kept.
+        "WebFetch", "WebSearch", "Task", "Agent", "Skill",
+    )
+    for tool in still_allowed:
+        assert tool not in ACCOUNT_REACH_TOOLS, f"{tool} should not be account-reach"
+        assert tool not in node_denied, f"{tool} should stay callable on a node"
+
+
+def test_the_engine_turn_denies_everything_it_denied_before_the_refactor():
+    """Moving names from literals into the shared constant must LOSE nothing.
+
+    The engine denylist is the stricter of the two paths; this refactor pulled
+    SendMessage, ScheduleWakeup, PushNotification, RemoteTrigger, Cron* and
+    DesignSync* out of its literals and into ACCOUNT_REACH_TOOLS. Each must
+    still be denied, or the refactor quietly widened the founder's turn.
+    """
+    from tinyassets.universe_intelligence import _ENGINE_DISALLOWED_TOOLS
+
+    moved_out_of_literals = (
+        "SendMessage", "ScheduleWakeup", "PushNotification", "RemoteTrigger",
+        "CronCreate", "CronDelete", "CronList", "DesignSync", "DesignSyncTool",
+    )
+    for tool in moved_out_of_literals:
+        assert tool in _ENGINE_DISALLOWED_TOOLS, tool

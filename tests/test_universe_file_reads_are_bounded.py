@@ -44,6 +44,9 @@ TURN_PATH = (
     "tinyassets/config.py",
     "tinyassets/universe_tools.py",
     "tinyassets/engine_mcp_server.py",
+    # The agent writes its own MEMORY.md (harness D7a): every reader of it.
+    "tinyassets/memory_items.py",
+    "tinyassets/harness_history.py",
     # The agent writes its own wiki (harness W): every wiki reader.
     "tinyassets/api/helpers.py",
     "tinyassets/api/wiki.py",
@@ -61,21 +64,9 @@ ALLOWED = {
         "reads /sys/fs/cgroup/<jail>/cgroup.procs, not a universe path",
     ("tinyassets/universe_tools.py", "_try_lock_one"):
         "opens a slot lock under the data dir's .universe-tool-slots, O_NOFOLLOW",
-    ("tinyassets/soul_edit.py", "_soul_lock"):
-        "opens .soul.lock for flock; a hidden root entry the tool jail masks",
     ("tinyassets/universe_intelligence.py", "read_operating_instructions"):
         "creates the seed AGENTS.md with O_CREAT|O_EXCL|O_NOFOLLOW and writes it; "
         "reading it goes through universe_files",
-    ("tinyassets/api/helpers.py", "_read_json"):
-        "reads root-level platform JSON (status.json, ledger, work_targets.json, "
-        "requests); the tool jail binds those read-only or hides them, never wiki/",
-    ("tinyassets/api/helpers.py", "_read_platform_text"):
-        "_read_text sends only paths OUTSIDE the active wiki root here (activity.log, "
-        "run logs); every wiki page goes through universe_files",
-    ("tinyassets/api/wiki.py", "_append_wiki_log"):
-        "opens log.md in append mode to WRITE one line; it never reads it",
-    ("tinyassets/api/wiki.py", "_wiki_file_bug"):
-        "opens a new bug page with mode 'x' to WRITE it; it never reads it",
     ("tinyassets/wiki/okf_export.py", "_conformance_report"):
         "reads the bundle this export just wrote into target_dir, which is refused "
         "when inside the wiki root; not an agent-written file",

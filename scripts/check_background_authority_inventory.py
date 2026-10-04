@@ -135,6 +135,16 @@ EXPECTED_SENSITIVE_CALL_SITES: tuple[CallSite, ...] = (
         "create_streamable_http_app._hooks_endpoint",
         "request.stream",
     ),
+    # Name collision (C1a, reviewed 2026-10-03): the dark stateless frontend
+    # forwards the caller's HTTP body to the owner socket byte-for-byte via
+    # Starlette `request.stream()`. It grants no execution authority; the
+    # owner authenticates the forwarded request exactly as it would directly.
+    CallSite("tinyassets/frontend.py", "Frontend.__call__", "request.stream"),
+    CallSite(
+        "packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/tinyassets/frontend.py",
+        "Frontend.__call__",
+        "request.stream",
+    ),
     CallSite(
         "fantasy_daemon/__main__.py",
         "DaemonController._try_execute_soul_loop",

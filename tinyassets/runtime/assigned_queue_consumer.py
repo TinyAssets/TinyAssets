@@ -201,6 +201,9 @@ class AssignedQueueConsumer:
         self._started_monotonic = 0.0
         self._last_poll_completed: float | None = None
         self._last_poll_failed = False
+        from tinyassets.control_plane.scheduler import ControlPlaneScheduler
+
+        self._control_plane = ControlPlaneScheduler(self.base_path)
 
     def start(self) -> None:
         # Gate start() itself (Codex #6, #2516): with the flag unset, constructing +
@@ -409,18 +412,26 @@ class AssignedQueueConsumer:
         # restart preserves `.pause` -- skipping the beat here would turn the P0
         # repair into a restart loop (Codex round 3 on the fleet prune).
         serving_universes = list_serving_universes(self.base_path)
-        automation_submitted, _automation_universes = self._submit_due_automations(
-            serving_universes, prep_store
-        )
-        # Activities (harness D2): settle ended runs and start queued ones on
-        # the same cadence, so nothing waits for a restart to be picked up.
-        # It runs on its own thread: the pump and its heartbeats never wait on it.
-        try:
-            from tinyassets.activity_dispatcher import tick_in_background
+        # Every fire is the execution owner's (target design D7/D11). A process
+        # that does not hold the owner lease still beats -- liveness is not
+        # activity -- but starts nothing. Today's lease is the single-process
+        # adapter (always held); S8a installs the generation-fenced one.
+        from tinyassets.control_plane.lease import current_owner_lease
 
-            tick_in_background(self.base_path)
-        except Exception:  # noqa: BLE001 - activities never stop the pump
-            logger.exception("activity dispatch tick failed")
+        lease_held = current_owner_lease().held()
+        automation_submitted = 0
+        if lease_held:
+            automation_submitted, _automation_universes = self._submit_due_automations(
+                serving_universes, prep_store
+            )
+            # The owner also settles ended activities and starts queued ones.
+            # Dispatch runs on its own thread so heartbeats need not wait.
+            try:
+                from tinyassets.activity_dispatcher import tick_in_background
+
+                tick_in_background(self.base_path)
+            except Exception:  # noqa: BLE001 - activities never stop the pump
+                logger.exception("activity dispatch tick failed")
         for universe_id in serving_universes:
             try:
                 self._publish_heartbeat(universe_id)
@@ -445,6 +456,13 @@ class AssignedQueueConsumer:
                     prep_store, f"universe:{universe_id}:-", universe_id,
                     _error_reason("prepare_error", exc),
                 )
+        if lease_held:
+            # Control-plane triggers (the proactive cadence) fire on the same
+            # owner tick; they read platform state only, never a universe dir.
+            try:
+                self._control_plane.tick()
+            except Exception:  # noqa: BLE001 - triggers never stop the pump
+                logger.exception("control-plane trigger tick failed")
         return automation_submitted
 
     def _release_universe(self, universe_id: str) -> None:

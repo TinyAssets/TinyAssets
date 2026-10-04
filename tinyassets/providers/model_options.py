@@ -54,9 +54,18 @@ def model_options_document(
             for reason in source_reasons.get(ref.connection_id, []):
                 # Missing enumeration is a source diagnostic, not a refusal of
                 # an independently admitted provider-default invocation.
+                #
+                # `catalogue_refresh_pending` belongs in this set for the same
+                # reason and is easy to miss: the client treats ANY reason on a
+                # row as "not pickable", so leaving it on would make the
+                # provider's own default unselectable while a background
+                # refresh runs -- for a lane that never needed enumeration at
+                # all. A warming catalogue must cost the enumerated rows, not
+                # the source.
                 if (model.model_id == "" and ref in admitted
                         and reason["reason"] in {
                             "native_catalogue_unavailable", "native_enumeration_unsupported",
+                            "catalogue_refresh_pending", "catalogue_refresh_unavailable",
                         }):
                     continue
                 if reason not in row_reasons:
@@ -68,6 +77,11 @@ def model_options_document(
                 "freshness": connection.freshness,
                 "provider_default": connection.default_model_id == model.model_id,
                 "tools": model.tools,
+                # What the SOURCE said this model accepts, so a client renders
+                # an effort control only where one exists and offers exactly
+                # the levels that model takes. An empty list means no control.
+                "effort_levels": list(model.effort_levels),
+                "effort": plan.policy.effort_for(ref),
                 "context_tokens": model.context_tokens,
                 "input_modalities": sorted(model.modalities),
                 "output_modalities": sorted(model.output_modalities),

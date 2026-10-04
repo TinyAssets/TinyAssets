@@ -17,6 +17,7 @@ import os
 import stat
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -123,7 +124,7 @@ def add_lane(repo: Path, name: str, *, merged: bool, push: bool = True) -> Path:
         git(repo, "merge", "-q", "--no-ff", "-m", f"merge {name}", name)
         git(repo, "push", "-q", "origin", "main")
     git(repo, "fetch", "-q", "--all")
-    worktree = repo.parent / f"w{abs(hash(name)) % 997}"
+    worktree = Path(tempfile.mkdtemp(prefix="w", dir=repo.parent))
     git(repo, "worktree", "add", "-q", str(worktree), name)
     return worktree
 
@@ -1007,8 +1008,12 @@ def test_budget_marks_the_rest_not_inventoried(repo: Path) -> None:
     assert all(i.verdict == "KEEP" and i.reason == "not_inventoried" for i in items)
 
 
-def test_apply_removes_a_merged_worktree_and_leaves_the_kept_one(repo: Path) -> None:
+def test_apply_removes_a_merged_worktree_and_leaves_the_kept_one(
+    repo: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """End-to-end: the remover runs through git and the refusals hold."""
+    # Reproduce the CI collision without depending on Python's random hash seed.
+    monkeypatch.setitem(add_lane.__globals__, "hash", lambda _name: 84)
     gone = add_lane(repo, "landed", merged=True)
     kept = add_lane(repo, "open", merged=False)
     report = dh.Report(items=worktree_items(repo))

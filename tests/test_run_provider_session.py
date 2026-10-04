@@ -9,6 +9,7 @@ from typing import Any
 import pytest
 
 import tinyassets.platform_runtime_provenance as platform_runtime_provenance
+from tests.inference_usage_helpers import accounting_resolver
 from tinyassets.branches import (
     BranchDefinition,
     EdgeDefinition,
@@ -243,6 +244,8 @@ def _seed_open_serving_assignment(
     universe_id: str = "universe_alice",
     select_for_serving: bool = True,
     model_access=None,
+    model="synthetic-model",
+    host="api.example.com",
 ) -> str:
     """Select one synthetic owner-bound HTTP provider for foreground runs."""
     from tinyassets.custom_agents import create_binding, publish_definition
@@ -270,11 +273,11 @@ def _seed_open_serving_assignment(
         destination="compute:synthetic",
         credential_ref="vault://http/compute:synthetic",
         allowed_endpoints=[{
-            "host": "api.example.com",
+            "host": host,
             "path_template": "/v1/chat/completions",
             "methods": ["POST"],
         }] + ([{
-            "host": "api.example.com", "path_template": "/api/v1/models/user", "methods": ["GET"],
+            "host": host, "path_template": "/api/v1/models/user", "methods": ["GET"],
             "allowed_query": ["output_modalities"], "required_query": ["output_modalities"],
             "query_patterns": {"output_modalities": "^all$"},
         }] if model_access is not None else []),
@@ -291,7 +294,7 @@ def _seed_open_serving_assignment(
         owner_user_id=owner_user_id,
         access_method="api_key_http",
         protocol="openai_chat",
-        model="synthetic-model",
+        model=model,
         ref=grant_id,
     )
     if model_access is not None:
@@ -356,10 +359,13 @@ def _run_branch(
     authority_case: str = "active",
     mock_provider: bool = False,
     open_provider: bool = False,
+    open_model: str = "synthetic-model",
+    open_host: str = "api.example.com",
     open_router_resolution_refusal: bool = False,
     model_access=None,
     services=("codex",),
     after_provider_call=None,
+    on_active_session=None,
 ) -> tuple[dict[str, Any], _CountingProvider, dict[str, Any]]:
     from tinyassets.api import runs as api_runs
     from tinyassets.daemon_server import save_branch_definition, set_founder_home
@@ -392,7 +398,7 @@ def _run_branch(
                 tmp_path,
                 monkeypatch,
                 select_for_serving=authority_case != "registered_only",
-                model_access=model_access,
+                model_access=model_access, model=open_model, host=open_host,
             )
         else:
             _seed_serving_assignment(tmp_path, model_access=model_access, services=services)
@@ -494,6 +500,8 @@ def _run_branch(
                 "tinyassets.providers.provider_resolver.provider_for_definition",
                 refuse_resolution,
             )
+        if on_active_session is not None:
+            on_active_session(captured["provider_call"])
         return provider_router.call_sync(
             role,
             prompt,
@@ -984,7 +992,7 @@ def test_foreground_run_launches_selected_open_provider_and_settles_once(
     monkeypatch.setattr(
         ApiKeyHttpProvider,
         "_resolve_proxy",
-        lambda _self, **_kwargs: proxy,
+        accounting_resolver(lambda _self, **_kwargs: proxy),
     )
     monkeypatch.setattr(
         "tinyassets.credential_vault.snapshot_llm_subscription_credential",
@@ -1250,45 +1258,60 @@ def test_async_sub_branch_gets_its_own_session_not_the_parents(
         prepare_foreground_run_provider,
     )
 
-    _, _, captured = _run_branch(tmp_path, monkeypatch, authenticate_request, _branch(node_count=1))
-    parent_wrapper = captured["provider_call"]
-    parent_session = _session_from_provider_call(parent_wrapper)
-    assert parent_session is not None, "fixture did not produce a real bound session"
+    active_checks = []
 
-    # A real child run row: the child must validate against ITS OWN run, so a
-    # made-up id proves nothing (and correctly fails "run record is missing").
-    from tinyassets.runs import create_run, update_run_status
+    def check_active_parent(parent_wrapper):
+        check_index = len(active_checks)
+        active_checks.append(False)
+        parent_session = _session_from_provider_call(parent_wrapper)
+        assert parent_session is not None, "fixture did not produce a real bound session"
 
-    child_branch = _branch(node_count=1)
-    save_branch_definition(tmp_path, branch_def=child_branch.to_dict())
-    child_run_id = create_run(
-        tmp_path,
-        branch_def_id=child_branch.branch_def_id,
-        thread_id="thread-child",
-        inputs={},
-        actor="universe:universe_alice",
+        # A real child run row: the child must validate against ITS OWN run, so a
+        # made-up id proves nothing (and correctly fails "run record is missing").
+        from tinyassets.runs import create_run, update_run_status
+
+        child_branch = _branch(node_count=1)
+        save_branch_definition(tmp_path, branch_def=child_branch.to_dict())
+        child_run_id = create_run(
+            tmp_path,
+            branch_def_id=child_branch.branch_def_id,
+            thread_id="thread-child",
+            inputs={},
+            actor="universe:universe_alice",
+        )
+        update_run_status(tmp_path, child_run_id, status="running")
+
+        child_wrapper = prepare_foreground_run_provider(
+            parent_wrapper,
+            run_id=child_run_id,
+            branch=child_branch,
+            branch_version_id=None,
+            allowed_statuses={"running", "queued"},
+        )
+
+        child_session = _session_from_provider_call(child_wrapper)
+        assert child_session is not None, "child run got no session at all"
+        assert child_session is not parent_session, (
+            "the child reused the PARENT's session; its receipt and claim are minted "
+            "against the parent's run id"
+        )
+        # The child must carry no authority inherited from the parent.
+        assert child_session._receipt is None, "child inherited the parent's receipt"
+        assert child_session._claim is None, "child inherited the parent's claim"
+        # And the parent must be left intact for its own remaining nodes.
+        assert _session_from_provider_call(parent_wrapper) is parent_session
+        child_session.close()
+        active_checks[check_index] = True
+
+    response, _, captured = _run_branch(
+        tmp_path, monkeypatch, authenticate_request, _branch(node_count=1),
+        on_active_session=check_active_parent,
     )
-    update_run_status(tmp_path, child_run_id, status="running")
-
-    child_wrapper = prepare_foreground_run_provider(
-        parent_wrapper,
-        run_id=child_run_id,
-        branch=child_branch,
-        branch_version_id=None,
-        allowed_statuses={"running", "queued"},
-    )
-
-    child_session = _session_from_provider_call(child_wrapper)
-    assert child_session is not None, "child run got no session at all"
-    assert child_session is not parent_session, (
-        "the child reused the PARENT's session; its receipt and claim are minted "
-        "against the parent's run id"
-    )
-    # The child must carry no authority inherited from the parent.
-    assert child_session._receipt is None, "child inherited the parent's receipt"
-    assert child_session._claim is None, "child inherited the parent's claim"
-    # And the parent must be left intact for its own remaining nodes.
-    assert _session_from_provider_call(parent_wrapper) is parent_session
+    assert response["terminal_status"] == "completed", response
+    assert active_checks and all(active_checks), "every callback must complete its assertions"
+    parent_session = _session_from_provider_call(captured["provider_call"])
+    with pytest.raises(ProviderAuthorityHeldError):
+        parent_session._request_allocation.child()
 
 
 def test_a_session_hidden_behind_an_extra_wrapper_is_refused_not_passed_through() -> None:
@@ -1444,3 +1467,36 @@ def test_foreground_claude_node_runs_in_its_universe_without_host_tools(
     # Only host reach is removed: web tools and subagents are not the host's.
     for kept in ("WebSearch", "WebFetch", "Agent"):
         assert kept not in denied
+
+
+@pytest.mark.parametrize("host,model,expected_calls", [
+    ("openrouter.ai", "synthetic-model:free", 6),
+    ("openrouter.ai", "synthetic-model", 8),
+    ("api.example.com", "synthetic-model:free", 8),
+])
+def test_legacy_run_free_policy_uses_owned_source_and_exact_model(
+    tmp_path, monkeypatch, authenticate_request, host, model, expected_calls,
+):
+    from tinyassets.providers.api_key_http_provider import ApiKeyHttpProvider
+    from tinyassets.storage.agent_request_usage import UsageStore
+
+    proxy = _OpenProxy()
+    monkeypatch.setattr(ApiKeyHttpProvider, "_resolve_proxy",
+                        accounting_resolver(lambda _self, **_kwargs: proxy))
+    response, substituted, captured = _run_branch(
+        tmp_path, monkeypatch, authenticate_request, _branch(node_count=8),
+        open_provider=True, open_model=model, open_host=host,
+    )
+    assert len(proxy.calls) == expected_calls
+    assert not substituted.calls
+    if expected_calls == 6:
+        assert response["terminal_status"] == "failed"
+        assert "request budget" in response["terminal_error"]
+        assert captured["effects"] == []
+    else:
+        assert response["terminal_status"] == "completed", response["terminal_error"]
+    stored = UsageStore(tmp_path).for_subject(
+        "acct_alice", "universe_alice", "run", response["run_id"],
+    )
+    assert len(stored) == 1 and stored[0]["dispatched"] == expected_calls
+    assert all(a["free"] is (expected_calls == 6) for a in stored[0]["attempts"])
