@@ -59,7 +59,7 @@
     // message as the owner are the app's offer to them, not a third-party
     // bundle's capability. `packages.list_tryable` is absent on purpose: it
     // only reads what is already published.
-    PLATFORM_ONLY:["packages.try","chat.prefill"],
+    PLATFORM_ONLY:["packages.try","packages.preview","chat.prefill"],
     FIELDS:["kind","markup","name","script","style","ui_id","version"],
     // Carried verbatim when present: the asset manifest the server checked,
     // shared libraries by name, and whether `script` is a module.
@@ -244,6 +244,8 @@
     // ---- lifecycle and fencing ---------------------------------------------
     fence(epoch,home){ return this.enabled&&epoch===this.epoch&&home===this.home; },
     reset(){
+      this.closePreview();
+      const receipt=$("ui-install-receipt");if(receipt){receipt.hidden=true;receipt.replaceChildren();}
       this.epoch++; this.unmount();
       this.enabled=false; this.home=""; this.principal="";
       this.library=[]; this.broken=[]; this.unreadable=""; this.selection=null; this.busy=false;
@@ -326,6 +328,7 @@
     },
     adopt(row){
       if(!this.enabled) return;
+      this.closePreview();
       this.revision=row.revision;
       this.platformDefault=row.platform_default||null;
       const library=this.readLibrary(row),selection=this.readSelection(row);
@@ -446,7 +449,8 @@
       list_automations:"listAutomations",list_runs:"listRuns",read_live:"readLive",
       read_run:"readRun",read_run_output:"readRunOutput",
       list_files:"listFiles",read_file:"readFile",emit:"emit",
-      "packages.list_tryable":"listTryablePackages","packages.try":"tryPackage","chat.prefill":"prefillChat",
+      "packages.list_tryable":"listTryablePackages","packages.try":"tryPackage",
+      "packages.preview":"previewShared","chat.prefill":"prefillChat",
       conversation_design:"conversationDesign",set_conversation_design:"setConversationDesign"}),
     receive(event){
       // Only THIS frame's window is heard. Another frame, a popup, or the page
@@ -1195,6 +1199,7 @@
     // ---- switching: explicit, persisted through ONE write path -------------
     async choose(uiId){
       if(!this.enabled||this.busy) return;
+      this.closePreview();
       const entry=this.library.find(b=>b.ui_id===uiId);
       if(!entry){ this.status("That UI is not installed. Refresh."); this.paint(); return; }
       // Apply first so the switch is immediate; persistence is what makes it
@@ -1206,6 +1211,7 @@
     },
     async chooseDefault(){
       if(!this.enabled||this.busy) return;
+      this.closePreview();
       this.unmount();
       this.mountDefault();
       await this.remember({version:1,state:"default"},
@@ -1391,6 +1397,7 @@
     },
     async browseShared(){
       if(!this.enabled) return;
+      this.closePreview();
       const epoch=this.epoch,home=this.home,request=(this.sharedRequest||0)+1;
       this.sharedRequest=request;this.sharedState="Loading shared command centers…";
       this.sharedCatalogue=null;this.paintShared();
@@ -1405,34 +1412,155 @@
         this.sharedState="Shared command centers could not be loaded. Try again.";
       }
       this.paintShared();
+      if(this.fence(epoch,home)&&request===this.sharedRequest&&this.sharedCatalogue){
+        const first=[...this.sharedCatalogue.packages,...this.sharedCatalogue.systems]
+          .find(item=>item.publication_kind!=="system"||item.available);
+        if(first)await this.previewShared(first.agent_definition_id);
+      }
     },
     paintShared(){
       const panel=this.sharedNode;if(!panel) return;
       panel.replaceChildren();this.line(panel,"Shared command centers");
       if(this.sharedState)this.line(panel,this.sharedState,"muted");
       const doc=this.sharedCatalogue;if(!doc) return;
+      const carousel=document.createElement("div");carousel.className="ui-catalogue";
+      carousel.setAttribute("aria-label","Shared command centers — swipe to browse");
+      panel.appendChild(carousel);
       for(const item of [...doc.packages,...doc.systems]){
         const system=item.publication_kind==="system";
-        const card=document.createElement("article");
+        const card=document.createElement("article");card.className="ui-catalogue-card";
         this.line(card,item.name+" — "+item.author_id);
+        this.line(card,item.description||"A shared command center.");
         this.line(card,system?"Public system · Components only; no files · "+
           item.workflow_count+" workflows · "+item.automation_count+" paused automations":
           "File package · Version "+item.version+" · "+item.size);
         if(system&&!item.available)this.line(card,item.unavailable_reason,"muted");
-        card.appendChild(this.button(system?"Preview component copy":"Preview package install",
+        card.appendChild(this.button("Preview "+item.name,
           ()=>this.previewShared(item.agent_definition_id),this.trying||(system&&!item.available)));
-        panel.appendChild(card);
+        carousel.appendChild(card);
       }
     },
     async previewShared(id){
-      if(!this.enabled) return;
+      // Called by trusted controls or the platform blank frame, never by an
+      // adopted publisher frame. This does not raise an install request.
+      id=typeof id==="object"&&id?id.agent_definition_id:id;
+      if(!this.enabled||!this.text(id,this.MAX_ID)||!id) return;
+      this.open();this.closePreview();
+      const epoch=this.epoch,home=this.home,generation=this.previewGeneration;
+      const current=()=>this.fence(epoch,home)&&generation===this.previewGeneration;
+      const panel=$("ui-preview");panel.hidden=false;
+      panel.replaceChildren();this.line(panel,"Loading visual preview…");
+      try{
+        const doc=await Owner.read({target:"command_center_preview",graph_id:home,agent_definition_id:id});
+        if(!current())return;
+        if(!doc||doc.error||doc.agent_definition_id!==id)
+          throw new Error(doc&&(doc.detail||doc.error)||"This preview is unavailable.");
+        const parsed=this.parseBundle(doc.ui);
+        if(!parsed.ok)throw new Error(parsed.reason);
+        const entry=parsed.bundle,files=[];
+        const assets=Array.isArray(doc.assets)?doc.assets:[];
+        for(const [path,ref] of Object.entries(entry.assets||{})){
+          const asset=assets.find(a=>a&&a.path===path);
+          if(!asset||typeof asset.base64!=="string")throw new Error("A public preview asset is missing.");
+          const bytes=Uint8Array.from(atob(asset.base64),c=>c.charCodeAt(0)).buffer;
+          const hash=Array.from(await this.digest("SHA-256",bytes),b=>b.toString(16).padStart(2,"0")).join("");
+          if(hash!==ref.sha256)throw new Error("A public preview asset failed its integrity check.");
+          files.push({path,media_type:ref.media_type,bytes});
+        }
+        const libraries=await this.libraryBytes(entry.libraries||[]);
+        if(!current())return;
+        panel.replaceChildren();
+        this.line(panel,String(doc.name||entry.name));this.line(panel,String(doc.description||""));
+        this.line(panel,"Visual preview — empty example data. No access to your agents, files or messages. No workflows run; nothing is installed.","muted");
+        const viewport=document.createElement("div");viewport.className="ui-preview-viewport";
+        const frame=document.createElement("iframe");frame.id="ui-preview-frame";
+        frame.title="Preview: "+entry.name;frame.className="ui-preview-frame";
+        frame.setAttribute("tabindex","-1");
+        frame.setAttribute("sandbox",this.SANDBOX);frame.setAttribute("referrerpolicy","no-referrer");
+        let delivered=false;
+        const listener=event=>{
+          if(!current()||event.source!==frame.contentWindow)return;
+          const m=event.data;if(!m||m.ta_ui!==this.PROTOCOL)return;
+          if(m.type==="ready"&&!delivered){
+            delivered=true;frame.contentWindow.postMessage({ta_ui:this.PROTOCOL,type:"bundle",
+              bundle:{markup:entry.markup,style:entry.style,script:entry.script,
+                script_type:entry.script_type,files,libraries}},"*");return;
+          }
+          if(m.type!=="call"||!this.text(m.id,this.MAX_ID)||typeof m.action!=="string")return;
+          const reply=this.previewRead(m.action);
+          frame.contentWindow.postMessage({ta_ui:this.PROTOCOL,type:"result",id:m.id,...reply},"*");
+        };
+        this.previewListener=listener;window.addEventListener("message",listener);
+        frame.setAttribute("src",this.FRAME_SRC);viewport.appendChild(frame);panel.appendChild(viewport);
+        panel.appendChild(this.button("Copy into my command center",()=>this.copyShared(id),false));
+        panel.appendChild(this.button("Close preview",()=>this.closePreview(),false));
+        const items=this.sharedCatalogue?[...this.sharedCatalogue.packages,...this.sharedCatalogue.systems]
+          .filter(item=>item.publication_kind!=="system"||item.available):[];
+        const index=items.findIndex(item=>item.agent_definition_id===id);
+        if(items.length>1&&index>=0){
+          const move=step=>{if(current())return this.previewShared(
+            items[(index+step+items.length)%items.length].agent_definition_id);};
+          for(const [label,step] of [["Previous design",-1],["Next design",1]])
+            panel.appendChild(this.button(label,()=>move(step),false));
+          let start=null;
+          viewport.addEventListener("pointerdown",event=>{start={x:event.clientX,y:event.clientY};});
+          viewport.addEventListener("pointercancel",()=>{start=null;});
+          viewport.addEventListener("pointerup",event=>{
+            if(!start)return;const dx=event.clientX-start.x,dy=event.clientY-start.y;start=null;
+            if(Math.abs(dx)>50&&Math.abs(dx)>Math.abs(dy))move(dx<0?1:-1);
+          });
+          this.line(panel,"Swipe the preview or use Previous / Next to browse.","muted");
+        }
+        if(typeof panel.scrollIntoView==="function")panel.scrollIntoView({block:"start"});
+        this.status("Preview only. Copy asks for your confirmation; it does not send a message.");
+        return {preview:true};
+      }catch(error){if(current()){panel.replaceChildren();this.line(panel,error.message||"This preview is unavailable.");}}
+    },
+    previewRead(action){
+      // No owner calls here. Unknown methods and EVERY mutation are refused.
+      const reads={whoami:{protocol:1,command_center_id:"preview",command_center_name:"Visual preview",workflow_refs:{}},
+        list_agents:{agents:[]},read_conversation:{turns:[]},list_automations:{automations:[]},
+        list_runs:{runs:[]},list_files:{files:[]},read_live:{agents:[],preview:true},
+        conversation_design:{state:"default",preview:true}};
+      return Object.prototype.hasOwnProperty.call(reads,action)
+        ?{ok:true,result:{...reads[action],preview:true}}
+        :{ok:false,error:"Preview only: this action is unavailable. Copy and open the screen to use your own data."};
+    },
+    closePreview(){
+      this.previewGeneration=(this.previewGeneration||0)+1;
+      if(this.previewListener)window.removeEventListener("message",this.previewListener);
+      this.previewListener=null;
+      const panel=$("ui-preview");if(panel){panel.replaceChildren();panel.hidden=true;}
+    },
+    async openBrowse(){
+      this.open();await this.browseShared();return {opened:true};
+    },
+    async copyShared(id){
       const epoch=this.epoch,home=this.home;
       try{
-        await this.tryPackage({agent_definition_id:id});
+        const request=await this.tryPackage({agent_definition_id:id});
         if(!this.fence(epoch,home))return;
-        this.status("Open the chat to review and confirm the copy. Nothing installs before you confirm.");
+        this.closePreview();$("ui-dialog").close();
+        if(typeof openInstallRequest==="function")await openInstallRequest(request.request_id);
       }catch(error){if(this.fence(epoch,home))this.status(error.message||"The copy could not be requested.");}
-      if(this.fence(epoch,home))this.paintShared();
+    },
+    async installedCopy(result){
+      const epoch=this.epoch,home=this.home;
+      await this.load();if(!this.fence(epoch,home))return;
+      const panel=$("ui-install-receipt");if(!panel)return;
+      panel.hidden=false;panel.replaceChildren();
+      this.line(panel,result.receipt||"Copied into your command center.");
+      this.line(panel,"Copied automations stay paused until you resume them. No message was sent.");
+      if(typeof result.ui==="string"&&this.library.some(b=>b.ui_id===result.ui)){
+        panel.appendChild(this.button("Open copied screen",async()=>{
+          if(!this.fence(epoch,home))return;
+          try{
+            await this.verify();if(!this.fence(epoch,home))return;
+            await this.choose(result.ui);
+            if(this.fence(epoch,home))panel.hidden=true;
+          }catch(error){if(this.fence(epoch,home))this.line(panel,error.message||"The screen could not be opened.");}
+        },false));
+      }
     },
     // Trusted recovery, outside any custom UI: what answers this person's
     // messages, and the way back to the default without the UI's help.
@@ -1461,6 +1589,9 @@
       $("btn-ui-switch").addEventListener("click",()=>this.open());
       $("btn-ui-refresh").addEventListener("click",()=>this.load());
       $("btn-ui-close").addEventListener("click",()=>$("ui-dialog").close());
+      $("ui-dialog").addEventListener("close",()=>this.closePreview());
+      for(const id of ["btn-chat-browse","btn-bubble-browse"])
+        $(id).addEventListener("click",()=>this.openBrowse());
       this.paintHeader();
     }
   };

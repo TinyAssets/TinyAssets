@@ -307,7 +307,9 @@ def test_shipped_frame_previews_system_trusted_rail_copies_and_navigation_persis
         frame.get_by_role("button", name="Try someone else's", exact=True).click()
         expect(frame.locator("#packages")).to_contain_text("Components only; no files")
         frame.get_by_role("button", name="Preview copy", exact=True).click()
-        expect(frame.locator("#message")).to_contain_text("preview and confirm")
+        expect(page.locator("#ui-preview")).to_contain_text("Visual preview")
+        assert not any(op == "try_package" for op, _ in calls)
+        page.get_by_role("button", name="Copy into my command center", exact=True).click()
         assert not _bobs_branches(home) and _bob_files(home) == before
         assert AutomationStore(home).list(universe_id=BOB_UNIVERSE) == []
         page.evaluate("async()=>{await refreshRail();}")
@@ -353,6 +355,118 @@ def test_shipped_frame_previews_system_trusted_rail_copies_and_navigation_persis
         _enter(page, origin)
         assert page.evaluate("AppUI.isPlatformDefault()") is True
         assert len(_bobs_branches(home)) == 2
+        assert not failures
+    finally:
+        page.close()
+
+
+@pytest.mark.real_browser
+def test_visual_preview_has_no_owner_bridge_and_copy_requires_visible_consent(
+    home, system_server, browser, tmp_path,
+):
+    import sqlite3
+    from copy import deepcopy
+
+    from playwright.sync_api import expect
+
+    from tinyassets.custom_agents import publish_definition
+    from tinyassets.provider_assignment import load_provider_assignment
+    from tinyassets.storage import db_path
+
+    _seed_own(home)
+    original = _legacy(home)
+    components = deepcopy(get_definition(home, original)["components"])
+    ui = next(c for c in components.values() if c["kind"] == "tinyassets.app-ui.v1")
+    ui["markup"] = '<h1>Village skyline</h1><p id="preview-proof">Loading</p>'
+    ui["script"] = """(async()=>{
+      const agents=await tinyassets.listAgents();
+      const failures=[];
+      if(agents.preview){
+        for(const action of ['send_message','emit','read_file','packages.try']){
+          try{await tinyassets.call(action,{text:'never send',name:'never run'});}
+          catch(error){failures.push(action);}
+        }
+        let isolated=false;try{parent.document.body;}catch(error){isolated=true;}
+        document.getElementById('preview-proof').textContent=
+          'preview agents '+agents.agents.length+'; refused '+failures.length+
+          '; isolated '+isolated;
+      }else document.getElementById('preview-proof').textContent='Your copied screen';
+    })();"""
+    publication = publish_definition(home, author_id=OWNER, payload={
+        "schema_version": 1, "name": "Visual Village", "description": "A village of your own",
+        "tags": ["tinyassets.system.v1"], "components": components})
+    source = get_definition(home, publication["agent_definition_id"])
+    publisher_ui = get_app_ui(home, owner_user_id=OWNER, universe_id=UNIVERSE)
+    with sqlite3.connect(db_path(home)) as db:
+        db.execute("DELETE FROM provider_assignments WHERE universe_id = ?", (BOB_UNIVERSE,))
+    assert load_provider_assignment(home, universe_id=BOB_UNIVERSE) is None
+    before_files = _bob_files(home)
+    origin, calls, failures = system_server
+    page = browser.new_page(viewport={"width": 390, "height": 844})
+    try:
+        _enter(page, origin)
+        page.evaluate("()=>{MCP.converse=async()=>{throw Error('NO MODEL IS AVAILABLE');};}")
+        # The collapsed bubble has its own trusted navigation, independent of the frame.
+        page.evaluate("setChatCloudMode('bubble')")
+        page.get_by_role("button", name="Browse / Switch", exact=True).click()
+        expect(page.locator("#ui-dialog")).to_contain_text("A village of your own")
+        page.get_by_role("button", name="Preview Visual Village", exact=True).click()
+        preview = page.frame_locator("#ui-preview-frame")
+        expect(preview.get_by_role("heading", name="Village skyline")).to_be_visible()
+        expect(preview.locator("#preview-proof")).to_have_text(
+            "preview agents 0; refused 4; isolated true")
+        box = page.locator(".ui-preview-viewport").bounding_box()
+        assert box is not None
+        page.mouse.move(box["x"] + box["width"] * .8, box["y"] + 60)
+        page.mouse.down()
+        page.mouse.move(box["x"] + box["width"] * .2, box["y"] + 60, steps=8)
+        page.mouse.up()
+        expect(page.locator("#ui-preview").get_by_text("GTM Village", exact=True)).to_be_visible()
+        page.get_by_role("button", name="Next design", exact=True).click()
+        expect(preview.get_by_role("heading", name="Village skyline")).to_be_visible()
+        page.screenshot(path=str(tmp_path / "visual-preview.png"))
+        assert not any(op == "try_package" for op, _ in calls)
+        assert not _bobs_branches(home)
+        assert page.evaluate("window.acceptRelays") == []
+        assert _bob_files(home) == before_files
+        page.get_by_role("button", name="Copy into my command center", exact=True).click()
+        tab = page.locator("#rail-items .rtab").filter(has_text="Visual Village")
+        try:
+            expect(tab.get_by_role("button", name="Accept", exact=True)).to_be_visible()
+        except AssertionError:
+            print(page.locator("body").inner_text())
+            print([(op, result.get("error"), result.get("detail"), result.get("request_id"))
+                   for op, result in calls])
+            raise
+        assert not _bobs_branches(home)
+        tab.get_by_role("button", name="Accept", exact=True).click()
+        expect(page.get_by_role("button", name="Open copied screen", exact=True)).to_be_visible()
+        assert page.evaluate("window.acceptRelays") == []
+        assert len(_bobs_branches(home)) == 2
+        assert all(row.desired_state == STATE_PAUSED for row in AutomationStore(home).list(
+            universe_id=BOB_UNIVERSE))
+        assert get_app_ui(home, owner_user_id=OWNER, universe_id=UNIVERSE) == publisher_ui
+        assert get_definition(home, publication["agent_definition_id"]) == source
+        assert _bob_files(home) == before_files
+        page.get_by_role("button", name="Open copied screen", exact=True).click()
+        expect(page.frame_locator("#ui-frame").get_by_role(
+            "heading", name="Village skyline")).to_be_visible()
+        expect(page.get_by_role("button", name="Browse / Switch command centers",
+                                exact=True)).to_be_visible()
+        assert any(c["ui_id"] == "my-own" for c in get_app_ui(
+            home, owner_user_id=BOB, universe_id=BOB_UNIVERSE)["ui_library"])
+        page.evaluate("sessionStorage.clear()")
+        _enter(page, origin)
+        expect(page.frame_locator("#ui-frame").get_by_role(
+            "heading", name="Village skyline")).to_be_visible()
+        page.evaluate("setChatCloudMode('bubble')")
+        page.get_by_role("button", name="Browse / Switch", exact=True).click()
+        page.get_by_role("button", name="Preview Visual Village", exact=True).click()
+        expect(page.locator("#ui-preview-frame")).to_be_visible()
+        # A synthetic account transition must destroy the old preview, not retain its bridge.
+        page.evaluate("AppUI.reset();AppUI.enabled=true;AppUI.home='other-home';AppUI.principal='other-owner';AppUI.paint();")
+        expect(page.locator("#ui-preview-frame")).to_have_count(0)
+        expect(page.get_by_role("button", name="Build your own", exact=True)).to_be_enabled()
         assert not failures
     finally:
         page.close()
