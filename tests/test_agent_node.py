@@ -15,6 +15,7 @@ from fastmcp import Client
 
 from tests import test_workflow_http_agent as foreground
 from tests.cloud_runtime_fixture import cloud_runtime  # noqa: F401
+from tests.inference_usage_helpers import accounting_resolver
 from tinyassets import engine_mcp_server, engine_tool_client
 from tinyassets.branches import BranchDefinition, EdgeDefinition, GraphNodeRef, NodeDefinition
 from tinyassets.providers.api_key_http_provider import ApiKeyHttpProvider
@@ -116,7 +117,8 @@ def engine(tmp_path, monkeypatch, work_agent):
             })}
 
     monkeypatch.setattr(engine_tool_client, "_make_client", client)
-    monkeypatch.setattr(ApiKeyHttpProvider, "_resolve_proxy", lambda *a, **k: Proxy())
+    monkeypatch.setattr(ApiKeyHttpProvider, "_resolve_proxy",
+                        accounting_resolver(lambda *a, **k: Proxy()))
     return state
 
 

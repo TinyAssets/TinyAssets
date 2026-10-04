@@ -117,7 +117,7 @@ def served(configured):
     auth.revoke_provider_request(capability)
 
 
-def _converse(agent, monkeypatch, choice=None, observer=None):
+def _converse(agent, monkeypatch, choice=None, observer=None, message="hello"):
     monkeypatch.setattr(
         universe_intelligence.interlocutor, "resolve_interlocutor_tier",
         lambda *_: SimpleNamespace(tier=universe_intelligence.interlocutor.FOUNDER),
@@ -129,7 +129,7 @@ def _converse(agent, monkeypatch, choice=None, observer=None):
     monkeypatch.setattr(universe_intelligence, "extract_learning", lambda *a: None)
     monkeypatch.setattr(universe_intelligence, "commit_learning", lambda *a, **k: None)
     return universe_intelligence.converse(
-        "u-models", "hello", model_choice=choice, response_observer=observer,
+        "u-models", message, model_choice=choice, response_observer=observer,
     )
 
 
@@ -141,7 +141,7 @@ def _save(agent, prefs):
 
 def test_new_opt_in_assignment_automatically_builds_real_plan(agent, monkeypatch):
     assert _converse(agent, monkeypatch) == "finished exact answer"
-    assert len(agent.tools) == 1
+    assert not agent.tools and len(agent.wires) == 1
     assert agent.wires[0][1]["body"]["model"] == authority.MODEL
     assert agent.latest().policy_source == "automatic"
     assert agent.latest().policy_generation == 0
@@ -165,11 +165,13 @@ def test_one_turn_auto_replaces_unavailable_saved_choice_without_saving(agent, m
     assert agent.latest().policy_source == "current" and agent.latest().policy_generation == 1
 
 
-def test_engine_disabled_does_not_degrade_to_text_only(agent, monkeypatch):
+def test_engine_disabled_allows_plain_chat_but_refuses_full_agent_task(agent, monkeypatch):
     monkeypatch.setenv("TINYASSETS_ENGINE_MCP_TOOLS", "0")
+    assert _converse(agent, monkeypatch) == "finished exact answer"
+    assert len(agent.wires) == 1 and not agent.tools
     with pytest.raises(ProviderAuthorityHeldError):
-        _converse(agent, monkeypatch)
-    assert agent.wires == [] and agent.tools == []
+        _converse(agent, monkeypatch, message="Build an app in my command center")
+    assert len(agent.wires) == 1 and not agent.tools
 
 
 @pytest.mark.parametrize("configured", ["mixed"], indirect=True)
@@ -267,7 +269,7 @@ def test_mixed_explicit_http_overrides_native_preference(agent, monkeypatch):
         f"api_key_http:{agent.served.rig.definition.id}", authority.MODEL,
     ), ())
     assert _converse(agent, monkeypatch, choice.document()) == "finished exact answer"
-    assert agent.served.native.calls == 0 and len(agent.tools) == 1
+    assert agent.served.native.calls == 0 and not agent.tools and len(agent.wires) == 1
 
 
 def test_revocation_after_capture_still_prevents_inference(agent, monkeypatch):
@@ -332,7 +334,7 @@ def test_canonical_mcp_choice_runs_real_selected_agent(agent, monkeypatch):
     assert result.structured_content["reply"] == "finished exact answer"
     assert json.loads(result.content[0].text) == result.structured_content
     assert result.structured_content["execution"]["model"] == "actual-answer-model"
-    assert len(agent.tools) == 1 and agent.latest().policy_source == "current"
+    assert not agent.tools and agent.latest().policy_source == "current"
 
 
 @pytest.mark.parametrize("access", [None, {}, [], {"x": {}}, {"x": {
@@ -614,7 +616,7 @@ def test_preference_change_after_capture_applies_to_next_turn(agent, monkeypatch
     assert store.get("owner", "u-models").generation == 2
     with pytest.raises(ProviderAuthorityHeldError):
         _converse(agent, monkeypatch)
-    assert len(agent.wires) == 2
+    assert len(agent.wires) == 1
 
 
 def test_discovery_does_not_hold_database_write_transaction(configured, monkeypatch):

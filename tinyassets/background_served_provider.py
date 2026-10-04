@@ -743,6 +743,12 @@ class _BackgroundAssignedProviderSession:
         self._sign_ins_refreshed = False
         self._consumer_lease = consumer_lease
         self._provider_call = provider_call
+        from tinyassets.request_budget import TurnRequestBudget, current_request_budget
+
+        self._request_budget = current_request_budget() or TurnRequestBudget(
+            task.actor_id, task.universe_id,
+        )
+        self._request_budget.check_scope(task.actor_id, task.universe_id)
         self._call_index = 0
         self._lock = threading.Lock()
 
@@ -806,6 +812,15 @@ class _BackgroundAssignedProviderSession:
                           "agent_model_plan", "model_selection")
         ):
             raise PermissionError("background provider authority cannot be substituted")
+        from tinyassets.providers.base import ModelConfig
+
+        if config is None:
+            config = ModelConfig()
+        if isinstance(config, ModelConfig):
+            if config.request_budget not in (None, self._request_budget):
+                raise PermissionError("background parent request budget cannot be substituted")
+            config = replace(config, request_budget=self._request_budget,
+                             request_purpose="helper")
         declared_providers = self._declared_policy_providers(policy)
         # Enforcement site (C), served half (design.md § Enforcement sites).
         # Both public entries land here — `__call__` (raw prompt/system) and
@@ -1167,6 +1182,7 @@ class _BackgroundAssignedProviderSession:
             background_store = SQLiteBackgroundBranchAuthorityStore(self._base_path)
             from tinyassets.providers.work_model_selection import prepare_work_model_snapshot
 
+            policy = self._resolved_policy(policy)
             preferred = (policy or {}).get("preferred", {})
             if not isinstance(preferred, dict):
                 raise PermissionError("background model preference is invalid")
@@ -1542,6 +1558,61 @@ class _BackgroundAssignedProviderSession:
 
             cleanup_llm_credential_snapshot(snapshot)
 
+    def _resolved_policy(self, policy):
+        """``policy`` with a bare access-method pin resolved to one accepted source.
+
+        ``{"provider": "api_key_http", "model_id": ...}`` names the universe's
+        single accepted source of that method, or the one of them offering the
+        model (``providers.model_pins``). Resolved here, BEFORE the model
+        snapshot, which needs the exact source to discover. Discovery runs only
+        when several accepted sources share the method and a model must decide
+        between them -- the read the owner's own turn already makes. An exact
+        ref passes unchanged; `_manifest_member` still decides admission.
+        """
+        preferred = (policy or {}).get("preferred")
+        if not isinstance(preferred, dict) or not str(preferred.get("provider") or "").strip():
+            return policy
+        provider = str(preferred["provider"]).strip()
+        if ":" in provider:
+            return policy
+        from tinyassets.provider_assignment import (
+            load_provider_assignment_in_transaction,
+            provider_assignment_admission,
+        )
+        from tinyassets.providers.model_pins import resolve_pin_source
+        from tinyassets.storage.provider_work_authority import SQLiteProviderWorkAuthorityStore
+
+        universe = self._task.universe_id
+        store = SQLiteProviderWorkAuthorityStore(self._base_path)
+        with provider_assignment_admission().shared(self._base_path / universe):
+            with store.connection() as conn:
+                conn.execute("BEGIN")
+                assignment = load_provider_assignment_in_transaction(conn, universe_id=universe)
+        if assignment is None:
+            return policy
+        accepted = [member.provider for member in assignment.candidates]
+        if provider in accepted:
+            return policy
+        model_id = str(preferred.get("model_id", preferred.get("model", "")) or "").strip()
+        sources = dict.fromkeys(accepted)
+        same_method = [ref for ref in accepted if ref.split(":", 1)[0] == provider]
+        if len(same_method) > 1 and model_id:
+            from tinyassets.providers.discovery_snapshot import refresh_model_discovery
+
+            for ref in same_method:
+                if not ref.startswith("api_key_http:"):
+                    continue
+                try:
+                    found = refresh_model_discovery(
+                        owner_user_id=assignment.owner_user_id, universe_id=universe,
+                        definition_id=ref.removeprefix("api_key_http:"),
+                    )
+                except Exception:  # noqa: BLE001 - unknown models, so it cannot decide
+                    continue
+                sources[ref] = tuple(model.model_id for model in found.models.models)
+        resolved = resolve_pin_source(provider, model_id, sources)
+        return {**policy, "preferred": {**preferred, "provider": resolved}}
+
     def _manifest_member(
         self, conn, store, universe_dir, assignment, agent, roles, declared_providers, policy
     ):
@@ -1567,12 +1638,27 @@ class _BackgroundAssignedProviderSession:
                 raise PermissionError("background model assignment changed")
             if set(roles) <= set(binding.allowed_roles):
                 current[member.provider] = (member, binding, custody)
-        if not current or declared_providers - current.keys():
+        if not current:
             raise PermissionError("background workflow requests an unavailable accepted provider")
+        from tinyassets.providers.model_pins import resolve_pin_source
+
+        # A bare access method (``api_key_http``) names this universe's single
+        # source of that method; anything unresolvable refuses with the refs.
+        sources = dict.fromkeys(current)
+        # Read off the policy itself: `_authorize_launch` already resolved its
+        # preferred pin model-aware (`_resolved_policy`), and the caller's set
+        # still carries the bare name it was given.
+        for declared in self._declared_policy_providers(policy):
+            if resolve_pin_source(declared, "", sources) not in sources:
+                raise PermissionError(
+                    "background workflow requests an unavailable accepted provider"
+                )
         preferred = (policy or {}).get("preferred", {})
         if not isinstance(preferred, dict):
             raise PermissionError("background model preference is invalid")
-        provider = preferred.get("provider") or (
+        provider = (
+            resolve_pin_source(preferred["provider"], "", sources)
+            if preferred.get("provider") else
             assignment.provider if assignment.provider in current else next(iter(current))
         )
         if provider not in current:

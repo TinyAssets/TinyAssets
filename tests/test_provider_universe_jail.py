@@ -287,3 +287,91 @@ def test_router_jails_a_new_command_adapter_with_no_jail_code(world: _World) -> 
         ))
     assert len(results) == 1, "the router dropped the only judge"
     _assert_confined(results[0].text, world, own_credential=False)
+
+
+
+# ── the disk budget (concern 2026-10-01-no-per-universe-disk-budget-in-jails) ─
+
+_MiB = 1024 * 1024
+_FILL = (
+    "mkdir -p many; for i in $(seq 1 400); do "
+    "head -c 262144 /dev/zero > many/f$i || exit 3; done; echo filled"
+)
+
+
+def _launch(universe: Path, script: str):
+    """One provider process through the shipping spawn point, run to its end."""
+    from tinyassets.providers import owned_process
+    from tinyassets.providers.provider_jail import provider_launch_scope
+
+    async def go():
+        with provider_launch_scope(universe):
+            proc = await owned_process.aspawn_owned(
+                ["/bin/sh", "-c", script],
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+            )
+        out, _ = await proc.communicate()
+        await proc.disk_watch
+        return proc, out
+
+    return asyncio.run(go())
+
+
+def test_a_provider_process_writing_past_its_budget_is_stopped(world, monkeypatch):
+    from tinyassets import jail_disk
+    from tinyassets.providers import owned_process
+
+    monkeypatch.setattr(jail_disk, "LAUNCH_BYTES_CAP", 24 * _MiB)
+    monkeypatch.setattr(owned_process, "DISK_POLL_SECONDS", 0.1)
+    try:
+        proc, out = _launch(world.universe_a, _FILL)
+        assert proc.disk_killed == jail_disk.STORAGE_LIMIT
+        assert b"filled" not in out and proc.returncode != 0
+        written = sum(p.stat().st_size for p in (world.universe_a / "many").iterdir())
+        assert 24 * _MiB < written < 100 * _MiB, written
+    finally:
+        shutil.rmtree(world.universe_a / "many", ignore_errors=True)
+
+
+def test_a_provider_process_is_stopped_at_the_shared_volume_floor(world, monkeypatch):
+    from tinyassets import jail_disk
+    from tinyassets.providers import owned_process
+
+    free = jail_disk.free_bytes(world.universe_a)
+    assert free > 400 * _MiB, "the runner needs room for this proof"
+    monkeypatch.setattr(jail_disk, "MIN_FREE_DISK_BYTES", free - 40 * _MiB)
+    monkeypatch.setattr(owned_process, "DISK_POLL_SECONDS", 0.1)
+    try:
+        proc, out = _launch(world.universe_a, _FILL)
+        assert proc.disk_killed == jail_disk.DISK_LIMIT
+        assert b"filled" not in out
+    finally:
+        shutil.rmtree(world.universe_a / "many", ignore_errors=True)
+
+
+def test_a_provider_launch_below_the_volume_floor_never_starts(world, monkeypatch):
+    from tinyassets import jail_disk
+    from tinyassets.providers.provider_jail import ProviderConfinementError
+
+    free = jail_disk.free_bytes(world.universe_a)
+    monkeypatch.setattr(jail_disk, "MIN_FREE_DISK_BYTES", free * 2)
+    with pytest.raises(ProviderConfinementError, match="nearly full"):
+        _launch(world.universe_a, "touch started")
+    assert not (world.universe_a / "started").exists()
+
+
+def test_a_provider_filling_its_runtime_dir_is_stopped_too(world, monkeypatch):
+    """``.runtime`` is read-write in the provider jail and outside the account's
+    ``universe_files`` store; the launch's walk still counts it."""
+    from tinyassets import jail_disk
+    from tinyassets.providers import owned_process
+
+    monkeypatch.setattr(jail_disk, "LAUNCH_BYTES_CAP", 24 * _MiB)
+    monkeypatch.setattr(owned_process, "DISK_POLL_SECONDS", 0.1)
+    target = world.universe_a / ".runtime" / "many"
+    try:
+        proc, out = _launch(world.universe_a, _FILL.replace("many", ".runtime/many"))
+        assert proc.disk_killed == jail_disk.STORAGE_LIMIT
+        assert b"filled" not in out
+    finally:
+        shutil.rmtree(target, ignore_errors=True)

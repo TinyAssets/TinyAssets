@@ -479,7 +479,13 @@ class _Coordinator:
     effects_evidence = AgentTurnCoordinator.effects_evidence
     _carry_spent_attempts = AgentTurnCoordinator._carry_spent_attempts
 
+    def _check_scope(self):
+        return "owner"
+
     def __init__(self, turn, universe_dir, outcome):
+        self.request_budget = None
+        self._owns_request_budget = True
+        self._text_only = False
         self.turn = turn
         self.context = SimpleNamespace(universe_dir=universe_dir)
         self.spent_attempts = []

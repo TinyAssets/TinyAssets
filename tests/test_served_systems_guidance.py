@@ -88,7 +88,8 @@ def test_the_chapter_promises_only_what_the_platform_accepts() -> None:
 
     # Every event type it names is one an automation accepts.
     named_events = set(
-        re.findall(r"``(run_completed|pending_request_answered|owner_message|[a-z_]*_event)``", text))
+        re.findall(r"``(run_completed|pending_request_answered|owner_message|[a-z_]*_event)``",
+                   text))
     # Every event it names is one an automation accepts, and it names them all.
     assert named_events == set(automations.EVENT_TYPES)
 
@@ -148,10 +149,13 @@ def test_the_publish_ask_it_shows_is_one_the_platform_accepts() -> None:
     text = _chapter()
     shown = re.search(r'"action": \{"type": "publish",(.*?)\}\}', text, re.S)
     assert shown, "the chapter shows the publish ask"
-    keys = set(re.findall(r'"([a-z_]+)":', shown.group(1)))
-    accepted = set(validate_action({
-        "name": "n", "branch_ids": ["b"], "ui_id": "", "automation_ids": [],
-        "description": ""}))
+    # Validate the actual example, including its nested explicit package,
+    # rather than comparing it with a different legacy workflow-only ask.
+    action, _ = json.JSONDecoder().raw_decode(text.split('"action": ', 1)[1])
+    keys = set(action) - {"type"}
+    accepted = set(validate_action(action))
+    assert action["publish_kind"] == "command_center"
+    assert action["package"] == {} and action["ui_id"]
     assert keys == accepted - {"type"}, (keys, accepted)
     # And the installer's steps name only calls the served surface has.
     for call in ("browse_commons", "read_commons_shape", "remix_shape", "app_ui"):

@@ -20,7 +20,9 @@ requires approval" (design #4172 §1.2, §4.9). Here:
   action leaves, not assumed of its caller.
 * **Tool-free and tighten-only.** A single text call that returns
   ``proceed`` or ``needs_approval``. Anything else -- an error, a timeout,
-  unparseable output, no model at all -- is ``needs_approval`` with its cause:
+  unparseable output, no model at all -- is ``needs_approval`` with its cause.
+  A parent request-budget stop instead holds the action without requesting
+  approval or renewing inference capacity. In either case,
   the review can stop an action, never allow one the rules did not. The answer
   must be exactly one JSON object with exactly those two keys; an object echoed
   inside prose (say, from the action's own content) is no answer.
@@ -37,8 +39,10 @@ import hashlib
 import json
 import logging
 import sqlite3
+import threading
 import time
 from contextlib import closing, contextmanager
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -60,6 +64,7 @@ OFF_CONSEQUENCE = ("Actions of this kind will then proceed on your rule alone, "
 _MAX_EVIDENCE = 2_000
 #: The review's own deadline (seconds), separate from the node's.
 REVIEW_TIMEOUT_S = 120.0
+REVIEW_MAX_ATTEMPTS = 2
 _MAX_ANSWER = 2_000
 
 SAFETY_REQUIREMENTS = (
@@ -79,18 +84,42 @@ _CTX: contextvars.ContextVar[tuple | None] = contextvars.ContextVar(
 
 
 @contextmanager
-def bound(provider_call: Any, *, active: bool):
+def bound(provider_call: Any, *, active: bool, run_id: str = ""):
     """The runner's provider call, for reviews made while its effects fire.
 
     ``active`` is False on the legacy post-run dispatcher, which has no run
     model: a consequential action reaching the effector from there is held
     (``review_refusal`` refuses without a bound runner), never sent unchecked.
     """
-    token = _CTX.set((provider_call,) if active else None)
+    token = _CTX.set((provider_call, run_id) if active else None)
     try:
         yield
     finally:
         _CTX.reset(token)
+
+
+@dataclass
+class _ReviewPurpose:
+    """Ephemeral server context, never an invocation grant or packet field."""
+
+    provider_call: Any
+    universe_dir: Path
+    run_id: str
+    action_sha256: str
+    prompt: str
+    attempts: int = 0
+    active: bool = True
+    lock: Any = field(default_factory=threading.Lock)
+
+    def consume(self) -> None:
+        with self.lock:
+            if not self.active or self.attempts >= REVIEW_MAX_ATTEMPTS:
+                raise PermissionError("effect review attempt allowance exhausted")
+            self.attempts += 1
+
+
+_PURPOSE: contextvars.ContextVar[_ReviewPurpose | None] = contextvars.ContextVar(
+    "tinyassets_effect_review_purpose", default=None)
 
 
 # -- the owner's off switch ------------------------------------------------------
@@ -284,12 +313,45 @@ def review_refusal(universe_dir: Path, *, action: dict, rule: str,
         "END UNTRUSTED ACTION CONTENT\n\n"
         "Return the JSON object."
     )
+    purpose = _ReviewPurpose(provider_call, Path(universe_dir), context[1], digest, prompt)
+    token = _PURPOSE.set(purpose)
+    try:
+        return _review_answer(universe_dir, provider_call, prompt, digest)
+    finally:
+        with purpose.lock:
+            purpose.active = False
+        _PURPOSE.reset(token)
+
+
+def _review_answer(universe_dir, provider_call, prompt, digest):
     cause = "the check could not be completed"
-    for _attempt in range(2):
+    for _attempt in range(REVIEW_MAX_ATTEMPTS):
         try:
             raw = _ask(universe_dir, provider_call, prompt)
         except Exception as exc:  # noqa: BLE001 - any failure is "ask the owner"
+            from tinyassets.exceptions import ProviderAuthorityHeldError
+            from tinyassets.providers.diagnostics import redacted_failure_detail
+            from tinyassets.request_budget import RequestBudgetExceeded
+
+            if isinstance(exc, RequestBudgetExceeded):
+                return {
+                    "dry_run": True,
+                    "reason": "request_budget_exhausted",
+                    "error_kind": "request_budget_exhausted",
+                    "review": {
+                        "verdict": "not_completed", "reason": exc.continuation,
+                        "action_sha256": digest,
+                    },
+                    "request_receipt": exc.request_receipt,
+                    "hint": exc.continuation + " The action was not sent.",
+                }
+
             cause = f"the check could not be completed ({type(exc).__name__})"
+            if isinstance(exc, (ProviderAuthorityHeldError, PermissionError)):
+                # Only the admission boundary's scrubbed diagnostic is useful;
+                # arbitrary provider exceptions can contain request/response data.
+                cause += ": " + redacted_failure_detail(str(exc))
+                break
             continue
         parsed = _verdict(raw)
         if parsed is None:

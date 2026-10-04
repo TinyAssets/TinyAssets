@@ -4,7 +4,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 
 import pytest
-from mcp.types import CallToolResult, ImageContent, TextContent
+from mcp.types import AudioContent, CallToolResult, ImageContent, TextContent
 
 from tinyassets.providers.agent_chat_codec import decode_openai_chat_agent
 from tinyassets.storage import agent_turn_records as records
@@ -278,9 +278,11 @@ def test_crash_after_intent_reopens_as_started_not_a_dispatch_right(journal, tmp
 
 
 def test_nontext_result_is_known_and_preserved_not_unknown(journal):
+    # Audio: a block a text-only connection cannot be shown. (An image is shown
+    # as a line -- test_an_image_result_continues_and_keeps_its_bytes.)
     turn = start(journal, receive(journal, begin(journal, new(journal)), reply(count=2))).snapshot
     raw = CallToolResult(
-        content=[ImageContent(type="image", data="YWJj", mimeType="image/png")],
+        content=[AudioContent(type="audio", data="YWJj", mimeType="audio/wav")],
         isError=False,
         _meta={"private_transport": "excluded"},
     )
@@ -290,6 +292,23 @@ def test_nontext_result_is_known_and_preserved_not_unknown(journal):
     assert tool.state == "completed" and tool.content_kind == "non_text"
     assert "YWJj" in tool.result_json and "private_transport" not in tool.result_json
     assert start(journal, held, 2).status == "conflict"
+
+
+def test_an_image_result_continues_and_keeps_its_bytes(journal):
+    """`read` shows an image file as an image (tinyassets/tool_images.py). The
+    journal keeps the exact result and the turn continues: the codec shows the
+    model one line saying the image was not shown."""
+    turn = start(journal, receive(journal, begin(journal, new(journal)), reply(count=2))).snapshot
+    raw = CallToolResult(
+        content=[TextContent(type="text", text="a.png: 8x8"),
+                 ImageContent(type="image", data="YWJj", mimeType="image/png")],
+        isError=False,
+    )
+    done = finish(journal, turn, result=raw).snapshot
+    assert done.state != "held_unsupported_result"
+    tool = done.rounds[0].tools[0]
+    assert tool.state == "completed" and tool.content_kind == "text_only"
+    assert "YWJj" in tool.result_json
 
 
 @pytest.mark.parametrize(
@@ -652,7 +671,7 @@ def test_abandon_cannot_hide_incomplete_or_ambiguous_progress(journal, stage):
         turn = finish(journal, turn, failure="unknown").snapshot
     elif stage == "nontext":
         turn = finish(journal, turn, result=CallToolResult(content=[
-            ImageContent(type="image", data="AA==", mimeType="image/png"),
+            AudioContent(type="audio", data="AA==", mimeType="audio/wav"),
         ])).snapshot
     assert journal.abandon(
         "owner", "home", turn.turn_id, expected_generation=turn.generation,

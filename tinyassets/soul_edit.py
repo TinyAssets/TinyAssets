@@ -22,7 +22,6 @@ import os
 import re
 import stat
 import sys
-import tempfile
 import time
 from collections.abc import Iterable, Iterator
 from datetime import datetime, timezone
@@ -35,6 +34,7 @@ from tinyassets.universe_files import (
     MAX_BRAIN_FILE_BYTES,
     MAX_FRONTMATTER_BYTES,
     load_untrusted_yaml,
+    open_lock_file,
     read_universe_text,
 )
 from tinyassets.universe_soul import SOUL_FILENAME, SOUL_VERSIONS_DIR
@@ -107,7 +107,9 @@ def assert_contained(root: Path, path: Path) -> None:
             )
 
 
-def _atomic_write_text(path: Path, text: str, *, encoding: str = "utf-8") -> None:
+def _atomic_write_text(
+    path: Path, text: str, *, encoding: str = "utf-8", mode: str = "replace",
+) -> None:
     """Inode-safe write: write a FRESH temp file in the same dir + os.replace.
 
     ``os.replace`` repoints the NAME at a new inode, so a SYMLINK or HARDLINK at
@@ -117,17 +119,17 @@ def _atomic_write_text(path: Path, text: str, *, encoding: str = "utf-8") -> Non
     and the version index — and also the check→use TOCTOU window, since the write
     itself is safe regardless of what the path pointed at a moment earlier (Codex
     brain-loop re-review 2026-08-22).
+
+    Through :func:`tinyassets.universe_files.write_data_path`: the temp file is
+    created ``O_EXCL|O_NOFOLLOW`` inside a directory opened with no link at any
+    component, so a ``soul_versions`` swapped for a link to another universe
+    between allocation and write refuses instead of writing there.
     """
-    path = Path(path)
-    fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp")
-    try:
-        with os.fdopen(fd, "w", encoding=encoding, newline="") as fh:
-            fh.write(text)
-        os.replace(tmp, path)
-    except BaseException:
-        with contextlib.suppress(OSError):
-            os.unlink(tmp)
-        raise
+    from tinyassets.universe_files import write_data_path
+
+    if encoding.lower().replace("-", "") != "utf8":
+        raise ValueError(f"soul files are UTF-8, not {encoding!r}")
+    write_data_path(Path(path), text, mode=mode)
 
 
 def read_governed_files(universe_dir: Path) -> tuple[str, ...]:
@@ -188,11 +190,15 @@ def _soul_lock(universe_dir: Path) -> Iterator[None]:
     Mirrors the sidecar-lock pattern in ``branch_tasks._file_lock`` (msvcrt on
     Windows, fcntl on POSIX). Held across the whole read→write→snapshot section
     of :func:`apply_soul_edit` so the snapshot-number allocation cannot race.
+
+    Opened through :func:`~tinyassets.universe_files.open_lock_file`: the lock
+    name sits in a directory the universe's own processes can write, and a plain
+    ``O_RDWR|O_CREAT`` on it follows a planted link and CREATES the link's
+    target outside this universe.
     """
     universe_dir = Path(universe_dir)
     universe_dir.mkdir(parents=True, exist_ok=True)
-    lock_file = universe_dir / SOUL_LOCK_FILENAME
-    fd = os.open(str(lock_file), os.O_RDWR | os.O_CREAT, 0o644)
+    fd = open_lock_file(universe_dir, SOUL_LOCK_FILENAME)
     try:
         if sys.platform == "win32":
             import msvcrt
@@ -467,8 +473,10 @@ def _write_edit_snapshot(
     for filename in sorted(files):
         body_parts += [f"## {filename}", "", "```markdown", files[filename].rstrip(), "```", ""]
     snapshot_name = f"{next_number:04d}.md"
+    # Exclusive: a numbered snapshot is never overwritten, and an entry that
+    # appeared at this number since allocation refuses rather than being replaced.
     _atomic_write_text(
-        versions_dir / snapshot_name, _render(meta, "\n".join(body_parts))
+        versions_dir / snapshot_name, _render(meta, "\n".join(body_parts)), mode="exclusive",
     )
 
     index_path = versions_dir / "index.md"
