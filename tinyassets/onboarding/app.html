@@ -3505,7 +3505,10 @@
         }
         this.snapshot=doc;this.stale=false;
         if(!this.draft) this.draft=copyModelChoice(modelChoiceForNextTurn||doc.preferences.policy||this.automatic());
-        const expiries=(doc.sources||[]).map(source=>Date.parse(source.expires_at)).filter(Number.isFinite);
+        // Native catalogue age is displayed separately from the freshness of
+        // this owner-authorized picker read. HTTP discovery keeps its expiry gate.
+        const expiries=(doc.sources||[]).filter(source=>source.access_method!=="subscription_cli")
+          .map(source=>Date.parse(source.expires_at)).filter(Number.isFinite);
         this.expires=Math.min(Date.now()+300000,...expiries);
         clearTimeout(this.timer);
         this.timer=setTimeout(()=>{this.stale=true;this.status("Model availability needs a refresh. Your choices are unchanged.");this.render();},Math.max(0,this.expires-Date.now()));

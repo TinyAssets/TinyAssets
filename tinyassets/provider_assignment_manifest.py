@@ -18,7 +18,7 @@ MODEL_ACCESS_FORMAT = (
     'model_ids (a nonempty array of unique model IDs for explicit; [] otherwise), '
     'cost_caps (null for free-only, or a nonempty object mapping cost components '
     'to nonnegative integer ceilings). Use "" as the native provider-default ID. '
-    'Example: {"codex":{"model_scope":"explicit",'
+    'Example: {"provider-name":{"model_scope":"explicit",'
     '"model_ids":["gpt-6-astra"],"cost_caps":null}}. '
     'For auto-detect use model_scope="discovered", model_ids=[]. '
     'Preserve other accepted providers and existing cost_caps.'

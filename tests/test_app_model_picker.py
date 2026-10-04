@@ -65,6 +65,24 @@ def test_catalogue_refresh_is_visible_without_disabling_known_choices(tmp_path, 
     assert any("third" in row["text"] and row["disabled"] for row in rows)
 
 
+@pytest.mark.parametrize("method,can_select", [("subscription_cli", True), ("api_key_http", False)])
+def test_retained_native_catalogue_age_does_not_expire_the_picker_read(
+    tmp_path, method, can_select,
+):
+    doc = catalogue()
+    doc["sources"] = [{"provider_ref": "owned:future-source", "access_method": method,
+                       "expires_at": "2000-01-01T00:00:00+00:00"}]
+    doc["source_failures"] = [{"provider_ref": "owned:future-source",
+                               "reasons": [{"reason": "catalogue_refresh_pending"}]}]
+    result = run_picker(tmp_path, """
+      await ModelPicker.menuOpen();
+      await ModelPicker.choose(ModelPicker.key(""" + json.dumps(ref("first")) + """));
+    """, doc)
+    assert bool(result["requests"]) is can_select
+    if can_select:
+        assert result["requests"][0]["body"]["policy"]["saved_default"] == ref("first")
+
+
 def test_choosing_closes_the_dropdown_and_reuses_the_fresh_catalogue(tmp_path):
     """One click applies and closes; reopening does not re-read the catalogue."""
     result = run_picker(tmp_path, """

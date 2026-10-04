@@ -7,6 +7,7 @@ result is advisory: every actual launch still validates its exact member anew.
 import logging
 import sqlite3
 from dataclasses import dataclass, replace
+from datetime import datetime, timezone
 from pathlib import Path
 
 from tinyassets.custom_agents import get_binding
@@ -64,14 +65,20 @@ _CANDIDATE_ONLY_BASES = frozenset({PUBLIC_LISTED_BASIS, OWN_VERIFIED_BASIS})
 NO_ELIGIBLE_MODEL = "no eligible model in the accepted assignment"
 HELD_SOURCES = "not usable now: "
 
-def _assert_plan_snapshot(snapshot):
+def _assert_plan_snapshot(snapshot, *, display_only=False):
     from tinyassets.providers.discovery_snapshot import assert_discovery_snapshot_current
     from tinyassets.providers.native_discovery import NativeDiscoverySnapshot
 
     if type(snapshot) is NativeDiscoverySnapshot:
         # The caller has just rechecked every exact member/custody chain in its
         # transaction. Do not open another SQLite connection inside that fence.
-        snapshot.assert_fresh()
+        if display_only:
+            # Age is advisory for an owned display, but future observations are
+            # still invalid. Execution always takes the strict default below.
+            if datetime.now(timezone.utc) < snapshot.completed_at:
+                raise ProviderError("native model discovery expired or source changed")
+        else:
+            snapshot.assert_fresh()
     else:
         assert_discovery_snapshot_current(snapshot)
 
@@ -131,7 +138,7 @@ class PreparedPlan:
                 failed[provider] = "source_revoked"
         for snapshot in self.snapshots:
             try:
-                _assert_plan_snapshot(snapshot)
+                _assert_plan_snapshot(snapshot, display_only=self.display_only)
             except ModelDiscoveryUnavailable as exc:
                 failed[snapshot.provider] = exc.reason
             except ProviderError:
@@ -522,11 +529,11 @@ def prepare_owned_model_plan(
                                pending or "model_access_optin_required")
                     for model in contributed
                 )
-                if native_snapshot is not None and not allow_empty:
+                if native_snapshot is not None:
                     snapshots.append(native_snapshot)
-                # Display rechecks current member/custody through chains below,
-                # without interpreting catalogue age as a revoked source. The
-                # resulting PreparedPlan is sealed display_only.
+                # Keep snapshots for honest source timestamps and warnings.
+                # Display rechecks current member/custody through chains below;
+                # the display_only plan cannot authorize a launch.
                 required, caps = interaction, member.access.cost_caps
             else:
                 from tinyassets.providers.discovery_snapshot import refresh_model_discovery
