@@ -421,6 +421,27 @@ def test_access_gate_step_present():
     assert "access" not in str(rollback.get("if", "")).lower()
 
 
+def test_access_gate_blocks_on_200():
+    """Access gate step must exit 1 when direct URL returns 200 (CF Access broken),
+    but must NOT unconditionally exit 1 — tunnel-down (000) is advisory only."""
+    wf = _load()
+    for step in _steps(wf):
+        if "access" in (step.get("name") or "").lower():
+            run_script = step.get("run", "") or ""
+            assert "exit 1" in run_script, (
+                "Access gate step must exit 1 when direct URL returns 200 "
+                "(CF Access disabled — this is a deploy-blocking security failure)"
+            )
+            # The step must NOT be unconditionally blocking — tunnel-down (000)
+            # is advisory. Verify exit 1 is guarded (inside an if-block).
+            assert run_script.count("exit 1") < run_script.count("if ["), (
+                "Access gate step exit 1 must be inside a conditional — "
+                "tunnel-down (000) case must be advisory, not blocking"
+            )
+            return
+    pytest.fail("Access gate step not found")
+
+
 @pytest.mark.skipif(shutil.which("bash") is None, reason="needs bash to execute the step")
 @pytest.mark.parametrize(
     "curl_rc,http_out,want_rc",
