@@ -137,6 +137,14 @@ def test_invalid_directory_is_fixed_error_without_contents(configured, field, va
     assert SECRET not in str(caught.value.__dict__)
 
 
+def test_directory_override_cannot_depend_on_working_directory(configured, monkeypatch):
+    _, config, _ = configured
+    monkeypatch.chdir(config.parent)
+    monkeypatch.setenv(directory.CONFIG_ENV, config.name)
+    with pytest.raises(OAuthError, match="^oauth_directory_invalid$"):
+        directory.entries()
+
+
 @pytest.mark.parametrize("method", ["client_secret_post", "client_secret_basic"])
 def test_confidential_flow_and_refresh_at_only_token_endpoint(
     configured, provider, app, tmp_path, caplog, method,

@@ -35,6 +35,8 @@ def entries() -> list[dict[str, Any]]:
 
     try:
         path = Path(os.environ.get(CONFIG_ENV) or Path(__file__).with_name("providers.json"))
+        if not path.is_absolute():
+            raise ValueError
         doc = json.loads(path.read_text(encoding="utf-8"))
         rows = doc["providers"]
         if not isinstance(rows, list):

@@ -38,7 +38,8 @@ SHALL take precedence over an agent-supplied client ID.
 
 The packaged directory SHALL live at
 `tinyassets/connection_oauth/providers.json`. `TINYASSETS_OAUTH_DIRECTORY` MAY
-select a replacement JSON file. Entries SHALL declare `id`, `hosts`,
+select a replacement JSON file by absolute path; relative overrides SHALL fail
+with `oauth_directory_invalid`. Entries SHALL declare `id`, `hosts`,
 `authorization_endpoint`, `token_endpoint`, `client_id_env`, `client_secret_env`,
 and `token_endpoint_auth_method`. They MAY declare `issuer`,
 `revocation_endpoint`, `default_scopes`, `host_uses`, and `extra_auth_params`.
