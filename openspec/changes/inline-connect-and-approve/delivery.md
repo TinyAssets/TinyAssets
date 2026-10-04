@@ -88,5 +88,16 @@ All pytest basetemps were outside the repository; no full suite was run.
 - `openspec validate inline-connect-and-approve --strict`: passed.
 - `git diff --check`: passed.
 
-No production deploy, public canary, spec sync, PR creation or cross-family
-review was performed. The full change remains open for the unchecked work above.
+No production deploy, public canary or full-change spec sync is claimed.
+PR #4449 now includes cross-family closure of three reproduced lifecycle defects:
+Stop interrupts before a contended approval lock; wakes persist retry backoff;
+stale cards permit session-bound dismissal while approval and editing stay blocked.
+Review receipt: https://github.com/TinyAssets/TinyAssets/pull/4449#issuecomment-5983207487
+at implementation head1e475b9f094e11a492d8220fa0917aa2a4366699.
+On2026-10-04 Windows/Python3.14 the reviewer independently passed31 approval tests;
+the integrated root run passed86 tests across test_inline_approvals,
+test_inline_approvals_real_browser, test_turn_interrupt, test_inline_owner_sessions,
+test_inline_request_storage and test_mirror_parity_gate via `python -m pytest`
+with an external basetemp. Changed Python Ruff, plugin import/parity and strict
+OpenSpec checks passed. Hosted and live acceptance remain separate requirements.
+The full change remains open for the unchecked work above.
