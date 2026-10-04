@@ -4293,7 +4293,7 @@
     // A steer request still on the wire may answer "already heard" for a line
     // that also sits in this queue: nothing goes out until it does.
     if(pendingSteers>0){ steerHeldBatch=steerHeldBatch||batch===true; return; }
-    if(sendQueueHeld || $("btn-send").disabled || interruptPending || !sendQueue.length) return;
+    if(InlineConnection.waiting() || sendQueueHeld || $("btn-send").disabled || interruptPending || !sendQueue.length) return;
     // A turn this page did not start is still running: everything waits for it.
     if(!activeTurn && serverTurnLive()) return;
     if(batch===true) return flushBatch();
@@ -4613,6 +4613,7 @@
 
   async function sendTurn(message, display, opts){
     opts=captureTurnOptions(opts);
+    if(InlineConnection.waiting()) return queueTurn(message,display,opts);
     // A turn running on the server that this page did not start (another
     // window, an answered request) is just as busy as this page's own: a send
     // now steers or waits, never starts a second turn beside it (P1, live
@@ -4658,6 +4659,13 @@
     try{
       const answer=await sendConversationRequest(message,display,sentAt,opts);
       if(!stillHere()) return;
+      if(answer&&answer.status==='held'&&answer.reason==='setup_required'&&answer.needs_connection){
+        const saved=readInflight();
+        if(!saved||saved.message!==message||saved.ts!==sentAt)throw new Error('Your message could not be saved for connection.');
+        InlineConnection.hold(answer.needs_connection);
+        unconfirmed=true;
+        return;
+      }
       renderConverse(answer);
       settleSteered((answer&&answer.steering)||{delivered:[],undelivered:[]});
       delivered=true;setStatusLine("");
@@ -4712,7 +4720,7 @@
         // working on this one, on the strength of a guess the transport
         // explicitly refused to make. The lines stay queued, on disk, until
         // the user explicitly resumes them, even after another manual send.
-        if(unconfirmed){ takeInterruptFlush(); noteHeldQueue(); }
+        if(unconfirmed){ takeInterruptFlush(); if(!InlineConnection.waiting()) noteHeldQueue(); }
         else flushAfterTurn();
         Voice.conversationSettled(delivered,{message,ts:sentAt,
           consumerRequest:opts.consumerRequest||null,owner:sentOwner,scope:sentScope});
@@ -6053,6 +6061,119 @@
   // Finishing is part of that tap: the button says "free models only", the
   // owner approves at the provider, and the page completes the free-model
   // request it gets back, with no second screen to approve again.
+  // Generic connection card. The server supplies the provider; the message is
+  // replayable only after an explicit before-send setup refusal, never a timeout.
+  const InlineConnection={
+    card:null,record:null,timer:null,busy:false,epoch:0,
+    current(record=this.record){
+      return !!record&&record===this.record&&ownsSavedRow(record)&&record.agent===addressedAgentId()&&this.epoch===MCP._loginEpoch;
+    },
+    waiting(){return this.current()&&!!this.record.needsConnection;},
+    hold(request,restored=null){
+      const record=restored||readInflight();
+      if(!record||!ownsSavedRow(record)) throw new Error('Could not retain your message.');
+      const already=this.waiting()&&sameInflight(this.record,record);
+      record.needsConnection=request;
+      localStorage.setItem(INFLIGHT_KEY,JSON.stringify(record));
+      this.record=record;this.epoch=MCP._loginEpoch;
+      if(already&&this.card&&this.card.isConnected)return;
+      const box=document.createElement('section');box.className='needs-connection';
+      box.setAttribute('aria-label','Needs a connection');
+      const note=document.createElement('p');note.setAttribute('role','status');
+      const primary=request.action&&request.action.setup&&request.action.setup.primary;
+      note.textContent='To reply I need an AI model. '+(primary?primary.name+' offers free models — connect your account, or connect another AI.':'Connect your own AI account to continue.');
+      const controls=document.createElement('div');controls.className='rtab-actions';
+      const connect=document.createElement('button');connect.className='btn btn--primary';
+      connect.textContent=primary?'Connect '+primary.name:'Connect AI';
+      const other=document.createElement('button');other.className='btn btn--ghost';other.textContent='Other AI';
+      const cancel=document.createElement('button');cancel.className='btn btn--link';cancel.textContent='Cancel sign-in';cancel.hidden=true;
+      controls.append(connect,other,cancel);box.append(note,controls);
+      this.card=box;this.note=note;this.connect=connect;this.cancel=cancel;
+      appendMessage('platform','',box);
+      other.onclick=()=>{if(this.current(record))openConnectRequest();};
+      connect.onclick=()=>primary?this.begin(primary):openConnectRequest();
+      cancel.onclick=async()=>{
+        if(!this.current(record)||!record.connectionFlow)return;
+        try{await HostedModelConnect.post('inline_cancel',{flow:record.connectionFlow});
+          if(this.current(record))this.failed('Sign-in was cancelled. Your message is kept.');
+        }catch(_e){if(this.current(record))this.failed('Cancellation was not confirmed. Your message is kept.');}
+      };
+      this.schedule();
+    },
+    save(){if(this.current()&&sameInflight(readInflight(),this.record))localStorage.setItem(INFLIGHT_KEY,JSON.stringify(this.record));},
+    failed(text){this.note.textContent=text+' Tap Retry to continue.';this.connect.textContent='Retry';this.connect.disabled=false;this.cancel.hidden=true;this.record.connectionFlow=null;this.save();},
+    schedule(){clearTimeout(this.timer);this.timer=setTimeout(()=>this.check(),1500);},
+    async begin(primary){
+      const record=this.record;if(!this.current(record)||this.busy)return;
+      // Reserve the popup inside the gesture, before network or token renewal.
+      const popup=NATIVE?null:window.open('about:blank','_blank');
+      if(!NATIVE&&!popup){this.failed('Allow the sign-in popup to connect.');return;}
+      if(popup)popup.opener=null;
+      this.busy=true;this.connect.disabled=true;this.note.textContent='Opening sign-in. Free models only; no paid access is approved.';
+      try{
+        const result=await HostedModelConnect.post('inline_begin',{preset_id:primary.preset_id});
+        if(!this.current(record)){if(popup)popup.close();return;}
+        if(!/^\/app\/model-callback\/[A-Za-z0-9_-]{43}\?launch=1$/.test(result.launch_path))throw new Error('Invalid sign-in response.');
+        record.connectionFlow=result.flow;this.save();this.cancel.hidden=false;
+        const url=new URL(result.launch_path,CFG.resource||location.origin).href;
+        if(NATIVE)await openExternal(url);else popup.location.href=url;
+        this.popup=popup;this.note.textContent='Finish signing in, then return here. Your message is kept.';
+      }catch(_e){if(popup)popup.close();if(this.current(record))this.failed('Sign-in could not start. Your message is kept.');}
+      finally{this.busy=false;this.schedule();}
+    },
+    async check(){
+      const record=this.record;if(!this.current(record))return;
+      if(this.busy){this.schedule();return;}
+      this.busy=true;
+      try{
+        if(record.connectionFlow){
+          const result=await HostedModelConnect.post('inline_poll',{flow:record.connectionFlow});
+          if(!this.current(record))return;
+          if(result.status==='confirmation_required'){
+            // This tap authorized only the server's existing free-only bootstrap.
+            if(!result.request||result.request.request_id!==result.request_id||
+               !result.request.action||result.request.action.type!=='bind_model_access')
+              throw new Error('Connection confirmation did not match the requested setup.');
+            const answered=await MCP.answerRequest({request_id:result.request_id,values:{}});
+            if(!this.current(record))return;
+            if(!answered||answered.error||answered.status!=='answered')throw new Error('Connection confirmation did not finish.');
+            record.connectionFlow=null;this.save();
+          }else if(result.status==='cancelled')this.failed('Sign-in was cancelled. Your message is kept.');
+          else if(result.status==='consumed'){
+            this.failed('Connection needs recovery. Use Other AI to finish the saved setup.');
+          }else if(this.popup&&this.popup.closed){
+            await HostedModelConnect.post('inline_cancel',{flow:record.connectionFlow});
+            if(this.current(record))this.failed('The sign-in window closed. Your message is kept.');
+          }
+        }
+        const response=await fetch('/app/me',{headers:authHeaders(),credentials:'same-origin',cache:'no-store'});
+        const me=await response.json();
+        if(!this.current(record))return;
+        if(response.ok&&me.setup==='connected'&&me.principal_id===record.owner&&me.universe_id===record.scope){
+          await this.resume(record);return;
+        }
+      }catch(_e){if(this.current(record)){
+        this.note.textContent='Connection is not confirmed yet. Your message is kept. Retry or choose Other AI.';
+        this.connect.disabled=false;this.connect.textContent='Retry';
+      }}finally{this.busy=false;if(this.waiting())this.schedule();}
+    },
+    async resume(record){
+      const send=async()=>{
+        if(!this.current(record)||activeTurn)return;
+        const saved=readInflight();
+        if(!sameInflight(saved,record)||!saved.needsConnection)return;
+        this.note.textContent='Connected';this.connect.disabled=true;this.cancel.hidden=true;
+        delete record.needsConnection;delete record.connectionFlow;
+        this.save(); // claim before awaiting a send; ambiguity uses normal recovery
+        this.record=null;clearTimeout(this.timer);
+        await sendTurn(record.message,record.display,{echoed:true,keepComposer:true,
+          sentAt:record.ts,inputMethod:record.inputMethod,modelChoice:record.modelChoice,
+          consumerRequest:record.consumerRequest,agentId:record.agent});
+      };
+      if(navigator.locks)await navigator.locks.request('ta-model-connect-resume',send);
+      else {this.note.textContent='Connected. This browser needs you to tap Continue.';this.connect.textContent='Continue';this.connect.disabled=false;this.connect.onclick=send;}
+    }
+  };
   const HostedModelConnect={
     storageKey:"ta_hosted_model_pkce_v1",preset:"",primary:null,
     setup:"unavailable",busy:false,request:null,epoch:0,keyOpen:false,
@@ -9662,6 +9783,14 @@
       appendMessage("system","An unconfirmed message to another of your agents is waiting; "+
         "open that agent to see it.");
       restoreQueue(); return;
+    }
+    if(pending.needsConnection&&ownsSavedRow(pending)){
+      inflightRestored=true;
+      if(!InlineConnection.waiting()){
+        appendMessage('founder',pending.display||pending.message,null,pending.ts/1000);
+        InlineConnection.hold(pending.needsConnection,pending);
+      }
+      return;
     }
     if(!pending.scope||!pending.owner){
       // Written before this page recorded its command center, so it may belong to

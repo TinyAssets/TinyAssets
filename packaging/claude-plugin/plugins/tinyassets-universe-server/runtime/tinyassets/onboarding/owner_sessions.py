@@ -214,7 +214,11 @@ async def callback(request):
             (hashed(session_cookie), json.dumps(identity.to_dict()), time.time() + 28800),
         )
     # No tokens/codes in callback output or browser scripts. Strip the query.
-    response = RedirectResponse("/app", status_code=303, headers=HEADERS)
+    from tinyassets.onboarding.inline_model_connect import RETURN_COOKIE, return_path
+
+    response = RedirectResponse(return_path(request, identity.user_id), status_code=303,
+                                headers=HEADERS)
+    response.delete_cookie(RETURN_COOKIE, secure=True, httponly=True, samesite="lax")
     response.delete_cookie(FLOW_COOKIE, secure=True, httponly=True, samesite="lax")
     response.set_cookie(
         COOKIE, session_cookie, max_age=28800, secure=True, httponly=True, samesite="lax"

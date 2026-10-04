@@ -1579,6 +1579,8 @@ let activeTurn = null;
 let queueScope = "uni-A";
 let queueOwner = "owner-A";
 const MCP = {_loginEpoch: 1};
+const InlineConnection = {waiting:()=>false,
+  hold:()=>{throw new Error("unexpected model-connect handoff in upload harness");}};
 const Voice = {conversationSettled:(d)=>log.push({voice:!!d}),
   turnStarted:(owner,scope)=>log.push({turnStarted:{owner,scope}})};
 function captureTurnOptions(o){ return Object.assign({modelChoice:null}, o||{}); }

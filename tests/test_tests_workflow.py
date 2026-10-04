@@ -242,6 +242,22 @@ def test_the_shard_venue_adds_no_host_privilege_and_no_secret():
     assert "secrets." not in yaml.safe_dump(job)
 
 
+def test_affected_shards_install_browser_before_running_selected_tests():
+    """A selected real_browser case must execute instead of failing setup."""
+    job = _load()["jobs"]["affected-tests"]
+    assert job["runs-on"] == "ubuntu-latest"
+    steps = job["steps"]
+    install = next(i for i, s in enumerate(steps)
+                   if "playwright install --with-deps chromium" in s.get("run", ""))
+    assert "'.[dev,browser]'" in steps[install]["run"]
+    assert not steps[install].get("if")
+    assert not steps[install].get("continue-on-error", False)
+    assert "|| true" not in steps[install]["run"]
+    runners = [i for i, s in enumerate(steps)
+               if "ci_required_tests.py" in s.get("run", "")]
+    assert runners and all(install < i for i in runners)
+
+
 def test_required_aggregate_rejects_missing_or_skipped_browser_proofs():
     """Whole-surface only, because the assertion is "present AND clean".
 
