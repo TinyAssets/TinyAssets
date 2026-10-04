@@ -538,13 +538,23 @@ def _confine_workflow_node(config: ModelConfig) -> ModelConfig:
     The served universe turn already runs this way (``sandbox_workspace``);
     this applies the existing rule to workflow nodes. Web tools, subagents and
     every other owner-level capability are untouched: only
-    :data:`HOST_REACH_TOOLS` are denied. No timeout, cap or retry changes.
+    :data:`HOST_REACH_TOOLS` and :data:`ACCOUNT_REACH_TOOLS` are denied. No
+    timeout, cap or retry changes.
+
+    ``ACCOUNT_REACH_TOOLS`` is denied for a different reason than the host
+    tools, not as latency control: those act on the DAEMON HOST'S claude.ai
+    account, so no amount of jailing or ``--strict-mcp-config`` contains them,
+    and a node that published an artifact or messaged another session would be
+    reaching outside its owner's command center entirely. The engine turn
+    already denied them; a node did not, which is the gap this closes.
     """
     from dataclasses import replace
 
-    from tinyassets.providers.base import HOST_REACH_TOOLS
+    from tinyassets.providers.base import ACCOUNT_REACH_TOOLS, HOST_REACH_TOOLS
 
-    denied = tuple(dict.fromkeys((*(config.disallowed_tools or ()), *HOST_REACH_TOOLS)))
+    denied = tuple(dict.fromkeys((
+        *(config.disallowed_tools or ()), *HOST_REACH_TOOLS, *ACCOUNT_REACH_TOOLS,
+    )))
     return replace(config, sandbox_workspace=True, disallowed_tools=denied)
 
 
