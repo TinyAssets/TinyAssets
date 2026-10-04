@@ -262,21 +262,26 @@ def install(base: Any, uid: str, actor: str, pin_id: str, template: dict) -> str
     return intended
 
 
-def consent_lines(agents: list[dict]) -> list[str]:
+def consent_lines(agents: list[dict], *, has_screen: bool) -> list[str]:
     from tinyassets.api.publish_requests import _shown
 
     if not agents:
-        return [
-            "No chat agents will be copied: the publisher did not include any public "
-            "chat-agent templates in this publication.",
-            "No public chat-agent templates are included; existing agents stay yours.",
-            "A screen that lists agents uses your own roster. If you have no chat agents, "
-            "its village or house will be empty. Workflows and agent instruction files "
-            "do not create chat agents.",
+        lines = [
+            "No public chat-agent templates are included, so no chat agents will be copied; "
+            "existing agents stay yours.",
+        ]
+        if has_screen:
+            lines.append(
+                "The screen's agent list uses your own roster and will be empty until you "
+                "add your own agents or the publisher includes them. Workflows and agent "
+                "instruction files do not create chat agents."
+            )
+        lines.append(
             "To bring the publisher's agents, ask them to select the agents' public "
             "instruction templates and republish. Their private agents and settings "
-            "cannot come with this copy.",
-        ]
+            "cannot come with this copy."
+        )
+        return lines
     return [
         "Chat agents, as new private bindings to these public instructions:",
         *(f"- {_shown(a['name'])}" for a in agents),

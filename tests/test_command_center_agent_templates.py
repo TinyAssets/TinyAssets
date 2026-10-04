@@ -181,10 +181,36 @@ def test_screen_without_published_agents_reports_empty_roster_before_copy(home, 
     assert list_bindings(home, universe_id=BOB_UNIVERSE, limit=None) == before
     assert get_binding(home, universe_id=UNIVERSE,
                        binding_id=original["agent_binding_id"]) == original
-    assert "No chat agents will be copied" in body
-    assert "publisher did not include any public chat-agent templates" in body
+    assert "no chat agents will be copied" in body
+    assert body.count("No public chat-agent templates are included") == 1
+    assert "The screen's agent list uses your own roster and will be empty" in body
     assert "empty" in body and "republish" in body
     assert original["agent_binding_id"] not in body
+
+
+@pytest.mark.parametrize("has_screen", [False, True])
+def test_agent_consent_screen_line_is_conditional_and_domain_neutral(has_screen):
+    lines = templates.consent_lines([], has_screen=has_screen)
+    body = "\n".join(lines)
+    assert ("screen" in body) == has_screen
+    assert "village" not in body.lower() and "house" not in body.lower()
+    assert body.count("No public chat-agent templates are included") == 1
+    if has_screen:
+        assert "add your own agents or the publisher includes them" in body
+
+
+def test_package_without_screen_omits_screen_consent(home):
+    from tinyassets.storage.pending_requests import get_request
+
+    action = _publish_action()
+    del action["ui_id"]
+    asked = _ask(OWNER, UNIVERSE, action)
+    published = _answer(OWNER, UNIVERSE, asked["request_id"])
+    request_id = _copy_request(published["agent_definition_id"])
+    request = get_request(home / BOB_UNIVERSE, request_id)
+    assert not request["action"]["plan"]["ui"]
+    assert "screen" not in request["body"].lower()
+    assert "no chat agents will be copied" in request["body"]
 
 
 @pytest.mark.parametrize("package", [False, True])

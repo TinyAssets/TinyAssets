@@ -20,3 +20,10 @@ same-finding-twice rule, hand this transport failure to a separate investigation
 establish baseline behavior and distinguish navigation-cancelled requests from
 failed application requests before changing the fixture. Delete this concern
 when the Windows browser proof passes with that distinction verified.
+
+The PR #4434 consent wording follow-up reproduced this in both the test above
+and `test_visual_preview_has_no_owner_bridge_and_copy_requires_visible_consent`.
+The four related test files finished with 193 passed, 1 POSIX-only skip, and
+these 2 failures. A focused retry of both tests with a fresh external basetemp
+failed at the same final `assert not failures`, again after their UI assertions
+completed. No test assertion or transport handling was relaxed.
