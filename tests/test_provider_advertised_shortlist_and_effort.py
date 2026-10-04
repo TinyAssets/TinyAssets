@@ -341,9 +341,15 @@ def metadata_snapshot(universe):
 #: Windows box. `metadata_transport_processes` (tests/test_native_model_discovery.py)
 #: substitutes `confine_launch` with one that still asserts the launch scope
 #: and view bind to the same command center, so the protocol, the decoder and
-#: the owned-process family are all real and only the OS isolation is stubbed.
-#: That isolation has its own proof in tests/test_native_metadata_jail.py, which
-#: runs under a real jail in `linux-jail-proof`.
+#: the owned-process family are all real.
+#:
+#: It drops more than the isolation, so do not read it as "only the sandbox is
+#: stubbed": the bwrap argv, the launch disk budget and bwrap's own
+#: cwd/environment setup go with it, and the child runs from `/` rather than the
+#: snapshot. Those live where they belong -- tests/test_native_metadata_jail.py
+#: runs the real jail under `linux-jail-proof`, and
+#: tests/test_native_metadata_confinement.py proves a missing, redirected or
+#: foreign snapshot refuses before any process is created.
 #:
 #: The NEGATIVE cases need it most: they assert
 #: `ProviderError("native model discovery unavailable")`, which the confinement
