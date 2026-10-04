@@ -94,26 +94,31 @@ def require_founder_home(base_path: Path, universe_id: str, principal_id: str) -
     if (
         not has_named_principal(principal_id)
         or get_founder_home(base, principal_id) != universe_id
-        or universe_access_permission(base, universe_id=universe_id, actor_id=principal_id) != "admin"
+        or universe_access_permission(
+            base, universe_id=universe_id, actor_id=principal_id,
+        ) != "admin"
     ):
         raise PermissionError("shared_self_requires_current_founder")
     return root
 
 
 def prepare_shared_self_turn(base_path, universe_id, principal_id, prompt, config=None,
-                             node=None):
+                             node=None, activity=None):
     """Use the SAME persona, memory formatter and tool config as converse.
 
     No learning extractor runs: a scheduled direction is not a new founder fact.
     History and run outputs remain evidence; this function does not record a
     synthetic founder message in the conversation. ``node`` is the agent node
     resolved from the admitted snapshot; its grant narrows the served tools.
+    ``activity`` is the record the run session found naming this run (harness
+    D2): the turn continues that activity's own session instead of the node's,
+    without the owner's conversation, which is not part of the activity.
     """
+    from tinyassets import universe_intelligence as intelligence
+    from tinyassets.api.permissions import owner_run_identity
     from tinyassets.config import load_universe_config
     from tinyassets.conversation_store import load_recent_readonly
     from tinyassets.providers.base import UniverseContext
-    from tinyassets import universe_intelligence as intelligence
-    from tinyassets.api.permissions import owner_run_identity
 
     root = require_founder_home(Path(base_path), universe_id, principal_id)
     ctx = UniverseContext(universe_dir=root, config=load_universe_config(root))
@@ -124,8 +129,8 @@ def prepare_shared_self_turn(base_path, universe_id, principal_id, prompt, confi
         system = intelligence._build_persona_system_prompt(
             root, universe_id=universe_id, tier=intelligence.interlocutor.FOUNDER,
         )
-    history = load_recent_readonly(root, f"principal:{principal_id}")
-    history_block = intelligence._conversation_history_block(history)
+    history = [] if activity else load_recent_readonly(root, f"principal:{principal_id}")
+    history_block = intelligence._conversation_history_block(history) if history else ""
     if history_block:
         system += "\n\n" + intelligence._CROSS_SURFACE_CONTINUITY
     system += "\n\n" + intelligence._turn_input_method_context("unknown")
@@ -150,7 +155,15 @@ def prepare_shared_self_turn(base_path, universe_id, principal_id, prompt, confi
     # `universe-agent-harness`): a resumable adapter resumes it and is sent only
     # the conversation that arrived since its last wake, then this wake's prompt.
     node_key = getattr(config, "agent_node_key", "") if config is not None else ""
-    if node_key:
+    if activity:
+        message = prompt
+        if int(activity.get("runner_generation") or 0) > 1:
+            message = ("[Platform] This activity was paused, waited on your owner, or was "
+                       "interrupted; continue it where you left off.\n\n" + prompt)
+        shared_config = replace(shared_config, agent_session=intelligence.session_ref(
+            root, activity["session_key"], prompt, message, [],
+        ))
+    elif node_key:
         shared_config = replace(shared_config, agent_session=intelligence.session_ref(
             root, f"node:{node_key}", history_block + prompt, prompt, history,
         ))

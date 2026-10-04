@@ -23,9 +23,31 @@ copies call no execution or enqueue boundary.
 mutation-proves new roots, duplicate same-function calls, and aliases are
 detected.
 
-Current scan: 40 sensitive callsite groups (42 occurrences), 12 source
+Original 2026-07-30 scan: 40 sensitive callsite groups (42 occurrences), 12 source
 families, 14 canonical/read-classification categories, zero unreviewed
 callsites, zero stale entries, and zero filing-to-run calls.
+
+## 2026-10-03 D2 Activities registration
+
+The D2 integration adds exactly one `start -> execute_branch_async` call in
+`tinyassets/activity_runner.py` and one in the packaged runtime's copy of that
+module. Both have occurrence count one; neither module is excluded from the
+scanner. This registration changes no execution decision.
+
+The named `activities` root records the existing owner-bound provider callback,
+`owner_run_identity` context and its false-result refusal, `owner_user_id`, and
+per-node automation authority guard. It also records the generation-checked
+`bind_run` and cancellation on a lost claim, the run-id lookup and unlinked-run
+refusal, and the foreground provider's Activities-branch start barrier. The
+barrier runs before the agent acts; dispatch starts the run before binding it.
+
+`tests/test_activity_dispatch.py` covers the owner/provider/guard arguments,
+owner-loss refusal, stale-generation cancellation, and refusal of an unlinked
+run. Inventory regressions remove each recorded guard and add a second launch
+to each shipped module, requiring the checker to fail. Literal source markers
+are a drift detector; the behavioral tests remain necessary authority evidence.
+This registration does not implement account activation or automatic reset
+wakes/resumption of paused activities.
 
 ## Execution and issuance roots
 

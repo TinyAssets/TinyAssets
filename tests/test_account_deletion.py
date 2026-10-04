@@ -277,6 +277,30 @@ def test_agent_session_records_and_rules_go_with_the_account_and_no_one_elses(
             if r.action_class == "app.read"] == [agent_rules.ASK_FIRST]
 
 
+def test_account_deletion_stops_the_accounts_activities_first(two_users: Path, monkeypatch):
+    """Harness D2: a running activity is fenced and its run cancelled before its
+    store is removed, so it cannot act for the deleted account."""
+    from tinyassets import agent_activities, runs
+    from tinyassets.agent_sessions import RECORDS_DIR
+
+    cancelled = []
+    monkeypatch.setattr(runs, "request_cancel", lambda base, run_id: cancelled.append(run_id))
+    aid = agent_activities.create(two_users / HOME_A, owner_principal=A, title="t", brief="b",
+                                  origin_kind="ask")["activity_id"]
+    generation = agent_activities.claim(two_users / HOME_A, aid, replaceable=lambda r: False)
+    agent_activities.bind_run(two_users / HOME_A, aid, generation, "run-a")
+    other = agent_activities.create(two_users / HOME_B, owner_principal=B, title="t", brief="b",
+                                    origin_kind="ask")["activity_id"]
+
+    receipt = delete_account(two_users, founder_sub=A, cancel_billing=lambda home: "cancelled",
+                             delete_identity=lambda sub: "deleted")
+
+    assert cancelled == ["run-a"]
+    assert not (two_users / RECORDS_DIR / HOME_A).exists()
+    assert receipt["unfinished_phases"] == []
+    assert agent_activities.get(two_users / HOME_B, other)["status"] == "scheduled"
+
+
 def test_a_symlinked_records_root_is_refused_and_reported_not_followed(
     two_users: Path, tmp_path: Path,
 ):
