@@ -52,17 +52,10 @@ def model_options_document(
                 labels.append("recent_sign_in_failure")
             row_reasons = list(reasons.get(ref, []))
             for reason in source_reasons.get(ref.connection_id, []):
-                # Missing enumeration is a source diagnostic, not a refusal of
-                # an independently admitted provider-default invocation.
-                #
-                # `catalogue_refresh_pending` belongs in this set for the same
-                # reason and is easy to miss: the client treats ANY reason on a
-                # row as "not pickable", so leaving it on would make the
-                # provider's own default unselectable while a background
-                # refresh runs -- for a lane that never needed enumeration at
-                # all. A warming catalogue must cost the enumerated rows, not
-                # the source.
-                if (model.model_id == "" and ref in admitted
+                # Refresh diagnostics belong on the source, not on independently
+                # admitted choices. Any row reason disables the desktop picker.
+                # A pending/failed catalogue must not revoke accepted access.
+                if (ref in admitted
                         and reason["reason"] in {
                             "native_catalogue_unavailable", "native_enumeration_unsupported",
                             "catalogue_refresh_pending", "catalogue_refresh_unavailable",

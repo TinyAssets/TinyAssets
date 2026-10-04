@@ -96,6 +96,26 @@ def test_invalid_model_setup_is_refused_before_raising_a_tab(rig, change):
     assert load_provider_assignment(rig[0], universe_id="u-owner") is None
 
 
+def test_invalid_model_document_explains_the_exact_schema(rig):
+    result = ask(rig, model_access={"codex": {"models": ["gpt-6-astra"]}})
+    assert result["error"] == "request_invalid"
+    message = result["detail"]
+    for expected in ("model_scope", "model_ids", "cost_caps", "explicit", "discovered"):
+        assert expected in message, result
+    assert load_provider_assignment(rig[0], universe_id="u-owner") is None
+
+
+@pytest.mark.parametrize("document", [
+    {"model_scope": "discovered", "model_ids": [], "cost_caps": None, "extra": True},
+    {"model_scope": "discovered", "model_ids": ["gpt-6-astra"], "cost_caps": None},
+    {"model_scope": "explicit", "model_ids": [], "cost_caps": None},
+    {"model_scope": "explicit", "model_ids": ["gpt-6-astra"], "cost_caps": {"tokens": True}},
+])
+def test_document_guidance_does_not_relax_validation(rig, document):
+    assert ask(rig, model_access={"codex": document})["error"] == "request_invalid"
+    assert load_provider_assignment(rig[0], universe_id="u-owner") is None
+
+
 def test_partial_reconnect_retries_without_rebinding(rig, monkeypatch):
     from tinyassets import provider_serving_binding as serving
 
