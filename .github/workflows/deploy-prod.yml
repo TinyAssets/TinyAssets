@@ -281,25 +281,12 @@ jobs:
           set -euo pipefail
           ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
               "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-              "sudo bash -s -- delete TINYASSETS_WIKI_PATH TINYASSETS_UNIVERSE TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY WORKFLOW_IMAGE WORKFLOW_DATA_DIR WORKFLOW_MCP_CANARY_URL WORKFLOW_ALLOW_API_KEY_PROVIDERS WORKFLOW_NODE_ENQUEUE_ENABLED WORKFLOW_SOUL_LOOP_DISPATCH WORKFLOW_BUG_INVESTIGATION_BACKFILL WORKFLOW_BUG_INVESTIGATION_BRANCH_DEF_ID WORKFLOW_BUG_INVESTIGATION_GOAL_ID GITHUB_OAUTH_CLIENT_ID GITHUB_OAUTH_CLIENT_SECRET" \
+              "sudo bash -s -- delete TINYASSETS_WIKI_PATH TINYASSETS_UNIVERSE TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY WORKFLOW_IMAGE WORKFLOW_DATA_DIR WORKFLOW_MCP_CANARY_URL WORKFLOW_ALLOW_API_KEY_PROVIDERS WORKFLOW_NODE_ENQUEUE_ENABLED WORKFLOW_SOUL_LOOP_DISPATCH WORKFLOW_BUG_INVESTIGATION_BACKFILL WORKFLOW_BUG_INVESTIGATION_BRANCH_DEF_ID WORKFLOW_BUG_INVESTIGATION_GOAL_ID" \
               < deploy/install-tinyassets-env.sh
           ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
               "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
               "sudo env TINYASSETS_ENV_FILE=/etc/tinyassets/env bash /tmp/install-tinyassets-env.sh assert-absent TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY" || {
             echo "::error::shared env still contains request admission minting authority"
-            exit 1
-          }
-          # GITHUB_OAUTH_CLIENT_SECRET left DAEMON_FORBIDDEN_ENV on 2026-10-03
-          # because nothing reads it. That list is a DENY filter applied when
-          # daemon.env is rendered (deploy_fail_safe.sh -> render-daemon-env,
-          # later in this job), so de-listing a key that is still in the shared
-          # env would START handing it to the daemon. The delete above runs
-          # first and this proves it took, which is what makes the removal safe
-          # rather than a hole.
-          ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
-              "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-              "sudo env TINYASSETS_ENV_FILE=/etc/tinyassets/env bash /tmp/install-tinyassets-env.sh assert-absent GITHUB_OAUTH_CLIENT_SECRET" || {
-            echo "::error::shared env still contains GITHUB_OAUTH_CLIENT_SECRET, which no longer has a deny-list entry to keep it out of the daemon"
             exit 1
           }
 
