@@ -56,6 +56,10 @@ def base(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     # Shrunk so the numbers stay in kilobytes; the logic is unchanged.
     monkeypatch.setattr(jail_disk, "LAUNCH_BYTES_CAP", 50 * KIB)
     monkeypatch.setattr(jail_disk, "GRACE_BYTES", 4 * KIB)
+    # Preserve these legacy allocation/lease assertions at their 100 KiB scale.
+    # Production headroom plus startup recovery is covered in
+    # test_jail_reservation_headroom.py with the real 16 MiB constants.
+    monkeypatch.setattr(jail_disk, "WRITE_HEADROOM_BYTES", 0)
     return root
 
 

@@ -822,11 +822,13 @@ def reserve_fitted(
     cap: int,
     credit: int = 0,
     minimum: int = MIN_WORKSPACE_BYTES,
+    headroom: int = 0,
 ) -> tuple[Reservation, int]:
     """Reserve a write whose size is unknown up front, sized to what FITS.
 
     Returns ``(reservation, bound)``: the caller must not let the write exceed
-    ``bound`` = min(``cap``, headroom + ``credit``). ``credit`` is bytes the
+    ``bound`` = min(``cap``, max(0, quota - used - ``headroom``) + ``credit``).
+    ``headroom`` leaves capacity unreserved for ordinary writes. ``credit`` is bytes the
     write replaces and that are already owed deletion (a published workspace
     generation this checkout supersedes), so a re-checkout of the same repo
     fits the quota it already occupies. Raises `StorageRefused` when the bound
@@ -835,6 +837,9 @@ def reserve_fitted(
     free account, empty or not.) No account: the cap, ungated.
     """
     base = Path(base_path)
+    headroom = int(headroom)
+    if headroom < 0:
+        raise ValueError("headroom must be >= 0")
     account = named_principal(account_id or "")
     if not account:
         return Reservation(base, None, None, 0), int(cap)
@@ -853,7 +858,7 @@ def reserve_fitted(
         # fit the capacity left by earlier writers, not reuse a stale bound.
         with _txn(base) as conn:
             current = _usage_in(conn, account, pairs, quota, tier)
-            bound = min(int(cap), quota - current.used_bytes + credit)
+            bound = min(int(cap), max(0, quota - current.used_bytes - headroom) + credit)
             # Replaced bytes remain measured until discard, so only their
             # increment is new pending capacity.
             incremental = max(0, bound - credit)
@@ -973,6 +978,10 @@ class Usage:
     unmeasured: tuple[tuple[str, str], ...]
     #: Oldest measurement's timestamp, or None when nothing is measured.
     oldest_measured_at: float | None
+    #: Accounting components can overlap until pending writes are reconciled.
+    measured_bytes: int
+    reserved_bytes: int
+    committed_bytes: int
 
 
 def _usage_in(conn: sqlite3.Connection, account_id: str, pairs, quota: int, tier: str) -> Usage:
@@ -984,11 +993,12 @@ def _usage_in(conn: sqlite3.Connection, account_id: str, pairs, quota: int, tier
         ).fetchone()
         if row is not None:
             rows[(scope_id, store)] = (int(row[0]), float(row[1]))
-    pending = int(
-        conn.execute(
-            "SELECT COALESCE(SUM(bytes), 0) FROM pending WHERE account_id = ?", (account_id,)
-        ).fetchone()[0]
-    )
+    pending = dict(conn.execute(
+        "SELECT state, SUM(bytes) FROM pending WHERE account_id = ? GROUP BY state",
+        (account_id,),
+    ).fetchall())
+    reserved = int(pending.get("reserved", 0))
+    committed = int(pending.get("committed", 0))
     measured = sum(size for size, _ in rows.values())
     breakdown = tuple(sorted(
         ((scope, store, size) for (scope, store), (size, _) in rows.items() if size),
@@ -996,12 +1006,15 @@ def _usage_in(conn: sqlite3.Connection, account_id: str, pairs, quota: int, tier
     ))
     return Usage(
         account_id=account_id,
-        used_bytes=measured + pending,
+        used_bytes=measured + reserved + committed,
         quota_bytes=quota,
         tier=tier,
         breakdown=breakdown,
         unmeasured=tuple(pair for pair in pairs if pair not in rows),
         oldest_measured_at=min((at for _, at in rows.values()), default=None),
+        measured_bytes=measured,
+        reserved_bytes=reserved,
+        committed_bytes=committed,
     )
 
 
@@ -1097,11 +1110,16 @@ def refusal_record(usage_: Usage, requested: int, *, universes: int) -> dict:
 
     across = f" across {universes} command centers" if universes > 1 else ""
     message = (
-        f"Your account is using {_human(usage_.used_bytes)} of its "
-        f"{_human(usage_.quota_bytes)} of cloud storage{across}, and this write needs "
-        f"{_human(requested)}. Delete files, pages, run outputs or workspaces to free "
-        "space"
+        f"Your account has {_human(usage_.used_bytes)} accounted against its "
+        f"{_human(usage_.quota_bytes)} of cloud storage{across}: "
+        f"{_human(usage_.measured_bytes)} measured, "
+        f"{_human(usage_.reserved_bytes)} reserved for in-flight writes, and "
+        f"{_human(usage_.committed_bytes)} committed pending remeasurement. "
+        f"This write needs {_human(requested)}. "
     )
+    if usage_.reserved_bytes:
+        message += "Reservations may clear when active calls finish; retry then. "
+    message += "Delete files, pages, run outputs or workspaces to free space"
     link = upgrade_sentence(usage_.tier, what="storage")
     message = f"{message}, or {link[0].lower()}{link[1:]}" if link else f"{message}."
     return {
@@ -1109,6 +1127,9 @@ def refusal_record(usage_: Usage, requested: int, *, universes: int) -> dict:
         "failure_class": FAILURE_QUOTA,
         "actionable_by": "user",
         "used_bytes": usage_.used_bytes,
+        "measured_bytes": usage_.measured_bytes,
+        "reserved_bytes": usage_.reserved_bytes,
+        "committed_bytes": usage_.committed_bytes,
         "quota_bytes": usage_.quota_bytes,
         "requested_bytes": requested,
         "tier": usage_.tier,

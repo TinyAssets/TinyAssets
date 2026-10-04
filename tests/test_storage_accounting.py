@@ -48,6 +48,58 @@ def _admit(base, uid, n, account=A):
     return sa.reserve(base, account_id=account, scope_id=uid, store="universe_files", nbytes=n)
 
 
+def test_fitted_headroom_preserves_replacement_credit_and_ordinary_writes(base):
+    root = _universe(base, "u-one", A)
+    _write(root, "retained.bin", 60 * KIB)
+    reservation, bound = sa.reserve_fitted(
+        base, account_id=A, scope_id=root.name, store="universe_files",
+        cap=100 * KIB, credit=20 * KIB, minimum=1, headroom=16 * KIB,
+    )
+    assert bound == 44 * KIB
+    assert reservation.bytes == 24 * KIB
+    ordinary = _admit(base, root.name, 16 * KIB)
+    with pytest.raises(sa.StorageRefused):
+        _admit(base, root.name, 1)
+    sa.release(ordinary)
+    sa.release(reservation)
+
+
+def test_fitted_headroom_rejects_negative_values(base):
+    _universe(base, "u-one", A)
+    with pytest.raises(ValueError, match="headroom"):
+        sa.reserve_fitted(
+            base, account_id=A, scope_id="u-one", store="universe_files",
+            cap=KIB, minimum=1, headroom=-1,
+        )
+
+
+def test_owner_refusal_distinguishes_measurements_and_pending_states(base):
+    root = _universe(base, "u-private", A)
+    _write(root, "private.bin", 10 * KIB)
+    active = _admit(base, root.name, 60 * KIB)
+    committed = _admit(base, root.name, 20 * KIB)
+    sa.commit(committed)
+    with pytest.raises(sa.StorageRefused) as caught:
+        _admit(base, root.name, 11 * KIB)
+    refused = caught.value
+    record = sa.visible_record(refused, A)
+    assert record["measured_bytes"] == 10 * KIB
+    assert record["reserved_bytes"] == 60 * KIB
+    assert record["committed_bytes"] == 20 * KIB
+    assert record["used_bytes"] == 90 * KIB
+    assert "measured" in record["error"]
+    assert "reserved for in-flight writes" in record["error"]
+    assert "committed pending remeasurement" in record["error"]
+    assert "retry then" in record["error"]
+    for viewer in (B, "", "unknown"):
+        assert sa.visible_record(refused, viewer) == sa._OTHER_ACCOUNT_FULL
+    sa.release(active)
+    sa.measure(base, root.name, "universe_files")
+    current = sa.usage(base, A)
+    assert current.reserved_bytes == current.committed_bytes == 0
+    assert "retry then" not in sa.refusal_record(current, 100 * KIB, universes=1)["error"]
+
+
 class TestOnePoolPerAccount:
     def test_bytes_in_two_universes_share_one_quota(self, base):
         _write(_universe(base, "u-one", A), "a.bin", 60 * KIB)

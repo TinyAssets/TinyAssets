@@ -58,6 +58,9 @@ LAUNCH_BYTES_CAP = 1024 * _MiB
 #: What a launch may still add when its account is full (or the ledger cannot
 #: answer): enough for a provider CLI's session files and an agent's notes.
 GRACE_BYTES = 16 * _MiB
+#: Capacity launch reservations leave inside the quota for ordinary writes.
+#: Recovery grace stays a growth floor, never an extra ledger reservation.
+WRITE_HEADROOM_BYTES = 16 * _MiB
 #: Size of the jail's private ``/tmp`` (RAM-backed tmpfs).
 TMP_BYTES = 256 * _MiB
 #: Size of every other tmpfs a jail view mounts (masks, the mount root).
@@ -260,8 +263,11 @@ def open_budget(
         storage_accounting.measure(base, universe_id, _STORE)
         reservation, bound = storage_accounting.reserve_fitted(
             base, account_id=account, scope_id=universe_id, store=_STORE,
-            cap=LAUNCH_BYTES_CAP, minimum=1,
+            cap=LAUNCH_BYTES_CAP, minimum=1, headroom=WRITE_HEADROOM_BYTES,
         )
+        # Preserve provider startup even when the fitted reservation is smaller
+        # than grace. If only write headroom remains, refusal below takes main's
+        # existing unreserved recovery path, leaving ordinary writes admissible.
         bound = max(int(bound), GRACE_BYTES)
     except storage_accounting.StorageRefused as refused:
         bound = GRACE_BYTES
@@ -300,4 +306,3 @@ def _full_notice(refused) -> str:
         f"{_human(GRACE_BYTES)}, and is stopped past that. Delete files to make room, "
         "or the owner can upgrade]"
     )
-
