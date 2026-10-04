@@ -941,6 +941,42 @@ def test_deploy_preserves_host_owned_log_destination():
     assert "LOG_DEST" not in run_script
 
 
+def test_deploy_deletes_the_retired_github_oauth_pair_and_proves_it_took():
+    """The retired OAuth pair is DELETED from the shared env, not just withheld.
+
+    GITHUB_OAUTH_CLIENT_ID / GITHUB_OAUTH_CLIENT_SECRET were retired on
+    2026-10-03: no reader anywhere, and no route serves the callback the
+    template used to describe. ``RETIRED_ENV`` in
+    ``deploy/install-tinyassets-env.sh`` withholds them from daemon.env at the
+    renderer, which covers every writer; that is deliberately a different job
+    from making the key go away. Without the delete below, a stale assignment
+    sits on the host forever -- withheld, but still a credential at rest in
+    ``/etc/tinyassets/env``.
+
+    Asserted as an ORDERED pair. A delete whose effect is never checked is the
+    failure mode this guards: the step would stay green while the key survived.
+    """
+    wf = _load()
+    scrub_step = _step_named(wf, "Scrub stale cloud env overrides")
+    run_script = scrub_step.get("run", "") or ""
+
+    delete_at = run_script.find("delete TINYASSETS_WIKI_PATH")
+    assert delete_at != -1, "the scrub step no longer issues a delete"
+    delete_line_end = run_script.find("\n", delete_at)
+    delete_line = run_script[delete_at:delete_line_end]
+    for name in ("GITHUB_OAUTH_CLIENT_ID", "GITHUB_OAUTH_CLIENT_SECRET"):
+        assert name in delete_line, f"the scrub step must delete the retired {name}"
+
+    assert_at = run_script.find("assert-absent GITHUB_OAUTH_CLIENT_SECRET")
+    assert assert_at != -1, (
+        "deleting the secret without asserting it absent leaves the step green "
+        "while the key survives on the host"
+    )
+    assert assert_at > delete_line_end, (
+        "assert-absent must run AFTER the delete, or it proves nothing"
+    )
+
+
 # Three fleet-only cases were deleted here on 2026-08-29:
 # `test_deploy_verifies_cloud_worker_running`,
 # `test_deploy_proves_running_workers_lack_request_hmac`, and

@@ -281,12 +281,28 @@ jobs:
           set -euo pipefail
           ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
               "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-              "sudo bash -s -- delete TINYASSETS_WIKI_PATH TINYASSETS_UNIVERSE TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY WORKFLOW_IMAGE WORKFLOW_DATA_DIR WORKFLOW_MCP_CANARY_URL WORKFLOW_ALLOW_API_KEY_PROVIDERS WORKFLOW_NODE_ENQUEUE_ENABLED WORKFLOW_SOUL_LOOP_DISPATCH WORKFLOW_BUG_INVESTIGATION_BACKFILL WORKFLOW_BUG_INVESTIGATION_BRANCH_DEF_ID WORKFLOW_BUG_INVESTIGATION_GOAL_ID" \
+              "sudo bash -s -- delete TINYASSETS_WIKI_PATH TINYASSETS_UNIVERSE TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY WORKFLOW_IMAGE WORKFLOW_DATA_DIR WORKFLOW_MCP_CANARY_URL WORKFLOW_ALLOW_API_KEY_PROVIDERS WORKFLOW_NODE_ENQUEUE_ENABLED WORKFLOW_SOUL_LOOP_DISPATCH WORKFLOW_BUG_INVESTIGATION_BACKFILL WORKFLOW_BUG_INVESTIGATION_BRANCH_DEF_ID WORKFLOW_BUG_INVESTIGATION_GOAL_ID GITHUB_OAUTH_CLIENT_ID GITHUB_OAUTH_CLIENT_SECRET" \
               < deploy/install-tinyassets-env.sh
           ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
               "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
               "sudo env TINYASSETS_ENV_FILE=/etc/tinyassets/env bash /tmp/install-tinyassets-env.sh assert-absent TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY" || {
             echo "::error::shared env still contains request admission minting authority"
+            exit 1
+          }
+          # The GitHub OAuth pair was retired on 2026-10-03: nothing reads it,
+          # no route serves the callback the template used to describe, and
+          # deploy/tinyassets-env.template no longer declares it (#4422).
+          # Withholding it from the daemon is handled at the renderer, by
+          # RETIRED_ENV in deploy/install-tinyassets-env.sh (#4267) -- that
+          # covers every writer of daemon.env, not just this workflow. This
+          # step is the other half: withholding keeps the key out of the
+          # daemon, DELETING makes it actually go away. The delete above runs
+          # first and this proves it took, so a stale assignment cannot sit on
+          # the host indefinitely.
+          ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+              "sudo env TINYASSETS_ENV_FILE=/etc/tinyassets/env bash /tmp/install-tinyassets-env.sh assert-absent GITHUB_OAUTH_CLIENT_SECRET" || {
+            echo "::error::shared env still contains the retired GITHUB_OAUTH_CLIENT_SECRET"
             exit 1
           }
 
