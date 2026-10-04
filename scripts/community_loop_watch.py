@@ -41,6 +41,11 @@ P0_OUTAGE_LABEL = "p0-outage"
 TIER3_BROKEN_LABEL = "tier3-broken"
 STATUS_RANK = {"green": 0, "yellow": 1, "unknown": 2, "red": 3}
 
+# Run conclusions that attest an actual failure (page red) versus ones that
+# carry no failure signal (warn yellow). Anything unrecognized fails closed.
+RED_CONCLUSIONS = {"failure", "timed_out", "action_required"}
+BENIGN_CONCLUSIONS = {"skipped", "cancelled", "neutral", "stale"}
+
 
 class WatchError(Exception):
     """Raised when the watch cannot read its evidence source."""
@@ -224,6 +229,43 @@ def _stage(
     return result
 
 
+def _staleness_stage(
+    name: str,
+    workflow_id: str,
+    latest: dict[str, Any],
+    details: dict[str, Any],
+    *,
+    max_age_min: int,
+    stale_red_min: int | None,
+    age: float | None,
+    evidence: str,
+) -> dict[str, Any]:
+    """Classify a stale heartbeat.
+
+    A stale heartbeat is a monitoring-cadence gap, not a measured endpoint
+    red, so it warns (yellow) first and only pages (red) when the monitor
+    itself looks dead — stale far beyond the warn window.
+    """
+    url = latest.get("html_url")
+    if stale_red_min is not None and age is not None and age > stale_red_min:
+        return _stage(
+            name,
+            "red",
+            f"{workflow_id} has not run successfully within {stale_red_min} min",
+            evidence=evidence,
+            url=url,
+            details=details,
+        )
+    return _stage(
+        name,
+        "yellow",
+        f"{workflow_id} has not run successfully within {max_age_min} min",
+        evidence=evidence,
+        url=url,
+        details=details,
+    )
+
+
 def workflow_stage(
     name: str,
     repo: str,
@@ -234,6 +276,7 @@ def workflow_stage(
     timeout: float,
     now: dt.datetime,
     max_age_min: int | None,
+    stale_red_min: int | None = None,
 ) -> dict[str, Any]:
     latest = _latest_workflow_run(
         repo,
@@ -243,7 +286,11 @@ def workflow_stage(
         timeout=timeout,
         per_page=100,
     )
-    details: dict[str, Any] = {"workflow_id": workflow_id, "max_age_min": max_age_min}
+    details: dict[str, Any] = {
+        "workflow_id": workflow_id,
+        "max_age_min": max_age_min,
+        "stale_red_min": stale_red_min,
+    }
     if latest is None:
         return _stage(
             name,
@@ -283,11 +330,18 @@ def workflow_stage(
             )
         created = _parse_time(created_at)
         if created is not None and created <= now and max_age_min is not None and age > max_age_min:
-            # Existing missing-monitor freshness alarm, not measured endpoint red.
-            return _stage(
-                name, "red", f"{workflow_id} has not run successfully within {max_age_min} min",
+            # A stale heartbeat is a monitoring-cadence gap, not a measured
+            # endpoint red: warn first, page only when the monitor itself
+            # looks dead (stale far beyond the warn window).
+            return _staleness_stage(
+                name,
+                workflow_id,
+                latest,
+                details,
+                max_age_min=max_age_min,
+                stale_red_min=stale_red_min,
+                age=age,
                 evidence="monitoring cadence unavailable; not an endpoint-health measurement",
-                url=latest.get("html_url"), details=details,
             )
         measured, reason = _canary_receipt(
             repo, latest, api=api, token=token, timeout=timeout, now=now,
@@ -299,7 +353,27 @@ def workflow_stage(
             evidence=f"run {latest.get('id')} attempt {latest.get('run_attempt')}",
             url=latest.get("html_url"), details=details,
         )
+    if conclusion in RED_CONCLUSIONS:
+        return _stage(
+            name,
+            "red",
+            f"{workflow_id} latest run concluded {conclusion}",
+            evidence=f"run {latest.get('id')} at {created_at}",
+            url=latest.get("html_url"),
+            details=details,
+        )
     if conclusion != "success":
+        # Skipped/cancelled/neutral runs carry no failure signal: warn, don't
+        # page. Anything unrecognized still fails closed below via red.
+        if conclusion in BENIGN_CONCLUSIONS:
+            return _stage(
+                name,
+                "yellow",
+                f"{workflow_id} latest run concluded {conclusion} — no failure signal",
+                evidence=f"run {latest.get('id')} at {created_at}",
+                url=latest.get("html_url"),
+                details=details,
+            )
         return _stage(
             name,
             "red",
@@ -310,13 +384,15 @@ def workflow_stage(
         )
     if max_age_min is not None and (age is None or age > max_age_min):
         age_text = "unknown age" if age is None else f"{age:.1f} min old"
-        return _stage(
+        return _staleness_stage(
             name,
-            "red",
-            f"{workflow_id} has not run successfully within {max_age_min} min",
+            workflow_id,
+            latest,
+            details,
+            max_age_min=max_age_min,
+            stale_red_min=stale_red_min,
+            age=age,
             evidence=f"latest success run {latest.get('id')} is {age_text}",
-            url=latest.get("html_url"),
-            details=details,
         )
     return _stage(
         name,
@@ -536,6 +612,7 @@ def build_status(args: argparse.Namespace, now: dt.datetime | None = None) -> di
             timeout=timeout,
             now=current_now,
             max_age_min=args.max_observation_age_min,
+            stale_red_min=args.max_observation_stale_red_min,
         ),
         incident_stage(repo, api=api, token=token, timeout=timeout),
         tier3_clone_smoke_stage(repo, api=api, token=token, timeout=timeout),
@@ -622,7 +699,14 @@ def make_parser() -> argparse.ArgumentParser:
         "--max-observation-age-min",
         type=int,
         default=90,
-        help="Red if uptime-canary latest success is older than this.",
+        help="Warn (yellow) if uptime-canary latest success is older than this.",
+    )
+    parser.add_argument(
+        "--max-observation-stale-red-min",
+        type=int,
+        default=360,
+        help="Page (red) only if uptime-canary latest success is older than "
+        "this; staleness beyond --max-observation-age-min only warns.",
     )
     parser.add_argument("--json", action="store_true", help="Print JSON instead of text.")
     return parser

@@ -24,6 +24,7 @@ def _args() -> argparse.Namespace:
         token="fixture-token",
         timeout=1.0,
         max_observation_age_min=90,
+        max_observation_stale_red_min=360,
         json=False,
     )
 
@@ -98,7 +99,9 @@ def test_build_status_does_not_read_deleted_cheat_loop_workflows(monkeypatch) ->
         assert workflow_id not in seen
 
 
-def test_observation_canary_staleness_still_goes_red(monkeypatch) -> None:
+def test_observation_canary_mild_staleness_warns_yellow(monkeypatch) -> None:
+    # A stale heartbeat is a monitoring-cadence gap, not a measured endpoint
+    # red: 125 min without a canary success warns instead of paging.
     monkeypatch.setattr(
         watch,
         "_latest_workflow_run",
@@ -116,7 +119,89 @@ def test_observation_canary_staleness_still_goes_red(monkeypatch) -> None:
 
     observation = status["stages"][0]
     assert observation["name"] == "Observation canary"
+    assert observation["status"] == "yellow"
+    assert "not an endpoint-health measurement" in (observation.get("evidence") or "")
+    assert status["overall"] == "yellow"
+
+
+def test_observation_canary_staleness_still_goes_red(monkeypatch) -> None:
+    # Past the red tier the monitor itself looks dead: still pages.
+    monkeypatch.setattr(
+        watch,
+        "_latest_workflow_run",
+        lambda _repo, workflow_id, **_kwargs: _success_run(
+            workflow_id,
+            created_at="2026-06-25T05:00:00Z",
+        ),
+    )
+    monkeypatch.setattr(watch, "list_open_issues_by_label", lambda *_args, **_kwargs: [])
+
+    status = watch.build_status(
+        _args(),
+        now=dt.datetime(2026, 6, 25, 12, 5, tzinfo=dt.timezone.utc),
+    )
+
+    observation = status["stages"][0]
+    assert observation["name"] == "Observation canary"
     assert observation["status"] == "red"
+    assert status["overall"] == "red"
+
+
+def _deploy_run_with_conclusion(conclusion: str | None) -> dict:
+    run = _success_run("deploy-prod.yml")
+    run["conclusion"] = conclusion
+    return run
+
+
+@pytest.mark.parametrize("conclusion", ["skipped", "cancelled", "neutral", "stale"])
+def test_deploy_benign_conclusion_warns_yellow(monkeypatch, conclusion: str) -> None:
+    # A skipped/cancelled deploy carries no failure signal: warn, don't page.
+    def fake_latest(_repo: str, workflow_id: str, **_kwargs) -> dict:
+        if workflow_id == "deploy-prod.yml":
+            return _deploy_run_with_conclusion(conclusion)
+        return _success_run(workflow_id)
+
+    monkeypatch.setattr(watch, "_latest_workflow_run", fake_latest)
+    monkeypatch.setattr(watch, "list_open_issues_by_label", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(
+        watch, "_canary_receipt", lambda *a, **kw: ("green", "verified fixture")
+    )
+
+    status = watch.build_status(
+        _args(),
+        now=dt.datetime(2026, 6, 25, 12, 5, tzinfo=dt.timezone.utc),
+    )
+
+    deploy = next(
+        stage for stage in status["stages"] if stage["name"] == "Production deploy"
+    )
+    assert deploy["status"] == "yellow"
+    assert status["overall"] == "yellow"
+
+
+@pytest.mark.parametrize("conclusion", ["failure", "timed_out", "action_required", None])
+def test_deploy_failure_like_conclusion_still_goes_red(monkeypatch, conclusion: str | None) -> None:
+    # Real failures — and unrecognized conclusions, fail-closed — still page.
+    def fake_latest(_repo: str, workflow_id: str, **_kwargs) -> dict:
+        if workflow_id == "deploy-prod.yml":
+            return _deploy_run_with_conclusion(conclusion)
+        return _success_run(workflow_id)
+
+    monkeypatch.setattr(watch, "_latest_workflow_run", fake_latest)
+    monkeypatch.setattr(watch, "list_open_issues_by_label", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(
+        watch, "_canary_receipt", lambda *a, **kw: ("green", "verified fixture")
+    )
+
+    status = watch.build_status(
+        _args(),
+        now=dt.datetime(2026, 6, 25, 12, 5, tzinfo=dt.timezone.utc),
+    )
+
+    deploy = next(
+        stage for stage in status["stages"] if stage["name"] == "Production deploy"
+    )
+    assert deploy["status"] == "red"
     assert status["overall"] == "red"
 
 

@@ -108,6 +108,25 @@ The community patch loop SHALL be observed by read-only monitors that never muta
 - **WHEN** the revert-loop canary evaluates an activity-log tail of REVERT commits
 - **THEN** it returns OK below the warn thresholds and escalates to WARN or CRITICAL as the revert count-and-window thresholds are crossed
 
+#### Scenario: Stale observation warns before paging
+
+- **WHEN** the latest valid observation-canary run is over 90 minutes old with default thresholds
+- **THEN** its monitoring-cadence status is yellow until its age exceeds 360 minutes, when it becomes red
+- **AND** a fresh measured endpoint failure still reports red
+- **AND** the separate workflow alarm sink dispatches the allowlisted stale uptime canary even when the overall status is yellow, without opening, closing, or commenting on alarm issues
+- **AND** a self-heal follow-up does not dispatch another follow-up
+
+#### Scenario: A deploy conclusion has no failure signal
+
+- **WHEN** the latest completed deploy run is skipped, cancelled, neutral, or stale
+- **THEN** the deploy stage warns yellow rather than reporting a measured failure
+- **AND** failure, timed_out, action_required, and unrecognized conclusions still report red
+
+#### Scenario: Unknown observation preserves incident state
+
+- **WHEN** the overall monitoring status is unknown
+- **THEN** the alarm sink performs no workflow dispatch or incident mutation
+
 ### Requirement: Auto-ship PR creation is scoped, idempotent, and stale-head safe
 PR creation SHALL operate only on a recorded eligible auto-ship attempt and a validated same-repository `auto-change/*` head. An explicit token SHALL take precedence; a production call with universe and destination SHALL resolve a per-universe `vcs/github/write` credential; environment token fallback SHALL apply only when no scoped destination lookup is requested. An attempt already recorded as opened SHALL return its recorded PR evidence without another network write, and a head that is behind or diverged from base SHALL fail with `pr_create_stale_head` before PR creation.
 
