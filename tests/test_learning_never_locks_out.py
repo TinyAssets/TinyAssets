@@ -42,6 +42,7 @@ from dataclasses import replace
 import pytest
 
 from tests import test_interactive_http_agent as integration
+from tests.inference_usage_helpers import accounting_resolver
 from tinyassets import universe_intelligence
 from tinyassets.exceptions import AllProvidersExhaustedError, ProviderRateLimitedError
 from tinyassets.providers.api_key_http_provider import ApiKeyHttpProvider
@@ -74,7 +75,8 @@ class _RateLimited:
 
 def _rate_limit(agent, monkeypatch):
     wire = _RateLimited()
-    monkeypatch.setattr(ApiKeyHttpProvider, "_resolve_proxy", lambda *a, **k: wire)
+    monkeypatch.setattr(ApiKeyHttpProvider, "_resolve_proxy",
+                        accounting_resolver(lambda *a, **k: wire))
     return wire
 
 
@@ -144,7 +146,7 @@ def test_learning_rate_limit_leaves_the_founder_s_next_turn_eligible(agent, monk
                      secondary_call=True)
     with pytest.raises(AllProvidersExhaustedError):
         _secondary_call(agent, config)
-    monkeypatch.setattr(ApiKeyHttpProvider, "_resolve_proxy", original)
+    monkeypatch.setattr(ApiKeyHttpProvider, "_resolve_proxy", accounting_resolver(original))
 
     # The live symptom was this call raising with one skipped attempt instead.
     assert integration.run(agent) == "finished exact answer"
@@ -363,7 +365,12 @@ def test_the_writer_receipt_carries_the_connection_name(agent):
         conn.commit()
     receipt = WriterExecutionReceipt()
     assert integration.run(agent, receipt.observe) == "finished exact answer"
-    assert receipt.projection() == {
+    projected = receipt.projection()
+    usage = projected.pop("usage")
+    assert usage["dispatched"] == len(agent.wires) == 2
+    assert usage["quota_authoritative"] is False
+    assert usage["sources"][0]["purpose"] == "reply"
+    assert projected == {
         "provider": _provider(agent),
         "provider_display": "OpenRouter",
         "model": "actual-answer-model",
@@ -436,7 +443,8 @@ def test_a_secondary_auth_failure_does_not_quarantine_the_source(agent, monkeypa
     to reconnect a connection that works.
     """
     marked = _reconnect_marks(monkeypatch)
-    monkeypatch.setattr(ApiKeyHttpProvider, "_resolve_proxy", lambda *a, **k: _Unauthorized())
+    monkeypatch.setattr(ApiKeyHttpProvider, "_resolve_proxy",
+                        accounting_resolver(lambda *a, **k: _Unauthorized()))
     config = replace(universe_intelligence._sandboxed_config(agent.served.context),
                      secondary_call=True)
     with pytest.raises(AllProvidersExhaustedError) as caught:
@@ -448,7 +456,8 @@ def test_a_secondary_auth_failure_does_not_quarantine_the_source(agent, monkeypa
 def test_a_foreground_auth_failure_still_quarantines_the_source(agent, monkeypatch):
     """The guard against over-fixing: a real turn's 401 still asks for a reconnect."""
     marked = _reconnect_marks(monkeypatch)
-    monkeypatch.setattr(ApiKeyHttpProvider, "_resolve_proxy", lambda *a, **k: _Unauthorized())
+    monkeypatch.setattr(ApiKeyHttpProvider, "_resolve_proxy",
+                        accounting_resolver(lambda *a, **k: _Unauthorized()))
     config = universe_intelligence._sandboxed_config(agent.served.context)
     with pytest.raises(AllProvidersExhaustedError):
         _secondary_call(agent, config)

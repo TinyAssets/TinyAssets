@@ -28,8 +28,14 @@ permissions:
   contents: read
 
 concurrency:
-  group: release-reconcile-regression-${{ github.ref }}
-  cancel-in-progress: true
+  # `github.ref` is unique per PR (refs/pull/N/merge), so PR cancellation is
+  # unchanged -- but on `push: main` every push shared ONE group, so each push
+  # cancelled the previous main run of this regression. That is the shape
+  # tests.yml calls "coverage while providing none": the main run is the one
+  # that proves what LANDED still reconciles. The `run_id` fallback gives every
+  # non-PR run its own group, and the condition is the second layer.
+  group: release-reconcile-regression-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   test:

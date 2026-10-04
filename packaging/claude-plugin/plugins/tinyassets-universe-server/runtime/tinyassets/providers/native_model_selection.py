@@ -117,7 +117,26 @@ def accepted_native_selection(provider, model_id, access):
 
 
 def native_model_arguments(model_id, flag):
-    """Argument vector only; no shell interpolation and no implicit fallback."""
+    """Argument vector only; no shell interpolation and no fallback added HERE.
+
+    "No implicit fallback" is a statement about this function: it passes the
+    accepted string through and never substitutes a second model. It is NOT a
+    guarantee that the CLI answers on exactly that model.
+
+    An ALIAS (``opus``, ``sonnet``) is a tier, not a model. From Claude Code
+    2.1.286, when the API refuses the model an alias or default resolved to, the
+    CLI retries the previous model in that tier -- so a refusal can come back as
+    a successful answer from a neighbouring model, and ``--model sonnet`` names
+    the tier it will be served from rather than one concrete model. The release
+    note does not extend this to explicit model IDs; pass a full ID when a turn
+    needs one exact model.
+
+    This is safe here because nothing downstream infers the answering model from
+    the request: ``claude_provider._AnswerModelEvidence`` reads the model off the
+    assistant message in the stream, and that observed value is what
+    ``ProviderResponse.reported_model`` carries. Requested and reported are
+    separate fields on purpose and are allowed to differ.
+    """
     if model_id is None:
         return []
     validate_model_id(model_id)

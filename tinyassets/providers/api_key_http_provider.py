@@ -159,6 +159,7 @@ class ApiKeyHttpProvider(BaseProvider):
     """Compute over a user-registered http provider, via the credential-blind proxy."""
 
     agent_execution_kind = "engine_inference"
+    supports_text_only = True
 
     def __init__(
         self, definition: ProviderDefinition, *, proxy_override: Any | None = None
@@ -231,6 +232,7 @@ class ApiKeyHttpProvider(BaseProvider):
         *,
         universe_dir: Path | None = None,
     ) -> ProviderResponse:
+        self.require_text_only_support(config)
         # An executor Future (not a Task wrapping to_thread) survives the
         # cancel-all-Tasks phase of asyncio.run teardown. Shield alone would
         # not protect a to_thread Task from being cancelled directly there.
@@ -271,6 +273,7 @@ class ApiKeyHttpProvider(BaseProvider):
         *,
         universe_dir: Path | None = None,
     ) -> ProviderResponse:
+        self.require_text_only_support(config)
         if universe_dir is None:
             raise ProviderUnavailableError(
                 "api_key_http compute requires a command center context (universe_dir)"
@@ -321,7 +324,7 @@ class ApiKeyHttpProvider(BaseProvider):
 
             agent_codec = agent_codec_for(self._definition.protocol)
             if (type(agent_request) is not AgentInferenceRequest or selection is None
-                    or not config.engine_mcp_enabled
+                    or not (config.engine_mcp_enabled or agent_request.text_only)
                     or agent_codec is None):
                 raise ProviderUnavailableError("HTTP agent inference requires admitted selection")
             protocol_path, body = agent_request.encode(
@@ -338,6 +341,26 @@ class ApiKeyHttpProvider(BaseProvider):
             )
             if selection is not None:
                 body = contract.constrain_inference(body, selection.cost_caps)
+        if getattr(config, "text_only", False):
+            # Only the installed text wire is proven tool-free. In particular,
+            # source-contract extensions must not reintroduce tools/plugins or
+            # completed agent history after the text encoder ran. Unknown
+            # extensions refuse rather than silently dropping billing controls.
+            from tinyassets.exceptions import ProviderAuthorityHeldError
+
+            if (type(body) is not dict or not {"model", "messages"} <= body.keys()
+                    or body.keys() - {"model", "messages", "system", "temperature", "max_tokens"}
+                    or type(body["messages"]) is not list
+                    or any(type(message) is not dict
+                           or message.keys() != {"role", "content"}
+                           or message["role"] not in {"system", "user"}
+                           or type(message["content"]) is not str
+                           for message in body["messages"])
+                    or ("system" in body and type(body["system"]) is not str)):
+                raise ProviderAuthorityHeldError(
+                    "selected HTTP request does not support enforced text-only review; "
+                    "nothing was sent"
+                )
         # The path the user granted wins over the protocol's canonical one: the
         # broker allowlists what they registered, so calling anything else is a
         # guaranteed refusal. The encoder still owns the BODY shape.
@@ -366,6 +389,19 @@ class ApiKeyHttpProvider(BaseProvider):
         if static_headers:
             wire_request["headers"] = static_headers
 
+        usage = None
+        budget = getattr(config, "request_budget", None)
+        if budget is not None:
+            from tinyassets.broker.ops import new_op_id
+
+            budget.check_scope(owner_user_id, universe_id)
+            usage = budget.issue_reference(
+                getattr(config, "request_attempt", None), grant_id=grant_id,
+                connection_id=connection_id, verb="POST", request=wire_request,
+                operation_id=new_op_id(),
+            )
+        from tinyassets.storage.agent_request_usage import InferenceUsageStopped
+
         started = time.monotonic()
         try:
             proxy = self._resolve_proxy(
@@ -376,7 +412,10 @@ class ApiKeyHttpProvider(BaseProvider):
                 owner_user_id=owner_user_id,
             )
             try:
-                result = proxy.request("POST", wire_request)
+                result = proxy.request(
+                    "POST", wire_request,
+                    **({"inference_usage": usage} if usage is not None else {}),
+                )
                 # Inference latency excludes the owned worker's cleanup/join.
                 latency_ms = (time.monotonic() - started) * 1000.0
             finally:
@@ -385,6 +424,13 @@ class ApiKeyHttpProvider(BaseProvider):
                         proxy.close()
                     except Exception:  # noqa: BLE001 - preserve result and secret-free diagnostics
                         _LOG.warning("HTTP inference proxy cleanup failed")
+        except InferenceUsageStopped as exc:
+            from tinyassets.exceptions import ProviderAuthorityHeldError
+            from tinyassets.request_budget import RequestBudgetExceeded
+
+            if budget is None or exc.usage_id != budget.usage_id:
+                raise ProviderAuthorityHeldError("inference usage stop scope changed") from None
+            raise RequestBudgetExceeded(exc.reason, budget.receipt()) from None
         except GrantResolutionError as exc:
             raise ProviderUnavailableError(
                 f"compute grant resolution failed: {exc}"
@@ -525,6 +571,20 @@ class ApiKeyHttpProvider(BaseProvider):
                 parsed = json.loads(body_str)
         except (TypeError, ValueError) as exc:
             raise unreadable(f"compute response was not JSON: {exc}") from exc
+        if getattr(config, "text_only", False):
+            # Do not accept a verdict alongside an unexpected tool request.
+            pending = [parsed]
+            while pending:
+                value = pending.pop()
+                if isinstance(value, dict):
+                    if ({"tool_calls", "function_call"} & value.keys()
+                            or value.get("type") in ("tool_use", "server_tool_use")):
+                        from tinyassets.exceptions import ProviderAuthorityHeldError
+
+                        raise ProviderAuthorityHeldError("text-only review returned a tool request")
+                    pending.extend(value.values())
+                elif isinstance(value, list):
+                    pending.extend(value)
         agent_reply = None
         cost = None
         try:

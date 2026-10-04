@@ -47,7 +47,7 @@ class _Candidates:
         self._refs = list(refs)
         self.advanced = []
 
-    def next_candidate(self, policy, exhaustions=None):
+    def next_candidate(self, policy, exhaustions=None, *, local_exclusions=()):
         if exhaustions is not None:
             self.advanced.append(exhaustions)
             return None
@@ -74,7 +74,16 @@ def _session(monkeypatch, *, refs, calls):
 
     monkeypatch.setattr(provider_call, "get_provider_router", lambda: _Router())
     session = object.__new__(frp._ForegroundRunProviderSession)
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    from tinyassets.request_budget import TurnRequestBudget
+
     session._work_candidates = _Candidates(refs)
+    session._work_candidates.catalog = SimpleNamespace(owner_id="owner", connections=())
+    session._universe_dir = Path("/tmp/diagnostic-fixture-universe")
+    session._principal_id = "owner"
+    session._request_budget = TurnRequestBudget("owner", session._universe_dir.name)
     calls_left = list(calls)
 
     def _call_once(role, prompt, system, config, policy, kwargs):
@@ -88,8 +97,10 @@ def _session(monkeypatch, *, refs, calls):
 
 
 def _run(session):
+    from tinyassets.providers.base import ModelConfig
+
     return session._call_captured_prompt(
-        "writer", "p", "s", {}, {}, {}, None,
+        "writer", "p", "s", ModelConfig(), {}, {}, None,
     )
 
 

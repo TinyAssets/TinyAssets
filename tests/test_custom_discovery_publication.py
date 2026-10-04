@@ -60,6 +60,8 @@ def source(rig, monkeypatch):
         canonical = _parse_canonical_https_url(request["url"], allowed_ports=frozenset({443}))
         _enforce_endpoint_allowlist(canonical, kwargs["verb"], kwargs["allowed_endpoints"],
                                     kwargs["access_mode"])
+        if kwargs.get("on_connect") is not None:
+            kwargs["on_connect"](None)
         state.calls.append((kwargs["verb"], request))
         if kwargs["verb"] == "POST":
             return state.infer(request)
@@ -67,12 +69,23 @@ def source(rig, monkeypatch):
         state.after_response()
         return {"status": 200, "body": raw}
 
+    from tinyassets.storage.agent_request_usage import resolve_inference_usage
+
+    def accounting(resource, grant, verb, request, envelope, operation):
+        return resolve_inference_usage(rig.base, "owner", "u-models", broker_ledger,
+                                       resource, grant, verb, request, envelope, operation)
+
     broker = CredentialBlindBroker(broker_ledger, resolve_credential=lambda *_: "synthetic",
-                                   network_request=network)
+                                   network_request=network, resolve_inference_usage=accounting)
 
     class Channel:
-        def request(self, verb, request):
-            return broker.dispatch("grant-models", verb, request)
+        def request(self, verb, request, *, inference_usage=None):
+            return broker.dispatch(
+                "grant-models", verb, request,
+                **({"inference_usage": inference_usage.document(),
+                    "operation_id": inference_usage.operation_id}
+                   if inference_usage is not None else {}),
+            )
 
         def close(self):
             state.closes += 1

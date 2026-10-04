@@ -947,6 +947,19 @@ and can be built in parallel with it.
 `main` is only the seeded default, never a special case in code. The roster UI
 is D8. Nothing before D8 may assume there is one agent.
 
+**D8 integration design (2026-10-03, not implemented):**
+[addressed-agent-control-provenance](../addressed-agent-control-provenance/design.md)
+specifies the missing authenticated turn/run carrier and control-door wiring
+after #4287 and #4228. Their accepted foundation residual remains open: keyed
+storage alone does not make custom-agent rules, Stop or request routing work.
+That design owns current-binding/revocation checks and safe legacy handling;
+the shared-brain and visibility requirements below remain here. The first Claude
+ADAPT is folded there, with [design approval at 6bf7923](https://github.com/TinyAssets/TinyAssets/pull/4343#issuecomment-5965426542): native internal tools have no claimed
+pre-tool interception (D2 remains held), launch identity requires a proposed
+isolated per-launch transport credential, and legacy recurring definitions need
+visible holds plus owner reconfirmation. None of these facilities is implemented
+by the documentation change.
+
 **What is per agent, and what is shared**
 
 | Per agent (keyed by `agent_id`) | Shared by the whole universe |
@@ -1014,9 +1027,9 @@ the rule is:
 | S1 sessions and conversation memory | Merged | The main thread keeps `thread:principal:<owner>` and conversation key `principal:<owner>`. Other agents use conversation key `agent:<agent_id>:principal:<owner>` and session and steering key `thread:agent:<agent_id>:principal:<owner>`: the `thread:` prefix is what S2 steers. No migration |
 | Stop (`turn_interrupt`) | Shipped | Today a stop ends every live turn for (owner, universe). It becomes per agent and thread, with a separate stop-all |
 | S2 steering (#4188) | Merging | Keyed by session key, so it follows S1. The app sends the addressed agent with the steer (D8 UI) |
-| S4 journal (#4190) | Open | S4's activity journal is keyed by session, which names the agent. The shipped `agent_turn_journal` has no session or agent column; add one. The status line shows the agent's name (D8 roster name, "Your agent" until then) |
+| S4 journal (#4190) | Foundation in #4228; integration pending | `agent_turn_journal` has an agent column on the combined foundation, but served creation still defaults to main. The D8 provenance change wires the captured identity; status names the acting agent |
 | D1a rules | Merged | Already per agent (`rules.agent`, `MAIN_AGENT` is the seed) |
-| D1d review (#4200) | Merged | `review_off` lacks `agent_id`. Follow-up: rebuild it with `(agent_id, action_class)`, existing rows becoming `main` |
+| D1d review (#4200/#4228) | Per-agent foundation reviewed; integration pending | #4228 adds `(agent, action_class)` and migrates the old global switches to main. The effector still selects main until the D8 provenance change |
 | D2 activities | In build | `agent_id` on each activity. Effect intents inherit it through `activity_id`. Status lines go to the owning agent's main session, and to any agent whose visibility covers it |
 | Pending requests and push | Shipped | Add the asking agent's id and name ("Your agent asks" becomes "<name> asks"). Deduplication, mute and answer routing are scoped per agent |
 | converse and the app | Built | `converse`, the steer route and the owner's conversation read take an addressed `agent_id` (`tinyassets/addressed_agents.py`); a custom UI opens the chat addressed to an agent. The command center decides which agents are exposed (D8) |
