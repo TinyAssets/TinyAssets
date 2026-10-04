@@ -146,7 +146,10 @@ reconnects with a key. No other stored shape changes.
 The packaged `connection_oauth/providers.json`, or an absolute-path
 `TINYASSETS_OAUTH_DIRECTORY` replacement, maps exact declared hosts to trusted
 endpoints, scope sets and environment credential names. Relative overrides
-fail with `oauth_directory_invalid`. Entries missing credentials are inactive.
+fail loading with `oauth_directory_invalid`; optional-directory failures are
+logged with a fixed code and fall through to discovery without preventing
+launch. Entries missing credentials are inactive. Explicit scopes must fit
+the union of the entry's declared scope sets.
 An active match takes precedence over a requested public client ID.
 
 Registered clients keep authorization code, S256 PKCE and existing flow
@@ -154,12 +157,15 @@ ownership. Only the opaque provider ID is added to offers and token bundles.
 Before exchange or refresh the daemon re-pins client ID and token URL against
 the current directory, then resolves the secret. Confidential failures expose
 fixed codes/status, not provider prose. Secrets are filtered from child
-environments and removed before engine/scoped-broker spawn.
+environments and removed at daemon startup and before engine/scoped-broker spawn.
 
 Child refresh uses a private loopback capability bound by the launcher to one
-owner and universe. The daemon rechecks admin authority and deposit ownership,
+owner and universe. The daemon rechecks canonical admin authority or the
+founder-home binding, plus deposit ownership,
 uses the existing refresh locks and vault admission, and returns success only.
-The child rereads its own vault. Public-client refresh remains unchanged.
+The child rereads its own vault. Each daemon launch gets a capability revoked
+on engine stop/restart or proxy close/failed startup; child proxies reuse the
+parent capability. Public-client refresh remains unchanged.
 
 These inheritance protections do not isolate same-UID processes from the
 daemon. The concern `docs/concerns/2026-10-04-engine-mcp-shares-daemon-uid.md`
