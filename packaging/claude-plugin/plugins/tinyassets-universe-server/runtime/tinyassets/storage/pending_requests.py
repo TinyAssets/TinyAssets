@@ -42,6 +42,8 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+from tinyassets.owner_control import serialized
+
 logger = logging.getLogger(__name__)
 
 _DB_NAME = ".pending_requests.db"
@@ -278,13 +280,16 @@ def _migrate_itemless_keys(conn: sqlite3.Connection) -> int:
 
 
 def _db(universe_dir: Path) -> sqlite3.Connection:
-    conn = sqlite3.connect(str(Path(universe_dir) / _DB_NAME), timeout=10.0)
+    from tinyassets.storage.request_migration import ensure_protected
+
+    conn = sqlite3.connect(ensure_protected(universe_dir), timeout=10.0)
     conn.executescript(_SCHEMA)
     _ensure_columns(conn)
     _migrate_itemless_keys(conn)
     return conn
 
 
+@serialized
 def create_request(
     universe_dir: Path,
     *,
@@ -580,6 +585,7 @@ def find_by_action_type(
     return [row for row in found if (row["action"] or {}).get("type") == action_type]
 
 
+@serialized
 def retire_platform_request(
     universe_dir: Path, request_id: str, *, reason: str = ""
 ) -> bool:
@@ -607,6 +613,7 @@ def retire_platform_request(
         return False
 
 
+@serialized
 def resolve_request(
     universe_dir: Path,
     request_id: str,
@@ -706,6 +713,7 @@ def _requeue_waiting_activity(universe_dir: Path, request_id: str) -> None:
         logger.warning("pending_requests: activity re-queue failed", exc_info=True)
 
 
+@serialized
 def resolve_item(
     universe_dir: Path,
     request_id: str,
@@ -816,6 +824,7 @@ def resolve_item(
     }
 
 
+@serialized
 def withdraw_request(
     universe_dir: Path, request_id: str, *, reason: str = ""
 ) -> dict[str, Any]:
@@ -872,6 +881,7 @@ def list_resolved(universe_dir: Path, limit: int = 20) -> list[dict[str, Any]]:
         return []
 
 
+@serialized
 def record_unmute(universe_dir: Path, dedupe_key: str) -> None:
     """Record that a mute was lifted, so the lift is visible in the rail."""
     try:
@@ -920,6 +930,7 @@ def list_suppressions(universe_dir: Path) -> list[dict[str, Any]]:
         return []
 
 
+@serialized
 def unsuppress(universe_dir: Path, dedupe_key: str) -> bool:
     """Undo a "don't ask again". A standing refusal the user cannot lift is a trap."""
     try:

@@ -1,4 +1,14 @@
-Proposal-only handoff; implementation boxes intentionally remain open. No product code, deployment or new PR in this session.
+Implementation lane: `feat/inline-connect-and-approve`. First slice targets once-only
+bound HTTP approvals, inline cards and server continuation. Wider task/always grants,
+server-completed provider OAuth (2.3), and deployed acceptance (3.2) remain deferred.
+Boxes remain unchecked until every part of the original task is verified.
+
+Task 1.1 progress: requests now cut over to protected activity storage under an
+OS-backed cross-worker owner-control lock. Copy verification and the cutover marker
+commit together; legacy write-refusal triggers retain the original file for recovery.
+134 targeted tests passed, including legacy migration, items, activity records,
+restart recovery, disjoint owners and lock exclusion. Schema extensions and shared
+dispatch/policy/Stop integration continue in the next slice commit.
 
 ## 1. Bound requests and owner authority
 
