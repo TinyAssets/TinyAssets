@@ -18,12 +18,12 @@ PLATFORM_DEFAULT_UI = {
     "name": "Blank command center",
     "markup": """<main id="offer">
 <h1>Your command center is empty</h1>
-<p>Build a space that works for you, or start with one someone has shared.</p>
-<button id="build">Build one with your agent</button>
-<button id="try-one" hidden>Try one</button>
+<p>Talk to your agent to build or change this space, or browse a design someone has shared.
+Browsing and visual previews do not send a message or use a model.</p>
+<button id="build">Build your own</button>
+<button id="try-one">Try someone else's</button>
 <section id="packages" hidden aria-label="Published command centers"></section>
 <p id="message" role="status"></p>
-<a id="dismiss" href="#">No thanks</a>
 </main>""",
     "style": """*{box-sizing:border-box}html,body{margin:0;min-height:100%;}
 body{min-height:100vh;display:grid;place-items:center;background:#101419;
@@ -37,30 +37,58 @@ margin:12px 0}h2{margin:0;font-size:20px}[hidden]{display:none!important}""",
     "script": """(async()=>{
 const el=id=>document.getElementById(id),message=el('message');
 const say=error=>{message.textContent=error.message||String(error);};
-el('dismiss').onclick=event=>{event.preventDefault();el('offer').hidden=true;};
+el('try-one').onclick=()=>{el('packages').hidden=false;};
 el('build').onclick=async()=>{
   try{await tinyassets.call('chat.prefill',{text:BUILD_PROMPT});}catch(error){say(error);}
 };
 try{
   const doc=await tinyassets.call('packages.list_tryable',{});
-  el('try-one').hidden=!doc.can_try;
-  el('try-one').onclick=()=>{el('packages').hidden=false;};
+  if(!doc.packages.length&&!(doc.systems||[]).length)
+    el('packages').textContent='No shared command centers are available yet. '+
+      'You can build your own.';
   if(doc.can_try)for(const p of doc.packages){
     const card=document.createElement('article'),name=document.createElement('h2');
     name.textContent=p.name;card.appendChild(name);
+    const description=document.createElement('p');description.textContent=p.description;
+    card.appendChild(description);
     const detail=document.createElement('p');
     detail.textContent=p.author_id+' · Version '+p.version+' · '+p.size+
       ' · Model: '+(p.needs.model||'None specified')+
       ' · Connections: '+(p.needs.connections.join(', ')||'None');
     card.appendChild(detail);
-    const button=document.createElement('button');button.textContent='Try';
+    const button=document.createElement('button');button.textContent='Preview';
     button.onclick=async()=>{
       button.disabled=true;
-      try{await tinyassets.call('packages.try',{agent_definition_id:p.agent_definition_id});
-        message.textContent='Open the chat to preview and confirm the install.';
+      try{await tinyassets.call('packages.preview',{agent_definition_id:p.agent_definition_id});
+        message.textContent='Visual preview is open. '+
+          'Nothing installs before you choose Copy and confirm.';
       }catch(error){say(error);}finally{button.disabled=false;}
     };
     card.appendChild(button);el('packages').appendChild(card);
+  }
+  for(const p of doc.systems||[]){
+    const card=document.createElement('article'),name=document.createElement('h2');
+    name.textContent=p.name;card.appendChild(name);
+    const description=document.createElement('p');description.textContent=p.description;
+    card.appendChild(description);
+    const detail=document.createElement('p');
+    detail.textContent=p.author_id+' · Public system · Components only; no files · '+
+      p.workflow_count+' workflows · '+p.automation_count+' paused automations · '+
+      (p.agent_template_count||0)+' public agent templates';
+    card.appendChild(detail);
+    const button=document.createElement('button');button.textContent='Preview copy';
+    button.disabled=!p.available;
+    button.onclick=async()=>{
+      button.disabled=true;
+      try{await tinyassets.call('packages.preview',{agent_definition_id:p.agent_definition_id});
+        message.textContent='Visual preview is open. '+
+          'Choose Copy to review and confirm; nothing installs yet.';
+      }catch(error){say(error);}finally{button.disabled=!p.available;}
+    };
+    card.appendChild(button);
+    if(!p.available){const why=document.createElement('p');
+      why.textContent=p.unavailable_reason;card.appendChild(why);}
+    el('packages').appendChild(card);
   }
 }catch(error){say(error);}
 })();""".replace("BUILD_PROMPT", json.dumps(BUILD_PROMPT)),
@@ -73,6 +101,7 @@ def working_packages() -> list[dict]:
     from tinyassets.api.helpers import _base_path
     from tinyassets.api.publish_requests import BRANCH_REF_KIND
     from tinyassets.branch_versions import branch_version_is_public, get_branch_version
+    from tinyassets.command_center_agent_templates import templates
 
     try:
         rows = package_requests.list_packages(limit=100)
@@ -103,10 +132,12 @@ def working_packages() -> list[dict]:
                 if (not version or not branch_version_is_public(base, version)
                         or get_branch_version(base, version) is None):
                     raise ValueError("package workflow version is missing or not public")
+            agent_template_count = len(templates(base, definition["components"]))
             result.append({key: row[key] for key in (
                 "agent_definition_id", "name", "description", "author_id", "version",
                 "size", "file_count", "needs",
             )})
+            result[-1]["agent_template_count"] = agent_template_count
             if len(result) == 12:
                 break
         except Exception:
@@ -122,4 +153,12 @@ def read_packages(*, universe_id: str = "") -> dict:
     if denial is not None:
         return denial
     packages = working_packages()
-    return {"packages": packages, "build_prompt": BUILD_PROMPT, "can_try": len(packages) >= 1}
+    systems = working_systems()
+    return {"packages": packages, "systems": systems, "build_prompt": BUILD_PROMPT,
+            "can_try": bool(packages or any(row["available"] for row in systems))}
+
+
+def working_systems() -> list[dict]:
+    from tinyassets.api.system_copy_requests import list_systems
+
+    return list_systems()

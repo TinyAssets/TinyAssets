@@ -81,6 +81,7 @@ ERROR_CLASSES = frozenset({
     "PermissionError", "GrantResolutionError", "AmbiguousProxyOutcome",
     "OutboundDeadlineExceeded", "ConnectionAuthorizationError", "ProxyRequestError",
     "SsrfValidationError", "fenced", "duplicate", "expired", "refused",
+    "InferenceUsageStopped", "ProviderAuthorityHeldError",
 })
 
 
@@ -398,7 +399,7 @@ class _Connection:
                                                       resource)
                 threading.Thread(
                     target=self._run, args=(stream, dispatch, grant_id, verb, request,
-                                            doc.get("idle_s")),
+                                            doc.get("idle_s"), doc.get("inference_usage")),
                     name=f"broker-stream-{stream_id}", daemon=True,
                 ).start()
             except Exception:  # noqa: BLE001 - nothing was sent: settle it as refused
@@ -436,7 +437,7 @@ class _Connection:
         stream.wrote = True
 
     def _run(self, stream: _Stream, dispatch: Callable[..., Any], grant_id: str, verb: str,
-             request: dict[str, Any], idle_s: Any) -> None:
+             request: dict[str, Any], idle_s: Any, inference_usage=None) -> None:
         outcome, error_class, extra = "failed", "ProxyRequestError", {}
         try:
             if stream.cancelled:
@@ -453,6 +454,8 @@ class _Connection:
                 on_connect=lambda sock: self._connected(stream, sock),
                 checkpoint=lambda: self._checkpoint(stream),
                 deadline_at=stream.deadline,
+                **({"inference_usage": inference_usage, "operation_id": stream.op_id}
+                   if inference_usage is not None else {}),
             )
             stream.upstream = upstream
             if stream.cancelled:
@@ -475,8 +478,14 @@ class _Connection:
                 # read's own error is that, not a destination failure.
                 outcome, error_class = "cancelled", None
             else:
+                from tinyassets.request_budget import RequestBudgetExceeded
+
                 name = type(exc).__name__
                 error_class = name if name in ERROR_CLASSES else "ProxyRequestError"
+                if isinstance(exc, RequestBudgetExceeded):
+                    error_class = "InferenceUsageStopped"
+                    extra = {"reason": exc.reason,
+                             "usage_id": exc.request_receipt.get("usage_id")}
                 failure = getattr(exc, "failure", None)
                 if name == "ConnectionAuthorizationError" and isinstance(failure, dict):
                     extra = {"failure": failure}

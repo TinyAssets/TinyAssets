@@ -138,7 +138,11 @@ class RoundInput:
                 raise invalid()
         tools = document(self.tools_json)
         fields(tools, {"version", "tools"})
-        codec._definitions(tools["tools"])
+        # An empty inventory records a text-only inference, never permission
+        # to execute tools. Keep every existing nonempty canonical byte and
+        # identity check unchanged; replies are still checked against names().
+        if tools["tools"] != []:
+            codec._definitions(tools["tools"])
         value = asdict(self)
         if work_lineage(self.authority_kind, self.work_receipt_id):
             return dump({"version": 3, "kind": "engine_inference", **value})

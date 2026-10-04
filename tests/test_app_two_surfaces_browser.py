@@ -6,6 +6,7 @@ every gesture is a real mouse or keyboard input.
 """
 from __future__ import annotations
 
+import os
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -66,7 +67,9 @@ def browser():
     )
     with sync_api.sync_playwright() as p:
         try:
-            chromium = p.chromium.launch()
+            chromium = p.chromium.launch(
+                executable_path=os.environ.get("TINYASSETS_TEST_CHROMIUM") or None
+            )
         except Exception as exc:  # noqa: BLE001 - no browser binary on this host
             pytest.skip(
                 "owner=codex runs-in=real-browser-proof Chromium is not available here: "
@@ -139,9 +142,13 @@ def test_default_bundle_build_focuses_composer_at_prompt_end_without_sending(app
             if(!AppUI.mountDefault())throw new Error('default did not mount');
         }""", {"bundle": PLATFORM_DEFAULT_UI, "prompt": BUILD_PROMPT})
         frame = page.frame_locator("#ui-frame")
-        build = frame.get_by_role("button", name="Build one with your agent", exact=True)
+        build = frame.get_by_role("button", name="Build your own", exact=True)
         expect(build).to_be_visible()
-        expect(frame.locator("#try-one")).to_be_hidden()
+        expect(frame.locator("#try-one")).to_be_visible()
+        frame.locator("#try-one").click()
+        expect(frame.locator("#packages")).to_have_text(
+            "No shared command centers are available yet. You can build your own.")
+        expect(frame.locator("#dismiss")).to_have_count(0)
         # Mounting the command center starts the chat as a bubble. Open it
         # through the owner control before entering the draft under test.
         expect(page.locator("#chat-cloud-bubble")).to_be_visible()
@@ -651,3 +658,213 @@ def test_clicking_the_composer_while_the_ui_holds_focus_gives_the_chat_the_keys(
     page.keyboard.type("typed after the click")
     assert page.input_value("#composer-input") == "typed after the click"
     context.close()
+
+
+@pytest.mark.parametrize("width", [390, 1280])
+def test_shared_system_preview_and_permanent_trusted_switcher(app_url, browser, width):
+    from playwright.sync_api import expect
+
+    from tinyassets.command_center_picker import BUILD_PROMPT, PLATFORM_DEFAULT_UI
+
+    page = browser.new_page(viewport={"width": width, "height": 850})
+    try:
+        _enter_chat(page, app_url)
+        page.evaluate("""({bundle,prompt})=>{
+            window.copyAsks=[];
+            const own={kind:AppUI.KIND,version:1,ui_id:'own',name:'My own',
+                markup:'<p>My own screen</p>',style:'',script:''};
+            window.testRow={universe_id:'home-1',revision:1,ui_library:[own],
+                ui_selection:null,platform_default:bundle};
+            const catalogue={packages:[],systems:[{agent_definition_id:'public-village',
+                publication_kind:'system',name:'Fantasy Village',description:'Shared village',
+                author_id:'publisher',workflow_count:2,automation_count:2,
+                available:true,unavailable_reason:''}],build_prompt:prompt,can_try:true};
+            fetchMe=async()=>({principal_id:'owner-1',universe_id:'home-1',setup:'connected'});
+            Owner.read=async args=>{
+                if(args.target==='command_center_packages')return structuredClone(catalogue);
+                if(args.target==='command_center_preview')return {
+                    agent_definition_id:'public-village',name:'Fantasy Village',
+                    description:'Shared village',
+                    ui:own,assets:[]};
+                if(args.target==='app_ui')return {app_ui:structuredClone(window.testRow)};
+                if(args.target==='agent_bindings')return {bindings:[]};
+                throw Error('unexpected read '+args.target);
+            };
+            MCP.callTool=async(tool,args)=>{
+                if(tool!=='write_graph')throw Error('unexpected tool');
+                if(args.operation==='try_package'){
+                    window.copyAsks.push(args);return {request_id:'copy-1',title:'Copy Village'};
+                }
+                if(args.target==='app_ui'){
+                    Object.assign(window.testRow,JSON.parse(args.payload_json));
+                    window.testRow.revision++;
+                    return {status:'saved',app_ui:structuredClone(window.testRow)};
+                }
+                throw Error('unexpected write');
+            };
+            AppUI.enabled=true;AppUI.home='home-1';AppUI.principal='owner-1';
+            document.getElementById('btn-ui-switch').hidden=false;
+            AppUI.adopt(window.testRow);
+        }""", {"bundle": PLATFORM_DEFAULT_UI, "prompt": BUILD_PROMPT})
+        frame = page.frame_locator("#ui-frame")
+        frame.get_by_role("button", name="Try someone else's", exact=True).click()
+        expect(frame.locator("#packages")).to_contain_text("Public system")
+        expect(frame.locator("#packages")).to_contain_text("Components only; no files")
+        frame.get_by_role("button", name="Preview copy", exact=True).click()
+        expect(page.locator("#ui-preview")).to_contain_text("Visual preview")
+        assert len(page.evaluate("window.copyAsks")) == 0
+        page.get_by_role("button", name="Copy into my command center", exact=True).click()
+        assert len(page.evaluate("window.copyAsks")) == 1
+        page.evaluate("AppUI.open()")
+        menu = page.locator("#ui-dialog")
+        for label in ("Build your own", "Try someone else's", "Blank command center"):
+            expect(menu.get_by_role("button", name=label, exact=True)).to_be_enabled()
+        menu.get_by_role("button", name="Use My own", exact=True).click()
+        expect(page.frame_locator("#ui-frame").get_by_text("My own screen")).to_be_visible()
+        page.evaluate("AppUI.load()")
+        assert page.evaluate("AppUI.active.ui_id") == "own"
+        page.evaluate("AppUI.open()")
+        menu.get_by_role("button", name="Try someone else's", exact=True).click()
+        expect(menu).to_contain_text("Fantasy Village")
+        menu.get_by_role("button", name="Preview Fantasy Village", exact=True).click()
+        expect(page.locator("#ui-status")).to_contain_text("Copy asks for your confirmation")
+        page.get_by_role("button", name="Copy into my command center", exact=True).click()
+        assert len(page.evaluate("window.copyAsks")) == 2
+        page.evaluate("AppUI.open()")
+        menu.get_by_role("button", name="Blank command center", exact=True).click()
+        expect(page.frame_locator("#ui-frame").get_by_role(
+            "button", name="Build your own", exact=True)).to_be_visible()
+        page.evaluate("AppUI.open()")
+        menu.get_by_role("button", name="Build your own", exact=True).click()
+        expect(menu).not_to_be_visible()
+        expect(page.locator("#composer-input")).to_have_value(BUILD_PROMPT)
+        expect(page.locator("#composer-input")).to_be_focused()
+    finally:
+        page.close()
+
+
+# All data and frames are local fixtures. Observe browser cancellation/selection,
+# never read or assert the host clipboard's contents.
+def _shortcut_page(browser, app_url):
+    page = browser.new_page(viewport={"width": 1280, "height": 800})
+    _enter_chat(page, app_url)
+    page.evaluate("""() => AppUI.mount({ui_id:'keys',name:'Keys',
+      markup:'<div id="key-probe" tabindex="0">Local frame</div>',
+      style:'#key-probe{width:100%;height:100%}',
+      script:`window.observedKeys=[];
+        for(const phase of ['keydown','keyup']) document.addEventListener(phase,e=>{
+          window.observedKeys.push({key:e.key,phase,trusted:e.isTrusted});
+        });`})""")
+    page.frame_locator('#ui-frame').locator('#key-probe').wait_for()
+    page.click('#chat-cloud-bubble')
+    page.evaluate("""() => {
+      const message=document.createElement('p');
+      message.id='selection-probe'; message.textContent='Message text stays selectable';
+      document.getElementById('chat-cloud').appendChild(message);
+      document.activeElement.blur();
+      window.parentKeys=[];
+      for(const phase of ['keydown','keyup']) window.addEventListener(phase,e=>{
+        window.parentKeys.push({key:e.key,phase,prevented:e.defaultPrevented});
+      });
+    }""")
+    assert page.evaluate('document.activeElement.tagName') == 'BODY'
+    return page
+
+
+def _frame_keys(page):
+    return page.frame_locator('#ui-frame').locator('#key-probe').evaluate(
+        '() => window.observedKeys')
+
+
+def _select_message(page):
+    page.evaluate("""() => {
+      const range=document.createRange();
+      range.selectNodeContents(document.getElementById('selection-probe'));
+      const selection=window.getSelection(); selection.removeAllRanges();
+      selection.addRange(range);
+    }""")
+
+
+@pytest.mark.parametrize('modifier', ['Control', 'Meta'])
+def test_selected_message_copy_keeps_native_browser_event(app_url, browser, modifier):
+    page = _shortcut_page(browser, app_url)
+    try:
+        _select_message(page)
+        selected = page.evaluate('String(window.getSelection())')
+        page.keyboard.press(modifier + '+c')
+        events = page.evaluate("parentKeys.filter(e=>e.key.toLowerCase()==='c')")
+        assert [e['phase'] for e in events] == ['keydown', 'keyup']
+        assert not any(e['prevented'] for e in events)
+        assert page.evaluate('String(window.getSelection())') == selected
+        assert _frame_keys(page) == []
+    finally:
+        page.close()
+
+
+@pytest.mark.parametrize('shortcut', [
+    {'key':'a','ctrlKey':True}, {'key':'x','ctrlKey':True},
+    {'key':'v','metaKey':True}, {'key':'z','metaKey':True},
+    {'key':'r','ctrlKey':True}, {'key':'r','metaKey':True},
+    {'key':'ArrowLeft','altKey':True}, {'key':'F5'},
+    {'key':'BrowserBack'}, {'key':'BrowserForward'},
+])
+def test_browser_shortcuts_are_not_canceled_or_forwarded(app_url, browser, shortcut):
+    page = _shortcut_page(browser, app_url)
+    try:
+        # Dispatch in the actual browser to inspect both listener phases without
+        # navigating away, opening browser UI, or reading/writing a clipboard.
+        result = page.evaluate("""shortcut => ['keydown','keyup'].map(type=>{
+          const event=new KeyboardEvent(type,{...shortcut,bubbles:true,cancelable:true});
+          document.body.dispatchEvent(event); return event.defaultPrevented;
+        })""", shortcut)
+        assert result == [False, False]
+        assert _frame_keys(page) == []
+    finally:
+        page.close()
+
+
+def test_native_editing_and_plain_frame_controls_survive(app_url, browser):
+    page = _shortcut_page(browser, app_url)
+    try:
+        composer = page.locator('#composer-input')
+        composer.fill('draft')
+        page.keyboard.press('Control+a')
+        assert composer.evaluate('e=>[e.selectionStart,e.selectionEnd]') == [0, 5]
+        page.keyboard.type('replacement')
+        page.keyboard.press('Control+z')
+        assert composer.input_value() == 'draft'
+        assert _frame_keys(page) == []
+        page.evaluate('document.activeElement.blur();window.getSelection().removeAllRanges()')
+        page.keyboard.press('Shift+ArrowRight')
+        page.wait_for_function('parentKeys.some(e=>e.key==="ArrowRight"&&e.phase==="keyup")')
+        keys = _frame_keys(page)
+        assert [(e['key'], e['phase']) for e in keys if e['key']=='ArrowRight'] == [
+            ('ArrowRight','keydown'), ('ArrowRight','keyup')]
+        assert not any(e['trusted'] for e in keys)
+        page.frame_locator('#ui-frame').locator('#key-probe').focus()
+        page.keyboard.press('ArrowLeft')
+        keys = _frame_keys(page)
+        assert [(e['phase'], e['trusted']) for e in keys if e['key']=='ArrowLeft'] == [
+            ('keydown',True), ('keyup',True)]
+    finally:
+        page.close()
+
+
+def test_shortcut_release_order_and_selected_text_do_not_send_orphan_keys(app_url, browser):
+    page = _shortcut_page(browser, app_url)
+    try:
+        page.keyboard.down('Control')
+        page.keyboard.down('c')
+        page.keyboard.up('Control')
+        page.keyboard.up('c')
+        assert _frame_keys(page) == []
+        _select_message(page)
+        page.keyboard.down('ArrowLeft')
+        assert page.evaluate('parentKeys.at(-1).prevented') is False
+        # Selection can disappear between phases (for example a pointer gesture).
+        # Its release still must not invent a game keydown or an orphan keyup.
+        page.evaluate('window.getSelection().removeAllRanges()')
+        page.keyboard.up('ArrowLeft')
+        assert _frame_keys(page) == []
+    finally:
+        page.close()
