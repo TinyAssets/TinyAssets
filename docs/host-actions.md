@@ -177,11 +177,12 @@ If billing is not switched on, there is nothing to do.
 
 ---
 
-## Store launch: four founder steps (2026-09-29)
+## Store launch: three founder steps (2026-10-04)
 
-Both stores are one founder action away from moving. Apple asked for more information
+Play needs founder testing actions; Apple also needs a verified live connection flow.
+Apple asked for more information
 (Guideline 2.1) and has build 3; Play approved build 4 on the closed track. The map is
-`docs/ops/mobile-launch-handoff.md`. The four steps are independent, so do them in any
+`docs/ops/mobile-launch-handoff.md`. The three steps are independent, so do them in any
 order. Only the Play one is on a 14-day clock, so it goes first.
 
 ### Google Play: opt in and recruit the 12 testers
@@ -224,8 +225,9 @@ This is Apple's actual ask (Guideline 2.1). Install build 3 from the TestFlight 
 already sent to you, on an iPhone updated to the latest iOS. Record the six steps in
 `docs/ops/app-store-submission-packet.md`, "Guideline 2.1 response packet". A simulator
 recording is refused. Hand the `.mov` to the lead. The agent attaches it with the written
-answers and resubmits only after the lead's explicit go. Do the key renewal above first,
-or step 4 of the recording (a real reply) will fail after 2026-10-10. Full history is item
+answers and resubmits only after the lead's explicit go. First have the agent verify the real inline
+connect flow with the reviewer account; the founder rejected an interim review key.
+Record only once that flow and a substantive reply work live. Full history is item
 12 under "Apple App Store: enroll" below.
 
 #### No iPhone? Record it on a cloud real iPhone (2026-10-04)
@@ -251,7 +253,8 @@ changes what Apple sees, so confirm that a fallback recording can satisfy the re
 request before using it.
 
 **Before you start:**
-- Do the OpenRouter key renewal above first. Step 4 needs a real reply.
+- Verify the real inline connect flow and a reviewer reply before recording.
+  The proposal alone is not proof that this works in production; no interim key renewal.
 - Have the App Review account's email and password ready: Windows Credential Manager,
   the `play-review@tinyassets.io` entry. You type them on the cloud phone. Never show the
   password on screen (step 2).
@@ -279,7 +282,7 @@ steps in order, without cutting. They're the shot list from the 2.1 response pac
 |---|---|---|
 | 1 | Tap the TinyAssets icon. | The native splash, then the signed-out screen. |
 | 2 | Choose email and password and sign in with the App Review account. Type the password in the masked field only, never in a visible notes app. | A normal sign-in into the reviewer's account. |
-| 3 | Wait for the reviewer's private universe to load. | You're inside the app. No API key, subscription or payment step appears. |
+| 3 | Wait for the reviewer's private universe to load. | You're inside the app. Show the real inline connect flow if a connection is needed; no subscription or payment step. |
 | 4 | Send: `Give me a three-step plan to launch a small bakery's online orders, and keep it short.` Wait for the full reply. Then swipe TinyAssets away (force quit), relaunch it, and show the same conversation still there. | A real AI reply, and the conversation surviving a force quit. |
 | 5 | Attach `app-store-review-sample.txt` (use App Live's **Files & Media → File → Upload new file**, then pick it under **Files → Chrome → Injected Files** in the attach sheet). Send: `What is the project, target storefront, and review deadline in this file?` | An answer grounded in the file's contents. |
 | 6 | Open Account / Privacy and show the **Delete my account** path. **Do not** confirm deletion. | That account deletion is reachable in the app. |
@@ -748,16 +751,17 @@ None of it can produce an installable app without account-owned signing material
    Notes-field preparation, attachment, and resubmission remain agent-owned, subject to
    the required action-time confirmation before sending the reviewer reply.
 
-   **Prepared 2026-09-10:** the dedicated App Review account is already provisioned with
-   a capped, expiring, zero-cost inference connection and completed a rendered production
-   turn. Protected read-only run `34522734323` then reverified Apple's retained reviewer
+   **Prepared 2026-09-10 (superseded 2026-10-04):** the dedicated App Review
+   account was provisioned with a capped, expiring, zero-cost inference connection
+   and completed a rendered production turn. The current plan requires a verified
+   real inline connect flow instead. Protected read-only run `34522734323` then reverified Apple's retained reviewer
    account/contact block and unchanged `UNRESOLVED_ISSUES` / `REJECTED` state at 12:50 PDT.
    PR #3830 / merge `f497050f6586ae70f41e98f78c412932176a46c7` is deployed and
    verified: Capacitor shells keep Voice hidden and uninitialized, the browser client
    retains Voice, and protected deploy run `34523794549` passed the public canary and
    exact-revision receipt gate. Build 3's defensive microphone usage string remains in
    the binary; the submitted reachable UI and declared review scope remain voice-dark.
-   The reviewer needs no provider setup or payment details. The only outstanding founder
+   The reviewer needed no provider setup or payment details. The only outstanding founder
    action in this lane is the physical-device recording (and Apple sign-in/2FA when the
    visible App Store Connect session has expired).
 
