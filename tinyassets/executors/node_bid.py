@@ -39,7 +39,10 @@ logger = logging.getLogger(__name__)
 # requires both boundaries). Use the full name throughout this module so
 # readers don't mistake the reference for the narrower
 # ``_DANGEROUS_PATTERNS`` used by ``_build_source_code_node``.
-from tinyassets.graph_compiler import _BID_DANGEROUS_PATTERNS  # noqa: E402
+from tinyassets.graph_compiler import (  # noqa: E402
+    _BID_DANGEROUS_PATTERNS,
+    dangerous_source_patterns,
+)
 
 
 @dataclass
@@ -59,10 +62,11 @@ def _strip_producer_keys(inputs: dict) -> dict:
 
 def _scan_dangerous_patterns(source: str) -> str:
     """Return the offending pattern or empty string."""
-    for pattern in _BID_DANGEROUS_PATTERNS:
-        if pattern in source:
-            return pattern
-    return ""
+    try:
+        patterns = dangerous_source_patterns(source, _BID_DANGEROUS_PATTERNS)
+    except SyntaxError:
+        return "invalid_syntax"
+    return patterns[0] if patterns else ""
 
 
 def execute_node_bid(

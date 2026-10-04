@@ -2515,9 +2515,14 @@ class NodeSandbox:
         """
         errors = []
 
-        for pattern in FORBIDDEN_PATTERNS:
-            if pattern in source_code:
-                errors.append(f"Forbidden pattern: '{pattern}'")
+        from tinyassets.graph_compiler import dangerous_source_patterns
+
+        try:
+            patterns = dangerous_source_patterns(source_code, tuple(FORBIDDEN_PATTERNS))
+        except SyntaxError:
+            patterns = []  # Report the syntax error below, with its location.
+        for pattern in patterns:
+            errors.append(f"Forbidden pattern: '{pattern}'")
 
         # Check for excessive code size
         if len(source_code) > 50_000:

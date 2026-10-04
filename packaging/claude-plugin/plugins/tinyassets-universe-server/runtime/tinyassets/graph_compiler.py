@@ -27,6 +27,7 @@ Design rules (from `docs/specs/community_branches_phase3.md`):
 
 from __future__ import annotations
 
+import ast
 import concurrent.futures
 import copy
 import dataclasses as _dataclasses
@@ -616,6 +617,37 @@ _DANGEROUS_PATTERNS = (
 _BID_DANGEROUS_PATTERNS = _DANGEROUS_PATTERNS + (
     "compile(", "open(", "importlib", "pickle", "marshal",
 )
+
+
+def dangerous_source_patterns(source: str, patterns: tuple[str, ...]) -> list[str]:
+    """Match executable syntax, never comments, docstrings or literal contents.
+
+    Keep the existing call-name and module/reference restrictions, including
+    attribute calls. The OS sandbox remains the authority boundary. Parsing
+    also closes the old whitespace/parenthesized-call bypass.
+    """
+    tree = ast.parse(source)
+
+    def dotted(node: ast.AST) -> str:
+        if isinstance(node, ast.Name):
+            return node.id
+        if isinstance(node, ast.Attribute):
+            return dotted(node.value) + "." + node.attr
+        return ""
+
+    references: set[str] = set()
+    calls: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Name, ast.Attribute)):
+            references.add(dotted(node))
+        elif isinstance(node, ast.Call):
+            calls.add(dotted(node.func) + "(")
+        elif isinstance(node, ast.ImportFrom):
+            references.add(node.module or "")
+        elif isinstance(node, ast.alias):
+            references.update((node.name, node.asname or ""))
+    return [pattern for pattern in patterns
+            if any(pattern in name for name in (calls if pattern.endswith("(") else references))]
 
 
 def _is_cancel_exception(exc: BaseException) -> bool:
@@ -1852,12 +1884,15 @@ def source_code_problems(source_code: str, node_id: str) -> list[str]:
     if not src:
         return []
     problems: list[str] = []
-    for pattern in _DANGEROUS_PATTERNS:
-        if pattern in src:
-            problems.append(
-                f"Node '{node_id}' source_code contains disallowed "
-                f"pattern: '{pattern}'"
-            )
+    try:
+        patterns = dangerous_source_patterns(src, _DANGEROUS_PATTERNS)
+    except SyntaxError:
+        patterns = []  # The syntax diagnostic below retains the compiler's detail.
+    for pattern in patterns:
+        problems.append(
+            f"Node '{node_id}' source_code contains disallowed "
+            f"pattern: '{pattern}'"
+        )
     size = len(src.encode("utf-8"))
     if size > _MAX_SOURCE_CODE_BYTES:
         problems.append(

@@ -20,7 +20,7 @@ from pathlib import Path
 
 from tinyassets.bid.node_bid import read_node_bids, validate_node_bid_inputs
 from tinyassets.branch_tasks import BranchTask
-from tinyassets.graph_compiler import _BID_DANGEROUS_PATTERNS
+from tinyassets.graph_compiler import _BID_DANGEROUS_PATTERNS, dangerous_source_patterns
 from tinyassets.producers.branch_task import register_branch_task_producer
 from tinyassets.producers.goal_pool import repo_root_path
 
@@ -75,9 +75,12 @@ def _producer_sandbox_reject(
     if not getattr(node, "approved", False):
         return "unapproved_node"
     source = getattr(node, "source_code", "") or ""
-    for pattern in _BID_DANGEROUS_PATTERNS:
-        if pattern in source:
-            return f"dangerous_pattern:{pattern}"
+    try:
+        patterns = dangerous_source_patterns(source, _BID_DANGEROUS_PATTERNS)
+    except SyntaxError:
+        return "invalid_syntax"
+    if patterns:
+        return f"dangerous_pattern:{patterns[0]}"
     return ""
 
 
