@@ -14,6 +14,7 @@ import time
 from contextlib import closing, contextmanager
 from contextvars import ContextVar
 from dataclasses import asdict
+from pathlib import Path
 
 import rfc8785
 
@@ -490,9 +491,11 @@ def execution_attempt(home, request_id):
     from tinyassets import agent_sessions
     from tinyassets.owner_control import ControlUnavailable
     from tinyassets.singleton_lock import _lock_fd, _unlock_fd
+    from tinyassets.universe_files import open_lock_file
 
-    path = agent_sessions._records_dir(home) / ("request-" + digest(request_id) + ".lock")
-    fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
+    root = Path(home)
+    relpath = f"{agent_sessions.RECORDS_DIR}/{root.name}/request-{digest(request_id)}.lock"
+    fd = open_lock_file(root.parent, relpath, mode=0o600)
     if not _lock_fd(fd):
         os.close(fd)
         raise ControlUnavailable("This action is executing; refresh its status.")

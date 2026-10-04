@@ -1,5 +1,6 @@
 """Protected request cutover: loss, legacy writers, restart and owner isolation."""
 
+import os
 import sqlite3
 from contextlib import closing
 
@@ -142,3 +143,30 @@ except ControlUnavailable:
     with control(home):
         assert attempt() == "retryable"
     assert attempt() == "acquired"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="owner=onboarding; runs-in=linux-required-tests")
+@pytest.mark.parametrize("kind", ["control", "attempt"])
+@pytest.mark.parametrize("planted", ["leaf", "parent"])
+def test_protected_locks_refuse_links_without_creating_foreign_files(tmp_path, kind, planted):
+    from tinyassets import agent_sessions, bound_requests
+    from tinyassets.universe_files import UniverseFileError
+
+    home = tmp_path / "owner"
+    home.mkdir()
+    foreign = tmp_path / "foreign"
+    foreign.mkdir()
+    records = tmp_path / agent_sessions.RECORDS_DIR / home.name
+    name = ("owner-control.lock" if kind == "control"
+            else f"request-{bound_requests.digest('request')}.lock")
+    if planted == "parent":
+        records.parent.mkdir()
+        records.symlink_to(foreign, target_is_directory=True)
+    else:
+        records.mkdir(parents=True)
+        (records / name).symlink_to(foreign / name)
+    lock = control(home) if kind == "control" else bound_requests.execution_attempt(home, "request")
+    with pytest.raises((OSError, UniverseFileError)):
+        with lock:
+            pytest.fail("A protected lock followed a planted link")
+    assert list(foreign.iterdir()) == []
