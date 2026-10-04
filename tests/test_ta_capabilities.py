@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import json
 from dataclasses import replace
+from types import SimpleNamespace
 
 import pytest
 
@@ -15,6 +16,154 @@ from tests.test_authenticated_external_call_effector import (
 )
 from tinyassets import agent_review, agent_rules, ta_cli
 from tinyassets.ta_capabilities import Capabilities, ExecutionContext
+
+
+def engine(root, monkeypatch):
+    from fastmcp import FastMCP
+
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(root.parent))
+    return SimpleNamespace(mcp=FastMCP("ta regression"), _GRAPH_ID=root.name,
+                           _ACTOR_ID="user-1", _acting_agent=lambda: "worker",
+                           _binding_error=lambda: None)
+
+
+def test_response_header_values_never_cross_into_jail(tmp_path, monkeypatch):
+    from tinyassets.effectors import authenticated_external_call as aec
+
+    _, root, _ = _setup(tmp_path)
+    headers = {"Set-Cookie": "session=ROTATED-SECRET", "X-Echo-Credential": "encoded-secret",
+               "Content-Type": "application/json", "ETag": "also-untrusted"}
+    response = {"headers": headers, "body": "full body " * 3000}
+    monkeypatch.setattr(aec, "run_authenticated_external_call_effector",
+                        lambda **_: {"delivered": True, "response": response})
+    result = call(backend(root))["result"]
+    assert result["response"] == {
+        "header_names": sorted(headers), "body": response["body"]}
+    assert response["headers"] == headers  # leave the worker's own result intact
+    for value in headers.values():
+        assert value not in json.dumps(result)
+
+
+@pytest.mark.parametrize("enabled,sampling,verdict,expected", [
+    (False, False, "proceed", None),
+    (False, True, "proceed", None),
+    (True, False, "proceed", "auto_review_unavailable"),
+    (True, True, "proceed", None),
+    (True, True, "needs_approval", "auto_review_needs_approval"),
+])
+def test_engine_binds_owners_opt_in_review_to_callers_sampling(
+    tmp_path, monkeypatch, enabled, sampling, verdict, expected,
+):
+    from fastmcp import Client
+
+    from tinyassets.ta_capabilities import engine_dispatch
+
+    _, root, db = _setup(tmp_path)
+    server = engine(root, monkeypatch)
+    agent_rules.set_rule(root, "app.write", agent_rules.DO, agent="worker")
+    if enabled:
+        agent_review.set_review(root, "app.write", True, confirm=True, agent="worker")
+    loop = _Loopback()
+    _install_loopback_driver(monkeypatch, loop.port)
+    _install_inprocess_proxy(monkeypatch, db_path=db, universe_dir=root,
+                             grant_id="grant-http", provider="http", destination="api.example.com",
+                             runtime_root=tmp_path / "runtime")
+    reviews = []
+
+    async def sample(messages, params, context):
+        reviews.append((messages, params))
+        return json.dumps({"verdict": verdict, "reason": "owner's connected model"})
+
+    @server.mcp.tool(name="bash")
+    async def turn():
+        dispatch = await engine_dispatch(server)
+        return await asyncio.to_thread(dispatch, {
+            "op": "call", "name": "connection:conn-http:POST",
+            "arguments": {"request": {"path": "/v1/messages"}},
+        })
+
+    async def run():
+        async with Client(server.mcp, sampling_handler=sample if sampling else None) as client:
+            return await client.call_tool("bash", {})
+
+    try:
+        answer = asyncio.run(run())
+        result = json.loads(answer.content[0].text)["result"]
+        if expected:
+            assert result["error_kind"] == expected
+            assert loop.recorded == []
+        else:
+            assert result["delivered"] is True, result
+            assert len(loop.recorded) == 1
+        assert len(reviews) == int(enabled and sampling)
+        if reviews:
+            messages, params = reviews[0]
+            assert "conn-http" in messages[0].content.text
+            assert params.systemPrompt == agent_review.SAFETY_REQUIREMENTS
+            assert params.includeContext == "none"
+    finally:
+        loop.stop()
+
+
+@pytest.mark.parametrize("kind", ["refusal", "validation", "large_refusal"])
+def test_engine_platform_refusal_and_validation_text_is_preserved(tmp_path, monkeypatch, kind):
+    from tinyassets.engine_mcp_server import RefusalsAreErrors
+    from tinyassets.engine_result_bounds import resolve_ceiling
+    from tinyassets.ta_capabilities import engine_dispatch
+
+    server = engine(tmp_path, monkeypatch)
+    server.mcp.add_middleware(RefusalsAreErrors())
+
+    @server.mcp.tool(name="read_graph")
+    async def read_graph(target: int):
+        return json.dumps({"error": "Owner refused this action" + (
+            " x" * resolve_ceiling() if kind == "large_refusal" else "")})
+
+    async def run():
+        dispatch = await engine_dispatch(server)
+        return await asyncio.to_thread(dispatch, {
+            "op": "call", "name": "read_graph",
+            "arguments": {"target": "invalid" if kind == "validation" else 1},
+        })
+
+    text = asyncio.run(run())["result"]["error"]
+    assert "ta request failed" not in text
+    assert ("target" if kind == "validation" else "Owner refused this action") in text
+    assert len(text.encode()) <= resolve_ceiling()
+    if kind == "large_refusal":
+        assert json.loads(text)["truncated"] is True
+
+
+@pytest.mark.parametrize("bad", ["{", "[]", "x" * (256 * 1024 + 1),
+                                '{"tools": [], "tools": []}', "duplicate_tools"],
+                         ids=["malformed", "wrong_shape", "oversized", "duplicate_keys",
+                              "duplicate_tools"])
+def test_bad_extension_is_reported_without_breaking_other_capabilities(
+    tmp_path, monkeypatch, capsys, bad,
+):
+    tool = {"name": "hello", "description": "Hello", "arguments": {"type": "object"}}
+    spec = {"executable": "run", "tools": [tool]}
+    for name, raw in (("good", json.dumps(spec)), ("bad", bad)):
+        package = tmp_path / name
+        package.mkdir()
+        if raw == "duplicate_tools":
+            raw = json.dumps({**spec, "tools": [tool, tool]})
+        (package / "extension.json").write_text(raw)
+
+    def remote(message):
+        if message["op"] == "catalog":
+            return {"extension_roots": {"shared": str(tmp_path)}, "capabilities": [
+                {"name": "read_graph", "description": "Read", "arguments": {}}]}
+        return {"result": {"ok": True}}
+
+    monkeypatch.setattr(ta_cli, "remote", remote)
+    found = ta_cli.main(["search"])
+    assert {item["name"] for item in found} == {"read_graph", "ext:shared:good:hello"}
+    assert ta_cli.main(["read_graph", "--json", "{}"]) == {"ok": True}
+    assert ta_cli.main(["describe", "ext:shared:good:hello"])["arguments"] == tool["arguments"]
+    captured = capsys.readouterr()
+    assert "skipped extension" in captured.err and "bad" in captured.err
+    assert captured.out == ""
 
 
 def backend(root, *, agent="worker", owner="user-1", platform=(), call=None,
@@ -61,6 +210,7 @@ def test_connection_uses_initiating_agents_rules_and_broker(
 ):
     monkeypatch.setenv("TINYASSETS_OUTBOUND_HTTP_CONNECTIONS_ENABLED", "1")
     _, root, db = _setup(tmp_path, token="D6-SYNTHETIC-SECRET")
+    agent_review.set_review(root, "app.write", False, confirm=True, agent="worker")
     loop = _Loopback()
     _install_loopback_driver(monkeypatch, loop.port)
     _install_inprocess_proxy(monkeypatch, db_path=db, universe_dir=root,
@@ -71,10 +221,7 @@ def test_connection_uses_initiating_agents_rules_and_broker(
                          else agent_rules.DO, agent="main")
     agent_rules.set_rule(root, "app.write", behaviour, agent="worker")
     try:
-        with agent_review.bound(
-            lambda *_a, **_k: '{"verdict":"proceed","reason":"test"}', active=True,
-        ):
-            result = call(backend(root), body={"hello": "world"})["result"]
+        result = call(backend(root), body={"hello": "world"})["result"]
         if expected:
             assert result["error_kind"] == expected
             assert loop.recorded == []
@@ -93,10 +240,10 @@ def test_connection_uses_initiating_agents_rules_and_broker(
 
 def test_connection_missing_consent_and_scope_still_refuse(tmp_path, monkeypatch):
     _, root, db = _setup(tmp_path, grant_consent_for=False)
+    agent_review.set_review(root, "app.write", False, confirm=True, agent="worker")
     service = backend(root)
     agent_rules.set_rule(root, "app.write", agent_rules.DO, agent="worker")
-    with agent_review.bound(lambda *_a, **_k: '{"verdict":"proceed","reason":"test"}', active=True):
-        assert call(service)["result"]["error_kind"] == "missing_consent"
+    assert call(service)["result"]["error_kind"] == "missing_consent"
     # Scope checks run in the real broker, even if a crafted path reaches it.
     from tinyassets.storage.effector_consents import grant_consent
 
@@ -108,11 +255,8 @@ def test_connection_missing_consent_and_scope_still_refuse(tmp_path, monkeypatch
                              grant_id="grant-http", provider="http", destination="api.example.com",
                              runtime_root=tmp_path / "runtime")
     try:
-        with agent_review.bound(
-            lambda *_a, **_k: '{"verdict":"proceed","reason":"test"}', active=True,
-        ):
-            assert call(service, path="/not-allowed")["result"]["error_kind"] == (
-                "outbound_request_failed")
+        assert call(service, path="/not-allowed")["result"]["error_kind"] == (
+            "outbound_request_failed")
         assert loop.recorded == []
     finally:
         loop.stop()
@@ -160,6 +304,7 @@ def test_reflected_credential_never_crosses_broker_and_revocation_is_current(tmp
     from tinyassets.storage.outbound_connections import ConnectionLedger
 
     _, root, db = _setup(tmp_path, token="D6-REFLECTED-SECRET")
+    agent_review.set_review(root, "app.write", False, confirm=True, agent="worker")
     service = backend(root)
     assert invoke(service, op="catalog")["capabilities"]
     agent_rules.set_rule(root, "app.write", agent_rules.DO, agent="worker")
@@ -169,10 +314,7 @@ def test_reflected_credential_never_crosses_broker_and_revocation_is_current(tmp
                              grant_id="grant-http", provider="http", destination="api.example.com",
                              runtime_root=tmp_path / "runtime")
     try:
-        with agent_review.bound(
-            lambda *_a, **_k: '{"verdict":"proceed","reason":"test"}', active=True,
-        ):
-            result = call(service)["result"]
+        result = call(service)["result"]
         assert loop.recorded[0]["headers"]["Authorization"] == "Bearer D6-REFLECTED-SECRET"
         assert result["error_kind"] == "outbound_request_failed"
         assert "D6-REFLECTED-SECRET" not in json.dumps(result)

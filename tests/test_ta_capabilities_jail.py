@@ -23,6 +23,17 @@ pytestmark = [pytest.mark.real_jail, pytest.mark.skipif(
     sys.platform != "linux" or not shutil.which("bwrap"), reason="requires Linux + bubblewrap")]
 
 
+@pytest.fixture(autouse=True)
+def dynamic_data_root(world, monkeypatch):
+    # The shared world fixture also sets TINYASSETS_DATA_DIR. Use that dynamic
+    # resolver: nested platform tools import helpers lazily, and must not retain
+    # the fixture's lambda pointing at a deleted world after this test returns.
+    from tinyassets.api import helpers
+    from tinyassets.storage import data_dir
+
+    monkeypatch.setattr(helpers, "_base_path", data_dir)
+
+
 def bash(server, command, exit_code=0):
     result = asyncio.run(server.run_bash(command=command))
     trailer = f"[exit code {exit_code}]"
@@ -41,6 +52,33 @@ def test_real_platform_search_describe_and_call(world, monkeypatch):
     assert "credential" not in json.dumps(result).lower()
     # No raw connector bearer or platform source tree accompanies ta.
     assert bash(server, "test ! -w /ta/bin/ta && test ! -e /app && test ! -e /u/.runtime; echo OK")
+
+
+def test_ta_runs_with_only_production_local_python(world, monkeypatch):
+    """Oracle's python:3.11-slim interpreter, with Debian python absent in-jail."""
+    server = _engine(monkeypatch, world)
+    original = universe_tools.TOOL_JAIL_ARGV
+    # On the actual slim image no Debian Python is found on the host either,
+    # so bash does not prepend its unrelated Debian-Python egress forwarder.
+    monkeypatch.setattr(universe_tools, "_egress_socket", lambda _root: None)
+
+    def without_debian_python(*args, **kwargs):
+        argv = original(*args, **kwargs)
+        # Hide Debian binaries in this jail only; restore exactly the shell,
+        # resource-limit tools and env needed to execute the shipping client.
+        mounts = []
+        for directory in ("/usr/bin", "/bin"):
+            mounts += ["--tmpfs", directory]
+            for name in ("env", "bash", "sh", "prlimit", "nice"):
+                mounts += ["--ro-bind", f"/usr/bin/{name}", f"{directory}/{name}"]
+        offset = argv.index("--")
+        return argv[:offset] + mounts + argv[offset:]
+
+    monkeypatch.setattr(universe_tools, "TOOL_JAIL_ARGV", without_debian_python)
+    result = bash(server, "test ! -e /usr/bin/python3 && test ! -e /bin/python3 && "
+                  "test -x /usr/local/bin/python3 && "
+                  "test \"$(command -v python3)\" = /usr/local/bin/python3 && ta search read_graph")
+    assert any(item["name"] == "read_graph" for item in json.loads(result))
 
 
 def test_agent_writes_extension_and_runs_it_without_deploy(world, monkeypatch):
@@ -67,6 +105,7 @@ def test_agent_writes_extension_and_runs_it_without_deploy(world, monkeypatch):
 def test_jailed_call_uses_agent_rules_and_never_receives_vault_secret(world, monkeypatch):
     secret = "D6-JAIL-SYNTHETIC-SECRET"
     _, root, db = _setup(world.data_root, universe_id=world.universe_a.name, token=secret)
+    agent_review.set_review(root, "app.write", False, confirm=True, agent="worker")
     server = _engine(monkeypatch, world, actor="user-1")
     monkeypatch.setattr(server, "_acting_agent", lambda: "worker")
     loop = _Loopback()
@@ -80,10 +119,7 @@ def test_jailed_call_uses_agent_rules_and_never_receives_vault_secret(world, mon
         for behaviour, expected in ((agent_rules.DO, None), (agent_rules.HAND_OFF, "rule_hand_off"),
                                     (agent_rules.ASK_FIRST, "rule_ask_first")):
             agent_rules.set_rule(root, "app.write", behaviour, agent="worker")
-            with agent_review.bound(
-                lambda *_a, **_k: '{"verdict":"proceed","reason":"test"}', active=True,
-            ):
-                raw = bash(server, command, exit_code=1 if expected else 0)
+            raw = bash(server, command, exit_code=1 if expected else 0)
             assert secret not in raw
             result = json.loads(raw)
             if expected:

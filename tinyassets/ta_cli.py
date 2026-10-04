@@ -1,4 +1,4 @@
-#!/usr/bin/python3
+#!/usr/bin/env python3
 """Dependency-free ta client. Mounted read-only; executes extensions IN the jail."""
 from __future__ import annotations
 
@@ -42,26 +42,47 @@ def extensions(roots):
             manifest = package / "extension.json"
             if not manifest.is_file():
                 continue
-            with manifest.open("rb") as source:
-                raw = source.read(256 * 1024 + 1)
-            if len(raw) > 256 * 1024:
-                raise ValueError(f"extension manifest too large: {manifest}")
-            spec = json.loads(raw)
-            executable = (package / spec["executable"]).resolve()
-            if not executable.is_relative_to(package.resolve()):
-                raise ValueError(f"extension executable leaves package: {manifest}")
-            for tool in spec["tools"]:
-                if not NAME.fullmatch(tool["name"]):
-                    raise ValueError(f"invalid extension tool name: {manifest}")
-                name = f"ext:{scope}:{package.name}:{tool['name']}"
-                if name in found:
-                    raise ValueError(f"duplicate extension tool: {name}")
-                found[name] = {
-                    "name": name, "description": tool["description"],
-                    "arguments": tool["arguments"],
-                    "executable": str(executable), "tool": tool["name"],
-                }
+            try:
+                with manifest.open("rb") as source:
+                    raw = source.read(256 * 1024 + 1)
+                if len(raw) > 256 * 1024:
+                    raise ValueError("manifest too large")
+                spec = json.loads(raw, object_pairs_hook=_unique_keys)
+                executable = (package / spec["executable"]).resolve()
+                if not executable.is_relative_to(package.resolve()):
+                    raise ValueError("executable leaves package")
+                if not isinstance(spec["tools"], list):
+                    raise ValueError("tools must be a list")
+                pending = {}
+                for tool in spec["tools"]:
+                    if (not NAME.fullmatch(tool["name"])
+                            or not isinstance(tool["description"], str)
+                            or not isinstance(tool["arguments"], dict)):
+                        raise ValueError("invalid tool definition")
+                    name = f"ext:{scope}:{package.name}:{tool['name']}"
+                    if name in found or name in pending:
+                        raise ValueError("duplicate extension tool")
+                    pending[name] = {
+                        "name": name, "description": tool["description"],
+                        "arguments": tool["arguments"],
+                        "executable": str(executable), "tool": tool["name"],
+                    }
+            except (ValueError, KeyError, TypeError, OSError, RecursionError) as exc:
+                # stderr keeps search/call stdout valid JSON. Do not partially
+                # register a package whose later entry is invalid or duplicate.
+                print(f"ta: skipped extension {manifest}: {str(exc)[:300]}", file=sys.stderr)
+                continue
+            found.update(pending)
     return found
+
+
+def _unique_keys(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate manifest key")
+        result[key] = value
+    return result
 
 
 def main(argv=None):

@@ -1415,6 +1415,7 @@ async def _handle_rules(request: Any) -> Any:
             "operation_kinds": [k.as_dict() for k in agent_rules.list_kinds(_universe_dir())],
             "kinds": agent_rules.OPERATION_KINDS,
             "review_off": sorted(agent_review.switched_off(_universe_dir(), agent)),
+            "review_on": sorted(agent_review.switched_on(_universe_dir(), agent)),
             "review_never": sorted(agent_review.NOT_CONSEQUENTIAL),
             "review_always": sorted(agent_review.ALWAYS_REVIEWED),
         }
