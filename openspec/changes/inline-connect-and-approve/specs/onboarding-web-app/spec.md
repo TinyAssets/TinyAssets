@@ -1,75 +1,57 @@
 ## ADDED Requirements
 
 ### Requirement: Requests appear inline at the point of need
-The bubble thread SHALL render one revision-aware card per pending request beside its originating turn, with the requesting agent identified. Connect SHALL show plain-word scope and Connect / Not now; ask-first approval SHALL show a summary, editable draft, Approve / Edit / Deny and once / this task / always. Duplicate connect entry points SHALL focus this card; the rail SHALL be read-only history. Failure SHALL retain the card and draft with Try again / alternative / skip.
+The bubble thread SHALL render one revision-aware card per request beside its originating turn, identifying the requesting agent. Connect SHALL show plain-word scope and Connect / Not now. Ask-first approval SHALL show the protected action summary, destination, editable draft, expiry, Approve / Edit / Deny and once / this task / always. Duplicate connect entry points SHALL focus this card; the rail SHALL be read-only history. Failure SHALL retain the card/draft with Try again / available alternative / skip. Existing owner-gated refresh transport SHALL remain in use.
 
-#### Scenario: Request arrives while the owner is on a phone
-- **WHEN** an agent needs a connection or owner-rule approval
-- **THEN** the pushed request renders in its thread without a 15-second wait or a rail-only chip
-- **AND** the collapsed bubble shows that it is waiting for the owner
+#### Scenario: Request appears on a phone
+- **WHEN** the app refreshes a connection or owner-rule approval request
+- **THEN** its card appears in the originating thread and the collapsed bubble shows waiting-for-owner
+- **AND** account switches clear previous-owner cards and all reads enforce current ownership
 
-#### Scenario: Edit and choose a scope
-- **WHEN** the owner edits an approval draft
-- **THEN** the card displays the validated new preview before Approve, with once as the default and the exact wider rule scope visible
+#### Scenario: Edit and select a scope
+- **WHEN** the owner changes draft or scope in the protected first-party view
+- **THEN** the card displays the validated protected preview, with once as default, exact wider predicate and deadlines visible
+- **AND** a new session-bound approval token is required before Approve
 
-### Requirement: Owner events are live and recoverable
-The app SHALL use the authenticated SSE contract in design.md for request and turn-status delivery, preserving the owner door's complete, identity-gated reads. Reconnect SHALL replay events or obtain a complete snapshot without duplicating cards or losing drafts. No fixed request/status poll SHALL drive this surface.
+#### Scenario: Agent prose conflicts with the action
+- **WHEN** the agent's summary or legacy request fields describe a different destination or draft
+- **THEN** the card renders approval data only from the server-protected envelope and pinned payloads, with agent prose separately labeled
+- **AND** missing protected data disables approval instead of falling back to the agent text
 
-#### Scenario: Disconnect, replay and account switch
-- **WHEN** the stream disconnects and later reconnects or the owner switches accounts
-- **THEN** stale state is labeled with Retry, replay restores the matching owner's cards/status, and previous-owner data is never delivered into the new session
+### Requirement: Sign-in completes server-side without the parent app
+Connect SHALL launch the bound OAuth flow in a popup or system in-app browser without replacing the thread. The server SHALL generate and retain the PKCE verifier in credential custody and the callback server SHALL exchange the code, deposit credentials and durably wake the saved active task as specified in design.md. Neither browser SHALL need an app bearer, verifier, parent relay or deep-link return. Tokens, secrets and codes SHALL NOT enter transcripts, agent context, event payloads or callback output/logs.
 
-### Requirement: Sign-in preserves the conversation and credential custody
-Connect SHALL launch the existing bound OAuth flow in a popup or system in-app browser instead of replacing the thread. The trusted completion path SHALL deposit credentials and resume the original request without needing a parent-page relay. Tokens, secrets and authorization codes SHALL NOT enter agent context, transcript or event payloads.
+#### Scenario: Parent page closes before sign-in finishes
+- **WHEN** the owner completes valid provider sign-in with the parent closed but the initiating session still valid
+- **THEN** the callback server validates the bound flow and uses its server-held verifier to complete exchange/deposit and persist the wake
+- **AND** the initiating agent continues the original active task without a page message or client completion call
 
-#### Scenario: Sign-in succeeds after the parent page closes
-- **WHEN** the owner completes valid provider sign-in
-- **THEN** the server finishes the bound connection, publishes its safe result and wakes the initiating agent to continue the saved task
+#### Scenario: Native app is suspended
+- **WHEN** the system browser returns from the provider while the native app is suspended
+- **THEN** the same server callback completes sign-in and records the result/wake without native bearer access or app-link return
+- **AND** the resumed app reads the safe result using its normal owner session
+
+#### Scenario: Replay, revoked session or changed task
+- **WHEN** callback state is replayed/expired, the owner logged out/switched accounts, or task/request/consent bindings changed
+- **THEN** no unauthorized exchange/deposit/wake is admitted and no other owner/request can receive the connection
+- **AND** stopped work cannot resume automatically
+
+#### Scenario: Deploy after credential deposit
+- **WHEN** credentials were deposited but the request/wake commit was interrupted
+- **THEN** recovery reuses the flow receipt to commit the result/wake idempotently without repeating the code exchange
+- **AND** uncertain redemption/deposit remains visibly unresolved rather than reported successful
 
 #### Scenario: Provider failure or blocked popup
 - **WHEN** sign-in fails, is cancelled or cannot open
-- **THEN** the same card remains pending with retry, available alternative and skip; no connection success or extra provider coverage is implied
+- **THEN** the card remains pending with retry, available alternative and skip, without implying unsupported provider coverage
 - **AND** available key deposit remains private to the card and vault
 
 ## MODIFIED Requirements
 
-### Requirement: Working state is the universe's, and waiting lines are ordered last
-The app SHALL show server-reported activity regardless of originating surface. Write-gated `get_status` SHALL return progressing/since/journal state and, once a round starts, step/model/wait duration, without prompt or owner. The model identifier SHALL match replies' Answered by line. Live status SHALL be pushed, not polled. Queued messages SHALL remain after the preceding reply, marked queued until their turn starts.
-
-Stale rows beyond the coordinator cap SHALL NOT appear active; unreadable status SHALL NOT appear idle. Startup SHALL settle rows not executed by the current boot to their journal-derived terminal/uncertain state without inventing success. Boot ownership SHALL reflect process state (unfinished turns it created or turns created after boot), never age alone.
-
-#### Scenario: A step waits a long time on its model
-- **WHEN** a model step waits
-- **THEN** status names its step, model and elapsed time; after three minutes Try another model selects only the next message's model without abandoning this reply
-
-#### Scenario: A turn this page did not start
-- **WHEN** another surface starts a turn
-- **THEN** pushed status shows activity, duration and that it started elsewhere until idle
-
-#### Scenario: A reload during a live turn
-- **WHEN** history lacks the still-running turn
-- **THEN** the same history read reports its activity and the indicator appears
-
-#### Scenario: A row no client can still verify
-- **WHEN** the turn exceeds the cap, its journal is unreadable, or the stream fails
-- **THEN** status visibly reports stale/unreadable with Retry, without falsely clearing or indefinitely claiming activity
-
-#### Scenario: An answer given while an earlier turn is running
-- **WHEN** a request is answered before the earlier reply arrives
-- **THEN** that reply precedes the queued answer, whose queued mark clears only when its turn starts
-
-#### Scenario: A deploy recreated the daemon mid-turn
-- **WHEN** the current boot is not executing a progressing row
-- **THEN** startup settles it from the journal, preserves uncertainty and stops showing it as working
-
-#### Scenario: A turn the current boot is running, older than this boot's start
-- **WHEN** startup encounters a live turn this boot created
-- **THEN** it leaves that turn working regardless of its timestamp
-
 ### Requirement: The chat with an agent floats over the command center
 The app SHALL present thread/inline requests, request history, model bar, composer and status in a floating cloud above the stage, draggable/resizable/collapsible by pointer, touch or keyboard. Without saved placement it SHALL fill the stage for owners without a layout and start as a corner bubble with a layout. Placement SHALL persist per owner, agent (default main) and viewport (phone below 760px, otherwise wide) in owner-ui-preferences with device fallback. Cloud/bubble SHALL remain wholly visible after resizing; dragging SHALL NOT also open it.
 
-The bubble SHALL remain reachable over broken/custom layouts as emergency control and conversation with every agent, retaining agent selection and addressed Stop. It SHALL show pushed working/waiting-for-owner/reconnecting/failed/idle status even collapsed, and indicate replies received while collapsed.
+The bubble SHALL remain reachable over broken/custom layouts as emergency control and conversation with every agent, retaining agent selection and addressed Stop. It SHALL show working/waiting-for-owner/failed/idle status from existing server reads even collapsed, and indicate replies received while collapsed. This change SHALL NOT migrate the working-state transport to a pushed stream.
 
 #### Scenario: A new owner signs in
 - **WHEN** no layout or placement exists
@@ -91,6 +73,7 @@ The bubble SHALL remain reachable over broken/custom layouts as emergency contro
 - **WHEN** the owner drags the bubble
 - **THEN** it moves without opening
 
-#### Scenario: A custom layout fails
+#### Scenario: A custom layout fails or the owner stops work
 - **WHEN** the layout breaks or covers the stage
-- **THEN** the bubble remains reachable for agent selection, conversation and addressed Stop
+- **THEN** the protected bubble remains reachable for agent selection, conversation and addressed Stop
+- **AND** Stop invalidates pending approvals and task grants for its affected work, retaining already-sent effects for reconciliation
