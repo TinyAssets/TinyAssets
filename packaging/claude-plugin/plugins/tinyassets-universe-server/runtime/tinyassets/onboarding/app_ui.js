@@ -947,7 +947,9 @@
       const id=this.runId(args);
       const doc=await Owner.read(
         {target:"run",graph_id:this.home,run_id:id});
-      if(!doc||doc.error||String(doc.run_id||"")!==id) throw new Error("that run is not one of yours");
+      // The server checks scope and ownership before returning a run snapshot.
+      // Its error is the execution failure, not a failure to authorize this read.
+      if(!doc||String(doc.run_id||"")!==id) throw new Error("that run is not one of yours");
       const nodes=[];
       for(const n of Array.isArray(doc.node_statuses)?doc.node_statuses:[])
         if(n&&typeof n==="object") nodes.push({node_id:String(n.node_id||""),status:String(n.status||"")});

@@ -295,6 +295,57 @@ A request reaches its owner's registered devices as a notification. Each channel
 
 `TINYASSETS_WEBPUSH_VAPID_PUBLIC_KEY` is printed by the same script for the **client** to pass to `pushManager.subscribe({applicationServerKey})`. The server never reads it — it is derived from the private key, and storing it twice is how two copies of one fact drift.
 
+## Deploying platform OAuth client credentials
+
+| Variable | Repository configuration | Daemon use |
+|---|---|---|
+| `TINYASSETS_OAUTH_GOOGLE_CLIENT_ID` | GitHub Actions **variable** (non-secret). | Platform Google Web application client ID, consumed by the provider directory in #4441. |
+| `TINYASSETS_OAUTH_GOOGLE_CLIENT_SECRET` | GitHub Actions **secret**, entered by the founder through the repository's web form. | Daemon-only client secret; #4441 filters the entire `TINYASSETS_OAUTH_` namespace from engine children. |
+| `TINYASSETS_OAUTH_CREDENTIALS_INSTALL` | GitHub Actions **variable**, default disabled; case-insensitive `true` enables installation. | Explicit activation gate after deployment and process-isolation proof; disabled removes any retained pair. |
+
+Installation is disabled by default even when the credential pair is present.
+Before setting `TINYASSETS_OAUTH_CREDENTIALS_INSTALL=true`, verify deployment of
+#4441 and resolve `docs/concerns/2026-10-04-engine-mcp-shares-daemon-uid.md` with
+its Linux isolation proof. Environment filtering alone does not prevent a
+same-UID engine from recovering daemon/PID1 secrets. Until those prerequisites
+are proven, unrelated deploys continue with OAuth disabled. Disabled mode does
+not consume or validate the credential pair and selects removal of retained
+keys; setting the variable false is the deactivation path on the next deploy.
+No activation or production proof is claimed by this change.
+
+When explicitly enabled, `deploy-prod.yml` installs each configured pair through
+`deploy/install-tinyassets-env.sh set-pair` into `/etc/tinyassets/env`, under the
+shared host mutation flock. Each atomic rename installs both keys together,
+including the rendered `daemon.env`; a failure between the two file commits can
+leave a complete old pair in `daemon.env` and a complete new pair in `env`, but
+never introduces a partial pair. The subsequent fail-safe recreate loads them.
+Values travel on SSH stdin, never in command arguments or log messages.
+
+The runner's **Validate OAuth provider credentials** step precedes every host
+contact. Both absent skips installation; only one present warns and skips without
+failing deployment. A complete pair must be single-line and use portable unquoted
+characters (`A-Z a-z 0-9 . _ ~ : / + = , @ % -`). Quotes, whitespace, comments,
+backslashes and interpolation characters are refused with key-name-only errors.
+Existing values are retained on skip only when both images below are protected.
+
+**Target and rollback protection:** the runner reads the resolved target revision
+(the same revision as the stop-writer gate), requiring the provider registry and
+the OAuth namespace exclusion in `platform_secrets.child_env` from #4441. Missing
+or unrecognized protection warns and selects removal instead of installation.
+Under the host lock, `install-oauth-credentials.sh` also probes `child_env` in the
+captured immutable rollback image, with no host env, mounts or network. Missing,
+unavailable or unprotected rollback images warn and select removal too. Removal
+deletes both keys from the shared env and re-renders `daemon.env` before any
+image swap. This applies even when the repository pair is absent/half-configured.
+
+The existing automatic and public-canary rollback paths retain the env file.
+Requiring protection in the captured previous image makes both safe without
+changing rollback. The first deployment of #4441 therefore proceeds with OAuth
+disabled; a later deploy can install credentials only after explicit activation and
+when the rollback image is also protected. An explicit deployment targeting older code removes the pair.
+This workflow does not alter `tinyassets/platform_secrets.py` or claim process
+isolation beyond that code's environment filtering.
+
 ## Local secrets — vault-first
 
 Local operator secrets (Cloudflare tokens, DigitalOcean token, Hetzner creds, OpenAI key) load from a password manager, not a plaintext file. Vendor is chosen via `TINYASSETS_SECRETS_VENDOR` — `1password` (default), `bitwarden`, or `plaintext` (migration-period opt-out, to be retired after cutover).

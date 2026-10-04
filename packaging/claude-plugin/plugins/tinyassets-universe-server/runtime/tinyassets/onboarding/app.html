@@ -9760,7 +9760,11 @@
          modelChoice:copyModelChoice(pending.modelChoice)});
     });
     const note=appendMessage("system",
-      "This message was never confirmed — the reply did not arrive. ",again);
+      "This message was never confirmed — the reply did not arrive here. The request may already have acted. ",again);
+    // A reload must retain the same read-only recovery as a live transport
+    // failure. The server can finish after this history/active-turn snapshot;
+    // foreground/online events then refresh the saved conversation here too.
+    attachSavedConversationCheck(note);
     // A line queued behind the unconfirmed turn (an approval, typically) is
     // offered below it, never sent on its own: the founder decides what goes
     // out, and in what order, once they see both.
