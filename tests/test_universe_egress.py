@@ -160,7 +160,15 @@ def test_the_socket_lives_outside_every_universe_folder(tmp_path, monkeypatch):
     assert not path.is_relative_to(tmp_path / "u-one")
 
 
-def test_the_jail_binds_its_own_sidecar_and_nothing_else_outside(tmp_path):
+def test_the_jail_binds_its_own_sidecar_socket_and_nothing_else_outside(tmp_path):
+    """The allowance is the exact socket the launch constructed, not its folder.
+
+    It used to be the whole ``<data>/.universe-sidecars/<cc>/`` directory, so any
+    source resolving under it was accepted -- which a renamed directory plus a
+    link into that folder turned into a writable handle on daemon-owned state.
+    The caller now declares the socket it obtained as ``platform_sources``; the
+    folder itself, a sibling universe's folder and the data root are all refused.
+    """
     from tinyassets.providers import provider_jail as jail
 
     universe = tmp_path / "u-one"
@@ -169,12 +177,22 @@ def test_the_jail_binds_its_own_sidecar_and_nothing_else_outside(tmp_path):
     other = tmp_path / jail.UNIVERSE_SIDECARS_DIR / "u-two"
     own.mkdir(parents=True)
     other.mkdir(parents=True)
-    ok = jail.UniverseView(universe, (jail.JailMount("bind", "/tmp/s", own),))
-    assert jail._validated_view(ok).mounts[0].source == own.resolve()
-    for source in (other, tmp_path):
+    socket_path = own / "egress.sock"
+    socket_path.write_bytes(b"")
+    declared = frozenset({socket_path.resolve()})
+
+    ok = jail.UniverseView(universe, (jail.JailMount("bind", "/tmp/s", socket_path),))
+    checked = jail._validated_view(ok, platform_sources=declared)
+    assert checked.mounts[0].source == socket_path.resolve()
+
+    # The folder is not a capability: only the declared socket inside it is.
+    for source in (own, other, tmp_path):
         bad = jail.UniverseView(universe, (jail.JailMount("bind", "/tmp/s", source),))
         with pytest.raises(jail.ProviderConfinementError):
-            jail._validated_view(bad)
+            jail._validated_view(bad, platform_sources=declared)
+    # And an undeclared launch cannot reach the socket at all.
+    with pytest.raises(jail.ProviderConfinementError):
+        jail._validated_view(ok)
 
 
 @posix_only
