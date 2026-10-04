@@ -776,6 +776,7 @@
         <p>What your agent may do on its own. For each kind of action, choose: take action
         without asking, take action if you asked for exactly that, ask you first, or hand
         it to you. Your agent can suggest a change; only you can make one.</p>
+        <p id="rules-review-notice" class="muted"></p>
         <div id="rules-list"></div>
         <h4>What a connection's operations mean</h4>
         <p class="muted">Your agent treats any call to a connected app as a change unless you
@@ -7236,6 +7237,8 @@
     }
     function rulesSay(text){ $("rules-status").textContent=text||""; }
     function renderRules(doc){
+      $("rules-review-notice").textContent=(doc.review_on||[]).length ? "" :
+        "Checks are now off unless you turn them on";
       const list=$("rules-list"); list.textContent="";
       (doc.rules||[]).forEach(rule=>{
         const row=document.createElement("div"); row.className="rule-row";
@@ -7251,17 +7254,14 @@
         });
         pick.addEventListener("change",()=>saveRule(rule,pick.value,false));
         row.appendChild(what); row.appendChild(pick);
-        // The check before acting (harness D1d): on unless the owner switched it
-        // off for this kind; the hand-back kinds keep it.
+        // A check runs only for kinds the owner explicitly enabled.
         const never=(doc.review_never||[]).indexOf(rule.action_class)>=0;
         if(!never && !rule.connection && !rule.operation){
-          const on=(doc.review_off||[]).indexOf(rule.action_class)<0;
-          const always=(doc.review_always||[]).indexOf(rule.action_class)>=0;
+          const on=(doc.review_on||[]).indexOf(rule.action_class)>=0;
           const check=document.createElement("button");
           check.type="button"; check.className="btn btn--link";
           check.textContent=on?"Checks first":"Check is off";
-          if(always){ check.disabled=true; check.title="Always checked first"; }
-          else check.addEventListener("click",()=>sendConfirmed({review:{
+          check.addEventListener("click",()=>sendConfirmed({review:{
             action_class:rule.action_class,enabled:!on}}));
           row.appendChild(check);
         }

@@ -670,21 +670,49 @@ def _review_evidence(request: dict[str, Any]) -> str:
     return (text or "")[:2000]
 
 
+def _initiating_agent(universe_dir: Path) -> str | None:
+    """Resolve server-owned turn/launch context; never trust packet or state ids.
+
+    Run workers copy the request context. Native agent launches carry their
+    addressed thread on the engine route instead of an in-process live turn.
+    Background/legacy paths without either use the strictest stored settings.
+    """
+    from tinyassets import turn_interrupt
+    from tinyassets.addressed_agents import agent_of_session
+    from tinyassets.auth.middleware import current_identity_or_none
+    from tinyassets.engine_steering import STEERED_PREFIX, _session_key
+
+    live = turn_interrupt.current()
+    if live is not None:
+        return live.agent_id if live.universe_id == universe_dir.name else None
+    session = _session_key()
+    identity = current_identity_or_none()
+    if identity is not None and session.startswith(STEERED_PREFIX):
+        return agent_of_session(session[len(STEERED_PREFIX):], identity.user_id)
+    return None
+
+
 def _rule_refusal(universe_dir: Path, connection_id: str, verb: str,
-                  path: str = "/", *, evidence: str = "") -> dict[str, Any] | None:
+                  path: str = "/", *, evidence: str = "",
+                  agent: str | None = None) -> dict[str, Any] | None:
     """``None`` when the owner's rules let this call proceed, else a refusal.
 
     What the call MEANS comes from the owner's declarations for this connection
     (harness D1b); an undeclared operation is decided as a write.
     """
-    from tinyassets import agent_rules
+    from tinyassets import agent_review, agent_rules
 
     try:
         action_class, operation = agent_rules.classify(
             universe_dir, connection_id, verb, path)
-        decision = agent_rules.decide(
+        agents = [agent] if agent else sorted(
+            {"main"} | agent_rules.configured_agents(universe_dir)
+            | agent_review.configured_agents(universe_dir))
+        decisions = [agent_rules.decide(
             universe_dir, action_class, connection=connection_id, operation=operation,
-        )
+            agent=candidate,
+        ) for candidate in agents]
+        decision = max(decisions, key=lambda d: agent_rules.BEHAVIOURS.index(d.behaviour))
     except Exception:
         logger.exception("authenticated_external_call rule lookup crashed")
         return {
@@ -694,16 +722,20 @@ def _rule_refusal(universe_dir: Path, connection_id: str, verb: str,
             "hint": "Your rules could not be read, so nothing was sent.",
         }
     if decision.proceeds:
-        # Allowed by the rules: a consequential action is still checked on the
-        # run's own model first (harness D1d), which can only hold it.
+        # Only an explicit owner-configured review adds a model check. Grants,
+        # consent and cross-user isolation remain independent mandatory checks.
         from tinyassets.agent_review import review_refusal
 
-        return review_refusal(
-            universe_dir,
-            action={"action_class": action_class, "connection": connection_id,
-                    "operation": operation, "path": path},
-            rule=decision.reason, evidence=evidence,
-        )
+        for candidate in agents:
+            refusal = review_refusal(
+                universe_dir,
+                action={"action_class": action_class, "connection": connection_id,
+                        "operation": operation, "path": path},
+                rule=decision.reason, evidence=evidence, agent=candidate,
+            )
+            if refusal is not None:
+                return refusal
+        return None
     if decision.behaviour == agent_rules.HAND_OFF:
         return {
             "dry_run": True,
@@ -1084,7 +1116,8 @@ def _run(
     # declare their operation kinds (D1b). A rule store that cannot be read
     # refuses the call; it never falls back to allowing it.
     rule_refusal = _rule_refusal(universe_dir, connection_id, verb, _request_path(request),
-                                 evidence=_review_evidence(request))
+                                 evidence=_review_evidence(request),
+                                 agent=_initiating_agent(universe_dir))
     if rule_refusal is not None:
         return {
             **rule_refusal,

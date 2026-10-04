@@ -12,7 +12,7 @@ from tests.test_live_view import _seed_runs
 from tests.test_turn_interrupt import _Request
 from tinyassets import agent_activities as acts
 from tinyassets import live_view, onboarding
-from tinyassets.api import helpers, permissions
+from tinyassets.api import permissions
 from tinyassets.auth import middleware
 
 
@@ -29,7 +29,8 @@ def live(monkeypatch, tmp_path):
     generation = acts.claim(universe, activity_id, replaceable=lambda r: False)
     acts.bind_run(universe, activity_id, generation, "private-run-token")
     _seed_runs(tmp_path, [("r1", "branch-map", "running", "universe:u-alpha", 100, None)])
-    monkeypatch.setattr(helpers, "_base_path", lambda: tmp_path)
+    # Keep lazy imports bound to the real resolver after this fixture ends.
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     monkeypatch.setattr(onboarding, "onboarding_enabled", lambda: True)
     monkeypatch.setattr(onboarding, "_app_identity_required", lambda: None)
     caller = SimpleNamespace(user_id="owner-secret")
