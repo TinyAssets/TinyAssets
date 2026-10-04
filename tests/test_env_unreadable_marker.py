@@ -79,7 +79,8 @@ def _run_entrypoint_via_stdin(
     scratch = Path(tempfile.mkdtemp(prefix="tinyassets-entrypoint-"))
     preamble_lines = [
         # Clear sentinels first so ambient-shell values don't leak through.
-        "unset CLOUDFLARE_TUNNEL_TOKEN SUPABASE_DB_URL TINYASSETS_IMAGE",
+        "unset CLOUDFLARE_TUNNEL_TOKEN SUPABASE_DB_URL TINYASSETS_IMAGE "
+        "TINYASSETS_WIKI_CANARY_TOKEN",
         f"export TINYASSETS_PACKAGE_ROOT={_bash_readable_path(_REPO)!r}",
         f"export TINYASSETS_DATA_DIR={_bash_readable_path(scratch / 'data')!r}",
         f"export CODEX_HOME={_bash_readable_path(scratch / 'codex')!r}",
