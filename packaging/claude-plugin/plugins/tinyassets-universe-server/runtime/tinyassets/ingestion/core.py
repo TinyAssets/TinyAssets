@@ -22,6 +22,11 @@ from pathlib import Path
 
 from tinyassets.enrichment_signals import append_enrichment_signals
 from tinyassets.ingestion.canon_names import resolve_within_canon
+from tinyassets.universe_files import (
+    MAX_PLATFORM_FILE_BYTES,
+    read_data_path,
+    write_data_path,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -165,45 +170,40 @@ class SourceManifest:
         return existing.sha256 != sha256
 
     def save(self, canon_dir: Path) -> None:
-        """Write the manifest to canon/.manifest.json."""
-        # Containment before write: a symlinked ``.manifest.json`` pointing
-        # outside canon_dir would let the clobbering write escape. Resolve and
-        # reject escapes before any I/O.
-        try:
-            manifest_path = resolve_within_canon(
-                canon_dir, ".manifest.json", kind="manifest"
-            )
-        except ValueError:
-            logger.warning("Manifest escapes canon dir, refusing to write")
-            return
+        """Write the manifest to canon/.manifest.json, link-free.
+
+        ``write_data_path`` refuses a link anywhere on the path (and replaces,
+        never writes through, one at the name). A refusal raises.
+        """
         data = {
             name: asdict(entry) for name, entry in self.entries.items()
         }
-        try:
-            manifest_path.write_text(
-                json.dumps(data, indent=2) + "\n", encoding="utf-8",
-            )
-        except OSError:
-            logger.debug("Failed to write manifest", exc_info=True)
+        write_data_path(canon_dir / ".manifest.json", json.dumps(data, indent=2) + "\n")
 
     @classmethod
     def load(cls, canon_dir: Path) -> SourceManifest:
-        """Load the manifest from canon/.manifest.json."""
+        """Load the manifest from canon/.manifest.json, link-free.
+
+        Absent reads as an empty manifest. A REFUSED read (a link on the path)
+        raises: ingestion must not go on to write and save a manifest derived
+        from "empty" over the real one.
+        """
         manifest = cls()
-        # Containment before read: ``read_text`` follows symlinks, so a
-        # symlinked manifest pointing outside canon_dir would leak external
-        # content. Resolve and reject escapes before any read.
-        try:
-            manifest_path = resolve_within_canon(
-                canon_dir, ".manifest.json", kind="manifest"
-            )
-        except ValueError:
-            logger.warning("Manifest escapes canon dir, refusing to read")
-            return manifest
-        if not manifest_path.exists():
+        raw = read_data_path(canon_dir / ".manifest.json", max_bytes=MAX_PLATFORM_FILE_BYTES)
+        if raw is None:
             return manifest
         try:
-            data = json.loads(manifest_path.read_text(encoding="utf-8"))
+            data = json.loads(raw.decode("utf-8"))
+            for name, entry_data in data.items():
+                manifest.entries[name] = ManifestEntry(**entry_data)
+        except (ValueError, TypeError, AttributeError):
+            logger.debug("Failed to load manifest", exc_info=True)
+        return manifest
+        raw = read_data_path(canon_dir / ".manifest.json", max_bytes=MAX_PLATFORM_FILE_BYTES)
+        if raw is None:
+            return manifest
+        try:
+            data = json.loads(raw.decode("utf-8"))
             for name, entry_data in data.items():
                 manifest.entries[name] = ManifestEntry(**entry_data)
         except (OSError, json.JSONDecodeError, TypeError):
@@ -437,15 +437,13 @@ def ingest_file(
         # Resolve under canon_dir and reject escapes before any I/O — the
         # ``sources/`` subdir is legitimate and still resolves inside.
         try:
-            source_path = resolve_within_canon(
+            resolve_within_canon(
                 canon_dir, f"sources/{filename}", kind="source file"
             )
         except ValueError as exc:
             logger.warning("Refusing to write source escaping canon dir: %s", exc)
             raise
-        sources_dir = canon_dir / "sources"
-        sources_dir.mkdir(parents=True, exist_ok=True)
-        source_path.write_bytes(data)
+        write_data_path(canon_dir / "sources" / filename, data)
         routed_to = "sources"
 
         # Emit synthesis signal (always for user uploads)
@@ -464,14 +462,13 @@ def ingest_file(
         # Containment before write: a symlinked canon entry or a ``../``
         # traversal in ``filename`` would let the write escape canon_dir.
         try:
-            canon_path = resolve_within_canon(
+            resolve_within_canon(
                 canon_dir, filename, kind="filename"
             )
         except ValueError as exc:
             logger.warning("Refusing to write canon escaping canon dir: %s", exc)
             raise
-        canon_dir.mkdir(parents=True, exist_ok=True)
-        canon_path.write_bytes(data)
+        write_data_path(canon_dir / filename, data)
         routed_to = "canon"
 
         logger.info(

@@ -6,6 +6,7 @@ every gesture is a real mouse or keyboard input.
 """
 from __future__ import annotations
 
+import os
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -66,7 +67,9 @@ def browser():
     )
     with sync_api.sync_playwright() as p:
         try:
-            chromium = p.chromium.launch()
+            chromium = p.chromium.launch(
+                executable_path=os.environ.get("TINYASSETS_TEST_CHROMIUM") or None
+            )
         except Exception as exc:  # noqa: BLE001 - no browser binary on this host
             pytest.skip(
                 "owner=codex runs-in=real-browser-proof Chromium is not available here: "
@@ -106,19 +109,66 @@ def _drag(page, selector, dx, dy, *, at=(0.5, 0.5)):
 
 
 
-def test_blank_command_center(app_url, browser):
+# The retired #cc-blank stand-in had a different focus/composer contract.
+# The replacement test below mounts and clicks the shipped platform bundle;
+# its browser execution is required in real-browser-proof, not inferred from
+# the synthetic play UI or the Node bridge tests.
+
+
+def test_default_bundle_build_focuses_composer_at_prompt_end_without_sending(app_url, browser):
+    from playwright.sync_api import expect
+
+    from tinyassets.command_center_picker import BUILD_PROMPT, PLATFORM_DEFAULT_UI
+
     page = browser.new_page(viewport={"width": 1280, "height": 800})
-    _enter_chat(page, app_url)
-    assert page.locator("#cc-blank").is_visible()
-    assert _box(page, "#cc-blank") == _box(page, "#chat-stage")
-    page.mouse.click(5, 5)
-    assert page.evaluate("document.activeElement.id") == "cc-blank"
-    page.click("#btn-cloud-shrink")
-    page.click("#btn-cc-build")
-    assert page.input_value("#composer-input") == "Build me a command center for "
-    assert page.evaluate("document.activeElement.id") == "composer-input"
-    assert page.locator("#composer-input").evaluate("e=>e.selectionStart") == 30
-    page.close()
+    try:
+        _enter_chat(page, app_url)
+        page.evaluate("""({bundle,prompt}) => {
+            // Synthetic owner/read responses are at the server boundary. The
+            // real default script, iframe bridge, verify and prefill all run.
+            fetchMe=async()=>({principal_id:'owner-1',universe_id:'home-1',setup:'connected'});
+            Owner.read=async args=>{
+                if(args.target!=='command_center_packages'||args.graph_id!=='home-1')
+                    throw new Error('unexpected picker read');
+                return {packages:[],build_prompt:prompt,can_try:false};
+            };
+            window.pickerSendCalls=[];
+            const originalSendTurn=sendTurn;
+            sendTurn=(...args)=>{
+                window.pickerSendCalls.push(args);return originalSendTurn(...args);
+            };
+            AppUI.enabled=true;AppUI.home='home-1';AppUI.principal='owner-1';
+            AppUI.platformDefault=bundle;
+            if(!AppUI.mountDefault())throw new Error('default did not mount');
+        }""", {"bundle": PLATFORM_DEFAULT_UI, "prompt": BUILD_PROMPT})
+        frame = page.frame_locator("#ui-frame")
+        build = frame.get_by_role("button", name="Build your own", exact=True)
+        expect(build).to_be_visible()
+        expect(frame.locator("#try-one")).to_be_visible()
+        frame.locator("#try-one").click()
+        expect(frame.locator("#packages")).to_have_text(
+            "No shared command centers are available yet. You can build your own.")
+        expect(frame.locator("#dismiss")).to_have_count(0)
+        # Mounting the command center starts the chat as a bubble. Open it
+        # through the owner control before entering the draft under test.
+        expect(page.locator("#chat-cloud-bubble")).to_be_visible()
+        page.click("#chat-cloud-bubble")
+        expect(page.locator("#composer-input")).to_be_visible()
+        page.fill("#composer-input", "draft before Build")
+        page.click("#btn-cloud-shrink")
+        expect(page.locator("#chat-cloud-bubble")).to_be_visible()
+        build.click()
+        composer = page.locator("#composer-input")
+        expect(composer).to_have_value(BUILD_PROMPT)
+        expect(composer).to_be_focused()
+        expect(page.locator("#chat-cloud-bubble")).to_be_hidden()
+        assert composer.evaluate("e=>[e.selectionStart,e.selectionEnd]") == [
+            len(BUILD_PROMPT), len(BUILD_PROMPT)]
+        assert page.evaluate("window.pickerSendCalls") == []
+        assert page.evaluate("AppUI.isPlatformDefault()") is True
+        expect(frame.locator("#message")).to_have_text("")
+    finally:
+        page.close()
 
 
 def test_play_never_needs_a_second_click(app_url, browser):
@@ -149,7 +199,6 @@ def test_play_never_needs_a_second_click(app_url, browser):
             expect(hero).to_have_attribute("data-trusted", "true")
 
     walk()
-    assert page.locator("#cc-blank").is_hidden()
     page.click("#chat-cloud-bubble")
     assert _box(page, "#chat-cloud")["width"] <= 440
     # Put the cloud centrally so all four stage edges and corners are exposed.
@@ -255,9 +304,16 @@ def test_play_never_needs_a_second_click(app_url, browser):
         page.keyboard.press("ArrowRight")
         position += 10
         expect(hero).to_have_css("left", f"{position}px")
+    # Unmounting ends the forwarding: with no frame there is nothing to forward
+    # to, and the keys stay with the control that has them. In the app a bare
+    # unmount does not happen -- chooseDefault mounts the platform's blank
+    # command center in its place -- so this only pins that the teardown is
+    # clean, not where focus lands.
     page.evaluate("AppUI.unmount()")
-    assert page.locator("#cc-blank").is_visible()
-    assert page.evaluate("document.activeElement.id") == "cc-blank"
+    assert page.locator("#ui-frame").count() == 0
+    assert page.locator("#ui-frame-host").is_hidden()
+    page.keyboard.press("ArrowRight")
+    assert page.evaluate("document.activeElement.id") == "btn-models", "keys stay put"
     page.close()
 
 
@@ -289,6 +345,65 @@ def test_picker_return_restores_native_frame_typing(app_url, browser):
     page.keyboard.type("cd")
     assert field.input_value().endswith("abcd")
     page.close()
+
+
+@pytest.mark.parametrize("phone", [False, True], ids=["desktop", "phone"])
+@pytest.mark.parametrize("target", ["composer-input", "btn-cloud-menu"])
+def test_queued_frame_focus_does_not_override_newer_chat_gesture(app_url, browser, phone, target):
+    context = browser.new_context(
+        viewport={"width": 390 if phone else 1280, "height": 844 if phone else 800},
+        is_mobile=phone, has_touch=phone,
+    )
+    page = context.new_page()
+    _enter_chat(page, app_url)
+    page.evaluate("""() => AppUI.mount({ui_id:'play', name:'Play',
+      markup:'<canvas id="scene" tabindex="0"></canvas>', style:'', script:''})""")
+    scene = page.frame_locator("#ui-frame").locator("#scene")
+    scene.wait_for()
+    page.click("#chat-cloud-bubble")
+    page.fill("#composer-input", "unsent draft")
+    scene.evaluate("""el => {
+      window.focusBarrierSeen=false;
+      window.addEventListener('message', event => {
+        if(event.source===parent && event.data?.testFocusBarrier) focusBarrierSeen=true;
+      });
+    }""")
+    # Deterministically order a pending frame handoff before a newer owner
+    # gesture, without a sleep or relying on process scheduling during a click.
+    page.evaluate("""target => {
+      focusCommandCenter();
+      const input=document.getElementById('composer-input');
+      input.setSelectionRange(2, 7);
+      const control=document.getElementById(target);
+      control.focus();
+      if(target==='btn-cloud-menu') control.click();
+      document.getElementById('ui-frame').contentWindow.postMessage({testFocusBarrier:true}, '*');
+    }""", target)
+    # Messages from this parent are ordered, so the barrier proves the queued
+    # focus message was consumed before we inspect focus and selection.
+    scene.evaluate("""() => new Promise(resolve => {
+      if(window.focusBarrierSeen) return resolve();
+      window.addEventListener('message', function observed(event) {
+        if(event.source===parent && event.data?.testFocusBarrier) {
+          window.removeEventListener('message', observed); resolve();
+        }
+      });
+    })""")
+    assert page.evaluate("document.activeElement.id") == target
+    assert page.input_value("#composer-input") == "unsent draft"
+    selection = page.locator("#composer-input").evaluate("e=>[e.selectionStart,e.selectionEnd]")
+    assert selection == [2, 7]
+    if target == "btn-cloud-menu":
+        assert page.locator("#cloud-menu").is_visible()
+        assert page.locator("#btn-cloud-menu").get_attribute("aria-expanded") == "true"
+    else:
+        page.keyboard.type("X")
+        assert page.input_value("#composer-input") == "unXdraft"
+    # The guard must still allow the next deliberate handoff into the frame.
+    page.evaluate("focusCommandCenter()")
+    from playwright.sync_api import expect
+    expect(page.locator("#ui-frame")).to_be_focused()
+    context.close()
 
 
 def test_phone_send_keeps_composer_focus(app_url, browser):
@@ -412,3 +527,344 @@ def test_phone_play(app_url, browser, tmp_path):
     assert page.locator("#chat-cloud").is_visible()
     assert errors == []
     context.close()
+
+
+# A UI that grabs the keyboard the way a real game does (Furry House): a canvas
+# it focuses itself, and a keydown handler that swallows everything it sees.
+_GRABBER = """() => AppUI.mount({ui_id:'play', name:'Play',
+  markup:'<canvas id="scene" tabindex="0"></canvas><input id="say">',
+  style:'#scene{width:100%;height:60%;background:#234}#say{width:50%}',
+  script:`const scene=document.getElementById('scene');
+    scene.focus();
+    window.keysSeen=[];
+    document.addEventListener('keydown',e=>{
+      window.keysSeen.push(e.key);
+      e.stopPropagation(); e.preventDefault();   // a game that eats every key
+    });`})"""
+
+
+@pytest.mark.parametrize("phone", [False, True], ids=["desktop", "phone"])
+def test_the_reserved_key_is_the_way_out_of_a_ui_that_holds_the_keyboard(
+        app_url, browser, phone):
+    """Founder, 2026-10-03: stuck inside a UI with no visible way back.
+
+    The whole loop in a real browser: a UI that focuses itself and swallows
+    keys, "/" to the chat, typing lands there, Escape back into the UI -- and
+    the ring says who has the keyboard at every step.
+    """
+    context = browser.new_context(
+        viewport={"width": 390 if phone else 1280, "height": 844 if phone else 800},
+        is_mobile=phone, has_touch=phone,
+    )
+    page = context.new_page()
+    _enter_chat(page, app_url)
+    page.evaluate(_GRABBER)
+    scene = page.frame_locator("#ui-frame").locator("#scene")
+    scene.wait_for()
+    page.evaluate("focusCommandCenter()")
+    from playwright.sync_api import expect
+
+    expect(page.locator("#ui-frame")).to_be_focused()
+    assert page.locator("#chat-stage").get_attribute("data-keys") == "cc"
+    # A mounted layout shrinks the chat to a bubble, so there is no composer on
+    # screen to click: this is the state the founder got stuck in.
+    assert page.evaluate("cloudState.mode") == "bubble"
+    assert not page.locator("#composer-input").is_visible()
+
+    # "/" pressed inside the frame: the UI never gets it, the composer does,
+    # and the collapsed chat opens to receive it.
+    page.frame_locator("#ui-frame").locator("#scene").press("/")
+    page.wait_for_function("() => document.activeElement.id === 'composer-input'")
+    assert page.evaluate("cloudState.mode") == "open"
+    assert page.locator("#chat-stage").get_attribute("data-keys") == "chat"
+    assert page.frame_locator("#ui-frame").locator("#scene").evaluate(
+        "() => window.keysSeen.indexOf('/')") == -1, "the UI must not also see it"
+    # Now the chat is on screen, the hint is hidden: these keys are already here.
+    if not phone:
+        assert page.locator("#chat-cloud-hint").is_hidden()
+
+    # Typing lands in the chat, not in the UI.
+    page.keyboard.type("hello")
+    assert page.input_value("#composer-input") == "hello"
+
+    # Escape hands the keyboard back to the command center.
+    page.keyboard.press("Escape")
+    expect(page.locator("#ui-frame")).to_be_focused()
+    assert page.locator("#chat-stage").get_attribute("data-keys") == "cc"
+    assert page.input_value("#composer-input") == "hello", "the draft is not discarded"
+    # Back in the UI, with the chat open, the way out is named again.
+    if not phone:
+        assert page.locator("#chat-cloud-hint").is_visible()
+    context.close()
+
+
+# The same UI without the key-swallowing handler: this one lets its own input
+# receive what it is given, which is the point of the test below.
+_TEXT_UI = """() => AppUI.mount({ui_id:'play', name:'Play',
+  markup:'<canvas id="scene" tabindex="0"></canvas><input id="say">',
+  style:'#scene{width:100%;height:40%;background:#234}#say{width:50%}',
+  script:`document.getElementById('scene').focus();`})"""
+
+
+@pytest.mark.parametrize("phone", [False, True], ids=["desktop", "phone"])
+def test_a_text_field_in_the_ui_still_receives_the_reserved_key(app_url, browser, phone):
+    """A game's own command box keeps "/": typing a slash is typing a slash.
+
+    This is the carve-out that makes the reserved key safe to reserve -- without
+    it, every UI with a search or chat field would lose the character."""
+    context = browser.new_context(
+        viewport={"width": 390 if phone else 1280, "height": 844 if phone else 800},
+        is_mobile=phone, has_touch=phone,
+    )
+    page = context.new_page()
+    _enter_chat(page, app_url)
+    page.evaluate(_TEXT_UI)
+    say = page.frame_locator("#ui-frame").locator("#say")
+    say.wait_for()
+    say.click()
+    say.press("/")
+
+    assert say.input_value() == "/", "the UI's own field keeps the character"
+    # Not stolen: the page's keyboard owner never changed.
+    assert page.evaluate("document.activeElement.id") == "ui-frame"
+    assert page.locator("#chat-stage").get_attribute("data-keys") == "cc"
+    assert page.input_value("#composer-input") == ""
+    context.close()
+
+
+@pytest.mark.parametrize("phone", [False, True], ids=["desktop", "phone"])
+def test_clicking_the_composer_while_the_ui_holds_focus_gives_the_chat_the_keys(
+        app_url, browser, phone):
+    """The stuck scenario exactly as it happened: the UI holds the keyboard and
+    the owner clicks the composer. The chat is highlighted and typing lands."""
+    context = browser.new_context(
+        viewport={"width": 390 if phone else 1280, "height": 844 if phone else 800},
+        is_mobile=phone, has_touch=phone,
+    )
+    page = context.new_page()
+    _enter_chat(page, app_url)
+    page.evaluate(_GRABBER)
+    page.frame_locator("#ui-frame").locator("#scene").wait_for()
+    # The owner opens the chat, then the UI takes the keyboard back.
+    page.click("#chat-cloud-bubble")
+    page.evaluate("focusCommandCenter()")
+    assert page.locator("#chat-stage").get_attribute("data-keys") == "cc"
+    if not phone:
+        assert page.locator("#chat-cloud-hint").is_visible()
+
+    page.click("#composer-input")
+    page.wait_for_function("() => document.activeElement.id === 'composer-input'")
+    assert page.locator("#chat-stage").get_attribute("data-keys") == "chat"
+    page.keyboard.type("typed after the click")
+    assert page.input_value("#composer-input") == "typed after the click"
+    context.close()
+
+
+@pytest.mark.parametrize("width", [390, 1280])
+def test_shared_system_preview_and_permanent_trusted_switcher(app_url, browser, width):
+    from playwright.sync_api import expect
+
+    from tinyassets.command_center_picker import BUILD_PROMPT, PLATFORM_DEFAULT_UI
+
+    page = browser.new_page(viewport={"width": width, "height": 850})
+    try:
+        _enter_chat(page, app_url)
+        page.evaluate("""({bundle,prompt})=>{
+            window.copyAsks=[];
+            const own={kind:AppUI.KIND,version:1,ui_id:'own',name:'My own',
+                markup:'<p>My own screen</p>',style:'',script:''};
+            window.testRow={universe_id:'home-1',revision:1,ui_library:[own],
+                ui_selection:null,platform_default:bundle};
+            const catalogue={packages:[],systems:[{agent_definition_id:'public-village',
+                publication_kind:'system',name:'Fantasy Village',description:'Shared village',
+                author_id:'publisher',workflow_count:2,automation_count:2,
+                available:true,unavailable_reason:''}],build_prompt:prompt,can_try:true};
+            fetchMe=async()=>({principal_id:'owner-1',universe_id:'home-1',setup:'connected'});
+            Owner.read=async args=>{
+                if(args.target==='command_center_packages')return structuredClone(catalogue);
+                if(args.target==='command_center_preview')return {
+                    agent_definition_id:'public-village',name:'Fantasy Village',
+                    description:'Shared village',
+                    ui:own,assets:[]};
+                if(args.target==='app_ui')return {app_ui:structuredClone(window.testRow)};
+                if(args.target==='agent_bindings')return {bindings:[]};
+                throw Error('unexpected read '+args.target);
+            };
+            MCP.callTool=async(tool,args)=>{
+                if(tool!=='write_graph')throw Error('unexpected tool');
+                if(args.operation==='try_package'){
+                    window.copyAsks.push(args);return {request_id:'copy-1',title:'Copy Village'};
+                }
+                if(args.target==='app_ui'){
+                    Object.assign(window.testRow,JSON.parse(args.payload_json));
+                    window.testRow.revision++;
+                    return {status:'saved',app_ui:structuredClone(window.testRow)};
+                }
+                throw Error('unexpected write');
+            };
+            AppUI.enabled=true;AppUI.home='home-1';AppUI.principal='owner-1';
+            document.getElementById('btn-ui-switch').hidden=false;
+            AppUI.adopt(window.testRow);
+        }""", {"bundle": PLATFORM_DEFAULT_UI, "prompt": BUILD_PROMPT})
+        frame = page.frame_locator("#ui-frame")
+        frame.get_by_role("button", name="Try someone else's", exact=True).click()
+        expect(frame.locator("#packages")).to_contain_text("Public system")
+        expect(frame.locator("#packages")).to_contain_text("Components only; no files")
+        frame.get_by_role("button", name="Preview copy", exact=True).click()
+        expect(page.locator("#ui-preview")).to_contain_text("Visual preview")
+        assert len(page.evaluate("window.copyAsks")) == 0
+        page.get_by_role("button", name="Copy into my command center", exact=True).click()
+        assert len(page.evaluate("window.copyAsks")) == 1
+        page.evaluate("AppUI.open()")
+        menu = page.locator("#ui-dialog")
+        for label in ("Build your own", "Try someone else's", "Blank command center"):
+            expect(menu.get_by_role("button", name=label, exact=True)).to_be_enabled()
+        menu.get_by_role("button", name="Use My own", exact=True).click()
+        expect(page.frame_locator("#ui-frame").get_by_text("My own screen")).to_be_visible()
+        page.evaluate("AppUI.load()")
+        assert page.evaluate("AppUI.active.ui_id") == "own"
+        page.evaluate("AppUI.open()")
+        menu.get_by_role("button", name="Try someone else's", exact=True).click()
+        expect(menu).to_contain_text("Fantasy Village")
+        menu.get_by_role("button", name="Preview Fantasy Village", exact=True).click()
+        expect(page.locator("#ui-status")).to_contain_text("Copy asks for your confirmation")
+        page.get_by_role("button", name="Copy into my command center", exact=True).click()
+        assert len(page.evaluate("window.copyAsks")) == 2
+        page.evaluate("AppUI.open()")
+        menu.get_by_role("button", name="Blank command center", exact=True).click()
+        expect(page.frame_locator("#ui-frame").get_by_role(
+            "button", name="Build your own", exact=True)).to_be_visible()
+        page.evaluate("AppUI.open()")
+        menu.get_by_role("button", name="Build your own", exact=True).click()
+        expect(menu).not_to_be_visible()
+        expect(page.locator("#composer-input")).to_have_value(BUILD_PROMPT)
+        expect(page.locator("#composer-input")).to_be_focused()
+    finally:
+        page.close()
+
+
+# All data and frames are local fixtures. Observe browser cancellation/selection,
+# never read or assert the host clipboard's contents.
+def _shortcut_page(browser, app_url):
+    page = browser.new_page(viewport={"width": 1280, "height": 800})
+    _enter_chat(page, app_url)
+    page.evaluate("""() => AppUI.mount({ui_id:'keys',name:'Keys',
+      markup:'<div id="key-probe" tabindex="0">Local frame</div>',
+      style:'#key-probe{width:100%;height:100%}',
+      script:`window.observedKeys=[];
+        for(const phase of ['keydown','keyup']) document.addEventListener(phase,e=>{
+          window.observedKeys.push({key:e.key,phase,trusted:e.isTrusted});
+        });`})""")
+    page.frame_locator('#ui-frame').locator('#key-probe').wait_for()
+    page.click('#chat-cloud-bubble')
+    page.evaluate("""() => {
+      const message=document.createElement('p');
+      message.id='selection-probe'; message.textContent='Message text stays selectable';
+      document.getElementById('chat-cloud').appendChild(message);
+      document.activeElement.blur();
+      window.parentKeys=[];
+      for(const phase of ['keydown','keyup']) window.addEventListener(phase,e=>{
+        window.parentKeys.push({key:e.key,phase,prevented:e.defaultPrevented});
+      });
+    }""")
+    assert page.evaluate('document.activeElement.tagName') == 'BODY'
+    return page
+
+
+def _frame_keys(page):
+    return page.frame_locator('#ui-frame').locator('#key-probe').evaluate(
+        '() => window.observedKeys')
+
+
+def _select_message(page):
+    page.evaluate("""() => {
+      const range=document.createRange();
+      range.selectNodeContents(document.getElementById('selection-probe'));
+      const selection=window.getSelection(); selection.removeAllRanges();
+      selection.addRange(range);
+    }""")
+
+
+@pytest.mark.parametrize('modifier', ['Control', 'Meta'])
+def test_selected_message_copy_keeps_native_browser_event(app_url, browser, modifier):
+    page = _shortcut_page(browser, app_url)
+    try:
+        _select_message(page)
+        selected = page.evaluate('String(window.getSelection())')
+        page.keyboard.press(modifier + '+c')
+        events = page.evaluate("parentKeys.filter(e=>e.key.toLowerCase()==='c')")
+        assert [e['phase'] for e in events] == ['keydown', 'keyup']
+        assert not any(e['prevented'] for e in events)
+        assert page.evaluate('String(window.getSelection())') == selected
+        assert _frame_keys(page) == []
+    finally:
+        page.close()
+
+
+@pytest.mark.parametrize('shortcut', [
+    {'key':'a','ctrlKey':True}, {'key':'x','ctrlKey':True},
+    {'key':'v','metaKey':True}, {'key':'z','metaKey':True},
+    {'key':'r','ctrlKey':True}, {'key':'r','metaKey':True},
+    {'key':'ArrowLeft','altKey':True}, {'key':'F5'},
+    {'key':'BrowserBack'}, {'key':'BrowserForward'},
+])
+def test_browser_shortcuts_are_not_canceled_or_forwarded(app_url, browser, shortcut):
+    page = _shortcut_page(browser, app_url)
+    try:
+        # Dispatch in the actual browser to inspect both listener phases without
+        # navigating away, opening browser UI, or reading/writing a clipboard.
+        result = page.evaluate("""shortcut => ['keydown','keyup'].map(type=>{
+          const event=new KeyboardEvent(type,{...shortcut,bubbles:true,cancelable:true});
+          document.body.dispatchEvent(event); return event.defaultPrevented;
+        })""", shortcut)
+        assert result == [False, False]
+        assert _frame_keys(page) == []
+    finally:
+        page.close()
+
+
+def test_native_editing_and_plain_frame_controls_survive(app_url, browser):
+    page = _shortcut_page(browser, app_url)
+    try:
+        composer = page.locator('#composer-input')
+        composer.fill('draft')
+        page.keyboard.press('Control+a')
+        assert composer.evaluate('e=>[e.selectionStart,e.selectionEnd]') == [0, 5]
+        page.keyboard.type('replacement')
+        page.keyboard.press('Control+z')
+        assert composer.input_value() == 'draft'
+        assert _frame_keys(page) == []
+        page.evaluate('document.activeElement.blur();window.getSelection().removeAllRanges()')
+        page.keyboard.press('Shift+ArrowRight')
+        page.wait_for_function('parentKeys.some(e=>e.key==="ArrowRight"&&e.phase==="keyup")')
+        keys = _frame_keys(page)
+        assert [(e['key'], e['phase']) for e in keys if e['key']=='ArrowRight'] == [
+            ('ArrowRight','keydown'), ('ArrowRight','keyup')]
+        assert not any(e['trusted'] for e in keys)
+        page.frame_locator('#ui-frame').locator('#key-probe').focus()
+        page.keyboard.press('ArrowLeft')
+        keys = _frame_keys(page)
+        assert [(e['phase'], e['trusted']) for e in keys if e['key']=='ArrowLeft'] == [
+            ('keydown',True), ('keyup',True)]
+    finally:
+        page.close()
+
+
+def test_shortcut_release_order_and_selected_text_do_not_send_orphan_keys(app_url, browser):
+    page = _shortcut_page(browser, app_url)
+    try:
+        page.keyboard.down('Control')
+        page.keyboard.down('c')
+        page.keyboard.up('Control')
+        page.keyboard.up('c')
+        assert _frame_keys(page) == []
+        _select_message(page)
+        page.keyboard.down('ArrowLeft')
+        assert page.evaluate('parentKeys.at(-1).prevented') is False
+        # Selection can disappear between phases (for example a pointer gesture).
+        # Its release still must not invent a game keydown or an orphan keyup.
+        page.evaluate('window.getSelection().removeAllRanges()')
+        page.keyboard.up('ArrowLeft')
+        assert _frame_keys(page) == []
+    finally:
+        page.close()

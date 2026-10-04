@@ -899,18 +899,21 @@ class TestWikiFileBugDispatch:
         (wiki_dir / "pages" / "bugs").mkdir(parents=True, exist_ok=True)
         (wiki_dir / "drafts" / "bugs").mkdir(parents=True, exist_ok=True)
 
-        real_open = open
+        from tinyassets.api import wiki as wiki_mod
+
+        real_write = wiki_mod.write_data_path
         first_call = {"fired": False}
 
-        def fake_open(path, mode="r", *args, **kwargs):
-            p = Path(path) if not isinstance(path, Path) else path
-            if mode == "x" and "bug-001" in p.name and not first_call["fired"]:
+        def fake_write(path, data, *args, mode="replace", **kwargs):
+            p = Path(path)
+            if mode == "exclusive" and "bug-001" in p.name and not first_call["fired"]:
+                # A concurrent filer took the id between the scan and the create.
                 first_call["fired"] = True
-                real_open(path, "w", *args, **kwargs).close()
+                real_write(path, "", *args, **kwargs)
                 raise FileExistsError(path)
-            return real_open(path, mode, *args, **kwargs)
+            return real_write(path, data, *args, mode=mode, **kwargs)
 
-        with patch("tinyassets.api.wiki.open", side_effect=fake_open, create=True):
+        with patch("tinyassets.api.wiki.write_data_path", side_effect=fake_write):
             out = json.loads(
                 wiki(
                     "file_bug",

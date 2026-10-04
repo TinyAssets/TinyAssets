@@ -202,24 +202,25 @@ class TestFileBugCollisionRetry:
         (wiki_dir / "pages" / "bugs" / "BUG-001-seed.md").write_text(
             "x", encoding="utf-8"
         )
-        real_open = open
+        from tinyassets.api import wiki as wiki_mod
+
+        real_write = wiki_mod.write_data_path
         first_call = {"fired": False}
 
-        def fake_open(path, mode="r", *args, **kwargs):
-            p = Path(path) if not isinstance(path, Path) else path
+        def fake_write(path, data, *args, mode="replace", **kwargs):
+            p = Path(path)
             if (
-                mode == "x"
+                mode == "exclusive"
                 and "bug-002" in p.name.lower()
                 and not first_call["fired"]
             ):
+                # A concurrent filer took the id between the scan and the create.
                 first_call["fired"] = True
-                real_open(path, "w", *args, **kwargs).close()
+                real_write(path, "", *args, **kwargs)
                 raise FileExistsError(path)
-            return real_open(path, mode, *args, **kwargs)
+            return real_write(path, data, *args, mode=mode, **kwargs)
 
-        with patch(
-            "tinyassets.api.wiki.open", side_effect=fake_open, create=True
-        ):
+        with patch("tinyassets.api.wiki.write_data_path", side_effect=fake_write):
             out = json.loads(
                 _wiki_file_bug(
                     component="x", severity="minor", title="racy"

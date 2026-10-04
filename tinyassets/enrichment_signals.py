@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from pathlib import Path
 from typing import Any
 
@@ -53,7 +54,9 @@ def load_enrichment_signals(
       (Hard Rule #8).
     """
     signals_path = enrichment_signals_path(universe_path)
-    if signals_path.exists():
+    # lexists: a dangling link at the canonical name is read (and refused), not
+    # skipped in favour of the legacy file.
+    if os.path.lexists(signals_path):
         return _read_signal_file(signals_path, strict=strict)
     return _read_signal_file(
         legacy_worldbuild_signals_path(universe_path), strict=strict,
@@ -64,10 +67,9 @@ def write_enrichment_signals(
     universe_path: str | Path,
     signals: list[dict[str, Any]],
 ) -> None:
-    enrichment_signals_path(universe_path).write_text(
-        json.dumps(signals, indent=2) + "\n",
-        encoding="utf-8",
-    )
+    from tinyassets.universe_files import write_data_path
+
+    write_data_path(enrichment_signals_path(universe_path), json.dumps(signals, indent=2) + "\n")
 
 
 def append_enrichment_signals(
@@ -84,12 +86,16 @@ def append_enrichment_signals(
 def _read_signal_file(
     path: Path, *, strict: bool = False,
 ) -> list[dict[str, Any]]:
-    if not path.exists():
-        # The only legitimate "empty" path: the file genuinely does not exist.
-        # This is the missing-canonical deprecation fallback, NOT an error mask.
-        return []
+    from tinyassets.universe_files import MAX_PLATFORM_FILE_BYTES, read_data_path
+
     try:
-        parsed = json.loads(path.read_text(encoding="utf-8"))
+        # Link-free; a refused read is an OSError handled as corruption below.
+        raw = read_data_path(path, max_bytes=MAX_PLATFORM_FILE_BYTES)
+        if raw is None:
+            # The only legitimate "empty" path: the file genuinely does not
+            # exist. The missing-canonical deprecation fallback, NOT an error mask.
+            return []
+        parsed = json.loads(raw.decode("utf-8"))
     except (json.JSONDecodeError, OSError, TypeError) as exc:
         # Hard Rule #8: a PRESENT file that cannot be read/parsed is corruption,
         # not the missing-file fallback. strict callers (read-modify-write) must

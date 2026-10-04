@@ -22,6 +22,12 @@ def resolve_within_canon(canon_dir: Path, name: str, kind: str = "path") -> Path
     shapes the error message ("filename", "marker", "source file") for
     debuggability.
     """
+    # A linked canon ROOT moves the containment root along with the target:
+    # ``canon -> /data/<other>/canon`` (a workflow provider jail binds the
+    # universe read-write and allows ``symlink``) would make every name
+    # "contained" in another universe's canon. Refused, not resolved.
+    if canon_dir.is_symlink():
+        raise ValueError(f"canon directory is a link; refusing canon {kind} {name!r}")
     canon_root = canon_dir.resolve()
     resolved = (canon_dir / name).resolve()
     if not resolved.is_relative_to(canon_root):

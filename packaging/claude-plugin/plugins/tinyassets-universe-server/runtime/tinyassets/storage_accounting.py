@@ -487,6 +487,14 @@ def _automations(base: Path, account_id: str) -> int:
     )
 
 
+def _packages(base: Path, account_id: str) -> int:
+    """Published command-center package content, by the author who owns each blob
+    (listed or not: ownership is recorded before the blob is written)."""
+    from tinyassets.command_center_packages import measure_packages
+
+    return measure_packages(base, _account_actors(base, account_id))
+
+
 #: THE registry. Every place user bytes live is either here, or named in
 #: `PLATFORM_ENTRIES` with why it is not the user's;
 #: `tests/test_storage_registry_complete.py` fails on any store that is neither.
@@ -504,6 +512,7 @@ STORES: dict[str, Store] = {
         Store("commons_pages", SCOPE_ACCOUNT, _commons_pages),
         Store("automations", SCOPE_ACCOUNT, _automations),
         Store("workspaces", SCOPE_UNIVERSE, _workspaces),
+        Store("packages", SCOPE_ACCOUNT, _packages),
     )
 }
 
@@ -522,6 +531,14 @@ ROOT_ENTRIES: dict[str, str] = {
     "daemon_wikis": "daemon_memory",
     "wiki": "commons_pages",
     ".storage_accounting.db": "platform: this ledger",
+    ".command-center-packages": (
+        "packages (published package blobs, by author); its consent pins and "
+        "version index are platform"
+    ),
+    "packages.db": (
+        "platform: package versions and consent pins, inside "
+        ".command-center-packages/ (blob bytes are charged as packages)"
+    ),
     "scratch": "platform: shared scratch pool, never charged (storage-permanent-vs-scratch)",
     ".workspace-staging": "platform: transient checkout staging, swept by liveness",
     ".consumer_liveness": "platform: process liveness locks",
@@ -531,11 +548,13 @@ ROOT_ENTRIES: dict[str, str] = {
     ".account_seats.db": "platform: per-account seat leases",
     ".engine_run_admissions.db": "platform: admission ledger",
     ".automations.db": "automations (user inputs by owner; schedule bookkeeping is platform)",
+    ".control_plane.db": "platform: control-plane trigger table and fire ledger (design D7)",
     ".universe-tool-slots": "platform: tool jail slots",
     ".agent-sessions": (
         "platform: which native session each thread resumes (bytes per thread; "
         "the session files themselves live in the command center and count there)"
     ),
+    "history.db": "platform: harness history inside .agent-sessions/<universe>/ (D7a)",
     "rules.db": (
         "platform: the owner's Custom Rules for their agents, inside "
         ".agent-sessions/<universe>/ (harness D1a)"
@@ -545,11 +564,17 @@ ROOT_ENTRIES: dict[str, str] = {
         "platform: the owner's mid-turn messages, inside .agent-sessions/<universe>/ "
         "(harness S2); emptied at every turn end"
     ),
+    "activity.db": (
+        "platform: the agent's recent tool calls for its owner's live view, inside "
+        ".agent-sessions/<universe>/ (harness S4); the latest 200 per session"
+    ),
     ".auth.db": "platform: sessions (never gated)",
     ".hosted-model-auth.db": "platform: credential vault (never gated)",
     ".owner_devices.db": "platform: device registrations",
     ".effector_consents.db": "platform: consent records",
     ".outbound-proxy": "platform: egress proxy state",
+    ".broker": "platform: credential broker socket, owner fence and operation bookkeeping",
+    "ops.db": "platform: bounded broker idempotency records under .broker/state",
     ".run-execution-locks": "platform: locks",
     ".run-file-operation-locks": "platform: locks",
     ".connect": "platform: connection handshakes",
@@ -585,6 +610,7 @@ UNIVERSE_ENTRIES: frozenset[str] = frozenset({
     ".subscription_state.db", ".pending_requests.db", ".usage_ledger.db",
     ".wiki_write_back_destination_markers.db", ".authoring.db", ".lock",
     ".effector_consents.db", ".external_write_receipts.db", ".idempotency.db",
+    ".manifest.json",  # canon/.manifest.json, inside the universe walk
     # The agent's own workspace (harness W2): user bytes, counted by the walk.
     ".agent-workspace",
 })
@@ -595,6 +621,9 @@ UNIVERSE_ENTRIES: frozenset[str] = frozenset({
 #: directory is named here.
 ELSEWHERE_ENTRIES: frozenset[str] = frozenset({
     ".git", ".agents", ".author_server.db", ".workflow.db",
+    # The box host's control-plane record (boxes/local.py), kept in the box
+    # driver's own state_dir, never inside a universe or charged to a user.
+    "boxhost.db",
 })
 
 
@@ -1225,6 +1254,24 @@ def commit(reservation: Reservation, actual_bytes: int | None = None) -> None:
         )
 
 
+def renew(reservation: Reservation) -> None:
+    """Keep a still-running write's reservation from expiring.
+
+    A measurement drops a reserved row older than `RESERVED_TTL_S` as a crashed
+    writer's. A write that is genuinely still running (a long jailed provider
+    turn) re-stamps its row so its headroom stays spent. Never raises."""
+    if reservation.id is None:
+        return
+    try:
+        with _txn(reservation.base) as conn:
+            conn.execute(
+                "UPDATE pending SET created_at = ? WHERE id = ? AND state = 'reserved'",
+                (time.time(), reservation.id),
+            )
+    except Exception:  # noqa: BLE001 -- worst case the row expires as before
+        _log.warning("storage renew failed for reservation %s", reservation.id, exc_info=True)
+
+
 def release(reservation: Reservation) -> None:
     """The write did not happen. Never raises: the caller is already failing."""
     if reservation.id is None:
@@ -1334,6 +1381,7 @@ __all__ = [
     "measure",
     "refusal_record",
     "release",
+    "renew",
     "reserve",
     "touch",
     "usage",

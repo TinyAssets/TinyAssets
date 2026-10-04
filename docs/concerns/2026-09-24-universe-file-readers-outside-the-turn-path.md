@@ -1,8 +1,8 @@
 ---
-severity: P2
+severity: P1
 title: Universe-file readers outside the turn path
 filed: '2026-09-24'
-summary: harness S1 routes every turn-path read through `universe_files` and keeps the agent's write set small; ~20 other modules still read universe files raw, safe only while those paths stay agent read-only
+summary: a workflow provider jail binds the universe read-write (hidden root FILES included) and allows symlink; daemon file reads/writes now go through universe_files read_data_path/write_data_path behind a shrink-only guard, but pinned raw sites and per-universe SQLite still follow a planted link
 ---
 
 # Universe-file readers outside the served turn path (harness S1)
@@ -29,32 +29,66 @@ no-follow). The fix has two halves:
    (link-free, bounded, alias-free YAML), enforced by
    `tests/test_universe_file_reads_are_bounded.py` over `TURN_PATH`.
 
-## The rest of the grep (2026-09-24)
 
-`grep -l 'universe_dir|udir'` crossed with `read_text|read_bytes|open(|yaml.*load`
-over `tinyassets/`. None of these reads a path in the agent's read-write set,
-so none is reachable by an agent write today. Each still reads raw.
+## What changed on 2026-10-01
 
-| Module | What it reads under a universe | Agent-writable? |
-|---|---|---|
-| `api/universe.py`, `api/runs.py`, `api/branches.py`, `api/pending_requests.py`, `api/helpers.py` (`_read_json`, `_read_platform_text`) | premise, `activity.log`, `work_targets.json`, `.runtime_status.json`, `.pause`, request docs | No (read-only or masked) |
+The premise above ("none of these is agent-writable") is **false for a workflow
+provider**. `providers/provider_jail.default_view` binds the WHOLE universe
+read-write and masks only hidden *directories*, so hidden root *files*
+(`.runs.db`, consent/usage DBs, `.credential-vault.json`) and every visible
+path can be replaced by a link, and the jail allows `symlink`
+(`docs/concerns/2026-10-01-provider-planted-link-reads-another-universe.md`).
+The tool-jail half of the fix no longer bounds the daemon's exposure.
 
-**Resolved for `wiki/` (harness W, 2026-10-01).** `wiki/` is now agent-writable.
-`api/wiki.py`, `api/helpers.py`, `effectors/wiki_write_back.py` and
-`wiki/okf_export.py` are in `TURN_PATH`: a wiki page reads link-free and bounded
-through `universe_files`, and an oversized or linked page raises instead of
-reading as empty. The trusted write-back markers moved from `wiki/` to the
-universe root.
-| `api/status.py` `_platform_has_work` | EVERY universe's `work_targets.json`, unbounded `json.loads` | No — but a cross-user amplifier if it ever becomes writable |
-| `work_targets.py`, `mcp_server.py` | `work_targets.json`, legacy status/progress/chapters | No |
-| `credential_vault.py`, `providers/base.py`, `providers/codex_provider.py`, `providers/definition.py`, `provider_assignment.py`, `storage/outbound_connections.py` | `.credential-vault.json`, `.credentials/`, `.runtime/`, admission lock | No (hidden root entries, masked) |
-| `onboarding/__init__.py` | package assets | Not a universe path |
-| `graph_compiler.py` | the string `"open("` in a denylist | Not a read |
+PR #4254 (`fix/daemon-link-refusing-writes`, superseding #4247) made two things true:
+
+- **One reader, one writer.** `universe_files.read_data_path` /
+  `write_data_path` (built on `read_universe_file` / `write_universe_file`)
+  walk from the data dir with no link at any component; writes are temp +
+  rename inside the verified directory. A refused read RAISES
+  `UniverseFileError` -- never "absent", which a read-modify-write would
+  overwrite. Converted: `api/helpers` `_read_json` / `_read_platform_text`
+  (inspect, activity, events, memory-scope, every `_read_json` caller),
+  `read_output`, `read_canon`, `read_source`, canon meta sidecars + manifest,
+  `ingestion` canon/source/manifest writes (`canon_io`, `core`; a linked canon
+  root is refused in `resolve_within_canon`), `dispatcher_config.yaml` (was a
+  cross-user WRITE), requests, ledger, notes, `work_targets`, premise mirror,
+  `.pause`, heartbeats, `soul/*.yaml`, the config probe, `status` activity,
+  the `daemon_overview` tail, `soul.md` + `soul_versions/`, the OKF seed,
+  enrichment signals, and every `api/wiki.py` write, append, exclusive
+  create and delete (`unlink_data_path`). A universe wiki root or page
+  path is no longer `resolve()`d before containment; a linked root refuses.
+- **A shrink-only guard.** `tests/test_universe_path_io_guard.py` pins the raw
+  file operations left in every module that mentions a universe or data-dir
+  path, keyed by enclosing function and operation (reads, writes, rename,
+  unlink, os.replace, shutil). A new one fails; a converted one must be
+  deleted from the pin. The pin is the sealed-box migration checklist.
+  It does not count `mkdir` or `Path.replace` (indistinguishable from
+  `str.replace`).
+
+## Still open
+
+1. **Per-universe SQLite.** `sqlite3.connect` follows a link at the file. A
+   planted `.runs.db -> /data/<B>/.runs.db` opens B's database in A's context
+   (read and write). Open per-universe DBs with the `nofollow=1` URI
+   (`SQLITE_OPEN_NOFOLLOW`), parent dirs being platform-owned. Not covered by
+   the guard, which scans file calls only.
+2. **The pinned raw sites** in `test_universe_path_io_guard.PINNED`. Many are
+   platform files in no universe (package assets, the data root's own files);
+   each still needs a look. `add_canon_from_path` reads any absolute server
+   path when `TINYASSETS_UPLOAD_WHITELIST` is unset.
+3. **Residual races.** `iter_canon_files` enumerates names and sizes under the
+   resolved canon root (a root swapped between the link check and the listing
+   discloses names); `_source_file_entry` stats the resolved target.
+4. **Windows.** The non-POSIX fallback checks with `lstat` and then opens by
+   path; it is the single-tenant tray, so the cross-user guarantee is POSIX-only.
+
+The by-construction close is fix direction 2 (provider-egress): run codex with
+its own sandbox off inside the provider jail so the jail can refuse `symlink`.
 
 ## Resolution rule
 
-Before adding ANY path to `AGENT_BRAIN_FILES` / `AGENT_HARNESS_DIRS` (e.g. S2's
-`AGENTS.md`, S4's `workflows/*.yaml` as authority, a writable `wiki/`), route
-every reader of that path through `tinyassets.universe_files` and add its module
-to `TURN_PATH` in the enforcement test, in the same change. Delete this file
-when every row above reads through `universe_files` or the path is gone.
+Route every new daemon read or write of a path under the data dir through
+`tinyassets.universe_files`; the guard enforces it. Delete this file when the
+pin is empty of universe paths, SQLite opens no-follow, and the races are closed
+-- or when the provider jail refuses `symlink`.

@@ -37,6 +37,7 @@ from tinyassets.api.helpers import (
     _wiki_pages_dir,
     _wiki_root,
 )
+from tinyassets.universe_files import unlink_data_path, write_data_path
 
 # Wiki category taxonomy. Expanded 2026-04-13 to stop user-intent content
 # (recipes, workflows, personal notes) getting dumped into `research/`
@@ -115,7 +116,7 @@ def _write_reserved_wiki_canary(content: str) -> str:
     try:
         draft_path.parent.mkdir(parents=True, exist_ok=True)
         is_new = not draft_path.exists()
-        draft_path.write_text(content, encoding="utf-8")
+        write_data_path(draft_path, content)
     except OSError as exc:
         return json.dumps({"error": f"Failed to write reserved canary draft: {exc}"})
     return json.dumps({
@@ -178,7 +179,7 @@ def _ensure_wiki_scaffold(wiki_root: Path) -> None:
     for name, body in anchors.items():
         path = wiki_root / name
         if not path.exists():
-            path.write_text(body, encoding="utf-8")
+            write_data_path(path, body)
 
 
 def _parse_frontmatter(content: str) -> tuple[dict[str, str], str]:
@@ -224,11 +225,12 @@ def _resolve_page(name: str) -> Path | None:
             return None
         if relative.suffix.lower() != ".md":
             return None
-        candidate = (_wiki_root() / relative).resolve()
+        # Lexical, never resolved: ``pages -> /data/<other>/wiki/pages`` would
+        # resolve both sides into the other universe and pass containment.
+        # The link-free reader/writer then refuses a link on the path.
+        candidate = _wiki_root() / relative
         for public_root in (_wiki_pages_dir(), _wiki_drafts_dir()):
-            try:
-                candidate.relative_to(public_root.resolve())
-            except ValueError:
+            if not candidate.is_relative_to(public_root):
                 continue
             return candidate if candidate.is_file() else None
         return None
@@ -589,7 +591,7 @@ def _add_to_index(category: str, slug: str, title: str) -> None:
         if lines and lines[-1].strip():
             lines.append("")
         lines.extend([hdr, entry])
-    idx_path.write_text("\n".join(lines), encoding="utf-8")
+    write_data_path(idx_path, "\n".join(lines))
 
 
 def _charge_commons_write(content: str, path: Path) -> None:
@@ -655,8 +657,7 @@ def _append_wiki_log(msg: str) -> None:
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     line = f"\n## [{today}] {msg}\n"
     try:
-        with open(log_path, "a", encoding="utf-8") as f:
-            f.write(line)
+        write_data_path(log_path, line, mode="append")
     except OSError:
         return
     # The log grows with user-supplied log entries: charge each appended line to
@@ -1200,7 +1201,7 @@ def _wiki_write(
     if promoted_path.exists():
         try:
             _charge_commons_write(content, promoted_path)
-            promoted_path.write_text(content, encoding="utf-8")
+            write_data_path(promoted_path, content)
             _record_commons_writer(promoted_path, content)
             _append_wiki_log(
                 f"update | {promoted_rel_path.removesuffix('.md')} | "
@@ -1219,7 +1220,7 @@ def _wiki_write(
         draft_path.parent.mkdir(parents=True, exist_ok=True)
         is_new = not draft_path.exists()
         _charge_commons_write(content, draft_path)
-        draft_path.write_text(content, encoding="utf-8")
+        write_data_path(draft_path, content)
         _record_commons_writer(draft_path, content)
         action_word = "draft" if is_new else "draft-update"
         _append_wiki_log(
@@ -1295,7 +1296,7 @@ def _wiki_patch(
 
     try:
         _charge_commons_write(patched, resolved)
-        resolved.write_text(patched, encoding="utf-8")
+        write_data_path(resolved, patched)
         _record_commons_writer(resolved, patched)
         _append_wiki_log(f"patch | {rel} | {log_entry or 'exact replacement'}")
         response.update({"status": "patched"})
@@ -1397,7 +1398,7 @@ def _wiki_delete(
         return json.dumps({"error": "reason is required when dry_run=false."})
 
     try:
-        resolved.unlink()
+        unlink_data_path(resolved)
         _append_wiki_log(f"delete | {rel} | {reason.strip()}")
         response.update({"status": "deleted"})
         return json.dumps(response)
@@ -1467,12 +1468,12 @@ def _wiki_consolidate(
                     f"on {today}*\n\n{secondary['body']}"
                 )
                 try:
-                    secondary["path"].unlink()
+                    unlink_data_path(secondary["path"])
                 except OSError:
                     pass
             try:
                 _charge_commons_write("".join(sections), primary["path"])
-                primary["path"].write_text("".join(sections), encoding="utf-8")
+                write_data_path(primary["path"], "".join(sections))
                 _record_commons_writer(primary["path"], "".join(sections))
             except OSError:
                 pass
@@ -1545,9 +1546,9 @@ def _wiki_promote(
         if "updated:" in content:
             content = re.sub(r"updated:.*", f"updated: {today}", content)
         _charge_commons_write(content, dest_path)
-        dest_path.write_text(content, encoding="utf-8")
+        write_data_path(dest_path, content)
         _record_commons_writer(dest_path, content)
-        draft_path.unlink()
+        unlink_data_path(draft_path)
         _add_to_index(found_category, slug, meta.get("title", slug))
         _append_wiki_log(
             f"promote | {found_category}/{slug} | moved from drafts to pages"
@@ -1574,7 +1575,7 @@ def _wiki_ingest(
         raw_dir.mkdir(parents=True, exist_ok=True)
         target = raw_dir / Path(filename).name
         _charge_commons_write(content, target)
-        target.write_text(content, encoding="utf-8")
+        write_data_path(target, content)
         _record_commons_writer(target, content)
         url_note = f" ({source_url})" if source_url else ""
         _append_wiki_log(f"ingest | {filename}{url_note}")
@@ -1658,7 +1659,7 @@ def _wiki_supersede(
             old_content = fm_match.group(1) + notice + body
 
         _charge_commons_write(old_content, old_path)
-        old_path.write_text(old_content, encoding="utf-8")
+        write_data_path(old_path, old_content)
         _record_commons_writer(old_path, old_content)
         _append_wiki_log(
             f"supersede | {old_category}/{old_slug} -> {new_slug} | {reason}"
@@ -1996,7 +1997,7 @@ def _wiki_sync_projects(**_kwargs: Any) -> str:
         )
 
         try:
-            (pp_dir / (slug + ".md")).write_text(page_content, encoding="utf-8")
+            write_data_path((pp_dir / (slug + ".md")), page_content)
             _add_to_index("projects", slug, title)
             created.append(f"{slug} (from {d})")
         except OSError:
@@ -2336,7 +2337,7 @@ def _wiki_cosign_bug(
 
     try:
         _charge_commons_write(raw, target)
-        target.write_text(raw, encoding="utf-8")
+        write_data_path(target, raw)
         _record_commons_writer(target, raw)
     except OSError as exc:
         return json.dumps({"error": f"Cannot write bug file: {exc}"})
@@ -2509,8 +2510,7 @@ def _wiki_file_bug(
         )
         try:
             _charge_commons_write(body, target)
-            with open(target, "x", encoding="utf-8") as fh:
-                fh.write(body)
+            write_data_path(target, body, mode="exclusive")
             _record_commons_writer(target, body)
             break
         except FileExistsError:
@@ -2594,7 +2594,14 @@ def _wiki_root_for_universe(universe_id: str) -> Path:
         return _wiki_root()
     if "/" in uid or "\\" in uid or uid.startswith("."):
         raise ValueError(f"Invalid universe_id: {universe_id}")
-    return (_universe_dir(uid) / "wiki").resolve()
+    root = _universe_dir(uid) / "wiki"
+    # Never resolve: ``wiki -> /data/<other>/wiki`` would hand back the other
+    # universe's wiki after this universe was authorized.
+    if root.is_symlink():
+        from tinyassets.universe_files import UniverseFileError
+
+        raise UniverseFileError(f"universe {uid!r} wiki is a link; nothing was opened")
+    return root
 
 
 def write_universe_canon(

@@ -574,8 +574,11 @@ enforce the configured child-invocation depth cap.
 ### Requirement: Live child invocation maps state and supports blocking or async execution
 
 A live child-invocation node SHALL resolve the current Branch definition, map
-declared parent keys into child input keys, and use an explicit child actor or
-otherwise inherit the parent run actor, falling back to `anonymous`. Blocking
+declared parent keys into child input keys, and run the child as the parent run's
+authenticated actor taken from the immutable execution context (see "An
+invoke_branch edge never widens execution authority"). A spec-supplied
+`child_actor` SHALL have no effect, and there SHALL be no synthetic actor
+fallback: an absent authenticated actor refuses the node. Blocking
 mode MUST invoke the child synchronously without a child-poll timeout and map
 declared child outputs on success. A non-completed terminal child SHALL apply
 `propagate`, `default`, or `retry`; node-local `retry_budget=N` permits up to N
@@ -687,6 +690,121 @@ rejected against its prior attachment.
 
 - **WHEN** the same completed child is attached to a different receipt-waiting parent with the same computed digest
 - **THEN** a separate parent-child attachment is permitted while a conflicting computed digest is refused
+
+### Requirement: An invoke_branch edge never widens execution authority
+
+Every invoked child branch — live or frozen, blocking or async, at any nesting depth — SHALL execute under an immutable execution context built ONCE at the authenticated run entry and threaded compile → node builder → invoke closure → child run → the child's own builders. The context SHALL carry the actor the run executes as, the execution universe, the running definition's provenance (`own` | `public-foreign`), the recursion depth, the persisted authenticated owner, the compiled definition's author, and the persisted workspace-family member that is the child's budget parent. A nested edge MAY narrow it and SHALL NOT widen it. Execution authority MUST NOT be read from a node spec, from a caller-supplied `child_actor`, or re-read from the mutable run record, and there SHALL be no synthetic or anonymous actor: an absent authenticated actor refuses the node fail-closed. The actor SHALL be resolved through the canonical principal normalizer rather than used as a raw string. A missing workspace-family member SHALL resolve to the unmanaged budget parent, so absent legacy authority does not turn each child into a new budget root. A BLOCKING live invocation is not capped by a compile-time depth limit (the former cap is retired; a blocking invoke past the old cap compiles). ASYNC live and frozen-version invocations SHALL be bounded by the shared invocation pool's capacity rather than by a depth cap.
+
+Provenance SHALL be recomputed at each authenticated run entry from that run's own
+definition rather than inherited as a token: `own` when the definition's author is
+the run actor, OR when the author is a canonical owner-actor of the execution
+universe — the second clause is what makes a universe's engine-authored branches
+its own, because a served turn stores the founder's user id as the author while the
+run executes as the universe principal. An empty author, or any failure of the
+ownership lookup, SHALL resolve to `public-foreign`.
+
+#### Scenario: child runs as the parent's authenticated actor, not a spec actor
+
+- **GIVEN** a child-invocation node whose spec names any `child_actor`
+- **WHEN** the node invokes its child
+- **THEN** the child executes as the parent run's authenticated actor in the parent run's universe, and the spec value has no effect
+
+#### Scenario: missing authenticated context fails closed
+
+- **WHEN** an invoke edge is reached with no authenticated actor in the execution context
+- **THEN** the node is refused, rather than defaulting to an anonymous or run-record-derived actor
+
+#### Scenario: an unresolvable universe owner is foreign, not own
+
+- **WHEN** provenance resolution cannot complete the universe owner-actor lookup for a definition whose author is not the run actor
+- **THEN** the run is treated as `public-foreign`
+
+### Requirement: A child branch reference is authorized by delegated, not ambient, authority
+
+An author-chosen child `branch_def_id` / `branch_version_id` SHALL be authorized
+against what the AUTHORING definition may reference, never against the running
+actor's ambient readability — the run actor is the potential victim, and their own
+readability would otherwise authorize a foreign spec's reference to their private
+branch. Authorization SHALL read only minimal descriptor metadata (visibility,
+author) and SHALL complete BEFORE the full definition is deserialized, so a
+malformed private body cannot raise a distinguishable error. Missing, blank, or
+malformed visibility SHALL NOT count as public.
+
+- `own` provenance MAY reference a child authored by the actor, or any public
+  child. It MAY additionally reference the persisted authenticated OWNER's private
+  child only while the owner's authority and the running parent's authority agree:
+  the child's author and the compiled definition's author are both that owner, the
+  owner is a canonical owner-actor of the execution universe, and the persisted
+  parent run row is still `running` with matching actor, owner, and universe.
+- `public-foreign` provenance MAY reference ONLY a public child.
+
+A version reference SHALL be authorized through its definition BEFORE the snapshot
+is loaded, AND the snapshot's own publication SHALL be checked independently
+(`branch_version_is_public`): an unmarked or private snapshot SHALL require
+delegated authorship (the authoring definition's author may reference it) even when
+its live definition is public. Every other outcome — absent, unreadable, corrupt, unauthorized, or any
+failure of the authority lookups — SHALL raise ONE uniform refusal, so the invoke
+surface is neither an existence nor an authorization oracle.
+
+> As-built note: the pinned authoring-time `allowed_child_refs` list proposed for
+> this behaviour was NOT built. The visibility-and-author resolver above is what
+> ships, and it carries the same property for foreign parents.
+
+#### Scenario: a foreign branch cannot invoke the runner's private branch
+
+- **GIVEN** a victim runs a public branch authored by somebody else, whose spec names one of the victim's PRIVATE branches
+- **WHEN** the invoke edge is evaluated
+- **THEN** it is refused with the uniform message and the private branch is never deserialized or run
+
+#### Scenario: a foreign branch may invoke a public child
+
+- **GIVEN** a foreign parent whose child reference is public
+- **WHEN** the invoke edge is evaluated
+- **THEN** it is authorized and the child runs under the victim's own actor and universe
+
+#### Scenario: blank visibility is not public
+
+- **WHEN** a child descriptor carries missing, blank, or unrecognized visibility
+- **THEN** it is not treated as public and a foreign parent's reference to it is refused
+
+#### Scenario: absent and unauthorized are indistinguishable
+
+- **WHEN** a child reference is absent, unreadable, corrupt, or merely unauthorized
+- **THEN** the same uniform refusal is raised in every case
+
+### Requirement: Foreign provenance cannot run authored code, map secrets, or await another actor's run
+
+A run whose provenance is not `own` SHALL NOT execute a `source_code` node at all:
+the sandbox bounds what code can touch, but authorship decides whose code may run,
+so the node is refused with guidance to remix the branch into the running universe
+first. For an invoke edge on a foreign-provenance run, `inputs_mapping` and
+`output_mapping` SHALL be refused at compile time if either side of any mapping
+pair names a credential, secret, or authorization-state field, classified by the
+same key-classes the agent-definition surface uses for redaction; `own`-provenance
+edges are unrestricted, because that is an owner plumbing their own fields. A child
+run handle read from run state by an await or poll step SHALL be returned only for a
+run bound to the same actor and universe as the execution context, and refused for
+another actor's or universe's run id.
+
+#### Scenario: a foreign run refuses an authored code node
+
+- **WHEN** a run whose provenance is `public-foreign` reaches a `source_code` node
+- **THEN** the node is refused and the message directs the user to remix the branch into their own universe so the code is theirs
+
+#### Scenario: a foreign spec cannot map a parent secret into its child
+
+- **GIVEN** a foreign parent whose `inputs_mapping` or `output_mapping` names a credential, secret, or auth-state key on either side
+- **THEN** compilation of that node is refused
+
+#### Scenario: own provenance may map its own sensitive fields
+
+- **GIVEN** an `own`-provenance parent mapping a sensitive-looking key
+- **THEN** the mapping is permitted, because the owner is plumbing their own data
+
+#### Scenario: await binds a state-supplied run id to the caller
+
+- **WHEN** an await or poll step resolves a run id read from run state
+- **THEN** it returns only for a run matching the execution context's actor and universe, and refuses another actor's or universe's run
 
 ### Requirement: A terminal run can seed a distinct same-Branch run with explicit lineage
 

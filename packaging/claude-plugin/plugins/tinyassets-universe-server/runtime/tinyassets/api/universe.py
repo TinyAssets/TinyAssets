@@ -71,9 +71,16 @@ from tinyassets.api.helpers import (
 )
 from tinyassets.catalog import list_unreconciled_writes
 from tinyassets.ids import new_universe_id
-from tinyassets.ingestion.canon_io import iter_canon_files, safe_canon_path
+from tinyassets.ingestion.canon_io import iter_canon_files, read_canon_bytes, safe_canon_path
 from tinyassets.storage_accounting import StorageRefused
 from tinyassets.universe_bundle import seed_okf_bundle
+from tinyassets.universe_files import (
+    MAX_CONFIG_BYTES,
+    MAX_PLATFORM_FILE_BYTES,
+    load_untrusted_yaml,
+    read_data_path,
+    write_data_path,
+)
 from tinyassets.universe_soul import (
     NO_LOOP_DECLARED,
     SOUL_FILENAME,
@@ -1185,7 +1192,8 @@ def _compute_word_count_from_files(
             if name.startswith(".") or name in {"INDEX.md", "progress.md"}:
                 continue
             try:
-                text = path.read_text(encoding="utf-8")
+                raw_md = read_data_path(path, max_bytes=MAX_PLATFORM_FILE_BYTES)
+                text = raw_md.decode("utf-8", "replace") if raw_md else ""
             except OSError:
                 continue
             total += len(text.split())
@@ -1281,7 +1289,8 @@ def _read_worker_liveness_entry(
 ) -> dict[str, Any]:
     worker_id = _worker_id_from_heartbeat_path(beat_path)
     try:
-        beat = json.loads(beat_path.read_text(encoding="utf-8"))
+        raw_beat = read_data_path(beat_path, max_bytes=MAX_CONFIG_BYTES) or b""
+        beat = json.loads(raw_beat.decode("utf-8"))
     except (OSError, ValueError, TypeError):  # noqa: BLE001 — probe, not gate
         return {
             "present": True,
@@ -2072,14 +2081,23 @@ def _list_output_tree(output_dir: Path, max_depth: int = 3) -> list[str]:
 def _action_read_output(universe_id: str = "", path: str = "", **_kwargs: Any) -> str:
     uid = _request_universe(universe_id)
     udir = _universe_dir(uid)
-    target = (udir / "output" / path).resolve()
-
-    if not target.is_relative_to((udir / "output").resolve()):
+    # Never resolve: a workflow provider jail can plant ``output -> /data/<B>/``,
+    # and a resolved target would then be "inside" the resolved output dir.
+    # The relative path is checked lexically and read with no link followed.
+    parts = path.replace("\\", "/").split("/")
+    if not path or path.startswith("/") or any(p in ("", ".", "..") for p in parts):
         return json.dumps({"error": "Path traversal not allowed."})
-    if not target.exists():
-        return json.dumps({"error": f"File not found: {path}"})
 
-    content = _read_text(target)
+    from tinyassets.universe_files import read_universe_text
+
+    try:
+        content = read_universe_text(
+            udir, "/".join(["output", *parts]), max_bytes=MAX_PLATFORM_FILE_BYTES,
+        )
+    except FileNotFoundError:
+        return json.dumps({"error": f"File not found: {path}"})
+    except (OSError, UnicodeDecodeError) as exc:
+        return json.dumps({"error": f"Output file {path!r} was not read: {exc}"})
     if len(content) > 10000:
         return json.dumps({
             "universe_id": uid,
@@ -2529,10 +2547,7 @@ def _action_submit_request(
 
     try:
         udir.mkdir(parents=True, exist_ok=True)
-        requests_path.write_text(
-            json.dumps(existing, indent=2, default=str),
-            encoding="utf-8",
-        )
+        write_data_path(requests_path, json.dumps(existing, indent=2, default=str))
     except OSError as exc:
         return json.dumps({"error": f"Failed to write request: {exc}"})
 
@@ -3590,16 +3605,17 @@ def _overview_limits(limit_param: Any) -> dict[str, int]:
 
 
 def _tail_file_lines(path: Path, n: int) -> list[str]:
-    """Return the last `n` lines of `path`, or empty list on missing/error."""
-    if not path.exists() or n <= 0:
+    """Return the last `n` lines of `path`; empty when absent.
+
+    Read link-free (``read_data_path``): a refused read raises rather than
+    returning another universe's lines through a planted ``activity.log``.
+    """
+    if n <= 0:
         return []
-    try:
-        with path.open("r", encoding="utf-8", errors="replace") as fh:
-            # Naive tail — OK up to 1000 lines for activity.log sized files.
-            lines = fh.readlines()
-        return [ln.rstrip("\n") for ln in lines[-n:]]
-    except OSError:
+    raw = read_data_path(path, max_bytes=MAX_PLATFORM_FILE_BYTES)
+    if raw is None:
         return []
+    return raw.decode("utf-8", "replace").splitlines()[-n:]
 
 
 def _action_daemon_overview(
@@ -3789,7 +3805,7 @@ def _action_daemon_overview(
 
     # Settlements.
     try:
-        import yaml as _yaml
+        import yaml as _yaml  # noqa: F401 - soul settlements need PyYAML
 
         from tinyassets.bid.settlements import settlements_dir
         from tinyassets.producers.goal_pool import repo_root_path
@@ -3804,7 +3820,9 @@ def _action_daemon_overview(
             for p in sorted(sroot.glob("*.yaml")):
                 s_total += 1
                 try:
-                    raw = _yaml.safe_load(p.read_text(encoding="utf-8")) or {}
+                    raw = load_untrusted_yaml(
+                        (read_data_path(p, max_bytes=MAX_CONFIG_BYTES) or b"").decode("utf-8")
+                    ) or {}
                 except Exception:  # noqa: BLE001
                     continue
                 if not isinstance(raw, dict):
@@ -3905,25 +3923,27 @@ def _action_set_tier_config(
     field_name = _TIER_KEY_TO_CONFIG_FIELD[tier_name]
     cfg_path = udir / "dispatcher_config.yaml"
     existing: dict[str, Any] = {}
-    if cfg_path.exists():
-        try:
-            loaded = _yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
+    try:
+        # Link-free and alias-free: a refusal rejects rather than reading as
+        # empty, which the write below would then replace the file with.
+        raw_cfg = read_data_path(cfg_path, max_bytes=MAX_CONFIG_BYTES)
+        if raw_cfg is not None:
+            loaded = load_untrusted_yaml(raw_cfg.decode("utf-8"))
             if isinstance(loaded, dict):
                 existing = loaded
-        except Exception as exc:  # noqa: BLE001
-            return json.dumps({
-                "status": "rejected",
-                "error": f"config_corrupt: {exc}",
-            })
+    except Exception as exc:  # noqa: BLE001
+        return json.dumps({
+            "status": "rejected",
+            "error": f"config_corrupt: {exc}",
+        })
 
     existing[field_name] = bool(enabled)
 
     try:
         udir.mkdir(parents=True, exist_ok=True)
-        cfg_path.write_text(
-            _yaml.safe_dump(existing, sort_keys=True,
-                            default_flow_style=False),
-            encoding="utf-8",
+        write_data_path(
+            cfg_path,
+            _yaml.safe_dump(existing, sort_keys=True, default_flow_style=False),
         )
     except OSError as exc:
         return json.dumps({
@@ -4703,7 +4723,7 @@ def _action_set_premise(universe_id: str = "", text: str = "", **_kwargs: Any) -
         soul = write_universe_soul(
             udir, purpose=text, lineage="created-from-premise",
         )
-        legacy_premise_path(udir).write_text(text, encoding="utf-8")
+        write_data_path(legacy_premise_path(udir), text)
         return json.dumps({
             "universe_id": uid,
             "status": "updated",
@@ -4908,7 +4928,7 @@ def _action_add_canon(
         if provenance_tag:
             # Resolve + contain the sidecar meta path before write so a
             # crafted ``safe_name`` cannot clobber a file outside canon_dir.
-            meta_path = safe_canon_path(
+            safe_canon_path(
                 canon_dir, f".{safe_name}.meta.json", kind="meta sidecar"
             )
             meta = {
@@ -4916,7 +4936,7 @@ def _action_add_canon(
                 "added": datetime.now(timezone.utc).isoformat(),
                 "source": _current_actor(),
             }
-            meta_path.write_text(json.dumps(meta), encoding="utf-8")
+            write_data_path(canon_dir / f".{safe_name}.meta.json", json.dumps(meta))
 
         return json.dumps({
             "universe_id": uid,
@@ -4963,60 +4983,43 @@ def _action_list_canon(
         }
         # Check for provenance metadata. ``f.name`` is a contained basename,
         # so the sidecar still resolves under canon_dir; contain it anyway.
-        try:
-            meta_path = safe_canon_path(
-                canon_dir, f".{f.name}.meta.json", kind="meta sidecar"
-            )
-        except ValueError:
-            files.append(entry)
-            continue
-        if meta_path.exists():
-            try:
-                meta = json.loads(meta_path.read_text(encoding="utf-8"))
-                entry["provenance"] = meta.get("provenance", "")
-                entry["added"] = meta.get("added", "")
-                entry["source"] = meta.get("source", "")
-            except (json.JSONDecodeError, OSError):
-                pass
+        meta = _canon_json(canon_dir, f".{f.name}.meta.json")
+        if meta:
+            entry["provenance"] = meta.get("provenance", "")
+            entry["added"] = meta.get("added", "")
+            entry["source"] = meta.get("source", "")
         files.append(entry)
 
     return json.dumps({"universe_id": uid, "canon_files": files, "count": len(files)})
 
 
-def _source_sidecar_meta(canon_dir: Path, filename: str) -> dict[str, Any]:
-    # Resolve + contain the sidecar before read so a symlinked ``.meta.json``
-    # (or a crafted ``filename``) cannot leak a file outside canon_dir.
+def _canon_json(canon_dir: Path, name: str) -> dict[str, Any]:
+    """A canon dotfile (meta sidecar, manifest) as a dict; ``{}`` when absent
+    or not a JSON object.
+
+    Read by its LEXICAL path with no link followed: ``safe_canon_path``
+    resolves against the resolved canon dir, which a ``canon -> /data/<other>``
+    link moves, so a sidecar read through it would return another universe's
+    provenance. A refused read raises rather than reading as ``{}``.
+    """
+    if "/" in name or "\\" in name or name in ("", ".", ".."):
+        return {}
+    raw = read_data_path(canon_dir / name, max_bytes=MAX_PLATFORM_FILE_BYTES)
+    if raw is None:
+        return {}
     try:
-        meta_path = safe_canon_path(
-            canon_dir, f".{filename}.meta.json", kind="meta sidecar"
-        )
+        data = json.loads(raw.decode("utf-8"))
     except ValueError:
         return {}
-    if not meta_path.exists():
-        return {}
-    try:
-        meta = json.loads(meta_path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
-        return {}
-    return meta if isinstance(meta, dict) else {}
+    return data if isinstance(data, dict) else {}
+
+
+def _source_sidecar_meta(canon_dir: Path, filename: str) -> dict[str, Any]:
+    return _canon_json(canon_dir, f".{filename}.meta.json")
 
 
 def _manifest_data(canon_dir: Path) -> dict[str, Any]:
-    # Resolve + contain the manifest before read so a symlinked
-    # ``.manifest.json`` pointing outside canon_dir is rejected.
-    try:
-        manifest_path = safe_canon_path(
-            canon_dir, ".manifest.json", kind="manifest"
-        )
-    except ValueError:
-        return {}
-    if not manifest_path.exists():
-        return {}
-    try:
-        data = json.loads(manifest_path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
-        return {}
-    return data if isinstance(data, dict) else {}
+    return _canon_json(canon_dir, ".manifest.json")
 
 
 def _source_file_entry(
@@ -5142,7 +5145,7 @@ def _action_read_source(
         })
 
     try:
-        raw = target.read_bytes()
+        raw = read_canon_bytes(canon_dir, f"sources/{safe_name}", kind="source file")
         content = raw.decode("utf-8")
         manifest = _manifest_data(canon_dir)
         entry = _source_file_entry(target, canon_dir, manifest, raw=raw)
@@ -5215,27 +5218,19 @@ def _action_read_canon(
         })
 
     try:
-        content = target.read_text(encoding="utf-8")
+        raw = read_canon_bytes(canon_dir, safe_name, kind="canon file")
+        content = raw.decode("utf-8").replace("\r\n", "\n").replace("\r", "\n")
         entry: dict[str, Any] = {
             "universe_id": uid,
             "filename": safe_name,
-            "size_bytes": target.stat().st_size,
+            "size_bytes": len(raw),
             "content": content,
         }
         # Attach provenance if available. ``safe_name`` is contained above, so
         # the sidecar still resolves under canon_dir; contain it anyway.
-        try:
-            meta_path = safe_canon_path(
-                canon_dir, f".{safe_name}.meta.json", kind="meta sidecar"
-            )
-        except ValueError:
-            return json.dumps(entry)
-        if meta_path.exists():
-            try:
-                meta = json.loads(meta_path.read_text(encoding="utf-8"))
-                entry["provenance"] = meta.get("provenance", "")
-            except (json.JSONDecodeError, OSError):
-                pass
+        meta = _canon_json(canon_dir, f".{safe_name}.meta.json")
+        if meta:
+            entry["provenance"] = meta.get("provenance", "")
         return json.dumps(entry)
     except OSError as exc:
         return json.dumps({"error": f"Failed to read canon file: {exc}"})
@@ -5257,9 +5252,7 @@ def _action_control_daemon(
     if action == "pause":
         try:
             udir.mkdir(parents=True, exist_ok=True)
-            pause_path.write_text(
-                datetime.now(timezone.utc).isoformat(), encoding="utf-8",
-            )
+            write_data_path(pause_path, datetime.now(timezone.utc).isoformat())
             return json.dumps({
                 "universe_id": uid,
                 "action": "pause",
@@ -5679,7 +5672,7 @@ def _action_create_universe(
         )
         # Write premise mirror if provided
         if normalized_text.strip():
-            legacy_premise_path(udir).write_text(normalized_text, encoding="utf-8")
+            write_data_path(legacy_premise_path(udir), normalized_text)
 
         result: dict[str, Any] = {
             "universe_id": uid,
@@ -5902,11 +5895,14 @@ def _config_yaml_is_parseable(config_file: Path) -> bool:
     Probe parseability separately so the read failure stays visible.
     """
     try:
-        import yaml
+        import yaml  # noqa: F401 - availability probe
     except ImportError:
         return False
     try:
-        yaml.safe_load(config_file.read_text(encoding="utf-8"))
+        raw = read_data_path(config_file, max_bytes=MAX_CONFIG_BYTES)
+        if raw is None:
+            return False
+        load_untrusted_yaml(raw.decode("utf-8"))
     except Exception:  # noqa: BLE001
         return False
     return True

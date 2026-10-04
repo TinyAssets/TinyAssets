@@ -144,10 +144,15 @@ def test_app_page_grants_frames_but_keeps_nonce_only_script() -> None:
     # bootstrap.
     assert app["frame-src"] == ["'self'"]
 
-    # Deliberately unchanged: even a bug that inserted bundle script into this
-    # page would not execute it, because nothing carries the per-request nonce.
-    assert len(app["script-src"]) == 1
-    assert app["script-src"][0].startswith("'nonce-")
+    # Inline script still runs only with the per-request nonce, so bundle text
+    # inserted into this page as script does not execute. The one other entry is
+    # the app's own ES-module path (app_modules.script_source): an inserted
+    # <script src> can load only our allowlisted module files from it. Never a
+    # bare origin, 'self' or 'strict-dynamic' (Codex on #4281 asked that this
+    # comment stop claiming every script element needs the nonce).
+    nonce, *rest = app["script-src"]
+    assert nonce.startswith("'nonce-")
+    assert len(rest) <= 1 and all(r.endswith("/app/m/") and "://" in r for r in rest), rest
     assert "'unsafe-inline'" not in app["script-src"]
     assert "'unsafe-eval'" not in app["script-src"]
 

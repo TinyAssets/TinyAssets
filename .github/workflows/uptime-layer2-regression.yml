@@ -16,8 +16,12 @@ permissions:
   contents: read
 
 concurrency:
-  group: layer2-windows-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  # Per-PR cancellation unchanged. The fallback was `github.ref`, which two
+  # manual dispatches on the same branch share -- the second cancelled the
+  # first. `run_id` makes every non-PR run its own group, and the condition is
+  # the second layer.
+  group: layer2-windows-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   windows-layer2:

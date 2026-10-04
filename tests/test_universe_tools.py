@@ -876,6 +876,10 @@ def test_agent_owned_paths_are_pinned():
     assert universe_tools.AGENT_BRAIN_FILES == (
         "identity.md", "founder.md", "origin.md", "body.md", "orgchart.md",
         "projects.md", "goals.md", "index.md", "log.md", "voice.md", "AGENTS.md",
+        # D7a: the agent writes its own memory continuously, so a root MEMORY.md
+        # is bind-mounted and promoted. Its readers (memory_items,
+        # harness_history) go through universe_files and are in TURN_PATH.
+        "MEMORY.md",
     )
     assert universe_tools.AGENT_HARNESS_DIRS == (
         "skills", "prompts", "extensions", "workflows", "bin", "notes", "wiki",
