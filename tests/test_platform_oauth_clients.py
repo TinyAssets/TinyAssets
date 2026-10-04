@@ -117,7 +117,8 @@ def test_directory_matches_all_hosts_exactly_and_selects_scope_sets(configured):
     offer = directory.resolve({"use": "tasks"}, [API])
     assert offer["scopes"] == ["tasks.write"]
     assert directory.resolve({"use": "unknown"}, [API]) is None
-    assert directory.resolve({"scopes": ["tasks.read"]}, [API])["scopes"] == ["tasks.read"]
+    assert directory.resolve({"scopes": ["tasks.write"]}, [API])["scopes"] == ["tasks.write"]
+    assert directory.resolve({"scopes": ["tasks.read"]}, [API]) is None
 
 
 @pytest.mark.parametrize("field,value", [
@@ -286,9 +287,8 @@ def test_two_connections_of_one_owner_keep_distinct_tokens(configured, provider,
 
 
 def test_future_secret_names_are_filtered_without_a_python_patch(monkeypatch):
-    from tinyassets.platform_secrets import CHILD_FORBIDDEN_ENV, child_env
+    from tinyassets.platform_secrets import child_env
 
-    assert "TINYASSETS_OAUTH_GOOGLE_CLIENT_SECRET" in CHILD_FORBIDDEN_ENV
     assert child_env({SECRET_NAME: SECRET, CLIENT_NAME: CLIENT,
                       service.ENV: "owner capability", "KEEP": "yes"}) == {"KEEP": "yes"}
     from tinyassets.node_sandbox import BwrapLauncher, PlainSubprocessLauncher
@@ -330,3 +330,185 @@ def test_packaged_example_is_inactive_until_both_env_names_are_set(monkeypatch):
             == row["default_scopes"]["gmail"])
     assert (directory.resolve({"use": "calendar"}, ["www.googleapis.com"])["scopes"]
             == row["default_scopes"]["calendar"])
+    assert directory.resolve({"scopes": ["https://mail.google.com/"]},
+                             ["www.googleapis.com"]) is None
+
+
+@pytest.mark.parametrize("failure", ["missing", "invalid", "rpc_timeout", "acl", "hosts"])
+@pytest.mark.parametrize("advertise", [True, False])
+def test_unavailable_directory_preserves_discovery_and_key_paste(
+    configured, app, monkeypatch, provider, caplog, failure, advertise,
+):
+    row, path, _ = configured
+    hosts = [API]
+    if failure == "missing":
+        monkeypatch.setenv(directory.CONFIG_ENV, str(path.with_name("absent.json")))
+    elif failure == "invalid":
+        path.write_text(SECRET, encoding="utf-8")
+    else:
+        owner = OTHER if failure == "acl" else OWNER
+        config = service.client_config(app / UID, owner)
+        monkeypatch.setenv(service.ENV, json.dumps(config))
+        if failure == "hosts":
+            hosts *= 9
+        if failure == "rpc_timeout":
+            def timeout(*_args, **_kwargs):
+                raise TimeoutError(SECRET)
+            monkeypatch.setattr(service.http.client, "HTTPConnection", timeout)
+    provider.advertise = advertise
+    offer, reason = discovery.resolve_offer({}, hosts)
+    if advertise:
+        assert not reason and offer["source"] == "discovered"
+    else:
+        assert offer is None and reason
+    assert "Optional OAuth directory unavailable" in caplog.text
+    assert SECRET not in caplog.text
+
+
+def test_unexpected_directory_errors_are_not_hidden(configured, monkeypatch):
+    def fail(*_args):
+        raise OAuthError("unexpected_failure")
+    monkeypatch.setattr(directory, "resolve", fail)
+    with pytest.raises(OAuthError, match="unexpected_failure"):
+        discovery.resolve_offer({}, [API])
+
+
+def test_invalid_directory_does_not_block_engine_restart(configured, tmp_path, monkeypatch, caplog):
+    from tinyassets.engine_mcp_http import _EngineServer
+
+    configured[1].write_text(SECRET, encoding="utf-8")
+    launches = []
+
+    class Process:
+        def poll(self):
+            return None
+
+        def terminate(self):
+            pass
+
+    def launch(*_args, **kwargs):
+        launches.append(kwargs["env"])
+        return Process()
+
+    monkeypatch.setattr("tinyassets.engine_mcp_http.subprocess.Popen", launch)
+    engine = _EngineServer(UID, OWNER, 8790, str(tmp_path))
+    assert engine.start()
+    first = json.loads(launches[0][service.ENV])
+    assert engine.start()
+    second = json.loads(launches[1][service.ENV])
+    assert first["token"] != second["token"]
+    assert first["token"] not in service._bindings
+    engine.stop()
+    assert second["token"] not in service._bindings
+    assert all(SECRET_NAME not in env for env in launches)
+    assert SECRET_NAME not in os.environ and directory.secret(SECRET_NAME) == SECRET
+    assert "oauth_directory_invalid" in caplog.text and SECRET not in caplog.text
+
+
+def test_invalid_directory_does_not_block_real_proxy_spawn(configured, tmp_path):
+    from tests.test_outbound_proxy_startup_diagnosis import _ledger_for
+
+    configured[1].write_text("invalid", encoding="utf-8")
+    before = set(service._bindings)
+    proxy = _ledger_for(tmp_path).resolve_scoped_proxy(
+        universe_id="universe-1", connection_class="issue-writer",
+    )
+    created = set(service._bindings) - before
+    assert len(created) == 1
+    proxy.close()
+    assert not created & set(service._bindings)
+
+
+def test_startup_scrubs_oauth_secrets_before_storage_or_children(configured, monkeypatch):
+    from tinyassets import storage_layout, universe_server
+
+    class StartupChecked(Exception):
+        pass
+
+    def check():
+        assert SECRET_NAME not in os.environ
+        assert directory.secret(SECRET_NAME) == SECRET
+        raise StartupChecked
+
+    configured[1].write_text("invalid", encoding="utf-8")
+    monkeypatch.setattr(storage_layout, "require_layout", check)
+    with pytest.raises(StartupChecked):
+        universe_server.main()
+
+
+def test_fork_guard_protects_inherited_memory(configured, monkeypatch):
+    directory.prepare_children()
+    monkeypatch.setattr(directory, "_pid", os.getpid() + 1)
+    with pytest.raises(OAuthError, match="platform_client_unavailable"):
+        directory.secret(SECRET_NAME)
+
+
+def test_founder_home_without_acl_can_resolve_and_refresh(configured, provider, app):
+    from tinyassets import daemon_server
+
+    with _as(OWNER):
+        ask = _ask()
+    assert _sign_in(provider, ask["request_id"])[2].status_code == 200
+    before = _vault_bundle(app)
+    daemon_server.set_founder_home(app, founder_sub=OWNER, universe_id=UID)
+    with daemon_server._connect(app) as conn:
+        conn.execute("DELETE FROM universe_acl WHERE universe_id = ?", (UID,))
+    assert daemon_server.list_universe_acl(app, universe_id=UID) == []
+    config = service.client_config(app / UID, OWNER)
+    assert service.call(config, {"op": "resolve", "hosts": [API]})["offer"]["source"] == "directory"
+    assert service.call(config, {"op": "refresh", "destination": "tasklark",
+                                 "rejected": before.access_token}) == {"ok": True}
+    assert _vault_bundle(app).access_token != before.access_token
+    stranger = service.client_config(app / UID, OTHER)
+    with pytest.raises(OAuthError):
+        service.call(stranger, {"op": "refresh", "destination": "tasklark"})
+
+
+def test_released_capability_cannot_refresh_but_other_launch_can(configured, provider, app):
+    with _as(OWNER):
+        ask = _ask()
+    assert _sign_in(provider, ask["request_id"])[2].status_code == 200
+    first = service.client_config(app / UID, OWNER)
+    second = service.client_config(app / UID, OWNER)
+    service.release_client(first)
+    with pytest.raises(OAuthError):
+        service.call(first, {"op": "refresh", "destination": "tasklark"})
+    assert service.call(second, {"op": "refresh", "destination": "tasklark"}) == {"ok": True}
+
+
+def test_invalid_directory_connect_ask_keeps_key_paste(configured, provider, universes):
+    configured[1].write_text("invalid", encoding="utf-8")
+    provider.advertise = False
+    with _as(OWNER):
+        assert _ask().get("oauth_unavailable")
+
+
+def test_failed_engine_spawn_revokes_capability(configured, tmp_path, monkeypatch):
+    from tinyassets.engine_mcp_http import _EngineServer
+
+    before = set(service._bindings)
+
+    def fail(*_args, **_kwargs):
+        raise OSError("spawn failed")
+
+    monkeypatch.setattr("tinyassets.engine_mcp_http.subprocess.Popen", fail)
+    assert not _EngineServer(UID, OWNER, 8790, str(tmp_path)).start()
+    assert set(service._bindings) == before
+
+
+@pytest.mark.parametrize("failure", ["spawn", "timeout", "startup"])
+def test_failed_proxy_start_revokes_capability(configured, tmp_path, monkeypatch, failure):
+    from tests import test_outbound_proxy_startup_diagnosis as diagnosis
+
+    before = set(service._bindings)
+    if failure == "spawn":
+        diagnosis.test_a_child_that_cannot_be_spawned_still_gets_the_diagnostic_contract(
+            tmp_path, monkeypatch,
+        )
+    elif failure == "timeout":
+        diagnosis.test_a_live_but_slow_child_is_reported_as_a_timeout_not_a_process_exit(
+            tmp_path, monkeypatch,
+        )
+    else:
+        diagnosis.test_scoped_proxy_start_failure_names_a_cause(tmp_path)
+    assert set(service._bindings) == before

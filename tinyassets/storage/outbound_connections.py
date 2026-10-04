@@ -1032,13 +1032,14 @@ def _run_proxy_worker(
 class _ProxyChannel:
     """Adapter-side transport; contains no dispatcher or credential material."""
 
-    __slots__ = ("_channel", "_closed", "_lock", "_process")
+    __slots__ = ("_channel", "_closed", "_lock", "_process", "_oauth_service")
 
-    def __init__(self, channel: Any, process: Any) -> None:
+    def __init__(self, channel: Any, process: Any, oauth_service=None) -> None:
         self._channel = channel
         self._closed = False
         self._lock = threading.Lock()
         self._process = process
+        self._oauth_service = oauth_service
 
     def request(self, verb: str, request: object, *, inference_usage=None) -> Any:
         with self._lock:
@@ -1081,6 +1082,9 @@ class _ProxyChannel:
         raise ProxyRequestError(message)
 
     def close(self) -> None:
+        from tinyassets.connection_oauth.service import release_client
+
+        release_client(self._oauth_service)
         with self._lock:
             if self._closed:
                 return
@@ -6104,7 +6108,7 @@ class ConnectionLedger:
         # Resolve the budget BEFORE spawning: a validation failure here must not
         # leak an already-started child (Codex FIX C).
         timeout = _proxy_startup_timeout_seconds()
-        from tinyassets.connection_oauth.service import client_config
+        from tinyassets.connection_oauth.service import client_config, release_client
 
         factory_config["oauth_service"] = client_config(
             Path(factory_config["universe_dir"]), owner_user_id,
@@ -6126,6 +6130,7 @@ class ConnectionLedger:
         try:
             worker.start()
         except Exception as exc:
+            release_client(factory_config["oauth_service"])
             # A spawn that never starts used to bypass the diagnostic contract
             # entirely, surfacing as an unrelated error type (Codex FIX D).
             client_channel.close()
@@ -6147,6 +6152,7 @@ class ConnectionLedger:
             # broken pipe while trying to send "ready" — so an exitcode sampled
             # after the close can be a death the PARENT caused, which is the very
             # misattribution this helper exists to prevent.
+            release_client(factory_config["oauth_service"])
             own_exit = worker.exitcode
             if own_exit is None and not worker.is_alive():
                 # Already exited, just not reaped yet; is_alive() reaps it, so
@@ -6200,7 +6206,7 @@ class ConnectionLedger:
             provider=provider,
             destination=destination,
             scopes=scopes,
-            _channel=_ProxyChannel(client_channel, worker),
+            _channel=_ProxyChannel(client_channel, worker, factory_config["oauth_service"]),
         )
 
     def _active_resource_for_grant(

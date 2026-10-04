@@ -22,7 +22,6 @@ ENV = "TINYASSETS_CONNECTION_OAUTH_SERVICE"
 _lock = threading.Lock()
 _server: http.server.ThreadingHTTPServer | None = None
 _bindings: dict[str, tuple[Path, str]] = {}
-_configs: dict[tuple[Path, str], dict[str, Any]] = {}
 _MAX_BODY = 16384
 
 
@@ -44,12 +43,17 @@ def _dispatch(binding: tuple[Path, str], doc: dict[str, Any]) -> dict[str, Any]:
     from tinyassets.connection_oauth.discovery import validate_request
     from tinyassets.connection_oauth.tokens import ConnectionTokens
     from tinyassets.credential_vault import http_deposit_refusal
-    from tinyassets.daemon_server import list_universe_acl
+    from tinyassets.daemon_server import get_founder_home, universe_access_permission
     from tinyassets.principals import named_principal
 
     universe, owner = binding
-    if not any(r.get("actor_id") == named_principal(owner) and r.get("permission") == "admin"
-               for r in list_universe_acl(universe.parent, universe_id=universe.name)):
+    actor = named_principal(owner)
+    if not actor or not (
+        get_founder_home(universe.parent, actor) == universe.name
+        or universe_access_permission(
+            universe.parent, universe_id=universe.name, actor_id=actor,
+        ) == "admin"
+    ):
         raise OAuthError("platform_client_unavailable")
     if doc.get("op") == "resolve":
         hosts = doc.get("hosts")
@@ -108,7 +112,10 @@ class _Server(http.server.ThreadingHTTPServer):
 
 
 def client_config(universe: Path, owner: str) -> dict[str, Any]:
-    """Called by daemon launchers; re-use the engine's binding inside children."""
+    """Mint per launch; re-use the engine's binding inside children.
+
+    The daemon launcher must release its capability on teardown or failed start.
+    """
     global _server
     inherited = inherited_config()
     if inherited:
@@ -118,8 +125,6 @@ def client_config(universe: Path, owner: str) -> dict[str, Any]:
     prepare_children()
     key = (Path(universe).resolve(), owner)
     with _lock:
-        if key in _configs:
-            return dict(_configs[key])
         if _server is None:
             _server = _Server(("127.0.0.1", 0), _Handler)
             threading.Thread(target=_server.serve_forever, daemon=True,
@@ -127,8 +132,14 @@ def client_config(universe: Path, owner: str) -> dict[str, Any]:
         token = secrets.token_urlsafe(32)
         _bindings[token] = key
         config = {"port": _server.server_port, "token": token}
-        _configs[key] = config
         return dict(config)
+
+
+def release_client(config: dict[str, Any] | None) -> None:
+    """Revoke a launcher-owned capability; inherited bindings belong to the parent."""
+    if config:
+        with _lock:
+            _bindings.pop(config.get("token"), None)
 
 
 def call(config: dict[str, Any], doc: dict[str, Any]) -> dict[str, Any]:

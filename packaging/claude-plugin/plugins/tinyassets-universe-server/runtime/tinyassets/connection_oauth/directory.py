@@ -6,6 +6,7 @@ from this trusted directory again at exchange/refresh, never from those bundles.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import threading
@@ -27,6 +28,7 @@ _RESERVED = frozenset({
 _secrets: dict[str, str] = {}
 _secret_lock = threading.Lock()
 _pid = os.getpid()
+logger = logging.getLogger(__name__)
 
 
 def entries() -> list[dict[str, Any]]:
@@ -81,12 +83,14 @@ def entries() -> list[dict[str, Any]]:
                     or any(not isinstance(v, str) or len(v) > 1024 for v in extra.values())):
                 raise ValueError
         return rows
-    except (OSError, ValueError, KeyError, TypeError, OAuthError):
+    except (OSError, ValueError, KeyError, TypeError, RecursionError, OAuthError):
         # Configuration/parse exception text can contain configuration contents.
         raise OAuthError("oauth_directory_invalid") from None
 
 
 def secret(name: str) -> str:
+    # This guards fork-inherited memory only. Spawn imports a fresh module;
+    # its protection is the environment scrub at daemon startup/before launch.
     if os.getpid() != _pid:
         raise OAuthError("platform_client_unavailable")
     with _secret_lock:
@@ -95,11 +99,16 @@ def secret(name: str) -> str:
 
 def prepare_children() -> None:
     """Keep even multiprocessing spawn from inheriting platform client secrets."""
-    entries()  # validate before starting a child
     with _secret_lock:
         for name in list(os.environ):
             if _SECRET_NAME.fullmatch(name):
                 _secrets[name] = os.environ.pop(name)
+    try:
+        entries()
+    except OAuthError:
+        # Optional registrations must never take down an engine or broker.
+        # Resolution/exchange revalidate, so no invalid entry can be used.
+        logger.warning("Optional OAuth directory unavailable: oauth_directory_invalid")
 
 
 def registered(provider_id: str, *, client_id: str, token_url: str) -> dict[str, Any]:
@@ -125,14 +134,18 @@ def resolve(requested: dict[str, Any], hosts: list[str]) -> dict[str, Any] | Non
         client_id = os.environ.get(row["client_id_env"], "")
         if not client_id or not secret(row["client_secret_env"]):
             continue
-        scopes = requested.get("scopes") or []
+        scopes = validate_scopes(requested.get("scopes"))
+        declared = row.get("default_scopes", {})
+        use = requested.get("use")
+        if use and use not in declared:
+            continue
+        allowed = {s for values in declared.values() for s in validate_scopes(values)}
+        if not set(scopes) <= allowed:
+            continue
         if not scopes:
-            use = requested.get("use")
             uses = [use] if use else sorted(
                 {row.get("host_uses", {}).get(h, "") for h in wanted} - {""})
-            if use and use not in row.get("default_scopes", {}):
-                continue
-            scopes = [s for u in uses for s in row.get("default_scopes", {}).get(u, [])]
+            scopes = [s for u in uses for s in validate_scopes(declared.get(u, []))]
             # Ambiguous shared API hosts require explicit scopes or a named use.
             if not scopes:
                 continue
