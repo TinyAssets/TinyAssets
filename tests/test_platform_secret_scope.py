@@ -11,6 +11,8 @@ assertion is on names.
 """
 from __future__ import annotations
 
+import ast
+import importlib
 import json
 import os
 import re
@@ -231,12 +233,99 @@ def test_engine_mcp_server_child_gets_a_scrubbed_env(monkeypatch):
     assert env["TINYASSETS_DATA_DIR"] == "/data"
 
 
-def test_the_stdio_engine_server_config_carries_no_inherited_env():
+_CLAUDE_PROVIDER = PACKAGE / "providers" / "claude_provider.py"
+
+
+def _server_env_builder() -> tuple[ast.AST, str]:
+    """The function that builds ``server_env`` for the stdio engine config."""
+    source = _CLAUDE_PROVIDER.read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        for sub in ast.walk(node):
+            if isinstance(sub, ast.Assign) and any(
+                isinstance(t, ast.Name) and t.id == "server_env" for t in sub.targets
+            ):
+                return node, source
+    raise AssertionError(
+        "claude_provider.py no longer builds server_env; this test has lost its subject"
+    )
+
+
+def _resolve_env_name(key: ast.AST, source: str) -> str:
+    """The literal env name a config key refers to.
+
+    Names are module constants (``TREE_ENV``), imported either at module scope
+    or inside the function. Resolve through the real module so a rename cannot
+    quietly turn a pin into a different variable than the test believes.
+    """
+    if isinstance(key, ast.Constant) and isinstance(key.value, str):
+        return key.value
+    assert isinstance(key, ast.Name), (
+        f"environment key is a computed expression ({ast.dump(key)}); it must be a "
+        "literal or a named constant so the name is auditable here"
+    )
+    for module, imported in re.findall(r"(?m)^\s*from ([\w.]+) import ([^\n(]+)$", source):
+        if key.id in {part.strip().split(" as ")[0] for part in imported.split(",")}:
+            return getattr(importlib.import_module(module), key.id)
+    raise AssertionError(f"could not resolve the env name behind {key.id}")
+
+
+def test_the_stdio_engine_server_config_inherits_no_platform_secret():
     """The stdio fallback is spawned by the provider CLI, whose own env is an
-    allowlist; its config must add only the engine pins, never os.environ."""
-    source = (PACKAGE / "providers" / "claude_provider.py").read_text(encoding="utf-8")
-    block = source[source.index("server_env = {"):source.index('"env": server_env')]
-    assert "os.environ" not in block
+    allowlist; its config must add only auditable pins, never a bulk copy of
+    ``os.environ``.
+
+    Originally a substring ban on ``os.environ``. That over-fired once
+    execution-owner-lease D2 (#4308) began forwarding one named, non-secret
+    variable -- ``TINYASSETS_OWNER_TREE``, a 32-hex process-tree id that exists
+    to be inherited -- so the check now enforces the invariant it was a proxy
+    for. This is strictly stronger than the substring: a forwarded name is
+    allowed only after being PROVEN not to be a platform secret, and any
+    wholesale form (``os.environ.copy()``, ``**os.environ``, ``dict(os.environ)``,
+    a bare reference) still fails, because every ``environ`` access must be a
+    single-key read.
+    """
+    func, source = _server_env_builder()
+    accesses = [
+        node for node in ast.walk(func)
+        if isinstance(node, ast.Attribute) and node.attr == "environ"
+    ]
+    keys: list[ast.AST] = []
+    for node in ast.walk(func):
+        # environ["NAME"]
+        if isinstance(node, ast.Subscript) and isinstance(node.value, ast.Attribute) \
+                and node.value.attr == "environ":
+            keys.append(node.slice)
+        # environ.get("NAME", ...)
+        elif isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) \
+                and node.func.attr == "get" \
+                and isinstance(node.func.value, ast.Attribute) \
+                and node.func.value.attr == "environ":
+            assert node.args, "environ.get() with no name reads the whole environment"
+            keys.append(node.args[0])
+
+    # Every environ access is accounted for by a single-key read. A bulk form
+    # (.copy(), ** unpacking, passing environ itself) leaves an access with no
+    # matching key and fails here.
+    assert len(accesses) == len(keys), (
+        f"{len(accesses)} environ access(es) but only {len(keys)} single-key read(s): "
+        "the stdio engine config must never inherit the environment wholesale"
+    )
+
+    forwarded = {_resolve_env_name(key, source) for key in keys}
+    assert forwarded <= {"TINYASSETS_OWNER_TREE"}, (
+        f"new name(s) forwarded into the stdio engine config: "
+        f"{sorted(forwarded - {'TINYASSETS_OWNER_TREE'})}. Adding one is a "
+        "deliberate inheritance decision -- classify it in "
+        "docs/reference/environment-variables.md first."
+    )
+    # And whatever is forwarded is not one of the platform's own secrets.
+    assert forwarded.isdisjoint(CHILD_FORBIDDEN_ENV), (
+        f"{sorted(forwarded & CHILD_FORBIDDEN_ENV)} is a platform secret and cannot "
+        "be forwarded to a provider-spawned engine"
+    )
 
 
 # ---------------------------------------------------------------------------
