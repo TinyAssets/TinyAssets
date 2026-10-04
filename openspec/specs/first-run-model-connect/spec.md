@@ -1,4 +1,12 @@
-﻿### Requirement: Inline connection at first send
+# First-run model connect
+
+## Purpose
+
+Connect an unpowered owner to their own model inside the chat and continue the retained message.
+
+## Requirements
+
+### Requirement: Inline connection at first send
 The bubble SHALL render a provider-data connection card when a message is refused for missing usable model authority, without calling an LLM.
 
 #### Scenario: Empty account
