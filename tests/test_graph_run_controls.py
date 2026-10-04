@@ -15,6 +15,22 @@ def controls(tmp_path, monkeypatch):
     from tinyassets.daemon_server import ensure_universe_registered, grant_universe_access
     from tinyassets.runs import create_run, update_run_status
 
+    # These rows have no worker that could settle them. Exercise the real
+    # polling loop and its full default window on a simulated clock instead
+    # of sleeping ten wall seconds for each cancellation-state snapshot.
+    read_settled = served._read_run_settled
+
+    def read_without_wall_wait(read):
+        now = 0.0
+
+        def advance(seconds):
+            nonlocal now
+            now += seconds
+
+        return read_settled(read, clock=lambda: now, sleep=advance)
+
+    monkeypatch.setattr(served, "_read_run_settled", read_without_wall_wait)
+
     class ProductionScopeProvider(DevAuthProvider):
         def resolve_always_writes(self):
             return True
