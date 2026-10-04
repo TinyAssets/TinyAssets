@@ -166,9 +166,16 @@ SUPABASE_SERVICE_ROLE_KEY=
 # Removed 2026-10-03 (founder: "all unused secrets get removed"):
 # GITHUB_OAUTH_CLIENT_ID / GITHUB_OAUTH_CLIENT_SECRET. Nothing read either --
 # no route serves the callback they describe, and `git grep authorize/github`
-# finds no flow anywhere under tinyassets/, WebSite/ or scripts/. The deploy
-# deletes both from /etc/tinyassets/env and asserts the secret absent, so they
-# are gone rather than guarded; re-add them WITH the code that reads them.
+# finds no flow anywhere under tinyassets/, WebSite/ or scripts/.
+#
+# Both names are WITHHELD from the daemon by RETIRED_ENV in
+# deploy/install-tinyassets-env.sh, which covers every writer of daemon.env --
+# so a stale assignment surviving in this file on some host never reaches the
+# daemon. DELETING them from /etc/tinyassets/env is a separate step that lands
+# with branch security/retire-github-oauth-workflow-secret; until then a stale
+# assignment stays on the host, withheld but present.
+#
+# Re-add them WITH the code that reads them.
 
 
 # ---------------------------------------------------------------------

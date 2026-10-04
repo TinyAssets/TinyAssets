@@ -15,8 +15,11 @@ whose next step is *"the founder logs into Cloudflare."*
 ## Delete the GitHub OAuth App (2026-10-03)
 
 **Why:** `GITHUB_OAUTH_CLIENT_ID` / `GITHUB_OAUTH_CLIENT_SECRET` are removed from the
-template, the deny-lists and the host env — nothing read them and no route serves the
-callback they described. Two things the code change cannot do:
+template and withheld from the daemon by `RETIRED_ENV` — nothing read them and no route
+serves the callback they described. Deleting them from `/etc/tinyassets/env` itself is
+deferred to branch `security/retire-github-oauth-workflow-secret`, so until that lands a
+stale assignment may still sit in the host env file (withheld from the daemon, but
+present). Two things the code change cannot do:
 
 * **This repo is public, and `docs/ops/day-of-cutover.md` carried an example assignment
   for the secret.** It looks like a placeholder and I did not establish otherwise (I did

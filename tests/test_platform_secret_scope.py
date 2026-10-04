@@ -74,14 +74,18 @@ def _shell_retired() -> set[str]:
 def test_a_retired_name_is_withheld_at_the_renderer_not_by_one_workflow():
     """Retirement is enforced where daemon.env is WRITTEN, not where it is deployed.
 
-    deploy-prod.yml deletes a retired key from the shared env and asserts it
-    absent, but it is not the only writer: every ``set`` whose target is the
-    shared env renders daemon.env, and apply-daemon-env.yml,
-    deploy/hetzner-bootstrap.sh and p0-outage-triage.yml all reach the daemon
-    through this helper without that scrub (Codex, 2026-10-03). So the helper's
-    own forbidden predicate has to cover retired names, or a stale assignment
-    on any host still reaches the daemon -- which is worse than before the name
+    A deploy-side scrub of the shared env would not be enough on its own, and
+    is not what this PR relies on: every ``set`` whose target is the shared env
+    renders daemon.env, and apply-daemon-env.yml, deploy/hetzner-bootstrap.sh
+    and p0-outage-triage.yml all reach the daemon through this helper without
+    passing any workflow's scrub (Codex, 2026-10-03). So the helper's own
+    forbidden predicate has to cover retired names, or a stale assignment on
+    any host still reaches the daemon -- which is worse than before the name
     was de-listed, because nothing withholds it any more.
+
+    Deleting a retired key from /etc/tinyassets/env is the separate, additive
+    half, deferred to branch security/retire-github-oauth-workflow-secret. This
+    test is about the withholding, which is what makes the de-listing safe.
     """
     retired = _shell_retired()
     assert retired, "the retirement list exists so a de-listed name is still withheld"
@@ -236,9 +240,8 @@ def test_engine_mcp_server_child_gets_a_scrubbed_env(monkeypatch):
 _CLAUDE_PROVIDER = PACKAGE / "providers" / "claude_provider.py"
 
 
-def _server_env_builder() -> tuple[ast.AST, str]:
-    """The function that builds ``server_env`` for the stdio engine config."""
-    source = _CLAUDE_PROVIDER.read_text(encoding="utf-8")
+def _server_env_builder(source: str) -> tuple[ast.AST, ast.AST]:
+    """The function that builds ``server_env``, and the module around it."""
     tree = ast.parse(source)
     for node in ast.walk(tree):
         if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -247,10 +250,72 @@ def _server_env_builder() -> tuple[ast.AST, str]:
             if isinstance(sub, ast.Assign) and any(
                 isinstance(t, ast.Name) and t.id == "server_env" for t in sub.targets
             ):
-                return node, source
+                return node, tree
     raise AssertionError(
         "claude_provider.py no longer builds server_env; this test has lost its subject"
     )
+
+
+def _rebound_at(tree: ast.AST, name: str) -> list[int]:
+    """Lines where ``name`` is bound by anything other than an import.
+
+    A name resolved through its import statement is only trustworthy if the
+    import is the ONLY thing that binds it. Codex round 3 on #4267: inserting
+    ``TREE_ENV = "DO_API_TOKEN"`` above the environ reads satisfied an
+    import-only resolver while forwarding a forbidden credential. Every binding
+    form is enumerated here so a rebinding cannot hide in an unusual one.
+    """
+    lines: list[int] = []
+
+    def _stores(target: ast.AST) -> list[ast.Name]:
+        return [
+            n for n in ast.walk(target)
+            if isinstance(n, ast.Name) and isinstance(n.ctx, (ast.Store, ast.Del))
+        ]
+
+    for node in ast.walk(tree):
+        targets: list[ast.AST] = []
+        if isinstance(node, (ast.Assign, ast.Delete)):
+            targets = list(node.targets)
+        elif isinstance(node, (ast.AnnAssign, ast.AugAssign, ast.NamedExpr)):
+            targets = [node.target]
+        elif isinstance(node, (ast.For, ast.AsyncFor, ast.comprehension)):
+            targets = [node.target]
+        elif isinstance(node, ast.withitem):
+            targets = [node.optional_vars] if node.optional_vars is not None else []
+        elif isinstance(node, ast.ExceptHandler):
+            if node.name == name:
+                lines.append(node.lineno)
+            continue
+        elif isinstance(node, (ast.Global, ast.Nonlocal)):
+            if name in node.names:
+                lines.append(node.lineno)
+            continue
+        elif isinstance(node, (ast.MatchAs, ast.MatchStar)):
+            if node.name == name:
+                lines.append(node.lineno)
+            continue
+        elif isinstance(node, ast.MatchMapping):
+            if node.rest == name:
+                lines.append(node.lineno)
+            continue
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            if node.name == name:
+                lines.append(node.lineno)
+            args = getattr(node, "args", None)
+            if args is not None:
+                for arg in [
+                    *args.posonlyargs, *args.args, *args.kwonlyargs,
+                    args.vararg, args.kwarg,
+                ]:
+                    if arg is not None and arg.arg == name:
+                        lines.append(arg.lineno)
+            continue
+        else:
+            continue
+        for target in targets:
+            lines.extend(n.lineno for n in _stores(target) if n.id == name)
+    return sorted(set(lines))
 
 
 def _resolve_env_name(key: ast.AST, source: str) -> str:
@@ -272,22 +337,20 @@ def _resolve_env_name(key: ast.AST, source: str) -> str:
     raise AssertionError(f"could not resolve the env name behind {key.id}")
 
 
-def test_the_stdio_engine_server_config_inherits_no_platform_secret():
-    """The stdio fallback is spawned by the provider CLI, whose own env is an
-    allowlist; its config must add only auditable pins, never a bulk copy of
-    ``os.environ``.
+#: The one name the stdio engine config may forward. A 32-hex process-tree id
+#: (``owner_lease.TREE_ENV``) whose documented purpose is to be inherited.
+_FORWARDABLE = {"TINYASSETS_OWNER_TREE"}
 
-    Originally a substring ban on ``os.environ``. That over-fired once
-    execution-owner-lease D2 (#4308) began forwarding one named, non-secret
-    variable -- ``TINYASSETS_OWNER_TREE``, a 32-hex process-tree id that exists
-    to be inherited -- so the check now enforces the invariant it was a proxy
-    for. This is strictly stronger than the substring: a forwarded name is
-    allowed only after being PROVEN not to be a platform secret, and any
-    wholesale form (``os.environ.copy()``, ``**os.environ``, ``dict(os.environ)``,
-    a bare reference) still fails, because every ``environ`` access must be a
-    single-key read.
+
+def _forwarded_env_names(source: str) -> set[str]:
+    """Every env name the stdio engine config forwards, or AssertionError.
+
+    Rejects a wholesale read in any form, a computed key, and -- since the name
+    behind a constant is resolved through its import -- any REBINDING of that
+    constant, which would otherwise let the resolver believe one name while the
+    code forwarded another.
     """
-    func, source = _server_env_builder()
+    func, tree = _server_env_builder(source)
     accesses = [
         node for node in ast.walk(func)
         if isinstance(node, ast.Attribute) and node.attr == "environ"
@@ -314,11 +377,92 @@ def test_the_stdio_engine_server_config_inherits_no_platform_secret():
         "the stdio engine config must never inherit the environment wholesale"
     )
 
-    forwarded = {_resolve_env_name(key, source) for key in keys}
-    assert forwarded <= {"TINYASSETS_OWNER_TREE"}, (
+    forwarded: set[str] = set()
+    for key in keys:
+        forwarded.add(_resolve_env_name(key, source))
+        if isinstance(key, ast.Name):
+            # Resolution trusted the import; prove the import is the only binder.
+            rebound = _rebound_at(tree, key.id)
+            assert not rebound, (
+                f"{key.id} is resolved through its import but is also rebound at "
+                f"line(s) {rebound}: the forwarded name is not what this test "
+                "resolved, so the value cannot be audited here"
+            )
+    return forwarded
+
+
+def test_the_stdio_engine_server_config_forwards_no_platform_secret(
+    tmp_path, monkeypatch,
+):
+    """BEHAVIOURAL: build the real config and look at what actually lands in it.
+
+    The source-level checks below can only reason about the code as written.
+    This one sets a distinguishable sentinel for every ``CHILD_FORBIDDEN_ENV``
+    name, builds the stdio engine config through the real
+    ``_engine_mcp_flags`` path, and asserts none of those sentinels appears --
+    as a key or as a value -- in the env the CLI would spawn the engine with.
+    Independent of how the forwarding is spelled.
+    """
+    from tinyassets.providers.base import ModelConfig
+    from tinyassets.providers.claude_provider import _engine_mcp_flags
+
+    # No routes file under this root, so read_engine_mcp_route returns None and
+    # the real code takes the stdio branch -- the subject of this test.
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("TINYASSETS_ENGINE_MCP_TOOLS", "1")
+    sentinels = {name: f"SENTINEL-{name}" for name in CHILD_FORBIDDEN_ENV}
+    for name, value in sentinels.items():
+        monkeypatch.setenv(name, value)
+    tree_id = "a" * 32
+    monkeypatch.setenv("TINYASSETS_OWNER_TREE", tree_id)
+
+    universe_dir = tmp_path / "universe"
+    universe_dir.mkdir()
+    flags = _engine_mcp_flags(
+        ModelConfig(
+            engine_mcp_enabled=True,
+            engine_mcp_actor_id="user:owner",
+            engine_mcp_graph_id="universe-a",
+        ),
+        universe_dir,
+    )
+    assert flags, "the engine MCP config was not written, so nothing was proved"
+    written = json.loads(
+        Path(flags[flags.index("--mcp-config") + 1]).read_text(encoding="utf-8")
+    )
+    server = written["mcpServers"]["tinyassets"]
+    assert "command" in server, (
+        "expected the stdio branch; an HTTP route was resolved instead and this "
+        "test no longer covers the config it was written for"
+    )
+    env = server["env"]
+
+    leaked_keys = set(env) & set(CHILD_FORBIDDEN_ENV)
+    assert not leaked_keys, f"platform secret(s) named in the engine config: {sorted(leaked_keys)}"
+    blob = json.dumps(env)
+    leaked_values = sorted(name for name, value in sentinels.items() if value in blob)
+    assert not leaked_values, (
+        f"platform secret VALUE(s) reached the engine config: {leaked_values}"
+    )
+    # Not vacuous: the one name that IS forwarded arrives, so a scan that found
+    # nothing cannot be mistaken for a config that forwarded nothing at all.
+    assert env.get("TINYASSETS_OWNER_TREE") == tree_id
+
+
+def test_the_stdio_engine_server_config_inherits_no_platform_secret():
+    """SOURCE-LEVEL: only auditable pins, never a bulk copy of ``os.environ``.
+
+    Originally a substring ban on ``os.environ``. That over-fired once
+    execution-owner-lease D2 (#4308) began forwarding one named, non-secret
+    variable, so the check now enforces the invariant it was a proxy for: every
+    ``environ`` access must be a single-key read, each key must resolve to a
+    name, and that name must be allowlisted and not a platform secret.
+    """
+    forwarded = _forwarded_env_names(_CLAUDE_PROVIDER.read_text(encoding="utf-8"))
+    assert forwarded <= _FORWARDABLE, (
         f"new name(s) forwarded into the stdio engine config: "
-        f"{sorted(forwarded - {'TINYASSETS_OWNER_TREE'})}. Adding one is a "
-        "deliberate inheritance decision -- classify it in "
+        f"{sorted(forwarded - _FORWARDABLE)}. Adding one is a deliberate "
+        "inheritance decision -- classify it in "
         "docs/reference/environment-variables.md first."
     )
     # And whatever is forwarded is not one of the platform's own secrets.
@@ -326,6 +470,30 @@ def test_the_stdio_engine_server_config_inherits_no_platform_secret():
         f"{sorted(forwarded & CHILD_FORBIDDEN_ENV)} is a platform secret and cannot "
         "be forwarded to a provider-spawned engine"
     )
+
+
+def test_rebinding_a_resolved_env_constant_is_rejected():
+    """The import-only resolver is not fooled by a later reassignment.
+
+    Codex round 3 on #4267: resolving ``TREE_ENV`` from its import without
+    checking for a rebinding let a mutation insert ``TREE_ENV = "DO_API_TOKEN"``
+    above the reads -- the resolver still reported the imported value while the
+    code forwarded a forbidden credential. Mutated SOURCE is fed to the checker;
+    the real file is never edited.
+    """
+    source = _CLAUDE_PROVIDER.read_text(encoding="utf-8")
+    assert "DO_API_TOKEN" in DAEMON_FORBIDDEN_ENV, "the mutation must name a real secret"
+    needle = "    if _os.environ.get(TREE_ENV):"
+    assert needle in source, "the forwarding shape moved; update this mutation"
+    mutated = source.replace(
+        needle, '    TREE_ENV = "DO_API_TOKEN"\n' + needle, 1,
+    )
+    assert mutated != source
+
+    # Unmutated source is accepted, so the failure below is the mutation.
+    assert _forwarded_env_names(source) == _FORWARDABLE
+    with pytest.raises(AssertionError, match="rebound at line"):
+        _forwarded_env_names(mutated)
 
 
 # ---------------------------------------------------------------------------

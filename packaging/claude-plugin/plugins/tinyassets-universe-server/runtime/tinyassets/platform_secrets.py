@@ -49,14 +49,17 @@ DAEMON_FORBIDDEN_ENV: frozenset[str] = frozenset({
     "SUPABASE_DB_URL",
     "SUPABASE_SERVICE_ROLE_KEY",
 })
-# A name is removed from this list only once it cannot exist: deleted from
-# deploy/tinyassets-env.template so it is never set again, AND deleted from the
-# live host env by the deploy, which then asserts it absent. This list is a
-# DENY list filtered out of daemon.env (`install-tinyassets-env.sh
-# render-daemon-env`), so de-listing a key that is still in /etc/tinyassets/env
-# would hand it to the daemon rather than withhold it -- the opposite of the
-# point. ``GITHUB_OAUTH_CLIENT_SECRET`` went that way on 2026-10-03: nothing
-# read it anywhere, so the whole name is gone instead of guarded.
+# This list is a DENY list filtered out of daemon.env
+# (`install-tinyassets-env.sh render-daemon-env`), so de-listing a key that is
+# still in /etc/tinyassets/env would hand it to the daemon rather than withhold
+# it -- the opposite of the point. A name therefore leaves this list only once
+# something else withholds it: removed from deploy/tinyassets-env.template so it
+# is never set again, AND covered by ``RETIRED_ENV`` in the renderer, which
+# applies to every writer of daemon.env rather than to one workflow.
+# ``GITHUB_OAUTH_CLIENT_SECRET`` went that way on 2026-10-03: nothing read it
+# anywhere, so the whole name is gone instead of guarded. Deleting it from the
+# live host env is the separate additive step, on branch
+# security/retire-github-oauth-workflow-secret.
 
 DAEMON_ONLY_ENV: frozenset[str] = frozenset({
     "TINYASSETS_BILLING_ENTITLEMENT_KEY",
