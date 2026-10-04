@@ -88,6 +88,9 @@ _OPTIONAL_FUNCS = ("sameInflight", "forgetInflightIf", "noteHeldQueue",
 # The shim above stops at `__APP_FUNCTIONS__`; this test supplies the
 # collaborators `pollStatus` reaches that the send/restore scenarios never did.
 _EXTRA_SHIM = r"""
+const InlineConnection={waiting:()=>false,hold:()=>{
+  throw new Error('Unexpected connection request in the live-turn harness');
+}};
 els["dot"]=new El("div"); els["universe-name"]=new El("div");
 for(const id of ["profile-name","profile-responsibility","profile-status"])
   els[id]=new El("div");

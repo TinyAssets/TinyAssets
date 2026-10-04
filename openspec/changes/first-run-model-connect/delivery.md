@@ -22,7 +22,7 @@ with no skips. Counts exclude repeat executions during diagnosis and post-merge 
 - Chromium: 36 cases — 17 first-run cases, 15 existing send/resume cases, 4 existing inline approval cases. Includes 390px and desktop layouts, cancellation/retry, provider-driven labels, queued messages, owner changes, restored pending messages, late cancellation, and a simulated native Browser plugin handoff.
 - Linux backend runs used the normal unprivileged oracle with bubblewrap. Browser runs used the same oracle's --as-root option and a temporary /out pytest bootstrap to install Playwright/Chromium in the disposable container. No sandbox tests were included in that root subset.
 - New real-store tests cover owner/home isolation, copied launch links, callback browser binding, cancellation, once-only exchange, failed-exchange recovery, and repeated cancellation beyond the pending-flow limit.
-- Cross-family review and AGREE/DISAGREE_EVIDENCE responses: docs/reviews/2026-10-04-first-run-model-connect.md.
+- Cross-family review and AGREE/DISAGREE_EVIDENCE responses: openspec/changes/first-run-model-connect/review.md.
 - Plugin mirror regenerated after parent merges; touched Python files pass ruff; diff whitespace checks pass; change and synced spec both pass strict OpenSpec validation.
 
 The phone Connected/reply screenshot was visually inspected. No live provider
