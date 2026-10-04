@@ -115,6 +115,7 @@ usage() {
 Usage:
   install-tinyassets-env.sh set <KEY>           # value on stdin
   install-tinyassets-env.sh set-once <KEY>      # immutable value on stdin
+  install-tinyassets-env.sh set-pair <KEY> <KEY> # two newline-framed values on stdin
   install-tinyassets-env.sh delete <KEY> [KEY...]
   install-tinyassets-env.sh assert-absent <KEY> # read-only Compose-aware check
   install-tinyassets-env.sh render-daemon-env   # daemon.env = env minus platform secrets
@@ -509,6 +510,43 @@ cmd_set() {
     fi
 }
 
+cmd_set_pair() {
+    local first="$1" second="$2" value1 value2 extra line new_content=""
+    validate_key "${first}"
+    validate_key "${second}"
+    [ "${first}" != "${second}" ] || exit 1
+    # Read and validate the entire pair before changing either env file.
+    if ! IFS= read -r value1 || ! IFS= read -r value2 ||
+        IFS= read -r extra || [ -n "${extra}" ]; then
+        echo "::error::set-pair requires exactly two single-line values for ${first} ${second}" >&2
+        exit 1
+    fi
+    if [[ ! "${value1}" =~ ^[A-Za-z0-9._~:/+=,@%-]+$ ||
+          ! "${value2}" =~ ^[A-Za-z0-9._~:/+=,@%-]+$ ]]; then
+        echo "::error::set-pair requires portable unquoted values for ${first} ${second}" >&2
+        exit 1
+    fi
+    ensure_env_file
+    while IFS= read -r line || [ -n "${line}" ]; do
+        if ! compose_line_assigns_key "${line}" "${first}" &&
+            ! compose_line_assigns_key "${line}" "${second}"; then
+            new_content+="${line}"$'\n'
+        fi
+    done < "${ENV_FILE}"
+    new_content+="${first}=${value1}"$'\n'"${second}=${value2}"$'\n'
+    if is_daemon_env_source; then
+        render_daemon_content "${new_content}"
+    fi
+    # Each rename contains BOTH keys. Even a failed daemon render commit leaves
+    # each consumer with a whole old/new pair, never a half-written pair.
+    atomic_install "${new_content}"
+    assert_readable
+    if is_daemon_env_source; then
+        write_daemon_env
+    fi
+    echo "set pair ${first} ${second}"
+}
+
 cmd_delete() {
     local key
     ensure_env_file
@@ -808,6 +846,10 @@ case "${subcmd}" in
     set-once)
         [ $# -eq 1 ] || usage
         cmd_set "$1" true
+        ;;
+    set-pair)
+        [ $# -eq 2 ] || usage
+        cmd_set_pair "$@"
         ;;
     delete)
         [ $# -ge 1 ] || usage

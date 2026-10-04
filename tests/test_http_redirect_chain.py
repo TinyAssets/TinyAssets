@@ -71,7 +71,10 @@ class _ChainHandler(http.server.BaseHTTPRequestHandler):
 def chain():
     server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _ChainHandler)
     server.state = {"responses": [], "requests": [], "dns": [], "sockets": []}
-    threading.Thread(target=server.serve_forever, daemon=True).start()
+    # Shutdown waits for this poll; keep real HTTP coverage without 0.5s per case.
+    threading.Thread(
+        target=server.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True
+    ).start()
     try:
         yield server
     finally:

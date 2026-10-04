@@ -231,6 +231,21 @@ def test_a_bundle_reads_the_viewers_own_automations_runs_and_output(tmp_path):
     assert "custom-ui live state checks passed" in out
 
 
+def test_failed_run_details_and_partial_output_remain_readable(tmp_path):
+    checks = CHECKS.replace(
+        "// ---- one run: its nodes and output field names, picked",
+        "RUNS['run-a'].status='failed'; RUNS['run-a'].error='provider timed out';\n"
+        "// ---- one run: its nodes and output field names, picked",
+    ).replace(
+        "assert.equal(one.ok,true,one.error);",
+        "assert.equal(one.ok,true,one.error);\n"
+        "assert.equal(one.result.status,'failed');\n"
+        "assert.equal(one.result.error,'provider timed out');",
+    )
+    out = _run(tmp_path, "failed_run.js", checks, extra=LIVE_DOUBLE)
+    assert "custom-ui live state checks passed" in out
+
+
 def test_main_agent_live_name_is_its_own_name_not_the_command_center(tmp_path):
     out = _run(tmp_path, "main_agent_name.js", r'''
 (async()=>{

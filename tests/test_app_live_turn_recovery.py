@@ -546,6 +546,30 @@ def test_an_unconfirmed_turn_holds_the_queue_and_offers_a_read_only_check(tmp_pa
     assert out["converseCalls"] == ["run the deploy"], "the check sent something"
 
 
+def test_restored_unconfirmed_send_can_observe_a_server_accepted_reply(tmp_path, html):
+    out = _run(tmp_path, html, r'''
+setQueueOwner("p-1"); setQueueScope("u-1");
+rememberInflight("run the deploy", "run the deploy", Date.now());
+liveInflight=null; // Reload: the previous page no longer owns this send.
+await restoreInflight([]);
+const note=els.thread.children.find(n=>/never confirmed/.test(n.textContent));
+const check=note.children.find(c=>c.tagName==="BUTTON"&&c.textContent==="Check saved conversation");
+Owner.getConversation=async()=>({recent_conversation:{turns:[
+  {speaker:"founder",text:"run the deploy",ts:Date.now()/1000},
+  {speaker:"universe",text:"The deployment finished while you were away.",ts:Date.now()/1000}
+]}});
+if(check)check.click();
+await settle(); await settle();
+console.log(JSON.stringify({hadCheck:!!check, calls:converseCalls,
+  inflight:readInflight(), texts:note.children.filter(c=>c.className==="muted")
+    .flatMap(c=>c.children).filter(c=>c.tagName==="PRE").map(c=>c.textContent)}));
+''')
+    assert out["hadCheck"], "reload loses the read-only recovery offered by a live send"
+    assert out["texts"] == ["run the deploy", "The deployment finished while you were away."]
+    assert out["calls"] == []
+    assert out["inflight"]["message"] == "run the deploy"
+
+
 def test_a_new_manual_question_does_not_resume_held_commands(tmp_path, html):
     setup = _UNCONFIRMED_QUEUE.split("const afterFailure = snapshot();", 1)[0]
     out = _run(tmp_path, html, setup + r"""

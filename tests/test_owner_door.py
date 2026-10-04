@@ -34,8 +34,9 @@ READ, STATUS = "/app/api/read", "/app/api/status"
 class _Auth:
     def resolve_token(self, token):
         if token in {A, B}:
-            return Identity(user_id=token, username=token,
-                            capabilities=["tinyassets.universe.write"])
+            return Identity(user_id=token, username=token, capabilities=[
+                "tinyassets.universe.write", "tinyassets.extensions.read",
+            ])
         return None
 
     def is_auth_required(self):
@@ -80,6 +81,37 @@ def door(tmp_path, monkeypatch):
 def _as(owner):
     return mw.identity_context(Identity(user_id=owner, username=owner,
                                         capabilities=["tinyassets.universe.write"]))
+
+
+def test_failed_run_and_output_are_owner_readable_but_private(door):
+    from tinyassets import runs
+    from tinyassets.api.visibility import set_universe_visibility
+    from tinyassets.daemon_server import ensure_universe_registered
+
+    client, base = door
+    ensure_universe_registered(base, universe_id=HOME_A, universe_path=base / HOME_A)
+    set_universe_visibility(HOME_A, "private", source="owner")
+    rid = runs.create_run(
+        base, branch_def_id="failed-branch", thread_id="t", inputs={},
+        actor=A, owner_user_id=A, queue_universe_id=HOME_A,
+    )
+    runs.update_run_status(base, rid, status="failed", error="provider timed out",
+                           output={"reply": "partial result"})
+    for target in ("run", "run_output"):
+        args = {"target": target, "graph_id": HOME_A, "run_id": rid}
+        if target == "run_output":
+            args["field_name"] = "reply"
+        doc = client.post(READ, headers=_headers(A), json=args).json()
+        assert doc.get("run_id") == rid, doc
+        assert doc["status"] == "failed"
+        if target == "run":
+            assert doc["error"] == "provider timed out"
+        else:
+            assert doc["chunk"] == "partial result"
+        denied = client.post(READ, headers=_headers(B), json=args).json()
+        assert denied.get("error")
+        assert "partial result" not in json.dumps(denied)
+        assert "provider timed out" not in json.dumps(denied)
 
 
 def _ask_many(owner, home, count):
