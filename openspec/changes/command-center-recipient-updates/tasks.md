@@ -33,3 +33,4 @@
 - [ ] 6.3 Obtain independent exact-head review of executor and integrated lifecycle/owner UI/maintenance wiring before automatic activation.
 
 - [x] 6.4 Integrate bounded sweeps into the existing admitted service loop with reset exclusion, durable owner status and owner-only receipt deletion; verify real barriers and browser persistence without inference.
+- [x] 6.5 Fence in-flight consent pin persistence against the canonical account tombstone through commit. `test_inflight_consent_pin_refuses_after_account_deletion` failed on `31bdded9` in all three home states, restoring one private pin after completed deletion; the fixed race, held-exclusion and sequential-deletion cases pass. Eight related files: Windows 283 passed / 2 symlink skips; Linux oracle 285 passed / zero skips. Mirror import probe, changed-file Ruff and strict OpenSpec validation passed.
