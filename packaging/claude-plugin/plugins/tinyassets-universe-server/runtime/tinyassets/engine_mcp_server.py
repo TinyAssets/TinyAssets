@@ -2361,6 +2361,13 @@ _WRITE_GRAPH_SYSTEMS_CHAPTER = """\
       credentials, memory and private agent configuration never travel. A UI
       villager label or workflow name alone is not an exported agent template.
       Unsupported agent kinds and nested dependencies are refused before copy.
+      For explicit version history on a component-system screen, add
+      ``release: {"summary": "One-line changes"}`` for its first release, or
+      include the exact returned ``series_id`` and ``parent_release_id`` for
+      its successor. The platform shows this linkage in the owner's publish
+      consent. Matching names and old publications do not establish history.
+      Release linkage does not opt recipients into updates or authorize new
+      code, components, permissions or model calls for them.
       Script text stays unchanged. Existing named ``emit`` events remain owner
       broadcasts; this does not grant direct workflow execution or exclusive routing.
     * **Sharing workflows only** uses ``publish_kind: "workflows"`` and

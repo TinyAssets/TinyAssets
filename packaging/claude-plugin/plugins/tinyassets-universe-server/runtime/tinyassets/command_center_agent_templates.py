@@ -38,10 +38,11 @@ def selection(raw: Any) -> dict[str, str]:
     return dict(raw)
 
 
-def _definition(base: Any, definition_id: str, fingerprint: str = "") -> dict:
+def _definition(base: Any, definition_id: str, fingerprint: str = "", *, readers=None) -> dict:
     from tinyassets.custom_agents import get_definition
 
-    definition = get_definition(base, definition_id)
+    definition = (readers.definition(definition_id) if readers is not None
+                  else get_definition(base, definition_id))
     if definition is None or (fingerprint and definition["content_fingerprint"] != fingerprint):
         raise ValueError("a required public agent definition is missing or changed")
     components = definition.get("components")
@@ -82,7 +83,7 @@ def export_templates(base: Any, uid: str, actor: str, selected: dict) -> dict[st
     return result
 
 
-def templates(base: Any, components: dict) -> list[dict]:
+def templates(base: Any, components: dict, *, readers=None) -> list[dict]:
     result = []
     for key, component in components.items():
         if not isinstance(component, dict) or component.get("kind") != AGENT_REF_KIND:
@@ -98,7 +99,8 @@ def templates(base: Any, components: dict) -> list[dict]:
             or not re.fullmatch(r"[0-9a-f]{64}", component["content_fingerprint"])
         ):
             raise ValueError("an agent template reference has unsupported or invalid fields")
-        _definition(base, component["agent_definition_id"], component["content_fingerprint"])
+        _definition(base, component["agent_definition_id"], component["content_fingerprint"],
+                    readers=readers)
         result.append({"key": key, **component})
     return result
 
@@ -129,7 +131,7 @@ def reject_nested_workflows(snapshot: Any) -> None:
 
 
 def validate_workflows(base: Any, workflows: list[dict], *,
-                       version_field: str = "version_id") -> None:
+                       version_field: str = "version_id", readers=None) -> None:
     from tinyassets.branch_versions import (
         branch_version_def_id,
         branch_version_is_public,
@@ -145,19 +147,24 @@ def validate_workflows(base: Any, workflows: list[dict], *,
         if (not isinstance(version_id, str) or not version_id
                 or version_id != version_id.strip()):
             raise ValueError("a required workflow version is missing or invalid")
-        source_id = branch_version_def_id(base, version_id)
+        source_id = (readers.version_parent(version_id) if readers is not None
+                     else branch_version_def_id(base, version_id))
         try:
-            branch = get_branch_definition(base, branch_def_id=source_id) if source_id else {}
+            branch = (readers.branch(source_id) if readers is not None
+                      else get_branch_definition(base, branch_def_id=source_id)
+                      ) if source_id else {}
         except KeyError:
             branch = {}
         if not version_readable_by(
             None,
             author=branch.get("author"),
             visibility=branch.get("visibility"),
-            public=branch_version_is_public(base, version_id),
+            public=(readers.version_public(version_id) if readers is not None
+                    else branch_version_is_public(base, version_id)),
         ):
             raise ValueError("a required workflow version is missing or no longer public")
-        version = get_branch_version(base, version_id)
+        version = (readers.version(version_id) if readers is not None
+                   else get_branch_version(base, version_id))
         if version is None:
             raise ValueError("a required workflow version is missing or no longer public")
         reject_nested_workflows(version.snapshot)

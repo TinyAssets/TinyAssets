@@ -25,7 +25,21 @@ def read_updates(*, universe_id: str = "") -> dict:
         return denial
     try:
         result = updates.inspect_adoptions(universe_id=uid)
+        from tinyassets.command_center_update_maintenance import status
+
+        result["maintenance"] = status(_base_path())
         for item in result["adoptions"]:
+            from tinyassets.command_center_release_series import histories_for_definition
+            from tinyassets.command_center_update_executor import inspect_status
+            from tinyassets.command_center_update_policy import inspect_policy
+
+            item["release_histories"] = histories_for_definition(
+                universe_id=uid, definition_id=item["ui_definition_id"])
+            item["presentation_policy"] = inspect_policy(
+                universe_id=uid, adoption_id=item["adoption_id"])
+            item["automatic_updates"] = item["presentation_policy"]["enabled"]
+            item["automatic_status"] = inspect_status(
+                universe_id=uid, adoption_id=item["adoption_id"])
             source = get_definition(_base_path(), item["ui_definition_id"])
             item["name"] = str((source or {}).get("name") or item["ui_id"])
             item["author_id"] = str((source or {}).get("author_id") or "")
@@ -80,11 +94,23 @@ def write_update(*, universe_id: str, operation: str, payload=None) -> dict:
         document = json.loads(payload) if isinstance(payload, str) else payload
         if not isinstance(document, dict):
             raise ValueError("update controls require an object")
+        if operation == "preview_center_policy":
+            from tinyassets.command_center_update_policy import preview_policy
+
+            enabled = document.get("enabled")
+            fields = {"adoption_id", "enabled"}
+            if enabled is True:
+                fields |= {"series_id", "release_id"}
+            if (type(enabled) is not bool or set(document) != fields
+                    or any(not isinstance(document[key], str) or not document[key]
+                           or len(document[key]) > 200 for key in fields - {"enabled"})):
+                raise ValueError("policy preview requires exact IDs and an explicit boolean")
+            return preview_policy(universe_id=uid, **document)
         if operation == "register_center_copy":
             fields = ("request_id",)
         elif operation == "preview_center_update":
             fields = ("adoption_id", "agent_definition_id")
-        elif operation == "answer_center_update":
+        elif operation in {"answer_center_update", "answer_center_policy"}:
             fields = ("request_id", "plan_digest", "decision")
         else:
             raise ValueError("unknown update operation")
@@ -99,6 +125,10 @@ def write_update(*, universe_id: str, operation: str, payload=None) -> dict:
         if operation == "preview_center_update":
             return updates.preview_update(universe_id=uid, adoption_id=document["adoption_id"],
                                           definition_id=document["agent_definition_id"])
+        if operation == "answer_center_policy":
+            from tinyassets.command_center_update_policy import commit_policy
+
+            return commit_policy(universe_id=uid, **document)
         return updates.commit_update(universe_id=uid, request_id=document["request_id"],
                                      plan_digest=document["plan_digest"],
                                      decision=document["decision"])
