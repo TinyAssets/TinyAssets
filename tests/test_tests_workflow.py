@@ -98,7 +98,7 @@ def _runner_argv(step: dict) -> tuple[list[str], list[str]]:
     return argv[:split], argv[split + 1:]
 
 
-def test_required_shards_run_in_the_oracle_with_the_browser_in_its_image():
+def test_required_shards_install_the_browser_before_running_tests():
     """The venue's setup precedes every step that runs tests, and covers each.
 
     The setup is conditional (a shard owning no selected file skips it), so
