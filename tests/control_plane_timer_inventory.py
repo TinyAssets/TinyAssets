@@ -69,6 +69,16 @@ SITES: dict[str, tuple[str, str]] = {
         "still refuses activation pending the per-role UID split",
     ),
     # -- bounded waits inside one call -----------------------------------------
+    "tinyassets/ui_preview.py::_supervised": (
+        CALL_SCOPED,
+        "one requested preview polls its child tree until exit, wall deadline "
+        "or a resource breach; no scheduled or autonomous preview work",
+    ),
+    "tinyassets/ui_preview.py::_supervised#2": (
+        CALL_SCOPED,
+        "the same preview waits at most ten seconds for namespace descendants "
+        "to stop during cleanup, then refuses further previews if uncontained",
+    ),
     "tinyassets/agent_turn_coordinator.py::AgentTurnCoordinator._pause_before_retry": (
         CALL_SCOPED,
         "bad-reply backoff bounded by the remaining turn deadline; polls Stop "

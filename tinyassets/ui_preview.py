@@ -110,7 +110,7 @@ window.__preview={calls:Object.create(null),dropped:0,delivered:false,error:""};
 // Every key the app's bridge returns, with empty data behind it, so a UI
 // renders its empty state instead of failing on a key that is only missing
 // here. A key the app answers and this does not is a UI that works in the app
-// and throws in preview (Codex, 2026-10-03: `readLive()` was refused outright
+// and throws in preview (review, 2026-10-03: `readLive()` was refused outright
 // and `whoami().workflow_refs` was undefined). The alias maps are the
 // COMPONENT's own declaration -- the app reads them off the active component,
 // not off the server -- so the preview answers with the real ones and a UI
