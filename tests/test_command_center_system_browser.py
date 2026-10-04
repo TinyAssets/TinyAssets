@@ -132,6 +132,7 @@ def system_server(home):
                             "active": agent_steering.active(home / BOB_UNIVERSE, key)}
                         operation = "pending:" + args.get("agent_id", "main")
                     elif self.path == "/app/api/status":
+                        assert args.pop("universe_id", BOB_UNIVERSE) == BOB_UNIVERSE
                         result = json.loads(get_status(universe_id=BOB_UNIVERSE, **args))
                         operation = "status:" + args.get("conversation_agent", "main")
                     elif self.path == "/app/ui-prefs":
