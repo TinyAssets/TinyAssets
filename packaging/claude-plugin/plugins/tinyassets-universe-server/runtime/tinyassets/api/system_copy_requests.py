@@ -9,7 +9,7 @@ from typing import Any
 SYSTEM_TAG = "tinyassets.system.v1"
 
 
-def _source(definition_id: str) -> tuple[dict, dict]:
+def _source(definition_id: str, *, readers=None) -> tuple[dict, dict]:
     from tinyassets.api.helpers import _base_path
     from tinyassets.api.publish_requests import AUTOMATION_SPEC_KIND, BRANCH_REF_KIND, UI_KIND
     from tinyassets.automations import (
@@ -34,8 +34,9 @@ def _source(definition_id: str) -> tuple[dict, dict]:
     from tinyassets.custom_agents import app_ui_renderability, app_ui_workflow_refs, get_definition
     from tinyassets.daemon_server import get_branch_definition
 
-    base = _base_path()
-    definition = get_definition(base, definition_id)
+    base = readers.base if readers is not None else _base_path()
+    definition = (readers.definition(definition_id) if readers is not None
+                  else get_definition(base, definition_id))
     if (definition is None or SYSTEM_TAG not in definition.get("tags", [])
             or PACKAGE_TAG in definition.get("tags", [])):
         raise LookupError("this is not a published component system")
@@ -62,23 +63,27 @@ def _source(definition_id: str) -> tuple[dict, dict]:
         # Metadata only: a retained publication mark does not make a version
         # public after its parent branch is withdrawn. Use the shared read rule
         # as a public reader, even when the publisher is browsing their own card.
-        source_id = branch_version_def_id(base, version_id)
+        source_id = (readers.version_parent(version_id) if readers is not None
+                     else branch_version_def_id(base, version_id))
         try:
-            branch = get_branch_definition(base, branch_def_id=source_id) if source_id else {}
+            branch = (readers.branch(source_id) if readers is not None
+                      else get_branch_definition(base, branch_def_id=source_id)
+                      ) if source_id else {}
         except KeyError:
             branch = {}
         if not version_readable_by(
             None, author=branch.get("author"), visibility=branch.get("visibility"),
-            public=branch_version_is_public(base, version_id),
+            public=(readers.version_public(version_id) if readers is not None
+                    else branch_version_is_public(base, version_id)),
         ):
             raise ValueError("a required workflow version is missing or no longer public")
         source_keys.setdefault(source_id, []).append(key)
         workflows.append({"key": key, "name": str(component.get("name") or key),
                           "version_id": version_id})
     workflow_keys = {w["key"] for w in workflows}
-    agent_templates = templates(base, components)
+    agent_templates = templates(base, components, readers=readers)
     resolve_ui_refs(ui, {a["key"] for a in agent_templates})
-    validate_workflows(base, workflows)
+    validate_workflows(base, workflows, readers=readers)
 
     def resolve(reference: str) -> str:
         if not isinstance(reference, str) or not reference:
@@ -190,8 +195,8 @@ def list_systems() -> list[dict]:
     return rows
 
 
-def _plan(action: dict) -> dict:
-    definition, parts = _source(action["agent_definition_id"])
+def _plan(action: dict, *, readers=None) -> dict:
+    definition, parts = _source(action["agent_definition_id"], readers=readers)
     plan = {"publication_kind": "system", "definition_id": definition["agent_definition_id"],
             "author": definition.get("author_id", ""), "name": definition.get("name", ""),
             **parts, "placement": {"land": [], "keep": [], "bytes": 0}}

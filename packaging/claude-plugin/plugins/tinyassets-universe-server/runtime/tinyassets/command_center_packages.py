@@ -997,6 +997,7 @@ CREATE TABLE IF NOT EXISTS package_versions (
 -- displayed it. Answers execute THIS, never the pending-request row.
 CREATE TABLE IF NOT EXISTS pins (
     universe_id  TEXT NOT NULL,
+    owner_id     TEXT NOT NULL DEFAULT '',
     pin_id       TEXT NOT NULL,
     kind         TEXT NOT NULL CHECK (kind IN ('publish', 'install')),
     agent_id     TEXT NOT NULL,
@@ -1020,15 +1021,39 @@ def store_dir(base_path: str | Path) -> Path:
     return Path(base_path) / ROOT_DIR
 
 
+def database_path(base_path: str | Path) -> Path:
+    return store_dir(base_path) / _DB
+
+
+def ensure_pin_owners(conn: sqlite3.Connection) -> None:
+    """Migrate within the caller's write transaction, including during erasure.
+
+    Release links are platform-written consent evidence. Their author remains
+    authoritative after a home rebind/removal; never infer it from current homes.
+    Older non-release pins have no such evidence and keep the empty owner.
+    """
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(pins)")}
+    if "owner_id" not in columns:
+        conn.execute("ALTER TABLE pins ADD COLUMN owner_id TEXT NOT NULL DEFAULT ''")
+    conn.execute(
+        "UPDATE pins SET owner_id = json_extract(record_json, '$.action.release_link.author_id') "
+        "WHERE owner_id = '' AND kind = 'publish' "
+        "AND json_type(record_json, '$.action.release_link.author_id') = 'text'"
+    )
+
+
 @contextlib.contextmanager
 def _db(base_path: str | Path) -> Iterator[sqlite3.Connection]:
     root = store_dir(base_path)
     root.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(root / _DB, timeout=30, isolation_level=None)
+    conn = sqlite3.connect(database_path(base_path), timeout=30, isolation_level=None)
     conn.row_factory = sqlite3.Row
     try:
         conn.execute("PRAGMA busy_timeout = 30000")
         conn.executescript(_SCHEMA)
+        with conn:
+            conn.execute("BEGIN IMMEDIATE")
+            ensure_pin_owners(conn)
         yield conn
     finally:
         conn.close()
@@ -1149,7 +1174,7 @@ def measure_packages(base_path: str | Path, actors: list[str]) -> int:
 
 
 def pin(base_path: str | Path, *, universe_id: str, kind: str, agent: str, digest: str,
-        record: dict[str, Any]) -> str:
+        record: dict[str, Any], owner_id: str = "") -> str:
     """Pin a consent record under a request id the PLATFORM allocates; returns it.
 
     The id is minted here, before any pending-request row exists, and the row
@@ -1163,9 +1188,9 @@ def pin(base_path: str | Path, *, universe_id: str, kind: str, agent: str, diges
     pin_id = hashlib.sha256(f"{universe_id}\x00{request_id}".encode()).hexdigest()[:32]
     with _db(base_path) as conn:
         conn.execute(
-            "INSERT INTO pins (universe_id, pin_id, kind, agent_id, digest, "
-            "request_id, record_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (universe_id, pin_id, kind, agent, digest, request_id,
+            "INSERT INTO pins (universe_id, owner_id, pin_id, kind, agent_id, digest, "
+            "request_id, record_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (universe_id, owner_id, pin_id, kind, agent, digest, request_id,
              json.dumps(record, sort_keys=True), time.time()))
     return request_id
 
