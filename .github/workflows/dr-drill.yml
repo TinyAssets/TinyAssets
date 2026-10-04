@@ -780,10 +780,13 @@ jobs:
           RUNTIME_IMAGE: ${{ steps.runtime-image.outputs.image }}
         run: |
           set -euo pipefail
+          # The daemon loads daemon.env, a copy of env without the platform's
+          # own secrets; this step edits env directly, so re-render the copy
+          # (deploy/install-tinyassets-env.sh render-daemon-env).
           quoted_runtime_image=$(printf '%q' "${RUNTIME_IMAGE}")
           ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
               "root@${DRILL_IP}" \
-              "python3 - ${quoted_runtime_image}" <<'PY'
+              "python3 - ${quoted_runtime_image} && bash /opt/tinyassets/deploy/install-tinyassets-env.sh render-daemon-env" <<'PY'
           import re
           import sys
           from pathlib import Path

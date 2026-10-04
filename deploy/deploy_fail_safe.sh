@@ -108,9 +108,11 @@
 # (the caller verifies ancestry/provenance).
 #
 # Exit codes:
-#   0  deployed the new image (daemon healthy + cloudflared + logs up)
+#   0  deployed the new image (daemon healthy + cloudflared + logs up + no
+#      platform secret in the daemon's environment)
 #   1  refused, and the box is back where it started: bad args, lock, pull,
-#      import, `layout_refused`, `bundle_invalid`, `bundle_dirty`, or a post-install failure whose
+#      import, `daemon_env_render_failed`, `layout_refused`, `bundle_invalid`,
+#      `bundle_dirty`, or a post-install failure whose
 #      restore COMPLETED (`bundle_install_failed`, `bundle_pointer_failed`,
 #      `failed_env_write`)
 #   2  new image unhealthy; rolled back to the previous image + bundle (healthy)
@@ -138,7 +140,17 @@ esac
 # from the variables it names explicitly, so production always takes the
 # defaults below.
 ENV_FILE="${ENV_FILE:-/etc/tinyassets/env}"
+# What the daemon container loads instead of ENV_FILE: the same file with the
+# platform's own secrets removed, rendered by the env helper. See
+# deploy/install-tinyassets-env.sh `render-daemon-env`.
+DAEMON_ENV_FILE="${DAEMON_ENV_FILE:-/etc/tinyassets/daemon.env}"
 ENV_HELPER="${ENV_HELPER:-/tmp/install-tinyassets-env.sh}"
+# Host procfs, read to list the environment NAMES of every daemon process.
+PROC_ROOT="${PROC_ROOT:-/proc}"
+# Where the env helper is kept between runs (see the install after the render).
+HELPER_INSTALL_PATH="${HELPER_INSTALL_PATH:-/usr/local/sbin/tinyassets-env}"
+HELPER_INSTALL_OWNER="${HELPER_INSTALL_OWNER:-root}"
+HELPER_INSTALL_GROUP="${HELPER_INSTALL_GROUP:-root}"
 UNIT="${UNIT:-tinyassets-daemon}"
 RUNTIME_DIR="${RUNTIME_DIR:-/opt/tinyassets}"
 COMPOSE_FILE="${COMPOSE_FILE:-${RUNTIME_DIR}/compose.yml}"
@@ -245,11 +257,56 @@ if ! printf '%s' "$HEALTH_TIMEOUT" | grep -Eq '^[1-9][0-9]{0,3}$'; then
 fi
 if [ ! -r "$ENV_FILE" ]; then err "${ENV_FILE} not readable"; exit 1; fi
 if [ ! -f "$ENV_HELPER" ]; then err "${ENV_HELPER} missing (workflow must scp it first)"; exit 1; fi
+DAEMON_FORBIDDEN_ENV="$(bash "$ENV_HELPER" daemon-forbidden-names 2>/dev/null | tr '\n' ' ')"
+if [ -z "${DAEMON_FORBIDDEN_ENV// /}" ]; then
+  err "${ENV_HELPER} did not list the platform secrets the daemon must not hold; refusing (prod untouched)"
+  exit 1
+fi
 
 # --- acquire the shared host-mutation lock (review #7) --------------------
 exec 9>"$LOCK_FILE" || { err "cannot open lock ${LOCK_FILE}"; exit 1; }
 if ! flock -w "$LOCK_WAIT" 9; then
   err "another host mutation holds ${LOCK_FILE} after ${LOCK_WAIT}s; refusing (prod untouched)"; exit 1
+fi
+
+# The daemon's env file, rendered from ENV_FILE before anything reads it:
+# validate_bundle's `compose config` needs it to exist, and an image-only deploy
+# would otherwise converge on whatever copy a previous run left. Under the lock,
+# before any mutation, so a refusal leaves prod untouched.
+render_daemon_env() {
+  TINYASSETS_DAEMON_ENV_SOURCE="$ENV_FILE" TINYASSETS_DAEMON_ENV_FILE="$DAEMON_ENV_FILE" \
+    TINYASSETS_ENV_FILE="$DAEMON_ENV_FILE" bash "$ENV_HELPER" render-daemon-env
+}
+# This is also what creates daemon.env on the FIRST deploy after the split: the
+# box has only ENV_FILE until here, and nothing below reads daemon.env before it.
+#
+# `--restore-bundle` is a rollback and must not be blocked by this: the bundle
+# it restores may predate the split and never read daemon.env, and if it does
+# read it, the copy a previous successful deploy rendered is still on disk.
+RENDER_OK=1
+if ! render_daemon_env; then
+  RENDER_OK=0
+  if [ "$RESTORE_BUNDLE" = "1" ]; then
+    err "could not render ${DAEMON_ENV_FILE}; continuing the restore with the copy on disk"
+  else
+    err "could not render ${DAEMON_ENV_FILE} from ${ENV_FILE}; refusing (prod untouched)"
+    echo "deploy_result=daemon_env_render_failed"
+    exit 1
+  fi
+fi
+# The helper lives in /tmp for this run only, and a host checkout can predate
+# `render-daemon-env`, so install it where the unit's refusal message and
+# DEPLOY.md send an operator after a hand edit. Every version only adds
+# subcommands, so a newer copy is safe under any older bundle.
+if ! install -m 0755 -o "$HELPER_INSTALL_OWNER" -g "$HELPER_INSTALL_GROUP" \
+      "$ENV_HELPER" "$HELPER_INSTALL_PATH"; then
+  if [ "$RESTORE_BUNDLE" = "1" ]; then
+    err "could not install ${ENV_HELPER} to ${HELPER_INSTALL_PATH}; continuing the restore"
+  else
+    err "could not install ${ENV_HELPER} to ${HELPER_INSTALL_PATH}; refusing (prod untouched)"
+    echo "deploy_result=daemon_env_render_failed"
+    exit 1
+  fi
 fi
 
 container_state() {
@@ -282,7 +339,17 @@ tunnel_up() {
   [ "$s" = "running" ]
 }
 
-set_image() { printf '%s' "$1" | bash "$ENV_HELPER" set TINYASSETS_IMAGE; }
+# A source the daemon copy cannot be rendered from makes the helper refuse every
+# write to it. Only a restore gets here with RENDER_OK=0, and it must still be
+# able to record the image it is restoring, so it writes without re-rendering
+# (an empty TINYASSETS_DAEMON_ENV_FILE turns rendering off in the helper).
+set_image() {
+  if [ "$RENDER_OK" = "1" ]; then
+    printf '%s' "$1" | bash "$ENV_HELPER" set TINYASSETS_IMAGE
+  else
+    printf '%s' "$1" | TINYASSETS_DAEMON_ENV_FILE= bash "$ENV_HELPER" set TINYASSETS_IMAGE
+  fi
+}
 
 # --- data layout guard (tinyassets/storage_layout.py, design D7.2) --------
 # An image-only rollback is safe only while the data is still in the layout
@@ -374,6 +441,78 @@ running_image_matches() {
   want="$(docker image inspect -f '{{.Id}}' "$1" 2>/dev/null || true)"
   have="$(docker inspect -f '{{.Image}}' "$DAEMON_CONTAINER" 2>/dev/null || true)"
   [ -n "$want" ] && [ "$want" = "$have" ]
+}
+
+# The daemon must hold none of the platform's own secrets, checked on the
+# running container rather than on the files that should have produced it: the
+# image, the entrypoint or a stale compose file can each put a name back.
+#   Config.Env      what every `docker exec` inherits, the healthcheck included
+#   /proc environ   every process in the container, read from the host
+# Names only; a value is never printed, logged or kept.
+daemon_env_scoped() {
+  # In Python because both sources need exact record boundaries: a permitted
+  # value containing "\nDO_API_TOKEN=" must not read as that name (Codex on the
+  # first draft, which split Config.Env on newlines and environ via tr).
+  # Every listed process must be read, or be gone by the time it is read; one
+  # unreadable live process fails the check rather than being skipped.
+  # Limit: procfs shows a process's environment as of its execve, so a name a
+  # process sets on itself afterwards is invisible here.
+  # shellcheck disable=SC2086  # DAEMON_FORBIDDEN_ENV is a space-separated list
+  python3 - "$DAEMON_CONTAINER" "$PROC_ROOT" $DAEMON_FORBIDDEN_ENV <<'SCOPE_PY'
+import json
+import os
+import subprocess
+import sys
+
+container, proc_root, *forbidden = sys.argv[1:]
+
+
+def fail(message):
+    sys.stderr.write("::error::%s\n" % message)
+    sys.exit(1)
+
+
+def run(argv):
+    done = subprocess.run(argv, capture_output=True, text=True)
+    if done.returncode != 0:
+        fail("%s failed (rc=%d)" % (" ".join(argv[:2]), done.returncode))
+    return done.stdout
+
+
+try:
+    config_env = json.loads(run(["docker", "inspect", "-f", "{{json .Config.Env}}", container]))
+except ValueError:
+    fail("cannot parse %s Config.Env" % container)
+names = {str(entry).split("=", 1)[0] for entry in config_env or []}
+
+pids = [token for token in run(["docker", "top", container, "-eo", "pid"]).split()[1:] if token.isdigit()]
+read = 0
+for pid in pids:
+    path = os.path.join(proc_root, pid, "environ")
+    try:
+        with open(path, "rb") as handle:
+            data = handle.read()
+    except FileNotFoundError:
+        if not os.path.exists(os.path.join(proc_root, pid)):
+            continue  # exited between `docker top` and this read
+        fail("pid %s of %s has no readable environment" % (pid, container))
+    except OSError as exc:
+        fail("pid %s of %s environment unreadable (%s)" % (pid, container, type(exc).__name__))
+    names.update(
+        record.split(b"=", 1)[0].decode("utf-8", "replace")
+        for record in data.split(b"\0")
+        if record
+    )
+    read += 1
+if read == 0:
+    fail("read no %s process environment; cannot show the platform secrets are absent" % container)
+
+leaked = sorted(set(forbidden) & names)
+if leaked:
+    fail("%s environment carries platform secret(s): %s (names only)" % (container, " ".join(leaked)))
+print("[deploy-fail-safe] daemon environment (%d process(es) + Config.Env) holds none of: %s"
+      % (read, " ".join(forbidden)))
+SCOPE_PY
 }
 
 accept() {  # daemon healthy AND running the requested image AND tunnel up AND logs up
@@ -702,6 +841,7 @@ validate_bundle() {
   # resolve the same, renders identically (Codex round 2, §2). argv[3] is the
   # uninterpolated render (env_file survives there).
   RUNTIME_DIR="$RUNTIME_DIR" EXPECT_IMAGE="$NEW_IMAGE" ENV_FILE="$ENV_FILE" \
+    DAEMON_ENV_FILE="$DAEMON_ENV_FILE" DAEMON_FORBIDDEN_ENV="$DAEMON_FORBIDDEN_ENV" \
     MAX_DAEMON_STOP_GRACE_S="$MAX_DAEMON_STOP_GRACE_S" \
     python3 - "$cfg" "${BUNDLE_WORK}/compose.yml" "${cfg}.raw" <<'PY'
 import json
@@ -712,6 +852,10 @@ import sys
 runtime = os.environ["RUNTIME_DIR"]
 expect_image = os.environ["EXPECT_IMAGE"]
 env_file = os.environ["ENV_FILE"]
+daemon_env_file = os.environ["DAEMON_ENV_FILE"]
+daemon_forbidden = set(os.environ["DAEMON_FORBIDDEN_ENV"].split())
+if not daemon_forbidden:
+    sys.exit("::error::DAEMON_FORBIDDEN_ENV is empty; refusing to validate without the list")
 
 with open(sys.argv[1], encoding="utf-8") as handle:
     config = json.load(handle)
@@ -928,10 +1072,19 @@ env_file_paths = [
     entry if isinstance(entry, str) else (entry or {}).get("path", "")
     for entry in daemon_env_files
 ]
-if env_file not in env_file_paths:
+if daemon_env_file not in env_file_paths:
     problems.append(
         "daemon.env_file is %s; it must include %r or the daemon starts with no "
-        "secrets at all" % (sorted(str(p) for p in env_file_paths), env_file)
+        "secrets at all" % (sorted(str(p) for p in env_file_paths), daemon_env_file)
+    )
+# The host env file carries the platform's own secrets (the account-wide DO
+# token, the tunnel token); the daemon reads the rendered copy without them.
+# Wiring the source back in undoes that split, whatever else it lists.
+if env_file in env_file_paths:
+    problems.append(
+        "daemon.env_file includes %r, the host env file; the daemon must load the "
+        "rendered %r so platform secrets stay out of its environment"
+        % (env_file, daemon_env_file)
     )
 
 daemon_data_mount = None
@@ -965,6 +1118,14 @@ if str(daemon_environment.get("TINYASSETS_DATA_DIR")) != "/data":
         "daemon environment TINYASSETS_DATA_DIR is %r, expected '/data' — the "
         "resolver would otherwise write beside the mount, not into it"
         % (daemon_environment.get("TINYASSETS_DATA_DIR"),)
+    )
+# Compose v5 resolves every env_file into `environment`, so this is the
+# container's environment as it will be created. Names only, never values.
+leaked = sorted(set(daemon_environment) & daemon_forbidden)
+if leaked:
+    problems.append(
+        "daemon environment would carry platform secret(s) %s; they belong to the "
+        "host or a sidecar, never the daemon" % leaked
     )
 
 
@@ -1477,7 +1638,20 @@ if [ "$CONVERGED" = "1" ] && [ "$VECTOR_CHANGED" = "1" ]; then
 fi
 
 # --- 5. accept the new image (healthy + RUNNING it + tunnel + logs up) -----
+# Scoping is checked on a FORWARD deploy only. A rollback accepts the previous
+# state as it ran, platform secrets included if that is how it ran: refusing it
+# would leave prod on the image being rolled away from. That covers BOTH
+# rollbacks: step 6 below, and `--restore-bundle`, which restores the previous
+# bundle (whose compose may still load the host env file) and converges the
+# image it was given. Checking that path re-converged the failing image the
+# public canary had just rejected (Codex on the first draft).
+ACCEPTED=0
 if [ "$CONVERGED" = "1" ] && accept "$NEW_IMAGE"; then
+  if [ "$RESTORE_BUNDLE" = "1" ] || daemon_env_scoped; then
+    ACCEPTED=1
+  fi
+fi
+if [ "$ACCEPTED" = "1" ]; then
   log "deploy healthy on ${NEW_IMAGE}"
   finish deployed "$NEW_IMAGE" 0
 fi

@@ -61,6 +61,14 @@ Environment=HOME=/opt/tinyassets
 # SSH shell. ExecStartPre= with a leading `-` would tolerate failure;
 # we do NOT use `-` so systemd refuses to start with the marker logged.
 ExecStartPre=/bin/sh -c 'test -r /etc/tinyassets/env || { echo "ENV-UNREADABLE: /etc/tinyassets/env not readable by user tinyassets (uid $$(id -u))" >&2; ls -l /etc/tinyassets/env >&2 || true; exit 1; }'
+# The daemon loads /etc/tinyassets/daemon.env, rendered from /etc/tinyassets/env
+# minus the platform's own secrets (deploy/install-tinyassets-env.sh
+# render-daemon-env, installed by every deploy as /usr/local/sbin/tinyassets-env).
+# Every helper write re-renders it; a hand edit of the source
+# does not, and starting on the stale copy would silently ignore that edit.
+# Refuse instead, naming the fix. Containers already running are not stopped:
+# this unit has no ExecStop.
+ExecStartPre=/bin/sh -c 'test -r /etc/tinyassets/daemon.env || { echo "DAEMON-ENV-UNREADABLE: /etc/tinyassets/daemon.env missing or unreadable; run: sudo tinyassets-env render-daemon-env" >&2; exit 1; }; if [ /etc/tinyassets/env -nt /etc/tinyassets/daemon.env ]; then echo "DAEMON-ENV-STALE: /etc/tinyassets/env changed after daemon.env was rendered; run: sudo tinyassets-env render-daemon-env" >&2; exit 1; fi'
 ExecStartPre=/bin/sh -c 'meta=$$(stat -c "%%U:%%G %%a" /etc/tinyassets/agent-interchange.env 2>/dev/null || true); test -r /etc/tinyassets/agent-interchange.env && [ "$$meta" = "root:tinyassets 640" ] || { echo "AGENT-INTERCHANGE-ENV-UNREADABLE: /etc/tinyassets/agent-interchange.env must be readable with root:tinyassets 640 (found $$meta)" >&2; ls -l /etc/tinyassets/agent-interchange.env >&2 || true; exit 1; }'
 ExecStartPre=/bin/sh -c 'meta=$$(stat -c "%%U:%%G %%a" /etc/tinyassets/request-idempotency.env 2>/dev/null || true); test -r /etc/tinyassets/request-idempotency.env && [ "$$meta" = "root:tinyassets 640" ] || { echo "REQUEST-IDEMPOTENCY-ENV-UNREADABLE: /etc/tinyassets/request-idempotency.env must be readable with root:tinyassets 640 (found $$meta)" >&2; ls -l /etc/tinyassets/request-idempotency.env >&2 || true; exit 1; }'
 

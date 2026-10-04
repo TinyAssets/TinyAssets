@@ -59,8 +59,6 @@ SUPABASE_SERVICE_ROLE_KEY=eyJhbGciOi...
 
 **Paste back to me:**
 ```
-GITHUB_OAUTH_CLIENT_ID=Iv1.abc123...
-GITHUB_OAUTH_CLIENT_SECRET=abcdef0123456789...
 ```
 
 ### 4. Cloudflare API token + tunnel token — MUST (~5 min)
@@ -166,8 +164,6 @@ CLOUDFLARE_TUNNEL_TOKEN=<your paste>
 TINYASSETS_MCP_CANARY_URL=https://tinyassets.io/mcp
 SUPABASE_DB_URL=<your paste>
 SUPABASE_SERVICE_ROLE_KEY=<your paste>
-GITHUB_OAUTH_CLIENT_ID=<your paste>
-GITHUB_OAUTH_CLIENT_SECRET=<your paste>
 BETTERSTACK_SOURCE_TOKEN=<your paste or empty>
 BACKUP_DEST=storagebox:tinyassets-backups
 EOF
@@ -293,8 +289,6 @@ SUPABASE_SERVICE_ROLE_KEY=
 ```
 
 ```
-GITHUB_OAUTH_CLIENT_ID=
-GITHUB_OAUTH_CLIENT_SECRET=
 ```
 
 ```

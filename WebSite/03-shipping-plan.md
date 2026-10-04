@@ -10,7 +10,7 @@
 ## Phase 1 scope (this push)
 Ship just three SSG surfaces:
 - **`/`** — Hero ("Summon the daemon"), 3-CTA (Connect / Host / Contribute), Live TinyAssets Surface section, How-it-works, Token & Rewards strip, Contact, Footer
-- **`/connect`** — copy-MCP-URL widget, optional GitHub OAuth (deferred to Phase 2)
+- **`/connect`** — copy-MCP-URL widget, optional GitHub OAuth (deferred to Phase 2; its env slots were removed 2026-10-03 as unused, so re-add `GITHUB_OAUTH_CLIENT_ID`/`_SECRET` alongside the code that reads them)
 - **`/legal`** — placeholder page with license info (CC0 content / MIT platform), ToS + privacy stubs
 
 Everything else from the 16-surface spec is **Phase 2+**.

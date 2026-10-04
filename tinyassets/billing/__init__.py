@@ -11,6 +11,7 @@ enforcement are deliberately absent. Two consequences are deliberate:
 """
 
 from tinyassets.billing.stripe_adapter import (
+    SECRET_ENV_NAMES,
     BillingUnavailable,
     billing_enabled,
     cancel_subscription,
@@ -21,6 +22,7 @@ from tinyassets.billing.stripe_adapter import (
 )
 
 __all__ = [
+    "SECRET_ENV_NAMES",
     "BillingUnavailable",
     "billing_enabled",
     "cancel_subscription",

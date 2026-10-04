@@ -267,7 +267,12 @@ class _EngineServer:
         self.proc = None
 
     def start(self) -> bool:
-        env = dict(os.environ)
+        from tinyassets.platform_secrets import child_env
+
+        # Keep daemon-only credentials out of the inherited environment.
+        # This is not process isolation: the shared UID/PID namespace still
+        # permits credential recovery via the daemon's or tini's /proc environ.
+        env = child_env(os.environ)
         env["TINYASSETS_ENGINE_ACTOR_ID"] = self.owner
         env["TINYASSETS_ENGINE_GRAPH_ID"] = self.universe_id
         env["TINYASSETS_DATA_DIR"] = self._data_dir

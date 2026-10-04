@@ -12,6 +12,49 @@ whose next step is *"the founder logs into Cloudflare."*
 
 ---
 
+## Delete the GitHub OAuth App (2026-10-03)
+
+**Why:** `GITHUB_OAUTH_CLIENT_ID` / `GITHUB_OAUTH_CLIENT_SECRET` are removed from the
+template and withheld from the daemon by `RETIRED_ENV` — nothing read them and no route
+serves the callback they described. Deleting them from `/etc/tinyassets/env` itself is
+deferred to branch `security/retire-github-oauth-workflow-secret`, so until that lands a
+stale assignment may still sit in the host env file (withheld from the daemon, but
+present). Two things the code change cannot do:
+
+* **This repo is public, and `docs/ops/day-of-cutover.md` carried an example assignment
+  for the secret.** It looks like a placeholder and I did not establish otherwise (I did
+  not read the value). Deleting the line does not scrub git history, so if that string was
+  ever the real one it is already public.
+* An OAuth App that still exists can still be used by whoever holds its secret.
+
+Smallest ask: **GitHub → Settings → Developer settings → OAuth Apps → delete the
+TinyAssets app** (or regenerate its secret if you want to keep the registration for the
+deferred `/connect` sign-in). Deleting it makes any leaked value worthless and matches
+the decision that unused secrets are removed rather than guarded.
+
+Nothing is blocked on this: no code path uses the app, and the renderer withholds both
+names from the daemon even if a stale assignment survives on a host
+(`deploy/install-tinyassets-env.sh` `RETIRED_ENV`).
+
+---
+
+## Rotate the DigitalOcean API token, then drop it from the box (2026-10-02)
+
+**Why:** an account-wide `DO_API_TOKEN` sat in `/etc/tinyassets/env` and so in the
+daemon's process environment and every engine MCP child
+(`docs/concerns/2026-10-02-platform-secrets-in-daemon-env.md`). The env split keeps it
+out of the daemon from the next deploy on, but the value was exposed for as long as the
+daemon ran with it. Nothing on the box reads it; the workflows use the GitHub secret.
+
+1. DigitalOcean → API → Tokens: create a replacement, then revoke the old one.
+2. `gh secret set DO_API_TOKEN` with the new value (the workflows need it).
+3. On the droplet, after the next deploy: `sudo tinyassets-env delete DO_API_TOKEN`.
+
+Optional, same concern: swap `STRIPE_SECRET_KEY` for a restricted `rk_live_` key scoped
+to Checkout, Subscriptions and webhook reads. The daemon must still hold a Stripe key.
+
+---
+
 ## Creator revenue share: decide F1–F14 and get counsel on the token questions (2026-10-01)
 
 **Why:** `openspec/changes/creator-revenue-share/` designs paying creators a share of
