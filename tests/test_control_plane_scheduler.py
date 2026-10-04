@@ -524,6 +524,7 @@ def test_the_tick_never_opens_a_command_center_directory(tmp_path, handler):
 @pytest.mark.usefixtures("cloud_runtime")
 def test_the_consumer_tick_runs_triggers_only_while_holding_the_lease(tmp_path, monkeypatch):
     from tests.test_background_budget_finalization_e2e import _seed_serving_assignment
+    from tinyassets import activity_dispatcher
     from tinyassets.runtime.assigned_queue_consumer import AssignedQueueConsumer
     from tinyassets.storage import db_path
     from tinyassets.storage.request_admissions import migrate_request_admission_schema
@@ -533,7 +534,7 @@ def test_the_consumer_tick_runs_triggers_only_while_holding_the_lease(tmp_path, 
         migrate_request_admission_schema(conn)
     monkeypatch.setenv("TINYASSETS_ASSIGNED_QUEUE_CONSUMER", "1")
     consumer = AssignedQueueConsumer(tmp_path, max_concurrency=1)
-    calls = {"automations": 0, "triggers": 0}
+    calls = {"automations": 0, "triggers": 0, "activities": 0}
 
     def _submit(*_a, **_k):
         calls["automations"] += 1
@@ -542,6 +543,8 @@ def test_the_consumer_tick_runs_triggers_only_while_holding_the_lease(tmp_path, 
     monkeypatch.setattr(consumer, "_submit_due_automations", _submit)
     monkeypatch.setattr(consumer._control_plane, "tick",
                         lambda: calls.__setitem__("triggers", calls["triggers"] + 1))
+    monkeypatch.setattr(activity_dispatcher, "tick_in_background",
+                        lambda _base: calls.__setitem__("activities", calls["activities"] + 1))
 
     class _NotHeld(SingleProcessLease):
         def held(self) -> bool:
@@ -549,10 +552,10 @@ def test_the_consumer_tick_runs_triggers_only_while_holding_the_lease(tmp_path, 
 
     try:
         consumer.poll_once()
-        assert calls == {"automations": 1, "triggers": 1}
+        assert calls == {"automations": 1, "triggers": 1, "activities": 1}
         set_owner_lease(_NotHeld())
         consumer.poll_once()
-        assert calls == {"automations": 1, "triggers": 1}
+        assert calls == {"automations": 1, "triggers": 1, "activities": 1}
     finally:
         set_owner_lease(SingleProcessLease())
         consumer.stop()

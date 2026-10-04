@@ -424,6 +424,14 @@ class AssignedQueueConsumer:
             automation_submitted, _automation_universes = self._submit_due_automations(
                 serving_universes, prep_store
             )
+            # The owner also settles ended activities and starts queued ones.
+            # Dispatch runs on its own thread so heartbeats need not wait.
+            try:
+                from tinyassets.activity_dispatcher import tick_in_background
+
+                tick_in_background(self.base_path)
+            except Exception:  # noqa: BLE001 - activities never stop the pump
+                logger.exception("activity dispatch tick failed")
         for universe_id in serving_universes:
             try:
                 self._publish_heartbeat(universe_id)

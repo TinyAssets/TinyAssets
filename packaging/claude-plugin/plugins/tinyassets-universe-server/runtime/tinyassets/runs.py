@@ -2935,6 +2935,37 @@ def list_runs(
     return [_row_to_run(r) for r in rows]
 
 
+def run_counts_by_branch(base_path: str | Path, *, universe_id: str) -> list[dict[str, Any]]:
+    """Per workflow of ``universe_id``: how many runs, how many completed, failed
+    and running, the last activity time and the newest run's status (the live
+    view's project progress). Counted in SQL over every run, never a page."""
+    initialize_runs_db(base_path)
+    scope = ("((actor LIKE 'universe:%' AND TRIM(SUBSTR(actor, 10)) = ?)"
+             " OR TRIM(COALESCE(queue_universe_id, '')) = ?)")
+    with _connect(base_path) as conn:
+        rows = conn.execute(
+            "SELECT branch_def_id, COUNT(*), "
+            "SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END), "
+            "SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END), "
+            "SUM(CASE WHEN status IN ('queued', 'running', 'resumed') THEN 1 ELSE 0 END), "
+            "MAX(COALESCE(finished_at, started_at)) "
+            f"FROM runs WHERE {scope} AND COALESCE(branch_def_id, '') != '' "
+            "GROUP BY branch_def_id ORDER BY 6 DESC",
+            (universe_id, universe_id),
+        ).fetchall()
+        out = []
+        for row in rows:
+            last = conn.execute(
+                f"SELECT status FROM runs WHERE branch_def_id = ? AND {scope} "
+                "ORDER BY started_at DESC LIMIT 1", (row[0], universe_id, universe_id),
+            ).fetchone()
+            out.append({"branch_def_id": row[0], "total": int(row[1] or 0),
+                        "completed": int(row[2] or 0), "failed": int(row[3] or 0),
+                        "running": int(row[4] or 0), "last_at": row[5],
+                        "last_status": last[0] if last else ""})
+    return out
+
+
 def latest_run_by_name(
     base_path: str | Path,
     *,

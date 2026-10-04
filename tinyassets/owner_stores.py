@@ -29,6 +29,7 @@ INFRASTRUCTURE: frozenset[str] = frozenset({
 #: (today's deploy shape); each must move to :data:`FENCED` before C2.
 FENCE_BEFORE_C2: frozenset[str] = frozenset({
     "tinyassets/account_deletion.py",
+    "tinyassets/agent_activities.py",
     "tinyassets/agent_activity.py",
     "tinyassets/agent_interchange.py",
     "tinyassets/agent_review.py",

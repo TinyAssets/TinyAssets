@@ -97,6 +97,11 @@ SITES: dict[str, tuple[str, str]] = {
         CALL_SCOPED, "agent lease refresh for one running automation batch",
     ),
     "tinyassets/auto_ship_ledger.py::_file_lock": (CALL_SCOPED, "lock acquisition"),
+    "tinyassets/activity_runner.py::linked_activity": (
+        CALL_SCOPED,
+        "one activity run waits up to wait_s for the dispatcher to bind its "
+        "record, then returns or refuses before inference; no background scheduling",
+    ),
     "tinyassets/bid/execution_log.py::_exec_log_lock": (CALL_SCOPED, "lock acquisition"),
     "tinyassets/bid/node_bid.py::_bid_file_lock": (CALL_SCOPED, "lock acquisition"),
     "tinyassets/boxes/local.py::LocalBoxProvider._supervise": (
