@@ -224,3 +224,23 @@ was shrunk.
 #### Scenario: A bubble is dragged
 - **WHEN** the owner drags the bubble to a new place
 - **THEN** it moves there and does not also open
+
+### Requirement: Normal web sign-in establishes protected owner proof
+Normal web app sign-in SHALL reuse the interactive server-PKCE, browser-bound,
+single-use owner login callback to establish both owner proof and app renewal.
+The first inline model Connect after that sign-in SHALL proceed to the provider
+without another TinyAssets sign-in. Client-PKCE exchange, app/MCP/CLI bearer and
+refresh handles SHALL NOT create owner proof. Existing action/session binding,
+CSRF, cross-user rejection and copied-callback defenses SHALL remain unchanged.
+
+#### Scenario: Fresh web login then first connect
+- **WHEN** a fresh browser completes normal app sign-in and starts inline Connect
+- **THEN** the callback has established a live Secure HttpOnly owner cookie
+- **AND** the launch goes directly to the provider for that owner
+- **AND** app renewal uses the new refresh cookie rather than stale account handles
+
+#### Scenario: Native system browser has no protected session
+- **WHEN** native login completes its app-held PKCE exchange in the WebView
+- **THEN** the system browser gains no owner proof from the WebView credentials
+- **AND** its first Connect requires protected sign-in if its own owner cookie is absent
+- **AND** copied URLs or bearer credentials cannot replace that browser proof
