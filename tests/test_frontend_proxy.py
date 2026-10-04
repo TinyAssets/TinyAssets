@@ -173,6 +173,7 @@ def test_absent_owner():
 @unix_only
 def test_real_socket_proxy(monkeypatch):
     ended = threading.Event()
+    release_last = threading.Event()
 
     async def echo(request):
         response = JSONResponse(
@@ -200,7 +201,7 @@ def test_real_socket_proxy(monkeypatch):
     async def events(request):
         async def body():
             yield b"data: first\n\n"
-            await asyncio.sleep(0.5)
+            assert await asyncio.to_thread(release_last.wait, 5), "client did not release SSE"
             ended.set()
             yield b"data: last\n\n"
 
@@ -248,12 +249,16 @@ def test_real_socket_proxy(monkeypatch):
                 assert "x-private" not in response.headers
                 assert response.headers["x-ta-frontend"] == "blue/abc"
                 assert client.request("PATCH", "/app").json()["method"] == "PATCH"
-                with client.stream("GET", "/events") as response:
-                    assert response.headers["x-ta-frontend"] == "blue/abc"
-                    chunks = response.iter_raw()
-                    assert b"first" in next(chunks)
-                    assert not ended.is_set(), "SSE buffered until stream ended"
-                    assert b"last" in b"".join(chunks)
+                try:
+                    with client.stream("GET", "/events", timeout=2.0) as response:
+                        assert response.headers["x-ta-frontend"] == "blue/abc"
+                        chunks = response.iter_raw()
+                        assert b"first" in next(chunks)
+                        assert not ended.is_set(), "SSE buffered until stream ended"
+                        release_last.set()
+                        assert b"last" in b"".join(chunks)
+                finally:
+                    release_last.set()
 
 
 @unix_only
