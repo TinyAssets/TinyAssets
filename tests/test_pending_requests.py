@@ -344,13 +344,14 @@ def test_an_unreadable_queue_raises_instead_of_reading_as_empty(base):
     """``[]`` would draw "nothing is waiting on you" over a queue we cannot read."""
     from pathlib import Path
 
-    from tinyassets.storage.pending_requests import _DB_NAME, list_pending
+    from tinyassets.agent_activities import store_path
+    from tinyassets.storage.pending_requests import list_pending
 
     _make_universe(base, "u-1", admin="alice")
     _login("alice")
     _ask("u-1", title="one")
     udir = Path(base) / "u-1"
-    (udir / _DB_NAME).write_bytes(b"this is not a sqlite database" * 64)
+    store_path(udir).write_bytes(b"this is not a sqlite database" * 64)
     with pytest.raises(Exception):
         list_pending(udir)
 

@@ -25,13 +25,14 @@ def test_phone_conversation(app_url, browser, tmp_path):
         cloudState.open = {x:20,y:30,w:320,h:360};
         cloudState.userSet = true; refreshChatCloud();
         document.getElementById('request-rail').hidden = false;
-        railCache = [{request_id:'a', status:'pending'}, {request_id:'b', status:'pending'},
-                     {request_id:'c', status:'pending'}];
-        document.getElementById('rail-items').innerHTML =
-            '<div>First request</div><div>Second request</div><div>Third request</div>';
+        renderRail([]);
+        InlineApprovals.history([
+            {title:'First request', status:'approved'},
+            {title:'Second request', status:'skipped'},
+            {title:'Third request', status:'approved'}]);
     }""")
     page.wait_for_function(
-        "() => document.getElementById('rail-head').textContent === '3 waiting on you'"
+        "() => document.getElementById('rail-head').textContent === 'Request history'"
     )
     assert page.locator('#view-chat .chat-header').count() == 0
     header = _box(page, '#chat-cloud-bar')
@@ -45,18 +46,22 @@ def test_phone_conversation(app_url, browser, tmp_path):
     assert 0 <= send['x'] and send['x'] + send['width'] <= 390
     assert 0 <= send['y'] and send['y'] + send['height'] <= 844
     assert _box(page, '#request-rail')['height'] <= 44
-    assert page.locator('#rail-items').is_hidden()
+    assert page.locator('#request-history').is_hidden()
+    assert page.locator('#request-history p').count() == 3
+    assert page.locator('#thread > #rail-items').count() == 1
+    assert page.locator('#thread #btn-rail-add').is_visible()
     assert page.locator('#chat-cloud-resize').is_hidden()
     stage, cloud = _box(page, '#chat-stage'), _box(page, '#chat-cloud')
     assert cloud == pytest.approx(stage, abs=1)
     page.locator('#rail-head').tap()
-    assert page.locator('#rail-items').is_visible()
+    assert page.locator('#request-history').is_visible()
+    assert page.locator('#request-history button').count() == 0
     page.locator('#rail-head').tap()
-    # An offered row ("Connect another LLM") is not waiting on anyone.
-    page.evaluate("""() => { railCache = [{request_id:'x', status:'optional'}];
-        document.getElementById('rail-items').innerHTML = '<div>Connect another LLM</div>'; }""")
+    # New history arrives without changing the folded chip into a pending queue.
+    page.evaluate("""() => InlineApprovals.history([
+        {title:'Another answered request', status:'skipped'}])""")
     page.wait_for_function(
-        "() => document.getElementById('rail-head').textContent === 'Nothing waiting on you'"
+        "() => document.getElementById('rail-head').textContent === 'Request history'"
     )
     page.locator('#btn-cloud-menu').tap()
     assert page.locator('#btn-account').is_visible()
@@ -86,16 +91,18 @@ def test_phone_conversation(app_url, browser, tmp_path):
     assert send['y'] + send['height'] <= 500
     with (tmp_path / 'phone-p0-measurements.txt').open('a') as output:
         output.write(f", composer_at_500={composer}, send_at_500={send}")
-    # With nothing listed, the chip stays and "Add a key yourself" is one tap away;
-    # renderRail, not the phone CSS, decides whether the rail shows at all.
-    page.evaluate("""() => { railCache = [];
-        document.getElementById('rail-items').replaceChildren(); }""")
+    # Empty history keeps its chip; adding a key remains in the conversation.
+    page.evaluate("""() => { renderRail([]); InlineApprovals.history([]); }""")
     page.wait_for_function(
-        "() => document.getElementById('rail-head').textContent === 'Nothing waiting on you'"
+        "() => document.getElementById('rail-head').textContent === 'Request history'"
     )
     assert page.locator('#request-rail').is_visible()
     page.locator('#rail-head').tap()
-    assert page.locator('#btn-rail-add').is_visible()
+    assert page.locator('#rail-head').get_attribute('aria-expanded') == 'true'
+    assert page.locator('#request-history').evaluate(
+        "node => getComputedStyle(node).display") != 'none'
+    assert page.locator('#request-history p').count() == 0
+    assert page.locator('#thread #btn-rail-add').is_visible()
     context.close()
 
 
@@ -109,7 +116,7 @@ def test_wide_cloud_menu(app_url, browser, width):
     page.click('#btn-cloud-menu')
     assert page.locator('#btn-account').is_visible()
     assert page.locator('#btn-signout').is_visible()
-    assert page.locator('#rail-head').text_content() == 'Waiting on you'
+    assert page.locator('#rail-head').text_content() == 'Request history'
     # Desktop and the Electron app keep 100dvh: no visual-viewport height.
     assert page.evaluate("document.documentElement.style.getPropertyValue('--app-h')") == ''
     page.close()

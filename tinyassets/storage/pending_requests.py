@@ -42,6 +42,8 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+from tinyassets.owner_control import serialized
+
 logger = logging.getLogger(__name__)
 
 _DB_NAME = ".pending_requests.db"
@@ -278,13 +280,16 @@ def _migrate_itemless_keys(conn: sqlite3.Connection) -> int:
 
 
 def _db(universe_dir: Path) -> sqlite3.Connection:
-    conn = sqlite3.connect(str(Path(universe_dir) / _DB_NAME), timeout=10.0)
+    from tinyassets.storage.request_migration import ensure_protected
+
+    conn = sqlite3.connect(ensure_protected(universe_dir), timeout=10.0)
     conn.executescript(_SCHEMA)
     _ensure_columns(conn)
     _migrate_itemless_keys(conn)
     return conn
 
 
+@serialized
 def create_request(
     universe_dir: Path,
     *,
@@ -501,7 +506,20 @@ def _projected(conn: sqlite3.Connection, rows: list[Any]) -> list[dict[str, Any]
     out = []
     for row in rows:
         has_items = bool(row[13] and row[13] not in ("[]", "null"))
-        out.append(_project(row, _item_answers(conn, str(row[0])) if has_items else None))
+        projected = _project(row, _item_answers(conn, str(row[0])) if has_items else None)
+        if projected['action'].get('type') == 'approve_action':
+            from tinyassets.bound_requests import RequestRefused, card
+            original_factory = conn.row_factory
+            conn.row_factory = sqlite3.Row
+            try:
+                projected.update(card(conn, projected['request_id']))
+                projected['body'] = ''
+            except (RequestRefused, sqlite3.OperationalError, IndexError):
+                projected.update(title='A fresh protected preview is required', body='',
+                                 action={'type': 'approve_action'}, phase='preview_required')
+            finally:
+                conn.row_factory = original_factory
+        out.append(projected)
     return out
 
 
@@ -531,11 +549,14 @@ def list_pending(universe_dir: Path) -> list[dict[str, Any]]:
     A universe that has never had a request has no store yet, and that one IS
     empty.
     """
-    if not (Path(universe_dir) / _DB_NAME).exists():
+    from tinyassets.agent_activities import store_path
+
+    if not (Path(universe_dir) / _DB_NAME).exists() and not store_path(universe_dir).is_file():
         return []
     with _db(universe_dir) as conn:
         rows = conn.execute(
-            f"{_SELECT} WHERE status = 'pending' ORDER BY created_at ASC"
+            f"{_SELECT} WHERE status IN ('pending','approved','unresolved','deferred') "
+            "ORDER BY created_at ASC"
         ).fetchall()
         return _projected(conn, rows)
 
@@ -580,6 +601,7 @@ def find_by_action_type(
     return [row for row in found if (row["action"] or {}).get("type") == action_type]
 
 
+@serialized
 def retire_platform_request(
     universe_dir: Path, request_id: str, *, reason: str = ""
 ) -> bool:
@@ -607,6 +629,7 @@ def retire_platform_request(
         return False
 
 
+@serialized
 def resolve_request(
     universe_dir: Path,
     request_id: str,
@@ -706,6 +729,7 @@ def _requeue_waiting_activity(universe_dir: Path, request_id: str) -> None:
         logger.warning("pending_requests: activity re-queue failed", exc_info=True)
 
 
+@serialized
 def resolve_item(
     universe_dir: Path,
     request_id: str,
@@ -816,6 +840,7 @@ def resolve_item(
     }
 
 
+@serialized
 def withdraw_request(
     universe_dir: Path, request_id: str, *, reason: str = ""
 ) -> dict[str, Any]:
@@ -872,6 +897,7 @@ def list_resolved(universe_dir: Path, limit: int = 20) -> list[dict[str, Any]]:
         return []
 
 
+@serialized
 def record_unmute(universe_dir: Path, dedupe_key: str) -> None:
     """Record that a mute was lifted, so the lift is visible in the rail."""
     try:
@@ -920,6 +946,7 @@ def list_suppressions(universe_dir: Path) -> list[dict[str, Any]]:
         return []
 
 
+@serialized
 def unsuppress(universe_dir: Path, dedupe_key: str) -> bool:
     """Undo a "don't ask again". A standing refusal the user cannot lift is a trap."""
     try:

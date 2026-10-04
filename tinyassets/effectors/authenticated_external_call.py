@@ -694,7 +694,7 @@ def _initiating_agent(universe_dir: Path) -> str | None:
 
 def _rule_refusal(universe_dir: Path, connection_id: str, verb: str,
                   path: str = "/", *, evidence: str = "",
-                  agent: str | None = None) -> dict[str, Any] | None:
+                  agent: str | None = None, preapproved: bool = False) -> dict[str, Any] | None:
     """``None`` when the owner's rules let this call proceed, else a refusal.
 
     What the call MEANS comes from the owner's declarations for this connection
@@ -721,7 +721,8 @@ def _rule_refusal(universe_dir: Path, connection_id: str, verb: str,
             "error_kind": "rules_unreadable",
             "hint": "Your rules could not be read, so nothing was sent.",
         }
-    if decision.proceeds:
+    if decision.proceeds or (preapproved and decision.behaviour in (
+            agent_rules.ASK_FIRST, agent_rules.DO_IF_PREAPPROVED)):
         # Only an explicit owner-configured review adds a model check. Grants,
         # consent and cross-user isolation remain independent mandatory checks.
         from tinyassets.agent_review import review_refusal
@@ -1129,13 +1130,44 @@ def _run(
     # its grant would allow. Every call here counts as a write until connections
     # declare their operation kinds (D1b). A rule store that cannot be read
     # refuses the call; it never falls back to allowing it.
+    from tinyassets.bound_requests import dispatch_agent
+
+    approved_agent = dispatch_agent(universe_dir, packet)
+    context_agent = (execution_context.initiating_agent if execution_context is not None
+                     else _initiating_agent(universe_dir))
+    if approved_agent and execution_context is not None and approved_agent != context_agent:
+        return {"error_kind": "execution_context_mismatch", "dry_run": True}
+    rule_agent = approved_agent or context_agent
     rule_refusal = _rule_refusal(
         universe_dir, connection_id, verb, _request_path(request),
-        evidence=_review_evidence(request),
-        agent=(execution_context.initiating_agent if execution_context is not None
-               else _initiating_agent(universe_dir)),
+        evidence=_review_evidence(request), agent=rule_agent,
+        preapproved=approved_agent is not None,
     )
     if rule_refusal is not None:
+        # Pin the actual attempted packet at the point of need. A continuation
+        # never has to reconstruct it from the agent's description of a refusal.
+        if rule_refusal.get("error_kind") == "rule_ask_first" and not approved_agent:
+            from tinyassets.auth.middleware import current_identity_or_none
+            from tinyassets.bound_requests import RequestRefused, capture
+
+            # capture binds the ambient turn. A signed ta launch must not
+            # create a card attributed to another agent's ambient conversation.
+            ambient_agent = _initiating_agent(universe_dir)
+            if (current_identity_or_none() is not None and ambient_agent
+                    and ambient_agent == rule_agent):
+                try:
+                    pending = capture(universe_dir, {
+                        "executor": EXTERNAL_WRITE_SINK_AUTHENTICATED_CALL,
+                        "arguments": {k: v for k, v in packet.items() if k != "sink"},
+                    })
+                    rule_refusal = {
+                        **rule_refusal, "request_id": pending["request_id"],
+                        "hint": "The exact action is waiting in the owner's inline card.",
+                    }
+                except (RequestRefused, ValueError):
+                    # Unsupported transforms/headers need an explicit safe ask.
+                    # Nothing is sent, and the existing refusal remains visible.
+                    pass
         return {
             **rule_refusal,
             "destination": destination,

@@ -1,4 +1,13 @@
-Proposal-only handoff; implementation boxes intentionally remain open. No product code, deployment or new PR in this session.
+Implementation lane: `feat/inline-connect-and-approve`. The authorized first
+coherent slice is implemented: once-only generic HTTP approval in the bubble,
+protected owner-session decisions that execute, and server-side continuation.
+See [delivery.md](delivery.md) for behavior, evidence and the remaining work in
+each original task. Original boxes stay unchecked where their broader contracts
+are not fully implemented or verified; this is not full change acceptance.
+
+- [x] S1 Deliver the first coherent slice: protected literal HTTP action envelopes,
+  owner-session once approval that executes through ordinary enforcement, inline
+  thread cards/read-only history, durable bound-answer wakes and server recovery.
 
 ## 1. Bound requests and owner authority
 

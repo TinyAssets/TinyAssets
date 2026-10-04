@@ -467,7 +467,7 @@
           </div>
         </div>
         <aside id="request-rail" class="rail" hidden>
-          <div id="rail-head" class="rail-head">Waiting on you</div>
+          <div id="rail-head" class="rail-head">Request history</div>
           <div id="rail-error" class="rail-error" role="alert" hidden>
             <span id="rail-error-text"></span>
             <button id="btn-rail-retry" class="btn btn--link" type="button">Try again</button>
@@ -5922,7 +5922,7 @@
   function clearThread(){
     const thread=$("thread"); if(!thread) return;
     Array.from(thread.children||[]).forEach(node=>{
-      if(node&&node.id!=="thread-empty"&&node.remove) node.remove(); });
+      if(node&&!['thread-empty','rail-items','request-entry-points'].includes(node.id)&&node.remove) node.remove(); });
     hasMessages=false;
   }
   // The composer is account-scoped state as much as the thread is: an unsent
@@ -5995,6 +5995,7 @@
     railNodes = new Map();
     railCache = [];
     railOpen = null;
+    const history=$("request-history");if(history)history.textContent="";
   }
   // Every credential the owner typed and did NOT submit, cleared when the login
   // ends. A RULE, not a list of ids: a `type="password"` input is by definition
@@ -6980,21 +6981,14 @@
   }
   function paintRailChip(){
     const rail=$("request-rail"), head=$("rail-head"), phone=window.matchMedia("(max-width:600px)").matches;
-    const count=$("rail-items").children.length;
-    rail.dataset.phoneEmpty=String(count===0);
+    const history=$("request-history");
+    rail.dataset.phoneEmpty=String(!history||history.children.length===0);
+    if(head.textContent!=="Request history") head.textContent="Request history";
     if(phone){
-      // Only what is outstanding counts: an offered row ("Connect another LLM")
-      // is not waiting on anyone (the same rule as the desktop heading).
-      const waiting=typeof railCache!=="undefined"
-        ? railCache.filter(r=>!(typeof isOptionalRequest==="function" && isOptionalRequest(r))).length : count;
-      const label=waiting ? waiting+" waiting on you" : "Nothing waiting on you";
-      if(head.textContent!==label) head.textContent=label;
-      head.setAttribute("role","button"); head.tabIndex=0;
+      head.setAttribute("role","button");head.tabIndex=0;
       head.setAttribute("aria-expanded",String(rail.classList.contains("rail--open")));
-    }else if(head.hasAttribute("role")){
-      head.textContent=typeof railCache!=="undefined" && !railCache.some(r=>!isOptionalRequest(r))
-        ? "Nothing waiting on you" : "Waiting on you";
-      head.removeAttribute("role"); head.removeAttribute("tabindex"); head.removeAttribute("aria-expanded");
+    }else{
+      head.removeAttribute("role");head.removeAttribute("tabindex");head.removeAttribute("aria-expanded");
     }
   }
   function toggleRailChip(event){
@@ -7173,6 +7167,12 @@
       if(body) init.body=JSON.stringify(body);
       const r=await fetch("/app/memory",init);
       const doc=await r.json().catch(()=>({}));
+      if(doc.error==='interactive_approval_required'){
+        let link=$('rules-owner-sign-in');
+        if(!link){link=document.createElement('a');link.id='rules-owner-sign-in';
+          link.href='/app/owner-sign-in';link.target='_blank';link.rel='noopener';
+          link.textContent='Sign in to change your rules';$('rules-status').after(link);}
+      }
       return {ok:r.ok,status:r.status,doc};
     }
     function renderMemory(doc,context){
@@ -8598,6 +8598,110 @@
     connectWasBlocking = blocking;
   }
 
+  // Begin protected inline approval cards.
+  const InlineApprovals = {
+    async post(operation, payload){
+      const epoch=MCP._loginEpoch;
+      const response=await fetch('/app/approvals/'+operation,{
+        method:'POST', credentials:'same-origin',
+        headers:{'Content-Type':'application/json','Authorization':'Bearer '+token()},
+        body:JSON.stringify(payload)
+      });
+      const result=await response.json();
+      if(epoch!==MCP._loginEpoch) throw new Error('Account changed.');
+      if(!response.ok){
+        const error=new Error(result.detail||result.error||'The request could not finish.');
+        error.signIn=result.error==='interactive_approval_required'; throw error;
+      }
+      return result;
+    },
+    build(req){
+      const box=document.createElement('section'); box.className='rtab-body inline-approval';
+      box.setAttribute('aria-label','Action approval');
+      const title=document.createElement('h3'), destination=document.createElement('p');
+      const draft=document.createElement('textarea'); draft.setAttribute('aria-label','Action draft');
+      draft.style.cssText='width:100%;box-sizing:border-box;min-height:5em';
+      const details=document.createElement('p'), note=document.createElement('p');
+      note.setAttribute('role','status');
+      const controls=document.createElement('div'); controls.className='rtab-actions';
+      const buttons={};
+      let preview=null, busy=false, originalDraft='', dirty=false;
+      const signIn=document.createElement('a'); signIn.href='/app/owner-sign-in';
+      signIn.target='_blank'; signIn.rel='noopener'; signIn.textContent='Sign in to approve'; signIn.hidden=true;
+      box.append(title,destination,draft,details,controls,signIn,note);
+      function show(value){
+        preview=value;
+        title.textContent=value.title;
+        destination.textContent=value.destination;
+        if(!dirty){
+          originalDraft=typeof value.draft==='string'?value.draft:JSON.stringify(value.draft??null,null,2);
+          draft.value=originalDraft;
+        }
+        details.textContent='Requested by '+value.agent+' · This action only · Expires '+new Date(value.expires_at*1000).toLocaleString();
+        note.textContent=value.approval_unavailable||(value.result?JSON.stringify(value.result):'');
+        for(const [key,button] of Object.entries(buttons)){
+          const canAct=['pending','deferred'].includes(value.status) ||
+            (value.status==='unresolved'&&['deny','skip','alternative'].includes(key));
+          button.disabled=busy||(key!=='preview'&&!canAct)||(key==='approve'&&dirty)||
+            (!!value.approval_unavailable&&['approve','edit'].includes(key));
+        }
+        if(value.phase==='unknown') note.textContent='The action may have completed. Check its outcome before trying again.';
+      }
+      async function perform(operation, extra={}){
+        if(busy) return;
+        busy=true; Object.values(buttons).forEach(b=>b.disabled=true);
+        try{
+          const payload={request_id:req.request_id,...extra};
+          if(operation==='decide') Object.assign(payload,{
+            expected_revision:preview.revision,action_sha256:preview.action_sha256,
+            approval_token:preview.approval_token,scope:'once'
+          });
+          const value=await InlineApprovals.post(operation,payload);
+          if(!box.isConnected) return;
+          if(operation==='edit') dirty=false;
+          busy=false; signIn.hidden=true; show(value);
+          if(operation==='decide' && typeof refreshRail==='function') refreshRail();
+        }catch(error){
+          busy=false; note.textContent=error.message; signIn.hidden=!error.signIn;
+          buttons.preview.disabled=false;
+          // Never re-enable an old approval token after an uncertain response.
+        }
+      }
+      function button(key,label,click){
+        const el=document.createElement('button'); el.type='button';el.textContent=label;
+        el.disabled=true;el.addEventListener('click',click);controls.appendChild(el);buttons[key]=el;
+      }
+      button('preview','Review / Try again',()=>perform('preview'));
+      button('edit','Preview edit',()=>{
+        let value=draft.value;
+        if(preview&&typeof preview.draft!=='string'){
+          try{value=JSON.parse(value);}catch(_e){note.textContent='Keep this draft valid JSON.';return;}
+        }
+        perform('edit',{draft:value});
+      });
+      button('approve','Approve once',()=>perform('decide',{decision:'approve'}));
+      button('deny','Deny',()=>perform('decide',{decision:'deny'}));
+      button('defer','Not now',()=>perform('decide',{decision:'defer'}));
+      button('alternative','Find an alternative',()=>perform('decide',{decision:'alternative'}));
+      button('skip','Skip',()=>perform('decide',{decision:'skip'}));
+      draft.addEventListener('input',()=>{dirty=draft.value!==originalDraft;buttons.approve.disabled=dirty||busy||!preview||!!preview.approval_unavailable||!['pending','deferred'].includes(preview.status);});
+      // Until the protected endpoint responds, agent-supplied text is no preview.
+      title.textContent='Review the requested action'; note.textContent='Loading protected preview…';
+      buttons.preview.disabled=false;
+      queueMicrotask(()=>perform('preview'));
+      return box;
+    },
+    history(rows){
+      let host=$('request-history');
+      if(!host){host=document.createElement('div');host.id='request-history';$('request-rail').appendChild(host);}
+      host.textContent='';
+      (rows||[]).forEach(row=>{const item=document.createElement('p');
+        item.textContent=(row.title||'Request')+' · '+row.status;host.appendChild(item);});
+      const head=$('rail-head'); if(head) head.textContent='Request history';
+    }
+  };
+  // End protected inline approval cards.
+
   function renderRail(items){
     if(typeof railLink !== "undefined" && railLink && (items||[]).some(r=>r.request_id===railLink)){
       railOpen=railLink; railLink=null;
@@ -8606,13 +8710,20 @@
     railCache = items || [];
     const rail = $("request-rail"), host = $("rail-items"), head = $("rail-head");
     if(!rail || !host) return;
+    // Request controls live in the conversation. The rail retains read-only history.
+    const thread=$('thread');
+    if(thread && host.parentNode!==thread) thread.appendChild(host);
+    if(thread && !$('request-entry-points')){
+      const entries=document.createElement('div');entries.id='request-entry-points';
+      for(const id of ['btn-rail-add','rail-add-panel']){const node=$(id);if(node)entries.appendChild(node);}
+      thread.appendChild(entries);
+    }
     forgetFinishedSetup(railCache);
     // The heading is a claim about the user's queue. A connected command center's
     // "Connect another LLM" row is offered, not outstanding, and a heading that
     // keeps saying "Waiting on you" over it is simply false (live 2026-09-25).
     if(head){
-      head.textContent = railCache.some(r=>!isOptionalRequest(r))
-        ? "Waiting on you" : "Nothing waiting on you";
+      head.textContent = "Request history";
     }
     const folded = foldedModelAccess(railCache);
     HostedModelConnect.adopt(folded);
@@ -8635,11 +8746,12 @@
     // the answer is "exactly what is already on screen", touch nothing at all.
     const wanted = [];
     railCache.forEach(req=>{
+      if(req.agent && typeof addressedAgentId==='function' && req.agent!==addressedAgentId()) return;
       if(folded && req.request_id === folded.request_id) return;
       // A sticky ask is a PRECONDITION, not a question: it opens itself and has
       // no dismiss, because a command center with no model cannot be asked to accept
       // having no model.
-      const open = req.sticky ? (railOpen !== "closed:" + req.request_id)
+      const open = req.action && req.action.type==='approve_action' ? true : req.sticky ? (railOpen !== "closed:" + req.request_id)
                               : (railOpen === req.request_id);
       // An optional entry is NOT a rail item. "Waiting on you" is for what
       // blocks the user's work; a standing offer to add a second model source
@@ -8687,14 +8799,15 @@
       const kind = document.createElement("span");
       kind.className = "rtab-kind"; kind.textContent = req.kind;
       const title = document.createElement("span");
-      title.className = "rtab-title"; title.textContent = req.suggestion || req.title;
+      title.className = "rtab-title"; title.textContent = req.action&&req.action.type==="approve_action" ? "Action approval" : req.suggestion || req.title;
       btn.appendChild(kind); btn.appendChild(title);
       btn.addEventListener("click",()=>{
         railOpen = (railOpen === req.request_id) ? null : req.request_id;
         renderRail(railCache);
       });
       tab.appendChild(btn);
-      if(open && setup){ tab.appendChild(connectBody(req)); setupOpen = !!req.sticky; }
+      if(req.action && req.action.type==='approve_action') tab.appendChild(InlineApprovals.build(req));
+      else if(open && setup){ tab.appendChild(connectBody(req)); setupOpen = !!req.sticky; }
       else if(open) tab.appendChild(railBody(req));
       host.appendChild(tab);
       if(req.items) updateRailItems(req);
@@ -9351,15 +9464,18 @@
   }
   async function refreshRail(){
     if(!token()) return;
+    const loginEpoch=MCP._loginEpoch;
     let r=null, failure=null;
     try{ r = await Owner.listRequests(); }
     catch(err){
       if(err && err.authRequired) return;
       failure = (err && err.message) || "the request failed";
     }
+    if(loginEpoch!==MCP._loginEpoch) return;
     if(!failure && r && Array.isArray(r.pending)){
       railFailed(null);
       renderRail(r.pending);
+      InlineApprovals.history(r.recently_answered);
       return;
     }
     railFailed(failure || (r && typeof r.error==="string" && r.error) || "no list came back");

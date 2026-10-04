@@ -445,14 +445,15 @@ def test_answering_an_item_of_an_edited_request_is_refused(base, signed_in):
     import json as _json
     import sqlite3
 
-    from tinyassets.storage.pending_requests import _DB_NAME, get_request
+    from tinyassets.agent_activities import store_path
+    from tinyassets.storage.pending_requests import get_request
 
     signed_in(OWNER)
     udir = _home(base, UID, OWNER)
     raised = _ask(UID, items=_items("a", "b"))
     # Edit the stored items WITHOUT touching the dedupe key, which is exactly
     # the shape the pin exists to catch.
-    conn = sqlite3.connect(udir / _DB_NAME)
+    conn = sqlite3.connect(store_path(udir))
     try:
         conn.execute(
             "UPDATE pending_requests SET items_json = ? WHERE request_id = ?",
@@ -516,7 +517,8 @@ def _predecessor_row(base, uid) -> tuple[str, str, dict]:
     import json as _json
     import sqlite3
 
-    from tinyassets.storage.pending_requests import _DB_NAME, get_request
+    from tinyassets.agent_activities import store_path
+    from tinyassets.storage.pending_requests import get_request
 
     live = _ask(uid)
     assert live.get("request_id"), live
@@ -529,7 +531,7 @@ def _predecessor_row(base, uid) -> tuple[str, str, dict]:
     assert len(_json.loads(six)) == 6
     # Rewrite the live row's key to the predecessor's, and reset the migration
     # marker so opening the store migrates rather than skipping.
-    conn = sqlite3.connect(udir / _DB_NAME)
+    conn = sqlite3.connect(store_path(udir))
     try:
         conn.execute(
             "UPDATE pending_requests SET dedupe_key = ? WHERE request_id = ?",
@@ -604,12 +606,13 @@ def test_a_predecessor_standing_decision_still_settles_the_ask(base, signed_in):
     import sqlite3
     import time as _time
 
-    from tinyassets.storage.pending_requests import _DB_NAME, list_pending
+    from tinyassets.agent_activities import store_path
+    from tinyassets.storage.pending_requests import list_pending
 
     signed_in(OWNER)
     udir = _home(base, UID, OWNER)
     request_id, six, _before = _predecessor_row(base, UID)
-    conn = sqlite3.connect(udir / _DB_NAME)
+    conn = sqlite3.connect(store_path(udir))
     try:
         # The owner settled it under the predecessor's key, and the tab is gone.
         conn.execute(

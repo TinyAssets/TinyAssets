@@ -76,6 +76,8 @@ class El{constructor(){this.hidden=true;this.textContent="";}}
 const els={"request-rail":new El(),"rail-error":new El(),"rail-error-text":new El()};
 const $=id=>els[id];
 const token=()=>"t";
+const MCP={_loginEpoch:1};
+const InlineApprovals={history:()=>{}};
 let rendered=null;
 function renderRail(items){ rendered=items; els["request-rail"].hidden=false; }
 const Owner={listRequests:async()=>{

@@ -47,6 +47,7 @@ from pathlib import Path
 from typing import Any
 
 from tinyassets import agent_sessions
+from tinyassets.owner_control import serialized
 
 logger = logging.getLogger(__name__)
 
@@ -191,6 +192,7 @@ def configured_agents(universe_dir: Path) -> set[str]:
         return {row[0] for row in conn.execute("SELECT DISTINCT agent FROM review_on")}
 
 
+@serialized
 def set_review(universe_dir: Path, action_class: str, enabled: bool, *,
                confirm: bool = False, agent: str = "main") -> None:
     """The owner turns the review on or off for one class (the owner door only)."""

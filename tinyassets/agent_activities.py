@@ -185,6 +185,14 @@ def _connect(universe_dir: Path, *, create: bool = False) -> sqlite3.Connection:
     conn.execute("PRAGMA journal_mode = WAL")
     for statement in _SCHEMA:
         conn.execute(statement)
+    for table, name, declaration in (
+        ("activities", "task_generation", "INTEGER NOT NULL DEFAULT 1"),
+        ("activities", "task_expires_at", "REAL NOT NULL DEFAULT 0"),
+        ("activities", "continuation_only", "INTEGER NOT NULL DEFAULT 0"),
+        ("activity_events", "dedupe_key", "TEXT"),
+    ):
+        if name not in {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {declaration}")
     return conn
 
 
@@ -268,7 +276,7 @@ def _event(conn: sqlite3.Connection, record: dict, kind: str, reason: str = "") 
     # a recent window onto the record, which stays the truth, so an activity that
     # loops through waits cannot grow its history without limit.
     conn.execute(
-        "DELETE FROM activity_events WHERE activity_id = ? AND seq <= ?",
+        "DELETE FROM activity_events WHERE activity_id = ? AND seq <= ? AND dedupe_key IS NULL",
         (activity_id, seq - MAX_EVENTS),
     )
 
@@ -280,7 +288,7 @@ def _bump(record: dict) -> float:
 
 def create(universe_dir: Path, *, owner_principal: str, title: str, brief: str,
            origin_kind: str, origin_ref: str = "", agent_id: str = "main",
-           approval_id: str = "") -> dict:
+           approval_id: str = "", continuation_only: bool = False) -> dict:
     """A new activity, queued (``scheduled``). The id is minted here, never taken.
 
     ``owner_principal`` must be derived server-side from the authenticated
@@ -334,6 +342,10 @@ def create(universe_dir: Path, *, owner_principal: str, title: str, brief: str,
             f"VALUES ({', '.join('?' for _ in _COLUMNS)})",
             tuple(record[c] for c in _COLUMNS),
         )
+        if continuation_only:
+            conn.execute("UPDATE activities SET continuation_only=1,task_expires_at=?,"
+                         "status='waiting_on_you' WHERE activity_id=?",
+                         (now + 86400, activity_id))
         _event(conn, record, "created")
     return record
 

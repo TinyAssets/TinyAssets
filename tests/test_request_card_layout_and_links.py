@@ -153,7 +153,7 @@ def _render_links(urls):
     script = (_LINK_HARNESS
               .replace("__SOURCE__", _js_function(html, "railFieldLink"))
               .replace("__URLS__", json.dumps(urls)))
-    run = subprocess.run([_NODE, "-e", script], capture_output=True, text=True,
+    run = subprocess.run([_NODE], input=script, capture_output=True, text=True,
                          encoding="utf-8", timeout=30, check=False)
     assert run.returncode == 0, run.stderr
     return json.loads(run.stdout)
@@ -344,7 +344,7 @@ def _run_rail(rows, extra):
               + "\nrenderRail(" + json.dumps(rows) + ");\n" + extra + r"""
 console.log(JSON.stringify(result));
 """)
-    run = subprocess.run([_NODE, "-e", script], capture_output=True, text=True,
+    run = subprocess.run([_NODE], input=script, capture_output=True, text=True,
                          encoding="utf-8", timeout=30, check=False)
     assert run.returncode == 0, run.stderr
     return json.loads(run.stdout)
@@ -419,9 +419,8 @@ def test_an_unchanged_rail_is_not_touched_at_all_so_the_cursor_survives():
 def test_a_settled_rail_still_updates_its_heading():
     """The early return skips DOM writes to the CARDS, not the bookkeeping.
 
-    The heading is a claim about the user's queue and is computed before the
-    return, so a rail whose cards happen to be unchanged still stops (or starts)
-    saying work is waiting.
+    The rail is read-only history now; unchanged cards must not leave the old
+    Waiting on you heading behind when the pending composition changes.
     """
     optional = {"request_id": "sys_connect_llm", "kind": "LLM", "sticky": False,
                 "status": "optional", "title": "Connect another LLM",
@@ -437,8 +436,8 @@ def test_a_settled_rail_still_updates_its_heading():
         "const result={asking,after:$('rail-head').textContent,"
         "tabs:host.children.length};",
     )
-    assert out["asking"] == "Waiting on you"
-    assert out["after"] == "Nothing waiting on you", (
+    assert out["asking"] == "Request history"
+    assert out["after"] == "Request history", (
         "a settled rail kept claiming work was waiting"
     )
     assert out["tabs"] == 0

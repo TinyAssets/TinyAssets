@@ -384,6 +384,8 @@ def test_what_executes_is_what_the_owner_was_shown(base):
     """
     import sqlite3
 
+    from tinyassets.storage.request_migration import ensure_protected
+
     udir = _make_universe(base, "u-1", admin="alice")
     _login("alice")
     _seed_connection("u-1")
@@ -395,7 +397,7 @@ def test_what_executes_is_what_the_owner_was_shown(base):
                                         "methods": ["PUT"]}]})
 
     swapped = json.dumps({"type": "remove_http", "destination": "github"})
-    db = next(udir.rglob("*.db"), None) or (udir / "requests.db")
+    db = ensure_protected(udir)
     with sqlite3.connect(db) as conn:
         conn.execute("UPDATE pending_requests SET action_json = ? WHERE request_id = ?",
                      (swapped, shown["request_id"]))
@@ -422,6 +424,8 @@ def test_a_suppression_recorded_BEFORE_this_rule_cannot_swallow_a_removal(base):
     """
     import sqlite3
 
+    from tinyassets.storage.request_migration import ensure_protected
+
     udir = _make_universe(base, "u-1", admin="alice")
     _login("alice")
     _seed_connection("u-1")
@@ -432,7 +436,7 @@ def test_a_suppression_recorded_BEFORE_this_rule_cannot_swallow_a_removal(base):
     dedupe = json.dumps([kind, title, body, [], action],
                         sort_keys=True, separators=(",", ":"))
 
-    db = next(udir.rglob("*.db"), None)
+    db = ensure_protected(udir)
     with sqlite3.connect(db) as conn:
         conn.execute(
             "INSERT OR REPLACE INTO request_suppressions "
