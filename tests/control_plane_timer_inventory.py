@@ -46,7 +46,8 @@ SITES: dict[str, tuple[str, str]] = {
     ),
     "tinyassets/universe_server.py::main._served_budget_lease_loop": (
         CONTROL_PLANE,
-        "run-file retention, admitted-run, delivery and budget-lease reconciliation",
+        "run-file retention, admitted-run, delivery, budget-lease reconciliation "
+        "and stored presentation-policy updates under the service writer barrier",
     ),
     "tinyassets/api/runs.py::start_run_owner_watcher._watch": (
         CONTROL_PLANE, "dead-owner run recovery and terminal-event redelivery",

@@ -116,6 +116,10 @@ OWNER_ONLY_TABLES = MappingProxyType({
     "universe_app_ui": "owner_user_id",
     "command_center_adoptions": "owner_id",
     "command_center_update_requests": "owner_id",
+    "command_center_update_policies": "owner_id",
+    "command_center_policy_requests": "owner_id",
+    "command_center_auto_receipts": "owner_id",
+    "command_center_auto_status": "owner_id",
 })
 
 #: Universe-scoped tables that ALSO hold a person-keyed row worth removing

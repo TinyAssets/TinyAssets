@@ -2896,7 +2896,7 @@ def answer_request(*, universe_id: str = "", payload: Any = None) -> dict[str, A
                 "receipt": f"Installed \"{action['plan']['name']}\" as your own copy.",
                 "suppressed": False}
     if action.get("type") == "publish":
-        from tinyassets.api.publish_requests import answer_publish
+        from tinyassets.api.publish_requests import after_publish, answer_publish
 
         try:
             result = answer_publish(_uid, pinned, values, request_id=request_id)
@@ -2905,8 +2905,11 @@ def answer_request(*, universe_id: str = "", payload: Any = None) -> dict[str, A
         if not resolve_request(udir, request_id, status="answered", answer=answer,
                                feedback=feedback, dont_ask_again=False, decision="allowed"):
             return {"error": "request_resolution_unconfirmed", "request_pending": True}
+        result = {**result, **after_publish(_uid, action, result, request_id=request_id)}
+        release_note = (" " + result["release_registration_detail"]
+                        if result.get("release_registration") == "unavailable" else "")
         return {**result, "status": "answered", "request_id": request_id,
-                "receipt": f"Published \"{action['name']}\" for anyone to copy.",
+                "receipt": f"Published \"{action['name']}\" for anyone to copy.{release_note}",
                 "suppressed": False}
     if action.get("type") == PATCH_INTAKE_ACTION:
         if row["fields"] or values:
