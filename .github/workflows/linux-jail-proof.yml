@@ -71,6 +71,10 @@ name: linux-jail-proof
 
 on:
   pull_request:
+    # `ready_for_review` is NOT a default type, and the job below skips on a
+    # draft; without it a PR marked ready keeps the draft run's skip until its
+    # next push.
+    types: [opened, reopened, synchronize, ready_for_review]
     paths:
       # This job and its assertion helper.
       - ".github/workflows/linux-jail-proof.yml"
@@ -151,6 +155,15 @@ concurrency:
 jobs:
   linux-jail-proof:
     name: linux-jail-proof
+    # Drafts do not spend a runner here; `ready_for_review` above runs it for
+    # real as soon as the PR is ready, and `workflow_dispatch` is unaffected
+    # (the condition's first clause is true for every non-PR event).
+    # Deliberately NOT a branch-protection context (see the header), which is
+    # what makes skipping safe: a skipped job reports `conclusion=skipped` and
+    # branch protection accepts that as satisfied. If this proof is ever
+    # promoted to a required check, this `if:` must be removed in the same
+    # change -- otherwise the gate passes without running.
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     # Ephemeral GitHub-hosted VM only, never self-hosted. The jail itself runs
     # in a throwaway container as uid 1001 (see the header).
     runs-on: ubuntu-latest

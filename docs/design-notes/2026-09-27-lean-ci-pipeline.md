@@ -178,3 +178,118 @@ conflicts will not.
   `reason` and `createdAt`. The proxy for "stamp" is the first enqueue.
 - Failing tests: `gh run list --workflow tests.yml --event merge_group`, then
   `gh run view <id> --log-failed`, then the ``- `tests/...` `` lines.
+
+## M2c, 2026-10-03: heavy `pull_request` workflows skip drafts
+
+Prompted by a merge-group `Tests` run queued 20+ minutes behind 30 PR runs.
+Five heavy, non-required `pull_request` workflows now skip while the PR is a
+draft, and re-run on `ready_for_review`:
+
+| Workflow | Job | Median / run | Total of last 100 completed PR runs |
+|---|---|---|---|
+| Docker build smoke | `build-smoke` | 11 min | 81 min |
+| preview-security | `contract` | 6 min | 77 min |
+| Build packaging artifacts | `stage-and-probe` | 11 min | 72 min |
+| linux-jail-proof | `linux-jail-proof` | 10 min | 66 min |
+| real-browser-proof | `real-browser-proof` | 10 min | 15 min |
+
+Those five are 311 of the 436 `pull_request` runner-minutes in that window
+(71%). Pinned by `tests/test_ci_runner_budget.py`, both halves: the condition
+and the `ready_for_review` type that makes the skip recoverable instead of
+sticky (it is not a default type, so without it a PR marked ready keeps the
+draft run's skip until its next push).
+
+**Measure this before expecting it to fix the queue.** Of those 436 minutes,
+only **62 (14%)** were on branches whose PR is currently a draft — 12 of 40
+open PRs. The draft cut is cheap and correct, but the dominant cost is 40 open
+PRs each running five heavy workflows on every push, not drafts specifically.
+The lower bound caveat: "currently a draft" misses runs that were drafts then
+and are ready now, so 14% understates it by an unmeasured amount. The next cut
+should target ready PRs — path-filter width, or per-PR concurrency on
+`preview-security` and `build-bundle`, which have no `concurrency:` block at
+all and so do not cancel superseded runs.
+
+**Why the required checks were left alone, and must stay that way.** A job
+skipped by an `if:` reports `conclusion=skipped`, and branch protection accepts
+a skipped required check as SATISFIED — verified on this repo on PR #2197 and
+written up at length in `tests.yml`. So a draft condition on `required-tests`,
+`slow-tests`, `invariants` or `Diff scope declared` fails OPEN: any edge case
+where the condition is wrong merges untested code silently, and auto-enrol arms
+auto-merge on every non-draft PR. `tests/test_ci_runner_budget.py` pins that
+boundary from both sides — the five above carry the condition, the required
+four do not. There was also nothing to win there: `tests.yml` already gates its
+heavy jobs on `github.event_name != 'pull_request'`, so a PR run is only
+`affected-tests` plus the aggregate, median 3 minutes.
+
+## 2026-10-03: measure runner-minutes from JOBS, not run elapsed time
+
+**Read this before citing any minute figure in this note.** A workflow run's
+`updated_at - run_started_at` is WALL TIME, and under runner starvation most of
+it is queue wait, not compute. It also undercounts every multi-job workflow: a
+run with six parallel shards bills six jobs but reports one wall clock. Both
+errors point the same way — they make the cheap single-job workflows look
+expensive and the sharded ones look cheap, which is exactly backwards.
+
+Sum per-JOB `completed_at - started_at` from
+`/actions/runs/{id}/jobs`, skipping `conclusion=skipped`. Measured that way over
+a sample of 8 recent `pull_request` runs each:
+
+| Workflow | Jobs/run | **Runner-min/run** | Wall-min/run |
+|---|---|---|---|
+| Tests | 7.0 | **25.8** | 6.0 |
+| Docker build smoke | 1.0 | 4.1 | 4.1 |
+| real-browser-proof | 1.0 | 3.2 | 3.2 |
+| linux-jail-proof | 1.0 | 2.7 | 2.7 |
+| PR scope guard | 1.0 | 2.0 | 2.0 |
+| invariants | 1.0 | 1.6 | 1.6 |
+| Build packaging artifacts | 1.0 | 1.4 | 1.4 |
+| preview-security | 1.0 | 0.3 | 0.3 |
+
+**`Tests` is twice everything else on a PR combined** (25.8 against 13.3), and
+its wall clock hides it. That is where the remaining PR-time runner budget is,
+and 30 open PRs pushing once each puts about 774 runner-minutes ahead of a
+merge-group run against ~20 concurrent runners — which is the 20-minute queue
+the founder saw.
+
+It is also the one place a draft/skip condition must NOT go: `required-tests`
+and `slow-tests` are required checks, a skipped job reports
+`conclusion=skipped`, and branch protection accepts that as satisfied. Cutting
+`Tests` on PRs means cutting what `affected-tests` SELECTS, or moving it to the
+merge queue — never gating the required job.
+
+**Corrections this forces.** Earlier figures in this note and in PR #4352
+("Docker build smoke median 11 min", "preview-security 6 min", "311 of 436
+runner-minutes") are wall-clock minutes including queue wait. The ordering
+among those five single-job workflows is roughly preserved, but the magnitudes
+are not: `preview-security` is 0.3 minutes of compute, not 6. The draft cut and
+the concurrency cut below are both still correct; they are just smaller than
+those numbers implied.
+
+## M2d, 2026-10-03: per-PR concurrency on the workflows that lacked it
+
+`preview-security`, `build-bundle`, `docker-build` and `android-release` had no
+`concurrency:` block, so every push to a PR stacked another full run beside the
+one already running. All four now key a group on
+`github.event.pull_request.number || github.run_id` with
+`cancel-in-progress: ${{ github.event_name == 'pull_request' }}`.
+
+Three more had a group keyed on `github.ref` with unconditional cancellation —
+`actionlint`, `release-reconcile-regression`, `uptime-layer2-regression`. That
+key is unique per PR (`refs/pull/N/merge`) but SHARED by every push to `main`,
+so each main push cancelled the previous main run: the same "coverage while
+providing none" shape `tests.yml` documents. They now use the same key.
+`invariants` has it too and is left alone — it is a required check, and
+changing its cancellation could eject a PR from the merge queue.
+
+**Measured saving, which is small.** Over a 4.5 h window, 186 completed
+`pull_request` runs of the four, of which **15 were superseded**: about **44 of
+959 wall-minutes (5%)**. Cancellation only pays when a new push lands while the
+old run is still going, and at the current push cadence that is rare. The change
+is still worth keeping — it is free, it bounds the worst case when cadence
+rises, and seven of thirteen `pull_request` workflows were the inconsistent
+ones — but it is not the fix for the queue. See the runner-minute table above
+for where that actually is.
+
+Pinned by `tests/test_ci_concurrency_cancels.py`, including the repo-wide
+ratchet that a new `pull_request` workflow must declare a group, and that a
+cancelling group may not key on something two non-PR runs share.

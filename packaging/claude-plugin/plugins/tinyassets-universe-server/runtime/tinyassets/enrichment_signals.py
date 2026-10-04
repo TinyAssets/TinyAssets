@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from pathlib import Path
 from typing import Any
 
@@ -53,7 +54,9 @@ def load_enrichment_signals(
       (Hard Rule #8).
     """
     signals_path = enrichment_signals_path(universe_path)
-    if signals_path.exists():
+    # lexists: a dangling link at the canonical name is read (and refused), not
+    # skipped in favour of the legacy file.
+    if os.path.lexists(signals_path):
         return _read_signal_file(signals_path, strict=strict)
     return _read_signal_file(
         legacy_worldbuild_signals_path(universe_path), strict=strict,

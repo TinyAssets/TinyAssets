@@ -946,7 +946,11 @@ def list_definitions(
     tags: list[str] | tuple[str, ...] = (),
     author_id: str = "",
     limit: int = 30,
+    offset: int = 0,
 ) -> list[dict[str, Any]]:
+    if type(offset) is not int or offset < 0:
+        raise AgentValidationError("offset must be a non-negative integer")
+    matched = 0
     bounded_limit = max(1, min(int(limit), 100))
     wanted_query = (query or "").strip().casefold()
     wanted_tags = {str(tag).strip() for tag in tags if str(tag).strip()}
@@ -971,6 +975,9 @@ def list_definitions(
                 haystack = f"{row['name']} {row['description']}".casefold()
                 if wanted_query not in haystack:
                     continue
+            matched += 1
+            if matched <= offset:
+                continue
             results.append(_definition_from_row(conn, row))
             if len(results) >= bounded_limit:
                 break
@@ -1492,6 +1499,28 @@ def _check_asset_path(path: Any) -> str:
     return path
 
 
+def app_ui_workflow_refs(entry: dict[str, Any]) -> dict[str, str]:
+    """Validate the explicit portable bindings; never interpret script text."""
+    refs = entry.get("workflow_refs", {})
+    if not isinstance(refs, dict) or len(refs) > 100:
+        raise AgentValidationError("workflow_refs must be an object of at most 100 references")
+    for alias, workflow in refs.items():
+        if (not isinstance(alias, str)
+                or not re.fullmatch(r"[A-Za-z][A-Za-z0-9_-]{0,63}", alias)
+                or not isinstance(workflow, str) or not workflow
+                or workflow != workflow.strip() or _utf16_units(workflow) > 200):
+            raise AgentValidationError("workflow_refs contains an invalid alias or workflow id")
+    return dict(refs)
+
+
+def app_ui_agent_refs(entry: dict[str, Any]) -> dict[str, str]:
+    """Declared agent aliases have the same shape as workflow aliases."""
+    try:
+        return app_ui_workflow_refs({"workflow_refs": entry.get("agent_refs", {})})
+    except AgentValidationError as exc:
+        raise AgentValidationError(str(exc).replace("workflow", "agent")) from None
+
+
 def _check_component(entry: dict[str, Any]) -> None:
     """The bounds and shape of the fields the server stores for one UI.
 
@@ -1517,6 +1546,8 @@ def _check_component(entry: dict[str, Any]) -> None:
             ui_library_set.check_names(entry["libraries"])
         except ValueError as exc:
             raise AgentValidationError(f"UI {ui_id!r}: {exc}") from None
+    app_ui_workflow_refs(entry)
+    app_ui_agent_refs(entry)
     if "assets" not in entry:
         return
     assets = entry["assets"]
@@ -1794,7 +1825,8 @@ def _save_app_ui_row(
 #: Fields ``edit_ui`` may change. ``kind``, ``version`` and ``ui_id`` are what
 #: the component IS; changing those is a ``replace_ui``. ``assets`` changes one
 #: path at a time through ``put_asset`` / ``remove_asset``.
-APP_UI_EDITABLE_FIELDS = ("name", "markup", "style", "script", "libraries", "script_type")
+APP_UI_EDITABLE_FIELDS = ("name", "markup", "style", "script", "libraries", "script_type",
+                          "workflow_refs", "agent_refs")
 _APP_UI_TEXT_FIELDS = ("name", "markup", "style", "script")
 APP_UI_ENTRY_OPERATIONS = (
     "activate", "use_default", "add_ui", "replace_ui", "edit_ui", "remove_ui",
@@ -1811,6 +1843,99 @@ def app_ui_etag(component: Any) -> str:
     return hashlib.sha256(_canonical_json(component).encode("utf-8")).hexdigest()[:16]
 
 
+#: The app's rendering contract, mirrored here so a READ can say which stored
+#: UI the app will refuse and why. The app stays the authority on rendering
+#: (see ``_check_component``: the server owns only what its own stores depend
+#: on); this adds no refusal, it only reports.
+#: ``tests/test_app_ui_renderability.py`` holds these equal to app_ui.js.
+APP_UI_KIND = "tinyassets.app-ui.v1"
+#: The FORMAT version of the component, not a revision and not a cache-buster.
+#: It is always 1. An agent that set it to a timestamp hid every UI the person
+#: had built (founder, P1, 2026-10-03).
+APP_UI_FORMAT_VERSION = 1
+APP_UI_COMPONENT_FIELDS = ("kind", "markup", "name", "script", "style", "ui_id", "version")
+APP_UI_OPTIONAL_COMPONENT_FIELDS = ("assets", "libraries", "script_type", "workflow_refs",
+                                    "agent_refs")
+#: Matched with ``fullmatch``, never ``match``: Python's ``$`` also matches
+#: BEFORE a trailing newline, so ``"x" * 64 + "\n"`` passed here while the app
+#: refused it -- a mirror saying "renderable" about a UI the app will not show
+#: is worse than no report at all (Codex, 2026-10-03).
+_APP_UI_ID_RE = re.compile(r"[a-z0-9][a-z0-9-]{0,63}")
+APP_UI_MAX_NAME = 120
+
+
+def _utf16_units(text: str) -> int:
+    """The length JavaScript measures: UTF-16 code units, not code points.
+
+    ``name.length <= MAX_NAME`` in the app counts surrogate pairs twice, so 61
+    emoji are 122 units there and 61 characters here. Python said renderable
+    about a name the app refuses (Codex, 2026-10-03).
+    """
+    return len(text.encode("utf-16-le")) // 2
+
+
+def app_ui_renderability(entry: Any) -> dict[str, str]:
+    """``{}`` when the app can render ``entry``, else its reason and a fix.
+
+    Only the checks the WRITE path does not already make, which is exactly the
+    set a stored entry can still fail: the field list, ``kind``, the format
+    ``version``, and the shape of ``ui_id``, ``name`` and the three text
+    fields. Bounds, assets, libraries and ``script_type`` are enforced by
+    ``_check_component`` on the way in, so a stored entry has passed them.
+    """
+    if not isinstance(entry, dict):
+        return {"reason": "UI component is not an object",
+                "hint": "replace_ui with a JSON object component"}
+    keys = set(entry)
+    extra = sorted(keys - set(APP_UI_COMPONENT_FIELDS) - set(APP_UI_OPTIONAL_COMPONENT_FIELDS))
+    if extra:
+        return {"reason": "UI component carries fields this app does not render: "
+                          + ", ".join(extra),
+                "hint": f"remove {', '.join(extra)}; the app refuses any field outside "
+                        f"{list(APP_UI_COMPONENT_FIELDS)} plus "
+                        f"{list(APP_UI_OPTIONAL_COMPONENT_FIELDS)}"}
+    missing = [f for f in APP_UI_COMPONENT_FIELDS if f not in keys]
+    if missing:
+        return {"reason": "UI component is missing " + ", ".join(missing),
+                "hint": f"replace_ui with all of {list(APP_UI_COMPONENT_FIELDS)} present"}
+    if entry["kind"] != APP_UI_KIND:
+        return {"reason": f"not a {APP_UI_KIND} component",
+                "hint": f'set "kind" to "{APP_UI_KIND}"'}
+    if entry["version"] != APP_UI_FORMAT_VERSION or isinstance(entry["version"], bool):
+        return {"reason": f"UI version {entry['version']!r} is not supported; this app renders "
+                          f"version {APP_UI_FORMAT_VERSION}",
+                "hint": f'"version" is the component FORMAT version and is always '
+                        f'{APP_UI_FORMAT_VERSION}; it is not a revision or a cache-buster. '
+                        f'Set it back to {APP_UI_FORMAT_VERSION} with replace_ui. Nothing needs '
+                        "busting: the app re-reads this row whenever its revision moves, and an "
+                        "asset is addressed by its own sha256"}
+    if (not isinstance(entry["ui_id"], str) or _utf16_units(entry["ui_id"]) > 64
+            or not _APP_UI_ID_RE.fullmatch(entry["ui_id"])):
+        return {"reason": "ui_id must be lowercase letters, digits or dashes",
+                "hint": "use up to 64 characters of lowercase letters, digits or dashes"}
+    if (not isinstance(entry["name"], str) or not entry["name"].strip()
+            or _utf16_units(entry["name"]) > APP_UI_MAX_NAME):
+        return {"reason": "name must be a non-empty string of at most "
+                          f"{APP_UI_MAX_NAME} characters",
+                "hint": f"set a name of 1 to {APP_UI_MAX_NAME} characters"}
+    for field in ("markup", "style", "script"):
+        if not isinstance(entry[field], str):
+            return {"reason": f"{field} must be a string",
+                    "hint": f'set "{field}" to a string (empty is fine)'}
+    # The rest of the contract -- script_type, library names, the asset manifest
+    # and the text bound -- is already defined once, by the check the write path
+    # makes. Delegating keeps this a COMPLETE mirror of what the app renders
+    # rather than a partial one: a differential test compares every verdict
+    # against app_ui.js, and a partial mirror that says "renderable" about a UI
+    # the app refuses is worse than no report (Codex, 2026-10-03, which found
+    # script_type and libraries diverging exactly here).
+    try:
+        _check_component(entry)
+    except AgentValidationError as exc:
+        return {"reason": str(exc), "hint": "correct it with replace_ui"}
+    return {}
+
+
 def app_ui_index(document: dict[str, Any]) -> dict[str, Any]:
     """The row without any UI body: what a model reads to pick a target."""
     entries = []
@@ -1824,6 +1949,13 @@ def app_ui_index(document: dict[str, Any]) -> dict[str, Any]:
             "chars": {field: len(entry[field]) for field in ("markup", "style", "script")
                       if isinstance(entry.get(field), str)},
         }
+        # Per UI, so one bad component is diagnosable instead of making the
+        # whole library read as broken (founder, P1, 2026-10-03).
+        refusal = app_ui_renderability(entry)
+        summary["renderable"] = not refusal
+        if refusal:
+            summary["reason"] = refusal["reason"]
+            summary["fix"] = refusal["hint"]
         if isinstance(entry.get("assets"), dict):
             # Paths and sizes, not bodies: what a model needs to reference one.
             summary["assets"] = {path: ref.get("size") for path, ref in entry["assets"].items()
@@ -1872,11 +2004,33 @@ def _check_etag(payload: dict[str, Any], entry: dict[str, Any]) -> None:
         )
 
 
+def _refuse_unrenderable(component: Any) -> None:
+    """Refuse a component no app can ever render, naming the reason and the fix.
+
+    The write and the read now share ONE definition of a valid component. They
+    did not: the write checked only what the server's own stores depend on, so
+    ``replace_ui`` ACCEPTED ``"version": 1791005187`` and answered with a
+    success receipt (revision 50 -> 51), while the app refused to render it.
+    The agent, told it had saved, assured the founder the UI was intact
+    (founder, P1, 2026-10-03).
+
+    Only ``add_ui`` and ``replace_ui`` go through here -- a whole component
+    supplied by the caller. ``save`` deliberately does NOT: it writes the whole
+    library, and the app carries entries it cannot render through that write so
+    they are not destroyed. Refusing there would make a stored bad entry
+    impossible to write back, which is the data loss this guards against.
+    """
+    refusal = app_ui_renderability(component)
+    if refusal:
+        raise AgentValidationError(f"{refusal['reason']}. {refusal['hint']}")
+
+
 def _component(payload: dict[str, Any]) -> dict[str, Any]:
     component = payload.get("component")
     if not isinstance(component, dict):
         raise AgentValidationError("component must be an object")
     _check_app_ui_fields({"ui_library": [component]})
+    _refuse_unrenderable(component)
     return component
 
 
@@ -1895,7 +2049,11 @@ def _edited_entry(entry: dict[str, Any], payload: dict[str, Any]) -> dict[str, A
             )
         if field == "libraries" and not isinstance(value, list):
             raise AgentValidationError("set.libraries must be a list of library names")
-        if field != "libraries" and not isinstance(value, str):
+        if field == "workflow_refs":
+            app_ui_workflow_refs({"workflow_refs": value})
+        if field == "agent_refs":
+            app_ui_agent_refs({"agent_refs": value})
+        if field not in {"libraries", "workflow_refs", "agent_refs"} and not isinstance(value, str):
             raise AgentValidationError(f"set.{field} must be a string")
         edited[field] = value
     for number, edit in enumerate(edits):
@@ -1980,6 +2138,11 @@ def _apply_app_ui_entry_operation(
         return updated, selection, outcome
     replacement = (_component(payload) if operation == "replace_ui"
                    else _edited_entry(entry, payload))
+    # An edit may not BREAK a UI that rendered. It is not refused for a fault
+    # the stored entry already had, because then the agent could not edit its
+    # way out of one -- `replace_ui` is the way back, and it is checked above.
+    if operation == "edit_ui" and not app_ui_renderability(entry):
+        _refuse_unrenderable(replacement)
     updated = list(library)
     updated[position] = replacement
     return updated, selection, {"ui_id": ui_id, "etag": app_ui_etag(replacement)}

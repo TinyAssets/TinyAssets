@@ -159,7 +159,10 @@ def test_a_steer_names_the_agent_the_line_was_typed_to(tmp_path):
 setQueueOwner("p-1"); setQueueScope("u-1");
 globalThis.authHeaders=()=>({});
 const steerPosts=[];
-globalThis.fetch=(url,init)=>{ steerPosts.push(JSON.parse(init.body));
+// Only the steer: the page also reads /app/turn/pending for lines the server
+// holds (harness S2), and that read is not what this test is about.
+globalThis.fetch=(url,init)=>{ if(String(url).indexOf("/app/turn/steer")>=0)
+    steerPosts.push(JSON.parse(init.body));
   return Promise.resolve({ok:true,status:200,json:async()=>({steered:true,steer_id:7})}); };
 await addressAgent({agent_id:"w1",name:"Evidence Weaver"});
 const first=sendTurn("start the long job");
@@ -186,7 +189,9 @@ localStorage.setItem(QUEUE_KEY, JSON.stringify([{message:"to weaver",display:"to
   ts:Date.now(),owner:"p-1",scope:"u-1",agent:"w1"}]));
 const deep=n=>[n.textContent||"",...(n.children||[]).map(deep)].join(" ");
 const all=()=>els.thread.children.map(deep).join(" | ");
-restoreQueue();
+// The restore now asks the server what it holds first (harness S2), so the
+// saved rows are painted on the turn after the call, not inside it.
+restoreQueue(); await settle();
 const onMain=all();
 await addressAgent({agent_id:"w1",name:"Evidence Weaver"});
 await settle();

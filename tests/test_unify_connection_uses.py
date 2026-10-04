@@ -118,8 +118,13 @@ def _broker_proxy(base, grant_id, destination, runtime):
     class _Proxy:
         closed = False
 
-        def request(self, verb, request):
-            return dispatch(grant_id, verb, request)
+        def request(self, verb, request, *, inference_usage=None):
+            return dispatch(
+                grant_id, verb, request,
+                **({"inference_usage": inference_usage.document(),
+                    "operation_id": inference_usage.operation_id}
+                   if inference_usage is not None else {}),
+            )
 
         def close(self):
             self.closed = True
@@ -318,19 +323,29 @@ def test_never_seen_llm_connects_from_the_request_and_answers_with_tools(
         "name": "read_graph", "description": "Read the universe.",
         "parameters": {"type": "object", "properties": {"target": {"type": "string"}}},
     }}]
+    from tinyassets.request_budget import TurnRequestBudget
+
+    budget = TurnRequestBudget(OWNER, UID)
+    budget.persist(base)
+    ordinal = budget.reserve(owner=OWNER, universe=UID, source_ref=provider,
+                             model=selection.model_id, free=False, purpose="reply")
     config = ModelConfig(
         engine_mcp_enabled=True, engine_mcp_actor_id=OWNER, engine_mcp_graph_id=UID,
         max_tokens=512, selected_model=selection,
         agent_request=AgentInferenceRequest(tools=tools),
+        request_budget=budget, request_attempt=ordinal,
     )
     try:
         response = asyncio.run(ApiKeyHttpProvider(definition, proxy_override=proxy).complete(
             "What is my universe doing?", "You are the universe.", config,
             universe_dir=base / UID,
         ))
+        budget.settle_invocation(ordinal, "succeeded")
     finally:
+        budget.close()
         loop.stop()
 
+    assert budget.receipt()["dispatched"] == 1
     assert [call.name for call in response.agent_reply.tool_requests] == ["read_graph"]
     assert response.reported_model == "quill-large-2026"
     assert (response.input_tokens, response.output_tokens) == (21, 7)
@@ -720,4 +735,3 @@ def test_served_configure_runs_as_the_owner_on_the_bound_universe(served, monkey
     assert result == {"status": "configured"}
     assert seen == [({"universe_id": "u-setup", "payload": document}, "owner-setup")]
     assert current_identity() == before
-

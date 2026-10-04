@@ -3068,7 +3068,12 @@ def _staged_branch_from_spec(
             parent = BranchDefinition.from_dict(fork_version["snapshot"])
             parent_copy = BranchDefinition.from_dict(parent.to_dict())
             parent_skills = parent_copy.skills
-            if not parent_skills and parent.branch_def_id:
+            # The live-source fallback is for the author's OWN older snapshots.
+            # Another author's live branch is not what they published: skills
+            # added after the snapshot (and maybe made private since) must
+            # never reach a copier (gpt-6-astra, command-center-packages D5).
+            if (not parent_skills and parent.branch_def_id
+                    and parent.author == _request_branch_actor()):
                 from tinyassets.daemon_server import get_branch_definition
 
                 try:
