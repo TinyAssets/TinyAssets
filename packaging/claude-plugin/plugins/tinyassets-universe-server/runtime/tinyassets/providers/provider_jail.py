@@ -363,19 +363,43 @@ def hidden_root_masks(universe_dir: Path) -> list[JailMount]:
 
 #: Daemon-owned files that belong to one universe but must not live inside
 #: it (its egress proxy socket): ``<data root>/.universe-sidecars/<universe>``.
-#: No jail binds that directory, so nothing a universe runs can replace them.
+#:
+#: A jail binds exactly two things from here and nothing else: the egress proxy
+#: socket, and the engine relay socket when a launch has one. Both are
+#: constructed by :func:`_network` for that launch and passed to
+#: :func:`jail_argv` as ``platform_sources``, which :func:`_validated_view`
+#: admits as an EXACT set.
+#:
+#: This comment used to say "No jail binds that directory, so nothing a
+#: universe runs can replace them". That was false, and a design was approved on
+#: it: the validator allowed any source resolving under this folder, so a
+#: provider could rename a directory the tool jail was about to bind read-write
+#: and leave a link here in its place, landing a writable handle on daemon-owned
+#: state. Corrected 2026-10-03 along with the rule itself. A directory prefix is
+#: not a capability; the exact paths are.
 UNIVERSE_SIDECARS_DIR = ".universe-sidecars"
 
 
-def _sidecars(root: Path) -> Path:
-    return root.parent / UNIVERSE_SIDECARS_DIR / root.name
-
-
-def _validated_view(view: UniverseView) -> UniverseView:
+def _validated_view(
+    view: UniverseView, *, platform_sources: frozenset[Path] = frozenset()
+) -> UniverseView:
     """``view`` with every bind source resolved ONCE and checked, or refuse.
 
     The argv binds the resolved path it was checked as, never a second
     resolution of the original name.
+
+    ``platform_sources`` are the resolved paths THIS MODULE just constructed
+    for the launch -- the egress proxy socket and, when there is one, the
+    engine relay socket. They are the only sources outside the command center
+    a view may bind. Everything else must resolve inside the command center.
+
+    It is an exact set, not a directory prefix, and that distinction is the
+    whole point: the sidecar folder used to be allowed wholesale, so a view
+    whose source resolved anywhere under it was accepted. A provider could
+    rename a directory the tool jail was about to bind read-write and leave a
+    link to the sidecar folder in its place; the resolution landed inside the
+    allowed prefix, and the command center got a writable handle on platform
+    state -- including the consent database that decides what it may do.
     """
     root = view.universe_dir.resolve(strict=False)
     checked: list[JailMount] = []
@@ -399,7 +423,7 @@ def _validated_view(view: UniverseView) -> UniverseView:
             source = mount.source.resolve(strict=not mount.op.endswith("-try"))
         except OSError:
             raise _refuse("a bind source does not exist") from None
-        if not (_within(source, root) or _within(source, _sidecars(root))):
+        if not (_within(source, root) or source in platform_sources):
             raise _refuse("a view may only bind paths inside its own command center")
         checked.append(JailMount(mount.op, dest, source))
     for name, _value in view.setenv:
@@ -506,6 +530,7 @@ def jail_argv(
     env: Mapping[str, str] | None = None,
     clearenv: bool = False,
     seccomp_fd: int | None = None,
+    platform_sources: frozenset[Path] = frozenset(),
     tmp_bytes: int = jail_disk.TMP_BYTES,
 ) -> list[str]:
     """The bubblewrap argv that runs ``argv`` inside ``view``. Pure of policy.
@@ -527,7 +552,7 @@ def jail_argv(
     defaults to half of it -- on a shared box that is one jail's scratch space
     competing with every user's daemon memory.
     """
-    view = _validated_view(view)
+    view = _validated_view(view, platform_sources=platform_sources)
     out: list[str] = [
         bwrap_path,
         "--die-with-parent",
@@ -722,6 +747,14 @@ def confine_launch(
     python, python_paths = _forwarder_python()
     install_paths.extend(python_paths)
     net_mounts, engine_port = _network(view, scope)
+    # The ONLY sources outside the command center a view may bind: the sockets
+    # this module just constructed for this launch. An exact set, resolved the
+    # same way the validator resolves a source, so a link that merely lands
+    # under the sidecar folder is not one of them.
+    platform_sources = frozenset(
+        mount.source.resolve(strict=False) for mount in net_mounts
+        if mount.source is not None
+    )
     # The proxy environment goes LAST, so nothing the provider env carried (an
     # inherited HTTPS_PROXY or NO_PROXY) can point around the forwarder.
     view = UniverseView(
@@ -744,7 +777,7 @@ def confine_launch(
     try:
         jailed = jail_argv(
             inner, view, bwrap_path=bwrap_path, install_paths=install_paths, env=env,
-            seccomp_fd=filter_fd,
+            seccomp_fd=filter_fd, platform_sources=platform_sources,
         )
     except BaseException:
         os.close(filter_fd)
