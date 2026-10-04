@@ -149,6 +149,7 @@ def system_server(home):
                         payload = args.get("payload_json", "{}")
                         if (args["target"] == "connection" and operation in {
                                 "preview_center_update", "answer_center_update",
+                                "preview_center_policy", "answer_center_policy",
                                 "register_center_copy"}):
                             from tinyassets.api.command_center_update_surface import write_update
 
@@ -694,7 +695,8 @@ def test_manual_screen_replacement_needs_consent_retains_components_and_refuses_
             _open_switcher(page)
             page.get_by_role("button", name="Manage shared copies", exact=True).click()
             panel = page.locator("#ui-shared-updates")
-            expect(panel).to_contain_text("Automatic updates are unavailable and remain off")
+            expect(panel).to_contain_text(
+                "Automatic presentation updates are off unless you explicitly opt in")
             expect(panel).to_contain_text(source_id)
             expect(panel).to_contain_text("Earlier copy:")
             with connect(home) as conn:
@@ -751,6 +753,10 @@ def test_manual_screen_replacement_needs_consent_retains_components_and_refuses_
                 page.get_by_role("button", name="Open updated screen", exact=True).click()
                 expect(page.frame_locator("#ui-frame").locator("#updated-boot")).to_have_text(
                     "New screen code ran")
+                # choose() mounts immediately, then persists the selection. The
+                # frame alone cannot prove the revision is ready to snapshot.
+                expect(page.locator("#ui-status")).to_have_text(
+                    f"Now using {updated['name']}.")
                 after = get_app_ui(home, owner_user_id=BOB, universe_id=BOB_UNIVERSE)
                 assert after["ui_selection"] == before["ui_selection"]
             page.locator("#btn-ui-close").click()
@@ -971,4 +977,339 @@ def test_pending_manual_update_cannot_boot_saved_script_during_refresh(
         assert not failures
     finally:
         release.set()
+        page.close()
+
+
+def _release_copy(home):
+    """Actual publisher approval and recipient installation establish the series."""
+    from tests.test_command_center_packages import _answer, _ask
+    from tests.test_command_center_release_surface import action
+    from tests.test_command_center_system_copy import _preview
+
+    asked = _ask(OWNER, UNIVERSE, action())
+    first = _answer(OWNER, UNIVERSE, asked["request_id"])
+    assert first.get("published") and first.get("release"), first
+    copied = _preview(first["agent_definition_id"])
+    installed = _answer(BOB, BOB_UNIVERSE, copied["request_id"])
+    assert installed.get("installed") and installed.get("adoption"), installed
+    row = get_app_ui(home, owner_user_id=OWNER, universe_id=UNIVERSE)
+    ui = {**row["ui_library"][0], "style": "body { color: #123456; }"}
+    save_app_ui(
+        home,
+        owner_user_id=OWNER,
+        universe_id=UNIVERSE,
+        expected_revision=row["revision"],
+        changes={"ui_library": [ui]},
+    )
+    asked = _ask(
+        OWNER,
+        UNIVERSE,
+        {
+            **action(
+                series_id=first["release"]["series_id"],
+                parent_release_id=first["release"]["release_id"],
+                summary="A calmer village palette",
+            ),
+            "name": "Village palette release",
+        },
+    )
+    second = _answer(OWNER, UNIVERSE, asked["request_id"])
+    assert second.get("published") and second.get("release"), second
+    return first, second, installed["adoption"]
+
+
+@pytest.mark.real_browser
+def test_release_history_and_policy_consent_are_exact_owner_choices_without_inference(
+    home,
+    system_server,
+    browser,
+):
+    import sqlite3
+
+    from playwright.sync_api import expect
+
+    from tests.test_background_budget_finalization_e2e import _CountingProvider
+    from tinyassets.api.command_center_update_surface import write_update
+    from tinyassets.command_center_update_policy import inspect_policy
+    from tinyassets.provider_assignment import load_provider_assignment
+    from tinyassets.storage import db_path
+
+    with sqlite3.connect(db_path(home)) as db:
+        db.execute("DELETE FROM provider_assignments WHERE universe_id=?", (BOB_UNIVERSE,))
+    provider = _CountingProvider()
+    with _real_providers(codex=provider):
+        first, second, adoption = _release_copy(home)
+    assert load_provider_assignment(home, universe_id=BOB_UNIVERSE) is None
+    before = get_app_ui(home, owner_user_id=BOB, universe_id=BOB_UNIVERSE)
+    origin, calls, failures = system_server
+    page = browser.new_page(viewport={"width": 1280, "height": 900})
+    try:
+        with _real_providers(codex=provider):
+            _enter(page, origin)
+            _open_switcher(page)
+            page.get_by_role("button", name="Manage shared copies", exact=True).click()
+            panel = page.locator("#ui-shared-updates")
+            history = page.get_by_role("region", name="Published version history", exact=True)
+            expect(history).to_contain_text("Version 1 · Installed screen source")
+            expect(history).to_contain_text(first["release"]["release_id"])
+            expect(history).to_contain_text("Version 2")
+            expect(history).to_contain_text("A calmer village palette")
+            expect(panel).to_contain_text("Automatic presentation update preference: Off")
+            assert not any(op.startswith("preview_center") for op, _ in calls)
+            page.get_by_role("button", name="Review version 2", exact=True).click()
+            confirmation = page.locator("#ui-update-confirmation")
+            expect(confirmation).to_contain_text(second["agent_definition_id"])
+            confirmation.get_by_role("button", name="Keep current", exact=True).click()
+            page.get_by_role(
+                "button", name="Review automatic presentation updates", exact=True
+            ).click()
+            consent = page.locator("#ui-policy-confirmation")
+            expect(consent).to_contain_text(first["agent_definition_id"])
+            expect(consent).to_contain_text("name/style")
+            expect(consent).to_contain_text("conflicts require a decision")
+            with _as(BOB):
+                assert not inspect_policy(
+                    universe_id=BOB_UNIVERSE, adoption_id=adoption["adoption_id"]
+                )["enabled"]
+            preview = next(
+                result for op, result in reversed(calls) if op == "preview_center_policy"
+            )
+            with _as(OWNER):
+                denied = write_update(
+                    universe_id=BOB_UNIVERSE,
+                    operation="answer_center_policy",
+                    payload={
+                        "request_id": preview["request_id"],
+                        "plan_digest": preview["plan_digest"],
+                        "decision": "accepted",
+                    },
+                )
+            assert denied.get("error"), denied
+            consent.get_by_role("button", name="Keep current preference", exact=True).click()
+            expect(panel).to_contain_text("Kept your current update preference")
+            with _as(BOB):
+                assert not inspect_policy(
+                    universe_id=BOB_UNIVERSE, adoption_id=adoption["adoption_id"]
+                )["enabled"]
+            page.get_by_role(
+                "button", name="Review automatic presentation updates", exact=True
+            ).click()
+            consent.get_by_role("button", name="Allow presentation updates", exact=True).click()
+            expect(panel).to_contain_text("Automatic presentation update preference: On")
+            with _as(BOB):
+                policy = inspect_policy(
+                    universe_id=BOB_UNIVERSE, adoption_id=adoption["adoption_id"]
+                )
+            assert (
+                policy["enabled"]
+                and policy["installed_release_id"] == first["release"]["release_id"]
+            )
+            page.get_by_role(
+                "button", name="Review turning automatic updates off", exact=True
+            ).click()
+            expect(consent).to_contain_text("Turn automatic presentation updates off")
+            consent.get_by_role("button", name="Turn automatic updates off", exact=True).click()
+            expect(panel).to_contain_text("Automatic presentation update preference: Off")
+            with _as(BOB):
+                assert not inspect_policy(
+                    universe_id=BOB_UNIVERSE, adoption_id=adoption["adoption_id"]
+                )["enabled"]
+            assert get_app_ui(home, owner_user_id=BOB, universe_id=BOB_UNIVERSE) == before
+            assert not provider.calls and page.evaluate("window.acceptRelays") == []
+            assert not failures
+    finally:
+        page.close()
+
+
+@pytest.mark.real_browser
+@pytest.mark.parametrize("operation", ["preview_center_policy", "answer_center_policy"])
+@pytest.mark.parametrize("transition", ["selection", "account"])
+def test_policy_reply_is_dropped_after_selection_or_account_change(
+    home,
+    system_server,
+    browser,
+    operation,
+    transition,
+):
+    from playwright.sync_api import expect
+
+    from tinyassets.command_center_update_policy import inspect_policy
+
+    _seed_own(home)
+    _first, _second, adoption = _release_copy(home)
+    origin, calls, failures = system_server
+    page = browser.new_page(viewport={"width": 1280, "height": 900})
+    try:
+        _enter(page, origin)
+        _open_switcher(page)
+        page.get_by_role("button", name="Manage shared copies", exact=True).click()
+        if operation == "answer_center_policy":
+            page.get_by_role(
+                "button", name="Review automatic presentation updates", exact=True
+            ).click()
+            expect(page.locator("#ui-policy-confirmation")).to_be_visible()
+        page.evaluate(
+            """operation=>{
+          const call=MCP.callTool.bind(MCP);
+          document.documentElement.dataset.policyReached='false';
+          document.documentElement.dataset.policyReleased='false';
+          MCP.callTool=async(name,args)=>{
+            const doc=await call(name,args);
+            if(args.operation===operation){
+              document.documentElement.dataset.policyReached='true';
+              await new Promise(resolve=>{window.releasePolicyReply=resolve;});
+              document.documentElement.dataset.policyReleased='true';
+            }
+            return doc;
+          };
+        }""",
+            operation,
+        )
+        page.get_by_role(
+            "button",
+            name=(
+                "Allow presentation updates"
+                if operation == "answer_center_policy"
+                else "Review automatic presentation updates"
+            ),
+            exact=True,
+        ).click()
+        expect(page.locator("html")).to_have_attribute("data-policy-reached", "true")
+        if transition == "selection":
+            page.get_by_role("button", name="Use Bob's own", exact=True).click()
+            expect(page.locator("#ui-status")).to_contain_text("Now using Bob's own")
+        else:
+            page.evaluate("""()=>{
+              AppUI.reset();AppUI.enabled=true;AppUI.home='other-home';
+              AppUI.principal='other-owner';AppUI.paint();
+            }""")
+        page.evaluate("()=>window.releasePolicyReply()")
+        expect(page.locator("html")).to_have_attribute("data-policy-released", "true")
+        expect(page.locator("#ui-policy-confirmation")).to_have_count(0)
+        expect(page.locator("#ui-shared-updates")).to_have_count(0)
+        with _as(BOB):
+            policy = inspect_policy(universe_id=BOB_UNIVERSE, adoption_id=adoption["adoption_id"])
+        assert policy["enabled"] == (operation == "answer_center_policy")
+        assert sum(op == "answer_center_policy" for op, _ in calls) == (
+            operation == "answer_center_policy"
+        )
+        assert page.evaluate("window.acceptRelays") == [] and not failures
+    finally:
+        page.close()
+
+
+@pytest.mark.real_browser
+@pytest.mark.parametrize("blocked", ["withdrawn_source", "private_edit"])
+def test_release_policy_controls_refuse_unavailable_source_or_recipient_edits(
+    home,
+    system_server,
+    browser,
+    blocked,
+):
+    from playwright.sync_api import expect
+
+    from tinyassets.daemon_server import get_branch_definition, save_branch_definition
+
+    _release_copy(home)
+    if blocked == "withdrawn_source":
+        branch = get_branch_definition(home, branch_def_id=SCOUT)
+        branch["visibility"] = "private"
+        save_branch_definition(home, branch_def=branch)
+    else:
+        row = get_app_ui(home, owner_user_id=BOB, universe_id=BOB_UNIVERSE)
+        edited = [{**entry, "name": "My private design name"} for entry in row["ui_library"]]
+        save_app_ui(
+            home,
+            owner_user_id=BOB,
+            universe_id=BOB_UNIVERSE,
+            expected_revision=row["revision"],
+            changes={"ui_library": edited},
+        )
+    before = get_app_ui(home, owner_user_id=BOB, universe_id=BOB_UNIVERSE)
+    origin, calls, failures = system_server
+    page = browser.new_page(viewport={"width": 1280, "height": 900})
+    try:
+        _enter(page, origin)
+        _open_switcher(page)
+        page.get_by_role("button", name="Manage shared copies", exact=True).click()
+        history = page.get_by_role("region", name="Published version history", exact=True)
+        expect(history).to_contain_text("A calmer village palette")
+        expect(history.get_by_role("button", name="Review version 2", exact=True)).to_be_disabled()
+        enable = history.get_by_role(
+            "button", name="Review automatic presentation updates", exact=True
+        )
+        if blocked == "withdrawn_source":
+            expect(history).to_contain_text(
+                "Unavailable: this published source cannot currently be adopted"
+            )
+            expect(enable).to_have_count(0)
+        else:
+            expect(page.locator("#ui-shared-updates")).to_contain_text("Private edits detected")
+            expect(enable).to_be_disabled()
+        assert not any(
+            op in {"preview_center_update", "preview_center_policy", "answer_center_policy"}
+            for op, _ in calls
+        )
+        assert get_app_ui(home, owner_user_id=BOB, universe_id=BOB_UNIVERSE) == before
+        assert page.evaluate("window.acceptRelays") == [] and not failures
+    finally:
+        page.close()
+
+
+@pytest.mark.real_browser
+def test_opted_in_service_update_survives_browser_reload_without_inference(
+    home, system_server, browser,
+):
+    from playwright.sync_api import expect
+
+    from tests.test_background_budget_finalization_e2e import _CountingProvider
+    from tinyassets import command_center_update_maintenance as maintenance
+    from tinyassets.command_center_update_policy import inspect_policy
+    from tinyassets.custom_agents import _agent_connect
+    from tinyassets.universe_owner import record_creation
+
+    provider = _CountingProvider()
+    with _real_providers(codex=provider):
+        _first, second, adoption = _release_copy(home)
+    with _agent_connect(home) as conn:
+        record_creation(conn, universe_id=BOB_UNIVERSE, owner_id=BOB)
+    before = get_app_ui(home, owner_user_id=BOB, universe_id=BOB_UNIVERSE)
+    origin, calls, failures = system_server
+    page = browser.new_page(viewport={"width": 1280, "height": 900})
+    try:
+        with _real_providers(codex=provider):
+            _enter(page, origin)
+            _open_switcher(page)
+            page.get_by_role("button", name="Manage shared copies", exact=True).click()
+            panel = page.locator("#ui-shared-updates")
+            expect(panel).to_contain_text("waiting for the service maintenance worker")
+            page.get_by_role(
+                "button", name="Review automatic presentation updates", exact=True,
+            ).click()
+            page.locator("#ui-policy-confirmation").get_by_role(
+                "button", name="Allow presentation updates", exact=True,
+            ).click()
+            expect(panel).to_contain_text("Automatic presentation update preference: On")
+            assert maintenance.tick(home)["state"] == "ready"
+            after = get_app_ui(home, owner_user_id=BOB, universe_id=BOB_UNIVERSE)
+            assert after["revision"] == before["revision"] + 1
+            assert after["ui_library"][0]["style"] == "body { color: #123456; }"
+            assert after["ui_library"][0]["script"] == before["ui_library"][0]["script"]
+            page.evaluate("sessionStorage.clear()")
+            _enter(page, origin)
+            _open_switcher(page)
+            page.get_by_role("button", name="Manage shared copies", exact=True).click()
+            expect(panel).to_contain_text("An eligible presentation update was saved")
+            expect(panel).to_contain_text(second["release"]["release_id"])
+            expect(panel).to_contain_text("Automatic presentation update preference: On")
+            with _as(BOB):
+                policy = inspect_policy(
+                    universe_id=BOB_UNIVERSE, adoption_id=adoption["adoption_id"],
+                )
+            assert policy["installed_release_id"] == second["release"]["release_id"]
+            assert get_app_ui(home, owner_user_id=BOB, universe_id=BOB_UNIVERSE) == after
+            assert not provider.calls and page.evaluate("window.acceptRelays") == []
+            assert sum(op == "answer_center_policy" for op, _ in calls) == 1
+            assert not failures
+    finally:
         page.close()

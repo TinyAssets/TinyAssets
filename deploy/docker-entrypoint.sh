@@ -30,10 +30,16 @@ set -euo pipefail
 # all-empty env indicates compose silently passed an empty file. The
 # ENV-UNREADABLE marker keeps the grep class the same regardless of
 # which layer detected the problem.
+# The daemon no longer receives the first two (it loads daemon.env, which
+# drops the platform's own secrets; docs/concerns/
+# 2026-10-02-platform-secrets-in-daemon-env.md). The canary bearer is synced
+# into the env file by every deploy and the healthcheck needs it, so it is the
+# daemon's live sentinel alongside the image pin.
 _env_sentinels=(
     CLOUDFLARE_TUNNEL_TOKEN
     SUPABASE_DB_URL
     TINYASSETS_IMAGE
+    TINYASSETS_WIKI_CANARY_TOKEN
 )
 _any_set=0
 for _name in "${_env_sentinels[@]}"; do

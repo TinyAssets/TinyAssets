@@ -15,6 +15,7 @@ from pathlib import Path
 
 from mcp.types import CallToolResult
 
+from tinyassets import owner_lease
 from tinyassets.providers.agent_chat_codec import AgentReply, ToolRequest
 from tinyassets.storage import agent_turn_records as records
 from tinyassets.storage import db_path
@@ -28,6 +29,7 @@ from tinyassets.storage.agent_turn_records import (
     TurnSnapshot,
 )
 from tinyassets.storage.current_home import check_current_home
+from tinyassets.storage.owner_fence import check_fence, ensure_fence_table
 from tinyassets.storage.provider_work_authority import SQLiteProviderWorkAuthorityStore
 
 _SCOPE = "owner_user_id = ? AND universe_id = ? AND turn_id = ?"
@@ -79,19 +81,43 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
         raise JournalUnavailable("agent turn schema requires an idle connection")
     for statement in _SCHEMA:
         conn.execute(statement)
+    ensure_fence_table(conn)
+    # Additive and idempotent (change execution-owner-lease, B1): the generation
+    # of the owner that created the row. Rows from before the lease existed are
+    # generation 0 -- below every real generation (the first acquisition is 1) --
+    # so the first leased boot reads them as an earlier owner's and settles them,
+    # exactly what the boot rule this replaces did for a pre-deploy leftover.
+    # Additive only, and atomic: re-checked under the write lock, so two
+    # processes cannot race it. A rebuild or rename would need the startup
+    # migration boundary instead (owner_stores.MIGRATES_ON_OPEN_BEFORE_C2).
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(agent_turns)")}
+    if "owner_generation" not in columns:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            columns = {row[1] for row in conn.execute("PRAGMA table_info(agent_turns)")}
+            if "owner_generation" not in columns:
+                conn.execute(
+                    "ALTER TABLE agent_turns ADD COLUMN owner_generation "
+                    "INTEGER NOT NULL DEFAULT 0"
+                )
+            conn.execute("COMMIT")
+        except BaseException:
+            conn.execute("ROLLBACK")
+            raise
     # Which agent ran the turn (harness §4.18); rows from before are main's.
     # Checked again under the write lock: another process may add it first.
-    if "agent_id" in {row[1] for row in conn.execute("PRAGMA table_info(agent_turns)")}:
-        return
-    conn.execute("BEGIN IMMEDIATE")
-    try:
-        if "agent_id" not in {row[1] for row in conn.execute("PRAGMA table_info(agent_turns)")}:
-            conn.execute(
-                "ALTER TABLE agent_turns ADD COLUMN agent_id TEXT NOT NULL DEFAULT 'main'")
-        conn.execute("COMMIT")
-    except BaseException:
-        conn.execute("ROLLBACK")
-        raise
+    if "agent_id" not in {row[1] for row in conn.execute("PRAGMA table_info(agent_turns)")}:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            if "agent_id" not in {
+                row[1] for row in conn.execute("PRAGMA table_info(agent_turns)")
+            }:
+                conn.execute(
+                    "ALTER TABLE agent_turns ADD COLUMN agent_id TEXT NOT NULL DEFAULT 'main'")
+            conn.execute("COMMIT")
+        except BaseException:
+            conn.execute("ROLLBACK")
+            raise
 
 
 def _scope(owner: str, universe: str, turn: str) -> tuple[str, str, str]:
@@ -376,16 +402,25 @@ class AgentTurnJournal:
         self._ledger = SQLiteProviderWorkAuthorityStore(base_path)
 
     @contextmanager
-    def _transaction(self):
+    def _transaction(self, universe: str):
+        """One owner mutation: the command center's lease, then ONE fenced write
+        transaction (change execution-owner-lease D3). Yields (conn, lease)."""
         with self._ledger.connection() as conn:
             ensure_schema(conn)
+            lease = self._lease(universe)
             conn.execute("BEGIN IMMEDIATE")
             try:
-                yield conn
+                check_fence(conn, lease)
+                yield conn, lease
                 conn.commit()
             except BaseException:
                 conn.rollback()
                 raise
+
+    def _lease(self, universe: str):
+        base = self._ledger.base_path
+        owner_lease.register_store(base, db_path(base), "agent_turn_journal")
+        return owner_lease.acquire(base, owner_lease.key_for(records.identity(universe)))
 
     def create(
         self,
@@ -419,13 +454,14 @@ class AgentTurnJournal:
                    if work else {}),
             }
         )
-        with self._transaction() as conn:
+        with self._transaction(universe) as (conn, lease):
             check_current_home(conn, owner, universe)
             conn.execute(
                 "INSERT INTO agent_turns (owner_user_id, universe_id, turn_id, version, "
-                "generation, state, round_ordinal, input_json, created_at, agent_id) "
-                "VALUES (?, ?, ?, 1, 1, 'ready', 0, ?, ?, ?)",
-                (*scope, raw, self._ledger.timestamp(), agent_id),
+                "generation, state, round_ordinal, input_json, created_at, "
+                "owner_generation, agent_id) "
+                "VALUES (?, ?, ?, 1, 1, 'ready', 0, ?, ?, ?, ?)",
+                (*scope, raw, self._ledger.timestamp(), lease.generation, agent_id),
             )
             snapshot = _read(conn, scope)
         # Creating the row IS this boot taking the turn on: both adapters reach a
@@ -466,14 +502,18 @@ class AgentTurnJournal:
         behind -- a caller must not paint it as activity, and hiding it would
         make a wedged row unobservable.
 
-        A progressing row THIS boot is not running is skipped entirely, which is
+        A progressing row no live owner is running is skipped entirely, which is
         not the silent fallback the stale bound avoids: the age bound is a guess
-        about whether a turn is still going, while boot ownership is a positive
-        determination that no process is executing it. Belt and braces behind
-        ``agent_turn_reconcile``, which settles such a row into its terminal
-        state at startup; if that failed, this still refuses to report a dead
+        about whether a turn is still going, while ownership is a positive
+        determination. A row is a live owner's only while its
+        ``owner_generation`` equals the generation its command center's key is
+        held at AND that owner tree is alive (change execution-owner-lease D2),
+        and it was not stopped by a cancelled task in this process (``boot``).
+        Belt and braces behind ``agent_turn_reconcile``, which settles such a row
+        at startup; if that failed, this still refuses to report a dead
         container's leftover as thinking (founder, 2026-09-26: a deploy killed a
         turn and the indicator ran for 35 minutes on the row it left behind).
+        Read-only: it never acquires a lease or creates a store.
         """
         uid = records.identity(universe)
         if max_age_s <= 0:
@@ -496,21 +536,28 @@ class AgentTurnJournal:
                 "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'agent_turns'"
             ).fetchone():
                 return None
+            columns = {r[1] for r in conn.execute("PRAGMA table_info(agent_turns)")}
+            generation = "owner_generation" if "owner_generation" in columns else "0"
             rows = conn.execute(
-                "SELECT turn_id, state, created_at FROM agent_turns "
-                "WHERE universe_id = ? ORDER BY created_at DESC",
+                f"SELECT turn_id, state, created_at, {generation} AS owner_generation "
+                "FROM agent_turns WHERE universe_id = ? ORDER BY created_at DESC",
                 (uid,),
             ).fetchall()
         finally:
             conn.close()
+        held = owner_lease.held_generation(self._ledger.base_path, owner_lease.key_for(uid))
+        live_owner = held is not None and owner_lease.tree_alive(self._ledger.base_path, held[1])
         newest: dict[str, object] | None = None
         for row in rows:
             if row["state"] not in WORKING_STATES:
+                boot.forget(uid, row["turn_id"])  # settled: nothing left to remember
                 continue
             started = row["created_at"]
             if not isinstance(started, str) or not started.endswith("Z"):
                 continue
-            if not boot.holds(uid, row["turn_id"], created_at=started):
+            if not live_owner or row["owner_generation"] != held[0]:
+                continue
+            if boot.stopped(uid, row["turn_id"]):
                 continue
             try:
                 when = datetime.fromisoformat(started[:-1] + "+00:00")
@@ -542,7 +589,7 @@ class AgentTurnJournal:
     def _mutation(self, owner, universe, turn_id, expected_generation):
         scope = _scope(owner, universe, turn_id)
         records.integer(expected_generation, minimum=1)
-        with self._transaction() as conn:
+        with self._transaction(universe) as (conn, _lease):
             check_current_home(conn, owner, universe)
             current = _read(conn, scope)
             if current is None:

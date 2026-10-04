@@ -46,7 +46,8 @@ SITES: dict[str, tuple[str, str]] = {
     ),
     "tinyassets/universe_server.py::main._served_budget_lease_loop": (
         CONTROL_PLANE,
-        "run-file retention, admitted-run, delivery and budget-lease reconciliation",
+        "run-file retention, admitted-run, delivery, budget-lease reconciliation "
+        "and stored presentation-policy updates under the service writer barrier",
     ),
     "tinyassets/api/runs.py::start_run_owner_watcher._watch": (
         CONTROL_PLANE, "dead-owner run recovery and terminal-event redelivery",
@@ -78,6 +79,14 @@ SITES: dict[str, tuple[str, str]] = {
         CALL_SCOPED,
         "the same preview waits at most ten seconds for namespace descendants "
         "to stop during cleanup, then refuses further previews if uncontained",
+    ),
+    "tinyassets/owner_lease.py::_lock_blocking": (
+        CALL_SCOPED, "one owner-tree gate acquisition retries until timeout_s",
+    ),
+    "tinyassets/owner_lease.py::acquire": (
+        CALL_SCOPED,
+        "one owner-key acquisition waits for a live holder only until wait_s; "
+        "it returns a lease or refuses, without scheduling work",
     ),
     "tinyassets/agent_turn_coordinator.py::AgentTurnCoordinator._pause_before_retry": (
         CALL_SCOPED,
@@ -175,6 +184,12 @@ SITES: dict[str, tuple[str, str]] = {
         CALL_SCOPED, "drain wait",
     ),
     "tinyassets/storage_accounting.py::_enable_wal": (CALL_SCOPED, "WAL switch retry"),
+    "tinyassets/storage_layout.py::_admit": (
+        CALL_SCOPED,
+        "one startup/check admission retries lock acquisition and rereads the "
+        "migration marker; returns on stable layout or raises on refusal, "
+        "without scheduling background work",
+    ),
     "tinyassets/subscriptions.py::_file_lock": (CALL_SCOPED, "lock acquisition"),
     "tinyassets/ttl_memo.py::TTLMemo.get": (CALL_SCOPED, "single-flight wait"),
     "tinyassets/universe_seats.py::_wait_for_seat": (CALL_SCOPED, "seat wait"),

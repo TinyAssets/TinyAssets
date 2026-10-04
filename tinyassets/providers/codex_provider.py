@@ -27,6 +27,7 @@ from tinyassets.exceptions import (
     ProviderTimeoutError,
     ProviderUnavailableError,
 )
+from tinyassets.providers import provider_jail
 from tinyassets.providers.base import (
     BaseProvider,
     ModelConfig,
@@ -775,6 +776,14 @@ class CodexProvider(BaseProvider):
         modalities_key="inputModalities", hidden_key="hidden", cursor_key="nextCursor",
         cursor_param="cursor", initialize_method="initialize",
         initialized_notification="initialized",
+        # Effort, from the source rather than a constant here. Codex advertises
+        # no boolean gate and lists OBJECTS, so support is implied by a
+        # non-empty list and the level name sits inside each entry. Its
+        # vocabulary also differs from Claude Code's -- a live catalogue offers
+        # `ultra`, which Claude does not -- which is why the admissible set is
+        # always per model and never a shared enum.
+        effort_levels_key="supportedReasoningEfforts",
+        effort_level_key="reasoningEffort",
         initialize_params_json='{"clientInfo":{"name":"tinyassets_model_discovery","version":"1"}}',
         list_params_json='{"limit":100,"includeHidden":true}',
     )
@@ -800,10 +809,24 @@ class CodexProvider(BaseProvider):
         base_cmd, use_shell = self.native_command_resolver()
         model = _codex_model() if config.native_model_id is None else config.native_model_id
         sandbox_status = get_sandbox_status()
-        sandbox_args = (
-            ["--sandbox", "workspace-write"] if sandbox_status.get("bwrap_available")
-            else ["--dangerously-bypass-approvals-and-sandbox"]
-        )
+        # Our provider jail (tinyassets.providers.provider_jail) is the sandbox
+        # whenever this launch is confined. codex's OWN workspace-write sandbox
+        # is a nested bubblewrap inside ours: it adds no confinement our jail
+        # does not already give (the universe RW, nothing else writable, no
+        # network off the egress proxy), and a nested bwrap is what forced the
+        # jail's seccomp to keep user namespaces and symlinks open. So drop it
+        # and let codex run its commands directly in our jail. Off the jail (a
+        # host-authority call with no owning universe) codex keeps its own
+        # sandbox, falling back to bypass only where bwrap is unavailable.
+        # A served turn (sandbox_workspace) replaces these arguments below and
+        # keeps its own sandbox: apply_patch needs it.
+        if provider_jail.launch_is_confined():
+            sandbox_args = ["--dangerously-bypass-approvals-and-sandbox"]
+        else:
+            sandbox_args = (
+                ["--sandbox", "workspace-write"] if sandbox_status.get("bwrap_available")
+                else ["--dangerously-bypass-approvals-and-sandbox"]
+            )
         # Prompt-node calls use Codex as a subscription-backed text model, but
         # loop-investigation coding prompts still need repo source/tests mounted.
         # Prefer Codex's sandboxed auto mode when bwrap is actually usable;
@@ -1014,6 +1037,12 @@ class CodexProvider(BaseProvider):
                 env=proc_env,
                 universe_view=universe_view,
                 install_mounts=lambda: self.native_install_mounts(base_cmd),
+                # A served turn keeps codex's own --sandbox workspace-write: its
+                # native apply_patch runs through a filesystem sandbox helper
+                # that needs a nested user namespace, so the jail loads its
+                # permissive seccomp profile for it. A non-served call runs
+                # with its sandbox off and gets the full deny profile.
+                nested_sandbox=bool(config.sandbox_workspace),
             )
         except BaseException:
             session_hold.close()

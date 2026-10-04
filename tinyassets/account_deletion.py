@@ -31,9 +31,9 @@ dependent request rows (``request_admissions``, ``request_admission_events``,
 user's own admitted request is their data and leaving it would make "we deleted
 your data" false.
 
-**Order.** The home directory is renamed out of the way first (atomic — a crash
-leaves a clearly named orphan under ``.deleting/``, never a half-deleted live
-universe), then every root-database row in one transaction, then the satellite
+**Order.** The home and sidecar are staged as separate children under
+``.deleting/<home>/``; a crash between their renames resumes from that container.
+Then every root-database row in one transaction, then the satellite
 databases, then the directory, then billing, then identity. Each phase is
 isolated: a failure in one never prevents the next, because the phase that must
 not be skipped is the one that stops the money. Anything unfinished is written
@@ -48,7 +48,6 @@ import json
 import logging
 import os
 import re
-import secrets
 import shutil
 import sqlite3
 import stat
@@ -113,9 +112,14 @@ UNIVERSE_KEY = "universe_id"
 #: the delete (gpt-6-astra review, 2026-09-26). Left behind, the row names a
 #: universe that no longer exists and goes when its own owner is deleted.
 OWNER_ONLY_TABLES = MappingProxyType({
+    "pins": "owner_id",
     "universe_app_ui": "owner_user_id",
     "command_center_adoptions": "owner_id",
     "command_center_update_requests": "owner_id",
+    "command_center_update_policies": "owner_id",
+    "command_center_policy_requests": "owner_id",
+    "command_center_auto_receipts": "owner_id",
+    "command_center_auto_status": "owner_id",
 })
 
 #: Universe-scoped tables that ALSO hold a person-keyed row worth removing
@@ -164,6 +168,9 @@ INDIRECTLY_SCOPED_TABLES = frozenset({
 PRESERVED_TABLES = frozenset({
     "author_definitions",
     "branch_definitions",
+    # Immutable public release history is referenced by other owners. Private
+    # series ownership and release evidence use owner_id and are swept normally.
+    "command_center_releases",
     "goals",
     "goal_canonicals",
     # Which branch is canonical for a goal is a COMMONS pointer other people
@@ -284,17 +291,33 @@ def _home_dir(root: Path, home: str) -> Path:
 
 
 def _stage_home(root: Path, home: str) -> Path | None:
-    """Rename the home directory under ``.deleting/`` (atomic) and return the
-    staged path, or None when there is no directory to remove."""
+    """Stage separate home/sidecar children in a platform-owned container.
+
+    The deterministic container survives a crash between renames; retry moves
+    only the remaining sources. No destination lies inside user-owned content.
+    Failure leaves both the container and unmoved sources for the receipt.
+    """
+    from tinyassets.providers.provider_jail import UNIVERSE_SIDECARS_DIR
+
     target = _home_dir(root, home)
-    if not target.exists() and not target.is_symlink():
-        return None
-    if target.is_symlink() or not target.is_dir():
-        raise AccountDeletionError("home path is not a plain directory")
+    sidecar = root / UNIVERSE_SIDECARS_DIR / home
     staging = root / _STAGING_DIR
-    staging.mkdir(exist_ok=True)
-    staged = staging / f"{home}-{int(time.time())}-{secrets.token_hex(4)}"
-    target.rename(staged)
+    staged = staging / home
+    sources = ((target, staged / "home"), (sidecar, staged / "sidecar"))
+    # Check every parent and source before the first rename. A symlink must
+    # never redirect staging or removal into another account's directory.
+    for path in (sidecar.parent, staging, staged, *(p for pair in sources for p in pair)):
+        if path.is_symlink() or (path.exists() and not path.is_dir()):
+            raise AccountDeletionError(f"{path.name} is not a plain directory")
+    if not staged.exists() and not any(source.exists() for source, _ in sources):
+        return None
+    for source, destination in sources:
+        if source.exists() and destination.exists():
+            raise AccountDeletionError(f"{destination.name} exists both live and staged")
+    staged.mkdir(parents=True, exist_ok=True)
+    for source, destination in sources:
+        if source.exists():
+            source.rename(destination)
     return staged
 
 
@@ -663,14 +686,18 @@ def _root_databases(root: Path) -> list[Path]:
     A registry that reads the directory cannot go stale the way a hand-listed
     one does — round 3 found ``.authoring.db`` and ``.automations.db``
     untouched because the list named only ``outbound.db`` and ``.auth.db``.
-    Non-recursive on purpose: per-universe stores live inside the universe
-    directory and go with it.
+    Per-universe stores go with the universe directory. The shared package
+    store is nested outside those directories and must be visited explicitly.
     """
+    from tinyassets.command_center_packages import database_path
     from tinyassets.storage import DB_FILENAME
 
-    return sorted(
+    stores = [
         p for p in root.glob("*.db") if p.is_file() and p.name != DB_FILENAME
-    )
+    ]
+    if database_path(root).is_file():
+        stores.append(database_path(root))
+    return sorted(stores)
 
 
 def _delivery_deletion_targets(conn, *, principal: str, home: str):
@@ -731,8 +758,21 @@ def _delete_satellite_rows(
         conn.execute("PRAGMA foreign_keys = ON")
         local: dict[str, int] = {}
         with conn:
+            from tinyassets.command_center_packages import database_path, ensure_pin_owners
+
+            package_store = path == database_path(path.parent.parent)
+            if package_store:
+                # DDL and legacy owner backfill must precede the deletion plan,
+                # even when this is the first access since upgrading the store.
+                conn.execute("BEGIN IMMEDIATE")
+                ensure_pin_owners(conn)
             plan = deletion_plan(conn, principal=principal, home=home)
             targets = _delivery_deletion_targets(conn, principal=principal, home=home)
+            if package_store and home:
+                # Only unowned legacy pins may fall back to the current home.
+                # Explicit peer ownership always wins over universe identity.
+                targets.append(("pins", "owner_id = ? OR (owner_id = '' AND universe_id = ?)",
+                                (principal, home)))
             delivery_tables = {target[0] for target in targets}
             from tinyassets.run_file_erasure import settled_deletion_targets
             file_targets = settled_deletion_targets(conn, principal=principal)
@@ -951,9 +991,9 @@ def delete_account(
     Raises :class:`AccountDeletionError` before changing anything when the
     principal is empty or the bound home path is unsafe, and
     :class:`AccountDeletionBlocked` when someone else's data or live work is in
-    scope. Once the home directory has been staged the account is gone; each
-    later phase runs independently, so a failure in one never stops the phase
-    that cancels the money, and anything unfinished lands in a durable receipt.
+    scope. After tombstoning, phase failures never stop billing cancellation
+    and anything unfinished lands in a durable receipt. Failed staging keeps
+    the home binding solely so a retry can finish moving the remaining source.
     """
     from tinyassets.daemon_server import _connect, get_founder_home, initialize_author_server
     from tinyassets.principals import named_principal
@@ -978,7 +1018,7 @@ def delete_account(
     # Finish any admitted vault persistence before tombstoning. Later writers
     # check the tombstone inside their transaction under this same admission.
     # Release BEFORE staging: Windows cannot rename an open admission-lock file.
-    if home:
+    if home and _home_dir(root, home).exists():
         from tinyassets.provider_assignment import provider_assignment_admission
 
         with provider_assignment_admission().exclusive(_home_dir(root, home)):
@@ -987,7 +1027,6 @@ def delete_account(
         write_tombstone(root, principal)
     blob_sessions = _authoring_session_ids(root, principal)
 
-    staged = _stage_home(root, home) if home else None
     failures: list[str] = []
 
     def _phase(name: str, run: Callable[[], Any]) -> Any:
@@ -1005,7 +1044,15 @@ def delete_account(
         with _connect(root) as conn:
             _delete_root_rows(conn, principal=principal, home=home, counts=counts)
 
-    _phase("root_rows", _root_rows)
+    staged = _phase("home_staging", lambda: _stage_home(root, home)) if home else None
+    staging_failed = "home_staging" in failures
+    if staging_failed:
+        # Keep the home binding so a retry can finish the deterministic staging
+        # container, even when the home itself has already moved. Billing and
+        # the other independent phases still run and failures get a receipt.
+        failures.append("root_rows")
+    else:
+        _phase("root_rows", _root_rows)
     # Every store at the data root, not a named few: an account's data is
     # wherever a store keyed it, and the directory is the only registry that
     # cannot go stale.
@@ -1025,8 +1072,8 @@ def delete_account(
 
         _phase("authoring_blobs", _blobs)
 
-    home_removed = staged is None
-    staged_path = ""
+    home_removed = staged is None and not staging_failed
+    staged_path = str(root / _STAGING_DIR / home) if staging_failed else ""
     if staged is not None:
         def _remove() -> None:
             nonlocal home_removed

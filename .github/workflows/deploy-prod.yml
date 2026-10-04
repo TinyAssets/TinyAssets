@@ -527,6 +527,86 @@ jobs:
           set -euo pipefail
           python scripts/probe_app_surface.py --verbose
 
+      # Hard Rule 11: tinyassets.io/mcp is the ONLY public endpoint, and the
+      # direct origin is an Access-gated internal one that must never answer an
+      # unauthenticated request. This step PROVES the gate; it does not make the
+      # origin usable, and the name stays out of user-facing docs.
+      #
+      # #2442 dropped this check with the rest of the post-canary block, so
+      # since then a change that opened the internal origin would deploy green:
+      # the public canary goes through the Worker and says nothing about the
+      # origin behind it.
+      #
+      # Non-mutating: one unauthenticated GET, no credentials, 10s cap.
+      #
+      # The pass condition is exactly ONE status, and 401 is a FAILURE. That is
+      # the opposite of what this step's name used to promise, and it is the
+      # point (Codex, 2026-10-03).
+      #
+      # The Access policy is service-token, non-identity
+      # (scripts/cf_access_cutover.py: decision="non_identity",
+      # include=[{service_token}], allowed_idps=[]), so Cloudflare denies an
+      # unauthenticated request with 403 and no login redirect.
+      #
+      # Our own application answers an anonymous GET on /mcp with 401
+      # (tinyassets/auth/middleware.py: no bearer on the MCP endpoint -> 401
+      # challenge). So a 401 PROVES the request reached the application, which
+      # means Access did not stop it -- the exact hole this step exists to
+      # catch. Accepting 401, as the deleted original and my first version both
+      # did, certifies the failure as a pass.
+      #
+      #   403                      -> pass: Access denied it, origin unreached
+      #   401, 200, 404, 405, ...  -> fail: something answered FOR us
+      #   transfer error, 5xx/530  -> advisory: nothing was proved either way
+      #
+      # If the policy is ever changed to an identity-based one (which redirects
+      # to a login page instead), this fails loudly and names the code rather
+      # than quietly accepting a redirect our own origin could also produce.
+      #
+      # No rollback either way. The rollback below keys on the canary and
+      # app-probe outcomes, not on this step, so a red gate stops the deploy
+      # without swapping a healthy image back out of production. That is
+      # detection, not containment: an image rollback would not restore a
+      # missing Cloudflare policy.
+      - name: Verify CF Access gates the direct origin (expects 403)
+        id: access-gate
+        env:
+          DIRECT_ORIGIN: ${{ vars.TINYASSETS_INTERNAL_ORIGIN_NAME || 'mcp.tinyassets.io' }}
+        run: |
+          set -uo pipefail
+          if ! command -v curl >/dev/null 2>&1; then
+            echo "::error::curl is unavailable on the runner, so the Access gate cannot be checked at all"
+            exit 1
+          fi
+          direct_url="https://${DIRECT_ORIGIN}/mcp"
+          # curl's exit status is captured SEPARATELY from the status code. The
+          # earlier `|| echo 000` appended to curl's own "000" on a connect
+          # failure, producing 000000, which matched no branch and failed the
+          # deploy -- breaking the advisory band it was written to provide.
+          # The step runs under Actions' default `bash -e`, and `set -uo
+          # pipefail` does not clear errexit: a bare failing assignment would
+          # exit here before curl_rc was read. `|| curl_rc=$?` keeps it.
+          curl_rc=0
+          http_code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "${direct_url}")" || curl_rc=$?
+          echo "curl exit ${curl_rc}, HTTP status '${http_code}'"
+          if [ "${curl_rc}" != "0" ]; then
+            echo "::warning::could not reach the direct origin (curl exit ${curl_rc}); the Access gate was not proved this run. Public MCP is served through the canonical endpoint, which was proved green above."
+          elif [ "${http_code}" = "403" ]; then
+            echo "Access gate confirmed: Cloudflare denied an unauthenticated request with 403 and the origin was never reached"
+          elif [ "${http_code}" = "429" ] || [ "${http_code}" = "502" ] || [ "${http_code}" = "503" ] || [ "${http_code}" = "504" ] || [ "${http_code}" = "530" ]; then
+            # Rate limiting and the edge/tunnel errors say nothing about the
+            # policy: the request never reached a decision about identity.
+            echo "::warning::the edge returned ${http_code} for the direct origin; nothing was proved about the Access policy this run"
+          elif [ "${http_code}" = "401" ]; then
+            echo "::error::Cloudflare Access is NOT gating the direct origin: the request reached our application, which answered 401 itself. A 401 here is our own auth middleware, not Access."
+            echo "::error::Fix: Cloudflare dashboard -> Access -> Applications -> confirm the service-token policy is active and covers this hostname."
+            exit 1
+          else
+            echo "::error::Cloudflare Access is NOT gating the direct origin: an unauthenticated request got HTTP ${http_code}, so something answered for us instead of Access denying it with 403."
+            echo "::error::Fix: Cloudflare dashboard -> Access -> Applications -> confirm the service-token policy is active and covers this hostname."
+            exit 1
+          fi
+
       # Evidence BEFORE the rollback destroys it, WITHOUT delaying the
       # rollback (Codex P1 on #4367: two 25s SSH calls plus local sanitizing ran
       # while the broken candidate was still serving). This step is one SSH

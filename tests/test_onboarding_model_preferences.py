@@ -28,6 +28,17 @@ PIN = {
 }
 
 
+def stored(policy):
+    """What the server stores for a given CLIENT document.
+
+    The documents above are deliberately left at version 1 -- a client that
+    predates per-model effort must keep working -- and the server normalizes
+    them to the current version on the way in. So the input proves back-compat
+    and this is the expected output.
+    """
+    return {**policy, "version": 2, "efforts": []}
+
+
 class Auth:
     def resolve_token(self, token):
         return Identity(user_id=token, username=token) if token in {A, B, "no_home"} else None
@@ -103,11 +114,11 @@ def test_unpowered_get_then_save_default_then_stale_tab_conflicts(app):
     assert missing.headers["cache-control"] == "no-store"
     saved = client.post(URL, headers=headers(), json=payload())
     assert saved.status_code == 200 and saved.json()["generation"] == 1
-    assert saved.json()["policy"] == PIN
+    assert saved.json()["policy"] == stored(PIN)
     conflict = client.post(URL, headers=headers(), json=payload(policy=AUTO))
     assert conflict.status_code == 409
     assert conflict.json()["error"] == "model_preferences_conflict"
-    assert conflict.json()["policy"] == PIN and conflict.json()["generation"] == 1
+    assert conflict.json()["policy"] == stored(PIN) and conflict.json()["generation"] == 1
     assert client.get(URL, headers=headers()).json() == saved.json()
     reset = client.post(URL, headers=headers(), json=payload(1, AUTO))
     assert reset.status_code == 200 and reset.json()["generation"] == 2
@@ -125,7 +136,7 @@ def test_authenticated_user_cannot_select_another_home(app):
     assert forged.status_code == 400
     saved = client.post(URL, headers=headers(B), json=payload(policy=AUTO))
     assert saved.status_code == 200 and saved.json()["universe_id"] == HOME_B
-    assert client.get(URL, headers=headers(A)).json()["policy"] == PIN
+    assert client.get(URL, headers=headers(A)).json()["policy"] == stored(PIN)
 
 
 def test_explicit_dialog_target_cannot_write_newly_rebound_home(app):

@@ -349,10 +349,13 @@ def test_automatic_replaces_the_whole_current_order(tmp_path):
         tmp_path, choose("first") + add("second") + 'ModelPicker.select("");'
     )
     assert result["draft"] == {
-        "version": 1,
+        "version": 2,
         "mode": "automatic",
         "saved_default": None,
         "fallbacks": [],
+        # Going back to Automatic replaces the ORDER, not the saved per-model
+        # effort levels; there were none set here, so the map is empty.
+        "efforts": [],
     }
     # ...and choosing it from the dropdown saves exactly that.
     applied = run_picker(tmp_path, choose("first") + add("second")
@@ -425,10 +428,11 @@ def test_save_exact_home_and_generation_never_grants_or_silently_switches(tmp_pa
             "body": {
                 "expected_generation": 2,
                 "policy": {
-                    "version": 1,
+                    "version": 2,
                     "mode": "explicit",
                     "saved_default": ref("first"),
                     "fallbacks": [],
+                    "efforts": [],
                 },
             },
         }
@@ -924,3 +928,185 @@ def test_the_connect_row_opens_the_connect_request_and_closes_the_menu(tmp_path)
     """)
     assert result["connects"] == 1, "the menu row did not open the connect request"
     assert result["ui"]["model-menu"]["hidden"] is True, "the menu stayed open over the card"
+
+
+# --------------------------------------------------------------------------
+# Effort, driven through the real picker code.
+# --------------------------------------------------------------------------
+
+
+def effort_catalogue(levels=("low", "medium", "high", "xhigh", "max")):
+    """A catalogue where `first` advertises effort levels and `second` does not."""
+    doc = catalogue()
+    for row in doc["options"]:
+        row["effort_levels"] = list(levels) if row["reference"]["model_id"] == "first" else []
+        row["effort"] = ""
+    doc["preferences"]["policy"] = {
+        "version": 2, "mode": "explicit", "saved_default": ref("first"),
+        "fallbacks": [], "efforts": [],
+    }
+    return doc
+
+
+def menu_rows(result):
+    return result["ui"]["model-menu"]["children"]
+
+
+def row_label(row):
+    """A checked row carries the tick glyph in its text; compare the label."""
+    return row["text"].replace("✓", "").strip()
+
+
+def test_effort_offers_exactly_the_levels_the_source_advertised(tmp_path):
+    """Per model, from the provider -- never a fixed list this app carries."""
+    result = run_picker(tmp_path, "await ModelPicker.menuOpen();", effort_catalogue())
+    rows = menu_rows(result)
+    assert any("Effort" in row["text"] for row in rows), "no effort group was rendered"
+    after = rows[next(i for i, r in enumerate(rows) if "Effort" in r["text"]) + 1:]
+    offered = [row_label(r) for r in after if r["cls"] == "model-menu-item"]
+    assert offered[:6] == ["Provider default", "low", "medium", "high", "xhigh", "max"]
+    # "Provider default" is ticked while nothing is saved: the app has not
+    # chosen a level on the owner's behalf.
+    default_row = next(r for r in after if row_label(r) == "Provider default")
+    assert default_row["checked"] == "true"
+
+
+def test_a_model_without_advertised_levels_shows_no_effort_control(tmp_path):
+    """The founder's constraint: unsupported means absent, not greyed out."""
+    doc = effort_catalogue()
+    doc["preferences"]["policy"]["saved_default"] = ref("second")
+    result = run_picker(tmp_path, "await ModelPicker.menuOpen();", doc)
+    assert all("Effort" not in row["text"] for row in menu_rows(result))
+
+
+def test_automatic_mode_shows_no_effort_control(tmp_path):
+    """Automatic has no single model, so there is nothing to set a level on."""
+    doc = effort_catalogue()
+    doc["preferences"]["policy"] = {
+        "version": 2, "mode": "automatic", "saved_default": None,
+        "fallbacks": [], "efforts": [],
+    }
+    result = run_picker(tmp_path, "await ModelPicker.menuOpen();", doc)
+    assert all("Effort" not in row["text"] for row in menu_rows(result))
+
+
+def test_choosing_a_level_saves_it_against_that_model(tmp_path):
+    result = run_picker(tmp_path, """
+      await ModelPicker.menuOpen();
+      await ModelPicker.chooseEffort(""" + json.dumps(ref("first")) + ""","xhigh");
+    """, effort_catalogue())
+    assert result["requests"], "choosing a level sent no save"
+    policy = result["requests"][-1]["body"]["policy"]
+    assert policy["version"] == 2
+    assert policy["efforts"] == [
+        {"provider_ref": ref("first")["provider_ref"], "model_id": "first", "level": "xhigh"},
+    ]
+    # Unlike a model pick, the menu stays open so levels can be compared.
+    assert result["ui"]["model-menu"]["hidden"] is False
+    rows = menu_rows(result)
+    picked = next(r for r in rows if row_label(r) == "xhigh")
+    assert picked["checked"] == "true"
+
+
+def test_switching_model_does_not_erase_a_saved_effort_level(tmp_path):
+    """A save replaces the WHOLE policy, so a rebuilt draft would wipe levels.
+
+    Switching model is not a decision about effort. Pinned because the client
+    owns the document it posts: dropping `efforts` here would silently reset
+    every level the owner had set, with the server doing exactly as told.
+    """
+    doc = effort_catalogue()
+    doc["preferences"]["policy"]["efforts"] = [
+        {"provider_ref": ref("first")["provider_ref"], "model_id": "first", "level": "max"},
+    ]
+    result = run_picker(tmp_path, """
+      await ModelPicker.menuOpen();
+      await ModelPicker.choose(ModelPicker.key(""" + json.dumps(ref("second")) + """));
+    """, doc)
+    policy = result["requests"][-1]["body"]["policy"]
+    assert policy["saved_default"] == ref("second")
+    assert policy["efforts"] == [
+        {"provider_ref": ref("first")["provider_ref"], "model_id": "first", "level": "max"},
+    ], "the other model's saved level was dropped by a model switch"
+
+
+def test_going_back_to_automatic_keeps_saved_effort_levels(tmp_path):
+    doc = effort_catalogue()
+    doc["preferences"]["policy"]["efforts"] = [
+        {"provider_ref": ref("first")["provider_ref"], "model_id": "first", "level": "high"},
+    ]
+    result = run_picker(tmp_path, """
+      await ModelPicker.menuOpen();
+      await ModelPicker.choose("");
+    """, doc)
+    policy = result["requests"][-1]["body"]["policy"]
+    assert policy["mode"] == "automatic"
+    assert policy["efforts"] == [
+        {"provider_ref": ref("first")["provider_ref"], "model_id": "first", "level": "high"},
+    ]
+
+
+def test_clearing_a_level_returns_to_the_provider_default(tmp_path):
+    doc = effort_catalogue()
+    doc["preferences"]["policy"]["efforts"] = [
+        {"provider_ref": ref("first")["provider_ref"], "model_id": "first", "level": "low"},
+    ]
+    result = run_picker(tmp_path, """
+      await ModelPicker.menuOpen();
+      await ModelPicker.chooseEffort(""" + json.dumps(ref("first")) + ""","");
+    """, doc)
+    assert result["requests"][-1]["body"]["policy"]["efforts"] == []
+
+
+def test_a_refused_effort_save_does_not_show_a_level_that_is_not_stored(tmp_path):
+    """The menu must not report a setting the server refused."""
+    result = run_picker(tmp_path, """
+      await ModelPicker.menuOpen();
+      await ModelPicker.chooseEffort(""" + json.dumps(ref("first")) + ""","max");
+    """, effort_catalogue(), response={"error": "model_preferences_conflict"})
+    rows = menu_rows(result)
+    assert all(r["checked"] != "true" or row_label(r) != "max" for r in rows), (
+        "a refused level was left ticked"
+    )
+
+
+def test_an_expired_catalogue_offers_no_effort_either(tmp_path):
+    result = run_picker(tmp_path, """
+      expire();Owner.getModelOptions=async()=>{throw new Error('offline');};
+      await ModelPicker.menuOpen();
+      await ModelPicker.chooseEffort(""" + json.dumps(ref("first")) + ""","high");
+    """, effort_catalogue())
+    assert result["requests"] == [], "a stale catalogue must not save a level"
+
+
+def test_a_provider_advertised_model_renders_as_a_normal_choice(tmp_path):
+    """The founder's symptom, closed in the UI layer.
+
+    An executor-enumerated row must be pickable and must NOT appear under
+    "Needs access". The same id arriving only from the reviewed public list is
+    an offer to grant and belongs under that divider with its reason -- so this
+    asserts both halves, because the broken build also SHOWED the model, just
+    in the wrong group.
+    """
+    doc = catalogue()
+    advertised, offered = doc["options"][0], doc["options"][1]
+    advertised["availability_basis"] = "executor_enumerated"
+    advertised["in_candidate_catalog"] = True
+    advertised["reasons"] = []
+    offered["availability_basis"] = "publicly_listed"
+    offered["in_candidate_catalog"] = False
+    offered["reasons"] = [{"reason": "model_access_optin_required"}]
+    result = run_picker(tmp_path, "await ModelPicker.menuOpen();", doc)
+
+    rows = menu_rows(result)
+    divider = next((i for i, r in enumerate(rows) if "Needs access" in r["text"]), len(rows))
+    above = [row_label(r) for r in rows[:divider] if r["cls"] == "model-menu-item"]
+    below = [row_label(r) for r in rows[divider:] if r["cls"] == "model-menu-item"]
+
+    assert "first" in " ".join(above), "the advertised model was not offered as a choice"
+    advertised_row = next(r for r in rows if row_label(r).endswith("first"))
+    assert advertised_row["disabled"] is False, "the advertised model was not pickable"
+    assert "opt in" not in advertised_row["text"].replace("_", " ")
+    # ...and the grant-only row is still gated, with its reason said out loud.
+    assert "second" in " ".join(below), "a grant-only row escaped the Needs access group"
+    assert any("model access optin required" in r["text"] for r in rows[divider:])

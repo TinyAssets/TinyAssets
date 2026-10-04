@@ -30,6 +30,7 @@ from __future__ import annotations
 import json
 import logging
 import math
+import os
 import re
 import uuid
 from contextlib import AsyncExitStack, asynccontextmanager
@@ -1508,7 +1509,8 @@ def write_graph(
             handler = getattr(_pending, connection_operation)
             return json.dumps(handler(universe_id=graph_id, payload=payload_json))
         if connection_operation in ("preview_center_update", "answer_center_update",
-                                    "register_center_copy"):
+                                    "register_center_copy", "preview_center_policy",
+                                    "answer_center_policy"):
             from tinyassets.api.command_center_update_surface import write_update
 
             return json.dumps(write_update(universe_id=graph_id,
@@ -2978,12 +2980,16 @@ def converse(
         input_method: Client-reported method by which this specific turn entered
             the calling client: typed, spoken, app_action, or unknown.
             Informational context only, never authority or consent.
-        model_choice: Optional one-turn model preference document: version1,
+        model_choice: Optional one-turn model preference document: version2,
             mode automatic or explicit, saved_default (provider_ref/model_id or
-            null), and fallbacks (ordered references). Automatic uses null and
-            an empty list. This replaces this turn's order only; it never saves
-            defaults, grants access or enables paid models. Omit to use saved
-            settings or the existing provider binding.
+            null), fallbacks (ordered references), and efforts (per-model
+            reasoning level, each provider_ref/model_id/level). Automatic uses
+            null and an empty list. A level must be one the source advertised
+            for that exact model; omit efforts to use each executor's own
+            default. Version1 documents, which predate efforts, are still
+            accepted and read as no effort chosen. This replaces this turn's
+            order only; it never saves defaults, grants access or enables paid
+            models. Omit to use saved settings or the existing provider binding.
         consumer_request: Selected custom conversation request: version1,
             request_key UUIDv4, binding_id and binding_revision. Reuse the exact
             original object/message/model choice on reconnect; never create a
@@ -4636,12 +4642,18 @@ def create_streamable_http_app() -> Starlette:
             # Initialize storage before the scheduler's immediate tick can open
             # the same fresh database and race its first journal-mode switch.
             initialize_consumer(data_dir())
-            # A deploy recreates the container mid-turn, so every progressing
-            # agent turn row predates this boot and nothing is executing it.
-            # Settle them before anything can read them as activity (founder,
+            # The execution owner's tree: main() starts it before spawning
+            # anything; an app served without main() (tests, embedding) starts it
+            # here. Idempotent for the same process (change execution-owner-lease).
+            from tinyassets.owner_lease import ensure_owner_tree
+
+            ensure_owner_tree(data_dir())
+            # A deploy recreates the container mid-turn, so a progressing agent
+            # turn row from the previous owner generation has nothing executing
+            # it. Settle them before anything can read them as activity (founder,
             # 2026-09-26: a killed turn showed "thinking" for 35 minutes).
-            # Hygiene, not a gate: an unsettleable row leaves the boot-ownership
-            # guard in `universe_working_turn` to keep it out of the indicator.
+            # Hygiene, not a gate: an unsettleable row is still kept out of the
+            # indicator by the generation check in `universe_working_turn`.
             from tinyassets.agent_turn_reconcile import reconcile_orphaned_turns
 
             try:
@@ -4812,6 +4824,29 @@ def create_streamable_http_app() -> Starlette:
     return app
 
 
+def _serve_configs(app, host: str, port: int, socket_path: str):
+    """Keep TCP defaults; only the additional socket bypasses lifespan."""
+    import uvicorn
+
+    from tinyassets.owner_socket import OwnerSocketMiddleware
+
+    return (
+        uvicorn.Config(app, host=host, port=port,
+                       timeout_graceful_shutdown=GRACEFUL_SHUTDOWN_S),
+        uvicorn.Config(OwnerSocketMiddleware(app), uds=socket_path, lifespan="off",
+                       proxy_headers=False,
+                       timeout_graceful_shutdown=GRACEFUL_SHUTDOWN_S),
+    )
+
+
+async def _serve_owner_listeners(configs):
+    import asyncio
+
+    import uvicorn
+
+    await asyncio.gather(*(uvicorn.Server(config).serve() for config in configs))
+
+
 def main(
     host: str = "0.0.0.0",
     port: int = 8001,
@@ -4948,6 +4983,12 @@ def main(
             while True:
                 _time.sleep(300.0)
                 try:
+                    from tinyassets.command_center_update_maintenance import tick as update_centers
+
+                    update_centers(_sb_data_dir())
+                except Exception:  # noqa: BLE001 - keep unrelated maintenance running
+                    logger.exception("command center updates: maintenance unavailable")
+                try:
                     _file_retention_cursor = reconcile_run_files(
                         _sb_data_dir(), after_operation_id=_file_retention_cursor,
                     )
@@ -4981,8 +5022,20 @@ def main(
             name="served-budget-lease-reconciler",
             daemon=True,
         ).start()
+        from tinyassets.command_center_update_maintenance import scheduled as updates_scheduled
+
+        updates_scheduled(_sb_data_dir())
     except Exception:  # noqa: BLE001 - boot must not fail on budget maintenance
         logger.exception("served budget: maintenance not started")
+        try:
+            from tinyassets.command_center_update_maintenance import (
+                unavailable as updates_unavailable,
+            )
+            from tinyassets.storage import data_dir as update_data_dir
+
+            updates_unavailable(update_data_dir())
+        except Exception:  # noqa: BLE001 - the original startup failure stays authoritative
+            logger.exception("command center updates: availability could not be recorded")
 
     # Take the run-recovery lock and interrupt what the previous process left in
     # flight BEFORE starting anything that runs: the engine MCP children serve
@@ -4993,6 +5046,14 @@ def main(
     # earlier failure skips; this call is the one boot can rely on (once-only).
     from tinyassets.api.runs import _ensure_runs_recovery, start_run_owner_watcher
 
+    # This process is the execution owner. Its tree exists, and is advertised in
+    # the environment, BEFORE anything is spawned: engine children and workers
+    # started below inherit it and join it, so the owner's death proof covers
+    # them (change execution-owner-lease D2). Every transport, not only HTTP.
+    from tinyassets.owner_lease import start_owner_tree
+    from tinyassets.storage import data_dir as _owner_data_dir
+
+    start_owner_tree(_owner_data_dir())
     _ensure_runs_recovery()
     # And keep recovering: an engine child that dies mid-run while this server
     # lives is found within one tick, by proof that it died.
@@ -5033,10 +5094,18 @@ def main(
             assigned_consumer = AssignedQueueConsumer(assigned_data_dir())
             assigned_consumer.start()
         try:
-            uvicorn.run(
-                app, host=host, port=port,
-                timeout_graceful_shutdown=GRACEFUL_SHUTDOWN_S,
-            )
+            socket_path = os.environ.get("TINYASSETS_OWNER_SOCKET")
+            if socket_path:
+                import asyncio
+
+                asyncio.run(_serve_owner_listeners(
+                    _serve_configs(app, host, port, socket_path)
+                ))
+            else:
+                uvicorn.run(
+                    app, host=host, port=port,
+                    timeout_graceful_shutdown=GRACEFUL_SHUTDOWN_S,
+                )
         finally:
             if assigned_consumer is not None:
                 assigned_consumer.stop()

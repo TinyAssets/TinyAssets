@@ -397,14 +397,28 @@ def test_canary_step_only_probes_canonical():
 
 
 def test_access_gate_step_present():
-    """A separate advisory step must verify the direct URL still returns 403/401."""
+    """A post-deploy step must prove Cloudflare Access still gates the origin.
+
+    #2442 deleted it, so for six weeks a change that opened the Access-gated
+    internal origin would have deployed green: the public canary goes through
+    the Worker and says nothing about the origin behind it.
+    """
     wf = _load()
     steps = _steps(wf)
     access_steps = [s for s in steps if "access" in (s.get("name") or "").lower()]
     assert access_steps, (
-        "deploy job must have a CF Access gate verification step "
-        "(expects 403/401 from direct URL — advisory, not blocking)"
+        "deploy job must have a CF Access gate verification step"
     )
+    gate = _step_named(wf, "Verify CF Access gates the direct origin (expects 403)")
+    assert gate.get("id") == "access-gate"
+    # After the public surfaces, before the rollback, and only on a green run.
+    canary = _step_named(wf, "Public MCP canary (--assert-handles)")
+    rollback = _step_named(wf, "Roll back if the public canary is red")
+    assert steps.index(canary) < steps.index(gate) < steps.index(rollback)
+    assert "if" not in gate, "the gate runs only when the deploy is otherwise green"
+    # A red gate must NOT revert a healthy image: an image rollback cannot
+    # restore a missing Cloudflare policy. Detection, not containment.
+    assert "access" not in str(rollback.get("if", "")).lower()
 
 
 def test_access_gate_blocks_on_200():
@@ -428,11 +442,99 @@ def test_access_gate_blocks_on_200():
     pytest.fail("Access gate step not found")
 
 
-# ---------------------------------------------------------------------------
-# (g) Rollback step present and conditioned on failure
-# ---------------------------------------------------------------------------
+@pytest.mark.skipif(shutil.which("bash") is None, reason="needs bash to execute the step")
+@pytest.mark.parametrize(
+    "curl_rc,http_out,want_rc",
+    [(6, "000", 0), (28, "000", 0), (0, "403", 0), (0, "401", 1), (0, "200", 1)],
+)
+def test_access_gate_step_executes_under_errexit(tmp_path, curl_rc, http_out, want_rc):
+    """Run the step's script the way Actions does (`bash -e`), curl stubbed.
+
+    String assertions passed while a transfer failure aborted the step before
+    `curl_rc` was read: `set -uo pipefail` does not clear the inherited errexit.
+    """
+    wf = _load()
+    gate = _step_named(wf, "Verify CF Access gates the direct origin (expects 403)")
+    stub = tmp_path / "curl"
+    # LF endings: a CRLF script breaks bash on a Windows checkout.
+    stub.write_bytes(f"#!/usr/bin/env bash\nprintf '%s' '{http_out}'\nexit {curl_rc}\n".encode())
+    stub.chmod(0o755)
+    script = tmp_path / "step.sh"
+    # Set inside the script, not via env=: a Windows `bash` may be WSL, which
+    # does not inherit the caller's environment.
+    prelude = 'export DIRECT_ORIGIN=origin.invalid\nexport PATH="$(pwd):$PATH"\n'
+    script.write_bytes((prelude + str(gate.get("run", ""))).encode())
+    proc = subprocess.run(
+        ["bash", "--noprofile", "--norc", "-e", "-o", "pipefail", script.name],
+        cwd=tmp_path, capture_output=True, text=True, timeout=30,
+    )
+    assert proc.returncode == want_rc, proc.stdout + proc.stderr
+    if curl_rc:
+        assert "could not reach the direct origin" in proc.stdout
 
 
+def test_access_gate_treats_our_own_401_as_an_open_gate():
+    """401 is a FAILURE here, which is the whole point of the step.
+
+    The Access policy is service-token, non-identity
+    (``scripts/cf_access_cutover.py``), so Cloudflare denies an unauthenticated
+    request with **403** and no login redirect. Our own application answers an
+    anonymous GET on ``/mcp`` with **401**
+    (``tinyassets/auth/middleware.py``). So a 401 proves the request reached the
+    application and Access did not stop it -- the exact hole this step exists to
+    catch. The deleted original, and the first version of this restore, both
+    accepted 401 and so certified the failure as a pass (Codex, 2026-10-03).
+    """
+    wf = _load()
+    gate = _step_named(wf, "Verify CF Access gates the direct origin (expects 403)")
+    run_script = str(gate.get("run", ""))
+
+    # The pass branch is 403 and only 403.
+    pass_branch = re.search(r'elif \[ "\$\{http_code\}" = "([0-9]{3})" \]; then\n\s*echo "Access gate confirmed',
+                            run_script)
+    assert pass_branch, "the step has a single, identifiable pass branch"
+    assert pass_branch.group(1) == "403", (
+        f"only 403 proves Access denied the request; found {pass_branch.group(1)}"
+    )
+
+    # 401 is named explicitly, and it exits non-zero.
+    assert '"${http_code}" = "401"' in run_script, (
+        "401 must be handled explicitly, not swept into a generic branch, so the "
+        "message can say it is OUR middleware answering rather than Access"
+    )
+    assert "our application, which answered 401 itself" in run_script
+    assert run_script.count("exit 1") >= 2, "401 and every other non-403 fail"
+
+    # The advisory band is transfer failures and codes that prove nothing.
+    for code in ("429", "502", "503", "504", "530"):
+        assert f'"${{http_code}}" = "{code}"' in run_script, (
+            f"{code} proves nothing about the policy and must stay advisory"
+        )
+
+    # curl's exit status is read SEPARATELY from the status code. The earlier
+    # `|| echo 000` appended to curl's own "000" on a connect failure, giving
+    # 000000, which matched no branch and failed the deploy -- breaking the
+    # advisory band the step was written to provide.
+    assert "curl_rc=$?" in run_script
+    assert "|| curl_rc=$?" in run_script, (
+        "a bare `x=$(curl ...)` exits under Actions' default `bash -e` before "
+        "curl_rc is read; capture it with `|| curl_rc=$?`"
+    )
+    assert '[ "${curl_rc}" != "0" ]' in run_script
+    code_lines = [
+        line for line in run_script.splitlines() if not line.strip().startswith("#")
+    ]
+    assert not any("|| echo 000" in line for line in code_lines), (
+        "concatenating a fallback onto curl's own output produced 000000 "
+        "(the step's comment may describe the old bug; the code may not have it)"
+    )
+    # A missing curl is not an advisory pass: the check could not run at all.
+    assert "command -v curl" in run_script
+
+    # Still satisfies the original contract: 200 blocks, and the exit is guarded
+    # rather than unconditional.
+    assert "exit 1" in run_script
+    assert run_script.count("exit 1") < run_script.count("if [")
 def test_rollback_step_present():
     wf = _load()
     names = [s.get("name", "") for s in _steps(wf)]

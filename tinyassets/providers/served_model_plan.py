@@ -182,6 +182,12 @@ def _native_models(base, universe, owner, member, *, native_snapshot=None):
 
     declared = member.access.model_ids if member.access.model_scope == "explicit" else ("",)
     models = []
+    #: Ids the executor advertised AND marked unselectable. Withheld from the
+    #: choices, and also withheld from the candidate sources below: Codex found
+    #: that filtering them out of enumeration alone let the same id return as a
+    #: learned or reviewed-list candidate, because dedupe only saw the rows that
+    #: were kept. A source saying "not this one" outranks our own history of it.
+    withdrawn = set()
     for model_id in declared:
         if model_id:
             accepted_native_selection(member.provider, model_id, member.access)
@@ -199,10 +205,16 @@ def _native_models(base, universe, owner, member, *, native_snapshot=None):
                 or native_snapshot.universe != Path(universe).resolve()
                 or native_snapshot.custody.reference_digest != member.credential_reference_digest):
             raise PermissionError("native catalogue is outside current member custody")
+        # A row the executor itself marked unselectable must not become a normal
+        # choice. Offering it would hand the owner a pick that fails at launch,
+        # which is worse than not listing it (see the learned-id split below).
+        withdrawn.update(model.model_id for model in native_snapshot.catalogue.models
+                         if model.hidden)
         models.extend(Model(
             model.model_id, True, model.input_modalities,
             pricing=Pricing("fresh", unmetered=True), availability_basis="executor_enumerated",
-        ) for model in native_snapshot.catalogue.models)
+            effort_levels=model.effort_levels,
+        ) for model in native_snapshot.catalogue.models if not model.hidden)
     # What the PLATFORM has seen work on this KIND of source, newest of each class.
     # Without this the list is only what this owner typed into their own access
     # grant, so a newly released model was invisible until someone shipped a patch
@@ -220,11 +232,12 @@ def _native_models(base, universe, owner, member, *, native_snapshot=None):
     # picker as soon as they stopped declaring it. Keeping a row nobody reads is not
     # keeping it.
     models.extend(_own_verified_candidates(base, LEARNED_SOURCE_KIND, owner,
-                                          already=models))
+                                          already=models, excluded=withdrawn))
     # ...then the reviewed public list for this kind of source, which is how a newly
     # released model reaches everyone without a patch: a PR adds the id, review is the
     # moderation, and every universe on that source kind sees it next read.
-    models.extend(_listed_candidates(LEARNED_SOURCE_KIND, already=models))
+    models.extend(_listed_candidates(LEARNED_SOURCE_KIND, already=models,
+                                     excluded=withdrawn))
     router = get_provider_router()
     provider = None if router is None else router._providers.get(member.provider)
     if provider is None or not provider.is_available():
@@ -236,7 +249,7 @@ def _native_models(base, universe, owner, member, *, native_snapshot=None):
     )
 
 
-def _own_verified_candidates(base, source_kind, owner, *, already):
+def _own_verified_candidates(base, source_kind, owner, *, already, excluded=frozenset()):
     """Ids THIS owner has already made work on this kind of source.
 
     Their own history, not anyone else's: read from the private evidence table
@@ -250,7 +263,7 @@ def _own_verified_candidates(base, source_kind, owner, *, already):
     """
     from tinyassets.storage.learned_models import OwnModelHistory
 
-    have = {model.model_id for model in already}
+    have = {model.model_id for model in already} | set(excluded)
     try:
         rows = OwnModelHistory(base).ids_for(source_kind, owner)
     except (OSError, sqlite3.DatabaseError, ValueError) as exc:
@@ -264,7 +277,7 @@ def _own_verified_candidates(base, source_kind, owner, *, already):
     )
 
 
-def _listed_candidates(source_kind, *, already):
+def _listed_candidates(source_kind, *, already, excluded=frozenset()):
     """Newest-per-class ids from the reviewed public list for one source kind.
 
     A UNION, never a filter: an id this universe already has keeps its own row and its
@@ -277,7 +290,7 @@ def _listed_candidates(source_kind, *, already):
     """
     from tinyassets.providers.public_model_lists import newest_listed_cached
 
-    have = {model.model_id for model in already}
+    have = {model.model_id for model in already} | set(excluded)
     return tuple(
         Model(model_id, True, frozenset({"text"}),
               pricing=Pricing("fresh", unmetered=True),

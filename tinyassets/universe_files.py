@@ -30,8 +30,10 @@ import errno
 import os
 import stat
 import uuid
+from collections.abc import Callable
 from itertools import islice
 from pathlib import Path
+from typing import Any
 
 from tinyassets import workspace_fs as fs
 
@@ -499,6 +501,117 @@ def unlink_data_path(path: Path | str) -> None:
         Path(path).unlink()
         return
     unlink_universe_file(located[0], located[1])
+
+
+class SqliteIdentityChanged(UniverseFileError):
+    """The database name stopped pointing at the file we verified."""
+
+
+def connect_guarded(path: Path | str, connect: Callable[[], Any]) -> Any:
+    """Run ``connect`` on a universe database whose name was opened link-free.
+
+    Takes the factory rather than yielding, so the ordering this depends on
+    cannot be got wrong by a caller, and a connection this helper received is
+    **closed on the refusal path** -- a close attempt, not a guarantee the
+    close succeeds. (A context manager here leaked one on exactly that path,
+    and this suite already exhausts descriptors --
+    ``docs/concerns/2026-10-03-full-suite-cannot-report-its-own-result.md``.)
+    A factory that allocates a connection and then raises must clean that up
+    itself: this helper never sees it.
+
+    **What this detects, stated exactly: an identity difference still present
+    at the final pathname lookup.** It is not a no-follow guarantee for SQLite
+    and it does not verify which inode SQLite opened -- it cannot, because
+    Python's ``sqlite3`` takes a path, exposes no open-flags argument and no
+    way to set ``SQLITE_OPEN_NOFOLLOW`` (a C open flag).
+
+    What this gives:
+
+    1. the leaf is opened ``O_NOFOLLOW`` under a parent descriptor whose every
+       component was opened the same way, so a link at the name, or at any
+       component above it, refuses before SQLite is involved;
+    2. the device and inode are recorded from that descriptor, which is held
+       across the call so the inode cannot be recycled under us;
+    3. after ``connect`` returns the name is resolved again and compared, and a
+       difference closes the connection before raising.
+
+    **What it explicitly does NOT cover -- an ABA swap.** Pin A; the attacker
+    keeps A under another name and puts a link to B at the name; SQLite opens
+    B; the attacker restores A before step 3's ``stat``. The comparison passes
+    and the returned connection still addresses B. A hardlink back to A, or a
+    symlink back to A, passes for the same reason: step 3 follows links and
+    sees only the name's current target, never SQLite's descriptor. So this
+    raises the cost of the attack from "rename once" to "win a race twice";
+    it does not make it impossible.
+
+    If cross-command-center isolation is the contract you need, this function
+    does not supply it and no wording here can. The closures are structural --
+    platform databases outside command-center-writable folders, or the
+    per-role uid split plus a sticky parent so a child uid cannot rename the
+    daemon's entry. See
+    ``docs/concerns/2026-10-03-a-universe-database-name-steers-the-daemon.md``.
+
+    Why it matters: with the name alone, a planted link makes the daemon read
+    AND WRITE another universe's database. That is measured, not theorised
+    (the same oracle run committed a row into the decoy).
+    """
+    located = _data_relative(Path(path))
+    if located is None:
+        return connect()  # outside the data dir: in no universe, nothing to steer
+    root, relpath = located
+    parts = _split(relpath)
+    if not getattr(fs, "_POSIX", False):
+        # Check-then-use, as everywhere else on this host; the cross-universe
+        # guarantee is POSIX-only (see _windows_parent).
+        target = _windows_parent(root, parts, create=False) / parts[-1]
+        if target.is_symlink():
+            raise UniverseFileError(f"{relpath!r} is a link; it is not opened")
+        return connect()
+    # O_PATH, not O_RDONLY. Closing ANY ordinary descriptor on an inode drops
+    # every POSIX advisory lock this process holds on it -- including another
+    # SQLite connection's -- while SQLite still believes it holds them. That is
+    # a documented corruption mechanism
+    # (sqlite.org/howtocorrupt.html#posix_advisory_locks_canceled_by_a_separate
+    # _thread_doing_close), and this daemon does run concurrent transactional
+    # users of these databases (workspace_pool). Linux excludes O_PATH
+    # descriptors from that behaviour, and `fstat` works on them, which is all
+    # this needs. O_PATH also cannot block on a FIFO the way O_RDONLY can.
+    # No silent fall-back: without O_PATH this cannot be done safely, so say so.
+    o_path = getattr(os, "O_PATH", None)
+    if o_path is None:  # pragma: no cover - Linux is the deployment target
+        raise UniverseFileError(
+            "O_PATH is unavailable, so a database name cannot be pinned without "
+            "risking another connection's POSIX locks")
+    flags = o_path | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
+    dir_fd = _parent_dir_fd(root, parts, create=False)
+    try:
+        try:
+            fd = os.open(parts[-1], flags, dir_fd=dir_fd)
+        except OSError as exc:
+            if exc.errno == errno.ELOOP:
+                raise UniverseFileError(
+                    f"{relpath!r} is a link; it is not opened") from exc
+            raise
+    finally:
+        os.close(dir_fd)
+    try:
+        opened = os.fstat(fd)
+        if not stat.S_ISREG(opened.st_mode):
+            raise UniverseFileError(f"{relpath!r} is not a regular file")
+        before = (opened.st_dev, opened.st_ino)
+        connection = connect()
+        try:
+            now = os.stat(path)  # follows links, which is the point of comparing
+            if (now.st_dev, now.st_ino) != before:
+                raise SqliteIdentityChanged(
+                    f"{relpath!r} changed identity while it was being opened; "
+                    "nothing was read from it")
+        except BaseException:
+            connection.close()
+            raise
+        return connection
+    finally:
+        os.close(fd)
 
 
 def load_untrusted_yaml(text: str, *, max_bytes: int = MAX_CONFIG_BYTES) -> object:

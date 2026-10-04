@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 from pathlib import Path
 from typing import Any
 
@@ -45,6 +46,7 @@ UI_KIND = "tinyassets.app-ui.v1"
 _MAX_NAME = 120
 _MAX_DESCRIPTION = 4000
 _MAX_ID = 200
+logger = logging.getLogger(__name__)
 
 #: The fixed consent sentence. The platform's words, not the agent's.
 PUBLIC_SENTENCE = (
@@ -112,6 +114,22 @@ def validate_action(action: dict[str, Any]) -> dict[str, Any]:
         if kind == "workflows" and validated["ui_id"]:
             raise ValueError("workflow-only publishing cannot include a screen")
         validated["publish_kind"] = kind
+    if "release" in action:
+        release = action["release"]
+        if (not isinstance(release, dict) or "summary" not in release
+                or set(release) - {"summary", "series_id", "parent_release_id"}
+                or any(not isinstance(value, str) for value in release.values())):
+            raise ValueError("release needs a summary and optional exact series and parent IDs")
+        summary = release["summary"].strip()
+        if not 1 <= len(summary) <= 2000 or any(ord(char) < 32 for char in summary):
+            raise ValueError("release summary must be one line of 1 to 2000 characters")
+        series_id, parent = release.get("series_id", ""), release.get("parent_release_id", "")
+        if bool(series_id) != bool(parent) or len(series_id) > 100 or len(parent) > 100:
+            raise ValueError("continuing a release requires both exact series and parent IDs")
+        if _publication_kind(validated) != "system":
+            raise ValueError("release history currently requires a component-system screen")
+        validated["release"] = {"summary": summary, "series_id": series_id,
+                                "parent_release_id": parent}
     return validated
 
 
@@ -243,6 +261,10 @@ def tab_text(action: dict[str, Any]) -> tuple[str, str, str]:
     lines.append(PUBLIC_SENTENCE)
     if package:
         lines.append(PACKAGE_SENTENCE)
+    if action.get("release_link"):
+        from tinyassets.command_center_release_series import consent_text
+
+        lines.extend(["", consent_text(action["release_link"])])
     return ("Publish", f"Publish {label} \"{_shown(action['name'], 120)}\" for anyone to copy?",
             "\n".join(lines))
 
@@ -527,9 +549,35 @@ def capture_action(uid: str, action: dict[str, Any]) -> dict[str, Any]:
     """Snapshot the public payload now; pin its digest and what the tab shows."""
     snap = build_snapshot(uid, action)
     captured = {**action, "snapshot_digest": snap["digest"], "shown": snap["shown"]}
+    if action.get("release"):
+        from tinyassets.command_center_release_series import _normalized, capture_release_link
+        from tinyassets.command_center_updates import digest
+
+        link = capture_release_link(universe_id=uid, action=action, **action["release"])
+        if link["release_link"]["definition_digest"] != digest(_normalized(snap["definition"])):
+            raise ValueError(_CHANGED)
+        captured["release_link"] = link["release_link"]
     if snap.get("package"):
         captured["package_version"] = snap["package"]["version"]
     return captured
+
+
+def after_publish(uid: str, action: dict[str, Any], result: dict[str, Any], *,
+                  request_id: str) -> dict[str, Any]:
+    """Report release registration separately from an already completed publication."""
+    if not action.get("release") or not result.get("published"):
+        return {}
+    from tinyassets.command_center_release_series import record_release
+
+    try:
+        return {"release_registration": "recorded",
+                "release": record_release(universe_id=uid, request_id=request_id)}
+    except Exception:  # noqa: BLE001 - the publication is already complete
+        logger.warning("Published release lineage could not be registered", exc_info=True)
+        return {"release_registration": "unavailable",
+                "release_registration_detail":
+                    "Your publication is public; release history could not be linked. "
+                    "It will not receive automatic-update eligibility from this publication."}
 
 
 #: The owner's per-folder switches on a package tab, and their two answers.

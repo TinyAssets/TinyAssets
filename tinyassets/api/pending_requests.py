@@ -1364,11 +1364,16 @@ def _ask_agent(action: dict[str, Any]) -> str:
 def _pin_consent(uid: str, action: dict[str, Any], tab: tuple[str, str, str],
                  fields: list[dict[str, Any]]) -> str:
     """Pin the consent record; returns the platform-minted request id."""
+    from tinyassets.api.custom_agents import _authenticated_actor
     from tinyassets.api.helpers import _base_path
     from tinyassets.command_center_packages import pin
 
     kind, title, body = tab
+    owner = _authenticated_actor()
+    if not owner:
+        raise PermissionError("authenticated consent owner required")
     return pin(_base_path(), universe_id=uid, kind=action["type"], agent=_ask_agent(action),
+               owner_id=owner,
                digest=action["snapshot_digest"],
                record={"action": action, "tab": {"kind": kind, "title": title, "body": body,
                                                  "fields": fields}})
@@ -2896,7 +2901,7 @@ def answer_request(*, universe_id: str = "", payload: Any = None) -> dict[str, A
                 "receipt": f"Installed \"{action['plan']['name']}\" as your own copy.",
                 "suppressed": False}
     if action.get("type") == "publish":
-        from tinyassets.api.publish_requests import answer_publish
+        from tinyassets.api.publish_requests import after_publish, answer_publish
 
         try:
             result = answer_publish(_uid, pinned, values, request_id=request_id)
@@ -2905,8 +2910,11 @@ def answer_request(*, universe_id: str = "", payload: Any = None) -> dict[str, A
         if not resolve_request(udir, request_id, status="answered", answer=answer,
                                feedback=feedback, dont_ask_again=False, decision="allowed"):
             return {"error": "request_resolution_unconfirmed", "request_pending": True}
+        result = {**result, **after_publish(_uid, action, result, request_id=request_id)}
+        release_note = (" " + result["release_registration_detail"]
+                        if result.get("release_registration") == "unavailable" else "")
         return {**result, "status": "answered", "request_id": request_id,
-                "receipt": f"Published \"{action['name']}\" for anyone to copy.",
+                "receipt": f"Published \"{action['name']}\" for anyone to copy.{release_note}",
                 "suppressed": False}
     if action.get("type") == PATCH_INTAKE_ACTION:
         if row["fields"] or values:

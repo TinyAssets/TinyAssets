@@ -74,18 +74,66 @@ def _load() -> dict:
 
 
 def test_required_shards_install_the_browser_before_running_tests():
+    """Install precedes every step that runs tests, and covers every such step.
+
+    The install is conditional now (a shard owning no selected file skips it,
+    which is the whole saving), so "has no `if`" is no longer the invariant.
+    What must hold is that NO run-tests step can execute without it: the
+    install's condition is the weakest one, and every run step's condition
+    includes it. A run step reachable while the install is skipped would fail on
+    a missing pytest, not on the code under test.
+    """
     steps = _load()["jobs"]["required-tests-shard"]["steps"]
     install = next(i for i, s in enumerate(steps)
                    if "playwright install --with-deps chromium" in s.get("run", ""))
-    execute = next(i for i, s in enumerate(steps)
-                   if "ci_required_tests.py" in s.get("run", ""))
-    assert install < execute
     assert "'.[dev,browser]'" in steps[install]["run"]
-    assert "if" not in steps[install]
     assert not steps[install].get("continue-on-error", False)
+    # The implication is checked over the only three values `--plan-shard` can
+    # print: ALL, 0, or a positive count. Spelling the conditions out means a
+    # change to any of them fails here and has to be re-reasoned rather than
+    # silently widening what runs without an install.
+    accepts = {
+        "steps.plan.outputs.count != '0'": {"ALL", "n"},
+        "steps.plan.outputs.count == 'ALL'": {"ALL"},
+        "steps.plan.outputs.count != '0' && steps.plan.outputs.count != 'ALL'": {"n"},
+    }
+    install_if = _expr(steps[install].get("if", ""))
+    assert install_if in accepts, install_if
+
+    # Every step that RUNS tests (not the stdlib-only planning step).
+    runners = [
+        (i, s) for i, s in enumerate(steps)
+        if "ci_required_tests.py" in s.get("run", "") and "--plan-shard" not in s["run"]
+    ]
+    assert len(runners) == 2, [s.get("name") for _, s in runners]
+    for index, step in runners:
+        assert install < index, f"{step.get('name')} runs before the install"
+        condition = _expr(step.get("if", ""))
+        assert condition in accepts, condition
+        assert accepts[condition] <= accepts[install_if], (
+            f"{step.get('name')} can run while the install is skipped: {condition}"
+        )
+    # Together they must cover every value that installs, or a shard with work
+    # would install and then run nothing while reporting success.
+    assert set().union(*(accepts[_expr(s.get("if", ""))] for _, s in runners)) == accepts[
+        install_if
+    ]
+
+    # The planning step must come FIRST and must not need the install: knowing
+    # the slice is empty is what lets the install be skipped at all.
+    plan = next(i for i, s in enumerate(steps) if "--plan-shard" in s.get("run", ""))
+    assert plan < install
 
 
 def test_required_aggregate_rejects_missing_or_skipped_browser_proofs():
+    """Whole-surface only, because the assertion is "present AND clean".
+
+    `ci_assert_junit_case` exits 1 when a named case is ABSENT. On a selective
+    union the browser cases are legitimately absent unless the entry touched
+    them, so running this there would fail the gate for the one reason that is
+    not a regression. It must therefore be scoped to ALL -- and it must still be
+    unconditional WITHIN that scope, which is what the rest of this pins.
+    """
     steps = _load()["jobs"]["required-tests"]["steps"]
     aggregate = next(i for i, s in enumerate(steps)
                      if "--aggregate shards/" in s.get("run", ""))
@@ -93,7 +141,9 @@ def test_required_aggregate_rejects_missing_or_skipped_browser_proofs():
                  if "ci_assert_junit_case.py" in s.get("run", ""))
     step = steps[proof]
     assert aggregate < proof
-    assert step["if"] == "github.event_name != 'pull_request'"
+    assert _expr(step["if"]) == (
+        "github.event_name != 'pull_request' && needs.select.outputs.scope == 'ALL'"
+    ), step["if"]
     assert "--junit junit.xml" in step["run"]
     assert "--marker real_browser" in step["run"]
     assert "'.[dev,browser]'" in step["run"]
@@ -353,10 +403,20 @@ def test_required_tests_cannot_decline_to_report() -> None:
     )
     assert "merge_group" in triggers, "without merge_group the shards never run at all"
     agg_steps = wf["jobs"]["required-tests"]["steps"]
-    decide = next(s for s in agg_steps if "--aggregate" in str(s.get("run", "")))
-    assert _expr(decide.get("if", "")) == queue_only, (
-        "the aggregate's gate step must run on every non-PR event"
-    )
+    # Two verdict steps now -- whole surface and selection -- and they must
+    # PARTITION every non-PR event. If a non-PR event could match neither, the
+    # job would report success having judged nothing, which is the fail-open
+    # this whole test exists to prevent. Complementary conditions on one
+    # expression are what make them exhaustive; `scope` is unvalidated input
+    # from another job, so the selective branch is written `!= 'ALL'` rather
+    # than `== 'affected'` to catch an empty value too.
+    decide = [s for s in agg_steps if "--aggregate" in str(s.get("run", ""))]
+    assert len(decide) == 2, [s.get("name") for s in decide]
+    conditions = {_expr(s.get("if", "")) for s in decide}
+    assert conditions == {
+        f"{queue_only} && needs.select.outputs.scope == 'ALL'",
+        f"{queue_only} && needs.select.outputs.scope != 'ALL'",
+    }, conditions
     assert any(
         _expr(s.get("if", "")) == "github.event_name == 'pull_request'" for s in agg_steps
     ), "on a PR the aggregate must still REPORT, explicitly deferring to the queue"
@@ -481,7 +541,12 @@ def test_every_shard_count_declaration_agrees() -> None:
     exactly 1..N rather than merely N entries long.
     """
     d = _shard_count_declarations()
-    assert len(d["shard_arg"]) == 1 and len(d["expect"]) == 1 and len(d["name"]) == 1, d
+    # `--shard .../N` now appears once per step that takes a slice (plan, the
+    # whole-surface run, the selective run). The invariant was never "written
+    # once" -- it is "written as ONE number wherever it appears".
+    assert d["shard_arg"], d
+    assert len(set(d["shard_arg"])) == 1, d
+    assert len(set(d["expect"])) == 1 and len(d["name"]) == 1, d
     n = int(d["shard_arg"][0])
     assert n >= 2, "a single shard is the old serial job with extra steps"
     assert d["matrix"] == list(range(1, n + 1)), d
@@ -501,7 +566,17 @@ def test_only_the_aggregate_carries_the_protection_context() -> None:
 def test_aggregate_waits_for_every_shard_and_reads_their_results() -> None:
     jobs = _load()["jobs"]
     shard, agg = jobs["required-tests-shard"], jobs["required-tests"]
-    assert agg.get("needs") in ("required-tests-shard", ["required-tests-shard"])
+    # `select` joined `needs` so the aggregate can read the published digest and
+    # scope. required-tests-shard must STAY in it: without that edge the
+    # aggregate could start before the shards finished and judge an empty
+    # directory, and `needs.required-tests-shard.result` would not resolve.
+    needs = agg.get("needs")
+    needs = [needs] if isinstance(needs, str) else list(needs or [])
+    assert "required-tests-shard" in needs, needs
+    assert "select" in needs, needs
+    assert "select" in (
+        [shard["needs"]] if isinstance(shard.get("needs"), str) else list(shard.get("needs") or [])
+    ), "a shard must not start before the selection it slices exists"
     # fail-fast would cancel sibling shards, turning one real failure into
     # "missing shards" and hiding what actually broke.
     assert shard["strategy"].get("fail-fast") is False
@@ -571,3 +646,78 @@ def test_affected_tests_select_then_run_their_slice_through_the_gate_script() ->
     # on a failure the queue never produces.
     required = _load()["jobs"]["required-tests-shard"]["strategy"]["matrix"]["shard"]
     assert job["strategy"]["matrix"]["shard"] == required
+
+
+# ---- the conservative merge gate (round-2 fixes from the #4359 review) ------
+
+
+def test_select_installs_before_it_selects() -> None:
+    """Finding 1: without deps the conftest probe raises and selection is ALL.
+
+    That fallback is correct -- it is the only safe direction -- but it made the
+    gate INERT while still paying for the select job. The install is therefore
+    load-bearing, not an optimisation, and it has no `if`.
+    """
+    steps = _load()["jobs"]["select"]["steps"]
+    install = next(
+        i for i, s in enumerate(steps) if "pip install -e" in s.get("run", "")
+    )
+    pick = next(
+        i for i, s in enumerate(steps) if "affected_tests.py" in s.get("run", "")
+    )
+    assert install < pick
+    assert "if" not in steps[install]
+    assert not steps[install].get("continue-on-error", False)
+
+
+def test_the_gate_asks_for_the_conservative_selection() -> None:
+    """`--gate`, not the advisory PR-time mode.
+
+    Without it the merge group would trust a selection the import graph cannot
+    prove complete; the review reproduced two real omissions (a function-local
+    import and a json data file).
+    """
+    run = next(
+        s["run"] for s in _load()["jobs"]["select"]["steps"]
+        if "affected_tests.py" in s.get("run", "")
+    )
+    assert "--gate" in run
+    assert re.search(r"affected_tests\.py\s+--gate\s+--base", run), run
+
+
+def test_the_selection_is_pruned_before_it_is_digested() -> None:
+    """Finding 3: a slow-only file would fail coverage and exit its shard 5.
+
+    Order matters -- pruning after the digest would pin a digest for a
+    selection the shards never ran.
+    """
+    run = next(
+        s["run"] for s in _load()["jobs"]["select"]["steps"]
+        if "affected_tests.py" in s.get("run", "")
+    )
+    assert "--prune-to-collectible affected.txt" in run
+    assert run.index("--prune-to-collectible") < run.index("--print-selection-digest"), run
+
+
+def test_a_selective_run_still_refuses_a_skipped_browser_proof() -> None:
+    """Finding 4: coverage accepts a skip, and these tests skip themselves.
+
+    Both scopes must assert the proofs; the selective one is restricted to the
+    selected files because an absent case is exit 1 and the unselected marked
+    cases are legitimately absent there.
+    """
+    steps = _load()["jobs"]["required-tests"]["steps"]
+    proofs = [s for s in steps if "ci_assert_junit_case.py" in s.get("run", "")]
+    assert len(proofs) == 2, [s.get("name") for s in proofs]
+    by_scope = {_expr(s["if"]).split("&&")[-1].strip(): s for s in proofs}
+    assert set(by_scope) == {
+        "needs.select.outputs.scope == 'ALL'",
+        "needs.select.outputs.scope != 'ALL'",
+    }, list(by_scope)
+    whole = by_scope["needs.select.outputs.scope == 'ALL'"]["run"]
+    selective = by_scope["needs.select.outputs.scope != 'ALL'"]["run"]
+    assert "--only-files" not in whole
+    assert "--only-files affected.txt" in selective
+    for run in (whole, selective):
+        assert "--marker real_browser" in run
+        assert "|| true" not in run

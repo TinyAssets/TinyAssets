@@ -329,14 +329,29 @@ both subprocesses exit zero.
 for the remainder of the process. It returns that same mutable dictionary,
 does not refresh it, and does not copy it.
 
-For an ordinary `CodexProvider.complete` call,
-`bwrap_available` truthy SHALL select `--sandbox workspace-write`, while falsey SHALL select
-`--dangerously-bypass-approvals-and-sandbox`; both modes also include
-`--skip-git-repo-check` and `--ephemeral`. A call with
+For an ordinary `CodexProvider.complete` call made while
+`provider_jail.launch_is_confined()` is true (a launch scope names an owning
+universe, so the shared spawn point OS-jails the process), the adapter SHALL
+select `--dangerously-bypass-approvals-and-sandbox`: the provider jail is the
+sandbox, and codex SHALL NOT nest its own bubblewrap inside it. Its shell
+commands then write the universe the jail binds read-write (hidden root entries
+masked) and reach the network only through the universe's checking egress
+proxy, the same floor as the universe tool jail's `bash`, rather than being
+network-denied as codex's own `workspace-write` mode would. Off the jail,
+`bwrap_available` truthy SHALL select `--sandbox workspace-write`, while falsey
+SHALL select `--dangerously-bypass-approvals-and-sandbox`. Every mode also
+includes `--skip-git-repo-check` and `--ephemeral`. A call with
 `sandbox_workspace=True` SHALL require a universe directory, a directly
 executable CLI, available Bubblewrap, and an auth home inside that universe;
 otherwise it SHALL refuse before starting a subprocess. Accepted served calls
-use `--sandbox workspace-write` inside the outer OS sandbox.
+use `--sandbox workspace-write` inside the outer OS sandbox and SHALL declare a
+nested sandbox to the provider jail, because codex's native `apply_patch` runs
+through a filesystem sandbox helper that needs a nested user namespace; that
+launch SHALL get the jail's permissive seccomp profile, which keeps new user
+namespaces and symlinks open. Every other provider launch SHALL get the full
+deny profile. On the served path a provider can still create a link in its
+universe; the daemon-side link-refusing reader and writer covers that residual
+until per-universe platform state moves out of the universe directory.
 This probe is a CLI-readiness heuristic, not an OS backend or proof that the
 subsequent workload is confined. In particular, an unavailable ordinary call
 bypasses Codex approvals and sandboxing rather than failing closed.
@@ -345,7 +360,19 @@ bypasses Codex approvals and sandboxing rather than failing closed.
 
 - **WHEN** `bwrap` is found and its version and minimal launch subprocesses both exit zero
 - **THEN** the first cached result is `{"bwrap_available": true, "reason": null}`
-- **AND** an ordinary Codex call includes `--sandbox workspace-write` and omits `--dangerously-bypass-approvals-and-sandbox`
+- **AND** an ordinary Codex call made outside any confining launch scope includes `--sandbox workspace-write` and omits `--dangerously-bypass-approvals-and-sandbox`
+
+#### Scenario: A confined ordinary call runs codex inside the provider jail without its own sandbox
+
+- **WHEN** an ordinary Codex call is made inside a launch scope that names an owning universe
+- **THEN** it includes `--dangerously-bypass-approvals-and-sandbox` and omits `--sandbox workspace-write`
+- **AND** the provider jail's seccomp filter refuses new user namespaces and symlinks for every process the call starts
+
+#### Scenario: A served call keeps codex's sandbox and gets the permissive jail profile
+
+- **WHEN** a Codex call with `sandbox_workspace=True` is accepted
+- **THEN** it includes `--sandbox workspace-write` and declares a nested sandbox to the provider jail
+- **AND** the jail's seccomp profile for that launch allows new user namespaces and symlinks, so codex's `apply_patch` edit succeeds
 
 #### Scenario: An unavailable probe selects the dangerous bypass
 
