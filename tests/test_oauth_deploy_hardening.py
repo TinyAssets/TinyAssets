@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -11,6 +12,10 @@ import yaml
 
 from scripts.validate_oauth_provider_credentials import ID, SECRET, target_protects_children
 
+# Resolve via PATH explicitly: Windows subprocess otherwise prefers the
+# system32 WSL launcher, which does not inherit this harness environment.
+BASH = shutil.which("bash")
+assert BASH is not None, "OAuth deploy execution proof requires bash"
 ROOT = Path(__file__).resolve().parents[1]
 VALIDATOR = ROOT / "scripts/validate_oauth_provider_credentials.py"
 HELPER = ROOT / "deploy/install-tinyassets-env.sh"
@@ -131,9 +136,9 @@ def test_target_requires_registry_and_actual_filter(tmp_path, revisions, source,
 
 
 def helper_env(tmp_path):
-    return {**os.environ, "TINYASSETS_ENV_FILE": str(tmp_path / "env"),
-            "TINYASSETS_DAEMON_ENV_SOURCE": str(tmp_path / "env"),
-            "TINYASSETS_DAEMON_ENV_FILE": str(tmp_path / "daemon.env"),
+    return {**os.environ, "TINYASSETS_ENV_FILE": (tmp_path / "env").as_posix(),
+            "TINYASSETS_DAEMON_ENV_SOURCE": (tmp_path / "env").as_posix(),
+            "TINYASSETS_DAEMON_ENV_FILE": (tmp_path / "daemon.env").as_posix(),
             "TINYASSETS_ENV_OWNER": "", "TINYASSETS_ENV_READ_USER": ""}
 
 
@@ -151,10 +156,11 @@ mv() {
 export -f mv
 '''
     proc = subprocess.run(
-        ["bash", "-c", prelude + 'bash "$HELPER" set-pair "$ID_KEY" "$SECRET_KEY"'],
-        input="new-id\nGOCSPX-new-secret\n", capture_output=True, text=True,
-        env={**helper_env(tmp_path), "HELPER": str(HELPER), "ID_KEY": ID, "SECRET_KEY": SECRET,
-             "FAIL_DEST": str(tmp_path / failure)},
+        [BASH, "-c", prelude + 'bash "$HELPER" set-pair "$ID_KEY" "$SECRET_KEY"'],
+        # Preserve LF framing: text-mode stdin becomes CRLF on Windows.
+        input=b"new-id\nGOCSPX-new-secret\n", capture_output=True,
+        env={**helper_env(tmp_path), "HELPER": HELPER.as_posix(), "ID_KEY": ID,
+             "SECRET_KEY": SECRET, "FAIL_DEST": (tmp_path / failure).as_posix()},
     )
     assert proc.returncode == (0 if failure == "none" else 3), proc.stderr
     for name in ("env", "daemon.env"):
@@ -162,7 +168,7 @@ export -f mv
         assert (f"{ID}=new-id\n" in content) == (f"{SECRET}=GOCSPX-new-secret\n" in content)
         assert content.count(f"{ID}=") == content.count(f"{SECRET}=") == 1
         assert "KEEP=yes" in content
-    assert "GOCSPX-new-secret" not in proc.stdout + proc.stderr
+    assert b"GOCSPX-new-secret" not in proc.stdout + proc.stderr
     assert not list(tmp_path.glob(".*.tmp.*"))
 
 
@@ -171,8 +177,8 @@ def test_pair_rejects_incomplete_input_without_mutation(tmp_path, payload):
     original = "KEEP=yes\n"
     (tmp_path / "env").write_text(original)
     proc = subprocess.run(
-        ["bash", str(HELPER), "set-pair", ID, SECRET], input=payload,
-        capture_output=True, text=True, env=helper_env(tmp_path),
+        [BASH, HELPER.as_posix(), "set-pair", ID, SECRET], input=payload.encode(),
+        capture_output=True, env=helper_env(tmp_path),
     )
     assert proc.returncode != 0
     assert (tmp_path / "env").read_text() == original
@@ -232,11 +238,11 @@ env() { shift; "$@"; }
 export -f sudo flock timeout docker bash env
 '''
     proc = subprocess.run(
-        ["bash", "-c", prelude + step["run"]], capture_output=True, text=True,
-        input="", env={**helper_env(tmp_path), "TEST_ENV": str(tmp_path / "env"),
-                       "REMOTE": str(REMOTE), "HELPER": str(HELPER),
-                       "SSH_ARGS": str(tmp_path / "ssh-args"),
-                       "PROBE_DIR": str(tmp_path), "OAUTH_ACTION": action,
+        [BASH, "-c", prelude + step["run"]], capture_output=True, text=True,
+        input="", env={**helper_env(tmp_path), "TEST_ENV": (tmp_path / "env").as_posix(),
+                       "REMOTE": REMOTE.as_posix(), "HELPER": HELPER.as_posix(),
+                       "SSH_ARGS": (tmp_path / "ssh-args").as_posix(),
+                       "PROBE_DIR": tmp_path.as_posix(), "OAUTH_ACTION": action,
                        "PREV_IMAGE": "ghcr.io/example/daemon@sha256:" + "a" * 64,
                        "DO_SSH_USER": "deploy", "DO_DROPLET_HOST": "host.invalid",
                        ID: "client-id", SECRET: "GOCSPX-secret"},

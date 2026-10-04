@@ -57,13 +57,26 @@ def _text() -> str:
 def test_oauth_provider_credentials_step_sources_and_order():
     wf = _load()
     steps = _steps(wf)
+    validation = _step_named(wf, "Validate OAuth provider credentials")
     step = _step_named(wf, "Install OAuth provider client credentials")
-    assert step["env"] == {
+    credentials = {
         "TINYASSETS_OAUTH_GOOGLE_CLIENT_ID":
             "${{ vars.TINYASSETS_OAUTH_GOOGLE_CLIENT_ID }}",
         "TINYASSETS_OAUTH_GOOGLE_CLIENT_SECRET":
             "${{ secrets.TINYASSETS_OAUTH_GOOGLE_CLIENT_SECRET }}",
     }
+    assert validation["id"] == "oauth"
+    assert validation["env"] == {
+        **credentials,
+        "TARGET_REVISION": "${{ steps.tag.outputs.revision }}",
+    }
+    assert validation["run"] == "python scripts/validate_oauth_provider_credentials.py"
+    assert step["env"] == {
+        **credentials,
+        "OAUTH_ACTION": "${{ steps.oauth.outputs.action }}",
+        "PREV_IMAGE": "${{ steps.capture.outputs.prev_image }}",
+    }
+    assert steps.index(validation) < steps.index(_step_named(wf, "Install SSH key"))
     assert steps.index(_step_named(
         wf, "Install daemon-only request idempotency HMAC secret",
     )) < steps.index(step) < steps.index(_step_named(
@@ -74,101 +87,6 @@ def test_oauth_provider_credentials_step_sources_and_order():
     assert "set +x" in script
     assert "set -x" not in script
     assert "sudo flock -w 120 /var/lock/tinyassets-host-mutation.lock" in script
-
-
-@pytest.mark.parametrize(
-    "client_id,client_secret,remote_rc,error",
-    [
-        ("", "", 0, ""),
-        ("test-client-id", "", 0, "configure both repository variable"),
-        ("", "test-client-secret", 0, "configure both repository variable"),
-        ("test-client-id", "test-client-secret", 0, ""),
-        ("test-client-id", "literal-$value-`command`-$(command)", 0, ""),
-        ("test-client-id", "test-client-secret", 23, ""),
-        ("test-client-id\ninjected", "test-client-secret", 0, "must be single-line"),
-        ("test-client-id\r", "test-client-secret", 0, "must be single-line"),
-        ("test-client-id", "test-client-secret\n", 0, "must be single-line"),
-        ("test-client-id", "test-client-secret\rinjected", 0, "must be single-line"),
-    ],
-)
-def test_oauth_provider_credentials_execution(
-    tmp_path, client_id, client_secret, remote_rc, error,
-):
-    """Execute the runner and remote shell; stub SSH, flock and the env writer.
-
-    No GitHub masking is present: captured output must never contain a value.
-    The SSH stub runs the actual remote command to prove stdin framing survives
-    both shells and the writer is invoked inside the shared host lock.
-    """
-    import shlex
-
-    bash = shutil.which("bash")
-    assert bash is not None, "OAuth deploy execution proof requires bash"
-    script = _step_named(_load(), "Install OAuth provider client credentials")["run"]
-    prelude = r'''
-export DO_SSH_USER=deploy DO_DROPLET_HOST=host.invalid
-ssh() {
-    printf '%s\n' "$@" >> ssh-args
-    if [ "$REMOTE_RC" != 0 ]; then return "$REMOTE_RC"; fi
-    bash -c "${@: -1}"
-}
-sudo() { "$@"; }
-flock() {
-    [ "$1" = -w ] && [ "$2" = 120 ]
-    [ "$3" = /var/lock/tinyassets-host-mutation.lock ]
-    shift 3
-    export OAUTH_TEST_LOCK_HELD=1
-    "$@"
-}
-env() {
-    [ "${OAUTH_TEST_LOCK_HELD:-}" = 1 ]
-    [ "$#" = 5 ]
-    [ "$1" = TINYASSETS_ENV_FILE=/etc/tinyassets/env ]
-    [ "$2" = bash ] && [ "$3" = /tmp/install-tinyassets-env.sh ]
-    [ "$4" = set ]
-    local value
-    value="$(cat)"
-    printf '%s=%s\n' "$5" "$value" >> installed
-}
-export -f sudo flock env
-'''
-    # Git Bash can ignore literal CR bytes while reading a script. Construct
-    # those bytes at runtime so Windows exercises the same input as Actions.
-    quoted_id = shlex.quote(client_id).replace("\r", "'$'\\r''")
-    quoted_secret = shlex.quote(client_secret).replace("\r", "'$'\\r''")
-    prelude += (
-        f"export TINYASSETS_OAUTH_GOOGLE_CLIENT_ID={quoted_id}\n"
-        f"export TINYASSETS_OAUTH_GOOGLE_CLIENT_SECRET={quoted_secret}\n"
-        f"export REMOTE_RC={remote_rc}\n"
-    )
-    harness = tmp_path / "step.sh"
-    harness.write_bytes((prelude + script).encode())
-    proc = subprocess.run(
-        [bash, "--noprofile", "--norc", "-e", "-o", "pipefail", harness.name],
-        cwd=tmp_path, capture_output=True, text=True, timeout=30,
-    )
-    output = proc.stdout + proc.stderr
-    assert proc.returncode == (1 if error else remote_rc), output
-    if error:
-        assert error in output
-    for value in (client_id, client_secret):
-        if value:
-            assert value not in output
-    contacted_host = not error and bool(client_id and client_secret)
-    assert (tmp_path / "ssh-args").exists() == contacted_host
-    if contacted_host:
-        arguments = (tmp_path / "ssh-args").read_text()
-        assert client_id not in arguments
-        assert client_secret not in arguments
-    if contacted_host and not remote_rc:
-        assert (tmp_path / "installed").read_text() == (
-            f"TINYASSETS_OAUTH_GOOGLE_CLIENT_ID={client_id}\n"
-            f"TINYASSETS_OAUTH_GOOGLE_CLIENT_SECRET={client_secret}\n"
-        )
-    else:
-        assert not (tmp_path / "installed").exists()
-    if not client_id and not client_secret:
-        assert output == ""
 
 
 def _triggers(wf: dict) -> dict:
