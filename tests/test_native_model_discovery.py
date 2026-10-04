@@ -20,6 +20,31 @@ from tinyassets.providers.native_jsonrpc_discovery import (
 )
 
 PROTOCOL = CodexProvider.native_discovery_protocol
+pytestmark = pytest.mark.usefixtures("metadata_transport_processes")
+
+
+@pytest.fixture
+def metadata_transport_processes(monkeypatch):
+    """Exercise real protocol/family children; OS isolation has separate proofs."""
+    from tinyassets.providers import owned_process, provider_jail
+
+    def transport_launch(argv, *, view, **kwargs):
+        scope = provider_jail._SCOPE.get()
+        assert scope.universe_dir == view.universe_dir
+        assert scope.engine_route is None
+        return provider_jail.ConfinedLaunch(list(argv), universe_dir=view.universe_dir)
+
+    monkeypatch.setattr(provider_jail, "confine_launch", transport_launch)
+    monkeypatch.setattr(
+        owned_process, "_open_disk_budget", lambda _: SimpleNamespace(settle=lambda: None),
+    )
+    monkeypatch.setattr(owned_process, "_watch_disk", lambda proc, budget: budget.settle())
+
+
+def metadata_snapshot(universe):
+    snapshot = universe / ".runtime" / "provider-launch-credentials" / "metadata-test"
+    snapshot.mkdir(parents=True, exist_ok=True)
+    return str(snapshot)
 
 
 def row(model="a-future-release", **kwargs):
@@ -93,7 +118,8 @@ for line in sys.stdin:
 def run_peer(tmp_path, pages, **kwargs):
     script = peer_script(pages, **kwargs)
     return asyncio.run(read_native_catalogue(
-        [sys.executable, "-u", "-c", script], env=os.environ.copy(), cwd=str(tmp_path), timeout=3,
+        [sys.executable, "-u", "-c", script], env=os.environ.copy(),
+        cwd=metadata_snapshot(tmp_path), universe_dir=tmp_path, timeout=3,
         protocol=PROTOCOL,
     ))
 
@@ -144,12 +170,17 @@ def test_child_is_reaped_on_every_failure(tmp_path, mode):
                 "eof": "pass"}[mode]
         with patch("asyncio.create_subprocess_exec", spawn):
             task = asyncio.create_task(read_native_catalogue(
-                [sys.executable, "-u", "-c", code], env=os.environ.copy(), cwd=str(tmp_path),
+                [sys.executable, "-u", "-c", code], env=os.environ.copy(),
+                cwd=metadata_snapshot(tmp_path), universe_dir=tmp_path,
                 protocol=PROTOCOL,
                 timeout=0.2 if mode == "timeout" else 3,
             ))
             if mode == "cancel":
-                while not children:
+                # Cancel the admitted metadata process, after its shared
+                # family handshake. Pre-handshake cancellation is owned by
+                # the launcher's separate teardown tests.
+                from tinyassets.providers import owned_process
+                while not children or owned_process._get_family(children[-1]) is None:
                     await asyncio.sleep(0.01)
                 task.cancel()
             expected = asyncio.CancelledError if mode == "cancel" else ProviderError
@@ -190,6 +221,19 @@ def test_native_registration_uses_owned_environment_and_direct_metadata_only(tmp
     assert reader.call_args.kwargs["env"] == {"OWNED": "yes"}
     assert reader.call_args.kwargs["cwd"] == str(snapshot)
     assert reader.call_args.kwargs["protocol"] is PROTOCOL
+    # The generic jail cannot discover native vendor binaries behind a wrapper.
+    # The provider's registered mount resolver must reach metadata as well.
+    mounts = reader.call_args.kwargs["install_mounts"]
+    assert callable(mounts)
+    vendor = tmp_path / "vendor"
+    vendor.mkdir()
+    with (
+        patch("tinyassets.providers.codex_provider._resolved_codex_executable",
+              return_value=(tmp_path / "wrapper", vendor / "codex")) as executable,
+        patch("tinyassets.providers.codex_provider._codex_binary_tree", return_value=vendor),
+    ):
+        assert mounts() == (vendor, tmp_path)
+    executable.assert_called_once_with(["executor"])
 
 
 def test_new_executor_can_describe_other_metadata_methods_and_fields(tmp_path):
@@ -207,7 +251,8 @@ print(json.dumps({'id': request['id'], 'result': {'items': [
 ]}}), flush=True)
 '''
     result = asyncio.run(read_native_catalogue(
-        [sys.executable, "-u", "-c", script], env=os.environ.copy(), cwd=str(tmp_path),
+        [sys.executable, "-u", "-c", script], env=os.environ.copy(),
+        cwd=metadata_snapshot(tmp_path), universe_dir=tmp_path,
         protocol=protocol, timeout=3,
     ))
     assert result.models[0].model_id == "future-company/model"

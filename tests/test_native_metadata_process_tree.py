@@ -10,7 +10,15 @@ from unittest.mock import Mock, patch
 
 import pytest
 
-from tests.test_native_model_discovery import PROTOCOL, peer_script, row
+from tests.test_native_model_discovery import (
+    PROTOCOL,
+    metadata_snapshot,
+    peer_script,
+    row,
+)
+from tests.test_native_model_discovery import (
+    metadata_transport_processes as metadata_transport_processes,
+)
 from tinyassets.exceptions import ProviderError
 from tinyassets.providers.native_jsonrpc_discovery import read_native_catalogue
 
@@ -115,7 +123,7 @@ if {mode!r} != 'launcher_exited':
             with patch("asyncio.create_subprocess_exec", spawn):
                 task = asyncio.create_task(read_native_catalogue(
                     [sys.executable, "-u", "-c", launcher], protocol=PROTOCOL,
-                    env=os.environ.copy(), cwd=str(tmp_path),
+                    env=os.environ.copy(), cwd=metadata_snapshot(tmp_path), universe_dir=tmp_path,
                     spawn_kwargs={"start_new_session": False},
                     timeout=0.25 if mode == "timeout" else 5,
                 ))
@@ -180,7 +188,10 @@ def test_cleanup_pipe_wait_is_bounded_and_cancellation_is_not_swallowed(cancel):
             pid=12345, returncode=0, stdin=Mock(),
             stdout=SimpleNamespace(read=stalled), wait=stalled, _transport=Mock(),
         )
-        with patch.object(module.os, "killpg") as kill, patch.object(module, "_REAP_TIMEOUT", .05):
+        with (
+            patch.object(module, "kill_owned_tree") as kill,
+            patch.object(module, "_REAP_TIMEOUT", .05),
+        ):
             task = asyncio.create_task(module._close_metadata_process(process))
             await waiting.wait()
             if cancel:
@@ -189,7 +200,9 @@ def test_cleanup_pipe_wait_is_bounded_and_cancellation_is_not_swallowed(cancel):
                     await asyncio.wait_for(task, 1)
             else:
                 await asyncio.wait_for(task, 1)
-            kill.assert_called_once_with(12345, signal.SIGKILL)
+            kill.assert_called_once_with(process)
             process.stdin.close.assert_called_once()
             process._transport.close.assert_called_once()
     asyncio.run(exercise())
+
+pytestmark = pytest.mark.usefixtures("metadata_transport_processes")

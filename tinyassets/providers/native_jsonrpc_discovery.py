@@ -15,13 +15,13 @@ A new executor registers an envelope here rather than forking the transport.
 import asyncio
 import json
 import logging
-import os
-import signal
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from tinyassets.exceptions import ProviderError
 from tinyassets.providers.native_catalogue import NativeCatalogue, NativeModel
+from tinyassets.providers.owned_process import FamilyAnchorError, aspawn_owned, kill_owned_tree
+from tinyassets.providers.provider_jail import metadata_view, provider_launch_scope
 
 
 class NativeMetadataUnsupported(ProviderError):
@@ -48,22 +48,11 @@ _log = logging.getLogger(__name__)
 
 
 async def _close_metadata_process(proc):
-    """Release this invocation's pipes and process group, not just its launcher.
-
-    POSIX launchers (including flock) can exit before their inherited-pipe
-    children. The group created by start_new_session belongs to this invocation;
-    target its original ID directly, never resolve a potentially recycled PID.
-    Only ephemeral metadata credentials are supplied to these processes.
-    """
+    """Release pipes and the owned family, including after launcher exit."""
     proc.stdin.close()
-    try:
-        if os.name == "posix":
-            # Even a reaped launcher can leave a live group holding our pipes.
-            os.killpg(proc.pid, signal.SIGKILL)
-        elif proc.returncode is None:
-            proc.kill()
-    except ProcessLookupError:
-        pass
+    # The live family anchor owns its group identity. Closing its handle is
+    # synchronous, including when cancellation interrupts the following await.
+    kill_owned_tree(proc)
     try:
         # wait() alone returns early when the launcher was already reaped.
         # Observe inherited-pipe EOF too, with the same byte/time ceilings.
@@ -363,27 +352,38 @@ def parse_model_page(result, protocol):
     return models, defaults, cursor
 
 
-async def read_native_catalogue(argv, *, protocol, env, cwd, timeout=30, spawn_kwargs=None):
+async def read_native_catalogue(
+    argv, *, protocol, env, cwd, universe_dir=None, timeout=30,
+    spawn_kwargs=None, install_mounts=None, auth_env_names=(),
+):
     """Read the complete bounded list or fail with sanitized fixed prose.
 
     Resource ceilings are transport guards, never silent list truncation. New
     optional fields and notifications are tolerated; invalid required facts,
     duplicate models, repeated cursors and upstream errors refuse the result.
+
+    ``auth_env_names`` carries the caller's own auth directory variable names
+    down to the jail, which is channel-agnostic and names no vendor itself.
     """
     proc = None
     try:
         if type(protocol) not in (NativeJsonRpcProtocol, NativeControlProtocol):
             raise ValueError("native metadata requires a registered protocol")
+        if universe_dir is None:
+            raise ValueError("native metadata requires its owning command center")
+        view = metadata_view(universe_dir, cwd, env, auth_env_names)
         process_options = dict(spawn_kwargs or {})
-        if os.name == "posix":
-            # Transport-owned isolation cannot be disabled by an adapter.
-            process_options["start_new_session"] = True
+        # Session ownership belongs to the shared family launcher. Adapters
+        # cannot replace its view, scope, shell mode or confinement requirement.
+        process_options.pop("start_new_session", None)
         async with asyncio.timeout(timeout):
-            proc = await asyncio.create_subprocess_exec(
-                *argv, env=env, cwd=cwd, stdin=asyncio.subprocess.PIPE,
-                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
-                limit=_MAX_BYTES, **process_options,
-            )
+            with provider_launch_scope(universe_dir, credential_dir=cwd):
+                proc = await aspawn_owned(
+                    argv, env=env, cwd=cwd, stdin=asyncio.subprocess.PIPE,
+                    stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
+                    limit=_MAX_BYTES, universe_view=view, require_confinement=True,
+                    install_mounts=install_mounts, **process_options,
+                )
             consumed = 0
 
             async def send(message):
@@ -437,7 +437,15 @@ async def read_native_catalogue(argv, *, protocol, env, cwd, timeout=30, spawn_k
                     raise ValueError("native catalogue cursor repeated")
                 cursors.add(cursor)
             raise ValueError("native catalogue page limit exceeded")
-    except (OSError, ValueError, TimeoutError, asyncio.LimitOverrunError):
+    except NativeMetadataUnsupported:
+        # The executor ANSWERED "I do not implement this". That is a truthful
+        # unknown, not a fault, and `BaseProvider.enumerate_models` turns it
+        # into None so the source keeps its own default. This clause MUST come
+        # first: the sanitizing handler below catches ProviderError, which this
+        # subclasses, and would widen the honest answer into a generic failure.
+        raise
+    except (OSError, ValueError, ProviderError, FamilyAnchorError,
+            TimeoutError, asyncio.LimitOverrunError):
         # Never relay process output, errors, paths or account material.
         raise ProviderError("native model discovery unavailable") from None
     finally:

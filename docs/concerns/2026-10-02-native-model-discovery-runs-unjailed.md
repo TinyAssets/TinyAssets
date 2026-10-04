@@ -1,8 +1,8 @@
 ---
 severity: P2
-title: Native model discovery launches the provider binary outside the jail
+title: Native metadata confinement deployment and live acceptance remain unverified
 filed: '2026-10-02'
-summary: 'The vendor-neutral provider jail lives at one spawn point, `owned_process._aspawn`, which calls `confine_launch`. Native model discovery is a second spawn point and does not: `native_jsonrpc_discovery.read_native_catalogue` runs `asyncio.create_subprocess_exec` directly, so `codex app-server` runs at the daemon uid with the daemon''s whole view of `/data` — every other command center''s directory and vault — and with a live subscription credential snapshot as both `CODEX_HOME` and its `cwd`. On the inference path the same binary is confined and those paths are masked. No user-controlled input reaches the discovery argv, which is why this is P2 and not the P0 it descends from; but the acceptance test named by that P0 can pass while this path stays open.'
+summary: 'PR #4404 repairs the unjailed metadata spawn; hosted synthetic isolation proof passed on 2026-10-04. Keep this concern until automatic deployment and real vendor enumeration under confinement are verified.'
 ---
 
 # Native model discovery launches the provider binary outside the jail
@@ -15,7 +15,13 @@ observed in production.
 See *Why P2 and not P0* below; it becomes P1 the moment any user-influenced value
 reaches the discovery argv or protocol.
 
-## What is true
+## Source fix and remaining verification (2026-10-04)
+
+PR #4404 routes metadata through the confined owned-process launcher and binds only the owner's exact snapshot. The original code observations below describe the pre-fix main tree `342ab4101`, not the repaired source. On reviewed source `06e2ebb56bb5bd6ba0578daf3c461ad38c00c9d1`, hosted Linux jail run 37191691078 passed the synthetic metadata isolation case with the no-skip gate; run 37191691029 passed all six affected shards. Local Linux oracle proof also passed 23 tests with zero skips. Runtime security review is recorded in PR comment 5977935795, with subsequent main-merge/skip-budget integration independently approved by Claude.
+
+This concern remains open until the merged SHA is verified deployed using the command below. Synthetic Python proof establishes the OS boundary but does not establish that the installed vendor CLI can enumerate real models under the strict jail; that live acceptance is still owed. No live credential/provider calls or real-user clean-use evidence are claimed.
+
+## Original finding (pre-fix main)
 
 The vendor-neutral jail landed at **one** spawn point. `providers/owned_process.py:635-652`
 imports `confine_launch`, builds a bubblewrap `jailed` launch and execs that; this is the

@@ -632,6 +632,31 @@ _PROVIDER_AUTH_OVERLAY_ENV_VARS: dict[str, frozenset[str]] = {
 }
 
 
+#: How a DIRECTORY variable is told apart from a credential variable, by shape
+#: rather than by name. Widen this when an executor declares an auth directory
+#: spelled some other way.
+_AUTH_DIR_ENV_SUFFIXES: tuple[str, ...] = ("_HOME", "_DIR")
+
+
+def auth_directory_env_names() -> tuple[str, ...]:
+    """Every executor auth DIRECTORY variable name, for jails that name none.
+
+    Derived from the overlay allow-list above rather than written out again, so
+    a new executor's auth directory is covered by declaring it there once. Only
+    directory-shaped names are returned: a token variable is a credential, not a
+    path, and must never be handed a disposable directory as its value. The jail
+    (``tinyassets.providers.provider_jail``) is channel-agnostic and takes these
+    as data (``scripts/check_channel_agnostic.py``).
+
+    The shape test is the suffix, because naming the variables here is what the
+    ratchet forbids. ``_DIR`` and ``_HOME`` cover every directory name any
+    executor has used; a declared auth directory spelled some other way would
+    be missed, so :data:`_AUTH_DIR_ENV_SUFFIXES` is the place to widen it.
+    """
+    names = {name for group in _PROVIDER_AUTH_OVERLAY_ENV_VARS.values() for name in group}
+    return tuple(sorted(n for n in names if n.endswith(_AUTH_DIR_ENV_SUFFIXES)))
+
+
 def subprocess_env_without_api_keys() -> dict[str, str] | None:
     """Return this process's env with every model API-key variable removed."""
     env = os.environ.copy()
@@ -1504,6 +1529,7 @@ class BaseProvider(abc.ABC):
     native_discovery_protocol = None
     native_metadata_arguments: tuple[str, ...] = ()
     native_command_resolver = None
+    native_install_mounts = None
 
     @staticmethod
     def native_process_options():
@@ -1537,8 +1563,11 @@ class BaseProvider(abc.ABC):
             return await read_native_catalogue(
                 [*base_cmd, *self.native_metadata_arguments],
                 protocol=self.native_discovery_protocol,
-                env=env, cwd=str(credential_snapshot_dir),
+                env=env, cwd=str(credential_snapshot_dir), universe_dir=universe_dir,
                 spawn_kwargs=self.native_process_options(),
+                install_mounts=(None if self.native_install_mounts is None else
+                                lambda: self.native_install_mounts(base_cmd)),
+                auth_env_names=auth_directory_env_names(),
             )
         except NativeMetadataUnsupported:
             # An installed executor that ANSWERED "I do not implement this"
