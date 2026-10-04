@@ -78,6 +78,27 @@ def save_effort(native, ref, level):  # noqa: F811
     )
 
 
+def warm_shortlist(native):  # noqa: F811
+    """Run the discovery a DISPLAY read no longer runs for itself.
+
+    #4368 moved enumeration off the picker's request path: a display read now
+    serves the warm per-source catalogue and never discovers inline, so the
+    refresh that used to happen *during* ``prepare_owned_model_plan`` has to
+    happen before it. Same pattern as
+    ``test_native_discovery_integration.test_new_account_model_reaches_picker``.
+
+    Only the display-read tests need this. The invocation tests below go through
+    ``_call``, and execution still discovers inline -- it is about to launch and
+    will not build a plan from a catalogue it has not confirmed.
+    """
+    from tinyassets.providers.shortlist_refresh import SHORTLIST_CACHE
+
+    SHORTLIST_CACHE.refresh_now(
+        base=native.base, owner="owner-1",
+        universe_id=native.universe.name, provider="codex",
+    )
+
+
 # --------------------------------------------------------------------------
 # Ask 1: the provider's own shortlist, as NORMAL choices.
 # --------------------------------------------------------------------------
@@ -95,6 +116,7 @@ def test_advertised_model_is_a_normal_choice_not_an_opt_in_offer(native, monkeyp
     async def discover():
         return effortful(["claude-opus-5-5"])
     install_discovery(native, monkeypatch, discover)
+    warm_shortlist(native)
     prepared = prepare_owned_model_plan(
         base=native.base, universe=native.universe, owner="owner-1", agent=native.agent,
         allow_empty=True,
@@ -124,6 +146,7 @@ def test_a_row_the_executor_disabled_never_becomes_a_choice(native, monkeypatch)
     async def discover():
         return effortful(["usable-model", "withdrawn-model"], hidden=("withdrawn-model",))
     install_discovery(native, monkeypatch, discover)
+    warm_shortlist(native)
     prepared = prepare_owned_model_plan(
         base=native.base, universe=native.universe, owner="owner-1", agent=native.agent,
         allow_empty=True,
@@ -156,6 +179,7 @@ def test_only_a_model_that_advertises_effort_offers_the_control(native, monkeypa
             "rich-model", datetime.now(timezone.utc),
         )
     install_discovery(native, monkeypatch, discover)
+    warm_shortlist(native)
     prepared = prepare_owned_model_plan(
         base=native.base, universe=native.universe, owner="owner-1", agent=native.agent,
         allow_empty=True,
@@ -642,6 +666,7 @@ def test_a_withdrawn_id_does_not_return_as_a_learned_candidate(native, monkeypat
         "tinyassets.providers.public_model_lists.newest_listed_cached",
         lambda kind: ("withdrawn-model", "some-other-id"),
     )
+    warm_shortlist(native)
     prepared = prepare_owned_model_plan(
         base=native.base, universe=native.universe, owner="owner-1", agent=native.agent,
         allow_empty=True,
