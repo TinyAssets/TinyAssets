@@ -143,6 +143,10 @@ on:
       - "tinyassets/universe_intelligence.py"
       - "tinyassets/universe_egress.py"
       - "tinyassets/workspace_fs.py"
+      - "tinyassets/jail_disk.py"
+      - "tinyassets/storage_accounting.py"
+      - "tests/test_jail_disk.py"
+      - "tests/test_storage_accounting.py"
   workflow_dispatch:
 
 permissions:
