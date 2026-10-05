@@ -5,18 +5,20 @@
 `initialize`, `tools/list` and every `tools/call` on the live connector SHALL
 require a valid bearer. A request without one SHALL answer HTTP 401 with a
 `WWW-Authenticate: Bearer` challenge carrying the resource-metadata URL, so an
-MCP client starts OAuth before it lists tools. The principal SHALL carry verified
-outside-client identity and an active authorization generation as specified by
-`outside-agent-grants`. Every tool call SHALL additionally enforce its current
+MCP client starts OAuth before it lists tools. The principal SHALL carry verified client classification. Configured first-party
+app clients SHALL be exempt from outside grants and the outside kill switch,
+while retaining owner/ACL checks and separate interactive approval proof.
+An outside principal SHALL carry verified outside-client identity and an active authorization generation as specified by
+`outside-agent-grants`. Every outside-client tool call SHALL additionally enforce its current
 owner-editable client grant before returning data or causing an effect.
-The existing first-converse private-home bootstrap SHALL establish its default
+For outside clients, the existing first-converse private-home bootstrap SHALL establish its default
 grant before message admission as specified by `outside-agent-grants`. An early
-no-home status response SHALL require verified active client identity and its
+no-home status response from an outside client SHALL require verified active client identity and its
 revocation fence but no universe grant, return only the caller's no-home state,
 and never provision or expose universe content.
 `converse` SHALL require an authenticated actor with write or admin on the target
-universe and `message` for the resolved addressed agent. `get_status` and
-`read_graph target=status` SHALL remain pure reads, requiring the client's `read`
+universe and, for outside clients, `message` for the resolved addressed agent. `get_status` and
+`read_graph target=status` SHALL remain pure reads, requiring an outside client's `read`
 grant for the returned scope, and never provision.
 
 #### Scenario: unauthenticated initialize
@@ -45,7 +47,7 @@ grant for the returned scope, and never provision.
 ## ADDED Requirements
 
 ### Requirement: Every existing handle enforces client scope daemon-side
-The daemon SHALL apply the outside-agent grant to `converse(agent_id)`, `get_status`, `read_graph`, `write_graph`, `run_graph`, `read_page` and `write_page`, including their aliases, batch paths and downstream actions. Reads SHALL require `read`, messages `message`, and writes/runs `control`; spend, publish and external posts SHALL additionally require `costly` and the existing owner approval policy. Enforcement SHALL cover every affected agent/resource, filter mixed reads before serialization and refuse unresolved scope. No new top-level handle, endpoint or brand-specific implementation SHALL be introduced.
+For outside clients, the daemon SHALL apply the outside-agent grant to `converse(agent_id)`, `get_status`, `read_graph`, `write_graph`, `run_graph`, `read_page` and `write_page`, including their aliases and batch paths. Downstream actions SHALL follow the current owner-selected message-only/message-and-act policy and always retain revocable outside origin. For direct calls and message-only work, reads SHALL require `read`, messages `message`, and writes/runs `control`; spend, publish and external posts SHALL additionally require `costly` and the existing owner approval policy. Enforcement SHALL cover every affected agent/resource, filter mixed reads before serialization and refuse unresolved scope. No new top-level handle, public MCP endpoint or brand-specific implementation SHALL be introduced.
 
 #### Scenario: Main-only grant encounters mixed content
 - **WHEN** a main-only read client requests a mixed agent list, graph summary or page
@@ -55,7 +57,7 @@ The daemon SHALL apply the outside-agent grant to `converse(agent_id)`, `get_sta
 #### Scenario: Page publication and graph run
 - **WHEN** a control-only client attempts publication through `write_page` or a spending operation through `run_graph`
 - **THEN** daemon-side admission names the missing costly grant before any effect
-- **AND** the same check applies through write_graph aliases and downstream execution
+- **AND** the same check applies through write_graph aliases and message-only downstream execution
 
 #### Scenario: Missing addressed agent is explicit main
 - **WHEN** a client calls `converse` without `agent_id`
@@ -74,3 +76,11 @@ The existing `read_graph target=access` readback SHALL add the caller's effectiv
 - **WHEN** a client lacks control on an otherwise owner-authorized agent
 - **THEN** the refusal identifies the missing control/agent grant and the owner editing path
 - **AND** cross-user targets retain existing uniform not-found/auth refusals without identity disclosure
+
+### Requirement: Bearer HTTP routes cannot bypass outside-client admission
+All bearer-accepting routes SHALL follow the admission or outside-refusal disposition in outside-agent-grants, including every app HTTP route and private bearer surface listed in its `bearer-surfaces.md`. First-party identity SHALL be verified from platform configuration, never claimed by caller metadata. Owner controls SHALL be operational before grant enforcement activates.
+
+#### Scenario: Outside client substitutes HTTP for MCP
+- **WHEN** an outside bearer attempts `/app/api/read` or another app HTTP route to bypass its MCP grant
+- **THEN** the HTTP route refuses before owner data or effects
+- **AND** the first-party app remains available under its owner authority
