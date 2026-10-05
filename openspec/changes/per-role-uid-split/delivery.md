@@ -124,7 +124,16 @@ git diff --check
 exit 0
 ```
 No affected test file matches .github/heavy-test-files.txt. Existing test names
-and assertions are retained. Commit/hygiene/push receipt follows after commit.
+and assertions are retained.
+
+Implementation `6fe67a30a31a9168d77219dc1052cc7dcae9594b` was committed with explicit
+paths and pushed to origin/feat/per-role-uid-split. Pre-commit mirror, mojibake,
+import-graph, path-resolver, cross-provider-drift and skill checks passed.
+`python scripts/test_hygiene_gate.py --base d43935b600 --head HEAD` printed:
+`tests added 7, removed 0, tampering findings 0, product lines added 742`.
+Worktree was clean after the implementation push; this receipt is a docs-only
+follow-up. No PR, deployment, startup activation or additional completed task
+is claimed. Continue from the remaining list at the top of this document.
 
 The crash probe exposed a readiness/reaper race: a START_BROKER arriving during
 broker exit could reap the child inside readiness, hiding the restart event
