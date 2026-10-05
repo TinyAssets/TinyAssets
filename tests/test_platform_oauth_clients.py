@@ -96,6 +96,73 @@ def test_directory_precedes_discovery_and_request_client_id(configured, monkeypa
     assert SECRET not in json.dumps(offer) and SECRET_NAME not in json.dumps(offer)
 
 
+@pytest.mark.parametrize("host", [
+    "googleapis.com", "www.googleapis.com", "calendar.googleapis.com",
+    "regional.googleapis.com",
+])
+def test_google_api_connect_ask_uses_directory_scopes(monkeypatch, universes, host):
+    monkeypatch.delenv(directory.CONFIG_ENV, raising=False)
+    monkeypatch.setenv("TINYASSETS_OAUTH_GOOGLE_CLIENT_ID", "google-test-client")
+    monkeypatch.setenv("TINYASSETS_OAUTH_GOOGLE_CLIENT_SECRET", "google-test-secret")
+    monkeypatch.setattr(discovery, "_metadata_for", lambda *_: pytest.fail("discovery ran"))
+    scopes = ["https://www.googleapis.com/auth/calendar.readonly"]
+    with _as(OWNER):
+        asked = _ask(fields=[], action={
+            **TASKS_ASK, "destination": "google-calendar", "host": host,
+            "path_template": "/calendar/v3/calendars/primary/events", "methods": ["GET"],
+            "oauth": {"scopes": scopes},
+        })
+    assert asked["primary"] == "sign_in"
+    offer = asked["action"]["oauth"]
+    assert offer["source"] == "directory" and offer["provider_id"] == "google"
+    assert offer["issuer"] == "https://accounts.google.com"
+    assert offer["scopes"] == scopes
+    assert asked["fields"] == []
+
+
+def test_uncovered_api_host_still_discovers(configured):
+    row, config, _ = configured
+    row["hosts"] = ["unrelated.example.com"]
+    row["host_uses"] = {}
+    config.write_text(json.dumps({"providers": [row]}), encoding="utf-8")
+    offer, reason = discovery.resolve_offer({"scopes": ["tasks.write"]}, [API])
+    assert not reason and offer["source"] == "discovered"
+    assert offer["scopes"] == ["tasks.write"]
+
+
+@pytest.mark.parametrize("hosts,covered", [
+    (["api.service.example"], True),
+    (["nested.api.service.example"], True),
+    (["API.SERVICE.EXAMPLE"], True),
+    (["service.example"], False),
+    (["evilservice.example"], False),
+    (["api.service.example.evil.com"], False),
+    (["www.googleapis.com"], False),
+    (["api.service.example", "evil.example.com"], False),
+])
+def test_other_directory_row_covers_only_declared_patterns(configured, hosts, covered):
+    row, config, _ = configured
+    row["hosts"] = ["*.service.example"]
+    row["host_uses"] = {}
+    config.write_text(json.dumps({"providers": [row]}), encoding="utf-8")
+    offer = directory.resolve({"scopes": ["tasks.write"]}, hosts)
+    if covered:
+        assert offer["provider_id"] == "unforeseen"
+        assert offer["scopes"] == ["tasks.write"]
+    else:
+        assert offer is None
+
+
+@pytest.mark.parametrize("pattern", ["*", "*.com", "api.*.example.com", "*example.com"])
+def test_directory_rejects_non_dns_wildcard_patterns(configured, pattern):
+    row, config, _ = configured
+    row["hosts"] = [pattern]
+    row["host_uses"] = {}
+    config.write_text(json.dumps({"providers": [row]}), encoding="utf-8")
+    with pytest.raises(OAuthError, match="^oauth_directory_invalid$"):
+        directory.entries()
+
+
 @pytest.mark.parametrize("unset", [SECRET_NAME, CLIENT_NAME])
 def test_missing_configuration_falls_back_to_discovery(configured, monkeypatch, unset):
     monkeypatch.delenv(unset)

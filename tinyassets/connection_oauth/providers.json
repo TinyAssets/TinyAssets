@@ -2,7 +2,7 @@
   "providers": [
     {
       "id": "google",
-      "hosts": ["gmail.googleapis.com", "calendar.googleapis.com", "www.googleapis.com"],
+      "hosts": ["googleapis.com", "*.googleapis.com", "www.googleapis.com", "gmail.googleapis.com", "calendar.googleapis.com"],
       "issuer": "https://accounts.google.com",
       "authorization_endpoint": "https://accounts.google.com/o/oauth2/v2/auth",
       "token_endpoint": "https://oauth2.googleapis.com/token",
