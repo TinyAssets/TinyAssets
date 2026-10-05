@@ -3,7 +3,8 @@
 Baseline: `21096788fb04a3587b900ed1883ed5183d92be20`. Line numbers below refer to
 that baseline runtime. **Routing status: partial; D19 routes two raw reads,
 D20 discovery HTTP, D23 compute-grant/incarnation/display reads,
-D24 effector authority/proxy and bound-preview reads.** D11
+D24 effector authority/proxy and bound-preview reads,
+D25 serving context/connection-id custody reads.** D11
 records the lead decision; D12 resolves the physical parent: .broker/outbound.db and
 .broker/.outbound-proxy. The logical data root must remain explicit.
 
@@ -206,3 +207,13 @@ Real launcher probes cover reads, foreign refusal and HTTPS proxy success, befor
 and after restart. `effectors/__init__.py::_authenticated_call_adapter` still
 needs trusted execution-context plumbing for background graph calls without an
 authenticated ambient identity; those calls refuse in selected mode today.
+
+## D25 consumer receipt
+
+`provider_serving_binding._open_serving_context` and `_open_connection_id` use
+GRANTED_RESOURCE IPC in selected mode. Both production initial-id callers now
+pass the independently admitted owner (serving validation and provider budget
+reservation); subsequent verify_open_grant_custody still rechecks the live
+credential reference digest. Launcher probes cover actual reads and foreign
+refusal before/after restart. Linux tests cover real bind/enable/authorize/reserve
+with daemon ledger construction forbidden. No other inventory row is discharged.

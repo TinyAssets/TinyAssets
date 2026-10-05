@@ -1,3 +1,81 @@
+# Current delivery: D25 serving context and custody broker consumers
+
+D24 is committed/pushed as `4c394ccaf9`. Its final hygiene command
+`python scripts/test_hygiene_gate.py --base a39ffede4d --head 4c394ccaf9`
+returned `tests added 10, removed 0, tampering findings 0, product lines added 283`.
+D25 continues D11: serving-context and initial connection-id reads use existing
+GRANTED_RESOURCE IPC with the independently admitted owner supplied at both
+production call sites. Live grant/resource scope and subsequent custody-digest
+revalidation remain enforced. No local fallback or new broker operation.
+
+Release-critical files: **zero** (cap 8). Runtime files:
+`tinyassets/provider_serving_binding.py`, `tinyassets/provider_assignment.py`,
+and their two generated mirrors. Oracle: `scripts/role_launcher_oracle.py`.
+New tests: `tests/test_broker_serving_consumers.py`. Decisions recorded as D25
+in design.md. No existing tests renamed/weakened; explicit staged paths only.
+One cross-family implementation review via peer-agents returned APPROVE;
+**AGREE**. Review noted the existing provider-store write transaction remains
+held during the bounded broker read; the broker reads its separate ledger.
+No security/isolation scope or privilege changes, no PR and no deployment.
+
+## D25 verification receipt
+
+`python scripts/linux_oracle.py --production-image tinyassets-uid-consumers:d25 --production-stream --build`
+and `python scripts/linux_oracle.py --production-image tinyassets-uid-consumers:d25`
+both returned exit 0, zero skips. Image digest:
+`sha256:9540845131af9bf2c26555d36a2974c626ed81dd2c8f958c959caad17bbbdb1b`.
+Both use `/opt/venv/bin/python -I -B /app/scripts/role_image_oracle.py`, root,
+cap-drop ALL plus CHOWN/DAC_OVERRIDE/FOWNER/SETUID/SETGID/SETPCAP/KILL,
+no-new-privileges and seccomp/AppArmor/systempaths unconfined. Default run has
+network none and no mounts/env overrides. HTTPS run uses internal network
+`ta-uid-stream-ae9bb1873033-net`, oracle .3 and fixture .2 in 93.184.216.0/29,
+uid-stream.invalid host mapping and read-only public-certificate volume
+`ta-uid-stream-ae9bb1873033-ca`, TA_ORACLE_HTTPS=1 and existing HTTP opt-in=1.
+Runner cleaned up its fixture resources.
+
+Exact new output before and after broker restart in both modes:
+```text
+D25 actual serving context/id/custody via launcher broker: scoped reads, foreign refusal, no daemon ledger: PASS
+```
+D24's effector/bound-preview and D22/D24's real HTTPS probes also passed,
+as did the unchanged chain, capabilities, non-dumpability, IPC refusal,
+launcher supervision and broker restart probes. Migration output in both modes:
+```text
+forward dry-run, apply, repeat; service remains unadmitted: PASS
+reverse dry-run/apply/repeat and uid-1001 old-location writes: PASS
+forward/reverse abrupt-exit checkpoint and rename recovery: PASS (6 boundaries)
+symlink/hardlink/FIFO/conflicting-copy refusal without mutation: PASS
+```
+These are still relocation-only results, not full-role deletion/old-image proof.
+
+Windows regression command:
+`python -m pytest tests/test_broker_serving_consumers.py tests/test_open_serving_bind.py tests/test_provider_serving_binding.py -q`
+returned `29 passed in 4.35s` before adding the full bind/enable/reserve test.
+Final `python -m pytest tests/test_broker_serving_consumers.py -q`: `10 passed in 2.23s`.
+Linux uid 1001, Python 3.11.16, bwrap 0.12.0:
+`python scripts/linux_oracle.py -- tests/test_broker_serving_consumers.py tests/test_open_serving_bind.py tests/test_provider_serving_binding.py tests/test_provider_assignment_manifest.py tests/test_provider_assignment_admission.py tests/test_served_authority_shared_chain.py tests/test_provider_work_authority.py tests/test_serving_manifest_publication.py -q`
+returned `218 passed in 17.49s`, zero skips. After extending the positive
+bind/enable test through actual authorize/reserve (fixing a test-only import),
+`python scripts/linux_oracle.py -- tests/test_broker_serving_consumers.py -q`
+returned `10 passed in 0.72s`, zero skips. No affected file is heavy-listed.
+Mirror build: probe-ok; parity: all 597 canonical files matched. Changed-file
+Ruff, strict OpenSpec validation and whitespace checks pass. The D24 whole-repo
+Ruff run still has 55 pre-existing errors outside this work.
+
+## Remaining and activation gate
+
+D24 and D25 complete five more D11 consumer routes; no whole task 2.1-2.8 is
+claimed complete. Still required: every actual engine class/site through the
+launcher and complete daemon-reader matrix; remaining D11 ledger mutations,
+accounting, refresh, deletion and read consumers; trusted execution context for
+background graph effectors; full role migration and D10 two-pass deletion;
+full role/ACL backup restoration and actual old-image rollback; real daemon
+CMD/environment, compose capability parity and healthchecks. Startup remains
+unactivated until every required probe passes. No deletion/actual old-image
+result is claimed. Continue under the standing mechanical-decision rule.
+
+---
+
 # Current delivery: D24 effector and bound-preview broker consumers
 
 Resumed from `a39ffede4d`; required pull was already current. Critically reviewed

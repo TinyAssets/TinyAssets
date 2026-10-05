@@ -1195,6 +1195,19 @@ incarnation instead of opening a second ledger. Selected-but-unavailable broker
 and malformed replies fail without a local fallback. This adds no privilege or
 security scope; it implements three existing D11 inventory obligations.
 
+### D25. Mechanical decision: serving custody reads reuse scoped broker facts
+
+In selected mode, serving context and initial connection-id lookup use the
+existing GRANTED_RESOURCE transaction. Thread the independently admitted owner
+from serving validation and provider assignment into both lookups; do not infer
+the actor from definition/grant rows. Require the definition owner to match,
+then let the broker enforce the live principal/center/grant scope. Preserve
+the existing subsequent custody-digest comparison against the current credential
+reference. Refuse missing/foreign/revoked authority and unavailable broker without
+local ledger construction. No new broker operation or privilege is introduced.
+The unsplit path retains its existing API behavior, including test-only baseline
+callers that omit the optional owner parameter. This is partial D11 conversion.
+
 ## Risks / Trade-offs
 
 - **The launcher is root-adjacent code.** One file, stdlib-only, run `-I -S`, a static kind table,

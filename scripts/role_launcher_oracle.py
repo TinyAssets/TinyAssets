@@ -173,6 +173,33 @@ def _query_consumers(root, supervisor):
     assert not (root / "outbound.db").exists()
     print("D24 actual effector/bound-preview consumers via launcher broker: "
           "scoped snapshot, foreign refusal, no daemon ledger: PASS", flush=True)
+    from tinyassets.credential_vault import _connection_grant_record_digest
+    from tinyassets.provider_serving_binding import (
+        ServingProviderNotOwned,
+        _open_connection_id,
+        _open_serving_context,
+        verify_open_grant_custody,
+    )
+
+    assert _open_serving_context(root, "alice", "alice", definition.id) == (
+        provider, "grant-alice", "conn-alice", "vault://http/fixture")
+    assert _open_connection_id(root, "alice", provider, owner_user_id="alice") == "conn-alice"
+    from types import SimpleNamespace
+
+    custody = SimpleNamespace(_record_digest=_connection_grant_record_digest(
+        grant_id="grant-alice", connection_id="conn-alice", credential_ref="vault://http/fixture",
+        owner_user_id="alice", universe_id="alice"))
+    assert verify_open_grant_custody(root, "alice", "alice", provider, custody) == "conn-alice"
+    for owner, did in (("bob", definition.id), ("", definition.id), ("alice", foreign.id)):
+        try:
+            _open_connection_id(root, "alice", f"api_key_http:{did}", owner_user_id=owner)
+        except ServingProviderNotOwned:
+            pass
+        else:
+            raise AssertionError("serving lookup accepted foreign or missing owner authority")
+    assert not (root / "outbound.db").exists()
+    print("D25 actual serving context/id/custody via launcher broker: "
+          "scoped reads, foreign refusal, no daemon ledger: PASS", flush=True)
     for changes in ({"principal": "bob"}, {"command_center": "bob"},
                     {"grant_id": "grant-bob"}, {"connection_id": "conn-bob"}):
         try:
