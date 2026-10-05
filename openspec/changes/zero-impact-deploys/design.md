@@ -1,0 +1,122 @@
+## Context
+
+Baseline inspected: `29fa5b4686f6df23e22f0a403e6a7046cd54f0e4` (the worktree's starting `origin/main`). References below are paths and symbols at that revision, not claims about later production. Founder incidents and related work are recorded in `proposal.md`.
+
+### Current implementation evidence
+
+| Exact path / anchor | What it does today; remaining gap |
+| --- | --- |
+| `.github/workflows/deploy-prod.yml`, `Wait`/`deploy/wait_for_turns.sh` invocation, `Public MCP canary`, `Roll back if the public canary is red` | Serializes release work, waits before host mutation, runs the fail-safe deploy, then public MCP/app probes and rollback. Post-swap success does not measure traffic during the swap. |
+| `deploy/wait_for_turns.sh`, `check`, polling loop | Probes live seats/graph owners via `scripts/turns_in_flight.py`; idle, unavailable checks, recovery yield, or the wait cap allow progress. Its own comment identifies the admission race after the final poll. It always exits zero after these outcomes. |
+| `deploy/deploy_fail_safe.sh`, `restart_stack`, `accept`, steps 4–6 | Validates candidate/bundle, changes image and runs `docker compose ... up -d --timeout`, then checks health, actual image, tunnel and logs; restores image and bundle on failure. The old daemon must stop before its replacement can bind. |
+| `deploy/compose.yml`, `daemon`, `cloudflared` | One daemon publishes loopback port 8001 and mounts durable data; host-network tunnel ingress targets that port. Restart policy and bounded stop grace recover service but cannot serve through recreation. |
+| `tinyassets/universe_server.py`, `converse`, server startup `require_layout`, uvicorn `timeout_graceful_shutdown` | Conversation execution is attached to serving runtime; startup validates storage layout and holds its shared layout lock. SIGTERM/drain is not a durable request handoff. |
+| `tinyassets/agent_turn_reconcile.py`, module contract and `REASON` | Acquires command-center owner generations and settles older abandoned work into held/unknown terminal states. Explicitly never resumes a killed turn. |
+| `tinyassets/owner_lease.py`, `acquire`, `release`, `recover_dead_keys`; `tinyassets/storage/run_execution_lock.py`, `try_run_execution_lock` | Generation fencing and nonexpiring kernel-backed run ownership already exist. A timestamp/TTL is not permission to steal an executing run. Reuse these authorities. |
+| `tinyassets/storage/agent_turn_journal.py`, `AgentTurnJournal`; `tinyassets/agent_turn_coordinator.py` | Durable turn step state records progression and effect uncertainty. A journal is not by itself a complete provider-session/workspace checkpoint. |
+| `tinyassets/bound_requests.py`, approval dispatch around lines 615–684; `tinyassets/request_continuations.py`, `_recover` | Persists effect intent before dispatch, marks `sent` before the call and stores a receipt afterward. Recovery preserves uncertain sends as `unknown`; it does not safely replay arbitrary external actions. |
+| `tinyassets/idempotency.py`, `derive_effect_key`, `IdempotencyStore` | Existing stable effect keys and result deduplication are useful primitives, but do not make every remote operation transactionally exactly-once. |
+| `tinyassets/onboarding/app.html`, `INFLIGHT_KEY`, `restoreInflight`, `checkForNewBuild`, `boot()` | Persists unconfirmed messages and offers recovery; checks `X-TinyAssets-Build` with `HEAD /app`. Baseline checks every 10 minutes, holds on a live turn up to three hours and failed message for 20 minutes; boot is fire-and-forget. #4481 proposes shorter checks/failed-message holds and boot/reload controls, not automatic turn continuation. |
+| `tinyassets/webhook_inbound.py`, `_handle_hook_inner` | Claims delivery dedupe, reserves dispatch, then enqueues a branch run or emits a source event. Acceptance/replay must cover these boundaries and preserve the original delivery identity. |
+| `tinyassets/scheduler.py`, `emit_event`, `Scheduler._event_loop` | Dispatches from an in-process queue; subscriptions and delivered-event dedupe are durable. The release contract must account for queued events, not only active graph runs. |
+| `tinyassets/control_plane/scheduler.py`, `tick`, `_consider` | Claims a due fire under owner generation, invokes a handler, then records the returned run/outcome. Handoff must reconcile claimed fires as well as running jobs. |
+| `tinyassets/storage/request_admissions.py`, `recover_expired_v2_tasks`; `tinyassets/storage/run_execution_lock.py` | Existing task recovery and ownership are building blocks; lease expiry alone must never cause duplicate live execution. |
+| `.github/workflows/release-reconcile.yml`, `Check`, `Converge` | Detects release drift by deploy ancestry, defers to active release runs, limits failed automatic retries and dispatches build/deploy. It must use the same continuity gates as manual/normal releases. |
+
+Existing evidence: `docs/concerns/2026-10-01-deploys-are-not-zero-downtime.md` includes measured outage windows and the SSE shutdown reproduction; `docs/concerns/2026-10-02-deploy-restarts-invisible-to-canary.md` covers post-deploy probe blindness. The repository references memory `deploy-kills-in-flight-turns`; its underlying memory was not independently accessed. Use these records, not a new duplicate concern.
+
+## Goals / Non-Goals
+
+**Release invariant:** a planned deploy, rollback, or release reconciliation must not cause a user-visible failed send, lost/duplicated action or reply, interrupted turn, dropped scheduled/background job, broken connector session, or page requiring manual reload. Accepted work keeps its identity and authorization. Temporary pending/reconnecting state is allowed; a deploy-induced error or manual Resend requirement is not.
+
+The invariant is enforced by refusing unsafe release transitions, not by asserting that every arbitrary operation can be resumed. Hardware loss, network partitions outside the service, and independent provider failures retain truthful failure semantics. Disk exhaustion must never produce a false durable-accept acknowledgement. A single host cannot provide host-failure redundancy. No new paid infrastructure, provider-specific recovery, platform LLM, or change to consent policy is proposed.
+
+## Decisions
+
+### D1. Stable ingress and bounded single-host overlap
+
+Keep the public endpoint `https://tinyassets.io/mcp`. Put a small local continuity gateway behind the existing tunnel. It owns durable request acceptance, client transport/session termination, and reply cursors independently of runtime containers. Bind blue/green runtimes to separate private ports; run at most two release generations temporarily. The candidate warms read-only with no schedulers, reconciliation, provider children or migrations until admitted. Reuse the existing host mutation lock across deploy, rollback and recovery controllers.
+
+Budget measured memory, CPU, disk, SQLite contention and connection capacity for gateway + old runtime + warming candidate before starting overlap. Candidate startup cannot evict the live runtime. If the host cannot fit overlap, defer the release; do not fall back to destructive Compose recreation. Gateway and tunnel are stable infrastructure, not routinely recreated by application deploys. No paid LB or persistent paid standby is needed.
+
+Ingress updates themselves use socket/listener inheritance with old connections drained by the old gateway, a shared durable queue and compatible session state. Tunnel updates preserve an overlapping local tunnel process and existing connections until retirement is safe. If either component cannot prove listener/connection continuity, its update is blocked. Initial routing installation is a separately verified bootstrap transition while the current daemon continues serving; do not claim the guarantee before that transition passes. Avoid changing the production tunnel blindly as a bootstrap shortcut.
+
+### D2. Durable acceptance and reply outbox
+
+Extend existing admission storage with a durable ingress envelope, rather than introduce a second execution authority. Proposed logical fields: owner, command center/thread, operation, stable client request key, payload digest, exact payload/blob references, accepted sequence/time, authorization provenance, run/turn ID, state and receipt. A transaction enforces uniqueness of `(owner, operation, request_key)` and binds its digest. Same key/different payload is a conflict; different owners never share a dedupe record. Authenticate and apply existing size/rate/storage rules before commit. Do not persist bearer credentials. Revalidate revocation/current authority at execution and result reads.
+
+Commit payload and replayable admission atomically before success/202; no 202 means 'stored only in RAM'. Preserve upload bytes verbatim. Persist output events with monotonic per-request sequence and terminal receipt before publishing them. Ack loss returns the same receipt on retry; client disconnect detaches a subscriber, not the work. A cursor can replay missing events without repeating actions. Keep nonterminal rows; retain terminal identity tombstones at least through the declared client retry window and reject expired keys rather than silently execute them again. Coordinate blob and conversation retention with the existing custody policy.
+
+App sends, approval answers, webhook deliveries, connector mutations and generated replies all enter this contract. Adapt synchronous protocols at ingress: maintain the response/SSE transport with heartbeats during worker handoff; only use asynchronous receipts where the client protocol supports them. A generic 202 is not a valid replacement for an MCP tool result. Availability and cutover queue bounds must be proved before admission hold; if backlog threatens capacity, abort the deploy and reopen the healthy old worker.
+
+### D3. Release state machine closes admission before drain
+
+Persist a host release record containing release ID, old/new immutable digests, route generation, storage/protocol compatibility, phase and ownership-transfer evidence:
+
+`serving-old -> candidate-ready -> admission-held -> drained-or-checkpointed -> owner-transferred -> serving-new -> retired-old`.
+
+Readiness proves image, dependencies, layout, protocol, resources and read-only warm-up, not merely a live process. Atomically gate all work-start paths by release generation while ingress continues accepting durably. Scheduler, webhook, direct MCP, app and background paths must consult the same gate. Capture the pre-gate work set and drain it with listeners still open: **do not send SIGTERM to begin drain**. Work accepted after the fence waits durably. Health and drain/checkpoint proof precede execution/routing cutover; the gateway remains reachable throughout.
+
+Transfer each command-center/run owner using existing owner leases and run guards only after its old executor has stopped dispatching and committed its checkpoint or terminal receipt. CAS/generation checks fence late old writes and dispatches. Keep lock order consistent with `run_execution_lock.py`. Candidate activation includes post-transfer functional readiness before gateway releases queued work. On a stuck unsafe operation or unknown probe, abort/defer and reopen old admission. A wait timeout never authorizes killing work. Only retire old processes once work ownership, outbox delivery and transport drainage are proven.
+
+### D4. Turn continuation and at-most-once effects
+
+A resumable checkpoint references the admitted graph/agent version, owner/thread/turn identity, conversation cursor, full model/tool transcript, provider session continuation when supported, workspace revision and durable bytes, pending approvals, effect intents, budgets/cancellation and output cursor. Use `SqliteSaver` for graph checkpoints, never `AsyncSqliteSaver`; keep a reused LanceDB connection. Commit a checkpoint manifest only after referenced data is durable. New runtime must prove it can load that exact admitted version; a deploy does not reinterpret old work under a new graph.
+
+Reuse the continuity/workspace persistence lane's snapshot contract once available. Native CLI processes and tools without a safe checkpoint finish on the old runtime with their workspace preserved. Pending inference can resume/reissue only under an adapter contract that has no untracked external effects and does not reset usage accounting. Otherwise drain. Infinite drain blocks the release, not the user's turn; no deadline kills it.
+
+Effect state handling is explicit: `planned` with proof of no dispatch may continue; `confirmed` returns the stored receipt; `sent`/`unknown` must never blindly re-dispatch. Use the same existing intent identity across generations. A remote operation may retry only with a proven provider-neutral idempotency/receipt-query contract. For an ambiguous non-idempotent effect during a planned deploy, retain the old executor until it records the outcome; do not initiate handoff through that boundary. At-most-once external dispatch cannot also guarantee automatic completion after arbitrary remote ambiguity. An unrelated crash still surfaces truthful uncertainty; the deploy gate must prevent causing that crash. Native effectful sessions lacking tracked boundaries cannot be checkpoint-transferred.
+
+### D5. Open pages recover without losing user state
+
+Handshake on boot, focus, reconnect and response metadata with build ID, API protocol range, release generation and stream cursor. A build mismatch alone need not reload a compatible page. Retain old immutable assets through supported session lifetime. On transport loss, query the durable request receipt and resume events automatically with its original request key; do not create a second turn or ask for Resend.
+
+Persist owner/thread-scoped draft, uploads, selection, pending request ID and cursor before replacement. Restore after login/owner verification; clear cross-account state. If incompatible, save state and automatically load a cache-busted shell with a versioned recovery bootstrap independent of the main app bundle. This bootstrap handles boot rejection/chunk load failure and stale disabled controls; it must not rely on `held()` becoming false. Apply #4481's always-working switch/reload escape controls, but test automatic recovery as the success criterion. Bound recovery attempts to avoid reload loops; repeated build failure rolls the release back while keeping drafts/receipts. No user hard reload is an acceptable deploy outcome.
+
+### D6. Scheduled and background work is part of the same ledger
+
+Persist schedule occurrence identity `(trigger, due_at, revision)` and event identity before enqueue. Atomically associate claim with durable work, or use a recoverable outbox that can resolve an interrupted claim-to-enqueue sequence. Reconcile outstanding claims against actual run ownership, not elapsed time alone. Preserve the schedule's timezone/misfire/coalescing policy; deploy does not silently advance last-fired past an unexecuted occurrence.
+
+Inventory every startup task, thread, queue consumer, delivery worker, reconciliation job and provider child. Each registers durable resumable work or drains to completion before retirement. Persist legacy scheduler events before placing wake hints into the in-process queue. On transfer, resume claimed work at its checkpoint and re-enqueue pending events once under the original identity. Use a generation fence for scheduler leadership; candidate warm-up must not fire schedules or settle the old runtime's live rows.
+
+### D7. MCP and connector compatibility
+
+Gateway owns MCP session-to-principal binding, in-flight JSON-RPC request mapping, negotiated protocol version and event replay. JSON-RPC IDs are session-scoped, not globally unique idempotency keys. Mutating calls need a durable operation identity bound to authenticated principal, session and payload; supported reconnects reuse it. Existing explicitly non-idempotent tools are never blindly retried on a guessed identity. Legacy sessions stay pinned/drain through the gateway until their result is delivered. A release cannot retire a session it cannot resume safely; defer it instead.
+
+Keep tools/initialize contracts and authorization checks compatible across overlap. Internal upstream resets trigger receipt lookup and reattachment, not a client-facing 520/502 or a duplicate tool call. Test actual supported connector transports; preserve cancellation separately from disconnect. Retry budgets use backoff/jitter, but network retries are not the source of truth for whether a mutation ran.
+
+### D8. Pipeline, rollback and schema compatibility
+
+Replace the best-effort wait-plus-recreate path with the persisted transition controller. Normal deploy, manual dispatch, reconcile, rollback and host recovery share it. Keep existing digest ancestry, bundle validation, constrained probes, public MCP/app canaries and receipt assertions. Unknown health/drain/ownership means defer; no emergency flag may silently claim zero-impact after killing accepted work.
+
+Use compatible expand-then-contract schemas/protocols across overlap and rollback. Candidate read-only warm-up does not run migrations against live stores. A migration requiring the exclusive layout lock holds runtime admissions, drains both writers, keeps durable gateway acceptance on its independent compatible store, then migrates with verified rollback strategy. If its resource/time/compatibility proof is missing, defer. Never restore an old database snapshot over newly accepted work. Destructive schema contraction waits until old binaries/sessions/checkpoints are no longer eligible.
+
+Before cutover failure, discard candidate and resume old admission. After cutover failure, fence new execution, settle/drain/checkpoint its owned work, and hand back through the same safe protocol to a compatible old binary; accepted queue and committed receipts survive. Release phases are idempotent across controller crash. CI cancellation cannot strand admission closed: a host controller reconciles persisted phase and ownership under the mutation lock. Return to last healthy generation only with evidence; an uncertain owner cannot be stolen. Receipt records phase timings, queue age/count, handoff IDs, active image/route, probe evidence and rollback outcome.
+
+## Verification plan (implementation merge gate)
+
+Add a required Linux `deploy-during-traffic` job for affected runtime, gateway, transport, UI, storage and deploy paths; it must run on implementation PRs, not only the scheduled `heavy-tests` job. Exercise the real Compose images, signal behavior, proxy and browser against old and candidate builds with the single-host resource budget. A fake deterministic provider/effect sink belongs only in the test fixture, never a production fallback.
+
+Start a long synthetic turn that streams output, updates a workspace file and performs one tracked effect. Open `/app` in a real browser, type an unsent draft, then keep a second send and approval reply crossing the admission fence. Simultaneously run an MCP session, webhook delivery, due schedule and queued background job. Trigger an actual deploy while the turn is active. Trace durable IDs, ownership generations, event cursors, HTTP statuses, browser errors and effect-sink receipts from before admission hold until old retirement.
+
+Pass requires: zero deploy-induced 5xx/520, failed user sends or MCP errors; every accepted ID reaches its rightful terminal receipt; exactly one intended effect/result/message per ID; resumed turn retains workspace and conversational continuity; no concurrent execution owners; all scheduled/background work accounted for; open page becomes usable automatically with draft, thread and reply intact; no hard reload or manual resend. Target test bounds: each admitted send acknowledged within 2 seconds under the stated fixture load, page recovery within 10 seconds of candidate readiness, and queued work starts within 30 seconds of admission reopening. Record baseline load and resource budget so these bounds cannot be met by silently reducing offered traffic.
+
+Inject failures before/after acceptance commit, before/after effect dispatch/receipt, at checkpoint transfer, before/after route switch, during candidate readiness, during gateway replacement and rollback. Include duplicate requests, changed-payload key reuse, wrong-owner receipt reads, expired authority, long native/non-resumable work, sleeping tabs, lost SSE connections, stale assets, layout incompatibility, controller cancellation and insufficient overlap capacity. Unsafe cases must demonstrate release deferral with old service intact. Mutation tables cover the data-loss and cross-user guards only. Run affected heavy files explicitly, `ruff`, and `python scripts/linux_oracle.py` for process/filesystem behavior; a skip is not a pass.
+
+Pre-merge result artifacts must include both drain and checkpoint/resume cases, automatic browser recovery and rollback, old/new digests and traffic/effect/ownership evidence. Missing or skipped evidence blocks the implementation merge. After rollout run `python scripts/deployed_sha.py --assert-contains <sha>`, `python scripts/mcp_public_canary.py --assert-handles`, and one rendered real-user app pass spanning a deploy with authorized synthetic data. Sync as-built specs only after this proof.
+
+## Migration Plan
+
+Land compatible identity/checkpoint/client contracts first with existing behavior supported. Integrate #4481 and the continuity lane without competing copies. Prove bootstrap and gateway/tunnel replacement in the Linux fixture before introducing stable ingress. Enable read-only candidate warming, then fenced handoff, then required pipeline enforcement. Do not declare zero-impact until every entry point is registered and both legacy and new client contracts pass. Retain old image/bundle and compatible assets through rollback eligibility. This design PR neither deploys nor marks implementation tasks complete.
+
+## Risks / Trade-offs
+
+- Single-host capacity or an uncheckpointable long operation can defer a release indefinitely; measure and report the blocker, continue serving, and never force a destructive swap.
+- Gateway expands the trusted acceptance boundary; owner-scoped keys, current authorization, constrained storage access and cross-user tests are mandatory.
+- Provider uncertainty cannot be solved by local intent rows; safe drain is required where remote deduplication/receipt lookup is unavailable.
+- Shared SQLite/LanceDB/workspaces are not made multiwriter-safe by blue/green alone; keep warm-up read-only, fence execution and test real Linux locks/layout transitions.
+- Compatibility retention consumes local disk; preflight budgets and delayed contraction must cover assets, snapshots, images and queue growth.
+
+## Open Questions
+
+No founder decision is required for this draft. Implementation must measure the overlap budget, inventory background origins and supported MCP resume behavior, and bind the unavailable continuity branch's exact snapshot API before coding handoff. These are proof obligations with safe deferral defaults, not permission to weaken the guarantee.
