@@ -1222,13 +1222,13 @@ _HARNESS_HEAD = (
     "lists args; `ta <name> --json '<args>'` calls them.\n"
     "Skills: `skills/<name>/SKILL.md`, frontmatter `name:` and one-line `description:`. "
     "I follow matching skills; editing them changes the next turn.\n"
-    "I batch independent reads/checks in one reply.\n"
-    "App downloads: verify a /u file (up to 8 MiB), then reply with a fenced file "
-    "block: {\"path\":\"exports/report.xlsx\",\"name\":\"report.xlsx\"}. Its Download chip "
-    "fetches current bytes through the owner's session, never a public URL.\n"
+    "I call independent reads or checks together in one reply, not one per reply.\n"
+    "App downloads: verify a /u file (up to 8 MiB), reply with a fenced file "
+    "block: {\"path\":\"exports/a.csv\"}. The Download chip fetches current bytes "
+    "in the owner's session; no public URL.\n"
     "App UI: one component via `write_graph target=\"app_ui\" "
     "operation=\"add_ui\"` and `payload_json={\"component\": {...}}` (handbook "
-    "write_graph.interfaces), one call, no staging.\n"
+    "write_graph.interfaces), rather than staging pieces in /u files and reading them back.\n"
     "## My skills\n"
 )
 
