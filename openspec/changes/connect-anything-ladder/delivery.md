@@ -16,13 +16,26 @@ Windows and Linux oracle: 22 tests passed (attachment and broker capability
 suites); Ruff passed; plugin build/import probe and 602-file mirror parity passed.
 Task 1.1 remains open until the complete request/card prerequisites are proven.
 
+## Verified slice: remote transport
+
+Added Streamable HTTP protocol negotiation (2025-06-18 and 2025-03-26),
+paginated discovery, JSON/SSE parsing and tool calls exclusively through
+AsyncBrokerClient. Sessions remain instance-local. Discovery renews expired
+sessions; tool calls never retry an uncertain outcome. Catalog hashes and
+argument schemas fence stale calls. Broker send guards bind endpoint,
+incarnation and metadata revision; attachment revocation serializes with sends.
+
+Linux oracle: 70 passed across attachment, remote protocol, real broker socket,
+broker server and upstream stream suites. Windows protocol/storage tests: 23
+passed. Ruff passed. The real broker test proves initialize/list/call and
+attachment revocation, but is not a live remote OAuth/user-app proof.
+
 ## Pending
 
-Remote protocol transport, OAuth resource discovery/registration, protected
+OAuth resource discovery/registration, protected
 connect activation, ta dispatch and end-to-end proof are not implemented yet.
 The stack predates #4469; reconcile card and #4483 owner-session prerequisite
 before wiring the user path. Do not claim a working pasted-link connection.
 Task 1.4 is deferred until the remote path is complete. No deployment occurred.
 
 ## Earlier prerequisite investigation
-

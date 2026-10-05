@@ -14,10 +14,15 @@ def validate(document):
                    document["connection_id"])
     if (document["action"] not in {"read", "configure"}
             or document["capability_kind"] not in {
-                "constant_headers", "model_use", "model_discovery", "realtime_voice"}
+                "constant_headers", "model_use", "model_discovery", "realtime_voice", "mcp"}
             or type(document["enabled"]) is not bool
             or type(document["preview"]) is not bool):
         raise ValueError("invalid capability operation")
+    if document["capability_kind"] == "mcp":
+        from tinyassets.mcp_attachment import validate_operation
+
+        validate_operation(document)
+        return
     if document["action"] == "read" and (
             document["descriptor"] is not None or document["enabled"] or document["preview"]):
         raise ValueError("invalid capability read")
@@ -28,6 +33,11 @@ def local_operation(ledger, *, principal, command_center, document):
     from tinyassets.storage.outbound_connections import ActionCap, ConnectionGrant
 
     validate(document)
+    if document["capability_kind"] == "mcp":
+        from tinyassets.mcp_attachment import local_operation as mcp_operation
+
+        return mcp_operation(ledger, principal=principal, command_center=command_center,
+                             document=document)
     facts = local_query(ledger, query=AUTHORIZED_CONNECTION, principal=principal,
                         command_center=command_center, grant_id=document["grant_id"],
                         connection_id=document["connection_id"])
@@ -78,4 +88,10 @@ def capability_operation(data_root, *, principal, command_center, grant_id, conn
         raise ProxyRequestError("invalid capability response")
     if answer["descriptor"] is None:
         return None
+    if capability_kind == "mcp":
+        from dataclasses import asdict
+
+        from tinyassets.mcp_attachment import Attachment
+
+        return asdict(Attachment.parse(answer["descriptor"]))
     return _validate_connection_capability(connection_id, capability_kind, answer["descriptor"])

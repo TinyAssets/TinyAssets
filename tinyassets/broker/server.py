@@ -136,6 +136,7 @@ class _Stream:
     #: This stream reached a network write (a guarded send began).
     wrote: bool = False
     upstream: Any = None
+    attachment_guard: Any = None
     wake: threading.Condition = field(default_factory=threading.Condition)
 
 
@@ -546,6 +547,13 @@ class _Connection:
             stream = _Stream(stream_id, generation, token, namespace, op_id,
                              deadline=time.monotonic() + _stream_budget(request),
                              credit=credit)
+            if "mcp_binding" in doc:
+                from tinyassets.mcp_attachment import bound_send
+
+                stream.attachment_guard = lambda: bound_send(
+                    ledger, principal=principal, command_center=command_center,
+                    grant_id=grant_id, connection_id=connection_id,
+                    binding=doc["mcp_binding"], request=request)
             with self._server._streams_lock:
                 self._server._streams[(self._key, stream_id)] = stream
             try:
@@ -580,7 +588,9 @@ class _Connection:
         """Held across each network send: fence and cancellation re-checked first."""
         with self._server._fence.send(stream.generation, stream.token):
             self._checkpoint(stream)
-            yield
+            with (stream.attachment_guard() if stream.attachment_guard
+                  else contextlib.nullcontext()):
+                yield
 
     def _connected(self, stream: _Stream, sock: Any) -> None:
         """Connected, the request not yet written: everything re-checked once

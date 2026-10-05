@@ -77,11 +77,12 @@ class _Stream:
 
 class AsyncBrokerClient:
     def __init__(self, path: Path, *, principal: str, command_center: str,
-                 fence: Callable[[], tuple[int, str]]) -> None:
+                 fence: Callable[[], tuple[int, str]], verify_peer=None) -> None:
         self._path = Path(path)
         self._principal = principal
         self._command_center = command_center
         self._fence = fence
+        self._verify_peer = verify_peer
         self._ids = itertools.count(1)
         self._streams: dict[int, _Stream] = {}
         self._reader: asyncio.StreamReader | None = None
@@ -102,6 +103,13 @@ class AsyncBrokerClient:
                     os.fspath(self._path))
             except OSError:
                 raise ProxyRequestError("the credential broker is unavailable") from None
+            if self._verify_peer is not None:
+                try:
+                    self._verify_peer(self._writer.get_extra_info("socket"))
+                except BaseException:
+                    self._writer.close()
+                    self._writer = self._reader = None
+                    raise
             self._demux = asyncio.ensure_future(self._demultiplex())
 
     async def _send(self, frame: bytes) -> None:
@@ -149,7 +157,8 @@ class AsyncBrokerClient:
     @contextlib.asynccontextmanager
     async def stream(self, *, grant_id: str, connection_id: str, verb: str,
                      request: dict[str, Any], op_id: str,
-                     idle_s: float | None = None) -> AsyncIterator[_Stream]:
+                     idle_s: float | None = None,
+                     mcp_binding: dict | None = None) -> AsyncIterator[_Stream]:
         from tinyassets.storage.outbound_connections import AmbiguousProxyOutcome
 
         await self._connect()
@@ -162,6 +171,8 @@ class AsyncBrokerClient:
             "grant_id": grant_id, "connection_id": connection_id, "verb": verb,
             "request": request, "credit": MAX_WINDOW,
         }
+        if mcp_binding is not None:
+            document["mcp_binding"] = mcp_binding
         if idle_s is not None:
             document["idle_s"] = idle_s
         try:
