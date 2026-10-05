@@ -248,7 +248,7 @@ def _wiki_write_back_adapter(
 def _workspace_adapter(
     *, node_id, output_keys, run_state, base_path, run_id, dry_run,
     allowed_state_keys=None, prior_effects=None, ancestors=None, timeout_seconds=0.0,
-    should_cancel=None,
+    should_cancel=None, execution_context=None,
 ):
     return run_workspace_effector(
         node_id=node_id,
@@ -261,6 +261,7 @@ def _workspace_adapter(
         ancestors=ancestors,
         timeout_seconds=timeout_seconds,
         should_cancel=should_cancel,
+        execution_context=execution_context,
     )
 
 
@@ -695,7 +696,7 @@ def dispatch_node_effects(
     state_schema=None,
     ancestors: set[str] | None = None,
     node_key: str | None = None,
-    should_cancel=None,
+    should_cancel=None, execution_context=None,
 ) -> dict[str, dict]:
     """Fire ``node.effects`` NOW, against ``run_state`` = the state the node saw
     merged with the delta it returned (the packet lives in that delta). Records
@@ -738,6 +739,7 @@ def dispatch_node_effects(
             schema_defaulted=_schema_defaulted_keys(state_schema),
             ancestors=ancestors, node_key=key,
             should_cancel=should_cancel,
+            execution_context=execution_context,
         )
         accept = packet_accept_statuses(
             output_keys=list(getattr(node, "output_keys", None) or []),
@@ -814,7 +816,7 @@ def first_effect_failure(
 def _fire_node_effects(
     node, run_state, *, chain: EffectChain, schema_defaulted: set,
     ancestors: set[str] | None = None, node_key: str | None = None,
-    should_cancel=None,
+    should_cancel=None, execution_context=None,
 ) -> dict:
     """Run every sink one node declares and return its bounded evidence
     ({sink: result}); full authenticated-call results and fired verbs land on
@@ -877,6 +879,7 @@ def _fire_node_effects(
                 # A server-owned closure over the actual root run database,
                 # not a packet field or a query against workspace storage.
                 adapter_kwargs["should_cancel"] = should_cancel
+                adapter_kwargs["execution_context"] = execution_context
                 adapter_kwargs["timeout_seconds"] = float(
                     getattr(node, "timeout_seconds", 0.0) or 0.0
                 )

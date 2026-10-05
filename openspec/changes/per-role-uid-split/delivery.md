@@ -1,3 +1,52 @@
+# Current delivery: D39 workspace authority reads
+
+D39 carries immutable run owner/center through compiler effect dispatch into
+workspace admission and push mount revalidation using AUTHORIZED_CONNECTION.
+Packets cannot supply principal. Missing/foreign/revoked/outage refuses without
+a daemon ledger. No whole build task complete; startup inactive, no PR/deploy.
+Cross-family peer-agents review: APPROVE; AGREE, no floor/correctness findings.
+Older runs lacking explicit persisted center/owner now refuse workspace effects;
+no scope is inferred to keep such rows running.
+
+Release-critical files: **0; none**. Runtime: tinyassets/effectors/__init__.py,
+tinyassets/effectors/workspace.py, tinyassets/graph_compiler.py and three mirrors.
+Tests: test_broker_workspace_consumers.py (6 cases), workspace_effector,
+effects_at_node_time, and affected heavy test_branch_runner. Oracle:
+scripts/role_launcher_oracle.py. Design, inventory and delivery updated.
+
+Verification:
+```text
+python -m pytest tests/test_workspace_effector.py tests/test_effects_at_node_time.py -q
+210 passed, 2 skipped in 26.59s
+python -m pytest tests/test_branch_runner.py -q
+49 passed in 57.04s
+python scripts/linux_oracle.py -- tests/test_broker_workspace_consumers.py tests/test_workspace_effector.py tests/test_effects_at_node_time.py tests/test_branch_runner.py -q -rs
+265 passed, 2 skipped in 51.91s
+python scripts/linux_oracle.py --production-image tinyassets-uid-workspace:d39 --build --production-stream
+python scripts/linux_oracle.py --production-image tinyassets-uid-workspace:d39 --production-stream
+exit 0; sha256:01e9e68d1620bf713861f386b800b6eeacbe4462017d1984eca4e95a73ba28bb
+D39 actual compiler/workspace admission and mount revalidation via launcher broker: trusted owner, foreign refusal, no daemon ledger: PASS
+```
+D39 passes before/after broker restart. Existing D22/D24 real HTTPS streams,
+egress forward/reverse dry-run/apply/repeat, 6 egress crash boundaries, 8
+accounting boundaries and 3 reverse recovery boundaries PASS. This is not full
+role migration/deletion, actual worker transport, or old-image acceptance.
+Seven planned capabilities and compose security options; synthetic internal
+HTTPS network ta-uid-stream-655059f531b7-net and public CA, cleaned by harness.
+Linux skips are the two Windows-only workspace rejection cases (lines 2689,
+2700), not missing Linux probes. Initial no-identity test inherited suite identity;
+explicit identity_context(None) fixed fixture; no guard weakened. Initial build
+PowerShell stderr redirection reported status 1 despite all probe PASS; repeated
+production command without redirection exits 0. Ruff, plugin build/import,
+mirror parity (603), strict OpenSpec and whitespace pass.
+
+Continue in order: intent custody/reconciliation and injected cloud automation;
+accounting IPC/liveness/source/daily evidence and refresh; every engine class;
+full migration/two-pass deletion; actual old-image rollback; startup/healthcheck
+only after all acceptance passes. D40 intent work is in progress this turn.
+
+---
+
 # Current delivery: D38 owner metadata consumers
 
 D37 pushed as `3e80b1a91b`; hygiene tests added 7, removed 0, tampering 0.

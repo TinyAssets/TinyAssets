@@ -1387,6 +1387,19 @@ remain unknown (None); consent reads fail loudly. The answer re-reads current
 owner/revocation/host before writing a daemon-owned consent. No schema or privilege
 changes; no startup activation. Effector authorization is a separate remaining row.
 
+### D39. Mechanical decision: workspace reads carry admitted execution scope
+
+Thread the immutable BranchExecutionContext through compiler effect dispatch to
+workspace admission. Its owner and center override ambient identity; packets
+cannot supply either. Direct daemon calls may use authenticated ambient identity.
+Selected broker mode uses AUTHORIZED_CONNECTION for both initial admission and
+push mount revalidation with the same principal. Missing, foreign, revoked or
+unavailable authority refuses without local ledger construction or cached-resource
+fallback. Existing scope and consent checks remain after the snapshot. This
+routes workspace authority reads only; actual worker/credential transport and
+intent reconciliation remain separate integration requirements. No privilege,
+isolation scope or startup behavior changes.
+
 ## Risks / Trade-offs
 
 - **The launcher is root-adjacent code.** One file, stdlib-only, run `-I -S`, a static kind table,

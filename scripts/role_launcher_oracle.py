@@ -367,6 +367,7 @@ def _disconnect_consumer(root):
 
         fresh = "connect-" + destination
         deposit = dict(destination=fresh, secret="synthetic-deposit-only", auth_scheme="bearer",
+                       scopes=["git_read:owner/repo"],
                        allowed_endpoints=[{"host": "models.example.com",
                                            "path_template": "/catalogue", "methods": ["GET"]}])
         for _ in range(2):
@@ -391,6 +392,41 @@ def _disconnect_consumer(root):
         assert "models.example.com/owner/repo" in granted["destinations"][0]
         print("D38 actual workspace consent capture/answer via launcher broker: owner metadata "
               "and daemon consent write: PASS", flush=True)
+        from types import SimpleNamespace
+
+        from tinyassets.effectors import EffectChain, EffectFailedError
+        from tinyassets.effectors.workspace import _connection_for_mount, _Refused
+        from tinyassets.graph_compiler import BranchExecutionContext, _wrap_with_effects
+
+        packet = dict(sink="workspace", op="checkout", repo="owner/repo",
+                      connection_id=result["connection_id"], grant_id=result["grant_id"],
+                      owner_user_id="disconnect")
+        node = SimpleNamespace(node_id="checkout", effects=["workspace"], output_keys=["packet"],
+                               input_keys=[], timeout_seconds=0)
+        for owner in ("disconnect", "bob"):
+            chain = EffectChain(base_path=root / "disconnect", run_id="probe", dry_run=True)
+            wrapped = _wrap_with_effects(
+                lambda state: {"packet": packet}, node, chain, [], None,
+                execution_context=BranchExecutionContext(
+                    owner_user_id=owner, universe_id="disconnect"))
+            try:
+                wrapped({})
+            except EffectFailedError as exc:
+                assert owner == "bob" and exc.error_kind == "connection_authority_unavailable"
+            else:
+                assert owner == "disconnect" and chain.evidence["checkout"]["workspace"]["dry_run"]
+        mount = SimpleNamespace(connection_id=result["connection_id"], grant_id=result["grant_id"])
+        resource = _connection_for_mount(root / "disconnect", mount, fallback=None,
+                                         principal="disconnect")
+        assert resource.connection_id == result["connection_id"]
+        try:
+            _connection_for_mount(root / "disconnect", mount, fallback=None, principal="bob")
+        except _Refused:
+            pass
+        else:
+            raise AssertionError("foreign workspace mount revalidation admitted")
+        print("D39 actual compiler/workspace admission and mount revalidation via launcher broker: "
+              "trusted owner, foreign refusal, no daemon ledger: PASS", flush=True)
         from tinyassets.credential_vault import load_credential_vault
 
         assert any(row.get("token") == "synthetic-deposit-only"
