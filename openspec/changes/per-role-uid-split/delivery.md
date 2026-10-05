@@ -92,6 +92,13 @@ The synthetic fixture lacks a release receipt, so ta-op pulse correctly refuses
 its absent git_sha; this is not claimed as healthcheck acceptance. No real-user
 app pass, full deletion, actual old-image rollback or launcher stream is proven.
 
+## Commit receipt
+
+Implementation pushed: `02d5542a78` on `origin/feat/per-role-uid-split`.
+`python scripts/test_hygiene_gate.py --base 5ecf0ec8fb --head HEAD`:
+`tests added 7, removed 0, tampering findings 0, product lines added 718`.
+Explicit paths staged; worktree clean after push. No PR or deployment.
+
 ## Historical delivery records (blockers below superseded by D12)
 
 # Current delivery: D11 broker ownership and ledger-parent clarification
