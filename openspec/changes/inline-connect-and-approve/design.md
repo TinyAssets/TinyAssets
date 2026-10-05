@@ -152,3 +152,20 @@ Grant records bind owner, initiating agent, connection incarnation, action class
 Classify actions as read, write (with destructive detail), or spend. Owner-declared tool/effect classification is trusted. Tool hints alone cannot grant authority; unknown effects follow the owner's editable default (starter default: ask through the approval sheet), never refusal merely for being unknown. Exact-total once-only approval is the editable starter default for payments, not an immutable platform rule. The owner may instead authorize a spend grant bounded by an owner-editable budget cap, destination/action scope and expiry; dispatch rechecks that grant and atomically reserves against the cap. Unknown payment totals need an enforceable maximum within that grant, or return to the owner's approval sheet. Cross-user isolation is the only immutable platform behavioral invariant.
 
 Needs you is a compact pending-items inbox over the same protected request IDs and revisions, not a second queue or side panel. Push uses notify-owner-of-requests delivery infrastructure: dedupe by request/revision, retry independently of continuation, omit draft/secret/token payloads, and deep-link to a first-party view that reauthenticates and fetches the current preview. Notification delivery is never acknowledgment or approval. Answer from any signed-in device removes/resolves the same inbox item and durably resumes the saved active work without a chat prompt. Offline clients reconcile on reconnect; denied, expired or stopped work retains truthful status. Enable inbox and push before removing the panel; retain request IDs and activity receipts across rollout/rollback, and never restore old inline approval controls as an authority bypass.
+### Approval sheet rollback compatibility
+
+Keep the legacy `rules` unique key so the previous image can upsert owner rules.
+Store independently revocable preapprovals in `approval_grants`; reserve distinct
+positive IDs across both tables using their AUTOINCREMENT high-water marks. Each grant has
+`behaviour=hand_off`, ignored by current grant matching. Insert a conservative
+preapproval row into `rules` when its legacy key is free; current decisions ignore
+these rows, while old decisions refuse them, even after grant revocation. Existing
+behavior rows retain precedence and are never overwritten by grant issuance.
+An old upsert over a compatibility row converts it to a behavior rule. Any old
+edit or delete revokes all grants for that exact legacy key, preserving the owner
+change after rollforward.
+
+Migrate both old-format and initial sheet-format databases transactionally under
+owner-control. Preserve behavior IDs, values and the AUTOINCREMENT high-water mark;
+copy all grants before deduplicating compatibility rows for the legacy unique key.
+Failure closes the connection and rolls back all migration changes.

@@ -510,9 +510,10 @@ def test_pending_requests_render_as_a_side_rail_of_tabs():
     assert html.index('id="thread"') < html.index('id="request-rail"')
     assert "border-left:1px solid var(--line)" in html
     # The header IS the agent's chosen kind, not a fixed label.
-    assert 'kind.textContent = req.kind;' in html
+    assert '<dialog id="request-rail"' in html
+    assert 'id="needs-you"' in html
     # Tap to expand, answer in place.
-    assert "railOpen = (railOpen === req.request_id)" in html
+    assert "this.open(row.request_id)" in html
     assert "MCP.answerRequest(payload)" in html
     # Fields are whatever the agent composed, including a paste box for a key.
     assert 'field.type === "secret" ? "textarea" : "input"' in html
@@ -2385,7 +2386,8 @@ def test_the_connect_nav_button_is_gone_and_the_rail_is_the_way_in():
     assert 'id="btn-connect"' not in html
     assert 'id="btn-rail-add"' in html
     # The rail stays present even with nothing waiting, or that route vanishes.
-    assert "rail.hidden = false;" in html
+    assert "$('settings-connect')" in html or '$("settings-connect")' in html
+    assert "sheet.showModal()" in html
 
 
 def test_a_sticky_ask_renders_expanded_and_offers_no_dismiss():
@@ -2417,7 +2419,9 @@ def test_an_approval_is_relayed_as_the_founders_line(tmp_path):
     assert out["answered"][0]["request_id"] == "req_1" and "dismiss" not in out["answered"][0]
     assert out["converseCalls"] == [f'Approved: "{_TITLE}"']
     assert [m["role"] for m in out["messages"]] == ["founder", "universe"]
-    assert out["refreshed"] == 1 and out["note"] == "Sent." and out["buttonsEnabled"]
+    # Answer removal and the completed turn each refresh: a short turn can
+    # raise its next foreground sheet before the periodic poll runs.
+    assert out["refreshed"] == 2 and out["note"] == "Sent." and out["buttonsEnabled"]
 
 
 @pytest.mark.parametrize("mode,reply", [
