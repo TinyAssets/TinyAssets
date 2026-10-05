@@ -118,6 +118,13 @@ def begin(*, owner: str, universe_id: str, request_id: str, challenge: str,
     offer = row["action"]["oauth"]
     scopes = list(offer.get("scopes") or [])
     client_id = offer.get("client_id") or ""
+    if offer.get("resource"):
+        from tinyassets.connection_oauth.mcp import select_client
+
+        try:
+            client_id = select_client(offer, redirect_uri=callback)
+        except OAuthError as exc:
+            raise FlowError(exc.code, 502) from None
     if not client_id:
         try:
             client_id = register_public_client(offer["registration_url"],
@@ -146,6 +153,8 @@ def begin(*, owner: str, universe_id: str, request_id: str, challenge: str,
         "response_type": "code", "client_id": client_id, "redirect_uri": callback,
         "state": handle, "code_challenge": challenge, "code_challenge_method": "S256",
     }
+    if offer.get("resource"):
+        query["resource"] = offer["resource"]
     if scopes:
         query["scope"] = " ".join(scopes)
     return {
@@ -197,7 +206,8 @@ def complete(*, owner: str, universe_id: str, handle: str, code: str,
     try:
         bundle = exchange_code(token_url=offer["token_url"], client_id=flow["client_id"],
                                code=code, verifier=verifier, redirect_uri=flow["redirect_uri"],
-                               provider_id=offer.get("provider_id", ""))
+                               provider_id=offer.get("provider_id", ""),
+                               **({"resource": offer["resource"]} if offer.get("resource") else {}))
     except OAuthError as exc:
         raise FlowError(exc.code, 502, exc.detail) from None
     from tinyassets.api.pending_requests import answer_connect_with_token

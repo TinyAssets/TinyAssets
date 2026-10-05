@@ -62,6 +62,7 @@ class TokenBundle:
     scope: str = ""
     token_type: str = "Bearer"
     provider_id: str = ""
+    resource: str = ""
 
     def expiring(self, now: float | None = None) -> bool:
         if self.expires_at is None:
@@ -79,6 +80,7 @@ def encode(bundle: TokenBundle) -> str:
         "refresh_token": bundle.refresh_token, "token_url": bundle.token_url,
         "client_id": bundle.client_id, "scope": bundle.scope,
         **({"provider_id": bundle.provider_id} if bundle.provider_id else {}),
+        **({"resource": bundle.resource} if bundle.resource else {}),
     }, sort_keys=True, separators=(",", ":"))
 
 
@@ -117,6 +119,7 @@ def decode(text: str) -> TokenBundle:
         scope=str(doc.get("scope") or ""),
         token_type=str(doc.get("token_type") or "Bearer"),
         provider_id=str(doc.get("provider_id") or ""),
+        resource=validate_https_url(doc["resource"]) if doc.get("resource") else "",
     )
 
 
@@ -186,18 +189,19 @@ def _request_token(token_url: str, client_id: str, provider_id: str,
 
 
 def exchange_code(*, token_url: str, client_id: str, code: str, verifier: str,
-                  redirect_uri: str, provider_id: str = "") -> TokenBundle:
+                  redirect_uri: str, provider_id: str = "", resource: str = "") -> TokenBundle:
     """RFC 6749 §4.1.3 with the RFC 7636 verifier; exactly one attempt."""
     now = time.time()
     doc = _request_token(token_url, client_id, provider_id, {
         "grant_type": "authorization_code", "code": code, "redirect_uri": redirect_uri,
         "client_id": client_id, "code_verifier": verifier,
+        **({"resource": validate_https_url(resource)} if resource else {}),
     }, (code, verifier))
     return TokenBundle(
         access_token=doc["access_token"], token_url=token_url, client_id=client_id,
         refresh_token=_token(doc["refresh_token"]) if doc.get("refresh_token") else "",
         expires_at=_expires_at(doc, now), scope=str(doc.get("scope") or ""),
-        provider_id=provider_id,
+        provider_id=provider_id, resource=resource,
     )
 
 
@@ -209,6 +213,7 @@ def refresh(bundle: TokenBundle) -> TokenBundle:
     doc = _request_token(bundle.token_url, bundle.client_id, bundle.provider_id, {
         "grant_type": "refresh_token", "refresh_token": bundle.refresh_token,
         "client_id": bundle.client_id,
+        **({"resource": bundle.resource} if bundle.resource else {}),
     }, secrets)
     rotated = doc.get("refresh_token")
     return replace(

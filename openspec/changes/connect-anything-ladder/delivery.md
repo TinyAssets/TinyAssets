@@ -1,4 +1,4 @@
-# Remote MCP delivery ? 2026-10-05
+# Remote MCP delivery - 2026-10-05
 
 Branch: `feat/mcp-connect-ladder`, stacked on `feat/per-role-uid-split`
 at `688a3e91f121c5b299afe2df536e75c5b4f78a00`.
@@ -30,12 +30,42 @@ broker server and upstream stream suites. Windows protocol/storage tests: 23
 passed. Ruff passed. The real broker test proves initialize/list/call and
 attachment revocation, but is not a live remote OAuth/user-app proof.
 
-## Pending
+## Verified slice: OAuth primitives
 
-OAuth resource discovery/registration, protected
-connect activation, ta dispatch and end-to-end proof are not implemented yet.
+Added path-aware protected-resource metadata discovery, exact resource matching,
+authorization-server metadata, public DCR followed by advertised CIMD followed
+by configured static ID. CIMD reuses the existing TinyAssets-hosted document.
+Generic authorization and token exchange/refresh carry the resource. The broker
+refuses another resource and disables redirect expansion for resource-bound
+tokens. The optional provider directory is unchanged.
+
+Local fake OAuth server covers DCR, real PKCE code exchange, refresh and resource
+parameters. Existing OAuth regression tests passed (88 tests before the final
+resource-confinement test); the final focused run passed 21 tests. Combined Linux oracle: 169 passed, no skips; plugin import probe and 606-file
+mirror parity passed. This is not a
+server-held PKCE/owner-session or end-to-end MCP card proof.
+
+## Remaining by task
+
+- 1.1: metadata is implemented; full prerequisite and rollback-cleanup acceptance remains.
+- 1.2: discovery/registration/resource primitives are implemented; protected
+  server-held generic PKCE and initiating owner-session integration remain.
+- 1.3: broker transport core is implemented; production client wiring,
+  MCP cancellation notification and durable operation reconciliation remain.
+- 1.6: ta catalog/dispatch, annotation-to-owner-policy integration, consolidated
+  card activation and durable continuation are not implemented.
+- 1.4 remains deferred. 1.5 and 1.7-1.10 are not complete.
+
+The full paste -> card -> sign-in -> tools/list -> tools/call test does not exist.
+No browser app proof, deployment, deployed-SHA assertion or as-built spec sync
+has occurred; no task checkbox is marked complete.
 The stack predates #4469; reconcile card and #4483 owner-session prerequisite
 before wiring the user path. Do not claim a working pasted-link connection.
-Task 1.4 is deferred until the remote path is complete. No deployment occurred.
 
-## Earlier prerequisite investigation
+Dependency evidence on 2026-10-05: #4469 was merged to main as
+99fa48fd6d837ea22a06a3ced6f31138453cc4ef but is not an ancestor of this stack.
+#4483 remains OPEN on fix/consent-asks-owner-session. Both own the request/card
+surfaces this lane must consume. The isolation foundation concurrently advanced
+through dc34dd2b10, including HTTP deposit and owner-metadata broker routing.
+Keep the PR draft and reconcile dependencies before editing their overlapping
+request/approval integration surfaces. Do not add a parallel approval mechanism.

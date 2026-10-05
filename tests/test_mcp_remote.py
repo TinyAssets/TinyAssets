@@ -168,3 +168,14 @@ async def test_sse_multiline_and_utf8_across_chunks():
     ({"readOnlyHint": "true"}, True), ({"readOnlyHint": True, "destructiveHint": True}, True)])
 def test_annotations_supply_conservative_policy_input(hints, expected):
     assert requires_approval({"annotations": hints}) is expected
+
+
+@pytest.mark.asyncio
+async def test_server_schema_cannot_resolve_external_references():
+    broker = FakeBroker()
+    remote = client(broker)
+    await remote.discover()
+    remote._tools["read"] = {"inputSchema": {"$ref": "https://metadata.internal/secret"}}
+    with pytest.raises(McpError, match="arguments"):
+        await remote.call("read", {}, catalog_hash=remote.catalog_hash, op_id="one")
+    assert len(broker.calls) == 4

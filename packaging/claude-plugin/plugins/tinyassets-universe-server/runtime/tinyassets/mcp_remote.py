@@ -157,6 +157,8 @@ class RemoteMcp:
             content_type = str(response_headers.get("content-type", "")).split(";")[0].strip()
             async for message in messages(stream.body(), content_type):
                 self._check_authority(binding)
+                if self._session and self._session in json.dumps(message, ensure_ascii=False):
+                    raise McpError("MCP response exposed session material")
                 if "method" in message:
                     if "id" in message:
                         raise McpError("MCP server requested an unadvertised client capability")
@@ -239,10 +241,17 @@ class RemoteMcp:
                     or name not in self._tools):
                 raise McpError("stale MCP catalog; discover tools again")
             import jsonschema
+            from referencing import Registry
+            from referencing.exceptions import NoSuchResource, Unresolvable
+
+            def refuse_reference(uri):
+                raise NoSuchResource(ref=uri)
 
             try:
-                jsonschema.validate(arguments, self._tools[name]["inputSchema"])
-            except (jsonschema.ValidationError, jsonschema.SchemaError):
+                jsonschema.validate(arguments, self._tools[name]["inputSchema"],
+                                    registry=Registry(retrieve=refuse_reference))
+            except (jsonschema.ValidationError, jsonschema.SchemaError,
+                    Unresolvable):
                 raise McpError("MCP tool arguments do not match the catalog") from None
             return await self._rpc("tools/call", {"name": name, "arguments": arguments},
                                    op_id=op_id, notify=notify)

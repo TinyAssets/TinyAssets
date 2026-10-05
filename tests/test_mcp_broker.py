@@ -14,7 +14,7 @@ from tests.test_mcp_remote import TOOLS
 from tinyassets.broker.aclient import AsyncBrokerClient
 from tinyassets.mcp_attachment import Attachment
 from tinyassets.mcp_remote import Binding, RemoteMcp
-from tinyassets.storage.outbound_connections import GrantResolutionError
+from tinyassets.storage.outbound_connections import ConnectionLedger, GrantResolutionError
 
 pytestmark = pytest.mark.skipif(
     sys.platform == "win32" or not hasattr(socket, "SO_PEERCRED"),
@@ -24,8 +24,8 @@ pytestmark = pytest.mark.skipif(
 
 @pytest.mark.asyncio
 async def test_real_broker_initialization_pagination_and_revocation(broker, ledger):
-    ledger._verify_authenticated_principal = lambda: "alice"
-    broker.server._ledger_for = lambda _: ledger
+    broker.server._ledger_for = lambda principal: ConnectionLedger(
+        ledger._db_path, verify_authenticated_principal=lambda: principal)
     operation(ledger, value=draft())
     configured = draft(revision=2, state="connecting")
     operation(ledger, value=configured, expected=draft())
@@ -61,6 +61,17 @@ async def test_real_broker_initialization_pagination_and_revocation(broker, ledg
         assert await remote.call("read", {}, catalog_hash=remote.catalog_hash,
                                  op_id=new_op_id()) == {
             "content": [{"type": "text", "text": "broker result"}]}
+        foreign_client = AsyncBrokerClient(
+            broker.path, principal="bob", command_center="cc-alice",
+            fence=lambda: (broker.state["generation"], broker.state["token"]))
+        count = len(broker.sent)
+        try:
+            foreign = RemoteMcp(foreign_client, binding, check_authority=lambda _: None)
+            with pytest.raises(GrantResolutionError):
+                await foreign.discover()
+            assert len(broker.sent) == count
+        finally:
+            await foreign_client.close()
         operation(ledger, value=asdict(Attachment.parse(configured)) | {
             "revision": 3, "state": "revoked"}, expected=configured)
         count = len(broker.sent)

@@ -26,7 +26,7 @@ import traceback
 import urllib.parse
 import urllib.request
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
@@ -1403,8 +1403,19 @@ class CredentialBlindBroker:
         if oauth:
             from tinyassets.connection_oauth.tokens import decode
 
-            bundle = oauth_bundle()
             original = decode(credential)
+            if original.resource:
+                if (not isinstance(request, dict) or request.get("url") != original.resource
+                        or request.get("path") or request.get("query")):
+                    raise GrantResolutionError("OAuth token belongs to another resource")
+                # Resource-bound tokens never follow a redirect, even when the
+                # backing HTTP grant has a broader owner-approved allowlist.
+                target = urllib.parse.urlsplit(original.resource)
+                resource = replace(resource, allowed_endpoints=_parse_allowed_endpoints([{
+                    "host": target.hostname, "path_template": target.path or "/",
+                    "methods": [verb],
+                }]), access_mode=ACCESS_EXACT)
+            bundle = oauth_bundle()
             wire_credential = bundle.access_token
             secrets_held = tuple(dict.fromkeys(
                 (*original.secret_values(), *bundle.secret_values())))

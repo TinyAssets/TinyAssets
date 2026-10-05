@@ -68,6 +68,7 @@ class ServerMetadata:
     code_challenge_methods: tuple[str, ...]
     grant_types: tuple[str, ...]
     response_types: tuple[str, ...]
+    client_id_metadata_document_supported: bool = False
 
 
 def _strings(value: Any) -> tuple[str, ...] | None:
@@ -174,6 +175,8 @@ def fetch_server_metadata(issuer: str) -> ServerMetadata:
             grant_types=_strings(doc.get("grant_types_supported"))
             or ("authorization_code", "implicit"),
             response_types=_strings(doc.get("response_types_supported")) or (),
+            client_id_metadata_document_supported=(
+                doc.get("client_id_metadata_document_supported") is True),
         )
     raise OAuthError("no_authorization_server_metadata")
 
