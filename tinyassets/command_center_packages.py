@@ -21,7 +21,9 @@ workspace, wiki pages) -- and the install side (change
   §4.16). Ownership is recorded BEFORE the write, so the ``packages`` store
   charges even a blob a failed publish left unlisted.
 * **The ingestion boundary** (``check_blob``) runs on every read of a blob,
-  before anything is planned from it.
+  before anything is planned from it. ``scan_install`` then screens the
+  verified files' content for the exfiltration patterns the ClawHub poisoning
+  wave used; the install tab shows every hit and the owner decides.
 * **Pins.** The consent record of a ``publish`` or ``install`` ask -- its
   action, digest, tab text and (for install) destination plan -- lives here,
   keyed by (command center, request). The rail renders those asks from the pin
@@ -748,6 +750,126 @@ def review_groups(flagged: list[dict[str, str]]) -> list[dict[str, Any]]:
     return groups
 
 
+# -- the install-side content screen -------------------------------------------
+#: What the ClawHub poisoning wave (Feb 2026) taught: a shared package is
+#: untrusted code. The ingestion boundary checks structure; this checks content
+#: for the exfiltration patterns that wave used, and the install tab shows
+#: every hit. Hits are review flags, never refusals: a notifier package
+#: legitimately posts to a webhook, and only the owner knows which endpoints
+#: are theirs.
+
+_EXFIL_HOSTS = (
+    "discord.com/api/webhooks",
+    "discordapp.com/api/webhooks",
+    "api.telegram.org",
+    "webhook.site",
+    "requestbin",
+    "pipedream.net",
+    "beeceptor.com",
+)
+
+#: Secret locations the ClawHavoc skills harvested before exfiltrating.
+_SECRET_READS = (
+    ".aws/credentials",
+    ".ssh/id_rsa",
+    ".ssh/id_ed25519",
+    ".gnupg/secring",
+    "login.keychain",
+    ".clawdbot",
+)
+
+#: Fragments of reverse shells; the wave hid these in functional code.
+_SHELL_RUNS = (
+    "/dev/tcp/",
+    "bash -i >&",
+    "nc -e",
+    "ncat -e",
+)
+
+_B64_RUN = re.compile(r"[A-Za-z0-9+/]{160,}={0,2}")
+_DECODE_EXEC = re.compile(
+    r"(eval|exec)\s*\(\s*(base64\.b64decode|bytes\.fromhex|codecs\.decode)",
+    re.IGNORECASE)
+_PIPE_TO_SHELL = re.compile(r"\b(curl|wget)\b[^\n]{0,200}\|\s*(ba|z)?sh\b", re.IGNORECASE)
+_POWERSHELL_IEX = re.compile(r"\biex\s*\(", re.IGNORECASE)
+#: The wave's "Prerequisites" docs pointed at paste sites for the payload.
+_PASTE_SITES = ("glot.io", "pastebin.com", "paste.rs", "termbin.com", "ix.io", "0x0.st")
+
+#: Only scripts get the long-encoded-blob flag; docs and data carry long
+#: opaque strings for innocent reasons.
+_SCRIPT_SUFFIXES = (".py", ".js", ".sh", ".ps1", ".bat")
+
+
+def _install_flags(path: str, text: str) -> list[tuple[str, str]]:
+    """``(kind, detail)`` content hits for one package file's text."""
+    lower = text.lower()
+    hits: list[tuple[str, str]] = []
+    seen: set[str] = set()
+
+    def add(kind: str, detail: str) -> None:
+        if kind not in seen:
+            seen.add(kind)
+            hits.append((kind, detail))
+
+    for host in _EXFIL_HOSTS:
+        if host in lower:
+            add("exfiltration endpoint", host)
+            break
+    for secret in _SECRET_READS:
+        if secret in lower:
+            add("reads a well-known secret location", secret)
+            break
+    for run in _SHELL_RUNS:
+        if run in lower:
+            add("reverse-shell fragment", run.strip())
+            break
+    if _PIPE_TO_SHELL.search(text):
+        # The wave's signature move: the agent itself ran the install line
+        # from the skill's docs.
+        where = "shared docs" if path.endswith(".md") else "a script"
+        add("pipes a download into a shell", f"curl/wget into sh in {where}")
+    if _POWERSHELL_IEX.search(text):
+        add("pipes a download into a shell", "IEX( download cradle")
+    if _DECODE_EXEC.search(text):
+        add("executes decoded content", "eval/exec of decoded bytes")
+    elif _B64_RUN.search(text) and path.endswith(_SCRIPT_SUFFIXES):
+        add("long encoded blob in a script", "160+ base64 chars")
+    if path.endswith(".md") and any(site in lower for site in _PASTE_SITES) \
+            and ("bash" in lower or re.search(r"\bsh\b", lower)):
+        add("shell install instructions in shared docs", "paste-site link beside shell")
+    return hits
+
+
+def scan_install(files: dict[str, bytes]) -> list[dict[str, str]]:
+    """Content-safety flags for a package's files, for the install tab.
+
+    Runs on the verified files at quarantine time, before anything is planned
+    from them. Every hit is ``{"path", "kind", "note"}``; an empty list means
+    nothing worth flagging. Flags never refuse the install: the tab shows
+    them and the owner decides.
+    """
+    flagged: list[dict[str, str]] = []
+    for path in sorted(files):
+        text = as_text(files[path])
+        if text is None:
+            continue
+        for kind, detail in _install_flags(path, text):
+            flagged.append({"path": path, "kind": kind, "note": detail})
+    return flagged
+
+
+def install_review_groups(flagged: list[dict[str, str]]) -> list[dict[str, Any]]:
+    """Flags grouped by kind for the install tab, mirroring ``review_groups``."""
+    by_kind: dict[str, list[str]] = {}
+    order: list[str] = []
+    for found in flagged:
+        by_kind.setdefault(found["kind"], []).append(found["path"])
+        if found["kind"] not in order:
+            order.append(found["kind"])
+    return [{"kind": kind, "count": len(by_kind[kind]),
+             "shown": by_kind[kind][:REVIEW_SHOWN]} for kind in order]
+
+
 def collect(universe_dir: Path, *, exclude: list[str],
             memory_items: dict[str, list[str]]
             ) -> tuple[dict[str, bytes], list[dict[str, str]]]:
@@ -868,7 +990,7 @@ def build_blob(manifest: dict[str, Any], files: dict[str, bytes]) -> bytes:
 def build_publish_package(universe_dir: Path, *, name: str, description: str,
                           options: dict[str, Any], branch_rows: Any,
                           workflows: list[dict[str, Any]], ui: str,
-                          automations: list[dict[str, Any]], bundle_id: str = "") -> dict[str, Any]:
+                          automations: list[dict[str, Any]]) -> dict[str, Any]:
     """Everything the ``publish`` ask pins for a package. Reads the folder only."""
     files, excluded = collect(universe_dir, exclude=options["exclude"],
                               memory_items=options["memory_items"])
@@ -883,8 +1005,6 @@ def build_publish_package(universe_dir: Path, *, name: str, description: str,
         profile=PROFILE_PUBLISH, name=name, description=description, files=files,
         workflows=workflows, ui=ui, automations=automations,
         connections=connection_names(branch_rows))
-    if bundle_id:
-        manifest["bundle_id"] = bundle_id
     blob = build_blob(manifest, files)
     if len(blob) > MAX_PACKAGE_BYTES:
         raise PackageError(f"this package is {human(len(blob))}, over the "
@@ -908,8 +1028,6 @@ def narrow_package(blob: bytes, leave_out: list[str]) -> dict[str, Any]:
         profile=PROFILE_PUBLISH, name=manifest["name"], description=manifest["description"],
         files=kept, workflows=manifest["workflows"], ui=manifest["ui"],
         automations=manifest["automations"], connections=manifest["needs"]["connections"])
-    if "bundle_id" in manifest:
-        narrowed["bundle_id"] = manifest["bundle_id"]
     new_blob = build_blob(narrowed, kept)
     return {"blob": new_blob, "sha256": hashlib.sha256(new_blob).hexdigest(),
             "manifest": narrowed}
@@ -1509,8 +1627,10 @@ __all__ = [
     "check_blob",
     "check_path",
     "classify",
+    "install_review_groups",
     "plan_install",
     "read_blob",
+    "scan_install",
     "scan_public",
     "store_blob",
     "write_new_file",
