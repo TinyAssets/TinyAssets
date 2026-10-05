@@ -63,21 +63,16 @@ Python 3.11.16 Linux oracle (one pass each). Running it with the oracle's
 `--no-bwrap` restricted venue reproduced the exact `unavailable != ready`
 failure (one failure). No renderer substitute or test edit was used.
 
-The affected-test job now uses the queue's `linux_oracle.py --required-runner`
-venue and identical container AppArmor profile. Namespace preflight remains
-mandatory; selection, shard split and assertions are unchanged. Summaries and
-JUnit are exported from the container, including failed runs. The existing host
-browser installation remains intact. No publication product behavior changed.
-
-One focused Claude cross-family review found no floor issue and one correctness
-issue: **AGREE**, artifact uploads must use `overwrite: true` so a rerun can
-replace the earlier shard result. Applied, with a regression assertion. The
-earlier publication behavior review remains intact.
-
-The final workflow passes all 27 workflow tests on Windows and all 27 through
-the Linux oracle's actual required-runner path (zero failures or skips, valid
-JUnit and summary). Plugin regeneration passed its import probe; all 598
-canonical files mirror-match. Existing tests are unchanged.
+**Resolution (Claude lead, 2026-10-05):** the earlier repair changed the
+affected-test job to the Linux oracle venue (about 47 workflow lines plus a guard
+test). That is a global CI change, so it was reverted here and moved to root's
+own infra PR (`ci/affected-tests-linux-oracle-queue`). In this PR, the real-render
+case skips only when the preview is unavailable AND `bwrap` is absent (the bare
+affected-test runner), with an owner/expiry reason matching
+`tests/test_ui_preview.py`. It stays `real_browser`-marked and in
+`real-browser-proof.yml` paths, which runs it in the Linux oracle and fails on any
+skip. Verified: 1 passed in the oracle (bwrap 0.12.0, uid 1001). No publication
+product behaviour changed.
 
 Expanded Linux run: **593 passed, 1 skipped** in 354.55 seconds, Python 3.11.16,
 FastMCP 3.4.8. The only skip is the Windows directory-junction case. This runs
@@ -96,5 +91,5 @@ Final expanded Windows run with that venv: **586 passed, 8 skipped** in
 1044.25 seconds, across the same 20 files as Linux. Skips remain the existing
 POSIX symlink and Linux PID-namespace cases. Ruff and diff whitespace checks
 pass. Hygiene against the PR base: **16 tests added, 0 removed, 0 tampering**.
-Only the workflow, its additive regression test, and this verification record
-are changed by the CI repair. No PR or deployment is part of this repair.
+The CI repair now changes only the render case's bubblewrap gate and this
+verification record; the workflow change lives in the separate infra PR. No PR or deployment is part of this repair.
