@@ -13,8 +13,9 @@ discovery flow plus platform-registered clients.
 For each connect request the platform SHALL first try its daemon-owned JSON
 provider directory, then existing RFC 9728, RFC 8414/OIDC discovery and public
 dynamic registration, then key paste. A directory match SHALL cover every
-declared host by exact case-insensitive hostname comparison; a subdomain or
-unrelated additional host SHALL NOT match. Entries lacking their client ID or
+declared host by case-insensitive exact comparison or an explicitly declared
+leading `*.` subdomain pattern at a dot boundary. An undeclared apex, suffix
+lookalike or unrelated additional host SHALL NOT match. Entries lacking their client ID or
 secret SHALL be inactive. Invalid optional configuration SHALL be logged with a
 fixed code and its entries unavailable, without blocking engine or broker launch.
 Unavailable directory/RPC lookups SHALL fall through to discovery and key paste;
@@ -145,3 +146,18 @@ service, secret reflection/error handling, and owner/connection isolation.
 `tests/test_generic_oauth_connections.py` retains public-client and PKCE coverage.
 This branch is a commit/push delivery; deployment and a live registered-provider
 consent pass are not claimed by this specification.
+
+### Requirement: Directory API host coverage
+The platform SHALL resolve an API connection through an active trusted directory row when every requested host matches its declared exact hosts or leading `*.` subdomain patterns and the requested scopes belong to its declared API scope sets. The agent SHALL name the API host and necessary OAuth scopes or named use.
+
+#### Scenario: Google API host uses Google issuer
+- **WHEN** a connect ask targets `www.googleapis.com` or a declared Google API subdomain with the Calendar read-only scope
+- **THEN** the Google row supplies sign-in endpoints and preserves the requested scopes without destination-host discovery
+
+#### Scenario: Uncovered host uses discovery
+- **WHEN** no directory row covers the requested host
+- **THEN** standard host-rooted discovery remains available
+
+#### Scenario: A row cannot claim undeclared hosts
+- **WHEN** a connection includes a host outside a row's declarations, including suffix lookalikes or the undeclared apex of a wildcard
+- **THEN** that row SHALL NOT supply the connection's OAuth offer
