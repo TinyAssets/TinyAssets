@@ -545,7 +545,7 @@ def test_the_limits_are_applied_inside_the_jail(world, monkeypatch):
     s = _engine(monkeypatch, world)
     limits = _run(s.run_bash(command="cat /proc/self/limits"))
     for row, value in (("Max address space", "536870912"), ("Max processes", "64"),
-                       ("Max file size", "33554432"), ("Max open files", "256"),
+                       ("Max file size", "unlimited"), ("Max open files", "256"),
                        ("Max core file size", "0")):
         line = next((ln for ln in limits.splitlines() if ln.startswith(row)), "")
         assert value in line.split(), (row, line)
@@ -651,11 +651,14 @@ _MiB = 1024 * 1024
 
 
 def test_a_jail_writing_many_small_files_past_its_budget_is_killed(world, monkeypatch):
-    """Each file is far under RLIMIT_FSIZE; only the per-launch budget stops it."""
-    from tinyassets import jail_disk
+    """Many small files must still stop at the owner's total storage quota."""
     from tinyassets import universe_tools as tools
+    from tinyassets.daemon_server import grant_universe_ownership, initialize_author_server
 
-    monkeypatch.setattr(jail_disk, "LAUNCH_BYTES_CAP", 24 * _MiB)
+    initialize_author_server(world.data_root)
+    grant_universe_ownership(world.data_root, universe_id=world.universe_a.name,
+                             owner_id="workos|alice")
+    monkeypatch.setenv("TINYASSETS_FREE_STORAGE_GIB", str(24 * _MiB / 1024**3))
     many = world.universe_a / "notes" / "many"
     try:
         out = tools.bash(
@@ -665,7 +668,7 @@ def test_a_jail_writing_many_small_files_past_its_budget_is_killed(world, monkey
             agent_id="main",
             timeout=120,
         )
-        assert "[killed: this call added more than" in out, out[-500:]
+        assert "[killed: the owner's total cloud storage quota was exceeded]" in out, out[-500:]
         assert "filled" not in out
         written = sum(path.stat().st_size for path in many.iterdir())
         assert 24 * _MiB < written < 100 * _MiB, written
@@ -920,3 +923,26 @@ def test_read_shows_an_image_in_its_own_universe_and_no_other(world, monkeypatch
     for path in (str(world.universe_b / "secret.png"), "../u-bravo/secret.png"):
         out = _run(s.read_file(path=path))
         assert isinstance(out, str) and out.startswith("error:"), (path, out)
+
+
+def test_shared_volume_floor_remains_aggregate_with_old_file_limit(world):
+    """A fixed per-file limit never made the aggregate floor synchronous."""
+    from tinyassets import universe_tools as tools
+
+    mib = 1024**2
+    free = tools._free_disk(world.universe_a)
+    assert free > 200 * mib
+    limits = tools.ToolLimits(min_free_disk_bytes=free - 48 * mib)
+    try:
+        result = tools.bash(
+            world.universe_a,
+            "prlimit --fsize=33554432 -- bash -c "
+            "'fallocate -l 32M notes/old-cap-a; fallocate -l 32M notes/old-cap-b'",
+            agent_id="main", limits=limits,
+        )
+        assert "shared disk" in result and "nearly full" in result, result
+        assert sum((world.universe_a / "notes" / name).stat().st_size
+                   for name in ("old-cap-a", "old-cap-b")) == 64 * mib
+    finally:
+        for name in ("old-cap-a", "old-cap-b"):
+            (world.universe_a / "notes" / name).unlink(missing_ok=True)

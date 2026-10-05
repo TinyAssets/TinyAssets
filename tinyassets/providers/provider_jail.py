@@ -706,7 +706,6 @@ class ConfinedLaunch:
 PROVIDER_LIMITS: tuple[tuple[str, str, int], ...] = (
     ("--nproc", "RLIMIT_NPROC", 512),
     ("--nofile", "RLIMIT_NOFILE", 8192),
-    ("--fsize", "RLIMIT_FSIZE", 1024 * 1024 * 1024),
     ("--core", "RLIMIT_CORE", 0),
 )
 
