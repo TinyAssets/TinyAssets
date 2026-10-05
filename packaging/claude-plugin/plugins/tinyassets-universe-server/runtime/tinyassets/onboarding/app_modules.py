@@ -65,6 +65,11 @@ def module_url(name: str) -> str:
     return f"/app/m/{build_segment()}/{name}"
 
 
+def chat_renderer_source() -> str:
+    """Trusted packaged script, also loadable by a frontend without owner storage."""
+    return (MODULE_DIR.parent / "chat_render.js").read_text(encoding="utf-8")
+
+
 def is_module_path(path: str) -> bool:
     """The exact public path shape, for the auth middleware's carve-out."""
     return _PATH_RE.fullmatch(path) is not None

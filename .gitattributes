@@ -50,3 +50,5 @@ scripts/git-hooks/* text eol=lf
 # Vendored custom-UI libraries are pinned by SHA-384 (ui_libraries.json); a
 # line-ending conversion on checkout would make every pin fail. Byte-exact.
 tinyassets/onboarding/ui_libraries/** -text
+tinyassets/onboarding/app/mermaid_vendor.js -text
+packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/tinyassets/onboarding/app/mermaid_vendor.js -text
