@@ -128,3 +128,48 @@ Changed-file Ruff and `git diff --check` passed. Plugin build/import probe passe
 all **601** canonical files mirror-match. Full-PR hygiene reports **14 test
 functions added, 0 removed, 0 tampering findings**. This is a draft-PR push,
 not deployment or live-user acceptance.
+
+
+## PR #4483 CI repair (2026-10-05)
+
+Merged origin/main at f0e4222763 before reproducing affected-tests job
+111676802810 on the Linux oracle. The unchanged failing suite reproduced
+**5 failed, 10 passed**. All five failures came from consent tests still using
+`_answer`, the bearer-only transport restored by the round-1 correction:
+
+- `test_the_owner_takes_a_key_back_from_the_rail`: removal was refused before
+  returning the expected answered status.
+- `test_removing_something_already_gone_is_not_an_error`: the same missing owner
+  proof prevented the idempotent removal path from running.
+- `test_a_standing_yes_cannot_swallow_a_removal`: the first removal was refused,
+  so the stored-suppression and subsequent-removal assertions were unreachable.
+- `test_a_standing_yes_cannot_swallow_a_grant_widening_either`: the first widening
+  was refused, leaving the repeated ask pending instead of already held.
+- `test_what_executes_is_what_the_owner_was_shown`: missing owner proof stopped
+  execution before the displayed-action mismatch check.
+
+This PR intentionally changes consent answers to require a protected owner
+session. The repair therefore changes these tests' transport to `_owner_answer`,
+which exercises the real HTTP cookie/origin checks. The other removal calls in
+this suite use that transport too, including the stranger test, which now proves
+that an authenticated non-owner still cannot remove the owner's credential.
+The ordinary-question test retains bearer `_answer`. All 44 assertions remain
+AST-identical; no tests were removed, skipped, xfailed or weakened. No additional
+product change was needed.
+
+Final Linux oracle (Python 3.11.16, real bubblewrap, uid 1001): **211 passed,
+0 failed, 0 skipped** across `test_removal_is_reachable_from_the_served_surface`,
+`test_pending_requests`, `test_consent_owner_answers`,
+`test_taking_a_key_back_and_putting_it_back`, and `test_unify_connection_uses`.
+Command: `MSYS_NO_PATHCONV=1 python scripts/linux_oracle.py -- -q <those five
+suite paths> --basetemp /tmp/b`. None of these files is heavy-listed.
+Changed-PR-file Ruff, all seven pre-commit invariants, plugin build/import probe,
+all 602 shipped runtime-file comparisons, and `git diff --check` passed.
+
+The separate Diff scope declared job 111676788855 reports a missing current
+Drain-Review approval receipt. This test repair does not claim a new approval,
+deployment, or live-user acceptance; the existing review record remains above.
+
+Full-PR hygiene against merged origin/main: **14 added, 0 removed,
+0 tampering findings**. Both merge and repair commits carry the required
+Claude Opus 5.5 co-author trailer.
