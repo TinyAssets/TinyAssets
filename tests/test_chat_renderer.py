@@ -11,6 +11,8 @@ def test_links_charts_fences_and_file_chip():
     source = Path("tinyassets/onboarding/chat_render.js").read_text(encoding="utf-8")
     harness = r"""
 const assert=require('node:assert/strict');
+const NATIVE=true;let opened;
+async function openExternal(url){opened=url;}
 class Element {
   constructor(tag){this.tag=tag;this.children=[];this.attrs={};this.events={};this._text='';}
   appendChild(child){this.children.push(child);child.parentNode=this;return child;}
@@ -32,6 +34,8 @@ const links=root.children.filter(n=>n.tag==='a');
 assert.equal(links.length,2);assert.equal(links[0].href,'https://example.org/a?x=1&y=2');
 assert.equal(links[0].target,'_blank');assert.equal(links[0].rel,'noopener noreferrer');
 assert.equal(links[1].href,'http://example.org/');
+let prevented=false;links[0].events.click({preventDefault(){prevented=true;}});
+assert(prevented);assert.equal(opened,links[0].href);
 assert(root.textContent.includes('[bad](javascript:alert(1))'));
 for(const bad of ['javascript:alert(1)','data:text/html,x','file:///x','//example.org','https://x\n.test'])assert.equal(ChatRender.httpURL(bad),null);
 for(const type of ['bar','line','stacked']){

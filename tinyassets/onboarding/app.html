@@ -231,6 +231,7 @@
     .msg-body a{color:var(--universe);text-decoration:underline;overflow-wrap:anywhere}
     .msg-body pre{white-space:pre-wrap;overflow-wrap:anywhere;padding:.6rem;border:1px solid var(--line);border-radius:8px}
     .msg-body svg,.chat-diagram{display:block;width:100%;max-width:640px;height:auto;margin:.6rem 0}
+    .chat-diagram{max-height:28rem;object-fit:contain;background:#fff;border-radius:8px;padding:.5rem}
     .chat-file{display:block;max-width:100%;margin:.5rem 0;padding:.6rem .9rem;border:1px solid var(--line);border-radius:8px;background:var(--surface);color:var(--ink);cursor:pointer;overflow-wrap:anywhere}
     .chip{display:inline-flex;align-items:center;gap:.4rem;background:var(--surface-2);border:1px solid var(--line);
       border-radius:999px;padding:.2rem .6rem;font-size:.78rem;color:var(--ink)}
@@ -5249,7 +5250,9 @@
           return;
         }
         if(failed){ failed.remove(); failed=null; }
-        body.textContent=full;                    // verbatim; no reflow or trim
+        if(typeof ChatRender!=="undefined" && el.classList.contains("msg--universe"))
+          ChatRender.render(body,full,chatFileDownloader());
+        else body.textContent=full;
         more.remove();
       });
     });

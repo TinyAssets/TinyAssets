@@ -135,3 +135,18 @@ def test_account_change_during_body_read_prevents_download(page):
       catch(_){return true;}finally{fetch=original;}
     }""")
     assert result is True
+
+
+def test_expanded_history_reply_keeps_links_and_file_chips(page):
+    page.evaluate(r"""() => {
+      const full='A'.repeat(4100)+'\n[site](https://example.org)\n'+
+        '```file\n{"path":"exports/report.csv"}\n```';
+      const preview=full.slice(0,4000);
+      loadFullMessage=async()=>full;
+      const bubble=appendMessage('universe',preview);
+      offerFullMessage(bubble,{id:'123',text:preview,total_chars:full.length});
+    }""")
+    page.get_by_role("button", name="Show full message", exact=False).click()
+    page.get_by_role("button", name="Download report.csv").wait_for()
+    assert page.locator(".msg-body a").get_attribute("href") == "https://example.org/"
+    assert page.locator(".msg-body .chat-file").count() == 1
