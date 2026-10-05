@@ -1942,3 +1942,47 @@ assignment readiness. Root-level identity is checked as well as descendants.
 The D61 diagnostic includes a separate two-name cross-tree quarantine MODEL,
 which preserves both names/inode/bytes and proves daemon denial. It is not the
 crash-safe migration implementation, engine-class acceptance or rollback proof.
+
+### D65. Mechanical descriptor enforcement from pinned owner labels
+
+Use the privileged migration's reserved owner label on canonical roots:
+dedicated work directories carry UID=GID; protected canonical roots may remain
+daemon-owned UID1001 with that owner's reserved GID, preserving D4's vault
+replacement authority. This is an on-disk copy of broker allocation, not a
+second allocator. Startup/admission must validate the root-to-principal binding
+against the broker's durable map before any cell runs. Unlabelled legacy roots
+retain legacy behavior and are not D60-admitted roots.
+
+The common bounded reader obtains identity from pinned directory descriptors,
+including ancestors when a caller starts at a nested directory. It never
+switches owner identities during descent. An explicitly supplied admitted
+identity must match the directory label. On the OPEN regular-file descriptor,
+require the exact UID AND GID, nlink1, regular type and size bound before read
+or copy. A daemon-owned leaf is not a work-file exception. Broker/vault protected
+metadata continues to need its separately declared control-plane reader policy;
+this substep is not a claim that the entire broker reader inventory is done.
+
+`read_universe_file` must not resolve a symlinked root before its no-follow
+walk. This also protects platform-text and authenticated inspect through their
+common reader. API file reads, workspace manifest reads and bounded copies use
+the same descriptor guard. Label validation supplements existing authorization;
+it never grants an actor access to a different command center.
+
+The D60 alias probe now labels fixtures before retirement and tests actual
+daemon readers at uid1001 with all capabilities zero. Foreign ACL read access
+is deliberately granted to the daemon so a failed descriptor guard cannot be
+hidden by ordinary EACCES. The original shared-ID probe remains `--legacy`.
+No profile, startup or class admission changes here.
+
+### D66. Mechanical snapshot oracle selection
+
+The D54 snapshot oracle must test the exact directory returned by snapshot
+creation, conveyed to its parent through a pipe. Selecting the first sibling
+from `iterdir()` can select another snapshot and fail on a missing `.lock` or
+different permissions. Keep the real installed-CLI, lock and all permission
+assertions. This changes only fixture selection, not product snapshot policy.
+
+D64 scanner refinement: ancestors use pinned O_PATH descriptors (no directory
+listing and no atime updates), then the scanned root uses O_NOATIME. This permits
+an ordinary owner to scan its own tree without requiring ownership of `/` or
+`/tmp`; production-wide scans still use the verified host root venue.

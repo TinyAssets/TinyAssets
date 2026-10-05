@@ -2,7 +2,7 @@
 severity: P1
 title: Preplanted cross-owner hardlink leaks through daemon file and inspect readers
 filed: '2026-10-05'
-summary: 'D59: shared engine UID can relabel or copy a preplanted foreign inode despite dedicated owner GIDs; 114 reader failures across all three D9 profiles. Synthetic acceptance counterexample, not current-production exploit. D58 is authorized but insufficient with shared UID.'
+summary: 'D65: dedicated-label daemon reader matrix passes with 114 denials and zero foreign reads; D61 legacy provenance model passes. Full broker reader and actual engine-class matrix remain open; not a current-production exploit.'
 ---
 
 ## Founder D61 continuation
@@ -22,6 +22,25 @@ Read-only production census on 2026-10-05: 5 owner trees, 65,742 entries,
 are **33 symlinks and 24 sockets**, not regular-file leaks. No file payloads
 were read or printed, no symlink followed, and no production data changed.
 This live observation is not a quiescent migration receipt.
+
+D65 implements exact open-descriptor UID/GID checking for labelled owner roots,
+including nested reader roots, and refuses resolving a symlinked read root.
+Unlabelled legacy trees are not claimed as D60-admitted. Startup must validate
+the root label against the durable broker allocation; full broker reader and
+engine-class acceptance remain open. Main rechecked at
+`b945fb3b3ab73d184e4bb91e4558d8e7f4ea8e96`: the shared common reader still lacks
+the nlink and dedicated-identity predicates. The prior single-tree jail
+reachability qualification remains; this is not evidence of a live exploit.
+
+Production Dockerfile D65/D66 image
+`sha256:acf2491ff6729c7d8d105b100eb1924a831b7ed09704d53b5a54fb47fa2a7392`:
+`role_reader_alias_probe.py` exits 0 with **114 DENIED, 19 own positive reads,
+0 FOREIGN_BYTES**, unchanged foreign bytes/metadata, daemon UID1001, zero
+capabilities. Includes symlink, FIFO, hardlink, retired-hardlink, wrong-UID and
+wrong-GID at six paths with actual file/platform/API readers and authenticated
+inspect. `--legacy` preserves the original diagnostic. The dedicated namespace
+probe separately denies read/relabel/copy in all three profiles; that is not
+an actual engine-class launcher matrix. Keep this concern open.
 
 The required D9/F2 reader matrix found a cross-owner alias that no-follow
 traversal does not reject. `workspace_fs._open_regular_beneath` checks the open

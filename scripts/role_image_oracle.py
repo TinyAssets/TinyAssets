@@ -520,6 +520,7 @@ def snapshot_permission_probes():
     universe = root / "snapshot-owner"
     universe.mkdir(mode=0o711)
     os.chown(universe, 1001, 1100)
+    snapshot_read, snapshot_write = os.pipe()
 
     def create():
         import base64
@@ -545,9 +546,16 @@ def snapshot_permission_probes():
         for path in made.directory.iterdir():
             info = path.stat()
             assert (info.st_uid, info.st_gid, stat.S_IMODE(info.st_mode)) == (1001, 1100, 0o440)
+        os.write(snapshot_write, made.directory.name.encode())
 
-    child(1001, [1100, 1101, 1102], create)
-    directory = next((universe / ".runtime/provider-launch-credentials").iterdir())
+    try:
+        child(1001, [1100, 1101, 1102], create)
+        name = os.read(snapshot_read, 128).decode()
+        assert name.startswith("codex-") and len(name) == 38 and "/" not in name
+        directory = universe / ".runtime/provider-launch-credentials" / name
+    finally:
+        os.close(snapshot_read)
+        os.close(snapshot_write)
 
     def engine():
         assert (directory / "auth.json").read_bytes() == b'{"token":"snapshot-fixture"}'

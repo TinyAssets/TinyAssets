@@ -514,7 +514,53 @@ def create_lease_dir(parent_fd: int, name: str, *, mode: int = _LEASE_DIR_MODE) 
     return _create_dir_beneath(parent_fd, name, mode=mode)
 
 
-def _open_regular_beneath(dir_fd: int, relpath: str | Path, *, max_bytes: int) -> tuple[int, int]:
+def _directory_owner_identity(fd: int) -> tuple[int, int] | None:
+    """D60 label on a pinned owner root, assigned in privileged migration.
+
+    A daemon-owned root may carry the reserved owner group so the owner cannot
+    replace protected root entries. Dedicated work directories carry both IDs.
+    Legacy/shared roots confer no dedicated identity. Admission must still
+    bind the requested root to the owner; these labels do not grant API access.
+    """
+    info = os.fstat(fd)
+    uid, gid = info.st_uid, info.st_gid
+    if 300001 <= gid <= 399999 and uid in (1001, gid):
+        return gid, gid
+    if 300000 <= uid <= 399999 or 300000 <= gid <= 399999:
+        raise UnsafePoolPath("invalid dedicated owner directory identity")
+    return None
+
+
+def _read_owner_identity(fd: int) -> tuple[int, int] | None:
+    """Keep owner provenance when the caller pins a nested daemon-owned dir.
+
+    Traverse only directory descriptors, never /proc pathname spellings. A
+    foreign labelled subtree cannot replace the enclosing owner's identity.
+    """
+    current = os.dup(fd)
+    identity = None
+    try:
+        for _ in range(256):
+            found = _directory_owner_identity(current)
+            if found is not None:
+                if identity is not None and identity != found:
+                    raise UnsafePoolPath("read crosses dedicated owner identities")
+                identity = found
+            parent = _open_child_dir(current, "..")
+            same = os.path.samestat(os.fstat(current), os.fstat(parent))
+            os.close(current)
+            current = parent
+            if same:
+                return identity
+        raise UnsafePoolPath("read directory ancestry exceeds the identity bound")
+    finally:
+        os.close(current)
+
+
+def _open_regular_beneath(
+    dir_fd: int, relpath: str | Path, *, max_bytes: int,
+    expected_identity: tuple[int, int] | None = None,
+) -> tuple[int, int]:
     """Open a REGULAR file beneath ``dir_fd``; return ``(fd, size)``.
 
     Every directory component is opened with ``O_NOFOLLOW``, the leaf too, and
@@ -526,11 +572,21 @@ def _open_regular_beneath(dir_fd: int, relpath: str | Path, *, max_bytes: int) -
         raise ValueError(f"max_bytes must be >= 0, got {max_bytes}")
     parts = _split_relpath(relpath)
     current = dir_fd
+    identity = _read_owner_identity(dir_fd)
+    if expected_identity is not None:
+        if identity is not None and identity != expected_identity:
+            raise UnsafePoolPath("read root does not match the admitted owner identity")
+        identity = expected_identity
     opened: list[int] = []
     try:
         for part in parts[:-1]:
             current = _open_child_dir(current, part)
             opened.append(current)
+            child_identity = _directory_owner_identity(current)
+            if child_identity is not None:
+                if identity is not None and child_identity != identity:
+                    raise UnsafePoolPath("read crosses dedicated owner identities")
+                identity = child_identity
         fd = _open_leaf(current, parts[-1])
     finally:
         for handle in opened:
@@ -547,6 +603,10 @@ def _open_regular_beneath(dir_fd: int, relpath: str | Path, *, max_bytes: int) -
                 f"{str(relpath)!r} has {info.st_nlink} links; "
                 "a workspace read refuses aliased regular files"
             )
+        if identity is not None and (info.st_uid, info.st_gid) != identity:
+            raise UnsafePoolPath(
+                f"{str(relpath)!r} does not belong to the admitted owner identity"
+            )
         if info.st_size > int(max_bytes):
             raise UnsafePoolPath(
                 f"{str(relpath)!r} is {info.st_size} bytes, over the {max_bytes} bound"
@@ -557,7 +617,10 @@ def _open_regular_beneath(dir_fd: int, relpath: str | Path, *, max_bytes: int) -
     return fd, int(info.st_size)
 
 
-def read_regular_file_beneath(dir_fd: int, relpath: str | Path, *, max_bytes: int) -> bytes:
+def read_regular_file_beneath(
+    dir_fd: int, relpath: str | Path, *, max_bytes: int,
+    expected_identity: tuple[int, int] | None = None,
+) -> bytes:
     """Read a regular file beneath a held directory handle, bounded.
 
     The bound is enforced twice: the size reported by ``fstat`` on the open
@@ -565,7 +628,9 @@ def read_regular_file_beneath(dir_fd: int, relpath: str | Path, *, max_bytes: in
     refuses. A file that GROWS between the stat and the read must not slip
     through on the strength of its earlier size.
     """
-    fd, _size = _open_regular_beneath(dir_fd, relpath, max_bytes=max_bytes)
+    fd, _size = _open_regular_beneath(
+        dir_fd, relpath, max_bytes=max_bytes, expected_identity=expected_identity,
+    )
     try:
         chunks: list[bytes] = []
         remaining = int(max_bytes) + 1
@@ -605,7 +670,8 @@ def _unlink_if_same_inode(dest: str, created: os.stat_result) -> None:
 
 
 def copy_regular_file_beneath(
-    dir_fd: int, relpath: str | Path, dest_path: str | Path, *, max_bytes: int
+    dir_fd: int, relpath: str | Path, dest_path: str | Path, *, max_bytes: int,
+    expected_identity: tuple[int, int] | None = None,
 ) -> int:
     """Stream a regular file from beneath a held handle to ``dest_path``.
 
@@ -616,7 +682,9 @@ def copy_regular_file_beneath(
     left behind would be read later as a whole one - but only after an inode
     compare proves it is still the file this call created.
     """
-    fd, _size = _open_regular_beneath(dir_fd, relpath, max_bytes=max_bytes)
+    fd, _size = _open_regular_beneath(
+        dir_fd, relpath, max_bytes=max_bytes, expected_identity=expected_identity,
+    )
     dest = str(dest_path)
     copied = 0
     try:

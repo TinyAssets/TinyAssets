@@ -1,3 +1,90 @@
+# Current delivery: D65 dedicated reader enforcement; D66 oracle repair
+
+D61 scan/diagnostic slice pushed as **52fcbfd47e**. Hygiene: 3 tests added,
+0 removed, 0 tampering. Continued into reader enforcement, production-image
+rebuild, broker stream regression and an actual old-image egress rollback probe.
+No startup activation, ui-preview admission, D9 profile change or deployment.
+
+D65 adds exact UID/GID checks on OPEN file descriptors beneath dedicated owner
+roots, keeping owner identity across directory descent and nested reader roots.
+It also removes pre-resolution of a potentially symlinked universe read root.
+Common file/platform/API/inspect, workspace manifest and copy readers inherit
+the guard. Legacy roots remain legacy; this does not complete startup's required
+broker-map/root-binding validation or the full broker reader inventory.
+
+Production Dockerfile images:
+- First D65 guard image: `sha256:d86c77199d6d4d210f18a83ca478745bd778c2cf4cab02d187caebe1f04c5658`.
+- Final D66 fixture image: `sha256:acf2491ff6729c7d8d105b100eb1924a831b7ed09704d53b5a54fb47fa2a7392`.
+
+```text
+python scripts/role_reader_alias_probe.py --image tinyassets-uid-d61:readers
+exit 0; denied=114; positive_reads=19; foreign_reads=0; failures=[]
+uid=1001; groups=[1100,1101,1102]; capabilities=zero; nnp=1; foreign_unchanged=true
+```
+
+Passed on both images. Six paths, actual file/platform/API readers and inspect,
+with symlink/FIFO/hardlink/retired-hardlink/wrong-UID/wrong-GID fixtures. Foreign
+ACLs deliberately allow daemon reads, so ordinary DAC cannot hide a failed guard.
+The original shared-ID diagnostic remains `--legacy`; it is historical evidence,
+not D60 fixture setup. The concern stays open for the complete class/reader matrix.
+
+On the first D65 image, both commands below exit 0:
+
+```text
+python scripts/role_owner_migration_provenance_probe.py --image tinyassets-uid-d61:readers
+foreign_reads=0; assigned_legacy_reads=114; profiles=3; attacks=2
+quarantined_inodes=1; quarantined_names=2; owner_assigned=false; daemon_denied=true
+python scripts/role_owner_namespace_probe.py --image tinyassets-uid-d61:readers
+foreign_reads=0; mapping=0 300000 100000; out_of_range_denied=true
+retained=SETUID/SETGID in owner userns only; bounding=zero; actual_engine_classes=false
+```
+
+Full final-image regression:
+
+```text
+python scripts/linux_oracle.py --production-image tinyassets-uid-d61:readers --production-stream
+exit 0; foundation/egress, D54 snapshots, D55 relays, actual image decoder,
+HTTPS streaming/accounting/daily evidence/refresh/restart: PASS
+forward/reverse egress dry-run/apply/repeat and six crash boundaries: PASS
+```
+
+The first D65 stream run failed D54 at a missing snapshot `.lock`. D66 changes
+only fixture selection: the creator passes the exact returned snapshot name over
+a pipe, instead of choosing `next(iterdir())`. All original lock/CLI/permission
+assertions remain. The full rebuilt-image run then passed. This fixes the
+observed nondeterministic sibling-selection hazard; prior D54 failure receipts
+remain recorded rather than being erased by a retry.
+
+Linux verification:
+- `python scripts/linux_oracle.py --as-root -- tests/test_role_reader_identity.py -q -rs`:
+  **3 passed in 0.14s; zero skips** (real UID/GID, retired alias, read/copy,
+  nested root, root symlink and cross-owner directory cases).
+- Root broader run of that file plus workspace_fs/workspace_resolver/bounded-reader
+  tests: **122 passed, 2 existing off-POSIX skips**.
+- Unprivileged run of legacy scan plus those three broader files: **122 passed,
+  2 existing off-POSIX skips**. D64 now uses O_PATH on unlisted ancestors and
+  O_NOATIME only on listed directories, preserving metadata without requiring
+  ownership of `/` or `/tmp` for scans of one's own tree.
+- Targeted Ruff, strict OpenSpec validation, regenerated plugin mirror parity,
+  and diff whitespace checks pass. Full Ruff retains the 55 baseline findings.
+
+One cross-family code review via peer-agents: **DISAGREE_EVIDENCE** on missing
+root prerequisite for the newly added identity tests; **AGREE**, corrected the
+new file's prerequisite, with the mandatory root acceptance run still zero-skip.
+Reviewer found the initial pair guard and actual reader probe sound. Nested-root
+ancestry and root-symlink additions have regression/production evidence above.
+Main rechecked at **b945fb3b3ab73d184e4bb91e4558d8e7f4ea8e96**; its shared reader
+still lacks nlink/identity checks. Today's single-tree jail qualification stays
+in the concern; no current-production exploit is claimed.
+
+Release-critical files in this slice: **0; none** (scope-guard regex inspected).
+No full 2.x task is newly complete. Remaining: bounded mapper integrated into
+the launcher; every actual engine class except unadmitted ui-preview; broker
+reader completion; full D61 quarantine/owner migration/two-pass deletion; full
+old-image rollback; startup/healthcheck only after all prior acceptance passes.
+The build PR prerequisites remain unmet. D61 scan/model receipts follow.
+
+---
 # Current delivery: founder D61 provenance rule implemented in scan/diagnostic
 
 Started at **a904cb73ff**; requested ff-only pull was already current. Founder

@@ -126,7 +126,7 @@ def read_universe_file(
     """
     root = Path(universe_dir)
     if getattr(fs, "_POSIX", False):
-        root_fd = fs.open_dir_nofollow(root.resolve(strict=False))
+        root_fd = fs.open_dir_nofollow(root.absolute())
         try:
             return fs.read_regular_file_beneath(root_fd, relpath, max_bytes=max_bytes)
         finally:

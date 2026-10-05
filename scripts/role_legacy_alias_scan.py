@@ -24,13 +24,18 @@ def directory(parent: int, name: str) -> int:
 def root_descriptor(path: Path) -> int:
     if not path.is_absolute() or ".." in path.parts:
         raise ValueError("scan root must be absolute without parent traversal")
-    fd = os.open("/", os.O_RDONLY | os.O_DIRECTORY | os.O_NOATIME)
+    # Ancestors are only traversed, never listed. O_PATH does not update atime
+    # and allows a tree's unprivileged owner to scan without owning / or /tmp.
+    flags = os.O_PATH | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+    fd = os.open("/", flags)
     try:
         for part in path.parts[1:]:
-            child = directory(fd, part)
+            child = os.open(part, flags, dir_fd=fd)
             os.close(fd)
             fd = child
-        return fd
+        readable = directory(fd, ".")
+        os.close(fd)
+        return readable
     except BaseException:
         os.close(fd)
         raise

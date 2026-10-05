@@ -107,10 +107,103 @@ print(json.dumps(dict(uid=os.getuid(), groups=os.getgroups(), capabilities='zero
 raise SystemExit(3 if failures else 0)
 '''
 
+# Preserve the shared-identity diagnostic above for --legacy. D60 fixtures are
+# labelled before authority retirement; actual readers then run as daemon 1001.
+DEDICATED_CONTAINER = r'''
+import json, os, runpy, subprocess, sys, tempfile
+from pathlib import Path
+launcher=runpy.run_path('/usr/local/libexec/ta-launch.py')
+launcher['verify_chain']()
+root=Path(tempfile.mkdtemp(prefix='role-d60-readers-'))
+os.chown(root,1001,1001); root.chmod(0o700)
+os.environ['TINYASSETS_DATA_DIR']=str(root)
+paths=('activity.log','workspace/record.txt','wiki/page.md','canon/record.md',
+       'output/record.md','logs/run.log')
+sentinel=b'BOB-PRIVATE-SYNTHETIC-SENTINEL'
+bob=root/'bob'; bob.mkdir(); os.chown(bob,1001,300002)
+cases=[]; foreign_files=[]
+for variant in ('positive','symlink','fifo','hardlink','retired-hardlink',
+                'wrong-uid','wrong-gid'):
+    center=root/variant; center.mkdir(); os.chown(center,1001,300001)
+    for index,relpath in enumerate(paths):
+        target=center/relpath
+        target.parent.mkdir(parents=True,exist_ok=True)
+        os.chown(target.parent,1001,300001)
+        foreign=bob/(variant+'-'+str(index)); foreign.write_bytes(sentinel)
+        os.chown(foreign,300002,300002); foreign.chmod(0o600)
+        subprocess.run(['setfacl','-m','u:1001:rw',str(foreign)],check=True)
+        if variant=='positive':
+            target.write_bytes(b'ALICE-POSITIVE-CONTROL'); os.chown(target,300001,300001)
+            target.chmod(0o600)
+            subprocess.run(['setfacl','-m','u:1001:rw',str(target)],check=True)
+        elif variant=='symlink': target.symlink_to(foreign)
+        elif variant=='fifo': os.mkfifo(target)
+        else:
+            os.link(foreign,target)
+            if variant!='hardlink': foreign.unlink()
+            if variant=='wrong-uid': os.chown(target,300002,300001)
+            if variant=='wrong-gid': os.chown(target,300001,300002)
+        stable=foreign if foreign.exists() else target
+        info=stable.stat()
+        foreign_files.append((stable,info.st_uid,info.st_gid,info.st_mode,info.st_mtime_ns))
+    cases.append(variant)
+launcher['retire_migration_authority'](); launcher['retire_child']('daemon')
+sys.path.insert(0,'/app')
+from tinyassets.api.helpers import _read_platform_text
+from tinyassets.api.universe import _action_inspect_universe
+from tinyassets.api.universe_file_reads import _read as api_file_read
+from tinyassets.auth.middleware import identity_context
+from tinyassets.auth.provider import Identity
+from tinyassets.daemon_server import ensure_universe_registered,grant_universe_access
+from tinyassets.universe_files import read_universe_file
+for name in ('bob',*cases):
+    ensure_universe_registered(root,universe_id=name,universe_path=root/name)
+    grant_universe_access(root,universe_id=name,actor_id='bob' if name=='bob' else 'alice',
+                          permission='admin',granted_by='alice')
+failures=[]; denied=0; positive=0
+with identity_context(Identity('alice','alice')):
+    assert 'error' in json.loads(_action_inspect_universe(universe_id='bob'))
+    for variant in cases:
+        owner=root/variant
+        for relpath in paths:
+            readers={
+                'universe-file':lambda:read_universe_file(owner,relpath),
+                'platform-text':lambda:_read_platform_text(owner/relpath,'','strict').encode(),
+                'api-file-read':lambda:api_file_read(root,variant,relpath),
+            }
+            if relpath=='activity.log':
+                readers['inspect-universe']=lambda:_action_inspect_universe(
+                    universe_id=variant).encode()
+            for name,read in readers.items():
+                try: answer=read()
+                except OSError:
+                    assert variant!='positive'
+                    outcome='DENIED'; denied+=1
+                else:
+                    if variant=='positive':
+                        assert b'ALICE-POSITIVE-CONTROL' in answer
+                        positive+=1; outcome='OWN_BYTES'
+                    else:
+                        outcome='FOREIGN_BYTES' if sentinel in answer else 'NO_FOREIGN_BYTES'
+                        if outcome=='FOREIGN_BYTES': failures.append((variant,relpath,name))
+                print(json.dumps(dict(variant=variant,path=relpath,reader=name,outcome=outcome)))
+for path,uid,gid,mode,mtime in foreign_files:
+    info=path.stat()
+    assert (info.st_uid,info.st_gid,info.st_mode,info.st_mtime_ns)==(uid,gid,mode,mtime)
+    assert path.read_bytes()==sentinel
+fields=launcher['status']()
+assert all(int(fields[key],16)==0 for key in launcher['CAP_FIELDS'])
+print(json.dumps(dict(uid=os.getuid(),groups=os.getgroups(),capabilities='zero',
+    nnp=int(fields['NoNewPrivs']),foreign_unchanged=True,positive_reads=positive,
+    denied=denied,foreign_reads=len(failures),failures=failures,dedicated_identity=True)))
+raise SystemExit(3 if failures else 0)
+'''
+
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--image', required=True)
+    parser.add_argument('--legacy', action='store_true', help='reproduce the shared-ID diagnostic')
     args = parser.parse_args()
     digest = subprocess.run(
         ['docker', 'image', 'inspect', args.image, '--format', '{{.Id}}'],
@@ -125,7 +218,8 @@ def main():
         command += ['--security-opt', option]
     command += ['--entrypoint', '/opt/venv/bin/python', digest, '-I', '-B', '-']
     print(json.dumps({'image': digest, 'command': command}), flush=True)
-    return subprocess.run(command, input=CONTAINER, text=True, timeout=60).returncode
+    return subprocess.run(command, input=CONTAINER if args.legacy else DEDICATED_CONTAINER,
+                          text=True, timeout=60).returncode
 
 
 if __name__ == '__main__':
