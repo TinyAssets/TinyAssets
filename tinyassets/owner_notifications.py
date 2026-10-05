@@ -196,6 +196,9 @@ def _compose(base: Path, universe_id: str, request: dict[str, Any]) -> Notificat
     kind = _flat(request.get("kind"), 24, byte_limit=96)
     title = _flat(request.get("title"), MAX_BODY_CHARS, byte_limit=MAX_BODY_BYTES)
     body = f"{kind}: {title}" if kind else title
+    informational = (request.get("action") or {}).get("type") == "notify"
+    if informational:
+        body = f"{title}: {request.get('body') or ''}"
     items = [
         _flat(i.get("item_id"), 64)
         for i in (request.get("items") or [])
@@ -214,7 +217,8 @@ def _compose(base: Path, universe_id: str, request: dict[str, Any]) -> Notificat
         data["item_ids"] = joined
         data["item_count"] = str(len(items))
     notification = Notification(
-        title=_universe_title(base, universe_id),
+        title=(_universe_title(base, universe_id).removesuffix(_SOURCE_SUFFIX) + " updates"
+               if informational else _universe_title(base, universe_id)),
         body=_flat(body, MAX_BODY_CHARS, byte_limit=MAX_BODY_BYTES)
         or "Something needs you.",
         data=data,

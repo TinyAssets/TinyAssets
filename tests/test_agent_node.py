@@ -444,6 +444,34 @@ def test_a_code_node_calls_every_served_tool_by_default(tmp_path, code_node_engi
     assert set(code_node_engine) == {("actor-a", "u-a")}
 
 
+def test_workflow_code_notify_uses_owner_engine_route(tmp_path, code_node_engine, monkeypatch):
+    from tinyassets.daemon_server import grant_universe_access
+    from tinyassets.storage.pending_requests import list_pending
+
+    grant_universe_access(tmp_path, universe_id="u-a", actor_id="actor-a",
+                          permission="admin", granted_by="actor-a")
+    result = _invoker(["notify"])("notify", title="Scheduled note", body="Good morning")
+    assert result["is_error"] is False, result
+    assert result["data"]["informational"], result
+    assert list_pending(tmp_path / "u-a")[0]["title"] == "Scheduled note"
+    assert set(code_node_engine) == {("actor-a", "u-a")}
+
+
+@pytest.mark.parametrize("context", [
+    {"caller_provenance": "public-foreign"},
+    {"definition_author": "actor-b"},
+    {"owner_user_id": ""},
+    {"owner_user_id": "actor-b", "definition_author": "actor-b"},
+    {"universe_id": "u-b"},
+])
+def test_workflow_notify_refuses_foreign_authority(code_node_engine, context):
+    from tinyassets.graph_compiler import CompilerError
+
+    with pytest.raises(CompilerError):
+        _invoker(["notify"], **context)("notify", title="Hi", body="Update")
+    assert code_node_engine == []
+
+
 def test_a_code_node_grant_narrows_its_served_tools(tmp_path, code_node_engine):
     from tinyassets.graph_compiler import CompilerError
 
