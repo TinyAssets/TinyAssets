@@ -291,3 +291,12 @@ through AUTHORIZED_CONNECTION; the same snapshot carries the incarnation.
 Real launcher probes pass before/after restart; no daemon ledger fallback.
 Connect and endpoint/access-mode extension remain pending, as do other inventory
 rows not explicitly discharged, accounting, refresh, full deletion and activation.
+
+## D36 consumer receipt
+
+HTTP `_extend_preview` and `extend_http` use AUTHORIZED_CONNECTION snapshots and
+the named HTTP_POLICY mutation. Broker-side grant/owner/custody/center validation
+and full policy CAS share the write transaction; extension is additive. Actual
+launcher endpoint and full-mode changes pass before/after restart. HTTP connect
+and redeposit still open the daemon ledger; their create/grant/legacy-upgrade
+and policy operations remain pending, along with the other unclosed rows.

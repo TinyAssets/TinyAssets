@@ -5375,6 +5375,7 @@ class ConnectionLedger:
         expected_incarnation: str | None = None,
         expected_grant_id: str | None = None,
         git_host: str = "",
+        _transaction: sqlite3.Connection | None = None,
     ) -> bool:
         """ADD endpoints to an existing http connection. Never remove or replace.
 
@@ -5445,7 +5446,8 @@ class ConnectionLedger:
                   AND g.revoked_at IS NULL
             )"""
             params.append(expected_grant_id)
-        with self._connect() as connection:
+        with (contextlib.nullcontext(_transaction) if _transaction is not None
+              else self._connect()) as connection:
             cursor = connection.execute(sql, tuple(params))
             return cursor.rowcount > 0
 
@@ -5458,6 +5460,7 @@ class ConnectionLedger:
         expected_endpoints_json: str,
         expected_scopes_json: str,
         expected_incarnation: str | None = None,
+        _transaction: sqlite3.Connection | None = None,
     ) -> bool:
         """Move a connection between ``exact`` and ``full`` under CAS.
 
@@ -5508,7 +5511,8 @@ class ConnectionLedger:
         if expected_incarnation is not None:
             sql += "           AND incarnation = ?\n"
             params.append(expected_incarnation)
-        with self._connect() as connection:
+        with (contextlib.nullcontext(_transaction) if _transaction is not None
+              else self._connect()) as connection:
             cursor = connection.execute(sql, tuple(params))
             return cursor.rowcount > 0
 

@@ -295,6 +295,9 @@ class _Connection:
         if op == "LEDGER_QUERY":
             answer = await asyncio.to_thread(self._ledger_query, doc)
             await self.send_async(rf.control(rf.CONNECTION, answer))
+        elif op == "HTTP_POLICY":
+            answer = await asyncio.to_thread(self._http_policy, doc)
+            await self.send_async(rf.control(rf.CONNECTION, answer))
         elif op == "DISCONNECT":
             answer = await asyncio.to_thread(self._disconnect, doc)
             await self.send_async(rf.control(rf.CONNECTION, answer))
@@ -398,6 +401,30 @@ class _Connection:
                 return answer
         except Exception as exc:  # noqa: BLE001 - fixed refusal, no persisted values on wire
             return {"op": "DISCONNECT_REFUSED", "error_class":
+                    "GrantResolutionError" if type(exc).__name__ == "GrantResolutionError"
+                    else "refused"}
+
+    def _http_policy(self, doc: dict[str, Any]) -> dict[str, Any]:
+        from tinyassets.broker.http_policy import local_operation, validate
+
+        try:
+            if set(doc) != {"op", "principal", "command_center", "generation", "token",
+                            "document"}:
+                raise ValueError("unsupported policy fields")
+            _namespace(doc["principal"], doc["command_center"])
+            validate(doc["document"])
+            if type(doc["generation"]) is not int or not isinstance(doc["token"], str):
+                raise Fenced("invalid fence")
+            with self._server._fence.send(doc["generation"], doc["token"]):
+                result = local_operation(self._server._ledger_for(doc["principal"]),
+                                    principal=doc["principal"],
+                                    command_center=doc["command_center"],
+                                    document=doc["document"])
+                answer = {"op": "HTTP_POLICY_RESULT", "result": result}
+                rf.control(rf.CONNECTION, answer)
+                return answer
+        except Exception as exc:  # noqa: BLE001 - fixed refusal, no persisted values on wire
+            return {"op": "HTTP_POLICY_REFUSED", "error_class":
                     "GrantResolutionError" if type(exc).__name__ == "GrantResolutionError"
                     else "refused"}
 

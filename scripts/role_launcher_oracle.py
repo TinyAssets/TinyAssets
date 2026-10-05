@@ -373,6 +373,22 @@ def _disconnect_consumer(root):
         assert disconnect(root, **scope, destination=destination) == snapshot
         print("D35 actual HTTP rotation via launcher broker: live snapshot, owner vault write, "
               "ledger policy unchanged: PASS", flush=True)
+        from tinyassets.api.http_connection import extend_http
+        from tinyassets.broker.http_policy import read_policy, update_policy
+
+        resource, _grant, policy = read_policy(root, **scope, destination=destination)
+        assert not update_policy(root, **scope, destination=destination, action="full",
+                                 expected=policy | {"incarnation": "stale"},
+                                 git_host=resource.git_host)
+        endpoint = {"host": "models.example.com", "path_template": "/extra", "methods": ["GET"]}
+        extended = extend_http(universe_id="disconnect", payload={
+            "destination": destination, "endpoints": [endpoint]})
+        assert extended["status"] == "extended" and len(extended["allowed_endpoints"]) == 2
+        full = extend_http(universe_id="disconnect", payload={
+            "destination": destination, "access": "full"})
+        assert full["status"] == "extended" and full["access"] == "full"
+        print("D36 actual HTTP endpoint and full-access extension via launcher broker: "
+              "scoped mutation and stale CAS refusal, no daemon ledger: PASS", flush=True)
         asked = request_from_user(universe_id="disconnect", payload={
             "kind": "Connection", "title": "Disconnect", "body": "Remove access", "fields": [],
             "action": {"type": "remove_http", "destination": destination}})

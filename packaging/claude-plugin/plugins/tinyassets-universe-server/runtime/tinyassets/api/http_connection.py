@@ -1691,6 +1691,30 @@ def extend_http(*, universe_id: str = "", payload: Any = None) -> dict[str, Any]
     if preview.get("status") == "unchanged":
         return preview
 
+    if preview["ledger"] is None:
+        from tinyassets.broker.http_policy import read_policy, update_policy
+
+        full = preview.get("access") == ACCESS_FULL and not redirect_extension
+        expected = ((_answered_policy_snapshot(document) if full else expected_redirect)
+                    or {"access_mode": preview["expected_access_mode"],
+                        "endpoints_json": preview["stored_json"],
+                        "scopes_json": preview["stored_scopes_json"],
+                        "incarnation": preview["stored_incarnation"]})
+        updated = update_policy(
+            base, principal=actor, command_center=uid, destination=destination,
+            expected=expected, action="full" if full else "extend",
+            endpoints=() if full else preview["merged"],
+            scopes=() if full else preview["scopes"],
+            git_host=preview.get("declared_git_host") or "")
+        if not updated:
+            return {"error": "connection_conflict", "resource": "connection"}
+        resource, _grant, _snapshot = read_policy(
+            base, principal=actor, command_center=uid, destination=destination)
+        return {"status": "extended", "destination": destination,
+                "access": resource.access_mode,
+                "allowed_endpoints": [e.as_dict() for e in resource.allowed_endpoints],
+                "scopes": list(resource.scopes), "secret_reused": True}
+
     ledger = preview["ledger"]
     connection_id = preview["connection_id"]
     if preview.get("access") == ACCESS_FULL and not redirect_extension:
@@ -1798,13 +1822,26 @@ def _extend_preview(
     )
 
     connection_id, grant_id = _ids(universe_id=uid, destination=destination)
-    ledger = ConnectionLedger(
-        Path(base) / "outbound.db",
-        verify_authenticated_principal=lambda: actor,
-    )
-    resource = ledger._get_connection_resource(connection_id)
-    redirect_extension = _redirect_permission_requested(added)
+    from tinyassets.broker.supervisor import broker_selected
+
+    selected = broker_selected()
     redirect_snapshot = None
+    if selected:
+        from tinyassets.broker.http_policy import read_policy
+        from tinyassets.storage.outbound_connections import GrantResolutionError
+
+        try:
+            resource, grant, redirect_snapshot = read_policy(
+                base, principal=actor, command_center=uid, destination=destination)
+        except GrantResolutionError:
+            return dict(_NOT_FOUND)
+        ledger = None
+    else:
+        ledger = ConnectionLedger(
+            Path(base) / "outbound.db", verify_authenticated_principal=lambda: actor)
+        resource = ledger._get_connection_resource(connection_id)
+        grant = ledger.get_grant(grant_id)
+    redirect_extension = _redirect_permission_requested(added)
     if redirect_extension:
         try:
             _parse_allowed_endpoints(added)
@@ -1815,10 +1852,11 @@ def _extend_preview(
                 "error": "connection_setup_invalid",
                 "detail": "Request redirect endpoints separately from full channel access.",
             }
-        captured = ledger._resource_policy_snapshot(connection_id)
-        if captured is None:
-            return dict(_NOT_FOUND)
-        resource, redirect_snapshot = captured
+        if not selected:
+            captured = ledger._resource_policy_snapshot(connection_id)
+            if captured is None:
+                return dict(_NOT_FOUND)
+            resource, redirect_snapshot = captured
     if resource is None or resource.owner_user_id != actor:
         # Nothing to extend, or not this principal's connection. Uniform
         # envelope so this cannot be used to probe which destinations exist.
@@ -1829,7 +1867,6 @@ def _extend_preview(
     # connection, invisible to the inventory, answered `already_held` with its
     # endpoints and scopes: a new oracle for the served agent (Codex on the
     # 2026-09-02 rail change).
-    grant = ledger.get_grant(grant_id)
     if (
         grant is None
         or grant.revoked_at is not None
@@ -1907,7 +1944,8 @@ def _extend_preview(
             "expected_access_mode": stored_mode,
             "stored_json": stored_json,
             "stored_scopes_json": stored_scopes_json,
-            "stored_incarnation": ledger.incarnation(connection_id) or "",
+            "stored_incarnation": (redirect_snapshot["incarnation"] if redirect_snapshot
+                                   else ledger.incarnation(connection_id) or ""),
             "git_host": git_host_for_endpoints(stored_hosts, resource.git_host),
             "declared_git_host": resource.git_host,
             "hosts": stored_hosts,

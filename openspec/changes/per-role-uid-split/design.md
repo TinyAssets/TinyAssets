@@ -1350,6 +1350,18 @@ ownership checks remain. Only the daemon writes the replacement vault record;
 no secret crosses the ledger IPC. Unavailable broker fails before the vault write.
 This closes rotation's D11 reader without new operations or privilege.
 
+### D36. Mechanical decision: HTTP policy mutations reauthorize in one transaction
+
+Extension previews read a live AUTHORIZED_CONNECTION snapshot, retaining exact
+stored JSON for compare-and-swap. The named HTTP_POLICY operation accepts only
+endpoint/scope extension or full-mode transition for a deterministic center and
+destination. It rechecks the live owner/grant/center/custody identity and complete
+policy/incarnation in one write transaction, reusing ledger endpoint/git/URL-secret
+validation inside that transaction. Endpoint extensions must remain additive.
+No connection ID, SQL, path or method name is supplied on the wire. Lost ACKs
+fail loudly without replay. The daemon retains existing consent preview and
+answer checks; startup remains inactive. This implements existing D11 authority.
+
 ## Risks / Trade-offs
 
 - **The launcher is root-adjacent code.** One file, stdlib-only, run `-I -S`, a static kind table,

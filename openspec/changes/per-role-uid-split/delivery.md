@@ -1,3 +1,49 @@
+# Current delivery: D36 HTTP endpoint and access-mode mutation
+
+D34/D35 pushed as `4b5c33e09b`; hygiene: tests added 5, removed 0, tampering 0.
+D36 routes extension preview and mutation through broker IPC, checks the live
+owner/grant/center and complete policy/incarnation in the mutation transaction,
+and enforces additive endpoint/scope changes. Existing ledger validators run
+inside that same transaction. Cross-family review APPROVE; **AGREE**, no floor
+findings. No whole build task newly complete; startup remains inactive.
+
+Release-critical files: **0; none**. Canonical runtime:
+`tinyassets/broker/{http_policy,client,server}.py`,
+`tinyassets/api/http_connection.py`, `tinyassets/storage/outbound_connections.py`,
+plus five generated mirrors. New test `tests/test_broker_http_policy.py` and
+extended oracle `scripts/role_launcher_oracle.py`. No affected heavy-list file.
+
+```text
+python -m pytest tests/test_full_channel_access.py tests/test_http_redirect_approval.py tests/test_http_redirect_policy.py tests/test_request_rail_honest_asks.py tests/test_outbound_http_connection.py -q
+185 passed in 15.56s
+python scripts/linux_oracle.py -- tests/test_broker_http_policy.py tests/test_full_channel_access.py tests/test_http_redirect_approval.py tests/test_http_redirect_policy.py tests/test_request_rail_honest_asks.py -q -rs
+162 passed in 32.06s; zero skips
+python scripts/linux_oracle.py --production-image tinyassets-uid-policy:d36 --build --production-stream
+exit 0; sha256:5ed9d87e271012d2ccf82788d0b09f7e8077867ed520b4e9f5fbc1f8031e9ce7
+D36 actual HTTP endpoint and full-access extension via launcher broker: scoped mutation and stale CAS refusal, no daemon ledger: PASS
+```
+D36 passes before/after broker restart. All D33-D35 consumer rows, D22 discovery
+HTTPS and D24 effector HTTPS PASS. Egress/accounting forward/reverse dry-run,
+apply/repeat, 6+8 crash boundaries, 3 reverse recovery boundaries and hostile
+input refusals PASS. Same seven-capability entry and compose security options;
+internal `ta-uid-stream-d82efd666d2d-net`, corresponding public-CA volume,
+93.184.216.0/29 client .3/server .2. Fixture resources cleaned.
+Ruff, mirror parity (601 canonical files), plugin build/import, strict OpenSpec
+and whitespace checks pass. Tests unchanged/strengthened, no skips counted.
+
+Behavioral detail from review: selected mode rejects legacy full-access approvals
+with empty incarnation instead of accepting an unbound snapshot. Broker-side
+post-preview validation errors remain fixed, credential-blind refusals. No authority
+is widened. Full role migration, owner-tree deletion, actual engine classes and
+old-image rollback are still unproven. No PR or deployment.
+
+Next: HTTP connect/redeposit, remaining D11 metadata/injected consumers;
+accounting/source/liveness/daily evidence and refresh; every actual engine class;
+full migration/two-pass deletion; actual old-image rollback; startup/healthcheck
+integration only after all prerequisites pass. Continue in this run.
+
+---
+
 # Current delivery: D34 removal readers and D35 rotation
 
 D33 pushed as `9c03ee5ad1`; hygiene: tests added 9, removed 0, tampering 0.
