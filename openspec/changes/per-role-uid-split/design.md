@@ -1710,3 +1710,31 @@ of the preview exception. Do not admit a class, activate startup or claim the
 matrix complete from this receipt. The probe establishes daemon-reader
 exposure for a preplanted alias, not an engine's ability to plant it after
 migration. No privilege, profile, migration or isolation-scope change is made.
+
+
+### D58. Mechanical decision: reject aliased descriptors in shared daemon readers
+
+The founder authorizes repairing D57. `_open_regular_beneath` now refuses
+regular descriptors whose `st_nlink != 1` before reading or copying bytes.
+There is no documented in-owner hardlink exception in these reader contracts;
+no exception is added. All callers inherit this guard, including file API,
+platform text, authenticated inspect, provision manifests and export copying.
+Descriptor validation, not a subsequent pathname stat, owns the decision.
+
+The separate requested identity check remains unresolved: the founder's D57
+instruction refers to a per-owner group, whereas D8 explicitly says to keep
+D1's shared uid 1003/gid 1100 and use no per-owner identity allocator. D9 does
+not define a per-owner group. Adding an allocator/ownership scheme changes the
+security design and is outside a mechanical path/mode choice. Clarification
+was requested; no new identity scheme or weakened identity claim is introduced.
+The link-count guard is independently useful in the current single-UID image.
+Do not claim full D57 completion or retire its concern from this substep.
+
+
+D58 final acceptance: the expanded production-image probe also removes the
+foreign original name after preplanting. The surviving alias has one link;
+19 reader/path cases return FOREIGN_BYTES. Original 57 cases still deny.
+The identity clarification is therefore a demonstrated isolation blocker,
+not only documentation terminology. Stop further integration under the
+founder's cross-user-exposure rule. No per-owner allocator is authorized by
+this mechanical decision and no full D57 completion is claimed.

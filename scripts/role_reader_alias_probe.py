@@ -25,6 +25,7 @@ root = Path(tempfile.mkdtemp(prefix='role-reader-alias-'))
 os.environ['TINYASSETS_DATA_DIR'] = str(root)
 from tinyassets.api.helpers import _read_platform_text
 from tinyassets.api.universe import _action_inspect_universe
+from tinyassets.api.universe_file_reads import _read as api_file_read
 from tinyassets.auth.middleware import identity_context
 from tinyassets.auth.provider import Identity
 from tinyassets.daemon_server import ensure_universe_registered, grant_universe_access
@@ -49,31 +50,50 @@ with identity_context(Identity('alice', 'alice')):
     own = json.loads(_action_inspect_universe(universe_id='alice'))
     assert own.get('recent_activity') == ['ALICE-POSITIVE-CONTROL'], own
     target.unlink()
-    for plant in ('symlink', 'fifo', 'hardlink'):
-        if plant == 'symlink':
-            target.symlink_to(foreign)
-        elif plant == 'fifo':
-            os.mkfifo(target)
-        else:
-            os.link(foreign, target)
-        readers = {
-            'universe-file': lambda: read_universe_file(root / 'alice', 'activity.log'),
-            'platform-text': lambda: _read_platform_text(target, '', 'strict').encode(),
-            'inspect-universe': lambda: _action_inspect_universe(universe_id='alice').encode(),
-        }
-        try:
-            for name, read in readers.items():
-                try:
-                    answer = read()
-                except OSError:
-                    outcome = 'DENIED'
-                else:
-                    outcome = 'FOREIGN_BYTES' if sentinel in answer else 'NO_FOREIGN_BYTES'
-                print(json.dumps(dict(plant=plant, reader=name, outcome=outcome)), flush=True)
-                if outcome == 'FOREIGN_BYTES':
-                    failures.append(plant + ':' + name)
-        finally:
-            target.unlink()
+    for relpath in ('activity.log', 'workspace/record.txt', 'wiki/page.md',
+                    'canon/record.md', 'output/record.md', 'logs/run.log'):
+        target = root / 'alice' / relpath
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text('ALICE-POSITIVE-CONTROL')
+        assert read_universe_file(root / 'alice', relpath) == b'ALICE-POSITIVE-CONTROL'
+        assert api_file_read(root, 'alice', relpath) == b'ALICE-POSITIVE-CONTROL'
+        assert _read_platform_text(target, '', 'strict') == 'ALICE-POSITIVE-CONTROL'
+        target.unlink()
+        for plant in ('symlink', 'fifo', 'hardlink', 'retired-hardlink'):
+            if plant == 'symlink':
+                target.symlink_to(foreign)
+            elif plant == 'fifo':
+                os.mkfifo(target)
+            else:
+                os.link(foreign, target)
+                if plant == 'retired-hardlink':
+                    # Normal deletion/replacement of Bob's original name
+                    # leaves Alice's alias with nlink=1, still Bob's bytes.
+                    foreign.unlink()
+            readers = {
+                'universe-file': lambda: read_universe_file(root / 'alice', relpath),
+                'platform-text': lambda: _read_platform_text(target, '', 'strict').encode(),
+                'api-file-read': lambda: api_file_read(root, 'alice', relpath),
+            }
+            if relpath == 'activity.log':
+                readers['inspect-universe'] = lambda: _action_inspect_universe(
+                    universe_id='alice').encode()
+            try:
+                for name, read in readers.items():
+                    try:
+                        answer = read()
+                    except OSError:
+                        outcome = 'DENIED'
+                    else:
+                        outcome = 'FOREIGN_BYTES' if sentinel in answer else 'NO_FOREIGN_BYTES'
+                    print(json.dumps(dict(path=relpath, plant=plant, reader=name,
+                                          outcome=outcome)), flush=True)
+                    if outcome == 'FOREIGN_BYTES':
+                        failures.append(relpath + ':' + plant + ':' + name)
+            finally:
+                if plant == 'retired-hardlink':
+                    os.link(target, foreign)
+                target.unlink()
 assert foreign.read_bytes() == sentinel
 after = foreign.stat()
 assert (after.st_uid, after.st_gid, after.st_mode, after.st_mtime_ns) == (

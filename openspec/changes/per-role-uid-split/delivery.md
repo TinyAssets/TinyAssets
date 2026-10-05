@@ -1,4 +1,102 @@
-# Current delivery: D57 preplanted hardlink reader exposure (2026-10-05)
+# Current delivery: D58 descriptor hardlink refusal (2026-10-05)
+
+Started at **3f4dc2c451**, ff-only pull already current. D12 relocation and
+D10/D11 are retained; no duplicate D12 or history rewrite. D57's lead repair
+is partially implemented: the shared regular-file open rejects `st_nlink != 1`
+on the OPEN descriptor before read/copy. Its callers include universe files,
+platform text, authenticated inspect, file API, provision manifests and export
+bundle copying. No hardlink exception is documented or added. Plugin mirror
+regenerated. Three regression cases cover read/copy and pathname replacement
+after open. No existing test was removed or weakened.
+
+## Final acceptance result: STOP, retired-original alias still leaks
+
+Cross-family peer-agents review returned **ADAPT**. AGREE with the independent
+link-count hardening and lack of known steady-state hardlink requirements.
+AGREE with the evidence limit: deleting/replacing Bob's original filename
+leaves the preplanted Alice alias with one link. Added that acceptance row,
+without changing the original controls. On the same immutable image the final
+probe returns native **exit 3**, a completed summary with **19 FOREIGN_BYTES**
+and 57 DENIED rows. All positive controls and restored foreign metadata pass.
+This is a failed full alias probe, not zero-leak acceptance. The earlier 57-row
+receipt below covers only aliases whose original name remains present.
+
+The standing cross-user-exposure stop applies. No additional class admission,
+identity allocator, migration rollout or startup integration was attempted.
+The requested descriptor owner validation cannot be satisfied with the stated
+per-owner group until the shared-D1 vs per-owner identity conflict is resolved.
+
+AGREE also with the review's availability caveat: `_promote_brain_files` uses
+link-then-unlink; interruption can leave a two-link brain file now refused by
+the guard. Tracked in the retained concern; no in-owner exception is inferred.
+The descriptor check defeats pathname replacement, not all alias-lifecycle
+races; no broader claim from the review is adopted.
+
+## Verified evidence
+
+```
+python scripts/role_reader_alias_probe.py --image tinyassets-uid-readers:d57
+exit 0; 57 DENIED rows; failures=[]; zero FOREIGN_BYTES
+positive_control=true foreign_metadata_denied=true foreign_unchanged=true
+uid=1001 groups=[1100,1101,1102] capabilities=zero nnp=1
+
+python scripts/linux_oracle.py --production-image tinyassets-uid-readers:d57 --build --production-stream
+exit 0; actual broker HTTPS streaming/accounting/refresh and image-decoder PASS
+existing migration substeps dry-run/apply/repeat and 6+8+3+4 crash boundaries PASS
+
+python scripts/linux_oracle.py -- tests/test_workspace_fs.py tests/test_platform_reads_refuse_links.py tests/test_universe_file_reads_are_bounded.py tests/test_workspace_resolver.py tests/test_workspace_staging.py -q -rs
+173 passed, 2 skipped in 4.73s
+```
+
+The two skips are existing Windows-only off-POSIX refusal tests, not acceptance
+probes; the production reader matrix has zero skips. An initial test command
+named nonexistent tests/test_universe_files.py and collected nothing; the
+corrected command above is the receipt. Production image pinned to
+`sha256:832b7055dce8a3eb48e6a0af5c776aa81a55f7cd8fa3dc397304e42f7c62e37f`.
+The external reader probe runs from stdin against the immutable image. Its six
+path categories and three readers, plus inspect's activity-log row, are a
+shared-reader submatrix, not every actual engine class or git/publish path.
+No new full migration, two-pass deletion or actual old-image rollback proof.
+
+## Identity-design clarification and remaining work
+
+D58 records the mechanical no-alias decision and the unresolved identity
+requirement. The latest lead instruction says the owner's per-owner group;
+D8 explicitly requires shared uid1003/gid1100, with no per-owner identity
+allocator, and D9 defines no such group. Asked whether to validate existing D1
+role identities or amend the design for per-owner groups. No answer yet. A
+per-owner allocator is a security-design change, not a mechanical mode/path
+choice, so it has not been inferred. The no-alias guard alone does not prove
+owner identity for a foreign inode with only one remaining name.
+
+Current main fetched at 26993ec47c71a8fa36d62410bb361cf5ee8898c9 has the same
+reader gap; the concern records why it matters under single UID too. This is
+source analysis, not a live production exploit or deployment. The concern
+remains open, per the lead's requirement, until the full reader/class matrix.
+
+ui-preview remains unadmitted, its D9 profile unchanged, and its founder
+decision still open. Remaining build: descriptor identity validation once the
+identity contract is reconciled; every other engine class through the launcher
+and paired readers; full migration/two-pass deletion; actual production old-image
+rollback; startup/healthcheck integration. No startup activation, deployment,
+PR or newly completed task is claimed. PR criteria are not yet satisfied.
+
+Release-critical files in this slice: **0**; runtime edit is workspace_fs.py
+and its generated mirror. Branch's previously recorded total remains 8.
+Targeted Ruff, mirror parity, strict OpenSpec and diff whitespace checks pass.
+Full Ruff still reports 55 errors in unchanged files.
+
+Additional affected-reader/sink and heavy API verification:
+```
+python scripts/linux_oracle.py -- tests/test_workspace_effector.py tests/test_workspace_end_to_end.py tests/test_api.py tests/test_api_edge_cases.py -q -rs
+422 passed, 3 skipped in 42.57s
+```
+The three existing skips are Windows-specific doubles/refusal branches; actual
+Linux paths ran. Total passing tests across the two receipts: 595. Neither
+pytest receipt substitutes for the failed production alias acceptance.
+
+---
+# Prior delivery: D57 preplanted hardlink reader exposure (2026-10-05)
 
 Evidence pushed as **694570f028**. Hygiene against 89b1cffa94: tests added 0,
 removed 0, tampering findings 0. Pre-commit checks passed. The corrected probe's

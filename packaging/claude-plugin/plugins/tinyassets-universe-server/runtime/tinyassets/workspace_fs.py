@@ -542,6 +542,11 @@ def _open_regular_beneath(dir_fd: int, relpath: str | Path, *, max_bytes: int) -
                 f"{str(relpath)!r} is not a regular file (mode {info.st_mode:#o}); "
                 "a workspace read never opens a device, a FIFO or a directory"
             )
+        if info.st_nlink != 1:
+            raise UnsafePoolPath(
+                f"{str(relpath)!r} has {info.st_nlink} links; "
+                "a workspace read refuses aliased regular files"
+            )
         if info.st_size > int(max_bytes):
             raise UnsafePoolPath(
                 f"{str(relpath)!r} is {info.st_size} bytes, over the {max_bytes} bound"

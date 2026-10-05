@@ -34,3 +34,49 @@ records that stop; no runtime patch or admission is included. A continuation
 must address alias validation at daemon reads (preserving legitimate in-owner
 hardlink semantics where required), rerun these controls plus the remaining
 class/path/reader matrix, and keep startup inactive until all prerequisites pass.
+
+
+## D58 repair evidence (2026-10-05)
+
+The common open-descriptor reader now refuses `st_nlink != 1` before bytes
+leave either read or copy. Production Dockerfile image
+`sha256:832b7055dce8a3eb48e6a0af5c776aa81a55f7cd8fa3dc397304e42f7c62e37f`
+passes the expanded `role_reader_alias_probe.py`: 57 denials, zero
+FOREIGN_BYTES, all positive controls intact, foreign content/metadata intact.
+Paths: activity.log, workspace/record.txt, wiki/page.md, canon/record.md,
+output/record.md and logs/run.log. Three readers cover all six; authenticated
+inspect additionally covers activity.log. This is not every actual engine's
+class/path/reader matrix. Keep this concern until that matrix passes.
+
+Current main was fetched and inspected at
+`26993ec47c71a8fa36d62410bb361cf5ee8898c9`: its identical common reader checks
+type/size but not link count; read_universe_file and the platform/inspect
+chain use it. The preplanted cross-owner alias therefore matters for the
+single-UID design too: both owners' files are readable by uid1001. This is
+source evidence of the reader gap, not proof that a production engine can
+plant the alias, and no live production data was tested or changed.
+
+Descriptor uid/gid validation remains pending the D58 identity-design
+clarification. D8 explicitly forbids substituting per-owner identities without
+an amendment, while the latest D57 instruction refers to a per-owner group
+that D1/D9 do not define. The implemented link-count guard does not establish
+owner identity when a foreign inode has only one remaining name.
+
+
+## Final D58 acceptance: surviving alias after original-name retirement
+
+Cross-family review: ADAPT; AGREE with the remaining lifecycle hole. The final
+probe adds `retired-hardlink`: preplant Alice's alias, remove Bob's original
+name, invoke the readers, then restore Bob's name before cleanup and assert
+unchanged foreign data/uid/gid/mode/mtime. Ordinary atomic replacement of Bob's
+original name has the same link-count consequence. On image 832b7055dce8,
+native exit 3 has a completed summary of **19 FOREIGN_BYTES**, alongside the
+original **57 DENIED** cases. No live data is accessed. This supersedes any
+interpretation that the initial 57-row pass resolves this concern.
+
+AGREE with review's separate availability finding: `universe_tools.py`
+`_promote_brain_files` links source to target then unlinks source. An interruption
+or unlink failure can leave two links permanently; the stricter reader refuses
+that brain file. Follow-up must repair promotion/recovery without creating a
+cross-owner hardlink exception or deleting user data. No unsafe automatic
+cleanup was introduced. This remains tracked here with the identity blocker.

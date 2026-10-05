@@ -176,6 +176,61 @@ def test_create_lease_dir_refuses_an_existing_name(tmp_path: Path) -> None:
 
 
 @posix_only
+@pytest.mark.parametrize("operation", ["read", "copy"])
+def test_regular_file_refuses_preplanted_hardlink(tmp_path, operation):
+    foreign = tmp_path / "foreign"
+    foreign.write_bytes(b"FOREIGN-PRIVATE-BYTES")
+    owner = tmp_path / "owner"
+    owner.mkdir()
+    alias = owner / "record"
+    os.link(foreign, alias)
+    before = foreign.stat()
+    fd = wfs.open_dir_nofollow(owner)
+    try:
+        with pytest.raises(wfs.UnsafePoolPath, match="links"):
+            if operation == "read":
+                wfs.read_regular_file_beneath(fd, "record", max_bytes=1024)
+            else:
+                wfs.copy_regular_file_beneath(fd, "record", owner / "copy", max_bytes=1024)
+        assert not (owner / "copy").exists()
+        alias.unlink()
+        alias.write_bytes(b"OWNER-CONTROL")
+        assert wfs.read_regular_file_beneath(fd, "record", max_bytes=1024) == b"OWNER-CONTROL"
+    finally:
+        os.close(fd)
+    assert foreign.read_bytes() == b"FOREIGN-PRIVATE-BYTES"
+    after = foreign.stat()
+    assert (before.st_uid, before.st_gid, before.st_mode, before.st_mtime_ns) == (
+        after.st_uid, after.st_gid, after.st_mode, after.st_mtime_ns)
+
+
+@posix_only
+def test_hardlink_validation_uses_open_descriptor_after_name_replacement(tmp_path, monkeypatch):
+    foreign = tmp_path / "foreign"
+    foreign.write_bytes(b"FOREIGN-PRIVATE-BYTES")
+    alias = tmp_path / "alias"
+    os.link(foreign, alias)
+    original_open = wfs._open_leaf
+
+    def replace_after_open(parent, name):
+        fd = original_open(parent, name)
+        # Keep both foreign links alive while substituting a benign pathname.
+        alias.rename(tmp_path / "retained-alias")
+        alias.write_bytes(b"BENIGN-REPLACEMENT")
+        return fd
+
+    monkeypatch.setattr(wfs, "_open_leaf", replace_after_open)
+    fd = wfs.open_dir_nofollow(tmp_path)
+    try:
+        with pytest.raises(wfs.UnsafePoolPath, match="links"):
+            wfs.read_regular_file_beneath(fd, "alias", max_bytes=1024)
+    finally:
+        os.close(fd)
+    assert alias.read_bytes() == b"BENIGN-REPLACEMENT"
+    assert foreign.read_bytes() == b"FOREIGN-PRIVATE-BYTES"
+
+
+@posix_only
 def test_read_returns_the_bytes_of_a_regular_file(tmp_path: Path) -> None:
     (tmp_path / "repo").mkdir()
     (tmp_path / "repo" / "manifest.json").write_bytes(b'{"ok": true}')
