@@ -14,10 +14,16 @@ evidence, not text or timestamps.
   optional `client_send_id`: ASCII letters, digits, `_` or `-`, 1-128
   characters; empty means legacy. Invalid values are refused with
   `invalid_client_send_id` before any work starts.
-- **Storage (additive):** the saved founder turn and the steering/active-turn
-  record each gain a `client_send_id TEXT NOT NULL DEFAULT ''` column, through a
-  race-tolerant additive migration. Reads select `''` where the column is
-  missing, and a store that cannot migrate saves the turn without the id.
+- **Storage (additive):** the saved founder turn (conversation store) and the
+  steering/active-turn record (agent steering) each gain a
+  `client_send_id TEXT NOT NULL DEFAULT ''` column. They differ:
+  - The **conversation store** reads legacy rows without migrating: it selects
+    an empty expression when the column is absent. If its write migration
+    fails, it logs the failure and saves the turn without the id.
+  - **Agent steering** must migrate: `_connect` attempts the `ALTER` and
+    re-raises any OperationalError other than a duplicate column, and
+    `active()` selects the column directly. That failure is handled
+    best-effort where steering is opened (`_open_steering`).
 - **Readers:** the active turn (`/app/turn/pending`) and the recent conversation
   rows echo the id, but only within the caller's own owner/home/agent thread.
 - **App:** each send mints an id, keeps it in the inflight record and the
@@ -43,6 +49,7 @@ and server tests.
 
 Delivered by PR #4458: Codex authored it; an independent Claude cross-family
 review ran three rounds, ending APPROVE at db2e5181b2; it merged with main at
-ce20cd3b56. This change directory reconciles the public-API and storage
-artifact after the fact (founder direction: build, prove, then spec what
-shipped), and is archived on landing.
+ce20cd3b56. AGENTS.md requires a change directory BEFORE code for public API and
+storage shape. This one was missing, so this is a retrospective reconciliation
+of that artifact, not an exception the founder authorized. It is archived on
+landing.
