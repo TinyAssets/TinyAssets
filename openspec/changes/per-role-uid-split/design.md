@@ -1362,6 +1362,19 @@ No connection ID, SQL, path or method name is supplied on the wire. Lost ACKs
 fail loudly without replay. The daemon retains existing consent preview and
 answer checks; startup remains inactive. This implements existing D11 authority.
 
+### D37. Mechanical decision: broker prepare/commit brackets the daemon vault deposit
+
+HTTP connect/redeposit sends only policy metadata to a named HTTP_CONNECT operation.
+Prepare uses the existing conflict rules on one connection/grant snapshot before
+custody changes. Commit compares a digest of both rows, scope and requested policy,
+then creates/grants/upgrades/extends in one broker transaction. The daemon alone
+writes the vault between those calls. An interrupted/lost commit never reports
+success or automatically replays; a fresh gesture re-prepares. No secrets, SQL,
+paths or arbitrary methods cross this channel. The pure conflict planner is shared
+with the unsplit path. Internal ledger transaction injection is not wire-selectable.
+Legacy scope upgrade plus endpoint extension use the post-upgrade row within the
+same transaction, avoiding the prior stale-scope no-op. Startup remains inactive.
+
 ## Risks / Trade-offs
 
 - **The launcher is root-adjacent code.** One file, stdlib-only, run `-I -S`, a static kind table,

@@ -1,3 +1,53 @@
+# Current delivery: D37 HTTP connect and redeposit
+
+D36 pushed as `688a3e91f1`; hygiene tests added 6, removed 0, tampering 0.
+D37 routes connect/redeposit through broker prepare/commit around daemon-only
+vault writes. Both connection and grant rows plus the requested policy are
+compared in the commit transaction. Fresh, repeated, additive and legacy-scope
+upgrade deposits are covered; no secrets travel in this new protocol.
+No whole build task newly complete. Startup inactive, no PR or deployment.
+
+Release-critical files: **0; none**. Runtime:
+`tinyassets/broker/{http_connect,client,server}.py`,
+`tinyassets/api/http_connection.py`, `tinyassets/storage/outbound_connections.py`,
+plus five generated mirrors. Test `tests/test_broker_http_connect.py`; oracle
+`scripts/role_launcher_oracle.py`. No affected heavy-list file.
+
+```text
+python -m pytest tests/test_http_connection_provisioning.py tests/test_outbound_http_connection.py -q
+69 passed in 5.25s
+python scripts/linux_oracle.py -- tests/test_broker_http_connect.py tests/test_http_connection_provisioning.py tests/test_outbound_http_connection.py -q -rs
+78 passed, 1 new test failed: test wrongly assumed exact->full redeposit bypasses existing scope conflict
+python scripts/linux_oracle.py -- tests/test_broker_http_connect.py -q -rs
+10 passed in 2.47s, zero skips (after correcting that assumption and checking stored mode rather than nonexistent projection field)
+python scripts/linux_oracle.py --production-image tinyassets-uid-connect:d37 --build --production-stream
+exit 0; final image ID sha256:9ac3ee9edf41fac9c5371b0f0cd084cdfb16166b752f527c55ef3ece0f492281
+D37 actual HTTP connect/redeposit via launcher broker: prepare/commit, fresh/repeat/additive, daemon-only vault and no daemon ledger: PASS
+```
+D37 passes before/after broker restart with actual vault content and daemon private
+ledger denial assertions. Previous consumers, D22/D24 HTTPS, egress/accounting
+forward/reverse and all 6+8+3 crash/recovery boundaries PASS. Same seven-capability
+entry, internal synthetic HTTPS fixture and security options; fixture resources
+cleaned. Ruff, mirror parity (602 canonical), plugin import, strict OpenSpec and
+whitespace checks pass. An initial command named a nonexistent extension test
+file and ran no tests; the corrected targeted commands above ran successfully.
+
+Cross-family review APPROVE; **AGREE** on no floor/correctness findings and on
+adding explicit custody/private-path oracle assertions. **DISAGREE_EVIDENCE**
+on the suggested missing restart test: `_query_consumers` calls the consumer and
+runs both before and after restart (oracle lines 640 and 702 after added assertions);
+the output contains both D37 PASS rows. Broker policy errors not caught at the
+API door remain credential-blind refusals. As before, vault and ledger are not
+one atomic store: a failed commit is reported and needs a fresh gesture.
+
+Remaining in order: owner metadata/injected D11 consumers; accounting runtime
+and refresh; every actual engine class through launcher; full role migration
+and two-pass deletion; actual old-image rollback; startup/healthcheck only after
+all prerequisites pass. Existing rollback probes cover storage reversal and
+old-location uid-1001 reads/writes, **not an actual old image**.
+
+---
+
 # Current delivery: D36 HTTP endpoint and access-mode mutation
 
 D34/D35 pushed as `4b5c33e09b`; hygiene: tests added 5, removed 0, tampering 0.

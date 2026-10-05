@@ -363,6 +363,35 @@ def _disconnect_consumer(root):
             raise AssertionError("disconnect accepted foreign/stale/unfenced mutation")
     with identity_context(Identity(user_id="disconnect", username="disconnect",
                                    capabilities=["write"])):
+        from tinyassets.api.http_connection import connect_http
+
+        fresh = "connect-" + destination
+        deposit = dict(destination=fresh, secret="synthetic-deposit-only", auth_scheme="bearer",
+                       allowed_endpoints=[{"host": "models.example.com",
+                                           "path_template": "/catalogue", "methods": ["GET"]}])
+        for _ in range(2):
+            result = connect_http(universe_id="disconnect", payload=deposit)
+            assert result["status"] == "provisioned", result
+            assert "synthetic-deposit-only" not in str(result)
+        deposit["allowed_endpoints"].append(
+            {"host": "models.example.com", "path_template": "/extra", "methods": ["GET"]})
+        result = connect_http(universe_id="disconnect", payload=deposit)
+        assert result["status"] == "provisioned" and len(result["allowed_endpoints"]) == 2
+        from tinyassets.credential_vault import load_credential_vault
+
+        assert any(row.get("token") == "synthetic-deposit-only"
+                   for row in load_credential_vault(root / "disconnect"))
+        assert not (root / "outbound.db").exists()
+        try:
+            (root / ".broker/outbound.db").open("rb")
+        except PermissionError:
+            pass
+        else:
+            raise AssertionError("daemon opened private ledger after connect")
+        assert remove_http(universe_id="disconnect", payload={"destination": fresh})[
+            "connection_removed"]
+        print("D37 actual HTTP connect/redeposit via launcher broker: prepare/commit, "
+              "fresh/repeat/additive, daemon-only vault and no daemon ledger: PASS", flush=True)
         preview = preview_rotate_http(universe_id="disconnect",
                                       payload={"destination": destination})
         assert preview["incarnation"] == snapshot["incarnation"]

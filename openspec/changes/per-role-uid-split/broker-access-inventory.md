@@ -300,3 +300,9 @@ and full policy CAS share the write transaction; extension is additive. Actual
 launcher endpoint and full-mode changes pass before/after restart. HTTP connect
 and redeposit still open the daemon ledger; their create/grant/legacy-upgrade
 and policy operations remain pending, along with the other unclosed rows.
+
+D37 routes `_connect_http` connect/redeposit through metadata-only HTTP_CONNECT
+prepare/commit, with daemon-owned vault writes between broker calls. Both rows
+are compared and mutations share one broker transaction. Fresh/repeat/additive
+production-image proofs pass before/after restart; see delivery.md. No startup
+activation or remaining accounting/refresh coverage is implied.
