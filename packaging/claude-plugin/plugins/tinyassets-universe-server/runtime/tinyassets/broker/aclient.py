@@ -76,6 +76,18 @@ class _Stream:
 
 
 class AsyncBrokerClient:
+    @classmethod
+    def for_owner(cls, data_root, *, principal, command_center):
+        """Use the admitted daemon's broker; MCP has no worker fallback."""
+        from tinyassets.broker.supervisor import broker_selected, get_supervisor
+        from tinyassets.storage.outbound_connections import ProxyRequestError
+
+        supervisor = get_supervisor(data_root) if broker_selected() else None
+        if supervisor is None:
+            raise ProxyRequestError("streaming MCP requires the running credential broker")
+        return cls(supervisor.socket_path, principal=principal, command_center=command_center,
+                   fence=supervisor.fence, verify_peer=supervisor.verify_broker)
+
     def __init__(self, path: Path, *, principal: str, command_center: str,
                  fence: Callable[[], tuple[int, str]], verify_peer=None) -> None:
         self._path = Path(path)
@@ -196,3 +208,37 @@ class AsyncBrokerClient:
             demux.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await demux
+
+    async def status(self, op_id: str) -> dict:
+        """Reconcile without opening or replaying a stream; never infer success."""
+        from tinyassets.broker.ops import canonical_op_id
+        from tinyassets.storage.outbound_connections import ProxyRequestError
+
+        op_id = canonical_op_id(op_id)
+        writer = None
+        try:
+            async with asyncio.timeout(30):
+                reader, writer = await asyncio.open_unix_connection(os.fspath(self._path))
+                if self._verify_peer is not None:
+                    self._verify_peer(writer.get_extra_info("socket"))
+                generation, token = self._fence()
+                writer.write(rf.control(rf.CONNECTION, {
+                    "op": "STATUS", "principal": self._principal,
+                    "command_center": self._command_center, "op_id": op_id,
+                    "generation": generation, "token": token,
+                }))
+                await writer.drain()
+                frame = await rf.read_frame(reader)
+                if frame is None or frame.kind != rf.CONTROL or frame.stream != rf.CONNECTION:
+                    raise rf.FrameError("invalid status response")
+                answer = frame.control()
+                if (answer.get("op") != "STATUS_IS" or answer.get("op_id") != op_id
+                        or answer.get("side_effect_state") not in {"none", "unknown"}):
+                    raise rf.FrameError("invalid status response")
+                return answer
+        except (OSError, TimeoutError, rf.FrameError):
+            raise ProxyRequestError("broker operation status unavailable") from None
+        finally:
+            if writer is not None:
+                writer.close()
+                await writer.wait_closed()

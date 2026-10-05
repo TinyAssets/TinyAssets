@@ -205,3 +205,14 @@ continuation, and the full pasted-link integration test. 1.4 remains deferred;
 1.5 and 1.7-1.10 remain open. The separate local OAuth sign-in/custody and broker
 initialize/list/call tests are NOT a full pasted-link/app acceptance test.
 No deployment, deployed-SHA assertion, real-user MCP proof or capability sync.
+
+## Resume slice: cancellation and reconciliation (2026-10-05)
+
+The async broker client now has a production constructor requiring the admitted
+running broker, and a status query for durable operation reconciliation. Remote
+MCP cancellation closes the broker stream and attempts notifications/cancelled
+with the original request ID. No call is replayed. Status remains conservative:
+a completed HTTP transport does not prove an external effect's semantic result.
+Windows protocol: 22 passed. Linux protocol/real broker/server/upstream: 69 passed,
+zero skips. Ruff passed. Task 1.3 stays open for end-to-end production wiring.
+

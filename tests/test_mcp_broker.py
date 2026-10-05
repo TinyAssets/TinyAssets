@@ -72,9 +72,19 @@ async def test_real_broker_initialization_pagination_and_revocation(broker, ledg
                           Attachment.parse(active))
         remote = RemoteMcp(client, binding, check_authority=lambda _: None)
         assert await remote.discover() == TOOLS
+        operation_id = new_op_id()
         assert await remote.call("read", {}, catalog_hash=remote.catalog_hash,
-                                 op_id=new_op_id()) == {
+                                 op_id=operation_id) == {
             "content": [{"type": "text", "text": "broker result"}]}
+        outcome = await remote.reconcile(operation_id)
+        assert outcome["state"] == "completed"
+        assert outcome["side_effect_state"] == "unknown"
+        count = len(broker.sent)
+        from tinyassets.broker.client import BrokerRefused
+
+        with pytest.raises(BrokerRefused):
+            await remote.call("read", {}, catalog_hash=remote.catalog_hash, op_id=operation_id)
+        assert len(broker.sent) == count
         foreign_client = AsyncBrokerClient(
             broker.path, principal="bob", command_center="cc-alice",
             fence=lambda: (broker.state["generation"], broker.state["token"]))

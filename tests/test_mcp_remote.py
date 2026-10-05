@@ -83,6 +83,36 @@ def client(broker, check=lambda _: None):
 
 
 @pytest.mark.asyncio
+async def test_cancel_notifies_server_without_replaying_call():
+    import asyncio
+
+    broker = FakeBroker()
+    remote = client(broker)
+    await remote.discover()
+
+    async def stop(_):
+        raise asyncio.CancelledError
+
+    with pytest.raises(asyncio.CancelledError):
+        await remote.call("write", {}, catalog_hash=remote.catalog_hash, op_id="cancel",
+                          notify=stop)
+    documents = [json.loads(call["request"]["body"]) for call in broker.calls]
+    calls = [doc for doc in documents if doc["method"] == "tools/call"]
+    assert len(calls) == 1
+    assert documents[-1]["method"] == "notifications/cancelled"
+    assert documents[-1]["params"]["requestId"] == calls[0]["id"]
+
+
+def test_production_client_refuses_without_broker(monkeypatch, tmp_path):
+    from tinyassets.broker.aclient import AsyncBrokerClient
+    from tinyassets.storage.outbound_connections import ProxyRequestError
+
+    monkeypatch.delenv("TINYASSETS_CREDENTIAL_BROKER", raising=False)
+    with pytest.raises(ProxyRequestError, match="requires"):
+        AsyncBrokerClient.for_owner(tmp_path, principal="alice", command_center="home")
+
+
+@pytest.mark.asyncio
 async def test_initialize_paginated_discovery_streamed_call():
     broker = FakeBroker()
     remote = client(broker)

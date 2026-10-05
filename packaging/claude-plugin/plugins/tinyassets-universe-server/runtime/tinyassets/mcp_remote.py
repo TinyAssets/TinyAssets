@@ -6,6 +6,7 @@ No HTTP library, credentials, global endpoint cache, or automatic tool replay.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
 import json
 import re
@@ -128,7 +129,16 @@ class RemoteMcp:
             if method in {"initialize", "notifications/initialized"}:
                 self._reset()
             if isinstance(exc, asyncio.CancelledError):
-                raise  # Broker CANCEL retains its durable uncertain operation outcome.
+                if method == "tools/call" and attempt.get("request_id") is not None:
+                    # The stream context has already sent broker CANCEL. Notify
+                    # the MCP server too, using a new operation, never replaying
+                    # the original call. Failure cannot turn cancellation into success.
+                    with contextlib.suppress(Exception):
+                        async with asyncio.timeout(5):
+                            await self._rpc("notifications/cancelled", {
+                                "requestId": attempt["request_id"], "reason": "Cancelled",
+                            }, op_id=new_op_id(), notification=True)
+                raise
             stream = attempt.get("stream")
             end = getattr(stream, "end", None)
             if (isinstance(exc, GrantResolutionError) and isinstance(end, dict)
@@ -143,6 +153,7 @@ class RemoteMcp:
         self._check_authority(self._binding)
         self._sequence += 1
         request_id = self._sequence
+        attempt["request_id"] = request_id
         document = {"jsonrpc": "2.0", "method": method, "params": params}
         if not notification:
             document["id"] = request_id
@@ -293,6 +304,10 @@ class RemoteMcp:
                 raise McpError("MCP tool arguments do not match the catalog") from None
             return await self._rpc("tools/call", {"name": name, "arguments": arguments},
                                    op_id=op_id, notify=notify)
+
+    async def reconcile(self, op_id):
+        self._check_authority(self._binding)
+        return await self._broker.status(op_id)
 
 
 def _safe_schema(schema):
