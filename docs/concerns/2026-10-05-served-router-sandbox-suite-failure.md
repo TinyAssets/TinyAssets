@@ -1,3 +1,10 @@
+---
+severity: Watch
+title: Served Codex sandbox test failed repeatedly in #4474's full suite runs
+filed: '2026-10-05'
+summary: the fake-Codex full-sandbox test exited 1 in three parallel-container runs on the #4474 branch, but passes alone, with its module and in a full shard 2 at 7c5d0c077e; root cause not established
+---
+
 # Served Codex sandbox test fails in the workflow-model branch suite
 
 Handoff from PR #4474's full required Linux 3.11 run. The nine requested policy
@@ -35,3 +42,13 @@ Reproduce with `scripts/linux_oracle.py --required-runner`, CI/GITHUB_ACTIONS tr
 `--junit /out/junit-shard-2.xml`. Use an external `--out` directory; basetemp is
 the oracle's `/tmp/b`. Resolve by explaining and repairing the unavailable fake
 launch with Linux evidence while retaining the complete sandbox assertions.
+
+## Update 2026-10-05 (round-2 review at 7c5d0c077e)
+
+The cross-family reviewer re-ran it on Linux at 7c5d0c077e: it passes alone, with its
+module (35 passed), and inside a full shard 2 using this note's exact reproduction
+settings. The logged failure is the fake codex process itself exiting 1 quickly
+(codex_provider.py:1170-1174); ProviderRouter.call never touches WorkCandidateData,
+so the #4474 diff is not a plausible cause. Likely contention from the two parallel
+shard containers in the local runner, but no root cause is established. Keep watching
+the merge-group shards.
