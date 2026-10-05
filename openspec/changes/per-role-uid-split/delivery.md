@@ -1,3 +1,82 @@
+# Current delivery: D27 capability metadata and voice consumers
+
+Resumed at `90d7186cfe8e2587361b9add7e8b363842670bb8`; requested fast-forward
+pull was current. D10-D26 retained. D27 adds bounded CAPABILITY read/configure
+IPC and CONNECTION_GRANTS lookup, routes connection-use configuration, provider
+capability configuration and voice binding/proxy acquisition, and revalidates
+every capability kind's live grant inside the actual read/write transaction.
+No startup activation, PR or deployment. No whole build task newly completed.
+
+Release-critical files: **0; list: none**. Runtime files are
+`tinyassets/broker/{capabilities,client,server,ledger_queries}.py`,
+`tinyassets/api/{connection_uses,provider_capability}.py`,
+`tinyassets/onboarding/realtime_voice.py`, `tinyassets/storage/outbound_connections.py`
+and their eight generated mirrors. Oracle: `scripts/role_launcher_oracle.py`.
+New tests: `tests/test_broker_capabilities.py`, `tests/test_broker_capability_ipc.py`.
+No existing test names/assertions changed. No affected heavy-list file identified.
+
+Cross-family implementation review via peer-agents: ADAPT, no floor finding.
+**AGREE** on typed endpoint/lookup/pricing errors, revocation-race not-found,
+distinct voice broker-outage code and explicit remaining-reader inventory.
+Implemented fixed wire classes without exposing persisted values. D27 design
+record was added while review ran, before commit; no extra design review.
+Lost mutation acknowledgements remain unavailable, never automatically replayed.
+
+Verification: Windows consumer/baseline tests **123 passed**; initial Linux
+set **130 passed**, zero skips. The expanded Linux command including broker-server
+and outbound-ledger regression returned **177 passed, 1 failed** (the new pricing
+fixture lacked POST). After fixture correction, final
+`python scripts/linux_oracle.py -- tests/test_broker_capability_ipc.py -q -rs`
+returned **10 passed in 0.80s**, zero skips. The expanded command was:
+`python scripts/linux_oracle.py -- tests/test_broker_capabilities.py tests/test_broker_capability_ipc.py tests/test_broker_server.py tests/test_outbound_connection_ledger.py tests/test_unify_connection_uses.py tests/test_provider_capability_api.py tests/test_model_discovery_capability.py tests/test_realtime_voice.py -q -rs`.
+Changed-file Ruff, mirror parity (598 canonical
+files), strict OpenSpec validation and whitespace checks pass. Whole-repository
+Ruff retains 55 errors in unchanged files. Plugin build initially hit WinError 5
+on its atomic staging rename, restored its old tree, then passed on retry.
+One Linux command named a nonexistent test file and is not counted. New error
+tests first used a protocol-invalid URL and a GET-only fixture; corrected the
+fixtures to reach the intended endpoint and pricing checks, without changing guards.
+
+Final runtime image `sha256:8d602371c5cea04d82c2d4be96e800b27d5fc2625cd6be8f2d45204e455e1f93`:
+
+```text
+python scripts/linux_oracle.py --production-image tinyassets-uid-consumers:d27 --production-stream --build
+python scripts/linux_oracle.py --production-image tinyassets-uid-consumers:d27
+```
+
+Both exit 0, zero skips. Entry `/opt/venv/bin/python -I -B /app/scripts/role_image_oracle.py`,
+uid 0, cap-drop ALL plus CHOWN/DAC_OVERRIDE/FOWNER/SETUID/SETGID/SETPCAP/KILL,
+no-new-privileges and seccomp/AppArmor/systempaths unconfined. Default mode has
+network none, no mounts/env overrides. HTTPS fixture uses disposable internal
+network `ta-uid-stream-dd71ff7ca632-net`, oracle .3 and fixture .2 in 93.184.216.0/29,
+read-only public-CA volume `ta-uid-stream-dd71ff7ca632-ca`, uid-stream.invalid mapping,
+TA_ORACLE_HTTPS=1 and the existing outbound HTTP opt-in. Fixture cleanup completed.
+
+New output before/after actual launcher broker restart in both modes:
+
+```text
+D27 actual connection-uses capability mutation via launcher broker: configure/read/disable, foreign/fence refusal, no daemon ledger: PASS
+```
+
+Existing real HTTPS discovery/effector streams, broker private-ledger writes,
+role identity/capabilities, fence/peer/fd checks and launcher lifecycle pass.
+Migration substep outputs remain:
+
+```text
+forward dry-run, apply, repeat; service remains unadmitted: PASS
+reverse dry-run/apply/repeat and uid-1001 old-location writes: PASS
+forward/reverse abrupt-exit checkpoint and rename recovery: PASS (6 boundaries)
+symlink/hardlink/FIFO/conflicting-copy refusal without mutation: PASS
+```
+
+These remain egress-only relocation proofs, not full role migration, two-pass
+deletion or actual old-image rollback. Next: remaining catalog/read/mutation
+consumers, accounting tables and authoritative liveness, refresh, then every
+actual engine class/site, full migration/deletion/rollback and startup/healthcheck.
+Startup remains unactivated until all prerequisites are complete and verified.
+
+---
+
 # Current delivery: D26 HTTP compute broker consumers
 
 Implementation committed and pushed as `4cec6e6fc9187e616f344c052bd32e375b2dfd9b`.

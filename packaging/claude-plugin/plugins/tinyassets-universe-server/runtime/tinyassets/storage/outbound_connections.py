@@ -5675,7 +5675,7 @@ class ConnectionLedger:
             resource = _resource_from_row(row)
             if resource.revoked_at is not None:
                 raise PermissionError("connection resource is revoked")
-            if kind == "model_discovery":
+            if kind == "model_discovery" or expected_grant is not None:
                 if expected_grant is None:
                     raise PermissionError("discovery requires current grant context")
                 grant_row = connection.execute(
@@ -5755,13 +5755,29 @@ class ConnectionLedger:
         return capability
 
     def get_connection_capability(
-        self, connection_id: str, capability_kind: str
+        self, connection_id: str, capability_kind: str, *,
+        expected_grant: ConnectionGrant | None = None,
     ) -> ConnectionCapability | ModelDiscoveryCapability | None:
         """Return validated non-secret metadata without altering connection views."""
 
         connection_key = _required("connection_id", connection_id)
         kind = _validate_capability_kind(capability_kind)
         with self._connect() as connection:
+            connection.execute("BEGIN")
+            if expected_grant is not None:
+                admitted = connection.execute(
+                    "SELECT 1 FROM outbound_connection_grants g "
+                    "JOIN outbound_connections c ON c.connection_id=g.connection_id "
+                    "WHERE g.grant_id=? AND g.connection_id=? AND g.owner_user_id=? "
+                    "AND c.owner_user_id=? AND g.universe_id=? AND g.granted_at=? "
+                    "AND g.revoked_at IS NULL AND c.revoked_at IS NULL",
+                    (expected_grant.grant_id, connection_key, expected_grant.owner_user_id,
+                     expected_grant.owner_user_id, expected_grant.universe_id,
+                     expected_grant.granted_at),
+                ).fetchone()
+                if (admitted is None or expected_grant.connection_id != connection_key
+                        or expected_grant.revoked_at is not None):
+                    raise PermissionError("capability grant context changed")
             row = connection.execute(
                 "SELECT descriptor_json FROM connection_capabilities "
                 "WHERE connection_id = ? AND capability_kind = ?",

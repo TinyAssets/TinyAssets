@@ -1231,6 +1231,26 @@ acceptance. Actual inference POST remains gated by the D11 accounting migration;
 do not weaken the required usage reference or grant broker access to daemon stores.
 Startup remains unactivated pending the full acceptance matrix.
 
+### D27. Mechanical decision: capability metadata uses scoped broker transactions
+
+Add the named CAPABILITY read/configure operation on the existing fenced owner
+channel, with a closed field set and four existing capability kinds. Resolve
+principal/center/grant/connection scope, then recheck the grant timestamp, owner,
+center and live resource inside the actual read or mutation transaction for every
+kind. Existing discovery, pricing, endpoint and descriptor checks remain. No SQL,
+path, callable or arbitrary method crosses IPC. A lost mutation acknowledgement
+is reported as unavailable and never automatically replayed. Error projections
+contain fixed classes, not persisted descriptors or secrets.
+
+Connection-use configuration, provider capability configuration and voice binding
+read/configuration use this route. Voice proxy acquisition reuses D24's exact
+broker proxy. CONNECTION_GRANTS selects live grant IDs for one admitted principal,
+center and connection in one transaction, replacing the configuration consumer's
+local list. More than one grant still refuses configuration. The local development
+route remains available only when broker selection is off. This is partial D11
+integration; accounting, refresh and the other remaining consumers still gate
+startup, together with all engine/migration/rollback acceptance.
+
 ## Risks / Trade-offs
 
 - **The launcher is root-adjacent code.** One file, stdlib-only, run `-I -S`, a static kind table,

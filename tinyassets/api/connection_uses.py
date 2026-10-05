@@ -167,19 +167,30 @@ def apply_connection_uses(
     A declared model use is refused on any connection with a priced source.
     """
     from tinyassets.api.compute_connection import _validate_http_grant
+    from tinyassets.broker.capabilities import capability_operation
+    from tinyassets.broker.ledger_queries import granted_resource_row
     from tinyassets.providers.definition import ProviderDefinitionError
-    from tinyassets.storage.outbound_connections import ConnectionLedger, SsrfValidationError
+    from tinyassets.storage.outbound_connections import GrantResolutionError, SsrfValidationError
 
     gate = _validate_http_grant(base=base, universe_id=uid, actor=actor, grant_id=grant_id)
     if gate is not None:
         return gate
-    ledger = ConnectionLedger(base / "outbound.db")
-    grant = ledger.get_grant(grant_id)
-    connection_id = grant.connection_id
+    try:
+        connection_id = granted_resource_row(
+            base, principal=actor, command_center=uid, grant_id=grant_id)["connection_id"]
+    except GrantResolutionError:
+        return dict(_NOT_FOUND)
+
+    def capability(capability_kind, **kwargs):
+        return capability_operation(base, principal=actor, command_center=uid,
+                                    grant_id=grant_id, connection_id=connection_id,
+                                    capability_kind=capability_kind, **kwargs)
     model = uses.get("model")
     if model is not None:
         try:
-            current = ledger.get_connection_capability(connection_id, "model_use")
+            current = capability("model_use")
+        except (PermissionError, GrantResolutionError):
+            return dict(_NOT_FOUND)
         except (LookupError, ValueError):
             current = None
         if not owner_confirmed and (current is None or current.descriptor() != model):
@@ -192,8 +203,8 @@ def apply_connection_uses(
                               "uses": sorted(uses)}
     try:
         if constant_headers:
-            ledger.configure_capability(
-                connection_id=connection_id, capability_kind="constant_headers",
+            capability(
+                "constant_headers", action="configure",
                 descriptor={"headers": constant_headers}, enabled=True,
             )
             result["constant_headers"] = dict(constant_headers)
@@ -201,8 +212,8 @@ def apply_connection_uses(
             definition = _definition_for(
                 uid, actor, grant_id, model["wire"], model["models"][0]["id"],
             )
-            ledger.configure_capability(
-                connection_id=connection_id, capability_kind="model_use",
+            capability(
+                "model_use", action="configure",
                 descriptor=model, enabled=True,
             )
             result.update({
@@ -210,7 +221,7 @@ def apply_connection_uses(
                 "provider": f"api_key_http:{definition.id}",
                 "model": model,
             })
-    except (LookupError, PermissionError):
+    except (LookupError, PermissionError, GrantResolutionError):
         return dict(_NOT_FOUND)
     except (ProviderDefinitionError, SsrfValidationError, ValueError) as exc:
         return {"error": "connection_setup_invalid", "detail": str(exc)}
@@ -256,9 +267,9 @@ def configure_connection(*, universe_id: str = "", payload: Any = None) -> dict[
     """
     from tinyassets.api import permissions
     from tinyassets.api.helpers import _base_path, _request_universe
+    from tinyassets.broker.ledger_queries import CONNECTION_GRANTS, query_ledger
     from tinyassets.daemon_server import list_universe_acl
     from tinyassets.principals import named_principal
-    from tinyassets.storage.outbound_connections import ConnectionLedger
 
     if not permissions.is_authenticated_request():
         return {"error": "authentication_required", "resource": "connection"}
@@ -294,13 +305,13 @@ def configure_connection(*, universe_id: str = "", payload: Any = None) -> dict[
     if not connection_id:
         return {"error": "connection_setup_invalid",
                 "detail": "name the connection by destination or connection_id"}
-    ledger = ConnectionLedger(base / "outbound.db")
-    grants = [g for g in ledger.list_grants(owner_user_id=actor, universe_id=uid, limit=1000)
-              if g.connection_id == connection_id and g.revoked_at is None]
+    grants = query_ledger(base, query=CONNECTION_GRANTS, principal=actor,
+                          command_center=uid, grant_id="lookup",
+                          connection_id=connection_id)["grant_ids"]
     if len(grants) != 1:
         return dict(_NOT_FOUND)
     applied = apply_connection_uses(
-        base=Path(base), uid=uid, actor=actor, grant_id=grants[0].grant_id,
+        base=Path(base), uid=uid, actor=actor, grant_id=grants[0],
         uses=uses, constant_headers=headers,
     )
     if applied.get("error"):

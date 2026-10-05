@@ -226,6 +226,7 @@ def _query_consumers(root, supervisor):
     print("D26 actual HTTP compute source/proxy consumers via launcher broker: "
           "scoped reads/acquisition, foreign refusal, no daemon ledger: PASS "
           "(inference accounting/POST not claimed)", flush=True)
+    _capability_consumers(root, supervisor)
     for changes in ({"principal": "bob"}, {"command_center": "bob"},
                     {"grant_id": "grant-bob"}, {"connection_id": "conn-bob"}):
         try:
@@ -279,6 +280,53 @@ def _query_consumers(root, supervisor):
     assert not (root / "outbound.db").exists(), "daemon constructed a fallback ledger"
     print("D11 actual discovery/priced-source consumers via launcher broker; "
           "foreign scope, fence, SQL/path/method refusal; no local ledger: PASS", flush=True)
+
+
+def _capability_consumers(root, supervisor):
+    from tinyassets.api.connection_uses import apply_connection_uses
+    from tinyassets.broker.capabilities import capability_operation
+    from tinyassets.broker.client import BrokerClient, BrokerRefused
+    from tinyassets.broker.ledger_queries import CONNECTION_GRANTS, query_ledger
+    from tinyassets.storage.outbound_connections import GrantResolutionError
+
+    scope = dict(principal="alice", command_center="alice", grant_id="grant-alice",
+                 connection_id="conn-alice", capability_kind="constant_headers")
+    applied = apply_connection_uses(base=root, uid="alice", actor="alice",
+                                    grant_id="grant-alice", uses={},
+                                    constant_headers={"X-Fixture": "broker"})
+    assert applied["constant_headers"] == {"X-Fixture": "broker"}
+    assert capability_operation(root, **scope).descriptor() == {
+        "headers": {"X-Fixture": "broker"}}
+    assert query_ledger(root, query=CONNECTION_GRANTS, principal="alice",
+                         command_center="alice", grant_id="lookup",
+                         connection_id="conn-alice") == {"grant_ids": ["grant-alice"]}
+    for changes in ({"principal": "bob"}, {"command_center": "bob"},
+                    {"grant_id": "grant-bob"}, {"connection_id": "conn-bob"}):
+        try:
+            capability_operation(root, **(scope | changes), action="configure", enabled=True,
+                                 descriptor={"headers": {"X-Fixture": "foreign"}})
+        except GrantResolutionError:
+            pass
+        else:
+            raise AssertionError("capability mutation admitted foreign scope")
+    bad = BrokerClient(supervisor.socket_path, principal="alice", command_center="alice",
+                       fence=lambda: (1, "wrong"), verify_peer=supervisor.verify_broker, timeout=5)
+    try:
+        bad.capability(dict(action="configure", grant_id="grant-alice",
+                            connection_id="conn-alice", capability_kind="constant_headers",
+                            descriptor={"headers": {"X-Fixture": "unfenced"}},
+                            enabled=True, preview=False))
+    except BrokerRefused:
+        pass
+    else:
+        raise AssertionError("capability mutation admitted invalid fence")
+    assert capability_operation(root, **scope).descriptor() == {
+        "headers": {"X-Fixture": "broker"}}
+    assert capability_operation(root, **scope, action="configure", enabled=False) is None
+    assert capability_operation(root, **scope) is None
+    assert not (root / "outbound.db").exists()
+    print("D27 actual connection-uses capability mutation via launcher broker: "
+          "configure/read/disable, foreign/fence refusal, no daemon ledger: PASS", flush=True)
 
 
 def _daemon(root, run, ready, control, launcher):

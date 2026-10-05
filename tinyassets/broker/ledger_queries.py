@@ -13,8 +13,9 @@ DISCOVERY_FACTS = "DISCOVERY_FACTS"
 HAS_PRICED_SOURCE = "HAS_PRICED_SOURCE"
 GRANTED_RESOURCE = "GRANTED_RESOURCE"
 AUTHORIZED_CONNECTION = "AUTHORIZED_CONNECTION"
+CONNECTION_GRANTS = "CONNECTION_GRANTS"
 QUERIES = frozenset({DISCOVERY_FACTS, HAS_PRICED_SOURCE, GRANTED_RESOURCE,
-                     AUTHORIZED_CONNECTION})
+                     AUTHORIZED_CONNECTION, CONNECTION_GRANTS})
 
 
 def validate_query(query, principal, command_center, grant_id, connection_id):
@@ -25,7 +26,7 @@ def validate_query(query, principal, command_center, grant_id, connection_id):
             raise ValueError("invalid ledger query scope")
     if not isinstance(connection_id, str) or len(connection_id) > 512 or "\0" in connection_id:
         raise ValueError("invalid connection identity")
-    if query in {HAS_PRICED_SOURCE, AUTHORIZED_CONNECTION} and not connection_id:
+    if query in {HAS_PRICED_SOURCE, AUTHORIZED_CONNECTION, CONNECTION_GRANTS} and not connection_id:
         raise ValueError("missing connection identity")
 
 
@@ -37,6 +38,16 @@ def local_query(ledger, *, query: str, principal: str, command_center: str,
     validate_query(query, principal, command_center, grant_id, connection_id)
     with ledger._connect() as conn:
         conn.execute("BEGIN")
+        if query == CONNECTION_GRANTS:
+            rows = conn.execute(
+                "SELECT g.grant_id FROM outbound_connection_grants g "
+                "JOIN outbound_connections c ON c.connection_id=g.connection_id "
+                "WHERE g.owner_user_id=? AND c.owner_user_id=? AND g.universe_id=? "
+                "AND g.connection_id=? AND g.revoked_at IS NULL AND c.revoked_at IS NULL "
+                "ORDER BY g.grant_id LIMIT 1001",
+                (principal, principal, command_center, connection_id),
+            ).fetchall()
+            return {"grant_ids": [row[0] for row in rows]}
         if query == HAS_PRICED_SOURCE:
             # Connect asks run before a first deposit/grant. An actually absent
             # pair has no priced source; an existing, revoked or foreign row

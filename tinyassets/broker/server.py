@@ -295,6 +295,9 @@ class _Connection:
         if op == "LEDGER_QUERY":
             answer = await asyncio.to_thread(self._ledger_query, doc)
             await self.send_async(rf.control(rf.CONNECTION, answer))
+        elif op == "CAPABILITY":
+            answer = await asyncio.to_thread(self._capability, doc)
+            await self.send_async(rf.control(rf.CONNECTION, answer))
         elif op == "FENCE":
             try:
                 generation, token = await asyncio.to_thread(
@@ -345,6 +348,44 @@ class _Connection:
                 "GrantResolutionError" if type(exc).__name__ == "GrantResolutionError"
                 else "refused")
             return {"op": "LEDGER_REFUSED", "error_class": error}
+
+    def _capability(self, doc: dict[str, Any]) -> dict[str, Any]:
+        from tinyassets.broker.capabilities import local_operation, validate
+        from tinyassets.storage.outbound_connections import (
+            MODEL_USE_PRICED_CONFLICT,
+            SsrfValidationError,
+        )
+
+        try:
+            if set(doc) != {"op", "principal", "command_center", "generation", "token",
+                            "document"}:
+                raise ValueError("unsupported capability fields")
+            _namespace(doc["principal"], doc["command_center"])
+            validate(doc["document"])
+            if type(doc["generation"]) is not int or not isinstance(doc["token"], str):
+                raise Fenced("invalid fence")
+            with self._server._fence.send(doc["generation"], doc["token"]):
+                result = local_operation(self._server._ledger_for(doc["principal"]),
+                                         principal=doc["principal"],
+                                         command_center=doc["command_center"],
+                                         document=doc["document"])
+                answer = {"op": "CAPABILITY_RESULT", "result": result}
+                rf.control(rf.CONNECTION, answer)
+                return answer
+        except Exception as exc:  # noqa: BLE001 - no persisted values or secrets on the wire
+            if isinstance(exc, Fenced):
+                error = "fenced"
+            elif isinstance(exc, SsrfValidationError):
+                error = "endpoint"
+            elif type(exc).__name__ == "GrantResolutionError":
+                error = "GrantResolutionError"
+            elif isinstance(exc, LookupError):
+                error = "lookup"
+            elif isinstance(exc, ValueError):
+                error = "priced_conflict" if str(exc) == MODEL_USE_PRICED_CONFLICT else "invalid"
+            else:
+                error = "refused"
+            return {"op": "CAPABILITY_REFUSED", "error_class": error}
 
     def _operation_state(self, namespace: str, op_id: str) -> tuple[str, str]:
         """``(state, side_effect_state)`` of an operation, never ``none`` on a guess."""

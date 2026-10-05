@@ -119,6 +119,51 @@ class BrokerClient:
             raise ProxyRequestError("invalid credential broker query response")
         return answer["result"]
 
+    def capability(self, document: dict[str, Any]) -> dict[str, Any]:
+        """Bounded capability metadata operation; mutations are never replayed."""
+        from tinyassets.broker.capabilities import validate
+        from tinyassets.storage.outbound_connections import (
+            MODEL_USE_PRICED_CONFLICT,
+            GrantResolutionError,
+            ProxyRequestError,
+            SsrfValidationError,
+        )
+
+        validate(document)
+        generation, token = self._fence()
+        wire = {"op": "CAPABILITY", "principal": self._principal,
+                "command_center": self._command_center, "generation": generation,
+                "token": token, "document": document}
+        with self._lock, socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+            sock.settimeout(self._timeout)
+            try:
+                sock.connect(os.fspath(self._path))
+                if self._verify_peer is not None:
+                    self._verify_peer(sock)
+                sock.sendall(rf.control(rf.CONNECTION, wire))
+                frame = rf.read_frame_blocking(sock)
+                if frame is None or frame.kind != rf.CONTROL or frame.stream != rf.CONNECTION:
+                    raise rf.FrameError("invalid capability response")
+                answer = frame.control()
+            except (OSError, rf.FrameError):
+                raise ProxyRequestError("broker capability outcome unavailable") from None
+        if answer.get("op") == "CAPABILITY_REFUSED":
+            kind = answer.get("error_class")
+            if kind == "GrantResolutionError":
+                raise GrantResolutionError("outbound connection grant identity mismatch")
+            if kind == "invalid":
+                raise ValueError("capability descriptor is invalid or not permitted")
+            if kind == "endpoint":
+                raise SsrfValidationError("capability URLs are not permitted")
+            if kind == "lookup":
+                raise LookupError("capability connection unavailable")
+            if kind == "priced_conflict":
+                raise ValueError(MODEL_USE_PRICED_CONFLICT)
+            raise BrokerRefused("credential broker capability refused")
+        if answer.get("op") != "CAPABILITY_RESULT" or not isinstance(answer.get("result"), dict):
+            raise ProxyRequestError("invalid credential broker capability response")
+        return answer["result"]
+
     def request(self, *, grant_id: str, connection_id: str, verb: str, request: dict[str, Any],
                 op_id: str, idle_s: float | None = None,
                 inference_usage: dict[str, Any] | None = None) -> dict[str, Any]:

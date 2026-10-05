@@ -27,15 +27,14 @@ def configure_provider_capability(
 
     from tinyassets.api import permissions
     from tinyassets.api.helpers import _base_path, _universe_dir
+    from tinyassets.broker.capabilities import capability_operation
+    from tinyassets.broker.ledger_queries import authorized_connection
     from tinyassets.daemon_server import get_founder_home, list_universe_acl
     from tinyassets.principals import named_principal
     from tinyassets.provider_serving_binding import (
         resolve_current_serving_provider_authority,
     )
-    from tinyassets.storage.outbound_connections import (
-        ConnectionLedger,
-        SsrfValidationError,
-    )
+    from tinyassets.storage.outbound_connections import GrantResolutionError, SsrfValidationError
 
     if not permissions.is_authenticated_request():
         return {"error": "authentication_required", "resource": "connection"}
@@ -101,27 +100,22 @@ def configure_provider_capability(
             "resource": "provider_capability",
         }
 
-    ledger = ConnectionLedger(base / "outbound.db")
-    grant = ledger.get_grant(authority.grant_id)
-    connection = ledger.get_connection_view(authority.connection_id)
-    if (
-        grant is None
-        or connection is None
-        or grant.revoked_at is not None
-        or connection.revoked_at is not None
-        or grant.connection_id != authority.connection_id
-        or grant.owner_user_id != actor
-        or connection.owner_user_id != actor
-        or grant.universe_id != home
-    ):
+    try:
+        authorized_connection(base, principal=actor, command_center=home,
+                              grant_id=authority.grant_id, connection_id=authority.connection_id)
+    except GrantResolutionError:
         return dict(_NOT_FOUND)
     try:
-        capability = ledger.configure_capability(
+        capability = capability_operation(
+            base, principal=actor, command_center=home, grant_id=authority.grant_id,
+            action="configure",
             connection_id=authority.connection_id,
             capability_kind=document.get("capability_kind"),
             descriptor=document.get("descriptor"),
             enabled=enabled,
         )
+    except GrantResolutionError:
+        return dict(_NOT_FOUND)
     except (LookupError, PermissionError, SsrfValidationError, ValueError) as exc:
         return {"error": "provider_capability_invalid", "detail": str(exc)}
     response: dict[str, Any] = {
@@ -140,9 +134,11 @@ def _configure_model_discovery(
     """Use an owned verified definition, never require a powered serving LLM."""
     from tinyassets.api.compute_connection import _validate_http_grant
     from tinyassets.api.helpers import _base_path, _request_universe
+    from tinyassets.broker.capabilities import capability_operation
+    from tinyassets.broker.ledger_queries import granted_resource_row
     from tinyassets.daemon_server import list_universe_acl
     from tinyassets.providers.definition import get_definition
-    from tinyassets.storage.outbound_connections import ConnectionLedger, SsrfValidationError
+    from tinyassets.storage.outbound_connections import GrantResolutionError, SsrfValidationError
 
     base = _base_path()
     uid = _request_universe(universe_id)
@@ -178,20 +174,18 @@ def _configure_model_discovery(
     gate = _validate_http_grant(base=base, universe_id=uid, actor=actor, grant_id=definition.ref)
     if gate is not None:
         return gate
-    ledger = ConnectionLedger(base / "outbound.db")
-    grant = ledger.get_grant(definition.ref)
-    if grant is None or grant.owner_user_id != actor or grant.universe_id != uid:
-        return dict(_NOT_FOUND)
     try:
-        capability = ledger.configure_capability(
-            connection_id=grant.connection_id,
+        row = granted_resource_row(base, principal=actor, command_center=uid,
+                                   grant_id=definition.ref)
+        capability = capability_operation(
+            base, principal=actor, command_center=uid, grant_id=definition.ref,
+            action="configure", connection_id=row["connection_id"],
             capability_kind="model_discovery",
             descriptor=document.get("descriptor"),
             enabled=enabled,
-            expected_grant=grant,
             preview=preview,
         )
-    except (LookupError, PermissionError):
+    except (LookupError, PermissionError, GrantResolutionError):
         return dict(_NOT_FOUND)
     except (SsrfValidationError, ValueError):
         return {

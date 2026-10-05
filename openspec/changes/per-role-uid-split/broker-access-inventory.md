@@ -5,7 +5,8 @@ that baseline runtime. **Routing status: partial; D19 routes two raw reads,
 D20 discovery HTTP, D23 compute-grant/incarnation/display reads,
 D24 effector authority/proxy and bound-preview reads,
 D25 serving context/connection-id custody reads,
-D26 HTTP compute authority reads and proxy acquisition.** D11
+D26 HTTP compute authority reads and proxy acquisition; D27 connection-use and
+provider-capability configuration plus voice binding/proxy acquisition.** D11
 records the lead decision; D12 resolves the physical parent: .broker/outbound.db and
 .broker/.outbound-proxy. The logical data root must remain explicit.
 
@@ -224,3 +225,14 @@ reservation); subsequent verify_open_grant_custody still rechecks the live
 credential reference digest. Launcher probes cover actual reads and foreign
 refusal before/after restart. Linux tests cover real bind/enable/authorize/reserve
 with daemon ledger construction forbidden. No other inventory row is discharged.
+
+## D27 consumer receipt
+
+`connection_uses.apply_connection_uses` and `configure_connection`, both provider
+capability configuration paths, and realtime voice binding/proxy acquisition now
+use named scoped broker operations. All capability kinds recheck live grant and
+resource scope in their actual read/write transaction. Existing pricing and
+endpoint guards remain. No daemon ledger is constructed in selected mode.
+`connection_uses_view` still requires an injected ledger; model_bootstrap,
+model_bootstrap_candidate and agent_request_usage retain direct capability reads.
+Those rows, other ledger mutations, accounting and refresh remain obligations.
