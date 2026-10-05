@@ -46,7 +46,7 @@ from tinyassets.engine_conversation_attention import ConversationAttention
 from tinyassets.engine_read_views import compact_model_options, universe_status_view
 from tinyassets.engine_steering import OwnerSteering
 from tinyassets.engine_tool_activity import ToolActivity
-from tinyassets.starter_skills import connect_skill
+from tinyassets.starter_skills import connect_skill, share_skill
 
 #: What a JSON-carrying argument (``write_graph payload_json``, ``run_graph
 #: inputs_json``) accepts on the wire: the JSON TEXT, or the value itself
@@ -2199,6 +2199,9 @@ _WRITE_GRAPH_INTERFACES_CHAPTER = """\
     ``screenshot`` -- a PNG in /u that I look at with ``read``. I check it after
     building or changing a UI, before telling the person it is ready. One render
     at a time; ``ui_preview_busy`` means try again shortly.
+    After publishing, ``query="publication:<listing_id>"`` previews that immutable
+    public screen instead of your live private UI. Only its publisher can render
+    it into their own command center. Publish completion supplies the image path.
 
     **Switching to it.** I switch it with ``activate`` / ``use_default`` above; the
     person can also use "Switch command center" in the app, and the choice is remembered.
@@ -2468,6 +2471,7 @@ _WRITE_GRAPH_CHAPTERS: dict[str, str] = {
     "branches": _WRITE_GRAPH_BRANCHES_CHAPTER,
     "connections": _WRITE_GRAPH_CONNECTIONS_CHAPTER,
     "connect": connect_skill(),
+    "share-after-publish": share_skill(),
     "code_nodes": _WRITE_GRAPH_CODE_NODES_CHAPTER,
     "workspaces": _WRITE_GRAPH_WORKSPACES_CHAPTER,
     "delivering": _WRITE_GRAPH_DELIVERING_CHAPTER,
@@ -3101,6 +3105,11 @@ def write_graph(
     * ``connect`` -- the editable connect-anything starter skill. To install it
       in an existing account, save the chapter's text as ``skills/connect/SKILL.md``
       with ``write``. Read any existing file first and preserve the user's edits.
+    * ``share-after-publish`` -- editable starter skill for offering a post and
+      public preview after a successful publish or update. Existing accounts can
+      save it as ``skills/share-after-publish/SKILL.md`` with ``write``; read first
+      and preserve edits. Completion is in the publish response and the resolved
+      request's ``answer.completion``. Publishing approval never approves a post.
     * ``code_nodes`` -- a node that runs my own Python instead of a prompt: the
       ``run(state, effects)`` contract, what ``effects`` exposes, reading the
       exact bytes of a file the user attached, and agent nodes.

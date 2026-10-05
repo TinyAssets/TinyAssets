@@ -9,7 +9,7 @@ carry no concept frontmatter — root ``index.md`` permits only ``okf_version``
 tracks the *latest-main* OKF spec on GitHub rather than a pinned copy, so it
 never goes stale.
 
-OKF files seeded (13), plus the editable skills/connect/SKILL.md:
+OKF files seeded (13), plus editable connect and share-after-publish starter skills:
 
     index.md  log.md  soul.md  soul.edit.md  identity.md  founder.md
     orgchart.md  projects.md  goals.md  body.md  origin.md
@@ -30,7 +30,12 @@ from pathlib import Path
 
 import yaml
 
-from tinyassets.starter_skills import CONNECT_SKILL_PATH, connect_skill
+from tinyassets.starter_skills import (
+    CONNECT_SKILL_PATH,
+    SHARE_SKILL_PATH,
+    connect_skill,
+    share_skill,
+)
 from tinyassets.universe_files import write_data_path
 from tinyassets.universe_soul import (
     SOUL_FILENAME,
@@ -410,6 +415,11 @@ def seed_okf_bundle(
     # Preserve an existing skill if a caller repeats provisioning.
     try:
         write_data_path(universe_dir / CONNECT_SKILL_PATH, connect_skill(), mode="exclusive")
+    except FileExistsError:
+        pass
+
+    try:
+        write_data_path(universe_dir / SHARE_SKILL_PATH, share_skill(), mode="exclusive")
     except FileExistsError:
         pass
 

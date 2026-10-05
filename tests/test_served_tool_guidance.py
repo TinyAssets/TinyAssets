@@ -76,7 +76,7 @@ SPLIT_CHAPTER_ORDER = (
     "interfaces", "systems",
 )
 # New handbook content is not part of the historical docstring relocation.
-CHAPTER_ORDER = (*SPLIT_CHAPTER_ORDER, "connect")
+CHAPTER_ORDER = (*SPLIT_CHAPTER_ORDER, "connect", "share-after-publish")
 
 #: The passage a LATER change deliberately DELETED, verbatim.
 #:

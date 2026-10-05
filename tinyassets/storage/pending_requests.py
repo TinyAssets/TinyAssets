@@ -892,6 +892,37 @@ def withdraw_request(
             "detail": "this ask was raised by the platform, not by you"}
 
 
+def update_publication_preview(universe_dir: Path, request_id: str, *,
+                               completion: dict[str, Any]) -> bool:
+    """Enrich exactly the resolved publish receipt, then wake its existing readers.
+
+    A single SQLite transaction serializes this metadata-only update. Do not
+    reacquire the approval's owner-control lock on the background thread.
+    """
+    with _db(universe_dir) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute(
+            "SELECT answer_json, kind, action_json FROM pending_requests "
+            "WHERE request_id=? AND status='answered'", (request_id,),
+        ).fetchone()
+        if row is None or json.loads(row[2]).get("type") != "publish":
+            return False
+        answer = json.loads(row[0] or "{}")
+        previous = answer.get("completion", {})
+        if (previous.get("listing_id") != completion["listing_id"]
+                or previous.get("preview_status") != "pending"):
+            return False
+        answer["completion"] = completion
+        conn.execute("UPDATE pending_requests SET answer_json=?, resolved_at=? WHERE request_id=?",
+                     (json.dumps(answer), time.time(), request_id))
+    from tinyassets.automation_events import emit_pending_request_answered
+
+    emit_pending_request_answered(universe_dir, request_id=request_id,
+                                  kind=str(row[1]), status="answered")
+    _requeue_waiting_activity(universe_dir, request_id)
+    return True
+
+
 def list_resolved(universe_dir: Path, limit: int = 20) -> list[dict[str, Any]]:
     """Recently answered requests — how the agent reads what it was told."""
     try:

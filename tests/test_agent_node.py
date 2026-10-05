@@ -105,6 +105,8 @@ def engine(tmp_path, monkeypatch, work_agent):
                 })}
             calls = state.script.pop(0) if state.script else []
             message = {"role": "assistant", "content": None if calls else "steward done"}
+            if isinstance(calls, str):
+                message["content"], calls = calls, []
             if calls:
                 message["tool_calls"] = [
                     {"id": f"tool-{index}", "type": "function", "function": call}
