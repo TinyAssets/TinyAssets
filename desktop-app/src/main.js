@@ -14,7 +14,7 @@
 //   - hardened webPreferences (contextIsolation, no nodeIntegration, sandbox);
 //   - an EXACT-origin https navigation allow-list applied to EVERY WebContents,
 //     covering will-navigate, will-frame-navigate, will-redirect, and popups;
-//   - shell.openExternal only for https URLs (never file:/custom schemes → RCE);
+//   - shell.openExternal only for HTTP(S) URLs (never file:/custom schemes → RCE);
 //   - all web permissions (camera/mic/geo/…) denied by default;
 //   - the dev URL override is ignored in a packaged build.
 'use strict';
@@ -90,7 +90,7 @@ function noteHandedOff(url) {
 }
 
 // Route a blocked navigation target to the system browser — but ONLY if the URL
-// itself is safe to hand to the OS (https). file:/javascript:/data:/custom
+// itself is safe to hand to the OS (HTTP(S)). file:/javascript:/data:/custom
 // schemes are dropped silently (openExternal on untrusted input is an RCE vector).
 function openExternalIfSafe(url) {
   if (isSafeExternal(url)) {
@@ -124,7 +124,7 @@ function applyNavigationPolicy(contents) {
   // event.isMainFrame names the frame being navigated.
   contents.on('will-redirect', (event) => decide(event, event.url, event.isMainFrame));
   contents.on('will-frame-navigate', (event) => decide(event, event.url, event.isMainFrame));
-  // Deny ALL new windows. An allowed https target opens in the system browser;
+  // Deny ALL new windows. An allowed HTTP(S) target opens in the system browser;
   // nothing gets a fresh, policy-less WebContents inside the app.
   contents.setWindowOpenHandler(({ url }) => {
     openExternalIfSafe(url);

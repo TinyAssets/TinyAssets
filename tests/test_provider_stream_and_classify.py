@@ -111,9 +111,9 @@ def _api_retry(error: str, error_status: int, retry_delay_ms: int) -> dict:
 def _rate_limit_event(status: str, *, resets_at: float | None = None) -> dict:
     """A REAL Claude 2.1.236 top-level ``rate_limit_event``.
 
-    ``rate_limit_info.status`` == "allowed" is informational (the reference
-    trace shows it on a SUCCESSFUL turn); any other status is an active limit,
-    with ``resetsAt`` a unix-seconds reset time.
+    ``rate_limit_info.status`` == "rejected" is an active limit, with
+    ``resetsAt`` a unix-seconds reset time; "allowed" and "allowed_warning" are
+    informational (the reference trace shows "allowed" on a SUCCESSFUL turn).
     """
     info: dict = {
         "status": status,
@@ -967,17 +967,42 @@ class TestFailureTaxonomy:
 
     def test_rate_limit_event_non_allowed_is_rate_limited(self):
         import time as _time
-        # A non-"allowed" status is an active limit; retry_after derives from
+        # A "rejected" status is an active limit; retry_after derives from
         # resetsAt (unix seconds).
         resets = _time.time() + 40
         proc = FakeStreamProcess([
             _line(INIT),
-            _line(_rate_limit_event("blocked", resets_at=resets)),
+            _line(_rate_limit_event("rejected", resets_at=resets)),
         ], returncode=0)
         with pytest.raises(ProviderRateLimitedError) as ei:
             _run_stream(proc, _FAST)
         assert ei.value.failure_class == "provider_rate_limited"
         assert 30 <= ei.value.retry_after <= 45  # ~40s from resetsAt
+
+    def test_rate_limit_event_allowed_warning_is_informational_not_a_failure(self):
+        import time as _time
+        # 2026-10-05 outage: "allowed_warning" with the weekly window's resetsAt
+        # (days away) was read as a limit and cooled the source for a day while
+        # the account was still allowed. It is a heartbeat, never a failure.
+        weekly = _time.time() + 410_349
+        proc = FakeStreamProcess([
+            _line(INIT),
+            _line(_rate_limit_event("allowed_warning", resets_at=weekly)),
+            _line(_assistant_text("still fine")),
+            _line(_result("still fine")),
+        ])
+        resp = _run_stream(proc, _FAST)
+        assert resp.text == "still fine"
+        # And when the turn then ends WITHOUT a result for some other reason, the
+        # warning must not be blamed: no rate-limit class, no day-long cooldown.
+        proc = FakeStreamProcess([
+            _line(INIT),
+            _line(_rate_limit_event("allowed_warning", resets_at=weekly)),
+        ], returncode=1)
+        with pytest.raises(Exception) as ei:
+            _run_stream(proc, _FAST)
+        assert not isinstance(ei.value, ProviderRateLimitedError)
+        assert getattr(ei.value, "retry_after", None) is None
 
     def test_known_retry_delay_longer_than_idle_is_not_killed_as_idle(self):
         # Blocker B: a documented retry states a 0.8s wait — longer than the
