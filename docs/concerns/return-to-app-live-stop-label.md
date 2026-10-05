@@ -1,3 +1,10 @@
+---
+severity: P2
+title: Return-to-app "you stopped this turn" live trigger not reproduced
+filed: '2026-10-04'
+summary: PR 4458 stops unexplained interruptions being attributed to an owner Stop, but the founder's live case was not reproduced; an unhandled Escape or a real Stop request remains possible
+---
+
 # Return-to-app Stop attribution: live trigger not reproduced
 
 Founder report, 2026-10-04: a resent turn ended with "you stopped this turn"
