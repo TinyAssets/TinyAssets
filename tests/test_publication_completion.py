@@ -1,8 +1,7 @@
 """Real publishing and owner receipts; only the isolated renderer is replaced."""
 import json
-import sqlite3
-
 import shutil
+import sqlite3
 
 import pytest
 
