@@ -68,6 +68,53 @@ something real). Those are the categories AGENTS.md says to specify first.
 
 ## D3. Every store, registered
 
+### Runtime accounting repair (2026-10-04)
+
+The production read-only inventory found 98,186,082 bytes in the founder home's
+`.credentials` tree, in addition to 445,009,987 bytes in the already-excluded
+`.runtime` tree. The effective quota was 2 GiB, not the raw folder size.
+Exclude the platform's credential materialization/cache directory as well:
+provider launches must create its mountpoint before masking hidden roots, and
+tool jails never expose hidden roots. Nested lookalikes and arbitrary cache or
+backup names remain charged. Consent sidecars outside the home are platform
+bytes; writable in-home `.premigration` and database backup copies remain charged.
+The status footprint must categorize credential materialization with provider
+runtime and explicitly distinguish raw observed bytes from account usage.
+A jail's fitted reservation can fail because of other reservations or its
+headroom holdback. That is not proof of a full measured account: retain grace
+and the notice, but say capacity is reserved instead of claiming storage is full.
+
+The cross-family review found a pre-existing escape in writable `.runtime`.
+Provider-child homes/caches now use a sized disposable tmpfs. Every on-disk
+persistent runtime path, including `agent-sessions`, legacy CLI homes and
+`provider-launch-credentials`, is included in `universe_files` and in status's
+other-files category. This charges resumable transcripts and arbitrary writes
+even across launches without breaking legacy CLI homes. Retained provider-child
+caches are masked, charged, and not deleted. The platform creates every excluded mountpoint
+before first launch, including checkout staging.
+The credential inventory was verified without reading contents: Codex `.tmp`
+67,633,721 bytes and `plugins` 28,849,650 bytes dominate; Claude's materialization
+is 47,415 bytes. The founder's provider attribution was not exact.
+
+Review disposition: AGREE on the runtime escape (closed by disposable cache
+mounts plus charging all persistent runtime writes). AGREE on the misleading
+wait advice (separate active reservations, committed remeasurement, and ordinary
+write headroom). DISAGREE_EVIDENCE with calling headroom alone "out of storage":
+the account is below its real quota; the regression test now covers that case.
+
+Round 2 disposition: AGREE with review areas (1) and (5). Renaming `.runtime`
+can relocate the disposable mount and recreate `provider-child` on disk. Remove
+all name-based runtime exclusions: the host walk charges every persistent runtime
+file, including retained caches, while jail tmpfs writes disappear. No migration
+or cache deletion is needed; this preserves auth and native sessions. The real-jail
+regression writes 5,000,000 bytes after the rename, checks accounting with and
+without the old directory, and verifies it remains charged after another launch.
+The round-2 cross-family review returned AGREE: no correctness or floor findings;
+auth bindings are unchanged, and one host walk still deduplicates hard links.
+Round-2 validation: Windows 188 passed / 51 platform skips; Linux Python 3.11.16
+oracle 239 passed / zero skips, including both 5 MB rename regressions. Ruff,
+plugin mirror parity and spec validation pass; hygiene 0 removed / 0 tampering.
+
 Accounting enumerates stores from one registry, `storage_accounting.STORES`.
 The table lists each store, where its bytes live, what attributes them, how it
 is measured, and whether writes to it are gated.
@@ -83,9 +130,8 @@ is measured, and whether writes to it are gated.
 | `commons_pages` | `<data>/wiki` | writer, recorded at write (Q3) | per-row size | yes |
 | scratch | `<data>/scratch` | none (shared pool) | pool ledger, host line only | pool bounds (unchanged) |
 
-- **Counted but excluded from the account:** `.runtime/`, the platform's own
-  provider runtime. `usage_policy`'s earlier note found it to be about 99% of
-  the raw footprint, and the user didn't put it there.
+- **Persistent runtime is charged:** every on-disk `.runtime/` file, including
+  provider-child caches; only disposable jail mounts leave no persistent bytes.
 - **Counted and never gated:** the credential vault, session and auth stores,
   subscription state, chat history, run records and checkpoints. These bytes
   are inside `universe_files` or the shared stores above, so they show in the

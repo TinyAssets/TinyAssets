@@ -76,6 +76,38 @@ def test_owner_refusal_distinguishes_measurements_and_pending_states(base):
 
 
 class TestOnePoolPerAccount:
+    @pytest.mark.parametrize(
+        "directory",
+        ["agent-sessions", "provider-launch-credentials", "arbitrary", "provider-child"],
+    )
+    def test_writable_runtime_is_charged_across_launches(self, base, directory):
+        udir = _universe(base, "u-one", A)
+        target = udir / ".runtime" / directory
+        target.mkdir(parents=True)
+        for turn in range(3):
+            _write(target, f"turn-{turn}", 30 * KIB)
+            sa.measure(base, udir.name, "universe_files")
+            assert sa.usage(base, A).measured_bytes == (turn + 1) * 30 * KIB
+        with pytest.raises(sa.StorageRefused):
+            _admit(base, udir.name, 11 * KIB)
+
+    def test_hardlink_between_runtime_and_user_folder_is_charged_once(self, base):
+        udir = _universe(base, "u-one", A)
+        _write(udir, "mine.bin", 30 * KIB)
+        (udir / ".runtime").mkdir()
+        (udir / ".runtime" / "duplicate").hardlink_to(udir / "mine.bin")
+        assert sa.measure(base, udir.name, "universe_files") == 30 * KIB
+
+    @pytest.mark.parametrize("directory", [".claude", ".codex", ".cache", "notes/.credentials"])
+    def test_runtime_lookalikes_remain_charged(self, base, directory):
+        udir = _universe(base, "u-one", A)
+        target = udir / directory
+        target.mkdir(parents=True)
+        _write(target, "mine.bin", 101 * KIB)
+        with pytest.raises(sa.StorageRefused):
+            _admit(base, udir.name, 1)
+        assert sa.usage(base, A).measured_bytes == 101 * KIB
+
     def test_platform_consent_artifacts_do_not_exhaust_the_owners_pool(self, base):
         udir = _universe(base, "u-one", A)
         _write(udir, "mine.bin", 10 * KIB)
@@ -129,8 +161,8 @@ class TestOnePoolPerAccount:
 
     def test_platform_bytes_are_not_charged(self, base):
         udir = _universe(base, "u-one", A)
-        for platform_dir in (".runtime", ".workspace-staging"):
-            (udir / platform_dir).mkdir()
+        for platform_dir in (".credentials", ".workspace-staging"):
+            (udir / platform_dir).mkdir(parents=True)
             _write(udir / platform_dir, "big.bin", 500 * KIB)
         _write(udir, "mine.bin", 10 * KIB)
 

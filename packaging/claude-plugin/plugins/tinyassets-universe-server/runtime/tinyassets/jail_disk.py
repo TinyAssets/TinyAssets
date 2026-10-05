@@ -125,16 +125,15 @@ def floor_breach(path: Path, *, min_free_bytes: int, min_free_inodes: int) -> st
     return None
 
 
-#: The one top-level entry no jail can write (the provider jail masks every
-#: hidden directory but ``.runtime``; the tool jail binds an allowlist): the
-#: platform's own checkout staging, which a concurrent workspace node fills.
-_NOT_JAIL_WRITABLE = frozenset({".workspace-staging"})
+#: Protected platform directories: provider jails mask them even on first use;
+#: tool jails never bind them. Concurrent platform writes are not jail growth.
+_NOT_JAIL_WRITABLE = frozenset({".workspace-staging", ".credentials"})
 
 
 def _jail_writable_bytes(root: Path) -> int:
     """Bytes under everything a jail can write in this universe -- WIDER than
     the account's ``universe_files`` store, which leaves out ``.runtime`` and
-    ``workspaces`` (the provider jail can write both)."""
+    ``workspaces``. Runtime session/snapshot subtrees remain writable."""
     from tinyassets import storage_accounting
 
     return storage_accounting._walk_bytes(root, exclude_top=_NOT_JAIL_WRITABLE)
@@ -298,6 +297,20 @@ def _full_notice(refused) -> str:
             f"{_human(GRACE_BYTES)} to the command center]"
         )
     # Never the owner's numbers here: the caller may be a collaborator.
+    if refused.record["measured_bytes"] < refused.record["quota_bytes"]:
+        if refused.record["reserved_bytes"]:
+            reason = "write capacity is reserved for active calls; retry when they finish"
+        elif refused.record["committed_bytes"]:
+            reason = "recent writes await remeasurement; retry after storage is measured"
+        else:
+            reason = (
+                "remaining write capacity is held for ordinary writes; "
+                "free space for larger calls"
+            )
+        return (
+            f"[cloud storage {reason}: "
+            f"this call may add at most {_human(GRACE_BYTES)}, and is stopped past that]"
+        )
     return (
         "[this command center's owner is out of cloud storage: this call may add at most "
         f"{_human(GRACE_BYTES)}, and is stopped past that. Delete files to make room, "

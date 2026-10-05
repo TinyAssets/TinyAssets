@@ -299,7 +299,7 @@ _FILL = (
 )
 
 
-def _launch(universe: Path, script: str):
+def _launch(universe: Path, script: str, *, env=None):
     """One provider process through the shipping spawn point, run to its end."""
     from tinyassets.providers import owned_process
     from tinyassets.providers.provider_jail import provider_launch_scope
@@ -309,6 +309,7 @@ def _launch(universe: Path, script: str):
             proc = await owned_process.aspawn_owned(
                 ["/bin/sh", "-c", script],
                 stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+                env=env,
             )
         out, _ = await proc.communicate()
         await proc.disk_watch
@@ -361,8 +362,7 @@ def test_a_provider_launch_below_the_volume_floor_never_starts(world, monkeypatc
 
 
 def test_a_provider_filling_its_runtime_dir_is_stopped_too(world, monkeypatch):
-    """``.runtime`` is read-write in the provider jail and outside the account's
-    ``universe_files`` store; the launch's walk still counts it."""
+    """Persistent writable runtime is charged and the launch walk bounds growth."""
     from tinyassets import jail_disk
     from tinyassets.providers import owned_process
 
@@ -375,3 +375,76 @@ def test_a_provider_filling_its_runtime_dir_is_stopped_too(world, monkeypatch):
         assert b"filled" not in out
     finally:
         shutil.rmtree(target, ignore_errors=True)
+
+
+def test_provider_runtime_cache_writes_are_disposable_between_launches(world):
+    child = world.universe_a / ".runtime" / "provider-child"
+    child.mkdir()
+    for _ in range(3):
+        proc, out = _launch(
+            world.universe_a,
+            "mkdir -p .runtime/provider-child/home; "
+            "printf hidden > .runtime/provider-child/home/cache; echo done",
+        )
+        assert proc.returncode == 0 and b"done" in out
+        assert list(child.iterdir()) == []
+
+
+@pytest.mark.parametrize("remove_old", [False, True])
+def test_renamed_runtime_and_recreated_cache_are_charged_across_launches(world, remove_old):
+    from tinyassets.storage_accounting import _universe_files
+
+    root = world.universe_a
+    before = _universe_files(world.data_root, root.name)
+    proc, _ = _launch(
+        root,
+        "mv .runtime .rt-old && mkdir -p .runtime/provider-child && "
+        "head -c 5000000 /dev/zero > .runtime/provider-child/hidden",
+    )
+    assert proc.returncode == 0
+    hidden = root / ".runtime/provider-child/hidden"
+    assert hidden.stat().st_size == 5_000_000
+    assert _universe_files(world.data_root, root.name) == before + 5_000_000
+    if remove_old:
+        shutil.rmtree(root / ".rt-old")
+    charged = _universe_files(world.data_root, root.name)
+    assert charged >= 5_000_000
+    proc, _ = _launch(root, "test ! -e .runtime/provider-child/hidden")
+    assert proc.returncode == 0
+    assert hidden.stat().st_size == 5_000_000
+    assert _universe_files(world.data_root, root.name) == charged
+
+
+def test_provider_runtime_environment_directories_exist_inside_disposable_home(world):
+    from tinyassets.providers.base import _provider_child_runtime_env
+
+    env = _provider_child_runtime_env("claude-code", world.universe_a)
+    proc, out = _launch(
+        world.universe_a,
+        'test -d "$HOME" && test -d "$XDG_CACHE_HOME" && '
+        'head -c 20971520 /dev/zero > "$XDG_CACHE_HOME/probe" && echo done',
+        env=env,
+    )
+    assert proc.returncode == 0 and b"done" in out
+    assert not (Path(env["XDG_CACHE_HOME"]) / "probe").exists()
+
+
+def test_provider_cannot_persist_data_in_excluded_credentials_even_on_first_launch(world):
+    from tinyassets import storage_accounting as sa
+
+    root = world.universe_a
+    assert not (root / ".credentials").exists()
+    proc, out = _launch(
+        root, "mkdir -p .credentials/cache; echo hidden > .credentials/cache/data; echo done",
+    )
+    assert proc.returncode == 0 and b"done" in out
+    assert list((root / ".credentials").iterdir()) == []
+    # A later launch also gets a disposable mask, never the persistent tree.
+    (root / ".credentials" / "platform-cache").write_bytes(b"p" * 112_000)
+    proc, out = _launch(root, "echo forged > .credentials/platform-cache; echo done")
+    assert proc.returncode == 0 and b"done" in out
+    assert (root / ".credentials" / "platform-cache").read_bytes() == b"p" * 112_000
+    before = sa._universe_files(root.parent, root.name)
+    proc, out = _launch(root, "mkdir -p notes/.credentials; printf user > notes/.credentials/data")
+    assert proc.returncode == 0
+    assert sa._universe_files(root.parent, root.name) == before + 4
