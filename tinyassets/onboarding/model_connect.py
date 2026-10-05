@@ -47,7 +47,7 @@ async def handle_model_connect(request):
         return JSONResponse({"error": "same_origin_json_required"}, 403, headers=_HEADERS)
     operation = request.path_params.get("operation")
     owner_session = None
-    if operation == "oauth_exchange":
+    if operation in {"oauth_begin", "inline_begin"}:
         from tinyassets.api.pending_requests import CONSENT_REQUIRED_DETAIL
         from tinyassets.onboarding.owner_sessions import require
 
@@ -143,7 +143,8 @@ async def handle_model_connect(request):
             _, home = scope()
             return sign_in.begin(owner=identity.user_id, universe_id=home,
                                  request_id=data["request_id"],
-                                 challenge=data["code_challenge"], public_resource=resource)
+                                 challenge=data["code_challenge"], public_resource=resource,
+                                 owner_session=owner_session)
 
     def source_sign_in():
         from tinyassets.onboarding.source_connect import raise_sign_in_ask
@@ -169,7 +170,7 @@ async def handle_model_connect(request):
             done = sign_in.complete(owner=identity.user_id, universe_id=home,
                                     handle=data["flow"], code=data["code"],
                                     verifier=data["code_verifier"],
-                                    iss=data.get("iss", ""), owner_session=owner_session)
+                                    iss=data.get("iss", ""))
             # A source card's sign-in on a command center that already runs on
             # something: the new source joins the agent only on the owner's
             # explicit confirmation, exactly like a pasted-key card.
@@ -197,13 +198,15 @@ async def handle_model_connect(request):
                         hosted.load_preset(data["preset_id"])
                         _, home = scope(create=True, empty=True)
                         return inline.begin(owner=identity.user_id, home=home,
-                                            preset_id=data["preset_id"], resource=resource)
+                                            preset_id=data["preset_id"], resource=resource,
+                                            owner_session=owner_session)
                     _, home = scope()
                     return inline.take(owner=identity.user_id, home=home, handle=data["flow"],
                                        cancel=operation == "inline_cancel")
 
             result = await run_in_threadpool(inline_operation)
             if result.get("status") == "ready":
+                proof = result["owner_session"]
                 verifier, code = result["verifier"], result["code"]
                 data.update(code_verifier=verifier)
                 flow = await run_in_threadpool(take)
@@ -211,6 +214,19 @@ async def handle_model_connect(request):
                 result = await run_in_threadpool(complete, hosted.load_preset(flow.preset_id),
                                                  expected=flow.universe_id,
                                                  expected_digest=flow.preset_digest, key=key)
+                # Only this consumed flow's protected gesture can finish its
+                # server-created free-only bootstrap, never an arbitrary ask.
+                from tinyassets.api.pending_requests import _answer_request
+
+                def finish_inline():
+                    with identity_context(identity):
+                        return _answer_request(
+                            universe_id=flow.universe_id,
+                            payload={"request_id": result["request_id"], "values": {}},
+                            owner_session=proof,
+                        )
+
+                result["answer"] = await run_in_threadpool(finish_inline)
         elif operation == "oauth_begin":
             result = await run_in_threadpool(oauth_begin)
         elif operation == "source_sign_in":

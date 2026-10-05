@@ -6421,7 +6421,17 @@
         const url=new URL(result.launch_path,CFG.resource||location.origin).href;
         if(NATIVE)await openExternal(url);else popup.location.href=url;
         this.popup=popup;this.note.textContent='Finish signing in, then return here. Your message is kept.';
-      }catch(_e){if(popup)popup.close();if(this.current(record))this.failed('Sign-in could not start. Your message is kept.');}
+      }catch(error){
+        if(popup)popup.close();
+        if(this.current(record)){
+          this.failed('Sign-in could not start. Your message is kept.');
+          if(error.signIn){
+            const link=document.createElement('a');link.href='/app/owner-sign-in';
+            link.target='_blank';link.rel='noopener';link.textContent='Sign in to approve';
+            this.note.append(' ',link);
+          }
+        }
+      }
       finally{this.busy=false;this.schedule();}
     },
     async check(){
@@ -6437,7 +6447,7 @@
             if(!result.request||result.request.request_id!==result.request_id||
                !result.request.action||result.request.action.type!=='bind_model_access')
               throw new Error('Connection confirmation did not match the requested setup.');
-            const answered=await MCP.answerRequest({request_id:result.request_id,values:{}});
+            const answered=result.answer || await MCP.answerRequest({request_id:result.request_id,values:{}});
             if(!this.current(record))return;
             if(!answered||answered.error||answered.status!=='answered')throw new Error('Connection confirmation did not finish.');
             record.connectionFlow=null;this.save();
@@ -6609,7 +6619,10 @@
         body:JSON.stringify(payload),
       });
       const result=await response.json();
-      if(!response.ok||result.error) throw new Error(result.error||"model_connection_incomplete");
+      if(!response.ok||result.error){
+        const error=new Error(result.error||"model_connection_incomplete");
+        error.signIn=result.error==='interactive_approval_required';throw error;
+      }
       return result;
     },
     async begin(){
@@ -6706,13 +6719,13 @@
       }catch(error){
         if(epoch!==this.epoch) return;
         if(error&&error.authRequired){ this.busy=false; enterSignedOut(); return; }
-        this.status(error.message||"Your answer could not finish. Try again.");
         if(error.signIn){
+          this.status(error.message||"Sign in to approve.");
           const link=document.createElement("a");link.href="/app/owner-sign-in";
           link.target="_blank";link.rel="noopener";link.textContent="Sign in to approve";
           $("hosted-model-status").append(" ",link);
+          return;
         }
-        return;
       }finally{if(epoch===this.epoch){this.busy=false;this.paint();}}
       if(epoch!==this.epoch) return;
       // Either way, re-read what powers the command center: an answer whose reply was
@@ -8261,7 +8274,8 @@
       });
       const result=await response.json();
       if(!response.ok||result.error){
-        throw new Error((result&&(result.detail||result.error))||"sign_in_incomplete");
+        const error=new Error((result&&(result.detail||result.error))||"sign_in_incomplete");
+        error.signIn=result.error==='interactive_approval_required';throw error;
       }
       return result;
     },
@@ -8287,6 +8301,11 @@
       }catch(err){
         sessionStorage.removeItem(this.storageKey);
         note.textContent="Could not start the sign-in: "+((err&&err.message)||"unknown error")+".";
+        if(err&&err.signIn){
+          const link=document.createElement('a');link.href='/app/owner-sign-in';
+          link.target='_blank';link.rel='noopener';link.textContent='Sign in to approve';
+          note.append(' ',link);
+        }
         button.disabled=false;
       }
     },
@@ -9852,7 +9871,9 @@
     buttons.forEach(b=>{ b.disabled = true; });
     note.textContent = mode === "clear" ? "Clearing..." : mode === "deny" ? "Denying..." : "Sending...";
     try{
-      const r = await MCP.answerRequest(payload);
+      const r = req.action && req.action.type === "grant_patch_intake"
+        ? await InlineApprovals.post("answer", payload)
+        : await MCP.answerRequest(payload);
       if(installAsk&&typeof AppUI!=="undefined"&&!AppUI.fence(installEpoch,installHome))return;
       if(r && r.error){
         const actionAsk = req.action && req.action.type && req.action.type !== "answer";
