@@ -436,6 +436,156 @@ def assert_unknown_liveness(root, owner_state, unknown):
     assert owner_state(root, "parent") == unknown
 
 
+def relay_permission_probes():
+    """Actual identities and live sockets; exact cell mounts remain separate."""
+    import socket
+
+    root = Path(tempfile.mkdtemp(prefix="uid-relays-"))
+    root.chmod(0o755)
+    os.chown(root, 1001, 1001)
+    ready_read, ready_write = os.pipe()
+    stop_read, stop_write = os.pipe()
+    sys.stdout.flush()
+    pid = os.fork()
+    if pid == 0:
+        os.close(ready_read)
+        os.close(stop_write)
+        try:
+            retire(1001, [1100, 1101, 1102])
+            os.environ["TINYASSETS_CREDENTIAL_BROKER"] = "process"
+            from tinyassets import universe_egress
+
+            (root / "alice").mkdir()
+            universe_egress._route_port = lambda *args: 12345
+            paths = [universe_egress.ensure_proxy(root / "alice"),
+                     universe_egress.ensure_engine_relay(
+                         root / "alice", actor_id="alice", graph_id="g")[0]]
+            for path in paths:
+                info = path.stat()
+                assert (info.st_uid, info.st_gid, stat.S_IMODE(info.st_mode)) == (1001, 1100, 0o660)
+                assert stat.S_IMODE(path.parent.stat().st_mode) == 0o2710
+            os.write(ready_write, json.dumps([str(path) for path in paths]).encode())
+            os.close(ready_write)
+            assert os.read(stop_read, 1) == b"x"
+        except BaseException:
+            traceback.print_exc()
+            os._exit(1)
+        os._exit(0)
+    os.close(ready_write)
+    os.close(stop_read)
+    try:
+        paths = json.loads(os.read(ready_read, 4096))
+
+        def engine():
+            for index, path in enumerate(paths):
+                with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+                    client.settimeout(2)
+                    client.connect(path)
+                    if index == 0:
+                        client.sendall(b"CONNECT 127.0.0.1:443 HTTP/1.1\r\n\r\n")
+                        assert b"403 Forbidden" in client.recv(4096)
+                try:
+                    os.listdir(Path(path).parent)
+                except PermissionError:
+                    pass
+                else:
+                    raise AssertionError("engine listed relay directory")
+
+        def broker():
+            for path in paths:
+                with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+                    try:
+                        client.connect(path)
+                    except PermissionError:
+                        pass
+                    else:
+                        raise AssertionError("broker reached engine relay")
+
+        child(1003, [1100], engine)
+        child(1002, [1102], broker)
+    finally:
+        os.close(ready_read)
+        os.write(stop_write, b"x")
+        os.close(stop_write)
+        assert os.waitpid(pid, 0)[1] == 0
+    print("D55 actual daemon egress/engine relay 1001:1100/0660; engine connects, "
+          "directory listing and broker denied: PASS (socket prerequisite, "
+          "not class acceptance)", flush=True)
+
+
+def snapshot_permission_probes():
+    root = Path(tempfile.mkdtemp(prefix="uid-snapshots-"))
+    root.chmod(0o755)
+    os.chown(root, 1001, 1001)
+    universe = root / "snapshot-owner"
+    universe.mkdir(mode=0o711)
+    os.chown(universe, 1001, 1100)
+
+    def create():
+        import base64
+
+        from tinyassets import credential_vault as vault
+        from tinyassets.storage import db_path
+
+        os.environ["TINYASSETS_CREDENTIAL_BROKER"] = "process"
+        vault.write_credential_vault(universe, [{"credential_type": "llm_subscription",
+            "service": "codex", "auth_json_b64": base64.b64encode(
+                b'{"token":"snapshot-fixture"}').decode()}],
+            owner_user_id="snapshot-owner", universe_id=universe.name)
+        with sqlite3.connect(db_path(root)) as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            custody = vault.adopt_llm_subscription_custody(
+                conn, universe_dir=universe, owner_user_id="snapshot-owner",
+                universe_id=universe.name, service="codex")
+        made = vault.snapshot_llm_subscription_credential(universe_dir=universe, custody=custody)
+        vault._prepare_snapshot_root(universe)
+        for directory in (made.directory, made.directory.parent, made.directory.parent.parent):
+            info = directory.stat()
+            assert (info.st_uid, info.st_gid, stat.S_IMODE(info.st_mode)) == (1001, 1100, 0o2750)
+        for path in made.directory.iterdir():
+            info = path.stat()
+            assert (info.st_uid, info.st_gid, stat.S_IMODE(info.st_mode)) == (1001, 1100, 0o440)
+
+    child(1001, [1100, 1101, 1102], create)
+    directory = next((universe / ".runtime/provider-launch-credentials").iterdir())
+
+    def engine():
+        assert (directory / "auth.json").read_bytes() == b'{"token":"snapshot-fixture"}'
+        with open(directory / ".lock", "rb") as handle:
+            import fcntl
+
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        for path in (directory / "auth.json", universe / ".credential-vault.json"):
+            try:
+                fd = os.open(path, os.O_WRONLY)
+            except PermissionError:
+                pass
+            else:
+                os.close(fd)
+                raise AssertionError("engine wrote a sealed credential")
+        version = subprocess.run(["/usr/local/bin/codex", "--version"],
+                                 env={"PATH": "/usr/local/bin:/usr/bin:/bin",
+                                      "HOME": "/tmp", "CODEX_HOME": str(directory)},
+                                 cwd=directory, capture_output=True, timeout=15)
+        assert version.returncode == 0, version.stderr.decode()
+
+    child(1003, [1100], engine)
+
+    def broker():
+        try:
+            (directory / "auth.json").read_bytes()
+        except PermissionError:
+            pass
+        else:
+            raise AssertionError("broker acquired work-group snapshot access")
+        assert (universe / ".credential-vault.json").read_bytes()
+
+    child(1002, [1102], broker)
+    print("D54 actual daemon snapshot creation/reprepare: 1001:1100 2750/0440; "
+          "engine read and installed CLI lock/version, engine write and broker snapshot denial: "
+          "PASS (permissions prerequisite, not launcher class acceptance)", flush=True)
+
+
 def main():
     assert os.getuid() == 0
     expected = sum(1 << cap for cap in (0, 1, 3, 5, 6, 7, 8))
@@ -443,6 +593,8 @@ def main():
         assert int(status()[field], 16) == expected, field
     assert all(int(status()[field], 16) == 0 for field in ("CapInh", "CapAmb"))
     liveness_probes()
+    snapshot_permission_probes()
+    relay_permission_probes()
     chain = runpy.run_path("/usr/local/libexec/ta-chain.py")
     chain["main"]()
     protected = Path("/opt/uid-chain-probe")

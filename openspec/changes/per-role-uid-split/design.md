@@ -1626,3 +1626,43 @@ not a substitute for actual class and paired daemon-reader probes.
   `"roles": {"state": "migrating"}` and completes on the next start.
 - `TINYASSETS_CREDENTIAL_BROKER=process` starts and serves one owner stream, with per-turn RSS
   measured (the target is about 100 KiB per stream versus 29 MiB per worker).
+
+### D53. Mechanical decision: account erasure names the private ledger explicitly
+
+After its existing tombstone admission, account deletion invokes ERASE_ACCOUNT
+on the authenticated daemon channel before home/root-row phases. The operation
+accepts only the principal and a fixed account-deletion scope, not a home, path,
+SQL or table. One broker transaction removes owned connections, grants, capability
+children, connector artifacts and their edges, and all four owner-keyed accounting
+tables. Foreign grants pointing at owned connections refuse the whole transaction.
+Counts return only after commit. A lost acknowledgement remains an unfinished
+phase, with no automatic replay; an explicit deletion retry can safely find zero
+rows. Broker-selected root enumeration excludes the legacy outbound.db path.
+This closes the ledger-row inventory item; it does not claim D10 filesystem
+passes, private proxy runtime cleanup, complete account-deletion acceptance or
+startup activation. No privilege or isolation scope changes.
+
+### D54. Mechanical decision: seal launch snapshots with the declared work group
+
+Selected-mode snapshot creation and re-preparation use role_modes for gid 1100,
+2750 directories and 0440 files. Set and verify group/mode on an open descriptor
+whose identity matches the validated daemon-owned directory or exclusive regular
+file; do not rely on inherited group or a best-effort post-write chmod. File
+permissions and fsync failures refuse before any snapshot is returned. Unsplit
+runtime retains 0700/0400. This is the D4 runtime prerequisite for actual provider
+classes, not an assertion that a CLI requiring writable snapshot state is proven.
+Any write requirement must still be measured in that class's production cell;
+no broader snapshot write permission or startup activation is inferred here.
+
+### D55. Mechanical decision: publish exact owner relay sockets through pinned directories
+
+Selected-mode egress and engine-relay creators pin each sidecar directory without
+following links, require daemon ownership, set and read back D4's 0711 parent /
+2710 work-group center modes, then bind the exact socket through that directory
+fd. Publish group 1100 and mode 0660 before listen. Refuse non-socket, multiply
+linked or foreign-owned preexisting entries rather than unlinking them. Cached
+proxy liveness compares the originally published inode and refuses substituted
+entries. No process-wide cwd/umask change is used. This supplies the existing
+scoped relay, not a new network authority or an owner-channel mount. Actual
+engine kinds must still pin only their exact socket and close the source fd
+after mount. Startup remains gated.

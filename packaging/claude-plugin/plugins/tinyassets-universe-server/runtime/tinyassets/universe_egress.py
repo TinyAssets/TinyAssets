@@ -305,22 +305,41 @@ class EgressProxy:
     """One universe's proxy in this process, listening on a unix socket."""
 
     def __init__(self, socket_path: Path, universe: str) -> None:
+        from tinyassets.broker.supervisor import broker_selected
+
         self.socket_path = socket_path
         self.universe = universe
         self._slots = _UNIVERSE_SLOTS.setdefault(
             universe, threading.BoundedSemaphore(MAX_CONNECTIONS),
         )
-        with contextlib.suppress(FileNotFoundError):
-            socket_path.unlink()
         server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        server.bind(str(socket_path))
-        os.chmod(socket_path, 0o600)
-        server.listen(64)
+        self._role_identity = None
+        try:
+            if broker_selected():
+                from tinyassets.role_relays import bind
+
+                self._role_identity = bind(server, socket_path)
+            else:
+                with contextlib.suppress(FileNotFoundError):
+                    socket_path.unlink()
+                server.bind(str(socket_path))
+                os.chmod(socket_path, 0o600)
+            server.listen(64)
+        except BaseException:
+            server.close()
+            raise
         self._server = server
         thread = threading.Thread(target=self._accept, name=f"egress-{universe}", daemon=True)
         thread.start()
 
     def alive(self) -> bool:
+        if self._role_identity is not None:
+            from tinyassets.role_relays import identity
+
+            try:
+                return identity(self.socket_path) == self._role_identity
+            except FileNotFoundError:
+                return False
         return self.socket_path.is_socket()
 
     def _accept(self) -> None:
@@ -387,7 +406,10 @@ def ensure_proxy(universe_dir: Path) -> Path | None:
         if proxy is not None and proxy.alive():
             return proxy.socket_path
         directory = root.parent / UNIVERSE_SIDECARS_DIR / root.name
-        directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+        from tinyassets.broker.supervisor import broker_selected
+
+        if not broker_selected():
+            directory.mkdir(mode=0o700, parents=True, exist_ok=True)
         path = directory / f"egress-{os.getpid()}.sock"
         proxy = EgressProxy(path, root.name)
         _PROXIES[key] = proxy
@@ -457,7 +479,10 @@ def ensure_engine_relay(
         relay = _ENGINE_RELAYS.get(key)
         if relay is None or not relay.alive():
             directory = root.parent / UNIVERSE_SIDECARS_DIR / root.name
-            directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+            from tinyassets.broker.supervisor import broker_selected
+
+            if not broker_selected():
+                directory.mkdir(mode=0o700, parents=True, exist_ok=True)
             tag = hashlib.sha256(f"{actor_id}\0{graph_id}".encode()).hexdigest()[:12]
             relay = EngineRelay(
                 directory / f"engine-{os.getpid()}-{tag}.sock", root.name,
