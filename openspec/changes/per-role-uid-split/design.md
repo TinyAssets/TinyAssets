@@ -1362,6 +1362,31 @@ No connection ID, SQL, path or method name is supplied on the wire. Lost ACKs
 fail loudly without replay. The daemon retains existing consent preview and
 answer checks; startup remains inactive. This implements existing D11 authority.
 
+### D37. Mechanical decision: broker prepare/commit brackets the daemon vault deposit
+
+HTTP connect/redeposit sends only policy metadata to a named HTTP_CONNECT operation.
+Prepare uses the existing conflict rules on one connection/grant snapshot before
+custody changes. Commit compares a digest of both rows, scope and requested policy,
+then creates/grants/upgrades/extends in one broker transaction. The daemon alone
+writes the vault between those calls. An interrupted/lost commit never reports
+success or automatically replays; a fresh gesture re-prepares. No secrets, SQL,
+paths or arbitrary methods cross this channel. The pure conflict planner is shared
+with the unsplit path. Internal ledger transaction injection is not wire-selectable.
+Legacy scope upgrade plus endpoint extension use the post-upgrade row within the
+same transaction, avoiding the prior stale-scope no-op. Startup remains inactive.
+
+### D38. Mechanical decision: owner metadata preserves its existing owner-only contract
+
+Package connection-name previews and workspace consent host reads use named
+OWNER_CONNECTION_NAMES and OWNER_CONNECTION_VIEW queries. They preserve the
+existing owner-only live-row predicate (no grant was required by these readers),
+return only redacted views/names, and confer no egress authority. Command-center
+scope is still attached to authenticated IPC. Names use bounded 64-row pages,
+removing the previous informational 500-row truncation. Failed package previews
+remain unknown (None); consent reads fail loudly. The answer re-reads current
+owner/revocation/host before writing a daemon-owned consent. No schema or privilege
+changes; no startup activation. Effector authorization is a separate remaining row.
+
 ## Risks / Trade-offs
 
 - **The launcher is root-adjacent code.** One file, stdlib-only, run `-I -S`, a static kind table,

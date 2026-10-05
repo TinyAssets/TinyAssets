@@ -363,6 +363,49 @@ def _disconnect_consumer(root):
             raise AssertionError("disconnect accepted foreign/stale/unfenced mutation")
     with identity_context(Identity(user_id="disconnect", username="disconnect",
                                    capabilities=["write"])):
+        from tinyassets.api.http_connection import connect_http
+
+        fresh = "connect-" + destination
+        deposit = dict(destination=fresh, secret="synthetic-deposit-only", auth_scheme="bearer",
+                       allowed_endpoints=[{"host": "models.example.com",
+                                           "path_template": "/catalogue", "methods": ["GET"]}])
+        for _ in range(2):
+            result = connect_http(universe_id="disconnect", payload=deposit)
+            assert result["status"] == "provisioned", result
+            assert "synthetic-deposit-only" not in str(result)
+        deposit["allowed_endpoints"].append(
+            {"host": "models.example.com", "path_template": "/extra", "methods": ["GET"]})
+        result = connect_http(universe_id="disconnect", payload=deposit)
+        assert result["status"] == "provisioned" and len(result["allowed_endpoints"]) == 2
+        from tinyassets.api.pending_requests import answer_request
+
+        consent = request_from_user(universe_id="disconnect", payload={
+            "kind": "Approval", "title": "Checkout", "body": "Fixture checkout", "fields": [],
+            "action": {"type": "grant_workspace_consent",
+                       "connection_id": result["connection_id"], "repo": "owner/repo",
+                       "consents": ["workspace_checkout"]}})
+        assert consent.get("status") == "pending", consent
+        granted = answer_request(universe_id="disconnect", payload={
+            "request_id": consent["request_id"], "values": {}})
+        assert granted.get("status") == "answered", granted
+        assert "models.example.com/owner/repo" in granted["destinations"][0]
+        print("D38 actual workspace consent capture/answer via launcher broker: owner metadata "
+              "and daemon consent write: PASS", flush=True)
+        from tinyassets.credential_vault import load_credential_vault
+
+        assert any(row.get("token") == "synthetic-deposit-only"
+                   for row in load_credential_vault(root / "disconnect"))
+        assert not (root / "outbound.db").exists()
+        try:
+            (root / ".broker/outbound.db").open("rb")
+        except PermissionError:
+            pass
+        else:
+            raise AssertionError("daemon opened private ledger after connect")
+        assert remove_http(universe_id="disconnect", payload={"destination": fresh})[
+            "connection_removed"]
+        print("D37 actual HTTP connect/redeposit via launcher broker: prepare/commit, "
+              "fresh/repeat/additive, daemon-only vault and no daemon ledger: PASS", flush=True)
         preview = preview_rotate_http(universe_id="disconnect",
                                       payload={"destination": destination})
         assert preview["incarnation"] == snapshot["incarnation"]
@@ -467,6 +510,14 @@ def _catalog_consumers(root, supervisor):
     assert all(g.owner_user_id == v.owner_user_id == "catalog" and incarnation
                for g, v, incarnation in rows)
     assert all(not hasattr(view, "credential_ref") for _, view, _ in rows)
+    from tinyassets.api.package_requests import _connections_you_have
+    from tinyassets.broker.owner_metadata import view as owner_view
+
+    assert _connections_you_have("catalog", "catalog") == {v.destination for _, v, _ in rows}
+    assert owner_view(root, principal="bob", command_center="catalog",
+                      connection_id=rows[0][1].connection_id) is None
+    print("D38 actual package connection-name preview via launcher broker: owner pages and "
+          "foreign metadata absence: PASS", flush=True)
     assert list(connections(root, principal="alice", command_center="catalog")) == []
     assert list(connections(root, principal="catalog", command_center="alice")) == []
     backend = Capabilities(root / "catalog", ExecutionContext(

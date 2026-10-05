@@ -1253,7 +1253,7 @@ def request_from_user(
         if refused is not None:
             return refused
     if action.get("type") == "grant_workspace_consent":
-        host = _owned_connection_git_host(action["connection_id"])
+        host = _owned_connection_git_host(action["connection_id"], command_center=_uid)
         if not host:
             # Uniform with the answer path: never name "the connection's host".
             return {"error": "not_found", "resource": "connection"}
@@ -1463,7 +1463,7 @@ def _rendered_from_pin(uid: str, row: dict[str, Any]) -> dict[str, Any]:
             "fields": tab.get("fields") or [], "action": pinned["record"]["action"]}
 
 
-def _owned_connection_git_host(connection_id: str) -> str:
+def _owned_connection_git_host(connection_id: str, *, command_center="owner-metadata") -> str:
     """The resolved git host of the caller's own live connection, or ``""``."""
     from pathlib import Path
 
@@ -1473,10 +1473,18 @@ def _owned_connection_git_host(connection_id: str) -> str:
     from tinyassets.storage.workspace_authority import connection_git_host
 
     actor = permissions.current_actor_id().strip()
-    connection = ConnectionLedger(
-        Path(_base_path()) / "outbound.db",
-        verify_authenticated_principal=lambda: actor,
-    ).get_connection(connection_id)
+    from tinyassets.broker.supervisor import broker_selected
+
+    if broker_selected():
+        from tinyassets.broker.owner_metadata import view
+
+        connection = view(_base_path(), principal=actor, command_center=command_center,
+                          connection_id=connection_id)
+    else:
+        connection = ConnectionLedger(
+            Path(_base_path()) / "outbound.db",
+            verify_authenticated_principal=lambda: actor,
+        ).get_connection(connection_id)
     if (
         connection is None
         or connection.owner_user_id != actor
@@ -2374,11 +2382,19 @@ def _grant_workspace_consent(
 
     actor = permissions.current_actor_id().strip()
     connection_id = action["connection_id"]
-    ledger = ConnectionLedger(
-        Path(_base_path()) / "outbound.db",
-        verify_authenticated_principal=lambda: actor,
-    )
-    connection = ledger.get_connection(connection_id)
+    from tinyassets.broker.supervisor import broker_selected
+
+    if broker_selected():
+        from tinyassets.broker.owner_metadata import view
+
+        connection = view(_base_path(), principal=actor, command_center=Path(udir).name,
+                          connection_id=connection_id)
+    else:
+        ledger = ConnectionLedger(
+            Path(_base_path()) / "outbound.db",
+            verify_authenticated_principal=lambda: actor,
+        )
+        connection = ledger.get_connection(connection_id)
     if (
         connection is None
         or connection.owner_user_id != actor

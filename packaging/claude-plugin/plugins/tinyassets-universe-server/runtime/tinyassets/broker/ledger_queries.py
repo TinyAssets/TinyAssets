@@ -15,8 +15,11 @@ GRANTED_RESOURCE = "GRANTED_RESOURCE"
 AUTHORIZED_CONNECTION = "AUTHORIZED_CONNECTION"
 CONNECTION_GRANTS = "CONNECTION_GRANTS"
 BOOTSTRAP_RECOVERY = "BOOTSTRAP_RECOVERY"
+OWNER_CONNECTION_VIEW = "OWNER_CONNECTION_VIEW"
+OWNER_CONNECTION_NAMES = "OWNER_CONNECTION_NAMES"
 QUERIES = frozenset({DISCOVERY_FACTS, HAS_PRICED_SOURCE, GRANTED_RESOURCE,
-                     AUTHORIZED_CONNECTION, CONNECTION_GRANTS, BOOTSTRAP_RECOVERY})
+                     AUTHORIZED_CONNECTION, CONNECTION_GRANTS, BOOTSTRAP_RECOVERY,
+                     OWNER_CONNECTION_VIEW, OWNER_CONNECTION_NAMES})
 
 
 def validate_query(query, principal, command_center, grant_id, connection_id):
@@ -27,7 +30,8 @@ def validate_query(query, principal, command_center, grant_id, connection_id):
             raise ValueError("invalid ledger query scope")
     if not isinstance(connection_id, str) or len(connection_id) > 512 or "\0" in connection_id:
         raise ValueError("invalid connection identity")
-    if query in {HAS_PRICED_SOURCE, AUTHORIZED_CONNECTION, CONNECTION_GRANTS} and not connection_id:
+    if query in {HAS_PRICED_SOURCE, AUTHORIZED_CONNECTION, CONNECTION_GRANTS,
+                 OWNER_CONNECTION_VIEW} and not connection_id:
         raise ValueError("missing connection identity")
 
 
@@ -39,6 +43,23 @@ def local_query(ledger, *, query: str, principal: str, command_center: str,
     validate_query(query, principal, command_center, grant_id, connection_id)
     with ledger._connect() as conn:
         conn.execute("BEGIN")
+        if query == OWNER_CONNECTION_VIEW:
+            from tinyassets.storage.outbound_connections import _resource_from_row
+
+            row = conn.execute(
+                "SELECT * FROM outbound_connections WHERE connection_id=? "
+                "AND owner_user_id=? AND revoked_at IS NULL",
+                (connection_id, principal),
+            ).fetchone()
+            return {"view": _resource_from_row(row).to_view().as_dict() if row else None}
+        if query == OWNER_CONNECTION_NAMES:
+            rows = conn.execute(
+                "SELECT connection_id, destination FROM outbound_connections "
+                "WHERE owner_user_id=? AND revoked_at IS NULL AND connection_id>? "
+                "ORDER BY connection_id LIMIT 65", (principal, connection_id),
+            ).fetchall()
+            return {"items": [dict(row) for row in rows[:64]],
+                    "next_cursor": rows[63]["connection_id"] if len(rows) > 64 else None}
         if query == BOOTSTRAP_RECOVERY:
             row = conn.execute(
                 "SELECT c.destination, p.descriptor_json FROM outbound_connection_grants g "

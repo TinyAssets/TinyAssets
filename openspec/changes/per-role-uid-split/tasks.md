@@ -6,7 +6,9 @@ The capability-lifetime conflict is resolved; no build task is proven yet.
 D11 records the lead decision assigning egress persistence to the broker and
 requiring authenticated daemon IPC. D12 resolves the ledger-parent issue by relocation to /data/.broker; D13
 keeps private directories inaccessible to the daemon IPC group.
-See delivery.md and broker-access-inventory.md; runtime routing is not implemented.
+See delivery.md and broker-access-inventory.md: runtime routing is partially
+implemented through D38. Accounting/refresh, remaining injected consumers, real
+engine classes, full migration/deletion, old-image rollback and startup remain.
 
 ## 1. Design (this change)
 

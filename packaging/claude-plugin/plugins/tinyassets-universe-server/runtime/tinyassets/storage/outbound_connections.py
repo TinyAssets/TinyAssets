@@ -5267,6 +5267,7 @@ class ConnectionLedger:
         allowed_endpoints: Any = (),
         access_mode: str = ACCESS_EXACT,
         git_host: str = "",
+        _transaction: sqlite3.Connection | None = None,
     ) -> ConnectionView:
         endpoints = _parse_allowed_endpoints(allowed_endpoints)
         declared_git_host = normalize_git_host(git_host)
@@ -5321,7 +5322,8 @@ class ConnectionLedger:
             access_mode=normalized_access,
             git_host=declared_git_host,
         )
-        with self._connect() as connection:
+        with (contextlib.nullcontext(_transaction) if _transaction is not None
+              else self._connect()) as connection:
             connection.execute(
                 """
                 INSERT INTO outbound_connections (
@@ -5352,7 +5354,8 @@ class ConnectionLedger:
         return resource.to_view()
 
     def _upgrade_http_connection_scopes(
-        self, *, connection_id: str, scopes: tuple[str, ...]
+        self, *, connection_id: str, scopes: tuple[str, ...],
+        _transaction: sqlite3.Connection | None = None,
     ) -> None:
         """Bounded, one-directional migration of the legacy ("http",) scope token.
 
@@ -5365,7 +5368,8 @@ class ConnectionLedger:
         real method-scoped set — a row already carrying method scopes is untouched.
         """
         new_scopes = tuple(_required("scope", scope) for scope in scopes)
-        with self._connect() as connection:
+        with (contextlib.nullcontext(_transaction) if _transaction is not None
+              else self._connect()) as connection:
             connection.execute(
                 """
                 UPDATE outbound_connections
@@ -5592,7 +5596,7 @@ class ConnectionLedger:
         }
 
     def _get_connection_resource(
-        self, connection_id: str
+        self, connection_id: str, *, _transaction: sqlite3.Connection | None = None,
     ) -> ConnectionResource | None:
         """Credential-BEARING read for TRUSTED internal use only.
 
@@ -5603,7 +5607,8 @@ class ConnectionLedger:
         the credential reference. Never expose its result to an adapter/graph/CRUD
         surface.
         """
-        with self._connect() as connection:
+        with (contextlib.nullcontext(_transaction) if _transaction is not None
+              else self._connect()) as connection:
             row = connection.execute(
                 "SELECT * FROM outbound_connections WHERE connection_id = ?",
                 (connection_id,),
@@ -5816,8 +5821,9 @@ class ConnectionLedger:
         universe_id: str,
         granted_at: float | None = None,
         unprompted_action_cap: ActionCap | None = None,
+        _transaction: sqlite3.Connection | None = None,
     ) -> ConnectionGrant:
-        resource = self._get_connection_resource(connection_id)
+        resource = self._get_connection_resource(connection_id, _transaction=_transaction)
         if resource is None:
             raise LookupError("connection resource does not exist")
         owner = _required("owner_user_id", owner_user_id)
@@ -5832,7 +5838,8 @@ class ConnectionLedger:
             revoked_at=None,
             unprompted_action_cap=unprompted_action_cap,
         )
-        with self._connect() as connection:
+        with (contextlib.nullcontext(_transaction) if _transaction is not None
+              else self._connect()) as connection:
             connection.execute(
                 """
                 INSERT INTO outbound_connection_grants (
@@ -5858,8 +5865,11 @@ class ConnectionLedger:
             )
         return grant
 
-    def get_grant(self, grant_id: str) -> ConnectionGrant | None:
-        with self._connect() as connection:
+    def get_grant(
+        self, grant_id: str, *, _transaction: sqlite3.Connection | None = None,
+    ) -> ConnectionGrant | None:
+        with (contextlib.nullcontext(_transaction) if _transaction is not None
+              else self._connect()) as connection:
             row = connection.execute(
                 "SELECT * FROM outbound_connection_grants WHERE grant_id = ?",
                 (grant_id,),
