@@ -33,6 +33,7 @@ auto-review arrive in D1b-D1d.
 
 from __future__ import annotations
 
+import json
 import sqlite3
 import time
 from contextlib import closing
@@ -151,6 +152,8 @@ class Rule:
     behaviour: str
     note: str = ""
     seeded: bool = False
+    kind: str = "behavior"
+    grant: dict | None = None
 
     def as_dict(self) -> dict:
         return {
@@ -158,7 +161,8 @@ class Rule:
             "covers": ACTION_CLASSES.get(self.action_class, ""),
             "connection": self.connection, "operation": self.operation,
             "behaviour": self.behaviour, "label": BEHAVIOUR_LABELS[self.behaviour],
-            "note": self.note, "seeded": self.seeded,
+            "note": self.note, "seeded": self.seeded, "kind": self.kind,
+            "grant": self.grant,
         }
 
 
@@ -179,6 +183,32 @@ def _connect(universe_dir: Path) -> sqlite3.Connection:
     conn.execute("PRAGMA busy_timeout = 10000")
     conn.execute(_SCHEMA)
     conn.execute(_KINDS_SCHEMA)
+    if "record_kind" not in {r[1] for r in conn.execute("PRAGMA table_info(rules)")}:
+        from tinyassets.owner_control import control
+
+        with control(universe_dir):
+            conn.execute("BEGIN IMMEDIATE")
+            if "record_kind" not in {r[1] for r in conn.execute("PRAGMA table_info(rules)")}:
+                # Preserve IDs, behavior precedence and owner edits. A separate
+                # partial index permits several independently revocable grants.
+                conn.execute("ALTER TABLE rules RENAME TO rules_before_scopes")
+                conn.execute(_SCHEMA.replace(
+                    "UNIQUE(agent, action_class, connection, operation)",
+                    "record_kind TEXT NOT NULL DEFAULT 'behavior', "
+                    "decision_id TEXT UNIQUE, grant_json TEXT NOT NULL DEFAULT '{}'"
+                ))
+                conn.execute(
+                    "INSERT INTO rules (id,agent,action_class,connection,operation,behaviour,"
+                    "note,seeded,updated_at) SELECT id,agent,action_class,connection,operation,"
+                    "behaviour,"
+                    "note,seeded,updated_at FROM rules_before_scopes"
+                )
+                conn.execute("DROP TABLE rules_before_scopes")
+                conn.execute(
+                    "CREATE UNIQUE INDEX behavior_rule_key ON rules "
+                    "(agent,action_class,connection,operation) WHERE record_kind='behavior'"
+                )
+            conn.commit()
     return conn
 
 
@@ -196,10 +226,13 @@ def _seed(conn: sqlite3.Connection, agent: str) -> None:
 
 
 def _rule(row) -> Rule:
-    return Rule(int(row[0]), row[1], row[2], row[3], row[4], row[5], row[6], bool(row[7]))
+    return Rule(int(row[0]), row[1], row[2], row[3], row[4], row[5], row[6], bool(row[7]),
+                row[8] if len(row) > 8 else "behavior",
+                json.loads(row[9]) if len(row) > 9 else None)
 
 
-_SELECT = ("SELECT id, agent, action_class, connection, operation, behaviour, note, seeded "
+_SELECT = ("SELECT id, agent, action_class, connection, operation, behaviour, note, seeded, "
+           "record_kind, grant_json "
            "FROM rules WHERE agent = ? ORDER BY action_class, connection, operation")
 
 
@@ -216,7 +249,8 @@ def list_rules(universe_dir: Path, agent: str = MAIN_AGENT) -> list[Rule]:
             _seed(conn, agent)
             rows = conn.execute(_SELECT, (agent,)).fetchall()
             conn.execute("COMMIT")
-    return [_rule(row) for row in rows]
+    return [rule for row in rows if not (rule := _rule(row)).grant
+            or not rule.grant.get("revoked")]
 
 
 def configured_agents(universe_dir: Path) -> set[str]:
@@ -240,7 +274,7 @@ def decide(universe_dir: Path, action_class: str, *, connection: str = "",
     """
     candidates = [
         rule for rule in list_rules(universe_dir, agent)
-        if rule.action_class == action_class
+        if rule.kind == "behavior" and rule.action_class == action_class
         and rule.connection in ("", connection)
         and rule.operation in ("", operation.upper())
     ]
@@ -276,7 +310,8 @@ def set_rule(universe_dir: Path, action_class: str, behaviour: str, *, connectio
         conn.execute(
             "INSERT INTO rules (agent, action_class, connection, operation, behaviour, note, "
             "seeded, updated_at) VALUES (?, ?, ?, ?, ?, ?, 0, ?) "
-            "ON CONFLICT(agent, action_class, connection, operation) DO UPDATE SET "
+            "ON CONFLICT(agent, action_class, connection, operation) "
+            "WHERE record_kind='behavior' DO UPDATE SET "
             "behaviour = excluded.behaviour, note = excluded.note, seeded = 0, "
             "updated_at = excluded.updated_at",
             (agent, action_class, connection.strip(), operation.strip().upper(),
@@ -285,7 +320,7 @@ def set_rule(universe_dir: Path, action_class: str, behaviour: str, *, connectio
         row = conn.execute(
             "SELECT id, agent, action_class, connection, operation, behaviour, note, seeded "
             "FROM rules WHERE agent = ? AND action_class = ? AND connection = ? "
-            "AND operation = ?",
+            "AND operation = ? AND record_kind='behavior'",
             (agent, action_class, connection.strip(), operation.strip().upper()),
         ).fetchone()
         conn.execute("COMMIT")
@@ -304,19 +339,27 @@ def delete_rule(universe_dir: Path, rule_id: int, *, agent: str = MAIN_AGENT,
     with closing(_connect(universe_dir)) as conn:
         conn.execute("BEGIN IMMEDIATE")
         row = conn.execute(
-            "SELECT action_class, connection, operation, behaviour FROM rules "
+            "SELECT action_class, connection, operation, behaviour, record_kind, grant_json "
+            "FROM rules "
             "WHERE id = ? AND agent = ?",
             (int(rule_id), agent),
         ).fetchone()
         if row is None or not (row[1] or row[2]):
             conn.execute("ROLLBACK")
             return False
-        action_class, connection, operation, behaviour = row
+        if row[4] == 'preapproval':
+            grant = json.loads(row[5])
+            grant['revoked'] = True
+            conn.execute('UPDATE rules SET grant_json=?,updated_at=? WHERE id=?',
+                         (json.dumps(grant), time.time(), int(rule_id)))
+            conn.commit()
+            return True
+        action_class, connection, operation, behaviour = row[:4]
         if (action_class in HANDBACK_CONSEQUENCES and behaviour == HAND_OFF
                 and not confirm_handback):
             remaining = [
                 _rule(r) for r in conn.execute(_SELECT, (agent,)).fetchall()
-                if r[0] != int(rule_id) and r[2] == action_class
+                if r[8] == "behavior" and r[0] != int(rule_id) and r[2] == action_class
                 and r[3] in ("", connection) and r[4] in ("", operation)
             ]
             after = max(remaining, key=lambda r: (_specificity(r),

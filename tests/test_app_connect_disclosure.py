@@ -43,8 +43,13 @@ function node(tag){
   const n={tag,children:[],attrs:{},textContent:'',id:'',className:'',type:'',
     hidden:false,disabled:false,dataset:{},listeners:{},
     replaceChildren(){this.children=[];},
+    showModal(){this.open=true;},close(){this.open=false;},
+    remove(){if(this.parentNode)this.parentNode.children=this.parentNode.children.filter(c=>c!==this);},
+    querySelectorAll(){return [];},
     append(...k){this.children.push(...k);},
-    appendChild(c){this.children.push(c);return c;},
+    appendChild(c){
+      if(c.parentNode)c.parentNode.children=c.parentNode.children.filter(x=>x!==c);
+      c.parentNode=this;this.children.push(c);return c;},
     setAttribute(k,v){this.attrs[k]=String(v);},
     getAttribute(k){return Object.prototype.hasOwnProperty.call(this.attrs,k)?this.attrs[k]:null;},
     addEventListener(e,h){this.listeners[e]=h;},
@@ -78,6 +83,7 @@ const CONNECT_REQUEST_ID='sys_connect_llm';
 function foldedModelAccess(){return null;}
 function railBody(){return node('body');}
 function autoGrow(){}
+function clearTypedValues(node){node.value="";for(const c of node.children)clearTypedValues(c);}
 __SOURCE__
 // Tap the disclosure the way a user does: the browser flips `open` and the queued
 // `toggle` follows on its own. Awaited, so the listener has actually run.

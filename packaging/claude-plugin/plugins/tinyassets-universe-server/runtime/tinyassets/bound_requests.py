@@ -182,7 +182,8 @@ def _authority(home, packet, owner, agent):
             list(r)
             for r in conn.execute(
                 "SELECT id,action_class,connection,operation,behaviour,updated_at FROM rules "
-                "WHERE agent=? AND action_class=? AND connection IN ('',?) AND operation IN ('',?) "
+                "WHERE record_kind='behavior' AND agent=? AND action_class=? "
+                "AND connection IN ('',?) AND operation IN ('',?) "
                 "ORDER BY id",
                 (agent, cls, packet["connection_id"], operation),
             )
@@ -267,6 +268,18 @@ def capture(home, raw):
             "AND continuation_only=1",
             (turn, owner, agent),
         ).fetchone()
+        from tinyassets.approval_scopes import task_for
+
+        inherited = task_for(home, owner, agent)
+        if inherited:
+            task = conn.execute(
+                "SELECT activity_id,task_generation,task_expires_at FROM activities "
+                "WHERE activity_id=? AND owner_principal=? AND agent_id=? "
+                "AND status NOT IN ('paused','completed','failed') AND task_expires_at>?",
+                (inherited, owner, agent, time.time()),
+            ).fetchone()
+            if task is None:
+                raise RequestRefused("The initiating task ended; start new work.")
         if task is None:
             task_record = activities.create(
                 home,
@@ -328,7 +341,12 @@ def capture(home, raw):
             ),
         )
         conn.commit()
-        return card(conn, row["request_id"])
+        result = card(conn, row["request_id"])
+    from tinyassets.api.pending_requests import _notify_owner
+
+    _notify_owner(home.name, {**result, "created": True,
+                             "body": "Your agent needs a decision."})
+    return result
 
 
 def card(conn, request_id):
@@ -359,6 +377,7 @@ def card(conn, request_id):
         "agent": envelope["subject"]["agent"],
         "title": f"{envelope['arguments']['verb']} {envelope['destination']}",
         "draft": envelope["arguments"]["request"].get("body"),
+        "purpose": agent_rules.ACTION_CLASSES.get(envelope["action_class"], "Requested action"),
         "destination": envelope["destination"],
         "expires_at": envelope["expires_at"],
         "scope": "once",
@@ -411,13 +430,17 @@ def stop(home, owner, agent):
         conn.commit()
 
 
-def preview(home, request_id, session, *, draft=None, edit=False):
+def preview(home, request_id, session, *, draft=None, edit=False, scope="once"):
+    from tinyassets.approval_scopes import predicate
     owner = json.loads(session["identity_json"])["user_id"]
     with control(home), closing(connect(home)) as conn:
         current = _owned(home, conn, request_id, owner)
         if current["status"] not in ("pending", "deferred", "unresolved"):
             return current
         unavailable = ""
+        if current["status"] == "unresolved":
+            unavailable = ("This attempt needs reconciliation or a new action; "
+                           "dismiss it to continue planning.")
         try:
             current = _current(home, conn, request_id, owner)
         except RequestRefused as exc:
@@ -438,13 +461,22 @@ def preview(home, request_id, session, *, draft=None, edit=False):
             )
             conn.commit()
             current = _current(home, conn, request_id, owner)
+        grant = predicate(current['action']['envelope'], scope)
+        if scope == 'task':
+            task_row = conn.execute(
+                'SELECT task_expires_at FROM activities WHERE activity_id=?',
+                (grant['task_id'],)).fetchone()
+            if task_row is None:
+                raise RequestRefused('Task context is missing; request a fresh preview.')
+            grant['expires_at'] = task_row[0]
         token = secrets.token_urlsafe(32)
         decision = {
             "token_hash": digest(token),
             "session_hash": session["session_hash"],
             "revision": current["revision"],
             "action_sha256": current["action_sha256"],
-            "scope": "once",
+            "scope": scope,
+            "predicate": grant,
             "dismiss_only": bool(unavailable),
             "expires_at": min(
                 time.time() + 300, session["expires_at"],
@@ -456,7 +488,8 @@ def preview(home, request_id, session, *, draft=None, edit=False):
             (json.dumps(decision), request_id),
         )
         conn.commit()
-        return {**current, "approval_token": token, "approval_unavailable": unavailable}
+        return {**current, "scope": scope, "predicate": grant, "approval_token": token,
+                "approval_unavailable": unavailable}
 
 
 def _wake(conn, current, outcome):
@@ -470,6 +503,7 @@ def _wake(conn, current, outcome):
         "owner": env["subject"]["owner"],
         "agent": env["subject"]["agent"],
         "task_generation": env["subject"]["task_generation"],
+        "task_id": task,
         "outcome": outcome,
         "request_id": current["request_id"],
     }
@@ -532,8 +566,6 @@ def _decide(home, data, session):
             raise RequestRefused("Check the uncertain outcome; this card cannot send it again.")
         if choice not in ("approve", "deny", "skip", "defer", "alternative"):
             raise RequestRefused("This action cannot be retried blindly; request a fresh preview.")
-        if data.get("scope", "once") != "once":
-            raise RequestRefused("Only once approval is available in this slice.")
         # Serialize decision admission against logout/account-switch revocation.
         with store() as sessions:
             sessions.execute("BEGIN IMMEDIATE")
@@ -553,6 +585,7 @@ def _decide(home, data, session):
                 or stored.get("session_hash") != session["session_hash"]
                 or stored.get("expires_at", 0) <= time.time()
                 or stored.get("revision") != current["revision"]
+                or stored.get("scope") != data.get("scope", "once")
                 or stored.get("choice")
                 or (choice == "approve" and stored.get("dismiss_only"))
             ):
@@ -604,6 +637,10 @@ def _decide(home, data, session):
                 (key, request_id),
             )
             conn.commit()
+            if stored['scope'] != 'once':
+                from tinyassets.approval_scopes import materialize
+
+                materialize(home, conn, request_id, stored, env)
             # Current policy/Stop cannot race this check: their writers share control.
             _current(home, conn, request_id, owner)
             conn.execute(

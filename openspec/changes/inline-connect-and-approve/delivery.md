@@ -141,3 +141,95 @@ Windows used external basetemp `C:/Users/Jonathan/AppData/Local/Temp/ta-single-s
 `python scripts/linux_oracle.py -- <same files> -q -ra` used external `/tmp/b`.
 All 15 new regressions passed. Plugin rebuild/import, changed-Python Ruff,
 strict OpenSpec validation (`--type change`), and `git diff --check` passed.
+
+## Approval sheet and service connection slice (2026-10-04)
+
+Lane: `feat/approval-sheet-and-connect-card`, based on main after #4468.
+S2 replaces the side rail and interim composer region with a modal sheet and
+bubble Needs you inbox. Foreground bound asks display protected purpose and exact
+action; all five decision choices use #4449 owner sessions and revision-bound
+tokens. Background asks use the existing notify-owner path; answered history is
+read-only. Polling preserves active drafts; owner changes clear cached secrets.
+
+Task/site/always HTTP preapprovals reuse Rules and effect_intents. Authority is
+limited to the displayed operation, class, account and exact origin, with policy,
+consent and connection revisions checked again at dispatch. Task grants also bind
+task generation/deadline; completed or stopped tasks cannot reuse them. Deletion
+tombstones prevent grant resurrection. Network sends release the owner-control
+lock so owners can revoke or Stop while a provider is slow. Crashed unfinalized
+grants remain inert; recovery invalidates their planned attempt, exposes an
+unresolved request and allows protected dismissal without blind resend.
+
+Settings and agent service requests share the sheet, with registered OAuth,
+protected secret deposit and generic HTTP shapes. Changing shape clears staged
+secrets. Account labels make independent deposits for the same service. Agent
+connection answers now atomically commit a sanitized activity-event wake with
+request resolution; the browser avoids the former second-chat-turn relay.
+Settings connections do not invent agent work. No platform LLM or provider-specific
+integration code was introduced.
+
+Original tasks 1.1–3.2 remain unchecked because their complete acceptance is wider
+than S2: full migration/rollback recovery matrix; broader packet forms and proposal
+classification authority; per-origin/background task contracts, owner classification
+and budget-capped spend defaults; exhaustive crash/fencing mutations; background
+cross-device notification delivery; complete first-power/model entry consolidation;
+and server-held generic OAuth PKCE/callback completion with parent closed or native
+suspended. Existing OAuth custody was reused, not represented as server-held. Push
+uses the existing delivery behavior, not a new durable cross-device notification
+protocol. Production SHA assertion, public canary and real-user production pass
+are not performed by this commit-and-push-only lane. Tests use scripted external
+provider transports, not live provider accounts.
+
+### Migration and review disposition
+
+The Rules migration copies named columns and preserves existing IDs, but replaces
+the old unique constraint with a behavior-only index. This migration is one-way:
+old set_rule handlers are incompatible afterward. Do not roll back migrated homes
+to those handlers. Recovery requires a schema-compatible handler or pausing owner
+mutations and applying a forward repair. Broader compatible rollback remains 1.1.
+
+One cross-family Claude round through the peer-agents skill returned ADAPT, with
+no floor findings. AGREE: release owner-control before network sends and handle
+busy prechecks; invalidate incomplete grant issuance in recovery; use named-column
+migration and document its one-way boundary; refuse missing task context visibly;
+move direct capture notification after its own lock; exercise subsequent effector
+reuse, policy edits, task Stop/expiry/generation and unrelated-rule stability;
+and exclude preapprovals from behavior-rule hand-back checks. These changes are
+implemented. The later connection-answer wake extension was validated by tests
+and local review; it was not in that peer snapshot. No additional peer round is
+claimed.
+
+Cross-user/data-loss guard evidence includes the unchanged owner-session/storage
+and universe-isolation suites, existing replay/fencing cases, and injected grant
+issuance and connection-wake write failures. The latter proves failed wake writes
+roll back resolution and report failure, then retry commits one sanitized wake.
+No exhaustive new source-mutation matrix is claimed; task 3.1 remains open.
+
+### Verification for S2
+
+Final backend/isolation selection: Windows 476 passed, 4 POSIX-lock skips;
+Linux oracle Python 3.11.16: 480 passed, no skips. Files: connection-sheet
+continuations, inline approvals, approval-sheet scopes, pending requests, generic
+OAuth connections, turn interruption, inline-request storage, owner notifications,
+agent activities, universe-server isolation, scoped-identity reset and first-contact.
+The three affected heavy files are included (186 cases).
+
+Final sheet/contract selection: 179 passed on Windows and 179 on Linux, including
+all six new whole-app desktop/390px browser cases, the four existing pending-request
+browser cases, request-card DOM contracts and onboarding app contracts. Existing
+browser/test names remain; the relay contract now strictly requires two refreshes
+(answer removal and completed-turn foreground discovery), not a weakened bound.
+The DOM test harness now implements the browser APIs the sheet uses.
+
+The plugin mirror was regenerated and its import probe passed. Touched Python
+Ruff, strict change and as-built spec validation, concerns-index check and diff
+whitespace checks passed. No new concern file was created. New real-browser tests
+are included in the real-browser workflow's pull_request.paths.
+
+The complementary approval-browser, disclosure and mirror/parity checks passed
+36/36 on each platform. Final disjoint selections total **691 passed, 4 skipped
+on Windows; 695 passed, no skips on Linux 3.11**. Earlier affected rules/effector
+and first-run/connect browser selections also passed, and are not added again to
+these totals. Post-commit test hygiene reports **12 new test functions, 0 removed,
+0 tampering findings** (parameterization expands the case count). No PR or
+production deployment is created by this lane.

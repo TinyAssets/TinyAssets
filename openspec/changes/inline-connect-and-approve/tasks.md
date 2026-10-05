@@ -5,9 +5,19 @@ See [delivery.md](delivery.md) for behavior, evidence and the remaining work in
 each original task. Original boxes stay unchecked where their broader contracts
 are not fully implemented or verified; this is not full change acceptance.
 
+Current follow-up lane: `feat/approval-sheet-and-connect-card`, based on
+`origin/main` after #4468. This is commit-and-push delivery, not deployment.
+
 - [x] S1 Deliver the first coherent slice: protected literal HTTP action envelopes,
   owner-session once approval that executes through ordinary enforcement, inline
   thread cards/read-only history, durable bound-answer wakes and server recovery.
+
+- [x] S2 Replace the side/composer request regions with a responsive approval
+  sheet, bubble Needs you inbox and read-only history; add protected task/site/
+  always HTTP grants, shared settings/agent service connect entry with auth-shape
+  switching and labelled accounts, and durable agent connection-answer wakes.
+  This milestone covers the implemented subset described in delivery.md, not
+  completion of the broader numbered tasks below.
 
 ## 1. Bound requests and owner authority
 

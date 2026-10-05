@@ -1,0 +1,146 @@
+"""Whole app sheet/inbox routing and account fencing in real Chromium."""
+
+import pytest
+
+from tests.test_app_chat_cloud_browser import _enter_chat
+from tests.test_app_chat_cloud_browser import app_url as _app_url
+from tests.test_app_chat_cloud_browser import browser as _browser
+
+app_url = _app_url
+browser = _browser
+pytestmark = pytest.mark.real_browser
+
+
+@pytest.mark.parametrize("width", [390, 1280])
+def test_foreground_sheet_scopes_inbox_history_and_account_fence(app_url, browser, width, tmp_path):
+    page = browser.new_page(viewport={"width": width, "height": 844})
+    _enter_chat(page, app_url)
+    page.evaluate("""() => {
+      window.calls=[];window.rows=[];window.receipts=[];
+      token=()=>'test-owner';readInflight=()=>({message:'Send my update'});
+      Owner.listRequests=async()=>({pending:rows,recently_answered:receipts});
+      window.row={request_id:'bound-1',status:'pending',revision:1,agent:'main',
+        title:'POST https://api.example.com/message',action_sha256:'hash',
+        destination:'https://api.example.com/message',draft:'Exactly this message',
+        expires_at:1999999999,action:{type:'approve_action',envelope:{subject:{turn:'live'}}}};
+      const previous=fetch;
+      window.fetch=async(url,options)=>{
+        if(!String(url).startsWith('/app/approvals/'))return previous(url,options);
+        const payload=JSON.parse(options.body);calls.push({url,payload});
+        if(url.endsWith('/decide')){
+          rows=[];receipts=[{...row,status:'answered'}];
+          return Response.json({...row,status:'answered',phase:'confirmed',result:{status:200}});
+        }
+        return Response.json({...row,scope:payload.scope,approval_token:'token-'+payload.scope,
+          predicate:{scope:payload.scope,action_class:'app.write',operation:'POST',
+            origin:'https://api.example.com',expires_at:1999999999}});
+      };
+      rows=[row];renderRail(rows);
+    }""")
+    sheet = page.locator("#request-rail")
+    assert sheet.evaluate('el=>el.matches(":modal")')
+    assert page.get_by_role("textbox", name="Action draft").input_value() == "Exactly this message"
+    box = sheet.bounding_box()
+    assert box["x"] >= 0 and box["x"] + box["width"] <= width
+    assert box["y"] >= 0 and box["y"] + box["height"] <= 844
+    page.get_by_role("combobox", name="Approval scope").select_option("site")
+    page.get_by_role("button", name="Allow for this site", exact=True).click()
+    page.wait_for_function("() => rows.length===0 && !document.getElementById('request-rail').open")
+    payload = page.evaluate("calls.at(-1).payload")
+    assert payload["scope"] == "site"
+    assert payload["approval_token"] == "token-site"
+    assert payload["expected_revision"] == 1
+    assert payload["decision"] == "approve"
+    assert page.evaluate("calls.length") == 3
+    page.locator("#needs-you-open").click()
+    page.get_by_role("button", name="Answered history", exact=True).click()
+    assert "answered" in page.locator("#request-history").inner_text()
+    assert page.locator("#request-history button, #request-history input").count() == 0
+    page.locator("#request-sheet-close").click()
+    page.evaluate("""() => {
+      readInflight=()=>null;
+      rows=[{...row,request_id:'away',draft:'Private away draft'}];renderRail(rows);
+    }""")
+    assert not sheet.is_visible()
+    page.locator("#needs-you-open").click()
+    assert page.locator("#needs-you-items button").count() == 1
+    page.locator("#needs-you-items button").click()
+    assert sheet.evaluate('el=>el.matches(":modal")')
+    page.get_by_role("textbox", name="Action draft").fill("Private unsent edit")
+    page.screenshot(path=tmp_path / f"approval-sheet-{width}.png")
+    page.evaluate("clearRailCards()")
+    assert not sheet.is_visible()
+    assert page.locator("#rail-items textarea").count() == 0
+    assert page.locator("#needs-you-items").inner_text() == ""
+    page.close()
+
+
+@pytest.mark.parametrize("width", [390, 1280])
+def test_settings_connection_shapes_clear_staged_secrets_and_label_accounts(
+    app_url, browser, width
+):
+    page = browser.new_page(viewport={"width": width, "height": 844})
+    _enter_chat(page, app_url)
+    page.evaluate("""() => {
+      showView('account');engineConnected=false;window.deposits=[];
+      MCP.connectHTTP=async(...args)=>{deposits.push(args);return {status:'provisioned'};};
+    }""")
+    page.locator("#settings-connect").click()
+    assert page.locator("#request-rail").evaluate('el=>el.matches(":modal")')
+    page.locator("#http-destination").fill("example")
+    page.locator("#http-account-label").fill("personal")
+    page.locator("#http-host").fill("api.example.com")
+    page.locator("#http-path").fill("/messages")
+    page.locator("#http-secret").fill("staged-personal-secret")
+    page.locator("#http-auth-scheme").select_option("oauth")
+    assert page.locator("#http-secret").input_value() == ""
+    assert not page.locator("#http-secret-field").is_visible()
+    page.locator("#http-auth-scheme").select_option("bearer")
+    page.locator("#http-secret").fill("personal-secret")
+    page.locator("#btn-connect-http").click()
+    page.wait_for_function("() => deposits.length===1")
+    assert page.evaluate("deposits[0][0]") == "example:personal"
+    page.locator("#http-destination").fill("example")
+    page.locator("#http-account-label").fill("work")
+    page.locator("#http-host").fill("api.example.com")
+    page.locator("#http-path").fill("/messages")
+    page.locator("#http-secret").fill("work-secret")
+    page.locator("#btn-connect-http").click()
+    page.wait_for_function("() => deposits.length===2")
+    assert page.evaluate("deposits.map(d=>d[0])") == ["example:personal", "example:work"]
+    assert page.locator("#http-secret").input_value() == ""
+    assert "personal-secret" not in page.locator("#thread").inner_text()
+    assert "work-secret" not in page.locator("#thread").inner_text()
+    page.close()
+
+
+@pytest.mark.parametrize("width", [390, 1280])
+def test_agent_connection_answer_uses_server_continuation_without_chat_relay(
+    app_url, browser, width
+):
+    page = browser.new_page(viewport={"width": width, "height": 844})
+    _enter_chat(page, app_url)
+    page.evaluate("""() => {
+      token=()=>'owner';window.answers=[];window.relays=[];
+      window.asks=[{request_id:'service-ask',kind:'API',title:'Connect work account',
+        body:'Send the update through your work account.',agent:'main',status:'pending',
+        server_continuation:true,fields:[{name:'secret',label:'API key',type:'secret'}],
+        action:{type:'connect',destination:'service:work'}}];
+      Owner.listRequests=async()=>({pending:asks,recently_answered:[]});
+      MCP.answerRequest=async payload=>{
+        answers.push(payload);asks=[];return {status:'answered',server_continuation:true};
+      };
+      sendTurn=(...args)=>relays.push(args);
+      renderRail(asks,{foregroundAgent:'main'});
+    }""")
+    assert page.locator("#request-rail").evaluate('el=>el.matches(":modal")')
+    page.locator("#f_service-ask_secret").fill("secret-for-vault-only")
+    page.get_by_role("button", name="Accept", exact=True).click()
+    page.wait_for_function(
+        "() => answers.length===1 && !document.getElementById('request-rail').open"
+    )
+    assert page.evaluate("answers[0].values.secret") == "secret-for-vault-only"
+    assert page.evaluate("relays.length") == 0
+    assert page.locator("#f_service-ask_secret").count() == 0
+    assert "secret-for-vault-only" not in page.locator("#thread").inner_text()
+    page.close()

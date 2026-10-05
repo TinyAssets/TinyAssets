@@ -36,10 +36,13 @@ async def handle_approval(request):
                 return denied
             operation = request.path_params["operation"]
             if operation == "preview":
-                return bound_requests.preview(home, data.get("request_id", ""), session)
+                return bound_requests.preview(
+                    home, data.get("request_id", ""), session, scope=data.get("scope", "once")
+                )
             if operation == "edit":
                 return bound_requests.preview(
-                    home, data.get("request_id", ""), session, draft=data.get("draft"), edit=True
+                    home, data.get("request_id", ""), session, draft=data.get("draft"), edit=True,
+                    scope=data.get("scope", "once")
                 )
             if operation == "decide":
                 return bound_requests.decide(home, data, session)

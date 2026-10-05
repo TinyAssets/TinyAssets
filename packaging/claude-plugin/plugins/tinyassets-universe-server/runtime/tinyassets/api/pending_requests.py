@@ -1341,10 +1341,15 @@ def request_from_user(
         if reused is not None:
             return {**reused, "grant_sentence": _grant_sentence(reused)}
         request_id = _pin_consent(_uid, action, (kind, title, body), fields)
+    request_agent = "main"
+    if action.get("type") in {"connect", "connect_http"}:
+        from tinyassets.effectors.authenticated_external_call import _initiating_agent
+
+        request_agent = _initiating_agent(udir) or "main"
     row = create_request(
         udir, kind=kind, title=title, body=body, fields=fields,
         action=action, dedupe_key=dedupe, origin=origin, items=items,
-        request_id=request_id,
+        request_id=request_id, agent=request_agent,
     )
     if row is None:
         return {"error": "request_storage_unavailable"}
@@ -1371,6 +1376,10 @@ def request_from_user(
     # request was raised" from "the one you raised before is still waiting".
     # Only the first is something to put on the owner's phone.
     created = row.pop("created", True)
+    if action.get("type") in {"connect", "connect_http"}:
+        from tinyassets.connection_continuations import bind
+
+        row["server_continuation"] = bind(udir, row["request_id"])
     if created:
         _notify_owner(_uid, row)
     return {**row, "grant_sentence": _grant_sentence(row), **sign_in}
@@ -2756,8 +2765,9 @@ def answer_request(*, universe_id: str = "", payload: Any = None) -> dict[str, A
                 "in the clear, so say it in words instead"
             )
         again = document.get("dont_ask_again") is True
-        resolve_request(udir, request_id, status="dismissed", feedback=fb,
-                        dont_ask_again=again, decision="declined")
+        if not resolve_request(udir, request_id, status="dismissed", feedback=fb,
+                               dont_ask_again=again, decision="declined"):
+            return {"error": "request_storage_unavailable", "request_pending": True}
         return {
             "status": "dismissed",
             "request_id": request_id,
@@ -2778,8 +2788,9 @@ def answer_request(*, universe_id: str = "", payload: Any = None) -> dict[str, A
                 "in the clear, so say it in words instead"
             )
         again = document.get("dont_ask_again") is True
-        resolve_request(udir, request_id, status="answered", answer=None,
-                        feedback=fb, dont_ask_again=again, decision="declined")
+        if not resolve_request(udir, request_id, status="answered", answer=None,
+                               feedback=fb, dont_ask_again=again, decision="declined"):
+            return {"error": "request_storage_unavailable", "request_pending": True}
         return {
             "status": "answered",
             "decision": "declined",
@@ -3290,9 +3301,10 @@ def _deposit_answer(
             # ask PENDING: answering again re-deposits idempotently and
             # retries the uses, so nothing is half-granted for long.
             return {**extra, "request_pending": True}
-    resolve_request(udir, request_id, status="answered", answer=answer,
-                    feedback=feedback, dont_ask_again=dont_ask_again,
-                    decision="allowed")
+    if not resolve_request(udir, request_id, status="answered", answer=answer,
+                           feedback=feedback, dont_ask_again=dont_ask_again,
+                           decision="allowed"):
+        return {"error": "request_storage_unavailable", "request_pending": True}
     return {
         "status": "answered",
         "request_id": request_id,
@@ -3300,6 +3312,7 @@ def _deposit_answer(
         "destination": action["destination"],
         "receipt": _grant_sentence(row).replace("will be able to", "may"),
         "connection_id": deposited.get("connection_id"),
+        "server_continuation": bool(row.get("server_continuation")),
         **({"signed_in": True} if auth_scheme == "oauth2" else {}),
         **extra,
     }

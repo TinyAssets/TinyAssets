@@ -39,9 +39,8 @@ def test_pending_requests_at_latest_and_new_arrival_answer(app_url, browser, wid
         assert box is not None
         assert 0 <= box["x"] and box["x"] + box["width"] <= width
         assert 0 <= box["y"] and box["y"] + box["height"] <= 844
-        composer = page.locator('#composer').bounding_box()
-        assert box["y"] + box["height"] <= composer["y"] + 1
-        pending = page.locator('#pending-requests').bounding_box()
+        assert page.locator('#needs-you').evaluate('el => el.matches(":modal")')
+        pending = page.locator('#needs-you-items').bounding_box()
         assert pending['y'] <= box['y'] + 1
         assert box['y'] + box['height'] <= pending['y'] + pending['height'] + 1
 
@@ -60,33 +59,43 @@ def test_pending_requests_at_latest_and_new_arrival_answer(app_url, browser, wid
     at_latest()
     page.evaluate('renderRail(asks)')
     at_latest()
-    in_view('#rail-items .rtab:nth-child(1) .rtab-btn')
-    in_view('#rail-items .rtab:nth-child(2) .rtab-btn')
+    assert page.locator('#pending-requests').count() == 0
+    assert not page.locator('#request-rail').is_visible()
+    page.locator('#needs-you-open').click()
+    in_view('#needs-you-items button:nth-child(1)')
+    in_view('#needs-you-items button:nth-child(2)')
     if width == 390:
-        assert page.locator('#rail-items .rtab-btn').first.bounding_box()['height'] < 40
+        assert page.locator('#needs-you-items button').first.bounding_box()['width'] < 390
     if expanded:
-        page.get_by_role('button', name='API Reconnect LinkedIn').click()
+        page.get_by_role('button', name='Reconnect LinkedIn', exact=False).click()
+        assert page.locator('#request-rail').evaluate('el => el.matches(":modal")')
         page.locator('#fb_reconnect').fill('Unsent note')
+        page.locator('#request-sheet-close').click()
     at_latest()
     page.evaluate("""() => {
         asks.push({request_id:'new',kind:'API',title:'A new request',fields:[]});
         renderRail(asks);
     }""")
-    in_view('#rail-items .rtab:nth-child(3) .rtab-btn')
+    if not page.locator('#needs-you').is_visible():
+        page.locator('#needs-you-open').click()
+    in_view('#needs-you-items button:nth-child(3)')
     at_latest()
     if expanded:
         assert page.locator('#fb_reconnect').input_value() == 'Unsent note'
-    page.get_by_role('button', name='API A new request').click()
+    page.get_by_role('button', name='A new request', exact=False).click()
     page.locator('#fb_new').fill('Go ahead')
     page.get_by_role('button', name='Accept', exact=True).click()
     page.wait_for_function('answers.length === 1 && relays.length === 1')
     assert page.evaluate('answers') == [
         {'request_id': 'new', 'feedback': 'Go ahead', 'values': {}}
     ]
-    assert page.evaluate('relays[0][0]') == 'Approved: "A new request" — Go ahead'
-    assert page.locator('#rail-items .rtab').count() == 2
-    in_view('#rail-items .rtab:nth-child(1) .rtab-btn')
-    in_view('#rail-items .rtab:nth-child(2) .rtab-btn')
+    assert page.evaluate('relays[0][0]') == 'Approved: "A new request" \u2014 Go ahead'
+    assert not page.locator('#request-rail').is_visible()
+    page.locator('#needs-you-open').click()
+    assert page.locator('#needs-you-items button').count() == 2
+    in_view('#needs-you-items button:nth-child(1)')
+    in_view('#needs-you-items button:nth-child(2)')
+    page.locator('#needs-you-close').click()
     # A poll must also leave someone reading older messages where they were.
     old_scroll = page.locator('#thread').evaluate('el => (el.scrollTop = 200)')
     page.evaluate("""() => {
