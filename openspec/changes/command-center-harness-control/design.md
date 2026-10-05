@@ -1,0 +1,80 @@
+## Context
+
+The supplied audit B4/L11–L13 identifies `command_center_packages.model_need()` as an install-only settings reader, `/u/extensions/<pkg>/extension.json` as tool-only, and the bridge in `ui_frame.py` as a limited method list. D7 names settings without a runtime schema. D8/D9 already specify package installation, and composable-ui-experiences already binds the renderer to its viewing user. These are extension points, not reasons to create competing stores or control planes.
+
+## Goals / Non-Goals
+
+Let the owner customize or replace the starter, main agent, tool set, model and loop with few tools plus one extension mechanism, as in the pi-style direction. Provide the same permitted execution capabilities through ta and custom UI. Cross-user isolation is the sole immutable platform policy. Credential custody and authentic owner provenance implement that isolation and the owner's chosen permissions; they do not authorize a platform veto over the owner's behavior. No platform LLM, provider-specific code or separate UI-only capability catalog is introduced.
+
+Do not reimplement D7 memory/history, D8/D9 packages/main selection, starter extraction, protected decisions or renderer isolation. The actual UI layout is implementation work in its owning lane.
+
+## Decisions
+
+### Runtime settings schema v1
+
+Read center-root `settings.yaml` for the main agent and `agents/<slug>/settings.yaml` for that roster agent. Resolve center and agent from the authenticated launch binding, never from YAML owner/path claims. A roster document is independent; missing fields use documented runtime defaults, not another agent's settings. Only an explicit per-run model choice overrides the settings model, followed by the existing owner model preference when the field is absent. Every candidate uses current owner-connected authority. No fallback to a platform or maintainer model.
+
+| Field | Version 1 meaning |
+|---|---|
+| `schema_version: 1` | Required for a newly authored document; unknown versions/keys and duplicate YAML keys are errors. Safe parsing only, no tags or executable YAML. |
+| `model: {connection, id, effort?}` | Local connected source ID and model ID; effort uses executor-advertised values. Missing binding asks inline and holds this launch without silently substituting another model. |
+| `tools: {allow: [...]}` | Owner-selected exposed names/patterns from ta plus base tools. Absent means current available set; empty means no model-callable tools. Restricts a launch, never grants another owner's access. |
+| `skills: {enabled: [...]}` | Relative skill identifiers; omitted retains current discovery, empty disables all. |
+| `extensions: {enabled: [...]}` | Ordered relative extension IDs; omitted retains the currently activated set, empty disables all. Package presence alone is not activation. |
+| `starter: {hooks: true|false}` | Enables/disables editable starter/hooks.md; absent retains the starter default. Never reconstitutes deleted instructions. |
+| `loop: {compaction: {...}, retry: {...}}` | Owner-selected context reserve/trigger and retry attempts/backoff; typed finite nonnegative values validated against the selected executor's capabilities. No retry of uncertain side effects. |
+
+Capture validated settings bytes/hash, resolved model and ordered extension manifest/code revisions at each turn boundary; record the snapshot in existing turn/run history. File writes use existing harness history and expected-revision conflict handling. An edit affects the next turn, never a half-completed hook/tool sequence. Revocation, account change and Stop take effect immediately and are rechecked before dispatch; a snapshot is not a durable authority grant. Background and foreground turns use the same resolver.
+
+Missing document preserves pre-change behavior; blank/malformed settings produce a visible diagnostic and do not silently run old settings. Legacy packaged `model: <string>` becomes a visible candidate requiring resolution to a local binding before activation, without rewriting the source or guessing a provider. An explicit owner adoption writes v1 with history/Undo. D9 still owns install quarantine and local binding. Packages export logical model needs, never credentials or source-account grants.
+
+### One extension protocol
+
+Extend `extension.json` with `schema_version: 2`, existing executable/tools declarations, ordered hook registrations, commands and card contributions. Version 1 tool-only manifests continue working with no implicit hooks. Entry points are relative no-link jail paths. A launch pins manifest and executable hashes; edits become effective next turn after normal activation. Run hooks in the same owner/center execution environment and no stronger launch grant than the active agent; no daemon Python imports or host execution.
+
+Hooks receive versioned JSON with opaque session/turn/invocation IDs, event kind, owner-visible payload and settings revision; they never receive session cookies, credential bytes or protected approval tokens. Output is a validated JSON result, not executable daemon code.
+
+| Event | Allowed result |
+|---|---|
+| `input` | Pass/transform owner input for this turn or return an owner-visible response. |
+| `turn_start` | Add/replace agent instructions and select configured tools/context for the turn. |
+| `context` | Transform context and select compaction behavior before a model request. |
+| `before_tool` | Continue, replace arguments/tool implementation, or cancel this call. |
+| `after_tool` | Transform the model-visible result after the actual effect and receipt exist. |
+| `turn_end` | Record owner-visible state and contribute a final card/response. |
+
+The enabled extension order in settings is the execution order; later hooks see validated output from earlier hooks. Stop and authentic owner/center bindings are not transformable payload. A transformed tool call is dispatched through ordinary ta authority and current owner rules, including when a hook replaces a built-in. A fabricated after_tool result cannot rewrite effect receipts or claim an interactive owner approval. An extension may implement the owner's replacement model loop through ordinary ta calls; every model call still requires the owner's connection. There is no immutable four-tool behavioral policy.
+
+Hook invocations carry IDs and cancellation/deadline signals. Timeouts, malformed output and crashes terminate that turn with a visible hook error unless the owner explicitly configured a supported recovery behavior; never silently run the unmodified tool. Retrying a hook cannot blindly replay an external side effect with uncertain outcome. Hook-initiated ta calls do not recursively re-enter the same hook dispatch; extensions needing orchestration perform it explicitly. Owner-chosen limits and progress/cancellation remain visible.
+
+Slash commands and inline cards use this same manifest/runtime. Cards carry owner-content provenance, not forged platform/approval chrome. If owner policy asks for a decision, the extension references an existing protected request ID and opens the inline-connect-and-approve surface. Owners can change their policy to preauthorize operations; there is no mandatory extra review gate invented by extensions.
+
+### Bridge parity through ta dispatch
+
+Extend the existing versioned message bridge with `capabilities.search`, `capabilities.describe` and `capabilities.call` carrying ta's stable capability identifiers, structured input, correlation ID and expected revision for mutable resources. Both surfaces use one dispatcher and result/error schema. Offer connections inventory/use/connect/disconnect, memory read/edit/delete/Undo, harness read/write/history/Undo, rules read and permitted owner-control operations, model selection and extension management through that registry. A denied or unavailable capability returns the same reason on both surfaces, never a hard-coded UI-specific ban.
+
+The trusted host authenticates the viewing owner and selected center/agent and binds the isolated frame instance, current bundle revision and permission revision to each request. It checks message source/nonce and current binding, not frame-supplied identity. Permission records reuse the existing installation/owner authority infrastructure outside editable package files; record owner, center, installation, exact bundle revision/content hash, allowed capabilities, permission revision and revocation. An owner can grant the full set for their center or a smaller set and revoke it later. Every third-party bundle revision requires renewed owner permission even when its requested capabilities are unchanged, unless the owner explicitly enabled automatic updates from that authenticated author within a recorded capability ceiling. That author identity, ceiling and update preference live in the owner permission record, not in the incoming package. An expanded scope still requires a new owner choice. The recipient-update path must check these records before activating any new revision and invalidate old frame handles. No model or platform policy agent participates in this permission check.
+
+Owner-permitted parity includes editable main-agent files. Files resolve under the bound harness roots without symlink/reparse escape; whole-memory edits preserve D7 IDs/history via its existing write operation. Concurrent writes require an expected revision and return a conflict without discarding later edits. Reading a connection returns redacted metadata and opaque usable handles, never vault credentials. Interactive approval tokens and platform identity records are not ta execution capabilities and cannot be forged by calling the bridge. If a chosen operation requires an owner interaction, return the protected inline request handle; broad standing owner permission can eliminate repeated asks according to existing rules.
+
+Account switch, center switch, navigation, permission revocation or frame destruction invalidates handles and pending responses. In-flight effects already dispatched retain their true receipts; late results cannot render in another owner's UI. An authorized cross-user interaction uses the existing recipient grant; no guessed ID, copied bundle or YAML field grants access.
+
+### Ownership reconciliation
+
+This contract fills D7 step 4 and D6 extension/ta gaps. `composable-ui-experiences` remains sole owner of the sandboxed renderer and installation binding; this adds its generic dispatcher methods rather than another renderer. D8/D9 main-agent selection consumes these settings after install, and starter task 3.3 remains the replacement-main proof owner. Record these delegation links in parent designs so implementers do not separately implement the old placeholders.
+
+## Migration Plan
+
+1. Add resolver and protocol negotiation with visible validation before activation. Preserve missing-settings behavior and v1 tool-only extensions.
+2. Wire foreground/background turns and ta once, then expose the same dispatcher through the existing owner-bound bridge. Activate packages only through D9's current path.
+3. Demonstrate an owner changing settings, disabling starter hooks, replacing a built-in/main agent and editing memory from a custom UI; prove account switch/revocation isolation. Undo content via history or disable extensions with ordinary owner controls, without resetting data or silently invoking a stock agent.
+
+## Risks / Trade-offs
+
+- Owner code can break its own agent: expose diagnostics and recovery through the existing model-independent owner surface; do not force a platform starter.
+- Hooks and frames can act as confused deputies: resolve authority at the shared dispatcher on every call and invalidate stale frame bindings.
+- Live files can change during a turn: pin revisions, recheck authority at dispatch and report next-turn activation explicitly.
+
+## Open Questions
+
+None affecting authority or storage. Exact UI affordances remain with the existing UI lanes; protocol names and v1 field semantics above are the proposed contract.

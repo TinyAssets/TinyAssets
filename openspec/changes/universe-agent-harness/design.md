@@ -1262,7 +1262,10 @@ expiry within one server's life, and a direct call on the engine's MCP route by
 a holder of the bearer is still narrowed only by the provider's tool list, as
 it was before D6a.
 
-**Attached MCP follow-up (deferred, no partial adapter).** Reserve
+**Attached MCP follow-up (delegated, no partial adapter).** The proposed
+`connect-anything-ladder` change now owns the D6 attachment storage, activation,
+transport and D5 browser-login custody extension. D5 retains browser/live-view
+implementation; D6 retains ta. Its delta must land before implementation. Reserve
 `mcp:<attachment>:<tool>` for tools/list descriptions and tools/call. An owner
 attachment should declare either `stdio: {argv, cwd}` (executed inside the
 same jail with its cleared environment), or `http: {connection_id, endpoint}`
@@ -1273,8 +1276,8 @@ and close children/sessions with the invocation. Before implementing, settle
 owner-authenticated attachment storage/activation and MCP initialization,
 streaming, cancellation and reconnect semantics. The existing connection
 broker buffers one HTTP request/response, so treating it as a persistent MCP
-transport now would only half-build the capability. This work remains in D6;
-any new table or public owner door needs its own delta before code.
+transport now would only half-build the capability. The delegated change resolves
+this contract; do not implement a second attachment or login mechanism here.
 
 Resident-tool removal, native-tool changes, handbook migration and the token
 ratchet remain D6 follow-ups. Durable workflow/automation context propagation
@@ -1285,7 +1288,9 @@ or live-user acceptance is claimed by this branch.
 1. Give memory items stable ids.
 2. Build the Memory tab.
 3. Add the jailed history store and Undo.
-4. Add `settings.yaml`.
+4. Runtime `settings.yaml`, lifecycle extension hooks and owner-permitted ta/UI
+   bridge parity are delegated to `command-center-harness-control` (L11-L13).
+   D7 retains the editor/history; D8/D9 retain install and main-agent selection.
 5. Build the Harness tab.
 6. Add seed curator and review skills.
 7. After steps 1-3 and the memory acceptance below, retire `read_brain`,
