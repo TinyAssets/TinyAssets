@@ -1994,7 +1994,7 @@
       }).observe(thread,{childList:true,subtree:true,characterData:true});
       const returned=()=>followChatLatest(true);
       document.addEventListener("visibilitychange",()=>{
-        if(document.visibilityState==="visible") returned();
+        if(document.visibilityState==="visible" && !pickerOpen) returned();
       });
       let leftWindow=false, pickerOpen=false;
       const fileInput=$("file-input");
@@ -2008,13 +2008,16 @@
         setTimeout(()=>{leftWindow=!pickerWasOpen && document.activeElement?.tagName!=="IFRAME";},0);
       });
       window.addEventListener("focus",()=>{
+        // Capture the departure before the command-center focus handler can
+        // focus its iframe and queue a nested blur that clears leftWindow.
+        const wasAway=leftWindow;
         setTimeout(()=>{
-          if(leftWindow && !pickerOpen) returned();
-          leftWindow=false; pickerOpen=false;
+          if(wasAway && !pickerOpen) returned();
+          leftWindow=false;
         },0);
-      });
+      },true);
       window.addEventListener("pageshow",returned);
-      document.addEventListener("resume",returned);
+      document.addEventListener("resume",()=>{if(!pickerOpen) returned();});
     }
     const state=thread.chatScroll;
     if(reset){state.following=true;state.gesture=false;state.opening++;}

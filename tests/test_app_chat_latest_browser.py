@@ -127,6 +127,58 @@ def test_return_to_app_resets_reader_to_latest(chat_page, event):
     _bottom(page)
 
 
+@pytest.mark.parametrize("target", ["body", "thread"])
+def test_window_return_with_command_center_lands_on_latest(chat_page, target):
+    page = chat_page
+    page.evaluate("loadHistory()")
+    _bottom(page)
+    _scroll_up(page)
+    # Keep the production listeners and their boot order, including the focus
+    # handler that really focuses the iframe and emits a nested window blur.
+    page.evaluate("""target => {
+        const frame=document.createElement('iframe');frame.id='ui-frame';
+        const host=document.getElementById('ui-frame-host');
+        host.hidden=false;host.replaceChildren(frame);
+        const active=target==='body'?document.body:document.getElementById('thread');
+        active.tabIndex=-1;active.focus();
+        window.returnEvents=[];
+        window.addEventListener('blur',()=>returnEvents.push(document.activeElement.tagName));
+    }""", target)
+    expected_tag = "BODY" if target == "body" else "DIV"
+    assert page.evaluate("document.activeElement.tagName") == expected_tag
+    page.evaluate("""async () => {
+        window.dispatchEvent(new Event('blur'));
+        await new Promise(r=>setTimeout(r,0));
+        window.dispatchEvent(new Event('focus'));
+    }""")
+    page.wait_for_function("() => document.activeElement.id==='ui-frame'")
+    assert "IFRAME" in page.evaluate("returnEvents")
+    _bottom(page)
+
+
+@pytest.mark.parametrize("event", ["visibility", "resume"])
+def test_native_picker_return_preserves_reader_position(chat_page, event):
+    page = chat_page
+    page.evaluate("loadHistory()")
+    _bottom(page)
+    _scroll_up(page)
+    before = page.locator("#thread").evaluate("t=>t.scrollTop")
+    with page.expect_file_chooser():
+        page.click("#btn-attach")
+    page.evaluate("""event => {
+        hiddenForTest=true;document.dispatchEvent(new Event('visibilitychange'));
+        hiddenForTest=false;
+        document.dispatchEvent(new Event(event==='visibility'?'visibilitychange':'resume'));
+        document.getElementById('file-input').dispatchEvent(new Event('cancel'));
+    }""", event)
+    _settle(page)
+    page.evaluate("appendMessage('universe','Arrived after native picker')")
+    _settle(page)
+    assert page.locator("#thread").evaluate("t=>t.scrollTop") == pytest.approx(before, abs=2)
+    page.evaluate("document.dispatchEvent(new Event('resume'))")
+    _bottom(page)
+
+
 @pytest.mark.parametrize("return_while_loading", [False, True])
 def test_show_earlier_preserves_visible_message_position(chat_page, return_while_loading):
     page = chat_page
