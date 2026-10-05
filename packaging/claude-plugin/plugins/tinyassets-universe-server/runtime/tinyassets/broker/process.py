@@ -55,6 +55,7 @@ class _Dispatchers:
         self._data_root = data_root
         self._ledger_root = data_root / ".broker" if role_split else data_root
         self._allow_test_fixtures = allow_test_fixtures
+        self._role_split = role_split
         self._cache: dict[str, Any] = {}
         self._lock = threading.Lock()
 
@@ -78,6 +79,7 @@ class _Dispatchers:
                     owner_user_id=resource.owner_user_id,
                     connection_type=resource.connection_type,
                 )
+                config["allow_local_refresh"] = not self._role_split
                 dispatch = _build_credential_broker_dispatch(config)
                 self._cache[key] = dispatch
         return dispatch

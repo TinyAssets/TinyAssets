@@ -17,6 +17,7 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from urllib.parse import parse_qs
 
 HOST = "uid-stream.invalid"
 ADDRESS = "93.184.216.2"
@@ -34,6 +35,7 @@ def fixture():
 
     class Handler(BaseHTTPRequestHandler):
         posts = 0
+        rotations = 0
         counter_lock = threading.Lock()
 
         def log_message(self, *_args):
@@ -44,7 +46,24 @@ def fixture():
             if not 0 < size < 4096:
                 self.send_error(400)
                 return
-            request = json.loads(self.rfile.read(size))
+            body = self.rfile.read(size)
+            if self.path == "/token":
+                form = parse_qs(body.decode())
+                with Handler.counter_lock:
+                    if form.get("refresh_token") != [f"single-use-oracle-{Handler.rotations}"]:
+                        self.send_error(400)
+                        return
+                    Handler.rotations += 1
+                    payload = json.dumps({
+                        "access_token": f"oauth-oracle-access-{Handler.rotations}",
+                        "refresh_token": f"single-use-oracle-{Handler.rotations}",
+                        "token_type": "Bearer", "expires_in": 3600}).encode()
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+                return
+            request = json.loads(body)
             if (self.path != "/inference" or request.get("model") != "oracle-model"
                     or self.headers.get("Authorization") != f"Bearer {TOKEN}"):
                 self.send_error(403)
@@ -60,13 +79,29 @@ def fixture():
             self.wfile.write(payload)
 
         def do_GET(self):
+            if self.path in {"/oauth", "/oauth-reject"}:
+                with Handler.counter_lock:
+                    rotations = Handler.rotations
+                if (self.headers.get("Authorization") != f"Bearer oauth-oracle-access-{rotations}"
+                        or rotations < (2 if self.path == "/oauth-reject" else 1)):
+                    self.send_response(401)
+                    self.send_header("Content-Length", "0")
+                    self.end_headers()
+                    return
+                payload = json.dumps({"ok": True, "rotations": rotations}).encode()
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+                return
             if (self.path not in {"/catalogue", "/counts"}
                     or self.headers.get("Authorization") != f"Bearer {TOKEN}"):
                 self.send_error(403)
                 return
             if self.path == "/counts":
                 with Handler.counter_lock:
-                    payload = json.dumps({"posts": Handler.posts}).encode()
+                    payload = json.dumps({"posts": Handler.posts,
+                                          "rotations": Handler.rotations}).encode()
                 self.send_response(200)
                 self.send_header("Content-Length", str(len(payload)))
                 self.end_headers()
@@ -132,6 +167,15 @@ def seed(root):
         connection_id="stream-connection", capability_kind="model_use", enabled=True,
         descriptor={"wire": "chat_messages", "models": [{"id": "oracle-model", "tools": True,
                                                         "context": 20000}], "billing": "free"})
+    ledger.create_connection(
+        connection_id="refresh-connection", owner_user_id="stream-owner",
+        connection_class="http", connection_type="http", auth_scheme="oauth2",
+        scopes=("GET",), provider="http", destination="refresh-fixture",
+        credential_ref="vault://http/refresh-fixture", allowed_endpoints=[
+            {"host": HOST, "path_template": path, "methods": ["GET"]}
+            for path in ("/oauth", "/oauth-reject")])
+    ledger.grant_connection(grant_id="refresh-grant", connection_id="refresh-connection",
+                            owner_user_id="stream-owner", universe_id="stream-owner")
     for path in (root / ".broker").glob("outbound.db*"):
         os.chown(path, 1002, 1101)
         path.chmod(0o600)
@@ -174,6 +218,41 @@ def probe(root):
     print("D24 actual effector proxy HTTPS through launcher broker: "
           "vault bearer, verified TLS, real body, no daemon ledger: PASS", flush=True)
     inference_probe(root)
+    refresh_probe(root)
+
+
+def refresh_probe(root):
+    from tinyassets.connection_oauth.tokens import ConnectionTokens, TokenBundle, decode, encode
+    from tinyassets.credential_vault import http_credential_record, write_credential_vault
+    from tinyassets.effectors.authenticated_external_call import _open_connection_proxy
+
+    universe = root / "stream-owner"
+    tokens = ConnectionTokens(universe_dir=universe, owner_user_id="stream-owner")
+    try:
+        tokens._read("refresh-fixture")
+    except LookupError:
+        write_credential_vault(universe, [http_credential_record(
+            destination="refresh-fixture", token=encode(TokenBundle(
+                "oauth-oracle-access-0", f"https://{HOST}/token", "oracle-client",
+                refresh_token="single-use-oracle-0", expires_at=1)))],
+            owner_user_id="stream-owner")
+    proxy = _open_connection_proxy(
+        db_path=root / "outbound.db", grant_id="refresh-grant", owner_user_id="stream-owner",
+        universe_id="stream-owner", connection_id="refresh-connection")
+    try:
+        for path in ("/oauth", "/oauth-reject", "/oauth"):
+            answer = proxy.request("GET", {"url": f"https://{HOST}{path}"})
+            assert answer["status"] == 200 and json.loads(answer["body"])["ok"] is True
+        assert json.loads(answer["body"])["rotations"] == 2
+        assert decode(tokens._read("refresh-fixture")).refresh_token == "single-use-oracle-2"
+        info = (universe / ".credential-vault.json").stat()
+        assert (info.st_uid, info.st_gid, info.st_mode & 0o7777) == (1001, 1102, 0o640)
+        assert not (root / "outbound.db").exists()
+    finally:
+        proxy.close()
+    print("D49/D50 actual daemon vault publication and broker HTTPS OAuth refresh: "
+          "expiry and 401, exactly two single-use rotations, persisted daemon-owned "
+          "1001:1102/0640 vault, reuse across broker restart: PASS", flush=True)
 
 
 def inference_probe(root):

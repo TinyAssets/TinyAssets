@@ -344,3 +344,11 @@ D44 routes UsageStore runtime creation, reservations, receipts, links, settlemen
 D45 supplies real broker-readable daemon/parent kernel lock creation plus offline forward/reverse mode migration. Runtime IPC passes through the launcher without fixture lock patches. Actual inference POST, daily evidence, refresh and full startup orchestration remain.
 
 D46 proves actual accounted HTTPS POST through launcher broker, including server-counted missing/replay refusals, with seeded definition modes. D47 routes daily accounting evidence and exact legacy-turn link exclusion through bounded owner-only IPC. Runtime definition replacement/migration modes and refresh remain before engine integration.
+
+D49/D50 route role-split HTTP OAuth refresh over the admitted broker stream.
+The daemon captures exact scoped custody through AUTHORIZED_CONNECTION before
+OPEN and performs admission/reread/spend/write under its existing vault locks;
+the broker receives only a boolean completion and re-reads the vault. No local
+broker refresh fallback. Actual expiry/401 HTTPS rotation and persistence across
+broker restart pass; subscription refresh remains daemon-local under the same
+refresh core. Full migration and deletion still require their own completion.

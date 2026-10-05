@@ -1,3 +1,50 @@
+# Current delivery: D50 coordinated refresh through the admitted broker stream
+
+D49 pushed as 692b2d201b; hygiene added 4 tests, removed 0, tampering 0.
+D50 adds REFRESH/REFRESH_ACK to the existing authenticated stream, with an exact
+pre-OPEN custody snapshot and daemon-only lock/admission/reread/spend/write.
+Only a destination and rejected-token digest cross the wire; the broker refuses
+local refresh without a daemon callback. Sync/async clients save before ACK;
+a lost ACK keeps the new vault and does not replay the single-use token.
+D49 runtime vault replacement is exercised by actual daemon uid 1001 here.
+Cross-family peer-agents: AGREE, APPROVE; no floor/correctness findings.
+Reviewer's Windows skips are not acceptance; Linux receipts follow.
+
+Release-critical files: **0; none**. Runtime broker refresh/client/aclient/server/
+process, connection_oauth/tokens and outbound_connections plus generated mirrors;
+refresh tests and HTTPS oracle. No affected heavy-list test file.
+
+```text
+python scripts/linux_oracle.py -- tests/test_broker_refresh.py tests/test_broker_server.py tests/test_broker_discovery_http.py tests/test_outbound_connection_ledger.py tests/test_generic_oauth_connections.py tests/test_platform_oauth_clients.py -q -rs
+144 passed in 50.16s; zero skips
+python scripts/linux_oracle.py --production-image tinyassets-uid-refresh:d50 --build --production-stream
+exit 0; sha256:e58b1cf1ba316821a58d7ddb56847cb77a1db00144c3028aeeb6e0d533edee18
+D49/D50 actual daemon vault publication and broker HTTPS OAuth refresh: expiry and 401, exactly two single-use rotations, persisted daemon-owned 1001:1102/0640 vault, reuse across broker restart: PASS
+```
+New tests additionally cover concurrent single-flight rotation, admission failure
+before spend, write retry under the same vault hold, foreign/revoked/stale scope,
+lost ACK, digest-based 401 retry, async coordination and broker fallback refusal.
+The earlier isolated run (33 passed) printed existing fixture shutdown pending-task
+warnings; the complete 144-test acceptance run above completed without them.
+Initial new assertions were corrected to the existing typed/sanitized error
+contract; no existing test or guard was loosened. One command named a nonexistent
+async-test file and ran no tests; its corrected run included test_broker_server.
+
+All previous production-image substeps pass: egress/accounting/liveness forward
+and reverse dry-run/apply/repeat; 6+8+3+4 crash boundaries; hostile input refusal;
+accounted HTTPS, consumers and restart. Same seven capabilities and compose
+security options; synthetic HTTPS network/CA cleaned by harness. These remain
+substep proofs, not full role migration, deletion or actual old-image rollback.
+Targeted Ruff, plugin build/import, mirror parity (608), strict OpenSpec and
+whitespace pass. Full Ruff still reports the same 55 untouched errors.
+
+No full task checked off. Remaining in order: every actual engine class through
+the launcher (including daemon-reader denial pairs), full role migration and
+capability-free two-pass deletion, actual old-image rollback, then startup and
+healthcheck integration only after every prior proof passes. Startup inactive.
+No PR, deploy, rebase or force-push.
+
+---
 # Current delivery: D49 runtime vault publication prerequisite
 
 D49 retains broker read-only access on every daemon vault replacement: the

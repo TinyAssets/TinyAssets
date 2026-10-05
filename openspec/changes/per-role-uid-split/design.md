@@ -1523,6 +1523,24 @@ compensation contract. Legacy unsplit publication remains 0600. This is required
 for refresh: uid 1002 must re-read rotated bytes without acquiring vault write
 permission. Existing-file migration and materialized credential modes remain
 part of full migration; this decision does not activate startup.
+### D50. Mechanical decision: refresh coordination uses the admitted stream
+
+The daemon captures exact grant/connection/owner/center custody through existing
+broker IPC before OPEN. OAuth streams opt into a bounded REFRESH/REFRESH_ACK
+exchange on that same kernel-authenticated, fenced channel. The broker sends
+only the pinned destination and a rejected-access-token digest; no secret, SQL,
+path, endpoint or callable crosses the wire. The daemon callback refuses scope
+mismatch and checks deposit ownership again inside the existing thread/file/
+exclusive-vault locks before spending. It re-reads under those locks and writes
+the rotated credential before ACK; a lost ACK reuses persisted bytes on a fresh
+operation instead of replaying the refresh token. Broker stream cancellation or
+disconnect cannot interrupt a daemon callback already spending/persisting.
+The existing broker send fence brackets refresh as it did local token refresh.
+The role-split broker refuses local refresh if a daemon callback is absent;
+no vault write right, retained privilege or separate privileged service is added.
+Vault replacements use D49. This is coordination of the existing daemon writer
+and existing broker, not startup activation. Production and fault receipts are
+recorded separately; engine/migration/deletion/rollback gates remain pending.
 ## Risks / Trade-offs
 
 - **The launcher is root-adjacent code.** One file, stdlib-only, run `-I -S`, a static kind table,

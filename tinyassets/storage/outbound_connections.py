@@ -1174,10 +1174,14 @@ def _broker_channel(data_root: Path, *, principal: str, command_center: str, gra
     if supervisor is None:
         raise ProxyRequestError("the credential broker is selected but not running")
     from tinyassets.broker.client import BrokerClient
+    from tinyassets.broker.refresh import prepare
 
     client = BrokerClient(supervisor.socket_path, principal=principal,
                           command_center=command_center, fence=supervisor.fence,
-                          verify_peer=supervisor.verify_broker)
+                          verify_peer=supervisor.verify_broker,
+                          refresh_factory=lambda grant, connection: prepare(
+                              data_root, principal=principal, command_center=command_center,
+                              grant_id=grant, connection_id=connection))
     return _BrokerChannel(client, grant_id=grant_id, connection_id=connection_id)
 
 
@@ -1310,7 +1314,7 @@ class CredentialBlindBroker:
                  on_connect: Callable[[Any], None] | None = None,
                  checkpoint: Callable[[], None] | None = None,
                  deadline_at: float | None = None, inference_usage=None,
-                 operation_id: str | None = None) -> Any:
+                 operation_id: str | None = None, refresh_request=None) -> Any:
         """One request on the grant. ``stream=True`` returns a :class:`BrokerStream`
         whose body is read as it arrives (I14); every check before the response
         is identical, and the body is scanned byte by byte instead of whole."""
@@ -1421,8 +1425,9 @@ class CredentialBlindBroker:
                     if deadline_at is not None and time.monotonic() >= deadline_at:
                         raise OutboundDeadlineExceeded("outbound request exceeded its time budget")
                     return self._oauth_bundle(resource, grant_id, verb, credential,
-                                              rejected=rejected)
-            return self._oauth_bundle(resource, grant_id, verb, credential, rejected=rejected)
+                                              rejected=rejected, refresh_request=refresh_request)
+            return self._oauth_bundle(resource, grant_id, verb, credential, rejected=rejected,
+                                      refresh_request=refresh_request)
 
         if oauth:
             from tinyassets.connection_oauth.tokens import decode
@@ -1502,14 +1507,15 @@ class CredentialBlindBroker:
 
     def _oauth_bundle(
         self, resource: ConnectionResource, grant_id: str, verb: str, credential: str,
-        *, rejected: str = "",
+        *, rejected: str = "", refresh_request=None,
     ) -> Any:
         if self._oauth_tokens is None:
             self._record_error(resource, grant_id, verb, "oauth2 tokens unavailable")
             raise ProxyRequestError("outbound request failed: credential unavailable")
         destination = (resource.credential_ref or "")[len(_HTTP_CREDENTIAL_REF_PREFIX):].strip()
         try:
-            return self._oauth_tokens.current(destination, credential, rejected=rejected)
+            return self._oauth_tokens.current(destination, credential, rejected=rejected,
+                **({"refresh_request": refresh_request} if refresh_request is not None else {}))
         except ConnectionAuthorizationError:
             self._record_error(resource, grant_id, verb, "connection authorization failed")
             raise
@@ -4975,6 +4981,7 @@ def _build_credential_broker_dispatch(
             universe_dir=config["universe_dir"],
             owner_user_id=config["owner_user_id"],
             oauth_service=config.get("oauth_service"),
+            allow_local_refresh=config.get("allow_local_refresh", True),
         ),
     )
     return broker.dispatch
