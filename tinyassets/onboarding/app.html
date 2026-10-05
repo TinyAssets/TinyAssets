@@ -1925,6 +1925,16 @@
     if(!thread.chatScroll){
       const state=thread.chatScroll={following:true,frame:0,opening:0,gesture:false,lastTop:thread.scrollTop};
       const atBottom=()=>thread.scrollHeight-thread.clientHeight-thread.scrollTop<=2;
+      state.atBottom=atBottom;
+      let gestureTimer=0;
+      const settleGesture=()=>{
+        clearTimeout(gestureTimer);
+        // Wheel default actions can arrive after the next animation frame.
+        gestureTimer=setTimeout(()=>{
+          state.following=atBottom();
+          if(state.following) state.gesture=false;
+        },120);
+      };
       state.schedule=()=>{
         if(state.frame) return;
         state.frame=requestAnimationFrame(()=>{
@@ -1937,6 +1947,7 @@
       thread.addEventListener("wheel",e=>{
         state.gesture=true;
         if(e.deltaY<0 && thread.scrollTop>0) state.following=false;
+        settleGesture();
       },{passive:true});
       let touchY=0;
       thread.addEventListener("touchstart",e=>{touchY=e.touches[0].clientY;},{passive:true});
@@ -1952,6 +1963,7 @@
           state.gesture=true; state.following=false;
         }
       },{passive:true});
+      window.addEventListener("pointerup",()=>{if(state.gesture) settleGesture();},{passive:true});
       thread.addEventListener("keydown",e=>{
         if(e.target.closest("button,input,textarea,select,[contenteditable]")) return;
         if(["ArrowUp","ArrowDown","PageUp","PageDown","Home","End"," "].includes(e.key))
@@ -1983,7 +1995,23 @@
       document.addEventListener("visibilitychange",()=>{
         if(document.visibilityState==="visible") returned();
       });
-      window.addEventListener("focus",returned);
+      let leftWindow=false, pickerOpen=false;
+      const fileInput=$("file-input");
+      fileInput.addEventListener("click",()=>{pickerOpen=true;});
+      const pickerClosed=()=>{setTimeout(()=>{pickerOpen=false;},0);};
+      fileInput.addEventListener("cancel",pickerClosed);
+      fileInput.addEventListener("change",pickerClosed);
+      window.addEventListener("blur",()=>{
+        // activeElement is updated after blur when focus enters the UI frame.
+        const pickerWasOpen=pickerOpen;
+        setTimeout(()=>{leftWindow=!pickerWasOpen && document.activeElement?.tagName!=="IFRAME";},0);
+      });
+      window.addEventListener("focus",()=>{
+        setTimeout(()=>{
+          if(leftWindow && !pickerOpen) returned();
+          leftWindow=false; pickerOpen=false;
+        },0);
+      });
       window.addEventListener("pageshow",returned);
       document.addEventListener("resume",returned);
     }
@@ -9870,6 +9898,7 @@
     Array.from(thread.children).slice(start).forEach(node=>thread.insertBefore(node, anchor));
     offerEarlier(conv.has_more===true ? conv.next_before : null, stillOwner);
     if(preserve && anchorTop!==null) thread.scrollTop+=anchor.getBoundingClientRect().top-anchorTop;
+    if(scrollState && preserve) scrollState.following=scrollState.atBottom();
   }
 
   // The conversation could not be read: say so in the thread, once, and clear

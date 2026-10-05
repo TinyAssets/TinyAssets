@@ -112,11 +112,17 @@ def test_return_to_app_resets_reader_to_latest(chat_page, event):
     page.evaluate("loadHistory()")
     _bottom(page)
     _scroll_up(page)
-    page.evaluate("""event => {
+    page.evaluate("""async event => {
         if(event==='visibility') {
             hiddenForTest=true;document.dispatchEvent(new Event('visibilitychange'));
             hiddenForTest=false;document.dispatchEvent(new Event('visibilitychange'));
-        } else (event==='resume'?document:window).dispatchEvent(new Event(event));
+        } else {
+            if(event==='focus') {
+                window.dispatchEvent(new Event('blur'));
+                await new Promise(r=>setTimeout(r,0));
+            }
+            (event==='resume'?document:window).dispatchEvent(new Event(event));
+        }
     }""", event)
     _bottom(page)
 
@@ -140,7 +146,11 @@ def test_show_earlier_preserves_visible_message_position(chat_page, return_while
     page.get_by_role("button", name="Show earlier messages", exact=True).click()
     page.wait_for_function("() => !!window.releaseEarlier")
     if return_while_loading:
-        page.evaluate("window.dispatchEvent(new Event('focus'))")
+        page.evaluate("""async () => {
+            window.dispatchEvent(new Event('blur'));
+            await new Promise(r=>setTimeout(r,0));
+            window.dispatchEvent(new Event('focus'));
+        }""")
         _bottom(page)
     page.evaluate("releaseEarlier()")
     page.wait_for_function("() => document.querySelectorAll('#thread .msg').length===160")
@@ -208,4 +218,89 @@ def test_switching_chat_context_starts_at_latest(chat_page, change):
         if(change==='home') setQueueScope('home-2');
         if(change==='view'){showView('signin');showView('chat');}
     }""", change)
+    _bottom(page)
+
+
+@pytest.mark.parametrize("surface", ["iframe", "picker"])
+def test_in_app_focus_handoff_preserves_reader_position(chat_page, surface):
+    page = chat_page
+    page.evaluate("loadHistory()")
+    _bottom(page)
+    _scroll_up(page)
+    before = page.locator("#thread").evaluate("t=>t.scrollTop")
+    if surface == "iframe":
+        page.evaluate("""() => {
+            const frame=document.createElement('iframe');frame.id='ui-frame';
+            const host=document.getElementById('ui-frame-host');
+            host.hidden=false;host.replaceChildren(frame);
+            frame.contentWindow.focus();
+        }""")
+        page.wait_for_function("() => document.activeElement.id==='ui-frame'")
+        _settle(page)
+        page.locator("#composer-input").focus()
+    else:
+        with page.expect_file_chooser():
+            page.click("#btn-attach")
+        # Playwright intercepts the native dialog. Replay its OS focus lifecycle
+        # after the real attach button has opened the chooser, then cancel it.
+        page.evaluate("window.dispatchEvent(new Event('blur'))")
+        _settle(page)
+        page.evaluate("""() => {
+            window.dispatchEvent(new Event('focus'));
+            document.getElementById('file-input').dispatchEvent(new Event('cancel'));
+        }""")
+    _settle(page)
+    page.evaluate("appendMessage('universe','Arrived after surface handoff')")
+    _settle(page)
+    assert page.locator("#thread").evaluate("t=>t.scrollTop") == pytest.approx(before, abs=2)
+    # The exclusion must not suppress the next actual departure and return.
+    page.locator("#composer-input").focus()
+    _settle(page)
+    page.evaluate("window.dispatchEvent(new Event('blur'))")
+    _settle(page)
+    page.evaluate("window.dispatchEvent(new Event('focus'))")
+    _bottom(page)
+
+
+@pytest.mark.parametrize("gesture", ["nested-wheel", "scrollbar"])
+def test_gesture_without_thread_movement_keeps_following(chat_page, gesture):
+    page = chat_page
+    page.evaluate("loadHistory()")
+    _bottom(page)
+    if gesture == "nested-wheel":
+        page.evaluate("""() => {
+            const nested=document.createElement('div');nested.id='nested-scroll';
+            nested.style.cssText='height:100px;overflow:auto;overscroll-behavior:contain';
+            const content=document.createElement('div');content.style.height='1000px';
+            content.textContent='Scrollable card';nested.append(content);
+            document.querySelector('#thread .msg:last-child').append(nested);
+            nested.scrollTop=500;
+        }""")
+        _bottom(page)
+        page.locator("#nested-scroll").hover()
+        page.mouse.wheel(0, -100)
+        page.wait_for_function("() => document.getElementById('nested-scroll').scrollTop<500")
+    else:
+        # Overlay scrollbars have no clickable gutter in headless Chromium.
+        page.locator("#thread").evaluate("""t=>{
+            t.dispatchEvent(new PointerEvent('pointerdown',{
+                clientX:t.getBoundingClientRect().left+t.clientWidth,bubbles:true}));
+            window.dispatchEvent(new PointerEvent('pointerup'));
+        }""")
+    page.wait_for_function("() => document.getElementById('thread').chatScroll.following")
+    page.evaluate("appendMessage('universe','Following after stationary gesture '.repeat(100))")
+    _bottom(page)
+
+
+def test_earlier_page_keeps_following_when_reader_is_at_bottom(chat_page):
+    page = chat_page
+    page.evaluate("loadHistory()")
+    _bottom(page)
+    page.evaluate("""async () => {
+        Owner.getConversation=async()=>({recent_conversation:{
+            turns:[{speaker:'universe',text:'Earlier message',ts:1}],has_more:false}});
+        await loadEarlier(document.getElementById('thread').firstElementChild,100,()=>true);
+    }""")
+    _bottom(page)
+    page.evaluate("appendMessage('universe','Following after earlier page '.repeat(100))")
     _bottom(page)

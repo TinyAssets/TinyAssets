@@ -198,6 +198,9 @@ recovery and completed-turn drawing, and later content or viewport resizing.
 Only an explicit reader scroll into the past or request for earlier messages
 SHALL suspend following, until the reader reaches the bottom or next opens or
 returns to the chat.
+Focus handoffs to the command-center iframe and upload picker SHALL preserve
+the reader's position; they are interactions inside the app, not returns.
+Gestures that leave the thread at the bottom SHALL keep following enabled.
 
 #### Scenario: History arrives while the chat is collapsed
 - **WHEN** saved history renders while the chat cloud is a bubble
@@ -212,6 +215,7 @@ returns to the chat.
 #### Scenario: Loading an earlier page
 - **WHEN** the reader requests "Show earlier messages"
 - **THEN** prepending the page preserves the visible message's position
+- **AND** following remains enabled if that position is still at the bottom
 - **AND** a return to the app while that request is pending takes precedence,
   so the late older page does not pull the reader away from the latest message
 
