@@ -69,6 +69,8 @@ import shlex
 import shutil
 import subprocess
 import sys
+import time
+import uuid
 from pathlib import Path, PurePosixPath
 
 IMAGE_REPO = "tinyassets-linux-oracle"
@@ -207,6 +209,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--production-image", metavar="TAG",
         help="run shipped role probes in a production Dockerfile image; --build rebuilds it",
     )
+    parser.add_argument("--production-stream", action="store_true",
+                        help="add offline real HTTPS streaming to --production-image probes")
     parser.add_argument("--shell", action="store_true", help="interactive shell instead of pytest")
     parser.add_argument(
         "--no-bwrap", action="store_true",
@@ -248,6 +252,8 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.production_image:
         return production_oracle(args, _repo_root())
+    if args.production_stream:
+        raise SystemExit("[oracle] --production-stream requires --production-image")
     if args.required_runner:
         _required_runner_command(args)  # refuse before Docker or filesystem effects
 
@@ -304,7 +310,76 @@ def production_oracle(args: argparse.Namespace, root: Path) -> int:
     command += ["--entrypoint", "/opt/venv/bin/python", digest,
                 "-I", "-B", "/app/scripts/role_image_oracle.py"]
     print(f"[oracle] production image {digest}\n[oracle] {shlex.join(command)}", flush=True)
+    if args.production_stream:
+        return production_stream_oracle(command, digest)
     return subprocess.run(command).returncode
+
+
+def production_stream_oracle(command: list[str], digest: str) -> int:
+    """Two disposable containers; internal-only network, synthetic public CA.
+
+    Public-numbered IPAM is intentional: exercise the real SSRF policy without
+    permitting private targets. Docker's internal network has no external route
+    or published ports. No live data, credentials or host directories are bound.
+    """
+    prefix = "ta-uid-stream-" + uuid.uuid4().hex[:12]
+    network, volume, fixture = prefix + "-net", prefix + "-ca", prefix + "-server"
+    created_network = created_volume = False
+    fixture_id = None
+    try:
+        subprocess.run(["docker", "network", "create", "--internal", "--subnet",
+                        "93.184.216.0/29", network], check=True, capture_output=True)
+        created_network = True
+        inspected = subprocess.run(["docker", "network", "inspect", network,
+                                    "--format", "{{.Internal}}"],
+                                   check=True, capture_output=True, text=True)
+        if inspected.stdout.strip() != "true":
+            raise RuntimeError("stream fixture network is not internal")
+        subprocess.run(["docker", "volume", "create", volume], check=True, capture_output=True)
+        created_volume = True
+        created = subprocess.run([
+            "docker", "create", "--name", fixture, "--network", network,
+            "--ip", "93.184.216.2", "--user", "0:0", "--cap-drop", "ALL",
+            "--security-opt", "no-new-privileges=true",
+            "--mount", f"type=volume,src={volume},dst=/fixture",
+            "--entrypoint", "/opt/venv/bin/python", digest,
+            "-I", "-B", "/app/scripts/role_stream_oracle.py", "fixture",
+        ], check=True, capture_output=True, text=True)
+        fixture_id = created.stdout.strip()
+        subprocess.run(["docker", "start", fixture_id], check=True, capture_output=True)
+        for _attempt in range(100):
+            ready = subprocess.run(["docker", "exec", fixture, "test", "-f", "/fixture/ca.crt"],
+                                   capture_output=True)
+            if ready.returncode == 0:
+                break
+            time.sleep(0.1)
+        else:
+            raise RuntimeError("isolated HTTPS fixture failed to become ready")
+        command = list(command)
+        command[command.index("--network") + 1] = network
+        command[command.index("--entrypoint"):command.index("--entrypoint")] = [
+            "--ip", "93.184.216.3", "--add-host", "uid-stream.invalid:93.184.216.2",
+            "--env", "TA_ORACLE_HTTPS=1", "--mount",
+            f"type=volume,src={volume},dst=/fixture,readonly",
+            "--env", "TINYASSETS_OUTBOUND_HTTP_CONNECTIONS_ENABLED=1",
+        ]
+        print(f"[oracle] internal HTTPS fixture; production command {shlex.join(command)}",
+              flush=True)
+        return subprocess.run(command).returncode
+    finally:
+        # Only randomly named resources created by this invocation are removed.
+        # No image, existing container, network, volume or user data is pruned.
+        cleanup = []
+        if fixture_id:
+            cleanup.append(["docker", "rm", "-f", fixture_id])
+        if created_volume:
+            cleanup.append(["docker", "volume", "rm", volume])
+        if created_network:
+            cleanup.append(["docker", "network", "rm", network])
+        failures = [item for item in cleanup
+                    if subprocess.run(item, capture_output=True).returncode]
+        if failures:
+            raise RuntimeError(f"oracle resource cleanup failed: {failures}")
 
 
 def _required_runner_command(args: argparse.Namespace) -> str:

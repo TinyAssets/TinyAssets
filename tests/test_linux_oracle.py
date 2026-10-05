@@ -68,6 +68,49 @@ def test_classic_builder_gets_real_dependency_generation():
     assert "python -m pytest --version" in dockerfile
 
 
+def test_stream_oracle_uses_internal_network_and_cleans_up_after_failed_probe(monkeypatch):
+    calls = []
+
+    def run(command, **kwargs):
+        calls.append(command)
+        stdout = ("true\n" if command[1:3] == ["network", "inspect"]
+                  else "created-fixture-id\n")
+        return subprocess.CompletedProcess(command, 17 if command[1] == "run" else 0,
+                                           stdout=stdout)
+
+    monkeypatch.setattr(subprocess, "run", run)
+    command = ["docker", "run", "--rm", "--network", "none", "--cap-drop", "ALL",
+               "--entrypoint", "/opt/venv/bin/python", "sha256:fixture", "probe.py"]
+    assert linux_oracle.production_stream_oracle(command, "sha256:fixture") == 17
+    assert "--internal" in calls[0]
+    fixture = next(c for c in calls if c[1] == "create")
+    probe = next(c for c in calls if c[1] == "run")
+    assert "--cap-add" not in fixture and "--publish" not in fixture
+    assert "--publish" not in probe
+    assert "--add-host" in probe
+    assert all("type=volume" in c[c.index("--mount") + 1] for c in (fixture, probe))
+    assert probe[probe.index("--mount") + 1].endswith(",readonly")
+    assert calls[-3] == ["docker", "rm", "-f", "created-fixture-id"]
+    assert calls[-2][1:3] == ["volume", "rm"]
+    assert calls[-1][1:3] == ["network", "rm"]
+
+
+def test_stream_oracle_refuses_noninternal_network_before_fixture(monkeypatch):
+    import pytest
+
+    calls = []
+
+    def run(command, **kwargs):
+        calls.append(command)
+        return subprocess.CompletedProcess(command, 0, stdout="false\n")
+
+    monkeypatch.setattr(subprocess, "run", run)
+    with pytest.raises(RuntimeError, match="not internal"):
+        linux_oracle.production_stream_oracle([], "sha256:fixture")
+    assert not any(c[1] in ("run", "create") for c in calls)
+    assert calls[-1][1:3] == ["network", "rm"]
+
+
 def test_the_oracle_pins_the_image_s_codex():
     """The jail proofs run the REAL codex, so the oracle must carry the version
     the daemon image ships: a different one would prove the jail's behaviour for

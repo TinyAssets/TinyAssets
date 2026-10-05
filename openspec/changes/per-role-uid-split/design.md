@@ -1146,6 +1146,27 @@ maintenance within the existing backup authority, not daemon file access or a
 new privileged service. This step proves ledger backup and archive metadata;
 full role/ACL restore and actual old-image rollback remain separate obligations.
 
+### D22. Mechanical decision: preserve HTTP opt-in and prove real broker streaming
+
+The launcher preserves the existing nonsecret deployment switch
+`TINYASSETS_OUTBOUND_HTTP_CONNECTIONS_ENABLED` as a canonical 0/1 in its static
+broker environment. Absent remains absent/disabled. The initial real HTTPS
+probe exposed that the previous allowlist dropped this switch and therefore
+disabled the trusted HTTP transport even on an opted-in deployment. No caller
+can set it over IPC; no TLS, SSRF, grant, fence or vault check is bypassed.
+
+The optional production-image `--production-stream` oracle creates a disposable
+internal Docker network with public-numbered IPAM so the ordinary SSRF policy
+can run unchanged, a synthetic HTTPS fixture and a volume containing only its
+public certificate. It installs that CA only in the disposable probe container,
+never the image or host. There is no external route, published port, real secret
+or host-directory mount. The fixture has zero capabilities. The launcher and
+broker retain the same entry/serving/child authority as the network-none oracle.
+The actual discovery consumer streams a synthetic GET through the real launcher,
+broker, credential resolver and TLS transport, including after broker restart.
+This proves HTTP streaming, not inference accounting, refresh or engine classes;
+startup activation remains gated on all of those and full migration/rollback.
+
 ## Risks / Trade-offs
 
 - **The launcher is root-adjacent code.** One file, stdlib-only, run `-I -S`, a static kind table,

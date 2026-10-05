@@ -25,6 +25,22 @@ def test_no_engine_identity_can_run_outside_an_owner_cell():
         LAUNCHER["retire_child"]("engine")
 
 
+@pytest.mark.parametrize("value, expected", [
+    ("1", "1"), (" TRUE ", "1"), ("yes", "1"), ("on", "1"),
+    ("0", "0"), ("false", "0"), ("secret-not-a-boolean", "0"), ("", "0"),
+])
+def test_broker_receives_only_canonical_http_deployment_opt_in(monkeypatch, value, expected):
+    name = "TINYASSETS_OUTBOUND_HTTP_CONNECTIONS_ENABLED"
+    monkeypatch.setenv(name, value)
+    assert LAUNCHER["broker_environment"]("/data")[name] == expected
+
+
+def test_broker_http_remains_disabled_without_startup_opt_in(monkeypatch):
+    name = "TINYASSETS_OUTBOUND_HTTP_CONNECTIONS_ENABLED"
+    monkeypatch.delenv(name, raising=False)
+    assert name not in LAUNCHER["broker_environment"]("/data")
+
+
 def test_capability_masks_exclude_sys_admin_and_retire_only_migration_authority():
     assert LAUNCHER["ENTRY_CAPS"] == sum(1 << cap for cap in (0, 1, 3, 5, 6, 7, 8))
     assert LAUNCHER["SERVING_CAPS"] == sum(1 << cap for cap in (5, 6, 7, 8))

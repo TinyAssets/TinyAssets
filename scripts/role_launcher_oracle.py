@@ -225,6 +225,8 @@ def _daemon(root, run, ready, control, launcher):
     assert supervisor_module.get_supervisor(root) is supervisor
     assert supervisor.fence() == (fenced["generation"], fenced["token"])
     _query_consumers(root, supervisor)
+    if os.environ.get("TA_ORACLE_HTTPS") == "1":
+        runpy.run_path("/app/scripts/role_stream_oracle.py")["probe"](root)
     # A socket at the daemon uid must never receive a proof, even when its
     # pathname was supplied by trusted startup configuration.
     fake_path = root / "fake-broker.sock"
@@ -285,6 +287,8 @@ def _daemon(root, run, ready, control, launcher):
     assert _fence(answer["socket"], proof) == fenced
     assert supervisor.fence() == (fenced["generation"], fenced["token"])
     _query_consumers(root, supervisor)
+    if os.environ.get("TA_ORACLE_HTTPS") == "1":
+        runpy.run_path("/app/scripts/role_stream_oracle.py")["probe"](root)
     from tinyassets.storage.outbound_connections import (
         GrantResolutionError,
         ProxyRequestError,
@@ -339,6 +343,10 @@ def main():
         directory.mkdir(mode=0o2700)
         directory_permissions(directory, 1002, 1101, 0o2700)
     _seed_ledger(root)
+    if os.environ.get("TA_ORACLE_HTTPS") == "1":
+        stream = runpy.run_path("/app/scripts/role_stream_oracle.py")
+        stream["install_fixture_trust"]()
+        stream["seed"](root)
     run = Path(tempfile.mkdtemp(prefix="uid-launcher-", dir="/run"))
     run.chmod(0o755)
     ipc = run / "broker"
@@ -446,8 +454,8 @@ def main():
     assert not (root / "outbound.db").exists()
     print("launcher wrong-uid filesystem refusal; actual broker uses private ledger: PASS",
           flush=True)
-    print("LAUNCHER/BROKER SUBSTEP ONLY: real daemon CMD, streams/accounting, "
-          "engine classes pending",
+    print("LAUNCHER/BROKER SUBSTEP ONLY: real daemon CMD, inference accounting, "
+          "refresh and engine classes pending; HTTPS stream requires --production-stream",
           flush=True)
 
 

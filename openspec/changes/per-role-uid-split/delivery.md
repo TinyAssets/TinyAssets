@@ -1,3 +1,81 @@
+# Current delivery: D22 real launcher-backed HTTPS streaming
+
+Started at `b78457fc58`; required fast-forward pull was already current.
+D12-D21 retained. D22 preserves the existing HTTP deployment opt-in in the
+launcher's static broker environment as canonical 0/1. It remains disabled when
+absent, cannot be supplied over IPC, and enables no test transport or credential
+hook. The production-image oracle now optionally exercises real HTTPS with a
+synthetic bearer vault and an isolated internal Docker network. Its public CA
+is installed only in the disposable oracle container, not the built image/host.
+
+Release-critical files in this step: **two** (cap 8): `Dockerfile` and
+`deploy/role_launcher.py`. Other implementation files: `scripts/linux_oracle.py`,
+`scripts/role_launcher_oracle.py`, new `scripts/role_stream_oracle.py` and two
+focused test files. No tinyassets runtime edits belong to this step; D23 work
+will be a separate explicit-path commit.
+
+One cross-family implementation review through peer-agents returned ADAPT for
+an unsorted import only; **AGREE**, fixed and reran changed-file Ruff. No floor
+or authority finding. No second review round. The first HTTPS probe exposed
+the missing HTTP flag. The next reached a successful response but its assertion
+incorrectly expected no .tinyassets.db even though discovery fixtures already
+create that store; changed the probe to assert its bytes/metadata remain equal.
+Neither failed attempt is counted as a pass.
+
+## D22 verification receipt
+
+`python scripts/linux_oracle.py --production-image tinyassets-uid-stream:d22 --production-stream --build`
+returned exit 0, zero skips. Image:
+`sha256:ec56d9b0ae0abf438c7d4eba1a9dee851db656c1c9680bad86e721d95d898be3`.
+The final host cleanup implementation was verified against that digest with:
+`python scripts/linux_oracle.py --production-image tinyassets-uid-stream:d22 --production-stream`
+(exit 0). Import ordering and the summary wording were subsequently corrected;
+the final combined image will be rebuilt for D23.
+
+The runner uses the existing exact entry capabilities CHOWN, DAC_OVERRIDE,
+FOWNER, SETUID, SETGID, SETPCAP, KILL with cap-drop ALL, no-new-privileges,
+seccomp/AppArmor/systempaths unconfined. The stream variant replaces network
+none with a newly created/read-back internal-only network, assigns .2 to the
+zero-capability fixture and .3 to the oracle in 93.184.216.0/29, adds the exact
+uid-stream.invalid host entry and a read-only Docker volume containing only the
+public fixture certificate. No ports are published and no host directory is
+mounted. The runner removes its container, certificate volume and network in
+finally, with cleanup errors reported.
+
+Relevant exact output (both before and after broker crash/restart):
+```text
+D22 actual launcher broker HTTPS stream: scoped discovery GET, vault bearer, verified TLS, real network/body, no daemon ledger: PASS
+launcher broker crash/restart preserves in-memory owner fence: PASS
+broker caps=all-zero nnp=1 non-dumpable; no received-fd leak; cross-uid shutdown: PASS
+```
+The existing chain, identities, broker-private access, IPC refusal, setgid and
+relocation probes also passed. Migration output:
+```text
+forward dry-run, apply, repeat; service remains unadmitted: PASS
+reverse dry-run/apply/repeat and uid-1001 old-location writes: PASS
+forward/reverse abrupt-exit checkpoint and rename recovery: PASS (6 boundaries)
+symlink/hardlink/FIFO/conflicting-copy refusal without mutation: PASS
+```
+These remain relocation-only evidence, not full-role or actual old-image rollback.
+
+Windows: `python -m pytest tests/test_role_launcher.py tests/test_linux_oracle.py -q`
+returned `37 passed in 0.72s`. Linux:
+`python scripts/linux_oracle.py -- tests/test_role_launcher.py tests/test_linux_oracle.py -q`
+returned `37 passed in 0.74s` (uid 1001, Python 3.11.16, bwrap 0.12.0; no skips).
+Changed-file Ruff and `openspec validate per-role-uid-split --strict` passed.
+
+## Remaining and activation gate
+
+Successful launcher-backed HTTP streaming is now proven for the real discovery
+consumer, including restart. No complete task 2.1-2.8 is newly checked off.
+Still required: every engine class/site and daemon-reader matrix, remaining D11
+ledger/mutation/accounting/refresh/deletion routes, full role migration and
+D10 deletion, full role/ACL backup restoration and actual old-image rollback,
+real daemon CMD/environment/capability parity/healthchecks. Startup remains
+unactivated. No PR or deployment.
+
+---
+
 # Current delivery: D20 discovery HTTP and D21 relocated-ledger backup
 
 Started at `415e976897ee32ef40da8594a16799f27cf20ec0`; the required

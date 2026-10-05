@@ -127,6 +127,11 @@ def broker_environment(data_root):
               "TINYASSETS_DATA_DIR": str(data_root)}
     if "TZ" in os.environ:
         result["TZ"] = os.environ["TZ"]
+    http_flag = "TINYASSETS_OUTBOUND_HTTP_CONNECTIONS_ENABLED"
+    if http_flag in os.environ:
+        # Preserve the deployment's existing opt-in, never arbitrary values.
+        result[http_flag] = "1" if os.environ[http_flag].strip().lower() in (
+            "1", "true", "yes", "on") else "0"
     return result
 
 

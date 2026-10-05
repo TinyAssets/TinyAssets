@@ -360,6 +360,7 @@ COPY deploy/role_launcher.py /usr/local/libexec/ta-launch.py
 COPY deploy/broker_main.py /app/broker_main.py
 COPY scripts/role_image_oracle.py /app/scripts/role_image_oracle.py
 COPY scripts/role_launcher_oracle.py /app/scripts/role_launcher_oracle.py
+COPY scripts/role_stream_oracle.py /app/scripts/role_stream_oracle.py
 
 ENV PATH=/opt/venv/bin:$PATH \
     PYTHONDONTWRITEBYTECODE=1 \
