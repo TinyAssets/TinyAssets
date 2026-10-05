@@ -210,3 +210,75 @@ def test_public_clone(workspace):
         "GIT_TERMINAL_PROMPT=0 git clone --depth 1 https://github.com/octocat/Hello-World repo "
         "&& git -C repo status --porcelain",
     )
+
+
+def test_full_large_clone_with_active_provider_budget_and_total_quota(workspace, monkeypatch):
+    """Full 48 MiB history/checkout exceeds both old 16/32 MiB limits."""
+    from tinyassets import jail_disk
+    from tinyassets import storage_accounting as sa
+    from tinyassets.daemon_server import grant_universe_ownership, initialize_author_server
+
+    owner = "workos|clone-owner"
+    initialize_author_server(workspace.parent)
+    grant_universe_ownership(workspace.parent, universe_id=workspace.name, owner_id=owner)
+    monkeypatch.setenv("TINYASSETS_FREE_STORAGE_GIB", "0.25")
+    source = workspace / "source"
+    source.mkdir()
+    # Incompressible data makes the git pack itself >32 MiB, not just checkout.
+    payload = source / "payload.bin"
+    with payload.open("wb") as out:
+        for _ in range(48):
+            out.write(os.urandom(1024**2))
+    def git(*args):
+        subprocess.run(["git", "-C", str(source), *args], check=True,
+                       capture_output=True, timeout=60)
+
+    git("init", "-b", "main")
+    git("config", "user.name", "Synthetic Developer")
+    git("config", "user.email", "developer@example.test")
+    git("add", "payload.bin")
+    git("commit", "-qm", "large initial history")
+    (source / "history.txt").write_text("second commit")
+    git("add", "history.txt")
+    git("commit", "-qm", "preserve complete history")
+    parent = jail_disk.open_budget(workspace)
+    try:
+        assert sa.usage(workspace.parent, owner).reserved_bytes == 0
+        result = shell(workspace, "git clone --no-local source full-clone && "
+                       "test $(git -C full-clone rev-list --count HEAD) = 2 && "
+                       "test ! -e full-clone/.git/shallow && "
+                       "cmp source/payload.bin full-clone/payload.bin && "
+                       "git -C full-clone fsck --full && echo FULL-CLONE-OK")
+        assert "[exit code 0]" in result and "FULL-CLONE-OK" in result, result
+        cloned = workspace / tools.WORKSPACE_DIR / "full-clone"
+        assert (cloned / "payload.bin").stat().st_size == 48 * 1024**2
+        packs = (workspace / tools.WORKSPACE_DIR / "full-clone/.git/objects/pack").glob("*.pack")
+        assert max(p.stat().st_size for p in packs) > 32 * 1024**2
+        assert parent.breach(force=True) is None
+        assert 160 * 1024**2 < sa.usage(workspace.parent, owner).measured_bytes < 256 * 1024**2
+        result = shell(workspace, "for i in $(seq 1 160); do "
+                       "head -c 1048576 /dev/zero >> overflow.bin; sleep 0.02; done; "
+                       "echo QUOTA-BYPASSED")
+        assert "total cloud storage quota was exceeded" in result, result
+        assert "QUOTA-BYPASSED" not in result
+        assert parent.breach(force=True) == jail_disk.STORAGE_LIMIT
+        assert sa.usage(workspace.parent, owner).measured_bytes > 256 * 1024**2
+        assert "[exit code 0]" in shell(workspace, "rm overflow.bin && echo CLEANUP-OK")
+    finally:
+        parent.settle()
+
+
+def test_single_call_above_old_gib_cap_and_short_call_over_total_quota(workspace, monkeypatch):
+    from tinyassets.daemon_server import grant_universe_ownership, initialize_author_server
+
+    initialize_author_server(workspace.parent)
+    grant_universe_ownership(workspace.parent, universe_id=workspace.name, owner_id="workos|large")
+    monkeypatch.setenv("TINYASSETS_FREE_STORAGE_GIB", "2")
+    # Sparse logical bytes exercise >1 GiB without filling the oracle volume.
+    result = shell(workspace, "truncate -s 1200M large.bin")
+    assert "[exit code 0]" in result, result
+    assert (workspace / tools.WORKSPACE_DIR / "large.bin").stat().st_size == 1200 * 1024**2
+    result = shell(workspace, "truncate -s 2100M large.bin")
+    assert "total cloud storage quota was exceeded" in result, result
+    assert "[exit code 0]" not in result
+    assert "[exit code 0]" in shell(workspace, "rm large.bin")

@@ -59,7 +59,7 @@ Resource limits (per call, per command center)
 Measured on the production container 2026-09-24 (kernel 6.1, uid 1001, no
 capabilities, cgroup2 mounted READ-ONLY, so no per-universe cgroup can be
 created): ``prlimit`` runs inside the jail, after the user namespace exists,
-and sets ``RLIMIT_AS``, ``RLIMIT_NPROC``, ``RLIMIT_CPU``, ``RLIMIT_FSIZE``,
+and sets ``RLIMIT_AS``, ``RLIMIT_NPROC``, ``RLIMIT_CPU``,
 ``RLIMIT_NOFILE`` and ``RLIMIT_CORE``. On kernels >= 5.14 ``RLIMIT_NPROC`` is
 charged per user namespace, so it bounds THIS jail's processes, not the
 daemon user's (measured: with 9 daemon processes and ``--nproc=12`` the jail
@@ -222,10 +222,6 @@ class ToolLimits:
     processes: int = 64
     #: ``RLIMIT_CPU`` per process; the wall clock bounds the whole call.
     cpu_seconds: int = 120
-    #: ``RLIMIT_FSIZE``: the largest file one write may produce. Kept modest
-    #: because the daemon reads some universe files (the persona grounding)
-    #: whole, in a process every universe shares.
-    file_bytes: int = 32 * _MiB
     #: ``RLIMIT_NOFILE``.
     open_files: int = 256
     #: Wall clock for one call (``bash`` may ask for up to MAX_BASH_SECONDS).
@@ -255,7 +251,6 @@ class ToolLimits:
             # soft < hard: SIGXCPU names the limit; SIGKILL one second later
             # if the process ignores it.
             f"--cpu={max(1, cpu)}:{max(1, cpu) + 1}",
-            f"--fsize={int(self.file_bytes)}",
             f"--nofile={int(self.open_files)}",
             "--core=0",
         ]
@@ -279,9 +274,9 @@ class ToolRun:
     #: wait the caller cannot see is indistinguishable from a hang.
     waited: float = 0.0
     #: Said before the tool's answer: the owner is out of storage (the call
-    #: still ran, on a small grace budget -- see `jail_disk`).
+    #: still runs so it can delete files -- see `jail_disk`).
     notice: str = ""
-    #: Bytes this call could add to the universe before ``storage_limit``.
+    #: Latest observed headroom in the owner's total storage.
     disk_bound: int = 0
 
 
@@ -840,6 +835,10 @@ def _supervise(
             feeder.join(timeout=_KILL_GRACE_SECONDS)
     if killed is None and out.over.is_set():
         killed = "output_limit"
+    if killed is None:
+        final_breach = budget.breach(force=True)
+        if final_breach:
+            killed = final_breach.replace("_limit", "_exceeded")
     elapsed = time.monotonic() - started
     data = out.data
     if not data.startswith(_LIMITS_MARK):
@@ -941,10 +940,13 @@ def _trailer(run: ToolRun, limits: ToolLimits, wall: float) -> str:
         return f"[killed: more than {limits.processes} processes]"
     if run.killed == "disk_limit":
         return "[killed: the shared disk was nearly full]"
+    if run.killed == "storage_exceeded":
+        return "[finished: the owner's total cloud storage quota was exceeded; writes landed]"
+    if run.killed == "disk_exceeded":
+        return "[finished: the shared disk is nearly full; writes landed]"
     if run.killed == "storage_limit":
         return (
-            f"[killed: this call added more than {run.disk_bound} bytes to the command center, "
-            "all the owner's cloud storage had room for]"
+            "[killed: the owner's total cloud storage quota was exceeded]"
         )
     if run.exit_code == 128 + _SIGXCPU:
         return "[killed: cpu time limit]"
