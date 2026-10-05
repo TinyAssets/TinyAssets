@@ -89,6 +89,9 @@ _OPTIONAL_FUNCS = ("sameInflight", "forgetInflightIf", "noteHeldQueue",
 # The shim above stops at `__APP_FUNCTIONS__`; this test supplies the
 # collaborators `pollStatus` reaches that the send/restore scenarios never did.
 _EXTRA_SHIM = r"""
+const appendShim=appendMessage;
+appendMessage=(...args)=>{const el=appendShim(...args);
+  if(!el.parentNode) els.thread.appendChild(el);return el;};
 const InlineConnection={waiting:()=>false,hold:()=>{
   throw new Error('Unexpected connection request in the live-turn harness');
 }};
@@ -283,22 +286,23 @@ def test_a_transport_failure_on_the_live_page_leaves_exactly_one_recovery(tmp_pa
     const failed=snapshot();
     await pollStatus(); await loadHistory(); await pollStatus(); await settle();
     const polled=snapshot();
-    // The single offer still works and is the same send.
-    const btn=els.thread.children.filter(n=>!n.removed).flatMap(n=>n.children)
-      .find(c=>c.tagName==="BUTTON"&&c.textContent==="Send it again");
-    btn.click(); await settle();
-    gates[1].resolve({reply:"Deployed."}); await settle();
+    // Recovery observes the exact saved send; it never replays it.
+    const note=els.thread.children.find(n=>n.unconfirmed);
+    Owner.getConversation=async()=>({recent_conversation:{turns:[
+      {speaker:"founder",text:"deploy the fix",client_send_id:readInflight().client_send_id},
+      {speaker:"universe",text:"Deployed."}]}});
+    await note.checkSavedConversation();
     console.log(JSON.stringify({failed, polled, done:snapshot()}));
     """)
-    assert out["failed"]["founderBubbles"] == 1 and out["failed"]["resendButtons"] == 1
+    assert out["failed"]["founderBubbles"] == 1 and out["failed"]["resendButtons"] == 0
     assert out["failed"]["inflight"]["message"] == "deploy the fix"
     assert out["failed"]["sendDisabled"] is False
     assert out["polled"]["founderBubbles"] == 1, "the failed message was drawn again"
-    assert out["polled"]["resendButtons"] == 1, "a second resend offer appeared"
+    assert out["polled"]["resendButtons"] == 0, "a second resend offer appeared"
     assert out["polled"]["unconfirmedNotes"] == 0
     assert out["polled"]["inflight"]["message"] == "deploy the fix", \
         "the durable recovery for a failed turn was erased"
-    assert out["done"]["converseCalls"] == ["deploy the fix", "deploy the fix"]
+    assert out["done"]["converseCalls"] == ["deploy the fix"]
     assert out["done"]["messages"][-1] == {"role": "universe", "text": "Deployed."}
     assert out["done"]["founderBubbles"] == 1 and out["done"]["inflight"] is None
 
@@ -316,29 +320,32 @@ def _prior_page_record(message: str, **extra) -> str:
 
 
 def test_a_reload_still_offers_the_previous_pages_unconfirmed_message_once(tmp_path, html):
-    out = _run(tmp_path, html, _prior_page_record("hello there") + r"""
+    record = _prior_page_record("hello there", client_send_id="reload-send")
+    out = _run(tmp_path, html, record + r"""
     setQueueOwner("p-1");
     await loadHistory();
     await pollStatus(); await pollStatus(); await loadHistory(); await settle();
     const offered=snapshot();
-    const btn=els.thread.children.filter(n=>!n.removed).flatMap(n=>n.children)
-      .find(c=>c.tagName==="BUTTON"&&c.textContent==="Send it again");
-    btn.click(); await settle();
+    const note=els.thread.children.find(n=>n.unconfirmed);
+    await note.checkSavedConversation();
     const resent=snapshot();
     await pollStatus(); await settle();
     const polledMidResend=snapshot();
-    gates[0].resolve({reply:"Hello!"}); await settle();
+    Owner.getConversation=async()=>({recent_conversation:{turns:[
+      {speaker:"founder",text:"hello there",client_send_id:"reload-send"},
+      {speaker:"universe",text:"Hello!"}]}});
+    await note.checkSavedConversation();
     console.log(JSON.stringify({offered, resent, polledMidResend, done:snapshot()}));
     """)
     assert out["offered"]["founderBubbles"] == 1, "reload recovery was lost"
-    assert out["offered"]["unconfirmedNotes"] == 1 and out["offered"]["resendButtons"] == 1
+    assert out["offered"]["unconfirmedNotes"] == 1 and out["offered"]["resendButtons"] == 0
     assert out["offered"]["inflight"]["message"] == "hello there"
     assert out["offered"]["converseCalls"] == []
     # The resend is a same-page turn now: the heartbeat leaves it alone.
-    assert out["resent"]["converseCalls"] == ["hello there"]
+    assert out["resent"]["converseCalls"] == []
     assert out["resent"]["founderBubbles"] == 1 and out["resent"]["resendButtons"] == 0
     assert out["polledMidResend"]["founderBubbles"] == 1
-    assert out["polledMidResend"]["unconfirmedNotes"] == 0
+    assert out["polledMidResend"]["unconfirmedNotes"] == 1
     assert out["polledMidResend"]["inflight"]["message"] == "hello there"
     assert out["done"]["messages"] == [{"role": "founder", "text": "hello there"},
                                        {"role": "universe", "text": "Hello!"}]
@@ -358,7 +365,7 @@ def test_a_reload_after_a_failed_peek_is_offered_by_the_heartbeat_once(tmp_path,
     """)
     assert out["beforeStatus"]["founderBubbles"] == 0 and out["beforeStatus"]["inflight"]
     assert out["polled"]["founderBubbles"] == 1
-    assert out["polled"]["unconfirmedNotes"] == 1 and out["polled"]["resendButtons"] == 1
+    assert out["polled"]["unconfirmedNotes"] == 1 and out["polled"]["resendButtons"] == 0
     assert out["polled"]["inflight"]["message"] == "hello"
 
 
@@ -419,7 +426,7 @@ def test_an_account_change_retires_the_live_turn_and_fences_its_record(tmp_path,
     assert late["inflight"]["owner"] == "p-1"
     back = out["backAsA"]
     assert back["founderBubbles"] == 1 and back["unconfirmedNotes"] == 1
-    assert back["resendButtons"] == 1
+    assert back["resendButtons"] == 0
     assert back["converseCalls"] == ["account A private question"], "no silent resend"
 
 
@@ -629,7 +636,7 @@ def test_a_new_typed_turn_tells_voice_to_retire_the_older_turns_retry_line(tmp_p
     """)
     # The only resend offer on screen was never clicked: every send is an
     # original with its own text, exactly as the live sequence ran.
-    assert out["afterFailure"]["resendButtons"] == 1
+    assert out["afterFailure"]["resendButtons"] == 0
     assert out["done"]["converseCalls"] == [
         "Retest my checklist", "How is the progress going?", "Test cancellation for me"]
     assert len(set(out["done"]["converseCalls"])) == 3, "a message was sent twice"
@@ -643,3 +650,37 @@ def test_a_new_typed_turn_tells_voice_to_retire_the_older_turns_retry_line(tmp_p
     assert failed["consumerRequest"] is None
     assert out["done"]["messages"][-1] == {"role": "universe", "text": "Cancellation works."}
     assert out["done"]["inflight"] is None and out["done"]["sendDisabled"] is False
+
+
+@pytest.mark.parametrize("dismiss", [False, True])
+def test_reconcile_backoff_clears_notice_without_replaying(tmp_path, html, dismiss):
+    record = _prior_page_record("recover me", client_send_id="recover-send")
+    out = _run(tmp_path, html, record + "const dismissIt=" + str(dismiss).lower() + r""";
+setQueueOwner("p-1");await loadHistory();await pollStatus();
+const note=els.thread.children.find(n=>n.unconfirmed);
+const realTimeout=setTimeout, scheduled=[];
+globalThis.setTimeout=(fn,ms)=>{scheduled.push({fn,ms});return {unref(){}};};
+globalThis.clearTimeout=()=>{};
+let reads=0;
+Owner.getConversation=async()=>{reads++;throw new Error("bad_gateway");};
+await note.checkSavedConversation();
+await note.checkSavedConversation();
+if(dismissIt)note.children.find(n=>n.textContent==="Dismiss").click();
+const hidden=!!note.hidden;
+Owner.getConversation=async()=>({recent_conversation:{turns:[
+  {id:"1",speaker:"founder",text:"recover me",client_send_id:"recover-send",ts:1},
+  {id:"2",speaker:"universe",text:"saved answer",ts:2}]}});
+document.visibilityState="visible";
+scheduled[scheduled.length-1].fn();
+await new Promise(r=>realTimeout(r,20));
+console.log(JSON.stringify({delays:scheduled.map(t=>t.ms),reads,hidden,
+  removed:!!note.removed,calls:converseCalls,record:readInflight(),
+  texts:messages,disabled:els["btn-send"].disabled}));
+""")
+    assert out["delays"] == [1000, 2000]
+    assert out["reads"] == 2
+    assert out["hidden"] is dismiss
+    assert out["removed"] and out["record"] is None
+    assert out["calls"] == [] and not out["disabled"]
+    assert out["texts"] == [{"role": "founder", "text": "recover me"},
+                            {"role": "universe", "text": "saved answer"}]

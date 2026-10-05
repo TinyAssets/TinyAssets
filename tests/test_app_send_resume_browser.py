@@ -243,7 +243,7 @@ def test_resume_requires_newest_complete_recent_founder_turn(recovery_page, bad)
         wire.hidden=false;document.dispatchEvent(new Event('visibilitychange'));
     }""", bad)
     expect(page.get_by_text("Not confirmed yet", exact=False)).to_be_visible()
-    expect(page.get_by_role("button", name="Send it again", exact=True)).to_be_visible()
+    expect(page.get_by_role("button", name="Send it again", exact=True)).to_have_count(0)
     assert page.evaluate("!!readInflight()")
     assert page.evaluate("wire.sends.length") == 1
     assert page.evaluate("wire.stops.length") == 0
@@ -259,14 +259,12 @@ def test_resume_shows_a_matching_active_turn_without_resending(recovery_page, re
         page.evaluate("""async () => {
             wire.hidden=true;
             rememberInflight('Please finish the checklist',
-                'Please finish the checklist',Date.now());
+                'Please finish the checklist',Date.now(),'typed',null,null,'main',
+                crypto.randomUUID());
             liveInflight=null;inflightRestored=false;
             await restoreInflight([]);
         }""")
-        page.get_by_role('button', name='Send it again', exact=True).click()
-        page.wait_for_function("wire.sends.length===1 && !!wire.stream")
-        page.evaluate("wire.stream.error(new TypeError('network lost'))")
-        expect(page.get_by_text('Delivery could not be confirmed:', exact=False)).to_be_visible()
+        expect(page.get_by_role('button', name='Send it again', exact=True)).to_have_count(0)
     else:
         _send_and_interrupt(page)
     page.evaluate("""() => {
@@ -277,7 +275,7 @@ def test_resume_shows_a_matching_active_turn_without_resending(recovery_page, re
     expect(page.get_by_text("Your agent is working on this.", exact=True)).to_be_visible()
     expect(page.locator(".msg--founder")).to_have_count(1)
     expect(page.get_by_role("button", name="Send it again", exact=True)).to_have_count(0)
-    assert page.evaluate("wire.sends.length") == 1
+    assert page.evaluate("wire.sends.length") == (0 if restored else 1)
     assert page.evaluate("wire.stops.length") == 0
     assert page.evaluate("!!readInflight()")  # retained until the watched turn finishes
 
@@ -379,14 +377,16 @@ def test_recent_old_identical_prompt_does_not_confirm_new_send(recovery_page, re
         expect(page.get_by_role("button", name="Send it again", exact=True)).to_have_count(0)
         if not restored:
             expect(page.locator("#thread .msg--universe .msg-body")).to_have_text(
-                "Only the matching reply")
+                ["OLD REPLY FROM THE PREVIOUS SEND", "Only the matching reply",
+                 "UNRELATED LATER REPLY"])
     else:
         expect(page.get_by_text("Not confirmed yet", exact=False)).to_be_visible()
         assert page.evaluate("readInflight().ts") == sent["ts"]
-        expect(page.get_by_role("button", name="Send it again", exact=True)).to_have_count(1)
-        expect(page.locator("#thread .msg--universe")).to_have_count(0)
-    expect(page.locator("#thread")).not_to_contain_text("OLD REPLY FROM THE PREVIOUS SEND")
-    expect(page.locator("#thread")).not_to_contain_text("UNRELATED LATER REPLY")
+        expect(page.get_by_role("button", name="Send it again", exact=True)).to_have_count(0)
+        expect(page.locator("#thread .msg--universe")).to_have_count(3)
+    if not restored or identity != "match":
+        expect(page.locator("#thread")).to_contain_text("OLD REPLY FROM THE PREVIOUS SEND")
+        expect(page.locator("#thread")).to_contain_text("UNRELATED LATER REPLY")
     assert page.evaluate("wire.sends.length") == 1
 
 
@@ -461,11 +461,54 @@ def test_watched_send_keeps_recovery_when_only_an_earlier_reply_is_saved(recover
         await finishActiveTurn();
     }""")
     expect(page.get_by_text("Not confirmed yet", exact=False)).to_be_visible()
-    expect(page.get_by_role("button", name="Send it again", exact=True)).to_be_visible()
-    expect(page.locator("#thread .msg--universe")).to_have_count(0)
+    expect(page.get_by_role("button", name="Send it again", exact=True)).to_have_count(0)
+    expect(page.locator("#thread .msg--universe")).to_have_count(1)
     assert page.evaluate("!!readInflight()")
     _complete_and_resume(page)
     expect(page.locator("#thread .msg--universe .msg-body")).to_have_text(
-        "The checklist is finished.")
+        ["Wrong previous reply", "The checklist is finished."])
     assert page.evaluate("readInflight()") is None
     assert page.evaluate("wire.sends.length") == 1
+
+
+@pytest.mark.parametrize("dismiss", [False, True])
+def test_outage_recovers_automatically_without_focus_or_resend(recovery_page, dismiss):
+    from playwright.sync_api import expect
+
+    page = recovery_page
+    _send_and_interrupt(page)
+    page.evaluate("wire.readError=true;wire.hidden=false;window.dispatchEvent(new Event('focus'))")
+    expect(page.get_by_text("Retrying automatically", exact=False)).to_be_visible()
+    expect(page.get_by_role("button", name="Send it again", exact=True)).to_have_count(0)
+    expect(page.locator("#btn-send")).to_be_enabled()
+    page.locator("#composer-input").fill("my next draft")
+    if dismiss:
+        page.get_by_role("button", name="Dismiss", exact=True).click()
+        notice = page.get_by_text("Delivery could not be confirmed:", exact=False)
+        expect(notice).not_to_be_visible()
+    page.evaluate("""() => {
+        wire.readError=false;
+        const sent=readInflight();
+        wire.turns=[{id:'101',speaker:'founder',text:sent.message,ts:100,
+            client_send_id:sent.client_send_id},
+            {id:'102',speaker:'universe',text:'Recovered automatically',ts:101}];
+    }""")
+    expect(page.locator("#thread .msg--universe .msg-body")).to_have_text("Recovered automatically")
+    expect(page.get_by_role("button", name="Check saved conversation", exact=True)).to_have_count(0)
+    expect(page.locator("#composer-input")).to_have_value("my next draft")
+    assert page.evaluate("readInflight()") is None
+    assert page.evaluate("wire.sends.length") == 1
+    assert page.evaluate("wire.stops.length") == 0
+
+
+def test_late_history_inserts_before_newer_notice_without_duplicates(recovery_page):
+    page = recovery_page
+    result = page.evaluate("""() => {
+        appendMessage('system','Newer notice',null,200);
+        const turns=[{id:'2',speaker:'universe',text:'Late answer',ts:100},
+            {id:'1',speaker:'founder',text:'Earlier question',ts:90}];
+        drawHistoryTurns(turns);drawHistoryTurns(turns);
+        return Array.from(document.querySelectorAll('#thread .msg-body'),n=>n.textContent);
+    }""")
+    assert result == ['Earlier question', 'Late answer', 'Newer notice']
+    assert page.evaluate("wire.sends.length") == 0

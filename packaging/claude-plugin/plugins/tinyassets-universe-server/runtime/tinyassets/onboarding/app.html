@@ -2127,6 +2127,7 @@
       when.title="This legacy message has no recorded timestamp";
     }
     meta.appendChild(when); el.appendChild(meta);
+    el.messageTime=stamp?Date.parse(stamp.iso)/1000:null;
     const body=document.createElement("span"); body.className="msg-body";
     body.textContent=text; el.appendChild(body);
     if(extra) el.appendChild(extra);
@@ -2138,7 +2139,9 @@
     // earlier turn's reply — composed before the click arrived — landed BELOW
     // it, so the thread read as though the agent had ignored the approval
     // (founder, 2026-09-26).
-    const waiting=queued?null:firstQueuedBubble(thread);
+    const waiting=queued?null:Array.from(thread.children).find(n=>
+      isQueuedBubble(n)||(Number.isFinite(el.messageTime)&&Number.isFinite(n.messageTime)&&
+        n.messageTime>el.messageTime));
     if(waiting&&thread.insertBefore) thread.insertBefore(el,waiting);
     else thread.appendChild(el);
     return el;
@@ -4648,6 +4651,11 @@
     watchedActive=null;
     if(watched.bubble&&watched.bubble.workingNote&&watched.bubble.workingNote.remove)
       watched.bubble.workingNote.remove();
+    // Keep the existing observer (including a dismissed notice) rather than
+    // creating a second recovery card when the active-turn snapshot ends.
+    const observer=Array.from($("thread").children).find(n=>n.unconfirmed&&
+      watched.client_send_id&&n.unconfirmed.client_send_id===watched.client_send_id);
+    if(observer){await observer.checkSavedConversation();return;}
     let r=null;
     try{ r=await Owner.getConversation(); }catch(_e){ /* Retain the cautious offer. */ }
     if(epoch!==MCP._loginEpoch||owner!==queueOwner||scope!==queueScope||
@@ -4656,6 +4664,7 @@
       ? r.recent_conversation.turns : [];
     const at=savedSendIndex(turns,watched);
     const reply=at<0?-1:turns.findIndex((t,i)=>i>at&&
+      !turns.slice(at+1,i).some(row=>row.speaker==="founder")&&
       (t.speaker==="universe"||t.speaker==="platform"));
     const held=readInflight();
     if(!watched.client_send_id){
@@ -5057,33 +5066,41 @@
     if(!stillOwner()||!note.parentNode) return;
     if(running&&running.active&&sent&&sent.client_send_id&&
        running.active.client_send_id===sent.client_send_id){
-      if(showActiveTurn(running.active,sent.bubble)||
-         watchedActive&&watchedActive.client_send_id===sent.client_send_id){
-        note.remove();
-        return;
-      }
+      showActiveTurn(running.active,sent.bubble);
+      line.textContent="Received; your agent is working on this. Nothing was sent again.";
+      return;
     }
     let r=null;
     try{ r=await Owner.getConversation(); }
     catch(e){
       if(!stillOwner()||!note.parentNode) return;
       line.textContent="Couldn\u2019t read your saved conversation just now ("+
-        ((e&&e.message)||"unknown error")+"). Nothing was sent.";
+        ((e&&e.message)||"unknown error")+"). Retrying automatically; nothing was sent again.";
       return;
     }
     if(!stillOwner()||!note.parentNode) return;
     const conv=r&&r.recent_conversation;
+    if(!conv||conv.error||!Array.isArray(conv.turns)){
+      line.textContent="Saved conversation is unavailable. Retrying automatically; nothing was sent again.";
+      return;
+    }
     const turns=(conv&&Array.isArray(conv.turns))?conv.turns:[];
     const at=savedSendIndex(turns,sent);
-    const reply=at<0?-1:turns.findIndex((t,i)=>i>at&&
-      (t.speaker==="universe"||t.speaker==="platform"));
+    // Paint every saved arrival, even if this particular send is still unknown.
+    // A different send's answer cannot settle this one.
+    drawHistoryTurns(turns);
+    let reply=-1;
+    for(let i=at+1;at>=0&&i<turns.length;i++){
+      if(turns[i].speaker==="founder") break;
+      if(turns[i].speaker==="universe"||turns[i].speaker==="platform"){reply=i;break;}
+    }
     if(reply>=0){
-      drawHistoryTurns(turns.slice(at+1,reply+1));
       if(sent.record) forgetInflightIf(sent.record);
       note.remove();
       return;
     }
-    line.textContent="Not confirmed yet; your agent may still be working. Nothing was sent again.";
+    line.textContent=at>=0?"Received; waiting for the saved reply. Nothing was sent again.":
+      "Not confirmed yet; your agent may still be working. Nothing was sent again.";
   }
 
   // A resume is an observation, never permission to replay a possibly accepted
@@ -5098,20 +5115,38 @@
       (sentAt===undefined||held.ts===sentAt)?held:null;
     note.unconfirmed={message,ts:rec?rec.ts:sentAt,record:rec,bubble,
       client_send_id:clientSendId||(rec&&rec.client_send_id)||""};
+    if(bubble) bubble.clientSendId=note.unconfirmed.client_send_id;
+    // A recent-history window cannot prove absence, even when it is empty.
+    // Only the explicit notSent path may offer a replay.
+    for(const child of Array.from(note.children)){
+      if(child.tagName==="BUTTON"&&child.textContent==="Send it again") child.remove();
+    }
     const look=document.createElement("button");
     look.className="btn btn--link"; look.textContent="Check saved conversation";
     note.checkSavedConversation=async()=>{
       if(look.disabled||!note.parentNode||!owner||!scope||epoch!==MCP._loginEpoch||owner!==queueOwner||
          scope!==queueScope||agent!==(typeof addressedAgentId==="function"?addressedAgentId():"main")) return;
+      clearTimeout(note.reconcileTimer);
       look.disabled=true;
-      try{ await offerSavedConversationCheck(note); }finally{ look.disabled=false; }
+      try{ await offerSavedConversationCheck(note); }finally{
+        look.disabled=false;
+        if(note.parentNode&&epoch===MCP._loginEpoch&&owner===queueOwner&&scope===queueScope&&
+           agent===(typeof addressedAgentId==="function"?addressedAgentId():"main")){
+          note.reconcileDelay=Math.min((note.reconcileDelay||500)*2,30000);
+          note.reconcileTimer=setTimeout(()=>{
+            if(document.visibilityState==="visible"&&navigator.onLine!==false)
+              note.checkSavedConversation().catch(()=>{});
+          },note.reconcileDelay);
+          if(note.reconcileTimer&&note.reconcileTimer.unref) note.reconcileTimer.unref();
+        }
+      }
     };
     look.addEventListener("click",note.checkSavedConversation);
     note.appendChild(document.createTextNode(" ")); note.appendChild(look);
     // The notice never traps the thread: the owner can always put it away.
     const dismiss=document.createElement("button");
     dismiss.className="btn btn--link"; dismiss.textContent="Dismiss";
-    dismiss.addEventListener("click",()=>note.remove());
+    dismiss.addEventListener("click",()=>{note.hidden=true;note.style.display="none";});
     note.appendChild(document.createTextNode(" ")); note.appendChild(dismiss);
     // A background watchdog can settle just AFTER the visibility event. Check
     // then too, otherwise that return to the app still leaves the reply hidden.
@@ -9916,18 +9951,32 @@
     }
   }
 
-  // Draw one page of stored turns at the END of the thread, oldest first,
-  // decided by each turn's own timestamp — NOT by assuming the page's order. It
-  // once returned newest-first and this reversed it; the store now returns
-  // oldest-first and the reverse drew the thread upside down: after a reload
-  // the bottom of the chat was the oldest turn ("the conversation is reset to
-  // the past" — founder, 2026-08-29). Turns without a usable ts keep their
-  // given order.
+  // Merge saved rows in server sequence, falling back to timestamps for legacy
+  // rows and local notices. A late page/reply belongs in place, not at the end.
   function drawHistoryTurns(turns){
+    const sequence=t=>t&&/^[0-9]+$/.test(String(t.id||""))?BigInt(t.id):null;
+    const compare=(a,b)=>sequence(a)!==null&&sequence(b)!==null
+      ? (sequence(a)<sequence(b)?-1:sequence(a)>sequence(b)?1:0) : (a.ts-b.ts)||0;
     const stamped = turns.every(t=>t && typeof t.ts==="number");
-    const ordered = stamped ? turns.slice().sort((a,b)=>a.ts-b.ts) : turns.slice();
+    const ordered = stamped||turns.every(t=>sequence(t)!==null) ? turns.slice().sort(compare) : turns.slice();
     ordered.forEach((t,index)=>{
       if(!t||typeof t.text!=="string"||!t.text)return;
+      const key=t.id?"id:"+t.id:JSON.stringify([t.speaker,t.ts,t.text]);
+      const place=node=>{
+        node.savedTurnKey=key;node.serverTurn=t;
+        if(typeof t.ts==="number"&&Number.isFinite(t.ts)) node.messageTime=t.ts;
+        const thread=$("thread");
+        const later=Array.from(thread.children).find(n=>n!==node&&
+          (String(n.className||"").split(" ").includes("msg--queued")||(n.serverTurn?compare(t,n.serverTurn)<0:
+            Number.isFinite(node.messageTime)&&Number.isFinite(n.messageTime)&&n.messageTime>node.messageTime)));
+        if(thread.insertBefore){
+          if(later) thread.insertBefore(node,later);
+          else thread.appendChild(node);
+        }
+      };
+      const existing=Array.from($("thread").children).find(n=>n.savedTurnKey===key||
+        (t.client_send_id&&n.clientSendId===t.client_send_id));
+      if(existing){place(existing);return;}
       if(t.consumer_turn_id){
         const seen=t.speaker==="founder"?renderedConsumerFounders:renderedConsumerTurns;
         if(seen.has(t.consumer_turn_id))return;
@@ -9937,13 +9986,16 @@
         const previous=ordered[index-1];
         const paired=previous&&typeof t.ts==="number"&&Number.isFinite(t.ts)&&previous.ts===t.ts;
         // Only the newest turn offers the daily-cap card: an old day's limit is history.
-        appendFailureNotice(t.text,paired?previous:null,t.ts,t.failure&&t.failure.code,
+        const notice=appendFailureNotice(t.text,paired?previous:null,t.ts,t.failure&&t.failure.code,
           index===ordered.length-1?t.failure:null);
+        place(notice);
         return;
       }
       const who=t.speaker==="universe"?"universe":t.speaker==="founder"?"founder":"system";
       const drawn=appendMessage(who,t.text,
         who==="universe"?answerExecutionDetail({execution:t.execution}):null, t.ts);
+      place(drawn);
+      drawn.clientSendId=t.client_send_id||"";
       // The peek said this turn is longer than what it returned. Offer the
       // rest instead of letting the preview pass for the message; the bubble
       // and its metadata (time, provider/model detail) are untouched.
@@ -9985,16 +10037,18 @@
     const conv=r && r.recent_conversation;
     if(!conv || typeof conv.error==="string" || !Array.isArray(conv.turns))
       return failed((conv && conv.error) || "no page came back");
-    // Drawn at the end, then moved as one block to just below the button, so
-    // the older page lands above everything already on screen.
-    const thread=$("thread"), anchor=button.nextElementSibling||button.nextSibling, start=thread.children.length;
+    // Timestamped rows insert themselves; only undated legacy rows need an
+    // explicit earlier-page anchor.
+    const thread=$("thread"), anchor=button.nextElementSibling||button.nextSibling;
+    const existingNodes=new Set(Array.from(thread.children));
     // Measure the retained message, not scrollHeight: the button can disappear
     // on the final page and browser scroll anchoring may already compensate.
     const anchorTop=anchor && anchor.getBoundingClientRect ? anchor.getBoundingClientRect().top : null;
     const preserve=!scrollState || opening===scrollState.opening;
     if(scrollState && preserve) scrollState.following=false;
     drawHistoryTurns(conv.turns);
-    Array.from(thread.children).slice(start).forEach(node=>thread.insertBefore(node, anchor));
+    Array.from(thread.children).filter(node=>!existingNodes.has(node)&&!Number.isFinite(node.messageTime))
+      .forEach(node=>thread.insertBefore(node, anchor));
     offerEarlier(conv.has_more===true ? conv.next_before : null, stillOwner);
     if(preserve && anchorTop!==null) thread.scrollTop+=anchor.getBoundingClientRect().top-anchorTop;
     if(scrollState && preserve) scrollState.following=scrollState.atBottom();
