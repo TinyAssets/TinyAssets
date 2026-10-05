@@ -21,7 +21,9 @@ workspace, wiki pages) -- and the install side (change
   §4.16). Ownership is recorded BEFORE the write, so the ``packages`` store
   charges even a blob a failed publish left unlisted.
 * **The ingestion boundary** (``check_blob``) runs on every read of a blob,
-  before anything is planned from it.
+  before anything is planned from it. ``scan_install`` then screens the
+  verified files' content for the exfiltration patterns the ClawHub poisoning
+  wave used; the install tab shows every hit and the owner decides.
 * **Pins.** The consent record of a ``publish`` or ``install`` ask -- its
   action, digest, tab text and (for install) destination plan -- lives here,
   keyed by (command center, request). The rail renders those asks from the pin
@@ -56,6 +58,7 @@ from tinyassets.ingestion.canon_io import CANON_DIRNAME as _CANON_DIRNAME
 from tinyassets.universe_files import (
     MAX_UNIVERSE_FILE_BYTES,
     list_universe_dir,
+    read_data_path,
     read_universe_file,
 )
 from tinyassets.work_targets import ARTIFACTS_DIRNAME as _ARTIFACTS_DIRNAME
@@ -746,6 +749,127 @@ def review_groups(flagged: list[dict[str, str]]) -> list[dict[str, Any]]:
         groups.append({"kind": N_OPAQUE, "count": len(opaque),
                        "shown": [f["path"] for f in opaque[:REVIEW_SHOWN]]})
     return groups
+
+
+# -- the install-side content screen -------------------------------------------
+#: What the ClawHub poisoning wave (Feb 2026) taught: a shared package is
+#: untrusted code. The ingestion boundary checks structure; this checks content
+#: for the exfiltration patterns that wave used, and the install tab shows
+#: every hit. Hits are review flags, never refusals: a notifier package
+#: legitimately posts to a webhook, and only the owner knows which endpoints
+#: are theirs.
+
+#: Kept as data next to this module so platform code names no channel
+#: (tests/test_channel_agnostic_ratchet.py); edit the JSON to add endpoints.
+_EXFIL_HOSTS = tuple(json.loads(
+    read_data_path(Path(__file__).with_name("package_screen_exfil_hosts.json")) or b"{}"
+)["exfil_hosts"])
+
+#: Secret locations the ClawHavoc skills harvested before exfiltrating.
+_SECRET_READS = (
+    ".aws/credentials",
+    ".ssh/id_rsa",
+    ".ssh/id_ed25519",
+    ".gnupg/secring",
+    "login.keychain",
+    ".clawdbot",
+)
+
+#: Fragments of reverse shells; the wave hid these in functional code.
+_SHELL_RUNS = (
+    "/dev/tcp/",
+    "bash -i >&",
+    "nc -e",
+    "ncat -e",
+)
+
+# Start only at a run boundary: retrying at each character of a 159-char
+# near-match makes large ordinary scripts unnecessarily expensive.
+_B64_RUN = re.compile(r"(?<![A-Za-z0-9+/])[A-Za-z0-9+/]{160}")
+_DECODE_EXEC = re.compile(
+    r"(eval|exec)\s*\(\s*(base64\.b64decode|bytes\.fromhex|codecs\.decode)",
+    re.IGNORECASE)
+# Bounded whitespace after the pipe: an unbounded \s* let ~40 `curl` tokens in
+# one window each rescan the same long whitespace run (16s per 8 MiB file).
+_PIPE_TO_SHELL = re.compile(r"\b(curl|wget)\b[^\n]{0,200}\|[ \t]{0,20}(ba|z)?sh\b",
+                            re.IGNORECASE)
+_POWERSHELL_IEX = re.compile(r"\biex\s*\(", re.IGNORECASE)
+#: The wave's "Prerequisites" docs pointed at paste sites for the payload.
+_PASTE_SITES = ("glot.io", "pastebin.com", "paste.rs", "termbin.com", "ix.io", "0x0.st")
+
+#: Only scripts get the long-encoded-blob flag; docs and data carry long
+#: opaque strings for innocent reasons.
+_SCRIPT_SUFFIXES = (".py", ".js", ".sh", ".ps1", ".bat")
+
+
+def _install_flags(path: str, text: str) -> list[tuple[str, str]]:
+    """``(kind, detail)`` content hits for one package file's text."""
+    lower = text.lower()
+    hits: list[tuple[str, str]] = []
+    seen: set[str] = set()
+
+    def add(kind: str, detail: str) -> None:
+        if kind not in seen:
+            seen.add(kind)
+            hits.append((kind, detail))
+
+    for host in _EXFIL_HOSTS:
+        if host in lower:
+            add("exfiltration endpoint", host)
+            break
+    for secret in _SECRET_READS:
+        if secret in lower:
+            add("reads a well-known secret location", secret)
+            break
+    for run in _SHELL_RUNS:
+        if run in lower:
+            add("reverse-shell fragment", run.strip())
+            break
+    if _PIPE_TO_SHELL.search(text):
+        # The wave's signature move: the agent itself ran the install line
+        # from the skill's docs.
+        where = "shared docs" if path.endswith(".md") else "a script"
+        add("pipes a download into a shell", f"curl/wget into sh in {where}")
+    if _POWERSHELL_IEX.search(text):
+        add("pipes a download into a shell", "IEX( download cradle")
+    if _DECODE_EXEC.search(text):
+        add("executes decoded content", "eval/exec of decoded bytes")
+    elif path.endswith(_SCRIPT_SUFFIXES) and _B64_RUN.search(text):
+        add("long encoded blob in a script", "160+ base64 chars")
+    if path.endswith(".md") and any(site in lower for site in _PASTE_SITES) \
+            and ("bash" in lower or re.search(r"\bsh\b", lower)):
+        add("shell install instructions in shared docs", "paste-site link beside shell")
+    return hits
+
+
+def scan_install(files: dict[str, bytes]) -> list[dict[str, str]]:
+    """Content-safety flags for a package's files, for the install tab.
+
+    Runs on the verified files at quarantine time, before anything is planned
+    from them. Every hit is ``{"path", "kind", "note"}``; an empty list means
+    nothing worth flagging. Flags never refuse the install: the tab shows
+    them and the owner decides.
+    """
+    flagged: list[dict[str, str]] = []
+    for path in sorted(files):
+        text = as_text(files[path])
+        if text is None:
+            continue
+        for kind, detail in _install_flags(path, text):
+            flagged.append({"path": path, "kind": kind, "note": detail})
+    return flagged
+
+
+def install_review_groups(flagged: list[dict[str, str]]) -> list[dict[str, Any]]:
+    """Flags grouped by kind for the install tab, mirroring ``review_groups``."""
+    by_kind: dict[str, list[str]] = {}
+    order: list[str] = []
+    for found in flagged:
+        by_kind.setdefault(found["kind"], []).append(found["path"])
+        if found["kind"] not in order:
+            order.append(found["kind"])
+    return [{"kind": kind, "count": len(by_kind[kind]),
+             "shown": by_kind[kind][:REVIEW_SHOWN]} for kind in order]
 
 
 def collect(universe_dir: Path, *, exclude: list[str],
@@ -1509,8 +1633,10 @@ __all__ = [
     "check_blob",
     "check_path",
     "classify",
+    "install_review_groups",
     "plan_install",
     "read_blob",
+    "scan_install",
     "scan_public",
     "store_blob",
     "write_new_file",
