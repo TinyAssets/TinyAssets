@@ -1227,10 +1227,11 @@ _HARNESS_HEAD = (
     "Skills are `skills/<name>/SKILL.md` with frontmatter `name:` and a one-line "
     "`description:`; I follow matching skills and write them "
     "to change them next turn.\n"
-    "I batch independent reads/checks in one reply.\n"
+    "I call independent reads or checks together in one reply, not one per reply.\n"
     "App UI: one component via `write_graph target=\"app_ui\" "
     "operation=\"add_ui\"` and `payload_json={\"component\": {...}}` (handbook "
-    "write_graph.interfaces), without staging files.\n"
+    "write_graph.interfaces), in one call rather than staging "
+    "pieces in /u files and reading them back.\n"
     "## My skills\n"
 )
 
