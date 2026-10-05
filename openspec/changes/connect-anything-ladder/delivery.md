@@ -270,3 +270,9 @@ acceptance, 1.7 durable lifecycle cleanup/reconnect acceptance, 1.8 multi-accoun
 real-user acceptance, and 1.10 deployment/canary/user proof/as-built sync. Task 1.9
 is finalized with the committed hygiene receipt. The full implementation retains
 explicit unsupported errors for regex-constrained tool schemas and unavailable brokers.
+
+
+Final committed hygiene for production slice `815daa2e42`, against the stacked
+foundation: **85 added / 0 removed / 0 tampering**, exit 0. Task 1.9 is complete.
+Transport slice `d6571b8c93` and production slice `815daa2e42` were pushed separately.
+The final documentation receipt follows them. Work remains draft and undeployed.

@@ -13,5 +13,5 @@ No checkbox is complete merely because its lower-level components pass tests.
 - [x] 1.6 Wire ta catalog/dispatch and existing inline coordinator; verify stale catalogs, Stop, account switching, callback replay and crash recovery.
 - [ ] 1.7 Fence revocation before durable cleanup; preserve independent backing HTTP connections and prevent old-incarnation reuse.
 - [ ] 1.8 Connect an unknown MCP server through the existing card with multiple accounts and model-independent controls; prove owner-classified and unknown-effect editable defaults.
-- [ ] 1.9 Run affected/heavy tests, Linux oracle, ruff and hygiene (0 removed / 0 tampering).
+- [x] 1.9 Run affected/heavy tests, Linux oracle, ruff and hygiene (0 removed / 0 tampering).
 - [ ] 1.10 Assert deployed SHA, public canary and real-user MCP connect/cancel/revoke pass; sync capability and delegations.
