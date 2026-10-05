@@ -58,6 +58,7 @@ from tinyassets.ingestion.canon_io import CANON_DIRNAME as _CANON_DIRNAME
 from tinyassets.universe_files import (
     MAX_UNIVERSE_FILE_BYTES,
     list_universe_dir,
+    read_data_path,
     read_universe_file,
 )
 from tinyassets.work_targets import ARTIFACTS_DIRNAME as _ARTIFACTS_DIRNAME
@@ -758,15 +759,11 @@ def review_groups(flagged: list[dict[str, str]]) -> list[dict[str, Any]]:
 #: legitimately posts to a webhook, and only the owner knows which endpoints
 #: are theirs.
 
-_EXFIL_HOSTS = (
-    "discord.com/api/webhooks",
-    "discordapp.com/api/webhooks",
-    "api.telegram.org",
-    "webhook.site",
-    "requestbin",
-    "pipedream.net",
-    "beeceptor.com",
-)
+#: Kept as data next to this module so platform code names no channel
+#: (tests/test_channel_agnostic_ratchet.py); edit the JSON to add endpoints.
+_EXFIL_HOSTS = tuple(json.loads(
+    read_data_path(Path(__file__).with_name("package_screen_exfil_hosts.json")) or b"{}"
+)["exfil_hosts"])
 
 #: Secret locations the ClawHavoc skills harvested before exfiltrating.
 _SECRET_READS = (
