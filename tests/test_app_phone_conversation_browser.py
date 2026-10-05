@@ -48,7 +48,7 @@ def test_phone_conversation(app_url, browser, tmp_path):
     assert _box(page, '#request-rail')['height'] <= 44
     assert page.locator('#request-history').is_hidden()
     assert page.locator('#request-history p').count() == 3
-    assert page.locator('#thread > #rail-items').count() == 1
+    assert page.locator('#pending-requests > #rail-items').count() == 1
     assert page.locator('#thread #btn-rail-add').is_visible()
     assert page.locator('#chat-cloud-resize').is_hidden()
     stage, cloud = _box(page, '#chat-stage'), _box(page, '#chat-cloud')

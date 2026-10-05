@@ -100,6 +100,17 @@
           overflow-y:auto;padding:.6rem;display:flex;flex-direction:column;gap:.5rem;
           min-width:0}
     .rail[hidden]{display:none}
+    /* Pending asks stay above the composer, outside the scrolling history. */
+    #pending-requests{flex:0 1 auto;min-height:0;max-height:30%;overflow-y:auto;
+      padding:0 .7rem;background:var(--surface)}
+    #pending-requests:has(#rail-items:empty){display:none}
+    #pending-requests .rtab{margin:.3rem 0}
+    @container (max-width:600px){
+      #pending-requests .rtab-btn{display:flex;align-items:center;gap:.4rem;padding:.35rem .5rem}
+      #pending-requests .rtab-kind{flex:none;margin:0}
+      #pending-requests .rtab-title{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+    }
+    @media (max-width:600px){#pending-requests{max-height:40%}}
     .rtab-item{border-bottom:1px solid var(--line);padding:.6rem 0;margin-bottom:.6rem}
     .rtab-item-heading{display:flex;align-items:flex-start;gap:.4rem;overflow-wrap:anywhere}
     .rtab-item-heading input{width:auto;flex:0 0 auto;margin:.2rem 0 0}
@@ -472,7 +483,6 @@
             <span id="rail-error-text"></span>
             <button id="btn-rail-retry" class="btn btn--link" type="button">Try again</button>
           </div>
-          <div id="rail-items"></div>
           <button id="btn-rail-add" class="btn btn--link" type="button"
             aria-expanded="false" aria-controls="rail-add-panel">Add a key yourself</button>
           <div id="rail-add-panel" class="rtab rtab-body" hidden>
@@ -624,6 +634,9 @@
         <div id="model-menu" class="model-menu" role="menu" aria-labelledby="btn-models" hidden></div>
         <span id="model-next" class="muted">Next message: saved default</span>
       </div>
+      <section id="pending-requests" aria-label="Requests needing you">
+        <div id="rail-items"></div>
+      </section>
       <form id="composer" class="composer">
         <input id="file-input" type="file" multiple hidden
                accept=".txt,.md,.markdown,.json,.csv,.tsv,.yaml,.yml,.py,.js,.ts,.jsx,.tsx,.html,.htm,.css,.xml,.log,.sh,.rst,.ini,.toml,.env,.sql,text/*" />
@@ -8908,9 +8921,11 @@
     railCache = items || [];
     const rail = $("request-rail"), host = $("rail-items"), head = $("rail-head");
     if(!rail || !host) return;
-    // Request controls live in the conversation. The rail retains read-only history.
+    // Pending controls stay above the composer. The rail retains read-only history.
     const thread=$('thread');
-    if(thread && host.parentNode!==thread) thread.appendChild(host);
+    // Capture before pending controls change the thread's available height.
+    // Readers at latest follow the resize; readers in history keep their place.
+    const pinThread=thread && Math.abs(thread.scrollHeight-thread.clientHeight-thread.scrollTop)<2;
     if(thread && !$('request-entry-points')){
       const entries=document.createElement('div');entries.id='request-entry-points';
       for(const id of ['btn-rail-add','rail-add-panel']){const node=$(id);if(node)entries.appendChild(node);}
@@ -8975,6 +8990,7 @@
         && host.children[at] === kept.node;
     });
     if(settled) return;
+    const arriving = wanted.filter(w=>!railNodes.has(w.req.request_id)).at(-1);
 
     // Park the setup panel before the tabs are rebuilt, so the node (and what
     // the user typed into it) survives every refresh.
@@ -9014,12 +9030,19 @@
     // Anything not carried over is gone from the rail; drop it so a resolved
     // ask cannot come back holding a stale node.
     railNodes = keep;
+    // A new ask must be visible even when an expanded card fills this area.
+    if(arriving){
+      const at=wanted.indexOf(arriving), node=host.children[at];
+      const button=node&&node.children[0];
+      if(button&&button.scrollIntoView) button.scrollIntoView({block:'nearest'});
+    }
     rail.classList.toggle("rail--setup", setupOpen);
     if(typeof railDeepItem !== "undefined" && railDeepItem){
       const target=$("item_" + railOpen + "::" + railDeepItem);
       if(target){ target.scrollIntoView({block:"nearest"}); target.focus(); railDeepItem=null; }
     }
     if(typeof pendingReply !== "undefined" && pendingReply) applyPendingReply();
+    if(pinThread) thread.scrollTop=thread.scrollHeight;
   }
 
   function updateRailItems(req){
