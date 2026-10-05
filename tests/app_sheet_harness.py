@@ -6,6 +6,14 @@ remain owned by each harness; these controllers are never no-op replacements.
 """
 from __future__ import annotations
 
+import re
+
+
+def recovery_source(html: str) -> str:
+    """Load the independent recovery script verbatim for sliced-app harnesses."""
+    return next(source for source in re.findall(r"<script\b[^>]*>(.*?)</script>", html, re.S)
+                if "window.AppRecovery=" in source)
+
 
 def sheet_source(html: str) -> str:
     """Load the page's controllers verbatim, failing if a boundary moves."""
