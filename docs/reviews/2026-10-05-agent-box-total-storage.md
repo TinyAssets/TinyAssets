@@ -78,6 +78,9 @@ shared-volume, runtime accounting and isolation checks are not weakened.
   `test_provider_retry.py` / `test_provider_work_authority.py`.
 - Earlier broad oracle: 309 passed, no skips; final run includes added boundary
   proofs and scan coalescing. The public network clone is explicitly enabled.
+- After restoring substantive retained-data, lease-isolation and cleanup
+  assertions flagged by the hygiene count check, focused Linux follow-up:
+  **38 passed, zero skips**. Product code is unchanged from the 425-test run.
 - Windows storage suites: 44 passed, one POSIX-only skip (not Linux proof).
   An earlier broader Windows probe hit Windows-path rejection in the unchanged
   POSIX mount-view test; that test passes in the Linux oracle.

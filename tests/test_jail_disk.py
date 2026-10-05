@@ -377,6 +377,10 @@ def test_a_lost_lease_stops_without_reclaiming_reallocated_capacity(
     assert not sa.renew_checked(original)
     assert sa.usage(base, A).used_bytes == before
     assert replacement.id != original.id
+    other_owner = jail_disk.open_budget(_universe(base, "u-other", "workos|bob"))
+    assert other_owner.bound == 100 * KIB
+    assert other_owner.breach(force=True) is None
+    other_owner.settle()
     sa.release(replacement)
 
 
@@ -410,7 +414,9 @@ def test_a_ledger_error_stops_the_budget_and_does_not_advance_renewal_clock(
 ):
     import sqlite3
 
-    budget = jail_disk.open_budget(_universe(base, "u-one"))
+    udir = _universe(base, "u-one")
+    _write(udir, "retained.bin", 10 * KIB)
+    budget = jail_disk.open_budget(udir)
     with monkeypatch.context() as patch:
         def fail_connect(_base):
             raise sqlite3.OperationalError(message)
@@ -418,6 +424,9 @@ def test_a_ledger_error_stops_the_budget_and_does_not_advance_renewal_clock(
         patch.setattr(sa, "_connect", fail_connect)
         assert budget.breach(force=True) == jail_disk.STORAGE_LIMIT
     assert budget.breach(force=True) == jail_disk.STORAGE_LIMIT
+    assert (udir / "retained.bin").read_bytes() == b"x" * (10 * KIB)
+    assert sa.usage(base, A).measured_bytes == 10 * KIB
+    assert sa.usage(base, A).reserved_bytes == 0
     budget.settle()
 
 
@@ -437,6 +446,11 @@ def test_a_full_account_preserves_bounded_provider_recovery(base, volume, monkey
         assert budget.bound == 0
         assert sa.usage(base, A).reserved_bytes == 0
         assert "KiB" not in budget.notice
+        _write(udir, "session.bin", KIB)
+        assert budget.breach(force=True) == jail_disk.STORAGE_LIMIT
+        assert sa.measure(base, "u-one", "universe_files") == 101 * KIB
+        (udir / "session.bin").unlink()
+        assert budget.breach(force=True) is None
         assert (udir / "full.bin").read_bytes() == b"x" * (100 * KIB)
         (udir / "full.bin").unlink()
         assert budget.breach(force=True) is None
@@ -452,6 +466,8 @@ def test_a_nearly_full_account_preserves_bounded_provider_recovery(base, volume,
     _write(udir, "almost.bin", 99 * KIB)
     budget = jail_disk.open_budget(udir)
     try:
+        assert budget.bound == KIB
+        assert sa.usage(base, A).reserved_bytes == 0
         (udir / ".runtime").mkdir()
         _write(udir / ".runtime", "session.bin", KIB)
         assert budget.breach(force=True) is None
