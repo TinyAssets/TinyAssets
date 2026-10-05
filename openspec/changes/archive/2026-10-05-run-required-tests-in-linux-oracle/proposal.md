@@ -1,8 +1,8 @@
 # Run the browser proof and the required shards in the Linux oracle
 
-Status: **implementation merged in #4316**, authorized in comment5984775429;
-selective merge-group proof and final gate review remain pending. See `tasks.md`
-for the successful full-surface and browser runs.
+Status: **complete, 2026-10-05.** Implementation merged in #4316, authorized in
+comment5984775429; #4459 synced the spec and proved the selective path. The
+independent acceptance review approved closure. See `gate.md` and `tasks.md`.
 
 ## Why
 

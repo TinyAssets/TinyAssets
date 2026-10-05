@@ -532,3 +532,49 @@ def test_a_new_message_is_not_swallowed_by_a_stale_legacy_text_match(tmp_path):
     assert cs.sync_tail(tmp_path, session, live) == 1  # the new "yes" is appended
     yeses = [m for m in cs.load_recent(tmp_path, session, limit=50) if m.text == "yes"]
     assert len(yeses) == 2, f"the new distinct 'yes' was dropped: {len(yeses)}"
+
+
+def test_send_identity_additive_migration_preserves_legacy_history(tmp_path):
+    import sqlite3
+
+    assert cs.record_exchange(tmp_path, "principal:owner", "old yes", "old reply")
+    db = tmp_path / cs._DB_NAME
+    with sqlite3.connect(db) as conn:
+        conn.execute("ALTER TABLE conversation_turns DROP COLUMN client_send_id")
+    # Read-only status/history must work before any writer migrates the store.
+    legacy = cs.load_recent_readonly(tmp_path, "principal:owner")
+    assert [m.text for m in legacy] == ["old yes", "old reply"]
+    assert [m.client_send_id for m in legacy] == ["", ""]
+    with sqlite3.connect(db) as conn:
+        assert "client_send_id" not in {r[1] for r in conn.execute(
+            "PRAGMA table_info(conversation_turns)")}
+    assert cs.record_exchange_turns(tmp_path, "principal:owner", "yes", "new reply",
+                                    client_send_id="new-send") is not None
+    rows = cs.load_recent_readonly(tmp_path, "principal:owner")
+    assert [m.text for m in rows] == ["old yes", "old reply", "yes", "new reply"]
+    assert [m.client_send_id for m in rows] == ["", "", "new-send", ""]
+    assert cs.load_recent_readonly(tmp_path, "principal:other") == []
+
+
+def test_failure_pair_preserves_send_identity_only_on_founder(tmp_path):
+    assert cs.record_failure(tmp_path, "principal:owner", "yes", "unknown",
+                             client_send_id="failed-send")
+    rows = cs.load_recent_readonly(tmp_path, "principal:owner")
+    assert [m.speaker for m in rows] == ["founder", "platform"]
+    assert [m.client_send_id for m in rows] == ["failed-send", ""]
+
+
+def test_unavailable_send_identity_column_keeps_text_and_reports_no_identity(tmp_path, monkeypatch,
+                                                                           caplog):
+    import sqlite3
+
+    from tests.test_conversation_execution_history import legacy_database
+
+    path = legacy_database(tmp_path)
+    monkeypatch.setattr(cs, "_connect", lambda _: sqlite3.connect(path))
+    assert cs.record_exchange_turns(tmp_path, "a", "yes", "answer",
+                                    client_send_id="new-send") is not None
+    rows = cs.load_recent_readonly(tmp_path, "a")
+    assert [m.text for m in rows][-2:] == ["yes", "answer"]
+    assert [m.client_send_id for m in rows][-2:] == ["", ""]
+    assert "saved text without send identity" in caplog.text

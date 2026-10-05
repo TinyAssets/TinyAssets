@@ -74,6 +74,7 @@ class Msg:
     # (a legacy store, an in-memory Msg) keeps ``None`` rather than a fabricated
     # handle derived from order or timestamp.
     id: int | None = None
+    client_send_id: str = ""
 
 
 #: Longest interlocutor name allowed into the fence — bounds the header/footer so

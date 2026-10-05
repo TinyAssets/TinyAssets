@@ -1773,8 +1773,9 @@
       if(block){ try{ return JSON.parse(block.text); }catch(_e){ return {reply:block.text}; } }
       return {};
     },
-    converse(message,inputMethod="unknown",modelChoice=null,consumerRequest=null,agentId="main"){
+    converse(message,inputMethod="unknown",modelChoice=null,consumerRequest=null,agentId="main",clientSendId=""){
       const args={message,input_method:turnInputMethod(inputMethod)};
+      if(clientSendId) args.client_send_id=clientSendId;
       if(modelChoice!==null) args.model_choice=copyModelChoice(modelChoice);
       if(consumerRequest!==null) args.consumer_request=JSON.parse(JSON.stringify(consumerRequest));
       // Which of the owner's agents this turn talks to; "main" is the default.
@@ -4004,8 +4005,8 @@
   // offered to resend, a message this one held - nor the filenames it names
   // (Fable 21633 on the app byte-intake shape, 2026-09-20).
   function rememberInflight(message, display, sentAt, inputMethod, modelChoice, consumerRequest=null,
-                            agent=null){
-    const record={message, display: display||message,
+                            agent=null,clientSendId=""){
+    const record={message, display: display||message, client_send_id:clientSendId,
        inputMethod:turnInputMethod(inputMethod),
        modelChoice:copyModelChoice(modelChoice),
        consumerRequest,
@@ -4022,10 +4023,10 @@
   }
   function forgetInflight(){ try{ localStorage.removeItem(INFLIGHT_KEY); }catch(_e){} liveInflight=null; }
   // One record is the same record by what its writer could not have shared
-  // with another turn: text, send stamp and (for a chosen conversation) the
-  // exact request. The stored shape is untouched; nothing new is persisted.
+  // with another turn: send identity and, for legacy records, the exact
+  // text, send stamp and chosen-conversation request.
   function sameInflight(a,b){
-    return !!a&&!!b&&a.message===b.message&&(a.ts||0)===(b.ts||0)&&
+    return !!a&&!!b&&(a.client_send_id||"")===(b.client_send_id||"")&&a.message===b.message&&(a.ts||0)===(b.ts||0)&&
       JSON.stringify(a.consumerRequest||null)===JSON.stringify(b.consumerRequest||null);
   }
   // Forget ONE record: the one a restore pass observed. A newer turn on this
@@ -4041,7 +4042,7 @@
   async function sendConversationRequest(message,display,sentAt,opts){
     const epoch=MCP._loginEpoch;
     const checkLogin=()=>{if(epoch!==MCP._loginEpoch)throw new Error("Conversation account changed.");};
-    let payload=await MCP.converse(message,opts.inputMethod,opts.modelChoice,opts.consumerRequest||null,opts.agentId);
+    let payload=await MCP.converse(message,opts.inputMethod,opts.modelChoice,opts.consumerRequest||null,opts.agentId,opts.clientSendId);
     // From here on the server has ANSWERED a converse for this message, and a
     // chosen-conversation turn may be accepted and running. A later failure (a
     // poll whose handshake fails, a 401 whose renewal is down) is not sent for
@@ -4060,11 +4061,11 @@
       opts.consumerRequest={version:1,request_key:crypto.randomUUID(),
         binding_id:s.binding_id,binding_revision:s.binding_revision};
       rememberInflight(message,display,sentAt,opts.inputMethod,opts.modelChoice,opts.consumerRequest,
-        opts.agentId);
+        opts.agentId,opts.clientSendId);
       const saved=readInflight();
       if(!saved||JSON.stringify(saved.consumerRequest)!==JSON.stringify(opts.consumerRequest))
         throw new Error("Could not save safe conversation recovery. No workflow was started.");
-      payload=await MCP.converse(message,opts.inputMethod,opts.modelChoice,opts.consumerRequest,opts.agentId);
+      payload=await MCP.converse(message,opts.inputMethod,opts.modelChoice,opts.consumerRequest,opts.agentId,opts.clientSendId);
       checkLogin();
     }
     const started=Date.now();
@@ -4079,7 +4080,7 @@
       if(payload&&payload.consumer_turn&&payload.consumer_turn.state==="held"&&
          ["completed","failed","cancelled","interrupted"].includes(payload.consumer_turn.run_status)){
         // Exact replay repairs only the already-terminal pair after a crash gap.
-        payload=await MCP.converse(message,opts.inputMethod,opts.modelChoice,opts.consumerRequest,opts.agentId);
+        payload=await MCP.converse(message,opts.inputMethod,opts.modelChoice,opts.consumerRequest,opts.agentId,opts.clientSendId);
         checkLogin();
       }
     }
@@ -4502,7 +4503,8 @@
     // row carries, so a line can never go out under a different identity than
     // the one that wrote it.
     sendQueue.push({message, display, owner:queueOwner, scope:queueScope, bubble,
-      opts: Object.assign({}, opts, {echoed:true,sentAt:queuedAt}), ts: queuedAt});
+      opts: Object.assign({}, opts, {echoed:true,sentAt:queuedAt,
+        recoveryBubble:bubble||opts.recoveryBubble}), ts: queuedAt});
     setStatusLine("Your agent is thinking... " + sendQueue.length + " waiting");
     renderWorking();
     saveQueue();   // last: a failed save replaces the status line with why
@@ -4589,11 +4591,11 @@
   // working state on it (P2, live 2026-10-02: a reload mid-turn showed neither
   // the message nor that it was being worked on, so it was sent twice).
   let watchedActive=null, lastActiveText="";
-  function showActiveTurn(active){
+  function showActiveTurn(active, existingBubble){
     if(!active||typeof active.text!=="string"||!active.text||watchedActive||
-       active.text===lastActiveText) return false;
-    lastActiveText=active.text;
-    const bubble=appendMessage("founder", active.text, null,
+       (active.client_send_id||active.text)===lastActiveText) return false;
+    lastActiveText=active.client_send_id||active.text;
+    const bubble=existingBubble||appendMessage("founder", active.text, null,
       typeof active.started_at==="number"?active.started_at:Date.now()/1000);
     if(bubble){
       const note=document.createElement("span");
@@ -4601,24 +4603,51 @@
       note.textContent="Your agent is working on this.";
       bubble.appendChild(note); bubble.workingNote=note;
     }
-    watchedActive={text:active.text, bubble};
+    watchedActive={text:active.text, client_send_id:active.client_send_id, bubble};
     return true;
   }
   // That turn ended: its reply is drawn under the message, read from the store.
   async function finishActiveTurn(){
+    const epoch=MCP._loginEpoch, owner=queueOwner, scope=queueScope;
+    const agent=typeof addressedAgentId==="function"?addressedAgentId():"main";
     const watched=watchedActive; if(!watched) return;
     watchedActive=null;
     if(watched.bubble&&watched.bubble.workingNote&&watched.bubble.workingNote.remove)
       watched.bubble.workingNote.remove();
     let r=null;
-    try{ r=await Owner.getConversation(); }catch(_e){ return; }
+    try{ r=await Owner.getConversation(); }catch(_e){ /* Retain the cautious offer. */ }
+    if(epoch!==MCP._loginEpoch||owner!==queueOwner||scope!==queueScope||
+       agent!==(typeof addressedAgentId==="function"?addressedAgentId():"main")) return;
     const turns=(r&&r.recent_conversation&&Array.isArray(r.recent_conversation.turns))
       ? r.recent_conversation.turns : [];
-    let at=-1;
-    turns.forEach((t,i)=>{ if(t&&t.speaker==="founder"&&t.text===watched.text) at=i; });
-    if(at>=0) drawHistoryTurns(turns.slice(at+1));
+    const at=savedSendIndex(turns,watched);
+    const reply=at<0?-1:turns.findIndex((t,i)=>i>at&&
+      (t.speaker==="universe"||t.speaker==="platform"));
     const held=readInflight();
-    if(held&&held.message===watched.text) forgetInflightIf(held);
+    if(!watched.client_send_id){
+      // Connector/pre-deploy turns have no send id. This is display only:
+      // matching text cannot confirm or forget a device's unconfirmed send.
+      let displayAt=-1;
+      turns.forEach((t,i)=>{
+        if(t.speaker==="founder"&&t.text===watched.text) displayAt=i;
+      });
+      if(displayAt>=0){
+        const nextFounder=turns.findIndex((t,i)=>i>displayAt&&t.speaker==="founder");
+        drawHistoryTurns(turns.slice(displayAt+1,nextFounder<0?turns.length:nextFounder)
+          .filter(t=>t.speaker==="universe"||t.speaker==="platform"));
+      }
+      return;
+    }
+    if(reply>=0){
+      drawHistoryTurns(turns.slice(at+1,reply+1));
+      if(held&&held.client_send_id&&held.client_send_id===watched.client_send_id)
+        forgetInflightIf(held);
+    }else if(held&&held.client_send_id&&held.client_send_id===watched.client_send_id){
+      offerResend(held.message,held.display,{transport:true,message:"The reply is not saved yet."},
+        {echoed:true,sentAt:held.ts,clientSendId:held.client_send_id,recoveryBubble:watched.bubble,
+         agentId:held.agent,inputMethod:held.inputMethod,modelChoice:held.modelChoice,
+         consumerRequest:held.consumerRequest});
+    }
   }
   // What the server holds or is running for this thread, read once.
   async function readPendingTurns(){
@@ -4763,12 +4792,14 @@
     // restored after a reload) - drawing it twice would read as two sends.
     const sentAt=(typeof opts.sentAt==="number" && Number.isFinite(opts.sentAt))
       ? opts.sentAt : Date.now();
-    if(!opts.echoed) appendMessage("founder", display || message, null, sentAt/1000);
+    opts.clientSendId=crypto.randomUUID();
+    const recoveryBubble=opts.recoveryBubble||(!opts.echoed
+      ?appendMessage("founder", display || message, null, sentAt/1000):null);
     // A line sent from a restore offer is a SIDE send: it must not take over
     // the in-flight record of an unconfirmed turn still on screen.
     if(!opts.keepInflight) rememberInflight(
       message, display, sentAt, opts.inputMethod, opts.modelChoice,opts.consumerRequest||null,
-      opts.agentId);
+      opts.agentId,opts.clientSendId);
     // A relayed answer or a side send did not come from the composer: what
     // the founder is typing there stays (Codex round 3).
     const input=$("composer-input");
@@ -4827,7 +4858,7 @@
         appendFailureNotice(err.message,{speaker:"founder",text:message,display,truncated:false},undefined,err.failureCode,err.failure);
       }else{
         unconfirmed=!!(err&&err.transport)&&!err.notSent;
-        offerResend(message, display, err, Object.assign({}, opts||{}, {sentAt}));
+        offerResend(message, display, err, Object.assign({}, opts||{}, {sentAt,recoveryBubble}));
         // Unsaved or unconfirmed: the local recovery record is still needed.
       }
     }finally{
@@ -4887,8 +4918,10 @@
     // founder to wait and say the line again.
     if($("btn-send").disabled || interruptPending) throw new Error("voice_turn_busy");
     const opts=captureTurnOptions({inputMethod:"spoken"});
-    appendMessage("founder",message);
-    rememberInflight(message,message,undefined,"spoken",opts.modelChoice,null,opts.agentId);
+    const recoveryBubble=appendMessage("founder",message);
+    const voiceSentAt=Date.now();
+    opts.clientSendId=crypto.randomUUID();
+    rememberInflight(message,message,voiceSentAt,"spoken",opts.modelChoice,null,opts.agentId,opts.clientSendId);
     // A spoken turn takes the composer too, so a typed turn's late cleanup can
     // see that it is no longer the one holding it.
     const myTurn={}; activeTurn=myTurn;
@@ -4896,7 +4929,6 @@
     setStatusLine("Your agent is thinking...");
     renderWorking();
     let delivered=false, unconfirmed=false;
-    const voiceSentAt=Date.now();
     // The same fence as the typed turn: account AND home at the moment of
     // speaking. A reply or a failure that lands after either changed belongs
     // to a conversation no longer on screen. It paints nothing, offers no
@@ -4934,7 +4966,7 @@
       }else{
         unconfirmed=!!(error&&error.transport)&&!error.notSent;
         offerResend(message,message,error,
-          Object.assign({},opts,{echoed:true,keepComposer:true,sentAt:voiceSentAt}));
+          Object.assign({},opts,{echoed:true,keepComposer:true,sentAt:voiceSentAt,recoveryBubble}));
       }
       throw error;
     }finally{
@@ -4969,13 +5001,13 @@
   // - no new authority, no new storage, and no send: a draft in the composer
   // and anything queued behind the turn are untouched.
   //
-  // What it must never do is attribute. A turn whose transport went silent has
-  // no id in the saved thread (only the consumer path carries a request_key),
-  // so nothing here can prove the newest saved reply belongs to the message
-  // that timed out - matching on text would happily adopt somebody else's
-  // answer, or an older identical prompt. So it REPORTS what is saved, stamped,
-  // and says plainly that the link is unknown. That is the honest limit of a
-  // read with no correlation id; it is reported, not papered over.
+  // Only causal identity proves which send a saved row belongs to. Legacy
+  // records remain uncertain; text, completion timestamps and clocks do not.
+  function savedSendIndex(turns, sent){
+    if(!sent||sent.consumerRequest||!sent.client_send_id) return -1;
+    return turns.findIndex(t=>t&&t.speaker==="founder"&&
+      t.client_send_id===sent.client_send_id);
+  }
   async function offerSavedConversationCheck(note){
     const epoch=MCP._loginEpoch, owner=queueOwner, scope=queueScope;
     const agent=typeof addressedAgentId==="function"?addressedAgentId():"main";
@@ -4985,59 +5017,56 @@
     note.savedConversationLine=line;
     line.className="muted"; line.textContent="Checking your saved conversation...";
     if(!line.parentNode) note.appendChild(line);
+    const sent=note.unconfirmed;
+    const running=sent?await readPendingTurns():null;
+    if(!stillOwner()||!note.parentNode) return;
+    if(running&&running.active&&sent&&sent.client_send_id&&
+       running.active.client_send_id===sent.client_send_id){
+      if(showActiveTurn(running.active,sent.bubble)||
+         watchedActive&&watchedActive.client_send_id===sent.client_send_id){
+        note.remove();
+        return;
+      }
+    }
     let r=null;
     try{ r=await Owner.getConversation(); }
     catch(e){
-      if(!stillOwner()) return;
+      if(!stillOwner()||!note.parentNode) return;
       line.textContent="Couldn\u2019t read your saved conversation just now ("+
         ((e&&e.message)||"unknown error")+"). Nothing was sent.";
       return;
     }
-    if(!stillOwner()) return;
+    if(!stillOwner()||!note.parentNode) return;
     const conv=r&&r.recent_conversation;
     const turns=(conv&&Array.isArray(conv.turns))?conv.turns:[];
-    if(!turns.length){
-      line.textContent="Your saved conversation has nothing recorded yet. That does "+
-        "not confirm this message failed - a turn is saved only when it finishes.";
+    const at=savedSendIndex(turns,sent);
+    const reply=at<0?-1:turns.findIndex((t,i)=>i>at&&
+      (t.speaker==="universe"||t.speaker==="platform"));
+    if(reply>=0){
+      drawHistoryTurns(turns.slice(at+1,reply+1));
+      if(sent.record) forgetInflightIf(sent.record);
+      note.remove();
       return;
     }
-    line.textContent="Saved conversation snapshot. This app cannot tell which saved reply, "+
-      "if any, answers the unconfirmed message. Nothing was sent or marked complete. ";
-    // Folded by default (founder 2026-10-04: the expanded snapshot buried the
-    // live chat and could not be collapsed). The turns stay one tap away.
-    const shown=[];
-    const fold=document.createElement("button");
-    fold.className="btn btn--link"; fold.textContent="Show "+turns.length+" saved turns";
-    fold.addEventListener("click",()=>{
-      const open=fold.textContent.indexOf("Show")===0;
-      shown.forEach(el=>{ el.style.display=open?"":"none"; });
-      fold.textContent=(open?"Hide ":"Show ")+turns.length+" saved turns";
-    });
-    line.appendChild(fold);
-    for(const turn of turns){
-      if(!turn||typeof turn.text!=="string")continue;
-      const label=document.createElement("div");
-      label.textContent=String(turn.speaker||"Unknown speaker")+" · "+
-        (typeof turn.ts==="number"?new Date(turn.ts*1000).toLocaleString():"Time unavailable")+
-        (turn.truncated?" (saved preview is shortened)":"");
-      const content=document.createElement("pre");
-      content.style.whiteSpace="pre-wrap";content.textContent=turn.text;
-      label.style.display="none"; content.style.display="none";
-      shown.push(label,content);
-      line.appendChild(label);line.appendChild(content);
-    }
+    line.textContent="Not confirmed yet; your agent may still be working. Nothing was sent again.";
   }
 
   // A resume is an observation, never permission to replay a possibly accepted
   // command. Bind each check to the thread that created its notice; a late read
   // or an old button cannot read another account/home/agent's conversation.
-  function attachSavedConversationCheck(note){
+  function attachSavedConversationCheck(note, message, record, sentAt, bubble, clientSendId=""){
     const epoch=MCP._loginEpoch, owner=queueOwner, scope=queueScope;
     const agent=typeof addressedAgentId==="function"?addressedAgentId():"main";
+    const held=record||readInflight();
+    const rec=held&&ownsSavedRow(held)&&(held.agent||"main")===agent&&
+      held.message===message&&(!clientSendId||held.client_send_id===clientSendId)&&
+      (sentAt===undefined||held.ts===sentAt)?held:null;
+    note.unconfirmed={message,ts:rec?rec.ts:sentAt,record:rec,bubble,
+      client_send_id:clientSendId||(rec&&rec.client_send_id)||""};
     const look=document.createElement("button");
     look.className="btn btn--link"; look.textContent="Check saved conversation";
     note.checkSavedConversation=async()=>{
-      if(look.disabled||!owner||!scope||epoch!==MCP._loginEpoch||owner!==queueOwner||
+      if(look.disabled||!note.parentNode||!owner||!scope||epoch!==MCP._loginEpoch||owner!==queueOwner||
          scope!==queueScope||agent!==(typeof addressedAgentId==="function"?addressedAgentId():"main")) return;
       look.disabled=true;
       try{ await offerSavedConversationCheck(note); }finally{ look.disabled=false; }
@@ -5087,7 +5116,7 @@
     // failure already has its own saved record, and the consumer path has an
     // exact request_key receipt that beats any observation this could make.
     if(err&&err.transport&&!unsent&&!(opts&&opts.consumerRequest)){
-      attachSavedConversationCheck(note);
+      attachSavedConversationCheck(note, message, null, opts&&opts.sentAt, opts&&opts.recoveryBubble, opts&&opts.clientSendId);
     }
   }
 
@@ -8968,11 +8997,14 @@
       queueMicrotask(()=>perform('preview'));
       return box;
     },
-    history(rows){
+    history(rows, pending){
       let host=$('request-history');
       if(!host){host=document.createElement('div');host.id='request-history';$('request-rail').appendChild(host);}
       host.textContent='';
-      (rows||[]).forEach(row=>{const item=document.createElement('p');
+      const open=new Map((pending||[]).filter(row=>row.status==="pending").map(row=>[row.request_id,row]));
+      const history=[...Array.from(open.values()).map(row=>({...row,status:'Open'})),
+        ...(rows||[]).filter(row=>!open.has(row.request_id))];
+      history.forEach(row=>{const item=document.createElement('p');
         item.textContent=(row.title||'Request')+' · '+row.status;host.appendChild(item);});
       const head=$('rail-head'); if(head) head.textContent='Request history';
     }
@@ -9553,7 +9585,7 @@
     // Feedback + "don't ask this again" (founder 2026-08-27): an approval needs a
     // way to disagree, and a standing way to stop being asked.
     const fb = document.createElement("label");
-    fb.className = "rtab-label"; fb.textContent = "Reply or note (optional)";
+    fb.className = "rtab-label"; fb.textContent = "Chat message or decision note (optional)";
     const fbi = document.createElement("input");
     fbi.type = "text"; fbi.id = "fb_" + req.request_id;
     fb.appendChild(fbi); box.appendChild(fb);
@@ -9583,7 +9615,8 @@
     verb("Accept", "btn--primary", "accept");
     verb("Deny", "btn--ghost", "deny");
     if(!req.item_id) verb("Clear", "btn--ghost", "clear");
-    verb("Send reply", "btn--link", "reply");
+    if(req.item_id) verb("Send answer", "btn--link", "reply");
+    else verb("Send chat (keeps open)", "btn--link", "reply");
     box.appendChild(row); box.appendChild(note);
     ConnectOAuth.decorate(req, box, row, note);
     return box;
@@ -9647,6 +9680,10 @@
     const installHome=typeof AppUI!=="undefined"?AppUI.home:"";
     const fbEl = $("fb_" + req.request_id), muteEl = $("mute_" + req.request_id);
     const text = fbEl && fbEl.value.trim() ? fbEl.value.trim() : "";
+    if(mode === "reply" && !req.item_id && /^(yes|yep|yeah|ok|okay|sure|approve|approved|no|nope|deny|denied)[.!\s]*$/i.test(text)){
+      note.textContent="To decide this request, use Accept or Deny. Chat keeps it open; nothing was sent.";
+      return;
+    }
     if(mode === "reply" && !req.item_id){
       if(!text){ note.textContent = "Type something to send."; return; }
       if(fbEl) fbEl.value = "";
@@ -9752,7 +9789,7 @@
     if(!failure && r && Array.isArray(r.pending)){
       railFailed(null);
       renderRail(r.pending);
-      InlineApprovals.history(r.recently_answered);
+      InlineApprovals.history(r.recently_answered, r.pending);
       return;
     }
     railFailed(failure || (r && typeof r.error==="string" && r.error) || "no list came back");
@@ -9918,6 +9955,10 @@
   // most once per page.
   let inflightRestored = false;
   async function restoreInflight(turns){
+    const restoreEpoch=MCP._loginEpoch, restoreOwner=queueOwner, restoreScope=queueScope;
+    const restoreAgent=typeof addressedAgentId==="function"?addressedAgentId():"main";
+    const stillOwner=()=>restoreEpoch===MCP._loginEpoch&&restoreOwner===queueOwner&&
+      restoreScope===queueScope&&restoreAgent===(typeof addressedAgentId==="function"?addressedAgentId():"main");
     const pending = readInflight();
     // Whatever was queued behind the in-flight turn goes out after it has been
     // accounted for below (its bubble and resend offer come first).
@@ -10017,26 +10058,18 @@
          consumerRequest:pending.consumerRequest});
       restoreQueue();return;
     }
-    // Delivered while the user was away? Only the NEWEST founder turn can be
-    // this message, and it must be stamped no earlier than the send. A
-    // text-only match against the whole history let an older identical prompt
-    // ("continue") delete the record of the new one (Codex round 3, P1).
-    // History stamps are epoch seconds; the record's is epoch milliseconds;
-    // a minute of slack covers clock skew without reaching an earlier send.
-    const founderTurns = (turns||[]).filter(t => t && t.speaker === "founder");
-    const last = founderTurns[founderTurns.length-1];
-    const already = !pending.consumerRequest && !!last && last.truncated!==true && last.text === pending.message &&
-      (typeof last.ts !== "number" || last.ts*1000 >= (pending.ts||0) - 60*1000);
+    // A running send takes precedence over saved history. Both require the
+    // exact echoed identity; an old client/server must keep the cautious offer.
+    const running=await readPendingTurns();
+    if(!stillOwner()) return;
+    if(running&&running.active&&pending.client_send_id&&
+       running.active.client_send_id===pending.client_send_id&&showActiveTurn(running.active)){
+      inflightRestored=true; restoreQueue(); return;
+    }
+    const already=savedSendIndex(turns||[],pending)>=0;
     if(already){ forgetInflightIf(pending); restoreQueue(); return; }
     inflightRestored = true;
-    // Still being answered on the server: shown with its working state, and its
-    // reply is drawn when that turn ends -- never offered as unconfirmed.
-    const running=await readPendingTurns();
-    if(running&&running.active&&running.active.text===pending.message&&
-       showActiveTurn(running.active)){
-      restoreQueue(); return;
-    }
-    appendMessage("founder", pending.display, null,
+    const recoveryBubble=appendMessage("founder", pending.display, null,
       typeof pending.ts==="number"?pending.ts/1000:null);
     const again = document.createElement("button");
     again.className = "btn btn--link"; again.textContent = pending.consumerRequest?"Check this conversation":"Send it again";
@@ -10048,7 +10081,7 @@
       // slot now, and the resend queues behind it rather than erasing it.
       note.remove(); forgetInflightIf(pending);
       sendTurn(pending.message, pending.display,
-        {echoed:true,agentId:pending.agent||"main",inputMethod:turnInputMethod(pending.inputMethod),
+        {echoed:true,recoveryBubble,agentId:pending.agent||"main",inputMethod:turnInputMethod(pending.inputMethod),
          consumerRequest:pending.consumerRequest||null,
          modelChoice:copyModelChoice(pending.modelChoice)});
     });
@@ -10057,7 +10090,7 @@
     // A reload must retain the same read-only recovery as a live transport
     // failure. The server can finish after this history/active-turn snapshot;
     // foreground/online events then refresh the saved conversation here too.
-    attachSavedConversationCheck(note);
+    attachSavedConversationCheck(note, pending.message, pending, pending.ts, recoveryBubble);
     // A line queued behind the unconfirmed turn (an approval, typically) is
     // offered below it, never sent on its own: the founder decides what goes
     // out, and in what order, once they see both.
@@ -10083,6 +10116,7 @@
       if(document.visibilityState!=="visible") Voice.stop(false);
     });
     window.addEventListener("online",resumeUnconfirmedTurns);
+    window.addEventListener("focus",resumeUnconfirmedTurns);
     window.addEventListener("pagehide",()=>Voice.stop(false));
     setInterval(checkForNewBuild, 10*60*1000);
   }

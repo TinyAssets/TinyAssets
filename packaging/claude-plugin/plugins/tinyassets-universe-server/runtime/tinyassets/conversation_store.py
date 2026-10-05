@@ -168,6 +168,15 @@ def _connect(db_path: Path) -> sqlite3.Connection:
     except sqlite3.OperationalError as exc:
         if "duplicate column" not in str(exc).lower():
             logger.warning("conversation_store: failure metadata migration failed: %s", exc)
+    columns = {r[1] for r in conn.execute("PRAGMA table_info(conversation_turns)")}
+    if "client_send_id" not in columns:
+        try:
+            conn.execute(
+                "ALTER TABLE conversation_turns ADD COLUMN client_send_id TEXT NOT NULL DEFAULT ''"
+            )
+        except sqlite3.OperationalError as exc:
+            if "duplicate column" not in str(exc).lower():
+                logger.warning("conversation_store: send identity migration failed: %s", exc)
     return conn
 
 
@@ -183,13 +192,14 @@ def _read_messages(conn: sqlite3.Connection, session_id: str, limit: int,
     failure_column = failure_column_sql(conn)
     columns = {row[1] for row in conn.execute("PRAGMA table_info(conversation_turns)")}
     identity_column = "ext_id" if "ext_id" in columns else "''"
+    send_column = "client_send_id" if "client_send_id" in columns else "''"
     # A store old enough to lack the key reports NO handle rather than a
     # position-derived stand-in: an expansion that cannot be keyed says so.
     id_column = "id" if "id" in columns else "NULL"
     has_projections = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' "
                                    "AND name='conversation_terminal_projections'").fetchone()
     select = (f"SELECT speaker, content, ts, {receipt_column}, {failure_column}, "
-              f"{identity_column}, turn_no, {id_column} FROM conversation_turns ")
+              f"{identity_column}, turn_no, {id_column}, {send_column} FROM conversation_turns ")
     if before is None:
         rows = conn.execute(
             select + "WHERE session_id = ? ORDER BY ts DESC, turn_no DESC LIMIT ?",
@@ -205,7 +215,8 @@ def _read_messages(conn: sqlite3.Connection, session_id: str, limit: int,
             (session_id, int(before), session_id, max(1, int(limit))),
         ).fetchall()
     result = []
-    for speaker, content, ts, raw, failure_raw, ext_id, turn_no, row_id in reversed(rows):
+    for (speaker, content, ts, raw, failure_raw, ext_id, turn_no, row_id,
+         client_send_id) in reversed(rows):
         receipt = None
         if speaker == "universe" and isinstance(raw, str) and 0 < len(raw) <= 4096:
             try:
@@ -228,7 +239,8 @@ def _read_messages(conn: sqlite3.Connection, session_id: str, limit: int,
                 consumer_id = parts[1]
         result.append(Msg(str(speaker or ""), str(content or ""), _coerce_ts(ts), receipt,
                           read_turn_failure(speaker, failure_raw), consumer_id,
-                          id=row_id if isinstance(row_id, int) else None))
+                          id=row_id if isinstance(row_id, int) else None,
+                          client_send_id=client_send_id or ""))
     return result
 
 
@@ -520,6 +532,7 @@ def record_exchange_turns(
     universe_text: str,
     *,
     ts: float | None = None,
+    client_send_id: str = "",
     execution: object = None,
     interjections: "tuple[tuple[str, float], ...] | list[tuple[str, float]]" = (),
 ) -> "tuple[int, int] | None":
@@ -532,12 +545,12 @@ def record_exchange_turns(
     """
     return _record_pair(universe_dir, session_id, founder_text, universe_text,
                         speaker="universe", ts=ts, execution=execution,
-                        interjections=interjections)
+                        interjections=interjections, client_send_id=client_send_id)
 
 
 def record_failure(
     universe_dir: "str | Path", session_id: str, founder_text: str, code: object,
-    *, ts: float | None = None,
+    *, ts: float | None = None, client_send_id: str = "",
 ) -> bool:
     """Save the composed platform notice plus original text, without an answer receipt.
 
@@ -548,12 +561,13 @@ def record_failure(
     """
     failure = code if isinstance(code, TurnFailure) else turn_failure(code)
     return _record_pair(universe_dir, session_id, founder_text, failure_notice(failure),
-                        speaker="platform", ts=ts, failure=failure) is not None
+                        speaker="platform", ts=ts, failure=failure,
+                        client_send_id=client_send_id) is not None
 
 
 def _record_pair(
     universe_dir, session_id, founder_text, universe_text, *, speaker, ts=None,
-    execution=None, failure=None, interjections=(),
+    execution=None, failure=None, interjections=(), client_send_id="",
 ) -> "tuple[int, int] | None":
     """The shared transaction and retry boundary for terminal pairs.
 
@@ -614,6 +628,14 @@ def _record_pair(
                         columns += ", failure_json"
                         placeholders += ", ?"
                         rows = [(*row, "") for row in rows[:-1]] + [(*rows[-1], failure_json)]
+                    available = {r[1] for r in conn.execute(
+                        "PRAGMA table_info(conversation_turns)")}
+                    if "client_send_id" in available:
+                        columns += ", client_send_id"
+                        placeholders += ", ?"
+                        rows = [(*rows[0], client_send_id)] + [(*row, "") for row in rows[1:]]
+                    elif client_send_id:
+                        logger.warning("conversation_store: saved text without send identity")
                     conn.executemany(
                         f"INSERT INTO conversation_turns ({columns}) VALUES ({placeholders})", rows,
                     )

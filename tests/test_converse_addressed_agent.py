@@ -489,3 +489,60 @@ def test_ingress_puts_the_addressed_agent_on_the_context(world, monkeypatch):
     _converse(message="as main")
     assert seen and seen[0] == addressed_agents.MAIN_AGENT, (
         "a turn with no addressed agent must carry main, not an empty string")
+
+@pytest.mark.parametrize("bad", [
+    None, 3, "x" * 129, "has space", "line\nbreak", "unicode-\u00e9", "path/id",
+])
+def test_client_send_identity_is_bounded_before_execution(world, bad):
+    assert _converse(message="yes", client_send_id=bad)["error"] == "invalid_client_send_id"
+    assert world["provider"].calls == []
+
+
+def test_client_send_identity_round_trips_only_in_own_agent_thread(world, monkeypatch):
+    import asyncio
+    from types import SimpleNamespace
+
+    from tests.test_turn_interrupt import _Request
+    from tinyassets import onboarding
+    from tinyassets.api.status import get_status
+    from tinyassets.auth import middleware
+
+    identity = "send-0123456789_ABC"
+    agent = world["weaver"]
+    monkeypatch.setattr(onboarding, "onboarding_enabled", lambda: True)
+    monkeypatch.setattr(onboarding, "_app_identity_required", lambda: None)
+    monkeypatch.setattr(middleware, "current_identity", lambda: SimpleNamespace(user_id=OWNER))
+    observed = []
+
+    def pending(**extra):
+        response = asyncio.run(onboarding._handle_turn_pending(
+            _Request({"universe_id": "u-home", "client_send_id": identity, **extra})))
+        assert response.status_code == 200
+        return json.loads(response.body)
+
+    def answer(*args, **kwargs):
+        observed.append(pending(agent_id=agent)["active"])
+        assert pending()["active"] is None  # knowing the ID cannot address the other agent
+        with monkeypatch.context() as other:
+            other.setattr(middleware, "current_identity",
+                          lambda: SimpleNamespace(user_id="other-owner"))
+            assert pending()["active"] is None
+        return "causally matched reply"
+
+    monkeypatch.setattr(ui, "converse", answer)
+    out = _converse(message="yes", agent_id=agent, client_send_id=identity)
+    assert out["reply"] == "causally matched reply"
+    assert observed[0]["client_send_id"] == identity
+    assert observed[0]["text"] == "yes"
+    peek = json.loads(get_status(universe_id="u-home", include_conversation=True,
+                                 conversation_agent=agent))["recent_conversation"]["turns"]
+    assert [t.get("client_send_id") for t in peek] == [identity, None]
+    assert json.loads(get_status(universe_id="u-home", include_conversation=True)
+                      )["recent_conversation"]["turns"] == []
+    other_session = addressed_agents.memory_session("other-owner", agent)
+    assert load_recent_readonly(world["udir"], other_session) == []
+    # Repeating the ID is metadata, never deduplication or a turn mutation.
+    _converse(message="yes", agent_id=agent, client_send_id=identity)
+    rows = load_recent_readonly(world["udir"], addressed_agents.memory_session(OWNER, agent))
+    assert len(rows) == 4
+    assert [r.client_send_id for r in rows] == [identity, "", identity, ""]

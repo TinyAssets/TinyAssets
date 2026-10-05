@@ -246,7 +246,9 @@ def test_the_scopes_guard_cannot_be_skipped():
         ConnectionLedger.extend_http_connection_endpoints
     ).parameters["expected_scopes_json"]
     assert param.default is inspect.Parameter.empty
-    src = pathlib.Path(__import__("tinyassets.api.http_connection", fromlist=["x"]).__file__).read_text(encoding="utf-8")
+    src = pathlib.Path(
+        __import__("tinyassets.api.http_connection", fromlist=["x"]).__file__
+    ).read_text(encoding="utf-8")
     assert src.count("expected_scopes_json=") == src.count("expected_endpoints_json="), (
         "every caller passes both halves of the snapshot"
     )
@@ -259,7 +261,9 @@ def test_the_reprovision_path_carries_scopes_from_its_cas_snapshot():
     import tinyassets.api.http_connection as hc
 
     src = pathlib.Path(hc.__file__).read_text(encoding="utf-8")
-    body = src[src.index("def connect_http("):src.index("def _reprovision_conflict(") if "def _reprovision_conflict(" in src else src.index("def extend_http(")]
+    end = (src.index("def _reprovision_conflict(") if "def _reprovision_conflict(" in src
+           else src.index("def extend_http("))
+    body = src[src.index("def connect_http("):end]
     assert body.count("ledger.policy_json(connection_id)") == 1
     assert "_stored_git_scopes(resource)" not in body
     assert "_git_scopes_in(raw_policy[1])" in body
@@ -286,7 +290,9 @@ def test_raise_time_and_answer_time_share_one_definition():
     src = pathlib.Path(hc.__file__).read_text(encoding="utf-8")
     assert src.count("_extend_preview(") >= 3        # def + two callers
     body = src[src.index("def extend_http("):src.index("def _extend_preview(")]
-    for rederived in ("_parse_allowed_endpoints(", "validate_git_scopes(", "_canonical_endpoint_set("):
+    for rederived in (
+        "_parse_allowed_endpoints(", "validate_git_scopes(", "_canonical_endpoint_set(",
+    ):
         assert rederived not in body, (
             f"extend_http must not re-derive the verdict beside the preview ({rederived})"
         )
@@ -306,6 +312,6 @@ def test_the_app_no_longer_offers_send_or_not_now():
 
     html, _csp = render_app_html()
     assert '"Not now"' not in html
-    for label in ("Accept", "Deny", "Clear", "Send reply"):
+    for label in ("Accept", "Deny", "Clear", "Send chat (keeps open)"):
         assert f'verb("{label}"' in html, label
     assert json.dumps("declined") in html or '"declined"' in html

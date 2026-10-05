@@ -762,7 +762,8 @@ def test_restoring_the_servers_lines_keeps_the_devices_own(tmp_path):
 _RELOAD_MID_TURN = r"""
 globalThis.authHeaders=()=>({});
 globalThis.fetch=()=>Promise.resolve({ok:true,status:200,json:async()=>(
-  {pending:[], active:{text:"build the village map", started_at:Date.now()/1000-30}})});
+  {pending:[], active:{text:"build the village map", started_at:Date.now()/1000-30,
+    client_send_id:"village-send"}})});
 const working={active_turn:{turn_id:"t9",state:"inference_started",age_s:30,stale:false}};
 readServerTurn(working);
 setQueueOwner("p-1"); setQueueScope("u-1");
@@ -784,12 +785,55 @@ def test_a_reload_mid_turn_shows_the_message_being_worked_on_then_its_reply(tmp_
     assert _NODE is not None, "node is required"
     page, _csp = onboarding.render_app_html()
     out = _run(tmp_path, page, {"history": [
-        {"speaker": "founder", "text": "build the village map", "ts": 1},
+        {"speaker": "founder", "text": "build the village map", "ts": 1,
+         "client_send_id": "village-send"},
         {"speaker": "universe", "text": "Here is the village map.", "ts": 2}]},
         _RELOAD_MID_TURN)
     assert out["during"] == ["build the village map|working"]
     assert out["after"] == ["build the village map", "Here is the village map."]
     assert out["sent"] == [], "nothing sent again"
+
+
+@pytest.mark.parametrize("held_id", [None, "", "unconfirmed-send"])
+def test_a_reload_mid_turn_without_id_draws_only_its_replies_and_forgets_nothing(tmp_path, held_id):
+    from tests.test_app_working_indicator import _NODE, _run
+    from tinyassets import onboarding
+
+    assert _NODE is not None, "node is required"
+    page, _csp = onboarding.render_app_html()
+    body = _RELOAD_MID_TURN.replace('client_send_id:"village-send"', "")
+    setup = """
+let forgotten=0;
+const originalForget=forgetInflight;
+forgetInflight=()=>{ forgotten++; originalForget(); };
+"""
+    if held_id is not None:
+        setup += (
+            'rememberInflight("build the village map","build the village map",'
+            f'Date.now(),"typed",null,null,"main",{json.dumps(held_id)});\n'
+        )
+    setup += "const heldBefore=JSON.stringify(readInflight());\n"
+    body = body.replace(
+        'readServerTurn({active_turn:null});', setup + 'readServerTurn({active_turn:null});'
+    )
+    body = body.replace(
+        "{during, after:",
+        "{forgotten, heldBefore, heldAfter:JSON.stringify(readInflight()), during, after:",
+    )
+    out = _run(tmp_path, page, {"history": [
+        {"speaker": "founder", "text": "build the village map", "ts": 1},
+        {"speaker": "universe", "text": "Old map.", "ts": 2},
+        {"speaker": "founder", "text": "build the village map", "ts": 3},
+        {"speaker": "universe", "text": "Here is the village map.", "ts": 4},
+        {"speaker": "universe", "text": "Map saved.", "ts": 5},
+        {"speaker": "founder", "text": "another request", "ts": 6},
+        {"speaker": "universe", "text": "Unrelated reply.", "ts": 7},
+    ]}, body)
+    assert out["during"] == ["build the village map|working"]
+    assert out["after"] == ["build the village map", "Here is the village map.", "Map saved."]
+    assert out["sent"] == [], "nothing sent again"
+    assert out["forgotten"] == 0
+    assert out["heldAfter"] == out["heldBefore"], "display cannot confirm a send"
 
 
 # -- gpt-6-astra on #4290, P1: an agent switch while a claim is in flight ------

@@ -2,23 +2,29 @@
 
 Tasks 1-4 landed in PR #4316. The founder authorized the permanent venue on
 2026-10-04 in PR #4316 comment5984775429, superseding the one-off #4398 scope.
-Tasks 5-6 track proof and spec closure, not a pending approval. The full-first,
-selective-follow-up sequence was agreed with the lead in comment5985466724.
+Tasks 5-6 completed after #4459 landed. The full-first, selective-follow-up
+sequence was agreed with the lead in comment5985466724.
 
 - [x] 1. Oracle image: `browser` extra and Chromium at `/opt/playwright`, readable by uid 1001 (`docker/linux-oracle.Dockerfile`).
 - [x] 2. `scripts/linux_oracle.py --required-runner`: fixed script, arguments unchanged, short basetemp, refuses weaker venues and unseen outputs; default pytest command unchanged. Tests assert the generated argv and output paths.
 - [x] 3. `real-browser-proof`: marked cases and the full `tests/test_ui_preview.py` module in the oracle, with no-skip assertions and both junit artifacts; ordinary triggers kept.
 - [x] 4. `required-tests-shard`: both paths through `--required-runner`; plan step, matrix, artifacts and aggregate unchanged. Workflow tests pin the venue, the argv and the absence of host privilege.
-- [ ] 5. Observe one `real-browser-proof` run and one whole-surface six-shard run on the implementation, then one selective merge-group run on the immediate documentation follow-up (the five items in `design.md` D5). Fix or quarantine through the existing ledger anything the gate executes for the first time and finds red; do not raise the skip budget.
-- [ ] 6. After the runs are green: independent cross-family review (gate file), then sync this spec and archive.
+- [x] 5. Observe one `real-browser-proof` run and one whole-surface six-shard run on the implementation, then one selective merge-group run on the immediate documentation follow-up (the five items in `design.md` D5). Fix or quarantine through the existing ledger anything the gate executes for the first time and finds red; do not raise the skip budget.
+- [x] 6. After the runs are green: independent cross-family review (gate file), then sync this spec and archive.
 
 Hosted evidence (2026-10-05 UTC): PR #4316 merged as
 `51db6894f30710ee9e00d816293fbbd76eff88cf`. `gh run view 37245286729`
 reports the full required run successful: all six oracle shards passed,
 26,297 tests ran, no new failures, 95 skips against 134, and 2,586 summed seconds
 against the separately reviewed provisional 3,000-second ceiling. Browser run
-`37245237518` at source `87df68e62b` also passed. The selective merge-group proof
-and final independent gate review remain pending; neither task is complete yet.
+`37245237518` at source `87df68e62b` also passed: 131 marked browser cases and
+36 full-preview cases, no skips. Selective merge-group run `37246536654` passed
+4,908 tests with no new failures, 77 skips and 605 summed seconds; its six
+JUnit file sets cover exactly 172 selected files without overlap, with one
+matching selection digest across all manifests. #4459 merged as
+`9e96ff95959499cd2ec6fda9e0761b9d498240dd`, syncing the main spec. The independent
+Claude acceptance review approved all five D5 items; see `gate.md`. This closes
+only the CI venue change; `custom-ui-assets` retains its live founder acceptance.
 
 ## PR #4316 browser reload investigation (2026-10-04)
 
