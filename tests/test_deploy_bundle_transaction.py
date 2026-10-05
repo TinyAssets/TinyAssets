@@ -2006,10 +2006,10 @@ def test_a_snapshot_without_a_manifest_is_refused(box: Box):
 
 
 def test_retention_never_deletes_the_pointed_snapshot(box: Box):
-    """An overfull snapshot directory keeps the pointed one regardless.
+    """Prune excess history while advancing to a restorable rollback target.
 
-    Asserting `count <= 5` alone also passes when the pointer's target was the
-    directory deleted, which is the failure this guards.
+    Asserting `count <= 5` alone also passes when the pointer target is gone.
+    The sorts_oldest case below deterministically puts it in the prune window.
     """
     box.stage_bundle()
     # Retention reads directory names, not old payload sizes. Seed the excess

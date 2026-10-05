@@ -62,6 +62,21 @@ def app_url():
 
 
 @pytest.fixture(scope="module")
+def required_browser():
+    """Share Chromium without converting import or launch failures into skips."""
+    from playwright.sync_api import sync_playwright
+
+    with sync_playwright() as runtime:
+        chromium = runtime.chromium.launch(
+            executable_path=os.environ.get("TINYASSETS_TEST_CHROMIUM") or None
+        )
+        try:
+            yield chromium
+        finally:
+            chromium.close()
+
+
+@pytest.fixture(scope="module")
 def browser():
     sync_api = pytest.importorskip(
         "playwright.sync_api", reason="owner=codex runs-in=real-browser-proof"

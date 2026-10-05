@@ -3,7 +3,7 @@ import pytest
 
 from tests.test_app_chat_cloud_browser import _enter_chat
 from tests.test_app_chat_cloud_browser import app_url as _app_url
-from tests.test_app_two_surfaces_browser import browser as _browser
+from tests.test_app_two_surfaces_browser import required_browser as _browser
 
 app_url = _app_url
 browser = _browser
