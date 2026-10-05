@@ -231,7 +231,49 @@ def read_app_ui_asset_bytes(*, universe_id: str, sha256: str) -> bytes | dict:
     return found
 
 
-__all__ = ["INDEX", "change_app_ui", "read_app_ui", "read_app_ui_asset_bytes", "write_app_ui"]
+def preview_app_ui(*, universe_id: str = "", ui_id: str = "") -> dict[str, Any]:
+    """Render the caller's own UI headlessly; the report, screenshot in /u.
+
+    The PNG is written to ``/u/previews/<ui_id>.png`` for the agent to look at
+    with ``read`` (which shows images); the report says what a person would
+    see and what went wrong. See :mod:`tinyassets.ui_preview`.
+    """
+    from tinyassets import ui_preview
+    from tinyassets.api.helpers import _universe_dir
+
+    uid = _binding_universe(universe_id)
+    denial = _binding_access(uid, write=True)
+    if denial is not None:
+        return denial
+    actor = _authenticated_actor()
+    if actor is None:
+        return {"error": "authentication_required", "resource": "app_ui"}
+    selector = (ui_id or "").strip()
+    if not selector:
+        return {"error": "app_ui_validation_error",
+                "detail": "query must name the ui_id to preview"}
+    try:
+        report = ui_preview.preview_app_ui(
+            _base_path(), owner_user_id=actor, universe_id=uid, ui_id=selector)
+        report["screenshot"] = ui_preview.write_preview(
+            _universe_dir(uid), selector, report.pop("png"))
+    except AgentNotFoundError as exc:
+        return {"error": "app_ui_not_found", "detail": str(exc)}
+    except ui_preview.PreviewUnavailable as exc:
+        reason = str(exc)
+        return {"error": reason.split(":", 1)[0], "detail": reason}
+    report["see_it"] = f'read path="{report["screenshot"]}"'
+    return report
+
+
+__all__ = [
+    "INDEX",
+    "change_app_ui",
+    "preview_app_ui",
+    "read_app_ui",
+    "read_app_ui_asset_bytes",
+    "write_app_ui",
+]
 
 
 def _visible_refusal(refused, viewer=None):
