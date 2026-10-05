@@ -178,6 +178,10 @@ def main():
     assert relocate(root, dry_run=True)
     assert snapshot(root) == before
     relocate(root)
+    for private in (root / ".broker", root / ".broker/.outbound-proxy"):
+        info = private.stat()
+        assert (info.st_uid, info.st_gid, stat.S_IMODE(info.st_mode)) == (1002, 1101, 0o2700)
+    print("broker private directory ownership/setgid readbacks without FSETID: PASS", flush=True)
     before = snapshot(root)
     assert relocate(root) == []
     assert snapshot(root) == before
@@ -274,6 +278,7 @@ def main():
             raise AssertionError(f"migration accepted {attack}")
         assert snapshot(root) == before
     print("symlink/hardlink/FIFO/conflicting-copy refusal without mutation: PASS", flush=True)
+    runpy.run_path("/app/scripts/role_launcher_oracle.py")["main"]()
     print("FOUNDATION/EGRESS SUBSTEP ONLY: launcher, IPC, real engine classes, "
           "full rollback pending")
 

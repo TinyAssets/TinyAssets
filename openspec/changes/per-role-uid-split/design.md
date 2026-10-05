@@ -1009,6 +1009,51 @@ without live mounts or network and with exactly the planned entry capabilities.
 Foundation/egress substep probes are labeled separately from the still-required
 actual launcher, IPC, engine-class, full deletion and old-image proofs.
 
+### D16. Mechanical decision: stage the broker lifecycle before startup admission
+
+The installed stdlib launcher kernel retires migration capabilities, verifies the
+immutable chain before binding, and accepts START_BROKER only from its exact
+daemon child pid and uid. The socket uses SOCK_SEQPACKET with a 4096-byte bound;
+extra fields, truncation and any descriptor transfer are refused. No generic
+exec, shell, environment, caller-selected path or engine-without-cell operation
+exists. Engine kinds remain unsupported until their owner cells are integrated.
+The launcher uses its already-approved SETGID capability briefly to create the
+root:1001 socket and inspect broker socket readiness after CHOWN retirement;
+it restores egid 0 before handling another request. No privilege is added.
+
+Broker-owned generation allocation persists the non-secret lease-proof hash
+beside the existing fence, so the same acquisition recovers its generation/token
+after crash or lost ACK and a new acquisition increments it. The role-split
+broker accepts FENCE with proof only and rejects caller-selected generations.
+The old explicit-generation mode remains only for the existing inactive legacy
+supervisor/tests until task 2.6 removes that path; start_broker still refuses
+production activation. No owner token file is written on the new path.
+
+Broker-local ConnectionLedger receives an explicit logical data_root distinct
+from its private physical parent. Command-center/authority/accounting references
+use that logical root; proxy persistence follows the ledger into .broker.
+This does not grant the broker access to daemon accounting or implement D11 RPC.
+The private broker umask is 077 (except socket creation at 117); engine umask
+007 remains required. The new broker checks retired identity/capability sets
+and makes itself non-dumpable after exec before loading state.
+
+This is an inactive integration substep under D14/D15. CMD, compose capabilities,
+entrypoint migration, daemon environment/spawn and production broker selection
+remain unchanged. The production-image oracle uses a trusted daemon fixture
+child with the real launcher/broker; it must label that evidence separately
+from real daemon startup, successful streams, every engine class, deletion and
+old-image rollback. No build task is complete solely from this substep.
+
+### D17. Mechanical decision: preserve setgid without CAP_FSETID
+
+The production launcher probe demonstrated that fchmod silently clears a
+requested directory setgid bit when the caller lacks that group and FSETID,
+even with FOWNER. During the existing privileged startup window, temporarily
+set egid to the target gid around directory fchmod, restore it in finally,
+and assert uid/gid/mode from fstat. SETGID is already required; do not add
+FSETID. Apply the same helper to relocation and startup IPC directory setup.
+The oracle asserts actual 2700 private parents and 2750 socket parents.
+
 ## Risks / Trade-offs
 
 - **The launcher is root-adjacent code.** One file, stdlib-only, run `-I -S`, a static kind table,

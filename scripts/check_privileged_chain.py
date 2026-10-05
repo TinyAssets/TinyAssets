@@ -89,6 +89,7 @@ def main() -> int:
         "/usr/local/libexec/ta-entry.sh",
         "/usr/local/libexec/ta-chain.py",
         "/usr/local/libexec/ta-egress-migration.py",
+        "/usr/local/libexec/ta-launch.py",
         "/usr/local/libexec/ta-op",
         "/app/broker_main.py",
         "/app",

@@ -1324,7 +1324,7 @@ class CredentialBlindBroker:
 
             grant = self._ledger.require_active_grant(grant_id)
             usage = resolve_inference_usage(
-                self._ledger._db_path.parent, grant.owner_user_id, grant.universe_id,
+                self._ledger._data_root, grant.owner_user_id, grant.universe_id,
                 self._ledger, resource, grant_id, verb, request, inference_usage, operation_id,
             )
         if usage is not None:
@@ -4933,12 +4933,13 @@ def _build_credential_broker_dispatch(
     from tinyassets.connection_oauth.tokens import ConnectionTokens
     from tinyassets.storage.agent_request_usage import resolve_inference_usage
 
-    ledger = ConnectionLedger(config["ledger_db_path"])
+    data_root = Path(config.get("data_root", Path(config["ledger_db_path"]).parent))
+    ledger = ConnectionLedger(config["ledger_db_path"], data_root=data_root)
     universe = Path(config["universe_dir"])
 
     def accounting(resource, grant_id, verb, request, envelope, operation_id):
         return resolve_inference_usage(
-            Path(config["ledger_db_path"]).parent, config["owner_user_id"], universe.name,
+            data_root, config["owner_user_id"], universe.name,
             ledger, resource, grant_id, verb, request, envelope, operation_id,
         )
 
@@ -5151,8 +5152,10 @@ class ConnectionLedger:
         *,
         allow_test_fixtures: bool = False,
         verify_authenticated_principal: AuthenticatedPrincipalVerifier | None = None,
+        data_root: str | Path | None = None,
     ) -> None:
         self._db_path = Path(db_path)
+        self._data_root = Path(data_root) if data_root is not None else self._db_path.parent
         self._allow_test_fixtures = allow_test_fixtures
         self._verify_authenticated_principal = verify_authenticated_principal
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -6021,7 +6024,7 @@ class ConnectionLedger:
         # The broker serves http connections, the only production type; the
         # legacy untyped test fixture keeps its worker.
         channel = None if resource.connection_type != "http" else _broker_channel(
-            self._db_path.parent, principal=resource.owner_user_id,
+            self._data_root, principal=resource.owner_user_id,
             command_center=grant.universe_id, grant_id=grant.grant_id,
             connection_id=resource.connection_id,
         )
@@ -6078,7 +6081,8 @@ class ConnectionLedger:
             "allow_test_fixtures": self._allow_test_fixtures,
             "allow_http_connections": _outbound_http_enabled(),
             "ledger_db_path": str(self._db_path.resolve()),
-            "universe_dir": str((self._db_path.parent / universe_id).resolve()),
+            "data_root": str(self._data_root.resolve()),
+            "universe_dir": str((self._data_root / universe_id).resolve()),
             "provider": provider,
             "destination": destination,
             "connection_type": (connection_type or "").strip().lower(),

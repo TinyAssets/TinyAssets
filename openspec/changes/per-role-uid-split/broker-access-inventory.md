@@ -14,6 +14,15 @@ The generated plugin mirror has corresponding copies under
 it with runtime edits rather than treating copies as independent implementations.
 Unit-test temporary ledgers are synthetic fixtures, not production authority.
 
+D16 staged implementation: role-split `broker/process.py` opens the private
+ledger, and `ConnectionLedger` / dispatch construction now carry an explicit
+logical data_root for command-center and accounting references. Proxy runtime
+remains under the physical ledger parent, thus .broker/.outbound-proxy for the
+new mode. This completes only the broker-local path separation; daemon IPC,
+accounting-state migration, refresh, backup and deletion rows below remain
+unimplemented. Normal broker startup is still refused and the image CMD is
+unchanged. See delivery.md for executable evidence and remaining integration.
+
 ## Ledger construction entry points
 
 Each daemon route must preserve the current request's trusted principal and

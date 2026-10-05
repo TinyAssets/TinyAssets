@@ -84,7 +84,19 @@ def _permissions(fd, uid, gid, mode):
     if (info.st_uid, info.st_gid) != (uid, gid):
         os.fchown(fd, uid, gid)
     if stat.S_IMODE(os.fstat(fd).st_mode) != mode:
-        os.fchmod(fd, mode)
+        # Without FSETID, Linux silently clears S_ISGID when the target group
+        # is absent from the caller's groups, even with FOWNER. SETGID already
+        # belongs to the startup capability set; retain no extra authority.
+        previous_gid = os.getegid()
+        try:
+            if mode & stat.S_ISGID:
+                os.setegid(gid)
+            os.fchmod(fd, mode)
+        finally:
+            os.setegid(previous_gid)
+    actual = os.fstat(fd)
+    if (actual.st_uid, actual.st_gid, stat.S_IMODE(actual.st_mode)) != (uid, gid, mode):
+        raise MigrationRefused("ownership/mode readback failed")
 
 
 def _rename(source, destination, name):

@@ -1,4 +1,139 @@
-# Current delivery: D12 relocation and implementation
+# Current delivery: D16 staged launcher and broker lifecycle
+
+Started from `d43935b600`; the required fast-forward pull was already current.
+OpenSpec admission is ALLOWED. D12-D15 and the relocation substep remain intact.
+D16 records mechanical IPC framing, socket group assignment after capability
+retirement, durable generation allocation and explicit logical data-root routing.
+
+Implemented but not startup-activated: stdlib launcher kernel with exact daemon
+uid/pid authentication, migration capability retirement/readbacks, protected
+chain verification, fixed broker argv/environment, descriptor closure, readiness,
+crash restart and ordered cross-uid shutdown. The new role-split broker mints
+its fence generation, checks identity/capabilities, becomes non-dumpable after
+exec and uses the relocated ledger with an explicit logical command-center root.
+No engine kind is admitted without a cell. Normal script startup refuses.
+
+Release-critical paths under pr-scope-guard SENSITIVE_RE (3, cap 8): `Dockerfile`,
+`deploy/role_launcher.py`, `deploy/role_egress_migration.py`. Additionally reviewed
+security-sensitive files: `scripts/check_privileged_chain.py`, the two role oracle
+scripts, `tinyassets/broker/fence.py`, `tinyassets/broker/process.py`, and
+`tinyassets/storage/outbound_connections.py`. Generated plugin copies accompany
+the three canonical runtime files.
+
+D17 follows an actual production-image failure: chmod without target-group
+membership silently cleared the setgid bit. The migration now uses its existing
+SETGID authority temporarily around fchmod and asserts uid/gid/mode readbacks;
+the oracle uses that helper for IPC setup and asserts private parent mode 2700.
+No CAP_FSETID or new retained privilege is added.
+
+No task 2.1-2.8 is newly checked complete. Remaining: real daemon spawn/environment
+and CMD integration; every actual engine class/cell and daemon reader matrix;
+all D11 authenticated ledger/accounting/refresh/deletion/backup consumers;
+in-memory supervisor replacement and removal of the legacy token path;
+full role migration and D10 deletion/reverse migration; actual broker streams,
+old-image rollback, ta-op/compose capability parity and healthcheck acceptance.
+Startup activation awaits all required proofs. No PR or deployment.
+
+One cross-family review via peer-agents returned ADAPT. **AGREE**: a deeply
+nested JSON packet can raise RecursionError on Python 3.11 and escape the
+malformed-request refusal. Catch it explicitly and add the 2200-byte nesting
+fixture to the production oracle. Reviewer agreed with capability retirement,
+exact-pid peer binding, descriptor refusal, socket modes, lifecycle, durable
+generation, logical-root separation and continued startup refusal. Readiness
+was subsequently strengthened from fresh socket metadata to an actual connection
+whose SO_PEERCRED must match the spawned broker pid/uid/gid. No second round.
+
+Oracle diagnostic correction: rejecting a wrong-pid peer before reading its
+request may produce AF_UNIX connection reset instead of a delivered REFUSED
+packet. The probe accepts only that reset/broken-pipe or explicit REFUSED as
+denial; timeout and successful replies still fail. This does not change the peer
+gate, read any unauthenticated request or weaken an existing test.
+
+## D16-D17 verification receipt (2026-10-04 local / 2026-10-05 UTC)
+
+Production Dockerfile image:
+`sha256:badccc57b43762c61b1750a7fc8be7b98d24902a4c3d5257457f584c04a7950d`.
+Final command `python scripts/linux_oracle.py --production-image tinyassets-uid-launcher:d16 --build`
+exited 0. Earlier failing iterations found the setgid mode, wrong-pid denial
+transport interpretation, procfs directory inference and readiness/reaper race
+described here; none is counted as a pass.
+
+Executed container command (no host mounts/network; the planned seven entry
+capabilities and compose security options):
+```
+docker run --rm --network none --user 0:0 --cap-drop ALL --cap-add CHOWN --cap-add DAC_OVERRIDE --cap-add FOWNER --cap-add SETUID --cap-add SETGID --cap-add SETPCAP --cap-add KILL --security-opt no-new-privileges=true --security-opt seccomp=unconfined --security-opt apparmor=unconfined --security-opt systempaths=unconfined --entrypoint /opt/venv/bin/python sha256:badccc57b43762c61b1750a7fc8be7b98d24902a4c3d5257457f584c04a7950d -I -B /app/scripts/role_image_oracle.py
+```
+Output (the full acceptance statements; no skips):
+```
+privileged chain: PASS (root owners, protected ancestors and link targets)
+non-root/writable descendant module chain refusal: PASS
+identity uid=1001 groups=[] caps=all-zero nnp=1
+image accounts, immutable paths, writable HOME, unprivileged bwrap: PASS
+overlapping consent migration refused without mutation: PASS
+broker private directory ownership/setgid readbacks without FSETID: PASS
+forward dry-run, apply, repeat; service remains unadmitted: PASS
+identity uid=1002 groups=[1102] caps=all-zero nnp=1
+broker actual ConnectionLedger existing/fresh writes and proxy mkdir: PASS
+identity uid=1001 groups=[1100, 1101, 1102] caps=all-zero nnp=1
+identity uid=1003 groups=[1100] caps=all-zero nnp=1
+direct daemon/engine-identity private path denials: PASS (not class acceptance)
+identity uid=1001 groups=[] caps=all-zero nnp=1
+reverse dry-run/apply/repeat and uid-1001 old-location writes: PASS
+forward/reverse abrupt-exit checkpoint and rename recovery: PASS (6 boundaries)
+symlink/hardlink/FIFO/conflicting-copy refusal without mutation: PASS
+launcher migration-capability retirement/readback and pre-bind refusal: PASS
+launcher exact-pid, malformed/oversized/SCM_RIGHTS/static-operation refusals: PASS
+launcher broker uid=1002; socket=1002:1101/0660; daemon fences without disk token: PASS
+launcher broker crash/restart preserves in-memory owner fence: PASS
+privileged chain: PASS (root owners, protected ancestors and link targets)
+broker caps=all-zero nnp=1 non-dumpable; no received-fd leak; cross-uid shutdown: PASS
+launcher wrong-uid filesystem refusal; actual broker creates private ledger: PASS
+LAUNCHER/BROKER SUBSTEP ONLY: real daemon CMD, streams/accounting, engine classes pending
+FOUNDATION/EGRESS SUBSTEP ONLY: launcher, IPC, real engine classes, full rollback pending
+```
+
+The relocation dry-runs preserve content/metadata; forward/reverse repeat is a
+no-op and six abrupt-exit boundaries resume. This remains **egress rollback**,
+not full role rollback or actual old-image startup. D10 deletion is not yet
+implemented or proven. The trusted oracle daemon fixture is explicit; it does
+not replace the actual engine-class or real daemon acceptance requirements.
+
+Other exact verification commands/results:
+```
+python -m pytest tests/test_role_launcher.py tests/test_broker_fence.py tests/test_broker_relocated_paths.py -q
+17 passed
+python -m pytest tests/test_role_launcher.py tests/test_broker_fence.py tests/test_broker_relocated_paths.py tests/test_broker_server.py tests/test_broker_process.py tests/test_dockerfile_shape.py tests/test_linux_oracle.py -q
+75 passed, 27 skipped (Windows; not kernel acceptance)
+python -m pytest tests/test_outbound_connection_ledger.py tests/test_broker_supervisor.py tests/test_platform_secret_scope.py -q
+48 passed, 32 skipped (Windows)
+python scripts/linux_oracle.py -- tests/test_role_launcher.py tests/test_broker_fence.py tests/test_broker_relocated_paths.py tests/test_broker_server.py tests/test_broker_process.py tests/test_broker_supervisor.py tests/test_outbound_connection_ledger.py tests/test_privileged_chain.py -q
+75 passed, zero skips
+python scripts/linux_oracle.py -- tests/test_outbound_http_connection.py tests/test_outbound_effect_boundary.py tests/test_outbound_proxy_startup_diagnosis.py tests/test_broker_scan.py tests/test_broker_upstream_stream.py tests/test_request_budget_broker.py tests/test_platform_secret_scope.py tests/test_dockerfile_shape.py tests/test_linux_oracle.py -q
+295 passed, 17 skipped (skips are not acceptance)
+python -m ruff check deploy/role_egress_migration.py deploy/role_launcher.py scripts/role_launcher_oracle.py scripts/role_image_oracle.py scripts/check_privileged_chain.py tinyassets/broker/fence.py tinyassets/broker/process.py tinyassets/storage/outbound_connections.py tests/test_role_launcher.py tests/test_broker_fence.py tests/test_broker_relocated_paths.py
+All checks passed!
+python -m ruff check --output-format concise
+55 pre-existing errors, all outside changed files
+python packaging/claude-plugin/build_plugin.py
+Import probe: probe-ok
+python scripts/check_mirror_parity.py
+mirror-parity: all 596 canonical file(s) mirror-matched
+openspec validate per-role-uid-split --strict
+Change 'per-role-uid-split' is valid
+git diff --check
+exit 0
+```
+No affected test file matches .github/heavy-test-files.txt. Existing test names
+and assertions are retained. Commit/hygiene/push receipt follows after commit.
+
+The crash probe exposed a readiness/reaper race: a START_BROKER arriving during
+broker exit could reap the child inside readiness, hiding the restart event
+from the lifecycle loop. Readiness now uses waitid(WNOWAIT); only poll reaps and
+counts a restart. The same crash/restart assertion remains in the oracle.
+The non-dumpability probe checks the protected environ inode and attempts a
+same-uid read; /proc/pid directory ownership alone was an incorrect inference.
+
+# Previous delivery: D12 relocation and implementation
 
 Starting HEAD `5ecf0ec8fb`; fast-forward pull was already current; clean worktree.
 OpenSpec admission: ALLOWED. D12 accepts the lead relocation decision. D13 uses

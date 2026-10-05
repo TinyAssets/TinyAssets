@@ -37,11 +37,12 @@ from tinyassets.broker.ops import OpStore
 from tinyassets.broker.server import OWNER, BrokerServer
 
 
-def lease_verifier(proof_sha256: str, owner_generation: int):
+def lease_verifier(proof_sha256: str, owner_generation: int | None = None):
     expected = bytes.fromhex(proof_sha256)
 
     def verify(generation: int, proof: str) -> bool:
-        if generation != owner_generation or not isinstance(proof, str):
+        if (owner_generation is not None and generation != owner_generation) \
+                or not isinstance(proof, str):
             return False
         return hmac.compare_digest(hashlib.sha256(proof.encode("utf-8")).digest(), expected)
 
@@ -51,8 +52,10 @@ def lease_verifier(proof_sha256: str, owner_generation: int):
 class _Dispatchers:
     """One trusted dispatcher per grant, built from the ledger's own config."""
 
-    def __init__(self, data_root: Path, *, allow_test_fixtures: bool) -> None:
+    def __init__(self, data_root: Path, *, allow_test_fixtures: bool,
+                 role_split: bool = False) -> None:
         self._data_root = data_root
+        self._ledger_root = data_root / ".broker" if role_split else data_root
         self._allow_test_fixtures = allow_test_fixtures
         self._cache: dict[str, Any] = {}
         self._lock = threading.Lock()
@@ -60,7 +63,7 @@ class _Dispatchers:
     def ledger_for(self, principal: str):
         from tinyassets.storage.outbound_connections import ConnectionLedger
 
-        return ConnectionLedger(self._data_root / "outbound.db",
+        return ConnectionLedger(self._ledger_root / "outbound.db", data_root=self._data_root,
                                 allow_test_fixtures=self._allow_test_fixtures,
                                 verify_authenticated_principal=lambda: principal)
 
@@ -86,20 +89,38 @@ async def serve(args: argparse.Namespace) -> None:
     from tinyassets.storage.outbound_connections import _sanitize_child_environment
 
     _sanitize_child_environment()  # no TLS key logging, no ambient proxies
+    role_split = getattr(args, "role_split", False)
+    if role_split:
+        import ctypes
+
+        fields = dict(line.split(":", 1) for line in Path(
+            "/proc/self/status").read_text().splitlines())
+        if (os.getresuid() != (1002, 1002, 1002)
+                or os.getresgid() != (1002, 1002, 1002) or os.getgroups() != [1102]
+                or any(int(fields[key], 16) != 0 for key in
+                       ("CapInh", "CapPrm", "CapEff", "CapBnd", "CapAmb"))
+                or int(fields["NoNewPrivs"]) != 1):
+            raise RuntimeError("broker role identity is not retired")
+        libc = ctypes.CDLL(None, use_errno=True)
+        if libc.prctl(4, 0, 0, 0, 0) != 0 or libc.prctl(3, 0, 0, 0, 0) != 0:
+            raise RuntimeError("broker non-dumpability failed")
+        os.umask(0o077)  # private SQLite journals and proxy runtime files
     state = Path(args.state)
     state.mkdir(parents=True, exist_ok=True, mode=0o700)
     dispatchers = _Dispatchers(Path(args.data_root),
-                               allow_test_fixtures=args.allow_test_fixtures)
+                               allow_test_fixtures=args.allow_test_fixtures,
+                               role_split=role_split)
     server = BrokerServer(
         ledger_for=dispatchers.ledger_for, dispatch_for=dispatchers.dispatch_for,
         ops=OpStore(state / "ops.db"),
         fence=Fence(state / "fence.json",
-                    verify_lease_proof=lease_verifier(args.proof_sha256, args.generation)),
+                    verify_lease_proof=lease_verifier(args.proof_sha256, args.generation),
+                    lease_sha256=args.proof_sha256 if role_split else None),
         roles={int(args.owner_uid): OWNER},
     )
     socket_path = Path(args.socket)
     socket_path.unlink(missing_ok=True)
-    old_umask = os.umask(0o177)  # the socket is created 0600
+    old_umask = os.umask(0o117 if role_split else 0o177)
     try:
         listener = await server.serve(socket_path)
     finally:
@@ -119,9 +140,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--data-root", required=True)
     parser.add_argument("--owner-uid", required=True, type=int)
     parser.add_argument("--proof-sha256", required=True)
-    parser.add_argument("--generation", required=True, type=int)
+    parser.add_argument("--generation", type=int)
+    parser.add_argument("--role-split", action="store_true")
     parser.add_argument("--allow-test-fixtures", action="store_true")
-    asyncio.run(serve(parser.parse_args(argv)))
+    args = parser.parse_args(argv)
+    if args.role_split and args.generation is not None:
+        parser.error("the broker allocates its generation under the role split")
+    if not args.role_split and args.generation is None:
+        parser.error("legacy broker startup requires --generation")
+    asyncio.run(serve(args))
     return 0
 
 
