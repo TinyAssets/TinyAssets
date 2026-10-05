@@ -1,8 +1,8 @@
 # Run the browser proof and the required shards in the Linux oracle
 
-Status: **local candidate, awaiting execution authorization.** Nothing here has
-run in CI. The only authorized execution so far was the one-off trial #4398,
-which explicitly excluded this permanent migration.
+Status: **implementation merged in #4316**, authorized in comment5984775429;
+selective merge-group proof and final gate review remain pending. See `tasks.md`
+for the successful full-surface and browser runs.
 
 ## Why
 
