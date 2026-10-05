@@ -1,7 +1,7 @@
 ## ADDED Requirements
 
 ### Requirement: Connection routes are general shapes inline in chat
-The system SHALL support MCP attachment shapes through the existing bound inline connection request and continuation mechanism, alongside generic OAuth/HTTP. It SHALL NOT require per-platform code, a directory entry or a platform LLM. The owner SHALL control route and approval policy; cross-user isolation SHALL remain the sole immutable platform behavioral invariant. Credentials SHALL remain daemon-side by default, with only explicit owner-approved stdio injection into that owner's jail permitted.
+The system SHALL support MCP attachment shapes through the existing bound inline connection request and continuation mechanism, alongside generic OAuth/HTTP. It SHALL NOT require per-platform code, a directory entry or a platform LLM. The owner SHALL control route and approval policy; cross-user isolation SHALL remain the sole immutable platform behavioral invariant. Credentials SHALL remain daemon-side by default, with only explicit owner-approved stdio injection into that server's separate owner-bound sandbox permitted.
 
 #### Scenario: An unknown service is requested
 - **WHEN** the owner asks to connect a service with a compatible MCP endpoint but no platform registration
@@ -16,12 +16,21 @@ The system SHALL support MCP attachment shapes through the existing bound inline
 ### Requirement: MCP attachments share existing connection authority
 MCP attachments SHALL use typed owner-scoped connection metadata and current use grants, remote HTTP custody or jailed stdio, negotiated initialization/list/call transport and ta names `mcp:<attachment-id>:<tool-name>`. Configuration, session and tool-catalog revisions SHALL be bound to connection incarnations. Untrusted server metadata SHALL NOT create authority. Stale/revoked calls SHALL fail before dispatch, and uncertain external calls SHALL NOT be blindly replayed.
 
-HTTP streaming SHALL use broker-streaming-contract's incremental scanning, cancellation, backpressure and reconciliation. Credentialed stdio SHALL default to broker injection. The owner SHALL be able to opt in to named own-key injection for an exact server configuration revision after a protected warning that server code can read the key. This grant SHALL NOT include other owners' secrets, survive configuration changes or be exported in packages.
+HTTP streaming SHALL use broker-streaming-contract's incremental scanning, cancellation, backpressure and reconciliation. Credentialed stdio SHALL default to broker injection. The owner SHALL be able to opt in to named own-key injection for an exact server configuration revision after a protected warning naming the exact server code and its author as the only parties that can read/use the injected key. The raw-key server SHALL run in its own sandbox with a separate process, user identity and filesystem view. The agent shell, hooks and other extensions SHALL reach it only over its mediated stdio pipe, with no access to its /proc entries, environment, arguments or files. Both stdout and stderr SHALL pass through the egress broker's incremental secret scanner, including secret bytes split across chunks, before reaching model context, logs or transcript. Matching bytes SHALL be withheld with a credential-free typed failure. This grant SHALL NOT include other owners' secrets, survive configuration changes or be exported in packages.
 
 #### Scenario: A stdio server requires a raw key
 - **WHEN** the owner explicitly permits named own-key injection into that exact server revision
-- **THEN** only that key is injected into the bound owner's jailed process
+- **THEN** only that key is injected into that server's separate owner-bound sandbox
 - **AND** without that opt-in the broker-only default remains and the card offers the owner the choice instead of declaring the server permanently unsupported
+
+#### Scenario: Other code cannot inspect a raw-key server
+- **WHEN** the agent shell or an activated extension from another author attempts to read the raw-key server's /proc entries, environment, arguments or files
+- **THEN** sandbox isolation denies access and the only communication path is the mediated stdio pipe
+- **AND** neither the agent nor the unrelated extension receives the injected key
+
+#### Scenario: A raw-key server echoes its credential
+- **WHEN** the server emits injected secret bytes on stdout or stderr, including bytes split across chunks
+- **THEN** the reused egress broker scanner withholds those bytes before any model context, log or transcript sink receives them and reports a credential-free typed failure
 
 #### Scenario: Streaming splits credential bytes
 - **WHEN** a broker-authenticated response splits a key across frames
@@ -34,7 +43,7 @@ HTTP streaming SHALL use broker-streaming-contract's incremental scanning, cance
 
 #### Scenario: A local server is activated
 - **WHEN** the owner permits an exact stdio executable/argv/cwd configuration
-- **THEN** it runs only in the bound owner's jail with its scoped grant and no inherited daemon credentials
+- **THEN** it runs only in the bound owner's sandbox with its scoped grant and no inherited daemon credentials, using a separate sandbox when raw-key injection is opted in
 - **AND** failure to start reports an error rather than executing on the host
 
 #### Scenario: Attachment IDs or sessions are copied between owners
@@ -62,7 +71,7 @@ Remote MCP SHALL support protected-resource and authorization-server metadata di
 - **THEN** the generic OAuth path connects it without platform code and without forwarding another resource's token
 
 ### Requirement: Private secret entry shares egress custody
-Protected secret entry SHALL deposit directly into custody; the broker SHALL inject only the bound connection's allowlisted slots and destination/method/path. Broker-only custody SHALL be the default; only the exact owner-approved stdio raw-key opt-in below permits scoped jail injection.
+Protected secret entry SHALL deposit directly into custody; the broker SHALL inject only the bound connection's allowlisted slots and destination/method/path. Broker-only custody SHALL be the default; only the exact owner-approved stdio raw-key opt-in above permits injection into the server's separate sandbox.
 
 #### Scenario: A connector requests another connection's credential
 - **WHEN** code requests a slot outside its owner's granted connection incarnation

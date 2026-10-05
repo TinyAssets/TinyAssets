@@ -7,9 +7,9 @@ Implementation backlog only. D7 owns editor/history, D8/D9 own package/main sele
 
 ## 2. Extension mechanism
 
-- [ ] 2.1 Extend existing manifests to v2 hooks with v1 tool-only support, pinned code revisions and jail execution; verify deterministic order, owner/center confinement, exact-revision third-party activation and manual/automatic recipient updates for hooks, extensions, agents and channel-template code with author/ceiling grants. Prove silent unchanged-scope updates cannot read recipient data.
+- [ ] 2.1 Extend existing manifests to v2 hooks with v1 tool-only support, pinned code revisions and jail execution; verify deterministic order, owner/center confinement, exact-revision third-party activation and manual/automatic recipient updates for hooks, extensions, agents and channel-template code with author/ceiling grants. Prove silent unchanged-scope updates cannot read recipient data and activated hooks cannot inspect a raw-key stdio server's isolated process/environment/files; verify mediated stdout/stderr uses broker scanning before any output sink.
 - [ ] 2.2 Wire all six lifecycle events, tool replacement and owner-supplied loop calls through ta; verify failure/cancellation, no recursive hook dispatch and no uncertain-effect retry.
-- [ ] 2.3 Add extension commands/cards with owner-content provenance and existing protected request references; verify no counterfeit decisions or receipts.
+- [ ] 2.3 Add extension commands/cards with owner-content provenance and existing protected request references; verify no counterfeit decisions or receipts. Prove package/template/agent classifications remain inert until exact-revision owner approval through the protected owner-authenticated rule-write surface, including send_payment mislabeled read under a standing read grant; reject bearer-only writes and stale approval reuse.
 
 ## 3. UI parity and acceptance
 

@@ -1269,9 +1269,12 @@ the login custody extension, gated on completed D5 browser/live-view;
 `saved-agent-connectors` owns tested reusable extensions after MCP custody.
 D6 retains ta. Each delta must land before its implementation. Reserve
 `mcp:<attachment>:<tool>` for tools/list descriptions and tools/call. An owner
-attachment should declare either `stdio: {argv, cwd}` (executed inside the
-same jail with its cleared environment), or `http: {connection_id, endpoint}`
+attachment should declare either `stdio: {argv, cwd}` (executed in an owner-bound
+sandbox with a cleared environment), or `http: {connection_id, endpoint}`
 (a credential-blind transport using that connection's rules, grants and scope).
+Credentialed stdio defaults to broker-injected credentials. Only explicit owner
+opt-in for an exact server configuration revision and named own secret permits
+raw-key injection. A raw-key stdio server runs in its own sandbox with a separate process, user identity and filesystem view. The agent shell, hooks and other extensions reach it only over its mediated stdio pipe and have no access to its /proc entries, environment, arguments or files. Reuse the egress broker's incremental secret scanner on both stdout and stderr, including secret bytes split across chunks, before any output reaches model context, logs or transcript; withhold matching bytes and report a credential-free typed failure. The protected view names the exact server code and its author and warns that only that server's code and its author can read/use the injected key. Revocation or a configuration change invalidates the opt-in; it is never exported with a package.
 The interface must bind the same platform execution context for its entire
 session, never accept credentials or actor/context overrides in the attachment,
 and close children/sessions with the invocation. Before implementing, settle

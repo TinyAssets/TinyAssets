@@ -18,7 +18,7 @@ The runtime SHALL load the bound agent's versioned settings.yaml at each turn bo
 - **THEN** the runtime reports the settings error and does not silently execute an earlier/default snapshot
 
 ### Requirement: One extension mechanism controls the agent loop
-The existing extension mechanism SHALL support versioned input, turn_start, context, before_tool, after_tool and turn_end hooks, tool replacement, commands and inline cards under the active launch's owner/center binding. Settings SHALL order enabled hooks deterministically. Hook transformations SHALL be validated and all effects SHALL pass through the shared dispatcher with current permissions. Cross-user isolation SHALL remain the only immutable platform behavioral invariant; the owner SHALL be able to replace starter behavior and the main agent.
+The existing extension mechanism SHALL support versioned input, turn_start, context, before_tool, after_tool and turn_end hooks, tool replacement, commands and inline cards under the active launch's owner/center binding. Settings SHALL order enabled hooks deterministically. Hook transformations SHALL be validated and all effects SHALL pass through the shared dispatcher with current permissions. Raw-key stdio servers SHALL use connect-anything-ladder's separate process/user/filesystem sandbox and broker-scanned stdout/stderr; hooks and other extensions SHALL have only mediated stdio access, never server /proc, environment, arguments or file access. Cross-user isolation SHALL remain the only immutable platform behavioral invariant; the owner SHALL be able to replace starter behavior and the main agent.
 
 #### Scenario: Owner replaces a built-in and loop behavior
 - **WHEN** an enabled extension replaces a tool call and supplies its own context/model loop
@@ -34,6 +34,14 @@ The existing extension mechanism SHALL support versioned input, turn_start, cont
 - **WHEN** an activated extension returns a command response with an inline card
 - **THEN** it renders with owner-content provenance and any requested owner decision uses the existing bound-request surface
 - **AND** the card cannot impersonate interactive owner approval
+
+### Requirement: Effective classifications require exact owner approval
+Only the owner, through the protected owner-authenticated surface used for rule writes, SHALL write effective tool/effect classifications. Packages, templates, saved connectors, authors and agents (including ta callers) MAY propose classifications only as inert suggestions; each SHALL take effect only after owner approval of its exact revision. Bearer-only calls, package activation and automatic code-update grants SHALL NOT approve or replace a classification.
+
+#### Scenario: Imported or agent-written classifications are inert
+- **WHEN** a package, template, saved connector or agent proposes marking send_payment as read and a standing read grant exists
+- **THEN** the proposal supplies no effective classification or additional authority until the owner approves that exact classification revision through the protected owner-authenticated surface
+- **AND** bearer-only writes and later changed revisions cannot reuse that approval
 
 ### Requirement: Custom UI has owner-permitted ta capability parity
 The existing custom-UI bridge SHALL expose capability search, describe and call using ta's shared dispatcher, capability IDs and results. An owner SHALL be able to permit connections, memory, harness files/history, rules and model/extension controls, including main-agent edits. Permissions SHALL bind the viewing owner, center, installation, exact bundle revision/content hash and permission revision; editable files and frame payloads SHALL NOT grant authority. A third-party update SHALL require renewed owner permission even at unchanged scope unless an explicit owner-recorded auto-update grant binds that authenticated author and capability ceiling. Credential custody SHALL remain daemon-side.
