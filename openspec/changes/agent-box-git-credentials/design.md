@@ -87,3 +87,24 @@ existing checkouts remain intact. No schema migration in this delivery.
 Future implementation must select the exact binary IPC frame shape and prove
 bounded streaming and revocation under backpressure. This is the reason for
 proposal-only status, not authorization to ship a partial credential route.
+
+## Delivery evidence (2026-10-05, draft PR #4485)
+
+- Linux oracle: 122 passed, no skips, including all five developer probes plus
+  box tools, egress, real jail isolation/resource tests and Dockerfile shape.
+  Public clone was enabled with `--env TA_DEV_PUBLIC_PROBE=1`.
+- Windows: 82 passed, 18 platform skips; these skips are not Linux proof.
+- Exact pinned production base image: `/usr/local/bin/python -m pytest --version`
+  fails with `No module named pytest`; installing the Dockerfile's pytest 8.4.2
+  into that interpreter makes a small pytest project pass. Full production image
+  build/deployment remains unverified; oracle already contains dev dependencies.
+- Synthetic smart HTTP: host control clone/push/fetch succeeds; registered-grant
+  jail clone/fetch/push each exit 128 at authentication, server sees no auth.
+  This proves the gap, not successful broker injection. No real private repo or
+  remote push was used for verification.
+- Ruff clean; OpenSpec strict validation passed; mirror parity 601/601;
+  hygiene 6 added, 0 removed, 0 tampering.
+- Cross-family review via peer-agents (Claude), exit 0, VERDICT: APPROVE.
+  AGREE: no floor/correctness findings; no assertion or isolation relaxation.
+- No deployment or real-user app pass claimed. The remaining credential tasks
+  and production `/cc` integration are intentionally open.

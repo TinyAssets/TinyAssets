@@ -4,7 +4,7 @@
   large exact edit, branch/merge/conflict/rebase, and persistence in Linux.
 - [x] 1.2 Install pytest on the production jail's Python, separately from the
   daemon venv; preserve existing isolation and resource limits.
-- [ ] 1.3 Complete synthetic authentication failure proof, Windows/Linux checks,
+- [x] 1.3 Complete synthetic authentication failure proof, Windows/Linux checks,
   ruff, hygiene and draft review; record evidence in the PR body.
 
 ## 2. Proposed credential route (not authorized for implementation in this lane)
