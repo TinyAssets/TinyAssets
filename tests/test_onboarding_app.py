@@ -2336,7 +2336,11 @@ def test_a_message_delivered_while_away_is_not_restored(tmp_path):
     ({"inflightAgeMin": 1}, False),               # a turn being served: hold
     ({"inflightAgeMin": 70}, False),              # a raised per-universe cap: still hold
     ({"inflightAgeMin": 200}, True),              # past any cap: a dead fetch; reload
-    ({"pendingAgeMin": 5}, False),                # a failed message waiting: hold
+    ({"pendingAgeMin": 1}, False),                # a failed message just shown: hold
+    # #4479: a deploy restart is what fails a turn mid-reply; the message is
+    # kept in the in-flight record and offered back after the reload, so the
+    # old page is not held on screen for twenty minutes.
+    ({"pendingAgeMin": 5}, True),
     ({"pendingAgeMin": 25}, True),                # abandoned: update
 ])
 def test_the_build_check_holds_for_a_live_turn_but_never_forever(tmp_path, scenario, reloads):
@@ -2344,6 +2348,112 @@ def test_the_build_check_holds_for_a_live_turn_but_never_forever(tmp_path, scena
     case = {"kind": "build", "liveBuild": "b2", **scenario}
     out = _run_app(tmp_path, case)
     assert out["reloaded"] is reloads, case
+
+
+_RECOVERY_PROBE = r"""
+let reloaded=0; const location={reload:()=>{ reloaded++; }};
+const listeners=[];
+const store={};
+const sessionStorage={getItem:k=>(k in store?store[k]:null),
+  setItem:(k,v)=>{store[k]=String(v);}, removeItem:k=>{delete store[k];}};
+const inserted=[];
+const document={
+  addEventListener:(type,fn,capture)=>listeners.push({type,fn,capture}),
+  createElement:(tag)=>({tagName:tag.toUpperCase(),attrs:{},children:[],textContent:"",
+    setAttribute(k,v){this.attrs[k]=v;},appendChild(c){this.children.push(c);}}),
+  body:{firstChild:null,insertBefore:(n)=>inserted.push(n)},
+};
+const console={error:()=>{}};
+const CFG={build:"b1"};
+__LISTENER__
+__BOOT_FAILED__
+const click=(id,attrs)=>{
+  const el={id,attrs:attrs||{}};
+  const target={closest:(sel)=>{
+    for(const part of sel.split(",")){
+      if(part==="#"+id) return el;
+      if(part.startsWith("[")&&(part.slice(1,-1) in el.attrs)) return el;
+    }
+    return null;
+  }};
+  let stopped=false;
+  for(const l of listeners) if(l.type==="click") l.fn({target,
+    preventDefault(){},stopPropagation(){stopped=true;}});
+  return stopped;
+};
+const out={};
+out.capture=listeners.every(l=>l.capture===true);
+click("btn-page-reload",{"data-ta-reload":""}); out.reloadClick=reloaded;
+click("btn-chat-browse"); out.browseBeforeWired=reloaded;
+switchWired=true;
+out.browseStoppedAfterWired=click("btn-chat-browse"); out.browseAfterWired=reloaded;
+click("btn-page-reload",{"data-ta-reload":""}); out.reloadAfterWired=reloaded;
+reloaded=0;
+out.first=bootFailed(new Error("x")); out.firstReloads=reloaded;
+out.second=bootFailed(new Error("x")); out.secondReloads=reloaded;
+out.box=inserted.length===1?{role:inserted[0].attrs.role,text:inserted[0].textContent,
+  button:inserted[0].children[0].attrs}:null;
+console.log=undefined;
+process.stdout.write(JSON.stringify(out));
+"""
+
+
+def _recovery_probe() -> dict:
+    """Run the page's recovery listener and boot-failure handler under node."""
+    import json
+    import os
+    import shutil
+    import subprocess
+    from pathlib import Path
+
+    node = shutil.which("node")
+    if not node:  # pragma: no cover - environment dependent
+        if os.environ.get("TINYASSETS_SKIP_JS_PROBE_TESTS"):
+            pytest.skip("node absent; skip explicitly requested via env")
+        pytest.fail("node executable not found")
+    html = (Path(onboarding.__file__).parent / "app.html").read_text(encoding="utf-8")
+    listener = html.split("  let switchWired=false;", 1)[1].split(
+        "  // Server-injected config", 1)[0]
+    script = (_RECOVERY_PROBE
+              .replace("__LISTENER__", "let switchWired=false;\n" + listener)
+              .replace("__BOOT_FAILED__", _js_function(html, "bootFailed")))
+    done = subprocess.run([node, "-e", script], capture_output=True, text=True, timeout=60)
+    assert done.returncode == 0, done.stderr
+    return json.loads(done.stdout)
+
+
+def test_the_reload_control_by_the_bubble_always_reloads():
+    """#4479 (founder, 2026-10-05): whatever broke, the controls by the chat
+    bubble must work. Reload is in the always-visible row beside the switcher,
+    not in the menu, and is handled by a capture listener installed before
+    anything else in the script runs."""
+    from pathlib import Path
+
+    html = (Path(onboarding.__file__).parent / "app.html").read_text(encoding="utf-8")
+    row = html.split('<div class="chat-discovery">', 1)[1].split("</div>", 1)[0]
+    assert 'id="btn-chat-browse"' in row
+    assert 'id="btn-page-reload"' in row and "data-ta-reload" in row
+    script = html.split('<script nonce="__TA_NONCE__">', 1)[1]
+    assert script.index("let switchWired=false;") < script.index("const CFG =")
+    out = _recovery_probe()
+    assert out["capture"] is True
+    assert out["reloadClick"] == 1
+    # Before AppUI.init wired it, the switcher may be dead: it reloads instead.
+    assert out["browseBeforeWired"] == 2
+    # Once wired, the switcher is left to its own handler.
+    assert out["browseStoppedAfterWired"] is False and out["browseAfterWired"] == 2
+    assert out["reloadAfterWired"] == 3
+
+
+def test_a_page_that_fails_to_start_reloads_once_then_shows_recovery():
+    """#4479: a failed start reloads by itself once per build (no loop), then
+    says so with a Reload control that the recovery listener handles."""
+    out = _recovery_probe()
+    assert out["first"] == "reloaded" and out["firstReloads"] == 1
+    assert out["second"] == "shown" and out["secondReloads"] == 1
+    assert out["box"]["role"] == "alert"
+    assert "could not start" in out["box"]["text"]
+    assert "data-ta-reload" in out["box"]["button"]
 
 
 def test_an_unconfirmed_message_survives_a_reload_and_says_so():

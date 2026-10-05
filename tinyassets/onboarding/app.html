@@ -438,7 +438,11 @@
       <div id="ui-frame-host" hidden></div>
       <section id="chat-cloud" class="chat-cloud" data-agent="main" data-mode="open"
                aria-label="Chat with your agent">
-      <div class="chat-discovery"><button id="btn-chat-browse" class="btn btn--link" type="button">Browse / Switch command centers</button></div>
+      <div class="chat-discovery"><button id="btn-chat-browse" class="btn btn--link" type="button">Browse / Switch command centers</button>
+        <!-- Always works (#4479): handled by the recovery listener at the top
+             of the script, which depends on nothing that boot sets up. -->
+        <button id="btn-page-reload" class="btn btn--link" type="button" data-ta-reload
+                title="Reload the app">Reload</button></div>
       <div id="ui-install-receipt" role="status" aria-live="polite" hidden></div>
       <div id="chat-cloud-bar" class="chat-cloud-bar" tabindex="0"
            aria-label="Chat window. Arrow keys move it; Shift and arrow keys resize it."
@@ -838,6 +842,23 @@
 
   <script nonce="__TA_NONCE__">
   "use strict";
+  // ---- recovery controls (#4479) -------------------------------------------
+  // The controls by the chat bubble must work whatever broke: a command
+  // center, a deploy, or this page's own start-up. So they are handled HERE,
+  // before anything else runs, by one capture-phase listener on the document
+  // that needs nothing boot() sets up. Reload always reloads the page. Until
+  // AppUI.init has wired the switch control it may be dead, so it reloads
+  // too: a fresh page is the way back to a switcher.
+  // (On 2026-10-05 a deploy mid-turn left the founder's page stuck until a
+  // hard reload; a user should never need to know that trick.)
+  let switchWired=false;
+  document.addEventListener("click",(ev)=>{
+    const el=ev.target&&ev.target.closest?ev.target.closest("[data-ta-reload],#btn-chat-browse"):null;
+    if(!el) return;
+    if(el.id==="btn-chat-browse"&&switchWired) return;
+    ev.preventDefault(); ev.stopPropagation();
+    location.reload();
+  },true);
   // Server-injected config (client_id, AuthKit endpoints, resource). Public values only.
   const CFG = window.__TA_ONBOARDING__ || __TA_ONBOARDING_CONFIG__;
   const TOKEN_KEY = "ta_access_token";
@@ -10144,7 +10165,9 @@
     window.addEventListener("online",resumeUnconfirmedTurns);
     window.addEventListener("focus",resumeUnconfirmedTurns);
     window.addEventListener("pagehide",()=>Voice.stop(false));
-    setInterval(checkForNewBuild, 10*60*1000);
+    // Every 2 minutes (a HEAD request): after a deploy the page should not sit
+    // on the old build for up to ten (#4479).
+    setInterval(checkForNewBuild, 2*60*1000);
   }
 
   // The desktop app loads this page once at startup; without this a user could keep
@@ -10153,6 +10176,9 @@
   // Never reloads mid-typing: only when nothing is being entered in a field.
   async function checkForNewBuild(){
     if(!CFG.build) return;
+    // Long enough to read the failure and press Resend; short enough that a
+    // turn a deploy cut off does not keep the old page up.
+    const BUILD_FAILED_HOLD_MS=2*60*1000;
     // Every hold is asked TWICE: before the probe and again when it answers.
     // The probe can take seconds (a tab waking from sleep reopens its
     // connections), and a founder who started typing and sent in the meantime
@@ -10171,10 +10197,13 @@
     // settles is cut by the proxy long before that, so the bound only has to
     // exist, not be tight. Past it a reload IS the recovery - the message
     // survives in the in-flight record and is offered back after it. A failed
-    // message holds the update ~20 minutes (plus at most one 10-minute tick).
+    // message holds the update only BUILD_FAILED_HOLD_MS (#4479): a deploy
+    // restart is exactly what fails a turn mid-reply, so a long hold kept the
+    // broken page on screen for most of half an hour. Reloading loses nothing:
+    // the message is in the in-flight record and is offered back after it.
       if($("btn-send").disabled && (Date.now()-turnStartedAt) < 3*60*60*1000) return true;
       const pending=readInflight();
-      if(!$("btn-send").disabled && pending && (Date.now()-(pending.ts||0)) < 20*60*1000) return true;
+      if(!$("btn-send").disabled && pending && (Date.now()-(pending.ts||0)) < BUILD_FAILED_HOLD_MS) return true;
       return false;
     };
     if(held()) return;
@@ -10190,7 +10219,7 @@
   async function boot(){
     const modelCallback=HostedModelConnect.takeCallback();
     wire();
-    if(typeof AppUI!=="undefined") AppUI.init();
+    if(typeof AppUI!=="undefined"){ AppUI.init(); switchWired=true; }
     HostedModelConnect.wire();
     wireNativeReturn();
     // A vendor sign-in card once kept a verifier here; nothing reads it now.
@@ -10206,7 +10235,29 @@
     }
     startSessionKeepAlive();
   }
-  boot();
+  // A page that failed to start is not left blank (#4479). The first failure
+  // for a build reloads once by itself (a reload is usually the fix, e.g. a
+  // half-applied deploy); a second failure on the same build does not loop, it
+  // shows what happened and the controls that always work.
+  function bootFailed(err){
+    const key="ta_boot_reload:"+String((CFG&&CFG.build)||"");
+    let tried=false;
+    try{ tried=sessionStorage.getItem(key)==="1"; if(!tried) sessionStorage.setItem(key,"1"); }catch(_e){ tried=true; }
+    try{ console.error("boot failed", err); }catch(_e){}
+    if(!tried){ location.reload(); return "reloaded"; }
+    const box=document.createElement("div");
+    box.id="boot-failed"; box.setAttribute("role","alert");
+    box.textContent="The app could not start. Reload, or switch to another command center. ";
+    const btn=document.createElement("button");
+    btn.type="button"; btn.className="btn"; btn.setAttribute("data-ta-reload","");
+    btn.textContent="Reload";
+    box.appendChild(btn);
+    document.body.insertBefore(box, document.body.firstChild);
+    return "shown";
+  }
+  boot().then(()=>{
+    try{ sessionStorage.removeItem("ta_boot_reload:"+String((CFG&&CFG.build)||"")); }catch(_e){} },
+    bootFailed);
   </script>
 </body>
 </html>
