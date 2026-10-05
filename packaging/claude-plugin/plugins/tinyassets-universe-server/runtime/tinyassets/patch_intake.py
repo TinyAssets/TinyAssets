@@ -395,12 +395,22 @@ def _how(receiver_id: str, label: str, *, granted: bool, pending: bool) -> str:
             "credential request for this: there is no token, and approving that "
             "one request is the whole setup."
         )
+    # The way back must be one that exists. This used to say "they can lift it
+    # from the muted list in their rail", but a plain Clear or a decline never
+    # lands on that list (only "don't ask again" does), and the platform never
+    # re-seeds an ask the owner already decided -- so an owner who changed their
+    # mind had nothing to tap (live 2026-10-05). The ask the agent may raise is
+    # the same validated, no-field, one-receiver action the platform seeds.
     return (
         f"Your user has already declined or cleared sending to {label}, so "
         "nothing is waiting and reports cannot be sent. Respect that: do NOT "
-        "raise another request for it, and do NOT raise a connection or "
-        "credential request -- there is no token involved. If they bring it up "
-        "themselves, they can lift it from the muted list in their rail."
+        "raise another request for it on your own, and do NOT raise a "
+        "connection or credential request -- there is no token involved. If "
+        "THEY ask you to send reports again, raise the one ask yourself: "
+        'write_graph target="pending_request" operation="ask" with no fields and '
+        f'action {{"type": "{ACTION_TYPE}", "receiver_id": "{receiver_id}", '
+        f'"label": "{label}"}}. Approving it is their way back; a cleared ask '
+        "is not on their muted list."
     )
 
 

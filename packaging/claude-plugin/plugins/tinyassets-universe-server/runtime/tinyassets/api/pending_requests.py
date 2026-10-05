@@ -2702,7 +2702,6 @@ def _start_approved_proposal(universe_id: str, row: dict[str, Any]) -> dict[str,
             "request_pending": True}
 
 
-@_coordinated
 def answer_request(*, universe_id: str = "", payload: Any = None) -> dict[str, Any]:
     """The user's answer.
 
@@ -2710,6 +2709,17 @@ def answer_request(*, universe_id: str = "", payload: Any = None) -> dict[str, A
     the tab with nothing written. For a ``connect_http`` request the secret value
     is deposited under the policy stored ON THE REQUEST — never one supplied
     here — so the tab's promise is what gets granted.
+    """
+    return _answer_request(universe_id=universe_id, payload=payload)
+
+
+@_coordinated
+def _answer_request(*, universe_id: str = "", payload: Any = None,
+                    owner_session: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Shared executor; only the protected HTTP route supplies owner proof.
+
+    Never take owner_session from the answer payload or expose it on the public
+    bearer handler. The route verifies the cookie, origin and authenticated owner.
     """
     from tinyassets.storage.pending_requests import get_request, resolve_request
 
@@ -2739,6 +2749,12 @@ def answer_request(*, universe_id: str = "", payload: Any = None) -> dict[str, A
     if row["action"].get("type") == "approve_action":
         return {"error": "interactive_approval_required",
                 "detail": "Open the protected inline owner card to decide this action."}
+    if row["action"].get("type") == PATCH_INTAKE_ACTION and owner_session is None:
+        return {"error": "interactive_approval_required",
+                "detail": "Only the owner can answer patch-intake consent in the "
+                          "protected owner session. Bearer, chatbot, MCP and CLI "
+                          "answers are not consent.",
+                "request_pending": row["status"] == "pending"}
     if row["status"] != "pending":
         return {"error": "already_resolved", "status": row["status"]}
 
