@@ -1218,11 +1218,24 @@ def _rotation_target(
     """
     base = _base_path()
     connection_id, grant_id = _ids(universe_id=uid, destination=destination)
-    ledger = ConnectionLedger(
-        Path(base) / "outbound.db",
-        verify_authenticated_principal=lambda: actor,
-    )
-    resource = ledger._get_connection_resource(connection_id)
+    from tinyassets.broker.supervisor import broker_selected
+
+    if broker_selected():
+        from tinyassets.broker.ledger_queries import authorized_connection
+        from tinyassets.storage.outbound_connections import GrantResolutionError
+
+        try:
+            grant, resource, incarnation = authorized_connection(
+                base, principal=actor, command_center=uid, grant_id=grant_id,
+                connection_id=connection_id)
+        except GrantResolutionError:
+            return dict(_NOT_FOUND)
+    else:
+        ledger = ConnectionLedger(
+            Path(base) / "outbound.db", verify_authenticated_principal=lambda: actor)
+        resource = ledger._get_connection_resource(connection_id)
+        grant = ledger.get_grant(grant_id)
+        incarnation = ledger.incarnation(connection_id)
     if resource is None or resource.revoked_at is not None:
         # Nothing to rotate. A revoked row is not rotatable either: the deposit
         # door refuses to re-provision one, so a key put into it would be inert.
@@ -1248,7 +1261,6 @@ def _rotation_target(
     # universe naming this destination already addresses its own row. The grant
     # is compared anyway: a derivation is not a check, and a connection with no
     # live grant for this universe is not this universe's to rotate.
-    grant = ledger.get_grant(grant_id)
     if (
         grant is None
         or grant.connection_id != connection_id
@@ -1257,7 +1269,7 @@ def _rotation_target(
         or grant.revoked_at is not None
     ):
         return dict(_NOT_FOUND)
-    return resource, grant, connection_id, grant_id, ledger
+    return resource, grant, connection_id, grant_id, incarnation
 
 
 def _rotation_git_scopes(resource: Any) -> list[str]:
@@ -1338,7 +1350,7 @@ def preview_rotate_http(*, universe_id: str = "", payload: Any = None) -> dict[s
     found = _rotation_target(uid=uid, actor=actor, destination=destination)
     if isinstance(found, dict):
         return found
-    resource, _grant, connection_id, grant_id, ledger = found
+    resource, _grant, connection_id, grant_id, incarnation = found
     # EVERY refusal the write makes for reasons the owner cannot type their way
     # out of, applied here too. The rule this module already follows is that the
     # owner never sees a tab that cannot be honoured; a preview that admitted one
@@ -1367,7 +1379,7 @@ def preview_rotate_http(*, universe_id: str = "", payload: Any = None) -> dict[s
         "connection_id": connection_id,
         "grant_id": grant_id,
         "auth_scheme": scheme,
-        "incarnation": ledger.incarnation(connection_id) or "",
+        "incarnation": incarnation or "",
         "allowed_endpoints": [e.as_dict() for e in resource.allowed_endpoints],
         "git_scopes": _rotation_git_scopes(resource),
         "access": getattr(resource, "access_mode", ACCESS_EXACT) or ACCESS_EXACT,
@@ -1464,7 +1476,7 @@ def _rotate_http(*, universe_id: str = "", payload: Any = None) -> dict[str, Any
     found = _rotation_target(uid=uid, actor=actor, destination=destination)
     if isinstance(found, dict):
         return found
-    resource, _grant, connection_id, grant_id, ledger = found
+    resource, _grant, connection_id, grant_id, incarnation = found
 
     scheme = str(resource.auth_scheme or "").strip().lower()
     refusal = _unpasteable_scheme(scheme)
@@ -1508,7 +1520,6 @@ def _rotate_http(*, universe_id: str = "", payload: Any = None) -> dict[str, Any
     # removed and a different one put in its place -- the incarnation is the only
     # thing that does.
     observed = document.get("incarnation")
-    incarnation = ledger.incarnation(connection_id)
     if observed is not None and observed != incarnation:
         return {"error": "connection_changed", "resource": "connection"}
 

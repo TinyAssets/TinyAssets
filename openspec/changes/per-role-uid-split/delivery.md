@@ -1,3 +1,47 @@
+# Current delivery: D34 removal readers and D35 rotation
+
+D33 pushed as `9c03ee5ad1`; hygiene: tests added 9, removed 0, tampering 0.
+D34 captures removal-request incarnations and reads intentional-disconnect status
+through scoped broker facts. D35 uses a single live authority/incarnation snapshot
+for rotation while retaining daemon-only vault writes. Cross-family review:
+APPROVE, **AGREE**; no floor findings. Added replacement-owner regression coverage
+suggested by review. No whole build task newly complete; startup inactive.
+
+Release-critical files: **0; none**. Canonical runtime:
+`tinyassets/api/{pending_requests,http_connection}.py`,
+`tinyassets/providers/connection_lifecycle.py`, and three generated mirrors.
+Extended `tests/test_broker_disconnect.py` and `scripts/role_launcher_oracle.py`.
+No affected heavy-list test. Existing tests/assertions preserved.
+
+```text
+python -m pytest tests/test_connection_lifecycle.py tests/test_replacing_a_rejected_credential.py tests/test_capability_url_connections.py -q
+181 passed in 25.31s
+python scripts/linux_oracle.py -- tests/test_broker_disconnect.py tests/test_connection_lifecycle.py tests/test_replacing_a_rejected_credential.py -q -rs
+76 passed, 1 new test import error (nonexistent vault reader; corrected to byte comparison)
+python scripts/linux_oracle.py -- tests/test_broker_disconnect.py -q -rs
+17 passed in 4.16s; zero skips (final, including two replacement cases)
+python scripts/linux_oracle.py --production-image tinyassets-uid-lifecycle:d35 --build --production-stream
+exit 0; sha256:93691e143a672a9e2bfe5df25ae1fc2bcb71e98eb80a8365816e1ef2e9e77cc4
+D35 actual HTTP rotation via launcher broker: live snapshot, owner vault write, ledger policy unchanged: PASS
+D34 actual removal request capture and lifecycle status via launcher broker: PASS
+```
+Both new production rows pass before/after broker restart. D33 removal and D22/D24
+HTTPS streams remain PASS. D34 stages the daemon's completed-model flag to test
+the status reader; it does not claim full model setup/assignment activation.
+D35 proves a real daemon vault write, not use of that rotated fixture by upstream.
+Same seven-capability root entry and compose security options as D33; internal
+synthetic HTTPS fixture, no real secrets or external requests. All prior egress
+and accounting dry-run/repeat/reverse/crash/refusal rows remain PASS; no claim of
+full role migration, two-pass deletion or actual old-image rollback.
+Ruff, mirror parity, plugin build/import, strict OpenSpec and whitespace pass.
+
+Next: endpoint/access-mode and connect mutations, other D11 injected consumers,
+accounting/source/liveness/daily evidence and refresh; every engine class/site;
+full migration and two-pass deletion; actual old-image rollback; startup and
+healthcheck integration only after all prerequisites pass. No PR or deployment.
+
+---
+
 # Current delivery: D33 broker HTTP disconnect
 
 D33 implements HTTP removal through authenticated broker inspect/fence/erase.

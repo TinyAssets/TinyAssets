@@ -322,10 +322,40 @@ def intentionally_disconnected(base, *, owner, uid):
         if assignment and (assignment.owner_user_id != owner or assignment.state != "unassigned"):
             return False
         rows = conn.execute(
-            "SELECT connection_id FROM connection_disconnections WHERE "
+            "SELECT connection_id,destination FROM connection_disconnections WHERE "
             "universe_id=? AND owner_user_id=? AND model_source=1 AND completed=1",
             (uid, owner),
         ).fetchall()
+    from tinyassets.broker.supervisor import broker_selected
+
+    if broker_selected():
+        from tinyassets.api.http_connection import _ids
+        from tinyassets.broker.disconnect import disconnect
+        from tinyassets.broker.ledger_queries import granted_resource_row
+        from tinyassets.storage.outbound_connections import GrantResolutionError
+
+        for definition in list_definitions(uid):
+            if definition.owner_user_id != owner or definition.access_method != "api_key_http":
+                continue
+            try:
+                granted_resource_row(base, principal=owner, command_center=uid,
+                                     grant_id=definition.ref)
+            except GrantResolutionError:
+                continue
+            return False
+        for row in rows:
+            # Completed records are daemon state, but still validate the exact
+            # identity before using the destination-based broker recovery read.
+            if _ids(universe_id=uid, destination=row[1])[0] != row[0]:
+                return False
+            try:
+                snapshot = disconnect(base, principal=owner, command_center=uid,
+                                      destination=row[1])
+            except GrantResolutionError:
+                return False
+            if snapshot["resource"] is not None:
+                return False
+        return bool(rows)
     ledger = ConnectionLedger(Path(base) / "outbound.db")
     for definition in list_definitions(uid):
         if definition.owner_user_id == owner and definition.access_method == "api_key_http":

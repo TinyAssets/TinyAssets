@@ -336,7 +336,8 @@ def _query_consumers(root, supervisor):
 
 
 def _disconnect_consumer(root):
-    from tinyassets.api.http_connection import remove_http
+    from tinyassets.api.http_connection import preview_rotate_http, remove_http, rotate_http
+    from tinyassets.api.pending_requests import request_from_user
     from tinyassets.auth.middleware import identity_context
     from tinyassets.auth.provider import Identity
     from tinyassets.broker.disconnect import disconnect
@@ -362,10 +363,34 @@ def _disconnect_consumer(root):
             raise AssertionError("disconnect accepted foreign/stale/unfenced mutation")
     with identity_context(Identity(user_id="disconnect", username="disconnect",
                                    capabilities=["write"])):
+        preview = preview_rotate_http(universe_id="disconnect",
+                                      payload={"destination": destination})
+        assert preview["incarnation"] == snapshot["incarnation"]
+        rotated = rotate_http(universe_id="disconnect", payload={
+            "destination": destination, "incarnation": snapshot["incarnation"],
+            "secret": "synthetic-rotation-only"})
+        assert rotated["status"] == "rotated", rotated
+        assert disconnect(root, **scope, destination=destination) == snapshot
+        print("D35 actual HTTP rotation via launcher broker: live snapshot, owner vault write, "
+              "ledger policy unchanged: PASS", flush=True)
+        asked = request_from_user(universe_id="disconnect", payload={
+            "kind": "Connection", "title": "Disconnect", "body": "Remove access", "fields": [],
+            "action": {"type": "remove_http", "destination": destination}})
+        assert asked.get("status") == "pending", asked
         result = remove_http(universe_id="disconnect", payload={"destination": destination})
         assert result["status"] == "removed" and result["connection_removed"] is True
         again = remove_http(universe_id="disconnect", payload={"destination": destination})
         assert again["connection_removed"] is False
+    from tinyassets.providers.connection_lifecycle import intentionally_disconnected
+    from tinyassets.storage.provider_work_authority import SQLiteProviderWorkAuthorityStore
+
+    with SQLiteProviderWorkAuthorityStore(root).connection() as conn:
+        conn.execute("UPDATE connection_disconnections SET model_source=1 "
+                     "WHERE owner_user_id='disconnect'")
+        conn.commit()
+    assert intentionally_disconnected(root, owner="disconnect", uid="disconnect")
+    print("D34 actual removal request capture and lifecycle status via launcher broker: PASS",
+          flush=True)
     assert disconnect(root, **scope, destination=destination)["resource"] is None
     assert not (root / "outbound.db").exists()
     print("D33 actual HTTP disconnect via launcher broker: fence/erase/repeat, foreign/stale "

@@ -1331,6 +1331,25 @@ assignment admission, then delete custody, then erase ledger rows. A lost ACK
 fails loudly without automatic replay or local fallback. This implements D11's
 existing removal authority, adding no privilege or scope. Startup stays inactive.
 
+### D34. Mechanical decision: disconnect capture and status reuse scoped broker reads
+
+Pending removal requests capture their incarnation through D33 inspect using the
+authenticated actor and admitted center. Lifecycle status checks live installed
+sources with GRANTED_RESOURCE and completed removals with D33 inspect, validating
+the recorded deterministic identity. A foreign/replaced connection cannot be
+reported as removed. Broker outage remains unknown/error rather than intentional
+disconnection or a local ledger open. No new operation or authority is introduced.
+
+### D35. Mechanical decision: rotation reads one live broker authority snapshot
+
+Rotation preview and mutation acquire AUTHORIZED_CONNECTION using the admitted
+actor/center and deterministic connection/grant IDs. The returned incarnation
+travels with that same resource/grant snapshot instead of a second ledger read.
+Existing HTTP custody-slot checks, gesture serialization, secret-shape and vault
+ownership checks remain. Only the daemon writes the replacement vault record;
+no secret crosses the ledger IPC. Unavailable broker fails before the vault write.
+This closes rotation's D11 reader without new operations or privilege.
+
 ## Risks / Trade-offs
 
 - **The launcher is root-adjacent code.** One file, stdlib-only, run `-I -S`, a static kind table,

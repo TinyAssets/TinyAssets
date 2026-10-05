@@ -1259,13 +1259,25 @@ def request_from_user(
             return {"error": "not_found", "resource": "connection"}
         action = {**action, "host": host}
     if action.get("type") == "remove_http":
+        from tinyassets.api import permissions
         from tinyassets.api.helpers import _base_path
         from tinyassets.api.http_connection import _ids
-        from tinyassets.storage.outbound_connections import ConnectionLedger
+        from tinyassets.broker.disconnect import disconnect
+        from tinyassets.broker.supervisor import broker_selected
+        from tinyassets.storage.outbound_connections import ConnectionLedger, GrantResolutionError
 
-        connection_id, _ = _ids(universe_id=_uid, destination=action["destination"])
-        action = {**action, "incarnation": ConnectionLedger(
-            _base_path() / "outbound.db").incarnation(connection_id) or "absent"}
+        if broker_selected():
+            try:
+                snapshot = disconnect(
+                    _base_path(), principal=permissions.current_actor_id().strip(),
+                    command_center=_uid, destination=action["destination"])
+            except GrantResolutionError:
+                return {"error": "not_found", "resource": "connection"}
+            incarnation = snapshot["incarnation"]
+        else:
+            connection_id, _ = _ids(universe_id=_uid, destination=action["destination"])
+            incarnation = ConnectionLedger(_base_path() / "outbound.db").incarnation(connection_id)
+        action = {**action, "incarnation": incarnation or "absent"}
     if action.get("type") == "extend_http":
         captured_preview: dict[str, Any] = {}
         held = _extend_ask_verdict(_uid, action, captured_preview=captured_preview)

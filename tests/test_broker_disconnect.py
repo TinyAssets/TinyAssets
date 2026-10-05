@@ -174,3 +174,100 @@ def test_wrong_fence_refuses_before_mutation(removal):
     with pytest.raises(BrokerRefused):
         operation(removal, action="fence", incarnation=removal.incarnation)
     assert removal.ledger._get_connection_resource(removal.connection).revoked_at is None
+
+
+def test_pending_remove_captures_broker_incarnation_and_rejects_replacement(removal):
+    from tinyassets.api.pending_requests import answer_request, request_from_user
+    from tinyassets.auth.middleware import identity_context
+    from tinyassets.auth.provider import Identity
+
+    with identity_context(Identity(user_id="alice", username="alice", capabilities=["write"])):
+        asked = request_from_user(universe_id="cc-alice", payload={
+            "kind": "Connection", "title": "Disconnect", "body": "Remove access", "fields": [],
+            "action": {"type": "remove_http", "destination": "fixture"}})
+        assert asked.get("status") == "pending", asked
+        with removal.ledger._connect() as db:
+            db.execute("UPDATE outbound_connections SET incarnation='replacement' "
+                       "WHERE connection_id=?", (removal.connection,))
+        answer = answer_request(universe_id="cc-alice", payload={
+            "request_id": asked["request_id"], "values": {}})
+        assert answer.get("error") == "connection_changed", answer
+    assert removal.ledger.get_connection(removal.connection) is not None
+    assert not (removal.root / "outbound.db").exists()
+
+
+def test_lifecycle_status_uses_broker_and_outage_is_not_disconnected(removal, monkeypatch):
+    from tinyassets.broker import supervisor
+    from tinyassets.providers.connection_lifecycle import intentionally_disconnected
+    from tinyassets.storage.outbound_connections import ProxyRequestError
+    from tinyassets.storage.provider_work_authority import SQLiteProviderWorkAuthorityStore
+
+    assert removal.remove()["status"] == "removed"
+    with SQLiteProviderWorkAuthorityStore(removal.root).connection() as db:
+        db.execute("UPDATE connection_disconnections SET model_source=1")
+        db.commit()
+    assert intentionally_disconnected(removal.root, owner="alice", uid="cc-alice")
+    assert not intentionally_disconnected(removal.root, owner="bob", uid="cc-alice")
+    monkeypatch.setattr(supervisor, "get_supervisor", lambda root: None)
+    with pytest.raises(ProxyRequestError):
+        intentionally_disconnected(removal.root, owner="alice", uid="cc-alice")
+    assert not (removal.root / "outbound.db").exists()
+
+
+def test_rotation_keeps_ledger_policy_and_writes_only_owner_vault(removal, monkeypatch):
+    from tinyassets.api.http_connection import preview_rotate_http, rotate_http
+    from tinyassets.auth.middleware import identity_context
+    from tinyassets.auth.provider import Identity
+    from tinyassets.broker import supervisor
+    from tinyassets.storage.outbound_connections import ProxyRequestError
+
+    before = removal.ledger._get_connection_resource(removal.connection)
+    with identity_context(Identity(user_id="alice", username="alice", capabilities=["write"])):
+        preview = preview_rotate_http(universe_id="cc-alice", payload={"destination": "fixture"})
+        assert preview["incarnation"] == removal.incarnation
+        result = rotate_http(universe_id="cc-alice", payload={
+            "destination": "fixture", "incarnation": removal.incarnation,
+            "secret": "synthetic-new"})
+        assert result["status"] == "rotated", result
+        vault = (removal.root / "cc-alice/.credential-vault.json").read_bytes()
+        assert vault
+        assert removal.ledger._get_connection_resource(removal.connection) == before
+        monkeypatch.setattr(supervisor, "get_supervisor", lambda root: None)
+        with pytest.raises(ProxyRequestError):
+            rotate_http(universe_id="cc-alice", payload={
+                "destination": "fixture", "secret": "must-not-replace"})
+        assert (removal.root / "cc-alice/.credential-vault.json").read_bytes() == vault
+    assert not (removal.root / "outbound.db").exists()
+
+
+def test_rotation_refuses_revoked_grant_before_vault_write(removal):
+    from tinyassets.api.http_connection import rotate_http
+    from tinyassets.auth.middleware import identity_context
+    from tinyassets.auth.provider import Identity
+
+    removal.ledger.revoke_grant(removal.grant)
+    with identity_context(Identity(user_id="alice", username="alice", capabilities=["write"])):
+        result = rotate_http(universe_id="cc-alice", payload={
+            "destination": "fixture", "secret": "must-not-write"})
+    assert result["error"] == "not_found"
+    assert not (removal.root / "cc-alice/.credential-vault.json").exists()
+    assert not (removal.root / "outbound.db").exists()
+
+
+@pytest.mark.parametrize("replacement_owner", ["alice", "bob"])
+def test_lifecycle_never_reports_a_replacement_as_removed(removal, replacement_owner):
+    from tinyassets.providers.connection_lifecycle import intentionally_disconnected
+    from tinyassets.storage.provider_work_authority import SQLiteProviderWorkAuthorityStore
+
+    assert removal.remove()["status"] == "removed"
+    with SQLiteProviderWorkAuthorityStore(removal.root).connection() as db:
+        db.execute("UPDATE connection_disconnections SET model_source=1")
+        db.commit()
+    removal.ledger.create_connection(
+        connection_id=removal.connection, owner_user_id=replacement_owner, connection_class="http",
+        connection_type="http", auth_scheme="bearer", scopes=("GET",), provider="http",
+        destination="fixture", credential_ref="vault://http/fixture",
+        allowed_endpoints=[{"host": "models.example.com", "path_template": "/catalogue",
+                            "methods": ["GET"]}])
+    assert not intentionally_disconnected(removal.root, owner="alice", uid="cc-alice")
+    assert not (removal.root / "outbound.db").exists()

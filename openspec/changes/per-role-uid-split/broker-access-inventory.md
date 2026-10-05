@@ -281,3 +281,13 @@ writes and dependent-authority admission. Actual launcher removal/repeat/foreign
 and stale refusals pass before/after restart without daemon ledger access.
 Request capture, intentionally_disconnected, connect/rotate/extend and other
 mutation/accounting/refresh rows remain pending.
+
+## D34-D35 consumer receipt
+
+D34 routes removal `request_from_user` incarnation capture and
+`connection_lifecycle.intentionally_disconnected` via D33 inspect and live
+GRANTED_RESOURCE reads. D35 routes `_rotation_target`, both preview and write,
+through AUTHORIZED_CONNECTION; the same snapshot carries the incarnation.
+Real launcher probes pass before/after restart; no daemon ledger fallback.
+Connect and endpoint/access-mode extension remain pending, as do other inventory
+rows not explicitly discharged, accounting, refresh, full deletion and activation.
