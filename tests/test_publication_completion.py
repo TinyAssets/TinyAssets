@@ -191,6 +191,10 @@ def test_direct_publication_returns_completion_and_respects_owner_context(home):
                                       payload_json=json.dumps(doc)))
         assert done["completion"]["listing_id"] == done["agent"]["agent_definition_id"]
         assert done["completion"]["preview_status"] == "ready"
+        # The commons version guard (#4475) refuses a publication built from a
+        # snapshot older than the bundle's current version, so the wrong-owner
+        # attempt uses a fresh snapshot taken after the first publication.
+        doc = build_snapshot(UNIVERSE, validate_action(_publish_action()))["definition"]
         denied = custom_agents(action="publish_agent", universe_id=BOB_UNIVERSE, payload=doc)
         assert denied["completion"]["preview_status"] == "owner_context_required"
         assert denied["completion"]["preview_image_path"] is None
