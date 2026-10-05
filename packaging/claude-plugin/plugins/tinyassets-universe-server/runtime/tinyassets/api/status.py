@@ -2021,6 +2021,8 @@ def get_status(
                                 _row_id := getattr(t, "id", None), int
                             ) and not isinstance(_row_id, bool) else {}),
                             "ts": getattr(t, "ts", None),
+                            **({"client_send_id": t.client_send_id}
+                               if getattr(t, "client_send_id", "") else {}),
                             **({"consumer_turn_id": t.consumer_turn_id}
                                if getattr(t, "consumer_turn_id", None) else {}),
                             **({"failure": failure} if (

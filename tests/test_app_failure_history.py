@@ -67,7 +67,10 @@ def test_unsaved_failure_keeps_recovery_and_says_it_is_unsaved(tmp_path):
 
 
 def test_restored_saved_failure_does_not_repeat_owner_or_resend_automatically(tmp_path):
-    result = _run_app(tmp_path, {"kind": "restore", "pending": "original", "history": pair()})
+    result = _run_app(tmp_path, {
+        "kind": "restore", "pending": "original", "pendingSendId": "failed-send",
+        "history": pair(client_send_id="failed-send"),
+    })
     assert [m["role"] for m in result["messages"]] == ["founder", "platform"]
     assert result["inflight"] is None and result["converseCalls"] == []
     assert result["notes"][0]["buttons"] == ["Send it again"]

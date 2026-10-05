@@ -68,16 +68,38 @@ retry automatically; an ambiguous conversation or connection write SHALL NOT.
 - **THEN** the client continues to wait for its matching terminal response
 
 ### Requirement: Unconfirmed recovery offers observation and explicit queue resumption
-For an unconfirmed default conversation, the app SHALL offer an owner-fenced,
-read-only saved-conversation snapshot preserving the draft and pending request.
-It SHALL NOT attribute a saved reply to the request by matching text or time.
+For an unconfirmed default conversation, the app SHALL offer an owner/home/agent/
+login-fenced, read-only saved-conversation check, also run on return online or to
+the foreground or window focus. It SHALL preserve the draft and never replay a send
+automatically. Recovery SHALL check the active turn first and confirm only a
+nonempty client_send_id equal to the saved send identity. Saved history uses the
+same identity rule. Missing IDs, text matches and timestamps prove nothing.
 Messages queued behind an unconfirmed turn SHALL remain held until explicitly
-resumed, including when the user sends a separate inspection question.
+resumed, even after confirming that first turn or sending a separate question.
 
 #### Scenario: Inspect progress before deciding whether to send again
-- **WHEN** the user selects the saved-conversation check
-- **THEN** saved messages and their available timestamps are shown as an uncorrelated snapshot
-- **AND** no conversation is invoked and no pending request is marked complete
+- **WHEN** saved history proves delivery by that identity rule
+- **THEN** the app draws only that exchange's reply, forgets only that inflight record,
+  and removes the unconfirmed notice and resend button
+- **WHEN** instead the pending-turn endpoint shows this message actively running
+- **THEN** the app shows it as working and removes the notice
+- **WHEN** neither observation proves delivery or active work
+- **THEN** one short line preserves uncertainty without dumping saved history
+- **AND** no conversation is invoked or queued approval resumed by these reads
+
+#### Scenario: A disconnected turn is not an owner Stop
+- **WHEN** a connection drops, a stream times out, or the app changes visibility
+- **THEN** no Stop request is issued
+- **AND** the server SHALL attribute an interruption to the owner only when the
+  registered live turn has an explicit Stop request
+
+#### Scenario: Chat about a request does not decide it
+- **WHEN** the founder sends a chat message about an open request
+- **THEN** request history continues to show it as open until Accept, Deny or Clear
+- **AND** the chat button labels that it keeps the request open
+- **WHEN** the proposed chat is an obvious yes/no decision
+- **THEN** an inline nudge directs the founder to Accept or Deny without sending
+  the text or granting approval
 
 #### Scenario: A manual question follows an uncertain outcome
 - **WHEN** the user asks another question while older queued messages remain held
@@ -224,6 +246,35 @@ was shrunk.
 #### Scenario: A bubble is dragged
 - **WHEN** the owner drags the bubble to a new place
 - **THEN** it moves there and does not also open
+
+### Requirement: causal return-to-app confirmation (PR 4458 round 2)
+
+The app MUST mint a unique `client_send_id` for each send and retain it in its
+inflight record and uncertainty notice. `converse` accepts an optional ASCII
+identifier (1–128 letters, digits, underscores or hyphens; empty means legacy).
+It echoes it on the scoped active turn and persists it on the saved founder row.
+This additive metadata grants no authority and is not an idempotency key.
+Legacy rows remain readable without migration on read.
+
+Recovery MUST check the running turn first and match only nonempty equal IDs,
+never text or timestamps. Missing IDs retain the cautious resend offer. Only
+the matched exchange's reply is drawn. Focus, visibility and online events
+retry observations without replaying requests. Optional connection suggestions
+MUST NOT appear as Open requests.
+
+#### Scenario: repeated short prompt
+- **WHEN** an identical prompt finished ten seconds before a new interrupted send
+- **THEN** neither notice nor reload recovery confirms that new send from the old row
+- **AND** an exact ID match confirms only its own exchange within the caller's thread
+
+#### Scenario: a running turn without an ID finishes
+- **WHEN** a watched running turn has no ID (sent by a connector, or running across a deploy)
+- **THEN** the app draws only the replies after the newest matching founder row, for display
+- **AND** it confirms no unconfirmed send and forgets no inflight record
+
+Design: nullable/empty-default columns in conversation and steering stores,
+validated at the converse boundary; all owner, home and agent resolution stays
+unchanged. No lookup, Stop, or replay operation accepts this ID as authority.
 
 ### Requirement: Normal web sign-in establishes protected owner proof
 Normal web app sign-in SHALL reuse the interactive server-PKCE, browser-bound,

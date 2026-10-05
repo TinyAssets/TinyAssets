@@ -89,6 +89,14 @@ def _connect(universe_dir: Path) -> sqlite3.Connection:
         except sqlite3.OperationalError as exc:  # another process added it first
             if "duplicate column" not in str(exc):
                 raise
+    if "client_send_id" not in {r[1] for r in conn.execute("PRAGMA table_info(open_turns)")}:
+        try:
+            conn.execute(
+                "ALTER TABLE open_turns ADD COLUMN client_send_id TEXT NOT NULL DEFAULT ''"
+            )
+        except sqlite3.OperationalError as exc:
+            if "duplicate column" not in str(exc):
+                raise
     return conn
 
 
@@ -105,7 +113,7 @@ def _row(row) -> Steer:
 
 
 def open_turn(universe_dir: Path, session_key: str, live_id: str,
-              *, live_ids: Iterable[str] = (), message: str = "") -> None:
+              *, live_ids: Iterable[str] = (), message: str = "", client_send_id: str = "") -> None:
     """A served turn of ``session_key`` starts and may be steered.
 
     ``live_ids`` are the turns of this session still running in this process.
@@ -130,8 +138,8 @@ def open_turn(universe_dir: Path, session_key: str, live_id: str,
             conn.execute("UPDATE steer SET live_id = NULL WHERE session_key = ? "
                          "AND live_id = ?", (key, dead))
         conn.execute("INSERT OR REPLACE INTO open_turns (session_key, live_id, opened_at, "
-                     "message) VALUES (?, ?, ?, ?)",
-                     (key, live, time.time(), str(message or "")[:MAX_STEER_CHARS]))
+                     "message, client_send_id) VALUES (?, ?, ?, ?, ?)",
+                     (key, live, time.time(), str(message or "")[:MAX_STEER_CHARS], client_send_id))
         conn.execute("COMMIT")
 
 
@@ -226,12 +234,13 @@ def active(universe_dir: Path, session_key: str) -> dict | None:
     key = _key(session_key)
     with closing(_connect(universe_dir)) as conn:
         row = conn.execute(
-            "SELECT message, opened_at FROM open_turns WHERE session_key = ? "
+            "SELECT message, opened_at, client_send_id FROM open_turns WHERE session_key = ? "
             "ORDER BY opened_at DESC LIMIT 1", (key,),
         ).fetchone()
     if row is None or not row[0]:
         return None
-    return {"text": row[0], "started_at": float(row[1])}
+    return {"text": row[0], "started_at": float(row[1]),
+            **({"client_send_id": row[2]} if row[2] else {})}
 
 
 def claim(universe_dir: Path, session_key: str, ids: Iterable[int]) -> list[int]:

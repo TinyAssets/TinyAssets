@@ -79,8 +79,9 @@ def test_the_rail_renders_the_four_verbs_and_only_those():
     html, _csp = render_app_html()
     body = _function_source(html, "railBody")
     for label, mode in (("Accept", "accept"), ("Deny", "deny"),
-                        ("Clear", "clear"), ("Send reply", "reply")):
+                        ("Clear", "clear")):
         assert f'verb("{label}", ' in body and f'"{mode}")' in body, label
+    assert '"Send chat (keeps open)"' in body
     assert "Not now" not in body and '"Send"' not in body
     rail = _function_source(html, "answerRail")
     assert 'payload.decision = "declined"' in rail

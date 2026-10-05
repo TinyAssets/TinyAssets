@@ -77,7 +77,7 @@ _FUNCS = (
     "sameInflight", "forgetInflightIf",
     "copyModelChoice", "captureTurnOptions", "sendConversationRequest",
     "executionLabel", "answerExecutionDetail", "servedFailureError", "appendFailureNotice",
-    "offerResend", "noteHeldQueue", "offerSavedConversationCheck",
+    "offerResend", "noteHeldQueue", "offerSavedConversationCheck", "savedSendIndex",
     "sendTurn", "loadHistory",
     "drawHistoryTurns", "offerEarlier", "loadEarlier", "historyFailed",
     "restoreInflight", "pollStatus",
