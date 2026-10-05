@@ -167,9 +167,17 @@ class WorkCandidateData:
             connection.connection_id: tuple(model.model_id for model in connection.models)
             for connection in self.catalog.connections
         }
-        provider = resolve_pin_source(
-            pin["provider"], pin.get("model_id", pin.get("model", "")), sources,
-        )
+        from tinyassets.providers.model_pins import ModelPinError
+
+        try:
+            provider = resolve_pin_source(
+                pin["provider"], pin.get("model_id", pin.get("model", "")), sources,
+            )
+        except ModelPinError as exc:
+            raise ModelPinError(
+                f"Requested model {pin.get('model_id', pin.get('model')) or 'default'} "
+                f"on {pin['provider']} is not eligible: {exc}"
+            ) from exc
         return pin if provider == pin["provider"] else {**pin, "provider": provider}
 
     def _constrained(self, policy):
@@ -186,9 +194,17 @@ class WorkCandidateData:
             # refusing the node for not appearing in an advisory ranking.
             matching = self._admitted_refs(pin)
         if not matching or (not self.automatic and matching[0] != self.order[0]):
-            raise PermissionError("graph model constraint conflicts with captured primary")
+            raise PermissionError(
+                f"Requested model {pin.get('model_id', pin.get('model')) or 'default'} "
+                f"on {pin.get('provider') or 'selected source'} is not eligible: "
+                "graph model constraint conflicts with captured primary"
+            )
         primary = matching[0]
         tail = tuple(ref for ref in self.order if ref != primary)
+        if self.automatic and pin and "fallback_chain" not in policy:
+            # A node pin is an explicit choice, not a ranking suggestion.
+            # Only an explicitly authored fallback chain permits substitution.
+            tail = ()
         if "fallback_chain" in policy:
             permitted = policy["fallback_chain"]
             permitted = [self.resolved_pin(item) for item in permitted]

@@ -120,6 +120,18 @@ model_access via strict ModelAccess validation and existing assignment publicati
 Omission SHALL preserve the legacy provider-only payload. Saving preferences SHALL
 NOT publish or widen assignments, grants or permitted spending.
 
+#### Scenario: A powered owner confirms another model connection
+- **WHEN** the owner confirms an exact model use on another HTTP connection
+- **THEN** that source joins the accepted manifest with those models and free-only limits
+- **AND** the current serving root and all prior member limits are preserved
+- **AND** registration without model-use confirmation grants no model access
+
+#### Scenario: Additional source activation fails
+- **WHEN** activation fails after publishing the additional membership
+- **THEN** recovery restores prior membership and serving using revision and assignment fences
+- **AND** an intervening owner edit is never overwritten
+- **AND** the request stays pending with a structured error and actual serving state
+
 #### Scenario: Owner opts into discovered models
 - **WHEN** the owner binds authorized sources with discovered scope and accepted price limits
 - **THEN** the current assignment records membership through existing authority
@@ -473,3 +485,23 @@ Native metadata transport SHALL use the shared confined owned-process launcher w
 - **WHEN** discovery succeeds, refuses, times out or is cancelled after starting an owned process family
 - **THEN** the existing owned-family teardown terminates descendants even after launcher exit
 - **AND** pipe cleanup is bounded and cancellation propagates
+
+### Requirement: Workflow pins and refreshed native choices remain exact
+
+A workflow step's explicit model policy SHALL reach the owner-bound policy caller.
+A missing policy-capable caller SHALL refuse, naming the model and source, before
+any ordinary or mock provider response. An automatic workflow order SHALL NOT
+append unrequested alternatives to a pinned step without an explicit fallback chain.
+
+#### Scenario: Cross-family workflow review
+- **WHEN** two steps select different accepted provider families and model IDs
+- **THEN** each invocation carries its exact selected model through its owner's authority
+- **AND** exhausting a pinned model without an explicit fallback fails rather than substitutes
+
+#### Scenario: A completed native refresh outlives the engine process
+- **WHEN** another engine process reads a completed native catalogue refresh
+- **THEN** it can display the same selectable models under current owner custody
+- **AND** persistent advisory rows carry only model metadata, timestamps and a custody digest
+- **AND** changed owner, provider or revoked custody cannot reuse the old catalogue
+- **AND** a late older refresh cannot overwrite newer observations
+- **AND** actual execution still requires fresh model discovery and authority checks
