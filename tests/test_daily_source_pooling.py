@@ -120,9 +120,17 @@ def test_chat_daily_quota_skips_sibling_and_uses_next_owned_source(pool, monkeyp
     reserve = auth.reserve_provider_request(principal_id=parity.A_OWNER, session_id="pool",
                                              request_id="pool", tool_name="converse")
     capability = auth.claim_provider_request(reserve, tool_name="converse")
+    responses = []
     try:
-        result = universe_intelligence.converse(parity.A_HOME, "Write a morning focus note.")
-        assert result == "morning focus note"
+        result = universe_intelligence.converse(
+            parity.A_HOME, "Write a morning focus note.", response_observer=responses.append,
+        )
+        assert len(responses) == 1 and responses[0].provider == pool.second
+        assert result == (
+            f"morning focus note\n\nAnswered by {responses[0].provider_display} because "
+            f"{pool.first} is cooling down or out of capacity. "
+            "The original source did not report a reset time."
+        )
     finally:
         auth.revoke_provider_request(capability)
     _assert_pool(pool)

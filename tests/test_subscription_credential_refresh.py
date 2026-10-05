@@ -685,6 +685,9 @@ def _coordinator(candidate, *, execution_kind="engine_inference"):
         candidates=() if candidate is None else (SimpleNamespace(ref=candidate),),
     ))
     coordinator._budget_skipped = set()
+    coordinator.capacity_recovery = False
+    coordinator.capacity_switch = None
+    coordinator._text_only = False
     coordinator.adapter = SimpleNamespace(has_candidate_order=False)
     coordinator.owner = OWNER
     from dataclasses import make_dataclass

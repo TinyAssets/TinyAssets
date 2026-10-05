@@ -17,7 +17,7 @@ from tinyassets.onboarding import render_app_html
 pytestmark = pytest.mark.real_browser
 
 
-@pytest.fixture
+@pytest.fixture(scope="module")
 def app_url():
     html, csp = render_app_html()
 
@@ -51,7 +51,7 @@ def app_url():
         httpd.server_close()
 
 
-@pytest.fixture
+@pytest.fixture(scope="module")
 def browser():
     sync_api = pytest.importorskip("playwright.sync_api")
     with sync_api.sync_playwright() as p:
@@ -70,7 +70,8 @@ def _enter_chat(page, url, *, layout=False):
     # Let the page finish its own boot first: with no session it lands on the
     # sign-in view, and a boot that finished later would hide the chat again.
     page.wait_for_selector("#view-signin", state="visible")
-    page.wait_for_load_state("networkidle")
+    # enterSignedOut reveals this view at the end of boot. The visible-view
+    # wait above is the readiness signal; networkidle adds a fixed 500 ms.
     page.evaluate("""(layout) => {
         setQueueOwner('owner-1');
         if (layout) document.getElementById('view-chat').classList.add('ui-custom-active');
