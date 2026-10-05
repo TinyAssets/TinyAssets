@@ -3409,8 +3409,10 @@ def _complete_connect(
             # The deposit succeeded, but it must not look like accepted model
             # access. Keep the request pending and report actual serving state.
             return {**out, "error": "model_source_acceptance_failed",
-                    "detail": "Connection saved; model access needs review. Retry the request "
-                              "or confirm model access in your model setup.",
+                    "detail": "Connection saved, but the model source was not accepted. "
+                              "In model setup, confirm explicit model access for your existing "
+                              "source and ensure exactly one owned agent is serving; "
+                              "then retry this request.",
                     "serving": {"status": "unchanged" if _serving_llm_bound(base, uid, actor)
                                 else "disabled", "reason": "model_source_acceptance_failed"}}
     return out

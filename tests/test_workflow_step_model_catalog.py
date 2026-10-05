@@ -45,6 +45,29 @@ def test_missing_step_model_error_names_requested_model_and_source():
         }}]}, ceiling=10, retry_multiplier=1)
 
 
+@pytest.mark.parametrize("model_pin", [{}, {"model": "A"}, {"model_id": "A"}])
+def test_provider_pin_retains_same_source_breadth_but_exact_model_does_not(model_pin):
+    from tests.test_model_policy import AUTO, NEEDS, connection, model
+    from tinyassets.providers.agent_model_plan import AgentModelPlan
+    from tinyassets.providers.model_policy import Catalog
+    from tinyassets.providers.work_candidate_data import WorkCandidateData
+
+    catalog = Catalog("owner", "universe", (
+        connection("a", models=[model("A"), model("A2")]),
+        connection("b", models=[model("B")]),
+    ))
+    choices = WorkCandidateData(AgentModelPlan(catalog, AUTO, NEEDS))
+    policy = {"preferred": {"provider": "a", **model_pin}}
+    assert choices.fit(
+        {"node_defs": [{"prompt_template": "review", "llm_policy": policy}]},
+        ceiling=10, retry_multiplier=3,
+    ) == (3 if model_pin else 6)
+    assert choices.next_candidate(policy) == ModelRef("a", "A")
+    next_choice = choices.next_candidate(policy, (Exhaustion("model", ModelRef("a", "A")),))
+    assert next_choice == (None if model_pin else ModelRef("a", "A2"))
+    assert choices.next_candidate(policy, (Exhaustion("model", ModelRef("a", "A2")),)) is None
+
+
 @pytest.mark.usefixtures("cloud_runtime")
 def test_workflow_dispatches_each_step_to_its_owners_chosen_family(
     tmp_path, monkeypatch, authenticate_request,

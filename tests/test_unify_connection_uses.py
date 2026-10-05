@@ -408,6 +408,9 @@ def test_model_source_acceptance_refusal_keeps_request_pending_and_existing_serv
     ask = {**QUILLMIND_ASK, "destination": "second-source", "host": "other.example.com"}
     answer = _answer(_ask(ask, _KEY_FIELD)["request_id"], {"secret": LLM_KEY})
     assert answer["error"] == "model_source_acceptance_failed"
+    assert "confirm explicit model access for your existing source" in answer["detail"]
+    assert "ensure exactly one owned agent is serving" in answer["detail"]
+    assert "then retry this request" in answer["detail"]
     assert answer["request_pending"] is True
     assert answer["serving"]["status"] == "unchanged"
     assert load_provider_assignment(owner, universe_id=UID) == before

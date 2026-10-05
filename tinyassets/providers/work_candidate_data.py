@@ -202,9 +202,9 @@ class WorkCandidateData:
         primary = matching[0]
         tail = tuple(ref for ref in self.order if ref != primary)
         if self.automatic and pin and "fallback_chain" not in policy:
-            # A node pin is an explicit choice, not a ranking suggestion.
-            # Only an explicitly authored fallback chain permits substitution.
-            tail = ()
+            # An exact model pin forbids substitution. A source-only pin
+            # retains its other eligible models, but never another source.
+            tail = () if pin.get("model_id", pin.get("model")) else matching[1:]
         if "fallback_chain" in policy:
             permitted = policy["fallback_chain"]
             permitted = [self.resolved_pin(item) for item in permitted]

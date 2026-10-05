@@ -132,6 +132,12 @@ NOT publish or widen assignments, grants or permitted spending.
 - **AND** an intervening owner edit is never overwritten
 - **AND** the request stays pending with a structured error and actual serving state
 
+#### Scenario: Existing model setup cannot accept another source
+- **WHEN** the powered setup lacks an accepted manifest digest or exactly one owned serving agent
+- **THEN** the request stays pending with `model_source_acceptance_failed` and actual serving state
+- **AND** the owner is told to confirm explicit model access for the existing source and ensure exactly one owned agent is serving before retrying
+- **AND** a deposited credential alone is never reported as accepted model access
+
 #### Scenario: Owner opts into discovered models
 - **WHEN** the owner binds authorized sources with discovered scope and accepted price limits
 - **THEN** the current assignment records membership through existing authority
@@ -491,12 +497,18 @@ Native metadata transport SHALL use the shared confined owned-process launcher w
 A workflow step's explicit model policy SHALL reach the owner-bound policy caller.
 A missing policy-capable caller SHALL refuse, naming the model and source, before
 any ordinary or mock provider response. An automatic workflow order SHALL NOT
-append unrequested alternatives to a pinned step without an explicit fallback chain.
+append unrequested alternatives to an exact model pin without an explicit fallback chain.
+A provider-only pin SHALL retain eligible same-source models in the captured order.
 
 #### Scenario: Cross-family workflow review
 - **WHEN** two steps select different accepted provider families and model IDs
 - **THEN** each invocation carries its exact selected model through its owner's authority
 - **AND** exhausting a pinned model without an explicit fallback fails rather than substitutes
+
+#### Scenario: Provider-only workflow choice
+- **WHEN** a step selects a provider without an exact model ID
+- **THEN** all eligible same-source models in the captured order remain candidates within the existing allowance
+- **AND** exhausting that source fails without substituting another source
 
 #### Scenario: A completed native refresh outlives the engine process
 - **WHEN** another engine process reads a completed native catalogue refresh
