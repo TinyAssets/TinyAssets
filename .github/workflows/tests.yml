@@ -450,16 +450,53 @@ jobs:
           python scripts/affected_tests.py --base HEAD^1 --out affected.txt
           { echo "### Selection"; echo; echo '```'; head -c 60000 affected.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Run this shard of the selection
+      # Preview rendering requires a bubblewrap PID namespace as well as
+      # Chromium. Use the queue's oracle venue, including its jail preflight,
+      # instead of the bare Ubuntu runner where user namespaces are restricted.
+      - name: Allow user namespaces for the jail container only
         env:
-          TINYASSETS_DATA_DIR: ${{ runner.temp }}/ta-data-affected
+          PROFILE: ${{ runner.temp }}/ta-jail-userns
         run: |
-          mkdir -p "$TINYASSETS_DATA_DIR"
-          python scripts/ci_required_tests.py \
-            --junit "junit-affected-${{ matrix.shard }}.xml" \
+          set -euo pipefail
+          printf '%s\n' \
+            'abi <abi/4.0>,' \
+            'include <tunables/global>' \
+            'profile ta-jail-userns flags=(unconfined) {' \
+            '  userns,' \
+            '}' > "$PROFILE"
+          sudo apparmor_parser -r "$PROFILE"
+
+      - name: Run this shard of the selection
+        run: |
+          set -euo pipefail
+          mkdir -p shard-out
+          # The oracle invokes scripts/ci_required_tests.py inside the container.
+          python scripts/linux_oracle.py --required-runner --out shard-out \
+            --apparmor ta-jail-userns \
+            --env TINYASSETS_DATA_DIR=/tmp/ta-data \
+            --env CI=true --env GITHUB_ACTIONS=true \
+            --env "GITHUB_STEP_SUMMARY=/out/summary-affected-${{ matrix.shard }}.md" \
+            -- \
+            --junit "/out/junit-affected-${{ matrix.shard }}.xml" \
             --exclude-from .github/heavy-test-files.txt \
             --affected affected.txt \
             --shard "${{ matrix.shard }}/6" --profile affected
+
+      - name: Publish the runner's summary
+        if: always()
+        run: |
+          if [ -f "shard-out/summary-affected-${{ matrix.shard }}.md" ]; then
+            cat "shard-out/summary-affected-${{ matrix.shard }}.md" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload affected shard result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: junit-affected-shard-${{ matrix.shard }}
+          path: shard-out/
+          if-no-files-found: warn
+          overwrite: true
 
   required-tests:
     # This exact string is the branch-protection context. Renaming the job
