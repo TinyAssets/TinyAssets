@@ -1,5 +1,10 @@
 # Current delivery: D58 descriptor hardlink refusal (2026-10-05)
 
+Implementation/evidence pushed as **8414c9c3c1**. Hygiene against 3f4dc2c451:
+2 test functions added (3 parametrized cases), 0 removed, 0 tampering findings.
+Pre-commit checks passed. Cross-family review ADAPT is addressed in the retained
+evidence/concern below; the isolation blocker remains open.
+
 Started at **3f4dc2c451**, ff-only pull already current. D12 relocation and
 D10/D11 are retained; no duplicate D12 or history rewrite. D57's lead repair
 is partially implemented: the shared regular-file open rejects `st_nlink != 1`
