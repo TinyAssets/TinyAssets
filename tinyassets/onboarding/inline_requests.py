@@ -35,6 +35,13 @@ async def handle_approval(request):
             if denied:
                 return denied
             operation = request.path_params["operation"]
+            if operation == "answer":
+                from tinyassets.api.pending_requests import _answer_request
+
+                return _answer_request(
+                    universe_id=str(data.get("universe_id", "")),
+                    payload=data, owner_session=session,
+                )
             if operation == "preview":
                 return bound_requests.preview(home, data.get("request_id", ""), session)
             if operation == "edit":

@@ -9736,7 +9736,9 @@
     buttons.forEach(b=>{ b.disabled = true; });
     note.textContent = mode === "clear" ? "Clearing..." : mode === "deny" ? "Denying..." : "Sending...";
     try{
-      const r = await MCP.answerRequest(payload);
+      const r = req.action && req.action.type === "grant_patch_intake"
+        ? await InlineApprovals.post("answer", payload)
+        : await MCP.answerRequest(payload);
       if(installAsk&&typeof AppUI!=="undefined"&&!AppUI.fence(installEpoch,installHome))return;
       if(r && r.error){
         const actionAsk = req.action && req.action.type && req.action.type !== "answer";
@@ -9779,6 +9781,11 @@
     }catch(err){
       if(err.authRequired) return enterSignedOut();
       note.textContent = "Couldn't do that: " + err.message;
+      if(err.signIn){
+        const link=document.createElement("a"); link.href="/app/owner-sign-in";
+        link.target="_blank"; link.rel="noopener"; link.textContent=" Sign in to decide this request";
+        note.appendChild(link);
+      }
     }finally{ buttons.forEach(b=>{ b.disabled = itemAnswered; }); }
   }
 
