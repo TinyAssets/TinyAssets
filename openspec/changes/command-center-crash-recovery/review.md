@@ -20,7 +20,7 @@ Peer verdict: ADAPT. No claim that the peer approved the subsequent edits.
 
 The review found draft owner/home/agent fencing, retry bounds, independent controls,
 module allowlisting and same-origin redirects sound. Final verification is recorded
-in verification.md. Integrator disposition: findings addressed, pending final tests.
+in verification.md. Integrator disposition: APPROVE after addressing findings and passing final Windows/Linux tests (verification.md).
 
 ## Peer output
 
