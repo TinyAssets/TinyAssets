@@ -206,6 +206,11 @@ inbox replace it.
 #### Scenario: A new request arrives
 - **WHEN** a request arrives while the owner reads the latest messages
 - **THEN** it appears in the pending region without scrolling, and answering it uses the existing path
+- **AND** the conversation stays pinned to its latest message when the pending region appears or grows
+
+#### Scenario: A request arrives while reading older messages
+- **WHEN** the owner has scrolled up and a request arrives
+- **THEN** the conversation preserves the owner's scroll position
 
 ### Requirement: An owner surface never vanishes silently
 

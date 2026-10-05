@@ -30,7 +30,6 @@ def test_pending_requests_at_latest_and_new_arrival_answer(app_url, browser, wid
             return {receipt:'Accepted.'};
         };
         sendTurn = async (...args) => { relays.push(args); };
-        renderRail(asks);
         for(let i=0;i<100;i++) appendMessage(i%2?'founder':'agent',
             'History message '+i+' with enough text to fill the conversation.');
     }""")
@@ -51,7 +50,15 @@ def test_pending_requests_at_latest_and_new_arrival_answer(app_url, browser, wid
             'el => el.scrollHeight > el.clientHeight * 5')
         assert page.locator('#thread').evaluate(
             'el => Math.abs(el.scrollHeight - el.clientHeight - el.scrollTop) < 2')
+        thread = page.locator('#thread').bounding_box()
+        last = page.locator('#thread .msg').last.bounding_box()
+        assert last is not None
+        # A tall message may exceed the compact cloud; its ending stays visible.
+        assert thread['y'] < last['y'] + last['height']
+        assert last['y'] + last['height'] <= thread['y'] + thread['height'] + 1
 
+    at_latest()
+    page.evaluate('renderRail(asks)')
     at_latest()
     in_view('#rail-items .rtab:nth-child(1) .rtab-btn')
     in_view('#rail-items .rtab:nth-child(2) .rtab-btn')
@@ -60,11 +67,13 @@ def test_pending_requests_at_latest_and_new_arrival_answer(app_url, browser, wid
     if expanded:
         page.get_by_role('button', name='API Reconnect LinkedIn').click()
         page.locator('#fb_reconnect').fill('Unsent note')
+    at_latest()
     page.evaluate("""() => {
         asks.push({request_id:'new',kind:'API',title:'A new request',fields:[]});
         renderRail(asks);
     }""")
     in_view('#rail-items .rtab:nth-child(3) .rtab-btn')
+    at_latest()
     if expanded:
         assert page.locator('#fb_reconnect').input_value() == 'Unsent note'
     page.get_by_role('button', name='API A new request').click()
@@ -78,4 +87,11 @@ def test_pending_requests_at_latest_and_new_arrival_answer(app_url, browser, wid
     assert page.locator('#rail-items .rtab').count() == 2
     in_view('#rail-items .rtab:nth-child(1) .rtab-btn')
     in_view('#rail-items .rtab:nth-child(2) .rtab-btn')
+    # A poll must also leave someone reading older messages where they were.
+    old_scroll = page.locator('#thread').evaluate('el => (el.scrollTop = 200)')
+    page.evaluate("""() => {
+        asks.push({request_id:'while-reading',kind:'API',title:'Later request',fields:[]});
+        renderRail(asks);
+    }""")
+    assert page.locator('#thread').evaluate('el => el.scrollTop') == old_scroll
     page.close()
