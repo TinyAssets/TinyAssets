@@ -4894,7 +4894,18 @@
       return;
     }
     line.textContent="Saved conversation snapshot. This app cannot tell which saved reply, "+
-      "if any, answers the unconfirmed message. Nothing was sent or marked complete.";
+      "if any, answers the unconfirmed message. Nothing was sent or marked complete. ";
+    // Folded by default (founder 2026-10-04: the expanded snapshot buried the
+    // live chat and could not be collapsed). The turns stay one tap away.
+    const shown=[];
+    const fold=document.createElement("button");
+    fold.className="btn btn--link"; fold.textContent="Show "+turns.length+" saved turns";
+    fold.addEventListener("click",()=>{
+      const open=fold.textContent.indexOf("Show")===0;
+      shown.forEach(el=>{ el.style.display=open?"":"none"; });
+      fold.textContent=(open?"Hide ":"Show ")+turns.length+" saved turns";
+    });
+    line.appendChild(fold);
     for(const turn of turns){
       if(!turn||typeof turn.text!=="string")continue;
       const label=document.createElement("div");
@@ -4903,6 +4914,8 @@
         (turn.truncated?" (saved preview is shortened)":"");
       const content=document.createElement("pre");
       content.style.whiteSpace="pre-wrap";content.textContent=turn.text;
+      label.style.display="none"; content.style.display="none";
+      shown.push(label,content);
       line.appendChild(label);line.appendChild(content);
     }
   }
@@ -4923,6 +4936,11 @@
     };
     look.addEventListener("click",note.checkSavedConversation);
     note.appendChild(document.createTextNode(" ")); note.appendChild(look);
+    // The notice never traps the thread: the owner can always put it away.
+    const dismiss=document.createElement("button");
+    dismiss.className="btn btn--link"; dismiss.textContent="Dismiss";
+    dismiss.addEventListener("click",()=>note.remove());
+    note.appendChild(document.createTextNode(" ")); note.appendChild(dismiss);
     // A background watchdog can settle just AFTER the visibility event. Check
     // then too, otherwise that return to the app still leaves the reply hidden.
     if(document.visibilityState==="visible" && navigator.onLine!==false)

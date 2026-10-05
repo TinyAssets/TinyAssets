@@ -97,8 +97,18 @@ MIN_RAN_FLOORS = {
 # new skips, with no other change. All six execute and pass in the same head's
 # linux-jail-proof run 37231177806 (100 cases, zero skips); its marker assertion
 # requires every real_jail case. Ordinary shards still have no bubblewrap.
+# 2026-10-04: #4316 runs the six required shards inside the Linux oracle
+# container (uid 1001, Chromium in the image) instead of on the bare runner. The
+# oracle runs execute 26,296 cases against 26,207 on the bare runner (50 more
+# collected, 39 fewer skipped: 95 against 134). Measured summed seconds: bare-runner
+# main run 37241639736 = 2128s; #4457 on the bare runner (41+/5- across four files)
+# failed at 2413s (37243264963); oracle runs 37243158547 = 2397s and #4316's
+# whole-surface 37243991116 = 2596s, both passing every test. 3000s is a
+# provisional cap 15.6% above the highest measurement, still low enough to catch a
+# material slowdown. Why the bare-runner total rose from 1431-1509s (10-01, from
+# JUnit artifacts) is unexplained: docs/concerns/2026-10-04-required-suite-time-drift.md.
 MAX_REQUIRED_SKIPPED = 134
-MAX_TEST_SECONDS = 2400
+MAX_TEST_SECONDS = 3000
 #: Entries in the quarantine ledger, flaky or not. A quarantine that only grows
 #: is how a red build gets normalised.
 MAX_QUARANTINE = 63

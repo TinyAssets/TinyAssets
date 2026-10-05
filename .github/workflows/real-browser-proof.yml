@@ -10,12 +10,27 @@ name: real-browser-proof
 # event; only Chromium can.
 #
 # The required shards install Chromium and assert these cases in their union.
-# This job provides the same proof before a PR enters the merge queue. It
-# installs Playwright and Chromium on a disposable GitHub-hosted Ubuntu VM and
-# FAILS unless EVERY case marked `@pytest.mark.real_browser` is present in
-# JUnit with no skip, failure or error. The marker is the only list: a new
-# browser proof joins by carrying it (and adding its file to `paths:` below so
-# it retriggers).
+# This job provides the same proof before a PR enters the merge queue. It runs
+# them on a disposable GitHub-hosted Ubuntu VM and FAILS unless EVERY case
+# marked `@pytest.mark.real_browser` is present in JUnit with no skip, failure
+# or error. The marker is the only list: a new browser proof joins by carrying
+# it (and adding its file to `paths:` below so it retriggers).
+#
+# WHERE IT RUNS: the Linux oracle container, as uid 1001, exactly as
+# linux-jail-proof does (see that workflow's header for the venue and why).
+# The custom-UI preview proofs launch Chromium inside a real bubblewrap jail,
+# and the hosted VM refuses the runner user namespaces, so on the bare runner
+# every one of them SKIPPED (run 37187940339). The oracle image carries the
+# `browser` extra and Chromium (docker/linux-oracle.Dockerfile); the container
+# gets the same per-container exceptions as linux-jail-proof and nothing more:
+# seccomp and systempaths unconfined, plus the named `ta-jail-userns` AppArmor
+# profile. Those are broad exceptions for one throwaway container, not an
+# allowlist. No host sysctl, no privileged container, no added capability.
+# Chromium keeps its own sandbox. If no jail can be made the oracle exits 3
+# before pytest starts and the job is red; nothing retries or falls back.
+#
+# After the marked cases it runs ALL of tests/test_ui_preview.py and fails
+# unless every collected case in that module executed.
 #
 # It is cloud-only test infrastructure: no deployment, no production surface,
 # no account secrets, no self-hosted runner, never the founder's desktop.
@@ -34,10 +49,14 @@ on:
       # This job and its assertion helper.
       - ".github/workflows/real-browser-proof.yml"
       - "scripts/ci_assert_junit_case.py"
+      # The venue.
+      - "scripts/linux_oracle.py"
+      - "docker/linux-oracle.Dockerfile"
       # The custom-UI frame: the sandbox attribute, the frame document and its
       # headers, and the page that hosts it.
       - "tinyassets/onboarding/app_ui.js"
       - "tinyassets/onboarding/ui_frame.py"
+      - "tinyassets/ui_preview.py"
       - "tinyassets/onboarding/app.html"
       - "pyproject.toml"
       # The proofs.
@@ -51,6 +70,7 @@ on:
       - "tests/test_app_two_surfaces_browser.py"
       - "tests/test_command_center_system_browser.py"
       - "tests/test_custom_ui_real_browser.py"
+      - "tests/test_ui_preview.py"
       - "tests/test_connect_free_ai_real_browser.py"
   workflow_dispatch:
 
@@ -72,9 +92,11 @@ jobs:
     # skipped job reports `conclusion=skipped` and branch protection accepts
     # that as satisfied.
     if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
-    # Ephemeral GitHub-hosted VM only, never self-hosted.
+    # Ephemeral GitHub-hosted VM only, never self-hosted. The proofs run in a
+    # throwaway container as uid 1001 (see the header).
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # Two oracle runs plus the image build (Chromium and its system libraries).
+    timeout-minutes: 30
 
     steps:
       - uses: actions/checkout@v4
@@ -88,20 +110,27 @@ jobs:
           cache-dependency-path: pyproject.toml
 
       - name: Install the project and Playwright
+        # On the host only to collect the cases and read the JUnit; the proofs
+        # themselves, and Chromium, run in the container.
         run: |
           python -m pip install --upgrade pip
           pip install -e '.[dev,browser]'
 
-      - name: Cache the Playwright browser
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/ms-playwright
-          key: ms-playwright-${{ runner.os }}-${{ hashFiles('pyproject.toml') }}
-
-      - name: Install Chromium
-        # --with-deps installs the system libraries Chromium needs (apt); the
-        # browser itself comes from the cache when the pinned version matches.
-        run: python -m playwright install --with-deps chromium
+      - name: Allow user namespaces for the jail container only
+        env:
+          PROFILE: ${{ runner.temp }}/ta-jail-userns
+        run: |
+          set -euo pipefail
+          # Unconfined like Docker's apparmor=unconfined, plus the one permission
+          # the kernel's userns restriction withholds. Applied only to the
+          # containers below, by name.
+          printf '%s\n' \
+            'abi <abi/4.0>,' \
+            'include <tunables/global>' \
+            'profile ta-jail-userns flags=(unconfined) {' \
+            '  userns,' \
+            '}' > "$PROFILE"
+          sudo apparmor_parser -r "$PROFILE"
 
       - name: Run the real-browser proofs
         env:
@@ -118,9 +147,14 @@ jobs:
             exit 1
           fi
           mkdir -p "$OUT_DIR"
-          python -m pytest "${files[@]}" -m real_browser -q -p no:cacheprovider \
-            -o junit_family=xunit1 --basetemp "$RUNNER_TEMP/b" \
-            --junitxml "$OUT_DIR/junit-real-browser.xml"
+          # scripts/linux_oracle.py builds the oracle image, runs as uid 1001,
+          # probes bubblewrap first (exit 3, pytest never starts, if no jail can
+          # be made) and passes pytest's exit code through.
+          python scripts/linux_oracle.py --out "$OUT_DIR" --apparmor ta-jail-userns \
+            --env TINYASSETS_DATA_DIR=/tmp/ta-data \
+            -- "${files[@]}" -m real_browser -q -p no:cacheprovider \
+            -o junit_family=xunit1 --basetemp /tmp/b \
+            --junitxml /out/junit-real-browser.xml
 
       - name: Assert every real-browser case executed (a skip is not a pass)
         # Runs even when pytest is red so the summary names each case's state.
@@ -135,10 +169,50 @@ jobs:
             --label real-browser-proof \
             --summary "$GITHUB_STEP_SUMMARY"
 
+      - name: Run the complete preview containment module
+        env:
+          OUT_DIR: ${{ runner.temp }}/browser-out
+        run: |
+          set -euo pipefail
+          mkdir -p "$OUT_DIR"
+          # No marker and no -k: the whole module, jailed and unjailed cases alike.
+          python scripts/linux_oracle.py --out "$OUT_DIR" --apparmor ta-jail-userns \
+            --env TINYASSETS_DATA_DIR=/tmp/ta-data \
+            -- tests/test_ui_preview.py -q -p no:cacheprovider \
+            -o junit_family=xunit1 --basetemp /tmp/b \
+            --junitxml /out/junit-preview.xml
+
+      - name: Assert every preview case executed (a skip is not a pass)
+        if: always()
+        env:
+          JUNIT_PATH: ${{ runner.temp }}/browser-out/junit-preview.xml
+        run: |
+          set -euo pipefail
+          # Every case the module collects, by node id; absent, skipped, failed
+          # or errored fails the job.
+          listed="$(python -m pytest tests/test_ui_preview.py --collect-only -q -p no:cacheprovider)"
+          mapfile -t cases < <(printf '%s\n' "$listed" | awk '/^tests\/test_ui_preview.py::/')
+          if [ "${#cases[@]}" -eq 0 ]; then
+            echo "::error::no preview test cases collected"
+            exit 1
+          fi
+          args=()
+          for case in "${cases[@]}"; do args+=(--nodeid "$case"); done
+          python scripts/ci_assert_junit_case.py --junit "$JUNIT_PATH" \
+            --label preview-containment "${args[@]}" --summary "$GITHUB_STEP_SUMMARY"
+
       - name: Upload junit
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: junit-real-browser-proof
           path: ${{ runner.temp }}/browser-out/junit-real-browser.xml
+          if-no-files-found: warn
+
+      - name: Upload preview junit
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: junit-preview-containment
+          path: ${{ runner.temp }}/browser-out/junit-preview.xml
           if-no-files-found: warn

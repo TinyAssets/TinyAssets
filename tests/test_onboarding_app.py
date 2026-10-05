@@ -2247,7 +2247,7 @@ def test_a_held_message_is_restored_on_an_empty_thread(tmp_path):
     assert [m["role"] for m in out["messages"]] == ["founder"]          # once, not twice
     notes = [n for n in out["notes"] if "msg--system" in n["cls"]]
     assert len(notes) == 1 and "never confirmed" in notes[0]["text"]
-    assert notes[0]["buttons"] == ["Send it again", "Check saved conversation"]
+    assert notes[0]["buttons"] == ["Send it again", "Check saved conversation", "Dismiss"]
 
 
 def test_a_held_message_is_restored_when_the_peek_fails(tmp_path):
@@ -2648,7 +2648,7 @@ def test_an_offer_below_an_unconfirmed_turn_leaves_that_turn_alone(tmp_path):
     assert out["callsAfterRestore"] == []
     unconfirmed = [n for n in out["notes"] if "never confirmed" in n["text"]]
     assert unconfirmed and unconfirmed[0]["buttons"] == [
-        "Send it again", "Check saved conversation",
+        "Send it again", "Check saved conversation", "Dismiss",
     ]
     assert out["converseCalls"] == [line]
     assert out["inflight"]["message"] == "first"                # A's record survived B's send

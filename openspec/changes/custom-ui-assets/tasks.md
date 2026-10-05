@@ -11,7 +11,9 @@
 
 ## 2. Visual self-check (C)
 
-- [ ] 2.1 `render_ui`: headless render of the owner's own UI with no network but the platform origin; screenshot, fps, console errors
+- [x] 2.1 Harness `read` shows images, bounded by one shared helper (#4306)
+- [x] 2.2 `read_graph target="app_ui_preview"`: headless render of the owner's own UI, no network; screenshot to /u/previews, fps, errors
+- [ ] 2.3 chromium-headless-shell in the daemon image (interim; box image later)
 
 ## 3. Remaining
 

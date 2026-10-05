@@ -171,11 +171,21 @@ def _listener(banner: bytes, family=socket.AF_INET, address=("127.0.0.1", 0)):
                 except OSError:
                     pass
 
-    threading.Thread(target=serve, daemon=True).start()
+    thread = threading.Thread(target=serve, daemon=True)
+    thread.start()
 
     def close():
         stop.set()
+        # close() alone leaves another thread blocked in accept() holding the
+        # Linux socket binding. Wake it before closing so fixture IDs can be
+        # reused without leaking an abstract address or a listener thread.
+        try:
+            srv.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
         srv.close()
+        thread.join(timeout=1)
+        assert not thread.is_alive(), "fixture listener did not stop"
 
     return srv, close
 

@@ -510,6 +510,22 @@ def test_visual_preview_has_no_owner_bridge_and_copy_requires_visible_consent(
         assert get_app_ui(home, owner_user_id=OWNER, universe_id=UNIVERSE) == publisher_ui
         assert get_definition(home, publication["agent_definition_id"]) == source
         assert _bob_files(home) == before_files
+        # Hold only selection persistence: choose() renders before saving. A
+        # visible frame must not be mistaken for a durable choice on fast hosts.
+        selection_before = get_app_ui(
+            home, owner_user_id=BOB, universe_id=BOB_UNIVERSE)["ui_selection"]
+        page.evaluate("""()=>{
+          const call=MCP.callTool;
+          const saved=new Promise(resolve=>{window.releaseSelectionSave=resolve;});
+          MCP.callTool=async(name,args)=>{
+            if(args.target==='app_ui' && args.operation==='save' &&
+               Object.hasOwn(JSON.parse(args.payload_json),'ui_selection')){
+              window.selectionSaveHeld=true;
+              await saved;
+            }
+            return call(name,args);
+          };
+        }""")
         page.get_by_role("button", name="Open copied screen", exact=True).click()
         expect(page.frame_locator("#ui-frame").get_by_role(
             "heading", name="Village skyline")).to_be_visible()
@@ -517,6 +533,15 @@ def test_visual_preview_has_no_owner_bridge_and_copy_requires_visible_consent(
                                 exact=True)).to_be_visible()
         assert any(c["ui_id"] == "my-own" for c in get_app_ui(
             home, owner_user_id=BOB, universe_id=BOB_UNIVERSE)["ui_library"])
+        page.wait_for_function("window.selectionSaveHeld===true")
+        assert get_app_ui(home, owner_user_id=BOB, universe_id=BOB_UNIVERSE)[
+            "ui_selection"] == selection_before
+        page.evaluate("window.releaseSelectionSave()")
+        # The success status follows the server's confirmed save. Reload only
+        # after this acknowledgement, retaining the original visible-frame proof.
+        expect(page.locator("#ui-status")).to_have_text("Now using Village.")
+        saved = get_app_ui(home, owner_user_id=BOB, universe_id=BOB_UNIVERSE)
+        assert saved["ui_selection"]["ui_id"] == saved["ui_library"][-1]["ui_id"]
         page.evaluate("sessionStorage.clear()")
         _enter(page, origin)
         expect(page.frame_locator("#ui-frame").get_by_role(
