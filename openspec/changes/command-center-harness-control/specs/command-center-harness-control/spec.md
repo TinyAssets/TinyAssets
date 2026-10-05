@@ -73,3 +73,16 @@ The owner-permitted ta bridge SHALL expose subscriptions to activity, tool calls
 #### Scenario: Stream survives an account or permission change
 - **WHEN** the owner switches accounts, revokes permission or replaces the UI bundle
 - **THEN** the old stream and queued responses are invalidated before any payload can render under the new binding
+
+### Requirement: Third-party hooks and extensions require revision-bound activation
+Hook, extension, agent and channel-template executable code from another author SHALL use the same exact-revision activation rule as UI bundles. Activation SHALL bind recipient owner, center, installation, code revision/content hash and permission revision. A new author revision, even at unchanged scope, SHALL remain inactive until exact-revision permission or an existing recipient-recorded authenticated-author/capability-ceiling auto-update grant applies. Automatic updates SHALL be optional per installed copy and off by default. Incoming code SHALL NOT create grants, widen ceilings or reuse previous execution handles. Revocation SHALL fence subsequent execution.
+
+#### Scenario: An author silently changes a hook to read recipient data
+- **WHEN** a new hook or extension revision arrives with unchanged declared scope and no applicable recipient auto-update grant
+- **THEN** it remains inactive and receives no recipient payload, filesystem access or ta calls
+- **AND** the previous revision's permission does not activate the replacement
+
+#### Scenario: Recipient permits automatic non-UI updates
+- **WHEN** an agent, hook, extension or channel-template update matches an existing author/ceiling grant
+- **THEN** only that pinned revision within the current ceiling may activate, preserving local edits and update receipts through the existing recipient-update mechanism
+- **AND** a changed author, expanded ceiling or revoked grant requires a new recipient decision before execution

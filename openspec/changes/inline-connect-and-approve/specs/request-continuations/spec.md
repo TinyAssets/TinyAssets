@@ -163,7 +163,7 @@ The server-side owner-control coordinator SHALL own the exclusive owner/home loc
 - **THEN** the live turn is interrupted and the response explicitly reports retryable incomplete approval-task invalidation
 
 ### Requirement: Scoped grants distinguish action classes and exact sites
-Grant evaluation SHALL bind read, write (including destructive detail) and spend classifications to owner, initiating agent, connection incarnation, destination predicate, scope and expiry. Site scope SHALL cover only the displayed exact origin and permitted operations until its displayed deadline or revocation. Always SHALL cover only the displayed connector/action predicate until revoked. Untrusted tool hints SHALL NOT downgrade effects into read-only authority. From this change onward, spend and effects not classifiable as non-spend by the trusted operation contract SHALL offer only Allow once / Deny bound to merchant, exact total including fees, currency and current quote revision/expiry. Unknown totals or unavailable exact-total enforcement SHALL refuse execution visibly, including before exact-total-spend-rail is implemented. Task/site/always preapproval SHALL NOT authorize these effects. This payment contract qualifies the general owner-rule behavior; known non-spend operations retain editable approval policy.
+Grant evaluation SHALL bind read, write (including destructive detail) and spend classifications to owner, initiating agent, connection incarnation, destination predicate, scope and expiry. Site scope SHALL cover only the displayed exact origin and permitted operations until its displayed deadline or revocation. Always SHALL cover only the displayed connector/action predicate until revoked. Owner-declared tool/effect classification SHALL be trusted. Tool hints alone cannot grant authority; unknown effects SHALL follow the owner's editable default (starter default: ask through the approval sheet), never refusal merely for being unknown. Exact-total once-only approval is the editable starter default for payments, not an immutable platform rule. The owner SHALL be able to authorize a spend grant bounded by an owner-editable budget cap, destination/action scope and expiry; dispatch rechecks that grant and atomically reserves against the cap. Unknown payment totals need an enforceable maximum within that grant, or return to the owner's approval sheet. Cross-user isolation is the only immutable platform behavioral invariant.
 
 #### Scenario: A site grant encounters another destination or action class
 - **WHEN** a read grant for one exact origin encounters a redirect to another origin, a write, another connection incarnation or a revoked grant
@@ -173,7 +173,12 @@ Grant evaluation SHALL bind read, write (including destructive detail) and spend
 - **WHEN** a once reservation is consumed or a task reaches its generation end, Stop or deadline
 - **THEN** that grant cannot authorize further effects; no site/always grant resurrects the cancelled pending request
 
-#### Scenario: Spend support has not shipped or classification is unknown
-- **WHEN** an action spends or cannot be classified as non-spend and exact-total enforcement is unavailable or its final total is unknown
-- **THEN** execution is refused visibly and no task/site/always grant is offered or accepted
-- **AND** implementing the later spend rail cannot retroactively authorize this request
+#### Scenario: An unknown tool follows owner policy
+- **WHEN** an unregistered MCP tool has no known effect classification
+- **THEN** the starter policy opens the approval sheet instead of refusing it
+- **AND** an owner declaration or edited default can authorize standing use without platform registration
+
+#### Scenario: Owner authorizes bounded standing spend
+- **WHEN** the owner replaces the once-only starter default with a spend grant and budget cap
+- **THEN** eligible payments within its current scope, expiry and remaining cap proceed without another once decision
+- **AND** concurrent reservations cannot exceed the cap; revocation or a cap reduction fences unsent dispatch

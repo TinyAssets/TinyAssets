@@ -1,7 +1,7 @@
 ## ADDED Requirements
 
 ### Requirement: Requests appear inline at the point of need
-Foreground asks raised from chat SHALL open one revision-aware protected approval sheet at the point of need, identifying the requesting agent and originating turn. Connect SHALL show plain-word scope and Connect / Not now. Ask-first approval SHALL show the protected purpose, action class, destination, editable draft, expiry and Allow once / Allow for this task / Allow for this site / Always allow / Deny. Spend and effects not classifiable as non-spend SHALL expose only Allow once / Deny with the exact-total contract in request-continuations; unavailable enforcement or unknown totals SHALL visibly prevent approval. Duplicate connect entry points SHALL focus the same connect card. Background asks while the owner is away SHALL enter a small Needs you inbox with push notifications and open the same sheet on selection. The side requests panel and history rail SHALL be removed; receipts SHALL remain in ordinary activity history. Failure SHALL retain the request/draft with Try again / available alternative / skip. Existing owner-gated refresh transport SHALL remain in use.
+Foreground asks raised from chat SHALL open one revision-aware protected approval sheet at the point of need, identifying the requesting agent and originating turn. Connect SHALL show plain-word scope and Connect / Not now. Ask-first approval SHALL show the protected purpose, action class, destination, editable draft, expiry and Allow once / Allow for this task / Allow for this site / Always allow / Deny. Owner-declared tool/effect classification SHALL be trusted. Tool hints alone cannot grant authority; unknown effects SHALL follow the owner's editable default (starter default: ask through the approval sheet), never refusal merely for being unknown. Exact-total once-only approval is the editable starter default for payments, not an immutable platform rule. The owner SHALL be able to authorize a spend grant bounded by an owner-editable budget cap, destination/action scope and expiry; dispatch rechecks that grant and atomically reserves against the cap. Unknown payment totals need an enforceable maximum within that grant, or return to the owner's approval sheet. Cross-user isolation is the only immutable platform behavioral invariant. Duplicate connect entry points SHALL focus the same connect card. Background asks while the owner is away SHALL enter a small Needs you inbox with push notifications and open the same sheet on selection. The side requests panel and history rail SHALL be removed; receipts SHALL remain in ordinary activity history. Failure SHALL retain the request/draft with Try again / available alternative / skip. Existing owner-gated refresh transport SHALL remain in use.
 
 #### Scenario: Request appears on a phone
 - **WHEN** the app refreshes a connection or owner-rule approval request
@@ -119,3 +119,13 @@ The app SHALL project unresolved protected requests into Needs you and send dedu
 #### Scenario: Push is repeated or stale
 - **WHEN** a notification is retried after denial, expiry, Stop or an answer elsewhere
 - **THEN** it opens current status without dispatching the stale action or exposing approval tokens, secrets or another owner's request
+
+## ADDED Requirements
+
+### Requirement: One connect card supports labelled accounts and auth shapes
+Chat and settings SHALL focus the same bound connect card for OAuth, API key, MCP and supported basic/none shapes. Multiple labelled accounts SHALL retain independent connection IDs/incarnations. Shape changes SHALL invalidate prior staged credentials and approval while preserving safe draft fields. Transport and custody implementations SHALL consume this card rather than create duplicate entry points.
+
+#### Scenario: Owner connects a second account or changes auth shape
+- **WHEN** the owner adds a second account or switches the draft's auth shape
+- **THEN** the existing account remains intact and stale staged credentials/approval cannot finalize the changed draft
+- **AND** ambiguous account selection requests an explicit choice rather than silently using the first account

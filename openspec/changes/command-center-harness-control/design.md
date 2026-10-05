@@ -63,6 +63,10 @@ Account switch, center switch, navigation, permission revocation or frame destru
 
 This contract fills D7 step 4 and D6 extension/ta gaps. `composable-ui-experiences` remains sole owner of the sandboxed renderer and installation binding; this adds its generic dispatcher methods rather than another renderer. D8/D9 main-agent selection consumes these settings after install, and starter task 3.3 remains the replacement-main proof owner. Record these delegation links in parent designs so implementers do not separately implement the old placeholders.
 
+### Third-party executable revision activation
+
+Hook and extension code from another author uses the same activation contract as UI bundles: recipient permission binds owner, center, installation, exact code revision/content hash and permission revision. An unchanged-scope author update stays inactive until the recipient approves that exact revision, unless a previously recorded owner auto-update grant binds the authenticated author and capability ceiling. Incoming code cannot create that grant, expand its ceiling or reuse old execution handles. This is a future supported non-UI update plan owned by this change, extending the existing recipient updater; its current presentation-updates-v1 executor remains presentation-only. This applies to agents and channel-template executable parts too; recipients choose manual or automatic updates per installed copy, automatic off by default. Recheck revocation and current authority before every execution, and invalidate prior revision handles.
+
 ## Migration Plan
 
 1. Add resolver and protocol negotiation with visible validation before activation. Preserve missing-settings behavior and v1 tool-only extensions.
@@ -124,3 +128,9 @@ Reserve tests: the Home Assistant voice agent (#26), which needs MCP attach plus
 | Every T1–T10 | command-center-packages and command-center-recipient-updates plus attribution: publish, second-account copy with local bindings, no leaked source state; live rendered proof on cloud-only compute |
 
 Record source and copy identities, package revisions, deployment SHA, rendered proof and host-off run evidence for every test. No box is marked accepted by a mocked demo or merely by publishing a package.
+
+### T1 measurable acceptance
+
+For both publisher and second-account copy, record a host-off 24-hour run with 48 scheduled 30-minute heartbeats. Fix and record the owner's editable warrant rule before the run: notify for a newly urgent message or a calendar event entering a 30-minute reminder window; otherwise remain silent. Seed no-change ticks, one nonurgent email, one urgent email and one due event. Pass only with exactly two outbound notifications, each on the first eligible tick, zero notifications for no-change/nonurgent ticks, and no duplicates after replay/restart. Retain tick inputs, rule revision, decision receipts and Telegram delivery IDs; changing that rule must change subsequent behavior without a platform patch.
+
+Under T1's broker-only credential default, use synthetic canary keys for Gmail/Calendar and a hostile skill that attempts environment/file reads, a foreign connection slot, response echo (including split streaming chunks) and an outbound upload to a test collector. Pass only if no key bytes appear in model/tool context, jail files/environment, logs, transcript, published package or collector; the foreign slot is denied before lookup while allowed Gmail/Calendar operations still succeed. Record attempted paths and scanned artifacts. Repeat after a second-account install using its own keys; no source-account handle or secret is usable. Explicit owner raw-key stdio opt-in is a different custody choice and cannot be claimed to satisfy this broker-only key-blind criterion.

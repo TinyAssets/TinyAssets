@@ -21,4 +21,4 @@ None; consume the existing owning contracts below.
 
 Planning owner: Codex. Branch: `spec/muse-pi-gap-proposals`. Proposal-only follow-up requested 2026-10-04; no product code, deployment or PR. Future implementation: one separately claimed worktree/branch/PR for this intent.
 
-connect-anything-ladder owns MCP/card/custody; inline-connect-and-approve owns protected decisions; existing egress broker owns destination enforcement. This changes no public top-level MCP handle.
+connect-anything-ladder owns MCP/secret custody; inline-connect-and-approve owns the sole connect card and protected decisions; existing egress broker owns destination enforcement. This changes no public top-level MCP handle.

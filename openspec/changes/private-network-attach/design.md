@@ -4,7 +4,7 @@ Sources: [Muse connection methods](../../../docs/design-notes/2026-10-04-muse-co
 
 ## Goals / Non-Goals
 
-Private and self-hosted APIs/MCP servers need a generic owner-network route without exposing platform infrastructure or requiring a device app. connect-anything-ladder owns MCP/card/custody; inline-connect-and-approve owns protected decisions; existing egress broker owns destination enforcement. This changes no public top-level MCP handle. No platform LLM or provider-specific compute/integration path.
+Private and self-hosted APIs/MCP servers need a generic owner-network route without exposing platform infrastructure or requiring a device app. connect-anything-ladder owns MCP/secret custody; inline-connect-and-approve owns the sole connect card and protected decisions; existing egress broker owns destination enforcement. This changes no public top-level MCP handle. No platform LLM or provider-specific compute/integration path.
 
 ## Decisions
 

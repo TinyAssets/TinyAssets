@@ -1264,8 +1264,10 @@ it was before D6a.
 
 **Attached MCP follow-up (delegated, no partial adapter).** The proposed
 `connect-anything-ladder` change now owns the D6 attachment storage, activation,
-transport and D5 browser-login custody extension. D5 retains browser/live-view
-implementation; D6 retains ta. Its delta must land before implementation. Reserve
+transport and MCP OAuth/secret entry. `browser-login-custody` separately owns
+the login custody extension, gated on completed D5 browser/live-view;
+`saved-agent-connectors` owns tested reusable extensions after MCP custody.
+D6 retains ta. Each delta must land before its implementation. Reserve
 `mcp:<attachment>:<tool>` for tools/list descriptions and tools/call. An owner
 attachment should declare either `stdio: {argv, cwd}` (executed inside the
 same jail with its cleared environment), or `http: {connection_id, endpoint}`

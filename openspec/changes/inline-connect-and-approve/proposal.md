@@ -5,7 +5,7 @@ The bubble is always-present plumbing: emergency control and conversation with e
 ## What Changes
 
 - **Founder decision 2026-10-04:** foreground asks open a protected approval sheet at the point of need; away/background asks enter a small Needs you inbox with push notifications. Remove the side requests panel and its history rail; retain ordinary activity receipts and consolidate connect entry points.
-- Bind previews to protected normalized actions; Approve executes server-side and Edit revalidates. Once is a decision; task/site/always reuse owner rules with explicit scope and expiry. All scopes recheck the applicable policy digest at dispatch and refuse stale approval. Spend/unclassified effects require the exact-total once-only contract immediately; missing enforcement or unknown totals refuse execution even before the payment rail ships.
+- Bind previews to protected normalized actions; Approve executes server-side and Edit revalidates. Once is a decision; task/site/always reuse owner rules with explicit scope and expiry. All scopes recheck the applicable policy digest at dispatch and refuse stale approval. Owner-declared tool/effect classification is trusted. Tool hints alone cannot grant authority; unknown effects follow the owner's editable default (starter default: ask through the approval sheet), never refusal merely for being unknown. Exact-total once-only approval is the editable starter default for payments, not an immutable platform rule. The owner may instead authorize a spend grant bounded by an owner-editable budget cap, destination/action scope and expiry; dispatch rechecks that grant and atomically reserves against the cap. Unknown payment totals need an enforceable maximum within that grant, or return to the owner's approval sheet. Cross-user isolation is the only immutable platform behavioral invariant.
 - Authenticate approval through protected interactive owner sessions and single-use bound tokens; an owner's bearer-holding chatbot cannot approve.
 - First-connect follow-up: reuse protected server-PKCE login for normal web app sign-in, establishing app renewal and owner proof together; preserve native's separate browser proof requirement.
 - Resume the saved active agent/task server-side after answers/results, with Stop/expiry invalidation and boot recovery through existing activity events until processed-ack, yielding one committed processing result per answer.
@@ -20,7 +20,7 @@ The bubble is always-present plumbing: emergency control and conversation with e
 
 ### Modified Capabilities
 
-- `onboarding-web-app`: protected inline cards, persistent emergency controls and server-completed popup/native sign-in.
+- `onboarding-web-app`: sole ownership of the unified chat/settings connect card, auth-shape switching and labelled multi-account selection, protected inline cards, persistent emergency controls and server-completed popup/native sign-in.
 - `live-mcp-connector-surface`: bound-action ask/read fields and an explicit boundary between automated bearer access and interactive approval; no new MCP handles.
 
 ## Impact

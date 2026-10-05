@@ -1,6 +1,6 @@
 ## Why
 
-Connection actions that spend money need an exact-total approval and reconciled payment receipt, not a reusable broad connector grant.
+Payments start with exact-total once-only approval and reconciled receipts; owners can replace that default with a budget-capped spend grant.
 
 ## What Changes
 
@@ -11,7 +11,7 @@ Connection actions that spend money need an exact-total approval and reconciled 
 
 ### New Capabilities
 
-- `exact-total-spend-rail`: Connection actions that spend money need an exact-total approval and reconciled payment receipt, not a reusable broad connector grant.
+- `exact-total-spend-rail`: Payments start with exact-total once-only approval and reconciled receipts; owners can replace that default with a budget-capped spend grant.
 
 ### Modified Capabilities
 

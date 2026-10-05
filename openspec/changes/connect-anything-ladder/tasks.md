@@ -1,24 +1,14 @@
-Implementation backlog only. Reuse inline-connect-and-approve request authority, D5 browser substrate, D6 ta, and L3/L4 card/skill work; no duplicate implementation of those lanes.
+Implementation backlog only. Card ownership belongs to inline-connect-and-approve; browser and saved extensions have separate changes.
 
-## 1. Connections and MCP
+## 1. MCP attach, secret entry and OAuth
 
-- [ ] 1.0 Consolidate L3/L4 into one chat/settings connect card branching on auth shape and a multi-account connections list; verify account selection, preserved independent connections and shape-switch invalidation.
-
-- [ ] 1.1 Extend existing connections with typed MCP/browser metadata, incarnation-scoped custody refs and migration; prove HTTP preservation, version refusal and rollback retaining cleanup access.
-- [ ] 1.2 Consume broker-streaming-contract for HTTP MCP OAuth metadata discovery, DCR/CIMD/static registration, PKCE/resource binding, initialization, paginated discovery, streaming calls and safe session renewal; verify cross-chunk secret scanning, cancellation/backpressure, stale catalog, auth failure and uncertain-call non-replay.
-- [ ] 1.3 Implement owner-activated stdio in the jail with protected secret-entry cards and broker-injected outbound auth and ta discovery/dispatch; verify raw-token-only servers fail visibly, exact configuration revision, identifier collisions, grant isolation and no host fallback.
-
-## 2. Browser and inline continuation
-
-- [ ] 2.1 Extend D5 with protected login capture and scoped surrogate handles; verify origin/session/expiry binding and passkey/challenge takeover without raw secrets to agent code.
-- [ ] 2.2 Suppress capture-context observation and credential artifacts, then restore only structured actions/sanitized page access; prove post-login evaluation/storage/CDP/network/profile reads are unavailable and cancellation/failure leave no captured credential artifacts.
-- [ ] 2.3 Integrate both shapes into existing inline requests/coordinator/continuation; verify Stop, account switching, revision changes, crash recovery, callback replay and one committed continuation result.
-- [ ] 2.4 Fence revocation before durable cleanup, expire staged custody and invalidate dependents on backing connection removal; verify reconnect cannot reuse old grants or browser sessions.
-
-## 3. Acceptance
-
-- [ ] 3.0 Save agent-authored API/OpenAPI connectors as tested extension revisions with declared secret slots, connection-list entries and revocation; verify failed/changed tests and credential-free exports.
-
-- [ ] 3.1 Coordinate L3/L4's generic card/skill and D10 distribution; connect an unknown MCP server and login-only site without per-platform code, including an unpowered direct-control path.
-- [ ] 3.2 Run cross-user/data-loss guard mutations and affected/heavy tests on Windows and Linux 3.11 oracle; preserve test names, run touched-Python ruff, regenerate mirror for tinyassets edits and pass hygiene with 0 removed / 0 tampering.
-- [ ] 3.3 Assert deployed implementation SHA, public canary and real-user inline MCP/browser connect/cancel/revoke pass; sync this capability and the parent delegation references after acceptance.
+- [ ] 1.1 Verify generic OAuth, streaming broker and existing request/card prerequisites; add typed MCP metadata preserving HTTP rows and rollback cleanup.
+- [ ] 1.2 Add MCP OAuth metadata discovery, PKCE/resource binding and DCR/CIMD/static registration without per-platform code; retain the optional provider directory.
+- [ ] 1.3 Consume streaming broker for initialization, paginated tools, streaming calls and safe renewal; verify cross-chunk scanning, cancellation and uncertain-call non-replay.
+- [ ] 1.4 Implement exact-revision jailed stdio and scoped proxy auth; support warned named-own-key opt-in, with grant/revision isolation and no host fallback.
+- [ ] 1.5 Implement protected secret entry and allowlisted egress slots with owner/incarnation checks and credential-free output/export.
+- [ ] 1.6 Wire ta catalog/dispatch and existing inline coordinator; verify stale catalogs, Stop, account switching, callback replay and crash recovery.
+- [ ] 1.7 Fence revocation before durable cleanup; preserve independent backing HTTP connections and prevent old-incarnation reuse.
+- [ ] 1.8 Connect an unknown MCP server through the existing card with multiple accounts and model-independent controls; prove owner-classified and unknown-effect editable defaults.
+- [ ] 1.9 Run affected/heavy tests, Linux oracle, ruff and hygiene (0 removed / 0 tampering).
+- [ ] 1.10 Assert deployed SHA, public canary and real-user MCP connect/cancel/revoke pass; sync capability and delegations.
