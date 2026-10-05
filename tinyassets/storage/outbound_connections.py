@@ -31,6 +31,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterable
 
 from tinyassets import __version__ as _tinyassets_version
+from tinyassets.mcp_attachment import SCHEMA as _MCP_SCHEMA
 from tinyassets.storage.workspace_authority import (
     is_git_scope,
     normalize_git_host,
@@ -5011,7 +5012,7 @@ def _contains_secret(value: object, secret: str) -> bool:
     return False
 
 
-_SCHEMA = """
+_SCHEMA = _MCP_SCHEMA + """
 CREATE TABLE IF NOT EXISTS outbound_connections (
     connection_id   TEXT PRIMARY KEY,
     owner_user_id   TEXT NOT NULL,
