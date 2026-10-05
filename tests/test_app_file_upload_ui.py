@@ -1569,7 +1569,8 @@ _TURN_LIFT = ("sendTurn",)
 _TURN_HARNESS = r"""
 // A minimal stand-in for the page around sendTurn: enough DOM and enough of
 // the app's own state that the SHIPPED function runs unmodified.
-const el = {"btn-send":{disabled:false}, "composer-input":{value:"", style:{}}};
+const el = {"thread":{children:[]},
+  "btn-send":{disabled:false}, "composer-input":{value:"", style:{}}};
 function $(id){ return el[id] || (el[id]={value:"", style:{}, disabled:false}); }
 const log = [];
 let turnStartedAt = 0;

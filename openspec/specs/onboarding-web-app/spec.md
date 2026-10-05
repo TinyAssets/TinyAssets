@@ -309,9 +309,21 @@ This additive metadata grants no authority and is not an idempotency key.
 Legacy rows remain readable without migration on read.
 
 Recovery MUST check the running turn first and match only nonempty equal IDs,
-never text or timestamps. Missing IDs retain the cautious resend offer. Only
-the matched exchange's reply is drawn. Focus, visibility and online events
-retry observations without replaying requests. Optional connection suggestions
+never text or timestamps. Missing IDs retain uncertainty without offering resend.
+Recovery SHALL retry read-only observations with exponential backoff (1 second
+through 30 seconds), while visible and online, including after a failed read.
+Focus, visibility and online events SHALL also retry observations. No recovery
+path SHALL automatically replay a request. A recent-history miss is not proof
+of non-delivery; only an explicit not-sent result may offer transport retry.
+
+A matching saved exchange SHALL clear its uncertainty notice and local inflight
+record. Other saved messages SHALL remain visible without confirming that send.
+Dismiss SHALL hide the notice immediately without stopping observation or blocking
+the composer. Repeated observations SHALL deduplicate saved rows and merge late
+arrivals by server timestamp with row ID breaking ties (the store's turn order).
+Local live messages SHALL append without trusting device/server clock alignment,
+preserving the chat-follow-latest behavior. Live sends and replies SHALL carry
+the send identity for display deduplication when later saved rows arrive. Optional connection suggestions
 MUST NOT appear as Open requests.
 
 #### Scenario: repeated short prompt

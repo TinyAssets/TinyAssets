@@ -405,4 +405,5 @@ def test_every_finished_turn_asks_the_ui_controller() -> None:
 
     app = Path("tinyassets/onboarding/app.html").read_text(encoding="utf-8")
     delivered = app.index("renderConverse(answer);")
-    assert "AppUI.turnSettled()" in app[delivered:delivered + 200]
+    settled = app.index("}catch(err)", delivered)
+    assert "AppUI.turnSettled()" in app[delivered:settled]
