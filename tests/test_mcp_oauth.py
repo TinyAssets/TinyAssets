@@ -11,11 +11,15 @@ from tests.test_generic_oauth_connections import (
     CHALLENGE,
     OWNER,
     REDIRECT,
+    TASKS_ASK,
     UID,
     VERIFIER,
+    _as,
+    _ask,
     _broker,
     _call,
     _connected,
+    _post,
     _vault_bundle,
     app,  # noqa: F401
     provider,  # noqa: F401
@@ -81,6 +85,177 @@ def test_registration_fallback_order(monkeypatch, cimd, static, expected):
 def test_no_supported_client_is_actionable():
     with pytest.raises(OAuthError, match="mcp_client_registration_required"):
         mcp.select_client({}, redirect_uri=REDIRECT)
+
+
+def test_mcp_pkce_is_server_held_and_bound_to_initiating_session(mcp_provider, app, monkeypatch):
+    import json
+
+    from tinyassets.connection_oauth import discovery, flow, pkce
+    from tinyassets.onboarding import owner_sessions, session_store
+
+    monkeypatch.setattr(session_store, "_key", b"s" * 32)
+    offer = mcp.discover(ENDPOINT, {"scopes": ["tasks.write"]})
+    monkeypatch.setattr(discovery, "resolve_offer", lambda *_: (offer, ""))
+    with _as(OWNER):
+        asked = _ask({**TASKS_ASK, "path_template": "/mcp"})
+        begun = _post("oauth_begin", {"request_id": asked["request_id"],
+                                     "code_challenge": CHALLENGE})
+        assert begun.status_code == 200, begun.text
+        handle = begun.json()["flow"]
+        query = parse_qs(urlsplit(begun.json()["authorize_url"]).query)
+        assert query["code_challenge"] != [CHALLENGE]
+        assert query["resource"] == [ENDPOINT]
+        with pkce.flows_db(app) as (conn, _):
+            stored = dict(conn.execute("SELECT * FROM connection_oauth_flows").fetchone())
+        assert stored["sealed_verifier"] and VERIFIER.encode() not in stored["sealed_verifier"]
+        assert stored["owner_session_hash"]
+        back = urlsplit(mcp_provider.authorize(begun.json()["authorize_url"]))
+        code = parse_qs(back.query)["code"][0]
+        # Another valid session for the same owner cannot redeem this flow.
+        with owner_sessions.store() as conn:
+            conn.execute("INSERT INTO owner_sessions VALUES (?,?,?)",
+                         ("different-session", json.dumps({"user_id": OWNER}), 4102444800))
+        with pytest.raises(flow.FlowError, match="initiating_session_changed"):
+            flow.complete(owner=OWNER, universe_id=UID, handle=handle, code=code,
+                          verifier=VERIFIER, owner_session={"session_hash": "different-session"})
+        assert not mcp_provider.api_calls
+        assert not [x for x in mcp_provider.seen if x[2] == "/token"]
+        # Browser verifier is not authority: the server uses its sealed verifier.
+        done = _post("oauth_exchange", {"flow": handle, "code": code,
+                                       "code_verifier": VERIFIER})
+        assert done.status_code == 200, done.text
+        assert _vault_bundle(app).resource == ENDPOINT
+        repeated = _post("oauth_exchange", {"flow": handle, "code": code,
+                                           "code_verifier": VERIFIER})
+        assert repeated.status_code == 404
+        assert len([x for x in mcp_provider.seen if x[2] == "/token"]) == 1
+
+
+def test_mcp_begin_requires_live_owner_session_before_registration(mcp_provider, app, monkeypatch):
+    from tinyassets.connection_oauth import discovery, flow
+
+    offer = mcp.discover(ENDPOINT, {})
+    monkeypatch.setattr(discovery, "resolve_offer", lambda *_: (offer, ""))
+    with _as(OWNER):
+        asked = _ask({**TASKS_ASK, "path_template": "/mcp"})
+        with pytest.raises(flow.FlowError, match="interactive_approval_required"):
+            flow.begin(owner=OWNER, universe_id=UID, request_id=asked["request_id"],
+                       challenge=CHALLENGE, public_resource="https://tinyassets.io/mcp")
+    assert not [x for x in mcp_provider.seen if x[2] == "/register"]
+
+
+def test_logout_during_mcp_token_exchange_prevents_deposit(mcp_provider, app, monkeypatch):
+    from tinyassets.connection_oauth import discovery, flow
+    from tinyassets.onboarding import owner_sessions, session_store
+
+    monkeypatch.setattr(session_store, "_key", b"s" * 32)
+    offer = mcp.discover(ENDPOINT, {})
+    monkeypatch.setattr(discovery, "resolve_offer", lambda *_: (offer, ""))
+    original_exchange = flow.exchange_code
+
+    def exchange(**kwargs):
+        result = original_exchange(**kwargs)
+        owner_sessions.revoke_owner(OWNER)
+        return result
+
+    monkeypatch.setattr(flow, "exchange_code", exchange)
+    with _as(OWNER):
+        asked = _ask({**TASKS_ASK, "path_template": "/mcp"})
+        begun = _post("oauth_begin", {"request_id": asked["request_id"],
+                                     "code_challenge": CHALLENGE}).json()
+        back = urlsplit(mcp_provider.authorize(begun["authorize_url"]))
+        code = parse_qs(back.query)["code"][0]
+        done = _post("oauth_exchange", {"flow": begun["flow"], "code": code,
+                                       "code_verifier": VERIFIER})
+        assert done.status_code == 403, done.text
+        from tinyassets.credential_vault import load_credential_vault
+        from tinyassets.storage.pending_requests import get_request
+
+        assert not load_credential_vault(app / UID)
+        assert get_request(app / UID, asked["request_id"])["status"] == "pending"
+
+
+def test_mcp_finalization_refuses_busy_owner_before_session_lock(mcp_provider, app, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    from contextlib import contextmanager
+    from threading import Event
+
+    from tinyassets.connection_oauth import discovery, flow
+    from tinyassets.onboarding import session_store
+    from tinyassets.owner_control import control
+
+    monkeypatch.setattr(session_store, "_key", b"s" * 32)
+    offer = mcp.discover(ENDPOINT, {})
+    monkeypatch.setattr(discovery, "resolve_offer", lambda *_: (offer, ""))
+    original_exchange, original_guard = flow.exchange_code, flow._session_guard
+    held, release = Event(), Event()
+    guards = []
+
+    @contextmanager
+    def guard(*args):
+        guards.append(True)
+        with original_guard(*args) as value:
+            yield value
+
+    def hold():
+        with control(app / UID):
+            held.set()
+            assert release.wait(10)
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        def exchange(**kwargs):
+            result = original_exchange(**kwargs)
+            pool.submit(hold)
+            assert held.wait(5)
+            return result
+
+        monkeypatch.setattr(flow, "exchange_code", exchange)
+        monkeypatch.setattr(flow, "_session_guard", guard)
+        try:
+            with _as(OWNER):
+                asked = _ask({**TASKS_ASK, "path_template": "/mcp"})
+                begun = _post("oauth_begin", {"request_id": asked["request_id"],
+                                             "code_challenge": CHALLENGE}).json()
+                back = urlsplit(mcp_provider.authorize(begun["authorize_url"]))
+                code = parse_qs(back.query)["code"][0]
+                done = _post("oauth_exchange", {"flow": begun["flow"], "code": code,
+                                               "code_verifier": VERIFIER})
+                assert done.status_code == 409, done.text
+                assert done.json()["error"] == "owner_control_unavailable"
+                assert len(guards) == 2  # Begin + flow take; final session lock never acquired.
+                from tinyassets.credential_vault import load_credential_vault
+
+                assert not load_credential_vault(app / UID)
+        finally:
+            release.set()
+
+
+def test_concurrent_legacy_flow_migration_is_atomic(tmp_path):
+    import sqlite3
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+
+    from tinyassets.connection_oauth import pkce
+
+    with sqlite3.connect(tmp_path / pkce._DB_NAME) as conn:
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("CREATE TABLE connection_oauth_flows ("
+                     "handle_digest TEXT PRIMARY KEY, owner_user_id TEXT NOT NULL, "
+                     "universe_id TEXT NOT NULL, request_id TEXT NOT NULL, "
+                     "action_digest TEXT NOT NULL, challenge TEXT NOT NULL, "
+                     "client_id TEXT NOT NULL, redirect_uri TEXT NOT NULL, "
+                     "created_at REAL NOT NULL, expires_at REAL NOT NULL)")
+    barrier = Barrier(4)
+
+    def migrate(_):
+        barrier.wait(timeout=5)
+        with pkce.flows_db(tmp_path) as (conn, _now):
+            assert conn.in_transaction
+            columns = {row[1] for row in conn.execute("PRAGMA table_info(connection_oauth_flows)")}
+            assert {"owner_session_hash", "sealed_verifier"} <= columns
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        list(pool.map(migrate, range(4)))
 
 
 def test_neighboring_resource_metadata_is_rejected(mcp_provider):

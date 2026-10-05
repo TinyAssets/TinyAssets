@@ -1,8 +1,8 @@
 """PKCE primitives shared by every browser sign-in flow a connection uses.
 
-The browser generates the verifier and keeps it; the server stores only the
-S256 challenge and a hashed flow handle. Nothing here is bearer material, so a
-leak of the flows database lets nobody redeem a code.
+Generic browser flows keep the verifier in the browser. MCP flows keep an
+encrypted server-generated verifier and bind the initiating protected session.
+Only the S256 challenge and hashed handles are stored in cleartext.
 
 Two flows share this store:
 
@@ -67,6 +67,12 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
                  "client_id TEXT NOT NULL, redirect_uri TEXT NOT NULL, "
                  "created_at REAL NOT NULL, expires_at REAL NOT NULL)")
 
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(connection_oauth_flows)")}
+    if "owner_session_hash" not in columns:
+        conn.execute("ALTER TABLE connection_oauth_flows ADD COLUMN owner_session_hash TEXT")
+    if "sealed_verifier" not in columns:
+        conn.execute("ALTER TABLE connection_oauth_flows ADD COLUMN sealed_verifier BLOB")
+
 
 @contextmanager
 def flows_db(base: Path | str) -> Iterator[tuple[sqlite3.Connection, float]]:
@@ -76,8 +82,8 @@ def flows_db(base: Path | str) -> Iterator[tuple[sqlite3.Connection, float]]:
     try:
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA secure_delete=ON")
-        _ensure_schema(conn)
         conn.execute("BEGIN IMMEDIATE")
+        _ensure_schema(conn)
         now = time.time()
         for table in ("hosted_model_flows", "connection_oauth_flows"):
             conn.execute(f"DELETE FROM {table} WHERE expires_at <= ? "  # noqa: S608 - fixed names

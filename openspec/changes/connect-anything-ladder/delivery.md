@@ -136,3 +136,24 @@ consent, approval scope, continuation, generic OAuth and rollback suites.
 Windows: 157 focused tests and 32 browser/removal tests passed. The initial
 Linux attempt failed during tar because the working tree changed during copy;
 its result is discarded. Mirror parity: 608 files. No deployment claimed.
+
+## Resume slice: session-bound MCP PKCE
+
+Resource-bound flows now generate and seal PKCE server-side and bind the live
+initiating owner session. Another session (even of the same owner), logout during
+exchange, replay, and pre-approval registration are refused. Finalization takes
+owner control before the session write lock, matching the approval coordinator.
+Flow schema migration runs inside BEGIN IMMEDIATE.
+
+Claude review: ADAPT; raw report review-resume.md. AGREE to all three findings:
+regenerate mirrors; align lock ordering (with contention regression); serialize
+schema migration (with four concurrent legacy-open regression). No second review
+verdict is implied. Final focused Linux: 130 passed, zero skips (MCP/generic
+OAuth, hosted auth/persistence, inline and onboarding model-connect). Windows:
+44 passed for MCP/generic OAuth. Plugin build/import, 608-file parity and Ruff pass.
+
+The affected app regression test also exposed imported #4483's transient-answer
+message regression (63 passed / 1 failed). The source lane just pushed its repair
+as dda3c01331, overlapping OAuth consent capture; reconcile that prerequisite
+next while retaining MCP's stronger live initiating-session check. Full-flow MCP
+activation/ta/continuation still has not been implemented or claimed.

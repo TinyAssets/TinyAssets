@@ -47,12 +47,13 @@ async def handle_model_connect(request):
         return JSONResponse({"error": "same_origin_json_required"}, 403, headers=_HEADERS)
     operation = request.path_params.get("operation")
     owner_session = None
-    if operation == "oauth_exchange":
+    if operation in {"oauth_begin", "oauth_exchange"}:
         from tinyassets.api.pending_requests import CONSENT_REQUIRED_DETAIL
         from tinyassets.onboarding.owner_sessions import require
 
         try:
-            owner_session = require(request, owner=current_identity().user_id)
+            owner_session = require(request, owner=current_identity().user_id,
+                                    optional=operation == "oauth_begin")
         except PermissionError:
             return JSONResponse({"error": "interactive_approval_required",
                                  "detail": CONSENT_REQUIRED_DETAIL}, 403, headers=_HEADERS)
@@ -143,7 +144,8 @@ async def handle_model_connect(request):
             _, home = scope()
             return sign_in.begin(owner=identity.user_id, universe_id=home,
                                  request_id=data["request_id"],
-                                 challenge=data["code_challenge"], public_resource=resource)
+                                 challenge=data["code_challenge"], public_resource=resource,
+                                 owner_session=owner_session)
 
     def source_sign_in():
         from tinyassets.onboarding.source_connect import raise_sign_in_ask

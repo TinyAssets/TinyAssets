@@ -21,6 +21,10 @@ exchange is standard RFC 6749 §4.1.
    token bundle is deposited through the same answer path a pasted key uses,
    under auth scheme ``oauth2``, pinned to that token URL. The response never
    carries a token.
+
+Resource-bound MCP flows replace the browser challenge with server-generated
+PKCE, seal the verifier at rest, and require the same live protected owner
+session at begin and completion. A consumed or uncertain exchange is never retried.
 """
 
 from __future__ import annotations
@@ -29,6 +33,8 @@ import hashlib
 import hmac
 import json
 import secrets
+import time
+from contextlib import contextmanager, nullcontext
 from typing import Any
 from urllib.parse import urlencode, urlsplit
 
@@ -107,7 +113,7 @@ def _pending_connect(universe_id: str, request_id: str) -> dict[str, Any]:
 
 
 def begin(*, owner: str, universe_id: str, request_id: str, challenge: str,
-          public_resource: str) -> dict[str, Any]:
+          public_resource: str, owner_session: dict | None = None) -> dict[str, Any]:
     """Start one sign-in for the owner's pending request. No token is involved."""
     if not owner or not universe_id:
         raise FlowError("current_home_required", 409)
@@ -116,6 +122,18 @@ def begin(*, owner: str, universe_id: str, request_id: str, challenge: str,
     callback = redirect_uri(public_resource)
     row = _pending_connect(universe_id, request_id)
     offer = row["action"]["oauth"]
+    session_hash, sealed = None, None
+    handle = secrets.token_urlsafe(32)
+    if offer.get("resource"):
+        session_hash = _live_session(owner_session, owner)
+        from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
+        from tinyassets.onboarding.session_store import seal_key
+
+        verifier = secrets.token_urlsafe(48)
+        challenge = pkce.challenge_for(verifier)
+        nonce = secrets.token_bytes(12)
+        sealed = nonce + AESGCM(seal_key()).encrypt(nonce, verifier.encode(), handle.encode())
     scopes = list(offer.get("scopes") or [])
     client_id = offer.get("client_id") or ""
     if offer.get("resource"):
@@ -134,7 +152,6 @@ def begin(*, owner: str, universe_id: str, request_id: str, challenge: str,
             raise FlowError(code, 502, getattr(exc, "detail", "")) from None
     from tinyassets.api.helpers import _base_path
 
-    handle = secrets.token_urlsafe(32)
     with pkce.flows_db(_base_path()) as (conn, now):
         total, mine = conn.execute(
             "SELECT COUNT(*), COALESCE(SUM(owner_user_id = ?), 0) FROM connection_oauth_flows",
@@ -143,10 +160,13 @@ def begin(*, owner: str, universe_id: str, request_id: str, challenge: str,
         if total >= MAX_PENDING or mine >= MAX_PER_OWNER:
             raise FlowError("too_many_pending_connections", 429)
         conn.execute(
-            "INSERT INTO connection_oauth_flows VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO connection_oauth_flows "
+            "(handle_digest,owner_user_id,universe_id,request_id,action_digest,challenge,"
+            "client_id,redirect_uri,created_at,expires_at,owner_session_hash,sealed_verifier) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (pkce.handle_digest(handle), owner, universe_id, request_id,
              action_digest(row["action"]), challenge, client_id, callback, now,
-             now + pkce.FLOW_TTL_SECONDS),
+             now + pkce.FLOW_TTL_SECONDS, session_hash, sealed),
         )
     query = {
         **offer.get("extra_auth_params", {}),
@@ -163,6 +183,27 @@ def begin(*, owner: str, universe_id: str, request_id: str, challenge: str,
         "authorize_host": urlsplit(offer["authorize_url"]).hostname or "",
         "expires_in": pkce.FLOW_TTL_SECONDS,
     }
+
+
+@contextmanager
+def _session_guard(session, owner):
+    """Serialize finalization with session revocation, after the network exchange."""
+    from tinyassets.onboarding.owner_sessions import store
+
+    session_hash = session.get("session_hash") if isinstance(session, dict) else None
+    with store() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute("SELECT identity_json FROM owner_sessions "
+                           "WHERE session_hash=? AND expires_at>?",
+                           (session_hash, time.time())).fetchone()
+        if row is None or json.loads(row[0]).get("user_id") != owner:
+            raise FlowError("interactive_approval_required", 403)
+        yield session_hash
+
+
+def _live_session(session, owner):
+    with _session_guard(session, owner) as session_hash:
+        return session_hash
 
 
 def complete(*, owner: str, universe_id: str, handle: str, code: str,
@@ -190,6 +231,20 @@ def complete(*, owner: str, universe_id: str, handle: str, code: str,
             raise FlowError("unknown_sign_in", 404)
         if flow["universe_id"] != universe_id:
             raise FlowError("current_home_changed", 409)
+        if flow["owner_session_hash"]:
+            if _live_session(owner_session, owner) != flow["owner_session_hash"]:
+                raise FlowError("initiating_session_changed", 409)
+            from cryptography.exceptions import InvalidTag
+            from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
+            from tinyassets.onboarding.session_store import seal_key
+
+            sealed = flow["sealed_verifier"]
+            try:
+                verifier = AESGCM(seal_key()).decrypt(
+                    sealed[:12], sealed[12:], handle.encode()).decode()
+            except (InvalidTag, TypeError, ValueError):
+                raise FlowError("sign_in_restart_required", 409) from None
         if not hmac.compare_digest(pkce.challenge_for(verifier), flow["challenge"]):
             raise FlowError("invalid_pkce_verifier")
         # One redemption attempt: once taken, an uncertain outcome means sign
@@ -200,6 +255,8 @@ def complete(*, owner: str, universe_id: str, handle: str, code: str,
     if not hmac.compare_digest(action_digest(row["action"]), flow["action_digest"]):
         raise FlowError("request_changed", 409)
     offer = row["action"]["oauth"]
+    if offer.get("resource") and not flow["owner_session_hash"]:
+        raise FlowError("sign_in_restart_required", 409)
     # RFC 9207: the authorization response names its issuer. A mismatch means
     # the code came from some other server (a mix-up); a server that
     # advertises the parameter must send it.
@@ -214,12 +271,22 @@ def complete(*, owner: str, universe_id: str, handle: str, code: str,
                                **({"resource": offer["resource"]} if offer.get("resource") else {}))
     except OAuthError as exc:
         raise FlowError(exc.code, 502, exc.detail) from None
-    from tinyassets.api.pending_requests import answer_connect_with_token
+    from tinyassets.api.pending_requests import _owner_gate, answer_connect_with_token
+    from tinyassets.owner_control import ControlUnavailable, control
 
-    result = answer_connect_with_token(
-        universe_id=universe_id, request_id=flow["request_id"], token=encode(bundle),
-        owner_session=owner_session,
-    )
+    _, home, denied = _owner_gate(universe_id)
+    if denied:
+        raise FlowError("unknown_request", 404)
+    guard = _session_guard(owner_session, owner) if flow["owner_session_hash"] else nullcontext()
+    try:
+        # Match the existing approval coordinator's lock order: owner, then session.
+        with control(home), guard:
+            result = answer_connect_with_token(
+                universe_id=universe_id, request_id=flow["request_id"], token=encode(bundle),
+                owner_session=owner_session,
+            )
+    except ControlUnavailable:
+        raise FlowError("owner_control_unavailable", 409) from None
     if result.get("error"):
         raise FlowError(str(result["error"]), 409, str(result.get("detail") or ""))
     return result
