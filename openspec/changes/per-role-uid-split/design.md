@@ -1264,6 +1264,48 @@ reference or capability descriptor is included. Malformed replies or broker
 outage never trigger a local fallback. This routes daemon catalogs, not engine
 filesystem access or startup activation, and adds no privilege.
 
+### D29. Mechanical decision: offline accounting transfer verifies before dropping
+
+Move only the four agent_request_usage/attempts/usage_links/dispatches tables
+from .tinyassets.db into the relocated broker ledger. The existing stdlib startup
+migration owns this substep under the layout lock with all roles stopped. Copy
+to a committed destination transaction, verify exact typed row fingerprints and
+schemas, durably record progress, and only then drop source tables in one source
+transaction. Unrelated tables remain untouched. An interrupted transfer resumes
+from its manifest; divergent copies refuse before deletion. Reverse runs before
+reverse egress relocation and restores these tables to .tinyassets.db. Both
+directions leave top-level roles/layout migrating until full role admission.
+
+Dry-run uses disposable copies outside the data root, including retained WAL,
+so SQLite cannot modify source journals/SHM. Preflight refuses symlinks, hardlinks,
+nonregular files, unknown accounting schemas and conflicting destination tables.
+The known schema is static in the isolated migration and parity-tested against
+the runtime schema. No service or capability is retained; this is accounting
+table transfer only. Daemon accounting IPC, source/liveness checks, refresh and
+full migration activation remain required after this substep is proven.
+
+### D30. Mechanical decision: source-budget facts use live broker authority
+
+In selected mode, request-budget source classification uses the existing scoped
+GRANTED_RESOURCE transaction instead of opening outbound.db. Require the admitted
+owner to agree with the installed definition. Preserve host-based source policy,
+but refuse unavailable, foreign or malformed broker facts rather than classifying
+an unreadable metered source as unmetered. Advisory budget rendering may still
+report unknown through its existing wrapper. No new IPC operation or privilege
+is added; usage-table IPC and kernel liveness preservation remain separate work.
+
+### D31. Mechanical decision: bootstrap recovery reads remain inert and scoped
+
+Bootstrap candidate capability reads use GRANTED_RESOURCE and CAPABILITY. Pending
+confirmation recovery needs its prior ability to display an owner's revoked
+connection, so add BOOTSTRAP_RECOVERY as a metadata-only query: exact grant,
+principal and center join, projecting only destination and discovery descriptor.
+It never returns credentials, authority, a proxy or permission to activate.
+Foreign or absent records produce no match. Actual setup and consent activation
+continue to require live grants through existing operations. Selected mode never
+opens a local ledger, and broker errors remain explicit. This implements existing
+D11 bootstrap readers without changing their owner scope or adding privilege.
+
 ## Risks / Trade-offs
 
 - **The launcher is root-adjacent code.** One file, stdlib-only, run `-I -S`, a static kind table,

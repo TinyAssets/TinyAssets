@@ -116,6 +116,188 @@ def insert(path, name):
     )
 
 
+def accounting_probes(migration):
+    """D29 table custody only; actual accounting IPC/old-image still required."""
+    from tinyassets.storage.agent_request_usage import _SCHEMA
+
+    transfer, relocate = migration["transfer_accounting"], migration["relocate"]
+    facts, refused = migration["_accounting_facts"], migration["MigrationRefused"]
+
+    def seed():
+        root = fixture()
+        pid = os.fork()
+        if pid == 0:
+            conn = sqlite3.connect(root / ".tinyassets.db")
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA wal_autocheckpoint=0")
+            for sql in _SCHEMA:
+                conn.execute(sql)
+            conn.execute("CREATE TABLE unrelated(value TEXT)")
+            conn.execute("INSERT INTO unrelated VALUES ('daemon state retained')")
+            conn.execute("INSERT INTO agent_request_usage VALUES "
+                         "('alice','alice','usage','{}','{}','owner','parent',0,'today')")
+            conn.execute("INSERT INTO agent_request_attempts VALUES "
+                         "('alice','alice','usage',1,'{}',NULL,'source','reserved')")
+            conn.execute("INSERT INTO agent_request_usage_links VALUES "
+                         "('alice','alice','usage','turn','turn-one')")
+            conn.execute("INSERT INTO agent_request_dispatches VALUES "
+                         "('hash','alice','alice','usage',1,1,'grant','conn','digest','op',1,1)")
+            conn.commit()
+            os._exit(0)  # Committed usage rows deliberately remain in WAL.
+        assert os.waitpid(pid, 0)[1] == 0
+        assert (root / ".tinyassets.db-wal").stat().st_size > 0
+        os.chown(root / ".tinyassets.db", 1001, 1001)
+        relocate(root)
+        return root
+
+    def read(path):
+        conn = sqlite3.connect(path)
+        try:
+            return facts(conn)
+        finally:
+            conn.close()
+
+    root = seed()
+    before = snapshot(root)
+    assert len(transfer(root, dry_run=True)) == 4
+    assert snapshot(root) == before, "accounting dry-run mutated live DB/WAL/SHM"
+    transfer(root)
+    saved = read(root / ".broker/outbound.db")
+    assert len(saved) == 4 and all(row["rows"] == 1 for row in saved.values())
+    assert read(root / ".tinyassets.db") == {}
+    conn = sqlite3.connect(root / ".tinyassets.db")
+    assert conn.execute("SELECT value FROM unrelated").fetchone() == ("daemon state retained",)
+    conn.close()
+    stable = snapshot(root)
+    assert transfer(root) == [] and snapshot(root) == stable
+    try:
+        relocate(root, reverse=True)
+    except refused:
+        pass
+    else:
+        raise AssertionError("egress rollback bypassed accounting rollback")
+
+    def broker_write():
+        conn = sqlite3.connect(root / ".broker/outbound.db")
+        assert facts(conn) == saved
+        conn.execute("UPDATE agent_request_attempts SET state='dispatched'")
+        conn.commit()
+        conn.close()
+
+    child(1002, [1102], broker_write)
+    changed = read(root / ".broker/outbound.db")
+    assert changed != saved
+    before = snapshot(root)
+    assert len(transfer(root, reverse=True, dry_run=True)) == 4
+    assert snapshot(root) == before
+    transfer(root, reverse=True)
+    assert read(root / ".tinyassets.db") == changed
+    assert read(root / ".broker/outbound.db") == {}
+    stable = snapshot(root)
+    assert transfer(root, reverse=True) == [] and snapshot(root) == stable
+    relocate(root, reverse=True)
+    stable = snapshot(root)
+    assert transfer(root, reverse=True) == [] and snapshot(root) == stable
+    print("D29 accounting forward/reverse dry-run/apply/repeat, broker writes and "
+          "unrelated daemon-table preservation: PASS (not accounting IPC or old-image)", flush=True)
+
+    for reverse in (False, True):
+        for boundary in ("accounting-manifest", "accounting-copy", "accounting-verified",
+                         "accounting-drop"):
+            root = seed()
+            if reverse:
+                transfer(root)
+            source = root / (".broker/outbound.db" if reverse else ".tinyassets.db")
+            target = root / (".tinyassets.db" if reverse else ".broker/outbound.db")
+            wanted = read(source)
+            pid = os.fork()
+            if pid == 0:
+                transfer(root, reverse=reverse,
+                         after_step=lambda name: os._exit(79) if name == boundary else None)
+                os._exit(1)
+            assert os.waitpid(pid, 0)[1] == 79 << 8
+            try:
+                relocate(root, reverse=True)
+            except refused:
+                pass
+            else:
+                raise AssertionError("egress moved incomplete accounting transfer")
+            before = snapshot(root)
+            transfer(root, reverse=reverse, dry_run=True)
+            assert snapshot(root) == before
+            transfer(root, reverse=reverse)
+            assert read(target) == wanted and read(source) == {}
+    print("D29 accounting abrupt-exit resume: PASS (8 forward/reverse boundaries)", flush=True)
+
+    for boundary in ("checkpoint", "outbound.db", ".outbound-proxy"):
+        root = seed()
+        transfer(root)
+        transfer(root, reverse=True)
+        wanted = read(root / ".tinyassets.db")
+        pid = os.fork()
+        if pid == 0:
+            relocate(root, reverse=True,
+                     after_step=lambda name: os._exit(79) if name == boundary else None)
+            os._exit(1)
+        assert os.waitpid(pid, 0)[1] == 79 << 8
+        before = snapshot(root)
+        assert transfer(root, reverse=True) == [] and snapshot(root) == before
+        relocate(root, reverse=True)
+        assert read(root / ".tinyassets.db") == wanted
+    print("D29 accounting rollback resumes interrupted reverse egress: PASS (3 boundaries)",
+          flush=True)
+
+    for attack in ("symlink", "hardlink", "fifo", "conflict", "schema", "diverged-copy",
+                   "case-collision", "index-collision"):
+        root = seed()
+        if attack in {"symlink", "hardlink", "fifo"}:
+            # Keep the synthetic original in place; attack a sidecar SQLite would open.
+            path = root / ".tinyassets.db-journal"
+            if attack == "symlink":
+                path.symlink_to(root / ".tinyassets.db")
+            elif attack == "hardlink":
+                os.link(root / ".tinyassets.db", path)
+            else:
+                os.mkfifo(path)
+        elif attack == "schema":
+            conn = sqlite3.connect(root / ".tinyassets.db")
+            conn.execute("ALTER TABLE agent_request_usage ADD COLUMN unexpected TEXT")
+            conn.close()
+        elif attack in {"case-collision", "index-collision"}:
+            conn = sqlite3.connect(root / ".broker/outbound.db")
+            name = ("AGENT_REQUEST_USAGE" if attack == "case-collision"
+                    else "agent_request_attempt_day")
+            conn.execute(f"CREATE TABLE {name} (value TEXT)")
+            conn.close()
+        else:
+            if attack == "diverged-copy":
+                pid = os.fork()
+                if pid == 0:
+                    transfer(root, after_step=lambda name: os._exit(79)
+                             if name == "accounting-copy" else None)
+                    os._exit(1)
+                assert os.waitpid(pid, 0)[1] == 79 << 8
+            conn = sqlite3.connect(root / ".broker/outbound.db")
+            if attack == "conflict":
+                for sql in _SCHEMA:
+                    conn.execute(sql)
+            else:
+                conn.execute("UPDATE agent_request_usage SET owner='foreign'")
+            conn.commit()
+            conn.close()
+        before = snapshot(root)
+        for dry in (True, False):
+            try:
+                transfer(root, dry_run=dry)
+            except refused:
+                pass
+            else:
+                raise AssertionError(f"accounting migration accepted {attack}")
+            assert snapshot(root) == before
+    print("D29 accounting link/FIFO/conflict/schema/diverged-copy refusal without mutation: PASS",
+          flush=True)
+
+
 def main():
     assert os.getuid() == 0
     expected = sum(1 << cap for cap in (0, 1, 3, 5, 6, 7, 8))
@@ -278,6 +460,7 @@ def main():
             raise AssertionError(f"migration accepted {attack}")
         assert snapshot(root) == before
     print("symlink/hardlink/FIFO/conflicting-copy refusal without mutation: PASS", flush=True)
+    accounting_probes(migration)
     runpy.run_path("/app/scripts/role_launcher_oracle.py")["main"]()
     print("FOUNDATION/EGRESS SUBSTEP ONLY: launcher, IPC, real engine classes, "
           "full rollback pending")

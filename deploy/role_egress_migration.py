@@ -8,11 +8,14 @@ layout migrating: only the full role migration may admit normal service.
 from __future__ import annotations
 
 import ctypes
+import hashlib
 import json
 import os
+import pickle
 import secrets
 import sqlite3
 import stat
+import tempfile
 from contextlib import ExitStack, contextmanager
 from pathlib import Path
 
@@ -124,9 +127,9 @@ def _read_marker(root):
     return document
 
 
-def _mark(root, document, progress):
+def _mark(root, document, progress, *, section="egress"):
     document = {**document, "state": "migrating", "roles": {
-        **document.get("roles", {}), "state": "migrating", "egress": progress,
+        **document.get("roles", {}), "state": "migrating", section: progress,
     }}
     temporary = ".layout.roles." + secrets.token_hex(16) + ".tmp"
     fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
@@ -193,6 +196,11 @@ def relocate(data_root: Path, *, reverse=False, dry_run=False, after_step=None):
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         document = _read_marker(root)
         progress = document.get("roles", {}).get("egress", {})
+        accounting = document.get("roles", {}).get("accounting", {})
+        if accounting.get("state") == "migrating":
+            raise MigrationRefused("complete accounting transfer before relocating egress")
+        if reverse and accounting.get("direction") == "forward":
+            raise MigrationRefused("reverse accounting transfer before relocating egress")
         # storage_layout can resume the consents move and mark the whole
         # volume stable. Do not overlap it: that would admit an old daemon
         # after relocation, which would create an empty ledger at the old path.
@@ -259,4 +267,223 @@ def relocate(data_root: Path, *, reverse=False, dry_run=False, after_step=None):
             elif _stat(destination, name) is not None:
                 _tree(destination, name, uid=uid, gid=gid)
         _mark(root, document, {**progress, "state": "stable"})
+        return plan
+
+
+# Kept stdlib-only for the isolated privileged chain. The oracle compares this
+# schema to storage.agent_request_usage._SCHEMA; no volume SQL is executed as DDL.
+ACCOUNTING_SCHEMA = (
+    """CREATE TABLE agent_request_usage (
+      owner TEXT NOT NULL, universe TEXT NOT NULL, usage_id TEXT NOT NULL,
+      policy_json TEXT NOT NULL, failures_json TEXT NOT NULL,
+      owner_token TEXT NOT NULL, parent_token TEXT NOT NULL, closed INTEGER NOT NULL,
+      created_at TEXT NOT NULL, PRIMARY KEY(owner, universe, usage_id))""",
+    """CREATE TABLE agent_request_attempts (
+      owner TEXT NOT NULL, universe TEXT NOT NULL, usage_id TEXT NOT NULL,
+      ordinal INTEGER NOT NULL, attempt_json TEXT NOT NULL, dispatched_at TEXT,
+      source_ref TEXT NOT NULL, state TEXT NOT NULL,
+      PRIMARY KEY(owner, universe, usage_id, ordinal))""",
+    """CREATE TABLE agent_request_usage_links (
+      owner TEXT NOT NULL, universe TEXT NOT NULL, usage_id TEXT NOT NULL,
+      kind TEXT NOT NULL, subject_id TEXT NOT NULL,
+      PRIMARY KEY(owner, universe, kind, subject_id, usage_id))""",
+    """CREATE TABLE agent_request_dispatches (
+      reference_hash TEXT PRIMARY KEY, owner TEXT NOT NULL, universe TEXT NOT NULL,
+      usage_id TEXT NOT NULL, first_ordinal INTEGER NOT NULL, last_ordinal INTEGER NOT NULL,
+      grant_id TEXT NOT NULL, connection_id TEXT NOT NULL, request_digest TEXT NOT NULL,
+      operation_id TEXT NOT NULL, claimed INTEGER NOT NULL DEFAULT 0,
+      active INTEGER NOT NULL DEFAULT 1,
+      UNIQUE(owner, universe, usage_id, first_ordinal))""",
+)
+ACCOUNTING_TABLES = tuple(sql.split()[2] for sql in ACCOUNTING_SCHEMA)
+ACCOUNTING_INDEX = """CREATE INDEX agent_request_attempt_day
+      ON agent_request_attempts(owner, source_ref, dispatched_at)"""
+
+
+def _accounting_facts(conn):
+    """Typed row digests with a static schema allowlist, never execute stored DDL."""
+    expected = {name: "".join(sql.split()).lower()
+                for name, sql in zip(ACCOUNTING_TABLES, ACCOUNTING_SCHEMA)}
+    index = conn.execute("SELECT name,type,sql FROM sqlite_master WHERE lower(name)=?",
+                         ("agent_request_attempt_day",)).fetchone()
+    if index is not None and (index[:2] != ("agent_request_attempt_day", "index")
+            or "".join((index[2] or "").split()).lower()
+            != "".join(ACCOUNTING_INDEX.split()).lower()):
+        raise MigrationRefused("unknown accounting index schema")
+    result = {}
+    for table in ACCOUNTING_TABLES:
+        row = conn.execute("SELECT type,sql,name FROM sqlite_master WHERE lower(name)=?",
+                            (table,)).fetchone()
+        if row is None:
+            continue
+        if (row[0] != "table" or row[2] != table
+                or "".join((row[1] or "").split()).lower() != expected[table]):
+            raise MigrationRefused(f"unknown accounting schema: {table}")
+        if conn.execute("SELECT 1 FROM sqlite_master WHERE type='trigger' AND tbl_name=?",
+                        (table,)).fetchone():
+            raise MigrationRefused(f"accounting trigger is not migratable: {table}")
+        keys = sorted((r[5], r[1]) for r in conn.execute(f"PRAGMA table_info({table})") if r[5])
+        ordering = ",".join(key for _, key in keys)
+        digest, count = hashlib.sha256(), 0
+        for values in conn.execute(f"SELECT * FROM {table} ORDER BY {ordering}"):
+            encoded = pickle.dumps(tuple(values), protocol=4)
+            digest.update(len(encoded).to_bytes(8, "big"))
+            digest.update(encoded)
+            count += 1
+        result[table] = {"rows": count, "sha256": digest.hexdigest()}
+    return result
+
+
+def _database_entries(parent, name):
+    """Validate SQLite's complete filename set before any SQLite open."""
+    names = (name, name + "-wal", name + "-shm", name + "-journal")
+    found = {item: _regular(parent, item) for item in names}
+    if found[name] is None and any(found[item] is not None for item in names[1:]):
+        raise MigrationRefused(f"orphan accounting sidecar: {name}")
+    return found
+
+
+@contextmanager
+def _database_snapshot(parent, name):
+    """Read stopped SQLite/WAL through private copies; dry-run changes no sidecars."""
+    entries = _database_entries(parent, name)
+    with tempfile.TemporaryDirectory(prefix="ta-accounting-plan-") as temporary:
+        destination = Path(temporary) / name
+        for entry, info in entries.items():
+            if info is None or entry.endswith("-shm"):
+                continue  # SQLite rebuilds its private WAL index in the copy.
+            fd = os.open(entry, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_NOATIME,
+                         dir_fd=parent)
+            with os.fdopen(fd, "rb") as source:
+                if not os.path.samestat(info, os.fstat(source.fileno())):
+                    raise MigrationRefused("accounting entry changed during snapshot")
+                with (Path(temporary) / entry).open("xb") as target:
+                    while chunk := source.read(1024 * 1024):
+                        target.write(chunk)
+        conn = sqlite3.connect(destination)
+        try:
+            if conn.execute("PRAGMA quick_check").fetchone() != ("ok",):
+                raise MigrationRefused("accounting database integrity check failed")
+            yield conn
+        finally:
+            conn.close()
+
+
+def transfer_accounting(data_root: Path, *, reverse=False, dry_run=False, after_step=None):
+    """Offline copy/verify/drop, reversible and resumable; never admits a service."""
+    import fcntl
+
+    direction = "reverse" if reverse else "forward"
+    with ExitStack() as stack:
+        root = stack.enter_context(_directory(data_root))
+        if _regular(root, ".layout.lock") is None:
+            raise MigrationRefused("accounting transfer requires the layout lock")
+        lock = os.open(".layout.lock", os.O_RDONLY | os.O_NOFOLLOW, dir_fd=root)
+        stack.callback(os.close, lock)
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        document = _read_marker(root)
+        roles = document.get("roles", {})
+        egress, progress = roles.get("egress", {}), roles.get("accounting", {})
+        if (reverse and progress.get("direction") == "reverse"
+                and progress.get("state") == "stable"
+                and egress.get("direction") == "reverse"
+                and egress.get("state") in {"stable", "migrating"}):
+            return []  # Let a subsequent interrupted reverse relocation resume.
+        if (document.get("layout") != 2
+                or document.get("moves", {}).get("consents_outside_command_centers") != "done"
+                or document.get("state") not in {"stable", "migrating"}
+                or roles.get("state") not in {"stable", "migrating"}
+                or egress.get("direction") != "forward" or egress.get("state") != "stable"):
+            raise MigrationRefused("complete forward egress relocation before accounting transfer")
+        if progress.get("state") == "migrating" and progress.get("direction") != direction:
+            raise MigrationRefused("finish interrupted accounting direction before reversing")
+        broker = stack.enter_context(_directory(BROKER_DIR, parent=root))
+        if os.fstat(broker).st_dev != os.fstat(root).st_dev:
+            raise MigrationRefused("accounting stores must share the data filesystem")
+        if _regular(broker, LEDGER) is None:
+            raise MigrationRefused("missing relocated ledger")
+        old, new = (root, ".tinyassets.db"), (broker, LEDGER)
+        source, target = (new, old) if reverse else (old, new)
+        source_copy = stack.enter_context(_database_snapshot(*source))
+        target_copy = stack.enter_context(_database_snapshot(*target))
+        source_facts, target_facts = _accounting_facts(source_copy), _accounting_facts(target_copy)
+        if (progress.get("direction") == direction and progress.get("state") == "stable"
+                and not source_facts):
+            return []
+        resumed = progress.get("direction") == direction and progress.get("state") == "migrating"
+        manifest = progress.get("manifest") if resumed else source_facts
+        if not isinstance(manifest, dict) or set(manifest) - set(ACCOUNTING_TABLES):
+            raise MigrationRefused("invalid accounting transfer manifest")
+        if resumed:
+            if (source_facts not in ({}, manifest) or target_facts not in ({}, manifest)
+                    or (manifest and not source_facts and not target_facts)):
+                raise MigrationRefused("accounting copies diverged from the transfer manifest")
+        elif target_facts:
+            raise MigrationRefused("conflicting destination accounting tables")
+        plan = [f"{direction}: {table} ({facts['rows']} rows)"
+                for table, facts in manifest.items()]
+        if dry_run:
+            return plan
+        progress = {"direction": direction, "state": "migrating", "manifest": manifest}
+        document = _mark(root, document, progress, section="accounting")
+
+        def step(name):
+            if after_step:
+                after_step(name)
+
+        step("accounting-manifest")
+        if manifest:
+            # Hold the source write lock through the destination commit and
+            # verification. The startup lock also excludes all admitted roles.
+            src = sqlite3.connect(f"file:/proc/self/fd/{source[0]}/{source[1]}?mode=rw",
+                                  uri=True, timeout=0, isolation_level=None)
+            stack.callback(src.close)
+            src.execute("PRAGMA synchronous=FULL")
+            src.execute("BEGIN IMMEDIATE")
+            if _accounting_facts(src) != source_facts:
+                raise MigrationRefused("source accounting changed after preflight")
+            dst = sqlite3.connect(f"file:/proc/self/fd/{target[0]}/{target[1]}?mode=rwc",
+                                  uri=True, timeout=0, isolation_level=None)
+            stack.callback(dst.close)
+            dst.execute("PRAGMA synchronous=FULL")
+            dst.execute("BEGIN IMMEDIATE")
+            if _accounting_facts(dst) != target_facts:
+                raise MigrationRefused("target accounting changed after preflight")
+            if not target_facts:
+                for table, schema in zip(ACCOUNTING_TABLES, ACCOUNTING_SCHEMA):
+                    if table not in manifest:
+                        continue
+                    dst.execute(schema)
+                    columns = len(src.execute(f"PRAGMA table_info({table})").fetchall())
+                    dst.executemany(f"INSERT INTO {table} VALUES ({','.join('?' * columns)})",
+                                    src.execute(f"SELECT * FROM {table}"))
+                if "agent_request_attempts" in manifest:
+                    dst.execute(ACCOUNTING_INDEX)
+            if _accounting_facts(dst) != manifest:
+                raise MigrationRefused("destination accounting verification failed")
+            dst.commit()
+            os.fsync(target[0])
+            step("accounting-copy")
+            # Verify the committed transaction again before dropping source tables.
+            dst.execute("BEGIN IMMEDIATE")
+            if _accounting_facts(dst) != manifest:
+                raise MigrationRefused("committed accounting verification failed")
+            document = _mark(root, document, {**progress, "copied": True}, section="accounting")
+            step("accounting-verified")
+            for table in source_facts:
+                src.execute(f"DROP TABLE {table}")
+            src.commit()
+            os.fsync(source[0])
+            step("accounting-drop")
+            dst.commit()
+            src.close()
+            dst.close()
+            # A newly created reverse target and retained SQLite sidecars take
+            # the destination role's ownership, never root's startup identity.
+            uid, gid = (1001, 1001) if reverse else (1002, 1101)
+            for entry, info in _database_entries(*target).items():
+                if info is not None:
+                    _tree(target[0], entry, uid=uid, gid=gid)
+            os.fsync(target[0])
+        _mark(root, document, {**progress, "state": "stable"}, section="accounting")
         return plan

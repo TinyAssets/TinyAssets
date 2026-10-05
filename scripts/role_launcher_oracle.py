@@ -229,6 +229,25 @@ def _query_consumers(root, supervisor):
     print("D26 actual HTTP compute source/proxy consumers via launcher broker: "
           "scoped reads/acquisition, foreign refusal, no daemon ledger: PASS "
           "(inference accounting/POST not claimed)", flush=True)
+    from tinyassets.exceptions import ProviderAuthorityHeldError
+    from tinyassets.request_budget import _source_budget_facts
+
+    budget_context = SimpleNamespace(universe_dir=root / "alice", model_selection=SimpleNamespace(
+        connection_id=provider, model_id="alice-fixture"))
+    assert _source_budget_facts(budget_context, owner="alice") == ("alice", None)
+    for who, center, source in (("bob", "alice", provider), (None, "alice", provider),
+                                ("alice", "bob", provider), ("alice", "alice", foreign_provider)):
+        bad = SimpleNamespace(universe_dir=root / center, model_selection=SimpleNamespace(
+            connection_id=source, model_id="alice-fixture"))
+        try:
+            _source_budget_facts(bad, owner=who)
+        except ProviderAuthorityHeldError:
+            pass
+        else:
+            raise AssertionError("source budget accepted missing or foreign authority")
+    assert not (root / "outbound.db").exists()
+    print("D30 source-budget facts via launcher broker: scoped read and missing/foreign "
+          "authority refusal, no daemon ledger: PASS", flush=True)
     _capability_consumers(root, supervisor)
     _catalog_consumers(root, supervisor)
     for changes in ({"principal": "bob"}, {"command_center": "bob"},

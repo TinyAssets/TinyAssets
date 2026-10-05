@@ -1,4 +1,62 @@
-# Current delivery: D28 bounded scoped catalogs
+# Current delivery: D29 accounting transfer and D30 source-budget IPC
+
+Resumed from `0f54d41cfefae44a205d3980ce3ad521683f00ee`; fast-forward pull
+was current. Finished inherited accounting WIP, then continued directly into
+source-budget IPC and D31 bootstrap readers (D31 still in progress at this receipt).
+No startup activation, PR or deployment; no whole task 2.1-2.8 newly checked off.
+
+D29 transfers the four accounting tables offline with committed-copy verification
+before source DROP, preserving unrelated daemon tables. Both directions support
+nonmutating dry-run, repeat and crash recovery. **AGREE** with cross-family review
+findings: reject case-insensitive reserved schema-name/index collisions before
+mutation, and permit rollback to resume a reverse egress move after accounting
+reverse is stable. Both fixes have new regression probes. D30 reuses existing
+scoped GRANTED_RESOURCE IPC for source-budget classification; **AGREE** with its
+separate cross-family APPROVE. Broker outage/refusal cannot become unmetered
+admission; advisory rendering may report unknown. No new privileges.
+
+Release-critical files for this combined verified step: **1**:
+`deploy/role_egress_migration.py`. Other code: `tinyassets/request_budget.py` and
+its generated mirror; oracles `scripts/role_image_oracle.py` and
+`scripts/role_launcher_oracle.py`; new tests `test_role_accounting_schema.py`
+and `test_broker_source_budget.py`. No affected heavy-list file. Existing tests
+were not removed, renamed or weakened. D31 design is recorded but its code is
+excluded from this verified step.
+
+Commands/results:
+
+```text
+python scripts/linux_oracle.py -- tests/test_role_accounting_schema.py -q -rs
+4 passed in 0.14s (before review regression additions)
+python -m pytest tests/test_role_accounting_schema.py -q
+7 passed in 0.33s (after review fixes)
+python scripts/linux_oracle.py -- tests/test_broker_source_budget.py tests/test_request_budget.py tests/test_parent_turn_request_budget.py tests/test_turn_request_economy.py -q -rs
+126 passed in 62.28s; zero skips
+python scripts/linux_oracle.py --production-image tinyassets-uid-accounting:d29 --build
+exit 0; sha256:e1152092bc805714e9af2338ff68878646b82064143a58e400bfb84e78125449
+```
+
+Production output: D29 forward/reverse dry-run/apply/repeat and broker writes
+PASS; eight accounting abrupt-exit boundaries PASS; three accounting-to-egress
+reverse recovery boundaries PASS; link/FIFO/conflict/schema/diverged-copy refusal
+without mutation PASS. Existing six egress interruption boundaries and denial
+probes PASS. D30 actual source-budget consumer succeeds through launcher broker
+and rejects missing/foreign authority before and after broker restart, with no
+daemon ledger. Same root entry, seven capabilities, no-new-privileges and compose
+security options as D28; no network. Ruff for changed files, plugin build/import
+probe, OpenSpec strict validation pass. Initial schema parity failure was index
+SQL whitespace; matched runtime declaration exactly without loosening assertion.
+
+Remaining in order: D11 remaining reads/mutations, runtime accounting and kernel
+liveness/source checks, refresh; every actual engine class/site; full migration
+and two-pass deletion; actual old-image rollback; startup/healthcheck only after
+all pass. Successful HTTPS GET broker stream is previously proven (D22/D28);
+inference POST/accounting remains unproven. Accounting table DROP here is not
+the owner-workspace two-pass deletion proof. Startup remains unactivated.
+
+---
+
+# Previous delivery: D28 bounded scoped catalogs
 
 D27 was committed/pushed as `66ec595bca`; its hygiene command against
 `90d7186cfe` returned `tests added 10, removed 0, tampering findings 0,
