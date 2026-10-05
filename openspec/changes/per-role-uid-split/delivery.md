@@ -109,6 +109,13 @@ was removed, skipped anew or weakened to make Windows green. Initial D18 Windows
 fake-socket unit coverage also needed a test-only AF_UNIX constant; it now passes.
 No affected test file matches .github/heavy-test-files.txt.
 
+Implementation `a34998fd573c46fee8ccc87ab8926a432acac8b7` was committed using
+explicit paths and pushed to origin/feat/per-role-uid-split. Pre-commit mirror,
+mojibake, import-graph, path-resolver, cross-provider-drift and skill checks passed.
+`python scripts/test_hygiene_gate.py --base be34773f5f --head HEAD` returned:
+`tests added 4, removed 0, tampering findings 0, product lines added 347`.
+Worktree was clean after that push. This receipt is a documentation-only follow-up.
+
 Remaining acceptance is unchanged beyond D18: real daemon launcher/CMD and
 allowlisted environment; every actual engine class/site and daemon reader matrix;
 D11 ledger/accounting/refresh/deletion/backup IPC consumers; complete role migration
