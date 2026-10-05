@@ -1,3 +1,24 @@
+# Current delivery: D49 runtime vault publication prerequisite
+
+D49 retains broker read-only access on every daemon vault replacement: the
+unique private temp receives group 1102 and shared mode 0640 before writing,
+fsync and atomic publication. Prepublication faults preserve the old inode and
+clean the temp; postpublication failures preserve existing commit semantics.
+Cross-family peer-agents: AGREE, APPROVE; no blocking findings.
+Release-critical files: **0; none**. No affected heavy-list file.
+
+```text
+python scripts/linux_oracle.py -- tests/test_broker_vault_modes.py tests/test_credential_vault.py tests/test_vault_account_deletion_guard.py -q -rs
+44 passed in 1.88s; zero skips
+```
+Targeted Ruff, plugin build/import, mirror parity pass. Production runtime
+rotation proof is next with coordinated refresh; no production-image acceptance
+is claimed by this unit slice. D50 refresh implementation is in progress.
+No complete build task checked off. Startup inactive; no PR or deployment.
+Remaining: refresh, each actual engine class, full migration/two-pass deletion,
+actual old-image rollback, then startup/healthcheck only after all proofs.
+
+---
 # Current delivery: D48 runtime provider metadata publication
 
 D46/D47 pushed as e31def9356; additive hygiene correction 7be718b2b8

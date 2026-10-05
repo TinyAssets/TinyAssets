@@ -609,6 +609,11 @@ def _persist_credential_vault_file(
         json.dumps({"schema_version": 1, "credentials": records}, indent=2, sort_keys=True)
         + "\n"
     )
+    from tinyassets.broker.supervisor import broker_selected
+
+    if broker_selected():
+        _persist_role_vault(path, data)
+        return
     # Pre-commit: write the temp file. A write/flush failure here is before the
     # commit point and propagates. The temp fsync is durability only — log loudly
     # on failure but do not abort a deposit whose bytes are already written.
@@ -638,6 +643,34 @@ def _persist_credential_vault_file(
             "deposit already took effect",
             type(exc).__name__,
         )
+
+
+def _persist_role_vault(path: Path, data: str) -> None:
+    """Assign the read-only broker group before publishing a replacement inode."""
+    import tempfile
+
+    from tinyassets.role_modes import BROKER_READ_GID, VAULT_FILE_MODE
+
+    fd, name = tempfile.mkstemp(prefix=".vault-", suffix=".tmp", dir=path.parent)
+    temporary = Path(name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            os.fchown(handle.fileno(), -1, BROKER_READ_GID)
+            os.fchmod(handle.fileno(), VAULT_FILE_MODE)
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        temporary.replace(path)
+    except BaseException:
+        temporary.unlink(missing_ok=True)
+        raise
+    # Publication is the existing vault commit point. Never compensate owner
+    # rows after it, even if a subsequent durability flush reports a failure.
+    try:
+        _post_commit_durability(path, path.parent)
+    except Exception as exc:  # noqa: BLE001 - committed deposit must not be compensated
+        logger.warning("credential vault durability flush failed after commit (%s); "
+                       "deposit already took effect", type(exc).__name__)
 
 
 def _restore_owner_rows(

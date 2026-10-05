@@ -1512,6 +1512,17 @@ daemon writer instead of seeding their mode. Existing-file migration remains
 part of the pending full inventory. No new privilege, reader role or startup
 activation is introduced.
 
+### D49. Mechanical decision: vault replacements retain broker read access
+
+In selected broker mode, every vault replacement creates a unique private
+sibling temp, assigns group 1102 and shared VAULT_FILE_MODE 0640 on its open fd,
+then writes, flushes and fsyncs before atomic publication. Group/mode/prepublish
+fsync failures leave the prior vault intact and remove only the unpublished
+temp. Postpublication durability errors retain the existing commit/owner-row
+compensation contract. Legacy unsplit publication remains 0600. This is required
+for refresh: uid 1002 must re-read rotated bytes without acquiring vault write
+permission. Existing-file migration and materialized credential modes remain
+part of full migration; this decision does not activate startup.
 ## Risks / Trade-offs
 
 - **The launcher is root-adjacent code.** One file, stdlib-only, run `-I -S`, a static kind table,
