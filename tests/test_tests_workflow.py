@@ -784,6 +784,39 @@ def test_affected_tests_select_then_run_their_slice_through_the_gate_script() ->
 # ---- the conservative merge gate (round-2 fixes from the #4359 review) ------
 
 
+def test_affected_tests_provide_the_same_render_namespace_as_the_queue() -> None:
+    """Chromium alone cannot run the preview's required bubblewrap PID tree."""
+    jobs = _load()["jobs"]
+    steps = jobs["affected-tests"]["steps"]
+    queue_profile = next(s for s in jobs["required-tests-shard"]["steps"]
+                         if "apparmor_parser" in s.get("run", ""))
+    profile = next(s for s in steps if "apparmor_parser" in s.get("run", ""))
+
+    def commands(step):
+        return [line.strip() for line in step["run"].splitlines()
+                if line.strip() and not line.lstrip().startswith("#")]
+
+    assert commands(profile) == commands(queue_profile)
+    assert profile["env"] == queue_profile["env"]
+    render = next(s for s in steps if "--profile affected" in s.get("run", ""))
+    run = render["run"]
+    assert steps.index(profile) < steps.index(render)
+    assert "scripts/linux_oracle.py --required-runner --out shard-out" in run
+    assert "--apparmor ta-jail-userns" in run
+    assert '--junit "/out/junit-affected-${{ matrix.shard }}.xml"' in run
+    assert "--env TINYASSETS_DATA_DIR=/tmp/ta-data" in run
+    assert "GITHUB_STEP_SUMMARY=/out/summary-affected-" in run
+    for step in (profile, render):
+        assert "if" not in step
+        assert not step.get("continue-on-error", False)
+    for bypass in ("--no-bwrap", "--as-root", "|| true"):
+        assert bypass not in run
+    upload = next(s for s in steps if "upload-artifact" in s.get("uses", ""))
+    assert upload["with"]["path"] == "shard-out/"
+    assert upload["with"]["overwrite"] is True
+    assert _expr(upload["if"]) == "always()"
+
+
 def test_select_installs_before_it_selects() -> None:
     """Finding 1: without deps the conftest probe raises and selection is ALL.
 
