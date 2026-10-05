@@ -200,6 +200,32 @@ def _query_consumers(root, supervisor):
     assert not (root / "outbound.db").exists()
     print("D25 actual serving context/id/custody via launcher broker: "
           "scoped reads, foreign refusal, no daemon ledger: PASS", flush=True)
+    from tinyassets.exceptions import ProviderUnavailableError
+    from tinyassets.providers.api_key_http_provider import ApiKeyHttpProvider
+    from tinyassets.providers.base import ModelConfig
+
+    compute = ApiKeyHttpProvider(definition)
+    config = ModelConfig(invocation_owner_user_id="alice")
+    connection, owner, view = compute._connection_context(root / "alice", config)
+    assert (connection, owner, view.owner_user_id) == ("conn-alice", "alice", "alice")
+    proxy = compute._resolve_proxy(
+        db_path=root / "outbound.db", universe_id="alice", grant_id="grant-alice",
+        connection_id=connection, owner_user_id=owner)
+    assert proxy.grant_id == "grant-alice" and proxy.access_mode == view.access_mode
+    proxy.close()
+    for did, who, center in ((definition, "", "alice"), (definition, "bob", "alice"),
+                             (definition, "alice", "bob"), (foreign, "alice", "alice")):
+        try:
+            ApiKeyHttpProvider(did)._connection_context(
+                root / center, ModelConfig(invocation_owner_user_id=who))
+        except ProviderUnavailableError:
+            pass
+        else:
+            raise AssertionError("compute read accepted missing or foreign admitted authority")
+    assert not (root / "outbound.db").exists()
+    print("D26 actual HTTP compute source/proxy consumers via launcher broker: "
+          "scoped reads/acquisition, foreign refusal, no daemon ledger: PASS "
+          "(inference accounting/POST not claimed)", flush=True)
     for changes in ({"principal": "bob"}, {"command_center": "bob"},
                     {"grant_id": "grant-bob"}, {"connection_id": "conn-bob"}):
         try:

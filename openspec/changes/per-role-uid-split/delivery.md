@@ -1,3 +1,102 @@
+# Current delivery: D26 HTTP compute broker consumers
+
+Resumed from `2df167974443c8cc3fb0b5e309d6f8b80d0dc0b3`; the requested
+`git pull --ff-only origin feat/per-role-uid-split` was already current.
+D10-D25 retained, including the existing D12 relocation decision. D26 routes
+HTTP compute source reads and exact proxy acquisition through scoped broker IPC.
+The router clears caller-provided principal data and supplies the independently
+admitted serving/work owner. Missing/foreign/revoked authority, malformed replies
+and broker outages never construct a daemon ledger. Access mode, usage-reference
+forwarding and proxy cleanup are preserved. No new privilege or security scope.
+
+Release-critical files: **zero** (cap 8; list: none). Runtime files:
+`tinyassets/providers/api_key_http_provider.py`, `tinyassets/providers/base.py`,
+`tinyassets/providers/router.py` and their three generated mirrors. Oracle:
+`scripts/role_launcher_oracle.py`. New tests: `tests/test_broker_compute_consumers.py`
+and `tests/test_broker_compute_ipc.py`. Existing test files/names/assertions are
+unchanged. Explicit staged paths only. No PR or deployment.
+
+One cross-family implementation review via peer-agents returned ADAPT with no
+cross-user/authority findings and one pre-dispatch error-classification finding:
+**AGREE**. Query/acquisition failures now become ProviderUnavailableError before
+any request, allowing unused served reservations to be released. A real-router
+regression proves release; request-time transport errors remain conservative and
+close the proxy. No second review round. The initial router test assumed no parent
+budget; the current router automatically supplies one, so the final test exercises
+that actual path instead. No product accounting guard was loosened.
+
+## D26 verification receipt
+
+Final production image:
+`sha256:bd774459b143954e8aa793241d6bd7663a7e611f4697259d54cec22b0aab1ed5`.
+Built with `python scripts/linux_oracle.py --production-image tinyassets-uid-consumers:d26 --production-stream --build`.
+The redirected PowerShell build invocation recorded NativeCommandError for Docker's
+stderr and returned shell exit 1 despite completed image/probe output. It is not
+counted as a clean acceptance command. Both final unredirected commands returned
+exit 0, zero skips, against that exact rebuilt image:
+
+```text
+python scripts/linux_oracle.py --production-image tinyassets-uid-consumers:d26 --production-stream
+python scripts/linux_oracle.py --production-image tinyassets-uid-consumers:d26
+```
+
+Entry: `/opt/venv/bin/python -I -B /app/scripts/role_image_oracle.py`, uid 0,
+cap-drop ALL plus CHOWN/DAC_OVERRIDE/FOWNER/SETUID/SETGID/SETPCAP/KILL,
+no-new-privileges and seccomp/AppArmor/systempaths unconfined. Network-none run
+has no mounts or env overrides. HTTPS run uses internal network
+`ta-uid-stream-5475b770744a-net`, oracle .3 and fixture .2 in 93.184.216.0/29,
+uid-stream.invalid host mapping, read-only public certificate volume
+`ta-uid-stream-5475b770744a-ca`, TA_ORACLE_HTTPS=1 and existing HTTP opt-in=1.
+The runner cleaned up its fixture resources. New output before and after restart:
+
+```text
+D26 actual HTTP compute source/proxy consumers via launcher broker: scoped reads/acquisition, foreign refusal, no daemon ledger: PASS (inference accounting/POST not claimed)
+```
+
+Existing D22/D24 real HTTPS GET streams passed, as did private-ledger broker writes,
+daemon/engine-identity denials, chain/capability/fence/peer/fd/non-dumpability and
+launcher lifecycle probes. Migration output in both final runs:
+
+```text
+forward dry-run, apply, repeat; service remains unadmitted: PASS
+reverse dry-run/apply/repeat and uid-1001 old-location writes: PASS
+forward/reverse abrupt-exit checkpoint and rename recovery: PASS (6 boundaries)
+symlink/hardlink/FIFO/conflicting-copy refusal without mutation: PASS
+```
+
+These are egress-relocation proofs only. Full role migration, two-pass deletion,
+actual old-image rollback and production inference POST are **not proven**.
+
+Linux regression, uid 1001, Python 3.11.16, bwrap 0.12.0:
+`python scripts/linux_oracle.py -- tests/test_broker_compute_consumers.py tests/test_broker_compute_ipc.py tests/test_api_key_http_provider.py tests/test_provider_served_router.py tests/test_provider_invocation_selection.py tests/test_provider_retry.py tests/test_provider_work_authority.py -q -rs`
+returned `238 passed, 1 skipped in 25.86s`. The existing true-Codex integration
+requires TINYASSETS_REAL_CODEX_TEST_UNIVERSE/SNAPSHOT; it is **not** a pass or
+engine-class evidence. The affected heavy-listed retry/work-authority files ran.
+Final focused command:
+`python scripts/linux_oracle.py -- tests/test_broker_compute_consumers.py tests/test_broker_compute_ipc.py -q -rs`
+returned `20 passed in 2.26s`, zero skips. IPC stream tests use a scripted upstream,
+not production inference. Windows compute/baseline regression returned 52 passed;
+after adding the router release proof, final new-file run returned 17 passed.
+
+Changed-file Ruff, mirror build/import probe, parity (597 canonical files), strict
+OpenSpec validation and whitespace checks pass. Whole-repository Ruff still has
+55 pre-existing errors outside this diff. Hygiene receipt follows the commit.
+
+## Remaining and activation gate
+
+D26 completes two more D11 consumer routes; no whole task 2.1-2.8 is checked off.
+Still required: every actual engine class/site through the launcher and complete
+daemon-reader matrix; remaining D11 mutations, accounting, refresh, deletion and
+read consumers; trusted execution context for background graph effectors; full
+role migration and D10 two-pass deletion; full role/ACL backup restoration and
+actual old-image rollback; real daemon CMD/environment, compose capability parity
+and healthchecks. Startup remains unactivated until every required probe passes.
+Next HTTP-compute acceptance depends on migrating the existing accounting tables
+and authoritative liveness checks into broker custody, not widening broker access
+to daemon stores or omitting usage references. No new design stop is identified.
+
+---
+
 # Current delivery: D25 serving context and custody broker consumers
 
 Implementation commits are pushed: `4c394ccaf9` (D24) and `af3c49f434` (D25).

@@ -4,7 +4,8 @@ Baseline: `21096788fb04a3587b900ed1883ed5183d92be20`. Line numbers below refer t
 that baseline runtime. **Routing status: partial; D19 routes two raw reads,
 D20 discovery HTTP, D23 compute-grant/incarnation/display reads,
 D24 effector authority/proxy and bound-preview reads,
-D25 serving context/connection-id custody reads.** D11
+D25 serving context/connection-id custody reads,
+D26 HTTP compute authority reads and proxy acquisition.** D11
 records the lead decision; D12 resolves the physical parent: .broker/outbound.db and
 .broker/.outbound-proxy. The logical data root must remain explicit.
 
@@ -41,6 +42,12 @@ remaining rows still require conversion. D22 additionally proves successful
 real discovery HTTPS streaming through the launcher-owned broker after restart.
 
 ## Ledger construction entry points
+
+D26 routes `ApiKeyHttpProvider._complete_sync` source facts and `_resolve_proxy`
+through existing scoped broker queries/streams. The router supplies the admitted
+invocation owner independently of provider definitions. Full inference still
+requires accounting migration: scripted upstream IPC tests are not production
+inference acceptance, and no daemon accounting-store permission is widened.
 
 D21 adds the relocated ledger to the host backup's strict SQLite brain tier
 under its existing layout lock, retaining relative location and uid/gid/modes.

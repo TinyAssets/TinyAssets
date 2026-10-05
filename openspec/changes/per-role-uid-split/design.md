@@ -1208,6 +1208,29 @@ local ledger construction. No new broker operation or privilege is introduced.
 The unsplit path retains its existing API behavior, including test-only baseline
 callers that omit the optional owner parameter. This is partial D11 conversion.
 
+### D26. Mechanical decision: HTTP compute uses the admitted invocation owner
+
+The router overwrites HTTP compute's internal invocation-owner field from the
+validated serving authority or work-carrier receipt at dispatch, clearing caller
+input first. A provider definition or grant cannot supply that principal. In
+broker-selected mode the executor requires the definition, running center and
+admitted owner to agree, obtains GRANTED_RESOURCE, then reacquires exact scoped
+authority with AUTHORIZED_CONNECTION before opening the existing broker stream.
+Preserve resource access mode, usage-reference forwarding, cleanup and response
+decoding. Missing/revoked/foreign scope, unavailable broker and malformed replies
+never construct a daemon ledger. The unsplit development path is unchanged.
+Query/acquisition failures are known-not-sent ProviderUnavailableError outcomes,
+so the router releases unused served reservations; errors after request dispatch
+retain conservative usage semantics. No send error is relabeled as unsent.
+
+No broker operation, privilege or isolation scope is added. Production-image
+probes cover actual compute source reads and proxy acquisition before and after
+broker restart; a separate Linux IPC test uses a scripted upstream to exercise
+the complete executor. That scripted response is not production inference
+acceptance. Actual inference POST remains gated by the D11 accounting migration;
+do not weaken the required usage reference or grant broker access to daemon stores.
+Startup remains unactivated pending the full acceptance matrix.
+
 ## Risks / Trade-offs
 
 - **The launcher is root-adjacent code.** One file, stdlib-only, run `-I -S`, a static kind table,
