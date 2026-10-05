@@ -4633,6 +4633,7 @@
     const bubble=existingBubble||appendMessage("founder", active.text, null,
       typeof active.started_at==="number"?active.started_at:Date.now()/1000);
     if(bubble){
+      bubble.clientSendId=active.client_send_id||"";
       const note=document.createElement("span");
       note.className="msg-steered-note";
       note.textContent="Your agent is working on this.";
@@ -4674,13 +4675,15 @@
       });
       if(displayAt>=0){
         const nextFounder=turns.findIndex((t,i)=>i>displayAt&&t.speaker==="founder");
-        drawHistoryTurns(turns.slice(displayAt+1,nextFounder<0?turns.length:nextFounder)
-          .filter(t=>t.speaker==="universe"||t.speaker==="platform"));
+        const row=turns[displayAt];
+        if(watched.bubble) watched.bubble.savedTurnKey=row.id?"id:"+row.id:
+          JSON.stringify([row.speaker,row.ts,row.text]);
+        drawHistoryTurns(turns.slice(displayAt,nextFounder<0?turns.length:nextFounder));
       }
       return;
     }
     if(reply>=0){
-      drawHistoryTurns(turns.slice(at+1,reply+1));
+      drawHistoryTurns(turns.slice(at,reply+1));
       if(held&&held.client_send_id&&held.client_send_id===watched.client_send_id)
         forgetInflightIf(held);
     }else if(held&&held.client_send_id&&held.client_send_id===watched.client_send_id){
