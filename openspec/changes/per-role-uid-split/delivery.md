@@ -1,5 +1,12 @@
 # Current delivery: D23 three more scoped broker consumers
 
+Implementation commits: `69aafb4ae7` (D22) and `2218bdcb68` (D23).
+Both used explicit staged paths and passed all commit hooks. Final hygiene:
+`python scripts/test_hygiene_gate.py --base b78457fc58 --head HEAD` returned
+`tests added 10, removed 0, tampering findings 0, product lines added 332`.
+This receipt is a documentation-only follow-up; all three commits are pushed
+together to origin/feat/per-role-uid-split. No PR or deployment.
+
 Continues from D22 implementation `69aafb4ae7`. D23 routes compute-grant
 validation, model-access custody-incarnation capture and source display names
 through GRANTED_RESOURCE, using one live principal/center/grant/connection
