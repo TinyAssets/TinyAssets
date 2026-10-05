@@ -173,3 +173,72 @@ deployment, or live-user acceptance; the existing review record remains above.
 Full-PR hygiene against merged origin/main: **14 added, 0 removed,
 0 tampering findings**. Both merge and repair commits carry the required
 Claude Opus 5.5 co-author trailer.
+
+
+## PR 4483 OAuth/browser repair (2026-10-05)
+
+Merged origin/main before reproducing merge-queue run 37287591956 / real-browser
+job 111689824472. Linux oracle (uid 1001, Python 3.11.16, Chromium, bubblewrap
+0.12.0), marker `real_browser or not real_browser`, the three reported modules:
+**14 failed, 64 passed**, including seven real-browser cases. Status reproduced
+exactly: `Finish signing in, then return here. Your message is kept.` followed
+by `Connection is not confirmed yet. Your message is kept. Retry or choose Other AI.`
+
+Evidence separates three causes: first-run Chromium scripts mocked only the old
+MCP answer transport, while the PR now sends answers to the protected HTTP door;
+HostedModelConnect returned early on a transient answer exception, bypassing its
+existing recovery/readback; rail extraction tests still expected the explicit
+protected patch-consent door. Separately, generic OAuth completion required a
+fresh cookie instead of binding consent at start, and inline bootstrap completion
+needed the same bound proof to activate its free-only request after browser return.
+
+Generic OAuth now requires protected proof at start and records approved_owner
+in the flow (legacy rows default unapproved). Completion validates owner, home,
+PKCE, action and expiry, consumes once, and deposits using that bound proof.
+Inline start seals proof into its existing expiring flow; protected launch still
+checks the owner, and callback still requires its per-flow browser cookie.
+Cookie-free polling consumes the flow and answers only the server-created
+free-only bootstrap request. The UI uses that completion receipt. An owner
+cookie at completion cannot upgrade a legacy unapproved flow.
+
+Every existing Chromium assertion is preserved. Its scripted inline poll now
+models the server's completion receipt and throws on any bearer tool answer.
+Added backend checks cover absent/forged/foreign start proof, legacy unbound
+flows, and completion with no owner cookie. Existing PKCE, action-change,
+expiry, owner-isolation and replay checks remain active. Restored transient
+answer recovery and the rail's explicit protected patch-consent call.
+
+
+Cross-family review: Claude via peer-agents, one round, verdict ADAPT.
+- AGREE: begin-time owner-login refusal needed a recovery link. Both inline
+  and generic starts now expose protected sign-in; added real Chromium checks
+  for the links, saved message/no answer, enabled retry and cleared PKCE draft.
+- DISAGREE_EVIDENCE (low, outside floor): require the original owner session to
+  remain live until completion. The requested contract explicitly binds consent
+  at START and allows completion without the cookie; authorization is the
+  independently expiring single-use flow, not a reusable session. Its owner,
+  home, PKCE/browser, action/preset and TTL bindings remain enforced. No general
+  consent-answer door accepts this proof from a caller. This review is not a
+  deployment or live-user acceptance claim.
+
+
+Broad Linux validation of every PR-touched test module plus the two reported
+JS execution modules: **1,025 passed, 1 skipped** in 380.36s. The single skip is
+`test_a_directory_junction_is_never_followed` (Windows-only); its separate
+Windows run passed (1 passed). The broad snapshot preceded the review-driven
+sign-in recovery links; those paths and the original reported modules are
+rechecked separately on Linux below. Changed-PR-file Ruff and plugin build /
+import probe / whole-tree mirror parity (606 canonical files) pass. A broad
+`ruff check .` also exposed 55 pre-existing findings outside this PR's diff;
+no unrelated files were changed. All assertions in the nine pre-existing
+first-run browser test functions remain AST-identical to origin/main.
+
+
+Final Linux recheck after the review adaptation: **114 passed, 0 skipped** in
+70.78s across first-run connect Chromium, hosted-model JS, request-rail JS and
+generic OAuth modules. JUnit verification across the broad run and final
+recheck confirms **54 distinct real-browser cases passed, none skipped or
+failed** (21 first-run connect cases, including four new recovery cases).
+Full-PR hygiene: **20 added, 0 removed, 0 tampering findings**. All pre-commit
+checks passed. The change is pushed for PR validation; no deployed-SHA or
+production live-user acceptance is claimed.

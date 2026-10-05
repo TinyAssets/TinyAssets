@@ -47,13 +47,13 @@ async def handle_model_connect(request):
         return JSONResponse({"error": "same_origin_json_required"}, 403, headers=_HEADERS)
     operation = request.path_params.get("operation")
     owner_session = None
-    if operation in {"oauth_begin", "oauth_exchange"}:
+    if operation in {"oauth_begin", "oauth_exchange", "inline_begin"}:
         from tinyassets.api.pending_requests import CONSENT_REQUIRED_DETAIL
         from tinyassets.onboarding.owner_sessions import require
 
         try:
             owner_session = require(request, owner=current_identity().user_id,
-                                    optional=operation == "oauth_begin")
+                                    optional=operation == "oauth_exchange")
         except PermissionError:
             return JSONResponse({"error": "interactive_approval_required",
                                  "detail": CONSENT_REQUIRED_DETAIL}, 403, headers=_HEADERS)
@@ -199,13 +199,15 @@ async def handle_model_connect(request):
                         hosted.load_preset(data["preset_id"])
                         _, home = scope(create=True, empty=True)
                         return inline.begin(owner=identity.user_id, home=home,
-                                            preset_id=data["preset_id"], resource=resource)
+                                            preset_id=data["preset_id"], resource=resource,
+                                            owner_session=owner_session)
                     _, home = scope()
                     return inline.take(owner=identity.user_id, home=home, handle=data["flow"],
                                        cancel=operation == "inline_cancel")
 
             result = await run_in_threadpool(inline_operation)
             if result.get("status") == "ready":
+                proof = result["owner_session"]
                 verifier, code = result["verifier"], result["code"]
                 data.update(code_verifier=verifier)
                 flow = await run_in_threadpool(take)
@@ -213,6 +215,19 @@ async def handle_model_connect(request):
                 result = await run_in_threadpool(complete, hosted.load_preset(flow.preset_id),
                                                  expected=flow.universe_id,
                                                  expected_digest=flow.preset_digest, key=key)
+                # Only this consumed flow's protected gesture can finish its
+                # server-created free-only bootstrap, never an arbitrary ask.
+                from tinyassets.api.pending_requests import _answer_request
+
+                def finish_inline():
+                    with identity_context(identity):
+                        return _answer_request(
+                            universe_id=flow.universe_id,
+                            payload={"request_id": result["request_id"], "values": {}},
+                            owner_session=proof,
+                        )
+
+                result["answer"] = await run_in_threadpool(finish_inline)
         elif operation == "oauth_begin":
             result = await run_in_threadpool(oauth_begin)
         elif operation == "source_sign_in":

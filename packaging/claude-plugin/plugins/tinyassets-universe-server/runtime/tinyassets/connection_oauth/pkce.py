@@ -72,6 +72,9 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE connection_oauth_flows ADD COLUMN owner_session_hash TEXT")
     if "sealed_verifier" not in columns:
         conn.execute("ALTER TABLE connection_oauth_flows ADD COLUMN sealed_verifier BLOB")
+    if "approved_owner" not in columns:
+        conn.execute("ALTER TABLE connection_oauth_flows "
+                     "ADD COLUMN approved_owner TEXT NOT NULL DEFAULT ''")
 
 
 @contextmanager

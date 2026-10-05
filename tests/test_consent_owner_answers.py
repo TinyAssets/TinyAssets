@@ -129,7 +129,8 @@ def test_oauth_token_answer_requires_owner_proof_before_deposit(home):
     assert store.get_request(home, row["request_id"])["status"] == "pending"
 
 
-@pytest.mark.parametrize("door", ["oauth_exchange", "rules", "preview", "decide", "edit"])
+@pytest.mark.parametrize("door",
+                         ["oauth_begin", "inline_begin", "rules", "preview", "decide", "edit"])
 def test_bearer_cannot_mint_retry_or_write_authority(home, monkeypatch, door):
     from tinyassets import onboarding
     from tinyassets.onboarding.inline_requests import handle_approval
@@ -147,7 +148,7 @@ def test_bearer_cannot_mint_retry_or_write_authority(home, monkeypatch, door):
                            (b"origin", b"https://tinyassets.io"),
                            (b"content-type", b"application/json"),
                        ]}, receive)
-    handler = (handle_model_connect if door == "oauth_exchange" else
+    handler = (handle_model_connect if door in {"oauth_begin", "inline_begin"} else
                onboarding._handle_rules if door == "rules" else handle_approval)
     response = asyncio.run(handler(request))
     assert response.status_code == 403

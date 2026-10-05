@@ -185,3 +185,13 @@ Migrate both old-format and initial sheet-format databases transactionally under
 owner-control. Preserve behavior IDs, values and the AUTOINCREMENT high-water mark;
 copy all grants before deduplicating compatibility rows for the legacy unique key.
 Failure closes the connection and rolls back all migration changes.
+
+### PR 4483: flow-bound owner completion
+
+Require the protected owner session at generic OAuth and inline connect start.
+Persist proof with the expiring owner/home/action/PKCE-bound flow; completion
+consumes that flow once without requiring the owner cookie again. Existing
+generic flows lacking proof cannot complete. Inline popup callbacks retain
+their per-flow browser cookie and launch-owner check; the consumed sealed proof
+authorizes only the free-model bootstrap request created by that same flow.
+Bearer-only starts and foreign, expired, changed or replayed flows stay inert.

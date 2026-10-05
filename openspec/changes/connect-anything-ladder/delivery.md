@@ -5,6 +5,12 @@ initially at `688a3e91f121c5b299afe2df536e75c5b4f78a00`, now integrated
 through foundation `dc34dd2b10` (merge `7cb44172be`).
 Draft PR: https://github.com/TinyAssets/TinyAssets/pull/4496.
 
+Current resume status: task 1.2's OAuth machinery is implemented and verified.
+MCP request-shape discovery/activation and ta integration remain under 1.6;
+the founder's pasted-link-to-tools flow is **not complete**. Earlier remaining-task
+lists below are historical receipts. The branch has integrated #4469 and #4483,
+including #4483's later `dda3c01331` repair. No deployment is claimed.
+
 ## Verified slice: typed attachment metadata
 
 Added broker-owned version-1 HTTP MCP metadata keyed by owner, backing
@@ -157,3 +163,21 @@ message regression (63 passed / 1 failed). The source lane just pushed its repai
 as dda3c01331, overlapping OAuth consent capture; reconcile that prerequisite
 next while retaining MCP's stronger live initiating-session check. Full-flow MCP
 activation/ta/continuation still has not been implemented or claimed.
+
+## Resume prerequisite repair: dda3c01331
+
+Imported the consent lane's later fix after it reproduced the transient-answer
+message failure. Generic/inline sign-in records a single-use owner-started proof;
+its callback need not carry an owner cookie. MCP retains the live initiating
+session check at take and deposit, since its verifier is server-held. Missing
+cookie, different session, logout and replay tests remain in place. No test was
+weakened: the MCP ASGI helper explicitly sends its required real session cookie,
+while the upstream generic helper now deliberately omits callback cookies.
+
+Validation after reconciliation: Linux oracle 278 passed, zero skips across
+MCP/generic OAuth, consent, inline/onboarding model connect, hosted-model app,
+real first-run browser, sign-in source and inline approvals. The preceding
+47-file Linux run passed 1299 with one platform-specific skip; it predates this
+last prerequisite repair. Ruff, plugin build/import, 608-file mirror parity,
+strict OpenSpec and whitespace checks pass. Task 1.2 is checked for the complete
+OAuth machinery; request-shape hookup and full-flow proof stay in task 1.6.

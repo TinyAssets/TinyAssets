@@ -19,16 +19,26 @@ from tests.test_generic_oauth_connections import (
     _broker,
     _call,
     _connected,
-    _post,
     _vault_bundle,
     app,  # noqa: F401
     provider,  # noqa: F401
     universes,  # noqa: F401
 )
+from tests.test_generic_oauth_connections import (
+    _post as _generic_post,
+)
 from tinyassets.connection_oauth import mcp, tokens
 from tinyassets.connection_oauth.transport import OAuthError
 
 ENDPOINT = f"https://{API}/mcp"
+
+
+def _post(operation, data):
+    # Unlike generic pre-approved flows, MCP completion requires the live
+    # initiating session because its PKCE verifier is held by the server.
+    from tests.owner_answer import session_cookie
+
+    return _generic_post(operation, data, cookie=session_cookie())
 
 
 @pytest.fixture
@@ -119,6 +129,10 @@ def test_mcp_pkce_is_server_held_and_bound_to_initiating_session(mcp_provider, a
             flow.complete(owner=OWNER, universe_id=UID, handle=handle, code=code,
                           verifier=VERIFIER, owner_session={"session_hash": "different-session"})
         assert not mcp_provider.api_calls
+        assert not [x for x in mcp_provider.seen if x[2] == "/token"]
+        missing = _generic_post("oauth_exchange", {"flow": handle, "code": code,
+                                                  "code_verifier": VERIFIER}, cookie="")
+        assert missing.status_code == 403
         assert not [x for x in mcp_provider.seen if x[2] == "/token"]
         # Browser verifier is not authority: the server uses its sealed verifier.
         done = _post("oauth_exchange", {"flow": handle, "code": code,

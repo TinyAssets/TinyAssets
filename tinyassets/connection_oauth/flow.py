@@ -115,6 +115,9 @@ def _pending_connect(universe_id: str, request_id: str) -> dict[str, Any]:
 def begin(*, owner: str, universe_id: str, request_id: str, challenge: str,
           public_resource: str, owner_session: dict | None = None) -> dict[str, Any]:
     """Start one sign-in for the owner's pending request. No token is involved."""
+    if (owner_session is None
+            or json.loads(owner_session.get("identity_json", "{}")).get("user_id") != owner):
+        raise FlowError("interactive_approval_required", 403)
     if not owner or not universe_id:
         raise FlowError("current_home_required", 409)
     if not isinstance(challenge, str) or not pkce.HANDLE_RE.fullmatch(challenge):
@@ -162,11 +165,11 @@ def begin(*, owner: str, universe_id: str, request_id: str, challenge: str,
         conn.execute(
             "INSERT INTO connection_oauth_flows "
             "(handle_digest,owner_user_id,universe_id,request_id,action_digest,challenge,"
-            "client_id,redirect_uri,created_at,expires_at,owner_session_hash,sealed_verifier) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "client_id,redirect_uri,created_at,expires_at,owner_session_hash,sealed_verifier,"
+            "approved_owner) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (pkce.handle_digest(handle), owner, universe_id, request_id,
              action_digest(row["action"]), challenge, client_id, callback, now,
-             now + pkce.FLOW_TTL_SECONDS, session_hash, sealed),
+             now + pkce.FLOW_TTL_SECONDS, session_hash, sealed, owner),
         )
     query = {
         **offer.get("extra_auth_params", {}),
@@ -209,10 +212,6 @@ def _live_session(session, owner):
 def complete(*, owner: str, universe_id: str, handle: str, code: str,
              verifier: str, iss: str = "", owner_session: dict | None = None) -> dict[str, Any]:
     """Redeem the code once and deposit the tokens as the owner's answer."""
-    if owner_session is None:
-        from tinyassets.api.pending_requests import CONSENT_REQUIRED_DETAIL
-
-        raise FlowError("interactive_approval_required", 403, CONSENT_REQUIRED_DETAIL)
     if not isinstance(handle, str) or not pkce.HANDLE_RE.fullmatch(handle) or not owner:
         raise FlowError("unknown_sign_in", 404)
     if (not isinstance(code, str) or not 1 <= len(code) <= 2048
@@ -229,6 +228,8 @@ def complete(*, owner: str, universe_id: str, handle: str, code: str,
         # Another user's (or an unknown) handle cannot consume the owner's flow.
         if flow is None or flow["owner_user_id"] != owner:
             raise FlowError("unknown_sign_in", 404)
+        if flow["approved_owner"] != owner:
+            raise FlowError("interactive_approval_required", 403)
         if flow["universe_id"] != universe_id:
             raise FlowError("current_home_changed", 409)
         if flow["owner_session_hash"]:
@@ -283,7 +284,7 @@ def complete(*, owner: str, universe_id: str, handle: str, code: str,
         with control(home), guard:
             result = answer_connect_with_token(
                 universe_id=universe_id, request_id=flow["request_id"], token=encode(bundle),
-                owner_session=owner_session,
+                owner_session={"approved_owner": owner, "flow_digest": digest},
             )
     except ControlUnavailable:
         raise FlowError("owner_control_unavailable", 409) from None
