@@ -10,8 +10,12 @@
 
 ## 3. Delivery
 
-- [ ] 3.1 Run affected Windows/Linux tests, ruff, plugin mirror and hygiene checks.
-- [ ] 3.2 Open/update draft PR with evidence and decisions; perform one cross-family floor/correctness review.
+- [x] 3.1 Run affected Windows/Linux tests, ruff, plugin mirror and hygiene checks.
+- [x] 3.2 Open/update draft PR with evidence and decisions; perform one cross-family floor/correctness review.
 - [x] 3.3 Sync capability spec; record deployment and real-user proof as remaining if not shipped.
 
-Verification so far: Windows regressions 9 passed / 2 environment skips; Linux affected suite 184 passed / 1 new engine-fixture failure, fixed by peer using real bound authority. Focused Linux rerun pending. Existing Windows-only limitations: shared-background-self symlink creation lacks privilege; universe-tools provider mount test assumes POSIX paths. No existing tests changed or weakened. Deployment and real-user app pass are not claimed for this draft.
+Final verification: affected Windows selection 81 passed / 4 symlink-privilege skips. Linux affected suite 184 passed / 1 new engine-fixture failure; Claude peer repaired that fixture using real serving authority. Final focused Linux oracle 12 passed / zero skips, including the real-jail persistence proof. The two unchanged Windows POSIX assumptions (shared-background-self symlink creation and provider mount paths) passed in Linux. Ruff, plugin import probe/mirror, strict spec validation and diff checks pass. Hygiene: 9 functions added, 0 removed, 0 tampering. Isolated session-predicate mutation returns foreign ID 2 and is detected by the regression's exact-ID assertion.
+
+Cross-family review: Claude APPROVE, diagnosis AGREE, approach AGREE; no floor/correctness findings. Non-blocking inventory-error omission nit deferred: preserve existing fail-closed behavior and avoid hiding storage errors behind a partial inventory. Full review is in review.md.
+
+Deployment and real-user app pass remain pending for this draft; no shipped claim. PR #4493.
