@@ -154,3 +154,38 @@ full report and reconciliation are in review.md. Main recovery spec still matche
 these implementation repairs. This repair is a PR push, not a deployment claim.
 
 Final PR hygiene: **20 added, 0 removed, 0 tampering**; exit 0.
+
+## Explicit-build CI repair (2026-10-05)
+
+Merged origin/main f811df9f0fad88372fdba02f4342a2c832ffd3a2 before the repair.
+Reproduced the unchanged test_frontend_proxy.py::test_render_build failure:
+render_app_html -> read_data_path -> _data_relative -> storage.data_dir.
+The recovery asset is packaged code, but its data-path reader consulted owner
+storage even when the caller supplied a build. Module URL hashing was unrelated.
+
+Moved the fixed recovery-script read alongside chat_renderer_source in
+app_modules.py. Rendering now loads that packaged asset without owner storage;
+missing assets still raise FileNotFoundError. No test or guard was modified.
+This does not change recovery behavior or the synced main recovery spec.
+
+Local regression and universe-path guard: 5 passed. Ruff passed on both changed
+canonical Python modules. Plugin builder import probe passed; whole-tree parity
+matched 609 canonical files. PR hygiene: 20 added, 0 removed, 0 tampering.
+
+Supplemental Linux oracle: 399 passed, 17 failed, no skips (97.67s):
+`tests/test_host_uptime_installers.py tests/test_retire_cheat_loop_deploy_fence.py
+ tests/test_scoped_identity_reset.py tests/test_custom_ui_bridge.py
+ tests/test_custom_ui_isolation.py tests/test_custom_ui_real_browser.py
+ tests/test_custom_ui_asset_delivery.py`.
+All 17 failures match the existing deploy-fence quarantine ledger. The deploy-
+fence implementation, tests and ledger have no diff from origin/main. The three
+heavy files were selected by affected_tests.py for the two changed modules.
+
+Required Linux oracle selection: **217 passed, zero failures/skips** (225.38s),
+Python 3.11.16, uid 1001, bubblewrap 0.12.0:
+`python scripts/linux_oracle.py -- -q tests/test_frontend_proxy.py
+ tests/test_app_recovery_browser.py tests/test_app_account_transition.py
+ tests/test_app_modules.py tests/test_onboarding_app.py
+ tests/test_universe_path_io_guard.py --basetemp /tmp/b`.
+The supplemental selection used the same oracle prefix and basetemp.
+This repair is a PR push, not a production deployment claim.

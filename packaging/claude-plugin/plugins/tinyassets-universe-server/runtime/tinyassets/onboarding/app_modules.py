@@ -70,6 +70,11 @@ def chat_renderer_source() -> str:
     return (MODULE_DIR.parent / "chat_render.js").read_text(encoding="utf-8")
 
 
+def recovery_source() -> str:
+    """Trusted packaged recovery script; loading it never consults owner storage."""
+    return (MODULE_DIR.parent / "app_recovery.js").read_text(encoding="utf-8")
+
+
 def is_module_path(path: str) -> bool:
     """The exact public path shape, for the auth middleware's carve-out."""
     return _PATH_RE.fullmatch(path) is not None
