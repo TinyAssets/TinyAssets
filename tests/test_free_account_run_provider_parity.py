@@ -785,20 +785,12 @@ def test_universe_b_run_never_reaches_universe_as_provider(
 def test_a_model_pin_admits_siblings_unless_the_node_declares_no_fallbacks(
     tmp_path, monkeypatch, authenticate_request, wires,
 ):
-    """How strictly a model pin binds is AUTHOR-declared, not platform policy.
+    """Exact model pins are strict; provider-only pins retain source siblings.
 
-    The Codex refutation of this change (C5, 2026-09-29) showed a node pinned to
-    one model completing on a sibling after a model-local capacity refusal, and
-    it is right that the change widened who sees that: before, a run with no
-    saved preference built no order and could only re-attempt the same model.
-
-    It is the captured-order contract, not an accident -- it is already what
-    every owner with a saved preference gets -- and it is the behaviour uptime
-    wants: a sibling from the SAME source, re-validated against the SAME
-    accepted ceilings, after a validated capacity refusal. An author who means
-    "only this model" says so with `fallback_chain: []`, and that is honoured.
-    Both halves are pinned here so the default is a decision rather than a
-    side effect.
+    Keep the historical test identity, but replace its obsolete expectation:
+    omitting fallback_chain no longer permits silent model substitution. Both
+    exact-pin forms must stop after exhaustion; only a source-only choice may
+    advance through that source's captured model order.
     """
     from tinyassets.provider_serving_binding import resolve_serving_agent_binding
     from tinyassets.providers.model_policy import Exhaustion, ModelRef
@@ -825,7 +817,7 @@ def test_a_model_pin_admits_siblings_unless_the_node_declares_no_fallbacks(
     assert order.next_candidate(open_pin) == pinned
     assert order.next_candidate(
         open_pin, (Exhaustion("model", pinned),),
-    ) == sibling, "a pin with no declared fallbacks may use the owner's own order"
+    ) is None, "an exact model pin must never silently substitute a sibling"
 
     closed_pin = {"preferred": {"model": LIVE_MODELS[0]}, "fallback_chain": []}
     order = WorkCandidateData(prepared.plan)
@@ -835,6 +827,15 @@ def test_a_model_pin_admits_siblings_unless_the_node_declares_no_fallbacks(
     assert order.next_candidate(
         closed_pin, (Exhaustion("model", pinned),),
     ) is None, "fallback_chain: [] means only this model, and it must stay that way"
+
+    source_pin = {"preferred": {"provider": provider}}
+    order = WorkCandidateData(prepared.plan)
+    snapshot["node_defs"][0]["llm_policy"] = source_pin
+    order.fit(snapshot, ceiling=10_000, retry_multiplier=1)
+    assert order.next_candidate(source_pin) == pinned
+    assert order.next_candidate(
+        source_pin, (Exhaustion("model", pinned),),
+    ) == sibling, "a provider-only pin retains siblings from the same source"
 
 
 def test_a_foreign_authored_branch_makes_no_discovery_request_at_all(

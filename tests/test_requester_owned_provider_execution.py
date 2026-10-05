@@ -234,7 +234,7 @@ def test_policy_graph_preserves_context_and_holds_without_served_authority(
     tmp_path,
     monkeypatch,
 ):
-    """MUTATION: drop context in either graph bridge -> a provider spy serves it."""
+    """The bound policy caller preserves owner context and cannot serve without authority."""
     from langgraph.checkpoint.memory import InMemorySaver
 
     from tinyassets.providers import call as call_module
@@ -258,9 +258,14 @@ def test_policy_graph_preserves_context_and_holds_without_served_authority(
         config=UniverseConfig(preferred_writer="codex"),
     )
     try:
+        # A policy graph needs the same universe-bound policy bridge as a real
+        # run. The raw text callable is now refused before authority checking.
+        bound = call_module.bind_universe_provider_call(
+            call_module.call_provider, context, operation="run_graph",
+        )
         compiled = compile_branch(
             _policy_branch(),
-            provider_call=call_module.call_provider,
+            provider_call=bound,
             universe_context=context,
         )
         with pytest.raises(CompilerError, match=r"(?i)connect your provider"):
