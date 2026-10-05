@@ -10363,12 +10363,19 @@
   }
   AppRecovery.attach({
     scope:()=>({owner:queueOwner,home:queueScope,agent:addressedAgentId()}),
-    health:()=>({expected:!$("view-chat").hidden&&
-        (engineConnected!==false||$("chat-cloud").dataset.mode==="bubble"),
-      healthy:!!(AppUI.enabled&&AppUI.frame&&AppUI.frame.isConnected&&AppUI.ready&&!AppUI.bootFault)}),
+    health:()=>({expected:!$("view-chat").hidden&&engineConnected!==false,
+      healthy:!!(AppUI.enabled&&AppUI.frame&&AppUI.frame.isConnected&&AppUI.bootComplete&&!AppUI.bootFault),
+      timeout:AppUI.ready&&AppUI.frame&&AppUI.frame.isConnected?120000:15000}),
+    holdUpdate:()=>{
+      const active=document.activeElement,pending=readInflight();
+      return !!((isTypingTarget(active)&&active.value)||
+        ($("btn-send").disabled&&Date.now()-turnStartedAt<3*60*60*1000)||
+        (!$("btn-send").disabled&&pending&&Date.now()-(pending.ts||0)<20*60*1000));
+    },
     retryFrame:()=>{
       if(!AppUI.enabled)return false;
-      if(AppUI.active)AppUI.mount(AppUI.active);else AppUI.load();
+      if(AppUI.isPlatformDefault())AppUI.mountDefault();
+      else if(AppUI.active)AppUI.mount(AppUI.active);else AppUI.load();
       return true;
     },
     browse:()=>{

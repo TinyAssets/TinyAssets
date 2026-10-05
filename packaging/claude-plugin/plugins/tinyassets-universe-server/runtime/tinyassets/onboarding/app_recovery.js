@@ -61,11 +61,14 @@ window.AppRecovery=(()=>{
     catch(_e){return {expected:true,healthy:false};}
   }
   function tick(){
+    // A reload starts at the main agent. Keep a different agent's draft private
+    // until the owner selects that agent again, then offer it without sending.
+    if(booted)restoreDraft();
     const state=health(),now=Date.now();
     if((!booted||state.expected)&&!state.healthy){
       goodSince=0;
       if(!badSince)badSince=now;
-      if(now-badSince>=15000){badSince=now;fail();}
+      if(now-badSince>=(state.timeout||15000)){badSince=now;fail();}
     }else{
       badSince=0;
       if(!goodSince)goodSince=now;
@@ -86,6 +89,8 @@ window.AppRecovery=(()=>{
       // A broken page never consults the turn/typing hold. The durable turn
       // record already belongs to the app; save only the unsent draft here.
       if(response.ok&&live&&live!==cfg.build){
+        const state=health();
+        if(booted&&!failed&&(!state.expected||state.healthy)&&hooks&&hooks.holdUpdate())return;
         notice();
         if(!frameTried&&hooks){
           frameTried=true;

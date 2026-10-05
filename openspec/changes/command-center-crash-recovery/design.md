@@ -3,6 +3,8 @@
 Read-only CDP snapshot: build 29fa5b4, zero iframes, AppUI disabled, cloud in bubble
 mode. fetchMe returns null on 5xx; enterSignedIn treats this as unavailable and
 resets AppUI, then shows chat. open/openBrowse cannot open the disabled UI.
+The server also converts session storage-read exceptions into a 200 response
+with setup=unavailable and an empty home; that entered the same reset path.
 This matches the observed state; no retained network log proves the triggering
 request. The empty main.js is not imported; the service worker has no fetch handler.
 
@@ -12,7 +14,7 @@ Use a separate nonce-bearing inline recovery script, outside the main script's
 parse/boot failure domain. Controls sit outside the collapsible cloud. Recovery
 first remounts the current frame, then navigates to a cache-busted app URL with
 session-persisted exponential backoff and a retry ceiling. A visible reload link
-survives exhaustion. Broken pages bypass live-turn holds. Drafts are restored only
+survives exhaustion. Broken pages bypass live-turn holds; healthy pages retain typing and turn holds. Drafts are restored only
 after matching verified owner, home and addressed agent; storage failure prevents
 automatic navigation when it would lose a draft.
 

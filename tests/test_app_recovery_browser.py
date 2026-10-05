@@ -82,7 +82,9 @@ def page(server):
             path = route.request.url.split("?", 1)[0]
             if path.endswith("/app/me"):
                 route.fulfill(status=503 if state["me_fail"] else 200, json={
-                    "principal_id": "owner-1", "universe_id": "home-1", "setup": "connected"})
+                    "principal_id": "owner-1",
+                    "universe_id": "" if state.get("degraded") else "home-1",
+                    "setup": "unavailable" if state.get("degraded") else "connected"})
             elif path.endswith("/app/api/read"):
                 route.fulfill(json={"app_ui": {"universe_id": "home-1", "revision": 1,
                     "ui_library": [], "ui_selection": None, "platform_default": {
@@ -120,9 +122,11 @@ def test_missing_frame_recovers_and_controls_are_clickable(page, server):
     page.locator("#btn-ui-close").click()
     healthy(page)  # watchdog notices the detached frame and remounts it
     assert server[1]["frames"] >= 2
+    assert page.evaluate("AppUI.isPlatformDefault()") is True
     assert page.input_value("#composer-input") == "keep this draft"
     page.locator('[data-app-recovery="refresh"]').click()
     healthy(page)
+    assert page.evaluate("AppUI.isPlatformDefault()") is True
     assert server[1]["pages"] == 1
 
 
@@ -142,6 +146,7 @@ def test_deploy_mismatch_ignores_live_turn_and_preserves_draft(page, server):
     page.locator('[data-app-recovery="chat"]').click()
     page.locator("#composer-input").fill("unsent during deploy")
     page.evaluate("document.getElementById('btn-send').disabled=true;turnStartedAt=Date.now()")
+    page.evaluate("document.getElementById('ui-frame').remove()")
     server[1]["build"] = "after"
     page.evaluate("AppRecovery.checkBuild()")
     page.wait_for_url("**/*_ta_recover=*")
@@ -235,3 +240,78 @@ def test_bubble_browse_reloads_when_ui_is_disabled(page):
     page.locator("#btn-bubble-browse").click()
     page.wait_for_url("**/*_ta_recover=*")
     healthy(page)
+
+
+def test_healthy_turn_holds_version_update(page, server):
+    healthy(page)
+    page.evaluate("document.getElementById('btn-send').disabled=true;turnStartedAt=Date.now()")
+    server[1]["build"] = "after"
+    page.evaluate("AppRecovery.checkBuild()")
+    assert page.evaluate("sessionStorage.getItem('ta_app_recovery')") is None
+    assert server[1]["pages"] == 1
+    assert server[1]["frames"] == 1
+
+
+def test_runtime_error_does_not_remount_working_bundle(page, server):
+    healthy(page)
+    page.frame_locator("#ui-frame").locator("#working").evaluate(
+        "() => window.dispatchEvent(new ErrorEvent('error',{message:'runtime action refused'}))")
+    assert page.evaluate("AppUI.bootFault") is False
+    assert server[1]["frames"] == 1
+    assert page.locator("#app-recovery-failed").is_hidden()
+
+
+def test_disconnected_bubble_is_not_a_boot_failure(page, server):
+    healthy(page)
+    page.evaluate("""() => {
+        AppUI.reset();engineConnected=false;
+        cloudState.mode='bubble';cloudState.userSet=true;applyChatCloud();
+    }""")
+    page.clock.install()
+    page.clock.run_for(40000)
+    assert page.locator("#app-recovery-failed").is_hidden()
+    assert server[1]["pages"] == 1
+    page.locator('[data-app-recovery="chat"]').click()
+    assert page.locator("#composer-input").is_visible()
+
+
+def test_degraded_session_reply_does_not_disable_ui(page, server):
+    healthy(page)
+    server[1]["degraded"] = True
+    page.evaluate("enterSignedIn()")
+    assert page.evaluate("AppUI.enabled") is True
+    assert page.evaluate("AppUI.home") == "home-1"
+    healthy(page)
+
+
+def test_draft_waits_for_its_addressed_agent(page):
+    from playwright.sync_api import expect
+
+    healthy(page)
+    page.evaluate("""() => {
+        sessionStorage.setItem('ta_recovery_draft',JSON.stringify({owner:'owner-1',
+            home:'home-1',agent:'helper',text:'helper draft'}));AppRecovery.restoreDraft();
+    }""")
+    assert page.input_value("#composer-input") == ""
+    page.evaluate("addressAgent({agent_id:'helper',name:'Helper'})")
+    expect(page.locator("#composer-input")).to_have_value("helper draft")
+    assert page.evaluate("sessionStorage.getItem('ta_recovery_draft')") is None
+
+
+def test_failed_asset_boot_retries_then_recovers_page(page, server):
+    healthy(page)
+    page.route("**/app/api/ui-asset", lambda route: route.fulfill(status=503, body="deploy"))
+    page.evaluate("AppUI.mount({...AppUI.active,libraries:['three']})")
+    page.wait_for_url("**/*_ta_recover=*")
+    healthy(page)
+    assert server[1]["pages"] == 2
+    assert page.evaluate("AppUI.bootComplete") is True
+
+
+def test_bundle_exception_is_reported_before_boot_success(page, server):
+    healthy(page)
+    page.evaluate("AppUI.mount({...AppUI.active,script:'throw Error(\"boot broke\")'})")
+    page.wait_for_url("**/*_ta_recover=*")
+    healthy(page)
+    assert server[1]["pages"] == 2
+    assert page.evaluate("AppUI.bootComplete && !AppUI.bootFault") is True
