@@ -1,5 +1,9 @@
 # Current delivery: D56 preview security-scope stop (2026-10-05)
 
+Evidence committed as **0abd204364**. The committed diagnostic was rerun:
+exit 0 with the same three-profile result. Hygiene against 71df3620de:
+0 tests added, 0 removed, 0 tampering findings. Pre-commit checks passed.
+
 Started at **71df3620de**; ff-only pull was already current. While reconciling
 the remaining actual engine classes, found that D9 assigns preview `cell-deny`
 but its real Chromium renderer requires nested user namespaces. Added a durable,
