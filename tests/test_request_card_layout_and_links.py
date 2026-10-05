@@ -32,6 +32,7 @@ from pathlib import Path
 
 import pytest
 
+from tests.app_sheet_harness import rail_source
 from tests.test_onboarding_app import _js_function
 from tinyassets.onboarding import render_app_html
 
@@ -338,16 +339,11 @@ __SOURCE__
 
 def _run_rail(rows, extra):
     html, _ = render_app_html()
-    source = "\n".join(_js_function(html, name) for name in (
-        "isSetupRequest", "isOptionalRequest", "forgetFinishedSetup",
-        "foldedModelAccess", "renderRail", "connectBody", "railFieldLink",
-        "railFieldControl", "railBody", "updateRailItems", "frameTitle", "answerLine",
-        "clearTypedValues", "clearRailCards"))
-    source += html[html.index("  const RequestSheets = {"):
-                   html.index("  function renderRail(items, options){")]
-    shapes = html[html.index("  const ConnectShapes={"):
-                  html.index("  // A declared model list needs")]
-    script = (_LIVE_DOM_HARNESS.replace("__SOURCE__", source + "\n" + shapes)
+    source = rail_source(html) + "\n" + "\n".join(
+        _js_function(html, name) for name in (
+            "railFieldLink", "railFieldControl", "railBody", "frameTitle",
+            "answerLine", "clearRailCards"))
+    script = (_LIVE_DOM_HARNESS.replace("__SOURCE__", source)
               + "\nrenderRail(" + json.dumps(rows) + ");\n" + extra + r"""
 console.log(JSON.stringify(result));
 """)

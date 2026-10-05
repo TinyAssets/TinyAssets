@@ -20,6 +20,8 @@ import tempfile
 
 import pytest
 
+from tests.app_sheet_harness import sheet_source
+
 _NODE = shutil.which("node")
 
 # Real page source, no reimplementation. The helper introduced by the account
@@ -153,7 +155,13 @@ function $(id){
   // `children` because every element has some: the page now walks a node to
   // clear the controls under it (clearRailCards), and an element without the
   // property is not a DOM element at all.
-  if(!DOM.other[id]) DOM.other[id]={id, value:"", textContent:"", style:{}, children:[]};
+  if(!DOM.other[id]) DOM.other[id]={id, value:"", textContent:"", style:{}, children:[],
+    open:false, showModal(){this.open=true;}, close(){this.open=false;},
+    appendChild(node){
+      if(node.parentNode)node.parentNode.children=node.parentNode.children.filter(c=>c!==node);
+      this.children.push(node);node.parentNode=this;return node;
+    },
+    contains(node){return this===node || this.children.some(child=>child.contains(node));}};
   return DOM.other[id];
 }
 let activeTurn=null, turnStartedAt=0, liveInflight=null;
@@ -256,7 +264,7 @@ def _script(html: str, body: str) -> str:
     # the page's own UPLOAD_RECORDS_KEY, so that constant has to exist by then.
     inline = "const InlineConnection=" + html.split("  const InlineConnection=", 1)[1].split(
         "  const HostedModelConnect=", 1)[0]
-    return _lifted(html) + "\n" + _HARNESS + "\n" + inline + "\n" + body
+    return sheet_source(html) + "\n" + _lifted(html) + "\n" + _HARNESS + "\n" + inline + "\n" + body
 
 
 pytestmark = pytest.mark.skipif(
@@ -266,6 +274,29 @@ pytestmark = pytest.mark.skipif(
 @pytest.fixture(scope="module")
 def html() -> str:
     return _app_html()
+
+
+def test_account_cleanup_resets_real_sheets_and_preserves_shared_panels(html):
+    out = _run_node(_script(html, r"""
+const host=$('rail-items'), sheet=$('request-rail'), inbox=$('needs-you');
+host.appendChild($('connect-panel'));host.appendChild($('rail-add-panel'));
+$('connect-panel').value='unsubmitted key';
+$('needs-you-items').textContent='Previous account request';
+$('request-history').textContent='Previous account history';
+sheet.showModal();inbox.showModal();
+RequestSheets.seen.add('old-request');RequestSheets.selected='old-request';
+clearRailCards();
+console.log(JSON.stringify({seen:[...RequestSheets.seen],selected:RequestSheets.selected,
+  open:[sheet.open,inbox.open],inbox:$('needs-you-items').textContent,
+  history:$('request-history').textContent,key:$('connect-panel').value,
+  panels:['connect-panel','rail-add-panel'].map(id=>({
+    retained:sheet.contains($(id)),hidden:$(id).hidden}))}));
+"""))
+    assert out == {
+        "seen": [], "selected": None, "open": [False, False],
+        "inbox": "", "history": "", "key": "",
+        "panels": [{"retained": True, "hidden": True}] * 2,
+    }
 
 
 def test_sign_out_drops_the_previous_account_view_and_memory(html):

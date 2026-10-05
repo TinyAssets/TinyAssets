@@ -30,8 +30,8 @@ import subprocess
 import pytest
 
 from tests import test_model_bootstrap as _bootstrap
+from tests.app_sheet_harness import rail_source
 from tests.test_notification_is_the_setup import _RAIL_HARNESS
-from tests.test_onboarding_app import _js_function
 from tinyassets.onboarding import render_app_html
 
 _NODE = shutil.which("node")
@@ -131,14 +131,8 @@ _ASK = {"request_id": "req_b", "kind": "API", "status": "pending", "title": "Key
 
 def _run_head(rows, extra=""):
     html, _ = render_app_html()
-    source = "\n".join(_js_function(html, name) for name in (
-        "isSetupRequest", "isOptionalRequest", "forgetFinishedSetup", "foldedModelAccess",
-        "renderRail", "connectBody", "clearTypedValues", "updateRailItems"))
-    source += html[html.index("  const RequestSheets = {"):
-                   html.index("  function renderRail(items, options){")]
-    shapes = html[html.index("  const ConnectShapes={"):
-                  html.index("  // A declared model list needs")]
-    script = (_RAIL_HARNESS.replace("__SOURCE__", source + "\n" + shapes)
+    source = rail_source(html)
+    script = (_RAIL_HARNESS.replace("__SOURCE__", source)
               + "\nrenderRail(" + json.dumps(rows) + ");\n" + extra + r"""
 const tabs=host.children.map(t=>({text:text(t),
   optional:(t.className||'').split(' ').includes('rtab--optional'),

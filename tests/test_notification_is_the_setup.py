@@ -31,6 +31,7 @@ import subprocess
 import pytest
 
 from tests import test_model_bootstrap as _bootstrap
+from tests.app_sheet_harness import rail_source
 from tests.inference_usage_helpers import accounting_resolver
 from tests.test_onboarding_app import _js_function
 from tinyassets.onboarding import render_app_html
@@ -318,14 +319,8 @@ __SOURCE__
 
 def _run_rail(rows, extra=""):
     html, _ = render_app_html()
-    source = "\n".join(_js_function(html, name) for name in (
-        "isSetupRequest", "isOptionalRequest", "forgetFinishedSetup", "foldedModelAccess",
-        "renderRail", "connectBody", "clearTypedValues", "updateRailItems"))
-    source += html[html.index("  const RequestSheets = {"):
-                   html.index("  function renderRail(items, options){")]
-    shapes = html[html.index("  const ConnectShapes={"):
-                  html.index("  // A declared model list needs")]
-    script = (_RAIL_HARNESS.replace("__SOURCE__", source + "\n" + shapes)
+    source = rail_source(html)
+    script = (_RAIL_HARNESS.replace("__SOURCE__", source)
               + "\nrenderRail(" + json.dumps(rows) + ");\n" + extra + r"""
 const tabs=host.children.map(t=>({text:text(t),
   hasPanel:t.children.some(c=>c.children.includes($('connect-panel')))}));

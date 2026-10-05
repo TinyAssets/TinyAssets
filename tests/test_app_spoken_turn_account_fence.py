@@ -24,6 +24,7 @@ import subprocess
 
 import pytest
 
+from tests.app_sheet_harness import sheet_source
 from tests.test_app_live_turn_recovery import _DECLS, _EXTRA_SHIM, _FUNCS, _NODE, _OPTIONAL_FUNCS
 from tests.test_onboarding_app import _APP_SHIM, _js_function
 from tinyassets import onboarding
@@ -77,7 +78,7 @@ function fence(){
 
 def _program(html: str, body: str) -> str:
     decls = [m.group(0) for pat in _DECLS if (m := re.search(pat, html))]
-    funcs = [_js_function(html, f) for f in _FUNCS]
+    funcs = [sheet_source(html)] + [_js_function(html, f) for f in _FUNCS]
     for name in _OPTIONAL_FUNCS:
         if re.search(r"function\s+" + name + r"\s*\(", html):
             funcs.append(_js_function(html, name))
