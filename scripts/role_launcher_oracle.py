@@ -78,8 +78,17 @@ def _query_consumers(root, supervisor):
     from tinyassets import rpc_frames as rf
     from tinyassets.api.connection_uses import model_use_refusal
     from tinyassets.broker.client import BrokerClient, BrokerRefused
-    from tinyassets.broker.ledger_queries import DISCOVERY_FACTS, HAS_PRICED_SOURCE, query_ledger
+    from tinyassets.broker.ledger_queries import (
+        DISCOVERY_FACTS,
+        GRANTED_RESOURCE,
+        HAS_PRICED_SOURCE,
+        query_ledger,
+    )
     from tinyassets.providers.definition import register_definition
+    from tinyassets.providers.discovery_http import (
+        ModelDiscoveryUnavailable,
+        read_granted_discovery_document,
+    )
     from tinyassets.providers.discovery_snapshot import _context
     from tinyassets.storage.outbound_connections import GrantResolutionError
 
@@ -112,6 +121,27 @@ def _query_consumers(root, supervisor):
         else:
             raise AssertionError("broker returned foreign discovery facts")
     assert query_ledger(root, **(arguments | {"query": HAS_PRICED_SOURCE})) == {"priced": False}
+    # A profile-independent query still checks scope and the live fence. Bob's
+    # malformed model profile cannot break his otherwise legitimate HTTP grant.
+    for owner in ("alice", "bob"):
+        resource = query_ledger(root, query=GRANTED_RESOURCE, principal=owner,
+                                command_center=owner, grant_id=f"grant-{owner}")
+        assert resource["resource"]["owner_user_id"] == owner
+        assert set(resource) == {"resource"}
+    for owner, grant, reason in (("alice", "grant-alice", "missing_discovery_scope"),
+                                  ("alice", "grant-bob", "source_revoked")):
+        try:
+            read_granted_discovery_document(
+                db_path=root / "outbound.db", grant_id=grant, owner_user_id=owner,
+                universe_id=owner, url="https://models.example.com/ungranted",
+            )
+        except ModelDiscoveryUnavailable as exc:
+            assert exc.reason == reason
+        else:
+            raise AssertionError("discovery HTTP admitted foreign scope/ungranted URL")
+    print("D20 actual discovery HTTP via launcher broker: scoped resource/endpoint "
+          "refusals, malformed-profile independence, no daemon ledger: PASS "
+          "(successful HTTP stream not claimed)", flush=True)
     bad = BrokerClient(supervisor.socket_path, principal="alice", command_center="alice",
                        fence=lambda: (1, "wrong"), verify_peer=supervisor.verify_broker, timeout=5)
     try:

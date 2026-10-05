@@ -11,7 +11,8 @@ from typing import Any
 
 DISCOVERY_FACTS = "DISCOVERY_FACTS"
 HAS_PRICED_SOURCE = "HAS_PRICED_SOURCE"
-QUERIES = frozenset({DISCOVERY_FACTS, HAS_PRICED_SOURCE})
+GRANTED_RESOURCE = "GRANTED_RESOURCE"
+QUERIES = frozenset({DISCOVERY_FACTS, HAS_PRICED_SOURCE, GRANTED_RESOURCE})
 
 
 def validate_query(query, principal, command_center, grant_id, connection_id):
@@ -62,6 +63,15 @@ def local_query(ledger, *, query: str, principal: str, command_center: str,
         ).fetchone()
         if row is None:
             raise GrantResolutionError("outbound connection grant identity mismatch")
+        # HTTP discovery needs live grant/resource facts even before a model
+        # profile exists, or when that unrelated profile needs repair.
+        fields = ("connection_id", "owner_user_id", "connection_class", "scopes_json",
+                  "provider", "destination", "credential_ref", "revoked_at",
+                  "connection_type", "auth_scheme", "allowed_endpoints_json", "access_mode",
+                  "git_host", "incarnation")
+        resource = {key: row[key] for key in fields}
+        if query == GRANTED_RESOURCE:
+            return {"resource": resource}
         priced = conn.execute(
             "SELECT descriptor_json FROM connection_capabilities "
             "WHERE connection_id = ? AND capability_kind = 'model_discovery'",
@@ -81,11 +91,7 @@ def local_query(ledger, *, query: str, principal: str, command_center: str,
             ).fetchone()
         # Explicit projection: future ledger columns are never automatically
         # published. credential_ref is an opaque custody reference, not bytes.
-        fields = ("connection_id", "owner_user_id", "connection_class", "scopes_json",
-                  "provider", "destination", "credential_ref", "revoked_at",
-                  "connection_type", "auth_scheme", "allowed_endpoints_json", "access_mode",
-                  "git_host", "incarnation")
-        return {"resource": {key: row[key] for key in fields},
+        return {"resource": resource,
                 "granted_at": grant["granted_at"],
                 "profile_kind": kind if profile is not None else None,
                 "profile": json.loads(profile[0]) if profile is not None else None}

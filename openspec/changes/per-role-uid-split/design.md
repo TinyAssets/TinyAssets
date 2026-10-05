@@ -1103,6 +1103,49 @@ oracle seeds only synthetic ledger rows before capability retirement and then
 exercises both actual daemon consumer functions through the launcher-owned
 broker, before and after restart, while direct ledger access stays denied.
 
+### D20. Mechanical decision: discovery HTTP uses scoped broker facts and streams
+
+Add the named GRANTED_RESOURCE read using D19's authenticated owner channel,
+live fence and single-transaction live grant/resource check. Its explicit
+projection omits model profiles: bootstrap and profile repair must be able to
+read a granted catalogue before a model descriptor exists or parses. This
+does not bypass the endpoint, method or SSRF checks on the actual HTTP stream.
+
+In broker-selected mode, discovery HTTP obtains that projection before URL
+validation, then uses the existing exact grant/connection broker channel. The
+broker rechecks authority at stream admission, including revocation after the
+query. Unavailable or fenced queries never construct a daemon ledger. The
+legacy local resolver is retained only when broker mode is off. Existing JSON
+parsing, response bounds and credential-blind errors are preserved.
+
+The production-image probe exercises scoped reads and actual HTTP consumer
+refusals through the launcher-owned broker; the Linux regression exercises a
+successful IPC stream with a scripted upstream. Neither is claimed as a
+successful production HTTP stream. Activation and all remaining class,
+migration, accounting, refresh, deletion and old-image proofs remain gated.
+
+### D21. Mechanical decision: retain strict ledger backup after relocation
+
+The host backup's existing shared layout lock also covers the explicit
+`.broker/outbound.db` source. Include it in the strict SQLite-backup brain tier
+at its original relative path, preserving its private parent and file uid/gid
+and modes. The SQLite backup API includes committed WAL data; never substitute
+a live file copy for this ledger. Full-volume tar already includes the private
+subtree. Legacy root-level ledgers remain supported for reverse migration.
+
+Verify source file and broker parent identity before and after the SQLite copy;
+reject observed symlinks, aliases, nonregular sources, inaccessible broker
+directories or failed copies before upload. These checks also tighten legacy
+root-level databases, which previously followed aliases. They do not claim
+race-proofness against a malicious writer performing an ABA replacement.
+The existing backup trusts the running daemon/broker and holds the layout lock.
+Omit the staging root header from the brain archive so repair cannot overwrite
+the live volume root with the staging directory's root:root/0700 metadata;
+the staging directory itself remains private throughout. This is host
+maintenance within the existing backup authority, not daemon file access or a
+new privileged service. This step proves ledger backup and archive metadata;
+full role/ACL restore and actual old-image rollback remain separate obligations.
+
 ## Risks / Trade-offs
 
 - **The launcher is root-adjacent code.** One file, stdlib-only, run `-I -S`, a static kind table,

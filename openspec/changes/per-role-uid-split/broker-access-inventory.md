@@ -2,7 +2,7 @@
 
 Baseline: `21096788fb04a3587b900ed1883ed5183d92be20`. Line numbers below refer to
 that baseline runtime. **Routing status: partial; D19 routes only the two raw
-read consumers noted below.** D11
+read consumers noted below; D20 additionally routes discovery HTTP.** D11
 records the lead decision; D12 resolves the physical parent: .broker/outbound.db and
 .broker/.outbound-proxy. The logical data root must remain explicit.
 
@@ -32,12 +32,18 @@ is claimed routed by D18. Image startup remains unactivated.
 
 ## Ledger construction entry points
 
+D21 adds the relocated ledger to the host backup's strict SQLite brain tier
+under its existing layout lock, retaining relative location and uid/gid/modes.
+Full-volume tar retains the subtree. Full role/ACL restore and actual old-image
+rollback remain unproven; this is not a claim of full migration completion.
+
 D19 replaces `discovery_snapshot._context`'s local construction/raw transaction
 and `connection_uses.model_use_refusal`'s capability SQL with named authenticated
 broker reads. Their local path exists only with broker mode off; selected mode
-has no local fallback. Other functions in those same files, including discovery
-HTTP and capability mutations, still require conversion. All rows below remain
-obligations except those two read operations. See D19's verification receipt.
+has no local fallback. Discovery HTTP is routed by D20 through GRANTED_RESOURCE
+and the existing broker stream;
+capability mutations still require conversion. All rows below remain
+obligations except those read operations and discovery HTTP. See the D19/D20 receipts.
 
 Each daemon route must preserve the current request's trusted principal and
 scope. Engine-MCP handlers move to the daemon per D9; engine code never imports

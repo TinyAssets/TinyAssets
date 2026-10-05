@@ -1,4 +1,149 @@
-# Current delivery: D19 named broker ledger reads
+# Current delivery: D20 discovery HTTP and D21 relocated-ledger backup
+
+Started at `415e976897ee32ef40da8594a16799f27cf20ec0`; the required
+`git pull --ff-only origin feat/per-role-uid-split` was already current.
+D12-D19 are retained. D20 routes discovery HTTP's scoped grant/resource read
+and existing broker stream without a daemon ledger. D21 includes the relocated
+ledger in the strict host backup tier, preserving committed WAL rows, relative
+path and uid/gid/modes. Both mechanical decisions are recorded in design.md.
+
+Release-critical files: **one**, `deploy/backup.sh` (cap 8). Runtime changes:
+`tinyassets/broker/ledger_queries.py`, `tinyassets/providers/discovery_http.py`,
+plus their generated mirrors. Oracle: `scripts/role_launcher_oracle.py`.
+New tests: `tests/test_broker_discovery_http.py`, `tests/test_broker_backup.py`.
+Existing discovery test names and assertions are unchanged; malformed-projection
+tests are added. The runbook and D11 inventory are updated.
+
+Cross-family reviews used peer-agents, one round for each distinct slice.
+D20: **AGREE** with the ADAPT finding about malformed projection errors;
+added LookupError/TypeError mapping and an explicit projection-shape guard.
+The new null-projection fixture initially exposed AttributeError; the shape
+guard fixes it, and the affected Windows suite subsequently passed 149 tests.
+D21: **AGREE** with ADAPT findings about post-copy identity verification and
+the stale runbook. File and broker-parent identities are rechecked after copy;
+this does not claim ABA race-proofness against a malicious trusted broker.
+Also fixed the review's older brain-repair root-mode concern: omit the staging
+root's tar header, retaining staging privacy and live-volume root metadata.
+No second review round. Reviews found no security-scope change or new privilege.
+
+## D20 verification receipt
+
+Final production image command (exit 0, zero skips):
+`python scripts/linux_oracle.py --production-image tinyassets-uid-discovery:d20 --build`
+
+```text
+[oracle] production image sha256:55cbd9abb5a74ae039043358fd01ecc6c214a909ec83d34603307d6ec84303c9
+[oracle] docker run --rm --network none --user 0:0 --cap-drop ALL --cap-add CHOWN --cap-add DAC_OVERRIDE --cap-add FOWNER --cap-add SETUID --cap-add SETGID --cap-add SETPCAP --cap-add KILL --security-opt no-new-privileges=true --security-opt seccomp=unconfined --security-opt apparmor=unconfined --security-opt systempaths=unconfined --entrypoint /opt/venv/bin/python sha256:55cbd9abb5a74ae039043358fd01ecc6c214a909ec83d34603307d6ec84303c9 -I -B /app/scripts/role_image_oracle.py
+privileged chain: PASS (root owners, protected ancestors and link targets)
+non-root/writable descendant module chain refusal: PASS
+identity uid=1001 groups=[] caps=all-zero nnp=1
+image accounts, immutable paths, writable HOME, unprivileged bwrap: PASS
+overlapping consent migration refused without mutation: PASS
+broker private directory ownership/setgid readbacks without FSETID: PASS
+forward dry-run, apply, repeat; service remains unadmitted: PASS
+identity uid=1002 groups=[1102] caps=all-zero nnp=1
+broker actual ConnectionLedger existing/fresh writes and proxy mkdir: PASS
+identity uid=1001 groups=[1100, 1101, 1102] caps=all-zero nnp=1
+identity uid=1003 groups=[1100] caps=all-zero nnp=1
+direct daemon/engine-identity private path denials: PASS (not class acceptance)
+identity uid=1001 groups=[] caps=all-zero nnp=1
+reverse dry-run/apply/repeat and uid-1001 old-location writes: PASS
+forward/reverse abrupt-exit checkpoint and rename recovery: PASS (6 boundaries)
+symlink/hardlink/FIFO/conflicting-copy refusal without mutation: PASS
+launcher migration-capability retirement/readback and pre-bind refusal: PASS
+D20 actual discovery HTTP via launcher broker: scoped resource/endpoint refusals, malformed-profile independence, no daemon ledger: PASS (successful HTTP stream not claimed)
+D11 actual discovery/priced-source consumers via launcher broker; foreign scope, fence, SQL/path/method refusal; no local ledger: PASS
+daemon non-dumpable procfs; same-uid fake broker gets no proof: PASS
+launcher exact-pid, malformed/oversized/SCM_RIGHTS/static-operation refusals: PASS
+launcher broker uid=1002; socket=1002:1101/0660; daemon fences without disk token: PASS
+D20 actual discovery HTTP via launcher broker: scoped resource/endpoint refusals, malformed-profile independence, no daemon ledger: PASS (successful HTTP stream not claimed)
+D11 actual discovery/priced-source consumers via launcher broker; foreign scope, fence, SQL/path/method refusal; no local ledger: PASS
+daemon supervisor acquisition, private-memory channel after restart, stop without signal: PASS
+launcher broker crash/restart preserves in-memory owner fence: PASS
+privileged chain: PASS (root owners, protected ancestors and link targets)
+broker caps=all-zero nnp=1 non-dumpable; no received-fd leak; cross-uid shutdown: PASS
+launcher wrong-uid filesystem refusal; actual broker uses private ledger: PASS
+LAUNCHER/BROKER SUBSTEP ONLY: real daemon CMD, streams/accounting, engine classes pending
+FOUNDATION/EGRESS SUBSTEP ONLY: launcher, IPC, real engine classes, full rollback pending
+```
+
+Windows (exit 0):
+`python -m pytest tests/test_discovery_http.py tests/test_broker_ledger_queries.py tests/test_discovery_snapshot.py tests/test_model_discovery_capability.py -q`
+returned `149 passed in 11.56s`.
+
+Linux (exit 0, zero skips):
+`python scripts/linux_oracle.py -- tests/test_broker_discovery_http.py tests/test_discovery_http.py tests/test_broker_ledger_queries.py tests/test_discovery_snapshot.py tests/test_model_discovery_capability.py tests/test_broker_server.py -q`
+returned:
+```text
+[oracle] python 3.11.16 | git 2.47.3 | bwrap 0.12.0 | uid 1001
+178 passed in 17.87s
+```
+An earlier attempt failed during source snapshot with `tar: ./tests: file changed
+as we read it` while the next test file was created; no tests ran in that attempt.
+The final invocation above used the settled files. The successful IPC stream in
+these regression tests uses a scripted upstream, not production HTTP acceptance.
+
+## D21 verification receipt
+
+Actual host-maintenance identity, with synthetic `1002:1101` ledger and parent,
+WAL committed rows, private modes, strict archive, and the actual full-volume
+restore script (Docker/rclone endpoints replaced by local fixture commands):
+`python scripts/linux_oracle.py --as-root --no-bwrap -- tests/test_broker_backup.py -q`
+returned (exit 0, zero skips):
+```text
+[oracle] python 3.11.16 | git 2.47.3 | bwrap 0.12.0 | uid 0
+7 passed in 0.84s
+```
+Root is the existing host-backup role here, not an engine substitute. These tests
+also prove legacy root-ledger backup/restore and refusal of parent/file symlinks,
+hardlinks, FIFOs and corrupt ledgers before any upload, with outside bytes and
+metadata unchanged. This does not prove full role/ACL or old-image restore.
+
+Shellcheck ran separately against both backup scripts in a disposable pinned
+Debian/Python container, since the ordinary oracle image lacks shellcheck:
+```text
+docker run --rm --network bridge -e DEBIAN_FRONTEND=noninteractive -v C:/Users/Jonathan/Projects/wf-uid/deploy:/src:ro python:3.11-slim@sha256:a3ab0b966bc4e91546a033e22093cb840908979487a9fc0e6e38295747e49ac0 sh -c 'apt-get update -qq && apt-get install -y -qq shellcheck > /dev/null && shellcheck --severity=warning /src/backup.sh /src/backup-restore.sh'
+exit 0, no shellcheck findings
+```
+
+Final ordinary Linux backup regression:
+`python scripts/linux_oracle.py -- tests/test_broker_backup.py tests/test_backup_script.py tests/test_backup_ship_gh.py -q`
+returned `71 passed, 2 skipped in 3.26s` (exit 0). The two skipped shellcheck
+tests are NOT counted as passes; the separate shellcheck command above completed
+both checks. The seven D21 acceptance cases passed in both this uid-1001 run
+and the explicit root host-maintenance run without skips.
+
+Changed-file Ruff, strict OpenSpec validation, diff whitespace and mirror parity
+passed (all 597 canonical files matched; regeneration import probe `probe-ok`).
+Repository-wide Ruff still reports the same 55 pre-existing errors outside this
+diff. No affected test file is in `.github/heavy-test-files.txt`.
+
+Windows backup regression command:
+`python -m pytest tests/test_broker_backup.py tests/test_backup_script.py tests/test_backup_ship_gh.py -q`
+returned `9 failed, 54 passed, 10 skipped in 6.38s`. The seven new host-backup
+cases skip Windows; nine existing restore cases fail because Git Bash lacks
+`flock` and rejects Windows `C:/...` paths as POSIX absolute BACKUP_FILE paths.
+Baseline verification loaded `deploy/backup.sh` and `scripts/backup_prune.py`
+verbatim from `git show 415e976897:<path>` into an external temporary directory,
+pointed the unchanged test module's BACKUP_SH there, and ran the two existing
+test modules. It reproduced the identical nine failed names, `54 passed,
+3 skipped in 6.33s`. No existing test was renamed or weakened. The Linux runs
+above prove the actual host behavior; these Windows failures/skips are not passes.
+
+## Remaining and activation gate
+
+No task 2.1-2.8 is newly complete. Startup remains unactivated; no PR or deployment.
+Remaining: actual engine-class launcher integration for every class and daemon
+reader matrix; remaining D11 ledger/mutation/accounting/refresh/deletion consumers;
+full role migration and D10 two-pass deletion; successful production broker
+streaming; full role/ACL backup restoration and actual old-image rollback;
+real daemon CMD/environment, capability parity and healthchecks. Activate only
+after every required probe passes. Current migration evidence is relocation-only:
+dry-run/apply/repeat both directions and six crash boundaries, not full rollback.
+
+---
+
+# Prior delivery: D19 named broker ledger reads
 
 Started from `e5f48c5ee9`; required fast-forward pull was already current.
 D12-D18 remain intact. D19 is a mechanical D11 continuation: the discovery
