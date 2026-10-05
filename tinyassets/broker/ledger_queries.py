@@ -12,7 +12,9 @@ from typing import Any
 DISCOVERY_FACTS = "DISCOVERY_FACTS"
 HAS_PRICED_SOURCE = "HAS_PRICED_SOURCE"
 GRANTED_RESOURCE = "GRANTED_RESOURCE"
-QUERIES = frozenset({DISCOVERY_FACTS, HAS_PRICED_SOURCE, GRANTED_RESOURCE})
+AUTHORIZED_CONNECTION = "AUTHORIZED_CONNECTION"
+QUERIES = frozenset({DISCOVERY_FACTS, HAS_PRICED_SOURCE, GRANTED_RESOURCE,
+                     AUTHORIZED_CONNECTION})
 
 
 def validate_query(query, principal, command_center, grant_id, connection_id):
@@ -23,7 +25,7 @@ def validate_query(query, principal, command_center, grant_id, connection_id):
             raise ValueError("invalid ledger query scope")
     if not isinstance(connection_id, str) or len(connection_id) > 512 or "\0" in connection_id:
         raise ValueError("invalid connection identity")
-    if query == HAS_PRICED_SOURCE and not connection_id:
+    if query in {HAS_PRICED_SOURCE, AUTHORIZED_CONNECTION} and not connection_id:
         raise ValueError("missing connection identity")
 
 
@@ -50,7 +52,8 @@ def local_query(ledger, *, query: str, principal: str, command_center: str,
             if existing is None and existing_grant is None:
                 return {"priced": False}
         grant = conn.execute(
-            "SELECT connection_id, granted_at FROM outbound_connection_grants "
+            "SELECT connection_id, granted_at, unprompted_action_cap_json "
+            "FROM outbound_connection_grants "
             "WHERE grant_id = ? AND owner_user_id = ? AND universe_id = ? "
             "AND revoked_at IS NULL", (grant_id, principal, command_center),
         ).fetchone()
@@ -72,6 +75,14 @@ def local_query(ledger, *, query: str, principal: str, command_center: str,
         resource = {key: row[key] for key in fields}
         if query == GRANTED_RESOURCE:
             return {"resource": resource}
+        if query == AUTHORIZED_CONNECTION:
+            return {"resource": resource, "grant": {
+                "grant_id": grant_id, "connection_id": grant["connection_id"],
+                "owner_user_id": principal, "universe_id": command_center,
+                "granted_at": grant["granted_at"], "revoked_at": None,
+                "unprompted_action_cap": json.loads(grant["unprompted_action_cap_json"])
+                if grant["unprompted_action_cap_json"] else None,
+            }}
         priced = conn.execute(
             "SELECT descriptor_json FROM connection_capabilities "
             "WHERE connection_id = ? AND capability_kind = 'model_discovery'",
@@ -139,3 +150,36 @@ def granted_resource_row(data_root: Path, *, principal: str, command_center: str
         return row
     except (LookupError, TypeError, ValueError):
         raise ProxyRequestError("invalid credential broker resource projection") from None
+
+
+def authorized_connection(data_root: Path, *, principal: str, command_center: str,
+                          grant_id: str, connection_id: str):
+    """Live grant, resource and incarnation from one exact scoped snapshot."""
+    from tinyassets.storage.outbound_connections import (
+        ActionCap,
+        ConnectionGrant,
+        ProxyRequestError,
+        _resource_from_row,
+    )
+
+    facts = query_ledger(data_root, query=AUTHORIZED_CONNECTION, principal=principal,
+                         command_center=command_center, grant_id=grant_id,
+                         connection_id=connection_id)
+    try:
+        row, grant_row = facts["resource"], facts["grant"]
+        if not isinstance(row, dict) or not isinstance(grant_row, dict):
+            raise ValueError("invalid authority projection")
+        resource = _resource_from_row(row)
+        cap = grant_row["unprompted_action_cap"]
+        grant = ConnectionGrant(**(grant_row | {
+            "unprompted_action_cap": ActionCap(**cap) if cap is not None else None}))
+        if not all((grant.grant_id == grant_id,
+                    grant.connection_id == resource.connection_id == connection_id,
+                    grant.owner_user_id == resource.owner_user_id == principal,
+                    grant.universe_id == command_center,
+                    grant.revoked_at is None, resource.revoked_at is None,
+                    isinstance(row.get("incarnation"), str))):
+            raise ValueError("invalid authority projection")
+        return grant, resource, row["incarnation"]
+    except (LookupError, TypeError, ValueError):
+        raise ProxyRequestError("invalid credential broker authority projection") from None
