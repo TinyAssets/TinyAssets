@@ -1476,6 +1476,30 @@ changes resume idempotently, and no proof bytes are deleted. Full role migration
 and startup remain gated separately. Production acceptance must use the real
 creator, removing D44's fixture permission wrapper.
 
+### D46. Mechanical decision: production accounting proof uses a real HTTPS POST
+
+Extend the isolated HTTPS fixture with a model endpoint and installed descriptor.
+The daemon persists a parent, reserves and issues its source-bound reference over
+IPC; the launcher broker claims it and performs real TLS POST dispatch, followed
+by durable settlement/receipt over IPC. Missing references and duplicate sends
+must refuse. Repeat after broker restart. Fixture metadata uses the planned
+1001:1102 0640 read-only broker view; this does not prove runtime metadata
+replacement or its full migration, nor an actual provider engine class.
+
+### D47. Mechanical decision: daily evidence joins bounded broker pages
+
+Owner-wide historical attempt reads move to named daily_page operations on the
+authenticated usage channel. Pages expose dispatch time, usage/ordinal, free and
+success facts only. Named linked_turns batches test exact owner/center/turn
+membership so daemon-owned legacy rounds are not double-counted after relocation.
+No SQL/path/callable is accepted; failure of any page or link query leaves the
+existing advisory result unknown. These are advisory observations, not a stable
+cross-process snapshot or authoritative quota. No grant or inference capacity is
+issued by this route. Startup remains inactive.
+An absent legacy daemon database means no legacy rounds, so complete broker
+evidence still yields counts; an existing unreadable legacy database is unknown.
+Activation requires all four accounting tables, including links, transferred.
+
 ## Risks / Trade-offs
 
 - **The launcher is root-adjacent code.** One file, stdlib-only, run `-I -S`, a static kind table,

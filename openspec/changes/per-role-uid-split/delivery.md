@@ -1,3 +1,49 @@
+# Current delivery: D46 accounted inference POST and D47 daily evidence
+
+D45 pushed as e2780ee541; hygiene added 3 tests, removed 0, tampering 0.
+D46 proves real HTTPS inference POST with source-bound references, runtime kernel
+leases, broker-local claims, send and settlement. The synthetic HTTPS server
+counts requests: omitted references, duplicate operation IDs and reusing a
+reference under a fresh operation ID produce no extra POST. Exactly two accepted
+POSTs per pass, before and after broker restart. Metadata modes are seeded here;
+runtime provider-definition replacement and full migration remain prerequisites.
+D47 routes daily history through owner-only bounded broker pages, with exact
+owner/center/turn membership batches to exclude linked daemon legacy rounds.
+Any failed page/link or unreadable legacy store returns the existing unknown
+advisory result; no grant or quota is implied. Absence of a legacy store does not
+hide complete broker evidence. All four accounting tables must move together.
+
+Cross-family peer-agents D46: ADAPT; AGREE and fixed the proof gaps with exact
+sanitized authority refusal, server-side POST counts, and fresh-op reference
+replay. The broker intentionally scrubs detailed authority messages, so asserting
+the suggested internal error text at the client would be false. D47: AGREE,
+APPROVE; no floor/correctness findings. Added first-page/unreadable-store tests.
+
+Release-critical files: **0; none**. Runtime broker usage/usage_evidence and
+request_budget plus mirrors; stream oracle and accounting/evidence tests, docs.
+No affected heavy-list test file. No full task checked off. Startup inactive.
+
+```text
+python scripts/linux_oracle.py -- tests/test_broker_usage_evidence.py tests/test_request_budget.py tests/test_request_budget_broker.py tests/test_broker_usage_ipc.py -q -rs
+68 passed in 5.29s; zero skips
+python scripts/linux_oracle.py --production-image tinyassets-uid-evidence:d47 --build --production-stream
+exit 0; sha256:f97dc257c522086b1917133dddf21d1400b88bcad7017eabc4ff5bdce60229af
+D46 actual accounted HTTPS inference POST via launcher broker: kernel leases, source binding, one-use claims, dispatch/settlement receipts, missing/replay refusal: PASS (seeded metadata modes)
+D47 actual daily evidence via launcher broker: counted HTTPS attempts across restart, foreign history absent, daemon tables untouched: PASS
+```
+All previous migration substeps, four liveness crash boundaries and launcher
+consumer proofs pass again. Same seven capabilities and compose security options;
+synthetic network/CA cleaned. This is not engine-class, full migration/two-pass
+deletion or actual old-image acceptance. Targeted Ruff, plugin build/import,
+strict OpenSpec and whitespace pass. Windows-only skips are declared for the
+new Unix socket tests; all reported acceptance runs are Linux, with zero skips.
+
+Next: runtime provider-definition replacement must retain broker read modes;
+refresh admission-before-spend with daemon-only durable vault writes; then every
+engine class, full migration/deletion, actual old-image rollback and gated
+startup/healthcheck. No PR or deployment and no history rewriting.
+
+---
 # Current delivery: D45 runtime liveness modes and reverse migration
 
 D44 pushed as 52136836ae; hygiene added 5 tests, removed 0, tampering 0.

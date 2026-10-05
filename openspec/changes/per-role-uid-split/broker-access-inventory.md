@@ -342,3 +342,5 @@ this read route do not establish runtime inference accounting.
 D44 routes UsageStore runtime creation, reservations, receipts, links, settlement and reference issuance through authenticated USAGE IPC. Claims/retry/send checks use the broker-local store. Production launcher proof passes with fixture lock modes before/after restart; runtime lock modes, actual inference POST, daily evidence and refresh remain prerequisites.
 
 D45 supplies real broker-readable daemon/parent kernel lock creation plus offline forward/reverse mode migration. Runtime IPC passes through the launcher without fixture lock patches. Actual inference POST, daily evidence, refresh and full startup orchestration remain.
+
+D46 proves actual accounted HTTPS POST through launcher broker, including server-counted missing/replay refusals, with seeded definition modes. D47 routes daily accounting evidence and exact legacy-turn link exclusion through bounded owner-only IPC. Runtime definition replacement/migration modes and refresh remain before engine integration.

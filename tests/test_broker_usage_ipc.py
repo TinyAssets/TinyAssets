@@ -1,5 +1,6 @@
 """Real socket accounting: atomic capacity, private tables and one-use sends."""
 # ruff: noqa: F811 -- imported pytest fixtures
+import socket
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
@@ -11,6 +12,9 @@ from tinyassets.broker.ops import new_op_id
 from tinyassets.exceptions import ProviderAuthorityHeldError
 from tinyassets.request_budget import RequestBudgetExceeded, TurnRequestBudget
 from tinyassets.storage.agent_request_usage import UsageStore
+
+pytestmark = pytest.mark.skipif(not hasattr(socket, "SO_PEERCRED"),
+                                reason="Unix broker peer identity")
 
 
 @pytest.fixture(autouse=True)

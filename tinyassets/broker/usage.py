@@ -24,6 +24,11 @@ def validate(document):
     if not isinstance(document, dict) or not isinstance(document.get("action"), str):
         raise ValueError("invalid accounting operation")
     action = document["action"]
+    if action in {"daily_page", "linked_turns"}:
+        from tinyassets.broker.usage_evidence import validate as validate_evidence
+
+        validate_evidence(document)
+        return
     if action not in _FIELDS or set(document) != _FIELDS[action] | {"action"}:
         raise ValueError("invalid accounting fields")
     for name in ("source_ref", "model", "grant_id", "connection_id", "operation_id",
@@ -79,10 +84,16 @@ def local_operation(ledger, *, principal, command_center, usage_id, document):
 
     validate(document)
     action = document["action"]
+    store = UsageStore(ledger._data_root, broker_ledger=ledger)
+    if action in {"daily_page", "linked_turns"}:
+        from tinyassets.broker.usage_evidence import local_operation as evidence
+
+        if usage_id != "":
+            raise ValueError("daily evidence does not select a parent")
+        return evidence(store, principal, document)
     if action != "for_subject" and (not isinstance(usage_id, str) or len(usage_id) != 32
                                     or any(c not in "0123456789abcdef" for c in usage_id)):
         raise ValueError("invalid accounting root")
-    store = UsageStore(ledger._data_root, broker_ledger=ledger)
     scope = (principal, command_center, usage_id)
     fields = {k: v for k, v in document.items() if k != "action"}
     if action == "create":

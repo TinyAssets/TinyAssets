@@ -476,6 +476,12 @@ def requests_today(base_path, owner, source_ref, *, reset_timezone,
         reset = current.astimezone(ZoneInfo(reset_timezone)).replace(
             hour=0, minute=0, second=0, microsecond=0,
         ).astimezone(timezone.utc)
+        from tinyassets.broker.supervisor import broker_selected
+
+        if broker_selected():
+            from tinyassets.broker.usage_evidence import daily_counts
+
+            return daily_counts(base_path, owner, source_ref, reset, current, zero_priced_models)
         events = []
         with closing(_read_only(Path(base_path) / DB_FILENAME)) as conn:
             tables = {row[0] for row in conn.execute(
