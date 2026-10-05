@@ -783,7 +783,8 @@ def read_graph(
         if type(output_offset) is not int or output_offset < 0:
             return json.dumps({"error": "output_offset must be a non-negative integer"})
         if normalized == "agent":
-            row = get_definition(_base_path(), agent_definition_id or graph_id)
+            row = get_definition(_base_path(), agent_definition_id or graph_id,
+                                 include_catalogue=True)
             if row is None:
                 return json.dumps({"error": "not_found", "resource": "agent_definition"})
             return json.dumps(project_agent(row, field_name=field_name, offset=output_offset,

@@ -168,21 +168,20 @@ def list_systems() -> list[dict]:
                 return
             offset += len(batch)
 
-    rows, seen = [], set()
+    rows = []
     for definition in definitions():
         if PACKAGE_TAG in definition.get("tags", []):
             continue
-        key = (definition.get("author_id"), definition.get("name"))
-        if key in seen:
-            continue
-        seen.add(key)
         reason = ""
         try:
             _, parts = _source(definition["agent_definition_id"])
         except (ValueError, LookupError) as exc:
             reason = str(exc)
             parts = {"workflows": [], "automations": []}
-        rows.append({"agent_definition_id": definition["agent_definition_id"],
+        rows.append({**{key: definition[key] for key in (
+                         "bundle_id", "bundle_version", "previous_definition_id",
+                         "current_definition_id") if key in definition},
+                     "agent_definition_id": definition["agent_definition_id"],
                      "publication_kind": "system", "name": definition.get("name", ""),
                      "description": definition.get("description", ""),
                      "author_id": definition.get("author_id", ""),
