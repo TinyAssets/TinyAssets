@@ -203,6 +203,10 @@ def build_parser() -> argparse.ArgumentParser:
         description="Run the suite on Linux, in a container, against the working tree.",
     )
     parser.add_argument("--build", action="store_true", help="rebuild the image first")
+    parser.add_argument(
+        "--production-image", metavar="TAG",
+        help="run shipped role probes in a production Dockerfile image; --build rebuilds it",
+    )
     parser.add_argument("--shell", action="store_true", help="interactive shell instead of pytest")
     parser.add_argument(
         "--no-bwrap", action="store_true",
@@ -242,6 +246,8 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    if args.production_image:
+        return production_oracle(args, _repo_root())
     if args.required_runner:
         _required_runner_command(args)  # refuse before Docker or filesystem effects
 
@@ -268,6 +274,37 @@ def main(argv: list[str] | None = None) -> int:
         if os.name != "nt":
             out.chmod(0o777)  # the suite runs as uid 1001, not the caller
     return subprocess.run(docker_command(args, root, tag)).returncode
+
+
+def production_oracle(args: argparse.Namespace, root: Path) -> int:
+    """Isolated synthetic-volume probes; no host data or credential mounts."""
+    if (args.shell or args.no_bwrap or args.as_root or args.required_runner
+            or args.pytest_args or args.env or args.out or args.apparmor != "unconfined"):
+        raise SystemExit("[oracle] production mode refuses test-runner/authority overrides")
+    if args.build:
+        result = subprocess.run([
+            "docker", "build", "-f", str(root / "Dockerfile"),
+            "-t", args.production_image, str(root),
+        ])
+        if result.returncode:
+            return result.returncode
+    inspect = subprocess.run([
+        "docker", "image", "inspect", args.production_image, "--format", "{{.Id}}",
+    ], capture_output=True, text=True, check=True)
+    digest = inspect.stdout.strip()
+    command = [
+        "docker", "run", "--rm", "--network", "none", "--user", "0:0",
+        "--cap-drop", "ALL",
+    ]
+    for capability in ("CHOWN", "DAC_OVERRIDE", "FOWNER", "SETUID", "SETGID", "SETPCAP", "KILL"):
+        command += ["--cap-add", capability]
+    for option in ("no-new-privileges=true", "seccomp=unconfined", "apparmor=unconfined",
+                   "systempaths=unconfined"):
+        command += ["--security-opt", option]
+    command += ["--entrypoint", "/opt/venv/bin/python", digest,
+                "-I", "-B", "/app/scripts/role_image_oracle.py"]
+    print(f"[oracle] production image {digest}\n[oracle] {shlex.join(command)}", flush=True)
+    return subprocess.run(command).returncode
 
 
 def _required_runner_command(args: argparse.Namespace) -> str:

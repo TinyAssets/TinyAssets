@@ -43,3 +43,14 @@ Record image digests, exact commands, dry-run before/after metadata, repeat no-o
 crash/resume markers, alias/symlink refusal and old-image read/write/delete. All
 acceptance results are currently **NOT RUN**. The previous capability-lifetime
 conflict is resolved by the lead's startup-only reverse-migration decision.
+
+## Implemented substep, not an operational rollback command
+
+D12's egress move is available as `relocate(root, reverse=True, dry_run=True)`
+in the immutable `ta-egress-migration.py` startup library. Apply sets dry_run=False.
+It requires the layout lock and completed consent migration; it leaves the
+whole layout migrating. Do not manually clear that marker or start an old image:
+workspace/ACL reversal and the complete startup command are not implemented yet.
+The production-image oracle exercises this substep on synthetic disposable copies,
+including old-location writes as uid 1001 without work groups. That is not an
+actual old-image or full rollback acceptance result.

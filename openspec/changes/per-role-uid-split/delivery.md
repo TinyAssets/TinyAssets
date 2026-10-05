@@ -1,3 +1,99 @@
+# Current delivery: D12 relocation and implementation
+
+Starting HEAD `5ecf0ec8fb`; fast-forward pull was already current; clean worktree.
+OpenSpec admission: ALLOWED. D12 accepts the lead relocation decision. D13 uses
+2700 private directories because daemon group 1101 must not grant private access.
+D14 stages the immutable image foundation without activating an unfinished root
+launcher. Mechanical choices will be recorded and implemented autonomously.
+
+Foundation release-critical paths: `Dockerfile`, `deploy/compose.yml`,
+`deploy/broker_main.py`, `deploy/role_egress_migration.py`,
+`.github/workflows/docker-build.yml` (5 under the gate;
+`scripts/check_privileged_chain.py` is additionally security-sensitive).
+No deployment or PR. Full task acceptance remains pending.
+
+## D15 implementation and review disposition
+
+Relocation is implemented as `deploy/role_egress_migration.py`, installed immutable
+as `/usr/local/libexec/ta-egress-migration.py`, but not activated at startup.
+It requires an initialized layout-2 marker with the consent migration done,
+uses the existing exclusive layout lock, checkpoints crash-left WAL before
+renames, fsyncs files and directories, and uses renameat2(RENAME_NOREPLACE).
+It refuses symlinks, hardlinks, FIFOs, mount crossings and conflicting copies.
+Forward/reverse progress is durable and resumable; dry-run never opens SQLite.
+The top-level layout deliberately remains migrating after this SUBSTEP; only
+the complete role migration may admit service. This is D15, recorded in design.md.
+
+One cross-family implementation review via peer-agents returned ADAPT.
+- **AGREE**: overlapping consent migration could clear the top-level fence.
+  Fixed with pre-mutation layout/consent validation; the production probe now
+  refuses both absent and interrupted consent state without mutation, and
+  calls actual storage_layout.check after relocation to prove admission refuses.
+- **AGREE**: the chain gate skipped broker site-packages under -S and only
+  checked directories. Fixed by explicitly enumerating the venv site paths
+  without evaluating .pth code, recursively checking modules and symlink
+  targets, and probing a non-root-owned and a writable descendant module.
+No second review round. Reviewer confirmed no-overwrite, link refusal,
+checkpoint ordering, crash-resume and exclusive-lock mechanisms.
+
+No tinyassets/ source changed, so plugin mirror regeneration is not applicable.
+Tasks 2.1 and 2.3 have foundation work, 2.4 has the egress substep, and 2.8 has
+production-image harness support and substep probes. None of 2.1-2.8 is checked
+complete: launcher/CMD, full role migration, D10 deletion, vault mode consumers,
+all D11 IPC/path/backup/accounting/refresh consumers, capability parity activation,
+actual engine classes, broker stream and old-image rollback remain outstanding.
+This branch must not be deployed or treated as the completed role split.
+
+## Foundation verification (2026-10-04)
+
+Production image built from the edited Dockerfile:
+`sha256:1ca1b9e6dfa4890396bb1e98bee628b9f1193ac49a4a6b98cc4aead58441900c`.
+
+Commands:
+```
+python scripts/linux_oracle.py --production-image tinyassets-uid-foundation:d14 --build
+python scripts/linux_oracle.py --production-image tinyassets-uid-foundation:d14
+```
+The direct second command exited 0. It prints the complete docker argv:
+```
+docker run --rm --network none --user 0:0 --cap-drop ALL --cap-add CHOWN --cap-add DAC_OVERRIDE --cap-add FOWNER --cap-add SETUID --cap-add SETGID --cap-add SETPCAP --cap-add KILL --security-opt no-new-privileges=true --security-opt seccomp=unconfined --security-opt apparmor=unconfined --security-opt systempaths=unconfined --entrypoint /opt/venv/bin/python sha256:1ca1b9e6dfa4890396bb1e98bee628b9f1193ac49a4a6b98cc4aead58441900c -I -B /app/scripts/role_image_oracle.py
+```
+Output:
+```
+privileged chain: PASS (root owners, protected ancestors and link targets)
+non-root/writable descendant module chain refusal: PASS
+identity uid=1001 groups=[] caps=all-zero nnp=1
+image accounts, immutable paths, writable HOME, unprivileged bwrap: PASS
+overlapping consent migration refused without mutation: PASS
+forward dry-run, apply, repeat; service remains unadmitted: PASS
+identity uid=1002 groups=[1102] caps=all-zero nnp=1
+broker actual ConnectionLedger existing/fresh writes and proxy mkdir: PASS
+identity uid=1001 groups=[1100, 1101, 1102] caps=all-zero nnp=1
+identity uid=1003 groups=[1100] caps=all-zero nnp=1
+direct daemon/engine-identity private path denials: PASS (not class acceptance)
+identity uid=1001 groups=[] caps=all-zero nnp=1
+reverse dry-run/apply/repeat and uid-1001 old-location writes: PASS
+forward/reverse abrupt-exit checkpoint and rename recovery: PASS (6 boundaries)
+symlink/hardlink/FIFO/conflicting-copy refusal without mutation: PASS
+FOUNDATION/EGRESS SUBSTEP ONLY: launcher, IPC, real engine classes, full rollback pending
+```
+
+`python -m pytest tests/test_dockerfile_shape.py tests/test_docker_entrypoint.py tests/test_linux_oracle.py tests/test_no_platform_llm_credentials.py tests/test_no_platform_github_push_credential.py -q`: 177 passed before the two added runner regressions; `python -m pytest tests/test_linux_oracle.py -q`: 23 passed after them.
+`python scripts/linux_oracle.py -- tests/test_privileged_chain.py tests/test_dockerfile_shape.py tests/test_docker_entrypoint.py tests/test_linux_oracle.py -q`: 65 passed.
+After review fixes, `python scripts/linux_oracle.py -- tests/test_privileged_chain.py tests/test_linux_oracle.py -q`: 28 passed, zero skips.
+Changed-file ruff, strict OpenSpec validation and git diff --check pass.
+Full `python -m ruff check` still reports the same 55 pre-existing errors.
+No affected file is on the heavy-test list.
+
+The simulated-admission Docker fixture starts Uvicorn successfully with immutable
+/app. Baseline and edited images both return exit 78 for unadmitted startup
+(checked via subprocess.returncode; PowerShell's tool result normalized it to 1).
+The synthetic fixture lacks a release receipt, so ta-op pulse correctly refuses
+its absent git_sha; this is not claimed as healthcheck acceptance. No real-user
+app pass, full deletion, actual old-image rollback or launcher stream is proven.
+
+## Historical delivery records (blockers below superseded by D12)
+
 # Current delivery: D11 broker ownership and ledger-parent clarification
 
 Starting HEAD `21096788fb04a3587b900ed1883ed5183d92be20`; the requested first

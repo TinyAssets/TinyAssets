@@ -9,6 +9,40 @@ from pathlib import Path
 from scripts import linux_oracle
 
 
+def test_production_probe_pins_digest_and_exact_entry_authority(monkeypatch):
+    calls = []
+
+    def run(command, **kwargs):
+        calls.append(command)
+        return subprocess.CompletedProcess(command, 0, stdout="sha256:fixture\n")
+
+    monkeypatch.setattr(subprocess, "run", run)
+    args = linux_oracle.build_parser().parse_args(["--production-image", "image:built"])
+    assert linux_oracle.production_oracle(args, Path("/repo")) == 0
+    command = calls[-1]
+    assert "sha256:fixture" in command and "image:built" not in command
+    assert "--network" in command and "none" in command
+    assert "--mount" not in command and "-v" not in command
+    assert [command[i + 1] for i, part in enumerate(command) if part == "--cap-add"] == [
+        "CHOWN", "DAC_OVERRIDE", "FOWNER", "SETUID", "SETGID", "SETPCAP", "KILL",
+    ]
+    assert command[-1] == "/app/scripts/role_image_oracle.py"
+
+
+def test_production_probe_refuses_skip_and_authority_overrides(monkeypatch):
+    import pytest
+
+    def unexpected(*args, **kwargs):
+        raise AssertionError("override must refuse before Docker")
+
+    monkeypatch.setattr(subprocess, "run", unexpected)
+    for extra in (["--no-bwrap"], ["--as-root"], ["--env", "X=Y"],
+                  ["--shell"], ["--", "tests"], ["--out", "/tmp/output"]):
+        args = linux_oracle.build_parser().parse_args(["--production-image", "image", *extra])
+        with pytest.raises(SystemExit, match="refuses"):
+            linux_oracle.production_oracle(args, Path("/repo"))
+
+
 def test_classic_builder_gets_real_dependency_generation():
     root = Path(__file__).resolve().parents[1]
     dockerfile = (root / linux_oracle.DOCKERFILE).read_text(encoding="utf-8")

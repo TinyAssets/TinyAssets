@@ -307,9 +307,9 @@ Exact inventory, from the code rather than from the shape of the tree:
 | `/data/.universe-sidecars/` | 1001:1001 | 0711 | relay parent, never mounted into a cell |
 | `/data/.universe-sidecars/<cc>/` | 1001:1100 | 2710 | `universe_egress.py` egress and engine relay directory creation |
 | exact `egress-*.sock` / `engine-*.sock` relay entries | 1001:1100 | 0660 | runtime-created sockets; only the admitted owner's exact socket is bound |
-| `/data/.broker/`, `/data/.broker/state/` | **1002:1002** | 0700 | `supervisor.py:52-53`, `process.py:89-90` |
-| outbound ledger and SQLite sidecars | **1002:1101** | 0600; broker-only parent required (D11) | `outbound_connections.py:5148-5213`; final parent pending |
-| `/data/.outbound-proxy/` and private contents | **1002:1101** | dirs 2700, files 0600 | `outbound_connections.py:4931-4955,6087`; D11 |
+| `/data/.broker/`, `/data/.broker/state/` | **1002:1101** | 2700 (D12-D13) | `supervisor.py:52-53`, `process.py:89-90` |
+| outbound ledger and SQLite sidecars | **1002:1101** | 0600; /data/.broker parent (D12) | `outbound_connections.py:5148-5213`; D12 fixes .broker/outbound.db |
+| `/data/.broker/.outbound-proxy/` and private contents (D12) | **1002:1101** | dirs 2700, files 0600 | `outbound_connections.py:4931-4955,6087`; D11 |
 | `/data/.layout.lock` | 1001:1001 | 0666 | `storage_layout.py:63-70` creates it 0o666 for cross-uid `flock` |
 | shared root stores, sidecars and replacements | 1001:1001 | remove other permissions; retain owner access | D9/F1; never mount in cells |
 | remaining classified platform state | 1001:1001 | preserve declared access without widening shared stores | inventory required |
@@ -924,7 +924,7 @@ IPC route. D4's read-only broker access to the vault remains a constraint: the
 current local refresh path cannot be called unchanged by uid 1002. Retain
 admission-before-spend and durable rotation; never grant vault write as a shortcut.
 
-**Unresolved physical parent:** D4 keeps `/data` 1001:1001/0755. Chowning
+**Historical physical-parent blocker (resolved by D12 below):** D4 keeps `/data` 1001:1001/0755. Chowning
 `/data/outbound.db` alone permits file open but not a SQLite write requiring a
 sibling journal, nor fresh database creation. The production-image diagnostic
 in delivery.md proves both failures and a successful private-parent control.
@@ -947,6 +947,67 @@ Mandatory additional production-image oracle rows, alongside all D8-D10 rows:
 | Forward/reverse migration | dry-run unchanged; interrupted resume; repeat no-op; old-image uid 1001 reads/writes after reverse migration, including ledger journals |
 
 No build checkbox is proven by the diagnostic or this decision record.
+
+### D12. Lead decision: relocate the ledger and proxy runtime
+
+Relocate `/data/outbound.db` and its SQLite sidecars to
+`/data/.broker/outbound.db`, and `/data/.outbound-proxy` to
+`/data/.broker/.outbound-proxy`. Startup creates the broker-owned parent in
+D10's privileged window. Never widen `/data` write access. This resolves D11's
+physical-parent blocker. Every D11 inventory consumer must use the authenticated
+broker interface; the logical data root is explicit, never the ledger parent.
+
+Under the exclusive layout lock with all roles stopped, validate the complete
+source/destination set without following links, checkpoint WAL before movement,
+fsync files and directories, then rename on the same filesystem with durable
+progress. Resume must distinguish source-only, destination-only and conflicting
+copies; refuse conflicts without overwriting or deleting data. Include retained
+sidecars and proxy contents. Dry-run does not checkpoint or change metadata.
+Reverse startup migration checkpoints and restores the original paths, ownership
+and usable journal parent before the old image starts. Backup and account deletion
+must explicitly include relocated state. Broker existing/fresh ledger writes,
+daemon/engine denials and old-image rollback are mandatory acceptance probes.
+
+### D13. Mechanical decision: private broker parent permissions
+
+Use uid 1002, gid 1101, mode 2700 for the private parent and private proxy
+directories; files 0600. The lead's 0750 example would grant directory access to
+the daemon through its IPC group 1101, conflicting with the required denial.
+Setgid retains the specified group without granting it access. `/state` remains
+private. D6's public IPC directory remains separate on `/run`, mode 2750.
+
+### D14. Mechanical decision: immutable image foundation and chain checks
+
+Keep the existing rootless CMD until migration and launcher integration are ready;
+do not activate root with the old daemon CMD. The ordered foundation commit adds
+role accounts without supplementary memberships, copied venv interpreters,
+root-owned source and entrypoint, broker bootstrap, HOME relocation and the chain
+gate. Task 2.1 remains unchecked until the launcher/CMD portion is integrated.
+Runtime-write audit: configured stores and auth DB use TINYASSETS_DATA_DIR;
+provider homes/snapshots and node workspace binds use owner trees; scratch uses
+private temporary paths; the health canary is read-only. The Codex wrapper uses
+CODEX_HOME or HOME, falling back to /tmp. No required /app write was found in
+these paths. Use one immutable source tree, not the duplicate-copy fallback.
+Symlink mode bits are not Linux access controls: check link ownership, all
+ancestors and resolved target permissions (including intermediate targets).
+
+### D15. Mechanical decision: relocation is a fenced startup substep
+
+`deploy/role_egress_migration.py` is a stdlib-only substep of the forthcoming
+startup migration, not an additional privileged service or an activated CLI.
+It requires an initialized layout-2 marker/lock with the consent move complete,
+and refuses overlapping migrations before mutation. Only its own interrupted
+role progress is resumable. It records roles.egress progress and leaves the
+TOP-LEVEL marker migrating in both directions; the complete role migration
+alone may mark the layout stable after every forward/reverse substep. This
+prevents the existing consent recovery path admitting an old daemon onto a
+relocated ledger. No service-start wiring or path-consumer switch is activated
+until the launcher, full migration and D11 IPC routes are ready.
+
+The production oracle mode runs the shipped script from the image digest,
+without live mounts or network and with exactly the planned entry capabilities.
+Foundation/egress substep probes are labeled separately from the still-required
+actual launcher, IPC, engine-class, full deletion and old-image proofs.
 
 ## Risks / Trade-offs
 

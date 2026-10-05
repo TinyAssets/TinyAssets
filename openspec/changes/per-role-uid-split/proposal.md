@@ -62,8 +62,8 @@ Measured on prod (2026-10-02, read-only):
   rule forbidding owner changes to any file an older image reads. Vault deposits
   remain daemon-written and broker-readable only; workspaces retain ta-work.
   One mode declaration governs startup and runtime creation. The ledger's
-  physical parent remains pending because SQLite cannot create journals under
-  D4's daemon-owned /data at 0755; see delivery.md. The access inventory names
+  physical parent is /data/.broker (D12), allowing private SQLite journals
+  without widening D4's daemon-owned /data at 0755. The access inventory names
   raw SQL, account deletion, backup and refresh dependencies as well as callers.
 - `start_broker` replaces its refusal with the launcher-mediated start when it observes distinct
   uids. It still refuses when it does not.

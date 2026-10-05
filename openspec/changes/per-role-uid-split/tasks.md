@@ -4,8 +4,8 @@ code review for the eventual build. D10 records the lead's least-privilege
 amendment: capability-free two-pass deletion and opt-in startup reverse migration.
 The capability-lifetime conflict is resolved; no build task is proven yet.
 D11 records the lead decision assigning egress persistence to the broker and
-requiring authenticated daemon IPC. The current diagnostic confirms a remaining
-ledger-parent issue: ownership alone cannot create SQLite journals under D4 /data.
+requiring authenticated daemon IPC. D12 resolves the ledger-parent issue by relocation to /data/.broker; D13
+keeps private directories inaccessible to the daemon IPC group.
 See delivery.md and broker-access-inventory.md; runtime routing is not implemented.
 
 ## 1. Design (this change)
@@ -84,8 +84,8 @@ Lands after #4299 (the broker) and #4267 (`platform_secrets`), amending both.
         the docker-build CI job, so the runtime refusal is a backstop not the only check.
 - [ ] 2.4 **Volume migration and vault permissions** (closes P1-3)
       - D11 broker egress ownership (1002:1101), including SQLite sidecars and
-        .outbound-proxy, forward and reverse in the startup window. Resolve the
-        ledger physical parent before implementation; never widen /data writes.
+        .outbound-proxy, forward and reverse in the startup window. D12 relocates both beneath /data/.broker with checkpoint/fsync/rename
+        and reverse relocation; never widen /data writes.
       - D4's exact inventory, under the exclusive layout lock, idempotent, with
         `"roles": {"state": "migrating"}` in `/data/.layout.json` for crash recovery.
       - before traversal/chown, root idempotently unlinks legacy owner.json and only known

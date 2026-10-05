@@ -177,7 +177,7 @@ RUN gcc -static -O2 -Wall -Wextra -Werror -o /tmp/ta-op /tmp/ta_op.c \
 
 # Install into a venv that we'll copy to the final stage. Keeps the
 # final image free of pip metadata + build tools.
-RUN python -m venv /opt/venv && \
+RUN python -m venv --copies /opt/venv && \
     /opt/venv/bin/pip install --no-cache-dir --upgrade pip && \
     /opt/venv/bin/pip install --no-cache-dir -e ".[mcp,browser]"
 
@@ -214,6 +214,7 @@ ARG NODESOURCE_REPO_CHECKSUM=b42e0321dabdc24e892115da705cf061167eac12a317f23d329
 RUN set -e; \
     apt-get update; \
     apt-get install -y --no-install-recommends \
+        acl \
         bubblewrap \
         ca-certificates \
         curl \
@@ -246,7 +247,14 @@ RUN set -e; \
     rm -f /tmp/nodesource-repo.gpg.key /tmp/gh.deb; \
     rm -rf /var/lib/apt/lists/*; \
     groupadd --system --gid 1001 tinyassets; \
-    useradd --system --uid 1001 --gid tinyassets --home /app --shell /bin/bash tinyassets
+    useradd --system --uid 1001 --gid tinyassets --home /home/tinyassets --shell /bin/bash tinyassets; \
+    groupadd --system --gid 1002 ta-broker; \
+    groupadd --system --gid 1003 ta-engine; \
+    groupadd --system --gid 1100 ta-work; \
+    groupadd --system --gid 1101 ta-brk; \
+    groupadd --system --gid 1102 ta-vault; \
+    useradd --system --uid 1002 --gid ta-broker --home /var/lib/ta-broker --shell /usr/sbin/nologin ta-broker; \
+    useradd --system --uid 1003 --gid ta-engine --home /nonexistent --shell /usr/sbin/nologin ta-engine
 
 # Copy the codex install tree from builder and install the flock
 # wrapper as /usr/local/bin/codex. The wrapper takes an exclusive
@@ -266,7 +274,7 @@ RUN chmod 0755 /usr/local/bin/codex && \
     git --version && rg --version && node --version && python3 --version
 
 # Install the drop-first wrapper root-owned 0555 under /usr/local/libexec —
-# OUTSIDE /app and /data, both of which are chowned to uid 1001 further down.
+# OUTSIDE /app and /data; /app also remains immutable and root-owned.
 # A binary that root may one day exec must not live in a tree its target
 # user can write. Not setuid, not setgid: it grants nothing, it retires.
 # The pinned SQLite (see the builder). /usr/local/lib precedes the Debian lib
@@ -345,7 +353,11 @@ COPY scripts/_canary_common.py /app/scripts/_canary_common.py
 # `docker cp` before you can run it is one that gets skipped. Stdlib-only and
 # read-only against a temp root under /tmp; it never touches /data.
 COPY scripts/workspace_bwrap_oracle.py /app/scripts/workspace_bwrap_oracle.py
-COPY deploy/docker-entrypoint.sh /app/docker-entrypoint.sh
+COPY deploy/docker-entrypoint.sh /usr/local/libexec/ta-entry.sh
+COPY scripts/check_privileged_chain.py /usr/local/libexec/ta-chain.py
+COPY deploy/role_egress_migration.py /usr/local/libexec/ta-egress-migration.py
+COPY deploy/broker_main.py /app/broker_main.py
+COPY scripts/role_image_oracle.py /app/scripts/role_image_oracle.py
 
 ENV PATH=/opt/venv/bin:$PATH \
     PYTHONDONTWRITEBYTECODE=1 \
@@ -355,10 +367,14 @@ ENV PATH=/opt/venv/bin:$PATH \
 # Data directory — Row B will wire TINYASSETS_DATA_DIR through all
 # on-disk state. For now, /data is the expected bind-mount target;
 # operators supply it via `-v /host/path:/data` + the env var below.
-ENV TINYASSETS_DATA_DIR=/data
-RUN mkdir -p /data && \
-    chmod +x /app/docker-entrypoint.sh && \
-    chown -R tinyassets:tinyassets /data /app
+ENV TINYASSETS_DATA_DIR=/data HOME=/home/tinyassets
+RUN mkdir -p /data /home/tinyassets /var/lib/ta-broker && \
+    chown tinyassets:tinyassets /data /home/tinyassets && \
+    chown ta-broker:ta-broker /var/lib/ta-broker && \
+    chmod 0700 /home/tinyassets /var/lib/ta-broker && \
+    chmod -R a-w,a+rX /app && \
+    chmod 0555 /app/broker_main.py /usr/local/libexec/ta-entry.sh /usr/local/libexec/ta-chain.py /usr/local/libexec/ta-egress-migration.py && \
+    /opt/venv/bin/python -I -S -B /usr/local/libexec/ta-chain.py
 
 USER tinyassets
 
@@ -367,7 +383,7 @@ EXPOSE 8001
 # tini as PID 1 handles signal forwarding + zombie reaping.
 # docker-entrypoint.sh enforces cloud-daemon subscription-only auth,
 # optionally installs a subscription Codex auth bundle, then execs the CMD.
-ENTRYPOINT ["/usr/bin/tini", "--", "/app/docker-entrypoint.sh"]
+ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/libexec/ta-entry.sh"]
 
 # Default command — the FastMCP streamable-http server on 0.0.0.0:8001.
 # Through a launcher whose import is empty: every broker/workspace child is a

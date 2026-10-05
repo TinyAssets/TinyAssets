@@ -2,7 +2,8 @@
 
 Baseline: `21096788fb04a3587b900ed1883ed5183d92be20`. Line numbers below refer to
 that unchanged runtime. **Routing status: specified, NOT IMPLEMENTED.** D11
-records the lead decision; delivery.md records the physical-parent blocker.
+records the lead decision; D12 resolves the physical parent: .broker/outbound.db and
+.broker/.outbound-proxy. The logical data root must remain explicit.
 
 Search scope: production `tinyassets/`, operator/probe `scripts/`, deploy backup,
 all ConnectionLedger constructors, raw SQL callers, injected ledger consumers,

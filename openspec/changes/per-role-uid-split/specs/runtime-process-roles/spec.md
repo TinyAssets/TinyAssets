@@ -246,9 +246,13 @@ SQL, account deletion, injected ledger clients and backup consumers.
 Forward and reverse ownership migration SHALL use D10's startup window, exclusive
 layout lock, non-mutating dry-run, idempotence, crash recovery and no-follow/alias
 protections. The physical ledger parent SHALL support broker SQLite journal
-creation without granting write access to the whole data root. The choice between
-relocation and a separately specified parent authority is pending in D11; no
-runtime implementation or probe completion is asserted by this requirement.
+creation without granting write access to the whole data root. D12 fixes the ledger at /data/.broker/outbound.db and proxy runtime at
+/data/.broker/.outbound-proxy, with uid 1002, gid 1101 and parent mode 2700.
+Migration SHALL checkpoint WAL before same-filesystem rename, fsync the files
+and both parent directories, refuse conflicting copies without overwriting,
+and resume interrupted movement idempotently. Dry-run SHALL NOT checkpoint.
+Reverse migration SHALL restore the original root paths before old-image startup.
+No runtime implementation or probe completion is asserted by this requirement.
 
 #### Scenario: The broker can create and transact in its private egress set
 - **WHEN** the actual capability-free broker opens an existing ledger, creates a fresh ledger, upgrades its schema and creates per-grant proxy state

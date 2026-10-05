@@ -145,7 +145,7 @@ services:
     ports:
       - "127.0.0.1:8001:8001"
     environment:
-      HOME: /app
+      HOME: /home/tinyassets
       TINYASSETS_DATA_DIR: /data
       # No model login or key lives at the platform level (AGENTS.md Hard Rule
       # 15). Each universe's provider child gets its own CLI home from that
@@ -355,7 +355,7 @@ services:
     entrypoint: ["/usr/bin/tini", "--"]
     command: ["python", "-m", "tinyassets.slack_agent_worker"]
     environment:
-      HOME: /app
+      HOME: /home/tinyassets
       # No TINYASSETS_DATA_DIR, deliberately. The `/data` mount below is
       # READ-ONLY, so a residual vault WRITE fails loudly at the kernel rather
       # than half-succeeding; leaving the resolver unset keeps this service from
