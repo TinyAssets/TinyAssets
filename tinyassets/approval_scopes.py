@@ -78,8 +78,11 @@ def materialize(home, conn, request_id, decision, envelope):
     grant = dict(decision["predicate"])
     grant.update(request_id=request_id, decision_id=key)
     with closing(agent_rules._connect(home)) as rules:
+        rules.execute("BEGIN IMMEDIATE")
+        agent_rules._advance_sequence(rules, "approval_grants", "rules")
         rules.execute(
-            "INSERT OR IGNORE INTO rules (agent,action_class,connection,operation,behaviour,"
+            "INSERT OR IGNORE INTO approval_grants (agent,action_class,connection,operation,"
+            "behaviour,"
             "note,updated_at,record_kind,decision_id,grant_json) "
             "VALUES (?,?,?,?,?,?,?,'preapproval',?,?)",
             (
@@ -87,13 +90,22 @@ def materialize(home, conn, request_id, decision, envelope):
                 grant["action_class"],
                 grant["connection"],
                 grant["operation"],
-                agent_rules.DO_IF_PREAPPROVED,
+                agent_rules.HAND_OFF,
                 f"{grant['scope']}: {grant['operation']} {grant['origin']}",
                 time.time(),
                 key,
                 json.dumps(grant),
             ),
         )
+        agent_rules._advance_sequence(rules, "rules", "approval_grants")
+        rules.execute(
+            "INSERT OR IGNORE INTO rules (agent,action_class,connection,operation,behaviour,"
+            "note,updated_at,record_kind,decision_id,grant_json) "
+            "SELECT agent,action_class,connection,operation,behaviour,note,updated_at,"
+            "record_kind,decision_id,grant_json FROM approval_grants WHERE decision_id=?",
+            (key,),
+        )
+        rules.commit()
     decision["finalized"] = True
     conn.execute(
         "UPDATE pending_requests SET decision_json=? WHERE request_id=?",

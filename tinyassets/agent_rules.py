@@ -183,33 +183,71 @@ def _connect(universe_dir: Path) -> sqlite3.Connection:
     conn.execute("PRAGMA busy_timeout = 10000")
     conn.execute(_SCHEMA)
     conn.execute(_KINDS_SCHEMA)
-    if "record_kind" not in {r[1] for r in conn.execute("PRAGMA table_info(rules)")}:
-        from tinyassets.owner_control import control
+    try:
+        if not conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='approval_grants'"
+        ).fetchone():
+            from tinyassets.owner_control import control
 
-        with control(universe_dir):
-            conn.execute("BEGIN IMMEDIATE")
-            if "record_kind" not in {r[1] for r in conn.execute("PRAGMA table_info(rules)")}:
-                # Preserve IDs, behavior precedence and owner edits. A separate
-                # partial index permits several independently revocable grants.
-                conn.execute("ALTER TABLE rules RENAME TO rules_before_scopes")
-                conn.execute(_SCHEMA.replace(
-                    "UNIQUE(agent, action_class, connection, operation)",
-                    "record_kind TEXT NOT NULL DEFAULT 'behavior', "
-                    "decision_id TEXT UNIQUE, grant_json TEXT NOT NULL DEFAULT '{}'"
-                ))
-                conn.execute(
-                    "INSERT INTO rules (id,agent,action_class,connection,operation,behaviour,"
-                    "note,seeded,updated_at) SELECT id,agent,action_class,connection,operation,"
-                    "behaviour,"
-                    "note,seeded,updated_at FROM rules_before_scopes"
-                )
-                conn.execute("DROP TABLE rules_before_scopes")
-                conn.execute(
-                    "CREATE UNIQUE INDEX behavior_rule_key ON rules "
-                    "(agent,action_class,connection,operation) WHERE record_kind='behavior'"
-                )
-            conn.commit()
+            with control(universe_dir):
+                conn.execute("BEGIN IMMEDIATE")
+                if not conn.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='approval_grants'"
+                ).fetchone():
+                    _migrate_scopes(conn)
+                conn.commit()
+    except BaseException:
+        conn.close()  # Roll back even if migration was interrupted halfway through.
+        raise
     return conn
+
+
+def _migrate_scopes(conn: sqlite3.Connection) -> None:
+    """Keep the old upsert key and retain every independently revocable grant."""
+    if "record_kind" not in {r[1] for r in conn.execute("PRAGMA table_info(rules)")}:
+        conn.execute("ALTER TABLE rules ADD COLUMN record_kind TEXT NOT NULL DEFAULT 'behavior'")
+        conn.execute("ALTER TABLE rules ADD COLUMN decision_id TEXT")
+        conn.execute("ALTER TABLE rules ADD COLUMN grant_json TEXT NOT NULL DEFAULT '{}'")
+    conn.execute(_SCHEMA.replace("rules (", "approval_grants (").replace(
+        "UNIQUE(agent, action_class, connection, operation)",
+        "record_kind TEXT NOT NULL DEFAULT 'preapproval', "
+        "decision_id TEXT UNIQUE, grant_json TEXT NOT NULL DEFAULT '{}'"
+    ))
+    # Reserve distinct positive IDs across both tables, including after rollback.
+    _advance_sequence(conn, "approval_grants", "rules")
+    columns = ("agent,action_class,connection,operation,behaviour,note,seeded,updated_at,"
+               "record_kind,decision_id,grant_json")
+    conn.execute(f"INSERT INTO approval_grants ({columns}) SELECT {columns} FROM rules "
+                 "WHERE record_kind='preapproval'")
+    _advance_sequence(conn, "rules", "approval_grants")
+    conn.execute("UPDATE approval_grants SET behaviour='hand_off'")
+    conn.execute("UPDATE rules SET behaviour='hand_off' WHERE record_kind='preapproval'")
+    # Retain a conservative legacy row only where there is no behavior row.
+    # All grant history (including tombstones) is already copied above.
+    conn.execute("DELETE FROM rules WHERE record_kind='preapproval' AND id NOT IN ("
+                 "SELECT COALESCE(MIN(CASE WHEN record_kind='behavior' THEN id END),MIN(id)) "
+                 "FROM rules GROUP BY agent,action_class,connection,operation)")
+    conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS legacy_rule_key ON rules "
+                 "(agent,action_class,connection,operation)")
+    # Old handlers cannot see the grant table. Edits/deletes of a legacy key
+    # revoke every grant for that key, so rollback cannot resurrect consent.
+    revoke = """UPDATE approval_grants SET grant_json=json_set(grant_json,'$.revoked',json('true'))
+        WHERE agent=OLD.agent AND action_class=OLD.action_class
+        AND connection=OLD.connection AND operation=OLD.operation;"""
+    conn.execute("""CREATE TRIGGER legacy_rule_edit AFTER UPDATE OF behaviour,note,seeded
+        ON rules BEGIN """ + revoke + """
+        UPDATE rules SET record_kind='behavior',decision_id=NULL,grant_json='{}'
+        WHERE id=NEW.id AND record_kind='preapproval'; END""")
+    conn.execute("CREATE TRIGGER legacy_rule_delete AFTER DELETE ON rules BEGIN "
+                 + revoke + " END")
+
+
+def _advance_sequence(conn: sqlite3.Connection, target: str, source: str) -> None:
+    conn.execute("INSERT INTO sqlite_sequence(name,seq) SELECT ?,0 WHERE NOT EXISTS "
+                 "(SELECT 1 FROM sqlite_sequence WHERE name=?)", (target, target))
+    conn.execute("UPDATE sqlite_sequence SET seq=MAX(seq,COALESCE("
+                 "(SELECT seq FROM sqlite_sequence WHERE name=?),0)) WHERE name=?",
+                 (source, target))
 
 
 def _seed(conn: sqlite3.Connection, agent: str) -> None:
@@ -233,7 +271,12 @@ def _rule(row) -> Rule:
 
 _SELECT = ("SELECT id, agent, action_class, connection, operation, behaviour, note, seeded, "
            "record_kind, grant_json "
-           "FROM rules WHERE agent = ? ORDER BY action_class, connection, operation")
+           "FROM (SELECT id,agent,action_class,connection,operation,behaviour,note,seeded,"
+           "updated_at,"
+           "record_kind,decision_id,grant_json FROM rules WHERE record_kind='behavior' UNION ALL "
+           "SELECT id,agent,action_class,connection,operation,behaviour,note,seeded,updated_at,"
+           "record_kind,decision_id,grant_json FROM approval_grants) "
+           "WHERE agent = ? ORDER BY action_class, connection, operation")
 
 
 def list_rules(universe_dir: Path, agent: str = MAIN_AGENT) -> list[Rule]:
@@ -311,7 +354,7 @@ def set_rule(universe_dir: Path, action_class: str, behaviour: str, *, connectio
             "INSERT INTO rules (agent, action_class, connection, operation, behaviour, note, "
             "seeded, updated_at) VALUES (?, ?, ?, ?, ?, ?, 0, ?) "
             "ON CONFLICT(agent, action_class, connection, operation) "
-            "WHERE record_kind='behavior' DO UPDATE SET "
+            "DO UPDATE SET "
             "behaviour = excluded.behaviour, note = excluded.note, seeded = 0, "
             "updated_at = excluded.updated_at",
             (agent, action_class, connection.strip(), operation.strip().upper(),
@@ -338,6 +381,15 @@ def delete_rule(universe_dir: Path, rule_id: int, *, agent: str = MAIN_AGENT,
     """
     with closing(_connect(universe_dir)) as conn:
         conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute("SELECT grant_json FROM approval_grants WHERE id=? AND agent=?",
+                           (int(rule_id), agent)).fetchone()
+        if row is not None:
+            grant = json.loads(row[0])
+            grant["revoked"] = True
+            conn.execute("UPDATE approval_grants SET grant_json=?,updated_at=? WHERE id=?",
+                         (json.dumps(grant), time.time(), int(rule_id)))
+            conn.commit()
+            return True
         row = conn.execute(
             "SELECT action_class, connection, operation, behaviour, record_kind, grant_json "
             "FROM rules "
@@ -350,7 +402,8 @@ def delete_rule(universe_dir: Path, rule_id: int, *, agent: str = MAIN_AGENT,
         if row[4] == 'preapproval':
             grant = json.loads(row[5])
             grant['revoked'] = True
-            conn.execute('UPDATE rules SET grant_json=?,updated_at=? WHERE id=?',
+            conn.execute("UPDATE approval_grants SET grant_json=?,updated_at=? WHERE decision_id="
+                         "(SELECT decision_id FROM rules WHERE id=?)",
                          (json.dumps(grant), time.time(), int(rule_id)))
             conn.commit()
             return True

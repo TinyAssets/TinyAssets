@@ -87,3 +87,32 @@ def test_wake_failure_rolls_back_answer_and_never_reports_success(base, monkeypa
             conn.execute("SELECT COUNT(*) FROM activity_events WHERE wake_required=1").fetchone()[0]
             == 1
         )
+
+
+@pytest.mark.parametrize("failure", [RuntimeError("lock busy"),
+                                    bound_requests.RequestRefused("The initiating task ended.")])
+def test_binding_failure_still_notifies_owner_and_returns_saved_ask(base, monkeypatch, failure):
+    from tinyassets import connection_continuations
+    from tinyassets.api import pending_requests as api
+
+    home = _make_universe(base, "u-1", admin="alice")
+    _login("alice")
+    notifications = []
+    monkeypatch.setattr(
+        api, "_notify_owner", lambda uid, row: notifications.append((uid, row.copy())))
+
+    def fail(*args):
+        raise failure
+
+    monkeypatch.setattr(connection_continuations, "bind", fail)
+    with turn_interrupt.interactive_turn("alice", "u-1"):
+        ask = _ask("u-1", **_CRED)
+        duplicate = _ask("u-1", **_CRED)
+    assert not ask.get("error")
+    assert ask["server_continuation"] is False
+    assert ask["continuation_status"] == "unavailable"
+    assert pending_requests.get_request(home, ask["request_id"])["status"] == "pending"
+    assert duplicate["request_id"] == ask["request_id"]
+    assert len(notifications) == 1
+    assert notifications[0][0] == "u-1"
+    assert notifications[0][1]["request_id"] == ask["request_id"]

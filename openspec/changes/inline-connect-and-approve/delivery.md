@@ -182,16 +182,22 @@ provider transports, not live provider accounts.
 
 ### Migration and review disposition
 
-The Rules migration copies named columns and preserves existing IDs, but replaces
-the old unique constraint with a behavior-only index. This migration is one-way:
-old set_rule handlers are incompatible afterward. Do not roll back migrated homes
-to those handlers. Recovery requires a schema-compatible handler or pausing owner
-mutations and applying a forward repair. Broader compatible rollback remains 1.1.
+The Rules migration now preserves the old upsert key. Independent grants live in
+`approval_grants`, with distinct positive IDs reserved across both tables. Grant
+rows and the conservative legacy compatibility rows use `hand_off`; current
+behavior decisions ignore compatibility rows and match grants by record kind and
+protected predicate. Old readers refuse those rows, including revoked grants.
+Old owner upserts still add/tighten rules, and editing a compatibility row converts
+it to a behavior rule. Existing behavior rows are never replaced by grant issuance.
+Migration is transactional and closes/rolls back on interruption; old-format values,
+IDs and the ID high-water mark survive. Initial sheet-format grants and tombstones
+are copied before deduplicating compatibility rows. The migration is no longer
+rollback-hostile. The broader task 1.1 recovery matrix remains unfinished.
 
 One cross-family Claude round through the peer-agents skill returned ADAPT, with
 no floor findings. AGREE: release owner-control before network sends and handle
 busy prechecks; invalidate incomplete grant issuance in recovery; use named-column
-migration and document its one-way boundary; refuse missing task context visibly;
+migration (Round 2 adds compatible rollback); refuse missing task context visibly;
 move direct capture notification after its own lock; exercise subsequent effector
 reuse, policy edits, task Stop/expiry/generation and unrelated-rule stability;
 and exclude preapprovals from behavior-rule hand-back checks. These changes are
@@ -233,3 +239,50 @@ and first-run/connect browser selections also passed, and are not added again to
 these totals. Post-commit test hygiene reports **12 new test functions, 0 removed,
 0 tampering findings** (parameterization expands the case count). No PR or
 production deployment is created by this lane.
+
+
+### Round 2 follow-ups
+
+Review areas 1 and 5: AGREE with conservative rollback behavior, old-upsert
+compatibility, migration regression coverage, notification after continuation-bind
+failure, and the inbox separator. Bind failure returns the saved pending ask with
+`server_continuation=false` and `continuation_status=unavailable`; the owner still
+receives the initial notification. Duplicate asks do not send it twice. Inbox
+buttons use the escaped middle dot, covered at desktop and 390px widths.
+
+This remains commit-and-push only. No production deployment, SHA assertion or
+real-user production pass is claimed; the broader unchecked work above remains.
+
+
+The focused Round 2 cross-family migration review through `peer-agents` returned
+ADAPT with one correctness finding. AGREE: old edits/deletes must tombstone every
+grant for the legacy key, or deletion during rollback could revive consent after
+rollforward. Both triggers now revoke the exact-key grants; regression tests
+exercise old DELETE/upsert, multiple overlapping grants and actual grant matching.
+Other scoped items had no findings. No new unresolved concern was introduced.
+
+
+Round 2 final verification: **818 passed, 4 POSIX-lock skips on Windows/Python
+3.14; 822 passed, no skips on Linux oracle Python 3.11.16, uid 1001,
+bwrap 0.12.0**. Both runs include 14 rendered browser cases and all 186 cases
+in the three affected heavy files (first-contact, scoped-identity reset and
+universe-server isolation). The 14 added regression cases cover rollback reads
+and writes, overlapping grant IDs/revocation, old edits/deletes on rollforward,
+migration values/counter, four interruption points, actual process death, and
+saved-ask notification despite binding failure. Existing tests were retained.
+
+Final selection: `tests/test_rules_rollback.py`, `tests/test_agent_rules.py`, `tests/test_authenticated_external_call_effector.py`, `tests/test_approval_sheet_scopes.py`, `tests/test_connection_sheet_continuations.py`, `tests/test_pending_requests.py`, `tests/test_pending_requests_migration.py`, `tests/test_pending_requests_power.py`, `tests/test_inline_approvals.py`, `tests/test_inline_request_storage.py`, `tests/test_inline_owner_sessions.py`, `tests/test_generic_oauth_connections.py`, `tests/test_turn_interrupt.py`, `tests/test_owner_notifications.py`, `tests/test_agent_activities.py`, `tests/test_universe_server_isolation.py`, `tests/test_scoped_identity_reset.py`, `tests/test_first_contact.py`, `tests/test_approval_sheet_real_browser.py`, `tests/test_inline_approvals_real_browser.py`, `tests/test_app_pending_requests_browser.py`, `tests/test_onboarding_app.py`, `tests/test_request_card_layout_and_links.py`, `tests/test_mirror_parity_gate.py`, `tests/test_pre_commit_mirror_parity.py`.
+
+Windows command: `python -m pytest <selection> -q -ra --basetemp
+C:/Users/Jonathan/AppData/Local/Temp/ta-sheet-r2-final-windows` (JUnit alongside
+that directory). Linux: `python scripts/linux_oracle.py -- <selection> -q -ra`,
+using external `/tmp/b`. Plugin regeneration/import and mirror parity, touched
+Python Ruff, strict OpenSpec change validation, concerns metadata and whitespace
+checks pass. The modified browser file already appears in the workflow paths;
+no new real-browser file or concern was added. Review disposition is recorded
+above. Production acceptance and remaining broader tasks are unchanged.
+
+Post-commit hygiene passes against both the Round 2 starting SHA and the PR
+merge base: **8 new test functions this round / 20 across the PR, 0 removed,
+0 tampering findings**. Commit hooks also pass mirror parity, mojibake scanning,
+import-graph smoke, path-resolver lint, cross-provider drift and skill validation.

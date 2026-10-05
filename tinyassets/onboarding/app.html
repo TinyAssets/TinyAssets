@@ -8985,7 +8985,7 @@
       const sheet=$('needs-you'); const host=$('needs-you-items');host.textContent='';
       railCache.filter(row=>!isOptionalRequest(row)).forEach(row=>{
         const button=document.createElement('button');button.type='button';button.className='btn';
-        button.textContent=(row.action?.type==='approve_action'?'Action approval':row.title)+' ? '+(row.agent||'Your agent');
+        button.textContent=(row.action?.type==='approve_action'?'Action approval':row.title)+' \u00b7 '+(row.agent||'Your agent');
         button.onclick=()=>{sheet.close();this.open(row.request_id);};host.appendChild(button);
       });
       if(!host.children.length)host.textContent='Nothing needs you right now.';

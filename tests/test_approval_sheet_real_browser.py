@@ -64,6 +64,7 @@ def test_foreground_sheet_scopes_inbox_history_and_account_fence(app_url, browse
     assert not sheet.is_visible()
     page.locator("#needs-you-open").click()
     assert page.locator("#needs-you-items button").count() == 1
+    assert page.locator("#needs-you-items button").inner_text() == "Action approval \u00b7 main"
     page.locator("#needs-you-items button").click()
     assert sheet.evaluate('el=>el.matches(":modal")')
     page.get_by_role("textbox", name="Action draft").fill("Private unsent edit")

@@ -213,3 +213,101 @@ def test_recovery_invalidates_unfinalized_scope_without_dispatch(case, monkeypat
     fresh = bound_requests.preview(home, card["request_id"], session)
     assert fresh["approval_unavailable"]
     assert bound_requests.decide(home, decision(fresh, "skip"), session)["status"] == "answered"
+
+
+@pytest.mark.parametrize("revoked", [False, True])
+def test_old_decide_refuses_grant_rows_after_rollback(case, monkeypatch, revoked):
+    from tinyassets.effectors import authenticated_external_call as effector
+
+    home, card, session, _ = case
+    monkeypatch.setattr(effector, "run_authenticated_external_call_effector",
+                        lambda **kw: {"status": 200})
+    preview = bound_requests.preview(home, card["request_id"], session, scope="site")
+    bound_requests.decide(home, {**decision(preview), "scope": "site"}, session)
+    grant = next(r for r in agent_rules.list_rules(home) if r.kind == "preapproval")
+    assert grant.behaviour == "hand_off"
+    if revoked:
+        assert agent_rules.delete_rule(home, grant.id)
+    agent_rules.set_rule(home, grant.action_class, "hand_off")
+    # Previous image: the eight-column read has no record_kind filter, and
+    # decide chooses the most specific rule, then the strictest behavior.
+    with closing(agent_rules._connect(home)) as conn:
+        rows = conn.execute(
+            "SELECT id,agent,action_class,connection,operation,behaviour,note,seeded "
+            "FROM rules WHERE agent=?", (grant.agent,)
+        ).fetchall()
+    candidates = [agent_rules._rule(r) for r in rows
+                  if r[2] == grant.action_class and r[3] in ("", grant.connection)
+                  and r[4] in ("", grant.operation.upper())]
+    best = max(candidates, key=lambda r: (agent_rules._specificity(r),
+                                        agent_rules.BEHAVIOURS.index(r.behaviour)))
+    assert best.connection == grant.connection
+    assert best.operation == grant.operation
+    assert best.behaviour == "hand_off"
+
+
+def test_multiple_grants_keep_distinct_ids_and_tombstones_with_legacy_rule_edits(case):
+    from tests.test_rules_rollback import OLD_UPSERT
+
+    home, card, session, _ = case
+    bound_requests.preview(home, card["request_id"], session, scope="site")
+    with closing(bound_requests.connect(home)) as conn:
+        stored = json.loads(conn.execute(
+            "SELECT decision_json FROM pending_requests WHERE request_id=?", (card["request_id"],)
+        ).fetchone()[0])
+        stored["choice"] = "approve"
+        approval_scopes.materialize(
+            home, conn, card["request_id"], stored, card["action"]["envelope"])
+        first = next(r for r in agent_rules.list_rules(home) if r.kind == "preapproval")
+        assert agent_rules.delete_rule(home, first.id)
+        # Replaying the original decision cannot undo the tombstone.
+        approval_scopes.materialize(
+            home, conn, card["request_id"], stored, card["action"]["envelope"])
+        assert not [r for r in agent_rules.list_rules(home) if r.kind == "preapproval"]
+        for revision in (stored["revision"] + 1, stored["revision"] + 2):
+            approval_scopes.materialize(home, conn, card["request_id"],
+                                       {**stored, "revision": revision}, card["action"]["envelope"])
+    grants = [r for r in agent_rules.list_rules(home) if r.kind == "preapproval"]
+    assert len(grants) == 2
+    assert len({first.id, *(r.id for r in grants)}) == 3
+    assert not agent_rules.delete_rule(home, grants[0].id, agent="other-agent")
+    assert agent_rules.delete_rule(home, grants[0].id)
+    assert [r.id for r in agent_rules.list_rules(home) if r.kind == "preapproval"] == [grants[1].id]
+    with closing(agent_rules._connect(home)) as conn:
+        conn.execute(OLD_UPSERT, (first.agent, first.action_class, first.connection,
+                                 first.operation, "hand_off", "tighten", 1))
+        conn.execute(OLD_UPSERT, (first.agent, "people.message", "other", "POST",
+                                 "hand_off", "new after rollback", 2))
+    rules = agent_rules.list_rules(home)
+    assert len({r.id for r in rules}) == len(rules)
+    assert not [r for r in rules if r.kind == "preapproval"]
+    assert agent_rules.decide(home, first.action_class, connection=first.connection,
+                              operation=first.operation).behaviour == "hand_off"
+
+
+@pytest.mark.parametrize("old_write", ["delete", "upsert"])
+def test_old_owner_rule_change_revokes_grant_on_rollforward(case, monkeypatch, old_write):
+    from tests.test_rules_rollback import OLD_UPSERT
+    from tinyassets.effectors import authenticated_external_call as effector
+
+    home, card, session, raw = case
+    monkeypatch.setattr(effector, "run_authenticated_external_call_effector",
+                        lambda **kw: {"status": 200})
+    preview = bound_requests.preview(home, card["request_id"], session, scope="site")
+    bound_requests.decide(home, {**decision(preview), "scope": "site"}, session)
+    grant = next(r for r in agent_rules.list_rules(home) if r.kind == "preapproval")
+    assert approval_scopes.matches(home, raw["arguments"], "user-1", "main")
+    with closing(agent_rules._connect(home)) as conn:
+        if old_write == "delete":
+            conn.execute("DELETE FROM rules WHERE agent=? AND action_class=? "
+                         "AND connection=? AND operation=?",
+                         (grant.agent, grant.action_class, grant.connection, grant.operation))
+        else:
+            conn.execute(OLD_UPSERT, (grant.agent, grant.action_class, grant.connection,
+                                     grant.operation, "ask_first", "old owner edit", 1))
+    assert not approval_scopes.matches(home, raw["arguments"], "user-1", "main")
+    assert not [r for r in agent_rules.list_rules(home) if r.kind == "preapproval"]
+    with closing(agent_rules._connect(home)) as conn:
+        stored = conn.execute("SELECT grant_json FROM approval_grants WHERE id=?",
+                              (grant.id,)).fetchone()[0]
+    assert json.loads(stored)["revoked"] is True

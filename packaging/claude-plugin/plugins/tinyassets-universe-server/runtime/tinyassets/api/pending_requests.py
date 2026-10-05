@@ -1379,7 +1379,13 @@ def request_from_user(
     if action.get("type") in {"connect", "connect_http"}:
         from tinyassets.connection_continuations import bind
 
-        row["server_continuation"] = bind(udir, row["request_id"])
+        try:
+            row["server_continuation"] = bind(udir, row["request_id"])
+        except Exception:
+            logger.warning("Connection ask saved but continuation binding failed", exc_info=True)
+            row["server_continuation"] = False
+            row["continuation_status"] = "unavailable"
+
     if created:
         _notify_owner(_uid, row)
     return {**row, "grant_sentence": _grant_sentence(row), **sign_in}
