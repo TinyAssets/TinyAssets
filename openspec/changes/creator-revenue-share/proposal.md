@@ -32,6 +32,14 @@ that happens.
 The old paid-market code is being deleted as dead code (#4209). This change
 starts fresh and does not bring it back.
 
+> **Founder decision, 2026-10-04: payouts are DAILY.** "If paid users are using
+> a command center you published then you get paid in tiny daily." This
+> supersedes "send them monthly" above. The design must state how daily accrual
+> settles on-chain (gas and Safe-signing cost per batch), whether by a daily batch
+> or daily accrual with a settlement threshold, and still avoid any projected
+> TINY value in the ledger. Command centers' recipients choose per installed copy
+> between opt-in updates and automatic updates (`command-center-recipient-updates`).
+
 ## What Changes
 
 1. **A payable piece** is one immutable published version of a command-center

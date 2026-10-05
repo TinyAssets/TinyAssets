@@ -1262,19 +1262,27 @@ expiry within one server's life, and a direct call on the engine's MCP route by
 a holder of the bearer is still narrowed only by the provider's tool list, as
 it was before D6a.
 
-**Attached MCP follow-up (deferred, no partial adapter).** Reserve
+**Attached MCP follow-up (delegated, no partial adapter).** The proposed
+`connect-anything-ladder` change now owns the D6 attachment storage, activation,
+transport and MCP OAuth/secret entry. `browser-login-custody` separately owns
+the login custody extension, gated on completed D5 browser/live-view;
+`saved-agent-connectors` owns tested reusable extensions after MCP custody.
+D6 retains ta. Each delta must land before its implementation. Reserve
 `mcp:<attachment>:<tool>` for tools/list descriptions and tools/call. An owner
-attachment should declare either `stdio: {argv, cwd}` (executed inside the
-same jail with its cleared environment), or `http: {connection_id, endpoint}`
+attachment should declare either `stdio: {argv, cwd}` (executed in an owner-bound
+sandbox with a cleared environment), or `http: {connection_id, endpoint}`
 (a credential-blind transport using that connection's rules, grants and scope).
+Credentialed stdio defaults to broker-injected credentials. Only explicit owner
+opt-in for an exact server configuration revision and named own secret permits
+raw-key injection. A raw-key stdio server runs in its own sandbox with a separate process, user identity and filesystem view. The agent shell, hooks and other extensions reach it only over its mediated stdio pipe and have no access to its /proc entries, environment, arguments or files. Reuse the egress broker's incremental secret scanner on both stdout and stderr, including secret bytes split across chunks, before any output reaches model context, logs or transcript; withhold matching bytes and report a credential-free typed failure. The protected view names the exact server code and its author and warns that only that server's code and its author can read/use the injected key. Revocation or a configuration change invalidates the opt-in; it is never exported with a package.
 The interface must bind the same platform execution context for its entire
 session, never accept credentials or actor/context overrides in the attachment,
 and close children/sessions with the invocation. Before implementing, settle
 owner-authenticated attachment storage/activation and MCP initialization,
 streaming, cancellation and reconnect semantics. The existing connection
 broker buffers one HTTP request/response, so treating it as a persistent MCP
-transport now would only half-build the capability. This work remains in D6;
-any new table or public owner door needs its own delta before code.
+transport now would only half-build the capability. The delegated change resolves
+this contract; do not implement a second attachment or login mechanism here.
 
 Resident-tool removal, native-tool changes, handbook migration and the token
 ratchet remain D6 follow-ups. Durable workflow/automation context propagation
@@ -1285,7 +1293,9 @@ or live-user acceptance is claimed by this branch.
 1. Give memory items stable ids.
 2. Build the Memory tab.
 3. Add the jailed history store and Undo.
-4. Add `settings.yaml`.
+4. Runtime `settings.yaml`, lifecycle extension hooks and owner-permitted ta/UI
+   bridge parity are delegated to `command-center-harness-control` (L11-L13).
+   D7 retains the editor/history; D8/D9 retain install and main-agent selection.
 5. Build the Harness tab.
 6. Add seed curator and review skills.
 7. After steps 1-3 and the memory acceptance below, retire `read_brain`,

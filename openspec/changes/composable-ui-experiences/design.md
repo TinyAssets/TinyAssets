@@ -208,6 +208,13 @@ is not a breach.
 
 ### The bridge is the whole capability surface
 
+Proposed extension (2026-10-04): `command-center-harness-control` owns generic
+ta search/describe/call parity and owner-permitted connections, memory and harness
+controls through this bridge. This change retains the renderer, frame isolation
+and installation binding; do not build a second bridge or duplicate its dispatcher.
+The implementation slice below describes the existing limited methods, not an
+immutable limit on owner-controlled capabilities.
+
 `app_ui.js` owns the parent half. A message is considered only when
 `event.source === frame.contentWindow`; the action is looked up in a frozen map
 and an unlisted action is refused by name, never guessed. Each handler builds its

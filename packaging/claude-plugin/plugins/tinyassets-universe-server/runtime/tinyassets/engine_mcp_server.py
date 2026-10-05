@@ -46,6 +46,7 @@ from tinyassets.engine_conversation_attention import ConversationAttention
 from tinyassets.engine_read_views import compact_model_options, universe_status_view
 from tinyassets.engine_steering import OwnerSteering
 from tinyassets.engine_tool_activity import ToolActivity
+from tinyassets.starter_skills import connect_skill
 
 #: What a JSON-carrying argument (``write_graph payload_json``, ``run_graph
 #: inputs_json``) accepts on the wire: the JSON TEXT, or the value itself
@@ -2466,6 +2467,7 @@ _WRITE_GRAPH_SYSTEMS_CHAPTER = """\
 _WRITE_GRAPH_CHAPTERS: dict[str, str] = {
     "branches": _WRITE_GRAPH_BRANCHES_CHAPTER,
     "connections": _WRITE_GRAPH_CONNECTIONS_CHAPTER,
+    "connect": connect_skill(),
     "code_nodes": _WRITE_GRAPH_CODE_NODES_CHAPTER,
     "workspaces": _WRITE_GRAPH_WORKSPACES_CHAPTER,
     "delivering": _WRITE_GRAPH_DELIVERING_CHAPTER,
@@ -3096,6 +3098,9 @@ def write_graph(
       asking rather than from memory, path patterns so one ask covers the job,
       extending or taking back a key, and writing a file through an API that
       takes base64.
+    * ``connect`` -- the editable connect-anything starter skill. To install it
+      in an existing account, save the chapter's text as ``skills/connect/SKILL.md``
+      with ``write``. Read any existing file first and preserve the user's edits.
     * ``code_nodes`` -- a node that runs my own Python instead of a prompt: the
       ``run(state, effects)`` contract, what ``effects`` exposes, reading the
       exact bytes of a file the user attached, and agent nodes.
