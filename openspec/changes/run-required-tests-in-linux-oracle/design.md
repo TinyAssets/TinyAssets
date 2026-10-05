@@ -49,8 +49,12 @@ the runner see the environment they saw on the bare runner.
 
 ## D5. What is not proven yet
 
-Only static and unit checks have run. Before this can merge, a hosted run must
-show:
+Hosted runs must establish every item below. Items 1 and 3-5 gate the
+implementation PR. Item 2 runs on the immediate documentation follow-up after
+that merge: changing `tests.yml` makes the implementation diff select `ALL`,
+so its own merge-group run cannot prove the selective path. The venue change
+remains open until all five items are verified, the requirements are synced,
+and the independent gate review is complete.
 
 1. All six whole-surface shards green in the oracle, including the `shard`
    floor and the 10,700 aggregate floor. Tests that have only ever skipped on
