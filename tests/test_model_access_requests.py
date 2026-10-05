@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from tests.owner_answer import answer_request
 from tests.test_provider_serving_binding import _seed_universe
 from tinyassets.api import pending_requests as requests
 from tinyassets.auth.middleware import identity_context
@@ -52,7 +53,7 @@ def ask(rig, **changes):
 
 def answer(row):
     with owner():
-        return requests.answer_request(universe_id="u-owner", payload={
+        return answer_request(universe_id="u-owner", payload={
             "request_id": row["request_id"], "values": {}, "dont_ask_again": True,
         })
 

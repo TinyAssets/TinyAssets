@@ -93,7 +93,7 @@ def _ask(action, fields):
 
 
 def _answer(request_id, values):
-    from tinyassets.api.pending_requests import answer_request
+    from tests.owner_answer import answer_request
 
     return answer_request(universe_id=UID, payload=json.dumps(
         {"request_id": request_id, "values": values}))

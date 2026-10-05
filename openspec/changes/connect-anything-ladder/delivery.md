@@ -121,3 +121,18 @@ The final Linux command was `MSYS_NO_PATHCONV=1 python scripts/linux_oracle.py -
 -q tests/test_mcp_attachment.py tests/test_mcp_remote.py tests/test_mcp_broker.py
  tests/test_mcp_oauth.py tests/test_broker_capability_ipc.py --basetemp /tmp/b`.
 No tests were removed or loosened to accommodate the corrections.
+
+## Resume: prerequisite reconciliation (2026-10-05)
+
+Merged isolation foundation through `5b6f175951` without rebase. Integrated the
+existing #4469 sheet and continuation implementation and #4483 consent guard
+(commits 210ae91df8, bfd76c7d04, 94b8b8385e, 4f4539a73f). The protected answer
+wrapper/route from their earlier patch-intake prerequisite is included explicitly;
+isolation broker owner metadata reads remain intact. This is dependency
+integration, not a second approval engine. #4483 is still open upstream.
+
+Linux oracle: 223 passed, zero skips across MCP, updated workspace broker,
+consent, approval scope, continuation, generic OAuth and rollback suites.
+Windows: 157 focused tests and 32 browser/removal tests passed. The initial
+Linux attempt failed during tar because the working tree changed during copy;
+its result is discarded. Mirror parity: 608 files. No deployment claimed.

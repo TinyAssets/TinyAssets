@@ -109,6 +109,22 @@ Blocked/closed/failed sign-in keeps the card pending with retry/alternative/skip
 
 ## Migration and risks
 
+### Consent answer boundary follow-up
+
+The `fix/consent-asks-owner-session` slice extends #4477's protected owner-session
+answer mechanism to all ten consent action types through one `CONSENT_ACTIONS`
+set. The check precedes item answers, Clear/Deny, retries and effect dispatch,
+and consults immutable publish/install pins before trusting a mutable row type.
+All app answer controls use the protected HTTP answer door. OAuth connection
+completion additionally requires that door's same-origin, matching-owner cookie
+proof before consuming the flow or depositing tokens. Bearer payloads cannot
+supply proof. Unmute only permits another ask; it never authorizes its answer.
+
+This closes bearer self-consent; it does not claim universal bound preview tokens
+or wider scopes for legacy consent actions. Existing generic HTTP once/task/site/
+always grants remain on the protected bound-decision path. Tasks 1.2–1.4 retain
+their unchecked broader contracts, including classification and payment scopes.
+
 The owner-control coordinator acquires its owner/home lock, persists a migration-in-progress marker and drains already admitted request mutations before taking the source snapshot. During this pause, new `ask`, answers/edits, approval/retry/grant mutations and new bound dispatch/resumption are refused with an explicit retryable migration-unavailable result; they are neither queued nor acknowledged successful and create no partial request/decision/wake. Ordinary reads use the last authoritative store. Already-sent effects and OAuth deposits retain their existing durable receipts for post-cutover reconciliation; do not claim they were cancelled or lose their outcomes. If old writers cannot be stopped, keep the owner paused and do not cut over.
 
 Copy all pending-request tables to the protected activity store idempotently, preserving legacy requests/items/answers/suppressions/unmutes verbatim. Verify row IDs/counts/content against the quiescent source; commit the verified copy and authoritative cutover marker together in the destination transaction before enabling protected writers. All APIs consult that marker and then use only the protected copy; the old file is retained as migration backup, never a live projection/authority. Before cutover, interrupted/failed verification keeps the pause active and resumes from the unchanged source. After cutover, restart uses only the protected destination, reconciles unfinished decisions/grants and retained receipts/wakes under the owner-control lock, then lifts the pause. It never recopies the stale backup over newer protected state or accepts legacy writers. Failures remain visibly retryable while paused, with no automatic fallback to the legacy store.
@@ -152,3 +168,20 @@ Grant records bind owner, initiating agent, connection incarnation, action class
 Classify actions as read, write (with destructive detail), or spend. Owner-declared tool/effect classification is trusted. Tool hints alone cannot grant authority; unknown effects follow the owner's editable default (starter default: ask through the approval sheet), never refusal merely for being unknown. Exact-total once-only approval is the editable starter default for payments, not an immutable platform rule. The owner may instead authorize a spend grant bounded by an owner-editable budget cap, destination/action scope and expiry; dispatch rechecks that grant and atomically reserves against the cap. Unknown payment totals need an enforceable maximum within that grant, or return to the owner's approval sheet. Cross-user isolation is the only immutable platform behavioral invariant.
 
 Needs you is a compact pending-items inbox over the same protected request IDs and revisions, not a second queue or side panel. Push uses notify-owner-of-requests delivery infrastructure: dedupe by request/revision, retry independently of continuation, omit draft/secret/token payloads, and deep-link to a first-party view that reauthenticates and fetches the current preview. Notification delivery is never acknowledgment or approval. Answer from any signed-in device removes/resolves the same inbox item and durably resumes the saved active work without a chat prompt. Offline clients reconcile on reconnect; denied, expired or stopped work retains truthful status. Enable inbox and push before removing the panel; retain request IDs and activity receipts across rollout/rollback, and never restore old inline approval controls as an authority bypass.
+### Approval sheet rollback compatibility
+
+Keep the legacy `rules` unique key so the previous image can upsert owner rules.
+Store independently revocable preapprovals in `approval_grants`; reserve distinct
+positive IDs across both tables using their AUTOINCREMENT high-water marks. Each grant has
+`behaviour=hand_off`, ignored by current grant matching. Insert a conservative
+preapproval row into `rules` when its legacy key is free; current decisions ignore
+these rows, while old decisions refuse them, even after grant revocation. Existing
+behavior rows retain precedence and are never overwritten by grant issuance.
+An old upsert over a compatibility row converts it to a behavior rule. Any old
+edit or delete revokes all grants for that exact legacy key, preserving the owner
+change after rollforward.
+
+Migrate both old-format and initial sheet-format databases transactionally under
+owner-control. Preserve behavior IDs, values and the AUTOINCREMENT high-water mark;
+copy all grants before deduplicating compatibility rows for the legacy unique key.
+Failure closes the connection and rolls back all migration changes.

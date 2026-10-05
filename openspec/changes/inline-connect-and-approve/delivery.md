@@ -141,3 +141,240 @@ Windows used external basetemp `C:/Users/Jonathan/AppData/Local/Temp/ta-single-s
 `python scripts/linux_oracle.py -- <same files> -q -ra` used external `/tmp/b`.
 All 15 new regressions passed. Plugin rebuild/import, changed-Python Ruff,
 strict OpenSpec validation (`--type change`), and `git diff --check` passed.
+
+## Approval sheet and service connection slice (2026-10-04)
+
+Lane: `feat/approval-sheet-and-connect-card`, based on main after #4468.
+S2 replaces the side rail and interim composer region with a modal sheet and
+bubble Needs you inbox. Foreground bound asks display protected purpose and exact
+action; all five decision choices use #4449 owner sessions and revision-bound
+tokens. Background asks use the existing notify-owner path; answered history is
+read-only. Polling preserves active drafts; owner changes clear cached secrets.
+
+Task/site/always HTTP preapprovals reuse Rules and effect_intents. Authority is
+limited to the displayed operation, class, account and exact origin, with policy,
+consent and connection revisions checked again at dispatch. Task grants also bind
+task generation/deadline; completed or stopped tasks cannot reuse them. Deletion
+tombstones prevent grant resurrection. Network sends release the owner-control
+lock so owners can revoke or Stop while a provider is slow. Crashed unfinalized
+grants remain inert; recovery invalidates their planned attempt, exposes an
+unresolved request and allows protected dismissal without blind resend.
+
+Settings and agent service requests share the sheet, with registered OAuth,
+protected secret deposit and generic HTTP shapes. Changing shape clears staged
+secrets. Account labels make independent deposits for the same service. Agent
+connection answers now atomically commit a sanitized activity-event wake with
+request resolution; the browser avoids the former second-chat-turn relay.
+Settings connections do not invent agent work. No platform LLM or provider-specific
+integration code was introduced.
+
+Original tasks 1.1–3.2 remain unchecked because their complete acceptance is wider
+than S2: full migration/rollback recovery matrix; broader packet forms and proposal
+classification authority; per-origin/background task contracts, owner classification
+and budget-capped spend defaults; exhaustive crash/fencing mutations; background
+cross-device notification delivery; complete first-power/model entry consolidation;
+and server-held generic OAuth PKCE/callback completion with parent closed or native
+suspended. Existing OAuth custody was reused, not represented as server-held. Push
+uses the existing delivery behavior, not a new durable cross-device notification
+protocol. Production SHA assertion, public canary and real-user production pass
+are not performed by this commit-and-push-only lane. Tests use scripted external
+provider transports, not live provider accounts.
+
+### Migration and review disposition
+
+The Rules migration now preserves the old upsert key. Independent grants live in
+`approval_grants`, with distinct positive IDs reserved across both tables. Grant
+rows and the conservative legacy compatibility rows use `hand_off`; current
+behavior decisions ignore compatibility rows and match grants by record kind and
+protected predicate. Old readers refuse those rows, including revoked grants.
+Old owner upserts still add/tighten rules, and editing a compatibility row converts
+it to a behavior rule. Existing behavior rows are never replaced by grant issuance.
+Migration is transactional and closes/rolls back on interruption; old-format values,
+IDs and the ID high-water mark survive. Initial sheet-format grants and tombstones
+are copied before deduplicating compatibility rows. The migration is no longer
+rollback-hostile. The broader task 1.1 recovery matrix remains unfinished.
+
+One cross-family Claude round through the peer-agents skill returned ADAPT, with
+no floor findings. AGREE: release owner-control before network sends and handle
+busy prechecks; invalidate incomplete grant issuance in recovery; use named-column
+migration (Round 2 adds compatible rollback); refuse missing task context visibly;
+move direct capture notification after its own lock; exercise subsequent effector
+reuse, policy edits, task Stop/expiry/generation and unrelated-rule stability;
+and exclude preapprovals from behavior-rule hand-back checks. These changes are
+implemented. The later connection-answer wake extension was validated by tests
+and local review; it was not in that peer snapshot. No additional peer round is
+claimed.
+
+Cross-user/data-loss guard evidence includes the unchanged owner-session/storage
+and universe-isolation suites, existing replay/fencing cases, and injected grant
+issuance and connection-wake write failures. The latter proves failed wake writes
+roll back resolution and report failure, then retry commits one sanitized wake.
+No exhaustive new source-mutation matrix is claimed; task 3.1 remains open.
+
+### Verification for S2
+
+Final backend/isolation selection: Windows 476 passed, 4 POSIX-lock skips;
+Linux oracle Python 3.11.16: 480 passed, no skips. Files: connection-sheet
+continuations, inline approvals, approval-sheet scopes, pending requests, generic
+OAuth connections, turn interruption, inline-request storage, owner notifications,
+agent activities, universe-server isolation, scoped-identity reset and first-contact.
+The three affected heavy files are included (186 cases).
+
+Final sheet/contract selection: 179 passed on Windows and 179 on Linux, including
+all six new whole-app desktop/390px browser cases, the four existing pending-request
+browser cases, request-card DOM contracts and onboarding app contracts. Existing
+browser/test names remain; the relay contract now strictly requires two refreshes
+(answer removal and completed-turn foreground discovery), not a weakened bound.
+The DOM test harness now implements the browser APIs the sheet uses.
+
+The plugin mirror was regenerated and its import probe passed. Touched Python
+Ruff, strict change and as-built spec validation, concerns-index check and diff
+whitespace checks passed. No new concern file was created. New real-browser tests
+are included in the real-browser workflow's pull_request.paths.
+
+The complementary approval-browser, disclosure and mirror/parity checks passed
+36/36 on each platform. Final disjoint selections total **691 passed, 4 skipped
+on Windows; 695 passed, no skips on Linux 3.11**. Earlier affected rules/effector
+and first-run/connect browser selections also passed, and are not added again to
+these totals. Post-commit test hygiene reports **12 new test functions, 0 removed,
+0 tampering findings** (parameterization expands the case count). No PR or
+production deployment is created by this lane.
+
+
+### Round 2 follow-ups
+
+Review areas 1 and 5: AGREE with conservative rollback behavior, old-upsert
+compatibility, migration regression coverage, notification after continuation-bind
+failure, and the inbox separator. Bind failure returns the saved pending ask with
+`server_continuation=false` and `continuation_status=unavailable`; the owner still
+receives the initial notification. Duplicate asks do not send it twice. Inbox
+buttons use the escaped middle dot, covered at desktop and 390px widths.
+
+This remains commit-and-push only. No production deployment, SHA assertion or
+real-user production pass is claimed; the broader unchecked work above remains.
+
+
+The focused Round 2 cross-family migration review through `peer-agents` returned
+ADAPT with one correctness finding. AGREE: old edits/deletes must tombstone every
+grant for the legacy key, or deletion during rollback could revive consent after
+rollforward. Both triggers now revoke the exact-key grants; regression tests
+exercise old DELETE/upsert, multiple overlapping grants and actual grant matching.
+Other scoped items had no findings. No new unresolved concern was introduced.
+
+
+Round 2 final verification: **818 passed, 4 POSIX-lock skips on Windows/Python
+3.14; 822 passed, no skips on Linux oracle Python 3.11.16, uid 1001,
+bwrap 0.12.0**. Both runs include 14 rendered browser cases and all 186 cases
+in the three affected heavy files (first-contact, scoped-identity reset and
+universe-server isolation). The 14 added regression cases cover rollback reads
+and writes, overlapping grant IDs/revocation, old edits/deletes on rollforward,
+migration values/counter, four interruption points, actual process death, and
+saved-ask notification despite binding failure. Existing tests were retained.
+
+Final selection: `tests/test_rules_rollback.py`, `tests/test_agent_rules.py`, `tests/test_authenticated_external_call_effector.py`, `tests/test_approval_sheet_scopes.py`, `tests/test_connection_sheet_continuations.py`, `tests/test_pending_requests.py`, `tests/test_pending_requests_migration.py`, `tests/test_pending_requests_power.py`, `tests/test_inline_approvals.py`, `tests/test_inline_request_storage.py`, `tests/test_inline_owner_sessions.py`, `tests/test_generic_oauth_connections.py`, `tests/test_turn_interrupt.py`, `tests/test_owner_notifications.py`, `tests/test_agent_activities.py`, `tests/test_universe_server_isolation.py`, `tests/test_scoped_identity_reset.py`, `tests/test_first_contact.py`, `tests/test_approval_sheet_real_browser.py`, `tests/test_inline_approvals_real_browser.py`, `tests/test_app_pending_requests_browser.py`, `tests/test_onboarding_app.py`, `tests/test_request_card_layout_and_links.py`, `tests/test_mirror_parity_gate.py`, `tests/test_pre_commit_mirror_parity.py`.
+
+Windows command: `python -m pytest <selection> -q -ra --basetemp
+C:/Users/Jonathan/AppData/Local/Temp/ta-sheet-r2-final-windows` (JUnit alongside
+that directory). Linux: `python scripts/linux_oracle.py -- <selection> -q -ra`,
+using external `/tmp/b`. Plugin regeneration/import and mirror parity, touched
+Python Ruff, strict OpenSpec change validation, concerns metadata and whitespace
+checks pass. The modified browser file already appears in the workflow paths;
+no new real-browser file or concern was added. Review disposition is recorded
+above. Production acceptance and remaining broader tasks are unchanged.
+
+Post-commit hygiene passes against both the Round 2 starting SHA and the PR
+merge base: **8 new test functions this round / 20 across the PR, 0 removed,
+0 tampering findings**. Commit hooks also pass mirror parity, mojibake scanning,
+import-graph smoke, path-resolver lint, cross-provider drift and skill validation.
+
+
+### PR #4469 full-source CI repair
+
+Started from 72873ee582 after a fast-forward pull and exact HEAD/origin check.
+Read all six supplied logs; reproduced 15 failures / 108 passes in the six full
+failing modules on Windows. No test removed, renamed, skipped or weakened.
+
+- Phone: migrate obsolete strip/parent/disclosure selectors to inbox/history
+  dialogs, preserving geometry, controls, empty history and keyboard checks.
+  Keep the inbox control within the original 44px compact-height contract.
+- Late steer: the extracted send harness lacked refreshRail; its ReferenceError
+  entered the error path and replaced the receipt. Supply the UI read stub.
+- Setup/optional rows: extract real RequestSheets plus its dialog/removal DOM
+  dependencies. Restore folded model-access rows and removal of closed optional
+  cards. Assert setup dialog open state instead of the retired rail CSS class.
+- Notification links: wait for the request, open its sheet, focus the exact item,
+  and consume the link. New Chromium cases prove this at 390 and 1280px.
+- Inventory: classify approval_scopes and connection_continuations as owner
+  writers requiring lease fences before C2. Both already use owner-control;
+  neither is infrastructure or lease-fenced, and handover remains disabled.
+
+Focused Windows checks: 132 passed plus all 16 phone cases. The peer-agents
+phone handoff verified the remaining DOM and retained/increased assertion counts.
+Full affected CI shards, affected heavy modules and omitted prior-validation
+modules ran on Windows and Linux 3.11; final counts follow below.
+
+
+Repair review: peer-agents Claude returned APPROVE (floor/correctness only).
+AGREE: consume a stale notification item with its request, and do not focus an
+unrelated request while waiting for the linked row. Added a real-browser proof.
+DISAGREE_EVIDENCE with reopening setup automatically when an already-open access
+row becomes folded: this request remains accessible in the inbox; not stealing
+focus for an already-seen background request is the reviewed sheet behavior.
+
+Final focused UI: 100/100 Windows; full failure-related modules plus card/sheet
+browser coverage: 154/154 Linux 3.11.16, uid 1001, bwrap 0.12.0, no skips.
+Expanded heavy/prior-extra runs: Windows 946 passed, 80 failed, 10 skipped across
+two disjoint runs; Linux 977 passed, 59 failed, zero skips. All 59 Linux failures
+are already in .github/known-failing-tests.txt (deployment-contract tests).
+Windows has those same 59 plus 21 host-installer failures: Git Bash lacks flock.
+Those 21 pass in Linux. No quarantine/skip edits were made.
+
+
+Final repair validation (unique test cases, no duplicate counting):
+
+| Venue | Passed | Failed | Skipped |
+| --- | ---: | ---: | ---: |
+| Linux 3.11 oracle | 10235 | 59 | 70 |
+| Windows 3.14, after the Git PATH rerun | 10031 | 85 | 248 |
+
+The six modules named in the supplied failures pass 123/123 on BOTH platforms.
+The complete card/sheet regression selection passes 154/154 on both. The normal
+CI real_browser marker assertion passes all 107 selected rendered cases per
+platform, including all 25 phone/sheet cases and the three new deep-link cases.
+
+Linux's required six-shard aggregate: 9256 passed, 0 failed, 70 skipped; gate
+exit 0 and 0 new failures. The final targeted rerun adds the new stale-item case
+collected after shard 1 started. Affected heavy files, four prior-validation
+modules missed by today's selector, and the selected slow case are included in
+the complete totals. All 59 Linux failures are existing deployment-contract
+entries in the known-failing ledger.
+
+Windows's raw six shards ran every selected module (9076 passed, 12 failed,
+238 skipped). Its aggregate correctly remains red. Seven failures came from
+Git's mingw64/bin preceding Git/cmd on PATH: the unchanged workflow harness
+looked in mingw64/bin for bash. Running the FULL workflow module with Git/cmd
+first passed 13/13, accounting for the seven recovered cases in the table.
+The other five required-shard failures are three description-size assertions
+reproduced on untouched 72873ee582, one missing Windows symlink privilege
+(WinError 1314), and one POSIX-jail mount check given a drive-letter path. The
+latter two pass in Linux. Windows heavy runs add the same 59 known failures
+plus 21 host-installer failures because Git Bash has no flock; all 21 pass in
+Linux. No skip, quarantine, assertion limit or guard was changed.
+
+The description-size findings were handed off in the existing
+2026-09-25-converse-turn-round-trip-cost concern. The baseline full modules
+reproduce the 32985/30100 total and 13547/12000 write_graph bounds.
+
+After repeated mutable-source tar failures, peer-agents prepared the detached
+external wf-sheet-oracle-snapshot checkout at
+78bf5c1b906e18f29e6bc72873a47b87ceb58c31 for Linux shards 4-6. Its product, tests,
+workflows, scripts and mirror are identical to this repair's staged source.
+Preparation failures were not counted as tests. Original reports, six-shard
+manifests, complete deduplicated reports, baseline repros and browser assertions
+are retained in C:/Users/Jonathan/Projects/wf-sheet-ci. Temporary test roots and
+both validation checkouts are outside the repository.
+
+Ruff over every PR-touched Python file, mirror parity (598 canonical files),
+plugin import probe and diff whitespace checks pass. Staged-snapshot hygiene:
+22 added test functions, 0 removed, 0 tampering. Cross-family repair review:
+APPROVE. This remains commit-and-push only, with no deployment claim.

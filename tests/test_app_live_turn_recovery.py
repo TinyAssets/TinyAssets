@@ -27,6 +27,7 @@ import subprocess
 
 import pytest
 
+from tests.app_sheet_harness import sheet_source
 from tests.test_onboarding_app import _APP_SHIM, _js_function
 from tinyassets import onboarding
 
@@ -143,7 +144,7 @@ def _program(html: str, body: str) -> str:
         found = re.search(pat, html)
         if found:
             decls.append(found.group(0))
-    funcs = [_js_function(html, f) for f in _FUNCS]
+    funcs = [sheet_source(html)] + [_js_function(html, f) for f in _FUNCS]
     for name in _OPTIONAL_FUNCS:
         if re.search(r"function\s+" + name + r"\s*\(", html):
             funcs.append(_js_function(html, name))

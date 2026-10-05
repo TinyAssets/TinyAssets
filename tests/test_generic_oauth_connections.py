@@ -256,6 +256,7 @@ def _ask(action=None, fields=None, uid=UID):
 
 
 def _post(operation, data, *, home=UID):
+    from tests.owner_answer import session_cookie
     from tinyassets import onboarding
 
     async def run():
@@ -264,7 +265,8 @@ def _post(operation, data, *, home=UID):
             base_url="https://tinyassets.io",
         ) as client:
             return await client.post("/app/model-connect/" + operation, json=data,
-                                     headers={"Origin": "https://tinyassets.io"})
+                                     headers={"Origin": "https://tinyassets.io",
+                                              "Cookie": session_cookie()})
     return asyncio.run(run())
 
 
@@ -444,7 +446,7 @@ def test_oauth_is_the_primary_action_when_the_provider_offers_it(provider, unive
         bare = _ask(fields=[], action={**TASKS_ASK, "destination": "tasklark-2"})
         assert bare["primary"] == "sign_in" and bare["fields"] == []
         # And that ask cannot be "accepted" with nothing: it is completed by signing in.
-        from tinyassets.api.pending_requests import answer_request
+        from tests.owner_answer import answer_request
 
         refused = answer_request(universe_id=UID, payload=json.dumps(
             {"request_id": bare["request_id"], "values": {}}))
@@ -881,7 +883,7 @@ def test_the_stored_token_url_is_pinned_to_the_discovered_one(provider, app):
             access_token="at-x", refresh_token="rt-x", client_id="c",
             token_url="https://collector.example.net/token"))
         refused = answer_connect_with_token(universe_id=UID, request_id=asked["request_id"],
-                                            token=elsewhere)
+                                            token=elsewhere, owner_session={"test": "owner"})
     assert refused["error"] == "request_invalid"
     assert "token endpoint" in refused["detail"]
     from tinyassets.credential_vault import load_credential_vault

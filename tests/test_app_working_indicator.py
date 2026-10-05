@@ -107,6 +107,7 @@ _SHIM = r"""
 const InlineConnection={waiting:()=>false,hold:()=>{
   throw new Error('Unexpected connection request in the working-indicator harness');
 }};
+function refreshRail(){}
 const store={};
 const localStorage={ getItem:k=>(k in store?store[k]:null),
   setItem:(k,v)=>{store[k]=String(v);}, removeItem:k=>{delete store[k];} };

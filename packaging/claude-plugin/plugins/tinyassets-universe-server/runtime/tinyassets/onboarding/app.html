@@ -101,16 +101,6 @@
           min-width:0}
     .rail[hidden]{display:none}
     /* Pending asks stay above the composer, outside the scrolling history. */
-    #pending-requests{flex:0 1 auto;min-height:0;max-height:30%;overflow-y:auto;
-      padding:0 .7rem;background:var(--surface)}
-    #pending-requests:has(#rail-items:empty){display:none}
-    #pending-requests .rtab{margin:.3rem 0}
-    @container (max-width:600px){
-      #pending-requests .rtab-btn{display:flex;align-items:center;gap:.4rem;padding:.35rem .5rem}
-      #pending-requests .rtab-kind{flex:none;margin:0}
-      #pending-requests .rtab-title{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
-    }
-    @media (max-width:600px){#pending-requests{max-height:40%}}
     .rtab-item{border-bottom:1px solid var(--line);padding:.6rem 0;margin-bottom:.6rem}
     .rtab-item-heading{display:flex;align-items:flex-start;gap:.4rem;overflow-wrap:anywhere}
     .rtab-item-heading input{width:auto;flex:0 0 auto;margin:.2rem 0 0}
@@ -388,7 +378,6 @@
       /* Collapsed, the chip and any load error stay; everything else (items,
          "Add a key yourself") is one tap away. renderRail still decides when
          the rail shows at all. */
-      #request-rail:not(.rail--open) > :not(#rail-head):not(#rail-error){display:none}
       #rail-head{padding:8px 0;margin:0;white-space:nowrap;cursor:pointer;text-transform:none;letter-spacing:normal}
       #model-bar{flex-wrap:nowrap;gap:8px;padding:4px 8px;white-space:nowrap}
       #model-next{min-width:0;overflow:hidden;text-overflow:ellipsis;font-size:12px}
@@ -403,6 +392,24 @@
       #composer #btn-send,#composer #btn-stop{grid-column:4;grid-row:2;padding:8px 12px}
       #status-line{padding-bottom:2px;min-height:0}
     }
+    dialog.request-sheet{position:fixed;inset:auto 0 0;margin:0 auto;width:min(42rem,100%);max-width:100%;max-height:88dvh;box-sizing:border-box;overflow:auto;border:1px solid var(--line);border-radius:20px 20px 0 0;padding:1.1rem;background:var(--surface);color:var(--ink);}
+    dialog.request-sheet:not([open]){display:none!important}
+    dialog.request-sheet[open]{display:block!important;width:min(42rem,100%)!important;max-height:88dvh!important;padding:1.1rem!important}
+    dialog.request-sheet::backdrop{background:rgb(0 0 0 / .45)}
+    #request-rail[open]>:not([hidden]){display:block}
+    #request-rail [hidden]{display:none!important}
+    #request-sheet-close,#needs-you-close{position:absolute;right:1rem;top:1rem}
+    #rail-head,#needs-you-title{padding-right:6rem;white-space:normal;margin-bottom:1rem}
+    #request-rail .rtab{clear:both;width:100%;box-sizing:border-box}
+    #request-rail .rtab>h3{display:none}
+    .inline-approval h3,.inline-approval p{overflow-wrap:anywhere}
+    .request-sheet .inline-approval{padding-top:.5rem}
+    #needs-you-items{display:grid;gap:.6rem;clear:both}
+    #needs-you-open{height:44px;padding-block:.5rem}
+    #chat-cloud-bubble[hidden] ~ #bubble-needs-you{display:none}
+    #bubble-needs-you{position:absolute;right:1rem;bottom:5rem;z-index:12}
+    .inline-approval .rtab-actions{display:flex;flex-wrap:wrap;gap:.5rem}
+    .inline-approval button{min-height:44px}
   </style>
 </head>
 <body>
@@ -477,8 +484,10 @@
             <div class="waking-sub">Your command center is waking up. Say hello to begin.</div>
           </div>
         </div>
-        <aside id="request-rail" class="rail" hidden>
+        <dialog id="request-rail" class="request-sheet" aria-labelledby="rail-head">
+          <button id="request-sheet-close" class="btn" type="button">Close</button>
           <div id="rail-head" class="rail-head">Request history</div>
+          <div id="rail-items"></div>
           <div id="rail-error" class="rail-error" role="alert" hidden>
             <span id="rail-error-text"></span>
             <button id="btn-rail-retry" class="btn btn--link" type="button">Try again</button>
@@ -507,6 +516,8 @@
             <label class="field"><span>Name (a label you'll recognize)
                 <span class="muted">(letters, numbers and . _ : - &mdash; no spaces)</span></span>
               <input id="http-destination" type="text" placeholder="a short name you will recognise later" /></label>
+            <label class="field"><span>Account label (optional; use a different label for each account)</span>
+              <input id="http-account-label" type="text" placeholder="personal or work" /></label>
             <label class="field"><span>API host</span>
               <input id="http-host" type="text" placeholder="the API hostname, e.g. api.example.com" /></label>
             <label class="field"><span>Path it may call
@@ -517,6 +528,7 @@
             <label class="field"><span>How it authenticates
                 <span class="muted">(most APIs use a bearer token; OAuth 1.0a needs four values &mdash; the service you are connecting tells you which)</span></span>
               <select id="http-auth-scheme">
+                <option value="oauth">Provider sign-in (registered OAuth)</option>
                 <option value="bearer" selected>API key / bearer token (most APIs, webhooks)</option>
                 <option value="basic">Username &amp; password (basic auth)</option>
                 <option value="oauth1a">OAuth 1.0a — 4 keys</option>
@@ -625,7 +637,7 @@
               </div>
             </details>
           </div>
-        </aside>
+        </dialog>
       </div>
       <div id="attachments" class="attachments" hidden></div>
       <div id="model-bar" class="model-bar">
@@ -634,9 +646,7 @@
         <div id="model-menu" class="model-menu" role="menu" aria-labelledby="btn-models" hidden></div>
         <span id="model-next" class="muted">Next message: saved default</span>
       </div>
-      <section id="pending-requests" aria-label="Requests needing you">
-        <div id="rail-items"></div>
-      </section>
+      <button id="needs-you-open" class="btn" type="button">Needs you</button>
       <form id="composer" class="composer">
         <input id="file-input" type="file" multiple hidden
                accept=".txt,.md,.markdown,.json,.csv,.tsv,.yaml,.yml,.py,.js,.ts,.jsx,.tsx,.html,.htm,.css,.xml,.log,.sh,.rst,.ini,.toml,.env,.sql,text/*" />
@@ -674,10 +684,17 @@
         <span class="chat-cloud-bubble-icon" aria-hidden="true">&#128172;</span>
         <span id="chat-cloud-badge" class="chat-cloud-badge" hidden></span>
       </button>
+      <button id="bubble-needs-you" class="btn" type="button">Needs you</button>
       <button id="btn-bubble-browse" class="btn" type="button" hidden>Browse / Switch</button>
       </div>
     </section>
 
+    <dialog id="needs-you" class="request-sheet" aria-labelledby="needs-you-title">
+      <button id="needs-you-close" class="btn" type="button">Close</button>
+      <h2 id="needs-you-title">Needs you</h2><div id="needs-you-items"></div>
+      <button id="needs-you-history" class="btn" type="button">Answered history</button>
+      <button id="needs-you-connect" class="btn" type="button">Connect a service</button>
+    </dialog>
     <dialog id="ui-dialog" class="ui-dialog" aria-labelledby="ui-title">
       <h2 id="ui-title">Browse and switch command centers</h2>
       <p>Preview shared designs, open one of your screens, or talk to your agent to build or change your space. Browsing and previews never send a message.</p>
@@ -769,6 +786,7 @@
         <p>Disconnect removes this command center's access and its saved key in TinyAssets.
         Your history and designs stay. Your provider account is not deleted.
         Requests already sent may still finish.</p>
+        <button class="btn" type="button" id="settings-connect">Connect a service</button>
         <button id="btn-refresh-connections" class="btn btn--ghost">Refresh connections</button>
         <button id="btn-connect-free-ai" class="btn btn--ghost" type="button">Connect free AI</button>
         <div id="connection-list"></div>
@@ -1819,8 +1837,7 @@
         payload_json:JSON.stringify(payload)});
     },
     answerRequest(payload){
-      return this.callTool("write_graph",{target:"connection",operation:"answer_request",
-        payload_json:JSON.stringify(payload)});
+      return InlineApprovals.post("answer",payload);
     },
     connectCompute(payload){
       return this.callTool("write_graph",{target:"connection",operation:"connect_compute",
@@ -4742,6 +4759,7 @@
       delivered=true;setStatusLine("");
       if(typeof AppUI!=="undefined") AppUI.turnSettled();
       if(typeof refreshAgentSwitcher==="function") refreshAgentSwitcher();
+      refreshRail({foregroundAgent:opts.agentId});
       if(!opts.keepInflight) forgetInflight();
     }catch(err){
       if(!stillHere()) return;
@@ -6085,8 +6103,17 @@
     const host=$("rail-items");
     if(host){
       clearTypedValues(host);
+      // These shared settings controls survive account changes, without drafts.
+      for(const id of ["connect-panel","rail-add-panel"]){
+        const panel=$(id);
+        if(panel && host.contains(panel)){
+          panel.hidden=true;
+          $("request-rail").appendChild(panel);
+        }
+      }
       host.textContent="";
     }
+    if(typeof RequestSheets!=="undefined")RequestSheets.reset();
     railNodes = new Map();
     railCache = [];
     railOpen = null;
@@ -6490,6 +6517,13 @@
       }catch(error){
         if(epoch!==this.epoch) return;
         if(error&&error.authRequired){ this.busy=false; enterSignedOut(); return; }
+        this.status(error.message||"Your answer could not finish. Try again.");
+        if(error.signIn){
+          const link=document.createElement("a");link.href="/app/owner-sign-in";
+          link.target="_blank";link.rel="noopener";link.textContent="Sign in to approve";
+          $("hosted-model-status").append(" ",link);
+        }
+        return;
       }finally{if(epoch===this.epoch){this.busy=false;this.paint();}}
       if(epoch!==this.epoch) return;
       // Either way, re-read what powers the command center: an answer whose reply was
@@ -7187,40 +7221,21 @@
       root.style.setProperty("--app-h",(vv.height*(vv.scale||1))+"px");
     else root.style.removeProperty("--app-h");
   }
-  function paintRailChip(){
-    const rail=$("request-rail"), head=$("rail-head"), phone=window.matchMedia("(max-width:600px)").matches;
-    const history=$("request-history");
-    rail.dataset.phoneEmpty=String(!history||history.children.length===0);
-    if(head.textContent!=="Request history") head.textContent="Request history";
-    if(phone){
-      head.setAttribute("role","button");head.tabIndex=0;
-      head.setAttribute("aria-expanded",String(rail.classList.contains("rail--open")));
-    }else{
-      head.removeAttribute("role");head.removeAttribute("tabindex");head.removeAttribute("aria-expanded");
-    }
-  }
-  function toggleRailChip(event){
-    if(!window.matchMedia("(max-width:600px)").matches) return;
-    if(event.type==="keydown" && event.key!=="Enter" && event.key!==" ") return;
-    event.preventDefault(); $("request-rail").classList.toggle("rail--open"); paintRailChip();
-  }
+  function paintRailChip(){}
   function wirePhoneConversation(){
     fitToVisualViewport();
-    if(window.visualViewport){
-      window.visualViewport.addEventListener("resize",fitToVisualViewport);
-      window.visualViewport.addEventListener("scroll",fitToVisualViewport);
-    }
-    $("rail-head").addEventListener("click",toggleRailChip);
-    $("rail-head").addEventListener("keydown",toggleRailChip);
-    new MutationObserver(paintRailChip).observe($("rail-items"),{childList:true,subtree:true});
-    new MutationObserver(()=>{
-      if(window.matchMedia("(max-width:600px)").matches) paintRailChip();
-    }).observe($("rail-head"),{childList:true});
-    window.matchMedia("(max-width:600px)").addEventListener("change",()=>{paintRailChip();fitToVisualViewport();});
-    paintRailChip();
+    document.body.appendChild($('request-rail'));
+    window.visualViewport?.addEventListener('resize',fitToVisualViewport);
+    $('needs-you-open').onclick=$('bubble-needs-you').onclick=()=>RequestSheets.inbox();
+    $('needs-you-close').onclick=()=>$('needs-you').close();
+    $('request-sheet-close').onclick=()=>{$('request-rail').close();railOpen=null;};
+    $('request-rail').addEventListener('cancel',()=>{railOpen=null;});
+    $('needs-you-history').onclick=()=>RequestSheets.history();
+    $('needs-you-connect').onclick=()=>{$('needs-you').close();toggleAddKey();};
   }
   function wire(){
     if(typeof wirePhoneConversation === "function") wirePhoneConversation();
+    $("settings-connect").onclick=()=>toggleAddKey();
     // Default-hidden in HTML prevents a pre-script flash inside the native shell.
     // Reveal and initialise Voice only on the web surface; NATIVE covers both iOS
     // and Android Capacitor shells.
@@ -7453,6 +7468,12 @@
         const what=document.createElement("span");
         what.textContent=(doc.classes&&doc.classes[rule.action_class]||rule.action_class)+
           (rule.connection?" \u2014 "+rule.connection:"")+(rule.operation?" "+rule.operation:"");
+        if(rule.kind==='preapproval'){
+          what.textContent=rule.note+' / '+rule.action_class+' / '+
+            (rule.grant?.expires_at?'Until '+new Date(rule.grant.expires_at*1000).toLocaleString():'Until revoked');
+          const revoke=document.createElement('button');revoke.type='button';revoke.className='btn';revoke.textContent='Revoke';
+          revoke.onclick=()=>sendConfirmed({delete:rule.id});row.append(what,revoke);list.appendChild(row);return;
+        }
         const pick=document.createElement("select");
         Object.keys(doc.behaviours||{}).forEach(key=>{
           const opt=document.createElement("option");
@@ -7813,12 +7834,15 @@
     // choice in the select. A service nobody has enumerated now gets exactly
     // the same path as a famous one.
     $("http-auth-scheme").addEventListener("change",()=>{
+      // A credential belongs to one draft auth shape; never carry it into another.
+      for(const id of ['http-secret','http-oauth1a-api-key','http-oauth1a-api-secret',
+                       'http-oauth1a-access-token','http-oauth1a-access-token-secret'])$(id).value='';
       const scheme=$("http-auth-scheme").value;
       const h=secretHints[scheme]||secretHints.bearer;
       $("http-secret-label").textContent=h[0]; $("http-secret").placeholder=h[1];
       // OAuth 1.0a: four labeled boxes instead of a "one per line" textarea — a
       // person with X's four values should never have to guess what goes where.
-      $("http-oauth1a").hidden=(scheme!=="oauth1a"); $("http-secret-field").hidden=(scheme==="oauth1a");
+      $("http-oauth1a").hidden=(scheme!=="oauth1a"); $("http-secret-field").hidden=(scheme==="oauth1a"||scheme==="oauth");
     });
     // ---- Paste anything ----------------------------------------------------
     // Split a paste into candidate credentials WITHOUT sending any of them. Only
@@ -7933,7 +7957,8 @@
     // fields so the user can correct it in place.
     function openManual(){ const d=$("http-manual"); if(d) d.open=true; }
     $("btn-connect-http").addEventListener("click",async()=>{
-      const dest=$("http-destination").value.trim();
+      const service=$("http-destination").value.trim(), account=$("http-account-label").value.trim();
+      const dest=account?service+':'+account:service;
       // A pasted "https://api.github.com" is unambiguous, but the SSRF allow-list
       // wants a bare hostname and refuses the scheme. Normalize instead of sending
       // the user through a refusal for something we can read perfectly well.
@@ -7958,7 +7983,7 @@
       // return preceded the clear). The value lives only in this local from here on.
       secretEl.value="";
       if(scheme==="oauth1a"&&oauth1aMissing){ out.textContent="All four OAuth 1.0a values are needed: API Key, API Key Secret, Access Token, Access Token Secret. Please enter them again."; return; }
-      if(!dest||!host||!secret){ out.textContent="Enter a name, host, and the credential"+(secret?" — please paste the credential again.":"."); return; }
+      if(!dest||!host||(!secret&&scheme!=="oauth")){ out.textContent="Enter a name, host, and the credential"+(secret?" — please paste the credential again.":"."); return; }
       // The path is REQUIRED, whatever the old label said. An endpoint with no
       // path_template is refused by the allow-list validator ("path_template must
       // be an absolute path"), and a blank one is NOT read as "any path" — there is
@@ -7975,8 +8000,20 @@
       const methods=(methodsRaw||"POST").split(",").map(m=>m.trim().toUpperCase()).filter(Boolean);
       const endpoint={host,methods,path_template:path};
       btn.disabled=true; out.textContent="Depositing securely...";
+      const epoch=MCP._loginEpoch;
       try{
+        if(scheme==='oauth'){
+          const asked=await MCP.requestFromUser({kind:'API',title:'Connect '+dest,
+            body:'Connect this labelled account for '+methods.join(', ')+' '+host+path,
+            fields:[{name:'secret',label:'API key (alternative)',type:'secret'}],
+            action:{type:'connect',destination:dest,auth_scheme:'bearer',host,
+              path_template:path,methods,uses:{call:{}},oauth:{}}});
+          if(epoch!==MCP._loginEpoch)return;
+          if(!asked||asked.error||!asked.request_id)throw new Error(asked?.detail||asked?.error||'Connection request was not created.');
+          railOpen=asked.request_id;await refreshRail();return;
+        }
         const r=await MCP.connectHTTP(dest,secret,[endpoint],scheme);
+        if(epoch!==MCP._loginEpoch)return;
         // Show the server's `detail` — it is the half that says WHAT to fix
         // ("destination must be 2-127 chars of [a-z0-9._:-]..."). Rendering the
         // bare `error` code left a real deposit dead with no way to self-correct:
@@ -8093,7 +8130,7 @@
         await refreshRail();
         // The owner's own line, as for any answered request: the command center
         // hears that its ask was completed.
-        sendTurn("Signed in to answer \""+frameTitle({title:cb.title})+"\"",undefined,
+        if(!result.server_continuation)sendTurn("Signed in to answer \""+frameTitle({title:cb.title})+"\"",undefined,
           {relay:true,keepComposer:true,inputMethod:"app_action"});
       }catch(err){
         appendMessage("system","The sign-in did not finish: "+((err&&err.message)||"unknown error")+". The request is still waiting; open it and sign in again.");
@@ -8818,7 +8855,13 @@
       const result=await response.json();
       if(epoch!==MCP._loginEpoch) throw new Error('Account changed.');
       if(!response.ok){
+        // Answer consumers render pending/retry guidance and relay a rejected
+        // grant to the agent. Keep those structured failures; missing owner
+        // proof must still offer protected sign-in rather than become an answer.
+        if(operation==='answer' && response.status!==401 && response.status!==403 &&
+            result.error && result.error!=='interactive_approval_required') return result;
         const error=new Error(result.detail||result.error||'The request could not finish.');
+        error.authRequired=response.status===401;
         error.signIn=result.error==='interactive_approval_required'; throw error;
       }
       return result;
@@ -8832,11 +8875,17 @@
       const details=document.createElement('p'), note=document.createElement('p');
       note.setAttribute('role','status');
       const controls=document.createElement('div'); controls.className='rtab-actions';
+      const scope=document.createElement('select');scope.setAttribute('aria-label','Approval scope');
+      const labels={once:'Allow once',task:'Allow for this task',site:'Allow for this site',always:'Always allow'};
+      for(const [value,label] of Object.entries(labels)){
+        const option=document.createElement('option');option.value=value;option.textContent=label;scope.appendChild(option);
+      }
+      const predicate=document.createElement('p');
       const buttons={};
       let preview=null, busy=false, originalDraft='', dirty=false;
       const signIn=document.createElement('a'); signIn.href='/app/owner-sign-in';
       signIn.target='_blank'; signIn.rel='noopener'; signIn.textContent='Sign in to approve'; signIn.hidden=true;
-      box.append(title,destination,draft,details,controls,signIn,note);
+      box.append(title,destination,draft,details,scope,predicate,controls,signIn,note);
       function show(value){
         preview=value;
         title.textContent=value.title;
@@ -8845,7 +8894,11 @@
           originalDraft=typeof value.draft==='string'?value.draft:JSON.stringify(value.draft??null,null,2);
           draft.value=originalDraft;
         }
-        details.textContent='Requested by '+value.agent+' · This action only · Expires '+new Date(value.expires_at*1000).toLocaleString();
+        details.textContent='Requested by '+value.agent+' / Expires '+new Date(value.expires_at*1000).toLocaleString();
+        const grant=value.predicate;
+        predicate.textContent=grant ? (value.purpose||'Permission')+' / '+grant.operation+' '+grant.origin+' / '+
+          (grant.scope==='once'?'This action only':grant.scope==='task'?'This task until '+new Date(grant.expires_at*1000).toLocaleString():'Until revoked in Rules') : 'This action only';
+        scope.value=value.scope||'once';buttons.approve.textContent=labels[scope.value];
         note.textContent=value.approval_unavailable||(value.result?JSON.stringify(value.result):'');
         for(const [key,button] of Object.entries(buttons)){
           const canAct=['pending','deferred'].includes(value.status) ||
@@ -8857,26 +8910,33 @@
       }
       async function perform(operation, extra={}){
         if(busy) return;
-        busy=true; Object.values(buttons).forEach(b=>b.disabled=true);
+        busy=true; scope.disabled=true; Object.values(buttons).forEach(b=>b.disabled=true);
         try{
-          const payload={request_id:req.request_id,...extra};
+          const payload={request_id:req.request_id,scope:scope.value,...extra};
           if(operation==='decide') Object.assign(payload,{
             expected_revision:preview.revision,action_sha256:preview.action_sha256,
-            approval_token:preview.approval_token,scope:'once'
+            approval_token:preview.approval_token,scope:preview.scope||'once'
           });
           const value=await InlineApprovals.post(operation,payload);
           if(!box.isConnected) return;
           if(operation==='edit') dirty=false;
-          busy=false; signIn.hidden=true; show(value);
-          if(operation==='decide' && typeof refreshRail==='function') refreshRail();
+          busy=false; scope.disabled=false; signIn.hidden=true; show(value);
+          if(operation==='decide' && typeof refreshRail==='function'){
+            if(extra.decision==='defer'){
+              railOpen=null;RequestSheets.selected=null;$('request-rail').close();
+            }
+            refreshRail();
+          }
         }catch(error){
-          busy=false; note.textContent=error.message; signIn.hidden=!error.signIn;
+          busy=false; scope.disabled=false; note.textContent=error.message; signIn.hidden=!error.signIn;
           buttons.preview.disabled=false;
+          preview=null;
           // Never re-enable an old approval token after an uncertain response.
         }
       }
       function button(key,label,click){
         const el=document.createElement('button'); el.type='button';el.textContent=label;
+        el.className=key==='approve'?'btn btn--primary':'btn';
         el.disabled=true;el.addEventListener('click',click);controls.appendChild(el);buttons[key]=el;
       }
       button('preview','Review / Try again',()=>perform('preview'));
@@ -8887,7 +8947,8 @@
         }
         perform('edit',{draft:value});
       });
-      button('approve','Approve once',()=>perform('decide',{decision:'approve'}));
+      scope.addEventListener('change',()=>perform('preview'));
+      button('approve','Allow once',()=>perform('decide',{decision:'approve'}));
       button('deny','Deny',()=>perform('decide',{decision:'deny'}));
       button('defer','Not now',()=>perform('decide',{decision:'defer'}));
       button('alternative','Find an alternative',()=>perform('decide',{decision:'alternative'}));
@@ -8901,149 +8962,124 @@
     },
     history(rows, pending){
       let host=$('request-history');
-      if(!host){host=document.createElement('div');host.id='request-history';$('request-rail').appendChild(host);}
+      if(!host){host=document.createElement('div');host.id='request-history';host.hidden=true;$('request-rail').appendChild(host);}
       host.textContent='';
       const open=new Map((pending||[]).filter(row=>row.status==="pending").map(row=>[row.request_id,row]));
       const history=[...Array.from(open.values()).map(row=>({...row,status:'Open'})),
         ...(rows||[]).filter(row=>!open.has(row.request_id))];
       history.forEach(row=>{const item=document.createElement('p');
         item.textContent=(row.title||'Request')+' · '+row.status;host.appendChild(item);});
-      const head=$('rail-head'); if(head) head.textContent='Request history';
     }
   };
   // End protected inline approval cards.
 
-  function renderRail(items){
-    if(typeof railLink !== "undefined" && railLink && (items||[]).some(r=>r.request_id===railLink)){
-      railOpen=railLink; railLink=null;
-    }
-    if(typeof pendingReply !== "undefined" && pendingReply && (items||[]).some(r=>r.request_id===pendingReply.request_id)) railOpen=pendingReply.request_id;
-    railCache = items || [];
-    const rail = $("request-rail"), host = $("rail-items"), head = $("rail-head");
-    if(!rail || !host) return;
-    // Pending controls stay above the composer. The rail retains read-only history.
-    const thread=$('thread');
-    // Capture before pending controls change the thread's available height.
-    // Readers at latest follow the resize; readers in history keep their place.
-    const pinThread=thread && Math.abs(thread.scrollHeight-thread.clientHeight-thread.scrollTop)<2;
-    if(thread && !$('request-entry-points')){
-      const entries=document.createElement('div');entries.id='request-entry-points';
-      for(const id of ['btn-rail-add','rail-add-panel']){const node=$(id);if(node)entries.appendChild(node);}
-      thread.appendChild(entries);
-    }
-    forgetFinishedSetup(railCache);
-    // The heading is a claim about the user's queue. A connected command center's
-    // "Connect another LLM" row is offered, not outstanding, and a heading that
-    // keeps saying "Waiting on you" over it is simply false (live 2026-09-25).
-    if(head){
-      head.textContent = "Request history";
-    }
-    const folded = foldedModelAccess(railCache);
-    HostedModelConnect.adopt(folded);
-    // Keep the rail present even with nothing waiting: with the nav button gone
-    // it is the only route to adding a key yourself, and a surface that vanishes
-    // is a surface a user cannot find.
-    rail.hidden = false;
-
-    // WHAT THE RAIL SHOULD SHOW, decided before anything is touched.
-    //
-    // The rail polls every 15 seconds. Rebuilding the cards on each poll
-    // DELETED whatever the user had typed into one: live 2026-09-30, a Deny
-    // note typed into "Reply or note" reached the thread as a bare
-    // `Denied: "<title>"`, because the poll had already emptied the box the
-    // click was about to read. Keeping each node keeps its values, with no copy
-    // of a typed secret anywhere outside the DOM -- but keeping the node is not
-    // enough on its own, because DETACHING one blurs it, and re-appending does
-    // not give focus back. Text that survives under a cursor that does not is
-    // still a poll the user can feel. So: work out the answer first, and when
-    // the answer is "exactly what is already on screen", touch nothing at all.
-    const wanted = [];
-    railCache.forEach(req=>{
-      if(req.agent && typeof addressedAgentId==='function' && req.agent!==addressedAgentId()) return;
-      if(folded && req.request_id === folded.request_id) return;
-      // A sticky ask is a PRECONDITION, not a question: it opens itself and has
-      // no dismiss, because a command center with no model cannot be asked to accept
-      // having no model.
-      const open = req.action && req.action.type==='approve_action' ? true : req.sticky ? (railOpen !== "closed:" + req.request_id)
-                              : (railOpen === req.request_id);
-      // An optional entry is NOT a rail item. "Waiting on you" is for what
-      // blocks the user's work; a standing offer to add a second model source
-      // belongs in the model picker, which reaches it through
-      // openConnectRequest (founder 2026-09-30, on a free account whose only
-      // rail row was one it could neither act on nor remove). Still rendered
-      // when something opened it deliberately, so that route has a card.
-      if(isOptionalRequest(req) && !open && !req.suggestion) return;
-      const shape={...req};
-      if(req.items) shape.items=req.items.map(i=>({item_id:i.item_id,title:i.title,body:i.body,fields:i.fields}));
-      wanted.push({req, open, setup: isSetupRequest(req),
-                   signature: JSON.stringify([shape, open, isOptionalRequest(req)])});
-      // Resolution from another device updates only the checklist status. Never
-      // replace the card (or another item's draft) during a poll.
-      if(req.items && railNodes.has(req.request_id)) updateRailItems(req);
-    });
-    // The setup card is never reused: its inputs live in #connect-panel, which
-    // is parked on the rail and re-hosted on purpose, so its presence always
-    // takes the rebuilding path below.
-    const settled = wanted.length === host.children.length && wanted.every((w, at)=>{
-      const kept = railNodes.get(w.req.request_id);
-      return !w.setup && kept && kept.signature === w.signature
-        && host.children[at] === kept.node;
-    });
-    if(settled) return;
-    const arriving = wanted.filter(w=>!railNodes.has(w.req.request_id)).at(-1);
-
-    // Park the setup panel before the tabs are rebuilt, so the node (and what
-    // the user typed into it) survives every refresh.
-    const panel = $("connect-panel");
-    if(panel){ panel.hidden = true; if(panel.parentNode !== rail) rail.appendChild(panel); }
-    host.textContent = "";
-    let setupOpen = false;
-    const keep = new Map();
-    wanted.forEach(({req, open, setup, signature})=>{
-      const previous = railNodes.get(req.request_id);
-      if(previous && !setup && previous.signature === signature){
-        keep.set(req.request_id, previous);
-        host.appendChild(previous.node);
-        return;
+  // Request IDs remain the single queue. Presentation never answers a request.
+  const RequestSheets = {
+    seen:new Set(), selected:null,
+    open(id){
+      this.selected=id; railOpen=id;
+      const req=railCache.find(row=>row.request_id===id);
+      if(!req)return;
+      const host=$('rail-items'), sheet=$('request-rail');
+      let entry=railNodes.get(id);
+      if(!entry)return;
+      if(!entry.body){
+        entry.node.appendChild(req.action&&req.action.type==='approve_action'
+          ?InlineApprovals.build(req):isSetupRequest(req)?connectBody(req):railBody(req));
+        entry.body=true;
       }
-      const tab = document.createElement("div");
-      tab.className = isOptionalRequest(req) ? "rtab rtab--optional" : "rtab";
-      const btn = document.createElement("button");
-      btn.type = "button"; btn.className = "rtab-btn";
-      const kind = document.createElement("span");
-      kind.className = "rtab-kind"; kind.textContent = req.kind;
-      const title = document.createElement("span");
-      title.className = "rtab-title"; title.textContent = req.action&&req.action.type==="approve_action" ? "Action approval" : req.suggestion || req.title;
-      btn.appendChild(kind); btn.appendChild(title);
-      btn.addEventListener("click",()=>{
-        railOpen = (railOpen === req.request_id) ? null : req.request_id;
-        renderRail(railCache);
+      for(const node of host.children)node.hidden=node!==entry.node;
+      $('rail-head').textContent=req.action&&req.action.type==='approve_action'?'Action approval':req.title;
+      $('request-history')?.setAttribute('hidden','');
+      $('rail-add-panel').hidden=true; $('btn-rail-add').hidden=true;
+      if(!sheet.open)sheet.showModal();
+      if(typeof railDeepItem!=='undefined' && railDeepItem &&
+         (typeof railLink==='undefined'||!railLink)){
+        const item=$('item_'+id+'::'+railDeepItem);
+        railDeepItem=null;
+        if(item){item.scrollIntoView({block:'nearest'});item.focus();}
+      }
+    },
+    inbox(){
+      const sheet=$('needs-you'); const host=$('needs-you-items');host.textContent='';
+      const folded=foldedModelAccess(railCache);
+      railCache.filter(row=>row!==folded&&!isOptionalRequest(row)).forEach(row=>{
+        const button=document.createElement('button');button.type='button';button.className='btn';
+        button.textContent=(row.action?.type==='approve_action'?'Action approval':row.title)+' \u00b7 '+(row.agent||'Your agent');
+        button.onclick=()=>{sheet.close();this.open(row.request_id);};host.appendChild(button);
       });
-      tab.appendChild(btn);
-      if(req.action && req.action.type==='approve_action') tab.appendChild(InlineApprovals.build(req));
-      else if(open && setup){ tab.appendChild(connectBody(req)); setupOpen = !!req.sticky; }
-      else if(open) tab.appendChild(railBody(req));
-      host.appendChild(tab);
-      if(req.items) updateRailItems(req);
-      if(!setup) keep.set(req.request_id, {signature, node: tab});
-    });
-    // Anything not carried over is gone from the rail; drop it so a resolved
-    // ask cannot come back holding a stale node.
-    railNodes = keep;
-    // A new ask must be visible even when an expanded card fills this area.
-    if(arriving){
-      const at=wanted.indexOf(arriving), node=host.children[at];
-      const button=node&&node.children[0];
-      if(button&&button.scrollIntoView) button.scrollIntoView({block:'nearest'});
+      if(!host.children.length)host.textContent='Nothing needs you right now.';
+      if(!sheet.open)sheet.showModal();
+    },
+    history(){
+      railOpen=null;this.selected=null;
+      $('needs-you').close();const sheet=$('request-rail');
+      for(const node of $('rail-items').children)node.hidden=true;
+      $('rail-add-panel').hidden=true;$('btn-rail-add').hidden=true;
+      $('rail-head').textContent='Request history';$('request-history').hidden=false;
+      if(!sheet.open)sheet.showModal();
+    },
+    reset(){
+      this.seen.clear();this.selected=null;
+      for(const id of ['request-rail','needs-you']){const node=$(id);if(node?.open)node.close();}
+      if($('needs-you-items'))$('needs-you-items').textContent='';
+    },
+    signature(row){
+      if(!row)return '';
+      const value={...row};
+      if(row.items)value.items=row.items.map(({item_id,title,body,fields})=>({item_id,title,body,fields}));
+      return JSON.stringify(value);
+    },
+    update(items, options={}){
+      const retained=new Set(Array.from(railNodes.values()).map(entry=>entry.node));
+      for(const node of Array.from($('rail-items').children)){
+        if(!retained.has(node)){clearTypedValues(node);node.remove();}
+      }
+      const previous=railCache;railCache=items||[];
+      forgetFinishedSetup(railCache);
+      const folded=foldedModelAccess(railCache);HostedModelConnect.adopt(folded);
+      if(typeof railLink!=='undefined' && railLink && railCache.some(row=>row.request_id===railLink)){
+        railOpen=railLink;railLink=null;
+      }
+      const visible=railCache.filter(row=>row!==folded && (!isOptionalRequest(row)||railOpen===row.request_id));
+      const current=new Map(visible.map(row=>[row.request_id,row]));
+      for(const [id,entry] of railNodes){
+        const row=current.get(id),old=previous.find(r=>r.request_id===id);
+        if(!row||this.signature(row)!==this.signature(old)){
+          if(isSetupRequest(old)){
+            const panel=$('connect-panel');panel.hidden=true;$('request-rail').appendChild(panel);
+          }
+          clearTypedValues(entry.node);entry.node.remove();railNodes.delete(id);
+          if(this.selected===id){$('request-rail').close();this.selected=null;}
+        }else if(row.items)updateRailItems(row);
+      }
+      for(const row of visible){
+        if(isOptionalRequest(row)&&railOpen!==row.request_id)continue;
+        if(!railNodes.has(row.request_id)){
+          const node=document.createElement('section');node.className='rtab'+(isOptionalRequest(row)?' rtab--optional':'');node.hidden=true;
+          const heading=document.createElement('h3');heading.textContent=row.action?.type==='approve_action'?'Action approval':row.title;
+          node.appendChild(heading);$('rail-items').appendChild(node);railNodes.set(row.request_id,{node,body:false});
+        }
+      }
+      const pending=visible.filter(row=>!isOptionalRequest(row));
+      for(const id of ['needs-you-open','bubble-needs-you']){
+        const button=$(id);if(button)button.textContent='Needs you'+(pending.length?' ('+pending.length+')':'');
+      }
+      const arriving=pending.filter(row=>!this.seen.has(row.request_id));
+      if(!railOpen&&!$('request-rail').open)$('rail-head').textContent='Request history';
+      pending.forEach(row=>this.seen.add(row.request_id));
+      // A foreground bound ask identifies its server-owned initiating turn.
+      // Reconnect/away requests stay in the inbox instead of stealing focus.
+      const foreground=arriving.find(row=>(row.action?.envelope?.subject?.turn || row.action?.type==='connect') &&
+        ((typeof readInflight==='function' && readInflight()) || options.foregroundAgent===row.agent) &&
+        (!row.agent||row.agent===addressedAgentId()) && document.visibilityState==='visible');
+      if(railOpen&&current.has(railOpen))this.open(railOpen);
+      else if(foreground&&!$('request-rail').open)this.open(foreground.request_id);
+      else if(arriving.some(row=>row.sticky)&&!$('request-rail').open)this.open(arriving.find(row=>row.sticky).request_id);
+      if($('needs-you').open)this.inbox();
     }
-    rail.classList.toggle("rail--setup", setupOpen);
-    if(typeof railDeepItem !== "undefined" && railDeepItem){
-      const target=$("item_" + railOpen + "::" + railDeepItem);
-      if(target){ target.scrollIntoView({block:"nearest"}); target.focus(); railDeepItem=null; }
-    }
-    if(typeof pendingReply !== "undefined" && pendingReply) applyPendingReply();
-    if(pinThread) thread.scrollTop=thread.scrollHeight;
-  }
+  };
+  function renderRail(items, options){RequestSheets.update(items, options);}
 
   function updateRailItems(req){
     (req.items||[]).forEach(item=>{
@@ -9398,7 +9434,12 @@
   // explicit fields.
   function toggleAddKey(){
     const panel=$("rail-add-panel"), btn=$("btn-rail-add");
-    panel.hidden=!panel.hidden;
+    const sheet=$('request-rail');railOpen=null;
+    for(const node of $('rail-items').children)node.hidden=true;
+    $('request-history')?.setAttribute('hidden','');
+    $('rail-head').textContent='Connect a service';
+    if(!sheet.open)sheet.showModal();
+    panel.hidden=false;
     btn.setAttribute("aria-expanded",String(!panel.hidden));
     if(panel.hidden) return;
     const powered=engineConnected===true;
@@ -9657,7 +9698,7 @@
           note.textContent=r.receipt||(mode==="accept"?"Copied. No message was sent.":"Closed. No message was sent.");
           if(mode==="accept"&&r.installed&&typeof AppUI!=="undefined"&&AppUI.fence(installEpoch,installHome))
             await AppUI.installedCopy(r);
-        }else{
+        }else if(!req.server_continuation){
           sendTurn(answerLine(req, mode, payload), undefined,
             {relay:true, keepComposer:true, inputMethod:"app_action"});
         }
@@ -9688,7 +9729,7 @@
       const button=entry.node.querySelector(".rtab-btn");if(button)button.focus();
     }
   }
-  async function refreshRail(){
+  async function refreshRail(options){
     if(!token()) return;
     const loginEpoch=MCP._loginEpoch;
     let r=null, failure=null;
@@ -9700,7 +9741,7 @@
     if(loginEpoch!==MCP._loginEpoch) return;
     if(!failure && r && Array.isArray(r.pending)){
       railFailed(null);
-      renderRail(r.pending);
+      renderRail(r.pending, options);
       InlineApprovals.history(r.recently_answered, r.pending);
       return;
     }

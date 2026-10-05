@@ -142,6 +142,11 @@ def system_server(home):
                                    key=args.get("key", ""), value=args.get("value"))
                         result = {"saved": True}
                         operation = "save:ui_prefs"
+                    elif self.path == "/app/approvals/answer":
+                        from tests.owner_answer import answer_request as owner_answer
+
+                        result = owner_answer(universe_id=BOB_UNIVERSE, payload=args)
+                        operation = "answer_request"
                     elif self.path == "/fixture/mcp":
                         assert args["name"] == "write_graph"
                         args = args["args"]
@@ -311,6 +316,8 @@ def test_loopback_transport_reaches_real_owner_handlers_and_runs_private_copy(ho
     done = _rpc(origin, "/fixture/mcp", {"name": "write_graph", "args": {
         "target": "connection", "operation": "answer_request",
         "payload_json": json.dumps({"request_id": ask["request_id"], "values": {}})}})
+    assert done["error"] == "interactive_approval_required"
+    done = _rpc(origin, "/app/approvals/answer", {"request_id": ask["request_id"], "values": {}})
     assert done.get("installed"), done
     _assert_copy_and_run(home, definition_id, source, alice_ui, alice_automations, before)
     row = _rpc(origin, "/app/api/read", {"target": "app_ui"})["app_ui"]

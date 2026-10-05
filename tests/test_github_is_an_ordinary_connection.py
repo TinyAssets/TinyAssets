@@ -113,7 +113,8 @@ def data(tmp_path, monkeypatch):
 
 def _connect(base, user, uid, pat):
     """The owner answers the universe's ordinary ``connect`` request."""
-    from tinyassets.api.pending_requests import answer_request, request_from_user
+    from tests.owner_answer import answer_request
+    from tinyassets.api.pending_requests import request_from_user
     from tinyassets.effectors import authenticated_external_call as aec
     from tinyassets.storage.effector_consents import grant_consent
 
@@ -316,7 +317,8 @@ def test_another_users_connection_is_never_used(data, broker):
 
 def _connect_forge(base, *, git_host=None):
     """An owner connects a forge whose git is NOT on its API host."""
-    from tinyassets.api.pending_requests import answer_request, request_from_user
+    from tests.owner_answer import answer_request
+    from tinyassets.api.pending_requests import request_from_user
 
     _login(ALICE)
     action = {
@@ -401,7 +403,7 @@ def _raise(action, *, kind="API", fields=_PAT_FIELD):
 
 
 def _answer_ok(asked, values):
-    from tinyassets.api.pending_requests import answer_request
+    from tests.owner_answer import answer_request
 
     return answer_request(universe_id=ALICE_UID, payload=json.dumps(
         {"request_id": asked["request_id"], "values": values}))

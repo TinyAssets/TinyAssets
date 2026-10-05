@@ -507,6 +507,13 @@ def _projected(conn: sqlite3.Connection, rows: list[Any]) -> list[dict[str, Any]
     for row in rows:
         has_items = bool(row[13] and row[13] not in ("[]", "null"))
         projected = _project(row, _item_answers(conn, str(row[0])) if has_items else None)
+        if projected['action'].get('type') in {'connect', 'connect_http'}:
+            columns = {r[1] for r in conn.execute('PRAGMA table_info(pending_requests)')}
+            if 'context_json' in columns:
+                context = conn.execute(
+                    'SELECT context_json FROM pending_requests WHERE request_id=?',
+                    (projected['request_id'],)).fetchone()
+                projected['server_continuation'] = bool(context and json.loads(context[0]))
         if projected['action'].get('type') == 'approve_action':
             from tinyassets.bound_requests import RequestRefused, card
             original_factory = conn.row_factory
@@ -676,6 +683,9 @@ def resolve_request(
             )
             if cur.rowcount <= 0:
                 return False
+            from tinyassets.connection_continuations import answered
+
+            answered(conn, request_id, decision or status)
             row = conn.execute(
                 "SELECT kind, title, dedupe_key FROM pending_requests "
                 "WHERE request_id = ?",
