@@ -1,5 +1,9 @@
 # Current delivery: D57 preplanted hardlink reader exposure (2026-10-05)
 
+Evidence pushed as **694570f028**. Hygiene against 89b1cffa94: tests added 0,
+removed 0, tampering findings 0. Pre-commit checks passed. The corrected probe's
+native exit code was explicitly read back as 3 with the completed failure summary.
+
 Started at **89b1cffa94**; requested ff-only pull was already current. The
 founder's preview deferral is preserved: ui-preview stays unadmitted and its
 D9 profile is unchanged. While tracing remaining provider classes and their
