@@ -1,3 +1,48 @@
+# Current delivery: D42 read-only kernel liveness
+
+D41 pushed as 4f8636e8cd; hygiene added 5 tests, removed 0, tampering 0.
+D42 makes POSIX owner_state use read-only pinned/no-follow proof descriptors
+through universe_files. Only actual lock contention means ALIVE; missing,
+hostile, replaced or errored proofs are UNKNOWN. Windows adapter unchanged.
+Cross-family peer-agents: AGREE, APPROVE; no floor/correctness findings.
+Final filesystem opening moved into the existing safe I/O helper after review;
+root ancestry now also uses workspace_fs's component-by-component no-follow walk.
+No permissions widened, startup inactive, no complete build task checked off.
+
+Release-critical files: **0; none**. Runtime process_liveness.py and
+universe_files.py plus mirrors; role_image_oracle.py, new
+ test_broker_readonly_liveness.py, design/inventory/delivery. No affected heavy file.
+D43 source-binding decision is recorded; its implementation is next/in progress.
+
+```text
+python scripts/linux_oracle.py -- tests/test_broker_readonly_liveness.py tests/test_request_usage_store.py tests/test_automation_lease_dead_holder.py tests/test_universe_seats.py tests/test_universe_file_reads_are_bounded.py -q -rs
+128 passed in 14.62s; zero skips
+python scripts/linux_oracle.py --production-image tinyassets-uid-liveness:d42 --build --production-stream
+exit 0; sha256:4ee66e63dbee172886e61fe4f9848516ddba1d239e05c0979d0ce40f561ec62a
+D42 broker read-only daemon/parent kernel liveness, independent parent close, daemon death, engine denial: PASS (runtime accounting IPC pending)
+```
+All prior migration dry-run/apply/repeat/reverse, 6+8+3 crash boundaries,
+launcher and D41 consumers, D22/D24 real HTTPS streams PASS. Synthetic
+network ta-uid-stream-381619cdce38-net and CA cleaned. No full migration,
+two-pass deletion or actual old-image proof is claimed. Production uses the
+same seven entry capabilities and compose security options.
+
+Targeted Ruff and plugin build/import pass. One attempted test command named
+nonexistent test_universe_files.py; corrected to test_universe_file_reads_are_bounded.
+An instrumented os.open before filesystem-module import invalidated its POSIX
+feature detection; pre-importing the module corrected the fixture, with all 128
+passing afterward. No test/guard weakened. Path-I/O guard: 3 pass, 1 fails on
+pre-existing broker/supervisor.py::_protect_daemon's /proc/self/status read;
+D42 introduces no remaining ratchet finding. This pre-existing failure remains
+an activation prerequisite, not a passed check.
+
+Remaining: accounting runtime IPC and lock-creation/migration modes, source
+binding (D43 in progress), daily evidence and refresh; actual engine classes;
+full migration/two-pass deletion; actual old-image rollback; startup/healthcheck
+only after every prerequisite passes.
+
+---
+
 # Current delivery: D41 injected connection authority
 
 D41 finishes the interrupted injected cloud/effect slice. Canonical immutable

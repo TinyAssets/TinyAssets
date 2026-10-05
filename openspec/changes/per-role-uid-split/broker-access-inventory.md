@@ -326,3 +326,8 @@ D41: injected cloud authority/continuation and cap/confirmation boundaries accep
 the closed BrokerConnectionAuthority. Broker-selected local ledgers refuse.
 Actual cloud resolver and above-cap hold pass through launcher-owned broker
 before/after restart. Accounting, refresh and actual worker transport remain.
+
+D42: POSIX owner_state now probes locks read-only through guarded no-follow
+filesystem access. Real broker uid reads but cannot write fixture daemon/parent
+proofs; parent close and daemon death are independently observed. Runtime lock
+modes/migration and accounting IPC remain pending; this does not route UsageStore.
