@@ -190,6 +190,31 @@ hide older turns without saying so.
 - **THEN** the page reports `has_more: true` and a `next_before` cursor
 - **AND** following the cursor until `has_more` is false returns every turn exactly once
 
+### Requirement: Agent chats open at the latest message
+Every agent chat in the shared web, desktop and mobile SPA SHALL show the latest
+message on opening, reopening, reload, return to the foreground, or switching
+agent or command center. Following the latest SHALL survive delayed history,
+recovery and completed-turn drawing, and later content or viewport resizing.
+Only an explicit reader scroll into the past or request for earlier messages
+SHALL suspend following, until the reader reaches the bottom or next opens or
+returns to the chat.
+
+#### Scenario: History arrives while the chat is collapsed
+- **WHEN** saved history renders while the chat cloud is a bubble
+- **AND** the owner opens the cloud
+- **THEN** the latest message is visible, including after late content grows
+
+#### Scenario: Reading older messages
+- **WHEN** the reader scrolls up and a new message arrives
+- **THEN** the reader's position is preserved
+- **AND** opening the chat again or returning to the app shows the latest message
+
+#### Scenario: Loading an earlier page
+- **WHEN** the reader requests "Show earlier messages"
+- **THEN** prepending the page preserves the visible message's position
+- **AND** a return to the app while that request is pending takes precedence,
+  so the late older page does not pull the reader away from the latest message
+
 ### Requirement: The chat with an agent floats over the command center
 The app SHALL present the chat with an agent (thread, request rail, model bar,
 composer and status lines) as a floating "chat cloud" above the command-center
