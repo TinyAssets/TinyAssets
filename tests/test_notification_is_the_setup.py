@@ -42,7 +42,7 @@ finish = _bootstrap.finish
 
 
 def _answer(request_id):
-    from tinyassets.api.pending_requests import answer_request
+    from tests.owner_answer import answer_request
 
     return answer_request(universe_id="u-owner", payload=json.dumps(
         {"request_id": request_id, "values": {}}))

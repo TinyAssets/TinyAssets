@@ -132,7 +132,7 @@ def _ask(uid, **payload):
 
 
 def _answer(uid, **document):
-    from tinyassets.api.pending_requests import answer_request
+    from tests.owner_answer import answer_request
 
     return answer_request(universe_id=uid, payload=json.dumps(document))
 

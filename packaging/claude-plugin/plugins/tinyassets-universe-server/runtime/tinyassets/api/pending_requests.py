@@ -71,6 +71,17 @@ from tinyassets.patch_intake import ACTION_TYPE as PATCH_INTAKE_ACTION
 
 logger = logging.getLogger(__name__)
 
+# Authority-bearing answers require the protected HTTP owner's proof, including
+# refusal/recovery decisions. Never derive this proof from an answer payload.
+CONSENT_ACTIONS = frozenset({
+    "publish", "install", "connect", "connect_http", "extend_http", "rotate_http",
+    "remove_http", "grant_workspace_consent", "bind_model_access", PATCH_INTAKE_ACTION,
+})
+CONSENT_REQUIRED_DETAIL = (
+    "Open the approval sheet in the app to answer this request in the protected owner session. "
+    "Bearer, chatbot, MCP and CLI answers are not consent."
+)
+
 _MAX_KIND_CHARS = 24
 _MAX_TITLE_CHARS = 120
 _MAX_BODY_CHARS = 600
@@ -2764,11 +2775,13 @@ def _answer_request(*, universe_id: str = "", payload: Any = None,
     if row["action"].get("type") == "approve_action":
         return {"error": "interactive_approval_required",
                 "detail": "Open the protected inline owner card to decide this action."}
-    if row["action"].get("type") == PATCH_INTAKE_ACTION and owner_session is None:
+    # Consult the immutable pin too: editing a publish/install row into a plain
+    # question must not let a bearer reach its pinned executable action.
+    pinned = _consent_pin(_uid, request_id)
+    action_type = (pinned["record"]["action"] if pinned else row["action"]).get("type")
+    if action_type in CONSENT_ACTIONS and owner_session is None:
         return {"error": "interactive_approval_required",
-                "detail": "Only the owner can answer patch-intake consent in the "
-                          "protected owner session. Bearer, chatbot, MCP and CLI "
-                          "answers are not consent.",
+                "detail": CONSENT_REQUIRED_DETAIL,
                 "request_pending": row["status"] == "pending"}
     if row["status"] != "pending":
         return {"error": "already_resolved", "status": row["status"]}
@@ -3348,6 +3361,7 @@ def _deposit_answer(
 @_coordinated
 def answer_connect_with_token(
     *, universe_id: str = "", request_id: str = "", token: str = "",
+    owner_session: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """The owner answered a sign-in-capable ``connect`` by signing in.
 
@@ -3363,6 +3377,9 @@ def answer_connect_with_token(
     row = get_request(udir, request_id) if request_id else None
     if row is None:
         return {"error": "not_found", "resource": "pending_request"}
+    if owner_session is None:
+        return {"error": "interactive_approval_required", "detail": CONSENT_REQUIRED_DETAIL,
+                "request_pending": row["status"] == "pending"}
     if row["status"] != "pending":
         return {"error": "already_resolved", "status": row["status"]}
     action = row["action"]

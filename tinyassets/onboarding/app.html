@@ -1837,8 +1837,7 @@
         payload_json:JSON.stringify(payload)});
     },
     answerRequest(payload){
-      return this.callTool("write_graph",{target:"connection",operation:"answer_request",
-        payload_json:JSON.stringify(payload)});
+      return InlineApprovals.post("answer",payload);
     },
     connectCompute(payload){
       return this.callTool("write_graph",{target:"connection",operation:"connect_compute",
@@ -9765,9 +9764,7 @@
     buttons.forEach(b=>{ b.disabled = true; });
     note.textContent = mode === "clear" ? "Clearing..." : mode === "deny" ? "Denying..." : "Sending...";
     try{
-      const r = req.action && req.action.type === "grant_patch_intake"
-        ? await InlineApprovals.post("answer", payload)
-        : await MCP.answerRequest(payload);
+      const r = await MCP.answerRequest(payload);
       if(installAsk&&typeof AppUI!=="undefined"&&!AppUI.fence(installEpoch,installHome))return;
       if(r && r.error){
         const actionAsk = req.action && req.action.type && req.action.type !== "answer";

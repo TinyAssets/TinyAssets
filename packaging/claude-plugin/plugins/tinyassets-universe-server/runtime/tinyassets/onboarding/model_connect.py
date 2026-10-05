@@ -46,6 +46,16 @@ async def handle_model_connect(request):
     if not allowed:
         return JSONResponse({"error": "same_origin_json_required"}, 403, headers=_HEADERS)
     operation = request.path_params.get("operation")
+    owner_session = None
+    if operation == "oauth_exchange":
+        from tinyassets.api.pending_requests import CONSENT_REQUIRED_DETAIL
+        from tinyassets.onboarding.owner_sessions import require
+
+        try:
+            owner_session = require(request, owner=current_identity().user_id)
+        except PermissionError:
+            return JSONResponse({"error": "interactive_approval_required",
+                                 "detail": CONSENT_REQUIRED_DETAIL}, 403, headers=_HEADERS)
     fields = {"inline_begin": {"preset_id"}, "inline_poll": {"flow"},
               "inline_cancel": {"flow"},
               "begin": {"preset_id", "code_challenge"},
@@ -159,7 +169,7 @@ async def handle_model_connect(request):
             done = sign_in.complete(owner=identity.user_id, universe_id=home,
                                     handle=data["flow"], code=data["code"],
                                     verifier=data["code_verifier"],
-                                    iss=data.get("iss", ""))
+                                    iss=data.get("iss", ""), owner_session=owner_session)
             # A source card's sign-in on a command center that already runs on
             # something: the new source joins the agent only on the owner's
             # explicit confirmation, exactly like a pasted-key card.

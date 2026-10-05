@@ -52,7 +52,7 @@ def deposit(key="synthetic-private-key", **kwargs):
 
 
 def test_manual_owner_reaches_existing_approval_then_connects(rig, monkeypatch):
-    from tinyassets.api.pending_requests import answer_request
+    from tests.owner_answer import answer_request
     from tinyassets.credential_vault import load_credential_vault
     from tinyassets.onboarding.model_setup import model_setup_state
     from tinyassets.provider_assignment import load_provider_assignment

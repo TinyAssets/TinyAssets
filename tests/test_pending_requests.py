@@ -114,7 +114,7 @@ def _ask(uid, **over):
 
 
 def _answer(uid, **doc):
-    from tinyassets.api.pending_requests import answer_request
+    from tests.owner_answer import answer_request
 
     return answer_request(universe_id=uid, payload=json.dumps(doc))
 
@@ -390,6 +390,9 @@ def test_dispatch_through_the_pinned_handles(base):
                               payload_json=json.dumps(
                                   {"request_id": rid,
                                    "values": {"secret": "ghp_" + "z" * 36}}))
+        assert json.loads(done)["error"] == "interactive_approval_required"
+        done = json.dumps(_answer("u-1", request_id=rid,
+                                  values={"secret": "ghp_" + "z" * 36}))
         assert json.loads(done)["status"] == "answered"
     finally:
         importlib.reload(us)

@@ -109,6 +109,22 @@ Blocked/closed/failed sign-in keeps the card pending with retry/alternative/skip
 
 ## Migration and risks
 
+### Consent answer boundary follow-up
+
+The `fix/consent-asks-owner-session` slice extends #4477's protected owner-session
+answer mechanism to all ten consent action types through one `CONSENT_ACTIONS`
+set. The check precedes item answers, Clear/Deny, retries and effect dispatch,
+and consults immutable publish/install pins before trusting a mutable row type.
+All app answer controls use the protected HTTP answer door. OAuth connection
+completion additionally requires that door's same-origin, matching-owner cookie
+proof before consuming the flow or depositing tokens. Bearer payloads cannot
+supply proof. Unmute only permits another ask; it never authorizes its answer.
+
+This closes bearer self-consent; it does not claim universal bound preview tokens
+or wider scopes for legacy consent actions. Existing generic HTTP once/task/site/
+always grants remain on the protected bound-decision path. Tasks 1.2–1.4 retain
+their unchecked broader contracts, including classification and payment scopes.
+
 The owner-control coordinator acquires its owner/home lock, persists a migration-in-progress marker and drains already admitted request mutations before taking the source snapshot. During this pause, new `ask`, answers/edits, approval/retry/grant mutations and new bound dispatch/resumption are refused with an explicit retryable migration-unavailable result; they are neither queued nor acknowledged successful and create no partial request/decision/wake. Ordinary reads use the last authoritative store. Already-sent effects and OAuth deposits retain their existing durable receipts for post-cutover reconciliation; do not claim they were cancelled or lose their outcomes. If old writers cannot be stopped, keep the owner paused and do not cut over.
 
 Copy all pending-request tables to the protected activity store idempotently, preserving legacy requests/items/answers/suppressions/unmutes verbatim. Verify row IDs/counts/content against the quiescent source; commit the verified copy and authoritative cutover marker together in the destination transaction before enabling protected writers. All APIs consult that marker and then use only the protected copy; the old file is retained as migration backup, never a live projection/authority. Before cutover, interrupted/failed verification keeps the pause active and resumes from the unchanged source. After cutover, restart uses only the protected destination, reconciles unfinished decisions/grants and retained receipts/wakes under the owner-control lock, then lifts the pause. It never recopies the stale backup over newer protected state or accepts legacy writers. Failures remain visibly retryable while paused, with no automatic fallback to the legacy store.

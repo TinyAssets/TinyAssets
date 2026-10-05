@@ -155,7 +155,7 @@ def _ask(actor: str, universe: str, action: dict) -> dict:
 
 
 def _answer(actor: str, universe: str, request_id: str, values: dict | None = None) -> dict:
-    from tinyassets.api.pending_requests import answer_request
+    from tests.owner_answer import answer_request
 
     with _as(actor):
         return answer_request(universe_id=universe, payload=json.dumps(
@@ -317,7 +317,7 @@ def test_a_rewritten_action_executes_the_pinned_one(home: Path):
 
 
 def test_the_same_ask_raised_again_after_a_dismissal_is_confirmable(home: Path):
-    from tinyassets.api.pending_requests import answer_request
+    from tests.owner_answer import answer_request
 
     first = _ask(OWNER, UNIVERSE, _publish_action())
     with _as(OWNER):

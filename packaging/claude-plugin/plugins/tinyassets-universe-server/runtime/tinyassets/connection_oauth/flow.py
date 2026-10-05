@@ -157,8 +157,12 @@ def begin(*, owner: str, universe_id: str, request_id: str, challenge: str,
 
 
 def complete(*, owner: str, universe_id: str, handle: str, code: str,
-             verifier: str, iss: str = "") -> dict[str, Any]:
+             verifier: str, iss: str = "", owner_session: dict | None = None) -> dict[str, Any]:
     """Redeem the code once and deposit the tokens as the owner's answer."""
+    if owner_session is None:
+        from tinyassets.api.pending_requests import CONSENT_REQUIRED_DETAIL
+
+        raise FlowError("interactive_approval_required", 403, CONSENT_REQUIRED_DETAIL)
     if not isinstance(handle, str) or not pkce.HANDLE_RE.fullmatch(handle) or not owner:
         raise FlowError("unknown_sign_in", 404)
     if (not isinstance(code, str) or not 1 <= len(code) <= 2048
@@ -204,6 +208,7 @@ def complete(*, owner: str, universe_id: str, handle: str, code: str,
 
     result = answer_connect_with_token(
         universe_id=universe_id, request_id=flow["request_id"], token=encode(bundle),
+        owner_session=owner_session,
     )
     if result.get("error"):
         raise FlowError(str(result["error"]), 409, str(result.get("detail") or ""))
