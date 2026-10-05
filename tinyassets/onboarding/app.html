@@ -405,6 +405,7 @@
     .inline-approval h3,.inline-approval p{overflow-wrap:anywhere}
     .request-sheet .inline-approval{padding-top:.5rem}
     #needs-you-items{display:grid;gap:.6rem;clear:both}
+    #needs-you-open{height:44px;padding-block:.5rem}
     #chat-cloud-bubble[hidden] ~ #bubble-needs-you{display:none}
     #bubble-needs-you{position:absolute;right:1rem;bottom:5rem;z-index:12}
     .inline-approval .rtab-actions{display:flex;flex-wrap:wrap;gap:.5rem}
@@ -8980,10 +8981,17 @@
       $('request-history')?.setAttribute('hidden','');
       $('rail-add-panel').hidden=true; $('btn-rail-add').hidden=true;
       if(!sheet.open)sheet.showModal();
+      if(typeof railDeepItem!=='undefined' && railDeepItem &&
+         (typeof railLink==='undefined'||!railLink)){
+        const item=$('item_'+id+'::'+railDeepItem);
+        railDeepItem=null;
+        if(item){item.scrollIntoView({block:'nearest'});item.focus();}
+      }
     },
     inbox(){
       const sheet=$('needs-you'); const host=$('needs-you-items');host.textContent='';
-      railCache.filter(row=>!isOptionalRequest(row)).forEach(row=>{
+      const folded=foldedModelAccess(railCache);
+      railCache.filter(row=>row!==folded&&!isOptionalRequest(row)).forEach(row=>{
         const button=document.createElement('button');button.type='button';button.className='btn';
         button.textContent=(row.action?.type==='approve_action'?'Action approval':row.title)+' \u00b7 '+(row.agent||'Your agent');
         button.onclick=()=>{sheet.close();this.open(row.request_id);};host.appendChild(button);
@@ -9016,8 +9024,13 @@
         if(!retained.has(node)){clearTypedValues(node);node.remove();}
       }
       const previous=railCache;railCache=items||[];
-      forgetFinishedSetup(railCache);HostedModelConnect.adopt(foldedModelAccess(railCache));
-      const current=new Map(railCache.map(row=>[row.request_id,row]));
+      forgetFinishedSetup(railCache);
+      const folded=foldedModelAccess(railCache);HostedModelConnect.adopt(folded);
+      if(typeof railLink!=='undefined' && railLink && railCache.some(row=>row.request_id===railLink)){
+        railOpen=railLink;railLink=null;
+      }
+      const visible=railCache.filter(row=>row!==folded && (!isOptionalRequest(row)||railOpen===row.request_id));
+      const current=new Map(visible.map(row=>[row.request_id,row]));
       for(const [id,entry] of railNodes){
         const row=current.get(id),old=previous.find(r=>r.request_id===id);
         if(!row||this.signature(row)!==this.signature(old)){
@@ -9028,19 +9041,20 @@
           if(this.selected===id){$('request-rail').close();this.selected=null;}
         }else if(row.items)updateRailItems(row);
       }
-      for(const row of railCache){
+      for(const row of visible){
         if(isOptionalRequest(row)&&railOpen!==row.request_id)continue;
         if(!railNodes.has(row.request_id)){
-          const node=document.createElement('section');node.className='rtab';node.hidden=true;
+          const node=document.createElement('section');node.className='rtab'+(isOptionalRequest(row)?' rtab--optional':'');node.hidden=true;
           const heading=document.createElement('h3');heading.textContent=row.action?.type==='approve_action'?'Action approval':row.title;
           node.appendChild(heading);$('rail-items').appendChild(node);railNodes.set(row.request_id,{node,body:false});
         }
       }
-      const pending=railCache.filter(row=>!isOptionalRequest(row));
+      const pending=visible.filter(row=>!isOptionalRequest(row));
       for(const id of ['needs-you-open','bubble-needs-you']){
         const button=$(id);if(button)button.textContent='Needs you'+(pending.length?' ('+pending.length+')':'');
       }
       const arriving=pending.filter(row=>!this.seen.has(row.request_id));
+      if(!railOpen&&!$('request-rail').open)$('rail-head').textContent='Request history';
       pending.forEach(row=>this.seen.add(row.request_id));
       // A foreground bound ask identifies its server-owned initiating turn.
       // Reconnect/away requests stay in the inbox instead of stealing focus.

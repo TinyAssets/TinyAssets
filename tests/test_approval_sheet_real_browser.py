@@ -12,6 +12,44 @@ pytestmark = pytest.mark.real_browser
 
 
 @pytest.mark.parametrize("width", [390, 1280])
+def test_notification_link_waits_for_its_request_then_focuses_its_item(app_url, browser, width):
+    page = browser.new_page(viewport={"width": width, "height": 844})
+    _enter_chat(page, app_url)
+    page.evaluate("""() => {
+      railLink='notification-request';railDeepItem='second';
+      renderRail([]);
+    }""")
+    assert page.evaluate("railLink") == "notification-request"
+    assert page.locator("#request-rail").is_hidden()
+    page.evaluate("""() => renderRail([{request_id:'notification-request',title:'Today',
+      items:[{item_id:'first',title:'First'},{item_id:'second',title:'Second'}]}])""")
+    assert page.locator("#request-rail").evaluate('el=>el.matches(":modal")')
+    assert page.evaluate("railOpen") == "notification-request"
+    assert page.evaluate("document.activeElement.id") == "item_notification-request::second"
+    assert page.evaluate("railLink===null && railDeepItem===null")
+    page.locator("#request-sheet-close").click()
+    page.evaluate("renderRail(railCache)")
+    assert page.locator("#request-rail").is_hidden()
+    page.close()
+
+
+def test_notification_item_does_not_focus_a_different_request(app_url, browser):
+    page = browser.new_page(viewport={"width": 390, "height": 844})
+    _enter_chat(page, app_url)
+    page.evaluate("""() => {
+      railLink='linked';railDeepItem='shared-id';
+      renderRail([{request_id:'other',sticky:true,title:'Other',
+        items:[{item_id:'shared-id',title:'Unrelated'}]}]);
+    }""")
+    assert page.evaluate("railDeepItem") == "shared-id"
+    assert page.evaluate("document.activeElement.id") != "item_other::shared-id"
+    page.evaluate("renderRail([{request_id:'linked',title:'Linked',items:[]}])")
+    assert page.evaluate("railOpen") == "linked"
+    assert page.evaluate("railLink===null && railDeepItem===null")
+    page.close()
+
+
+@pytest.mark.parametrize("width", [390, 1280])
 def test_foreground_sheet_scopes_inbox_history_and_account_fence(app_url, browser, width, tmp_path):
     page = browser.new_page(viewport={"width": width, "height": 844})
     _enter_chat(page, app_url)
