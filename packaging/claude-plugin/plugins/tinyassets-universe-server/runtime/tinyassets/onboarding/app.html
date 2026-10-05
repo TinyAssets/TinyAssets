@@ -2140,7 +2140,8 @@
     // it, so the thread read as though the agent had ignored the approval
     // (founder, 2026-09-26).
     const waiting=queued?null:Array.from(thread.children).find(n=>
-      isQueuedBubble(n)||(Number.isFinite(el.messageTime)&&Number.isFinite(n.messageTime)&&
+      String(n.className||"").split(" ").includes("msg--queued")||
+      (Number.isFinite(el.messageTime)&&Number.isFinite(n.messageTime)&&
         n.messageTime>el.messageTime));
     if(waiting&&thread.insertBefore) thread.insertBefore(el,waiting);
     else thread.appendChild(el);
