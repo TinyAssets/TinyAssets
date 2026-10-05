@@ -1,3 +1,8 @@
+**founder decision 2026-10-05: fold + build with probes.** D9 folds all seven
+round-3 findings; no fourth design review, normal cross-family build review,
+no deployment. Build is blocked on the demonstrated ACL-mask ambiguity in
+`delivery.md`; documentation is not implementation acceptance.
+
 ## Why
 
 The credential broker (S6, `broker-streaming-contract`, #4299) authenticates its callers by the
@@ -58,7 +63,8 @@ Measured on prod (2026-10-02, read-only):
   vault to the engine children. Every mode comes from one declaration shared by the migration and
   the runtime sites that re-mode the same paths, so a later provider launch cannot restore
   single-uid permissions. A startup migration applies this idempotently under the exclusive layout
-  lock, refusing symlinks and hardlinks rather than following them.
+  lock, skipping workspace symlinks and re-moding their containing trees, with
+  link refusal in privileged/vault/broker sets and D9/F4's work-tree alias proof.
 - `start_broker` replaces its refusal with the launcher-mediated start when it observes distinct
   uids. It still refuses when it does not.
 
@@ -68,9 +74,9 @@ Measured on prod (2026-10-02, read-only):
   relocated entrypoint), `deploy/docker-entrypoint.sh` (install path only — contents unchanged),
   `deploy/compose.yml` (root entry, `cap_add`, `HOME`), and the deploy validator's capability
   assertions.
-- **Rollback is free, not staged.** Because no path an older image reads changes owner, an older
-  image that runs everything as 1001 still reads and writes every store. There is no reverse
-  migration and no temporary permission widening.
+- **Rollback and deletion must be proven after engine writes.** Access/default ACLs
+  for uid 1001 and child umask 007 are required, but explicit 0700 creation/chmod
+  masks those ACLs. D9/F5 records the unresolved mechanism; do not claim free rollback.
 - **Code:** `tinyassets/role_launcher` ships as a root-owned file, not an importable module;
   `tinyassets/broker/supervisor.py` (refusal → launcher-mediated start; `owner.json`, `stop()` and
   `read_owner` deleted); `tinyassets/broker/process.py` (the generation is minted by the broker, so

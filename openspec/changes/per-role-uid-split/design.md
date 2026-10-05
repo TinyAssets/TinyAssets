@@ -1,3 +1,14 @@
+## Founder amendment status
+
+**founder decision 2026-10-05: fold + build with probes.** D9 folds all seven
+round-3 required changes and supersedes conflicting historical decisions below.
+No fourth design review; the eventual build gets a normal cross-family code
+review. Nothing deploys under this instruction.
+
+**Build stopped on a demonstrated design ambiguity:** default ACLs do not
+guarantee rollback/deletion after engine-created 0700 paths or chmod. D9/F5 and
+`delivery.md` record the evidence and decision needed. No build task is proven.
+
 ## Context
 
 `broker-streaming-contract` design §Roles: "the owner process and boxhostd run as DISTINCT uids …
@@ -103,7 +114,7 @@ different authority, and each capability here is one some step provably cannot d
 | `SETUID`, `SETGID` | launcher | `setresuid`/`setresgid`/`setgroups` per role |
 | `SETPCAP` | launcher | `PR_CAPBSET_DROP` — the retirement itself |
 | `KILL` | launcher | signalling the daemon (1001) and broker (1002) at shutdown. euid 0 does not match either uid, so signal permission is `EPERM` without it |
-| `SYS_ADMIN` | — | inherited from `ta-op`'s existing assertion; necessity unproven |
+| `SYS_ADMIN` | forbidden | remove from compose and ta-op MASK together (D9/F6) |
 
 The **launcher drops `CHOWN`, `FOWNER` and `DAC_OVERRIDE` from all five of its own sets and reads
 that back before it binds its socket.** The long-lived privileged process therefore never holds the
@@ -114,9 +125,8 @@ migration, while the container holds exactly one process.
 healthcheck enters `ta-op` at uid 0 and that file asserts *set equality* (`ta_op.c:206-208`).
 So `MASK` changes in the same commit as `cap_add`, held by the existing
 `tests/test_ta_op_modes.py` parity. **Never diverge from it silently** — a mismatch turns the
-healthcheck red, which is an unhealthy daemon, which is a deploy rollback. `SYS_ADMIN` is the one
-member whose necessity is not yet proven; narrowing it means changing both in one commit
-(task 2.7), not dropping it from one side.
+healthcheck red, which is an unhealthy daemon, which is a deploy rollback. `SYS_ADMIN`
+is forbidden: remove it from both in one commit (task 2.7).
 
 Three privileged artifacts, each root-owned, each outside `/app` and `/data`:
 
@@ -265,17 +275,17 @@ The `multiprocessing` spawn children do not go through the launcher as they stan
 passes a pipe handle and the resource-tracker descriptor through its own protocol, which an
 `SCM_RIGHTS`-stdio `execve` does not reproduce. D7 decides each of them by name.
 
-### D4. Volume ownership, and the one rule that makes rollback free
+### D4. Volume ownership and rollback requirements
 
 **Invariant: the migration never changes the OWNER of a path an older image reads.** It adds a
 group, sets setgid, and tightens other-bits. Only `/data/.broker/**` — which is new in #4299 and
 which no older image opens, because an older `start_broker` refuses outright
 (`supervisor.py:177-183`) — changes owner to 1002.
 
-That invariant is what answers rollback: an older image running everything as 1001 still owns
-every vault file and every store, so it reads and writes them unchanged. **D4's previous
-"temporary 1001 read ACL on the vault directory" is deleted** — there is no temporary widening,
-and no reverse migration.
+This preserves access to pre-existing stores, but does not prove access to new
+engine-owned files. D9/F5 adds access/default ACLs and umask 007; its unresolved
+ACL-mask case blocks the rollback claim. Do not claim reverse migration is unnecessary
+until the old-image and deletion probes pass. No ACL widening applies to the vault.
 
 Exact inventory, from the code rather than from the shape of the tree:
 
@@ -288,13 +298,14 @@ Exact inventory, from the code rather than from the shape of the tree:
 | `/data/<cc>/.credentials/<service>/**` | 1001:**1102** | dirs 2750, files 0640 | `credential_vault.py:1100,1205,2235,2365`; `providers/base.py:603`; `credential_vault.py:1111` (`.credentials.json`) |
 | `/data/<cc>/.runtime/` | 1001:1100 | 2750 | `credential_vault.py:1783` — created `0o700` today |
 | `/data/<cc>/.runtime/provider-launch-credentials/` and each snapshot under it | 1001:1100 | dirs 2750, files 0440 | `provider_jail.py:199`; `credential_vault.py:1784-1808,1846,2069` — the 1003 child's own snapshot |
-| workspace roots under `/data/<cc>/` | 1001:1100 | 2770 setgid | `workspace_pool.universe_paths` |
+| workspace trees under `/data/<cc>/`, including `.venv` and `node_modules` | existing uid retained, gid 1100 | dirs 2770; files 0660 plus existing executable bits; uid-1001 ACLs (D9/F5) | `workspace_pool.universe_paths`; skip symlinks without following |
 | `/data/.universe-sidecars/` | 1001:1001 | 0711 | relay parent, never mounted into a cell |
 | `/data/.universe-sidecars/<cc>/` | 1001:1100 | 2710 | `universe_egress.py` egress and engine relay directory creation |
 | exact `egress-*.sock` / `engine-*.sock` relay entries | 1001:1100 | 0660 | runtime-created sockets; only the admitted owner's exact socket is bound |
 | `/data/.broker/`, `/data/.broker/state/` | **1002:1002** | 0700 | `supervisor.py:52-53`, `process.py:89-90` |
 | `/data/.layout.lock` | 1001:1001 | 0666 | `storage_layout.py:63-70` creates it 0o666 for cross-uid `flock` |
-| everything else | 1001:1001 | unchanged | — |
+| shared root stores, sidecars and replacements | 1001:1001 | remove other permissions; retain owner access | D9/F1; never mount in cells |
+| remaining classified platform state | 1001:1001 | preserve declared access without widening shared stores | inventory required |
 
 **The shared work group is not an owner boundary.** Its host-side modes are retained for
 rollback compatibility, but every 1003 application process receives those rights only
@@ -376,12 +387,11 @@ not sufficient on its own: the volume is a bind mount, so a *previous* container
 - walks with directory file descriptors it holds open, using `os.open(..., O_NOFOLLOW|O_DIRECTORY)`
   and `*at()` calls relative to them, so a rename between stat and change cannot redirect it;
 - uses `os.lchown` / `fchownat(AT_SYMLINK_NOFOLLOW)`, never `chown`;
-- **refuses, loudly, on any symlink inside the traversal set** rather than following it — the same
-  rule and the same reason as `provider_jail.py:338-339` ("the command center's `<name>` is a link;
-  it cannot be masked");
-- **refuses on any regular file with `st_nlink > 1`** in the set: a hardlink means a second name
-  exists, possibly outside the set, and changing the inode's group would hand that name the same
-  access;
+- skips symlinks inside ta-work trees without following or chmodding targets;
+  symlink refusal remains for privileged, vault and broker sets;
+- refuses hardlinks in privileged, vault and broker sets. D9/F4 requires proof of
+  all aliases within one owner's work set before mutating a work-tree inode;
+  unresolved aliases remain untouched and block completion;
 - refuses on anything that is not a directory or a regular file.
 
 **Legacy runtime cleanup before traversal/chown.** Under the same exclusive lock,
@@ -653,7 +663,7 @@ historical):**
 |---|---|---|
 | `provider-cli` | `providers/owned_process.py`: `_aspawn_anchored` and `aspawn_owned` exec paths | launcher plus owner provider view; sync/async and descendants included |
 | `provider-discovery` | `providers/base.py` -> `providers/native_jsonrpc_discovery.py` -> `aspawn_owned` | launcher plus exact-snapshot `metadata_view`; current code already requests confinement, preserve it |
-| `engine-mcp` | `engine_mcp_http.py`: `_EngineServer.start` | owner-keyed server in owner view with scoped transport |
+| `engine-mcp` | `engine_mcp_http.py`: `_EngineServer.start` | pinned thin proxy in cell; canonical handlers and shared stores stay in daemon (D9/F1) |
 | `node-sandbox` | `node_sandbox.py`: both `Popen` sites (workspace `_spawn` and main sandbox launch) | owner cell; nested workspace commands inherit it |
 | `tool-jail` | `universe_tools.py`: tool `Popen` | existing tool jail inside/equivalent to mandatory owner cell, not an exception |
 | `workspace-provision` | `workspace_provision_process.py`: `Popen`; `workspace_provision_execution.py`: embedded subprocess runner | owner cell; provisioning child inherits it |
@@ -663,9 +673,11 @@ historical):**
 | `image-decoder` | `tool_images.py`: `_decode_in_child` | owner-bound process with input/output pipes and private scratch, no data bind required |
 | provider auth probe | `providers/base.py`: direct `subprocess.run` auth probe | owner-bound launcher kind and snapshot, never inherited host auth/HOME |
 | local box execution | `boxes/local.py`: exec `Popen` | owner cell now for any served owner work; reserved box uids do not defer this requirement |
-| owner-scoped utility descendants | `git_bridge.py`, `bid/node_bid.py`, `ingestion/video_extractor.py`, `workspace_git.py`, `workspace_worker.py` subprocess calls | execute within admitting owner's cell; daemon-direct owner-work calls must route through a static launcher kind |
+| owner-scoped utility descendants | `git_bridge.py`, `ingestion/video_extractor.py`, `workspace_git.py`, `workspace_worker.py` subprocess calls | execute within admitting owner's cell; daemon-direct owner-work calls must route through a static launcher kind |
 
-**Remaining inventory dispositions:** the daemon and broker are trusted control-plane
+**Remaining inventory dispositions:** `bid/node_bid.py` is control-plane: its shared
+`bids/` repository never enters a cell; only fixed platform operations with validated
+inputs execute there, never owner payloads or hooks. The daemon and broker are trusted control-plane
 roles, not engine exceptions. `storage/outbound_connections.py`'s legacy proxy `Process`
 is refused while the broker is selected (D7(b)). D7 row 11's `gh`/`git` designation is
 narrowed: any invocation on an owner's behalf goes through the owner cell, including
@@ -699,6 +711,123 @@ and record its image digest and launch configuration. Its default test image is 
 No skipped/unavailable class or Windows-only check counts as a pass. Implementation and
 production-image oracle execution remain pending; this amendment claims neither.
 
+### D9. Round-3 fold and executable acceptance
+
+**founder decision 2026-10-05: fold + build with probes.** F1-F7 are accepted.
+This section replaces conflicting historical mechanisms above, not their security
+requirements. Every row below is a required production-image Linux oracle probe.
+The full refute, including confirmed items, was read. No fourth design review.
+
+**F1 — control-plane stores stay outside cells.** Canonical engine-MCP handlers,
+OAuth service configuration and multi-tenant store access move into the daemon.
+The `engine-mcp` cell contains only a thin proxy with a preconnected, per-launch
+channel pinned to the admitted owner/execution at the trusted receiver. The
+receiver rechecks authority; child-supplied owner fields cannot widen it. No
+platform credentials or owner-channel token cross that channel. Do not solve
+compatibility by mounting shared databases. `node_bid` is control-plane, not an
+owner utility. D4 strips other permissions from shared stores, their directories,
+WAL/SHM files and atomic replacements; runtime creation preserves those modes.
+Probe: A's actual proxy performs a real canonical operation, forged B scope is
+refused, B's shared-store sentinel is unreachable, and node_bid still works from
+the control plane without exposing its repository to cells.
+
+**F2 — named seccomp profiles and daemon-side readers.** The profiles are:
+`cell-deny` (existing default deny_program), `cell-links` (same deny profile
+except symlink/symlinkat for git/venv/npm), and `cell-nested` (existing
+nested_sandbox=True profile). `cell-links` still denies new user namespaces;
+link creation alone must not grant the nested profile. All retain FIFO/device,
+io_uring, ptrace and host namespace restrictions. Install after namespace setup.
+
+| Class | Profile | Reason for exception |
+|---|---|---|
+| provider-cli | cell-deny; cell-nested only for the existing proven nested CLI path | nested CLI sandbox; recorded launch policy, never payload choice |
+| provider-discovery, provider auth probe | cell-deny | exact metadata snapshot only |
+| engine-mcp thin proxy | cell-deny | channel forwarding only |
+| node-sandbox, tool-jail outer cell | cell-nested | nested bubblewrap; inner jail retains its own filter |
+| workspace-provision | cell-links | venv/npm symlinks; namespace setup precedes filter |
+| workspace-registry | cell-deny | registry channel only |
+| workspace-worker, workspace-git, git_bridge | cell-links | git symlink checkout |
+| ui-preview, image-decoder | cell-deny | no demonstrated nested requirement |
+| local box execution | cell-deny | no exception without a measured nested operation |
+| ingestion/video and other owner utilities | cell-deny | default for new kinds |
+
+For every actual class and **each** cell-writable path (workspace, snapshot,
+runtime subset, preview output, cache and scratch if a daemon consumes it), the
+matrix must enumerate every daemon reader/server: inspect, preview, file reads,
+git_bridge, staging/publish and any additional reader found in the code. Each
+pair gets symlink-to-B, FIFO and hardlink-to-B probes. Even when cell seccomp
+rejects planting, preplant a fixture before launch and exercise the actual
+reader. Receivers must use confined reads or pinned no-follow traversal with
+regular-file/type and alias validation; never resolve an untrusted path in the
+daemon's unrestricted view. No B bytes, B writes or FIFO hang is allowed. A
+blocked plant alone is not a reader proof. A path without a daemon consumer
+needs inventory evidence, not a silently omitted row. No new nested exception
+is accepted without its positive operation and all negative probes passing.
+
+**F3 — close pinned mount descriptors after mount, for every class.** Keep the
+pre-mount sweep, then execute a root-owned close-after-mount bootstrap equivalent
+to node_sandbox's `_CLOSE_MOUNT_FDS_SCRIPT` before any payload. Close all bind-source,
+seccomp and namespace descriptors; retain only declared stdio/scoped IPC. Apply
+again at nested boundaries. Probe each actual payload's `/proc/self/fd`, exercise
+every retained fd and try directory-relative `openat(fd, "..")`; no descriptor
+may lead to a host ancestor, B's data, privileged state or a writable read-only
+bind source. Closing merely foreign fds is insufficient.
+
+**F4 — migration preserves real workspace structure.** Skip symlinks without
+following them in ta-work trees; do not refuse venv/bin/python or node_modules/.bin.
+Re-mode the entire tree, not just roots, preserving executable bits. Privileged,
+vault and broker link refusals remain. For work-tree hardlinks, prove all aliases
+are in the same owner's classified work set before changing the inode; unresolved
+or cross-owner aliases remain untouched and block completion, never silently
+widened. Dry-run reports this without mutation. Probe valid venv/npm symlinks,
+outside-target sentinels and in-owner/cross-owner hardlinks; repeat migration and
+interrupted resume must preserve contents, targets and existing uid ownership.
+
+**F5 — mandatory ACLs, umask, rollback and deletion; mechanism unresolved.**
+Every ta-work directory gets access `u:1001:rwx` and default `d:u:1001:rwx` with
+an effective mask; regular files get appropriate read/write and existing execute
+access. Require ACL support for work trees: no ACL-less fallback. Every engine
+child starts with umask `007`. Probe newly created files and directories as well
+as migrated files, including explicit `0600`/`0700` and later chmod; both the
+current daemon and an old-image uid 1001 without supplementary groups must read,
+write and delete as required. Exercise actual deletion APIs and old-image rollback.
+
+**Blocking ambiguity:** Linux intersects inherited ACL permissions with creation
+mode and chmod changes the ACL mask. Engine-owned 0700 directories therefore
+exclude uid 1001 despite the required ACL entry. Provisioning explicitly creates
+such a `.venv`; changing that one call does not cover arbitrary engine code.
+`delivery.md` has a reproducible Linux counterexample. The design has not chosen
+between controlling all permission-reducing operations and introducing an
+owner-scoped repair/deletion/rollback mechanism with additional authority. Do not
+grant that authority, weaken deletion/rollback, or claim defaults suffice by guess.
+Stop before build until this mechanism is decided, as the founder instructed.
+
+**F6 — no CAP_SYS_ADMIN.** Remove it from compose cap_add and ta_op.c MASK in the
+same implementation commit. Keep exactly CHOWN, DAC_OVERRIDE, FOWNER, SETUID,
+SETGID, SETPCAP and KILL at entry, then retire migration caps before serving.
+Probe capability parity/readbacks and real unprivileged bubblewrap plus ta-op
+healthcheck under the production image and compose security options.
+
+**F7 — git trusts only the cell's owner view.** Set safe.directory for exact
+admitted repo paths in protected per-cell Git configuration, never `*` or a shared
+host global config. Child configuration cannot add a host mount. Probe actual
+git status/read/write/checkout in workspace-worker/git_bridge/provisioning and
+every other git-using class; the same process remains denied B's repository.
+
+| Confirmed refute item retained | Required pass/fail production probe |
+|---|---|
+| C1 bubblewrap available | production Dockerfile image, compose seccomp/AppArmor/systempaths options, unprivileged namespace creation without SYS_ADMIN |
+| C2 spawn inventory complete at review | repeat repository-wide inventory; every site maps to a real class probe or explicit trusted control-plane disposition |
+| C3 private network/IPC and egress | deny B ports/relay sockets, host loopback/abstract sockets; allow only A relay |
+| C4 private procfs and non-dumpability | deny sibling procfs/ptrace and token extraction; daemon/broker post-exec readbacks |
+| C5 no shared tmp, explicit vault group | tmp isolation; atomic deposit retains ta-vault, broker reads but cannot write, every engine denied |
+| C6 exact launcher peer and no fallback | wrong uid, wrong pid, missing scope, failed jail all refuse before payload; PlainSubprocessLauncher remains tests-only |
+
+The oracle must report F1-F7 and C1-C6 per applicable class/site/path/reader with
+image digest, launch argv, identity and namespace evidence. No skipped or generic
+uid-only substitute counts. Broker launch/stream, healthcheck, migration dry-run,
+crash-resume, repeat no-op, rollback and deletion remain separate mandatory proofs.
+
 ## Risks / Trade-offs
 
 - **The launcher is root-adjacent code.** One file, stdlib-only, run `-I -S`, a static kind table,
@@ -707,12 +836,12 @@ production-image oracle execution remain pending; this amendment claims neither.
 - **`/app` becomes read-only and `HOME` moves.** The largest behavioural risk in this change, and
   the one with a named fallback (D2). Any runtime write under `/app` fails loudly rather than
   silently, which is the right direction; task 2.1 enumerates them first.
-- **The capability set is wider than one would like, and wider than the first draft said.** Eight,
+- **The capability set is wider than the first draft said.** Seven,
   because the migration needs DAC authority over paths it deliberately does not own and the
   launcher needs to signal two foreign uids. Mitigated structurally rather than by wishing: the
   migration's three are dropped before the launcher serves, and the whole set is held equal to
-  `ta_op.c`'s `MASK` so the two cannot drift. `CAP_SYS_ADMIN`'s necessity is still unproven
-  (task 2.7), and narrowing it must change `ta-op` in the same commit.
+  `ta_op.c`'s `MASK` so the two cannot drift. `CAP_SYS_ADMIN` is forbidden
+  (task 2.7); remove it from compose and `ta-op` in the same commit.
 - **Two correctness traps this design walks into unless implemented exactly as written**, both
   found by review rather than by reasoning, and both now spec'd: a socket directory without the
   setgid bit yields a socket the owner cannot reach (D6), and a vault group left to setgid

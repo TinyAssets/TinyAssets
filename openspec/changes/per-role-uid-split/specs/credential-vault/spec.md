@@ -1,5 +1,8 @@
 ## MODIFIED Requirements
 
+<!-- founder decision 2026-10-05: fold + build with probes.
+     Workspace ACLs do not apply to vault or broker state. -->
+
 ### Requirement: As-Built Storage Protection Is Filesystem Permissions Only
 
 The vault file and any materialized credential artifacts (for example a Codex `auth.json` or a Claude config directory) SHALL be persisted as unencrypted content on disk, and the only at-rest protection SHALL be a best-effort POSIX file mode. Where every role shares one uid — a developer host, a desktop install — that mode SHALL be `0o600` for the vault file and secret files and `0o700` for the `.credentials` artifact directory. Where the per-role uid split is deployed (`runtime-process-roles`), the owner uid SHALL remain the only writer and the mode SHALL be `0o640` for the vault file and secret files with their directories `2750`, group-owned by the vault group whose members are the owner and broker uids. That group SHALL be set on the temporary file before the atomic replace rather than inherited from the directory, because the vault's directory is the command-center root and belongs to the work group; a vault that inherited that group would be readable by every engine and provider child. Per-launch credential snapshots and the platform runtime directory that holds them SHALL instead take the work group, at `2750` with files `0o440`, because the engine/provider child reads its own snapshot. Every one of these modes SHALL come from a single declaration shared by the ownership migration and each runtime site that creates or re-modes these paths. The split's result is strictly tighter than the single-uid case, where every child process shares the owner's uid and can read a `0o600` vault.
@@ -22,3 +25,9 @@ As-built limitation: there is no encryption at rest, no cipher, and no key manag
 
 - **WHEN** the per-role uid split is deployed and an engine or provider child (uid 1003) opens the vault file or the `.credentials` artifact directory of any command center
 - **THEN** the open fails with a permission error, because neither the child's uid nor its groups are granted on either path
+
+#### Scenario: Workspace ACL migration does not widen credential access
+
+- **WHEN** workspace trees receive uid-1001 access/default ACLs and shared stores lose other-read during the role migration
+- **THEN** vault, materialized credential and broker-state sets retain their separate declared permissions and link-refusal rules, without inheriting ta-work ACLs
+- **AND** the production-image oracle proves each actual engine class remains denied the vault, while an atomic owner deposit remains readable but not writable by the broker

@@ -1,3 +1,6 @@
+<!-- founder decision 2026-10-05: fold + build with probes.
+     D9/F5 implementation mechanism remains blocked; see delivery.md. -->
+
 ## ADDED Requirements
 
 ### Requirement: Distinct kernel uids per runtime role
@@ -88,9 +91,10 @@ The ownership migration SHALL NOT change the owning uid of any path an older ima
 - **WHEN** the container restarts on a volume already migrated
 - **THEN** the migration makes no ownership or mode changes and the roles start
 
-#### Scenario: Rolling back to a single-uid image needs no reverse migration
-- **WHEN** an older image that runs every role as the owner uid starts on a migrated volume
-- **THEN** it reads and writes every store it used before, because no path it reads changed owner
+#### Scenario: Rolling back preserves access after engine writes
+- **WHEN** an older image running as uid 1001 without supplementary work groups starts on a migrated copy after uid 1003 has created files and directories, including explicit 0600/0700 modes and later chmod
+- **THEN** it reads, writes and deletes the required workspace contents without losing user data
+- **AND** merely retaining the uid of pre-existing files is not evidence that rollback succeeds
 
 #### Scenario: A deposit keeps the broker's read access and does not widen it
 - **WHEN** the owner writes a new credential through its sibling-temp-and-replace path
@@ -105,15 +109,18 @@ The ownership migration SHALL NOT change the owning uid of any path an older ima
 - **WHEN** the broker attempts to modify the vault file or a materialized credential artifact
 - **THEN** the write fails with a permission error
 
-#### Scenario: A planted link is refused, not followed
-- **WHEN** the migration's traversal meets a symlink inside its set, or a regular file with more than one hard link
-- **THEN** it refuses loudly and changes nothing on that path, rather than following the link or changing an inode a second name also reaches
+#### Scenario: Workspace symlinks survive migration without target traversal
+- **WHEN** migration encounters symlinks in ta-work trees, including .venv/bin/python and node_modules/.bin
+- **THEN** it skips them without following or re-moding their targets and re-modes the actual workspace contents including executable files
+- **AND** privileged, vault and broker sets retain link refusal; work-tree hardlinks are mutated only after all aliases are proven to lie within the same owner's work set, otherwise completion is blocked without changing that inode
 
 #### Scenario: An interrupted migration completes rather than half-applying
 - **WHEN** the migration is killed part-way through
 - **THEN** the data-layout marker records that the role migration is in progress, and the next start re-runs it to completion before any role starts
 
 ### Requirement: Every owner-scoped engine process is isolated from other owners
+
+The engine-MCP cell SHALL contain only a pinned thin proxy; canonical handlers and multi-tenant stores SHALL remain in the daemon control plane. The receiver SHALL bind the channel's owner/execution from trusted admission and SHALL refuse attempts to widen that scope through payload fields. `node_bid` SHALL remain a fixed control-plane operation; its shared repository SHALL NOT enter any cell. Shared root stores, database sidecars and replacements SHALL have other permissions removed at migration and runtime creation.
 
 Every engine process executing owner-scoped work SHALL enter an owner-bound bubblewrap mount/PID/IPC/network boundary with an empty network namespace before executing application code, using the launcher and existing provider-jail validated views. This includes every D8 inventory class and every descendant: provider CLI, provider discovery, engine MCP, node sandbox, tool jail, workspace provision/registry/worker, preview, image decoder, auth probe, local box execution and owner-scoped utilities. The common uid 1003 and work group SHALL NOT be claimed as cross-owner isolation. Work-group rights SHALL be usable by engine payloads only inside that owner's namespace. No engine payload SHALL run unjailed or be reused across owners; missing, mismatched or unsupported owner scope SHALL fail closed.
 
@@ -144,3 +151,57 @@ Views SHALL expose at most the admitted owner's command-center tree/workspace su
 - **WHEN** each actual engine class attempts to connect to owner B's engine-MCP port, relay socket or host abstract sockets
 - **THEN** the attempts fail, while its legitimate owner-A relay connection works at uid 1003 using the exact socket bind and D4's sidecar directory/socket modes
 - **AND** sidecar parent directories are never exposed inside the cell
+
+### Requirement: Each class has a named seccomp policy and safe daemon readers
+
+Each class SHALL use the named D9/F2 profile: cell-deny by default, cell-links only for symlink-requiring git/venv/npm operations, and cell-nested only for demonstrated nested sandboxes. The production-image oracle SHALL exercise every class and each cell-writable-path/daemon-reader pair, including inspect, preview, file reads, git_bridge and staging/publish. Seccomp denial of planting SHALL NOT replace a daemon-reader probe against preplanted fixtures.
+
+#### Scenario: A cell-planted object never returns another owner's bytes
+- **WHEN** A plants, or the adversarial fixture preplants, a symlink, FIFO or hardlink targeting B at each cell-writable path, then invokes each actual daemon reader/server of that path
+- **THEN** no B bytes or B write authority are returned and no FIFO hangs the reader
+- **AND** A's ordinary operation succeeds under the class's declared seccomp profile
+
+### Requirement: Mount descriptors close before every payload
+
+Every class SHALL execute a mandatory close-after-mount bootstrap before payload code, closing bind-source, seccomp and namespace descriptors while retaining only explicitly scoped stdio/IPC. Nested boundaries SHALL repeat this discipline.
+
+#### Scenario: An owner directory descriptor cannot escape the mount view
+- **WHEN** each actual payload lists /proc/self/fd and tries openat(fd, "..") and relative traversal through each retained directory descriptor
+- **THEN** it cannot reach host ancestors, another owner's files, privileged state or a writable source behind a read-only bind
+
+### Requirement: Workspace ACLs preserve daemon access and deletion
+
+Ta-work directories SHALL have access u:1001:rwx and default d:u:1001:rwx ACLs with effective masks; files SHALL have appropriate owner-daemon access while retaining executable bits. Children SHALL start with umask 007. Work trees SHALL require ACL support. Default ACL presence alone SHALL NOT be accepted as proof after explicit restrictive creation or chmod. D9/F5's unresolved mechanism MUST be decided before implementation; no additional authority is implicitly authorized by this requirement.
+
+#### Scenario: Engine-owned restrictive paths remain deletable
+- **WHEN** an engine creates directories/files with 0700/0600 or applies those modes afterward
+- **THEN** actual daemon deletion APIs and the old-image rollback proof complete without data loss outside the requested tree
+- **AND** tests verify effective access, not merely the presence of named ACL entries
+
+#### Scenario: Migration dry-run is non-mutating
+- **WHEN** migration dry-run inventories a copy containing workspaces, venvs, node_modules, shared stores and adversarial links
+- **THEN** contents, ownership, modes, ACLs and layout markers remain unchanged and the report identifies planned changes and unresolved aliases
+
+### Requirement: Production confinement requires no host SYS_ADMIN
+
+Compose cap_add and ta_op.c MASK SHALL exclude CAP_SYS_ADMIN and retain exact parity. The entry set SHALL contain only CHOWN, DAC_OVERRIDE, FOWNER, SETUID, SETGID, SETPCAP and KILL; the launcher SHALL retire migration capabilities before serving.
+
+#### Scenario: Production namespaces and healthcheck work without SYS_ADMIN
+- **WHEN** the production-image oracle runs with compose security options and the declared capability set
+- **THEN** unprivileged bubblewrap, role/capability readbacks and the ta-op healthcheck succeed without SYS_ADMIN
+
+### Requirement: Git trust is scoped to each owner cell
+
+Every git-using cell SHALL receive protected per-cell safe.directory configuration for exact admitted repo paths. Wildcard and shared host-global trust SHALL NOT be used.
+
+#### Scenario: Legitimate git works while other-owner access fails
+- **WHEN** every git-using class runs its real owner-A git operation including checkout and workspace mutation
+- **THEN** the operation succeeds despite mapped ownership and the same process cannot access B's repository
+
+### Requirement: All refute findings and confirmed controls have executable evidence
+
+The production-image Linux oracle SHALL implement D9's F1-F7 and C1-C6 matrix using every actual class/site and compose security options, recording image digest, command, identity, namespaces and pass/fail results. Skips, Windows-only checks and generic uid substitutes SHALL NOT count as passes. Broker launcher startup and stream, healthcheck, migration dry-run, idempotence, interrupted resume, rollback and deletion SHALL be proven separately. No deployment is authorized by this change's current build instruction.
+
+#### Scenario: Confirmed controls remain true after integration
+- **WHEN** the actual production image runs the complete refute matrix
+- **THEN** namespace availability, spawn coverage, private network/IPC/procfs/tmp, explicit vault group, exact launcher peer validation and absence of unjailed fallbacks each pass their named probes

@@ -1,3 +1,9 @@
+**founder decision 2026-10-05: fold + build with probes.** D9 accepts F1-F7 and
+retains the confirmed controls. No fourth design review; normal cross-family
+code review for the eventual build. Build is stopped at the demonstrated F5
+ACL-mask ambiguity in `delivery.md`, per the stop-rather-than-guess instruction.
+No new task is checked off; sections remain at 2 and 10 tasks.
+
 ## 1. Design (this change)
 
 - [x] 1.1 Proposal, design and spec delta; uid map agreed with agent-loop and openshell-spike.
@@ -55,6 +61,8 @@ Lands after #4299 (the broker) and #4267 (`platform_secrets`), amending both.
         passing owner channel tokens or platform credentials (D3/D8).
       - validate owner scope, select and pin a static per-kind jail view, and complete D8
         namespace/fd/IPC confinement before payload exec; no unjailed fallback.
+      - D9's named per-class seccomp profile, mandatory post-mount fd closure,
+        child umask 007 and exact per-cell safe.directory entries.
       - unit tests in the Linux oracle.
 - [ ] 2.3 **Chain verification** (closes P1-1, part 3)
       - the launcher checks itself, the interpreter, `broker_main.py`, every privileged `sys.path`
@@ -71,11 +79,15 @@ Lands after #4299 (the broker) and #4267 (`platform_secrets`), amending both.
         stale relay sockets via pinned dirfds without following links (D4 cleanup). Add D4
         sidecar directory/socket modes to the shared declaration and both egress/engine
         relay runtime creation paths; bind only exact sockets, never sidecar parents.
-      - traversal holds directory fds with `O_NOFOLLOW|O_DIRECTORY`, uses `*at()`/`lchown` only,
-        and **refuses** on any symlink in the set, any regular file with `st_nlink > 1`, and
-        anything that is not a directory or regular file.
-      - assert D4's rollback invariant as a test over the inventory table: no path an older image
-        reads changes owner, so there is no reverse migration and no temporary widening.
+      - traversal holds directory fds with `O_NOFOLLOW|O_DIRECTORY`, uses `*at()`/`lchown` only;
+        skip workspace symlinks, re-mode contents including .venv/node_modules, preserve
+        executable bits. Refuse links in privileged/vault/broker sets; D9/F4 governs
+        work-tree hardlink aliases. No user-data deletion; dry-run changes no metadata/marker.
+      - remove other permissions from shared stores, including runtime replacements/sidecars.
+      - add access u:1001:rwx and default d:u:1001:rwx ACLs on ta-work directories,
+        appropriate file access ACLs; require ACL support. Resolve D9/F5 before build.
+      - prove rollback against engine-created files, not merely the initial inventory;
+        prove daemon deletion and old-image uid-1001 read/write/delete without work groups.
       - runs with `CHOWN` + `FOWNER` + `DAC_OVERRIDE`: it keeps owner 1001 on almost everything,
         so euid 0 is not the owner of what it re-modes, and `CHOWN` alone is `EPERM` (D4
         §Authority).
@@ -96,9 +108,13 @@ Lands after #4299 (the broker) and #4267 (`platform_secrets`), amending both.
         decoder, auth probe, local box and owner-scoped utility calls through the same owner
         boundary. Scope engine-MCP servers, worker reuse and IPC to one owner, with private
         PID/IPC/network namespaces, procfs/scratch and exact relay sockets; preserve narrower existing jail views.
-      - `provider-cli` (`owned_process.py:539,650-652`), `engine-mcp`
-        (`engine_mcp_http.py:277-283`), `node-sandbox` (`node_sandbox.py`) move to the launcher
-        client at 1003.
+      - provider-cli, engine-mcp thin proxy and node-sandbox move to the launcher client
+        at 1003. Canonical engine-mcp handlers and shared stores stay in the daemon;
+        pin proxy scope at the receiver from admission, never child owner fields.
+        Reclassify node_bid as control-plane; shared stores never enter cells.
+      - inventory each daemon reader/server of each cell-writable path. D9/F2's planted
+        symlink/FIFO/hardlink probes cover inspect, preview, file reads, git_bridge,
+        staging/publish and every additional reader; a denied plant alone is insufficient.
       - and the four sites the first enumeration missed: `provider-discovery`
         (`providers/base.py:1418-1420` → `native_jsonrpc_discovery.py:130-134`, historically bypassing
         the jail; current code uses `aspawn_owned` and the narrow metadata view),
@@ -123,8 +139,8 @@ Lands after #4299 (the broker) and #4267 (`platform_secrets`), amending both.
         (`outbound_connections.py:5338`), so the two credential paths never coexist at uid 1001.
         Test both directions.
 - [ ] 2.7 **Entrypoint, compose, and the capability set**
-      - start as root with `cap_add: [CHOWN, DAC_OVERRIDE, FOWNER, SETUID, SETGID, SETPCAP, KILL,
-        SYS_ADMIN]`, and change `ta_op.c`'s `MASK` (81-82) to match **in the same commit** — that
+      - start as root with `cap_add: [CHOWN, DAC_OVERRIDE, FOWNER, SETUID, SETGID, SETPCAP, KILL]`,
+        and change `ta_op.c`'s `MASK` (81-82) to match **in the same commit** — that
         file asserts set *equality* on root entry (206-208) and the healthcheck runs through it,
         so a mismatch is a red healthcheck and a deploy rollback. `tests/test_ta_op_modes.py`
         holds the parity.
@@ -133,8 +149,8 @@ Lands after #4299 (the broker) and #4267 (`platform_secrets`), amending both.
         it gains exactly two steps — the D4 migration and the `/run/tinyassets` directories.
       - `HOME` updated in `deploy/compose.yml` (today `HOME: /app`, compose:147); the deploy
         validator's capability assertions updated.
-      - decide `CAP_SYS_ADMIN`: prove what needs it or remove it from both `cap_add` and `MASK`
-        in one commit. Never diverge from `ta-op` silently.
+      - remove `CAP_SYS_ADMIN` from both `cap_add` and `MASK` in one commit; no exception.
+        Never diverge from `ta-op` silently.
 - [ ] 2.8 **Production-image Linux oracle proofs** (non-root payloads, like production)
       - add production-image support to the oracle proof harness (the existing runner
         builds `docker/linux-oracle.Dockerfile`, which is not acceptance), then run
@@ -146,6 +162,13 @@ Lands after #4299 (the broker) and #4267 (`platform_secrets`), amending both.
         and A relay access with D4 sidecar modes. Record identities/namespaces and deny results;
         no generic jailed substitute or skip counts as a pass. Prove obsolete owner.json
         removal separately from the seeded legacy-file denial fixture.
+      - every D9 F1-F7 and confirmed C1-C6 row becomes a pass/fail probe using the
+        production image and compose security options. Per class list /proc/self/fd,
+        try openat(fd, ".."), and run actual positive operations including git and venv.
+        Cover every writable-path/daemon-reader pair, including preplanted fixtures.
+      - migration on a disposable copy: dry-run unchanged, repeat no-op, interrupted
+        resume, symlink targets unchanged; old-image rollback and actual daemon deletion
+        after engine 0700/0600 creations and chmod. No skip counts as a pass.
       - a 1003 child gets `EACCES` on `/data/.broker/state/fence.json` and on
         `/data/<cc>/.credential-vault.json`.
       - the broker reads the vault and **cannot write** it; the provider jail works under 1003
