@@ -5169,6 +5169,18 @@ class ConnectionLedger:
                     "ALTER TABLE outbound_connection_grants "
                     "ADD COLUMN unprompted_action_cap_json TEXT"
                 )
+            # Clear the legacy per-connection "http_requests" cap. Accounts are
+            # limited only by total storage and simultaneous agent runs, so a
+            # fixed request cap on an HTTP channel is a leftover of the old
+            # account model. Other caps (e.g. one_pull_request) are untouched.
+            connection.execute(
+                "UPDATE outbound_connection_grants "
+                "SET unprompted_action_cap_json = NULL "
+                "WHERE unprompted_action_cap_json IS NOT NULL "
+                "AND json_valid(unprompted_action_cap_json) "
+                "AND json_extract(unprompted_action_cap_json, '$.name') "
+                "= 'http_requests'"
+            )
             # Backfill the channel descriptor columns onto pre-descriptor DBs.
             # Legacy rows read back as connection_type='' (routes to the existing
             # github/slack drivers) with an empty allowlist.
