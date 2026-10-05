@@ -1666,3 +1666,31 @@ entries. No process-wide cwd/umask change is used. This supplies the existing
 scoped relay, not a new network authority or an owner-channel mount. Actual
 engine kinds must still pin only their exact socket and close the source fd
 after mount. Startup remains gated.
+
+### D56. Security-scope stop: preview requires Chromium's nested sandbox
+
+The actual shipped `tinyassets.ui_preview._child` was exercised in the D55
+production image under each existing named profile, keeping
+`chromium_sandbox=True`. D9's assigned `cell-deny` and the narrower alternative
+`cell-links` both produce Chromium's `No usable sandbox!` and no PNG.
+`cell-nested` renders the identical synthetic UI with no delivery or page errors.
+All runs retire the seven entry capabilities through the installed launcher
+helpers, enter as uid 1003 with no supplementary groups, and show zero capability
+sets, no-new-privileges and distinct mount/PID/IPC/network namespaces.
+
+This is a reproducible policy diagnostic, **not** actual launcher admission or
+per-owner preview acceptance. The diagnostic mounts immutable image runtime
+paths only, no owner data or host paths, and uses an offline Docker network.
+`scripts/role_preview_profile_probe.py --image tinyassets-uid-relays:d55`
+reproduces it and asserts both failures and the positive control. Image identity
+and commands are in delivery.md. No runtime profile or spec requirement changes.
+
+The pending proposal is to assign **ui-preview only** the existing `cell-nested`
+profile while keeping Chromium's own sandbox enabled. This relaxes D9's explicit
+new-user-namespace denial for an additional class; it is not merely test wiring
+or a path/mode choice. The founder's standing security/isolation-scope stop rule
+therefore applies. Lead authorization is required before implementation. Do not
+disable Chromium's sandbox, retain capabilities, or activate startup to bypass
+this stop. Authorization would still require every D8/D9 per-class negative and
+paired daemon-reader probe, actual launcher lifecycle/resource limits, and the
+remaining migration/deletion/old-image/startup proofs before PR readiness.

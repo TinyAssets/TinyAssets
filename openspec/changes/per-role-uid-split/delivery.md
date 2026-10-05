@@ -1,4 +1,61 @@
-# Current delivery: D53 account erasure, D54 snapshots, D55 owner relay creation
+# Current delivery: D56 preview security-scope stop (2026-10-05)
+
+Started at **71df3620de**; ff-only pull was already current. While reconciling
+the remaining actual engine classes, found that D9 assigns preview `cell-deny`
+but its real Chromium renderer requires nested user namespaces. Added a durable,
+standalone diagnostic, not a runtime policy change or a launcher admission.
+
+```text
+python scripts/role_preview_profile_probe.py --image tinyassets-uid-relays:d55
+exit 0
+cell-deny: No usable sandbox!; unavailable; PNG bytes 0
+cell-links: No usable sandbox!; unavailable; PNG bytes 0
+cell-nested: PNG base64 bytes 5780; delivery_error empty; uncaught_errors []
+DIAGNOSTIC CONFIRMED: preview fails cell-deny/cell-links; cell-nested renders.
+No launcher acceptance, policy change, or startup activation.
+
+python scripts/linux_oracle.py --production-image tinyassets-uid-relays:d55 --production-stream
+exit 0
+```
+
+Both use immutable production image
+`sha256:7c8bb8846244365fc3c2806468f886767749304471342ef4d9aa96a0218c7a60`.
+The diagnostic uses no host mounts, network none, root entry with exactly
+CHOWN/DAC_OVERRIDE/FOWNER/SETUID/SETGID/SETPCAP/KILL, then the installed
+launcher's capability retirement and uid-1003 transition before bubblewrap.
+Security options are no-new-privileges plus seccomp/AppArmor/systempaths
+unconfined, as in the production oracle. All three processes report uid1003,
+zero capability sets, nnp=1 and distinct mount/PID/IPC/network namespaces.
+The renderer is the shipped `_child`, with Chromium sandbox on and the same
+synthetic 320x240 markup in each run. No asset/store read or owner tree was
+mounted, and no owner-class denial or daemon-reader acceptance is claimed.
+The alternate profile is an isolated diagnostic control only.
+
+The baseline production oracle again passes actual broker HTTPS streaming,
+accounting, refresh, account-ledger erasure, decoder launcher acceptance,
+snapshot/relay permissions, and forward/reverse migration substeps including
+dry-run/apply/repeat and 6+8+3+4 crash boundaries. These remain substep evidence;
+full migration, two-pass deletion and actual old-image rollback are not proven.
+
+**Stop under the founder's explicit security/isolation-scope rule:** admitting
+preview with `cell-nested` would relax D9's namespace policy for another class.
+D56 records a pending proposal for **ui-preview only**, retaining Chromium's
+own sandbox, all existing capability retirement, and every remaining class and
+daemon-reader probe. No scope relaxation has been approved or implemented.
+The unresolved finding is
+`docs/concerns/2026-10-05-role-preview-seccomp-policy.md`.
+
+No build task newly completed. Release-critical files this step: **0**;
+branch's previously recorded total remains **8**. No product package edits,
+so no plugin mirror regeneration. No test names, skips or expectations changed.
+Targeted Ruff, strict OpenSpec validation and diff whitespace checks pass.
+Full Ruff reports the same 55 pre-existing errors in unchanged files.
+Startup remains inactive; no PR, deployment, rebase or force-push. Remaining
+work is still all other launcher classes, full migration/two-pass deletion,
+actual old-image rollback, and startup/healthcheck after all prerequisites.
+
+---
+# Prior delivery: D53 account erasure, D54 snapshots, D55 owner relay creation
 
 Implementation pushed as **58839ec354**. Test hygiene against 69ee880edc:
 12 tests added, 0 removed, 0 tampering findings. Pre-commit mirror parity,
