@@ -199,7 +199,6 @@ def _spec_for(
     width: int, height: int,
 ) -> dict[str, Any]:
     from tinyassets.custom_agents import AgentNotFoundError, get_app_ui
-    from tinyassets.onboarding import ui_library_set
 
     row = get_app_ui(base_path, owner_user_id=owner_user_id, universe_id=universe_id)
     entry = next((e for e in row["ui_library"]
@@ -207,6 +206,13 @@ def _spec_for(
     if entry is None:
         installed = [e.get("ui_id") for e in row["ui_library"] if isinstance(e, dict)]
         raise AgentNotFoundError(f"no UI with ui_id {ui_id!r}; installed: {installed}")
+    return _component_spec(base_path, owner_user_id, universe_id, entry, width, height)
+
+
+def _component_spec(base_path, owner_user_id, universe_id, entry, width, height):
+    from tinyassets.onboarding import ui_library_set
+
+    ui_id = entry.get("ui_id", "published")
     names = ui_library_set.load_order(list(entry.get("libraries") or []))
     manifest = ui_library_set.manifest()
     assets = entry.get("assets") or {}
@@ -241,6 +247,24 @@ def preview_app_ui(
             and 200 <= width <= MAX_WIDTH and 200 <= height <= MAX_HEIGHT):
         raise ValueError(f"width and height must be 200..{MAX_WIDTH} pixels")
     spec = _spec_for(base_path, owner_user_id, universe_id, ui_id, width, height)
+    return _render_spec(spec, wall_seconds)
+
+
+def preview_public_component(component: dict[str, Any]) -> dict[str, Any]:
+    """The same app_ui_preview renderer, with only an immutable public screen.
+
+    No owner identity or private blob references reach the browser. Published
+    screens currently exclude assets; refuse rather than resolving private ones.
+    """
+    if component.get("assets"):
+        raise PreviewUnavailable("published_preview_assets_unsupported")
+    spec = _component_spec("", "", "preview", component, DEFAULT_WIDTH, DEFAULT_HEIGHT)
+    return _render_spec(spec, WALL_SECONDS)
+
+
+def _render_spec(spec: dict[str, Any], wall_seconds: float) -> dict[str, Any]:
+    if _POISONED:
+        raise PreviewUnavailable(_POISONED)
     if not available():
         raise PreviewUnavailable(
             "ui_preview_unavailable: this host has no headless browser to render with")

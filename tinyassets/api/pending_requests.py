@@ -2939,6 +2939,10 @@ def answer_request(*, universe_id: str = "", payload: Any = None) -> dict[str, A
             result = answer_publish(_uid, pinned, values, request_id=request_id)
         except (ValueError, LookupError, PermissionError) as exc:
             return {"error": "publish_refused", "detail": str(exc), "request_pending": True}
+        from tinyassets.publication_completion import receipt_completion
+
+        result["completion"] = receipt_completion(result, universe_id=_uid, action=action)
+        answer = {**answer, "completion": result["completion"]}
         if not resolve_request(udir, request_id, status="answered", answer=answer,
                                feedback=feedback, dont_ask_again=False, decision="allowed"):
             return {"error": "request_resolution_unconfirmed", "request_pending": True}

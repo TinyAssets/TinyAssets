@@ -879,7 +879,10 @@ def _publish_snapshot(actor: str, action: dict[str, Any], snap: dict[str, Any], 
         mark_versions_public(_base_path(), newly_marked, public=False)
         _unflip(prior)
         raise
+    from tinyassets.publication_completion import completion_for
+
     receipt = {"published": True, "agent_definition_id": agent["agent_definition_id"],
+               "completion": completion_for(agent, action=action),
                "branch_versions": versions, "publication_kind": _publication_kind(action),
                "catalogue": "packages" if package else "agents"}
     if package:

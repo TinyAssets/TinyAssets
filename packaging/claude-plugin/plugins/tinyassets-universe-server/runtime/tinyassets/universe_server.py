@@ -1580,6 +1580,7 @@ def write_graph(
                 action=action,
                 definition_id=agent_definition_id,
                 stage_id=agent_stage_id,
+                universe_id=graph_id,
                 payload=payload_json,
                 idempotency_key=idempotency_key,
             )
