@@ -145,6 +145,34 @@ def _query_consumers(root, supervisor):
     assert source_display_name(base=root, universe_id="alice", provider=foreign_provider) == ""
     print("D23 actual compute-grant/incarnation/display consumers via launcher broker: "
           "scoped reads, foreign refusal, no daemon ledger: PASS", flush=True)
+    from tinyassets import bound_requests
+    from tinyassets.effectors import authenticated_external_call as effector
+    from tinyassets.storage.effector_consents import grant_consent
+
+    scope = dict(db_path=root / "outbound.db", grant_id="grant-alice",
+                 connection_id="conn-alice", universe_id="alice", principal="alice")
+    grant, view, error = effector._read_connection_context(**scope)
+    assert not error and grant.owner_user_id == view.owner_user_id == "alice"
+    grant_consent(root / "alice", sink="authenticated_external_call",
+                  destination=view.destination, granted_by="alice")
+    packet = {"connection_id": "conn-alice", "grant_id": "grant-alice", "verb": "POST",
+              "request": {"path": "/v1/chat"}}
+    authority = bound_requests._authority(root / "alice", packet, "alice", "main")
+    assert authority["connection_revision"] == bound_requests.digest([
+        view.as_dict(), facts["resource"]["incarnation"]])
+    for change in ({"principal": "bob"}, {"universe_id": "bob"},
+                   {"grant_id": "grant-bob"}, {"connection_id": "conn-bob"}):
+        assert effector._read_connection_context(**(scope | change)) == (
+            None, None, "connection_authority_unavailable")
+    try:
+        bound_requests._authority(root / "alice", packet, "bob", "main")
+    except bound_requests.RequestRefused:
+        pass
+    else:
+        raise AssertionError("bound preview accepted foreign authority")
+    assert not (root / "outbound.db").exists()
+    print("D24 actual effector/bound-preview consumers via launcher broker: "
+          "scoped snapshot, foreign refusal, no daemon ledger: PASS", flush=True)
     for changes in ({"principal": "bob"}, {"command_center": "bob"},
                     {"grant_id": "grant-bob"}, {"connection_id": "conn-bob"}):
         try:

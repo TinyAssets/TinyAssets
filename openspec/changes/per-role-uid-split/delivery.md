@@ -1,3 +1,83 @@
+# Current delivery: D24 effector and bound-preview broker consumers
+
+Resumed from `a39ffede4d`; required pull was already current. Critically reviewed
+and completed the seven staged D24 files from the interrupted run. D12-D23 retained.
+D24 adds AUTHORIZED_CONNECTION for a single scoped grant/resource/incarnation
+snapshot. Effector authority uses trusted execution or ambient identity. Bound
+preview hashes that same snapshot; proxy acquisition rechecks authority and
+preserves the resource access mode (fixed during this review). Selected mode
+never opens a local ledger. No security scope or retained privilege change.
+
+Release-critical files: **zero** (cap 8). Runtime files:
+`tinyassets/bound_requests.py`, `tinyassets/broker/ledger_queries.py`,
+`tinyassets/effectors/authenticated_external_call.py`, and their three generated
+mirrors. Probe files: `scripts/role_launcher_oracle.py`,
+`scripts/role_stream_oracle.py`. New tests: `tests/test_broker_effector_consumers.py`.
+No existing tests renamed or weakened; explicit paths only. No PR or deployment.
+
+One cross-family code review via peer-agents returned APPROVE; **AGREE**.
+Its follow-up check is satisfied: broker server uses authorize_exact on the live
+resource; CredentialBlindBroker enforces resource.access_mode in its scope check.
+Its background graph observation remains an explicit D11 obligation:
+`effectors/__init__.py::_authenticated_call_adapter` must thread trusted execution
+context for identity-free scheduled runs. D24 refuses those calls rather than
+inferring an owner from an untrusted packet or opening a daemon ledger.
+
+## D24 verification receipt
+
+Production, exit 0 and zero skips in both modes:
+`python scripts/linux_oracle.py --production-image tinyassets-uid-consumers:d24 --production-stream --build`
+and `python scripts/linux_oracle.py --production-image tinyassets-uid-consumers:d24`.
+Image digest: `sha256:82e4233bec4d61ac39d90d6f4fe9b4e4289e82517850f3667f155b8a1f5fb743`.
+Entry: `/opt/venv/bin/python -I -B /app/scripts/role_image_oracle.py`, root,
+cap-drop ALL plus CHOWN/DAC_OVERRIDE/FOWNER/SETUID/SETGID/SETPCAP/KILL,
+no-new-privileges, seccomp/AppArmor/systempaths unconfined as in the D22 receipt.
+Default mode: network none, no mounts or environment overrides. HTTPS mode:
+internal `ta-uid-stream-6b6bdad961f1-net`, oracle IP 93.184.216.3, fixture .2,
+uid-stream.invalid host mapping, read-only public-certificate volume
+`ta-uid-stream-6b6bdad961f1-ca`, TA_ORACLE_HTTPS=1 and existing HTTP opt-in=1.
+Fixture resources cleaned up by the runner.
+
+Exact new output, both before and after broker restart:
+```text
+D24 actual effector/bound-preview consumers via launcher broker: scoped snapshot, foreign refusal, no daemon ledger: PASS
+D24 actual effector proxy HTTPS through launcher broker: vault bearer, verified TLS, real body, no daemon ledger: PASS
+```
+The second line is HTTPS mode only. Existing broker lifecycle, capabilities,
+IPC refusal and D22 real HTTPS probes also pass. Migration remains relocation-only:
+```text
+forward dry-run, apply, repeat; service remains unadmitted: PASS
+reverse dry-run/apply/repeat and uid-1001 old-location writes: PASS
+forward/reverse abrupt-exit checkpoint and rename recovery: PASS (6 boundaries)
+symlink/hardlink/FIFO/conflicting-copy refusal without mutation: PASS
+```
+
+Windows: `python -m pytest tests/test_authenticated_external_call_effector.py tests/test_broker_effector_consumers.py tests/test_broker_resource_consumers.py tests/test_broker_ledger_queries.py -q`
+returned `99 passed in 17.04s` before the additional access-mode test.
+Final `python -m pytest tests/test_broker_effector_consumers.py -q`: `22 passed`.
+Linux uid 1001, Python 3.11.16, bwrap 0.12.0:
+`python scripts/linux_oracle.py -- tests/test_broker_effector_consumers.py tests/test_authenticated_external_call_effector.py tests/test_inline_approvals.py tests/test_inline_request_storage.py tests/test_broker_ledger_queries.py tests/test_broker_resource_consumers.py tests/test_role_launcher.py tests/test_linux_oracle.py -q`
+returned `181 passed in 45.89s`, zero skips, before that additional test.
+Final `python scripts/linux_oracle.py -- tests/test_broker_effector_consumers.py -q`
+returned `22 passed in 1.05s`, zero skips. No affected file is heavy-listed.
+Mirror build: probe-ok; parity: all 597 canonical files matched. Changed-file
+Ruff, strict OpenSpec validation and whitespace checks pass. Repository-wide Ruff
+still reports the same 55 pre-existing errors outside these files.
+
+## Remaining and activation gate
+
+D24 completes three more D11 consumer routes, not an entire task 2.1-2.8.
+Remaining: every actual engine class/site through launcher and daemon-reader
+matrix; D11 ledger mutations/accounting/refresh/deletion and other read consumers;
+trusted graph effector execution context; full role migration and D10 two-pass
+deletion; full role/ACL backup restoration and actual old-image rollback;
+real daemon CMD/environment, compose capability parity and healthchecks.
+Startup remains unactivated until every required probe passes. No full-role
+deletion or actual old-image result is claimed. Continue these items autonomously
+under the standing mechanical-decision rule.
+
+---
+
 # Current delivery: D23 three more scoped broker consumers
 
 Implementation commits: `69aafb4ae7` (D22) and `2218bdcb68` (D23).

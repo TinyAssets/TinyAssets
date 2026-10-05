@@ -2,7 +2,8 @@
 
 Baseline: `21096788fb04a3587b900ed1883ed5183d92be20`. Line numbers below refer to
 that baseline runtime. **Routing status: partial; D19 routes two raw reads,
-D20 discovery HTTP, D23 compute-grant/incarnation/display reads.** D11
+D20 discovery HTTP, D23 compute-grant/incarnation/display reads,
+D24 effector authority/proxy and bound-preview reads.** D11
 records the lead decision; D12 resolves the physical parent: .broker/outbound.db and
 .broker/.outbound-proxy. The logical data root must remain explicit.
 
@@ -195,3 +196,13 @@ with local `_connect` would violate D11 even if some methods were proxied.
 | `create_connector_artifact` | `tinyassets/storage/outbound_connections.py:6311` | broker-local; named IPC operation for daemon callers |
 | `remix_connector_artifact` | `tinyassets/storage/outbound_connections.py:6353`, `tinyassets/storage/outbound_connections.py:6369` | broker-local; named IPC operation for daemon callers |
 | `get_connector_artifact` | `tinyassets/storage/outbound_connections.py:6382` | broker-local; named IPC operation for daemon callers |
+
+## D24 consumer receipt
+
+`bound_requests._authority`, authenticated external-call `_read_connection_context`
+and `_open_connection_proxy` now use scoped broker IPC in selected mode. One
+AUTHORIZED_CONNECTION transaction includes the grant cap and custody incarnation.
+Real launcher probes cover reads, foreign refusal and HTTPS proxy success, before
+and after restart. `effectors/__init__.py::_authenticated_call_adapter` still
+needs trusted execution-context plumbing for background graph calls without an
+authenticated ambient identity; those calls refuse in selected mode today.

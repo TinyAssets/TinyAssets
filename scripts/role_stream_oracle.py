@@ -118,6 +118,23 @@ def probe(root):
     assert daemon_store_snapshot() == before, "GET changed daemon accounting state"
     print("D22 actual launcher broker HTTPS stream: scoped discovery GET, vault bearer, "
           "verified TLS, real network/body, no daemon ledger: PASS", flush=True)
+    from tinyassets.effectors.authenticated_external_call import _open_connection_proxy
+
+    proxy = _open_connection_proxy(
+        db_path=root / "outbound.db", grant_id="stream-grant",
+        owner_user_id="stream-owner", universe_id="stream-owner",
+        connection_id="stream-connection",
+    )
+    try:
+        response = proxy.request("GET", {"url": f"https://{HOST}/catalogue"})
+    finally:
+        proxy.close()
+    assert response["status"] == 200
+    assert json.loads(response["body"]) == json.loads(BODY)
+    assert not (root / "outbound.db").exists()
+    assert daemon_store_snapshot() == before, "effector GET changed daemon accounting state"
+    print("D24 actual effector proxy HTTPS through launcher broker: "
+          "vault bearer, verified TLS, real body, no daemon ledger: PASS", flush=True)
 
 
 if __name__ == "__main__":

@@ -1181,6 +1181,20 @@ The unsplit path uses the same query locally; a revoked source cannot now be
 captured or displayed there either. The launcher oracle exercises all three
 actual consumers before and after restart; this is partial D11 conversion only.
 
+### D24. Mechanical decision: effector authority is one broker snapshot
+
+Route authenticated external-call authority, proxy acquisition and bound-request
+preview through a named AUTHORIZED_CONNECTION ledger query. The existing D11
+principal/center/grant/connection checks apply to one transaction returning the
+live resource, grant action cap and custody incarnation. Validate projection
+scope before use. Effector authority comes from the admitted execution context
+or authenticated ambient identity, never from the packet or inferred grant owner.
+Preserve connection access mode in the credential-blind proxy; the broker still
+rechecks live authority before sending. Bound preview hashes the same snapshot's
+incarnation instead of opening a second ledger. Selected-but-unavailable broker
+and malformed replies fail without a local fallback. This adds no privilege or
+security scope; it implements three existing D11 inventory obligations.
+
 ## Risks / Trade-offs
 
 - **The launcher is root-adjacent code.** One file, stdlib-only, run `-I -S`, a static kind table,
