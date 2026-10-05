@@ -1,5 +1,10 @@
 Implementation backlog only. Card ownership belongs to inline-connect-and-approve; browser and saved extensions have separate changes.
 
+2026-10-04 prerequisite inspection: blocked during 1.1 because production
+streaming broker startup requires the unimplemented per-role UID split.
+See [delivery.md](delivery.md) for code evidence and the exact resumption gate.
+No task is checked off by this inspection.
+
 ## 1. MCP attach, secret entry and OAuth
 
 - [ ] 1.1 Verify generic OAuth, streaming broker and existing request/card prerequisites; add typed MCP metadata preserving HTTP rows and rollback cleanup.
