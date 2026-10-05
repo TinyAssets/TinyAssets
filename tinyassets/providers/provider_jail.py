@@ -289,12 +289,39 @@ def default_view(
     *,
     credential_dir: Path | None = None,
     cwd: str | None = None,
+    env: Mapping[str, str] | None = None,
 ) -> UniverseView:
     """The universe read-write at its own path, other launch snapshots masked."""
     root = universe_dir.resolve(strict=False)
     if root.is_dir():
         ensure_agent_workspace(root)
+        # Reserve the credential materialization name BEFORE taking the hidden
+        # root inventory. Otherwise a provider can create it on first launch
+        # and persist arbitrary bytes in this account-exempt directory.
+        from tinyassets.credential_vault import CREDENTIAL_ARTIFACT_DIR
+
+        for name in (CREDENTIAL_ARTIFACT_DIR, ".workspace-staging", PLATFORM_RUNTIME_DIR):
+            directory = root / name
+            if directory.is_symlink():
+                raise _refuse("platform runtime is not a plain directory")
+            directory.mkdir(mode=0o700, exist_ok=True)
+            if not directory.is_dir():
+                raise _refuse("platform runtime is not a plain directory")
     mounts = [JailMount("bind", str(root), root)]
+    runtime = root / PLATFORM_RUNTIME_DIR
+    if runtime.is_dir():
+        # CLI homes/caches are disposable per launch. The rest of runtime stays
+        # writable for legacy CLI homes and native sessions, and is charged.
+        child = runtime / "provider-child"
+        if child.is_symlink():
+            raise _refuse("provider runtime home is not a plain directory")
+        child.mkdir(mode=0o700, exist_ok=True)
+        if child.is_dir():
+            mounts.append(JailMount("tmpfs", str(child)))
+            for value in sorted(set((env or {}).values())):
+                path = Path(value)
+                if path.is_relative_to(child) and path != child:
+                    mounts.append(JailMount("dir", str(path)))
     launch_root = root / _LAUNCH_CREDENTIALS
     if launch_root.is_dir():
         mounts.append(JailMount("tmpfs", str(launch_root)))
@@ -306,8 +333,7 @@ def default_view(
         # re-expose every hidden entry the masks just hid (gpt-6-astra refute,
         # 2026-10-01). So the rebind is accepted only for a strict descendant of
         # ``.runtime``.
-        runtime = root / PLATFORM_RUNTIME_DIR
-        if own.is_dir() and own != root and _within(own, runtime):
+        if own.is_dir() and own != launch_root and _within(own, launch_root):
             # Bound back read-write: the CLI writes its lock / session files
             # beside the credential exactly as it did before the jail.
             mounts.append(JailMount("bind", str(own), own))
@@ -454,12 +480,13 @@ def _validated_view(
     root = view.universe_dir.resolve(strict=False)
     checked: list[JailMount] = []
     for mount in view.mounts:
-        if mount.op not in ("bind", "ro-bind", "bind-try", "ro-bind-try", "tmpfs", "remount-ro"):
+        if mount.op not in ("bind", "ro-bind", "bind-try", "ro-bind-try", "tmpfs",
+                            "remount-ro", "dir"):
             raise _refuse(f"unknown mount operation {mount.op!r}")
         dest = mount.dest
         if not dest.startswith("/") or dest.rstrip("/") == "" or _covered(dest, _RESERVED_DESTS):
             raise _refuse(f"a view may not mount at {dest!r}")
-        if mount.op in ("tmpfs", "remount-ro"):
+        if mount.op in ("tmpfs", "remount-ro", "dir"):
             checked.append(mount)
             continue
         if mount.source is None:
@@ -627,8 +654,12 @@ def jail_argv(
     out.extend(_ca_file_binds(env, view, bound))
     for mount in view.mounts:
         if mount.op == "tmpfs":
-            out.extend(("--size", str(jail_disk.MASK_TMPFS_BYTES), "--tmpfs", mount.dest))
-        elif mount.op == "remount-ro":
+            # CLI homes do real cache work, unlike empty authority masks. Give
+            # them the same bounded scratch capacity as the private /tmp.
+            cache_home = str(view.universe_dir / PLATFORM_RUNTIME_DIR / "provider-child")
+            size = tmp_bytes if mount.dest == cache_home else jail_disk.MASK_TMPFS_BYTES
+            out.extend(("--size", str(size), "--tmpfs", mount.dest))
+        elif mount.op in ("remount-ro", "dir"):
             out.extend((f"--{mount.op}", mount.dest))
         else:
             # Resolved and checked by _validated_view; a ``-try`` source that
@@ -778,6 +809,7 @@ def confine_launch(
             scope.universe_dir,
             credential_dir=scope.credential_dir,
             cwd=None if cwd is None else os.fspath(cwd),
+            env=env,
         )
     elif scope is not None and (
         view.universe_dir.resolve(strict=False)

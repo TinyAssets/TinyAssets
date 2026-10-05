@@ -103,6 +103,19 @@ def test_released_history_and_absent_derived_paths_are_not_partial(home):
 
 
 @POSIX
+def test_credential_runtime_is_separate_from_user_files_in_status(home):
+    put(home, f"{UID}/.credentials/claude/projects/cache", b"x" * 112_000)
+    put(home, f"{UID}/notes/mine", b"x" * 36_000)
+    put(home, f"{UID}/.runtime/agent-sessions/transcript", b"history")
+    db_bytes = (home / UID / ".runs.db").stat().st_size
+    result = observe(home)
+    assert result["categories"]["provider_runtime"]["observed_logical_bytes"] == 112_000
+    user_bytes = result["categories"]["other_universe_files"]["observed_logical_bytes"]
+    assert user_bytes == 36_000 + db_bytes + 7
+    assert "not account usage" in result["accounting_note"]
+
+
+@POSIX
 def test_hard_links_deduplicate_in_fixed_category_order(home):
     file = put(home, f"{UID}/workspaces/project/file", b"abcde")
     (home / UID / ".runtime").mkdir()

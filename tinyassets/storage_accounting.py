@@ -98,7 +98,10 @@ class Store:
     measure: Callable[[Path, str], int]
 
 
-def _walk_bytes(root: Path, *, exclude_top: frozenset[str] = frozenset()) -> int:
+def _walk_bytes(
+    root: Path, *, exclude_top: frozenset[str] = frozenset(),
+    _seen: set[tuple[int, int]] | None = None,
+) -> int:
     """Logical bytes of regular files under ``root``. Symlinks are not followed
     and a hard-linked file is counted once. Missing root is 0 bytes."""
     try:
@@ -108,7 +111,7 @@ def _walk_bytes(root: Path, *, exclude_top: frozenset[str] = frozenset()) -> int
     if not stat.S_ISDIR(info.st_mode):
         return 0
     total = 0
-    seen: set[tuple[int, int]] = set()
+    seen: set[tuple[int, int]] = set() if _seen is None else _seen
     stack: list[tuple[Path, bool]] = [(root, True)]
     while stack:
         directory, top = stack.pop()
@@ -140,20 +143,32 @@ def _walk_bytes(root: Path, *, exclude_top: frozenset[str] = frozenset()) -> int
 
 def _universe_files(base: Path, universe_id: str) -> int:
     """Everything in the universe's own directory except what the user did not put
-    there -- the provider runtime (``.runtime``)
+    there -- the provider runtime and credential materialization/cache
     and transient checkout staging (``.workspace-staging``, platform debris when a checkout fails:
     measured at 2.8 GiB in one production universe, concern
     2026-09-30-workspace-staging-leaks-on-failed-checkouts) -- and permanent
     workspaces, which are their own store."""
     if not universe_id or Path(universe_id).name != universe_id or universe_id.startswith("."):
         raise ValueError(f"not a command center id: {universe_id!r}")
-    return _walk_bytes(base / universe_id, exclude_top=_NOT_USER_BYTES)
+    root = base / universe_id
+    seen: set[tuple[int, int]] = set()
+    return _walk_bytes(root, exclude_top=_NOT_USER_BYTES, _seen=seen) + _walk_bytes(
+        root / ".runtime", exclude_top=_NOT_USER_RUNTIME_BYTES, _seen=seen,
+    )
+
+
+#: Platform-created CLI homes/caches are masked with disposable tmpfs. Everything
+#: else in .runtime can retain user writes, so it is measured and charged.
+_NOT_USER_RUNTIME_BYTES = frozenset({"provider-child"})
 
 
 #: Top-level entries of a universe directory that are the PLATFORM's, not the
-#: user's. Counted on the host line, never charged to an account.
+#: user's, or measured separately (workspaces and writable runtime subtrees).
 _NOT_USER_BYTES = frozenset({
-    ".runtime", ".workspace-staging", "workspaces",
+    ".runtime", ".credentials", ".workspace-staging", "workspaces",
+    # .credentials is materialized by credential_vault, hidden from tool jails,
+    # and masked by provider default_view even before credentials exist. Never
+    # exempt arbitrary .claude/.codex/.cache names or nested lookalikes.
     # Consent authority lives OUTSIDE the universe in .universe-sidecars. Even
     # the legacy .premigration backup remains jail-writable here: a filename
     # cannot establish platform ownership, so all in-universe copies are charged.

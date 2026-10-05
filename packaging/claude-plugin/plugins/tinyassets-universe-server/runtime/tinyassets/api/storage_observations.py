@@ -35,6 +35,11 @@ def _base() -> dict:
                        "allocated_disk_blocks", "billing_attribution"],
         "hard_link_attribution": "first_category_in_declared_order",
         "category_order": list(_CATEGORIES),
+        "accounting_note": (
+            "Observed footprint includes platform provider runtime and scratch; "
+            "it is not account usage or evidence that the account quota is full. "
+            "Provider runtime includes protected credential materialization/cache."
+        ),
     }
 
 
@@ -190,10 +195,11 @@ def _measure(root: Path, uid: str, identity: tuple[int, int], readonly) -> dict:
                 try:
                     walker.child(universe_fd, pool.WORKSPACES_DIR, "permanent_workspaces",
                                  missing_is_absent=True)
-                    walker.child(universe_fd, ".runtime", "provider_runtime",
+                    _runtime(walker, universe_fd)
+                    walker.child(universe_fd, ".credentials", "provider_runtime",
                                  missing_is_absent=True)
                     walker.walk(universe_fd, "other_universe_files",
-                                exclude=(pool.WORKSPACES_DIR, ".runtime"))
+                                exclude=(pool.WORKSPACES_DIR, ".runtime", ".credentials"))
                     _scratch(walker, root_fd, root, uid, readonly)
                 except _BoundReached:
                     pass
@@ -208,6 +214,24 @@ def _measure(root: Path, uid: str, identity: tuple[int, int], readonly) -> dict:
         return _unavailable("root_unreadable")
     finally:
         _scan_slots.release()
+
+
+def _runtime(walker: _Walker, universe_fd: int) -> None:
+    from tinyassets.storage_accounting import _NOT_USER_RUNTIME_BYTES
+
+    try:
+        runtime_fd = fs.open_subdir_nofollow(universe_fd, ".runtime")
+    except FileNotFoundError:
+        return
+    except OSError:
+        walker.reasons.add("entry_unreadable")
+        return
+    try:
+        for name in _NOT_USER_RUNTIME_BYTES:
+            walker.child(runtime_fd, name, "provider_runtime", missing_is_absent=True)
+        walker.walk(runtime_fd, "other_universe_files", exclude=_NOT_USER_RUNTIME_BYTES)
+    finally:
+        os.close(runtime_fd)
 
 
 def observe(root: Path, uid: str, *, readonly) -> dict:

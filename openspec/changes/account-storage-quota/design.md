@@ -68,6 +68,40 @@ something real). Those are the categories AGENTS.md says to specify first.
 
 ## D3. Every store, registered
 
+### Runtime accounting repair (2026-10-04)
+
+The production read-only inventory found 98,186,082 bytes in the founder home's
+`.credentials` tree, in addition to 445,009,987 bytes in the already-excluded
+`.runtime` tree. The effective quota was 2 GiB, not the raw folder size.
+Exclude the platform's credential materialization/cache directory as well:
+provider launches must create its mountpoint before masking hidden roots, and
+tool jails never expose hidden roots. Nested lookalikes and arbitrary cache or
+backup names remain charged. Consent sidecars outside the home are platform
+bytes; writable in-home `.premigration` and database backup copies remain charged.
+The status footprint must categorize credential materialization with provider
+runtime and explicitly distinguish raw observed bytes from account usage.
+A jail's fitted reservation can fail because of other reservations or its
+headroom holdback. That is not proof of a full measured account: retain grace
+and the notice, but say capacity is reserved instead of claiming storage is full.
+
+The cross-family review found a pre-existing escape in writable `.runtime`.
+Provider-child homes/caches now use a sized disposable tmpfs. Every other
+persistent runtime path, including `agent-sessions`, legacy CLI homes and
+`provider-launch-credentials`, is included in `universe_files` and in status's
+other-files category. This charges resumable transcripts and arbitrary writes
+even across launches without breaking legacy CLI homes. Retained provider-child
+caches are masked, not deleted. The platform creates every excluded mountpoint
+before first launch, including checkout staging.
+The credential inventory was verified without reading contents: Codex `.tmp`
+67,633,721 bytes and `plugins` 28,849,650 bytes dominate; Claude's materialization
+is 47,415 bytes. The founder's provider attribution was not exact.
+
+Review disposition: AGREE on the runtime escape (closed by disposable cache
+mounts plus charging all persistent runtime writes). AGREE on the misleading
+wait advice (separate active reservations, committed remeasurement, and ordinary
+write headroom). DISAGREE_EVIDENCE with calling headroom alone "out of storage":
+the account is below its real quota; the regression test now covers that case.
+
 Accounting enumerates stores from one registry, `storage_accounting.STORES`.
 The table lists each store, where its bytes live, what attributes them, how it
 is measured, and whether writes to it are gated.
