@@ -245,14 +245,22 @@ def _extract_rate_limit_event(obj: dict, *, now: float | None = None) -> dict:
     REAL Claude 2.1.236 schema: ``rate_limit_info.{status, resetsAt,
     rateLimitType, overageStatus}``. ``status == "allowed"`` is INFORMATIONAL —
     the reference trace shows it emitted on a SUCCESSFUL turn — so it is never a
-    failure (the caller treats it as a liveness heartbeat). Any other status is
+    failure (the caller treats it as a liveness heartbeat). Only ``rejected`` is
     an active limit; ``retry_after`` is derived from ``resetsAt`` (unix seconds).
+
+    Every other status is informational, including ``allowed_warning``: the CLI
+    sends it while the account is still allowed but nearing a window, with
+    ``resetsAt`` set to that window's end (days away for the weekly window). On
+    2026-10-05 treating it as a limit cooled the founder's Claude source for the
+    full day cap (``retry_after`` 410349s) while their limits were fine, and every
+    chat failed. A real refusal also ends the turn with an error result, which
+    is classified separately, so an unknown status is never the only signal.
     """
     info = obj.get("rate_limit_info")
     if not isinstance(info, dict):
         return {"failure_class": None, "retry_after": None}
     status = str(info.get("status") or "").strip().lower()
-    if status in ("", "allowed"):
+    if status != "rejected":
         return {"failure_class": None, "retry_after": None}
     retry_after: float | None = None
     resets_at = _finite_nonneg(info.get("resetsAt"))

@@ -15,6 +15,63 @@ from tinyassets.exceptions import ProviderError
 native = integration.native
 
 
+@pytest.mark.parametrize("native", ["discovered"], indirect=True)
+def test_refreshed_codex_catalogue_is_selectable_in_a_new_cache_instance(
+    picker, native, monkeypatch,
+):
+    from tinyassets.providers.shortlist_refresh import SHORTLIST_CACHE, ShortlistCache
+
+    async def discover():
+        return integration.catalogue(["gpt-6-astra"])
+
+    integration.install_discovery(native, monkeypatch, discover)
+    SHORTLIST_CACHE.refresh_now(base=native.base, owner="owner-1",
+                                universe_id=native.universe.name, provider="codex")
+    fresh = ShortlistCache()
+    # A new engine process must read the completed refresh, not require a second
+    # metadata subprocess before the first useful read in every agent turn.
+    monkeypatch.setattr(fresh, "schedule", lambda **kwargs: False)
+    monkeypatch.setattr("tinyassets.providers.shortlist_refresh.SHORTLIST_CACHE", fresh)
+    try:
+        result = model_options.read_model_options()
+        row = next(row for row in result["options"]
+                   if row["reference"] == {"provider_ref": "codex", "model_id": "gpt-6-astra"})
+        assert row["in_candidate_catalog"] and not row["reasons"], row
+    finally:
+        fresh.shutdown(wait=True)
+
+
+@pytest.mark.parametrize("native", ["discovered"], indirect=True)
+def test_persisted_shortlist_never_crosses_owner_or_revoked_custody(picker, native):
+    from tinyassets.providers import shortlist_store
+    from tinyassets.providers.shortlist_refresh import SHORTLIST_CACHE
+
+    snapshot = SHORTLIST_CACHE.refresh_now(base=native.base, owner="owner-1",
+                                         universe_id=native.universe.name, provider="codex")
+    scope = {"base": native.base, "universe_id": native.universe.name, "provider": "codex"}
+    assert shortlist_store.load(**scope, owner="owner-1") == snapshot
+    assert shortlist_store.load(**scope, owner="other-owner") is None
+    assert shortlist_store.load(**{**scope, "provider": "claude-code"}, owner="owner-1") is None
+    write_credential_vault(native.universe, [], owner_user_id="owner-1",
+                           universe_id=native.universe.name)
+    assert shortlist_store.load(**scope, owner="owner-1") is None
+    shortlist_store.save(snapshot)  # Late completion from the old credential.
+    assert shortlist_store.load(**scope, owner="owner-1") is None
+
+
+@pytest.mark.parametrize("native", ["discovered"], indirect=True)
+def test_persisted_shortlist_keeps_newer_refresh_when_old_worker_finishes_last(picker, native):
+    from tinyassets.providers import shortlist_store
+    from tinyassets.providers.shortlist_refresh import SHORTLIST_CACHE
+
+    snapshot = SHORTLIST_CACHE.refresh_now(base=native.base, owner="owner-1",
+                                         universe_id=native.universe.name, provider="codex")
+    old = replace(snapshot, observed_at=snapshot.observed_at - timedelta(seconds=10))
+    shortlist_store.save(old)
+    assert shortlist_store.load(base=native.base, owner="owner-1",
+                                universe_id=native.universe.name, provider="codex") == snapshot
+
+
 @pytest.fixture
 def picker(native, monkeypatch):
     integration.install_discovery(native, monkeypatch)

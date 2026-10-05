@@ -255,7 +255,8 @@ def _ask(action=None, fields=None, uid=UID):
     }))
 
 
-def _post(operation, data, *, home=UID):
+def _post(operation, data, *, home=UID, cookie=None):
+    from tests.owner_answer import session_cookie
     from tinyassets import onboarding
 
     async def run():
@@ -263,8 +264,10 @@ def _post(operation, data, *, home=UID):
             app=Starlette(routes=onboarding.onboarding_routes())),
             base_url="https://tinyassets.io",
         ) as client:
+            proof = (session_cookie() if operation == "oauth_begin" else "")
             return await client.post("/app/model-connect/" + operation, json=data,
-                                     headers={"Origin": "https://tinyassets.io"})
+                                     headers={"Origin": "https://tinyassets.io",
+                                              "Cookie": proof if cookie is None else cookie})
     return asyncio.run(run())
 
 
@@ -444,7 +447,7 @@ def test_oauth_is_the_primary_action_when_the_provider_offers_it(provider, unive
         bare = _ask(fields=[], action={**TASKS_ASK, "destination": "tasklark-2"})
         assert bare["primary"] == "sign_in" and bare["fields"] == []
         # And that ask cannot be "accepted" with nothing: it is completed by signing in.
-        from tinyassets.api.pending_requests import answer_request
+        from tests.owner_answer import answer_request
 
         refused = answer_request(universe_id=UID, payload=json.dumps(
             {"request_id": bare["request_id"], "values": {}}))
@@ -881,7 +884,7 @@ def test_the_stored_token_url_is_pinned_to_the_discovered_one(provider, app):
             access_token="at-x", refresh_token="rt-x", client_id="c",
             token_url="https://collector.example.net/token"))
         refused = answer_connect_with_token(universe_id=UID, request_id=asked["request_id"],
-                                            token=elsewhere)
+                                            token=elsewhere, owner_session={"test": "owner"})
     assert refused["error"] == "request_invalid"
     assert "token endpoint" in refused["detail"]
     from tinyassets.credential_vault import load_credential_vault
@@ -950,3 +953,37 @@ def test_lock_contention_during_refresh_never_loses_the_rotated_token(
     assert busy["left"] == 0 and provider.refresh_calls == 1 and provider.reused == 0
     assert before.refresh_token in provider.refresh_spent
     assert after.refresh_token in provider.refresh_live  # the rotated token was kept
+
+
+@pytest.mark.parametrize("cookie", ["", "__Host-ta-owner=forged"])
+def test_bearer_cannot_start_owner_bound_oauth(provider, app, cookie):
+    from tinyassets.connection_oauth import pkce
+
+    with _as(OWNER):
+        asked = _ask()
+        refused = _post("oauth_begin", {"request_id": asked["request_id"],
+                                       "code_challenge": CHALLENGE}, cookie=cookie)
+    assert refused.status_code == 403
+    assert refused.json()["error"] == "interactive_approval_required"
+    with pkce.flows_db(app) as (conn, _):
+        assert conn.execute("SELECT COUNT(*) FROM connection_oauth_flows").fetchone()[0] == 0
+    assert provider.access == {}
+
+
+def test_unbound_legacy_oauth_flow_cannot_be_upgraded_at_completion(provider, app):
+    from tests.owner_answer import session_cookie
+    from tinyassets.connection_oauth import pkce
+
+    with _as(OWNER):
+        asked = _ask()
+        begun = _post("oauth_begin", {"request_id": asked["request_id"],
+                                     "code_challenge": CHALLENGE}).json()
+        back = dict(parse_qsl(urlsplit(provider.authorize(begun["authorize_url"])).query))
+        with pkce.flows_db(app) as (conn, _):
+            conn.execute("UPDATE connection_oauth_flows SET approved_owner=''")
+        for cookie in ("", session_cookie()):
+            result = _post("oauth_exchange", {"flow": back["state"], "code": back["code"],
+                                             "code_verifier": VERIFIER}, cookie=cookie)
+            assert result.status_code == 403
+            assert result.json()["error"] == "interactive_approval_required"
+    assert provider.access == {}

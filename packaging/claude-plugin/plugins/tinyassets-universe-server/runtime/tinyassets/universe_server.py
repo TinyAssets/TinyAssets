@@ -714,7 +714,9 @@ def read_graph(
             model_options_summary is the same read),
             conversation_turn (your keyed custom conversation's current run/projection),
             or conversation (page your OWN retained conversation: omit field_name
-            for a bounded catalogue of turn ids, or pass field_name=<turn id> --
+            for turn ids and bounded previews; query searches retained text
+            literally, ignoring case, and must be kept when paging next_offset.
+            Pass field_name=<turn id> --
             the id get_status's recent_conversation carries -- for exact chunks
             of one message, continuing from next_offset until it is null).
         graph_id: Optional graph/command center identifier.
@@ -1581,6 +1583,7 @@ def write_graph(
                 action=action,
                 definition_id=agent_definition_id,
                 stage_id=agent_stage_id,
+                universe_id=graph_id,
                 payload=payload_json,
                 idempotency_key=idempotency_key,
             )

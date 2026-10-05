@@ -52,7 +52,7 @@ def entries() -> list[dict[str, Any]]:
             hosts = row["hosts"]
             if (not isinstance(hosts, list) or not hosts
                     or any(not isinstance(h, str) or not re.fullmatch(
-                        r"[a-z0-9-]+(?:\.[a-z0-9-]+)+", h) for h in hosts)):
+                        r"(?:\*\.)?[a-z0-9-]+(?:\.[a-z0-9-]+)+", h) for h in hosts)):
                 raise ValueError
             for key in ("authorization_endpoint", "token_endpoint",
                         "revocation_endpoint", "issuer"):
@@ -77,7 +77,8 @@ def entries() -> list[dict[str, Any]]:
                 validate_scopes(values)
             uses = row.get("host_uses", {})
             if not isinstance(uses, dict) or any(
-                h not in hosts or u not in scopes for h, u in uses.items()
+                h not in hosts or h.startswith("*.") or u not in scopes
+                for h, u in uses.items()
             ):
                 raise ValueError
             extra = row.get("extra_auth_params", {})
@@ -130,8 +131,13 @@ def resolve(requested: dict[str, Any], hosts: list[str]) -> dict[str, Any] | Non
     wanted = {h.lower() for h in hosts}
     for row in entries():
         # A token must not be granted to a connection that also names an
-        # unrelated host. No suffix/wildcard matching.
-        if not wanted or not wanted <= set(row["hosts"]):
+        # unrelated host. Only explicitly declared wildcard DNS subdomains
+        # match; the dot boundary excludes suffix lookalikes and the apex.
+        if not wanted or not all(any(
+            h == pattern if not pattern.startswith("*.")
+            else h.endswith(pattern[1:]) and h != pattern[2:]
+            for pattern in row["hosts"]
+        ) for h in wanted):
             continue
         client_id = os.environ.get(row["client_id_env"], "")
         if not client_id or not secret(row["client_secret_env"]):

@@ -193,8 +193,7 @@ def test_pinned_preferred_used_when_available():
 
 
 def test_policy_router_empty_registry_falls_back_to_injected_provider_call():
-    """BUG-038: a fresh policy router with no registered providers must not
-    exhaust before the run_branch provider bridge can serve the node."""
+    """A policy-incapable route must refuse before the plain bridge can substitute."""
     policy = {"preferred": {"provider": "codex"}}
     node = _make_node(llm_policy=policy)
     branch = _make_branch(node)
@@ -220,15 +219,20 @@ def test_policy_router_empty_registry_falls_back_to_injected_provider_call():
         branch, provider_call=_PolicyBridge(_router, _provider), event_sink=_sink,
     )
     app = compiled.graph.compile()
-    result = app.invoke(
-        {"topic": "install planning"},
-        config={"configurable": {"thread_id": "t-empty-router"}},
-    )
+    from tinyassets.graph_compiler import CompilerError
 
-    assert prompts == ["Write about install planning"]
-    assert result["out"] == "served by injected provider"
+    # Historical test name retained: this fallback must now fail closed, because
+    # the plain bridge has no way to honour the node's chosen source.
+    with pytest.raises(CompilerError, match="default on codex.*policy execution"):
+        app.invoke(
+            {"topic": "install planning"},
+            config={"configurable": {"thread_id": "t-empty-router"}},
+        )
+
+    assert prompts == []
+    assert any(e.get("phase") == "failed" for e in events)
     ran = [e for e in events if e.get("phase") == "ran"]
-    assert ran
+    assert ran == []
 
 
 def test_branch_default_policy_applies_when_node_unset():

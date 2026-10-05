@@ -71,6 +71,17 @@ from tinyassets.patch_intake import ACTION_TYPE as PATCH_INTAKE_ACTION
 
 logger = logging.getLogger(__name__)
 
+# Authority-bearing answers require the protected HTTP owner's proof, including
+# refusal/recovery decisions. Never derive this proof from an answer payload.
+CONSENT_ACTIONS = frozenset({
+    "publish", "install", "connect", "connect_http", "extend_http", "rotate_http",
+    "remove_http", "grant_workspace_consent", "bind_model_access", PATCH_INTAKE_ACTION,
+})
+CONSENT_REQUIRED_DETAIL = (
+    "Open the approval sheet in the app to answer this request in the protected owner session. "
+    "Bearer, chatbot, MCP and CLI answers are not consent."
+)
+
 _MAX_KIND_CHARS = 24
 _MAX_TITLE_CHARS = 120
 _MAX_BODY_CHARS = 600
@@ -1341,10 +1352,15 @@ def request_from_user(
         if reused is not None:
             return {**reused, "grant_sentence": _grant_sentence(reused)}
         request_id = _pin_consent(_uid, action, (kind, title, body), fields)
+    request_agent = "main"
+    if action.get("type") in {"connect", "connect_http"}:
+        from tinyassets.effectors.authenticated_external_call import _initiating_agent
+
+        request_agent = _initiating_agent(udir) or "main"
     row = create_request(
         udir, kind=kind, title=title, body=body, fields=fields,
         action=action, dedupe_key=dedupe, origin=origin, items=items,
-        request_id=request_id,
+        request_id=request_id, agent=request_agent,
     )
     if row is None:
         return {"error": "request_storage_unavailable"}
@@ -1371,6 +1387,16 @@ def request_from_user(
     # request was raised" from "the one you raised before is still waiting".
     # Only the first is something to put on the owner's phone.
     created = row.pop("created", True)
+    if action.get("type") in {"connect", "connect_http"}:
+        from tinyassets.connection_continuations import bind
+
+        try:
+            row["server_continuation"] = bind(udir, row["request_id"])
+        except Exception:
+            logger.warning("Connection ask saved but continuation binding failed", exc_info=True)
+            row["server_continuation"] = False
+            row["continuation_status"] = "unavailable"
+
     if created:
         _notify_owner(_uid, row)
     return {**row, "grant_sentence": _grant_sentence(row), **sign_in}
@@ -2702,7 +2728,6 @@ def _start_approved_proposal(universe_id: str, row: dict[str, Any]) -> dict[str,
             "request_pending": True}
 
 
-@_coordinated
 def answer_request(*, universe_id: str = "", payload: Any = None) -> dict[str, Any]:
     """The user's answer.
 
@@ -2710,6 +2735,17 @@ def answer_request(*, universe_id: str = "", payload: Any = None) -> dict[str, A
     the tab with nothing written. For a ``connect_http`` request the secret value
     is deposited under the policy stored ON THE REQUEST — never one supplied
     here — so the tab's promise is what gets granted.
+    """
+    return _answer_request(universe_id=universe_id, payload=payload)
+
+
+@_coordinated
+def _answer_request(*, universe_id: str = "", payload: Any = None,
+                    owner_session: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Shared executor; only the protected HTTP route supplies owner proof.
+
+    Never take owner_session from the answer payload or expose it on the public
+    bearer handler. The route verifies the cookie, origin and authenticated owner.
     """
     from tinyassets.storage.pending_requests import get_request, resolve_request
 
@@ -2737,8 +2773,20 @@ def answer_request(*, universe_id: str = "", payload: Any = None) -> dict[str, A
     if row is None:
         return {"error": "not_found", "resource": "pending_request"}
     if row["action"].get("type") == "approve_action":
-        return {"error": "interactive_approval_required",
+        return {"error": ("preview_required" if owner_session is not None
+                          else "interactive_approval_required"),
                 "detail": "Open the protected inline owner card to decide this action."}
+    if row["action"].get("type") == "notify":
+        return {"error": "not_answerable",
+                "detail": "This notification needs no answer; dismiss it with withdraw."}
+    # Consult the immutable pin too: editing a publish/install row into a plain
+    # question must not let a bearer reach its pinned executable action.
+    pinned = _consent_pin(_uid, request_id)
+    action_type = (pinned["record"]["action"] if pinned else row["action"]).get("type")
+    if action_type in CONSENT_ACTIONS and owner_session is None:
+        return {"error": "interactive_approval_required",
+                "detail": CONSENT_REQUIRED_DETAIL,
+                "request_pending": row["status"] == "pending"}
     if row["status"] != "pending":
         return {"error": "already_resolved", "status": row["status"]}
 
@@ -2756,8 +2804,9 @@ def answer_request(*, universe_id: str = "", payload: Any = None) -> dict[str, A
                 "in the clear, so say it in words instead"
             )
         again = document.get("dont_ask_again") is True
-        resolve_request(udir, request_id, status="dismissed", feedback=fb,
-                        dont_ask_again=again, decision="declined")
+        if not resolve_request(udir, request_id, status="dismissed", feedback=fb,
+                               dont_ask_again=again, decision="declined"):
+            return {"error": "request_storage_unavailable", "request_pending": True}
         return {
             "status": "dismissed",
             "request_id": request_id,
@@ -2778,8 +2827,9 @@ def answer_request(*, universe_id: str = "", payload: Any = None) -> dict[str, A
                 "in the clear, so say it in words instead"
             )
         again = document.get("dont_ask_again") is True
-        resolve_request(udir, request_id, status="answered", answer=None,
-                        feedback=fb, dont_ask_again=again, decision="declined")
+        if not resolve_request(udir, request_id, status="answered", answer=None,
+                               feedback=fb, dont_ask_again=again, decision="declined"):
+            return {"error": "request_storage_unavailable", "request_pending": True}
         return {
             "status": "answered",
             "decision": "declined",
@@ -2939,10 +2989,15 @@ def answer_request(*, universe_id: str = "", payload: Any = None) -> dict[str, A
             result = answer_publish(_uid, pinned, values, request_id=request_id)
         except (ValueError, LookupError, PermissionError) as exc:
             return {"error": "publish_refused", "detail": str(exc), "request_pending": True}
+        from tinyassets.publication_completion import receipt_completion, start_receipt_preview
+
+        result["completion"] = receipt_completion(result, universe_id=_uid, action=action)
+        answer = {**answer, "completion": result["completion"]}
         if not resolve_request(udir, request_id, status="answered", answer=answer,
                                feedback=feedback, dont_ask_again=False, decision="allowed"):
             return {"error": "request_resolution_unconfirmed", "request_pending": True}
         result = {**result, **after_publish(_uid, action, result, request_id=request_id)}
+        start_receipt_preview(result["completion"], universe_id=_uid, request_id=request_id)
         release_note = (" " + result["release_registration_detail"]
                         if result.get("release_registration") == "unavailable" else "")
         return {**result, "status": "answered", "request_id": request_id,
@@ -3290,9 +3345,10 @@ def _deposit_answer(
             # ask PENDING: answering again re-deposits idempotently and
             # retries the uses, so nothing is half-granted for long.
             return {**extra, "request_pending": True}
-    resolve_request(udir, request_id, status="answered", answer=answer,
-                    feedback=feedback, dont_ask_again=dont_ask_again,
-                    decision="allowed")
+    if not resolve_request(udir, request_id, status="answered", answer=answer,
+                           feedback=feedback, dont_ask_again=dont_ask_again,
+                           decision="allowed"):
+        return {"error": "request_storage_unavailable", "request_pending": True}
     return {
         "status": "answered",
         "request_id": request_id,
@@ -3300,6 +3356,7 @@ def _deposit_answer(
         "destination": action["destination"],
         "receipt": _grant_sentence(row).replace("will be able to", "may"),
         "connection_id": deposited.get("connection_id"),
+        "server_continuation": bool(row.get("server_continuation")),
         **({"signed_in": True} if auth_scheme == "oauth2" else {}),
         **extra,
     }
@@ -3308,6 +3365,7 @@ def _deposit_answer(
 @_coordinated
 def answer_connect_with_token(
     *, universe_id: str = "", request_id: str = "", token: str = "",
+    owner_session: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """The owner answered a sign-in-capable ``connect`` by signing in.
 
@@ -3323,6 +3381,9 @@ def answer_connect_with_token(
     row = get_request(udir, request_id) if request_id else None
     if row is None:
         return {"error": "not_found", "resource": "pending_request"}
+    if owner_session is None:
+        return {"error": "interactive_approval_required", "detail": CONSENT_REQUIRED_DETAIL,
+                "request_pending": row["status"] == "pending"}
     if row["status"] != "pending":
         return {"error": "already_resolved", "status": row["status"]}
     action = row["action"]
@@ -3398,10 +3459,23 @@ def _complete_connect(
     if "provider" in applied:
         out["provider"] = applied["provider"]
         out["definition_id"] = applied["definition_id"]
-        out["serving"] = select_model_if_unpowered(
-            base=base, uid=uid, actor=actor, definition_id=applied["definition_id"],
-            model=applied["model"],
-        )
+        from tinyassets.exceptions import ProviderError
+
+        try:
+            out["serving"] = select_model_if_unpowered(
+                base=base, uid=uid, actor=actor, definition_id=applied["definition_id"],
+                model=applied["model"],
+            )
+        except (PermissionError, ValueError, LookupError, ProviderError, OSError):
+            # The deposit succeeded, but it must not look like accepted model
+            # access. Keep the request pending and report actual serving state.
+            return {**out, "error": "model_source_acceptance_failed",
+                    "detail": "Connection saved, but the model source was not accepted. "
+                              "In model setup, confirm explicit model access for your existing "
+                              "source and ensure exactly one owned agent is serving; "
+                              "then retry this request.",
+                    "serving": {"status": "unchanged" if _serving_llm_bound(base, uid, actor)
+                                else "disabled", "reason": "model_source_acceptance_failed"}}
     return out
 
 

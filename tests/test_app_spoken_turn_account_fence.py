@@ -24,6 +24,7 @@ import subprocess
 
 import pytest
 
+from tests.app_sheet_harness import sheet_source
 from tests.test_app_live_turn_recovery import _DECLS, _EXTRA_SHIM, _FUNCS, _NODE, _OPTIONAL_FUNCS
 from tests.test_onboarding_app import _APP_SHIM, _js_function
 from tinyassets import onboarding
@@ -77,7 +78,7 @@ function fence(){
 
 def _program(html: str, body: str) -> str:
     decls = [m.group(0) for pat in _DECLS if (m := re.search(pat, html))]
-    funcs = [_js_function(html, f) for f in _FUNCS]
+    funcs = [sheet_source(html)] + [_js_function(html, f) for f in _FUNCS]
     for name in _OPTIONAL_FUNCS:
         if re.search(r"function\s+" + name + r"\s*\(", html):
             funcs.append(_js_function(html, name))
@@ -316,20 +317,21 @@ def test_a_same_owner_spoken_failure_still_offers_the_retry_once(tmp_path, html)
     const e=new Error("offline"); e.transport=true; gates[0].reject(e);
     const error=await turn; await settle();
     const failed=fence();
-    const btn=els.thread.children.filter(n=>!n.removed).flatMap(n=>n.children)
-      .find(c=>c.tagName==="BUTTON"&&c.textContent==="Send it again");
-    btn.click(); await settle();
-    gates[1].resolve({reply:"Deployed."}); await settle();
+    const note=els.thread.children.find(n=>n.unconfirmed);
+    Owner.getConversation=async()=>({recent_conversation:{turns:[
+      {speaker:"founder",text:"deploy the fix",client_send_id:readInflight().client_send_id},
+      {speaker:"universe",text:"Deployed."}]}});
+    await note.checkSavedConversation();
     console.log(JSON.stringify({error, failed, done:fence()}));
     """)
     failed, done = out["failed"], out["done"]
     assert out["error"] == "offline"
-    assert failed["founderBubbles"] == 1 and failed["resendButtons"] == 1
+    assert failed["founderBubbles"] == 1 and failed["resendButtons"] == 0
     assert failed["inflight"]["message"] == "deploy the fix"
     assert failed["sendDisabled"] is False
     assert failed["settled"] == [False]
     assert "available to retry" in failed["voiceStatus"]
-    assert done["converseCalls"] == ["deploy the fix", "deploy the fix"]
+    assert done["converseCalls"] == ["deploy the fix"]
     assert done["messages"][-1] == {"role": "universe", "text": "Deployed."}
     assert done["inflight"] is None
 
@@ -369,6 +371,6 @@ def test_the_original_owner_is_still_offered_the_retired_spoken_turn(tmp_path, h
     console.log(JSON.stringify(fence()));
     """)
     assert back["founderBubbles"] == 1 and back["unconfirmedNotes"] == 1
-    assert back["resendButtons"] == 1
+    assert back["resendButtons"] == 0
     assert back["inflight"]["message"] == "account A private spoken line"
     assert back["converseCalls"] == ["account A private spoken line"], "no silent resend"

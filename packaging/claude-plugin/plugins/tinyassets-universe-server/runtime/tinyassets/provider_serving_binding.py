@@ -499,6 +499,7 @@ def bind_serving_provider(
     provider: str,
     model_access: dict[str, ModelAccess] | None = None,
     expected_assignment_digest: str | None = None,
+    expected_binding_updated_at: float | None = None,
     require_current_home: bool = False,
 ) -> dict[str, object]:
     """Publish one exact agent's accepted connections in the existing two phases.
@@ -548,6 +549,9 @@ def bind_serving_provider(
         raise PermissionError("only the binding creator may assign its provider")
     if int(agent["revision"]) != expected_revision:
         raise ValueError("agent binding revision is stale")
+    if (expected_binding_updated_at is not None
+            and agent["updated_at"] != expected_binding_updated_at):
+        raise PermissionError("agent serving intent changed")
 
     admission = provider_assignment_admission()
     store = SQLiteProviderWorkAuthorityStore(base)
@@ -564,6 +568,9 @@ def bind_serving_provider(
         agent = get_binding(base, universe_id=uid, binding_id=binding_id)
         if agent is None:
             raise LookupError("agent binding was not found")
+        if (expected_binding_updated_at is not None
+                and agent["updated_at"] != expected_binding_updated_at):
+            raise PermissionError("agent serving intent changed")
         if agent["created_by"] != owner:
             raise PermissionError("only the binding creator may assign its provider")
         if int(agent["revision"]) != expected_revision:
@@ -986,6 +993,7 @@ def set_serving(
     expected_revision: int,
     enabled: bool,
     expected_assignment_digest: str | None = None,
+    expected_binding_updated_at: float | None = None,
     require_current_home: bool = False,
 ) -> dict[str, object]:
     """Enable/disable an exact founder-owned binding for served turns.
@@ -1017,6 +1025,9 @@ def set_serving(
     existing = get_binding(base_path, universe_id=uid, binding_id=binding_id)
     if existing is None:
         raise LookupError("agent binding was not found")
+    if (expected_binding_updated_at is not None
+            and existing["updated_at"] != expected_binding_updated_at):
+        raise PermissionError("agent serving intent changed")
     store = SQLiteProviderWorkAuthorityStore(base_path)
     prepared = None
     if enabled:
@@ -1041,6 +1052,9 @@ def set_serving(
         current = get_binding(base_path, universe_id=uid, binding_id=binding_id)
         if current is None:
             raise LookupError("agent binding was not found")
+        if (expected_binding_updated_at is not None
+                and current["updated_at"] != expected_binding_updated_at):
+            raise PermissionError("agent serving intent changed")
         if current["created_by"] != owner:
             raise PermissionError("only the binding creator may change serving state")
         if int(current["revision"]) != expected_revision:

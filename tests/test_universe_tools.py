@@ -271,10 +271,10 @@ def test_limits_wrap_the_command_and_prove_themselves_before_it_runs(monkeypatch
     monkeypatch.setattr(universe_tools.shutil, "which",
                         lambda name, path=None: f"/usr/bin/{name}")
     limits = universe_tools.ToolLimits(memory_bytes=1, processes=2, cpu_seconds=3,
-                                       file_bytes=4, open_files=5)
+                                       open_files=5)
     wrapped = universe_tools._limited(["/usr/bin/bash", "-c", "x"], limits, cpu_seconds=3)
     assert wrapped[0] == "/usr/bin/prlimit"
-    assert wrapped[1:8] == ["--as=1", "--nproc=2", "--cpu=3:4", "--fsize=4", "--nofile=5",
+    assert wrapped[1:7] == ["--as=1", "--nproc=2", "--cpu=3:4", "--nofile=5",
                             "--core=0", "--"]
     assert wrapped[-3:] == ["/usr/bin/bash", "-c", "x"]
     assert universe_tools._LIMITS_MARK.decode() in wrapped

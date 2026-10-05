@@ -190,7 +190,8 @@ def test_policy_verbs_stay_off_the_served_surface(monkeypatch, base):
 
 
 def test_the_agent_withdraws_its_own_stale_ask(monkeypatch, base):
-    from tinyassets.api.pending_requests import answer_request, list_requests
+    from tests.owner_answer import answer_request
+    from tinyassets.api.pending_requests import list_requests
 
     s = _served(monkeypatch)
     rid = _ask(s)["request_id"]
@@ -220,7 +221,7 @@ def test_withdrawal_is_not_a_standing_decision(monkeypatch, base):
 
 
 def test_the_agent_cannot_withdraw_what_the_owner_answered(monkeypatch, base):
-    from tinyassets.api.pending_requests import answer_request
+    from tests.owner_answer import answer_request
 
     s = _served(monkeypatch)
     rid = _ask(s)["request_id"]

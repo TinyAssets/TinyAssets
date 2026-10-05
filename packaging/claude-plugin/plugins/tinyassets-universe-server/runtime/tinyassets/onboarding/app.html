@@ -101,16 +101,6 @@
           min-width:0}
     .rail[hidden]{display:none}
     /* Pending asks stay above the composer, outside the scrolling history. */
-    #pending-requests{flex:0 1 auto;min-height:0;max-height:30%;overflow-y:auto;
-      padding:0 .7rem;background:var(--surface)}
-    #pending-requests:has(#rail-items:empty){display:none}
-    #pending-requests .rtab{margin:.3rem 0}
-    @container (max-width:600px){
-      #pending-requests .rtab-btn{display:flex;align-items:center;gap:.4rem;padding:.35rem .5rem}
-      #pending-requests .rtab-kind{flex:none;margin:0}
-      #pending-requests .rtab-title{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
-    }
-    @media (max-width:600px){#pending-requests{max-height:40%}}
     .rtab-item{border-bottom:1px solid var(--line);padding:.6rem 0;margin-bottom:.6rem}
     .rtab-item-heading{display:flex;align-items:flex-start;gap:.4rem;overflow-wrap:anywhere}
     .rtab-item-heading input{width:auto;flex:0 0 auto;margin:.2rem 0 0}
@@ -238,6 +228,11 @@
     .voice-dialog-card p{color:var(--ink-dim);line-height:1.45}
     .voice-dialog-actions{display:flex;justify-content:flex-end;gap:.6rem;margin-top:1rem}
     .attachments{display:flex;flex-wrap:wrap;gap:.4rem;padding:.4rem 1rem 0}
+    .msg-body a{color:var(--universe);text-decoration:underline;overflow-wrap:anywhere}
+    .msg-body pre{white-space:pre-wrap;overflow-wrap:anywhere;padding:.6rem;border:1px solid var(--line);border-radius:8px}
+    .msg-body svg,.chat-diagram{display:block;width:100%;max-width:640px;height:auto;margin:.6rem 0}
+    .chat-diagram{max-height:28rem;object-fit:contain;background:#fff;border-radius:8px;padding:.5rem}
+    .chat-file{display:block;max-width:100%;margin:.5rem 0;padding:.6rem .9rem;border:1px solid var(--line);border-radius:8px;background:var(--surface);color:var(--ink);cursor:pointer;overflow-wrap:anywhere}
     .chip{display:inline-flex;align-items:center;gap:.4rem;background:var(--surface-2);border:1px solid var(--line);
       border-radius:999px;padding:.2rem .6rem;font-size:.78rem;color:var(--ink)}
     .chip--warn{border-color:#b3541e;color:#e08a4a}
@@ -388,7 +383,6 @@
       /* Collapsed, the chip and any load error stay; everything else (items,
          "Add a key yourself") is one tap away. renderRail still decides when
          the rail shows at all. */
-      #request-rail:not(.rail--open) > :not(#rail-head):not(#rail-error){display:none}
       #rail-head{padding:8px 0;margin:0;white-space:nowrap;cursor:pointer;text-transform:none;letter-spacing:normal}
       #model-bar{flex-wrap:nowrap;gap:8px;padding:4px 8px;white-space:nowrap}
       #model-next{min-width:0;overflow:hidden;text-overflow:ellipsis;font-size:12px}
@@ -403,6 +397,24 @@
       #composer #btn-send,#composer #btn-stop{grid-column:4;grid-row:2;padding:8px 12px}
       #status-line{padding-bottom:2px;min-height:0}
     }
+    dialog.request-sheet{position:fixed;inset:auto 0 0;margin:0 auto;width:min(42rem,100%);max-width:100%;max-height:88dvh;box-sizing:border-box;overflow:auto;border:1px solid var(--line);border-radius:20px 20px 0 0;padding:1.1rem;background:var(--surface);color:var(--ink);}
+    dialog.request-sheet:not([open]){display:none!important}
+    dialog.request-sheet[open]{display:block!important;width:min(42rem,100%)!important;max-height:88dvh!important;padding:1.1rem!important}
+    dialog.request-sheet::backdrop{background:rgb(0 0 0 / .45)}
+    #request-rail[open]>:not([hidden]){display:block}
+    #request-rail [hidden]{display:none!important}
+    #request-sheet-close,#needs-you-close{position:absolute;right:1rem;top:1rem}
+    #rail-head,#needs-you-title{padding-right:6rem;white-space:normal;margin-bottom:1rem}
+    #request-rail .rtab{clear:both;width:100%;box-sizing:border-box}
+    #request-rail .rtab>h3{display:none}
+    .inline-approval h3,.inline-approval p{overflow-wrap:anywhere}
+    .request-sheet .inline-approval{padding-top:.5rem}
+    #needs-you-items{display:grid;gap:.6rem;clear:both}
+    #needs-you-open{height:44px;padding-block:.5rem}
+    #chat-cloud-bubble[hidden] ~ #bubble-needs-you{display:none}
+    #bubble-needs-you{position:absolute;right:1rem;bottom:5rem;z-index:12}
+    .inline-approval .rtab-actions{display:flex;flex-wrap:wrap;gap:.5rem}
+    .inline-approval button{min-height:44px}
   </style>
 </head>
 <body>
@@ -438,7 +450,7 @@
       <div id="ui-frame-host" hidden></div>
       <section id="chat-cloud" class="chat-cloud" data-agent="main" data-mode="open"
                aria-label="Chat with your agent">
-      <div class="chat-discovery"><button id="btn-chat-browse" class="btn btn--link" type="button">Browse / Switch command centers</button></div>
+      <div class="chat-discovery"><button id="btn-chat-browse" data-app-recovery="browse" class="btn btn--link" type="button">Browse / Switch command centers</button></div>
       <div id="ui-install-receipt" role="status" aria-live="polite" hidden></div>
       <div id="chat-cloud-bar" class="chat-cloud-bar" tabindex="0"
            aria-label="Chat window. Arrow keys move it; Shift and arrow keys resize it."
@@ -477,8 +489,10 @@
             <div class="waking-sub">Your command center is waking up. Say hello to begin.</div>
           </div>
         </div>
-        <aside id="request-rail" class="rail" hidden>
+        <dialog id="request-rail" class="request-sheet" aria-labelledby="rail-head">
+          <button id="request-sheet-close" class="btn" type="button">Close</button>
           <div id="rail-head" class="rail-head">Request history</div>
+          <div id="rail-items"></div>
           <div id="rail-error" class="rail-error" role="alert" hidden>
             <span id="rail-error-text"></span>
             <button id="btn-rail-retry" class="btn btn--link" type="button">Try again</button>
@@ -507,6 +521,8 @@
             <label class="field"><span>Name (a label you'll recognize)
                 <span class="muted">(letters, numbers and . _ : - &mdash; no spaces)</span></span>
               <input id="http-destination" type="text" placeholder="a short name you will recognise later" /></label>
+            <label class="field"><span>Account label (optional; use a different label for each account)</span>
+              <input id="http-account-label" type="text" placeholder="personal or work" /></label>
             <label class="field"><span>API host</span>
               <input id="http-host" type="text" placeholder="the API hostname, e.g. api.example.com" /></label>
             <label class="field"><span>Path it may call
@@ -517,6 +533,7 @@
             <label class="field"><span>How it authenticates
                 <span class="muted">(most APIs use a bearer token; OAuth 1.0a needs four values &mdash; the service you are connecting tells you which)</span></span>
               <select id="http-auth-scheme">
+                <option value="oauth">Provider sign-in (registered OAuth)</option>
                 <option value="bearer" selected>API key / bearer token (most APIs, webhooks)</option>
                 <option value="basic">Username &amp; password (basic auth)</option>
                 <option value="oauth1a">OAuth 1.0a — 4 keys</option>
@@ -625,7 +642,7 @@
               </div>
             </details>
           </div>
-        </aside>
+        </dialog>
       </div>
       <div id="attachments" class="attachments" hidden></div>
       <div id="model-bar" class="model-bar">
@@ -634,9 +651,7 @@
         <div id="model-menu" class="model-menu" role="menu" aria-labelledby="btn-models" hidden></div>
         <span id="model-next" class="muted">Next message: saved default</span>
       </div>
-      <section id="pending-requests" aria-label="Requests needing you">
-        <div id="rail-items"></div>
-      </section>
+      <button id="needs-you-open" class="btn" type="button">Needs you</button>
       <form id="composer" class="composer">
         <input id="file-input" type="file" multiple hidden
                accept=".txt,.md,.markdown,.json,.csv,.tsv,.yaml,.yml,.py,.js,.ts,.jsx,.tsx,.html,.htm,.css,.xml,.log,.sh,.rst,.ini,.toml,.env,.sql,text/*" />
@@ -674,10 +689,17 @@
         <span class="chat-cloud-bubble-icon" aria-hidden="true">&#128172;</span>
         <span id="chat-cloud-badge" class="chat-cloud-badge" hidden></span>
       </button>
-      <button id="btn-bubble-browse" class="btn" type="button" hidden>Browse / Switch</button>
+      <button id="bubble-needs-you" class="btn" type="button">Needs you</button>
+      <button id="btn-bubble-browse" data-app-recovery="browse" class="btn" type="button" hidden>Browse / Switch</button>
       </div>
     </section>
 
+    <dialog id="needs-you" class="request-sheet" aria-labelledby="needs-you-title">
+      <button id="needs-you-close" class="btn" type="button">Close</button>
+      <h2 id="needs-you-title">Needs you</h2><div id="needs-you-items"></div>
+      <button id="needs-you-history" class="btn" type="button">Answered history</button>
+      <button id="needs-you-connect" class="btn" type="button">Connect a service</button>
+    </dialog>
     <dialog id="ui-dialog" class="ui-dialog" aria-labelledby="ui-title">
       <h2 id="ui-title">Browse and switch command centers</h2>
       <p>Preview shared designs, open one of your screens, or talk to your agent to build or change your space. Browsing and previews never send a message.</p>
@@ -769,6 +791,7 @@
         <p>Disconnect removes this command center's access and its saved key in TinyAssets.
         Your history and designs stay. Your provider account is not deleted.
         Requests already sent may still finish.</p>
+        <button class="btn" type="button" id="settings-connect">Connect a service</button>
         <button id="btn-refresh-connections" class="btn btn--ghost">Refresh connections</button>
         <button id="btn-connect-free-ai" class="btn btn--ghost" type="button">Connect free AI</button>
         <div id="connection-list"></div>
@@ -834,8 +857,18 @@
       </div>
     </section>
 
+  <nav id="app-recovery-controls" aria-label="Command center recovery">
+    <a href="/app" data-app-recovery="refresh">Refresh command center</a>
+    <a href="/app" data-app-recovery="browse">Browse / Switch</a>
+    <a href="/app" data-app-recovery="chat">Open chat</a>
+    <span id="app-recovery-failed" role="alert" hidden>Something went wrong - <a href="/app" data-app-recovery="reload">Reload</a></span>
+  </nav>
   </main>
-
+  <style nonce="__TA_NONCE__">
+    #app-recovery-controls{flex:0 0 auto;display:flex;flex-wrap:wrap;gap:12px;padding:6px 10px;padding-bottom:max(6px,env(safe-area-inset-bottom));box-sizing:border-box;background:var(--surface,#fff);border-top:1px solid var(--line,#ddd);font-size:12px}
+    #app-recovery-controls a{color:var(--ink,#111)}
+  </style>
+  <script nonce="__TA_NONCE__">__TA_APP_RECOVERY__</script>
   <script nonce="__TA_NONCE__">
   "use strict";
   // Server-injected config (client_id, AuthKit endpoints, resource). Public values only.
@@ -1819,8 +1852,7 @@
         payload_json:JSON.stringify(payload)});
     },
     answerRequest(payload){
-      return this.callTool("write_graph",{target:"connection",operation:"answer_request",
-        payload_json:JSON.stringify(payload)});
+      return InlineApprovals.post("answer",payload);
     },
     connectCompute(payload){
       return this.callTool("write_graph",{target:"connection",operation:"connect_compute",
@@ -2086,6 +2118,27 @@
     el.queuedNote=null;
   }
 
+  function chatFileDownloader(){
+    const epoch=MCP._loginEpoch, owner=queueOwner, home=queueScope;
+    const current=()=>{
+      MCP._assertLogin(epoch);
+      if(!owner || !home || owner!==queueOwner || home!==queueScope) throw new Error("Session changed");
+    };
+    return async(path,name)=>{
+      current(); await ensureFreshToken(); current();
+      const response=await fetch("/app/api/file",{method:"POST",credentials:"same-origin",cache:"no-store",
+        headers:{"Content-Type":"application/json","Authorization":"Bearer "+token()},
+        body:JSON.stringify({graph_id:home,path})});
+      current();
+      if(!response.ok) throw new Error("Download unavailable");
+      const blob=await response.blob(); current();
+      const url=URL.createObjectURL(blob), link=document.createElement("a");
+      link.href=url; link.download=String(name||"download").replace(/[\\/\u0000-\u001f]/g,"_");
+      document.body.appendChild(link);link.click();link.remove();
+      setTimeout(()=>URL.revokeObjectURL(url),60000);
+    };
+  }
+
   function appendMessage(role,text,extra,instant,queued){
     if(!hasMessages){ const e=$("thread-empty"); if(e) e.remove(); hasMessages=true; }
     const thread=$("thread"), el=document.createElement("div");
@@ -2109,8 +2162,12 @@
       when.title="This legacy message has no recorded timestamp";
     }
     meta.appendChild(when); el.appendChild(meta);
+    el.messageTime=stamp?Date.parse(stamp.iso)/1000:null;
     const body=document.createElement("span"); body.className="msg-body";
-    body.textContent=text; el.appendChild(body);
+    if(role==="universe" && typeof ChatRender!=="undefined")
+      ChatRender.render(body,text,chatFileDownloader());
+    else body.textContent=text;
+    el.appendChild(body);
     if(extra) el.appendChild(extra);
     if(queued) markQueued(el);
     // The thread is ordered the way the AGENT will see it, not the order the
@@ -4614,6 +4671,7 @@
     const bubble=existingBubble||appendMessage("founder", active.text, null,
       typeof active.started_at==="number"?active.started_at:Date.now()/1000);
     if(bubble){
+      bubble.clientSendId=active.client_send_id||"";
       const note=document.createElement("span");
       note.className="msg-steered-note";
       note.textContent="Your agent is working on this.";
@@ -4630,6 +4688,11 @@
     watchedActive=null;
     if(watched.bubble&&watched.bubble.workingNote&&watched.bubble.workingNote.remove)
       watched.bubble.workingNote.remove();
+    // Keep the existing observer (including a dismissed notice) rather than
+    // creating a second recovery card when the active-turn snapshot ends.
+    const observer=Array.from($("thread").children).find(n=>n.unconfirmed&&
+      watched.client_send_id&&n.unconfirmed.client_send_id===watched.client_send_id);
+    if(observer){await observer.checkSavedConversation();return;}
     let r=null;
     try{ r=await Owner.getConversation(); }catch(_e){ /* Retain the cautious offer. */ }
     if(epoch!==MCP._loginEpoch||owner!==queueOwner||scope!==queueScope||
@@ -4638,6 +4701,7 @@
       ? r.recent_conversation.turns : [];
     const at=savedSendIndex(turns,watched);
     const reply=at<0?-1:turns.findIndex((t,i)=>i>at&&
+      !turns.slice(at+1,i).some(row=>row.speaker==="founder")&&
       (t.speaker==="universe"||t.speaker==="platform"));
     const held=readInflight();
     if(!watched.client_send_id){
@@ -4649,13 +4713,15 @@
       });
       if(displayAt>=0){
         const nextFounder=turns.findIndex((t,i)=>i>displayAt&&t.speaker==="founder");
-        drawHistoryTurns(turns.slice(displayAt+1,nextFounder<0?turns.length:nextFounder)
-          .filter(t=>t.speaker==="universe"||t.speaker==="platform"));
+        const row=turns[displayAt];
+        if(watched.bubble) watched.bubble.savedTurnKey=row.id?"id:"+row.id:
+          JSON.stringify([row.speaker,row.ts,row.text]);
+        drawHistoryTurns(turns.slice(displayAt,nextFounder<0?turns.length:nextFounder));
       }
       return;
     }
     if(reply>=0){
-      drawHistoryTurns(turns.slice(at+1,reply+1));
+      drawHistoryTurns(turns.slice(at,reply+1));
       if(held&&held.client_send_id&&held.client_send_id===watched.client_send_id)
         forgetInflightIf(held);
     }else if(held&&held.client_send_id&&held.client_send_id===watched.client_send_id){
@@ -4811,6 +4877,7 @@
     opts.clientSendId=crypto.randomUUID();
     const recoveryBubble=opts.recoveryBubble||(!opts.echoed
       ?appendMessage("founder", display || message, null, sentAt/1000):null);
+    if(recoveryBubble) recoveryBubble.clientSendId=opts.clientSendId;
     // A line sent from a restore offer is a SIDE send: it must not take over
     // the in-flight record of an unconfirmed turn still on screen.
     if(!opts.keepInflight) rememberInflight(
@@ -4848,11 +4915,17 @@
         unconfirmed=true;
         return;
       }
+      const beforeReply=new Set(Array.from($("thread").children));
       renderConverse(answer);
+      for(const node of Array.from($("thread").children)){
+        if(!beforeReply.has(node)&&String(node.className||"").includes("msg--universe"))
+          node.replyToClientSendId=opts.clientSendId;
+      }
       settleSteered((answer&&answer.steering)||{delivered:[],undelivered:[]});
       delivered=true;setStatusLine("");
       if(typeof AppUI!=="undefined") AppUI.turnSettled();
       if(typeof refreshAgentSwitcher==="function") refreshAgentSwitcher();
+      refreshRail({foregroundAgent:opts.agentId});
       if(!opts.keepInflight) forgetInflight();
     }catch(err){
       if(!stillHere()) return;
@@ -4937,6 +5010,7 @@
     const recoveryBubble=appendMessage("founder",message);
     const voiceSentAt=Date.now();
     opts.clientSendId=crypto.randomUUID();
+    recoveryBubble.clientSendId=opts.clientSendId;
     rememberInflight(message,message,voiceSentAt,"spoken",opts.modelChoice,null,opts.agentId,opts.clientSendId);
     // A spoken turn takes the composer too, so a typed turn's late cleanup can
     // see that it is no longer the one holding it.
@@ -4967,7 +5041,12 @@
         if(payload&&(payload.error||payload.turn_failure))throw servedFailureError(payload);
         throw new Error("voice_converse_invalid");
       }
+      const beforeReply=new Set(Array.from($("thread").children));
       renderConverse(payload);
+      for(const node of Array.from($("thread").children)){
+        if(!beforeReply.has(node)&&String(node.className||"").includes("msg--universe"))
+          node.replyToClientSendId=opts.clientSendId;
+      }
       delivered=true;forgetInflight();
       return payload.reply;
     }catch(error){
@@ -4978,7 +5057,8 @@
       if(error&&error.authRequired){ sessionExpired(); throw error; }
       if(error.historySaved){
         forgetInflight();
-        appendFailureNotice(error.message,{speaker:"founder",text:message,truncated:false},undefined,error.failureCode,error.failure);
+        const notice=appendFailureNotice(error.message,{speaker:"founder",text:message,truncated:false},undefined,error.failureCode,error.failure);
+        notice.replyToClientSendId=opts.clientSendId;
       }else{
         unconfirmed=!!(error&&error.transport)&&!error.notSent;
         offerResend(message,message,error,
@@ -5038,28 +5118,31 @@
     if(!stillOwner()||!note.parentNode) return;
     if(running&&running.active&&sent&&sent.client_send_id&&
        running.active.client_send_id===sent.client_send_id){
-      if(showActiveTurn(running.active,sent.bubble)||
-         watchedActive&&watchedActive.client_send_id===sent.client_send_id){
-        note.remove();
-        return;
-      }
+      showActiveTurn(running.active,sent.bubble);
+      line.textContent="Received; your agent is working on this. Nothing was sent again.";
+      return;
     }
     let r=null;
     try{ r=await Owner.getConversation(); }
     catch(e){
       if(!stillOwner()||!note.parentNode) return;
       line.textContent="Couldn\u2019t read your saved conversation just now ("+
-        ((e&&e.message)||"unknown error")+"). Nothing was sent.";
+        ((e&&e.message)||"unknown error")+"). Retrying automatically; nothing was sent again.";
       return;
     }
     if(!stillOwner()||!note.parentNode) return;
     const conv=r&&r.recent_conversation;
+    if(!conv||conv.error||!Array.isArray(conv.turns)){
+      line.textContent="Saved conversation is unavailable. Retrying automatically; nothing was sent again.";
+      return;
+    }
     const turns=(conv&&Array.isArray(conv.turns))?conv.turns:[];
     const at=savedSendIndex(turns,sent);
-    const reply=at<0?-1:turns.findIndex((t,i)=>i>at&&
-      (t.speaker==="universe"||t.speaker==="platform"));
-    if(reply>=0){
-      drawHistoryTurns(turns.slice(at+1,reply+1));
+    // Paint every saved arrival, even if this particular send is still unknown.
+    // Only this send's own saved founder row confirms delivery; a different
+    // answer cannot. Existence is sufficient, including exchanges with steers.
+    drawHistoryTurns(turns);
+    if(at>=0){
       if(sent.record) forgetInflightIf(sent.record);
       note.remove();
       return;
@@ -5079,20 +5162,38 @@
       (sentAt===undefined||held.ts===sentAt)?held:null;
     note.unconfirmed={message,ts:rec?rec.ts:sentAt,record:rec,bubble,
       client_send_id:clientSendId||(rec&&rec.client_send_id)||""};
+    if(bubble) bubble.clientSendId=note.unconfirmed.client_send_id;
+    // A recent-history window cannot prove absence, even when it is empty.
+    // Only the explicit notSent path may offer a replay.
+    for(const child of Array.from(note.children)){
+      if(child.tagName==="BUTTON"&&child.textContent==="Send it again") child.remove();
+    }
     const look=document.createElement("button");
     look.className="btn btn--link"; look.textContent="Check saved conversation";
     note.checkSavedConversation=async()=>{
       if(look.disabled||!note.parentNode||!owner||!scope||epoch!==MCP._loginEpoch||owner!==queueOwner||
          scope!==queueScope||agent!==(typeof addressedAgentId==="function"?addressedAgentId():"main")) return;
+      clearTimeout(note.reconcileTimer);
       look.disabled=true;
-      try{ await offerSavedConversationCheck(note); }finally{ look.disabled=false; }
+      try{ await offerSavedConversationCheck(note); }finally{
+        look.disabled=false;
+        if(note.parentNode&&epoch===MCP._loginEpoch&&owner===queueOwner&&scope===queueScope&&
+           agent===(typeof addressedAgentId==="function"?addressedAgentId():"main")){
+          note.reconcileDelay=Math.min((note.reconcileDelay||500)*2,30000);
+          note.reconcileTimer=setTimeout(()=>{
+            if(document.visibilityState==="visible"&&navigator.onLine!==false)
+              note.checkSavedConversation().catch(()=>{});
+          },note.reconcileDelay);
+          if(note.reconcileTimer&&note.reconcileTimer.unref) note.reconcileTimer.unref();
+        }
+      }
     };
     look.addEventListener("click",note.checkSavedConversation);
     note.appendChild(document.createTextNode(" ")); note.appendChild(look);
     // The notice never traps the thread: the owner can always put it away.
     const dismiss=document.createElement("button");
     dismiss.className="btn btn--link"; dismiss.textContent="Dismiss";
-    dismiss.addEventListener("click",()=>note.remove());
+    dismiss.addEventListener("click",()=>{note.hidden=true;note.style.display="none";});
     note.appendChild(document.createTextNode(" ")); note.appendChild(dismiss);
     // A background watchdog can settle just AFTER the visibility event. Check
     // then too, otherwise that return to the app still leaves the reply hidden.
@@ -5202,7 +5303,9 @@
           return;
         }
         if(failed){ failed.remove(); failed=null; }
-        body.textContent=full;                    // verbatim; no reflow or trim
+        if(typeof ChatRender!=="undefined" && el.classList.contains("msg--universe"))
+          ChatRender.render(body,full,chatFileDownloader());
+        else body.textContent=full;
         more.remove();
       });
     });
@@ -5925,6 +6028,9 @@
     const me = await fetchMe();
     if(epoch!==MCP._loginEpoch) return;          // a stale answer names no one
     if(me===null && !token()) return;            // fetchMe signed us out
+    // A deploy's 5xx is not evidence that the verified owner disconnected.
+    // Previously this fell through to AppUI.reset(), destroying the frame.
+    if(me===null){ AppRecovery.fail(new Error("Could not read your session")); return; }
     // Both halves of "is this mine?", taken from the VERIFIED account the
     // connector just described - never from a caller or a provider. Seeded
     // before anything this page may restore (held lines, the in-flight record,
@@ -5932,6 +6038,7 @@
     if(me&&me.universe_id) setQueueScope(me.universe_id);
     if(typeof showCommandCenterName === "function") showCommandCenterName(me&&me.name);
     if(me&&me.principal_id) setQueueOwner(me.principal_id);
+    AppRecovery.restoreDraft();
     if(typeof rebindBrowserNotifications === "function") rebindBrowserNotifications();
     // In this order: a reply left by a previous owner is discarded by the rebind
     // before this page can collect it.
@@ -5946,12 +6053,16 @@
     // it must not sit in front of the page they are waiting for.
     reportTimezone();
     HostedModelConnect.setup=me&&me.setup||"unavailable";
+    if(HostedModelConnect.setup==="unavailable"){
+      AppRecovery.fail(new Error("Could not confirm your command center's connections"));
+    }
     const connected=HostedModelConnect.setup==="connected";
-    engineConnected = connected ? true : HostedModelConnect.setup==="unavailable" ? null : false;
+    if(HostedModelConnect.setup!=="unavailable") engineConnected=connected;
     // The custom-UI switcher is gated on a verified identity and home: a
     // bundle only ever runs for a verified signed-in home.
     if(typeof AppUI!=="undefined"){
-      if(connected) AppUI.enable(me.universe_id,me.principal_id); else AppUI.reset();
+      if(connected) AppUI.enable(me.universe_id,me.principal_id);
+      else if(HostedModelConnect.setup!=="unavailable") AppUI.reset();
     }
     if(typeof refreshAgentSwitcher==="function") refreshAgentSwitcher();
     // Powered or not, this is the command center's own chat. The owner and home were
@@ -6199,8 +6310,17 @@
     const host=$("rail-items");
     if(host){
       clearTypedValues(host);
+      // These shared settings controls survive account changes, without drafts.
+      for(const id of ["connect-panel","rail-add-panel"]){
+        const panel=$(id);
+        if(panel && host.contains(panel)){
+          panel.hidden=true;
+          $("request-rail").appendChild(panel);
+        }
+      }
       host.textContent="";
     }
+    if(typeof RequestSheets!=="undefined")RequestSheets.reset();
     railNodes = new Map();
     railCache = [];
     railOpen = null;
@@ -6319,7 +6439,17 @@
         const url=new URL(result.launch_path,CFG.resource||location.origin).href;
         if(NATIVE)await openExternal(url);else popup.location.href=url;
         this.popup=popup;this.note.textContent='Finish signing in, then return here. Your message is kept.';
-      }catch(_e){if(popup)popup.close();if(this.current(record))this.failed('Sign-in could not start. Your message is kept.');}
+      }catch(error){
+        if(popup)popup.close();
+        if(this.current(record)){
+          this.failed('Sign-in could not start. Your message is kept.');
+          if(error.signIn){
+            const link=document.createElement('a');link.href='/app/owner-sign-in';
+            link.target='_blank';link.rel='noopener';link.textContent='Sign in to approve';
+            this.note.append(' ',link);
+          }
+        }
+      }
       finally{this.busy=false;this.schedule();}
     },
     async check(){
@@ -6335,7 +6465,7 @@
             if(!result.request||result.request.request_id!==result.request_id||
                !result.request.action||result.request.action.type!=='bind_model_access')
               throw new Error('Connection confirmation did not match the requested setup.');
-            const answered=await MCP.answerRequest({request_id:result.request_id,values:{}});
+            const answered=result.answer || await MCP.answerRequest({request_id:result.request_id,values:{}});
             if(!this.current(record))return;
             if(!answered||answered.error||answered.status!=='answered')throw new Error('Connection confirmation did not finish.');
             record.connectionFlow=null;this.save();
@@ -6507,7 +6637,10 @@
         body:JSON.stringify(payload),
       });
       const result=await response.json();
-      if(!response.ok||result.error) throw new Error(result.error||"model_connection_incomplete");
+      if(!response.ok||result.error){
+        const error=new Error(result.error||"model_connection_incomplete");
+        error.signIn=result.error==='interactive_approval_required';throw error;
+      }
       return result;
     },
     async begin(){
@@ -6604,6 +6737,13 @@
       }catch(error){
         if(epoch!==this.epoch) return;
         if(error&&error.authRequired){ this.busy=false; enterSignedOut(); return; }
+        if(error.signIn){
+          this.status(error.message||"Sign in to approve.");
+          const link=document.createElement("a");link.href="/app/owner-sign-in";
+          link.target="_blank";link.rel="noopener";link.textContent="Sign in to approve";
+          $("hosted-model-status").append(" ",link);
+          return;
+        }
       }finally{if(epoch===this.epoch){this.busy=false;this.paint();}}
       if(epoch!==this.epoch) return;
       // Either way, re-read what powers the command center: an answer whose reply was
@@ -7301,40 +7441,21 @@
       root.style.setProperty("--app-h",(vv.height*(vv.scale||1))+"px");
     else root.style.removeProperty("--app-h");
   }
-  function paintRailChip(){
-    const rail=$("request-rail"), head=$("rail-head"), phone=window.matchMedia("(max-width:600px)").matches;
-    const history=$("request-history");
-    rail.dataset.phoneEmpty=String(!history||history.children.length===0);
-    if(head.textContent!=="Request history") head.textContent="Request history";
-    if(phone){
-      head.setAttribute("role","button");head.tabIndex=0;
-      head.setAttribute("aria-expanded",String(rail.classList.contains("rail--open")));
-    }else{
-      head.removeAttribute("role");head.removeAttribute("tabindex");head.removeAttribute("aria-expanded");
-    }
-  }
-  function toggleRailChip(event){
-    if(!window.matchMedia("(max-width:600px)").matches) return;
-    if(event.type==="keydown" && event.key!=="Enter" && event.key!==" ") return;
-    event.preventDefault(); $("request-rail").classList.toggle("rail--open"); paintRailChip();
-  }
+  function paintRailChip(){}
   function wirePhoneConversation(){
     fitToVisualViewport();
-    if(window.visualViewport){
-      window.visualViewport.addEventListener("resize",fitToVisualViewport);
-      window.visualViewport.addEventListener("scroll",fitToVisualViewport);
-    }
-    $("rail-head").addEventListener("click",toggleRailChip);
-    $("rail-head").addEventListener("keydown",toggleRailChip);
-    new MutationObserver(paintRailChip).observe($("rail-items"),{childList:true,subtree:true});
-    new MutationObserver(()=>{
-      if(window.matchMedia("(max-width:600px)").matches) paintRailChip();
-    }).observe($("rail-head"),{childList:true});
-    window.matchMedia("(max-width:600px)").addEventListener("change",()=>{paintRailChip();fitToVisualViewport();});
-    paintRailChip();
+    document.body.appendChild($('request-rail'));
+    window.visualViewport?.addEventListener('resize',fitToVisualViewport);
+    $('needs-you-open').onclick=$('bubble-needs-you').onclick=()=>RequestSheets.inbox();
+    $('needs-you-close').onclick=()=>$('needs-you').close();
+    $('request-sheet-close').onclick=()=>{$('request-rail').close();railOpen=null;};
+    $('request-rail').addEventListener('cancel',()=>{railOpen=null;});
+    $('needs-you-history').onclick=()=>RequestSheets.history();
+    $('needs-you-connect').onclick=()=>{$('needs-you').close();toggleAddKey();};
   }
   function wire(){
     if(typeof wirePhoneConversation === "function") wirePhoneConversation();
+    $("settings-connect").onclick=()=>toggleAddKey();
     // Default-hidden in HTML prevents a pre-script flash inside the native shell.
     // Reveal and initialise Voice only on the web surface; NATIVE covers both iOS
     // and Android Capacitor shells.
@@ -7567,6 +7688,12 @@
         const what=document.createElement("span");
         what.textContent=(doc.classes&&doc.classes[rule.action_class]||rule.action_class)+
           (rule.connection?" \u2014 "+rule.connection:"")+(rule.operation?" "+rule.operation:"");
+        if(rule.kind==='preapproval'){
+          what.textContent=rule.note+' / '+rule.action_class+' / '+
+            (rule.grant?.expires_at?'Until '+new Date(rule.grant.expires_at*1000).toLocaleString():'Until revoked');
+          const revoke=document.createElement('button');revoke.type='button';revoke.className='btn';revoke.textContent='Revoke';
+          revoke.onclick=()=>sendConfirmed({delete:rule.id});row.append(what,revoke);list.appendChild(row);return;
+        }
         const pick=document.createElement("select");
         Object.keys(doc.behaviours||{}).forEach(key=>{
           const opt=document.createElement("option");
@@ -7927,12 +8054,15 @@
     // choice in the select. A service nobody has enumerated now gets exactly
     // the same path as a famous one.
     $("http-auth-scheme").addEventListener("change",()=>{
+      // A credential belongs to one draft auth shape; never carry it into another.
+      for(const id of ['http-secret','http-oauth1a-api-key','http-oauth1a-api-secret',
+                       'http-oauth1a-access-token','http-oauth1a-access-token-secret'])$(id).value='';
       const scheme=$("http-auth-scheme").value;
       const h=secretHints[scheme]||secretHints.bearer;
       $("http-secret-label").textContent=h[0]; $("http-secret").placeholder=h[1];
       // OAuth 1.0a: four labeled boxes instead of a "one per line" textarea — a
       // person with X's four values should never have to guess what goes where.
-      $("http-oauth1a").hidden=(scheme!=="oauth1a"); $("http-secret-field").hidden=(scheme==="oauth1a");
+      $("http-oauth1a").hidden=(scheme!=="oauth1a"); $("http-secret-field").hidden=(scheme==="oauth1a"||scheme==="oauth");
     });
     // ---- Paste anything ----------------------------------------------------
     // Split a paste into candidate credentials WITHOUT sending any of them. Only
@@ -8047,7 +8177,8 @@
     // fields so the user can correct it in place.
     function openManual(){ const d=$("http-manual"); if(d) d.open=true; }
     $("btn-connect-http").addEventListener("click",async()=>{
-      const dest=$("http-destination").value.trim();
+      const service=$("http-destination").value.trim(), account=$("http-account-label").value.trim();
+      const dest=account?service+':'+account:service;
       // A pasted "https://api.github.com" is unambiguous, but the SSRF allow-list
       // wants a bare hostname and refuses the scheme. Normalize instead of sending
       // the user through a refusal for something we can read perfectly well.
@@ -8072,7 +8203,7 @@
       // return preceded the clear). The value lives only in this local from here on.
       secretEl.value="";
       if(scheme==="oauth1a"&&oauth1aMissing){ out.textContent="All four OAuth 1.0a values are needed: API Key, API Key Secret, Access Token, Access Token Secret. Please enter them again."; return; }
-      if(!dest||!host||!secret){ out.textContent="Enter a name, host, and the credential"+(secret?" — please paste the credential again.":"."); return; }
+      if(!dest||!host||(!secret&&scheme!=="oauth")){ out.textContent="Enter a name, host, and the credential"+(secret?" — please paste the credential again.":"."); return; }
       // The path is REQUIRED, whatever the old label said. An endpoint with no
       // path_template is refused by the allow-list validator ("path_template must
       // be an absolute path"), and a blank one is NOT read as "any path" — there is
@@ -8089,8 +8220,20 @@
       const methods=(methodsRaw||"POST").split(",").map(m=>m.trim().toUpperCase()).filter(Boolean);
       const endpoint={host,methods,path_template:path};
       btn.disabled=true; out.textContent="Depositing securely...";
+      const epoch=MCP._loginEpoch;
       try{
+        if(scheme==='oauth'){
+          const asked=await MCP.requestFromUser({kind:'API',title:'Connect '+dest,
+            body:'Connect this labelled account for '+methods.join(', ')+' '+host+path,
+            fields:[{name:'secret',label:'API key (alternative)',type:'secret'}],
+            action:{type:'connect',destination:dest,auth_scheme:'bearer',host,
+              path_template:path,methods,uses:{call:{}},oauth:{}}});
+          if(epoch!==MCP._loginEpoch)return;
+          if(!asked||asked.error||!asked.request_id)throw new Error(asked?.detail||asked?.error||'Connection request was not created.');
+          railOpen=asked.request_id;await refreshRail();return;
+        }
         const r=await MCP.connectHTTP(dest,secret,[endpoint],scheme);
+        if(epoch!==MCP._loginEpoch)return;
         // Show the server's `detail` — it is the half that says WHAT to fix
         // ("destination must be 2-127 chars of [a-z0-9._:-]..."). Rendering the
         // bare `error` code left a real deposit dead with no way to self-correct:
@@ -8149,7 +8292,8 @@
       });
       const result=await response.json();
       if(!response.ok||result.error){
-        throw new Error((result&&(result.detail||result.error))||"sign_in_incomplete");
+        const error=new Error((result&&(result.detail||result.error))||"sign_in_incomplete");
+        error.signIn=result.error==='interactive_approval_required';throw error;
       }
       return result;
     },
@@ -8175,6 +8319,11 @@
       }catch(err){
         sessionStorage.removeItem(this.storageKey);
         note.textContent="Could not start the sign-in: "+((err&&err.message)||"unknown error")+".";
+        if(err&&err.signIn){
+          const link=document.createElement('a');link.href='/app/owner-sign-in';
+          link.target='_blank';link.rel='noopener';link.textContent='Sign in to approve';
+          note.append(' ',link);
+        }
         button.disabled=false;
       }
     },
@@ -8207,7 +8356,7 @@
         await refreshRail();
         // The owner's own line, as for any answered request: the command center
         // hears that its ask was completed.
-        sendTurn("Signed in to answer \""+frameTitle({title:cb.title})+"\"",undefined,
+        if(!result.server_continuation)sendTurn("Signed in to answer \""+frameTitle({title:cb.title})+"\"",undefined,
           {relay:true,keepComposer:true,inputMethod:"app_action"});
       }catch(err){
         appendMessage("system","The sign-in did not finish: "+((err&&err.message)||"unknown error")+". The request is still waiting; open it and sign in again.");
@@ -8932,7 +9081,13 @@
       const result=await response.json();
       if(epoch!==MCP._loginEpoch) throw new Error('Account changed.');
       if(!response.ok){
+        // Answer consumers render pending/retry guidance and relay a rejected
+        // grant to the agent. Keep those structured failures; missing owner
+        // proof must still offer protected sign-in rather than become an answer.
+        if(operation==='answer' && response.status!==401 && response.status!==403 &&
+            result.error && result.error!=='interactive_approval_required') return result;
         const error=new Error(result.detail||result.error||'The request could not finish.');
+        error.authRequired=response.status===401;
         error.signIn=result.error==='interactive_approval_required'; throw error;
       }
       return result;
@@ -8946,11 +9101,17 @@
       const details=document.createElement('p'), note=document.createElement('p');
       note.setAttribute('role','status');
       const controls=document.createElement('div'); controls.className='rtab-actions';
+      const scope=document.createElement('select');scope.setAttribute('aria-label','Approval scope');
+      const labels={once:'Allow once',task:'Allow for this task',site:'Allow for this site',always:'Always allow'};
+      for(const [value,label] of Object.entries(labels)){
+        const option=document.createElement('option');option.value=value;option.textContent=label;scope.appendChild(option);
+      }
+      const predicate=document.createElement('p');
       const buttons={};
       let preview=null, busy=false, originalDraft='', dirty=false;
       const signIn=document.createElement('a'); signIn.href='/app/owner-sign-in';
       signIn.target='_blank'; signIn.rel='noopener'; signIn.textContent='Sign in to approve'; signIn.hidden=true;
-      box.append(title,destination,draft,details,controls,signIn,note);
+      box.append(title,destination,draft,details,scope,predicate,controls,signIn,note);
       function show(value){
         preview=value;
         title.textContent=value.title;
@@ -8959,7 +9120,11 @@
           originalDraft=typeof value.draft==='string'?value.draft:JSON.stringify(value.draft??null,null,2);
           draft.value=originalDraft;
         }
-        details.textContent='Requested by '+value.agent+' · This action only · Expires '+new Date(value.expires_at*1000).toLocaleString();
+        details.textContent='Requested by '+value.agent+' / Expires '+new Date(value.expires_at*1000).toLocaleString();
+        const grant=value.predicate;
+        predicate.textContent=grant ? (value.purpose||'Permission')+' / '+grant.operation+' '+grant.origin+' / '+
+          (grant.scope==='once'?'This action only':grant.scope==='task'?'This task until '+new Date(grant.expires_at*1000).toLocaleString():'Until revoked in Rules') : 'This action only';
+        scope.value=value.scope||'once';buttons.approve.textContent=labels[scope.value];
         note.textContent=value.approval_unavailable||(value.result?JSON.stringify(value.result):'');
         for(const [key,button] of Object.entries(buttons)){
           const canAct=['pending','deferred'].includes(value.status) ||
@@ -8971,26 +9136,33 @@
       }
       async function perform(operation, extra={}){
         if(busy) return;
-        busy=true; Object.values(buttons).forEach(b=>b.disabled=true);
+        busy=true; scope.disabled=true; Object.values(buttons).forEach(b=>b.disabled=true);
         try{
-          const payload={request_id:req.request_id,...extra};
+          const payload={request_id:req.request_id,scope:scope.value,...extra};
           if(operation==='decide') Object.assign(payload,{
             expected_revision:preview.revision,action_sha256:preview.action_sha256,
-            approval_token:preview.approval_token,scope:'once'
+            approval_token:preview.approval_token,scope:preview.scope||'once'
           });
           const value=await InlineApprovals.post(operation,payload);
           if(!box.isConnected) return;
           if(operation==='edit') dirty=false;
-          busy=false; signIn.hidden=true; show(value);
-          if(operation==='decide' && typeof refreshRail==='function') refreshRail();
+          busy=false; scope.disabled=false; signIn.hidden=true; show(value);
+          if(operation==='decide' && typeof refreshRail==='function'){
+            if(extra.decision==='defer'){
+              railOpen=null;RequestSheets.selected=null;$('request-rail').close();
+            }
+            refreshRail();
+          }
         }catch(error){
-          busy=false; note.textContent=error.message; signIn.hidden=!error.signIn;
+          busy=false; scope.disabled=false; note.textContent=error.message; signIn.hidden=!error.signIn;
           buttons.preview.disabled=false;
+          preview=null;
           // Never re-enable an old approval token after an uncertain response.
         }
       }
       function button(key,label,click){
         const el=document.createElement('button'); el.type='button';el.textContent=label;
+        el.className=key==='approve'?'btn btn--primary':'btn';
         el.disabled=true;el.addEventListener('click',click);controls.appendChild(el);buttons[key]=el;
       }
       button('preview','Review / Try again',()=>perform('preview'));
@@ -9001,7 +9173,8 @@
         }
         perform('edit',{draft:value});
       });
-      button('approve','Approve once',()=>perform('decide',{decision:'approve'}));
+      scope.addEventListener('change',()=>perform('preview'));
+      button('approve','Allow once',()=>perform('decide',{decision:'approve'}));
       button('deny','Deny',()=>perform('decide',{decision:'deny'}));
       button('defer','Not now',()=>perform('decide',{decision:'defer'}));
       button('alternative','Find an alternative',()=>perform('decide',{decision:'alternative'}));
@@ -9015,149 +9188,124 @@
     },
     history(rows, pending){
       let host=$('request-history');
-      if(!host){host=document.createElement('div');host.id='request-history';$('request-rail').appendChild(host);}
+      if(!host){host=document.createElement('div');host.id='request-history';host.hidden=true;$('request-rail').appendChild(host);}
       host.textContent='';
       const open=new Map((pending||[]).filter(row=>row.status==="pending").map(row=>[row.request_id,row]));
       const history=[...Array.from(open.values()).map(row=>({...row,status:'Open'})),
         ...(rows||[]).filter(row=>!open.has(row.request_id))];
       history.forEach(row=>{const item=document.createElement('p');
         item.textContent=(row.title||'Request')+' · '+row.status;host.appendChild(item);});
-      const head=$('rail-head'); if(head) head.textContent='Request history';
     }
   };
   // End protected inline approval cards.
 
-  function renderRail(items){
-    if(typeof railLink !== "undefined" && railLink && (items||[]).some(r=>r.request_id===railLink)){
-      railOpen=railLink; railLink=null;
-    }
-    if(typeof pendingReply !== "undefined" && pendingReply && (items||[]).some(r=>r.request_id===pendingReply.request_id)) railOpen=pendingReply.request_id;
-    railCache = items || [];
-    const rail = $("request-rail"), host = $("rail-items"), head = $("rail-head");
-    if(!rail || !host) return;
-    // Pending controls stay above the composer. The rail retains read-only history.
-    const thread=$('thread');
-    // Capture before pending controls change the thread's available height.
-    // Readers at latest follow the resize; readers in history keep their place.
-    const pinThread=thread && Math.abs(thread.scrollHeight-thread.clientHeight-thread.scrollTop)<2;
-    if(thread && !$('request-entry-points')){
-      const entries=document.createElement('div');entries.id='request-entry-points';
-      for(const id of ['btn-rail-add','rail-add-panel']){const node=$(id);if(node)entries.appendChild(node);}
-      thread.appendChild(entries);
-    }
-    forgetFinishedSetup(railCache);
-    // The heading is a claim about the user's queue. A connected command center's
-    // "Connect another LLM" row is offered, not outstanding, and a heading that
-    // keeps saying "Waiting on you" over it is simply false (live 2026-09-25).
-    if(head){
-      head.textContent = "Request history";
-    }
-    const folded = foldedModelAccess(railCache);
-    HostedModelConnect.adopt(folded);
-    // Keep the rail present even with nothing waiting: with the nav button gone
-    // it is the only route to adding a key yourself, and a surface that vanishes
-    // is a surface a user cannot find.
-    rail.hidden = false;
-
-    // WHAT THE RAIL SHOULD SHOW, decided before anything is touched.
-    //
-    // The rail polls every 15 seconds. Rebuilding the cards on each poll
-    // DELETED whatever the user had typed into one: live 2026-09-30, a Deny
-    // note typed into "Reply or note" reached the thread as a bare
-    // `Denied: "<title>"`, because the poll had already emptied the box the
-    // click was about to read. Keeping each node keeps its values, with no copy
-    // of a typed secret anywhere outside the DOM -- but keeping the node is not
-    // enough on its own, because DETACHING one blurs it, and re-appending does
-    // not give focus back. Text that survives under a cursor that does not is
-    // still a poll the user can feel. So: work out the answer first, and when
-    // the answer is "exactly what is already on screen", touch nothing at all.
-    const wanted = [];
-    railCache.forEach(req=>{
-      if(req.agent && typeof addressedAgentId==='function' && req.agent!==addressedAgentId()) return;
-      if(folded && req.request_id === folded.request_id) return;
-      // A sticky ask is a PRECONDITION, not a question: it opens itself and has
-      // no dismiss, because a command center with no model cannot be asked to accept
-      // having no model.
-      const open = req.action && req.action.type==='approve_action' ? true : req.sticky ? (railOpen !== "closed:" + req.request_id)
-                              : (railOpen === req.request_id);
-      // An optional entry is NOT a rail item. "Waiting on you" is for what
-      // blocks the user's work; a standing offer to add a second model source
-      // belongs in the model picker, which reaches it through
-      // openConnectRequest (founder 2026-09-30, on a free account whose only
-      // rail row was one it could neither act on nor remove). Still rendered
-      // when something opened it deliberately, so that route has a card.
-      if(isOptionalRequest(req) && !open && !req.suggestion) return;
-      const shape={...req};
-      if(req.items) shape.items=req.items.map(i=>({item_id:i.item_id,title:i.title,body:i.body,fields:i.fields}));
-      wanted.push({req, open, setup: isSetupRequest(req),
-                   signature: JSON.stringify([shape, open, isOptionalRequest(req)])});
-      // Resolution from another device updates only the checklist status. Never
-      // replace the card (or another item's draft) during a poll.
-      if(req.items && railNodes.has(req.request_id)) updateRailItems(req);
-    });
-    // The setup card is never reused: its inputs live in #connect-panel, which
-    // is parked on the rail and re-hosted on purpose, so its presence always
-    // takes the rebuilding path below.
-    const settled = wanted.length === host.children.length && wanted.every((w, at)=>{
-      const kept = railNodes.get(w.req.request_id);
-      return !w.setup && kept && kept.signature === w.signature
-        && host.children[at] === kept.node;
-    });
-    if(settled) return;
-    const arriving = wanted.filter(w=>!railNodes.has(w.req.request_id)).at(-1);
-
-    // Park the setup panel before the tabs are rebuilt, so the node (and what
-    // the user typed into it) survives every refresh.
-    const panel = $("connect-panel");
-    if(panel){ panel.hidden = true; if(panel.parentNode !== rail) rail.appendChild(panel); }
-    host.textContent = "";
-    let setupOpen = false;
-    const keep = new Map();
-    wanted.forEach(({req, open, setup, signature})=>{
-      const previous = railNodes.get(req.request_id);
-      if(previous && !setup && previous.signature === signature){
-        keep.set(req.request_id, previous);
-        host.appendChild(previous.node);
-        return;
+  // Request IDs remain the single queue. Presentation never answers a request.
+  const RequestSheets = {
+    seen:new Set(), selected:null,
+    open(id){
+      this.selected=id; railOpen=id;
+      const req=railCache.find(row=>row.request_id===id);
+      if(!req)return;
+      const host=$('rail-items'), sheet=$('request-rail');
+      let entry=railNodes.get(id);
+      if(!entry)return;
+      if(!entry.body){
+        entry.node.appendChild(req.action&&req.action.type==='approve_action'
+          ?InlineApprovals.build(req):isSetupRequest(req)?connectBody(req):railBody(req));
+        entry.body=true;
       }
-      const tab = document.createElement("div");
-      tab.className = isOptionalRequest(req) ? "rtab rtab--optional" : "rtab";
-      const btn = document.createElement("button");
-      btn.type = "button"; btn.className = "rtab-btn";
-      const kind = document.createElement("span");
-      kind.className = "rtab-kind"; kind.textContent = req.kind;
-      const title = document.createElement("span");
-      title.className = "rtab-title"; title.textContent = req.action&&req.action.type==="approve_action" ? "Action approval" : req.suggestion || req.title;
-      btn.appendChild(kind); btn.appendChild(title);
-      btn.addEventListener("click",()=>{
-        railOpen = (railOpen === req.request_id) ? null : req.request_id;
-        renderRail(railCache);
+      for(const node of host.children)node.hidden=node!==entry.node;
+      $('rail-head').textContent=req.action&&req.action.type==='approve_action'?'Action approval':req.title;
+      $('request-history')?.setAttribute('hidden','');
+      $('rail-add-panel').hidden=true; $('btn-rail-add').hidden=true;
+      if(!sheet.open)sheet.showModal();
+      if(typeof railDeepItem!=='undefined' && railDeepItem &&
+         (typeof railLink==='undefined'||!railLink)){
+        const item=$('item_'+id+'::'+railDeepItem);
+        railDeepItem=null;
+        if(item){item.scrollIntoView({block:'nearest'});item.focus();}
+      }
+    },
+    inbox(){
+      const sheet=$('needs-you'); const host=$('needs-you-items');host.textContent='';
+      const folded=foldedModelAccess(railCache);
+      railCache.filter(row=>row!==folded&&!isOptionalRequest(row)).forEach(row=>{
+        const button=document.createElement('button');button.type='button';button.className='btn';
+        button.textContent=(row.action?.type==='approve_action'?'Action approval':row.title)+' \u00b7 '+(row.agent||'Your agent');
+        button.onclick=()=>{sheet.close();this.open(row.request_id);};host.appendChild(button);
       });
-      tab.appendChild(btn);
-      if(req.action && req.action.type==='approve_action') tab.appendChild(InlineApprovals.build(req));
-      else if(open && setup){ tab.appendChild(connectBody(req)); setupOpen = !!req.sticky; }
-      else if(open) tab.appendChild(railBody(req));
-      host.appendChild(tab);
-      if(req.items) updateRailItems(req);
-      if(!setup) keep.set(req.request_id, {signature, node: tab});
-    });
-    // Anything not carried over is gone from the rail; drop it so a resolved
-    // ask cannot come back holding a stale node.
-    railNodes = keep;
-    // A new ask must be visible even when an expanded card fills this area.
-    if(arriving){
-      const at=wanted.indexOf(arriving), node=host.children[at];
-      const button=node&&node.children[0];
-      if(button&&button.scrollIntoView) button.scrollIntoView({block:'nearest'});
+      if(!host.children.length)host.textContent='Nothing needs you right now.';
+      if(!sheet.open)sheet.showModal();
+    },
+    history(){
+      railOpen=null;this.selected=null;
+      $('needs-you').close();const sheet=$('request-rail');
+      for(const node of $('rail-items').children)node.hidden=true;
+      $('rail-add-panel').hidden=true;$('btn-rail-add').hidden=true;
+      $('rail-head').textContent='Request history';$('request-history').hidden=false;
+      if(!sheet.open)sheet.showModal();
+    },
+    reset(){
+      this.seen.clear();this.selected=null;
+      for(const id of ['request-rail','needs-you']){const node=$(id);if(node?.open)node.close();}
+      if($('needs-you-items'))$('needs-you-items').textContent='';
+    },
+    signature(row){
+      if(!row)return '';
+      const value={...row};
+      if(row.items)value.items=row.items.map(({item_id,title,body,fields})=>({item_id,title,body,fields}));
+      return JSON.stringify(value);
+    },
+    update(items, options={}){
+      const retained=new Set(Array.from(railNodes.values()).map(entry=>entry.node));
+      for(const node of Array.from($('rail-items').children)){
+        if(!retained.has(node)){clearTypedValues(node);node.remove();}
+      }
+      const previous=railCache;railCache=items||[];
+      forgetFinishedSetup(railCache);
+      const folded=foldedModelAccess(railCache);HostedModelConnect.adopt(folded);
+      if(typeof railLink!=='undefined' && railLink && railCache.some(row=>row.request_id===railLink)){
+        railOpen=railLink;railLink=null;
+      }
+      const visible=railCache.filter(row=>row!==folded && (!isOptionalRequest(row)||railOpen===row.request_id));
+      const current=new Map(visible.map(row=>[row.request_id,row]));
+      for(const [id,entry] of railNodes){
+        const row=current.get(id),old=previous.find(r=>r.request_id===id);
+        if(!row||this.signature(row)!==this.signature(old)){
+          if(isSetupRequest(old)){
+            const panel=$('connect-panel');panel.hidden=true;$('request-rail').appendChild(panel);
+          }
+          clearTypedValues(entry.node);entry.node.remove();railNodes.delete(id);
+          if(this.selected===id){$('request-rail').close();this.selected=null;}
+        }else if(row.items)updateRailItems(row);
+      }
+      for(const row of visible){
+        if(isOptionalRequest(row)&&railOpen!==row.request_id)continue;
+        if(!railNodes.has(row.request_id)){
+          const node=document.createElement('section');node.className='rtab'+(isOptionalRequest(row)?' rtab--optional':'');node.hidden=true;
+          const heading=document.createElement('h3');heading.textContent=row.action?.type==='approve_action'?'Action approval':row.title;
+          node.appendChild(heading);$('rail-items').appendChild(node);railNodes.set(row.request_id,{node,body:false});
+        }
+      }
+      const pending=visible.filter(row=>!isOptionalRequest(row));
+      for(const id of ['needs-you-open','bubble-needs-you']){
+        const button=$(id);if(button)button.textContent='Needs you'+(pending.length?' ('+pending.length+')':'');
+      }
+      const arriving=pending.filter(row=>!this.seen.has(row.request_id));
+      if(!railOpen&&!$('request-rail').open)$('rail-head').textContent='Request history';
+      pending.forEach(row=>this.seen.add(row.request_id));
+      // A foreground bound ask identifies its server-owned initiating turn.
+      // Reconnect/away requests stay in the inbox instead of stealing focus.
+      const foreground=arriving.find(row=>(row.action?.envelope?.subject?.turn || row.action?.type==='connect') &&
+        ((typeof readInflight==='function' && readInflight()) || options.foregroundAgent===row.agent) &&
+        (!row.agent||row.agent===addressedAgentId()) && document.visibilityState==='visible');
+      if(railOpen&&current.has(railOpen))this.open(railOpen);
+      else if(foreground&&!$('request-rail').open)this.open(foreground.request_id);
+      else if(arriving.some(row=>row.sticky)&&!$('request-rail').open)this.open(arriving.find(row=>row.sticky).request_id);
+      if($('needs-you').open)this.inbox();
     }
-    rail.classList.toggle("rail--setup", setupOpen);
-    if(typeof railDeepItem !== "undefined" && railDeepItem){
-      const target=$("item_" + railOpen + "::" + railDeepItem);
-      if(target){ target.scrollIntoView({block:"nearest"}); target.focus(); railDeepItem=null; }
-    }
-    if(typeof pendingReply !== "undefined" && pendingReply) applyPendingReply();
-    if(pinThread) thread.scrollTop=thread.scrollHeight;
-  }
+  };
+  function renderRail(items, options){RequestSheets.update(items, options);}
 
   function updateRailItems(req){
     (req.items||[]).forEach(item=>{
@@ -9512,7 +9660,12 @@
   // explicit fields.
   function toggleAddKey(){
     const panel=$("rail-add-panel"), btn=$("btn-rail-add");
-    panel.hidden=!panel.hidden;
+    const sheet=$('request-rail');railOpen=null;
+    for(const node of $('rail-items').children)node.hidden=true;
+    $('request-history')?.setAttribute('hidden','');
+    $('rail-head').textContent='Connect a service';
+    if(!sheet.open)sheet.showModal();
+    panel.hidden=false;
     btn.setAttribute("aria-expanded",String(!panel.hidden));
     if(panel.hidden) return;
     const powered=engineConnected===true;
@@ -9563,6 +9716,30 @@
 
   function railBody(req){
     const box = document.createElement("div"); box.className = "rtab-body";
+    if(req.action?.type==='notify'){
+      const label=document.createElement('p');label.textContent='Notification · No answer needed';box.appendChild(label);
+      const body=document.createElement('p');body.textContent=req.body||'';box.appendChild(body);
+      if(req.action.attachment_ref){
+        const ref=document.createElement('p');ref.textContent='Attachment: '+req.action.attachment_ref;box.appendChild(ref);
+      }
+      const status=document.createElement('p');box.appendChild(status);
+      const chat=document.createElement('button');chat.type='button';chat.className='btn';chat.textContent='Open chat';
+      chat.onclick=async()=>{try{
+        const agent=req.action.thread_agent||req.agent||'main';
+        await addressAgent({agent_id:agent,name:agent==='main'?'Your agent':agent});
+        $('request-rail').close();
+        const item=Array.from($('thread').children).find(node=>node.dataset.itemId===req.action.item_id);
+        if(item&&req.action.item_id)item.scrollIntoView({block:'center'});
+      }catch(e){status.textContent=e.message;}};box.appendChild(chat);
+      const dismiss=document.createElement('button');dismiss.type='button';dismiss.className='btn';dismiss.textContent='Dismiss';
+      dismiss.onclick=async()=>{dismiss.disabled=true;try{
+        const result=await MCP.callTool('write_graph',{target:'connection',operation:'withdraw_request',
+          payload_json:JSON.stringify({request_id:req.request_id,reason:'Notification dismissed'})});
+        if(result?.error)throw new Error(result.detail||result.error);
+        renderRail(railCache.filter(row=>row.request_id!==req.request_id));
+      }catch(e){status.textContent=e.message;dismiss.disabled=false;}};box.appendChild(dismiss);
+      return box;
+    }
     (req.items||[]).forEach(item=>{
       const id=req.request_id + "::" + item.item_id;
       const entry=document.createElement("section"); entry.id="item_" + id; entry.className="rtab-item";
@@ -9736,7 +9913,9 @@
     buttons.forEach(b=>{ b.disabled = true; });
     note.textContent = mode === "clear" ? "Clearing..." : mode === "deny" ? "Denying..." : "Sending...";
     try{
-      const r = await MCP.answerRequest(payload);
+      const r = req.action && req.action.type === "grant_patch_intake"
+        ? await InlineApprovals.post("answer", payload)
+        : await MCP.answerRequest(payload);
       if(installAsk&&typeof AppUI!=="undefined"&&!AppUI.fence(installEpoch,installHome))return;
       if(r && r.error){
         const actionAsk = req.action && req.action.type && req.action.type !== "answer";
@@ -9771,7 +9950,7 @@
           note.textContent=r.receipt||(mode==="accept"?"Copied. No message was sent.":"Closed. No message was sent.");
           if(mode==="accept"&&r.installed&&typeof AppUI!=="undefined"&&AppUI.fence(installEpoch,installHome))
             await AppUI.installedCopy(r);
-        }else{
+        }else if(!req.server_continuation){
           sendTurn(answerLine(req, mode, payload), undefined,
             {relay:true, keepComposer:true, inputMethod:"app_action"});
         }
@@ -9779,6 +9958,11 @@
     }catch(err){
       if(err.authRequired) return enterSignedOut();
       note.textContent = "Couldn't do that: " + err.message;
+      if(err.signIn){
+        const link=document.createElement("a"); link.href="/app/owner-sign-in";
+        link.target="_blank"; link.rel="noopener"; link.textContent=" Sign in to decide this request";
+        note.appendChild(link);
+      }
     }finally{ buttons.forEach(b=>{ b.disabled = itemAnswered; }); }
   }
 
@@ -9802,7 +9986,7 @@
       const button=entry.node.querySelector(".rtab-btn");if(button)button.focus();
     }
   }
-  async function refreshRail(){
+  async function refreshRail(options){
     if(!token()) return;
     const loginEpoch=MCP._loginEpoch;
     let r=null, failure=null;
@@ -9814,7 +9998,7 @@
     if(loginEpoch!==MCP._loginEpoch) return;
     if(!failure && r && Array.isArray(r.pending)){
       railFailed(null);
-      renderRail(r.pending);
+      renderRail(r.pending, options);
       InlineApprovals.history(r.recently_answered, r.pending);
       return;
     }
@@ -9880,18 +10064,38 @@
     }
   }
 
-  // Draw one page of stored turns at the END of the thread, oldest first,
-  // decided by each turn's own timestamp — NOT by assuming the page's order. It
-  // once returned newest-first and this reversed it; the store now returns
-  // oldest-first and the reverse drew the thread upside down: after a reload
-  // the bottom of the chat was the oldest turn ("the conversation is reset to
-  // the past" — founder, 2026-08-29). Turns without a usable ts keep their
-  // given order.
+  // Merge saved rows by timestamp, with row ID breaking ties as in the store.
+  // A late page/reply belongs in place, not at the end.
   function drawHistoryTurns(turns){
+    const sequence=t=>t&&/^[0-9]+$/.test(String(t.id||""))?BigInt(t.id):null;
+    const compare=(a,b)=>{
+      const time=Number.isFinite(a.ts)&&Number.isFinite(b.ts)?a.ts-b.ts:0;
+      return time||(sequence(a)!==null&&sequence(b)!==null
+        ? (sequence(a)<sequence(b)?-1:sequence(a)>sequence(b)?1:0) : 0);
+    };
     const stamped = turns.every(t=>t && typeof t.ts==="number");
-    const ordered = stamped ? turns.slice().sort((a,b)=>a.ts-b.ts) : turns.slice();
+    const ordered = stamped||turns.every(t=>sequence(t)!==null) ? turns.slice().sort(compare) : turns.slice();
     ordered.forEach((t,index)=>{
       if(!t||typeof t.text!=="string"||!t.text)return;
+      const key=t.id?"id:"+t.id:JSON.stringify([t.speaker,t.ts,t.text]);
+      const place=node=>{
+        node.savedTurnKey=key;node.serverTurn=t;
+        if(typeof t.ts==="number"&&Number.isFinite(t.ts)) node.messageTime=t.ts;
+        const thread=$("thread");
+        const later=Array.from(thread.children).find(n=>n!==node&&
+          (String(n.className||"").split(" ").includes("msg--queued")||(n.serverTurn?compare(t,n.serverTurn)<0:
+            Number.isFinite(node.messageTime)&&Number.isFinite(n.messageTime)&&n.messageTime>node.messageTime)));
+        if(thread.insertBefore){
+          if(later) thread.insertBefore(node,later);
+          else thread.appendChild(node);
+        }
+      };
+      const founder=ordered.slice(0,index).reverse().find(row=>row.speaker==="founder");
+      const replySendId=t.speaker!=="founder"&&founder&&founder.client_send_id;
+      const existing=Array.from($("thread").children).find(n=>n.savedTurnKey===key||
+        (t.client_send_id&&n.clientSendId===t.client_send_id)||
+        (replySendId&&n.replyToClientSendId===replySendId));
+      if(existing){place(existing);return;}
       if(t.consumer_turn_id){
         const seen=t.speaker==="founder"?renderedConsumerFounders:renderedConsumerTurns;
         if(seen.has(t.consumer_turn_id))return;
@@ -9901,13 +10105,17 @@
         const previous=ordered[index-1];
         const paired=previous&&typeof t.ts==="number"&&Number.isFinite(t.ts)&&previous.ts===t.ts;
         // Only the newest turn offers the daily-cap card: an old day's limit is history.
-        appendFailureNotice(t.text,paired?previous:null,t.ts,t.failure&&t.failure.code,
+        const notice=appendFailureNotice(t.text,paired?previous:null,t.ts,t.failure&&t.failure.code,
           index===ordered.length-1?t.failure:null);
+        place(notice);
         return;
       }
       const who=t.speaker==="universe"?"universe":t.speaker==="founder"?"founder":"system";
       const drawn=appendMessage(who,t.text,
         who==="universe"?answerExecutionDetail({execution:t.execution}):null, t.ts);
+      place(drawn);
+      drawn.clientSendId=t.client_send_id||"";
+      if(drawn?.dataset&&t.consumer_turn_id)drawn.dataset.itemId=t.consumer_turn_id;
       // The peek said this turn is longer than what it returned. Offer the
       // rest instead of letting the preview pass for the message; the bubble
       // and its metadata (time, provider/model detail) are untouched.
@@ -9949,16 +10157,18 @@
     const conv=r && r.recent_conversation;
     if(!conv || typeof conv.error==="string" || !Array.isArray(conv.turns))
       return failed((conv && conv.error) || "no page came back");
-    // Drawn at the end, then moved as one block to just below the button, so
-    // the older page lands above everything already on screen.
-    const thread=$("thread"), anchor=button.nextElementSibling||button.nextSibling, start=thread.children.length;
+    // Timestamped rows insert themselves; only undated legacy rows need an
+    // explicit earlier-page anchor.
+    const thread=$("thread"), anchor=button.nextElementSibling||button.nextSibling;
+    const existingNodes=new Set(Array.from(thread.children));
     // Measure the retained message, not scrollHeight: the button can disappear
     // on the final page and browser scroll anchoring may already compensate.
     const anchorTop=anchor && anchor.getBoundingClientRect ? anchor.getBoundingClientRect().top : null;
     const preserve=!scrollState || opening===scrollState.opening;
     if(scrollState && preserve) scrollState.following=false;
     drawHistoryTurns(conv.turns);
-    Array.from(thread.children).slice(start).forEach(node=>thread.insertBefore(node, anchor));
+    Array.from(thread.children).filter(node=>!existingNodes.has(node)&&!Number.isFinite(node.messageTime))
+      .forEach(node=>thread.insertBefore(node, anchor));
     offerEarlier(conv.has_more===true ? conv.next_before : null, stillOwner);
     if(preserve && anchorTop!==null) thread.scrollTop+=anchor.getBoundingClientRect().top-anchorTop;
     if(scrollState && preserve) scrollState.following=scrollState.atBottom();
@@ -10185,6 +10395,7 @@
     }catch(_e){ /* offline or blocked: try again next time */ }
   }
 
+  __TA_CHAT_RENDER__
   __TA_APP_UI__
 
   async function boot(){
@@ -10206,7 +10417,35 @@
     }
     startSessionKeepAlive();
   }
-  boot();
+  AppRecovery.attach({
+    scope:()=>({owner:queueOwner,home:queueScope,agent:addressedAgentId()}),
+    health:()=>({expected:!$("view-chat").hidden&&engineConnected!==false,
+      healthy:!!(AppUI.enabled&&AppUI.frame&&AppUI.frame.isConnected&&AppUI.bootComplete&&!AppUI.bootFault),
+      timeout:AppUI.ready&&AppUI.frame&&AppUI.frame.isConnected?120000:15000}),
+    holdUpdate:()=>{
+      const active=document.activeElement,pending=readInflight();
+      return !!((isTypingTarget(active)&&active.value)||
+        ($("btn-send").disabled&&Date.now()-turnStartedAt<3*60*60*1000)||
+        (!$("btn-send").disabled&&pending&&Date.now()-(pending.ts||0)<20*60*1000));
+    },
+    retryFrame:()=>{
+      if(!AppUI.enabled)return false;
+      if(AppUI.isPlatformDefault())AppUI.mountDefault();
+      else if(AppUI.active)AppUI.mount(AppUI.active);else AppUI.load();
+      return true;
+    },
+    browse:()=>{
+      if(!AppUI.enabled)return false;
+      AppUI.openBrowse().catch(error=>AppRecovery.fail(error));return true;
+    },
+    openChat:()=>{
+      if($("view-chat").hidden)throw new Error("Chat has not started");
+      cloudState=cloudState||cloudDefaultState(false,cloudStageSize());
+      cloudState.mode="open";cloudState.userSet=true;applyChatCloud();
+      $("composer-input").focus();
+    }
+  });
+  boot().then(()=>AppRecovery.started(),error=>AppRecovery.fail(error));
   </script>
 </body>
 </html>

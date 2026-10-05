@@ -155,7 +155,7 @@ def _ask(actor: str, universe: str, action: dict) -> dict:
 
 
 def _answer(actor: str, universe: str, request_id: str, values: dict | None = None) -> dict:
-    from tinyassets.api.pending_requests import answer_request
+    from tests.owner_answer import answer_request
 
     with _as(actor):
         return answer_request(universe_id=universe, payload=json.dumps(
@@ -317,7 +317,7 @@ def test_a_rewritten_action_executes_the_pinned_one(home: Path):
 
 
 def test_the_same_ask_raised_again_after_a_dismissal_is_confirmable(home: Path):
-    from tinyassets.api.pending_requests import answer_request
+    from tests.owner_answer import answer_request
 
     first = _ask(OWNER, UNIVERSE, _publish_action())
     with _as(OWNER):
@@ -1384,3 +1384,65 @@ def test_the_install_tab_without_findings_shows_no_warning():
 
     _, _, body = tab_text(_tab_plan())
     assert "Worth a careful look" not in body
+
+
+
+def test_shipped_starter_bundle_and_skills_screen_clear(tmp_path: Path):
+    from tinyassets.universe_bundle import seed_okf_bundle
+
+    seed = tmp_path / "starter"
+    seed_okf_bundle(seed)
+    files = {p.relative_to(seed).as_posix(): p.read_bytes()
+             for p in seed.rglob("*") if p.is_file()}
+    root = Path(__file__).resolve().parents[1]
+    for directory in (root / "tinyassets/skills",
+                      root / "packaging/claude-plugin/plugins/tinyassets-universe-server/skills"):
+        for path in directory.rglob("*"):
+            if path.is_file():
+                files[path.relative_to(root).as_posix()] = path.read_bytes()
+    assert files
+    assert ccp.scan_install(files) == []
+
+
+def test_legitimate_notifier_is_flagged_and_installs_verbatim(home: Path):
+    path = "skills/notifier/notify.py"
+    source = b"requests.post('https://discord.com/api/webhooks/123/abc', json={'content': 'Done'})"
+    _write(home / UNIVERSE, path, source)
+    published = _published(home)
+    definition_id = published["done"]["agent_definition_id"]
+    assert _blob_files(home, definition_id)[path] == source
+    before = _bob_files(home)
+    ask = _install(home, definition_id)
+    assert "request_id" in ask, ask
+    assert "exfiltration endpoint" in ask["body"]
+    assert path in ask["body"]
+    assert _bob_files(home) == before
+    done = _answer(BOB, BOB_UNIVERSE, ask["request_id"])
+    assert done.get("installed") is True, done
+    assert _bob_files(home)["agents/gtm-village/" + path] == source
+
+
+def test_install_scan_large_package_is_bounded_and_reads_file_tails():
+    import subprocess
+    import sys
+
+    # Run outside pytest so a pathological regex is stopped, not merely timed
+    # after it eventually returns. Scan 256 MiB, including near-matches and a
+    # real hit at the end of each maximum-size file; never truncate content.
+    probe = r"""
+from tinyassets import command_center_packages as ccp
+from time import monotonic
+suffix = b"\nhttps://webhook.site/notifier"
+prefix = b"eval " + b" " * 200 + b"curl " + b"x" * 159 + b"!"
+data = (prefix * (ccp.MAX_FILE_BYTES // len(prefix) + 1))[:ccp.MAX_FILE_BYTES-len(suffix)] + suffix
+files = {f"skills/notify{i}.py": data for i in range(ccp.MAX_PACKAGE_BYTES // ccp.MAX_FILE_BYTES)}
+start = monotonic()
+hits = ccp.scan_install(files)
+assert len(hits) == len(files), hits
+assert all(h['kind'] == 'exfiltration endpoint' for h in hits)
+print(f"Scanned {sum(map(len, files.values()))} bytes in {monotonic()-start:.3f}s")
+"""
+    result = subprocess.run([sys.executable, "-c", probe], capture_output=True,
+                            text=True, timeout=90)
+    assert result.returncode == 0, result.stdout + result.stderr
+    print(result.stdout)

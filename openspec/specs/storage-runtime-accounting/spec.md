@@ -3,7 +3,7 @@
 ## Purpose
 
 Charge owner data while keeping protected platform runtime out of the account
-quota, and distinguish storage exhaustion from launch reservation pressure.
+quota, and enforce account totals across concurrent and nested jail calls.
 
 ## Requirements
 
@@ -32,20 +32,42 @@ SHALL remain charged. Platform sidecars outside the home are not user files.
 - **THEN** all persistent bytes in both paths SHALL be charged, including after another launch
 - **AND** retained auth and sessions SHALL NOT be deleted to repair accounting
 
-### Requirement: Status and notices distinguish bytes from reservations
+### Requirement: Jails enforce total account storage without per-call capacity
 
-Status SHALL classify protected credential materialization files as provider runtime and
-persistent writable runtime files as other user files. It SHALL explicitly say
-the observed footprint is not the account quota total. A full-account warning
-SHALL require measured bytes at or above the effective quota. Reservation,
-committed-write reconciliation, and headroom pressure SHALL report their actual
-reason while preserving the existing write allowance and volume safeguards.
+Tool and provider jails SHALL share the owner's total-storage quota. A launch
+SHALL NOT reserve unused headroom or receive a fixed growth or file-size cap.
+Ordinary gated-write reservations SHALL continue to count toward account usage.
+Writable runtime and workspaces across all owned homes SHALL remain charged.
+The shared-volume free-byte and free-inode floors SHALL remain aggregate
+storage safeguards. Supervision is polling-based and can overshoot between
+checks; it SHALL NOT be represented as a synchronous filesystem quota.
 
-#### Scenario: Genuine full account
-- **WHEN** measured owner data reaches or exceeds the effective quota
-- **THEN** the full-storage warning remains and recovery grace still permits cleanup
+Status SHALL classify protected credential materialization as provider runtime
+and persistent writable runtime as owner data. A full-data warning SHALL require
+measured bytes at or above quota, rather than capacity held by active calls.
+A full account SHALL be allowed to run cleanup without increasing its initial
+total; the allowed total SHALL ratchet downward as cleanup makes room. No new
+per-call recovery allowance SHALL be granted. Accounting errors SHALL fail closed.
+Concurrent supervisors SHALL coalesce account scans; admission and exit SHALL
+force a current check. A breach detected after exit SHALL say writes landed,
+rather than claiming the process was killed.
 
-#### Scenario: Active launches reserve remaining capacity
-- **WHEN** fitted admission fails while measured owner data is below quota
-- **THEN** the notice identifies reservation, remeasurement, or headroom pressure
-- **AND** it does not claim the owner is out of cloud storage
+#### Scenario: Complete clone with an active provider
+- **WHEN** a tool clones a complete repository larger than 16 MiB while a provider is active
+- **AND** the owner's total usage fits the quota and shared-volume floors hold
+- **THEN** the clone succeeds without sparse or shallow fallback
+- **AND** neither active launch reserves unused headroom away from the other
+
+#### Scenario: Total quota across concurrent homes
+- **WHEN** writes across the owner's homes and pending ordinary writes exceed quota
+- **THEN** the next total-storage check reports the violation and stops a still-running jail
+- **AND** other owners' data does not consume this owner's quota
+
+#### Scenario: Genuine full account and cleanup
+- **WHEN** measured owner data reaches or exceeds quota
+- **THEN** the full-storage warning remains and deleting files can succeed
+- **AND** repeated calls do not receive fresh growth allowances
+
+#### Scenario: Fast completed write exceeds quota
+- **WHEN** a command exits before the periodic watcher observes its excess writes
+- **THEN** the final check reports that it finished over quota and writes landed
