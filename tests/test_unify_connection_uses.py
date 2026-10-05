@@ -368,6 +368,108 @@ def test_a_powered_universe_is_not_switched_by_a_new_model_connection(owner, mon
     assert second["serving"] == {"status": "unchanged", "reason": "already_powered"}
 
 
+def test_confirmed_openrouter_model_source_is_accepted_without_switching_root(owner):
+    from tinyassets.provider_assignment import load_provider_assignment
+
+    first = _answer(_ask(QUILLMIND_ASK, _KEY_FIELD)["request_id"], {"secret": LLM_KEY})
+    before = load_provider_assignment(owner, universe_id=UID)
+    ask = {**QUILLMIND_ASK, "destination": "openrouter", "host": "openrouter.ai",
+           "path_template": "/api/v1/chat/completions"}
+    second = _answer(_ask(ask, _KEY_FIELD)["request_id"], {"secret": LLM_KEY})
+    assert first["status"] == second["status"] == "answered"
+    after = load_provider_assignment(owner, universe_id=UID)
+    assert after.provider == before.provider
+    accepted = {member.provider: member.access for member in after.candidates}
+    assert second["provider"] in accepted
+    assert accepted[second["provider"]].model_ids == ("quill-large",)
+    assert accepted[first["provider"]] == before.candidates[0].access
+
+
+def test_model_source_acceptance_refusal_keeps_request_pending_and_existing_serving(
+    owner, monkeypatch,
+):
+    from tinyassets.custom_agents import serving_binding_candidates
+    from tinyassets.provider_assignment import load_provider_assignment
+    from tinyassets.provider_serving_binding import bind_serving_provider, set_serving
+
+    _answer(_ask(QUILLMIND_ASK, _KEY_FIELD)["request_id"], {"secret": LLM_KEY})
+    current = load_provider_assignment(owner, universe_id=UID)
+    [binding] = serving_binding_candidates(owner, universe_id=UID, owner_user_id=OWNER)
+    legacy = bind_serving_provider(
+        base_path=owner, universe_dir=owner / UID, owner_user_id=OWNER, universe_id=UID,
+        agent_binding_id=binding["agent_binding_id"], expected_revision=binding["revision"],
+        provider=current.provider.removeprefix("api_key_http:"),
+    )["agent_binding"]
+    set_serving(base_path=owner, universe_dir=owner / UID, owner_user_id=OWNER, universe_id=UID,
+                agent_binding_id=legacy["agent_binding_id"], expected_revision=legacy["revision"],
+                enabled=True)
+    before = load_provider_assignment(owner, universe_id=UID)
+    assert not before.manifest_digest
+    ask = {**QUILLMIND_ASK, "destination": "second-source", "host": "other.example.com"}
+    answer = _answer(_ask(ask, _KEY_FIELD)["request_id"], {"secret": LLM_KEY})
+    assert answer["error"] == "model_source_acceptance_failed"
+    assert "confirm explicit model access for your existing source" in answer["detail"]
+    assert "ensure exactly one owned agent is serving" in answer["detail"]
+    assert "then retry this request" in answer["detail"]
+    assert answer["request_pending"] is True
+    assert answer["serving"]["status"] == "unchanged"
+    assert load_provider_assignment(owner, universe_id=UID) == before
+
+
+def test_failed_additional_source_activation_restores_prior_membership_and_serving(
+    owner, monkeypatch,
+):
+    from tinyassets import provider_serving_binding
+    from tinyassets.api.pending_requests import _serving_llm_bound
+    from tinyassets.provider_assignment import load_provider_assignment
+
+    _answer(_ask(QUILLMIND_ASK, _KEY_FIELD)["request_id"], {"secret": LLM_KEY})
+    before = load_provider_assignment(owner, universe_id=UID)
+    actual = provider_serving_binding.set_serving
+    attempts = []
+
+    def fail_new_membership(**kwargs):
+        attempts.append(kwargs)
+        if len(attempts) == 1:
+            raise ValueError("new source is unavailable")
+        return actual(**kwargs)
+
+    monkeypatch.setattr(provider_serving_binding, "set_serving", fail_new_membership)
+    ask = {**QUILLMIND_ASK, "destination": "second-source", "host": "other.example.com"}
+    answer = _answer(_ask(ask, _KEY_FIELD)["request_id"], {"secret": LLM_KEY})
+    assert answer["error"] == "model_source_acceptance_failed"
+    assert answer["request_pending"] is True
+    assert answer["serving"]["status"] == "unchanged"
+    assert _serving_llm_bound(owner, UID, OWNER)
+    after = load_provider_assignment(owner, universe_id=UID)
+    assert after.provider == before.provider
+    assert {m.provider: m.access for m in after.candidates} == {
+        m.provider: m.access for m in before.candidates}
+    assert len(attempts) == 2
+
+
+def test_additional_source_recovery_cannot_overwrite_a_newer_disable(owner, monkeypatch):
+    from tinyassets import provider_serving_binding
+    from tinyassets.custom_agents import list_bindings
+
+    _answer(_ask(QUILLMIND_ASK, _KEY_FIELD)["request_id"], {"secret": LLM_KEY})
+    actual = provider_serving_binding.set_serving
+    edited = []
+
+    def disable_then_refuse(**kwargs):
+        edited.append(actual(**{**kwargs, "enabled": False})["agent_binding"])
+        raise PermissionError("owner disabled the binding concurrently")
+
+    monkeypatch.setattr(provider_serving_binding, "set_serving", disable_then_refuse)
+    ask = {**QUILLMIND_ASK, "destination": "second-source", "host": "other.example.com"}
+    answer = _answer(_ask(ask, _KEY_FIELD)["request_id"], {"secret": LLM_KEY})
+    assert answer["error"] == "model_source_acceptance_failed"
+    assert answer["request_pending"] is True
+    assert answer["serving"]["status"] == "disabled"
+    assert len(edited) == 1
+    assert list_bindings(owner, universe_id=UID) == edited
+
+
 # --------------------------------------------------------------------------- #
 # (b) A never-seen platform: one answer, then an authenticated call whose
 #     constant header the broker applies.

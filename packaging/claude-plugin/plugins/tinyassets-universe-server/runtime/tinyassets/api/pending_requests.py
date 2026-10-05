@@ -3456,10 +3456,23 @@ def _complete_connect(
     if "provider" in applied:
         out["provider"] = applied["provider"]
         out["definition_id"] = applied["definition_id"]
-        out["serving"] = select_model_if_unpowered(
-            base=base, uid=uid, actor=actor, definition_id=applied["definition_id"],
-            model=applied["model"],
-        )
+        from tinyassets.exceptions import ProviderError
+
+        try:
+            out["serving"] = select_model_if_unpowered(
+                base=base, uid=uid, actor=actor, definition_id=applied["definition_id"],
+                model=applied["model"],
+            )
+        except (PermissionError, ValueError, LookupError, ProviderError, OSError):
+            # The deposit succeeded, but it must not look like accepted model
+            # access. Keep the request pending and report actual serving state.
+            return {**out, "error": "model_source_acceptance_failed",
+                    "detail": "Connection saved, but the model source was not accepted. "
+                              "In model setup, confirm explicit model access for your existing "
+                              "source and ensure exactly one owned agent is serving; "
+                              "then retry this request.",
+                    "serving": {"status": "unchanged" if _serving_llm_bound(base, uid, actor)
+                                else "disabled", "reason": "model_source_acceptance_failed"}}
     return out
 
 
