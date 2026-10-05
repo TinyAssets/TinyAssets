@@ -1,3 +1,257 @@
+# Current delivery: least-privilege D10 amendment
+
+Starting HEAD `664a4361e7`; `git pull --ff-only origin feat/per-role-uid-split`
+returned `Already up to date.` Worktree was clean. Read both briefs and the full
+round-3 refute, all change artifacts and PLAN operating principles. Admission
+`python scripts/openspec_flow.py check-change per-role-uid-split --provider codex`
+returned `ALLOWED`.
+
+The lead resolves the prior capability ambiguity: no runtime root maintenance,
+no retained DAC_OVERRIDE/FOWNER/CHOWN and no separate privileged helper. Deletion
+uses capability-free engine 1003 inside the admitted owner's cell through normal
+launcher spawn, then daemon 1001 for daemon entries/empty structure. Both passes
+fail loudly with the path. Account deletion and scoped_reset are covered.
+Reverse migration is explicit opt-in at container startup in the forward
+migration code path before capability drop, dry-run capable, idempotent and
+never deletes data. Group-preserving creation modes remain required.
+
+D10, proposal, runtime-role delta, tasks and rollback runbook now agree. No probe
+has been weakened; no build task is checked off. Release-critical paths changed
+in this documentation step: **0; list: none**. All six changed paths are under
+this change: design.md, proposal.md, tasks.md, specs/runtime-process-roles/spec.md,
+rollback.md and delivery.md. No tinyassets/ edits, so mirror regeneration is not
+applicable. No PR, deployment, test-name change or assertion weakening.
+
+## Build continuation and new stop: broker filesystem authority
+
+Task 2.1 prerequisite inspection covered the Dockerfile, daemon entry/health
+paths, provider jail, node sandbox, runtime path resolution and compose image
+consumers. No runtime edit was made before the blocker below was established.
+The audit is not complete and task 2.1 remains unchecked. Observations to retain:
+
+- Source-relative uses inspected in mcp_server, discovery and storage.rotation
+  read packaged data; mcp_server writes default universe state under data_dir().
+- Provider homes are per-launch; moving daemon HOME removes the wrapper's /app
+  default from the daemon path. Catalog's implicit repo_root is cwd, requiring
+  the remaining audit to check explicit sqlite_cached configurations.
+- The optional slack-agent service uses the same image but overrides entrypoint.
+  A root image USER would otherwise make that service root too. Preserve its
+  uid-1001 execution explicitly when implementing the image/compose changes;
+  this is a required compatibility adaptation, not a deployed change.
+
+**Separate authority conflict, reproduced using the production Dockerfile.**
+D1 gives the broker uid/gid 1002 and supplementary group **1102 only**, with no
+capabilities. D4 assigns shared root stores **1001:1001**, strips other access,
+and leaves remaining platform state with the daemon. These rows exclude the
+broker from outbound.db; the design supplies no broker ACL or mediated ledger
+channel. Yet the mandatory working-stream path requires these operations:
+
+| Actual code | Required access under current implementation | Evidence |
+|---|---|---|
+| broker/process.py `_Dispatchers.ledger_for` (59-65), server.py `_open` (361-366) | open shared outbound.db to authorize every stream | production-image diagnostic below: unable to open database file |
+| storage/outbound_connections.py `ConnectionLedger.__init__` (5148-5206) | schema initialization/upgrade and incarnation backfill in addition to reads | code inspection: executescript, ALTER TABLE and conditional UPDATE; a read ACL alone is not a complete contract |
+| storage/outbound_connections.py `_build_credential_broker_dispatch` (4928-4955), `broker_dispatch_config` (6071-6089) | mkdir and write under /data/.outbound-proxy/<grant-hash>, plus open the ledger | production-image diagnostic: EACCES at runtime mkdir |
+| storage/agent_request_usage.py `resolve_inference_usage`, `UsageStore`, `claim_reference` and usage dispatch (141-197, 401-425, 465+) | write accounting transactions in shared .tinyassets.db; inspect parent/owner liveness locks | source inspection only; not claimed as a runtime probe |
+| process_liveness.py `owner_state` (88-109) | open .consumer_liveness/<token>.lock O_RDWR for kernel liveness check | source inspection only; inaccessible means UNKNOWN, not successful inference admission |
+| connection_oauth/tokens.py `ConnectionTokens.current` (274-337) | refresh may enter local refresh_credential and its vault-write admission | source inspection only: remote service path requires provider_id plus supplied/inherited config; D3 broker allowlist supplies neither general refresh IPC nor write authority |
+
+The last path also conflicts with the explicit owner-only vault-writer contract:
+broker process `_Dispatchers.dispatch_for` does not supply oauth_service in its
+config, and non-directory OAuth bundles take the local refresh path regardless.
+No refresh network request was attempted. The code's lock-before-spend protection
+must remain intact; granting vault write to make refresh work would contradict D4.
+
+**Decision needed:** define the broker's data/operation authority as a whole:
+which ledger/accounting operations use authenticated daemon IPC versus explicit
+broker-specific storage rights, where broker audit/runtime writes live, and how
+refresh remains daemon-owned. A narrowly read-only ledger consumer would also
+need to stop schema/backfill writes in broker opens. Giving the broker daemon
+group 1001, restoring other-read, widening ta-work, granting vault write, or
+retaining capabilities would not be a faithful implementation of the stated
+role/mode tables. No one of these choices is inferred.
+
+This is a concrete build compatibility/authority issue, not a fourth design
+review and not a reopening of D10. The retained brief says: **"If you hit a
+genuine design ambiguity, record it in delivery.md and stop rather than guess."**
+Accordingly stopped before runtime implementation. D10 remains resolved.
+
+## Production-image diagnostic: exact command and output
+
+Built the unchanged production Dockerfile from starting runtime HEAD 664a4361e7
+(the working-tree changes were Markdown only):
+
+```powershell
+docker build -f Dockerfile -t tinyassets-uid-baseline:664a4361e7 .
+docker image inspect tinyassets-uid-baseline:664a4361e7 --format '{{.Id}}'
+```
+
+Build exit 0. Image ID:
+`sha256:7d30057f0d2f6a6259b44ee7164831d2c1919697c2d9cae55512051909e585d4`.
+Platform manifest:
+`sha256:8ae8092e8558708ebc32bb86eac86e4c91d4f67141e88ab78049c26b287922e3`.
+
+The following script was saved outside the repo at
+`C:/Users/Jonathan/AppData/Local/Temp/uid-broker-d4-probe.py`. It creates only
+synthetic data inside a disposable network-disabled container with no host
+mounts, applies D1/D4 identities/modes, and calls the actual production broker
+methods. It is a diagnostic, **not** task 2.8 launcher/stream acceptance: no new
+launcher or migration exists yet. All five child capability sets are read back
+zero; all compose security options and the proposed seven entry caps are used.
+
+```python
+import ctypes
+import os
+import sqlite3
+import tempfile
+import traceback
+from pathlib import Path
+
+from tinyassets.broker.process import _Dispatchers
+from tinyassets.storage.outbound_connections import ConnectionLedger, _build_credential_broker_dispatch
+
+CAP_FIELDS = ('CapInh', 'CapPrm', 'CapEff', 'CapBnd', 'CapAmb')
+libc = ctypes.CDLL(None, use_errno=True)
+
+class Header(ctypes.Structure):
+    _fields_ = [('version', ctypes.c_uint32), ('pid', ctypes.c_int)]
+
+class Data(ctypes.Structure):
+    _fields_ = [('effective', ctypes.c_uint32), ('permitted', ctypes.c_uint32), ('inheritable', ctypes.c_uint32)]
+
+def retire(uid, groups):
+    assert libc.prctl(38, 1, 0, 0, 0) == 0
+    for cap in range(int(Path('/proc/sys/kernel/cap_last_cap').read_text()) + 1):
+        assert libc.prctl(24, cap, 0, 0, 0) == 0
+    assert libc.prctl(47, 4, 0, 0, 0) == 0
+    os.setgroups(groups)
+    os.setresgid(uid, uid, uid)
+    os.setresuid(uid, uid, uid)
+    header, data = Header(0x20080522, 0), (Data * 2)()
+    assert libc.capset(ctypes.byref(header), ctypes.byref(data)) == 0
+    fields = dict(line.split(':', 1) for line in Path('/proc/self/status').read_text().splitlines())
+    assert all(int(fields[k].strip(), 16) == 0 for k in CAP_FIELDS)
+    assert os.getresuid() == (uid, uid, uid)
+    assert os.getresgid() == (uid, uid, uid)
+    assert os.getgroups() == groups
+    print(f'identity uid={uid} gid={uid} groups={groups} caps=all-zero nnp=1', flush=True)
+
+def child(uid, groups, action):
+    pid = os.fork()
+    if pid == 0:
+        try:
+            retire(uid, groups)
+            action()
+        except BaseException:
+            traceback.print_exc()
+            os._exit(1)
+        os._exit(0)
+    assert os.waitpid(pid, 0)[1] == 0
+
+root = Path(tempfile.mkdtemp(prefix='uid-broker-d4-'))
+os.chown(root, 1001, 1001)
+root.chmod(0o755)
+
+def seed():
+    ledger = ConnectionLedger(root / 'outbound.db', verify_authenticated_principal=lambda: 'alice')
+    ledger.create_connection(connection_id='conn-a', owner_user_id='alice', connection_class='http',
+        connection_type='http', auth_scheme='bearer', scopes=('POST',), provider='http',
+        destination='compute:conn-a', credential_ref='vault://http/synthetic',
+        allowed_endpoints=[{'host':'models.example.com', 'path_template':'/v1/chat', 'methods':['POST']}])
+    ledger.grant_connection(grant_id='grant-a', connection_id='conn-a', owner_user_id='alice', universe_id='cc-alice')
+    (root / 'outbound.db').chmod(0o640)
+    (root / '.outbound-proxy').mkdir(mode=0o700)
+    print('seed outbound.db=1001:1001:0640 .outbound-proxy=1001:1001:0700', flush=True)
+
+child(1001, [1100, 1101, 1102], seed)
+
+def control():
+    ledger = _Dispatchers(root, allow_test_fixtures=False).ledger_for('alice')
+    grant, resource = ledger.authorize_exact(universe_id='cc-alice', grant_id='grant-a', connection_id='conn-a')
+    assert grant.connection_id == resource.connection_id == 'conn-a'
+    print('daemon.actual_ledger_authorize=PASS', flush=True)
+
+child(1001, [1100, 1101, 1102], control)
+
+def broker():
+    try:
+        _Dispatchers(root, allow_test_fixtures=False).ledger_for('alice')
+    except sqlite3.OperationalError as exc:
+        assert str(exc) == 'unable to open database file', str(exc)
+        print('broker.actual_ledger_for=OperationalError: ' + str(exc), flush=True)
+    else:
+        raise AssertionError('D4 unexpectedly admitted broker to the ledger')
+    try:
+        _build_credential_broker_dispatch({'runtime_root':str(root / '.outbound-proxy' / 'synthetic-grant')})
+    except PermissionError as exc:
+        assert '.outbound-proxy' in str(exc.filename)
+        print('broker.actual_dispatch_build=EACCES: .outbound-proxy/synthetic-grant', flush=True)
+    else:
+        raise AssertionError('D4 unexpectedly admitted broker writes to owner runtime')
+
+child(1002, [1102], broker)
+print('DIAGNOSTIC PASS: D1/D4 permissions block actual broker ledger and runtime setup; NOT stream acceptance', flush=True)
+
+```
+
+```powershell
+Get-Content -Raw C:/Users/Jonathan/AppData/Local/Temp/uid-broker-d4-probe.py | docker run --rm -i --network none --user 0:0 --cap-drop ALL --cap-add CHOWN --cap-add DAC_OVERRIDE --cap-add FOWNER --cap-add SETUID --cap-add SETGID --cap-add SETPCAP --cap-add KILL --security-opt no-new-privileges=true --security-opt seccomp=unconfined --security-opt apparmor=unconfined --security-opt systempaths=unconfined --entrypoint /opt/venv/bin/python tinyassets-uid-baseline:664a4361e7 -
+```
+
+Exit 0, diagnostic assertions passed:
+
+```text
+identity uid=1001 gid=1001 groups=[1100, 1101, 1102] caps=all-zero nnp=1
+seed outbound.db=1001:1001:0640 .outbound-proxy=1001:1001:0700
+identity uid=1001 gid=1001 groups=[1100, 1101, 1102] caps=all-zero nnp=1
+daemon.actual_ledger_authorize=PASS
+identity uid=1002 gid=1002 groups=[1102] caps=all-zero nnp=1
+broker.actual_ledger_for=OperationalError: unable to open database file
+broker.actual_dispatch_build=EACCES: .outbound-proxy/synthetic-grant
+DIAGNOSTIC PASS: D1/D4 permissions block actual broker ledger and runtime setup; NOT stream acceptance
+```
+
+## Verification
+
+```text
+python scripts/linux_oracle.py -- tests/test_ta_op_modes.py -q
+[oracle] python 3.11.16 | git 2.47.3 | bwrap 0.12.0 | uid 1001
+..........                                                               [100%]
+10 passed in 0.26s
+```
+
+Exit 0; this is the existing test-oracle baseline capability/healthcheck contract,
+not proof of the unimplemented launcher's capability retirement.
+
+- Windows: `python -m pytest tests/test_ta_op_modes.py -q --basetemp=C:/Users/Jonathan/AppData/Local/Temp/uid-d10-least-privilege-pytest`:
+  exit 0, `10 passed in 0.52s`.
+- `openspec validate per-role-uid-split --strict`: exit 0,
+  `Change 'per-role-uid-split' is valid`.
+- `python -m ruff check --output-format concise`: exit 1, `Found 55 errors.`
+  All in unchanged files (same baseline count as the preceding checkpoint).
+  No Python or heavy-test file was edited; no unrelated fixes.
+- `git diff --check`: exit 0.
+- `python scripts/test_hygiene_gate.py --base 664a4361e7 --head HEAD`:
+  exit 0, `tests added 0, removed 0, tampering findings 0, product lines added 0`.
+- Commit hooks: mirror parity N/A, mojibake clean (6 text files),
+  cross-provider drift clean and skill validation passed. Explicit paths staged;
+  no commit -a. Worktree clean after the checkpoint. Push target remains
+  origin/feat/per-role-uid-split; no PR.
+
+**Remaining:** all build tasks 2.1-2.8; all actual-class production-image
+F1-F7/C1-C6 probes; capability-free two-pass deletion/reset and failure-path
+proofs; startup migration dry-run/copy/idempotence/crash-resume; startup reverse
+migration followed by old-image read/write/delete; broker launcher/stream and
+new-image healthcheck. All are **NOT RUN/NOT PROVEN**, distinct from the diagnostic
+above. Tasks 2.9 and 2.10 remain unchecked. No deployment was authorized.
+Deviation: the brief's stop condition was applied at the broker authority
+conflict. No fourth design review or build-code review occurred: no runtime
+implementation exists in this checkpoint.
+
+The entries below are historical evidence only; their unresolved-decision
+language and runtime root-maintenance proposal are superseded by amended D10.
+
+---
+
 # Current delivery: lead technical decision D10
 
 Started with `git pull --ff-only origin feat/per-role-uid-split`:

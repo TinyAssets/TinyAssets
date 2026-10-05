@@ -1,5 +1,5 @@
 <!-- founder decision 2026-10-05: fold + build with probes.
-     D10 resolves the access mechanism; capability lifetime remains blocked;
+     D10 resolves access with two-pass deletion and startup reverse migration;
      see delivery.md. -->
 
 ## ADDED Requirements
@@ -93,7 +93,7 @@ The ownership migration SHALL NOT change the owning uid of any path an older ima
 - **THEN** the migration makes no ownership or mode changes and the roles start
 
 #### Scenario: Rolling back preserves access after engine writes
-- **WHEN** launcher-mediated reverse migration has completed on a migrated copy after uid 1003 has created files and directories, including explicit 0600/0700 modes and later chmod, and an older image starts as uid 1001 without supplementary work groups
+- **WHEN** explicit opt-in startup reverse migration has completed on a migrated copy after uid 1003 has created files and directories, including explicit 0600/0700 modes and later chmod, and an older image starts as uid 1001 without supplementary work groups
 - **THEN** it reads, writes and deletes the required workspace contents without losing user data
 - **AND** merely retaining the uid of pre-existing files is not evidence that rollback succeeds
 
@@ -170,28 +170,36 @@ Every class SHALL execute a mandatory close-after-mount bootstrap before payload
 - **WHEN** each actual payload lists /proc/self/fd and tries openat(fd, "..") and relative traversal through each retained directory descriptor
 - **THEN** it cannot reach host ancestors, another owner's files, privileged state or a writable source behind a read-only bind
 
-### Requirement: Workspace access uses ACLs plus scoped root maintenance
+### Requirement: Workspace access uses ACLs plus capability-free two-pass deletion
 
 Ta-work directories SHALL have access u:1001:rwx and default d:u:1001:rwx ACLs with effective masks; files SHALL have appropriate owner-daemon access while retaining executable bits. Children SHALL start with umask 007. Work trees SHALL require ACL support. Default ACL presence alone SHALL NOT be accepted as proof after explicit restrictive creation or chmod. Known explicit 0700/chmod sites creating owner-work content SHALL use group-preserving 0770/2770 modes consistent with umask 007, without widening any path outside the classified owner's work tree.
 
-Per the lead technical decision D10, daemon deletion, reset and cleanup of engine-created owner content SHALL use a new launcher-mediated root maintenance operation, including workspace pool removal, scoped_reset and account deletion. It SHALL accept only the verified daemon peer using the existing exact uid-and-pid check. Its fixed operation allowlist SHALL be delete-tree, reset-tree and chown-back; it SHALL expose no general root exec. Each operation SHALL be confined to the requesting owner's admitted tree using pinned no-follow openat traversal and SHALL be audited without logging secrets or content. Foreign-owner targets and symlink escapes SHALL be refused. Metadata changes SHALL preserve the work-tree hardlink alias rule. The conflict between this authority and mandatory capability retirement SHALL be explicitly resolved before implementation, as recorded in D10.
+Per D10, owner-tree deletion/reset SHALL use two passes without capabilities, including workspace pool removal, scoped_reset and account deletion. Pass 1 SHALL run as engine uid 1003 inside the admitted owner's cell through normal launcher spawn, removing engine-owned entries with pinned no-follow openat traversal confined to that view. Pass 2 SHALL run as daemon uid 1001 and remove daemon-owned entries and the now-empty structure. A pass unable to remove an entry SHALL fail loudly with its path, never silently report partial deletion as success. Launcher peer validation and owner confinement SHALL remain unchanged. The launcher SHALL retire CHOWN/FOWNER/DAC_OVERRIDE from all five sets before service; no retained-capability helper or runtime root maintenance operation SHALL exist.
 
-Rollback SHALL require explicit, idempotent, crash-recoverable launcher-mediated reverse migration with a non-mutating dry-run. It SHALL chown/chmod engine-created content back to a uid-1001-readable, writable and deletable layout before old-image startup, SHALL NOT delete user data and SHALL have a tested rollback runbook.
+Rollback SHALL run only at container startup before capability drop in the same privileged window and code path as forward migration, selected by an explicit env/flag opt-in. It SHALL hold the exclusive layout lock before any role starts, be idempotent and crash-recoverable, and support a non-mutating dry-run. It SHALL restore engine-created content to uid-1001-readable, writable and deletable ownership/modes, SHALL preserve no-follow and hardlink alias protections, and SHALL never delete user data. Rollback startup SHALL exit before normal service or forward remigration. The tested rollback runbook SHALL record the actual invocation.
 
 #### Scenario: Engine-owned restrictive paths remain deletable
 - **WHEN** an engine creates directories/files with 0700/0600 or applies those modes afterward
-- **THEN** actual daemon deletion/reset APIs complete through launcher maintenance, and old-image read/write/delete succeeds after reverse migration, without data loss outside the requested tree
-- **AND** tests verify effective access, not merely the presence of named ACL entries
+- **THEN** actual daemon deletion/reset APIs complete through the two unprivileged passes without changing data outside the requested tree
+- **AND** each pass's identity, namespace and zero capabilities are proven
 
-#### Scenario: Maintenance cannot target another owner or follow a symlink escape
-- **WHEN** an A-scoped delete-tree, reset-tree or chown-back request targets B's tree or traverses an escaping symlink
-- **THEN** the operation is refused and B's contents and metadata and every outside target remain unchanged
-- **AND** a wrong-uid or wrong-pid peer cannot request maintenance even with an otherwise valid owner scope
+#### Scenario: Pass 1 cannot reach another owner or follow a symlink escape
+- **WHEN** an A-scoped deletion cell targets B's tree or attempts traversal through an escaping symlink
+- **THEN** B and outside targets retain their contents and metadata
+- **AND** the existing exact daemon uid-and-pid check protects the normal cell spawn
+
+#### Scenario: Removal failure is explicit
+- **WHEN** either pass cannot remove an entry
+- **THEN** the operation fails loudly with the path and does not report partial deletion as success
 
 #### Scenario: Reverse migration prepares restrictive engine content for an old image
-- **WHEN** chown-back dry-run, apply, interrupted resume and repeat are exercised on a disposable migrated copy with engine-created 0600/0700 content and later chmod
+- **WHEN** explicitly selected startup rollback dry-run, apply, interrupted resume and repeat run on a disposable migrated copy with engine-created 0600/0700 content and later chmod
 - **THEN** dry-run changes no contents, ownership, modes, ACLs or layout markers, resume completes and repeat makes no changes
-- **AND** the old image running as uid 1001 without supplementary work groups reads, writes and deletes the restored content successfully
+- **AND** the actual old image running as uid 1001 without supplementary work groups reads, writes and deletes the restored content successfully
+
+#### Scenario: Capability retirement survives deletion and rollback changes
+- **WHEN** the launcher begins normal service after migration
+- **THEN** CHOWN/FOWNER/DAC_OVERRIDE are absent from all five capability sets and the existing capability-drop/refusal probe passes
 
 #### Scenario: Migration dry-run is non-mutating
 - **WHEN** migration dry-run inventories a copy containing workspaces, venvs, node_modules, shared stores and adversarial links

@@ -1,9 +1,9 @@
 **founder decision 2026-10-05: fold + build with probes.** D9 folds all seven
 round-3 findings; no fourth design review, normal cross-family build review,
 no deployment. D10 records the lead's technical decision resolving ACL-mask
-access preservation with scoped root maintenance and explicit reverse migration.
-Build is blocked on the remaining capability-retirement conflict in
-`delivery.md`; documentation is not implementation acceptance.
+access preservation with capability-free two-pass owner deletion and explicit
+startup reverse migration before capability drop. The capability ambiguity is
+resolved; documentation is not implementation acceptance.
 
 ## Why
 
@@ -78,12 +78,14 @@ Measured on prod (2026-10-02, read-only):
   assertions.
 - **Rollback and deletion must be proven after engine writes.** Access/default ACLs
   for uid 1001 and child umask 007 are required, but explicit 0700 creation/chmod
-  masks those ACLs. D10 requires audited launcher-mediated root operations
-  `delete-tree`, `reset-tree` and `chown-back`, scoped to the requesting owner's
-  tree with the exact daemon peer check and no-follow openat traversal. Rollback
-  requires dry-run and idempotent reverse migration before an old image starts;
-  known owner-work creation modes become group-preserving as defense in depth.
-  D10's capability-lifetime conflict must be decided before implementation.
+  masks those ACLs. D10 requires engine 1003 to remove engine-owned entries
+  inside the owner's cell through normal launcher spawn, then daemon 1001 to
+  remove daemon-owned entries and empty structure, both without capabilities.
+  Failures report the path loudly. Rollback is explicitly selected at startup in
+  the forward migration's privileged window, before capability drop, with dry-run
+  and idempotent recovery. No retained capability or privileged helper is added.
+  Known owner-work creation modes remain group-preserving as defense in depth.
+
 - **Code:** `tinyassets/role_launcher` ships as a root-owned file, not an importable module;
   `tinyassets/broker/supervisor.py` (refusal → launcher-mediated start; `owner.json`, `stop()` and
   `read_owner` deleted); `tinyassets/broker/process.py` (the generation is minted by the broker, so

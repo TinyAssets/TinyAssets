@@ -1,10 +1,10 @@
 **founder decision 2026-10-05: fold + build with probes.** D9 accepts F1-F7 and
 retains the confirmed controls. No fourth design review; normal cross-family
-code review for the eventual build. D10 resolves the F5 access mechanism with
-the lead's scoped root-maintenance/reverse-migration decision. Build is stopped
-at its conflict with mandatory capability retirement, demonstrated in
-`delivery.md`, per the stop-rather-than-guess instruction.
-No new task is checked off; sections remain at 2 and 10 tasks.
+code review for the eventual build. D10 records the lead's least-privilege
+amendment: capability-free two-pass deletion and opt-in startup reverse migration.
+The capability-lifetime conflict is resolved; no build task is proven yet.
+Build continuation found a separate broker filesystem-authority conflict;
+see delivery.md for the production-image diagnostic and required decision.
 
 ## 1. Design (this change)
 
@@ -56,13 +56,12 @@ Lands after #4299 (the broker) and #4267 (`platform_secrets`), amending both.
       - the launcher drops `CHOWN`, `FOWNER` and `DAC_OVERRIDE` from all five of its own sets,
         with readback, **before** it binds — the migration is over and the serving process must
         not keep that authority (D2 phase table).
-        D10 exposes a conflict with the new runtime maintenance operation; obtain
-        the lead's authority-lifetime amendment before implementing either model.
-      - D10 root maintenance accepts only the verified daemon peer and the fixed
-        `delete-tree`, `reset-tree`, `chown-back` operations, scoped to the admitted
-        requesting owner's tree, audited, with pinned no-follow openat traversal.
-        No general root exec. Route all owner-tree daemon cleanup/removal through
-        it, including pool removal, scoped_reset and account deletion.
+      - D10 deletion/reset uses two capability-free passes: engine 1003 in the
+        admitted owner's cell through normal launcher spawn removes engine-owned
+        entries with no-follow openat traversal; daemon 1001 removes daemon-owned
+        entries and empty structure. Route pool removal, scoped_reset and account
+        deletion through this path. Any removal failure reports the path loudly.
+        No retained migration capabilities or separate privileged helper.
       - **not** `PR_SET_DUMPABLE(0)` here: `execve` resets it, so the daemon and broker each set
         it on themselves after exec, before any secret exists.
       - audit the current `engine-mcp` environment consumers (including OAuth service and
@@ -95,8 +94,9 @@ Lands after #4299 (the broker) and #4267 (`platform_secrets`), amending both.
       - remove other permissions from shared stores, including runtime replacements/sidecars.
       - add access u:1001:rwx and default d:u:1001:rwx ACLs on ta-work directories,
         appropriate file access ACLs; require ACL support. D10 resolves D9/F5's
-        access mechanism; settle its authority-lifetime conflict before build.
-      - implement launcher-mediated reverse migration (`chown-back`) with dry-run,
+        access mechanism without changing capability retirement.
+      - implement explicit opt-in startup reverse migration before capability drop,
+        in the forward migration code path, with dry-run,
         crash recovery and idempotence; restore engine-owned restrictive content
         to the 1001-readable layout before old-image startup. Complete and test
         `rollback.md` with the actual CLI. Reverse migration never deletes data.
@@ -185,9 +185,10 @@ Lands after #4299 (the broker) and #4267 (`platform_secrets`), amending both.
       - migration on a disposable copy: dry-run unchanged, repeat no-op, interrupted
         resume, symlink targets unchanged; old-image rollback and actual daemon deletion
         after engine 0700/0600 creations and chmod. No skip counts as a pass.
-      - actual daemon delete/reset of engine-created 0700 trees through launcher
-        maintenance; reject A requests targeting B and symlink escapes, proving
-        outside contents/metadata unchanged. Reverse migration dry-run/apply/repeat
+      - actual daemon delete/reset of engine-created 0700 trees through D10 two
+        capability-free passes; failures report their path; reject A requests
+        targeting B and symlink escapes, proving
+        outside contents/metadata unchanged. Startup reverse migration dry-run/apply/repeat
         then actual old-image uid-1001 read/write/delete without work groups.
       - a 1003 child gets `EACCES` on `/data/.broker/state/fence.json` and on
         `/data/<cc>/.credential-vault.json`.
