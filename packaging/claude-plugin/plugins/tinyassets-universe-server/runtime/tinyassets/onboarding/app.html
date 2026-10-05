@@ -8962,6 +8962,11 @@
       const result=await response.json();
       if(epoch!==MCP._loginEpoch) throw new Error('Account changed.');
       if(!response.ok){
+        // Answer consumers render pending/retry guidance and relay a rejected
+        // grant to the agent. Keep those structured failures; missing owner
+        // proof must still offer protected sign-in rather than become an answer.
+        if(operation==='answer' && response.status!==401 && response.status!==403 &&
+            result.error && result.error!=='interactive_approval_required') return result;
         const error=new Error(result.detail||result.error||'The request could not finish.');
         error.signIn=result.error==='interactive_approval_required'; throw error;
       }

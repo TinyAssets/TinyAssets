@@ -97,6 +97,28 @@ def test_failed_preview_keeps_draft_and_offers_protected_sign_in(page):
     assert page.get_by_role("button", name="Allow once").is_disabled()
 
 
+@pytest.mark.parametrize("failure", [
+    {"error": "provider_authority_denied", "detail": "Try again", "request_pending": True},
+    {"error": "request_invalid", "detail": "Ask for the correct fields"},
+])
+def test_owner_answer_preserves_structured_refusals_for_existing_consumers(page, failure):
+    result = page.evaluate("""async failure => {
+      window.fetch=async()=>({ok:false,status:404,json:async()=>failure});
+      return InlineApprovals.post('answer',{request_id:'req-1',values:{}});
+    }""", failure)
+    assert result == failure
+
+
+@pytest.mark.parametrize("operation", ["answer", "preview", "decide"])
+def test_missing_owner_proof_still_throws_sign_in_error(page, operation):
+    result = page.evaluate("""async operation => {
+      window.fail=true;
+      try { await InlineApprovals.post(operation,{request_id:'req-1'}); return null; }
+      catch(error) { return {signIn:error.signIn,message:error.message}; }
+    }""", operation)
+    assert result == {"signIn": True, "message": "interactive_approval_required"}
+
+
 def test_history_is_read_only(page):
     page.evaluate("window.historyRows([{title:'Sent message',status:'answered'}])")
     page.evaluate("document.getElementById('request-history').hidden=false")
