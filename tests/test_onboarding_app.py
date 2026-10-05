@@ -2435,6 +2435,9 @@ def test_the_reload_control_by_the_bubble_always_reloads():
     assert 'id="btn-page-reload"' in row and "data-ta-reload" in row
     script = html.split('<script nonce="__TA_NONCE__">', 1)[1]
     assert script.index("let switchWired=false;") < script.index("const CFG =")
+    # The switcher's only handler is attached by AppUI.init (app_ui.js); the
+    # flag is set right after it, so a healthy page never has Browse reload.
+    assert 'if(typeof AppUI!=="undefined"){ AppUI.init(); switchWired=true; }' in html
     out = _recovery_probe()
     assert out["capture"] is True
     assert out["reloadClick"] == 1
