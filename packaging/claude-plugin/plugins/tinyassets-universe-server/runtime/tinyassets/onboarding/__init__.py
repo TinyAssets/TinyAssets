@@ -226,13 +226,18 @@ def render_app_html(build: str | None = None) -> tuple[str, str]:
     import json
 
     from tinyassets.onboarding.app_modules import chat_renderer_source, module_url
+    from tinyassets.universe_files import read_data_path
 
     nonce = secrets.token_urlsafe(16)
     cfg = app_config() if build is None else app_config(build=build)
     blob = json.dumps(cfg).replace("<", "\\u003c").replace("\u2028", "").replace("\u2029", "")
+    recovery_path = _HTML_PATH.with_name("app_recovery.js")
+    recovery_source = read_data_path(recovery_path)
+    if recovery_source is None:
+        raise FileNotFoundError(recovery_path)
     html = (
         _HTML_PATH.read_text("utf-8")
-        .replace("__TA_APP_RECOVERY__", _HTML_PATH.with_name("app_recovery.js").read_text("utf-8"))
+        .replace("__TA_APP_RECOVERY__", recovery_source.decode("utf-8"))
         .replace("__TA_CHAT_RENDER__", chat_renderer_source())
         .replace("__TA_MERMAID_URL__", module_url("mermaid_vendor.js"))
         .replace("__TA_APP_UI__", _HTML_PATH.with_name("app_ui.js").read_text("utf-8"))

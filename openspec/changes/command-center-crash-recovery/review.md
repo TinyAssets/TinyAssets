@@ -70,3 +70,45 @@ When `engineConnected===false`, `enterSignedIn` calls `AppUI.reset()` (UI disabl
 - **Module redirect:** it applies only to allowlisted names and stale hashes of exactly 16 lowercase hex characters. It returns a no-store 307 to `module_url(name)`, which is same-origin, so it is not an open redirect. Anything else still gets a 404, and the public path shape the auth exemption covers is unchanged.
 
 VERDICT: ADAPT
+
+## CI repair review (2026-10-05)
+
+Claude review via peer-agents, read-only, exit 0. Verdict: ADAPT.
+AGREE: include the page renderer and module loader in real-browser-proof path
+triggers, alongside the recovery script and marked test file. Added both paths.
+No floor or app correctness findings; no test removals or weakened assertions.
+
+### Retained peer report
+
+Still reviewing: diff is read, now checking what happens after the `unavailable` setup call no longer returns early.
+
+Checking one remaining risk: whether `read_data_path` could refuse the packaged script when the data dir contains the install path.
+
+I'd ask for one small change before approval: two files that build the recovery page aren't in the trigger list of the `real-browser-proof` workflow. I found no floor findings, and no correctness findings in the app or test code. No tests were removed or loosened, and one new browser test was added. I didn't run any tests; this is from reading the diff and the code around it.
+
+**Finding (ADAPT, low): the browser-proof trigger list is still incomplete**
+- The diff adds `app_recovery.js` and `tests/test_app_recovery_browser.py` to the paths that retrigger the workflow (`.github/workflows/real-browser-proof.yml:61,75`).
+- Two files that the recovery proofs depend on are still missing:
+  - **`tinyassets/onboarding/__init__.py`**: `render_app_html` now inserts the recovery script with `read_data_path` (`__init__.py:234-240`).
+  - **`tinyassets/onboarding/app_modules.py`**: it supplies `chat_renderer_source` and `module_url`, and this PR changes it (`git diff --name-only origin/main...HEAD`).
+- **Failure case:** a later PR that touches only `__init__.py` could break how the recovery script gets into the page, and the browser proofs would never run. The workflow's header says a proof's dependencies must be in `paths:` for it to retrigger.
+- It doesn't block this PR, because this PR also touches `app.html`. The fix is to add both paths next to `app.html`.
+
+**Checked and correct:**
+- **`read_data_path` in `__init__.py`:** the packaged `app_recovery.js` sits outside the data dir, so `_data_relative` returns `None` and the file is read plainly (`universe_files.py:444-447`). A missing file still fails loudly (`raise FileNotFoundError`). The only difference from `read_text` is that line endings aren't normalised, which is harmless for inline JS.
+- **Recovery nav inside the flex layout:** `.app` is a full-height flex column (`app.html:19`), so the nav now sits below the views instead of being fixed over the content. No code rewrites `#app`, so the controls survive. The safe-area padding is correct.
+- **Unavailable setup:** the floor is not affected.
+  - Keeping a mounted AppUI is limited to the same identity: sign-out already resets AppUI (`app.html:6357`), a home change resets it through `setQueueScope`, and stale replies are dropped by `_loginEpoch` (`app.html:6029-6031`).
+  - After `fail()`, boot now continues to `showView("chat")` and the "Could not confirm…" status. That is the same chat behaviour as `origin/main:app.html:6042-6054`; the only differences are that the frame is kept and recovery is scheduled.
+  - `engineConnected` now keeps its last value instead of becoming `null`. On a first boot that is still `null`; on a later re-read it is the same account's last known state.
+- **`tests/test_app_connection_controls.py`:** selecting the script that contains `const CFG =` is right, now that the recovery `<script>` comes first (`app.html:871-875`). The duplicate-declaration proof still compiles the real controller.
+- **`tests/test_app_hosted_model_connect.py` and `tests/app_sheet_harness.py`:**
+  - The recovery source is loaded verbatim from the page, not stubbed. Switching from `node -e` to stdin only changes how the program reaches node.
+  - The stubbed `setTimeout`/`setInterval` never fire, so `not navigations` in the `"unavailable"` case doesn't cover the real reload. The real browser tests cover that path with actual timing (`test_degraded_session_reply_does_not_disable_ui`, `test_app_recovery_browser.py:291`).
+- **New `test_healthy_recovery_controls_do_not_cover_content`:** it checks, at desktop and phone sizes, that the controls sit below `.chat-stage`, fit inside the viewport, and leave the composer focusable.
+
+**Context:** PR #4497's last run shows `affected-tests` shards 1-4 failed and `real-browser-proof` skipped. That is the CI this repair targets; I didn't verify whether the repair turns it green.
+
+No collision with another lane: the files reviewed are all within this PR's own scope.
+
+VERDICT: ADAPT

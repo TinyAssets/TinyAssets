@@ -857,16 +857,15 @@
       </div>
     </section>
 
-  </main>
-
   <nav id="app-recovery-controls" aria-label="Command center recovery">
     <a href="/app" data-app-recovery="refresh">Refresh command center</a>
     <a href="/app" data-app-recovery="browse">Browse / Switch</a>
     <a href="/app" data-app-recovery="chat">Open chat</a>
     <span id="app-recovery-failed" role="alert" hidden>Something went wrong - <a href="/app" data-app-recovery="reload">Reload</a></span>
   </nav>
+  </main>
   <style nonce="__TA_NONCE__">
-    #app-recovery-controls{position:fixed;bottom:4px;left:8px;z-index:10000;display:flex;flex-wrap:wrap;gap:12px;padding:6px 10px;max-width:calc(100vw - 16px);box-sizing:border-box;background:var(--surface,#fff);border:1px solid var(--line,#ddd);border-radius:8px;font-size:12px}
+    #app-recovery-controls{flex:0 0 auto;display:flex;flex-wrap:wrap;gap:12px;padding:6px 10px;padding-bottom:max(6px,env(safe-area-inset-bottom));box-sizing:border-box;background:var(--surface,#fff);border-top:1px solid var(--line,#ddd);font-size:12px}
     #app-recovery-controls a{color:var(--ink,#111)}
   </style>
   <script nonce="__TA_NONCE__">__TA_APP_RECOVERY__</script>
@@ -6056,14 +6055,15 @@
     reportTimezone();
     HostedModelConnect.setup=me&&me.setup||"unavailable";
     if(HostedModelConnect.setup==="unavailable"){
-      AppRecovery.fail(new Error("Could not confirm your command center's connections"));return;
+      AppRecovery.fail(new Error("Could not confirm your command center's connections"));
     }
     const connected=HostedModelConnect.setup==="connected";
-    engineConnected = connected ? true : HostedModelConnect.setup==="unavailable" ? null : false;
+    if(HostedModelConnect.setup!=="unavailable") engineConnected=connected;
     // The custom-UI switcher is gated on a verified identity and home: a
     // bundle only ever runs for a verified signed-in home.
     if(typeof AppUI!=="undefined"){
-      if(connected) AppUI.enable(me.universe_id,me.principal_id); else AppUI.reset();
+      if(connected) AppUI.enable(me.universe_id,me.principal_id);
+      else if(HostedModelConnect.setup!=="unavailable") AppUI.reset();
     }
     if(typeof refreshAgentSwitcher==="function") refreshAgentSwitcher();
     // Powered or not, this is the command center's own chat. The owner and home were

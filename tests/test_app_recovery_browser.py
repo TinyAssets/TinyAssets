@@ -109,6 +109,19 @@ def healthy(page):
     page.frame_locator("#ui-frame").locator("#working").wait_for(timeout=40000)
 
 
+@pytest.mark.parametrize("width,height", [(1280, 850), (390, 844)])
+def test_healthy_recovery_controls_do_not_cover_content(page, width, height):
+    page.set_viewport_size({"width": width, "height": height})
+    healthy(page)
+    page.locator('[data-app-recovery="chat"]').click()
+    controls = page.locator("#app-recovery-controls").bounding_box()
+    stage = page.locator(".chat-stage").bounding_box()
+    assert controls["y"] >= stage["y"] + stage["height"]
+    assert controls["y"] + controls["height"] <= height
+    page.locator("#composer-input").click()
+    assert page.locator("#composer-input").evaluate("el => el === document.activeElement")
+
+
 def test_missing_frame_recovers_and_controls_are_clickable(page, server):
     from playwright.sync_api import expect
 
