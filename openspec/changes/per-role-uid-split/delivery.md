@@ -96,7 +96,14 @@ python scripts/linux_oracle.py -- tests/test_broker_ledger_queries.py tests/test
 214 passed in 29.55s
 ```
 
-Commit/hygiene receipt follows.
+Implementation commit: `eb5d9d6c34bfd5e59c6e32578daa72cd4361e160`.
+Staged explicit paths only. Commit hooks passed: mirror parity, mojibake,
+import graph, path resolver, cross-provider drift and skills validation.
+`python scripts/test_hygiene_gate.py --base e5f48c5ee9 --head HEAD` returned:
+`tests added 7, removed 0, tampering findings 0, product lines added 589`.
+The implementation worktree was clean after commit. This receipt update is a
+documentation-only follow-up; both commits are for origin/feat/per-role-uid-split.
+No PR or deployment.
 
 Migration results here are relocation-substep results: dry-run/apply/repeat in
 both directions and six abrupt-exit boundaries passed. Full role migration,
