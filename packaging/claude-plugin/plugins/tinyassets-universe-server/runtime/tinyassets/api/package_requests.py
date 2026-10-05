@@ -98,12 +98,17 @@ def _load(action: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any],
     return definition, component, manifest, files
 
 
-def _connections_you_have(actor: str) -> set[str] | None:
+def _connections_you_have(actor: str, command_center: str = "owner-metadata") -> set[str] | None:
     """Connection names the installer already holds, or None when unknown."""
     from tinyassets.api.helpers import _base_path
+    from tinyassets.broker.supervisor import broker_selected
     from tinyassets.storage.outbound_connections import ConnectionLedger
 
     try:
+        if broker_selected():
+            from tinyassets.broker.owner_metadata import names
+
+            return names(_base_path(), principal=actor, command_center=command_center)
         views = ConnectionLedger(Path(_base_path()) / "outbound.db").list_connection_views(
             owner_user_id=actor, active_only=True, limit=500)
     except Exception:  # noqa: BLE001 - a preview line, never a refusal
@@ -171,7 +176,7 @@ def _plan(uid: str, action: dict[str, Any]) -> dict[str, Any]:
         if any(key not in workflow_keys for key in app_ui_workflow_refs(ui).values()):
             raise ValueError("package workflow_refs must name its selected workflow components")
     needs = component.get("needs") or {}
-    have = _connections_you_have(actor)
+    have = _connections_you_have(actor, uid)
     connections = [{"name": str(name), "you_have": None if have is None else name in have}
                    for name in needs.get("connections") or []]
     digest = hashlib.sha256(json.dumps({

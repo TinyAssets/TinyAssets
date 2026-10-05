@@ -306,3 +306,9 @@ prepare/commit, with daemon-owned vault writes between broker calls. Both rows
 are compared and mutations share one broker transaction. Fresh/repeat/additive
 production-image proofs pass before/after restart; see delivery.md. No startup
 activation or remaining accounting/refresh coverage is implied.
+
+D38 routes package `_connections_you_have` and pending request
+`_owned_connection_git_host` / `_grant_workspace_consent` through owner-only
+redacted metadata IPC. No egress grant is implied. Actual package preview and
+consent capture/answer pass in the production image before/after broker restart.
+Workspace effector/intent and injected cloud-automation rows remain open.

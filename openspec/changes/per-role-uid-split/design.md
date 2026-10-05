@@ -1375,6 +1375,18 @@ with the unsplit path. Internal ledger transaction injection is not wire-selecta
 Legacy scope upgrade plus endpoint extension use the post-upgrade row within the
 same transaction, avoiding the prior stale-scope no-op. Startup remains inactive.
 
+### D38. Mechanical decision: owner metadata preserves its existing owner-only contract
+
+Package connection-name previews and workspace consent host reads use named
+OWNER_CONNECTION_NAMES and OWNER_CONNECTION_VIEW queries. They preserve the
+existing owner-only live-row predicate (no grant was required by these readers),
+return only redacted views/names, and confer no egress authority. Command-center
+scope is still attached to authenticated IPC. Names use bounded 64-row pages,
+removing the previous informational 500-row truncation. Failed package previews
+remain unknown (None); consent reads fail loudly. The answer re-reads current
+owner/revocation/host before writing a daemon-owned consent. No schema or privilege
+changes; no startup activation. Effector authorization is a separate remaining row.
+
 ## Risks / Trade-offs
 
 - **The launcher is root-adjacent code.** One file, stdlib-only, run `-I -S`, a static kind table,

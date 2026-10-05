@@ -1,3 +1,71 @@
+# Current delivery: D38 owner metadata consumers
+
+D37 pushed as `3e80b1a91b`; hygiene tests added 7, removed 0, tampering 0.
+D38 routes package previews and workspace consent host capture/answer through
+owner-only broker metadata. Name pages hold at most 64 rows; redacted views
+contain no custody reference. Answer rechecks owner, revocation and host.
+No whole build task newly complete. Startup inactive, no PR or deployment.
+
+Release-critical files: **0; none**. Runtime:
+`tinyassets/broker/{ledger_queries,owner_metadata}.py`,
+`tinyassets/api/{package_requests,pending_requests}.py`, plus four generated
+mirrors. Test `tests/test_broker_owner_metadata.py`; oracle
+`scripts/role_launcher_oracle.py`; design, delivery, tasks status and inventory.
+No affected heavy-list file.
+
+```text
+python -m pytest tests/test_workspace_authority.py tests/test_github_is_an_ordinary_connection.py tests/test_command_center_packages.py -q
+181 passed, 1 skipped in 54.00s; Windows skip is not acceptance
+python scripts/linux_oracle.py -- tests/test_broker_owner_metadata.py tests/test_workspace_authority.py tests/test_github_is_an_ordinary_connection.py tests/test_command_center_packages.py -q -rs
+189 passed in 46.06s, zero skips
+python scripts/linux_oracle.py -- tests/test_broker_ledger_queries.py -q -rs
+12 passed in 0.54s, zero skips
+python scripts/linux_oracle.py --production-image tinyassets-uid-metadata:d38 --build --production-stream
+exit 0; sha256:5dc1f8096375f9904186705412f0d3bb5c359f37721313dcc88deb71e6adb2bb
+D38 actual package connection-name preview via launcher broker: owner pages and foreign metadata absence: PASS
+D38 actual workspace consent capture/answer via launcher broker: owner metadata and daemon consent write: PASS
+```
+D38 passes before/after broker restart. D33-D37 and all earlier consumer proofs,
+D22 discovery and D24 effector real HTTPS streams PASS. Egress/accounting
+forward/reverse dry-run, apply/repeat, all 6+8+3 crash/recovery boundaries and
+hostile input refusals PASS. Same seven-capability entry and compose security
+options; internal `ta-uid-stream-6f89ce96ae69-net`, corresponding public-CA volume,
+93.184.216.0/29 client .3/server .2. Fixture resources cleaned.
+Ruff, mirror parity (603 canonical), plugin build/import, strict OpenSpec,
+whitespace and OpenSpec audit pass. Cross-family review APPROVE; **AGREE**, no
+floor/correctness findings. No skip is treated as a pass.
+
+D38 preserves owner-only metadata semantics; a live grant remains independently
+required by egress authorization. Package names now include all pages instead of
+the previous informational 500-row cap. Package outage stays unknown (None),
+not an invented empty catalog. Consent outage fails loudly. No new privilege,
+security scope change, deployment, or startup admission.
+
+## Remaining, in order
+
+1. D11 workspace effector/intents and injected cloud-automation consumers.
+   Workspace `_read_connection` needs the trusted execution principal carried
+   through both initial admission and mount revalidation; never derive it from
+   an untrusted packet. Workspace intent custody fallback likewise needs admitted
+   scope. Replace concrete-ledger coupling with a closed trusted IPC interface.
+2. Accounting runtime IPC and refresh. `UsageStore` still opens `.tinyassets.db`;
+   D29 only transferred the tables offline. Preserve per-parent kernel liveness:
+   `owner_state` currently opens lock files O_RDWR; broker needs a safe read-only
+   proof, not broad write access. Source-definition checks and daily evidence
+   also need routes. Refresh must retain admission before spending single-use
+   tokens and daemon-only vault writes.
+3. Every actual engine class through the launcher (identity-only denials do not
+   count), then full role migration/ACLs and D10 two-pass deletion.
+4. Actual old-image rollback. Current evidence proves reverse storage migration
+   and uid-1001 writes at the old location, not an old image boot.
+5. Startup/healthcheck integration only after all preceding probes pass.
+
+The turn continued through five verified commits (D33, D34/D35, D36, D37, D38),
+not just one decision slice. Build tasks 2.1-2.8 remain unchecked because their
+full acceptance conditions have not been satisfied. No PR was opened.
+
+---
+
 # Current delivery: D37 HTTP connect and redeposit
 
 D36 pushed as `688a3e91f1`; hygiene tests added 6, removed 0, tampering 0.
