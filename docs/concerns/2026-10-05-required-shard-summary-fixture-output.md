@@ -1,3 +1,10 @@
+---
+severity: P3
+title: Required shard summaries include test fixture output
+filed: '2026-10-05'
+summary: Gate-runner unit tests inherit the real shard summary destination and append synthetic failure messages to a successful hosted job summary.
+---
+
 # Required shard summaries include test fixture output
 
 Found during independent CI venue acceptance review on 2026-10-05.
