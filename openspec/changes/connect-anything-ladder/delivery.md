@@ -347,3 +347,7 @@ This includes the post-review collision/crash regressions, owner-editable defaul
 labelled account search and the unchanged stale-catalog assertion.
 The previous final command had a mistyped test filename and ran no tests; it is
 not counted. The subsequent broad run and this rerun are the reported evidence.
+
+Committed hygiene for `e76dc6d0c8`, against merged foundation `69ee880edc`:
+**94 added / 0 removed / 0 tampering**, exit 0. The implementation and review
+receipt are committed together; the final documentation commit records this check.
