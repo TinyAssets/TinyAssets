@@ -1387,6 +1387,32 @@ remain unknown (None); consent reads fail loudly. The answer re-reads current
 owner/revocation/host before writing a daemon-owned consent. No schema or privilege
 changes; no startup activation. Effector authorization is a separate remaining row.
 
+### D39. Mechanical decision: workspace reads carry admitted execution scope
+
+Thread the immutable BranchExecutionContext through compiler effect dispatch to
+workspace admission. Its owner and center override ambient identity; packets
+cannot supply either. Direct daemon calls may use authenticated ambient identity.
+Selected broker mode uses AUTHORIZED_CONNECTION for both initial admission and
+push mount revalidation with the same principal. Missing, foreign, revoked or
+unavailable authority refuses without local ledger construction or cached-resource
+fallback. Existing scope and consent checks remain after the snapshot. This
+routes workspace authority reads only; actual worker/credential transport and
+intent reconciliation remain separate integration requirements. No privilege,
+isolation scope or startup behavior changes.
+
+### D40. Mechanical decision: lost push outcomes recover persisted run authority
+
+Broker-selected reconciliation obtains its principal and center from the daemon's
+persisted root run row, requiring agreement with the intent's center and base
+directory. The existing AUTHORIZED_CONNECTION snapshot rechecks the exact live
+grant/resource. Stored host, git-write scope and current push consent must still
+agree before returning custody. Missing legacy run authority, outage, revocation
+or mismatches defer the intent as sent with retry evidence; no remote probe fires.
+Injected custody/revalidation callbacks cannot bypass these selected-mode checks,
+and the old unscoped helper refuses selected mode. Unsplit behavior is unchanged.
+No schema, privilege or scope changes; actual worker/credential transport remains
+gated separately and startup is inactive.
+
 ## Risks / Trade-offs
 
 - **The launcher is root-adjacent code.** One file, stdlib-only, run `-I -S`, a static kind table,

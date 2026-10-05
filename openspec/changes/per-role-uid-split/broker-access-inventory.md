@@ -312,3 +312,12 @@ D38 routes package `_connections_you_have` and pending request
 redacted metadata IPC. No egress grant is implied. Actual package preview and
 consent capture/answer pass in the production image before/after broker restart.
 Workspace effector/intent and injected cloud-automation rows remain open.
+
+D39: workspace initial admission and push mount revalidation use AUTHORIZED_CONNECTION
+with immutable BranchExecutionContext owner/center threaded through compiler dispatch.
+Direct daemon calls use authenticated ambient identity; no packet owner or local
+ledger fallback in selected mode. Intent custody and actual worker transport remain.
+
+D40: intent custody in selected mode uses persisted daemon run scope and live
+AUTHORIZED_CONNECTION, host/scope/consent revalidation. Unscoped helper refuses;
+missing or unavailable authority defers without network. Worker transport remains.
