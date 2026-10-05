@@ -36,9 +36,11 @@ def owner_read_definitions() -> dict[str, dict[str, Any]]:
             "description": (
                 "Page your founder's retained conversation, newest first. Omit "
                 "message_id for a page of message ids; pass one to read its text in "
-                "chunks. Continue with the returned next_offset. Read-only."),
+                "chunks. query searches retained text literally, ignoring case. "
+                "Continue with the returned next_offset and the same query. Read-only."),
             "inputSchema": {"type": "object", "properties": {
                 "message_id": {"type": "string", "default": ""},
+                "query": {"type": "string", "default": ""},
                 "offset": dict(integer, default=0),
                 "max_chars": dict(integer, default=8192),
             }, "required": []},
@@ -63,7 +65,8 @@ class OwnerReads:
         self._owner = owner
         self._universe_dir = Path(universe_dir)
 
-    def history(self, message_id: str = "", offset: int = 0, max_chars: int = 8192) -> str:
+    def history(self, message_id: str = "", offset: int = 0, max_chars: int = 8192,
+                query: str = "") -> str:
         from tinyassets.conversation_retrieval import read_conversation_page
         from tinyassets.shared_self import require_founder_home
 
@@ -73,7 +76,7 @@ class OwnerReads:
             )
             page = read_conversation_page(
                 root, f"principal:{self._owner}", field_name=str(message_id or ""),
-                offset=offset, max_chars=max_chars,
+                offset=offset, max_chars=max_chars, query=query,
             )
         except (PermissionError, ValueError) as exc:
             return json.dumps({"error": str(exc)})
@@ -100,7 +103,7 @@ class OwnerReads:
 
     def call(self, name: str, arguments: dict[str, Any]) -> str:
         handler, allowed = {
-            "history": (self.history, {"message_id", "offset", "max_chars"}),
+            "history": (self.history, {"message_id", "offset", "max_chars", "query"}),
             "activity": (self.activity, {"limit"}),
         }[name]
         unexpected = set(arguments) - allowed

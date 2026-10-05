@@ -704,7 +704,7 @@ def _open_disk_budget(universe_dir):
             f"{ProviderConfinementError.MESSAGE}: {below}; nothing was started"
         ) from None
     if budget.notice:
-        logger.warning("jailed provider launch on a grace disk budget: %s", budget.notice)
+        logger.warning("jailed provider storage notice: %s", budget.notice)
     return budget
 
 
@@ -721,17 +721,18 @@ def _watch_disk(proc, budget) -> None:
         try:
             while not waiter.done():
                 done, _ = await asyncio.wait({waiter}, timeout=DISK_POLL_SECONDS)
-                if done:
-                    break
-                killed = await asyncio.to_thread(budget.breach)
+                killed = await asyncio.to_thread(budget.breach, force=bool(done))
                 if killed:
-                    proc.disk_killed = killed
+                    proc.disk_killed = killed.replace("_limit", "_exceeded") if done else killed
                     logger.warning(
                         "jailed provider process stopped: %s (bound %d bytes)",
                         killed, budget.bound,
                     )
-                    kill_owned_tree(proc)
+                    if not done:
+                        kill_owned_tree(proc)
                     await waiter
+                    break
+                if done:
                     break
         finally:
             if not waiter.done():
@@ -743,6 +744,8 @@ def _watch_disk(proc, budget) -> None:
 
 
 _DISK_STOP_NOTES = {
+    "storage_exceeded": "finished, but total cloud storage exceeds quota; writes landed",
+    "disk_exceeded": "finished, but the shared disk is nearly full; writes landed",
     "storage_limit": (
         "stopped: this run added more to its command center than the owner's "
         "cloud storage had room for"
