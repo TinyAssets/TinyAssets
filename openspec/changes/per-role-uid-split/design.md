@@ -1413,6 +1413,21 @@ and the old unscoped helper refuses selected mode. Unsplit behavior is unchanged
 No schema, privilege or scope changes; actual worker/credential transport remains
 gated separately and startup is inactive.
 
+### D41. Mechanical decision: injected consumers use a closed authority type
+
+Cloud continuation, inactive cloud authority and outbound cap/confirmation
+consumers accept the canonical BrokerConnectionAuthority type. Its immutable
+configuration contains the admitted center and a daemon principal verifier;
+definitions cannot supply either. GRANTED_RESOURCE resolves the connection ID,
+then AUTHORIZED_CONNECTION rechecks authority and returns the grant and redacted
+view from one snapshot. A changed ID between reads refuses; both queries check
+owners, center and revocations. No existing query guard is relaxed. No generic method
+dispatch or duck-typed authority is admitted. Selected mode rejects injected
+local ledgers; unsplit mode retains them. The pure cap evaluator is shared with
+the ledger, evaluated against that snapshot without a second grant read.
+Proxy/effect send-time authorization remains independent. This routes existing
+injected D11 consumers; no new operation, privilege or startup activation.
+
 ## Risks / Trade-offs
 
 - **The launcher is root-adjacent code.** One file, stdlib-only, run `-I -S`, a static kind table,

@@ -321,3 +321,8 @@ ledger fallback in selected mode. Intent custody and actual worker transport rem
 D40: intent custody in selected mode uses persisted daemon run scope and live
 AUTHORIZED_CONNECTION, host/scope/consent revalidation. Unscoped helper refuses;
 missing or unavailable authority defers without network. Worker transport remains.
+
+D41: injected cloud authority/continuation and cap/confirmation boundaries accept
+the closed BrokerConnectionAuthority. Broker-selected local ledgers refuse.
+Actual cloud resolver and above-cap hold pass through launcher-owned broker
+before/after restart. Accounting, refresh and actual worker transport remain.

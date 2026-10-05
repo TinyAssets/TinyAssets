@@ -100,6 +100,16 @@ def _seed_ledger(root):
                                 "methods": ["GET"]}])
         ledger.grant_connection(grant_id=grant, connection_id=connection,
                                 owner_user_id="disconnect", universe_id="disconnect")
+    from tinyassets.storage.outbound_connections import ActionCap
+
+    ledger.create_connection(
+        connection_id="cloud-destination", owner_user_id="cloud",
+        connection_class="pull-request-writer",
+        scopes=("pull_requests:write", "pull_requests:read_for_commit"), provider="github",
+        destination="github.com/example/project", credential_ref="vault://github/fixture")
+    ledger.grant_connection(grant_id="cloud-grant", connection_id="cloud-destination",
+                            owner_user_id="cloud", universe_id="cloud",
+                            unprompted_action_cap=ActionCap("one", 1, "pull_requests"))
     for path in (root / ".broker").glob("outbound.db*"):
         os.chown(path, 1002, 1101)
         path.chmod(0o600)
@@ -125,6 +135,7 @@ def _query_consumers(root, supervisor):
 
     os.environ["TINYASSETS_DATA_DIR"] = str(root)
     os.environ["TINYASSETS_CREDENTIAL_BROKER"] = "process"
+    _injected_consumers(root)
     definition = register_definition(
         universe_id="alice", owner_user_id="alice", access_method="api_key_http",
         protocol="chat_messages", model="alice-fixture", ref="grant-alice",
@@ -333,6 +344,66 @@ def _query_consumers(root, supervisor):
     assert not (root / "outbound.db").exists(), "daemon constructed a fallback ledger"
     print("D11 actual discovery/priced-source consumers via launcher broker; "
           "foreign scope, fence, SQL/path/method refusal; no local ledger: PASS", flush=True)
+
+
+def _injected_consumers(root):
+    from dataclasses import replace
+    from datetime import datetime, timezone
+    from types import SimpleNamespace
+
+    from tinyassets.broker.connection_authority import BrokerConnectionAuthority
+    from tinyassets.effectors.outbound_boundary import execute_capped_action
+    from tinyassets.provider_work_authority import ProviderWorkBindingSeed
+    from tinyassets.storage.provider_work_authority import SQLiteProviderWorkAuthorityStore
+    from tinyassets.user_owned_cloud_automation import (
+        AutomationAdmissionError,
+        RepositorySpecWorkDefinition,
+        resolve_inactive_cloud_authority,
+    )
+
+    store = SQLiteProviderWorkAuthorityStore(
+        root, clock=lambda: datetime(2026, 7, 31, tzinfo=timezone.utc), allow_test_fixtures=True)
+    binding = store.install_test_binding(ProviderWorkBindingSeed(
+        owner_user_id="cloud", universe_id="cloud", provider="codex",
+        credential_reference_digest="sha256:" + "9" * 64,
+        allowed_operations=("repository_spec_delivery",), allowed_roles=("writer",),
+        assignment_generation=2, assignment_digest="sha256:" + "8" * 64,
+        max_invocations=4, max_tokens=100000, max_cost_microunits=5000000,
+        expires_at="2026-08-02T00:00:00Z")).record
+    definition = RepositorySpecWorkDefinition.from_dict(dict(
+        schema_version=1, principal_id="cloud", universe_id="cloud", repository="example/project",
+        accepted_spec_ref="openspec/specs/example/spec.md",
+        accepted_spec_digest="sha256:" + "a" * 64,
+        branch_def_id="branch", branch_version_id="branch@abc12345",
+        branch_content_digest="sha256:" + "b" * 64,
+        acceptance_scenario_id="scenario:fixture", acceptance_scenario_digest="sha256:" + "c" * 64,
+        input_artifact_digests=["sha256:" + "a" * 64], provider_binding_id=binding.binding_id,
+        destination_grant_id="cloud-grant", destination_purpose="pull_request", max_attempts=2,
+        max_provider_invocations=4, max_wall_time_seconds=3600, max_tokens=100000,
+        max_cost_microunits=5000000))
+    authority = BrokerConnectionAuthority(root, "cloud", lambda: "cloud")
+    resolved = resolve_inactive_cloud_authority(
+        definition, provider_store=store, connection_ledger=authority)
+    assert resolved.destination_grant_id == "cloud-grant"
+    for foreign in (replace(authority, command_center="bob"),
+                    replace(authority, verify_authenticated_principal=lambda: "bob")):
+        try:
+            resolve_inactive_cloud_authority(definition, provider_store=store,
+                                              connection_ledger=foreign)
+        except AutomationAdmissionError:
+            pass
+        else:
+            raise AssertionError("cloud definition widened injected authority")
+    # Above-cap effect is actually journaled held; no external PR is attempted.
+    (root / "cloud").mkdir(exist_ok=True)
+    result = execute_capped_action(
+        universe_dir=root / "cloud", ledger=authority, grant_id="cloud-grant",
+        proxy=SimpleNamespace(grant_id="cloud-grant"), tool_authorized=True,
+        action_value=2, action_unit="pull_requests", effect_key="cloud-held", sink="pull_request",
+        run_id="cloud-run", verb="POST", request={"title": "synthetic fixture"})
+    assert result["status"] == "held" and not (root / "outbound.db").exists()
+    print("D41 actual cloud authority and capped-effect hold via launcher broker: scoped snapshot, "
+          "foreign refusal, no daemon ledger: PASS", flush=True)
 
 
 def _disconnect_consumer(root):

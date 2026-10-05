@@ -400,6 +400,31 @@ class CapDecision:
         }
 
 
+def evaluate_action_cap(cap: ActionCap | None, *, action_value: float,
+                        action_unit: str) -> CapDecision:
+    """Pure cap policy shared by local and broker-authorized snapshots."""
+    if not math.isfinite(action_value):
+        raise ValueError("action_value must be finite")
+    if action_value < 0:
+        raise ValueError("action_value must be non-negative")
+    normalized_unit = _required("action_unit", action_unit)
+    if cap is not None and normalized_unit != cap.unit:
+        raise ValueError(
+            f"action_unit {normalized_unit!r} does not match cap unit {cap.unit!r}"
+        )
+    status = (
+        "held"
+        if cap is not None and action_value > cap.maximum
+        else "automatic"
+    )
+    return CapDecision(
+        status=status,
+        cap=cap,
+        action_value=action_value,
+        action_unit=normalized_unit,
+    )
+
+
 @dataclass(frozen=True)
 class ConnectorArtifact:
     artifact_id: str
@@ -6308,28 +6333,9 @@ class ConnectionLedger:
         action_unit: str,
     ) -> CapDecision:
         """Evaluate only the unprompted-action axis; tool/spend gates are separate."""
-        if not math.isfinite(action_value):
-            raise ValueError("action_value must be finite")
-        if action_value < 0:
-            raise ValueError("action_value must be non-negative")
-        normalized_unit = _required("action_unit", action_unit)
         grant = self.require_active_grant(grant_id)
-        cap = grant.unprompted_action_cap
-        if cap is not None and normalized_unit != cap.unit:
-            raise ValueError(
-                f"action_unit {normalized_unit!r} does not match cap unit {cap.unit!r}"
-            )
-        status = (
-            "held"
-            if cap is not None and action_value > cap.maximum
-            else "automatic"
-        )
-        return CapDecision(
-            status=status,
-            cap=cap,
-            action_value=action_value,
-            action_unit=normalized_unit,
-        )
+        return evaluate_action_cap(
+            grant.unprompted_action_cap, action_value=action_value, action_unit=action_unit)
 
     def create_connector_artifact(
         self,

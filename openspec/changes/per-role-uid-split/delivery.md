@@ -1,3 +1,44 @@
+# Current delivery: D41 injected connection authority
+
+D41 finishes the interrupted injected cloud/effect slice. Canonical immutable
+broker authority supplies admitted principal/center; grant and redacted resource
+are revalidated together. Selected mode rejects local ledgers and duck types.
+Cap policy uses that same snapshot. No startup activation, PR or deployment.
+No complete build task newly checked off. Cross-family peer-agents review:
+AGREE, APPROVE; no floor/correctness findings.
+
+Release-critical files: **0; none**. Five runtime files (broker/connection_authority,
+cloud_automation_continuation, effectors/outbound_boundary,
+storage/outbound_connections, user_owned_cloud_automation), their mirrors,
+test_broker_injected_authority, role_launcher_oracle and design/inventory/delivery.
+No affected heavy-list test file.
+
+```text
+python -m pytest tests/test_outbound_effect_boundary.py -q
+19 passed in 4.76s
+python scripts/linux_oracle.py -- tests/test_broker_injected_authority.py tests/test_user_owned_cloud_automation.py tests/test_cloud_automation_control.py tests/test_outbound_connection_ledger.py -q -rs
+108 passed in 9.33s; zero skips
+python scripts/linux_oracle.py --production-image tinyassets-uid-injected:d41 --build --production-stream
+exit 0; sha256:b11527bfebdfb5d8c7929474e3f8d7f55ffdf3dec22785ba76521dd63da3ced8
+D41 actual cloud authority and capped-effect hold via launcher broker: scoped snapshot, foreign refusal, no daemon ledger: PASS
+```
+D41 passes before/after restart; previous consumer probes and real D22/D24
+HTTPS streams PASS. Forward/reverse egress and accounting dry-run/apply/repeat,
+6+8+3 crash/recovery boundaries and hostile-input refusals PASS. Full role
+migration, two-pass deletion and actual old-image rollback remain unproven.
+Same seven entry capabilities and compose security options; synthetic HTTPS
+network ta-uid-stream-f80e2b4960ec-net and matching public CA cleaned by harness.
+Initial production probe failed because D41 ran before the fixture selected
+broker mode; moved it after fixture configuration, then all probes passed.
+No product guard relaxed. Targeted Ruff, plugin build/import, mirror parity
+(604 canonical files), whitespace pass.
+
+Continue with accounting runtime IPC, kernel liveness, source binding/daily
+evidence and refresh; every actual engine class; full migration/two-pass
+deletion; actual old-image rollback; startup/healthcheck only after all pass.
+
+---
+
 # Current delivery: D40 intent custody
 
 D39 pushed as e1a413ba99; hygiene added 4 tests, removed 0, tampering 0.
