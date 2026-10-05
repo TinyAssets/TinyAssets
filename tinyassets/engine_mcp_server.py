@@ -3102,9 +3102,9 @@ def write_graph(
 
     Notify your owner: ``target="pending_request" operation="notify"`` with
     ``{"title":"Done","body":"Your report is ready"}``, optional ``item_id``
-    and ``attachment_ref``. Informational Needs-you item, same push as requests,
-    no answer needed. Scheduled agent steps use this too; code steps grant
-    ``notify`` and call ``invoke_mcp_action("notify", title=..., body=...)``.
+    and ``attachment_ref``; no answer needed. Scheduled agent steps use this
+    too; code steps grant ``notify`` and call
+    ``invoke_mcp_action("notify", title=..., body=...)``.
 
     * ``capabilities`` -- persistent box, git, egress, Python/pytest, file delivery
       and notifications. Editable starter skill: save as

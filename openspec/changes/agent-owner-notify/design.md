@@ -8,7 +8,7 @@ Give every owner agent and workflow step an informational notify primitive. No n
 
 ## Decisions
 
-Use `write_graph target=pending_request operation=notify` and the existing code-node bridge action `notify`. Both call the same owner-gated API. Code nodes use their trusted run universe and existing bound run identity, never payload identity. Notification payloads contain title, body, optional item reference and attachment reference. The originating agent is server-derived; the chat link cannot select another owner.
+Use `write_graph target=pending_request operation=notify` and the existing code-node bridge action `notify`. Both call the same owner-gated API. Code nodes use their trusted run universe and existing bound run identity, never payload identity. Notification payloads contain title, body, optional item reference and attachment reference. The originating agent is server-derived; optional `link_to_thread` resolves an agent within the same authenticated owner and command center. The chat link cannot select another owner.
 
 Reuse pending_requests with action.type=notify and empty fields/items. Pending means unread/undismissed for this kind; projection identifies it as informational and requiring no answer. The UI shows text, references, Open chat and Dismiss, never approval/answer controls. The answer API refuses notification answers; existing withdrawal dismisses it. Identical content and references deduplicate while outstanding, scoped to originating agent. Device delivery additionally retains its existing ledger dedupe.
 

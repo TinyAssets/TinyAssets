@@ -15,12 +15,17 @@ def test_notification_is_informational_and_opens_source_chat(app_url, browser):
     page = browser.new_page(viewport={"width": 390, "height": 844})
     _enter_chat(page, app_url)
     page.evaluate("""() => {
-        window.openedAgents=[]; window.dismissals=[];
+        window.openedAgents=[]; window.dismissals=[]; window.scrolledItems=[];
+        HTMLElement.prototype.scrollIntoView=function(){
+            if(this.dataset.itemId)scrolledItems.push(this.dataset.itemId);
+        };
+        drawHistoryTurns([{speaker:'universe',text:'Report details',ts:10,
+            consumer_turn_id:'turn_report'}]);
         addressAgent=async agent=>openedAgents.push(agent.agent_id);
         MCP.callTool=async (name,args)=>{dismissals.push(args);return {status:'withdrawn'};};
         renderRail([{request_id:'notice',title:'Report ready',body:'All tests passed',
             agent:'social-manager',informational:true,requires_answer:false,
-            action:{type:'notify',attachment_ref:'file_report'},fields:[],items:[]}]);
+            action:{type:'notify',attachment_ref:'file_report',item_id:'turn_report'},fields:[],items:[]}]);
     }""")
     page.locator('#needs-you-open').click()
     page.get_by_role('button', name='Report ready', exact=False).click()
@@ -31,6 +36,7 @@ def test_notification_is_informational_and_opens_source_chat(app_url, browser):
     assert sheet.get_by_role('button', name='Accept', exact=True).count() == 0
     sheet.get_by_role('button', name='Open chat', exact=True).click()
     assert page.evaluate('openedAgents') == ['social-manager']
+    assert page.evaluate('scrolledItems') == ['turn_report']
     page.locator('#needs-you-open').click()
     page.get_by_role('button', name='Report ready', exact=False).click()
     sheet.get_by_role('button', name='Dismiss', exact=True).click()

@@ -9968,7 +9968,7 @@
       const who=t.speaker==="universe"?"universe":t.speaker==="founder"?"founder":"system";
       const drawn=appendMessage(who,t.text,
         who==="universe"?answerExecutionDetail({execution:t.execution}):null, t.ts);
-      if(drawn&&t.consumer_turn_id)drawn.dataset.itemId=t.consumer_turn_id;
+      if(drawn?.dataset&&t.consumer_turn_id)drawn.dataset.itemId=t.consumer_turn_id;
       // The peek said this turn is longer than what it returned. Offer the
       // rest instead of letting the preview pass for the message; the bubble
       // and its metadata (time, provider/model detail) are untouched.
