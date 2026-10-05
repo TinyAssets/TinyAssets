@@ -7,6 +7,7 @@ owner-cell implementations are installed.
 """
 from __future__ import annotations
 
+import array
 import ctypes
 import json
 import os
@@ -88,6 +89,10 @@ def retire_migration_authority():
 def retire_child(role):
     """Called in a single-threaded fork child, before any application import."""
     uid, groups = ROLE_IDS[role]
+    _retire_identity(uid, groups)
+
+
+def _retire_identity(uid, groups):
     libc = _libc()
     _checked(libc.prctl(38, 1, 0, 0, 0), "no-new-privileges")
     _checked(libc.prctl(8, 0, 0, 0, 0), "clear keepcaps")
@@ -168,6 +173,7 @@ class BrokerLauncher:
         self.proof_hash = None
         self.restarts = 0
         self.listener = None
+        self.engines = {}
         self.socket_path = self.run_root / "broker" / "broker.sock"
 
     def bind(self):
@@ -259,14 +265,33 @@ class BrokerLauncher:
         if (pid, uid) != (self.daemon_pid, 1001):
             raise Refused("launcher peer is not the daemon")
         connection.settimeout(1)
-        packet, ancillary, flags, _address = connection.recvmsg(MAX_REQUEST, 0)
-        if ancillary or flags & (socket.MSG_TRUNC | socket.MSG_CTRUNC):
-            raise Refused("oversized request or unexpected descriptors")
+        packet, ancillary, flags, _address = connection.recvmsg(
+            MAX_REQUEST, socket.CMSG_SPACE(32), socket.MSG_CMSG_CLOEXEC)
+        received = []
+        try:
+            for level, kind, payload in ancillary:
+                if level == socket.SOL_SOCKET and kind == socket.SCM_RIGHTS:
+                    descriptors = array.array("i")
+                    descriptors.frombytes(payload[:len(payload) - len(payload) % 4])
+                    received.extend(descriptors)
+                else:
+                    raise Refused("unsupported ancillary message")
+            if flags & (socket.MSG_TRUNC | socket.MSG_CTRUNC):
+                raise Refused("oversized request or descriptors")
+            self._request(connection, packet, received)
+        finally:
+            for fd in received:
+                os.close(fd)
+
+    def _request(self, connection, packet, received):
         try:
             request = json.loads(packet)
         except (ValueError, UnicodeError, RecursionError):
             raise Refused("malformed launcher request") from None
-        if not isinstance(request, dict) or set(request) != {"op", "proof_sha256"}:
+        if isinstance(request, dict) and request.get("op") == "SPAWN":
+            self._decoder(connection, request, received)
+            return
+        if received or not isinstance(request, dict) or set(request) != {"op", "proof_sha256"}:
             raise Refused("unsupported launcher request")
         proof = request["proof_sha256"]
         if request["op"] != "START_BROKER" or not isinstance(proof, str) \
@@ -281,7 +306,84 @@ class BrokerLauncher:
         connection.sendall(json.dumps({"op": "BROKER_READY", "socket": str(self.socket_path),
                                        "restarts": self.restarts}).encode())
 
+    def _decoder(self, connection, request, received):
+        if (set(request) != {"op", "kind", "principal", "command_center", "mime"}
+                or request["kind"] != "image-decoder" or len(received) != 1
+                or not isinstance(request["mime"], str)
+                or request["mime"] not in {"image/png", "image/jpeg", "image/webp", "image/gif"}):
+            raise Refused("unsupported engine request")
+        owner, center = request["principal"], request["command_center"]
+        if (not isinstance(owner, str) or not owner.strip() or len(owner) > 512
+                or not owner.isprintable() or not isinstance(center, str)
+                or not center or center in {".", ".."} or len(center) > 128
+                or any(c not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_"
+                       for c in center)):
+            raise Refused("missing admitted engine scope")
+        info = (self.data_root / center).lstat()
+        if not stat.S_ISDIR(info.st_mode) or info.st_uid != 1001:
+            raise Refused("engine scope is not a canonical daemon directory")
+        # Only an anonymous endpoint created by this exact daemon. No directory,
+        # regular file, listener, foreign peer or host-network socket crosses.
+        fd = received[0]
+        if not stat.S_ISSOCK(os.fstat(fd).st_mode):
+            raise Refused("decoder requires a socketpair")
+        copied = os.dup(fd)
+        try:
+            channel = socket.socket(fileno=copied)
+        except BaseException:
+            os.close(copied)
+            raise
+        try:
+            if (channel.family != socket.AF_UNIX or channel.type != socket.SOCK_STREAM
+                    or channel.getsockname() or channel.getpeername()
+                    or _peer(channel)[:2] != (self.daemon_pid, 1001)):
+                raise Refused("decoder endpoint is not daemon-scoped")
+        finally:
+            channel.close()
+        if len(self.engines) >= 2:
+            raise Refused("decoder capacity is occupied")
+        reply = connection.dup()
+        try:
+            pid = os.fork()
+        except BaseException:
+            reply.close()
+            raise
+        if pid == 0:
+            try:
+                os.dup2(fd, 0)
+                os.dup2(fd, 1)
+                null = os.open("/dev/null", os.O_WRONLY)
+                os.dup2(null, 2)
+                close_descriptors()
+                _retire_identity(1003, ())
+                os.execve("/opt/venv/bin/python", ["/opt/venv/bin/python", "-I", "-B",
+                    "/usr/local/libexec/ta-decoder.py", "enter", request["mime"],
+                    str(self.data_root)],
+                    {"PATH": "/usr/bin:/bin", "LANG": "C.UTF-8", "HOME": "/tmp",
+                     "PYTHONDONTWRITEBYTECODE": "1"})
+            except BaseException:
+                os._exit(126)
+        self.engines[pid] = (time.monotonic() + 35, reply)
+
+    def _poll_engines(self):
+        for pid, (deadline, reply) in list(self.engines.items()):
+            waited, status_code = os.waitpid(pid, os.WNOHANG)
+            if not waited and time.monotonic() >= deadline:
+                os.kill(pid, signal.SIGKILL)
+                _, status_code = os.waitpid(pid, 0)
+                waited = pid
+            if waited:
+                del self.engines[pid]
+                try:
+                    reply.sendall(json.dumps({"op": "SPAWN_DONE",
+                        "returncode": os.waitstatus_to_exitcode(status_code)}).encode())
+                except OSError:
+                    pass  # the daemon disconnected; the child is already reaped
+                finally:
+                    reply.close()
+
     def poll(self):
+        self._poll_engines()
         # WNOWAIT keeps the exact admitted daemon pid reserved until shutdown.
         if os.waitid(os.P_PID, self.daemon_pid, os.WEXITED | os.WNOHANG | os.WNOWAIT):
             return False
@@ -307,7 +409,7 @@ class BrokerLauncher:
     def stop(self):
         # No private directory cleanup here: only its owner may unlink the
         # broker socket. /run is disposable and the broker replaces it on boot.
-        for pid in (self.daemon_pid, self.broker_pid):
+        for pid in (self.daemon_pid, self.broker_pid, *self.engines):
             if pid is None:
                 continue
             try:
@@ -321,6 +423,9 @@ class BrokerLauncher:
                     time.sleep(0.02)
             except (ProcessLookupError, ChildProcessError):
                 pass
+        for _, reply in self.engines.values():
+            reply.close()
+        self.engines.clear()
         if self.listener is not None:
             self.listener.close()
             (self.run_root / "launcher.sock").unlink()

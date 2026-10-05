@@ -1541,6 +1541,28 @@ no vault write right, retained privilege or separate privileged service is added
 Vault replacements use D49. This is coordination of the existing daemon writer
 and existing broker, not startup activation. Production and fault receipts are
 recorded separately; engine/migration/deletion/rollback gates remain pending.
+### D51. Mechanical decision: the image decoder is a data-free engine kind
+
+Implement the first engine kind as image-decoder, with a static command and
+cell-deny profile. The authenticated daemon supplies its admitted principal and
+command-center label; the daemon checks current founder-home or admin authority and the canonical
+root before requesting the launcher. No request field selects an executable,
+filesystem mount, environment value or descriptor number. This kind binds no
+owner data at all, so its view is independent of the supplied labels. The
+launcher authenticates the exact daemon pid/uid and accepts only one anonymous
+AF_UNIX stream socketpair endpoint created by that daemon, for bytes in/out.
+It retires to engine uid 1003 without supplementary groups (this data-free
+kind needs no work-group access) before application imports and starts
+the fixed bootstrap. Bubblewrap supplies private mount/PID/IPC/network/tmp,
+immutable runtime-only mounts, cell-deny seccomp and no capabilities. The
+post-mount bootstrap closes every fd above stdio before decoding and performs
+mandatory identity/fd/namespace confinement checks in that same process.
+Decoder children are polled asynchronously so neither a blocked input nor a
+busy decoder blocks broker restart or daemon-exit detection. The daemon bounds
+input/output and time; the launcher independently bounds
+lifetime. Unsupported kinds remain refused. This adds no privilege or helper
+process that retains privilege: the new bootstrap runs only after retirement.
+No global startup activation or all-class acceptance is implied.
 ## Risks / Trade-offs
 
 - **The launcher is root-adjacent code.** One file, stdlib-only, run `-I -S`, a static kind table,

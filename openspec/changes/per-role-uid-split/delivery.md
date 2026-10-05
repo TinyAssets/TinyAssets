@@ -1,3 +1,49 @@
+# Current delivery: D51 actual data-free image decoder through the launcher
+
+D49 pushed as 692b2d201b; D50 pushed as 8281f758fd (8 added tests,
+0 removed, 0 tampering). D51 admits only the fixed image-decoder kind with
+one authenticated anonymous socketpair, no mounted owner data, engine uid
+1003 and no supplementary groups. Unsupported engine kinds remain refused.
+Actual bound_image uses this launcher path when broker mode is selected.
+The launcher polls decoder lifetimes asynchronously with a two-child bound.
+
+Cross-family peer-agents: ADAPT; AGREE and fixed all three findings: removed
+unneeded work group and pre-cell application imports, admitted the founder's
+public home using the existing canonical home authority, and mapped errors to
+existing refusals while removing blocking child waits from the launcher loop.
+Also closed the duplicated fd if socket construction fails. No second round.
+Release-critical files in this slice: **3**: Dockerfile,
+deploy/role_launcher.py, deploy/role_decoder.py. The privileged-chain checker
+also changed and was included in review. No affected heavy-list test file.
+
+```text
+python scripts/linux_oracle.py -- tests/test_role_decoder.py tests/test_role_launcher.py tests/test_privileged_chain.py tests/test_tool_images.py -q -rs
+60 passed in 5.12s; zero skips
+python scripts/linux_oracle.py --production-image tinyassets-uid-decoder:d51 --build --production-stream
+exit 0; sha256:5ffbe0cd1b628981202396d49bc087f7ad875386ebaa7a7a8f2db7ad6f8e9804
+D51 actual image-decoder through launcher: uid1003 zero capabilities, private mount/PID/IPC/network, stdio-only fds/openat denial, foreign data/vault/token absence, host abstract socket denial, cell-deny planted link/FIFO refusal, real PNG decode, concurrent input wait and foreign scope/file-fd refusal: PASS
+```
+The same decoder process checks read/write and hardlink denial, host TCP denial,
+all capability sets, no-new-privileges and descriptors before importing the
+image decoder. Daemon-side foreign scope and arbitrary-file-fd requests fail.
+All previous broker, HTTPS refresh/accounting and migration-substep probes
+pass again, including the forward/reverse dry-run/apply/repeat and 6+8+3+4
+crash boundaries. This is not full migration, two-pass deletion or old-image
+rollback. Successful broker streaming is proven; startup remains inactive.
+
+The first image run exposed a missing dynamic-linker cache in the cell. Added
+fixed read-only /etc/ld.so.cache; diagnostic runs are not acceptance. One
+PowerShell redirected invocation misreported native stderr as an error; the
+final unredirected full production run above has explicit exit 0. Targeted
+Ruff, plugin build/import and mirror parity (609) pass. Full Ruff's previously
+recorded 55 unrelated errors remain. No test removal or weakened guard.
+
+No complete task 2.1-2.8 checked off. Remaining: other actual engine classes
+through the launcher (including paired daemon-reader denial), full migration
+and two-pass deletion, actual old-image rollback, then startup/healthcheck only
+after all prior proofs. No PR, deployment, rebase or force-push.
+
+---
 # Current delivery: D50 coordinated refresh through the admitted broker stream
 
 D49 pushed as 692b2d201b; hygiene added 4 tests, removed 0, tampering 0.

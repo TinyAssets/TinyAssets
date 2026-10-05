@@ -756,6 +756,82 @@ def _capability_consumers(root, supervisor):
           "configure/read/disable, foreign/fence refusal, no daemon ledger: PASS", flush=True)
 
 
+def _decoder_probe(root, launcher_path):
+    import io
+
+    from PIL import Image
+
+    from tinyassets.auth.middleware import identity_context
+    from tinyassets.auth.provider import Identity
+    from tinyassets.daemon_server import grant_universe_access
+    from tinyassets.role_decoder import decode
+    from tinyassets.tool_images import ToolImage, bound_image
+
+    for owner in ("decoder-alice", "decoder-bob"):
+        universe = root / owner
+        universe.mkdir(exist_ok=True)
+        (universe / "workspace").mkdir(exist_ok=True)
+        (universe / "workspace/private").write_text(owner + "-private-sentinel")
+        (universe / ".credential-vault.json").write_text(owner + "-vault-sentinel")
+        (universe / "owner.json").write_text(owner + "-legacy-token-sentinel")
+        grant_universe_access(root, universe_id=owner, actor_id=owner,
+                              permission="admin", granted_by=owner)
+    output = io.BytesIO()
+    Image.new("RGB", (8, 8), "blue").save(output, format="PNG")
+    data = output.getvalue()
+    abstract = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    tcp = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    with abstract, tcp:
+        abstract.bind("\0ta-uid-cross-owner")
+        abstract.listen(1)
+        tcp.bind(("127.0.0.1", 39281))
+        tcp.listen(1)
+        with identity_context(Identity("decoder-alice", "decoder-alice")):
+            done = decode(data, "image/png", root / "decoder-alice")
+            assert done.returncode == 0
+            assert done.cell["groups"] == []
+            assert str(root / "decoder-bob/workspace/private") in done.cell["denied"]
+            assert all(done.cell["namespaces"][key] != done.cell["host_namespaces"][key]
+                       for key in done.cell["namespaces"])
+            shown = bound_image(data, "tile.png", universe_dir=root / "decoder-alice")
+            assert isinstance(shown, ToolImage) and (shown.width, shown.height) == (8, 8)
+            try:
+                decode(data, "image/png", root / "decoder-bob")
+            except PermissionError:
+                pass
+            else:
+                raise AssertionError("decoder accepted another owner's scope")
+    document = {"op": "SPAWN", "kind": "image-decoder", "principal": "decoder-alice",
+                "command_center": "decoder-alice", "mime": "image/png"}
+    with open(root / "decoder-bob/workspace/private", "rb") as handle:
+        assert _request(launcher_path, document, descriptor=handle.fileno())["op"] == "REFUSED"
+    assert _request(launcher_path, document)["op"] == "REFUSED"
+    # Leave one real decoder blocked reading its admitted input. The launcher
+    # must keep serving another decode while it waits.
+    with socket.socket(socket.AF_UNIX, socket.SOCK_SEQPACKET) as control:
+        control.settimeout(10)
+        control.connect(str(launcher_path))
+        parent, child = socket.socketpair()
+        with parent, child:
+            parent.settimeout(10)
+            control.sendmsg([json.dumps(document).encode()], [(
+                socket.SOL_SOCKET, socket.SCM_RIGHTS, array.array("i", [child.fileno()]))])
+            child.close()
+            with identity_context(Identity("decoder-alice", "decoder-alice")):
+                assert decode(data, "image/png", root / "decoder-alice").returncode == 0
+            parent.sendall(data)
+            parent.shutdown(socket.SHUT_WR)
+            while parent.recv(65536):
+                pass
+            assert json.loads(control.recv(4096))["returncode"] == 0
+    assert (root / "decoder-bob/workspace/private").read_text() == "decoder-bob-private-sentinel"
+    print("D51 actual image-decoder through launcher: uid1003 zero capabilities, private "
+          "mount/PID/IPC/network, stdio-only fds/openat denial, foreign data/vault/token "
+          "absence, host abstract socket denial, cell-deny planted link/FIFO refusal, "
+          "real PNG decode, concurrent input wait and foreign scope/file-fd refusal: PASS",
+          flush=True)
+
+
 def _daemon(root, run, ready, control, launcher):
     launcher["retire_child"]("daemon")
     launcher["close_descriptors"]((ready, control))
@@ -814,6 +890,7 @@ def _daemon(root, run, ready, control, launcher):
     assert supervisor_module.get_supervisor(root) is supervisor
     assert supervisor.fence() == (fenced["generation"], fenced["token"])
     _query_consumers(root, supervisor)
+    _decoder_probe(root, path)
     if os.environ.get("TA_ORACLE_HTTPS") == "1":
         runpy.run_path("/app/scripts/role_stream_oracle.py")["probe"](root)
     # A socket at the daemon uid must never receive a proof, even when its
@@ -1087,8 +1164,8 @@ def main():
     assert not (root / "outbound.db").exists()
     print("launcher wrong-uid filesystem refusal; actual broker uses private ledger: PASS",
           flush=True)
-    print("LAUNCHER/BROKER SUBSTEP ONLY: real daemon CMD, inference accounting, "
-          "refresh and engine classes pending; HTTPS stream requires --production-stream",
+    print("LAUNCHER SUBSTEP ONLY: image decoder proved; other engine classes, "
+          "full migration/rollback and real daemon CMD pending; HTTPS requires --production-stream",
           flush=True)
 
 

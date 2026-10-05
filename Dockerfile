@@ -357,6 +357,7 @@ COPY deploy/docker-entrypoint.sh /usr/local/libexec/ta-entry.sh
 COPY scripts/check_privileged_chain.py /usr/local/libexec/ta-chain.py
 COPY deploy/role_egress_migration.py /usr/local/libexec/ta-egress-migration.py
 COPY deploy/role_launcher.py /usr/local/libexec/ta-launch.py
+COPY deploy/role_decoder.py /usr/local/libexec/ta-decoder.py
 COPY deploy/broker_main.py /app/broker_main.py
 COPY scripts/role_image_oracle.py /app/scripts/role_image_oracle.py
 COPY scripts/role_launcher_oracle.py /app/scripts/role_launcher_oracle.py
@@ -376,7 +377,7 @@ RUN mkdir -p /data /home/tinyassets /var/lib/ta-broker && \
     chown ta-broker:ta-broker /var/lib/ta-broker && \
     chmod 0700 /home/tinyassets /var/lib/ta-broker && \
     chmod -R a-w,a+rX /app && \
-    chmod 0555 /app/broker_main.py /usr/local/libexec/ta-entry.sh /usr/local/libexec/ta-chain.py /usr/local/libexec/ta-egress-migration.py /usr/local/libexec/ta-launch.py && \
+    chmod 0555 /app/broker_main.py /usr/local/libexec/ta-entry.sh /usr/local/libexec/ta-chain.py /usr/local/libexec/ta-egress-migration.py /usr/local/libexec/ta-launch.py /usr/local/libexec/ta-decoder.py && \
     /opt/venv/bin/python -I -S -B /usr/local/libexec/ta-chain.py
 
 USER tinyassets
