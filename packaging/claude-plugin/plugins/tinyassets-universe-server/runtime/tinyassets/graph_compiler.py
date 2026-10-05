@@ -1725,6 +1725,14 @@ def _build_prompt_template_node(
                 )
 
             if provider_call is None:
+                if effective_policy:
+                    preferred = effective_policy.get("preferred", {})
+                    requested = preferred.get("model_id", preferred.get("model")) or "default"
+                    raise CompilerError(
+                        f"Requested model {requested} "
+                        f"on {preferred.get('provider') or 'selected source'} "
+                        "cannot run: no bound provider policy execution path"
+                    )
                 response = f"[Mock response for {node.node_id}]"
                 provider_served = "mock"
             elif effective_policy:
@@ -1762,16 +1770,12 @@ def _build_prompt_template_node(
                         )
                         response, provider_served, provider_meta = text_and_name
                     else:
-                        # Router unavailable or empty — fall through to the
-                        # run_branch-injected provider bridge.
-                        response = _run_agent_with_timeout(
-                            lambda: _bridge(
-                                prompt, "", _observe_response, _deadline_cfg(),
-                            ),
-                            timeout_s=timeout_s,
-                            node_id=node.node_id,
-                            universe_context=universe_context, event_sink=event_sink,
-                            seat_scope=seat_scope, on_seated=_seated,
+                        preferred = effective_policy.get("preferred", {})
+                        requested = preferred.get("model_id", preferred.get("model")) or "default"
+                        raise CompilerError(
+                            f"Requested model {requested} "
+                            f"on {preferred.get('provider') or 'selected source'} cannot run: "
+                            "the bound provider has no available policy execution path"
                         )
                 except NodeTimeoutError:
                     raise
