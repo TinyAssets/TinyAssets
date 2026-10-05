@@ -240,10 +240,12 @@ class ConnectionTokens:
     """
 
     def __init__(self, *, universe_dir: str | Path, owner_user_id: str,
-                 oauth_service: dict[str, Any] | None = None) -> None:
+                 oauth_service: dict[str, Any] | None = None,
+                 allow_local_refresh: bool = True) -> None:
         self._universe_dir = Path(universe_dir)
         self._owner = str(owner_user_id)
         self._oauth_service = oauth_service
+        self._allow_local_refresh = allow_local_refresh
 
     # The vault seam: read and write the ONE record, by its destination.
     def _read(self, destination: str) -> str:
@@ -275,7 +277,8 @@ class ConnectionTokens:
 
         return ConnectionAuthorizationError(detail)
 
-    def current(self, destination: str, credential: str, *, rejected: str = "") -> TokenBundle:
+    def current(self, destination: str, credential: str, *, rejected: str = "",
+                refresh_request=None) -> TokenBundle:
         """The bundle whose access token to send now.
 
         ``rejected`` is an access token the service just answered 401 to; the
@@ -290,6 +293,17 @@ class ConnectionTokens:
             raise self._failed("the stored authorization is unreadable; reconnect") from None
         if not rejected and not bundle.expiring():
             return bundle
+        if refresh_request is not None:
+            import hashlib
+
+            refresh_request(destination, hashlib.sha256(rejected.encode()).hexdigest()
+                            if rejected else "")
+            try:
+                return decode(self._read(destination))
+            except (LookupError, ValueError):
+                raise self._failed("refreshed authorization is unreadable; reconnect") from None
+        if not self._allow_local_refresh:
+            raise self._failed("daemon refresh admission is unavailable")
         if bundle.provider_id:
             from tinyassets.connection_oauth import service
 

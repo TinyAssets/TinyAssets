@@ -35,13 +35,15 @@ _END = object()
 
 
 class _Stream:
-    def __init__(self, client: AsyncBrokerClient, stream_id: int) -> None:
+    def __init__(self, client: AsyncBrokerClient, stream_id: int, refresh=None) -> None:
         self._client = client
         self.id = stream_id
         self.queue: asyncio.Queue[Any] = asyncio.Queue()
         self._head: dict[str, Any] | None = None
         self.end: dict[str, Any] | None = None
         self.admitted = False
+        self._refresh = refresh
+        self._refresh_sequence = 0
 
     async def _next(self) -> Any:
         item = await self.queue.get()
@@ -59,6 +61,22 @@ class _Stream:
                     self.admitted = True
                 elif item["op"] == "HEAD":
                     self._head = item
+                elif item["op"] == "REFRESH":
+                    if (type(item.get("sequence")) is not int
+                            or item["sequence"] != self._refresh_sequence + 1):
+                        raise rf.FrameError("unexpected refresh sequence")
+                    self._refresh_sequence += 1
+                    ok = False
+                    try:
+                        if self._refresh is not None:
+                            # Cancellation stops waiting, never the thread that
+                            # already holds vault admission and may have spent.
+                            await asyncio.to_thread(self._refresh, item)
+                            ok = True
+                    except Exception:  # noqa: BLE001 - no credential details in ACK
+                        pass
+                    await self._client._send(rf.control(self.id, {
+                        "op": "REFRESH_ACK", "sequence": self._refresh_sequence, "ok": ok}))
         return self._head
 
     async def body(self) -> AsyncIterator[bytes]:
@@ -85,16 +103,23 @@ class AsyncBrokerClient:
         supervisor = get_supervisor(data_root) if broker_selected() else None
         if supervisor is None:
             raise ProxyRequestError("streaming MCP requires the running credential broker")
+        from tinyassets.broker.refresh import prepare
+
         return cls(supervisor.socket_path, principal=principal, command_center=command_center,
-                   fence=supervisor.fence, verify_peer=supervisor.verify_broker)
+                   fence=supervisor.fence, verify_peer=supervisor.verify_broker,
+                   refresh_factory=lambda grant, connection: prepare(
+                       data_root, principal=principal, command_center=command_center,
+                       grant_id=grant, connection_id=connection))
 
     def __init__(self, path: Path, *, principal: str, command_center: str,
-                 fence: Callable[[], tuple[int, str]], verify_peer=None) -> None:
+                 fence: Callable[[], tuple[int, str]], verify_peer=None,
+                 refresh_factory=None) -> None:
         self._path = Path(path)
         self._principal = principal
         self._command_center = command_center
         self._fence = fence
         self._verify_peer = verify_peer
+        self._refresh_factory = refresh_factory
         self._ids = itertools.count(1)
         self._streams: dict[int, _Stream] = {}
         self._reader: asyncio.StreamReader | None = None
@@ -113,15 +138,15 @@ class AsyncBrokerClient:
             try:
                 self._reader, self._writer = await asyncio.open_unix_connection(
                     os.fspath(self._path))
+                if self._verify_peer is not None:
+                    try:
+                        self._verify_peer(self._writer.get_extra_info("socket"))
+                    except BaseException:
+                        self._writer.close()
+                        self._reader = self._writer = None
+                        raise
             except OSError:
                 raise ProxyRequestError("the credential broker is unavailable") from None
-            if self._verify_peer is not None:
-                try:
-                    self._verify_peer(self._writer.get_extra_info("socket"))
-                except BaseException:
-                    self._writer.close()
-                    self._writer = self._reader = None
-                    raise
             self._demux = asyncio.ensure_future(self._demultiplex())
 
     async def _send(self, frame: bytes) -> None:
@@ -173,9 +198,11 @@ class AsyncBrokerClient:
                      mcp_binding: dict | None = None) -> AsyncIterator[_Stream]:
         from tinyassets.storage.outbound_connections import AmbiguousProxyOutcome
 
+        refresh = (await asyncio.to_thread(self._refresh_factory, grant_id, connection_id)
+                   if self._refresh_factory is not None else None)
         await self._connect()
         generation, token = self._fence()
-        stream = _Stream(self, next(self._ids))
+        stream = _Stream(self, next(self._ids), refresh)
         self._streams[stream.id] = stream
         document = {
             "op": "OPEN", "op_id": op_id, "generation": generation, "token": token,
@@ -187,6 +214,8 @@ class AsyncBrokerClient:
             document["mcp_binding"] = mcp_binding
         if idle_s is not None:
             document["idle_s"] = idle_s
+        if refresh is not None:
+            document["refresh"] = True
         try:
             await self._send(rf.control(stream.id, document))
         except AmbiguousProxyOutcome:

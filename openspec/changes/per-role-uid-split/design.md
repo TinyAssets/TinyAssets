@@ -1450,6 +1450,132 @@ This removes the source-check path dependency without moving UsageStore's four
 tables at runtime: create/reserve/receipt/settle and daily evidence IPC remain
 pending, and no inference or startup completion is claimed.
 
+### D44. Mechanical decision: accounting operations retain daemon-held leases
+
+The authenticated owner channel gains a closed set of usage operations, with
+owner/center bound outside each document and no SQL, callable or path field.
+The daemon still creates and holds both kernel liveness proofs. The broker
+checks those proofs before inserting a root and owns all usage transactions in
+its ledger. Reference validation uses broker-local grant facts; claim, retry and
+send checkpoints remain broker-local and one-use. Remote operations never retry
+an ambiguous mutation. Budget refusals preserve the committed receipt; transport
+failure grants no capacity. Legacy unsplit accounting remains in the daemon DB.
+Runtime lock permissions, daily evidence, refresh and inference POST production
+proofs remain separate prerequisites; this decision does not activate startup.
+
+### D45. Mechanical decision: daemon kernel proofs have a broker-read-only group
+
+The liveness directory is daemon-owned 2750 and its regular proof files 0640,
+group 1102 (the broker's existing read group). No new group or privilege is
+retained. Runtime creation pins directories, refuses links/FIFOs/hardlinks and
+non-daemon ownership before re-moding, and creates no PID sidecar. Existing
+process locks are upgraded on the same inode. The literal role_modes declaration
+is shared with offline forward/reverse migration under the layout lock; reverse
+restores 1001:1001 at 0700/0600. Dry-run changes nothing, interrupted metadata
+changes resume idempotently, and no proof bytes are deleted. Full role migration
+and startup remain gated separately. Production acceptance must use the real
+creator, removing D44's fixture permission wrapper.
+
+### D46. Mechanical decision: production accounting proof uses a real HTTPS POST
+
+Extend the isolated HTTPS fixture with a model endpoint and installed descriptor.
+The daemon persists a parent, reserves and issues its source-bound reference over
+IPC; the launcher broker claims it and performs real TLS POST dispatch, followed
+by durable settlement/receipt over IPC. Missing references and duplicate sends
+must refuse. Repeat after broker restart. Fixture metadata uses the planned
+1001:1102 0640 read-only broker view; this does not prove runtime metadata
+replacement or its full migration, nor an actual provider engine class.
+
+### D47. Mechanical decision: daily evidence joins bounded broker pages
+
+Owner-wide historical attempt reads move to named daily_page operations on the
+authenticated usage channel. Pages expose dispatch time, usage/ordinal, free and
+success facts only. Named linked_turns batches test exact owner/center/turn
+membership so daemon-owned legacy rounds are not double-counted after relocation.
+No SQL/path/callable is accepted; failure of any page or link query leaves the
+existing advisory result unknown. These are advisory observations, not a stable
+cross-process snapshot or authoritative quota. No grant or inference capacity is
+issued by this route. Startup remains inactive.
+An absent legacy daemon database means no legacy rounds, so complete broker
+evidence still yields counts; an existing unreadable legacy database is unknown.
+Activation requires all four accounting tables, including links, transferred.
+
+### D48. Mechanical decision: definition replacements retain broker read access
+
+Accounting's installed-source validator needs the existing daemon-owned provider
+definition file read-only in the broker. Selected-mode registration sets group
+1102 and 0640 on the new file before atomic replacement, from role_modes, and
+fails before replacement if that assignment fails. No other file or directory
+is widened; command-center traversal remains D4's full migration obligation.
+The HTTPS acceptance now registers/replaces definitions through the actual
+daemon writer instead of seeding their mode. Existing-file migration remains
+part of the pending full inventory. No new privilege, reader role or startup
+activation is introduced.
+
+### D49. Mechanical decision: vault replacements retain broker read access
+
+In selected broker mode, every vault replacement creates a unique private
+sibling temp, assigns group 1102 and shared VAULT_FILE_MODE 0640 on its open fd,
+then writes, flushes and fsyncs before atomic publication. Group/mode/prepublish
+fsync failures leave the prior vault intact and remove only the unpublished
+temp. Postpublication durability errors retain the existing commit/owner-row
+compensation contract. Legacy unsplit publication remains 0600. This is required
+for refresh: uid 1002 must re-read rotated bytes without acquiring vault write
+permission. Existing-file migration and materialized credential modes remain
+part of full migration; this decision does not activate startup.
+### D50. Mechanical decision: refresh coordination uses the admitted stream
+
+The daemon captures exact grant/connection/owner/center custody through existing
+broker IPC before OPEN. OAuth streams opt into a bounded REFRESH/REFRESH_ACK
+exchange on that same kernel-authenticated, fenced channel. The broker sends
+only the pinned destination and a rejected-access-token digest; no secret, SQL,
+path, endpoint or callable crosses the wire. The daemon callback refuses scope
+mismatch and checks deposit ownership again inside the existing thread/file/
+exclusive-vault locks before spending. It re-reads under those locks and writes
+the rotated credential before ACK; a lost ACK reuses persisted bytes on a fresh
+operation instead of replaying the refresh token. Broker stream cancellation or
+disconnect cannot interrupt a daemon callback already spending/persisting.
+The existing broker send fence brackets refresh as it did local token refresh.
+The role-split broker refuses local refresh if a daemon callback is absent;
+no vault write right, retained privilege or separate privileged service is added.
+Vault replacements use D49. This is coordination of the existing daemon writer
+and existing broker, not startup activation. Production and fault receipts are
+recorded separately; engine/migration/deletion/rollback gates remain pending.
+### D51. Mechanical decision: the image decoder is a data-free engine kind
+
+Implement the first engine kind as image-decoder, with a static command and
+cell-deny profile. The authenticated daemon supplies its admitted principal and
+command-center label; the daemon checks current founder-home or admin authority and the canonical
+root before requesting the launcher. No request field selects an executable,
+filesystem mount, environment value or descriptor number. This kind binds no
+owner data at all, so its view is independent of the supplied labels. The
+launcher authenticates the exact daemon pid/uid and accepts only one anonymous
+AF_UNIX stream socketpair endpoint created by that daemon, for bytes in/out.
+It retires to engine uid 1003 without supplementary groups (this data-free
+kind needs no work-group access) before application imports and starts
+the fixed bootstrap. Bubblewrap supplies private mount/PID/IPC/network/tmp,
+immutable runtime-only mounts, cell-deny seccomp and no capabilities. The
+post-mount bootstrap closes every fd above stdio before decoding and performs
+mandatory identity/fd/namespace confinement checks in that same process.
+Decoder children are polled asynchronously so neither a blocked input nor a
+busy decoder blocks broker restart or daemon-exit detection. The daemon bounds
+input/output and time; the launcher independently bounds
+lifetime. Unsupported kinds remain refused. This adds no privilege or helper
+process that retains privilege: the new bootstrap runs only after retirement.
+No global startup activation or all-class acceptance is implied.
+### D52. Mechanical decision: named cell profiles preserve existing callers
+
+Implement D9's three names in the existing seccomp compiler. cell-deny and
+cell-nested are byte-identical to the prior default and nested_sandbox=True
+policies. cell-links changes only symlink/symlinkat allowance; it retains
+CLONE_NEWUSER denial, clone3 ENOSYS, FIFO/device and kernel-surface denial.
+Keep the legacy keyword compatible; reject unknown or contradictory profile
+selection before allocating a descriptor. Only trusted static launch policy
+selects a profile. Image-decoder explicitly selects cell-deny; no engine
+payload chooses a profile, and no other class is admitted by this slice.
+The named profiles are prerequisites for the remaining D9 class matrix,
+not a substitute for actual class and paired daemon-reader probes.
+
 ## Risks / Trade-offs
 
 - **The launcher is root-adjacent code.** One file, stdlib-only, run `-I -S`, a static kind table,

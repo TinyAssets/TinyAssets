@@ -138,6 +138,9 @@ class _Stream:
     upstream: Any = None
     attachment_guard: Any = None
     wake: threading.Condition = field(default_factory=threading.Condition)
+    refresh_sequence: int = 0
+    refresh_result: bool | None = None
+    refresh_pending: bool = False
 
 
 class BrokerServer:
@@ -289,12 +292,25 @@ class _Connection:
                     stream.wake.notify_all()
         elif op == "CANCEL" and stream is not None:
             await asyncio.to_thread(self._server.cancel, stream)
+        elif op == "REFRESH_ACK" and stream is not None:
+            with stream.wake:
+                if (set(doc) != {"op", "sequence", "ok"}
+                        or type(doc["sequence"]) is not int or type(doc["ok"]) is not bool
+                        or not stream.refresh_pending
+                        or doc["sequence"] != stream.refresh_sequence
+                        or stream.refresh_result is not None):
+                    raise rf.FrameError("invalid refresh acknowledgement")
+                stream.refresh_result = doc["ok"]
+                stream.wake.notify_all()
 
     async def _connection_op(self, op: str, doc: dict[str, Any]) -> None:
         if self._role != OWNER:
             raise rf.FrameError("only the owner channel may send connection operations")
         if op == "LEDGER_QUERY":
             answer = await asyncio.to_thread(self._ledger_query, doc)
+            await self.send_async(rf.control(rf.CONNECTION, answer))
+        elif op == "USAGE":
+            answer = await asyncio.to_thread(self._usage, doc)
             await self.send_async(rf.control(rf.CONNECTION, answer))
         elif op == "HTTP_CONNECT":
             answer = await asyncio.to_thread(self._http_connect, doc)
@@ -431,6 +447,33 @@ class _Connection:
             return {"op": "HTTP_POLICY_REFUSED", "error_class":
                     "GrantResolutionError" if type(exc).__name__ == "GrantResolutionError"
                     else "refused"}
+
+    def _usage(self, doc: dict[str, Any]) -> dict[str, Any]:
+        from tinyassets.broker.usage import local_operation, validate
+        from tinyassets.request_budget import RequestBudgetExceeded
+
+        try:
+            if set(doc) != {"op", "principal", "command_center", "generation", "token",
+                            "usage_id", "document"}:
+                raise ValueError("unsupported accounting fields")
+            _namespace(doc["principal"], doc["command_center"])
+            validate(doc["document"])
+            if type(doc["generation"]) is not int or not isinstance(doc["token"], str):
+                raise Fenced("invalid fence")
+            with self._server._fence.send(doc["generation"], doc["token"]):
+                try:
+                    result = local_operation(self._server._ledger_for(doc["principal"]),
+                                             principal=doc["principal"],
+                                             command_center=doc["command_center"],
+                                             usage_id=doc["usage_id"], document=doc["document"])
+                    answer = {"op": "USAGE_RESULT", "result": result}
+                except RequestBudgetExceeded as exc:
+                    answer = {"op": "USAGE_STOPPED", "reason": exc.reason,
+                              "receipt": exc.request_receipt}
+                rf.control(rf.CONNECTION, answer)
+                return answer
+        except Exception:  # noqa: BLE001 - fixed refusal, no storage details on wire
+            return {"op": "USAGE_REFUSED"}
 
     def _http_connect(self, doc: dict[str, Any]) -> dict[str, Any]:
         from tinyassets.broker.http_connect import local_operation, validate
@@ -588,7 +631,8 @@ class _Connection:
                                                       resource)
                 threading.Thread(
                     target=self._run, args=(stream, dispatch, grant_id, verb, request,
-                                            doc.get("idle_s"), doc.get("inference_usage")),
+                                            doc.get("idle_s"), doc.get("inference_usage"),
+                                            doc.get("refresh") is True),
                     name=f"broker-stream-{stream_id}", daemon=True,
                 ).start()
             except Exception:  # noqa: BLE001 - nothing was sent: settle it as refused
@@ -627,8 +671,32 @@ class _Connection:
         self._checkpoint(stream)
         stream.wrote = True
 
+    def _refresh(self, stream: _Stream, destination: str, rejected_digest: str) -> None:
+        from tinyassets.storage.outbound_connections import ConnectionAuthorizationError
+
+        with stream.wake:
+            self._checkpoint(stream)
+            stream.refresh_sequence += 1
+            stream.refresh_result = None
+            stream.refresh_pending = True
+        try:
+            self.send(rf.control(stream.id, {
+                "op": "REFRESH", "sequence": stream.refresh_sequence,
+                "destination": destination, "rejected_digest": rejected_digest}), stream)
+            with stream.wake:
+                while stream.refresh_result is None:
+                    self._checkpoint(stream)
+                    stream.wake.wait(min(0.1, max(0, stream.deadline - time.monotonic())))
+                self._checkpoint(stream)
+                if not stream.refresh_result:
+                    raise ConnectionAuthorizationError("daemon refresh failed")
+        finally:
+            with stream.wake:
+                stream.refresh_pending = False
+
     def _run(self, stream: _Stream, dispatch: Callable[..., Any], grant_id: str, verb: str,
-             request: dict[str, Any], idle_s: Any, inference_usage=None) -> None:
+             request: dict[str, Any], idle_s: Any, inference_usage=None,
+             refresh_enabled: bool = False) -> None:
         outcome, error_class, extra = "failed", "ProxyRequestError", {}
         try:
             if stream.cancelled:
@@ -645,6 +713,8 @@ class _Connection:
                 on_connect=lambda sock: self._connected(stream, sock),
                 checkpoint=lambda: self._checkpoint(stream),
                 deadline_at=stream.deadline,
+                **({"refresh_request": lambda destination, rejected: self._refresh(
+                    stream, destination, rejected)} if refresh_enabled else {}),
                 **({"inference_usage": inference_usage, "operation_id": stream.op_id}
                    if inference_usage is not None else {}),
             )

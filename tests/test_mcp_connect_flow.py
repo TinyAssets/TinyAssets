@@ -2,6 +2,7 @@
 # ruff: noqa: F811
 import asyncio
 import json
+import os
 import socket
 import sys
 from contextlib import closing
@@ -40,10 +41,13 @@ pytestmark = pytest.mark.skipif(
 
 @pytest.fixture
 def connected_broker(broker, app, monkeypatch, mcp_provider):
+    from tinyassets import role_modes
     from tinyassets.broker import supervisor
     from tinyassets.broker.process import _Dispatchers
     from tinyassets.onboarding import session_store
 
+    # In-process broker fixture shares the test user group; production uses 1102.
+    monkeypatch.setattr(role_modes, "BROKER_READ_GID", os.getgid())
     ConnectionLedger(app / "outbound.db")
     dispatchers = _Dispatchers(app, allow_test_fixtures=False)
     broker.server._ledger_for = dispatchers.ledger_for

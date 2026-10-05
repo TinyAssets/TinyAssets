@@ -30,6 +30,10 @@ def consumers(tmp_path, monkeypatch):
         protocol="chat_messages", model="fixture", ref="grant-alice",
     )
     provider = f"api_key_http:{definition.id}"
+    foreign_definition = register_definition(
+        universe_id="cc-alice", owner_user_id="alice", access_method="api_key_http",
+        protocol="chat_messages", model="foreign-fixture", ref="grant-bob",
+    )
     calls = []
 
     class Client:
@@ -50,7 +54,8 @@ def consumers(tmp_path, monkeypatch):
         raise AssertionError("daemon attempted a local ConnectionLedger")
 
     monkeypatch.setattr("tinyassets.storage.outbound_connections.ConnectionLedger", no_local)
-    return SimpleNamespace(root=tmp_path, ledger=ledger, provider=provider, calls=calls)
+    return SimpleNamespace(root=tmp_path, ledger=ledger, provider=provider, calls=calls,
+                           foreign_provider=f"api_key_http:{foreign_definition.id}")
 
 
 def test_all_resource_consumers_use_scoped_query_without_local_ledger(consumers):
@@ -102,11 +107,7 @@ def test_unavailable_broker_never_opens_local_ledger(consumers, monkeypatch):
 
 def test_owned_definition_cannot_capture_or_label_foreign_grant(consumers):
     c = consumers
-    definition = register_definition(
-        universe_id="cc-alice", owner_user_id="alice", access_method="api_key_http",
-        protocol="chat_messages", model="foreign-fixture", ref="grant-bob",
-    )
-    provider = f"api_key_http:{definition.id}"
+    provider = c.foreign_provider
     with pytest.raises(PermissionError, match="model connection changed"):
         _connection_incarnations(c.root, "alice", "cc-alice", [provider])
     assert source_display_name(base=c.root, universe_id="cc-alice", provider=provider) == ""

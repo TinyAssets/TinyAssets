@@ -1,3 +1,348 @@
+# Current delivery: D52 named cell profiles for the remaining engine matrix
+
+D51 pushed as b32cea4ff4; hygiene: 5 tests added, 0 removed, 0 tampering.
+D52 implements D9's cell-deny/cell-links/cell-nested names in the shared
+seccomp compiler. Image-decoder explicitly selects cell-deny. No remaining
+engine kind is admitted and no payload can select its own profile. Both
+legacy filter byte streams match commit b32cea4ff4 exactly. cell-links
+permits symlink creation but keeps namespace, clone3, FIFO/device and kernel
+interface restrictions. Unknown or explicitly contradictory options refuse
+before pipe allocation; pipe write failure closes both ends.
+
+Cross-family peer-agents: ADAPT. AGREE with CI wiring: moved the new kernel
+cases into existing tests/test_provider_jail_network.py, already real_jail
+marked and covered by linux-jail-proof's paths and zero-skip assertion.
+No new skip on any existing test, no workflow or heavy-list change. Also
+fixed the minor explicit-False/nested contradiction using an unset default.
+No second round. Release-critical files in this slice: **1**,
+deploy/role_decoder.py (already changed in D51). Branch total against local
+origin/main: **8**, unchanged: .github/workflows/docker-build.yml, Dockerfile,
+deploy/backup.sh, deploy/broker_main.py, deploy/compose.yml,
+deploy/role_decoder.py, deploy/role_egress_migration.py, deploy/role_launcher.py.
+No affected heavy-list file.
+
+```text
+python scripts/linux_oracle.py -- tests/test_jail_seccomp.py tests/test_role_decoder.py tests/test_role_launcher.py tests/test_provider_jail_network.py tests/test_universe_tools_jail.py -q -rs
+107 passed in 32.09s; zero skips
+```
+This includes real-kernel symlink/FIFO/io_uring/new-user/clone3 decisions for
+all three profiles, plus the shipping provider and tool jail regression
+proofs. Initial new clone3 fixture used size zero and received EINVAL;
+corrected to a valid structure size with null pointer to distinguish EFAULT
+from the filter's ENOSYS. The runtime policy was not weakened. Marker-based
+CI collection includes the containing module. Targeted Ruff, mirror parity
+(609), plugin import and strict OpenSpec pass. Full Ruff still reports the
+same 55 unrelated errors.
+
+```text
+python scripts/linux_oracle.py --production-image tinyassets-uid-profiles:d52 --build --production-stream
+exit 0; sha256:114b5f77154b2f276b46dbfc92009d3cabe77883c816358cafbe976f43af325e
+```
+All D51 decoder, D49/D50 refresh, broker consumers/accounting, HTTPS streaming
+and migration-substep probes pass again. Forward/reverse dry/apply/repeat and
+6+8+3+4 crash boundaries remain substep evidence, not full migration/deletion
+or actual old-image rollback. Additional production-image profile probe:
+`python $env:TEMP/uid-d52-production-profiles.py` exit 0. It extracts the
+committed ROLE_PROFILE_PROBE from test_provider_jail_network.py and runs each
+profile from the immutable image's jail_seccomp.py via runpy, at uid 1001,
+cap-drop ALL, network none, nnp and the same seccomp/AppArmor/systempaths
+options. All three profile results match the 107-test Linux receipt. Initial
+ad-hoc import under python -I failed because /app is intentionally absent from
+sys.path; loading the fixed stdlib-only module by path matches the decoder.
+This probe uses a synthetic read-only runtime view, not an additional actual
+engine class. Startup inactive.
+Remaining: actual provider CLI/discovery/auth, thin engine-MCP, node/tool,
+workspace provision/registry/worker/git, preview, local box and utility class
+launcher integration with every paired daemon-reader probe; full migration
+and two-pass deletion; actual old-image rollback; startup/healthcheck only
+after all prior acceptance. No full task 2.1-2.8 checked off. No PR or deploy.
+
+---
+# Current delivery: D51 actual data-free image decoder through the launcher
+
+D49 pushed as 692b2d201b; D50 pushed as 8281f758fd (8 added tests,
+0 removed, 0 tampering). D51 admits only the fixed image-decoder kind with
+one authenticated anonymous socketpair, no mounted owner data, engine uid
+1003 and no supplementary groups. Unsupported engine kinds remain refused.
+Actual bound_image uses this launcher path when broker mode is selected.
+The launcher polls decoder lifetimes asynchronously with a two-child bound.
+
+Cross-family peer-agents: ADAPT; AGREE and fixed all three findings: removed
+unneeded work group and pre-cell application imports, admitted the founder's
+public home using the existing canonical home authority, and mapped errors to
+existing refusals while removing blocking child waits from the launcher loop.
+Also closed the duplicated fd if socket construction fails. No second round.
+Release-critical files in this slice: **3**: Dockerfile,
+deploy/role_launcher.py, deploy/role_decoder.py. The privileged-chain checker
+also changed and was included in review. No affected heavy-list test file.
+
+```text
+python scripts/linux_oracle.py -- tests/test_role_decoder.py tests/test_role_launcher.py tests/test_privileged_chain.py tests/test_tool_images.py -q -rs
+60 passed in 5.12s; zero skips
+python scripts/linux_oracle.py --production-image tinyassets-uid-decoder:d51 --build --production-stream
+exit 0; sha256:5ffbe0cd1b628981202396d49bc087f7ad875386ebaa7a7a8f2db7ad6f8e9804
+D51 actual image-decoder through launcher: uid1003 zero capabilities, private mount/PID/IPC/network, stdio-only fds/openat denial, foreign data/vault/token absence, host abstract socket denial, cell-deny planted link/FIFO refusal, real PNG decode, concurrent input wait and foreign scope/file-fd refusal: PASS
+```
+The same decoder process checks read/write and hardlink denial, host TCP denial,
+all capability sets, no-new-privileges and descriptors before importing the
+image decoder. Daemon-side foreign scope and arbitrary-file-fd requests fail.
+All previous broker, HTTPS refresh/accounting and migration-substep probes
+pass again, including the forward/reverse dry-run/apply/repeat and 6+8+3+4
+crash boundaries. This is not full migration, two-pass deletion or old-image
+rollback. Successful broker streaming is proven; startup remains inactive.
+
+The first image run exposed a missing dynamic-linker cache in the cell. Added
+fixed read-only /etc/ld.so.cache; diagnostic runs are not acceptance. One
+PowerShell redirected invocation misreported native stderr as an error; the
+final unredirected full production run above has explicit exit 0. Targeted
+Ruff, plugin build/import and mirror parity (609) pass. Full Ruff's previously
+recorded 55 unrelated errors remain. No test removal or weakened guard.
+
+No complete task 2.1-2.8 checked off. Remaining: other actual engine classes
+through the launcher (including paired daemon-reader denial), full migration
+and two-pass deletion, actual old-image rollback, then startup/healthcheck only
+after all prior proofs. No PR, deployment, rebase or force-push.
+
+---
+# Current delivery: D50 coordinated refresh through the admitted broker stream
+
+D49 pushed as 692b2d201b; hygiene added 4 tests, removed 0, tampering 0.
+D50 adds REFRESH/REFRESH_ACK to the existing authenticated stream, with an exact
+pre-OPEN custody snapshot and daemon-only lock/admission/reread/spend/write.
+Only a destination and rejected-token digest cross the wire; the broker refuses
+local refresh without a daemon callback. Sync/async clients save before ACK;
+a lost ACK keeps the new vault and does not replay the single-use token.
+D49 runtime vault replacement is exercised by actual daemon uid 1001 here.
+Cross-family peer-agents: AGREE, APPROVE; no floor/correctness findings.
+Reviewer's Windows skips are not acceptance; Linux receipts follow.
+
+Release-critical files: **0; none**. Runtime broker refresh/client/aclient/server/
+process, connection_oauth/tokens and outbound_connections plus generated mirrors;
+refresh tests and HTTPS oracle. No affected heavy-list test file.
+
+```text
+python scripts/linux_oracle.py -- tests/test_broker_refresh.py tests/test_broker_server.py tests/test_broker_discovery_http.py tests/test_outbound_connection_ledger.py tests/test_generic_oauth_connections.py tests/test_platform_oauth_clients.py -q -rs
+144 passed in 50.16s; zero skips
+python scripts/linux_oracle.py --production-image tinyassets-uid-refresh:d50 --build --production-stream
+exit 0; sha256:e58b1cf1ba316821a58d7ddb56847cb77a1db00144c3028aeeb6e0d533edee18
+D49/D50 actual daemon vault publication and broker HTTPS OAuth refresh: expiry and 401, exactly two single-use rotations, persisted daemon-owned 1001:1102/0640 vault, reuse across broker restart: PASS
+```
+New tests additionally cover concurrent single-flight rotation, admission failure
+before spend, write retry under the same vault hold, foreign/revoked/stale scope,
+lost ACK, digest-based 401 retry, async coordination and broker fallback refusal.
+The earlier isolated run (33 passed) printed existing fixture shutdown pending-task
+warnings; the complete 144-test acceptance run above completed without them.
+Initial new assertions were corrected to the existing typed/sanitized error
+contract; no existing test or guard was loosened. One command named a nonexistent
+async-test file and ran no tests; its corrected run included test_broker_server.
+
+All previous production-image substeps pass: egress/accounting/liveness forward
+and reverse dry-run/apply/repeat; 6+8+3+4 crash boundaries; hostile input refusal;
+accounted HTTPS, consumers and restart. Same seven capabilities and compose
+security options; synthetic HTTPS network/CA cleaned by harness. These remain
+substep proofs, not full role migration, deletion or actual old-image rollback.
+Targeted Ruff, plugin build/import, mirror parity (608), strict OpenSpec and
+whitespace pass. Full Ruff still reports the same 55 untouched errors.
+
+No full task checked off. Remaining in order: every actual engine class through
+the launcher (including daemon-reader denial pairs), full role migration and
+capability-free two-pass deletion, actual old-image rollback, then startup and
+healthcheck integration only after every prior proof passes. Startup inactive.
+No PR, deploy, rebase or force-push.
+
+---
+# Current delivery: D49 runtime vault publication prerequisite
+
+D49 retains broker read-only access on every daemon vault replacement: the
+unique private temp receives group 1102 and shared mode 0640 before writing,
+fsync and atomic publication. Prepublication faults preserve the old inode and
+clean the temp; postpublication failures preserve existing commit semantics.
+Cross-family peer-agents: AGREE, APPROVE; no blocking findings.
+Release-critical files: **0; none**. No affected heavy-list file.
+
+```text
+python scripts/linux_oracle.py -- tests/test_broker_vault_modes.py tests/test_credential_vault.py tests/test_vault_account_deletion_guard.py -q -rs
+44 passed in 1.88s; zero skips
+```
+Targeted Ruff, plugin build/import, mirror parity pass. Production runtime
+rotation proof is next with coordinated refresh; no production-image acceptance
+is claimed by this unit slice. D50 refresh implementation is in progress.
+No complete build task checked off. Startup inactive; no PR or deployment.
+Remaining: refresh, each actual engine class, full migration/two-pass deletion,
+actual old-image rollback, then startup/healthcheck only after all proofs.
+
+---
+# Current delivery: D48 runtime provider metadata publication
+
+D46/D47 pushed as e31def9356; additive hygiene correction 7be718b2b8
+removes an accidental skip from the existing D44 test (no history rewrite).
+D48 applies daemon-owned 1001:1102/0640 to each new provider-definition
+inode before atomic replacement. Unsplit creation remains private 0600;
+permission failure preserves the old definition and removes the unpublished temp.
+The HTTPS oracle now registers and replaces definitions as the actual daemon,
+then proves broker-local source validation and accounted POST before/after restart.
+No seeded provider-definition permissions remain in that proof.
+
+Cross-family peer-agents: ADAPT; AGREE and corrected the resource-consumer
+fixture to seed its foreign definition before broker mode is selected. Its
+cross-owner refusal assertions are unchanged. Same-uid transport fixtures use
+their actual group; the production oracle proves the real 1102 group.
+Release-critical files: **0; none**. No affected heavy-list test file.
+
+```text
+python scripts/linux_oracle.py -- tests/test_broker_definition_modes.py tests/test_provider_definition_registry.py tests/test_broker_usage_ipc.py tests/test_broker_usage_source.py tests/test_broker_discovery_http.py tests/test_broker_compute_consumers.py tests/test_broker_usage_evidence.py -q -rs
+77 passed in 4.85s; zero skips
+python -m pytest tests/test_broker_resource_consumers.py -q
+13 passed in 0.83s
+python scripts/linux_oracle.py -- tests/test_broker_resource_consumers.py tests/test_broker_serving_consumers.py tests/test_broker_bootstrap_ipc.py tests/test_broker_graph_connections.py tests/test_broker_usage_ipc.py tests/test_broker_definition_modes.py -q -rs
+48 passed in 8.40s; zero skips
+python scripts/linux_oracle.py --production-image tinyassets-uid-metadata:d48 --build --production-stream
+exit 0; sha256:4db53b5ca656e60b72d7a86c49cf7897e32e968930fdf70d789a97abbfb26553
+D48 actual daemon definition registration/replacement retains broker read mode before atomic publish; broker-local source binding succeeds: PASS
+```
+All prior production-image probes pass again, including D46/D47 before and
+after broker restart, using the same seven-capability startup harness. This
+proves runtime metadata publication, not existing-metadata migration.
+
+Remaining in order: coordinated refresh with admission before spending a
+single-use token and daemon-only durable vault publication; every actual engine
+class through the launcher; full migration and capability-free two-pass deletion;
+actual old-image rollback; then startup/healthcheck activation only after every
+prior proof passes. Startup remains inactive. No PR or deployment.
+
+---
+# Current delivery: D46 accounted inference POST and D47 daily evidence
+
+D45 pushed as e2780ee541; hygiene added 3 tests, removed 0, tampering 0.
+D46 proves real HTTPS inference POST with source-bound references, runtime kernel
+leases, broker-local claims, send and settlement. The synthetic HTTPS server
+counts requests: omitted references, duplicate operation IDs and reusing a
+reference under a fresh operation ID produce no extra POST. Exactly two accepted
+POSTs per pass, before and after broker restart. Metadata modes are seeded here;
+runtime provider-definition replacement and full migration remain prerequisites.
+D47 routes daily history through owner-only bounded broker pages, with exact
+owner/center/turn membership batches to exclude linked daemon legacy rounds.
+Any failed page/link or unreadable legacy store returns the existing unknown
+advisory result; no grant or quota is implied. Absence of a legacy store does not
+hide complete broker evidence. All four accounting tables must move together.
+
+Cross-family peer-agents D46: ADAPT; AGREE and fixed the proof gaps with exact
+sanitized authority refusal, server-side POST counts, and fresh-op reference
+replay. The broker intentionally scrubs detailed authority messages, so asserting
+the suggested internal error text at the client would be false. D47: AGREE,
+APPROVE; no floor/correctness findings. Added first-page/unreadable-store tests.
+
+Release-critical files: **0; none**. Runtime broker usage/usage_evidence and
+request_budget plus mirrors; stream oracle and accounting/evidence tests, docs.
+No affected heavy-list test file. No full task checked off. Startup inactive.
+
+```text
+python scripts/linux_oracle.py -- tests/test_broker_usage_evidence.py tests/test_request_budget.py tests/test_request_budget_broker.py tests/test_broker_usage_ipc.py -q -rs
+68 passed in 5.29s; zero skips
+python scripts/linux_oracle.py --production-image tinyassets-uid-evidence:d47 --build --production-stream
+exit 0; sha256:f97dc257c522086b1917133dddf21d1400b88bcad7017eabc4ff5bdce60229af
+D46 actual accounted HTTPS inference POST via launcher broker: kernel leases, source binding, one-use claims, dispatch/settlement receipts, missing/replay refusal: PASS (seeded metadata modes)
+D47 actual daily evidence via launcher broker: counted HTTPS attempts across restart, foreign history absent, daemon tables untouched: PASS
+```
+All previous migration substeps, four liveness crash boundaries and launcher
+consumer proofs pass again. Same seven capabilities and compose security options;
+synthetic network/CA cleaned. This is not engine-class, full migration/two-pass
+deletion or actual old-image acceptance. Targeted Ruff, plugin build/import,
+strict OpenSpec and whitespace pass. Windows-only skips are declared for the
+new Unix socket tests; all reported acceptance runs are Linux, with zero skips.
+
+Next: runtime provider-definition replacement must retain broker read modes;
+refresh admission-before-spend with daemon-only durable vault writes; then every
+engine class, full migration/deletion, actual old-image rollback and gated
+startup/healthcheck. No PR or deployment and no history rewriting.
+
+---
+# Current delivery: D45 runtime liveness modes and reverse migration
+
+D44 pushed as 52136836ae; hygiene added 5 tests, removed 0, tampering 0.
+D45 replaces fixture lock preparation with no-follow daemon runtime creation:
+1001:1102 directories 2750, proofs 0640, no new PID sidecars. Same-inode process
+proof upgrades preserve the held lock. The startup migration substep shares the
+literal role_modes declaration and restores 1001:1001 0700/0600 on reverse.
+Cross-family peer-agents: AGREE, APPROVE; no floor/correctness findings.
+No full build task complete; startup inactive. No PR or deployment.
+
+Release-critical files: **1: deploy/role_egress_migration.py**. Runtime changes:
+process_liveness, universe_files, role_modes, storage/agent_request_usage and
+mirrors; both role oracles, liveness creation tests and accounting fixture.
+No affected heavy-list test file.
+
+```text
+python scripts/linux_oracle.py -- tests/test_broker_liveness_creation.py tests/test_broker_usage_ipc.py tests/test_broker_readonly_liveness.py tests/test_request_usage_store.py tests/test_parent_turn_request_budget.py -q -rs
+125 passed in 59.00s; zero skips
+python scripts/linux_oracle.py -- tests/test_universe_file_reads_are_bounded.py tests/test_role_accounting_schema.py tests/test_broker_liveness_creation.py -q -rs
+30 passed in 0.55s; zero skips
+python scripts/linux_oracle.py --production-image tinyassets-uid-locks:d45 --build --production-stream
+exit 0; sha256:d54afe8fd44066ea9b0dbcb14d932d364256706b755aafa7d1a95cb74504c638
+D42/D45 runtime-created read-only daemon/parent kernel liveness, independent parent close, daemon death, engine denial: PASS
+D45 liveness forward/reverse dry-run/apply/repeat, four crash boundaries, hostile aliases and foreign owner refused without mutation: PASS
+D44/D45 actual accounting create/reserve/dispatch/settle/receipt/close via launcher broker, foreign refusal and committed budget stop: PASS (runtime lock creation; inference POST pending)
+```
+All previous egress/accounting migration and launcher consumers, plus real HTTPS
+GET streams, pass before/after restart. Same seven capabilities/compose security
+options. No proof of full role migration/deletion or actual old-image rollback.
+Targeted Ruff, plugin build/import, strict OpenSpec and whitespace pass. Full
+Ruff baseline remains 55 unrelated errors. The initial test run caught a legacy
+lease-registration hook rejecting the added keyword; the unsplit call signature
+was preserved, and the unchanged regression then passed. No test weakened.
+
+Review notes: the old singleton helper may create informational .pid sidecars
+with group write in a setgid directory; the authoritative .lock creation mode
+is 0644 before umask and cannot grant group write. D45's broker-readable path
+creates no .pid. Full startup orchestration must order reverse liveness with
+accounting/egress reversal while roles are stopped; this substep never admits
+service. Continue this run with actual inference POST, daily evidence and
+refresh, then engine classes, full migration/deletion, old-image and startup.
+
+---
+# Current delivery: D44 runtime accounting IPC
+
+D44 routes create/reserve/check/dispatch/settle/receipt/link/close and reference
+issuance through a closed authenticated broker operation. The daemon retains
+kernel leases; the broker owns the four tables and local claim/retry checkpoints.
+Foreign scope, stale fence, outage, source revocation and consumed references
+refuse. Mutations never retry ambiguous transport outcomes. Startup inactive.
+Cross-family peer-agents: AGREE, APPROVE; no floor/correctness findings. Resolved
+the review's path-normalization note with an exact relocated-ledger comparison.
+
+Release-critical files: **0; none**. Runtime broker usage/client/server and
+storage/agent_request_usage plus mirrors, test_broker_usage_ipc, launcher oracle,
+design/inventory/delivery. No affected heavy-list test file. No full task newly
+checked off. No PR, deployment, rebase or force push.
+
+```text
+python scripts/linux_oracle.py -- tests/test_broker_usage_ipc.py tests/test_broker_usage_source.py tests/test_request_usage_store.py tests/test_http_inference_lifecycle.py tests/test_parent_turn_request_budget.py tests/test_broker_server.py tests/test_broker_upstream_stream.py -q -rs
+182 passed in 64.04s; zero skips
+python scripts/linux_oracle.py -- tests/test_broker_usage_ipc.py -q -rs
+9 passed in 1.34s; zero skips (final direct-scope refusal assertion)
+python scripts/linux_oracle.py --production-image tinyassets-uid-accounting:d44 --build --production-stream
+sha256:4299fcbba3a5199d66d02c81da202fda99ff33725c7870796771746af3995db6
+D44 actual accounting create/reserve/dispatch/settle/receipt/close via launcher broker, foreign refusal and committed budget stop: PASS
+```
+D44 passes before/after restart, using explicit fixture lock permissions. Runtime
+permission creation/migration and actual inference POST are not claimed here.
+All prior launcher consumer and HTTPS GET proofs pass. Egress/accounting forward
+and reverse dry-run/apply/repeat, 6+8+3 crash boundaries, hostile input refusal
+pass; these remain substeps, not full migration/deletion or actual old-image
+rollback. Same seven capabilities and compose security options. Fixture network
+and CA are cleaned by the harness.
+
+Targeted Ruff, strict OpenSpec, plugin import and whitespace pass. Full Ruff has
+55 pre-existing errors outside these changes. A PowerShell redirected build
+reported NativeCommandError for Docker's normal stderr despite passing probes;
+reran the completed image directly to get an unambiguous tool exit status.
+
+Next, continuing this run: daemon-owned broker-readable lock creation and offline
+mode migration, actual inference POST, daily evidence, refresh; then every engine
+class, full migration/two-pass deletion, actual old-image rollback and finally
+startup/healthcheck only after all prerequisites pass.
+
+---
 # Current delivery: D43 accounting source binding
 
 D42 pushed as 11b4cc3a78; hygiene added 4 tests, removed 0, tampering 0.
@@ -2903,3 +3248,5 @@ require private networking and cross-owner port/socket denial; root migration ow
 owner.json cleanup before chown; D7's owner-work exception and absent historical gh site
 are narrowed explicitly. The reviewer confirmed inventory coverage and preservation of
 both prior refute rounds. No second review round was dispatched.
+
+D47 hygiene correction: the per-commit gate rejected adding a Windows skip to the already-committed D44 IPC tests (1 tampering finding). Restored those tests without the skip in an additive follow-up; no exception, test-removal approval, or history rewrite. D47's newly introduced evidence tests retain their own Unix prerequisite. All acceptance receipts above are zero-skip Linux runs.
