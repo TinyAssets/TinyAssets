@@ -18,18 +18,21 @@ containerized deploys don't drift based on where the process was launched from.
 | `TINYASSETS_OAUTH_GOOGLE_CLIENT_SECRET` | Daemon-only platform client secret. Filtered by the OAuth namespace. | Unset; entry inactive |
 
 The directory is `{"providers": [entry, ...]}`. Every entry requires a stable
-`id`, exact API `hosts`, HTTPS `authorization_endpoint` and `token_endpoint`,
+`id`, API `hosts` (exact names or explicit `*.domain` subdomain patterns),
+HTTPS `authorization_endpoint` and `token_endpoint`,
 `client_id_env`, `client_secret_env`, and `token_endpoint_auth_method`
 (`client_secret_post` or `client_secret_basic`). Optional fields are `issuer`,
 `revocation_endpoint` (metadata only), `default_scopes` (use name to scope list),
-`host_uses` (host to use name), and `extra_auth_params` (string parameters).
+`host_uses` (declared exact host to use name), and `extra_auth_params` (string parameters).
+Wildcards match only subdomains at a dot boundary, never the apex or suffix
+lookalikes. Every host in a connection must be covered by the same entry.
 Reserved parameters such as state, redirect URI and PKCE cannot be overridden.
 Use the packaged JSON as a complete example. A replacement file can add any
 provider without Python changes. Secret names must follow
 `TINYASSETS_OAUTH_*_SECRET`; client ID names use the `TINYASSETS_OAUTH_` namespace.
 
-The packaged Google entry matches `gmail.googleapis.com`,
-`calendar.googleapis.com` and `www.googleapis.com`. It uses
+The packaged Google entry declares `googleapis.com`, `*.googleapis.com`,
+`gmail.googleapis.com`, `calendar.googleapis.com` and `www.googleapis.com`. It uses
 `https://accounts.google.com/o/oauth2/v2/auth`,
 `https://oauth2.googleapis.com/token`, and the optional
 `https://oauth2.googleapis.com/revoke`, with `access_type=offline` and
