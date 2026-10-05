@@ -113,12 +113,12 @@ function isAllowedSubframe(urlString) {
     && SUBFRAME_ONLY_HOSTS.includes(u.hostname.toLowerCase());
 }
 
-// A URL is safe to hand to the OS (shell.openExternal) iff it is https. Custom
+// A URL is safe to hand to the OS (shell.openExternal) iff it is HTTP(S). Custom
 // schemes (file:, javascript:, data:, smb:, app-protocol:, …) are DENIED —
 // openExternal on untrusted input is an RCE vector (Codex 2026-08-23 #1).
 function isSafeExternal(urlString) {
   try {
-    return new URL(urlString).protocol === 'https:';
+    return ['https:', 'http:'].includes(new URL(urlString).protocol);
   } catch {
     return false;
   }
