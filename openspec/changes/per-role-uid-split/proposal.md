@@ -1,6 +1,8 @@
 **founder decision 2026-10-05: fold + build with probes.** D9 folds all seven
 round-3 findings; no fourth design review, normal cross-family build review,
-no deployment. Build is blocked on the demonstrated ACL-mask ambiguity in
+no deployment. D10 records the lead's technical decision resolving ACL-mask
+access preservation with scoped root maintenance and explicit reverse migration.
+Build is blocked on the remaining capability-retirement conflict in
 `delivery.md`; documentation is not implementation acceptance.
 
 ## Why
@@ -76,7 +78,12 @@ Measured on prod (2026-10-02, read-only):
   assertions.
 - **Rollback and deletion must be proven after engine writes.** Access/default ACLs
   for uid 1001 and child umask 007 are required, but explicit 0700 creation/chmod
-  masks those ACLs. D9/F5 records the unresolved mechanism; do not claim free rollback.
+  masks those ACLs. D10 requires audited launcher-mediated root operations
+  `delete-tree`, `reset-tree` and `chown-back`, scoped to the requesting owner's
+  tree with the exact daemon peer check and no-follow openat traversal. Rollback
+  requires dry-run and idempotent reverse migration before an old image starts;
+  known owner-work creation modes become group-preserving as defense in depth.
+  D10's capability-lifetime conflict must be decided before implementation.
 - **Code:** `tinyassets/role_launcher` ships as a root-owned file, not an importable module;
   `tinyassets/broker/supervisor.py` (refusal → launcher-mediated start; `owner.json`, `stop()` and
   `read_owner` deleted); `tinyassets/broker/process.py` (the generation is minted by the broker, so

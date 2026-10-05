@@ -1,3 +1,222 @@
+# Current delivery: lead technical decision D10
+
+Started with `git pull --ff-only origin feat/per-role-uid-split`:
+`Already up to date.` Starting HEAD: `39f99b0155819fad4dcb5ebd5672276941810ef0`.
+The worktree was clean. Read both build briefs, the full round-3 refute including
+confirmed items, proposal/design/tasks and both spec deltas. OpenSpec apply is
+ready; delivery admission for codex is `ALLOWED`.
+
+## Access-preservation decision recorded
+
+D10 records the lead's technical decision: ACLs alone are insufficient; all
+owner-tree daemon deletion/reset/cleanup uses audited launcher-mediated root
+maintenance with the fixed `delete-tree`, `reset-tree`, `chown-back` allowlist,
+exact daemon uid/pid verification and no-follow openat traversal confined to the
+requesting owner's tree. Rollback requires explicit, idempotent, dry-run-capable
+reverse migration before an old image starts. Known owner-work 0700/chmod sites
+must use group-preserving modes as defense in depth. No widening outside the
+owner's work tree, no general root exec and no free-rollback claim.
+
+Updated design, proposal, runtime-role delta and tasks, and added `rollback.md`.
+The runbook is a specified sequence, clearly marked not yet executable/tested;
+there is no maintenance CLI to document as working. Added the required
+production acceptance rows for actual daemon deletion/reset of engine-created
+0700 trees, other-owner and symlink-escape refusal, and reverse migration followed
+by actual old-image uid-1001 read/write/delete. No build task was checked off.
+
+## Build stop: maintenance authority versus mandatory retirement
+
+The access-preservation choice is resolved. A separate explicit conflict remains:
+
+- D2 and D6 step 4 require CHOWN/FOWNER/DAC_OVERRIDE to be removed from **all
+  five** launcher capability sets before service.
+- Task 2.2 requires that drop/readback; task 2.8 requires the launcher to refuse
+  service while it holds FOWNER or DAC_OVERRIDE. D9/F6 and the runtime-role spec
+  preserve this control. The new instruction says all brief probes still apply.
+- The new root operation must run after service starts and traverse/re-mode
+  engine-owned 0700 content and chown it back to uid 1001. These need the retired
+  authority. Root uid alone does not supply it. Fork/exec from the retired
+  launcher does not regain it under the bounding set and no-new-privileges.
+
+The isolated Linux diagnostic below demonstrates the conflict, including
+successful retained-capability controls. This is not a fourth design review,
+not production-image acceptance and not a claim that maintenance was built.
+
+**Decision needed:** either amend retirement to allow the existing launcher to
+retain these three capabilities for the fixed scoped operations (and replace
+that conflicting oracle row), or preserve launcher retirement and authorize a
+separate maintenance helper created before retirement to retain them (amending
+the one-long-lived-privileged-process goal). The request authorizes maintenance
+but does not state which still-required security constraint changes. No choice,
+helper, probe weakening or privilege-regain workaround has been implemented.
+The clarification was sent to the lead during this turn.
+
+The build brief explicitly says: "If you hit a genuine design ambiguity, record
+it in delivery.md and stop rather than guess." Accordingly stopped before 2.1;
+no runtime, test or gate edits. This supersedes the historical F5 stop below.
+
+## Capability diagnostic: exact command and output
+
+Synthetic data only in a disposable network-disabled container, no host volume
+mounted, using the existing **test** oracle image. It is **not** the production
+image and proves only the capability conflict. Image:
+`tinyassets-linux-oracle:724828e06295`, digest
+`sha256:c36872bb77443c134a36f690b86d68470f05c9353bd6be0874971874cd1dd6e5`.
+The run uses all three compose confinement options, no-new-privileges and the
+proposed seven-capability entry set, without SYS_ADMIN.
+
+Write the following script to a temporary file outside the repository, e.g.
+`C:/Users/Jonathan/AppData/Local/Temp/uid-maintenance-capability-probe.py`:
+
+```python
+import ctypes
+import errno
+import os
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+MIGRATION = (1 << 0) | (1 << 1) | (1 << 3)
+FIELDS = ('CapInh', 'CapPrm', 'CapEff', 'CapBnd', 'CapAmb')
+libc = ctypes.CDLL(None, use_errno=True)
+class Header(ctypes.Structure):
+    _fields_ = [('version', ctypes.c_uint32), ('pid', ctypes.c_int)]
+class Data(ctypes.Structure):
+    _fields_ = [('effective', ctypes.c_uint32), ('permitted', ctypes.c_uint32), ('inheritable', ctypes.c_uint32)]
+
+def caps():
+    lines = Path('/proc/self/status').read_text().splitlines()
+    return {k: int(v.strip(), 16) for k, v in (s.split(':', 1) for s in lines) if k in FIELDS}
+
+def setcaps(mask):
+    header = Header(0x20080522, 0)
+    data = (Data * 2)(Data(mask, mask, 0), Data(0, 0, 0))
+    return libc.capset(ctypes.byref(header), ctypes.byref(data))
+
+def check(label, action, expected):
+    try:
+        action()
+        result = 'OK'
+    except OSError as exc:
+        result = errno.errorcode[exc.errno]
+    print(f'{label}={result}', flush=True)
+    assert result == expected, (label, result, expected)
+
+def open_dir(path):
+    fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    os.close(fd)
+
+root = Path(tempfile.mkdtemp(prefix='maintenance-caps-'))
+root.chmod(0o755)
+for label in ('retained', 'retired'):
+    tree = root / label
+    tree.mkdir()
+    (tree / 'data').write_text('synthetic owner A only')
+    os.chown(tree / 'data', 1003, 1100)
+    os.chown(tree, 1003, 1100)
+    tree.chmod(0o700)
+assert caps()['CapEff'] == 0x1eb, caps()
+tree = root / 'retained'
+check('retained.root.open_0700', lambda: open_dir(tree), 'OK')
+check('retained.root.chmod', lambda: tree.chmod(0o770), 'OK')
+check('retained.root.chown_back', lambda: os.chown(tree, 1001, 1001), 'OK')
+assert libc.prctl(38, 1, 0, 0, 0) == 0
+for cap in (0, 1, 3):
+    assert libc.prctl(24, cap, 0, 0, 0) == 0
+assert setcaps(0x1e0) == 0
+assert all(not (value & MIGRATION) for value in caps().values())
+print('retired.caps=' + ','.join(f'{k}:{v:08x}' for k, v in caps().items()), flush=True)
+tree = root / 'retired'
+check('retired.root.open_0700', lambda: open_dir(tree), 'EACCES')
+check('retired.root.chmod', lambda: tree.chmod(0o770), 'EPERM')
+check('retired.root.chown_back', lambda: os.chown(tree, 1001, 1001), 'EPERM')
+assert setcaps(0x1eb) == -1 and ctypes.get_errno() == errno.EPERM
+print('retired.capset_regain=EPERM', flush=True)
+subprocess.run([sys.executable, '-I', '-S', '-c', '''
+import os
+from pathlib import Path
+fields = ('CapInh', 'CapPrm', 'CapEff', 'CapBnd', 'CapAmb')
+values = {k: int(v.strip(), 16) for k, v in (s.split(':', 1) for s in Path('/proc/self/status').read_text().splitlines()) if k in fields}
+assert os.geteuid() == 0
+assert all(not (v & 0xb) for v in values.values())
+print('retired.fork_exec_regain=DENIED', flush=True)
+'''], check=True)
+print('DIAGNOSTIC PASS: root uid alone cannot perform required maintenance after retirement', flush=True)
+
+```
+
+Exact command executed (PowerShell):
+
+```powershell
+Get-Content -Raw 'C:/Users/Jonathan/AppData/Local/Temp/uid-maintenance-capability-probe.py' | docker run --rm -i --network none --cap-drop ALL --cap-add CHOWN --cap-add DAC_OVERRIDE --cap-add FOWNER --cap-add SETUID --cap-add SETGID --cap-add SETPCAP --cap-add KILL --security-opt no-new-privileges=true --security-opt seccomp=unconfined --security-opt apparmor=unconfined --security-opt systempaths=unconfined --entrypoint python tinyassets-linux-oracle:724828e06295 -
+```
+
+Output (exit 0, diagnostic assertions passed):
+
+```text
+retained.root.open_0700=OK
+retained.root.chmod=OK
+retained.root.chown_back=OK
+retired.caps=CapInh:00000000,CapPrm:000001e0,CapEff:000001e0,CapBnd:000001e0,CapAmb:00000000
+retired.root.open_0700=EACCES
+retired.root.chmod=EPERM
+retired.root.chown_back=EPERM
+retired.capset_regain=EPERM
+retired.fork_exec_regain=DENIED
+DIAGNOSTIC PASS: root uid alone cannot perform required maintenance after retirement
+```
+
+## Verification and release-critical scope
+
+- `python scripts/linux_oracle.py -- tests/test_ta_op_modes.py -q`: exit 0.
+  Baseline capability/healthcheck-contract regression only, not role-split
+  production acceptance. Output:
+
+  ```text
+  [oracle] python 3.11.16 | git 2.47.3 | bwrap 0.12.0 | uid 1001
+  ..........                                                               [100%]
+  10 passed in 0.15s
+  ```
+
+- `openspec validate per-role-uid-split --strict`: exit 0,
+  `Change 'per-role-uid-split' is valid`.
+- `python -m ruff check`: exit 1, `Found 55 errors.` All are in unchanged
+  Python files; this checkpoint changes only Markdown. No unrelated fixes.
+- `git diff --check`: exit 0, no whitespace errors.
+- `python scripts/test_hygiene_gate.py --base 39f99b0155819fad4dcb5ebd5672276941810ef0 --head HEAD`:
+  exit 0, `tests added 0, removed 0, tampering findings 0, product lines added 0`.
+  An initial attempt against the staged tree object was rejected because this
+  gate requires commits for merge-base; rerunning on the checkpoint commit
+  succeeded. No gate code was changed.
+- `python -m pytest tests/test_ta_op_modes.py -q --basetemp=C:/Users/Jonathan/AppData/Local/Temp/uid-d10-pytest`:
+  exit 0, `10 passed in 0.37s` on Windows. Baseline regression only.
+- Commit hooks: mirror parity N/A, mojibake clean (6 text files), cross-provider
+  drift clean and skill validation passed.
+- No affected runtime implementation or heavy file changed. No test name or
+  assertion changed; no plugin mirror regeneration needed (no tinyassets edit).
+- No fourth design review. No implementation code exists for the normal
+  cross-family build review yet. No PR and no deployment.
+
+**Release-critical files in this step: 0; list: none.** Six documentation files:
+`design.md`, `proposal.md`, `tasks.md`, `specs/runtime-process-roles/spec.md`,
+`rollback.md` and `delivery.md`, all under this change directory. Checked against
+`.github/workflows/pr-scope-guard.yml` SENSITIVE_RE, hard cap 8. Future build
+steps still require their own exact release-critical inventory before edits.
+
+**Remaining work:** all tasks 2.1-2.8, including the maintenance implementation,
+all-class F1-F7/C1-C6 production-image oracle matrix, migration dry-run/copy/
+crash-resume/idempotence, reverse migration/old-image rollback, actual deletion
+and reset, broker launch/stream and healthcheck. All are **NOT RUN/NOT PROVEN**.
+Tasks 2.9 deployment and 2.10 sync/archive remain unchecked. No build task is
+complete. Deviation: applied the brief's stop condition at the demonstrated
+capability-lifetime conflict; the access-preservation decision itself is recorded.
+
+---
+
+The following is historical delivery evidence, superseded by D10 and the current
+status above where it describes F5 as undecided.
+
 # Current delivery: founder decision 2026-10-05
 
 **founder decision 2026-10-05: fold + build with probes.** Started with

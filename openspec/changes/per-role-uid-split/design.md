@@ -5,9 +5,11 @@ round-3 required changes and supersedes conflicting historical decisions below.
 No fourth design review; the eventual build gets a normal cross-family code
 review. Nothing deploys under this instruction.
 
-**Build stopped on a demonstrated design ambiguity:** default ACLs do not
-guarantee rollback/deletion after engine-created 0700 paths or chmod. D9/F5 and
-`delivery.md` record the evidence and decision needed. No build task is proven.
+**Lead technical decision: access preservation uses scoped root maintenance.**
+D10 resolves D9/F5: launcher-mediated deletion/reset and explicit reverse
+migration replace reliance on ACLs alone. A separate authority-lifetime conflict
+with D2's mandatory capability retirement remains demonstrated in `delivery.md`.
+No build task is proven; the brief's stop condition applies to that conflict.
 
 ## Context
 
@@ -283,9 +285,10 @@ which no older image opens, because an older `start_broker` refuses outright
 (`supervisor.py:177-183`) — changes owner to 1002.
 
 This preserves access to pre-existing stores, but does not prove access to new
-engine-owned files. D9/F5 adds access/default ACLs and umask 007; its unresolved
-ACL-mask case blocks the rollback claim. Do not claim reverse migration is unnecessary
-until the old-image and deletion probes pass. No ACL widening applies to the vault.
+engine-owned files. D9/F5 adds access/default ACLs and umask 007; D10 requires
+explicit reverse migration before rollback and scoped root maintenance for
+deletion/reset. Neither the old-image nor deletion proofs have passed yet.
+No ACL widening applies to the vault.
 
 Exact inventory, from the code rather than from the shape of the tree:
 
@@ -783,7 +786,7 @@ widened. Dry-run reports this without mutation. Probe valid venv/npm symlinks,
 outside-target sentinels and in-owner/cross-owner hardlinks; repeat migration and
 interrupted resume must preserve contents, targets and existing uid ownership.
 
-**F5 — mandatory ACLs, umask, rollback and deletion; mechanism unresolved.**
+**F5 — mandatory ACLs, umask, rollback and deletion; resolved by D10.**
 Every ta-work directory gets access `u:1001:rwx` and default `d:u:1001:rwx` with
 an effective mask; regular files get appropriate read/write and existing execute
 access. Require ACL support for work trees: no ACL-less fallback. Every engine
@@ -792,15 +795,13 @@ as migrated files, including explicit `0600`/`0700` and later chmod; both the
 current daemon and an old-image uid 1001 without supplementary groups must read,
 write and delete as required. Exercise actual deletion APIs and old-image rollback.
 
-**Blocking ambiguity:** Linux intersects inherited ACL permissions with creation
+**Resolved access-preservation ambiguity:** Linux intersects inherited ACL permissions with creation
 mode and chmod changes the ACL mask. Engine-owned 0700 directories therefore
 exclude uid 1001 despite the required ACL entry. Provisioning explicitly creates
 such a `.venv`; changing that one call does not cover arbitrary engine code.
-`delivery.md` has a reproducible Linux counterexample. The design has not chosen
-between controlling all permission-reducing operations and introducing an
-owner-scoped repair/deletion/rollback mechanism with additional authority. Do not
-grant that authority, weaken deletion/rollback, or claim defaults suffice by guess.
-Stop before build until this mechanism is decided, as the founder instructed.
+`delivery.md` has a reproducible Linux counterexample. The lead explicitly chose
+owner-scoped launcher-mediated root maintenance and reverse migration in D10.
+ACLs and group-preserving creation remain defense in depth, not the guarantee.
 
 **F6 — no CAP_SYS_ADMIN.** Remove it from compose cap_add and ta_op.c MASK in the
 same implementation commit. Keep exactly CHOWN, DAC_OVERRIDE, FOWNER, SETUID,
@@ -827,6 +828,70 @@ The oracle must report F1-F7 and C1-C6 per applicable class/site/path/reader wit
 image digest, launch argv, identity and namespace evidence. No skipped or generic
 uid-only substitute counts. Broker launch/stream, healthcheck, migration dry-run,
 crash-resume, repeat no-op, rollback and deletion remain separate mandatory proofs.
+
+### D10. Lead technical decision: scoped maintenance and explicit rollback
+
+This is the lead's **technical decision**, not a fourth design review or a new
+founder policy. It supersedes D9/F5's unresolved mechanism and any statement
+that an old image needs no reverse migration. Other requirements and the
+build brief's probes and stop conditions remain in force.
+
+1. All daemon-side deletion, reset and cleanup of engine-created owner content
+   goes through a new launcher-mediated maintenance operation executed as root.
+   This includes `workspace_pool.remove_tree_no_follow` (implemented by
+   `workspace_fs.RealPoolFilesystem`), `scoped_reset`, account deletion and every
+   additional removal site found by the build inventory. Requests pass the same
+   exact daemon uid-and-pid peer check as spawn requests. The fixed operation
+   allowlist is `delete-tree`, `reset-tree`, `chown-back`; no shell, caller-selected
+   executable or general root exec is exposed.
+2. Each request is bound to the requesting owner's trusted scope and limited to
+   that owner's admitted tree. Resolve components with pinned directory fds,
+   `O_NOFOLLOW|O_DIRECTORY` and openat-relative operations; refuse foreign-owner
+   targets and symlink escapes. A lexical prefix or a caller-supplied absolute
+   path is not authority. Apply the existing no-follow/alias protections to
+   metadata mutation too: chown/chmod must not affect an inode aliased outside
+   the admitted owner's set. Audit operation, owner scope, dry-run/mutation and
+   outcome, without file contents, credentials or owner channel tokens.
+3. Rollback requires an explicit launcher-mediated `chown-back` reverse
+   migration, with dry-run and idempotent crash recovery, before the old image
+   starts. Restore engine-created content to a uid-1001-readable/writable/
+   deletable layout, including engine 0600/0700 creations and later chmod.
+   No user content is deleted by reverse migration. The rollback runbook is
+   `rollback.md`; restoring pre-existing ownership alone is insufficient.
+4. Keep the access/default ACLs and child umask 007. Inventory known explicit
+   0700/chmod creation sites inside ta-work trees, including the embedded venv
+   creation in `workspace_provision_execution.py:69` and the lease mode declared
+   in `workspace_fs.py`, and use the shared group-preserving 0770/2770 policy
+   where classified as owner work. Do not change modes outside those trees or
+   widen vault, materialized credential or broker-state permissions.
+
+Additional mandatory production-image oracle rows:
+
+| Probe | Required result |
+|---|---|
+| Actual daemon delete/reset APIs on uid-1003-created 0700 directories | launcher maintenance completes; nothing outside the requested tree changes |
+| A maintenance request targets B's tree | refused; B's contents and metadata unchanged |
+| Symlink escape through maintenance traversal | refused; outside target unchanged |
+| Reverse migration dry-run, apply, repeat and interrupted resume | dry-run changes nothing; repeat is a no-op; resume completes; no data loss |
+| Old-image uid 1001 with no work group after reverse migration | reads, writes and deletes engine-created restrictive content successfully |
+
+**Remaining authority-lifetime conflict (build stop).** D2, D6 step 4, task 2.2,
+task 2.8 and the runtime-role delta require the serving launcher to have retired
+CHOWN, FOWNER and DAC_OVERRIDE from all five capability sets; task 2.8 explicitly
+requires refusal while FOWNER or DAC_OVERRIDE is held. D10 requires root
+maintenance after that point. The Linux diagnostic in `delivery.md` proves
+that uid 0 alone cannot perform it and fork/exec cannot recover the retired
+capabilities. The root-only operation is authorized, but its capability lifetime
+and the still-required conflicting acceptance row have not been reconciled.
+
+Two possible amendments have materially different authority boundaries:
+retain these capabilities in the existing launcher and replace the retirement
+probe with fixed-operation/scope enforcement probes; or retain the launcher's
+retirement and authorize a separate helper created before retirement to hold
+maintenance authority (changing the one-long-lived-privileged-process goal).
+Do not silently choose either, relax a probe, introduce setuid/file-capability
+exec under no-new-privileges, or claim root alone suffices. Record and stop per
+the build brief until the lead selects the authority model.
 
 ## Risks / Trade-offs
 

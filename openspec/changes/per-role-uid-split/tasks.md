@@ -1,7 +1,9 @@
 **founder decision 2026-10-05: fold + build with probes.** D9 accepts F1-F7 and
 retains the confirmed controls. No fourth design review; normal cross-family
-code review for the eventual build. Build is stopped at the demonstrated F5
-ACL-mask ambiguity in `delivery.md`, per the stop-rather-than-guess instruction.
+code review for the eventual build. D10 resolves the F5 access mechanism with
+the lead's scoped root-maintenance/reverse-migration decision. Build is stopped
+at its conflict with mandatory capability retirement, demonstrated in
+`delivery.md`, per the stop-rather-than-guess instruction.
 No new task is checked off; sections remain at 2 and 10 tasks.
 
 ## 1. Design (this change)
@@ -54,6 +56,13 @@ Lands after #4299 (the broker) and #4267 (`platform_secrets`), amending both.
       - the launcher drops `CHOWN`, `FOWNER` and `DAC_OVERRIDE` from all five of its own sets,
         with readback, **before** it binds — the migration is over and the serving process must
         not keep that authority (D2 phase table).
+        D10 exposes a conflict with the new runtime maintenance operation; obtain
+        the lead's authority-lifetime amendment before implementing either model.
+      - D10 root maintenance accepts only the verified daemon peer and the fixed
+        `delete-tree`, `reset-tree`, `chown-back` operations, scoped to the admitted
+        requesting owner's tree, audited, with pinned no-follow openat traversal.
+        No general root exec. Route all owner-tree daemon cleanup/removal through
+        it, including pool removal, scoped_reset and account deletion.
       - **not** `PR_SET_DUMPABLE(0)` here: `execve` resets it, so the daemon and broker each set
         it on themselves after exec, before any secret exists.
       - audit the current `engine-mcp` environment consumers (including OAuth service and
@@ -85,7 +94,14 @@ Lands after #4299 (the broker) and #4267 (`platform_secrets`), amending both.
         work-tree hardlink aliases. No user-data deletion; dry-run changes no metadata/marker.
       - remove other permissions from shared stores, including runtime replacements/sidecars.
       - add access u:1001:rwx and default d:u:1001:rwx ACLs on ta-work directories,
-        appropriate file access ACLs; require ACL support. Resolve D9/F5 before build.
+        appropriate file access ACLs; require ACL support. D10 resolves D9/F5's
+        access mechanism; settle its authority-lifetime conflict before build.
+      - implement launcher-mediated reverse migration (`chown-back`) with dry-run,
+        crash recovery and idempotence; restore engine-owned restrictive content
+        to the 1001-readable layout before old-image startup. Complete and test
+        `rollback.md` with the actual CLI. Reverse migration never deletes data.
+      - inventory explicit 0700/chmod sites inside ta-work trees (including venv
+        creation) and use shared group-preserving 0770/2770 modes there only.
       - prove rollback against engine-created files, not merely the initial inventory;
         prove daemon deletion and old-image uid-1001 read/write/delete without work groups.
       - runs with `CHOWN` + `FOWNER` + `DAC_OVERRIDE`: it keeps owner 1001 on almost everything,
@@ -169,6 +185,10 @@ Lands after #4299 (the broker) and #4267 (`platform_secrets`), amending both.
       - migration on a disposable copy: dry-run unchanged, repeat no-op, interrupted
         resume, symlink targets unchanged; old-image rollback and actual daemon deletion
         after engine 0700/0600 creations and chmod. No skip counts as a pass.
+      - actual daemon delete/reset of engine-created 0700 trees through launcher
+        maintenance; reject A requests targeting B and symlink escapes, proving
+        outside contents/metadata unchanged. Reverse migration dry-run/apply/repeat
+        then actual old-image uid-1001 read/write/delete without work groups.
       - a 1003 child gets `EACCES` on `/data/.broker/state/fence.json` and on
         `/data/<cc>/.credential-vault.json`.
       - the broker reads the vault and **cannot write** it; the provider jail works under 1003
