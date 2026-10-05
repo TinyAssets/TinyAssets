@@ -74,6 +74,9 @@ def test_scripted_turn_offers_a_public_post_and_picture_without_posting(
     _library(tmp_path)
     ask = _ask(OWNER, UNIVERSE, _publish_action())
     done = _answer(OWNER, UNIVERSE, ask["request_id"])
+    from tests.test_publication_completion import wait_for_preview
+
+    done = wait_for_preview(tmp_path, done)
     receipt = done["completion"]
     offered = (
         "Your command center is published. Would you like to share it on a connected platform? "

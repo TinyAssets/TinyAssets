@@ -12,7 +12,7 @@ The resolved answer SHALL remain owner-scoped.
 immutable definition content fingerprint (null only if an older completed pin's
 definition metadata is unavailable during recovery). `change_kind` SHALL be `update` for
 package versions after the first or an explicitly linked release successor;
-otherwise it SHALL be `new`. `preview_status` SHALL be `ready`, `no_screen`,
+otherwise it SHALL be `new`. `preview_status` SHALL be `pending`, `ready`, `no_screen`,
 `owner_context_required`, or `unavailable`; only `ready` carries an image path.
 The direct `write_graph target="agent" operation="publish"` route SHALL pass
 its command-center context to the same completion primitive.
@@ -44,6 +44,15 @@ data and a synthetic preview identity, never the owner's live private UI.
 - **WHEN** a direct publish with an idempotency key is replayed
 - **THEN** it SHALL return the same listing and original change kind
 - **AND** it SHALL NOT invent an update relationship from a name or a retry
+
+#### Scenario: Approval does not wait for the picture
+- **WHEN** a screen publication is committed and its approval is resolved
+- **THEN** the owner receives success with pending preview metadata immediately
+- **AND** a bounded background task renders only the immutable public screen using the existing one-render-at-a-time limit
+- **AND** successful rendering updates the same owner-scoped answer to `preview_status=ready` and its image path
+- **AND** the existing completion event/activity path wakes readers after that update
+- **AND** busy admission or rendering failure updates the answer to `unavailable` without blocking or undoing publication
+- **AND** the sharing skill explains that a pending picture may take a moment
 
 ### Requirement: Editable offer after publication
 

@@ -10,6 +10,9 @@ the listing, change kind and version. An approval alone is not publication succe
 Look at the user's connected platforms and their saved connection skills. Offer
 to post on suitable ones, suggest a short post about what became public or changed,
 and include the picture at `preview_image_path` when its status is `ready`.
+The picture may take a moment: while `preview_status` is `pending`, the publish
+has already succeeded. Read the completion again through the existing request/activity
+path when it updates; offer the draft now and add the picture when ready.
 Use `share_url` if supplied; never invent a listing link. If the picture is
 unavailable, say so and offer the draft without pretending to have one. Use only
 public details in the draft and picture, never private conversations or live data.

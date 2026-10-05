@@ -2,6 +2,8 @@
 import json
 import shutil
 import sqlite3
+import threading
+import time
 
 import pytest
 
@@ -38,11 +40,31 @@ def renderer(tmp_path, monkeypatch):
     return captured
 
 
+def wait_for_preview(base, done):
+    """Read the actual owner receipt after background completion, never render here."""
+    from tinyassets.storage.pending_requests import get_request
+
+    deadline = time.monotonic() + 75
+    while time.monotonic() < deadline:
+        row = get_request(base / UNIVERSE, done["request_id"])
+        completion = row["answer"]["completion"]
+        if completion["preview_status"] != "pending":
+            # Ensure the worker has released admission before the next publish.
+            from tinyassets.publication_completion import _BACKGROUND_SLOT
+
+            assert _BACKGROUND_SLOT.acquire(timeout=5)
+            _BACKGROUND_SLOT.release()
+            return {**done, "completion": completion}
+        time.sleep(0.01)
+    pytest.fail("Publication preview did not complete within its render bound")
+
+
 def test_real_publish_and_update_reach_owner_answer(home, renderer):  # noqa: F811
     for version in (1, 2):
         ask = _ask(OWNER, UNIVERSE, _publish_action())
         assert "request_id" in ask, ask
         done = _answer(OWNER, UNIVERSE, ask["request_id"])
+        done = wait_for_preview(home, done)
         assert done.get("published"), done
         receipt = done["completion"]
         assert receipt["listing_id"] == done["agent_definition_id"]
@@ -83,6 +105,7 @@ def test_preview_uses_public_definition_even_if_private_screen_changes(home, ren
     monkeypatch.setattr(publish_requests, "_publish_snapshot", publish_then_edit)
     ask = _ask(OWNER, UNIVERSE, _publish_action())
     done = _answer(OWNER, UNIVERSE, ask["request_id"])
+    done = wait_for_preview(home, done)
     assert done["completion"]["preview_status"] == "ready", done
     assert "PRIVATE AFTER PUBLICATION" not in json.dumps(renderer)
     assert "PRIVATE AFTER PUBLICATION" not in json.dumps(done)
@@ -95,6 +118,7 @@ def test_preview_failure_preserves_publication_and_records_no_image(home, monkey
     monkeypatch.setattr(ui_preview, "preview_public_component", unavailable)
     ask = _ask(OWNER, UNIVERSE, _publish_action())
     done = _answer(OWNER, UNIVERSE, ask["request_id"])
+    done = wait_for_preview(home, done)
     assert done["published"] is True
     assert done["completion"]["preview_status"] == "unavailable"
     assert done["completion"]["preview_image_path"] is None
@@ -137,10 +161,11 @@ def test_finished_publish_retries_resolution_without_republishing(home, monkeypa
 
     monkeypatch.setattr(publish_requests, "execute_action", must_not_publish)
     retried = _answer(OWNER, UNIVERSE, request_id)
+    retried = wait_for_preview(home, retried)
     assert retried["already_published"] is True
     assert retried["completion"]["listing_id"] == pin["progress"]["agent_definition_id"]
     assert retried["completion"]["preview_status"] == "ready"
-    assert renders == [retried["agent_definition_id"]] * 2
+    assert renders == [retried["agent_definition_id"]]
 
 
 def test_direct_idempotent_replay_retains_original_listing_kind(home):  # noqa: F811
@@ -177,6 +202,7 @@ def test_workflow_publication_has_a_version_and_explicitly_no_picture(home):  # 
     ask = _ask(OWNER, UNIVERSE, {"type": "publish", "name": "Scout workflow",
                                "branch_ids": [SCOUT], "ui_id": ""})
     done = _answer(OWNER, UNIVERSE, ask["request_id"])
+    done = wait_for_preview(home, done)
     assert done["completion"]["listing_id"] == done["agent_definition_id"]
     assert done["completion"]["version"]
     assert done["completion"]["preview_status"] == "no_screen"
@@ -193,12 +219,14 @@ def test_release_successor_is_an_update_with_immutable_version(home):  # noqa: F
 
     first = _ask(OWNER, UNIVERSE, action())
     initial = _answer(OWNER, UNIVERSE, first["request_id"])
+    initial = wait_for_preview(home, initial)
     release = initial["release"]
     next_ask = _ask(OWNER, UNIVERSE, {
         **action(series_id=release["series_id"], parent_release_id=release["release_id"]),
         "description": "Updated public screen bundle",
     })
     updated = _answer(OWNER, UNIVERSE, next_ask["request_id"])
+    updated = wait_for_preview(home, updated)
     assert updated["completion"]["change_kind"] == "update"
     assert updated["completion"]["version"] != initial["completion"]["version"]
 
@@ -210,6 +238,7 @@ def test_publication_preview_selector_is_owner_scoped(home, monkeypatch):  # noq
 
     ask = _ask(OWNER, UNIVERSE, _publish_action())
     done = _answer(OWNER, UNIVERSE, ask["request_id"])
+    done = wait_for_preview(home, done)
     selector = "publication:" + done["agent_definition_id"]
     with _as(BOB):
         assert preview_app_ui(universe_id=BOB_UNIVERSE, ui_id=selector) == {
@@ -236,6 +265,7 @@ def test_real_publish_completion_contains_rendered_public_screen(home, monkeypat
     monkeypatch.setattr(ui_preview, "_render_spec", _REAL_RENDER)
     ask = _ask(OWNER, UNIVERSE, _publish_action())
     done = _answer(OWNER, UNIVERSE, ask["request_id"])
+    done = wait_for_preview(home, done)
     receipt = done["completion"]
     assert receipt["listing_id"] == done["agent_definition_id"]
     assert receipt["change_kind"] == "new" and receipt["version"] == 1
@@ -248,3 +278,54 @@ def test_real_publish_completion_contains_rendered_public_screen(home, monkeypat
     assert receipt["preview_status"] == "ready", done
     image = home / UNIVERSE / receipt["preview_image_path"].removeprefix("/u/")
     assert _pixel(image.read_bytes(), 500, 300) == (32, 80, 192)
+
+
+def test_approval_returns_before_render_and_receipt_wakes_readers(home, monkeypatch):  # noqa: F811
+    from tinyassets.storage.pending_requests import get_request
+
+    entered, release = threading.Event(), threading.Event()
+    wakes = []
+
+    def render(*args):
+        entered.set()
+        assert release.wait(5), "Approval blocked on the renderer"
+        return {"png": _png()}
+
+    monkeypatch.setattr(ui_preview, "_render_spec", render)
+    monkeypatch.setattr("tinyassets.automation_events.emit_pending_request_answered",
+                        lambda *a, **k: wakes.append(k))
+    ask = _ask(OWNER, UNIVERSE, _publish_action())
+    try:
+        done = _answer(OWNER, UNIVERSE, ask["request_id"])
+        assert done["published"] is True
+        assert entered.wait(2)
+        assert done["completion"]["preview_status"] == "pending"
+        assert done["completion"]["preview_image_path"] is None
+        row = get_request(home / UNIVERSE, ask["request_id"])
+        assert row["status"] == "answered"
+        assert row["answer"]["completion"] == done["completion"]
+        assert len(wakes) == 1
+    finally:
+        release.set()
+    ready = wait_for_preview(home, done)
+    assert ready["completion"]["preview_status"] == "ready"
+    assert ready["completion"]["preview_image_path"]
+    assert len(wakes) == 2
+    assert all(w["request_id"] == ask["request_id"] for w in wakes)
+    assert done["completion"]["preview_status"] == "pending"
+
+
+def test_busy_background_preview_never_delays_or_undoes_publication(home):  # noqa: F811
+    from tinyassets.publication_completion import _BACKGROUND_SLOT
+
+    assert _BACKGROUND_SLOT.acquire(timeout=5)
+    try:
+        ask = _ask(OWNER, UNIVERSE, _publish_action())
+        done = _answer(OWNER, UNIVERSE, ask["request_id"])
+        assert done["published"] is True
+        with _as(OWNER):
+            row = list_requests(universe_id=UNIVERSE)["recently_answered"][0]
+        assert row["answer"]["completion"]["preview_status"] == "unavailable"
+        assert row["answer"]["completion"]["preview_image_path"] is None
+    finally:
+        _BACKGROUND_SLOT.release()

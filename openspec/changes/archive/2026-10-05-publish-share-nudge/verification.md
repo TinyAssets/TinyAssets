@@ -93,3 +93,66 @@ POSIX symlink and Linux PID-namespace cases. Ruff and diff whitespace checks
 pass. Hygiene against the PR base: **16 tests added, 0 removed, 0 tampering**.
 The CI repair now changes only the render case's bubblewrap gate and this
 verification record; the workflow change lives in the separate infra PR. No PR or deployment is part of this repair.
+
+
+## Async approval repair: merge-group 37266089374
+
+Starting HEAD and origin both matched `16f48cfa4879840d9a664bc3fedf26846295d4df`
+after the requested fast-forward pull. The root timing comparison and PR comment
+5988697479 identify 3950.639 summed test seconds versus the unchanged 3000-second
+budget, compared with 2596.322 before this feature. Code tracing confirmed that
+`receipt_completion` invoked the real renderer synchronously inside approval.
+
+Approval now commits and resolves before admitting background preview work. Tests
+hold rendering behind an event to prove the approval returns with a durable pending
+answer, then release it and assert the image and second completion wake. Existing
+privacy, immutable-content, failed-render and legacy-pin tests still run; the real
+browser test waits for the actual stored completion and retains its pixel assertion
+and original venue gate. Failed request resolution now starts no render, so the
+retry test correctly expects one render after successful resolution, not two.
+
+Final coverage: the same 19 modules ran on Windows (external share-ci-venv,
+FastMCP 3.4.8) and Linux oracle (Python 3.11.16, bubblewrap 0.12.0, uid 1001).
+The modules include all four PR-touched test files, publication packages/intent/
+release/discovery, update_executor, picker, served guidance, preview, custom agents,
+pending requests, bundle, in-platform systems, isolation, first contact, MCP
+instruction surfaces and the connect skill. JUnit and logs stay outside the repo
+in `C:/Users/Jonathan/Projects/publish-async-*`; pytest basetemp is external on
+Windows and `/tmp/b` in the oracle.
+
+Ruff passes across all PR-touched Python plus the receipt store. Strict as-built
+spec validation passes. Plugin rebuild/import probe and parity pass (598 canonical
+files). Hygiene on an index snapshot: 17 added / 0 removed / 0 tampering against
+the PR base; this repair adds 2 / removes 0 / tampers with 0. No budget or gate
+changes. The prior review round remains the existing round; the root comment
+explicitly requests no fourth review. Delivery remains commit/push only.
+
+
+Linux final result: **588 passed, 1 skipped**, 376.36 seconds. The only skip is
+the existing Windows directory-junction case. The `real_browser` publication
+case passed (4.906s including setup/teardown; 4.16s call), without a skip; the
+stored completion supplies a PNG with the expected `(32, 80, 192)` pixel.
+
+Historical merge-group JUnit times versus this Linux oracle's JUnit times
+(setup + call + teardown, seconds):
+
+| Existing fixture/test | Before | After |
+|---|---:|---:|
+| update_executor: identical screen then next release | 12.951 | 2.700 |
+| update_executor: settlement sweep failure | 12.724 | 2.391 |
+| picker: both doors offer two latest packages | 10.535 | 1.021 |
+
+Across all 81 matching update_executor/picker cases in the root comparison,
+summed time fell from **530.127s to 129.881s** (75.5%). This is a historical CI
+versus local-oracle comparison, not a claim to have rerun the full merge-group
+budget gate. Several unrelated oracle suites were active on the local host.
+The causal proof is the held-render test: approval resolves and returns while
+the renderer is still waiting, with no fixture renderer bypass or budget change.
+Timing rows: `C:/Users/Jonathan/Projects/publish-async-timing-comparison.json`.
+
+
+Windows final result: **581 passed, 8 skipped**, 767.13 seconds. The existing
+POSIX symlink / Linux PID namespace skips remain; the real-browser publication
+case passes on Windows too. Both full runs exited 0. This repair's focused
+non-browser run also passed: **17 passed, 1 deselected**, 29.23 seconds.
+All requested modules and all PR-touched tests passed on both platforms.
