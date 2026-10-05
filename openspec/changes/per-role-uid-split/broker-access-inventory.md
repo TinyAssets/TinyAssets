@@ -1,5 +1,17 @@
 # Broker egress access inventory
 
+Current continuation (D53): account deletion now has a fixed ERASE_ACCOUNT
+daemon IPC phase after the existing tombstone, covering owned ledger children
+and all four accounting tables in one broker transaction. The selected daemon
+does not enumerate the legacy outbound.db. Transaction rollback, foreign-grant
+refusal, lost acknowledgement, repeat, and actual launcher-broker execution
+before/after restart are proved. D46-D50 already prove real accounted HTTPS
+and daemon-only OAuth refresh; the production oracle repeats those controls.
+This is not complete deletion acceptance: quiesce admitted work before erasure,
+private proxy-runtime cleanup, and D10's two filesystem passes remain required.
+The older paragraphs below are chronological implementation receipts, not the
+current completion summary; delivery.md owns remaining work and exact commands.
+
 Baseline: `21096788fb04a3587b900ed1883ed5183d92be20`. Line numbers below refer to
 that baseline runtime. **Routing status: partial; D19 routes two raw reads,
 D20 discovery HTTP, D23 compute-grant/incarnation/display reads,

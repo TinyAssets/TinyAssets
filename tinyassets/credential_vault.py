@@ -1857,10 +1857,34 @@ def _prepare_snapshot_root(universe: Path) -> tuple[Path, tuple[int, int]]:
         except OSError as exc:
             raise PermissionError("credential snapshot directory cannot be created") from exc
         identity = _plain_snapshot_directory(directory)
-        _chmod_best_effort(directory, 0o700)
+        _set_snapshot_directory_mode(directory, identity)
         if _plain_snapshot_directory(directory) != identity:
             raise PermissionError("credential snapshot directory identity changed")
     return snapshot_root, _plain_snapshot_directory(snapshot_root)
+
+
+def _set_snapshot_directory_mode(path: Path, identity: tuple[int, int]) -> None:
+    from tinyassets.broker.supervisor import broker_selected
+
+    if not broker_selected():
+        _chmod_best_effort(path, 0o700)
+        return
+    from tinyassets.role_modes import SNAPSHOT_DIRECTORY_MODE, WORK_GID
+
+    descriptor = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        opened = os.fstat(descriptor)
+        if (_snapshot_file_identity(opened) != identity or opened.st_uid != os.geteuid()
+                or not stat.S_ISDIR(opened.st_mode)):
+            raise PermissionError("credential snapshot directory identity changed")
+        os.fchown(descriptor, -1, WORK_GID)
+        os.fchmod(descriptor, SNAPSHOT_DIRECTORY_MODE)
+        final = os.fstat(descriptor)
+        if (final.st_gid != WORK_GID or stat.S_IMODE(final.st_mode) != SNAPSHOT_DIRECTORY_MODE
+                or _plain_snapshot_directory(path) != identity):
+            raise PermissionError("credential snapshot directory permissions unavailable")
+    finally:
+        os.close(descriptor)
 
 
 def _create_snapshot_directory(
@@ -1880,6 +1904,7 @@ def _create_snapshot_directory(
         identity = _plain_snapshot_directory(directory)
         if _plain_snapshot_directory(snapshot_root) != root_identity:
             raise PermissionError("credential snapshot root identity changed")
+        _set_snapshot_directory_mode(directory, identity)
         return directory, identity
     raise PermissionError("credential snapshot directory name cannot be reserved")
 
@@ -1902,15 +1927,29 @@ def _write_exclusive_snapshot_file(path: Path, contents: bytes) -> None:
             or _snapshot_file_identity(opened) != _snapshot_file_identity(current)
         ):
             raise PermissionError("credential snapshot file identity is unstable")
+        from tinyassets.broker.supervisor import broker_selected
+
+        selected = broker_selected()
+        if selected:
+            from tinyassets.role_modes import SNAPSHOT_FILE_MODE, WORK_GID
+
+            os.fchown(descriptor, -1, WORK_GID)
+            os.fchmod(descriptor, SNAPSHOT_FILE_MODE)
+            final = os.fstat(descriptor)
+            if final.st_gid != WORK_GID or stat.S_IMODE(final.st_mode) != SNAPSHOT_FILE_MODE:
+                raise PermissionError("credential snapshot file permissions unavailable")
         remaining = memoryview(contents)
         while remaining:
             written = os.write(descriptor, remaining)
             if written <= 0:
                 raise OSError("credential snapshot file write made no progress")
             remaining = remaining[written:]
+        if selected:
+            os.fsync(descriptor)
     finally:
         os.close(descriptor)
-    _chmod_best_effort(path, 0o400)
+    if not selected:
+        _chmod_best_effort(path, 0o400)
 
 
 def _remove_snapshot_tree(
@@ -2133,7 +2172,7 @@ def snapshot_llm_subscription_credential(
         # cover the bytes, so comparing references alone would pass a bad copy.
         if copied_record_digest != custody._record_digest:
             raise PermissionError("credential snapshot custody digest disagrees")
-        _chmod_best_effort(directory, 0o700)
+        _set_snapshot_directory_mode(directory, directory_identity)
         return snapshot
     except BaseException:
         cleanup_llm_credential_snapshot(snapshot)

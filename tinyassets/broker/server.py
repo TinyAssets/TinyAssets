@@ -308,6 +308,9 @@ class _Connection:
         if op == "LEDGER_QUERY":
             answer = await asyncio.to_thread(self._ledger_query, doc)
             await self.send_async(rf.control(rf.CONNECTION, answer))
+        elif op == "ERASE_ACCOUNT":
+            answer = await asyncio.to_thread(self._erase_account, doc)
+            await self.send_async(rf.control(rf.CONNECTION, answer))
         elif op == "USAGE":
             answer = await asyncio.to_thread(self._usage, doc)
             await self.send_async(rf.control(rf.CONNECTION, answer))
@@ -345,6 +348,23 @@ class _Connection:
             await self.send_async(rf.control(rf.CONNECTION, {
                 "op": "STATUS_IS", "op_id": doc.get("op_id"), "state": state,
                 "side_effect_state": effect}))
+
+    def _erase_account(self, doc: dict[str, Any]) -> dict[str, Any]:
+        from tinyassets.broker.account_erasure import local_erase, validate
+
+        try:
+            if set(doc) != {"op", "principal", "command_center", "generation", "token"}:
+                raise ValueError("unsupported erasure fields")
+            validate(doc["principal"], doc["command_center"])
+            if type(doc["generation"]) is not int or not isinstance(doc["token"], str):
+                raise Fenced("invalid fence")
+            with self._server._fence.send(doc["generation"], doc["token"]):
+                counts = local_erase(self._server._ledger_for(doc["principal"]),
+                                     principal=doc["principal"],
+                                     command_center=doc["command_center"])
+                return {"op": "ACCOUNT_ERASED", "counts": counts}
+        except Exception:  # noqa: BLE001 - no persisted values on the wire
+            return {"op": "ACCOUNT_ERASURE_REFUSED"}
 
     def _ledger_query(self, doc: dict[str, Any]) -> dict[str, Any]:
         from tinyassets.broker.ledger_queries import local_query, validate_query

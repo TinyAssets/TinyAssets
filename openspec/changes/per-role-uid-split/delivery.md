@@ -1,4 +1,76 @@
-# Current delivery: D52 named cell profiles for the remaining engine matrix
+# Current delivery: D53 account erasure, D54 snapshots, D55 owner relay creation
+
+Continued from 69ee880edc after ff-only pull (already current). D12 relocation
+was already implemented and recorded; no duplicate decision or history rewrite.
+D53 closes the missing daemon account-deletion ledger-row consumer through
+ERASE_ACCOUNT: fixed principal/scope, one broker transaction, foreign-grant
+refusal, committed counts, all four accounting tables, and no local ledger.
+A lost acknowledgement leaves the existing durable phase unfinished; explicit
+retry is idempotent. Actual launcher probes erase separate synthetic owners
+before/after broker restart and preserve a third owner's connection/accounting.
+
+D54 makes snapshot creation/re-preparation publish and verify daemon:work
+2750 directories / 0440 files using descriptors, with mandatory file fsync.
+The actual uid-1003 installed CLI lock/version succeeds; snapshot writes and
+broker snapshot reads fail. This is a permission prerequisite, not discovery
+or provider-cli class acceptance. D55 similarly pins nofollow daemon-owned
+relay directories, sets 0711/2710 and 1001:1100/0660 sockets before listen,
+refuses planted entries, and checks cached inode identity. Real daemon-created
+egress and engine relays accept uid1003, deny directory listing, and refuse
+uid1002. Exact socket-only cell binding is still required for every class.
+
+Cross-family peer-agents: three bounded read-only reviews, all APPROVE.
+AGREE with D53 transaction/foreign/fence/ambiguous-outcome controls, D54
+descriptor/readback/fsync controls, and D55 nofollow/identity/mode controls.
+No finding was dismissed. D53 oracle diagnosis was handed off after repeated
+failure: its probe ran before broker selection, accidentally using a local
+ledger. Moved it after selection and added an explicit selected/no-local guard.
+The earlier missing COPY and failing runs are not acceptance receipts.
+
+Verified Linux commands (zero skips):
+```text
+python scripts/linux_oracle.py -- tests/test_broker_account_erasure.py tests/test_account_deletion.py tests/test_broker_server.py tests/test_broker_disconnect.py -q -rs
+93 passed in 25.04s
+python scripts/linux_oracle.py -- tests/test_credential_vault.py tests/test_native_model_discovery.py -q -rs
+69 passed in 1.94s
+python scripts/linux_oracle.py -- tests/test_role_relays.py tests/test_universe_egress.py tests/test_provider_jail_network.py tests/test_universe_tools_jail.py -q -rs
+62 passed in 27.68s
+python scripts/linux_oracle.py --production-image tinyassets-uid-snapshots:d54 --build --production-stream
+exit 0; sha256:a618e830f15f980d33f102d6d464143acee55984bfc29bb96afe9f1ef1f949b6
+python scripts/linux_oracle.py --production-image tinyassets-uid-relays:d55 --build --production-stream
+exit 0; sha256:7c8bb8846244365fc3c2806468f886767749304471342ef4d9aa96a0218c7a60
+```
+Both production runs use the immutable production Dockerfile image, seven
+entry caps then role retirement, no-new-privileges, network-none foundation
+and the internal HTTPS fixture. D55's only subsequent harness edit wraps its
+long print line for Ruff; runtime bytes are unchanged. D51 decoder, D22/D24
+HTTPS, D46 accounted inference, D47 history and D49/D50 refresh all pass again.
+Forward/reverse migration dry/apply/repeat and 6+8+3+4 crash boundaries pass;
+these remain substep evidence, not full migration or actual old-image rollback.
+Targeted Ruff, strict OpenSpec and plugin generation/import (613 files) pass.
+Full Ruff still has the same 55 unrelated errors. No affected heavy-list file.
+Windows account tests: 49 pass / 6 platform skips; Linux supplies acceptance.
+Windows combined vault/native test was stopped after failures/hang and is not
+claimed as a pass; corresponding Linux run above passed.
+
+Release-critical files this continuation: D53 **1**, Dockerfile (oracle COPY);
+D54 **0**; D55 **0**. Branch total remains **8**: Dockerfile,
+.github/workflows/docker-build.yml, deploy/backup.sh, deploy/broker_main.py,
+deploy/compose.yml, deploy/role_decoder.py, deploy/role_egress_migration.py,
+deploy/role_launcher.py. No privilege/security-scope change or startup activation.
+
+Remaining, in order: actual provider CLI/discovery/auth, thin engine-MCP,
+node/tool, workspace provision/registry/worker/git, preview, local box and
+utility class launcher integration with every paired daemon-reader probe;
+full migration and D10 two-pass deletion; actual old-image rollback; then
+startup/healthcheck. Native discovery's bounded parser/process transport was
+traced, but no discovery class is admitted by this continuation. Full deletion
+must also quiesce admitted work before erasure (otherwise late USAGE can
+recreate rows) and clear broker-private proxy runtime. No task 2.1-2.8 marked
+complete. No PR or deploy; startup remains inactive.
+
+---
+# Prior delivery: D52 named cell profiles for the remaining engine matrix
 
 D51 pushed as b32cea4ff4; hygiene: 5 tests added, 0 removed, 0 tampering.
 D52 implements D9's cell-deny/cell-links/cell-nested names in the shared

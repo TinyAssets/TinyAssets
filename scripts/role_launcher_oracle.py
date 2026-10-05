@@ -110,6 +110,7 @@ def _seed_ledger(root):
     ledger.grant_connection(grant_id="cloud-grant", connection_id="cloud-destination",
                             owner_user_id="cloud", universe_id="cloud",
                             unprompted_action_cap=ActionCap("one", 1, "pull_requests"))
+    runpy.run_path("/app/scripts/role_account_erasure_oracle.py")["seed"](ledger)
     for path in (root / ".broker").glob("outbound.db*"):
         os.chown(path, 1002, 1101)
         path.chmod(0o600)
@@ -135,6 +136,7 @@ def _query_consumers(root, supervisor):
 
     os.environ["TINYASSETS_DATA_DIR"] = str(root)
     os.environ["TINYASSETS_CREDENTIAL_BROKER"] = "process"
+    runpy.run_path("/app/scripts/role_account_erasure_oracle.py")["probe"](root)
     _injected_consumers(root)
     definition = register_definition(
         universe_id="alice", owner_user_id="alice", access_method="api_key_http",
