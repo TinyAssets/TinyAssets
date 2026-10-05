@@ -81,7 +81,11 @@ correcting the new requirement's opening normative sentence; whole-tree plugin
 mirror parity passes (611 files); diff whitespace passes. Full Ruff retains
 55 findings in unchanged files. No affected application/heavy test file exists
 for this diagnostic/docs-only diff; the real production-image diagnostic and
-baseline oracle above are its verification. Hygiene and push receipt follow.
+baseline oracle above are its verification. Evidence commit **789ae47bda**;
+`python scripts/test_hygiene_gate.py --base 2b24d108f94cfdf08135c8a3914bcbaa365b6abe --head 789ae47bda`
+passes: tests added 0, removed 0, tampering findings 0, product lines added 200
+(the diagnostic script). All pre-commit hooks passed; worktree was clean after
+the evidence commit. The subsequent receipt commit changes this document only.
 
 ---
 # Prior delivery: descriptor hardlink refusal (historically D58, 2026-10-05)
