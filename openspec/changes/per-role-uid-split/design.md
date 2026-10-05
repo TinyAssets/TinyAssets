@@ -1694,3 +1694,19 @@ disable Chromium's sandbox, retain capabilities, or activate startup to bypass
 this stop. Authorization would still require every D8/D9 per-class negative and
 paired daemon-reader probe, actual launcher lifecycle/resource limits, and the
 remaining migration/deletion/old-image/startup proofs before PR readiness.
+
+### D57. Acceptance stop: preplanted hardlinks cross the daemon reader boundary
+
+The founder's 2026-10-05 continuation explicitly leaves ui-preview unadmitted
+under D9 and permits work on all other classes. That decision is preserved.
+While checking the required D9/F2 reader prerequisite, the immutable D55
+production image returns a synthetic Bob file through Alice's authenticated
+inspect when Alice's activity.log is a preplanted hardlink to it. The common
+reader rejects symlinks/FIFOs but validates no hardlink aliases. The diagnostic
+is `scripts/role_reader_alias_probe.py`; delivery.md records exact results.
+
+This invokes the founder's explicit cross-user-exposure stop, independently
+of the preview exception. Do not admit a class, activate startup or claim the
+matrix complete from this receipt. The probe establishes daemon-reader
+exposure for a preplanted alias, not an engine's ability to plant it after
+migration. No privilege, profile, migration or isolation-scope change is made.

@@ -1,4 +1,72 @@
-# Current delivery: D56 preview security-scope stop (2026-10-05)
+# Current delivery: D57 preplanted hardlink reader exposure (2026-10-05)
+
+Started at **89b1cffa94**; requested ff-only pull was already current. The
+founder's preview deferral is preserved: ui-preview stays unadmitted and its
+D9 profile is unchanged. While tracing remaining provider classes and their
+required reader matrix, found an additional cross-user acceptance failure.
+The founder explicitly requires STOP/report for cross-user exposure; this
+continuation records that evidence rather than admitting more classes.
+
+`scripts/role_reader_alias_probe.py` runs the real universe file reader,
+platform-text reader and authenticated inspect handler against disposable
+synthetic owners inside the immutable production Dockerfile image. Alice's
+ordinary inspect succeeds; Bob's metadata is denied to Alice. A preplanted
+hardlink from Alice/activity.log to Bob/private.txt then returns Bob bytes
+through all three readers. No-follow traversal checks type and size but not
+hardlink aliases. Symlink/FIFO controls deny all six reads without hanging.
+
+```text
+python scripts/role_reader_alias_probe.py --image tinyassets-uid-relays:d55
+exit 3 (completed summary lists the three hardlink failures)
+symlink: universe-file/platform-text/inspect-universe = DENIED
+fifo: universe-file/platform-text/inspect-universe = DENIED
+hardlink: universe-file/platform-text/inspect-universe = FOREIGN_BYTES
+uid=1001 groups=[1100,1101,1102] capabilities=zero nnp=1
+positive_control=true foreign_metadata_denied=true foreign_unchanged=true
+
+python scripts/linux_oracle.py --production-image tinyassets-uid-relays:d55 --production-stream
+exit 0
+```
+
+Both pin image
+`sha256:7c8bb8846244365fc3c2806468f886767749304471342ef4d9aa96a0218c7a60`.
+The alias probe has no host mounts/network, uses the seven declared entry
+capabilities, then the installed launcher's retirement to daemon identity.
+It uses the production oracle security options (nnp and unconfined
+seccomp/AppArmor/systempaths). It is a **failed preplanted-reader acceptance**,
+not proof of engine planting after migration, not full class acceptance and
+not a production exploit test. No real user data or credentials are accessed.
+The synthetic foreign bytes/owner/group/mode/mtime are unchanged.
+
+Existing production substeps pass again: image/chain/capabilities, broker
+private storage, decoder launcher, HTTPS streaming/accounting/refresh,
+account erasure, snapshots/relays, and relocation/accounting/liveness
+dry-run/apply/repeat and 6+8+3+4 crash boundaries. Full migration, D10 two-pass
+deletion and actual old-image rollback remain unproven. The passing baseline
+does not override the new reader failure.
+
+Finding: `docs/concerns/2026-10-05-role-reader-hardlink-alias.md`. D57 records
+the stop and evidence limits in design.md. Remaining work: resolve the reader
+alias failure; every other engine class through the launcher with all paired
+reader probes; full migration/two-pass deletion; actual old-image rollback;
+startup/healthcheck integration. Preview remains the explicitly deferred
+founder decision, but is no longer the only known open acceptance blocker.
+
+Release-critical files this continuation: **0** (diagnostic and documentation
+only); branch's previously recorded total remains **8**. No tinyassets package
+edit, mirror regeneration, heavy-test change, test removal or expectation
+loosening. Targeted Ruff, strict OpenSpec and whitespace checks pass. Full Ruff
+still reports 55 errors in unchanged files. No task is newly checked complete.
+Startup remains inactive. No PR, deployment, rebase or force-push.
+
+Cross-family peer-agents review: **ADAPT**; AGREE with the reproduction and
+evidence limits. AGREE with both diagnostic corrections: a distinct leak exit
+code plus completed-summary requirement distinguishes setup failure; assert
+uid/gid/groups explicitly before the reader matrix. Both corrections applied
+and the diagnostic rerun. No runtime patch or second review round.
+
+---
+# Prior delivery: D56 preview security-scope stop (2026-10-05)
 
 Evidence committed as **0abd204364**. The committed diagnostic was rerun:
 exit 0 with the same three-profile result. Hygiene against 71df3620de:
