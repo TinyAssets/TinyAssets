@@ -792,7 +792,10 @@ _B64_RUN = re.compile(r"(?<![A-Za-z0-9+/])[A-Za-z0-9+/]{160}")
 _DECODE_EXEC = re.compile(
     r"(eval|exec)\s*\(\s*(base64\.b64decode|bytes\.fromhex|codecs\.decode)",
     re.IGNORECASE)
-_PIPE_TO_SHELL = re.compile(r"\b(curl|wget)\b[^\n]{0,200}\|\s*(ba|z)?sh\b", re.IGNORECASE)
+# Bounded whitespace after the pipe: an unbounded \s* let ~40 `curl` tokens in
+# one window each rescan the same long whitespace run (16s per 8 MiB file).
+_PIPE_TO_SHELL = re.compile(r"\b(curl|wget)\b[^\n]{0,200}\|[ \t]{0,20}(ba|z)?sh\b",
+                            re.IGNORECASE)
 _POWERSHELL_IEX = re.compile(r"\biex\s*\(", re.IGNORECASE)
 #: The wave's "Prerequisites" docs pointed at paste sites for the payload.
 _PASTE_SITES = ("glot.io", "pastebin.com", "paste.rs", "termbin.com", "ix.io", "0x0.st")
