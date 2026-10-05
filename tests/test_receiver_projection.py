@@ -49,11 +49,20 @@ def _branch(nodes, edges, *, conditionals=(), schema=()):
 def _invoke(branch, values=None, provider=None):
     calls = []
 
-    def _provider(prompt, _system="", **kwargs):
-        calls.append(prompt)
-        return provider(prompt) if provider else "handled"
+    class ProjectionProvider:
+        def __call__(self, prompt, _system="", **kwargs):
+            pytest.fail("a policy-bearing projection must use policy execution")
 
-    compiled = compile_branch(branch, provider_call=_provider)
+        def call_with_policy_sync(self, role, prompt, system, policy, config=None, **kwargs):
+            # Projection preserves policy as well as topology. A plain callable
+            # can no longer bypass that policy through the legacy text bridge.
+            assert policy == branch.default_llm_policy
+            assert policy["preferred"]["provider"] == "user-chosen"
+            calls.append(prompt)
+            text = provider(prompt) if provider else "handled"
+            return text, "user-chosen", {}
+
+    compiled = compile_branch(branch, provider_call=ProjectionProvider())
     result = compiled.graph.compile().invoke(seed_initial_state(values or {}, branch.state_schema))
     return result, calls
 
