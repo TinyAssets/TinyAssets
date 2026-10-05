@@ -1,3 +1,10 @@
+---
+severity: P2
+title: Command-center layout table does not classify the agents/ roster directory
+filed: '2026-10-04'
+summary: classify("agents") returns None, so the command-center inventory refuses any home with an agents/ roster until the directory is classified
+---
+
 # Cutover inventory does not classify the installed roster directory
 
 Found while verifying audit L0 on 2026-10-04 at main `9e96ff9595`.
