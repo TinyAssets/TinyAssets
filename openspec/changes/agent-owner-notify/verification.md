@@ -21,6 +21,16 @@ Reuses pending-request storage/projection, Needs-you, existing owner device reso
 - Ruff on affected Python files passes. Plugin mirror parity: 604 files match. OpenSpec change validates; spec synced to `openspec/specs/agent-owner-notify/spec.md`.
 - Test hygiene: 8 tests added, 0 removed, 0 tampering findings (parameterized cases are additional).
 
+## CI repair, 2026-10-05
+
+- Merged `origin/main` (`f0e4222763`) before reproducing jobs 111678328538 and 111678328095.
+- Linux reproduction: 2 failed, 16 passed. The shortened resident file-input guidance omitted the exact state schema, read tool, chunk loop and manifest repair recipe required before a file workflow call. Restored that recipe near the start of `write_graph`; extended delivery guidance remains on demand.
+- Adding `notify` had displaced the existing ask/withdraw refusal wording. Retained that wording and listed `notify` as a no-answer operation; answer/unmute restrictions are unchanged.
+- No tests or assertions changed for this repair.
+- Final Linux oracle: **474 passed, 0 skipped**, 138.79s; Python 3.11.16, git 2.47.3, bubblewrap 0.12.0, uid 1001. Covers both failing files, converse prompt budgets, served guidance/packet contracts, notification and browser behavior, owner requests, bundles, engine and affected heavy branch-authoring/runner/concurrency files. Used `MSYS_NO_PATHCONV=1` and `--basetemp /tmp/b`.
+- Ruff on all PR-changed Python files passed; plugin rebuilt; pre-commit invariants passed (604 canonical files mirror-matched); test hygiene: 8 added, 0 removed, 0 tampering findings.
+- The PR's existing review receipt is bound to the pre-repair head and will need renewal for the new head. No merge or deployment is claimed.
+
 ## Remaining
 
 Keep the PR draft. Merge/deploy and real-user live app proof are pending. No deployment claim is made: `deployed_sha.py --assert-contains 19048946e6a65b7e1d2dc572fc0d36e209bbf580` could not run without `TINYASSETS_WIKI_CANARY_TOKEN`; the prescribed secrets loader failed because the 1Password CLI `op` is absent. Registered-device receipt and a live scheduled notification still need post-deploy proof.

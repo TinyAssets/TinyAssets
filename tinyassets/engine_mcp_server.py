@@ -3032,10 +3032,23 @@ def write_graph(
     write research may do; any other session is refused and uses its own request
     tools instead.
 
-    File inputs use ``io_manifest={"inputs":[{"name":"files","io_type":"file_bundle",
-    "max_count":4,"max_bytes":4194304}]}`` and a matching list state field.
-    ``inputs`` and ``outputs`` are the only manifest keys. Read ``delivering``
-    for binary custody and linked delivery before building a file workflow.
+    FILE INPUTS, exact shape (an app attachment is already a six-field
+    reference; full example under FILE INPUTS below). Create with
+    ``"io_manifest": {"inputs": [{"name": "files", "io_type": "file_bundle",
+    "max_count": 4, "max_bytes": 4194304}]}`` - ``inputs`` and ``outputs`` are
+    the ONLY top-level manifest keys; any other key (``file_inputs``,
+    ``file_bundle_inputs``) is refused at create, patch and run, never ignored.
+    Add the matching ``state_schema`` field (``file_bundle`` -> ``{"name":
+    "files", "type": "list"}``; a single ``file`` -> ``"type": "dict"``), and a
+    ``source_code`` node with that field in ``input_keys`` plus
+    ``"tools_allowed": ["read_run_file"]`` that reads by keyword call
+    ``invoke_mcp_action("read_run_file", file_id=ref["file_id"], offset=0,
+    count=524288)`` -> ``{"bytes_base64", "next_offset", "eof"}``, looping until
+    ``eof``. Then ``run_graph inputs_json={"files": [<reference verbatim>]}``.
+    Repair a stored manifest with ``operation=patch`` payload
+    ``[{"op": "set_io_manifest", "io_manifest": {"inputs": [...]}}]``.
+
+    Read ``delivering`` for binary custody and linked delivery.
 
     **Inbound webhooks:** ``target="webhook"`` supports ``operation="create"``
     and ``operation="revoke"``. Create takes ``branch_id`` (one of YOUR OWN
@@ -3329,8 +3342,9 @@ def write_graph(
         if op not in {"ask", "request_from_user", "withdraw", "notify"}:
             return json.dumps({
                 "error": (
-                    "target='pending_request' supports operation='notify', 'ask' or "
-                    "'withdraw' (your own stale ask). Answering a request, and "
+                    "target='pending_request' supports operation='ask' or "
+                    "'withdraw' (your own stale ask), or 'notify' (no answer needed). "
+                    "Answering a request, and "
                     "lifting a mute, belong to the person you asked - not to you."
                 ),
             })
