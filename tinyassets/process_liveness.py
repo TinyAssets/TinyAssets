@@ -86,6 +86,9 @@ def owner_state(base_path: str | Path, token: str) -> str:
     probe that deleted it after reclaiming ONE thing would leave every other
     thing of that dead owner unprovable (Codex round 2, 2026-09-27).
     """
+    if os.name == "posix":
+        return _readonly_owner_state(base_path, token)
+
     from tinyassets.singleton_lock import _lock_fd, _unlock_fd
 
     path = liveness_path(base_path, token)
@@ -102,6 +105,37 @@ def owner_state(base_path: str | Path, token: str) -> str:
         return DEAD
     finally:
         os.close(fd)
+
+
+def _readonly_owner_state(base_path: str | Path, token: str) -> str:
+    """POSIX flock needs no write access; only contention proves life.
+
+    Pin the proof directory and refuse links/non-files before probing. A FIFO
+    must not block the broker, and an unrelated flock error must not authorize
+    another inference request. A replaced proof is unknown, never dead/alive.
+    """
+    import errno
+    import fcntl
+
+    from tinyassets.universe_files import readonly_lock_file
+
+    path = liveness_path(base_path, token)
+    if path is None:
+        return UNKNOWN
+    try:
+        with readonly_lock_file(base_path, LIVENESS_DIR, path.name) as fd:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError as exc:
+                if exc.errno not in (errno.EAGAIN, errno.EWOULDBLOCK):
+                    return UNKNOWN
+                state = ALIVE
+            else:
+                # Closing the read-only descriptor releases the probe lock.
+                state = DEAD
+            return state
+    except (OSError, ValueError):
+        return UNKNOWN
 
 
 def remove_if_dead(

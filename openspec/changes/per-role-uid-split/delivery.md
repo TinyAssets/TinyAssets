@@ -1,3 +1,143 @@
+# Current delivery: D43 accounting source binding
+
+D42 pushed as 11b4cc3a78; hygiene added 4 tests, removed 0, tampering 0.
+D43 routes accounting reference issuance's grant read through authenticated
+GRANTED_RESOURCE in selected mode. Installed definition/model checks remain;
+connection identity must match exactly. Broker outage/fence/revocation refuses
+without local fallback. Unsplit read-only query preserved.
+Cross-family peer-agents: AGREE, APPROVE; no floor/correctness findings. Added
+direct broker owner/center and resource-revocation probes after the review's
+coverage note. No full build task checked off, startup inactive, no PR/deployment.
+
+Release-critical files: **0; none**. Runtime storage/agent_request_usage.py and
+its mirror; role_launcher_oracle.py, test_broker_usage_source.py, tasks/inventory/
+delivery; D43 design was recorded in the preceding commit. No affected heavy file.
+
+```text
+python scripts/linux_oracle.py -- tests/test_broker_usage_source.py tests/test_request_usage_store.py -q -rs
+47 passed in 12.34s; zero skips
+python scripts/linux_oracle.py --production-image tinyassets-uid-usage-source:d43 --build --production-stream
+exit 0; sha256:22a36fd05ffc2f66ad0e335517be1d131d6955693daff45e05bfbb1e4abf36d6
+D43 actual accounting source binding via launcher broker: installed definition/model, foreign connection refusal, no daemon ledger: PASS (usage runtime IPC pending)
+```
+D43 passes before/after restart; D41/D42 and previous consumer proofs, actual
+D22/D24 HTTPS streams PASS. Egress/accounting forward/reverse dry-run/apply/
+repeat, all 6+8+3 crash boundaries and hostile-input refusals PASS. This is not
+full role migration/two-pass deletion or an actual old-image rollback.
+Seven entry capabilities and compose security options unchanged; synthetic
+network ta-uid-stream-68aa64c6d193-net and public CA cleaned by harness.
+
+Targeted Ruff, plugin build/import, mirror parity (604), strict OpenSpec and
+whitespace pass. Full python -m ruff check still reports 55 pre-existing errors
+outside touched files. Windows test_request_usage_store: 35 passed, 1 fails
+because the existing fd-leak test unconditionally opens /proc/self/fd; the same
+test passes on Linux. No skip or failure is reported as acceptance. The existing
+path-I/O ratchet failure in broker/supervisor.py::_protect_daemon remains as
+recorded under D42. No guard/test was weakened and no history rewritten.
+
+## Next work, in order
+
+1. Accounting runtime create/reserve/receipt/settle IPC, daemon-owned lock
+   creation and migration modes for broker read access, and daily evidence.
+   UsageStore still opens .tinyassets.db at runtime; do not activate the split.
+   Source binding's daemon grant read is now routed, but broker-local installed
+   definition access and complete inference POST acceptance remain unproven.
+2. Refresh: preserve admission before spending single-use tokens and daemon-only
+   vault writes. No broker vault-write privilege may be introduced.
+3. Every actual engine class through the launcher and per-class denial/positive
+   controls, including daemon planted-link/FIFO/hardlink readers and fd closure.
+4. Full role migration/ACLs and capability-free D10 two-pass deletion.
+5. Actual old-image rollback, then startup and healthcheck only after every
+   preceding proof passes. Existing storage reverse/old-uid proof is insufficient.
+
+---
+
+# Current delivery: D42 read-only kernel liveness
+
+D41 pushed as 4f8636e8cd; hygiene added 5 tests, removed 0, tampering 0.
+D42 makes POSIX owner_state use read-only pinned/no-follow proof descriptors
+through universe_files. Only actual lock contention means ALIVE; missing,
+hostile, replaced or errored proofs are UNKNOWN. Windows adapter unchanged.
+Cross-family peer-agents: AGREE, APPROVE; no floor/correctness findings.
+Final filesystem opening moved into the existing safe I/O helper after review;
+root ancestry now also uses workspace_fs's component-by-component no-follow walk.
+No permissions widened, startup inactive, no complete build task checked off.
+
+Release-critical files: **0; none**. Runtime process_liveness.py and
+universe_files.py plus mirrors; role_image_oracle.py, new
+ test_broker_readonly_liveness.py, design/inventory/delivery. No affected heavy file.
+D43 source-binding decision is recorded; its implementation is next/in progress.
+
+```text
+python scripts/linux_oracle.py -- tests/test_broker_readonly_liveness.py tests/test_request_usage_store.py tests/test_automation_lease_dead_holder.py tests/test_universe_seats.py tests/test_universe_file_reads_are_bounded.py -q -rs
+128 passed in 14.62s; zero skips
+python scripts/linux_oracle.py --production-image tinyassets-uid-liveness:d42 --build --production-stream
+exit 0; sha256:4ee66e63dbee172886e61fe4f9848516ddba1d239e05c0979d0ce40f561ec62a
+D42 broker read-only daemon/parent kernel liveness, independent parent close, daemon death, engine denial: PASS (runtime accounting IPC pending)
+```
+All prior migration dry-run/apply/repeat/reverse, 6+8+3 crash boundaries,
+launcher and D41 consumers, D22/D24 real HTTPS streams PASS. Synthetic
+network ta-uid-stream-381619cdce38-net and CA cleaned. No full migration,
+two-pass deletion or actual old-image proof is claimed. Production uses the
+same seven entry capabilities and compose security options.
+
+Targeted Ruff and plugin build/import pass. One attempted test command named
+nonexistent test_universe_files.py; corrected to test_universe_file_reads_are_bounded.
+An instrumented os.open before filesystem-module import invalidated its POSIX
+feature detection; pre-importing the module corrected the fixture, with all 128
+passing afterward. No test/guard weakened. Path-I/O guard: 3 pass, 1 fails on
+pre-existing broker/supervisor.py::_protect_daemon's /proc/self/status read;
+D42 introduces no remaining ratchet finding. This pre-existing failure remains
+an activation prerequisite, not a passed check.
+
+Remaining: accounting runtime IPC and lock-creation/migration modes, source
+binding (D43 in progress), daily evidence and refresh; actual engine classes;
+full migration/two-pass deletion; actual old-image rollback; startup/healthcheck
+only after every prerequisite passes.
+
+---
+
+# Current delivery: D41 injected connection authority
+
+D41 finishes the interrupted injected cloud/effect slice. Canonical immutable
+broker authority supplies admitted principal/center; grant and redacted resource
+are revalidated together. Selected mode rejects local ledgers and duck types.
+Cap policy uses that same snapshot. No startup activation, PR or deployment.
+No complete build task newly checked off. Cross-family peer-agents review:
+AGREE, APPROVE; no floor/correctness findings.
+
+Release-critical files: **0; none**. Five runtime files (broker/connection_authority,
+cloud_automation_continuation, effectors/outbound_boundary,
+storage/outbound_connections, user_owned_cloud_automation), their mirrors,
+test_broker_injected_authority, role_launcher_oracle and design/inventory/delivery.
+No affected heavy-list test file.
+
+```text
+python -m pytest tests/test_outbound_effect_boundary.py -q
+19 passed in 4.76s
+python scripts/linux_oracle.py -- tests/test_broker_injected_authority.py tests/test_user_owned_cloud_automation.py tests/test_cloud_automation_control.py tests/test_outbound_connection_ledger.py -q -rs
+108 passed in 9.33s; zero skips
+python scripts/linux_oracle.py --production-image tinyassets-uid-injected:d41 --build --production-stream
+exit 0; sha256:b11527bfebdfb5d8c7929474e3f8d7f55ffdf3dec22785ba76521dd63da3ced8
+D41 actual cloud authority and capped-effect hold via launcher broker: scoped snapshot, foreign refusal, no daemon ledger: PASS
+```
+D41 passes before/after restart; previous consumer probes and real D22/D24
+HTTPS streams PASS. Forward/reverse egress and accounting dry-run/apply/repeat,
+6+8+3 crash/recovery boundaries and hostile-input refusals PASS. Full role
+migration, two-pass deletion and actual old-image rollback remain unproven.
+Same seven entry capabilities and compose security options; synthetic HTTPS
+network ta-uid-stream-f80e2b4960ec-net and matching public CA cleaned by harness.
+Initial production probe failed because D41 ran before the fixture selected
+broker mode; moved it after fixture configuration, then all probes passed.
+No product guard relaxed. Targeted Ruff, plugin build/import, mirror parity
+(604 canonical files), whitespace pass.
+
+Continue with accounting runtime IPC, kernel liveness, source binding/daily
+evidence and refresh; every actual engine class; full migration/two-pass
+deletion; actual old-image rollback; startup/healthcheck only after all pass.
+
+---
+
 # Current delivery: D40 intent custody
 
 D39 pushed as e1a413ba99; hygiene added 4 tests, removed 0, tampering 0.

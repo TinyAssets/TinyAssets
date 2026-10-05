@@ -342,22 +342,38 @@ class UsageStore:
             if (definition.owner_user_id != scope[0] or definition.ref != grant_id
                     or definition.access_method != "api_key_http"):
                 raise ValueError("source grant mismatch")
-            uri = (self.base / "outbound.db").as_uri() + "?mode=ro"
-            with closing(sqlite3.connect(uri, uri=True)) as ledger:
-                grant = ledger.execute(
-                    "SELECT 1 FROM outbound_connection_grants g "
-                    "JOIN outbound_connections c ON g.connection_id=c.connection_id "
-                    "WHERE g.grant_id=? AND g.connection_id=? AND g.owner_user_id=? "
-                    "AND c.owner_user_id=? AND g.universe_id=? "
-                    "AND g.revoked_at IS NULL AND c.revoked_at IS NULL",
-                    (grant_id, connection_id, scope[0], scope[0], scope[1]),
-                ).fetchone()
-            if grant is None:
-                raise ValueError("source grant unavailable")
+            self._validate_source_grant(scope, grant_id, connection_id)
         except (OSError, ValueError, TypeError, KeyError, StopIteration, sqlite3.Error) as exc:
             raise ProviderAuthorityHeldError(
                 "inference usage reservation does not match its admitted source"
             ) from exc
+
+    def _validate_source_grant(self, scope, grant_id, connection_id):
+        from tinyassets.broker.supervisor import broker_selected
+
+        if broker_selected():
+            from tinyassets.broker.ledger_queries import granted_resource_row
+
+            try:
+                row = granted_resource_row(self.base, principal=scope[0],
+                                           command_center=scope[1], grant_id=grant_id)
+                if row["connection_id"] != connection_id:
+                    raise ValueError("source connection changed")
+            except (RuntimeError, PermissionError, ValueError, KeyError) as exc:
+                raise ProviderAuthorityHeldError("source grant unavailable") from exc
+            return
+        uri = (self.base / "outbound.db").as_uri() + "?mode=ro"
+        with closing(sqlite3.connect(uri, uri=True)) as ledger:
+            grant = ledger.execute(
+                "SELECT 1 FROM outbound_connection_grants g "
+                "JOIN outbound_connections c ON g.connection_id=c.connection_id "
+                "WHERE g.grant_id=? AND g.connection_id=? AND g.owner_user_id=? "
+                "AND c.owner_user_id=? AND g.universe_id=? "
+                "AND g.revoked_at IS NULL AND c.revoked_at IS NULL",
+                (grant_id, connection_id, scope[0], scope[0], scope[1]),
+            ).fetchone()
+        if grant is None:
+            raise ValueError("source grant unavailable")
 
     def issue_reference(self, scope, ordinal, *, grant_id, connection_id, verb, request,
                         operation_id):

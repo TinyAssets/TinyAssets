@@ -298,12 +298,91 @@ def accounting_probes(migration):
           flush=True)
 
 
+def liveness_probes():
+    """Real cross-uid read-only kernel proof, independent parent lifetime."""
+    from tinyassets.process_liveness import ALIVE, DEAD, UNKNOWN, hold_liveness, owner_state
+    from tinyassets.singleton_lock import _unlock_fd
+
+    root = Path(tempfile.mkdtemp(prefix="uid-liveness-"))
+    os.chown(root, 1001, 1102)
+    root.chmod(0o750)
+    ready_read, ready_write = os.pipe()
+    command_read, command_write = os.pipe()
+    holder = os.fork()
+    if holder == 0:
+        try:
+            os.close(ready_read)
+            os.close(command_write)
+            retire(1001, [1100, 1101, 1102])
+            directory = root / ".consumer_liveness"
+            directory.mkdir(mode=0o750)
+            os.chown(directory, -1, 1102)
+            directory.chmod(0o2750)
+            daemon = hold_liveness(root, "daemon")
+            parent = hold_liveness(root, "parent")
+            for token in ("daemon", "parent"):
+                (directory / f"{token}.lock").chmod(0o640)
+            os.write(ready_write, b"1")
+            assert os.read(command_read, 1) == b"r"
+            _unlock_fd(parent.fd)
+            os.write(ready_write, b"2")
+            assert os.read(command_read, 1) == b"q"
+            assert daemon.fd is not None
+            os._exit(0)  # Kernel releases daemon lock; retain file as dead proof.
+        except BaseException:
+            traceback.print_exc()
+            os._exit(1)
+    os.close(ready_write)
+    os.close(command_read)
+    try:
+        assert os.read(ready_read, 1) == b"1"
+
+        def probe(parent_state, daemon_state):
+            assert owner_state(root, "parent") == parent_state
+            assert owner_state(root, "daemon") == daemon_state
+            assert owner_state(root, "missing") == UNKNOWN
+            for path in (root / ".consumer_liveness").glob("*.lock"):
+                try:
+                    fd = os.open(path, os.O_WRONLY)
+                except PermissionError:
+                    pass
+                else:
+                    os.close(fd)
+                    raise AssertionError("broker can write daemon liveness proof")
+
+        child(1002, [1102], lambda: probe(ALIVE, ALIVE))
+        child(1003, [1100], lambda: (
+            assert_unknown_liveness(root, owner_state, UNKNOWN)))
+        os.write(command_write, b"r")
+        assert os.read(ready_read, 1) == b"2"
+        child(1002, [1102], lambda: probe(DEAD, ALIVE))
+        os.write(command_write, b"q")
+        assert os.waitpid(holder, 0)[1] == 0
+        holder = None
+        child(1002, [1102], lambda: probe(DEAD, DEAD))
+    finally:
+        os.close(ready_read)
+        os.close(command_write)
+        if holder is not None:
+            import signal
+            os.kill(holder, signal.SIGKILL)
+            os.waitpid(holder, 0)
+    print("D42 broker read-only daemon/parent kernel liveness, independent parent close, "
+          "daemon death, engine denial: PASS (runtime accounting IPC pending)", flush=True)
+
+
+def assert_unknown_liveness(root, owner_state, unknown):
+    assert owner_state(root, "daemon") == unknown
+    assert owner_state(root, "parent") == unknown
+
+
 def main():
     assert os.getuid() == 0
     expected = sum(1 << cap for cap in (0, 1, 3, 5, 6, 7, 8))
     for field in ("CapPrm", "CapEff", "CapBnd"):
         assert int(status()[field], 16) == expected, field
     assert all(int(status()[field], 16) == 0 for field in ("CapInh", "CapAmb"))
+    liveness_probes()
     chain = runpy.run_path("/usr/local/libexec/ta-chain.py")
     chain["main"]()
     protected = Path("/opt/uid-chain-probe")

@@ -1413,6 +1413,43 @@ and the old unscoped helper refuses selected mode. Unsplit behavior is unchanged
 No schema, privilege or scope changes; actual worker/credential transport remains
 gated separately and startup is inactive.
 
+### D41. Mechanical decision: injected consumers use a closed authority type
+
+Cloud continuation, inactive cloud authority and outbound cap/confirmation
+consumers accept the canonical BrokerConnectionAuthority type. Its immutable
+configuration contains the admitted center and a daemon principal verifier;
+definitions cannot supply either. GRANTED_RESOURCE resolves the connection ID,
+then AUTHORIZED_CONNECTION rechecks authority and returns the grant and redacted
+view from one snapshot. A changed ID between reads refuses; both queries check
+owners, center and revocations. No existing query guard is relaxed. No generic method
+dispatch or duck-typed authority is admitted. Selected mode rejects injected
+local ledgers; unsplit mode retains them. The pure cap evaluator is shared with
+the ledger, evaluated against that snapshot without a second grant read.
+Proxy/effect send-time authorization remains independent. This routes existing
+injected D11 consumers; no new operation, privilege or startup activation.
+
+### D42. Mechanical decision: broker liveness uses read-only POSIX flock
+
+Accounting retains separate daemon and per-parent kernel locks. On POSIX,
+owner_state opens the proof read-only with pinned root/directory descriptors,
+NOFOLLOW and NONBLOCK, refusing non-regular or multiply linked proofs. Only
+EAGAIN/EWOULDBLOCK means alive; other errors and replaced names mean unknown.
+No writable broker access, new process, capability or token authority is added.
+Windows keeps its existing lock adapter. Runtime creation/migration permissions
+and the accounting IPC integration remain separately required; this prerequisite
+alone does not activate startup or complete task 2.6.
+
+### D43. Mechanical decision: accounting source binding uses scoped grant facts
+
+The daemon's accounting reference issuer retains installed-definition/model
+validation, but replaces its raw outbound.db grant SELECT with GRANTED_RESOURCE
+through the existing authenticated broker query. Exact connection identity is
+checked against the admitted reference request. Selected-mode broker failure
+refuses issuance; unsplit mode retains the read-only local query for compatibility.
+This removes the source-check path dependency without moving UsageStore's four
+tables at runtime: create/reserve/receipt/settle and daily evidence IPC remain
+pending, and no inference or startup completion is claimed.
+
 ## Risks / Trade-offs
 
 - **The launcher is root-adjacent code.** One file, stdlib-only, run `-I -S`, a static kind table,
