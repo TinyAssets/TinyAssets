@@ -9,11 +9,11 @@ quota, and distinguish storage exhaustion from launch reservation pressure.
 
 ### Requirement: Runtime exclusions cannot retain arbitrary uncharged writes
 
-The account file measurement SHALL exclude root credential materialization,
-masked provider-child caches, and inaccessible platform checkout staging.
+The account file measurement SHALL exclude root credential materialization
+and inaccessible platform checkout staging.
 Permanent workspaces SHALL remain measured by their own store. Persistent
-runtime files (including sessions, legacy CLI homes and launch snapshots) SHALL be charged by
-`universe_files`. Provider home/cache writes SHALL use disposable sized mounts.
+runtime files (including provider-child caches, sessions, legacy CLI homes and
+launch snapshots) SHALL be charged by `universe_files`. Provider home/cache writes SHALL use disposable sized mounts.
 Provider launches SHALL mask the credential directory even before first use.
 Nested lookalikes, arbitrary provider/cache names, and in-home database backups
 SHALL remain charged. Platform sidecars outside the home are not user files.
@@ -27,9 +27,14 @@ SHALL remain charged. Platform sidecars outside the home are not user files.
 - **THEN** the write is disposable or refused
 - **AND** persistent native-session/snapshot writes count across launches
 
+#### Scenario: Renamed runtime and recreated cache
+- **WHEN** a provider renames `.runtime` and recreates `.runtime/provider-child`
+- **THEN** all persistent bytes in both paths SHALL be charged, including after another launch
+- **AND** retained auth and sessions SHALL NOT be deleted to repair accounting
+
 ### Requirement: Status and notices distinguish bytes from reservations
 
-Status SHALL classify protected credential/cache files as provider runtime and
+Status SHALL classify protected credential materialization files as provider runtime and
 persistent writable runtime files as other user files. It SHALL explicitly say
 the observed footprint is not the account quota total. A full-account warning
 SHALL require measured bytes at or above the effective quota. Reservation,

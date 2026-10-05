@@ -77,7 +77,8 @@ def test_owner_refusal_distinguishes_measurements_and_pending_states(base):
 
 class TestOnePoolPerAccount:
     @pytest.mark.parametrize(
-        "directory", ["agent-sessions", "provider-launch-credentials", "arbitrary"],
+        "directory",
+        ["agent-sessions", "provider-launch-credentials", "arbitrary", "provider-child"],
     )
     def test_writable_runtime_is_charged_across_launches(self, base, directory):
         udir = _universe(base, "u-one", A)
@@ -160,7 +161,7 @@ class TestOnePoolPerAccount:
 
     def test_platform_bytes_are_not_charged(self, base):
         udir = _universe(base, "u-one", A)
-        for platform_dir in (".runtime/provider-child", ".workspace-staging"):
+        for platform_dir in (".credentials", ".workspace-staging"):
             (udir / platform_dir).mkdir(parents=True)
             _write(udir / platform_dir, "big.bin", 500 * KIB)
         _write(udir, "mine.bin", 10 * KIB)

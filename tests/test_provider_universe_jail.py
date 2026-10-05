@@ -390,6 +390,31 @@ def test_provider_runtime_cache_writes_are_disposable_between_launches(world):
         assert list(child.iterdir()) == []
 
 
+@pytest.mark.parametrize("remove_old", [False, True])
+def test_renamed_runtime_and_recreated_cache_are_charged_across_launches(world, remove_old):
+    from tinyassets.storage_accounting import _universe_files
+
+    root = world.universe_a
+    before = _universe_files(world.data_root, root.name)
+    proc, _ = _launch(
+        root,
+        "mv .runtime .rt-old && mkdir -p .runtime/provider-child && "
+        "head -c 5000000 /dev/zero > .runtime/provider-child/hidden",
+    )
+    assert proc.returncode == 0
+    hidden = root / ".runtime/provider-child/hidden"
+    assert hidden.stat().st_size == 5_000_000
+    assert _universe_files(world.data_root, root.name) == before + 5_000_000
+    if remove_old:
+        shutil.rmtree(root / ".rt-old")
+    charged = _universe_files(world.data_root, root.name)
+    assert charged >= 5_000_000
+    proc, _ = _launch(root, "test ! -e .runtime/provider-child/hidden")
+    assert proc.returncode == 0
+    assert hidden.stat().st_size == 5_000_000
+    assert _universe_files(world.data_root, root.name) == charged
+
+
 def test_provider_runtime_environment_directories_exist_inside_disposable_home(world):
     from tinyassets.providers.base import _provider_child_runtime_env
 

@@ -81,8 +81,8 @@ def test_categories_measure_files_not_transport_and_never_read_contents(home, mo
     assert result["availability"] == "observed"
     assert result["categories"] == {
         "permanent_workspaces": {"observed_logical_bytes": 8, "files_observed": 2},
-        "provider_runtime": {"observed_logical_bytes": 7, "files_observed": 1},
-        "other_universe_files": {"observed_logical_bytes": db_bytes + 11, "files_observed": 2},
+        "provider_runtime": {"observed_logical_bytes": 0, "files_observed": 0},
+        "other_universe_files": {"observed_logical_bytes": db_bytes + 18, "files_observed": 3},
         "scratch": {"observed_logical_bytes": 30, "files_observed": 2},
     }
     assert result["observed_logical_bytes"] == db_bytes + 56

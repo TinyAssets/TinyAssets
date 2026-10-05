@@ -158,7 +158,7 @@ def test_a_full_account_still_launches_on_the_grace_budget(base, volume):
 
 def test_large_protected_provider_cache_does_not_warn_or_charge_owner(base, volume):
     udir = _universe(base, "u-one")
-    for directory in (".credentials/claude/projects", ".runtime/provider-child"):
+    for directory in (".credentials/claude/projects", ".credentials/codex/plugins"):
         path = udir / directory
         path.mkdir(parents=True)
         _write(path, "runtime.bin", 112 * KIB)

@@ -143,7 +143,7 @@ def _walk_bytes(
 
 def _universe_files(base: Path, universe_id: str) -> int:
     """Everything in the universe's own directory except what the user did not put
-    there -- the provider runtime and credential materialization/cache
+    there -- protected credential materialization/cache
     and transient checkout staging (``.workspace-staging``, platform debris when a checkout fails:
     measured at 2.8 GiB in one production universe, concern
     2026-09-30-workspace-staging-leaks-on-failed-checkouts) -- and permanent
@@ -151,21 +151,15 @@ def _universe_files(base: Path, universe_id: str) -> int:
     if not universe_id or Path(universe_id).name != universe_id or universe_id.startswith("."):
         raise ValueError(f"not a command center id: {universe_id!r}")
     root = base / universe_id
-    seen: set[tuple[int, int]] = set()
-    return _walk_bytes(root, exclude_top=_NOT_USER_BYTES, _seen=seen) + _walk_bytes(
-        root / ".runtime", exclude_top=_NOT_USER_RUNTIME_BYTES, _seen=seen,
-    )
-
-
-#: Platform-created CLI homes/caches are masked with disposable tmpfs. Everything
-#: else in .runtime can retain user writes, so it is measured and charged.
-_NOT_USER_RUNTIME_BYTES = frozenset({"provider-child"})
+    # The host walk never sees a jail's disposable tmpfs. Every on-disk runtime
+    # file is persistent, even if a provider renamed/recreated a cache directory.
+    return _walk_bytes(root, exclude_top=_NOT_USER_BYTES)
 
 
 #: Top-level entries of a universe directory that are the PLATFORM's, not the
-#: user's, or measured separately (workspaces and writable runtime subtrees).
+#: user's, or measured separately (workspaces).
 _NOT_USER_BYTES = frozenset({
-    ".runtime", ".credentials", ".workspace-staging", "workspaces",
+    ".credentials", ".workspace-staging", "workspaces",
     # .credentials is materialized by credential_vault, hidden from tool jails,
     # and masked by provider default_view even before credentials exist. Never
     # exempt arbitrary .claude/.codex/.cache names or nested lookalikes.

@@ -311,7 +311,8 @@ def default_view(
     runtime = root / PLATFORM_RUNTIME_DIR
     if runtime.is_dir():
         # CLI homes/caches are disposable per launch. The rest of runtime stays
-        # writable for legacy CLI homes and native sessions, and is charged.
+        # writable for legacy CLI homes and native sessions. All on-disk runtime
+        # is charged, including any cache content hidden under this tmpfs.
         child = runtime / "provider-child"
         if child.is_symlink():
             raise _refuse("provider runtime home is not a plain directory")
