@@ -24,6 +24,6 @@ External availability and partial failures can leave work held: expose current s
 
 ## Acceptance criteria
 
-Supports T1/T3/T10 in command-center-harness-control/design.md. Publish and copy a heartbeat/gateway template into a second account; prove 24/7 with no owner host online, restart recovery, quiet scripted checks and Stop fencing through rendered live proof.
+Supports the T1/T3/T10 capability checklist in command-center-harness-control/design.md. Users build their own projects; the platform never builds or ships these setups or heartbeat/gateway templates. Verify general cloud-only execution, restart recovery, scripted scheduling and Stop fencing through rendered live proof.
 
 Implementation verification includes affected tests/heavy files, Ruff, strict OpenSpec validation, floor review, deployed-SHA assertion, real-user rendered proof and spec sync. Sandbox/process/network enforcement must pass the Linux oracle; a skip is not acceptance.

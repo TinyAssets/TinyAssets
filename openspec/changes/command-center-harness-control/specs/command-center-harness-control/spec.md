@@ -73,7 +73,7 @@ The existing custom-UI bridge SHALL expose capability search, describe and call 
 ### Requirement: Custom UI receives authorized replayable live events
 The owner-permitted ta bridge SHALL expose subscriptions to activity, tool calls, approval status, task changes and process health using a versioned envelope and snapshot/cursor replay. Streams SHALL enforce current owner/center/installation/revision permissions, omit credentials and decision tokens, and invalidate on account switch or revocation. A lost replay window or backpressure overflow SHALL require resynchronization rather than silently lose state.
 
-#### Scenario: Mission Control reconnects after missed events
+#### Scenario: A user-built screen reconnects after missed events
 - **WHEN** a permitted screen reconnects with its last cursor
 - **THEN** it receives authorized replay with event-ID dedupe, or an explicit resync-required response and a new authoritative snapshot
 - **AND** it can open protected approval sheets by request reference without granting itself decision authority
@@ -94,3 +94,21 @@ Hook, extension, agent and channel-template executable code from another author 
 - **WHEN** an agent, hook, extension or channel-template update matches an existing author/ceiling grant
 - **THEN** only that pinned revision within the current ceiling may activate, preserving local edits and update receipts through the existing recipient-update mechanism
 - **AND** a changed author, expanded ceiling or revoked grant requires a new recipient decision before execution
+
+### Requirement: Delegation and agent messages preserve current authority
+The system SHALL expose ta spawn and ta message using authenticated owner/center/run identities, explicit delegation grants, model bindings and durable message/task IDs. Child and recipient access SHALL be checked at dispatch; cross-user messages SHALL require an existing recipient grant.
+
+#### Scenario: Parallel children return summaries
+- **WHEN** an owner spawns parallel children with distinct model bindings
+- **THEN** each uses its bound model and scoped workspace, records task identity and returns summaries/artifact references without inheriting unrelated authority
+
+#### Scenario: Forged sender or stopped recipient
+- **WHEN** a message spoofs sender/owner, lacks recipient permission or targets stopped work
+- **THEN** it is refused or visibly undelivered without a wake, grant or effect for another owner
+
+### Requirement: Task board changes are revisioned and budget aware
+The team board SHALL store assignments, dependencies, state and result references in an ordinary scoped collection with expected revisions and history. Execution and budget authority SHALL remain in existing launch/budget records.
+
+#### Scenario: Two agents claim the same task
+- **WHEN** workers update the same expected board revision
+- **THEN** one update commits and the other receives a conflict without dropping task state; configured budget exhaustion pauses affected execution

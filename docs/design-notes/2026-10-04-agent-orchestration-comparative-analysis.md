@@ -1,6 +1,8 @@
-# 2026-10-04 — Preserve supplied orchestration research and the T1-T10 acceptance bar.
+# 2026-10-04 — Orchestration research and the T1-T10 capability checklist.
 
-# Agent orchestrations people build and sell: a comparative analysis and the acceptance bar for TinyAssets
+**Founder correction (2026-10-05): capability checklist, not build deliverables.** The platform never builds or ships T1-T10 setups or channel/team templates. Users, starting with the founder's own agent, build these as their own command-center projects, as complex as they like, to exercise the platform's general primitives.
+
+# Agent orchestrations people build and sell: a comparative analysis and capability checklist for TinyAssets
 
 **Date:** 2026-10-04. **Method:** WebSearch (mostly extended mode) and WebFetch, run 2026-10-04. No repo files were edited. **Environment:** Claude Code research subagent. Some pages were read through a summarising fetcher, and the YouTube and npm pages did not render. Where a number came only from a search-result snippet, the citation says so.
 
@@ -200,29 +202,22 @@ Also seen: OpenClaw-focused Skool communities. OpenClaw Lab is $29/mo with tiere
 9. **C21 two-way cross-user** and **C19 updates to installed copies.**
 10. **C20 revenue.** This gates creator acquisition, not rebuilding.
 
-### 4.3 (a) Top 10 "rebuild it here, better" acceptance tests
+### 4.3 (a) T1-T10 capability checklist for user projects
 
-Each test is passed only if three things hold:
-- it is built **only from general primitives**;
-- it is **published** and **copied by a second account**;
-- the copy **runs 24/7 with no host online**.
+| # | User project reference | General primitives the user needs |
+|---|---|---|
+| T1 | OpenClaw heartbeat | Persistent execution; editable memory/skills; schedules and scripted checks; inbound receivers and outbound connections; owner notification rules; brokered credential custody. |
+| T2 | Henry / Mission Control | Agent spawn; per-agent models; A2A messaging; revisioned task board; schedules; editable memory/files; custom screens, ta parity and live events. |
+| T3 | Telegram-forum team | Agent spawn; permitted A2A messaging; inbound receivers/outbound calls; user-authored topic/mention routing; schedules/webhooks; protected approvals. |
+| T4 | Hermes skills / cron | Editable skills/memory; versioned history and rollback; scripted schedules; lifecycle hooks and steer commands; owner approval rules. |
+| T5 | JARVIS voice HUD | Voice input/output; custom screens/media; replayable activity events; protected approval request references. |
+| T6 | Paperclip company | Agent spawn/delegation and A2A messaging; task board with dependencies; per-agent models/budgets and pause; schedules; protected approvals. |
+| T7 | n8n Jarvis / Nate Herk | Voice input/output; inbound/outbound channel primitives; OAuth connections and data writes; spawn/delegation and A2A messaging; attribution/usage for user-published work. |
+| T8 | TradingAgents debate swarm | Parallel spawn and A2A messaging; schedules; per-agent models/budgets; report screens; data connections; authorized cross-user publication/subscriptions. |
+| T9 | Second brain | Owner-scoped files/memory; editable conventions; versioned history; schedules; sync connections; inbound/outbound channel primitives. |
+| T10 | pi-style coding team | Lifecycle hooks and extension tools; parallel spawn and A2A messaging; task board; persistent scoped processes; bounded summaries/artifact references; connection calls; optional attached compute. |
 
-The final proof is a rendered conversation through the live surface.
-
-| # | Original | Rebuild spec (pass criteria) | Needs | Better-than-original bar |
-|---|---|---|---|---|
-| T1 | **OpenClaw personal agent with heartbeat** (#1) | One agent with SOUL/MEMORY files; 30-min heartbeat that messages *only* when warranted; Telegram in/out; Gmail and Calendar skills | C1/C2, C10, C9, C6 | No Mac mini; copy-and-run in under 5 min; skills cannot exfiltrate keys |
-| T2 | **Alex Finn's Henry plus Mission Control** (#3) | Chief of staff plus four specialists on *different* models; screens for task board, calendar, projects, memory, docs and team; mission statement drives idle reverse-prompting; the agent builds a new screen on request | C4, C5, C12 (bridge parity plus events), C15, C2 | Zero hardware instead of four Mac Studios; BYO and free models; the whole team copied in one click |
-| T3 | **Dan Malone's Telegram-forum team** (#5) | Four agents, one forum topic each, mention routing in General, A2A messaging with permission, crons plus webhooks, confirmation on sensitive ops | C10 routing, C5 A2A, C3, C14 | Routing is data in the template, so another user installs it against *their own* forum |
-| T4 | **Hermes self-improving agent plus cron** (#8) | Agent writes and refines its own skills; nightly 3 AM digest of the day's conversations; `/steer` and `/rollback`; zero-LLM scripted cron | C6, C2, C8 (steer via hooks), C14 | Learned skills are publishable; rollback is backed by storage versioning |
-| T5 | **JARVIS voice HUD** (#9) | Voice in/out in a command center; live activity feed; approval cards; agent-summoned media panels | C11, C12 events, C14 | No LAN box; works from phone and desktop; same HUD on any command center |
-| T6 | **Paperclip zero-human company** (#17) | CEO agent turns a mission into goals and delegates down an org chart; ticket board; per-agent budgets with auto-pause; approval gates | C4, C5, C15 budgets, C14, C2 | Each agent's provider is BYO; the company is a template others fork and remix |
-| T7 | **n8n Jarvis / Nate Herk agent team** (#10/11) | Telegram voice to an orchestrator over email, calendar, contacts and content sub-agents; expenses logged to a sheet | C10, C11, C9 (OAuth directory), C4 | No n8n hosting and no credential JSON; OAuth is one click; the creator earns on run-time rather than an affiliate link |
-| T8 | **TradingAgents debate swarm** (#22) | Parallel analyst agents, bull/bear debate, trader, risk; scheduled daily per ticker; HTML report screen; per-tier models | C4 parallel, C2, C12, C15, C24 | Scheduled 24/7 without a laptop; the report is a shareable page; other users subscribe cross-user to *your* published signal (two-way C21) |
-| T9 | **Second brain (Obsidian plus Claude Code / Cole Medin)** (#24/25) | Vault-as-files memory, CLAUDE.md conventions, 24/7 content engine that produces drafts and SOPs on a schedule | C6, C2, C9 (Obsidian/Drive sync) | Brain lives in the universe and is reachable from any channel; a template ships with empty slots, never the creator's notes |
-| T10 | **pi-style multi-agent coding team** (Pi-Agents-Team / Gas Town lite, #18/pi) | An orchestrator extension registers `dispatch_agent`; three workers in parallel boxes return summaries only; a guardrail hook blocks writes outside the repo; PRs opened via a GitHub connection | **C8**, C1, C4, C16, C9 | Runs while the user sleeps with no tmux; hooks are sandboxed; the extension itself is publishable |
-
-Reserve tests: the Home Assistant voice agent (#26), which needs MCP attach plus a local-network compute attachment (C16); and a family shared agent on WhatsApp (Hermes story), which needs C21 and multi-member access.
+Users choose how complex their projects become. Home Assistant and family-agent examples likewise check optional MCP/local-network and cross-user/member primitives; they are not platform deliverables.
 
 ### 4.4 (b) The creator-acquisition angle
 
@@ -265,7 +260,7 @@ Ordered by how much of "rebuild anything" each item unblocks, then by shared dep
 | **P0** | **Persistent boxes** (long-lived user processes, restart policy, health, owned by the universe) | C1, C10 gateways, C2 resident heartbeats; T1, T3, T10 | Revive the #4319/S7 #4292 branches. This is the zero-host 24/7 headline |
 | **P1** | **UI bridge parity with `ta` plus an event stream** (activity, tool calls, approvals) | C12, C14, C11, C17; T2, T5, T6 | Mission Control and the JARVIS HUD become plain screens |
 | **P1** | **MCP attach as a connection kind**, lazily described | C9; T3, T7, T26 | Matches pi's progressive-disclosure argument |
-| **P1** | **Channel shapes as publishable bundles** (Telegram, Discord, Slack, WhatsApp, email) built from connection plus receiver plus outbound op; routing as data | C10; T1, T3, T7 | User-built, not hard-coded, per founder rule. Ship them as *published templates*, not as platform code |
+| **P1** | **Channel shapes as publishable bundles** (Telegram, Discord, Slack, WhatsApp, email) built from connection plus receiver plus outbound op; routing as data | C10; T1, T3, T7 | Users build and optionally publish their own channels from these primitives; the platform ships no channel templates |
 | **P1** | **`ta spawn` / `ta message`** plus a task board as a data collection | C4, C5; T2, T6, T8, T10 | |
 | **P2** | **Publish-the-whole-package plus connection checklist plus versioned updates to installed copies plus lineage** | C19; creator angle 1, 3, 4 | Storage shape, so it needs an OpenSpec change |
 | **P2** | **Creator attribution ledger plus aggregate analytics** (no payout) | C20 phase 1; creator angle 2, 5 | Already the safe first phase in the design |
@@ -275,7 +270,7 @@ Ordered by how much of "rebuild anything" each item unblocks, then by shared dep
 | **P3** | **Payout rail** (fiat plus TINY), gated by founder and legal | C20 phase 2 | Money, so proposal plus design first |
 | **P3** | **Package scanning, verified-creator badge, embeddable "Run in your universe" links** | C22, creator angle 6, 7 | |
 
-**[I] The acceptance bar in one line.** TinyAssets meets the founder's goal when T1–T10 each pass three tests. First, each is rebuilt from primitives alone, with no per-setup code. Second, a second account copies it and it runs 24/7 with no host online. Third, its creator can see attribution and usage for it.
+**[I] Capability coverage.** T1-T10 checks whether users have the primitives to build their own projects. Publication, second-account copying, host-off execution and attribution exercise general capabilities when users choose them; they do not require the platform to build or ship any setup.
 
 ---
 

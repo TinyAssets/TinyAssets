@@ -69,6 +69,16 @@ This contract fills D7 step 4 and D6 extension/ta gaps. `composable-ui-experienc
 
 Hook and extension code from another author uses the same activation contract as UI bundles: recipient permission binds owner, center, installation, exact code revision/content hash and permission revision. An unchanged-scope author update stays inactive until the recipient approves that exact revision, unless a previously recorded owner auto-update grant binds the authenticated author and capability ceiling. Incoming code cannot create that grant, expand its ceiling or reuse old execution handles. This is a future supported non-UI update plan owned by this change, extending the existing recipient updater; its current presentation-updates-v1 executor remains presentation-only. This applies to agents and channel-template executable parts too; recipients choose manual or automatic updates per installed copy, automatic off by default. Recheck revocation and current authority before every execution, and invalidate prior revision handles.
 
+## Harness coordination primitives
+
+Use existing roster and agent-system launch records for ta spawn: bind owner/center, parent run, child role/model binding, task ID, allowed capabilities, budget and cancellation relationship. Support single, parallel, chain, nested and background delegation using one primitive with explicit dependency records. Authority is an intersection of current parent delegation and child-local grants, never a copied YAML assertion. Children select their own owner-connected model and return bounded summaries or owner-scoped artifact references; uncertain effects remain receipts, not success prose.
+
+Ta message targets a real agent/run mailbox with authenticated sender and recipient bindings, idempotent message ID, reply correlation and delivery/ack state. Per-owner agent messaging needs the current declared grant; cross-user routing requires the existing recipient permission path, never an assumed same-owner shortcut. A message is task content, not approval or permission. Unknown/stopped recipients remain visibly undelivered. Define Stop propagation at spawn: attached children stop with parent; explicitly detached background work has its own visible owner lifecycle. Revocation always wins.
+
+Task board is an ordinary owner-scoped data collection: stable task ID, assignee, parent/dependencies, state, expected revision, result refs and budget status. Claim/update uses optimistic concurrency so two workers cannot silently overwrite each other; history and event stream expose changes. Reuse budgets for per-agent pause at caps. Do not make the board a second execution authority.
+
+Only agent spawn, agent-to-agent messaging and the task board move into this harness contract. Reuse existing roster/agent-system, budget and collection records; no channel/team templates or specific setups are supplied.
+
 ## Migration Plan
 
 1. Add resolver and protocol negotiation with visible validation before activation. Preserve missing-settings behavior and v1 tool-only extensions.
@@ -91,48 +101,27 @@ Extend the same owner-bound bridge with subscribe/unsubscribe and a versioned ev
 
 Use an authoritative snapshot plus cursor and replay to avoid gaps; dedupe by event ID. Bound retention/backpressure and emit a resync-required result when the cursor is unavailable; obtain a new snapshot instead of silently dropping events. Account/center switch, frame destruction, grant revocation and bundle replacement invalidate streams and pending responses. Reconnect cannot carry the prior account's payloads. The transport extends the existing UI bridge; the inline approval lane need not replace its current polling to consume protected decisions.
 
-Blocking order: hooks/settings here; resident-agent-processes for long-lived gateways/heartbeats; bridge events here; connect-anything-ladder for MCP; agent-team-channel-templates for channel templates and spawn/message/task board; D5 browser; optional attachable compute via existing workspace-node/connect-cross-user-nodes. No founder desktop as infrastructure. Use existing channel, scheduler and agent-system stores. Follow-up package publishing, installed-copy versioned merge and remix credit stay with command-center-packages, command-center-recipient-updates, creator-revenue-share and attribution. Incoming packages never bring author credentials/grants. T1–T10 are integrated acceptance, not a claim that this one implementation supplies every dependency.
+Blocking order: hooks/settings here; resident-agent-processes for long-lived gateways/heartbeats; bridge events here; connect-anything-ladder for MCP; spawn/message/task-board primitives here; D5 browser; optional attachable compute via existing workspace-node/connect-cross-user-nodes. No founder desktop as infrastructure. Use existing channel, scheduler and agent-system stores. Follow-up package publishing, installed-copy versioned merge and remix credit stay with command-center-packages, command-center-recipient-updates, creator-revenue-share and attribution. Incoming packages never bring author credentials/grants. T1-T10 are a capability checklist for user-built projects, not platform deliverables.
 
-## Acceptance criteria — rebuild it here, better (T1–T10)
+## Capability checklist (T1-T10)
 
-The following acceptance bar is preserved from the supplied analysis; it is future verification, not a result. In T5, approval cards mean entry points to the founder-mandated protected approval sheet. No side requests panel is permitted.
+**Founder correction (2026-10-05): capability checklist, not build deliverables.** The platform never builds or ships T1-T10 setups or channel/team templates. Users, starting with the founder's own agent, build these as their own command-center projects, as complex as they like, to exercise the platform's general primitives.
 
-Each test is passed only if three things hold:
-- it is built **only from general primitives**;
-- it is **published** and **copied by a second account**;
-- the copy **runs 24/7 with no host online**.
+| # | User project reference | General primitives the user needs |
+|---|---|---|
+| T1 | OpenClaw heartbeat | Persistent execution; editable memory/skills; schedules and scripted checks; inbound receivers and outbound connections; owner notification rules; brokered credential custody. |
+| T2 | Henry / Mission Control | Agent spawn; per-agent models; A2A messaging; revisioned task board; schedules; editable memory/files; custom screens, ta parity and live events. |
+| T3 | Telegram-forum team | Agent spawn; permitted A2A messaging; inbound receivers/outbound calls; user-authored topic/mention routing; schedules/webhooks; protected approvals. |
+| T4 | Hermes skills / cron | Editable skills/memory; versioned history and rollback; scripted schedules; lifecycle hooks and steer commands; owner approval rules. |
+| T5 | JARVIS voice HUD | Voice input/output; custom screens/media; replayable activity events; protected approval request references. |
+| T6 | Paperclip company | Agent spawn/delegation and A2A messaging; task board with dependencies; per-agent models/budgets and pause; schedules; protected approvals. |
+| T7 | n8n Jarvis / Nate Herk | Voice input/output; inbound/outbound channel primitives; OAuth connections and data writes; spawn/delegation and A2A messaging; attribution/usage for user-published work. |
+| T8 | TradingAgents debate swarm | Parallel spawn and A2A messaging; schedules; per-agent models/budgets; report screens; data connections; authorized cross-user publication/subscriptions. |
+| T9 | Second brain | Owner-scoped files/memory; editable conventions; versioned history; schedules; sync connections; inbound/outbound channel primitives. |
+| T10 | pi-style coding team | Lifecycle hooks and extension tools; parallel spawn and A2A messaging; task board; persistent scoped processes; bounded summaries/artifact references; connection calls; optional attached compute. |
 
-The final proof is a rendered conversation through the live surface.
+This maps capability coverage across existing lanes, not setup acceptance or required publication/copying. Users choose complexity and whether to publish. Existing resident-process, connection, voice, memory/history, package, recipient-update, attribution and cross-user lanes retain their ownership. Approval cards open the protected approval sheet.
 
-| # | Original | Rebuild spec (pass criteria) | Needs | Better-than-original bar |
-|---|---|---|---|---|
-| T1 | **OpenClaw personal agent with heartbeat** (#1) | One agent with SOUL/MEMORY files; 30-min heartbeat that messages *only* when warranted; Telegram in/out; Gmail and Calendar skills | C1/C2, C10, C9, C6 | No Mac mini; copy-and-run in under 5 min; skills cannot exfiltrate keys |
-| T2 | **Alex Finn's Henry plus Mission Control** (#3) | Chief of staff plus four specialists on *different* models; screens for task board, calendar, projects, memory, docs and team; mission statement drives idle reverse-prompting; the agent builds a new screen on request | C4, C5, C12 (bridge parity plus events), C15, C2 | Zero hardware instead of four Mac Studios; BYO and free models; the whole team copied in one click |
-| T3 | **Dan Malone's Telegram-forum team** (#5) | Four agents, one forum topic each, mention routing in General, A2A messaging with permission, crons plus webhooks, confirmation on sensitive ops | C10 routing, C5 A2A, C3, C14 | Routing is data in the template, so another user installs it against *their own* forum |
-| T4 | **Hermes self-improving agent plus cron** (#8) | Agent writes and refines its own skills; nightly 3 AM digest of the day's conversations; `/steer` and `/rollback`; zero-LLM scripted cron | C6, C2, C8 (steer via hooks), C14 | Learned skills are publishable; rollback is backed by storage versioning |
-| T5 | **JARVIS voice HUD** (#9) | Voice in/out in a command center; live activity feed; approval cards; agent-summoned media panels | C11, C12 events, C14 | No LAN box; works from phone and desktop; same HUD on any command center |
-| T6 | **Paperclip zero-human company** (#17) | CEO agent turns a mission into goals and delegates down an org chart; ticket board; per-agent budgets with auto-pause; approval gates | C4, C5, C15 budgets, C14, C2 | Each agent's provider is BYO; the company is a template others fork and remix |
-| T7 | **n8n Jarvis / Nate Herk agent team** (#10/11) | Telegram voice to an orchestrator over email, calendar, contacts and content sub-agents; expenses logged to a sheet | C10, C11, C9 (OAuth directory), C4 | No n8n hosting and no credential JSON; OAuth is one click; the creator earns on run-time rather than an affiliate link |
-| T8 | **TradingAgents debate swarm** (#22) | Parallel analyst agents, bull/bear debate, trader, risk; scheduled daily per ticker; HTML report screen; per-tier models | C4 parallel, C2, C12, C15, C24 | Scheduled 24/7 without a laptop; the report is a shareable page; other users subscribe cross-user to *your* published signal (two-way C21) |
-| T9 | **Second brain (Obsidian plus Claude Code / Cole Medin)** (#24/25) | Vault-as-files memory, CLAUDE.md conventions, 24/7 content engine that produces drafts and SOPs on a schedule | C6, C2, C9 (Obsidian/Drive sync) | Brain lives in the universe and is reachable from any channel; a template ships with empty slots, never the creator's notes |
-| T10 | **pi-style multi-agent coding team** (Pi-Agents-Team / Gas Town lite, #18/pi) | An orchestrator extension registers `dispatch_agent`; three workers in parallel boxes return summaries only; a guardrail hook blocks writes outside the repo; PRs opened via a GitHub connection | **C8**, C1, C4, C16, C9 | Runs while the user sleeps with no tmux; hooks are sandboxed; the extension itself is publishable |
+### Primitive credential verification
 
-Reserve tests: the Home Assistant voice agent (#26), which needs MCP attach plus a local-network compute attachment (C16); and a family shared agent on WhatsApp (Hermes story), which needs C21 and multi-member access.
-
-### Acceptance ownership
-
-| Tests | Implementing dependencies alongside this change |
-|---|---|
-| T1, T3, T10 | resident-agent-processes; agent-team-channel-templates; connect-anything-ladder |
-| T2, T6, T8 | agent-team-channel-templates; existing model/budget, scheduler and cross-user recipient lanes |
-| T4, T9 | Existing D7 memory/history, scheduler and connection lanes; hooks/settings here |
-| T5, T7 | Existing voice/channel/renderer lanes; bridge events here; inline-connect-and-approve and connection ladder; creator-revenue-share for T7 |
-| Every T1–T10 | command-center-packages and command-center-recipient-updates plus attribution: publish, second-account copy with local bindings, no leaked source state; live rendered proof on cloud-only compute |
-
-Record source and copy identities, package revisions, deployment SHA, rendered proof and host-off run evidence for every test. No box is marked accepted by a mocked demo or merely by publishing a package.
-
-### T1 measurable acceptance
-
-For both publisher and second-account copy, record a host-off 24-hour run with 48 scheduled 30-minute heartbeats. Fix and record the owner's editable warrant rule before the run: notify for a newly urgent message or a calendar event entering a 30-minute reminder window; otherwise remain silent. Seed no-change ticks, one nonurgent email, one urgent email and one due event. Pass only with exactly two outbound notifications, each on the first eligible tick, zero notifications for no-change/nonurgent ticks, and no duplicates after replay/restart. Retain tick inputs, rule revision, decision receipts and Telegram delivery IDs; changing that rule must change subsequent behavior without a platform patch.
-
-Under T1's broker-only credential default, use synthetic canary keys for Gmail/Calendar and a hostile skill that attempts environment/file reads, a foreign connection slot, response echo (including split streaming chunks) and an outbound upload to a test collector. Pass only if no key bytes appear in model/tool context, jail files/environment, logs, transcript, published package or collector; the foreign slot is denied before lookup while allowed Gmail/Calendar operations still succeed. Record attempted paths and scanned artifacts. Repeat after a second-account install using its own keys; no source-account handle or secret is usable. Explicit owner raw-key stdio opt-in is a different custody choice and cannot be claimed to satisfy this broker-only key-blind criterion.
+For broker-only credential custody, use synthetic canary keys and a hostile skill probing environment/files, foreign connection slots, response echo (including split streaming chunks) and outbound upload to a test collector. Verify no key bytes reach model/tool context, jail files/environment, logs, transcripts, exported packages or the collector; foreign slots are denied before lookup while permitted operations succeed. Repeat with recipient-local bindings and verify source-account handles are unusable. Record attempted paths and scanned artifacts. Explicit owner raw-key stdio opt-in is a different custody choice and does not satisfy this broker-only criterion. This verifies primitives, not a T1 setup deliverable.

@@ -1,5 +1,7 @@
 # 2026-10-04 — Preserve supplied Muse connection research for connection and approval design.
 
+**Founder correction (2026-10-05): capability checklist, not build deliverables.** The platform never builds or ships T1-T10 setups or channel/team templates. Users, starting with the founder's own agent, build these as their own command-center projects, as complex as they like, to exercise the platform's general primitives.
+
 # Meta Muse: every way it connects to other software, and parity for TinyAssets
 
 Researched 2026-10-04 (web search + fetch, sources inline). Evidence labels:
