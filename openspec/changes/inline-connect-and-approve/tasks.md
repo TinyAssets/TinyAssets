@@ -21,6 +21,13 @@ Current follow-up lane: `feat/approval-sheet-and-connect-card`, based on
 
 ## 1. Bound requests and owner authority
 
+Follow-up `fix/consent-asks-owner-session`: close bearer answers for all ten
+consent kinds using the existing protected owner-session door, including item,
+retry, Clear/Deny and OAuth token-answer paths. Tasks 1.2–1.4 stay unchecked:
+this partial slice does not complete their universal bound-token, classification,
+or payment-scope contracts. Evidence and entry-point inventory live in
+[consent-delivery.md](consent-delivery.md).
+
 - [ ] 1.1 Migrate existing pending-request tables into protected activity storage with one lifecycle authority; extend rules/effect_intents/activity_events rather than duplicate them. Implement the owner-control coordinator's cross-worker lock and durable pause with explicit retryable refusal (no queue/partial success) of ask and other mutations. Verify drain/copy/atomic cutover marker, pre/post-cutover recovery and compatible rollback preserve requests/items/answers/suppressions/unmutes and in-flight receipts.
 - [ ] 1.2 Bind generic actions, pinned payloads, trusted provenance and deadlines; render all approval fields from the protected envelope. Verify forged identities and tampered legacy prose cannot change the preview or executable action.
 - [ ] 1.3 Add interactive owner sessions and single-use session/action/scope-bound approval tokens for protected web/native views. Reject bearer-only chatbot/MCP/CLI approvals, token minting, dispatch-retries and rule/classification-write bypasses; prove package/template/agent classification proposals are inert until exact-revision owner approval and changed revisions cannot reuse approval; verify replay, CSRF, account switch and cross-user rejection.

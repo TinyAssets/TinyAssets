@@ -97,12 +97,64 @@ def test_failed_preview_keeps_draft_and_offers_protected_sign_in(page):
     assert page.get_by_role("button", name="Allow once").is_disabled()
 
 
+@pytest.mark.parametrize("failure", [
+    {"error": "provider_authority_denied", "detail": "Try again", "request_pending": True},
+    {"error": "request_invalid", "detail": "Ask for the correct fields"},
+])
+def test_owner_answer_preserves_structured_refusals_for_existing_consumers(page, failure):
+    result = page.evaluate("""async failure => {
+      window.fetch=async()=>({ok:false,status:404,json:async()=>failure});
+      return InlineApprovals.post('answer',{request_id:'req-1',values:{}});
+    }""", failure)
+    assert result == failure
+
+
+@pytest.mark.parametrize("operation", ["answer", "preview", "decide"])
+def test_missing_owner_proof_still_throws_sign_in_error(page, operation):
+    result = page.evaluate("""async operation => {
+      window.fail=true;
+      try { await InlineApprovals.post(operation,{request_id:'req-1'}); return null; }
+      catch(error) { return {signIn:error.signIn,message:error.message}; }
+    }""", operation)
+    assert result == {"signIn": True, "message": "interactive_approval_required"}
+
+
 def test_history_is_read_only(page):
     page.evaluate("window.historyRows([{title:'Sent message',status:'answered'}])")
     page.evaluate("document.getElementById('request-history').hidden=false")
     rail = page.locator("#request-rail")
     assert "Request history" in rail.inner_text()
     assert rail.locator("button,input,textarea").count() == 0
+
+
+@pytest.mark.parametrize("operation", ["answer", "preview", "decide"])
+def test_unauthenticated_response_preserves_auth_required(page, operation):
+    result = page.evaluate("""async operation => {
+      window.fetch=async()=>({ok:false,status:401,json:async()=>({error:'authentication_required'})});
+      try { await InlineApprovals.post(operation,{}); return null; }
+      catch(error) { return {authRequired:error.authRequired}; }
+    }""", operation)
+    assert result == {"authRequired": True}
+
+
+def test_model_answer_displays_protected_sign_in_and_keeps_request(page):
+    html, _ = render_app_html()
+    start = html.index("    async answer(accepted){")
+    end = html.index("    wire(){", start)
+    page.evaluate("""source => {
+      document.body.insertAdjacentHTML('beforeend','<div id="hosted-model-status"></div>');
+      window.model={epoch:1,busy:false,request:{request_id:'model-request'},
+        paint(){},status(text){document.getElementById('hosted-model-status').textContent=text;}};
+      Object.assign(window.model,eval('({' + source + '})'));
+      MCP.answerRequest=()=>InlineApprovals.post('answer',{});
+      window.fail=true;
+    }""", html[start:end])
+    page.evaluate("window.model.answer(true)")
+    assert page.get_by_role("link", name="Sign in to approve").is_visible()
+    link = page.get_by_role("link", name="Sign in to approve")
+    assert link.get_attribute("href") == "/app/owner-sign-in"
+    assert page.evaluate("window.model.request.request_id") == "model-request"
+    assert page.evaluate("window.model.busy") is False
 
 
 def test_stale_preview_disables_effects_but_allows_skip(page):

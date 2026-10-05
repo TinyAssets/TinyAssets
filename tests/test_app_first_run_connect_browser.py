@@ -49,19 +49,24 @@ def page(app_url, request, browser):
                             }}}}
                         };
                     }else{
-                        wire.answers++;wire.connected=true;result={status:'answered'};
+                        throw new Error('Unexpected bearer answer');
                     }
                     return Response.json({jsonrpc:'2.0',id:frame.id,result:{
                         content:[{type:'text',text:JSON.stringify(result)}]}});
                 }
                 throw new Error('Unexpected handshake');
             }
+            if(url==='/app/model-connect/inline_begin'&&wire.needsOwnerLogin)
+                return Response.json({error:'interactive_approval_required'},{status:403});
             if(url==='/app/model-connect/inline_begin')return Response.json({
                 flow:'a'.repeat(43),launch_path:'/app/model-callback/'+'a'.repeat(43)+'?launch=1'});
-            if(url==='/app/model-connect/inline_poll')return Response.json(
-                wire.flow==='ready'?{status:'confirmation_required',request_id:'free-request',
-                    request:{request_id:'free-request',action:{type:'bind_model_access'}}
-                }:{status:wire.flow});
+            if(url==='/app/model-connect/inline_poll'){
+                if(wire.flow!=='ready')return Response.json({status:wire.flow});
+                wire.flow='consumed';wire.answers++;wire.connected=true;
+                return Response.json({status:'confirmation_required',request_id:'free-request',
+                    request:{request_id:'free-request',action:{type:'bind_model_access'}},
+                    answer:{status:'answered'}});
+            }
             if(url==='/app/model-connect/inline_cancel'){
                 if(wire.delayCancel)await new Promise(resolve=>wire.releaseCancel=resolve);
                 wire.flow='cancelled';return Response.json({status:'cancelled'});}
@@ -222,3 +227,38 @@ def test_late_cancel_cannot_replace_connected_card(page):
     card = page.get_by_role("region", name="Needs a connection")
     expect(card.get_by_role("status")).to_have_text("Connected")
     assert page.evaluate("wire.sends.length") == 2
+
+
+def test_missing_owner_session_offers_protected_sign_in_and_keeps_message(page):
+    from playwright.sync_api import expect
+
+    send(page)
+    page.evaluate("wire.needsOwnerLogin=true")
+    card = page.get_by_role("region", name="Needs a connection")
+    card.get_by_role("button", name="Connect OpenRouter", exact=True).click()
+    link = card.get_by_role("link", name="Sign in to approve")
+    expect(link).to_be_visible()
+    expect(link).to_have_attribute("href", "/app/owner-sign-in")
+    assert page.evaluate("readInflight().message") == "Help me plan my day"
+    assert page.evaluate("wire.answers") == 0
+    assert page.evaluate("wire.sends.length") == 1
+
+
+def test_generic_sign_in_without_owner_session_offers_protected_login(page):
+    from playwright.sync_api import expect
+
+    page.evaluate("""async()=>{
+        const original=window.fetch;
+        window.fetch=async(url,opts)=>url==='/app/model-connect/oauth_begin'
+            ? Response.json({error:'interactive_approval_required'},{status:403})
+            : original(url,opts);
+        const note=document.createElement('div');note.id='oauth-start-status';
+        const button=document.createElement('button');button.id='oauth-start-button';
+        document.body.append(note,button);
+        await ConnectOAuth.begin({request_id:'owner-request',title:'Connect'},note,button);
+    }""")
+    link = page.locator("#oauth-start-status").get_by_role("link", name="Sign in to approve")
+    expect(link).to_be_visible()
+    expect(link).to_have_attribute("href", "/app/owner-sign-in")
+    expect(page.locator("#oauth-start-button")).to_be_enabled()
+    assert page.evaluate("sessionStorage.getItem(ConnectOAuth.storageKey)") is None

@@ -16,7 +16,7 @@ pytestmark = pytest.mark.usefixtures("cloud_runtime")
 
 @pytest.fixture
 def pool(tmp_path, monkeypatch, authenticate_request, wires):
-    from tinyassets.api.pending_requests import answer_request
+    from tests.owner_answer import answer_request
     from tinyassets.onboarding.source_connect import connect_source
     from tinyassets.providers.api_key_http_provider import ApiKeyHttpProvider
     from tinyassets.providers.free_sources import source_preset
