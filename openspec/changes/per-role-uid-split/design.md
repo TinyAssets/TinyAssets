@@ -1450,6 +1450,19 @@ This removes the source-check path dependency without moving UsageStore's four
 tables at runtime: create/reserve/receipt/settle and daily evidence IPC remain
 pending, and no inference or startup completion is claimed.
 
+### D44. Mechanical decision: accounting operations retain daemon-held leases
+
+The authenticated owner channel gains a closed set of usage operations, with
+owner/center bound outside each document and no SQL, callable or path field.
+The daemon still creates and holds both kernel liveness proofs. The broker
+checks those proofs before inserting a root and owns all usage transactions in
+its ledger. Reference validation uses broker-local grant facts; claim, retry and
+send checkpoints remain broker-local and one-use. Remote operations never retry
+an ambiguous mutation. Budget refusals preserve the committed receipt; transport
+failure grants no capacity. Legacy unsplit accounting remains in the daemon DB.
+Runtime lock permissions, daily evidence, refresh and inference POST production
+proofs remain separate prerequisites; this decision does not activate startup.
+
 ## Risks / Trade-offs
 
 - **The launcher is root-adjacent code.** One file, stdlib-only, run `-I -S`, a static kind table,

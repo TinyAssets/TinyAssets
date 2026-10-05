@@ -295,6 +295,9 @@ class _Connection:
         if op == "LEDGER_QUERY":
             answer = await asyncio.to_thread(self._ledger_query, doc)
             await self.send_async(rf.control(rf.CONNECTION, answer))
+        elif op == "USAGE":
+            answer = await asyncio.to_thread(self._usage, doc)
+            await self.send_async(rf.control(rf.CONNECTION, answer))
         elif op == "HTTP_CONNECT":
             answer = await asyncio.to_thread(self._http_connect, doc)
             await self.send_async(rf.control(rf.CONNECTION, answer))
@@ -430,6 +433,33 @@ class _Connection:
             return {"op": "HTTP_POLICY_REFUSED", "error_class":
                     "GrantResolutionError" if type(exc).__name__ == "GrantResolutionError"
                     else "refused"}
+
+    def _usage(self, doc: dict[str, Any]) -> dict[str, Any]:
+        from tinyassets.broker.usage import local_operation, validate
+        from tinyassets.request_budget import RequestBudgetExceeded
+
+        try:
+            if set(doc) != {"op", "principal", "command_center", "generation", "token",
+                            "usage_id", "document"}:
+                raise ValueError("unsupported accounting fields")
+            _namespace(doc["principal"], doc["command_center"])
+            validate(doc["document"])
+            if type(doc["generation"]) is not int or not isinstance(doc["token"], str):
+                raise Fenced("invalid fence")
+            with self._server._fence.send(doc["generation"], doc["token"]):
+                try:
+                    result = local_operation(self._server._ledger_for(doc["principal"]),
+                                             principal=doc["principal"],
+                                             command_center=doc["command_center"],
+                                             usage_id=doc["usage_id"], document=doc["document"])
+                    answer = {"op": "USAGE_RESULT", "result": result}
+                except RequestBudgetExceeded as exc:
+                    answer = {"op": "USAGE_STOPPED", "reason": exc.reason,
+                              "receipt": exc.request_receipt}
+                rf.control(rf.CONNECTION, answer)
+                return answer
+        except Exception:  # noqa: BLE001 - fixed refusal, no storage details on wire
+            return {"op": "USAGE_REFUSED"}
 
     def _http_connect(self, doc: dict[str, Any]) -> dict[str, Any]:
         from tinyassets.broker.http_connect import local_operation, validate

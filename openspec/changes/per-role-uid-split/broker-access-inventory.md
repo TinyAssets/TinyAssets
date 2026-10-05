@@ -338,3 +338,5 @@ identity. No raw daemon outbound.db read on this path. Actual production-image
 source binding passes before/after broker restart. UsageStore create/reserve/
 receipt/settle and daily-evidence IPC still remain; table relocation alone and
 this read route do not establish runtime inference accounting.
+
+D44 routes UsageStore runtime creation, reservations, receipts, links, settlement and reference issuance through authenticated USAGE IPC. Claims/retry/send checks use the broker-local store. Production launcher proof passes with fixture lock modes before/after restart; runtime lock modes, actual inference POST, daily evidence and refresh remain prerequisites.

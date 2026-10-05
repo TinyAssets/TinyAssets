@@ -207,6 +207,41 @@ class BrokerClient:
             raise ProxyRequestError("invalid credential broker catalog response")
         return answer["result"]
 
+    def usage(self, usage_id: str, document: dict[str, Any]) -> dict[str, Any]:
+        from tinyassets.broker.usage import validate
+        from tinyassets.request_budget import RequestBudgetExceeded
+        from tinyassets.storage.agent_request_usage import InferenceUsageStopped
+        from tinyassets.storage.outbound_connections import ProxyRequestError
+
+        validate(document)
+        generation, token = self._fence()
+        wire = {"op": "USAGE", "principal": self._principal,
+                "command_center": self._command_center, "generation": generation,
+                "token": token, "usage_id": usage_id, "document": document}
+        with self._lock, socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+            sock.settimeout(self._timeout)
+            try:
+                sock.connect(os.fspath(self._path))
+                if self._verify_peer is not None:
+                    self._verify_peer(sock)
+                sock.sendall(rf.control(rf.CONNECTION, wire))
+                frame = rf.read_frame_blocking(sock)
+                if frame is None or frame.kind != rf.CONTROL or frame.stream != rf.CONNECTION:
+                    raise rf.FrameError("invalid accounting response")
+                answer = frame.control()
+            except (OSError, rf.FrameError):
+                raise ProxyRequestError("broker accounting outcome unavailable") from None
+        if answer.get("op") == "USAGE_STOPPED":
+            reason, receipt = answer.get("reason"), answer.get("receipt")
+            if (reason not in InferenceUsageStopped.REASONS or not isinstance(receipt, dict)
+                    or receipt.get("usage_id") != usage_id
+                    or type(receipt.get("dispatched")) is not int):
+                raise ProxyRequestError("invalid accounting stop")
+            raise RequestBudgetExceeded(reason, receipt)
+        if answer.get("op") != "USAGE_RESULT" or not isinstance(answer.get("result"), dict):
+            raise BrokerRefused("credential broker accounting refused")
+        return answer["result"]
+
     def http_connect(self, document: dict[str, Any]) -> dict[str, Any]:
         from tinyassets.broker.http_connect import validate
         from tinyassets.storage.outbound_connections import GrantResolutionError, ProxyRequestError

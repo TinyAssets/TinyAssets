@@ -1,3 +1,46 @@
+# Current delivery: D44 runtime accounting IPC
+
+D44 routes create/reserve/check/dispatch/settle/receipt/link/close and reference
+issuance through a closed authenticated broker operation. The daemon retains
+kernel leases; the broker owns the four tables and local claim/retry checkpoints.
+Foreign scope, stale fence, outage, source revocation and consumed references
+refuse. Mutations never retry ambiguous transport outcomes. Startup inactive.
+Cross-family peer-agents: AGREE, APPROVE; no floor/correctness findings. Resolved
+the review's path-normalization note with an exact relocated-ledger comparison.
+
+Release-critical files: **0; none**. Runtime broker usage/client/server and
+storage/agent_request_usage plus mirrors, test_broker_usage_ipc, launcher oracle,
+design/inventory/delivery. No affected heavy-list test file. No full task newly
+checked off. No PR, deployment, rebase or force push.
+
+```text
+python scripts/linux_oracle.py -- tests/test_broker_usage_ipc.py tests/test_broker_usage_source.py tests/test_request_usage_store.py tests/test_http_inference_lifecycle.py tests/test_parent_turn_request_budget.py tests/test_broker_server.py tests/test_broker_upstream_stream.py -q -rs
+182 passed in 64.04s; zero skips
+python scripts/linux_oracle.py -- tests/test_broker_usage_ipc.py -q -rs
+9 passed in 1.34s; zero skips (final direct-scope refusal assertion)
+python scripts/linux_oracle.py --production-image tinyassets-uid-accounting:d44 --build --production-stream
+sha256:4299fcbba3a5199d66d02c81da202fda99ff33725c7870796771746af3995db6
+D44 actual accounting create/reserve/dispatch/settle/receipt/close via launcher broker, foreign refusal and committed budget stop: PASS
+```
+D44 passes before/after restart, using explicit fixture lock permissions. Runtime
+permission creation/migration and actual inference POST are not claimed here.
+All prior launcher consumer and HTTPS GET proofs pass. Egress/accounting forward
+and reverse dry-run/apply/repeat, 6+8+3 crash boundaries, hostile input refusal
+pass; these remain substeps, not full migration/deletion or actual old-image
+rollback. Same seven capabilities and compose security options. Fixture network
+and CA are cleaned by the harness.
+
+Targeted Ruff, strict OpenSpec, plugin import and whitespace pass. Full Ruff has
+55 pre-existing errors outside these changes. A PowerShell redirected build
+reported NativeCommandError for Docker's normal stderr despite passing probes;
+reran the completed image directly to get an unambiguous tool exit status.
+
+Next, continuing this run: daemon-owned broker-readable lock creation and offline
+mode migration, actual inference POST, daily evidence, refresh; then every engine
+class, full migration/two-pass deletion, actual old-image rollback and finally
+startup/healthcheck only after all prerequisites pass.
+
+---
 # Current delivery: D43 accounting source binding
 
 D42 pushed as 11b4cc3a78; hygiene added 4 tests, removed 0, tampering 0.
