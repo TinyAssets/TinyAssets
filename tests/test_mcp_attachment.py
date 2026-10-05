@@ -95,3 +95,13 @@ def test_unknown_stored_version_fails_without_deletion(ledger):
         operation(ledger)
     with ledger._connect() as conn:
         assert conn.execute("SELECT COUNT(*) FROM mcp_attachments").fetchone()[0] == 1
+
+
+def test_rollback_cleanup_can_remove_unknown_metadata_version(ledger):
+    operation(ledger, value=draft())
+    with ledger._connect() as conn:
+        conn.execute("UPDATE mcp_attachments SET descriptor_json='{}'")
+    assert ledger.delete_connection("conn-alice")
+    with ledger._connect() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM mcp_attachments").fetchone()[0] == 0
+    assert ledger._get_connection_resource("conn-bob") is not None

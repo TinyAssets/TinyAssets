@@ -84,6 +84,8 @@ class Capabilities:
                 self._mcp_catalog = attached
                 for name, (binding, tool) in attached.items():
                     items.append({"name": name, "description": str(tool.get("description", "")),
+                                  "account_label": binding.attachment.display_name,
+                                  "server_url": binding.attachment.endpoint,
                                   "arguments": tool["inputSchema"],
                                   "annotations": tool.get("annotations", {}),
                                   "catalog_hash": binding.attachment.catalog_hash})

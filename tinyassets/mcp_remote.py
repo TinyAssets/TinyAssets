@@ -168,6 +168,8 @@ class RemoteMcp:
         async with self._broker.stream(
             grant_id=binding.grant_id, connection_id=binding.connection_id, verb="POST",
             request={"url": binding.attachment.endpoint, "headers": headers,
+                     **({"header_name": binding.attachment.auth_header}
+                        if binding.attachment.auth_header else {}),
                      "body": json.dumps(document, separators=(",", ":"))},
             op_id=op_id, mcp_binding={"incarnation": binding.incarnation,
                                     "revision": binding.attachment.revision},

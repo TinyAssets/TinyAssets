@@ -512,6 +512,16 @@ def _validated_connect(action: dict[str, Any]) -> dict[str, Any]:
             "host": endpoint.netloc, "path_template": endpoint.path or "/", "methods": ["POST"],
         }], "scopes": []}
     deposit = _validated_action({**action, "type": "connect_http"})
+    if mcp_endpoint:
+        from tinyassets.mcp_attachment import Attachment
+
+        auth_header = action.get("mcp_auth_header", "")
+        if deposit["auth_scheme"] == "header" and not auth_header:
+            raise ValueError("MCP API-key authentication requires its header name")
+        if deposit["auth_scheme"] != "header" and auth_header:
+            raise ValueError("MCP credential header requires header authentication")
+        Attachment.parse({"endpoint": mcp_endpoint, "display_name": deposit["destination"],
+                          "auth_header": auth_header})
     try:
         uses = validate_uses(action.get("uses"))
         headers = validate_constant_headers(action.get("constant_headers"))
@@ -529,7 +539,7 @@ def _validated_connect(action: dict[str, Any]) -> dict[str, Any]:
         )
     return {**deposit, "type": "connect", "uses": uses, "constant_headers": headers,
             "oauth_request": oauth_request,
-            **({"mcp_url": mcp_endpoint} if mcp_endpoint else {})}
+            **({"mcp_url": mcp_endpoint, "mcp_auth_header": auth_header} if mcp_endpoint else {})}
 
 
 def _has_sign_in(action: dict[str, Any]) -> bool:
@@ -1896,6 +1906,8 @@ def _grant_sentence(row: dict[str, Any]) -> str:
         base = _grant_sentence({**row, "action": {**action, "type": "connect_http"}})
         if action.get("mcp_url"):
             base += f' Connect the MCP tools at {action["mcp_url"]}.'
+            if action.get("mcp_auth_header"):
+                base += f' MCP sends the API key in the {action["mcp_auth_header"]} header.'
         return (base + _uses_sentence(action) + _sign_in_sentence(row)) if base else ""
     if action.get("type") in ("extend_http", "connect_http") and action.get("access") == "full":
         return _full_channel_sentence(action)
@@ -3364,6 +3376,15 @@ def _deposit_answer(
             require_current(udir, request_id)
         except RequestRefused:
             return {"error": "originating_task_stopped", "request_pending": True}
+    mcp_draft = None
+    if action.get("mcp_url"):
+        from dataclasses import asdict
+
+        from tinyassets.mcp_attachment import Attachment
+
+        mcp_draft = asdict(Attachment(
+            action["mcp_url"], action["destination"], activation_request_id=request_id,
+            auth_header=action.get("mcp_auth_header", "") if auth_scheme == "header" else ""))
     deposited = connect_http(
         universe_id=universe_id,
         payload=json.dumps(
@@ -3382,6 +3403,7 @@ def _deposit_answer(
             }
         ),
         allow_oauth2=auth_scheme == "oauth2",
+        mcp_draft=mcp_draft,
     )
     if deposited.get("error"):
         # Leave it PENDING: the answer did not land, and closing the tab
@@ -3519,7 +3541,8 @@ def _complete_connect(
 
         out.update(activate(_universe_dir(uid), actor, applied["grant_id"],
                             deposited["connection_id"], action["mcp_url"], action["destination"],
-                            request_id))
+                            request_id, action.get("mcp_auth_header", "")
+                            if deposited.get("auth_scheme") == "header" else ""))
         from tinyassets.storage.effector_consents import grant_consent
 
         grant_consent(_universe_dir(uid), sink="authenticated_external_call",

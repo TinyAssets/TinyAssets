@@ -55,15 +55,29 @@ async def handle_connections(request):
         raw = await onboarding._read_bounded_body(request, 2048)
         try:
             data = json.loads(raw) if raw is not None else None
+            operation = data.get("operation") if isinstance(data, dict) else None
+            fields = ({"operation", "universe_id", "destination", "mcp_url", "auth_scheme",
+                       "auth_header"} if operation == "connect_mcp" else
+                      {"operation", "universe_id", "destination", "incarnation"}
+                      if operation == "detach_mcp" else
+                      {"universe_id", "destination", "incarnation"})
             if (
                 not isinstance(data, dict)
-                or set(data) != {"universe_id", "destination", "incarnation"}
-                or any(not isinstance(v, str) or not v or len(v) > 200 for v in data.values())
+                or set(data) != fields
+                or any(not isinstance(v, str) or (not v and k != "auth_header")
+                       or len(v) > (1000 if k == "mcp_url" else 200) for k, v in data.items())
             ):
                 raise ValueError
         except (ValueError, UnicodeError):
             return JSONResponse({"error": "invalid_connection_removal"}, 400, headers=_HEADERS)
     identity = current_identity()
+    if data is not None and data.get("operation"):
+        from tinyassets.onboarding.owner_sessions import require
+
+        try:
+            require(request, owner=identity.user_id)
+        except PermissionError:
+            return JSONResponse({"error": "interactive_approval_required"}, 403, headers=_HEADERS)
 
     def run():
         from tinyassets.api.helpers import _base_path
@@ -81,11 +95,17 @@ async def handle_connections(request):
             require_founder_home(base, uid, identity.user_id)
             _require_current_admin(base, universe_id=uid, owner=identity.user_id)
             if data is not None:
+                if data.get("operation") == "connect_mcp":
+                    from tinyassets.onboarding.mcp_connect import offer
+
+                    result = offer(base, uid, identity.user_id, data)
+                    return result, 409 if result.get("error") else 200
                 result = remove_http(
                     universe_id=uid,
                     payload={
                         "destination": data["destination"],
                         "incarnation": data["incarnation"],
+                        "attachment_only": data.get("operation") == "detach_mcp",
                     },
                 )
                 return result, 409 if result.get("error") else 200
@@ -97,10 +117,19 @@ async def handle_connections(request):
                     and resource.owner_user_id == identity.user_id
                     and resource.connection_type == "http"
                 ):
+                    from tinyassets.mcp_attachment import metadata
+
+                    attachment = metadata(base, principal=identity.user_id, command_center=uid,
+                                          grant_id=grant.grant_id,
+                                          connection_id=resource.connection_id,
+                                          incarnation=incarnation)
                     rows.append(
                         {
                             **_project(resource, grant),
                             "incarnation": incarnation,
+                            **({"mcp": {key: attachment[key] for key in
+                                         ("endpoint", "display_name", "state")}}
+                               if attachment is not None else {}),
                         }
                     )
             known = {row["connection_id"] for row in rows}

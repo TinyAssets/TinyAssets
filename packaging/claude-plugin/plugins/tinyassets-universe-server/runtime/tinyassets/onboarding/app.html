@@ -787,6 +787,16 @@
         Your history and designs stay. Your provider account is not deleted.
         Requests already sent may still finish.</p>
         <button class="btn" type="button" id="settings-connect">Connect a service</button>
+        <details><summary>Connect an MCP server</summary>
+          <form id="mcp-connect-form">
+            <label>Server URL <input id="mcp-connect-url" type="url" required placeholder="https://example.com/mcp" /></label>
+            <label>Account label <input id="mcp-connect-label" required placeholder="work-account" pattern="[a-z0-9][a-z0-9:_-]*" /></label>
+            <p>Use a different label for each account on the same server.</p>
+            <label>Authentication <select id="mcp-connect-auth"><option value="bearer">Sign in or bearer key</option><option value="header">API key header</option></select></label>
+            <label>API key header name <input id="mcp-connect-header" placeholder="X-API-Key" /></label>
+            <button class="btn" type="submit">Review connection</button>
+          </form>
+        </details>
         <button id="btn-refresh-connections" class="btn btn--ghost">Refresh connections</button>
         <button id="btn-connect-free-ai" class="btn btn--ghost" type="button">Connect free AI</button>
         <div id="connection-list"></div>
@@ -7249,6 +7259,35 @@
   function wire(){
     if(typeof wirePhoneConversation === "function") wirePhoneConversation();
     $("settings-connect").onclick=()=>toggleAddKey();
+    $("mcp-connect-form").onsubmit=async event=>{
+      event.preventDefault();
+      const ticket=holdConnections();if(!ticket)return;
+      const fence=connectionFence("");
+      const status=$("connection-status"),button=event.target.querySelector('button');
+      button.disabled=true;status.textContent="Preparing your connection sheet…";
+      try{
+        const me=await fetch('/app/me',{headers:authHeaders(),credentials:'same-origin'});
+        const state=await me.json();
+        if(!sameConnectionFence(connectionFence(""),fence))return;
+        const response=await fetch('/app/connections',{method:'POST',credentials:'same-origin',
+          headers:Object.assign({'Content-Type':'application/json'},authHeaders()),
+          body:JSON.stringify({operation:'connect_mcp',universe_id:state.universe_id,
+            destination:$("mcp-connect-label").value,mcp_url:$("mcp-connect-url").value,
+            auth_scheme:$("mcp-connect-auth").value,
+            auth_header:$("mcp-connect-auth").value==='header'?$("mcp-connect-header").value:''})});
+        const result=await response.json();
+        if(!sameConnectionFence(connectionFence(""),fence))return;
+        if(!response.ok||result.error||!result.request_id){
+          status.textContent=result.error==='account_label_in_use'
+            ?'That account label is already connected. Choose a different label.'
+            :'Could not prepare the connection. Check the URL, label and authentication, then sign in again if needed.';
+          return;
+        }
+        await refreshRail({quiet:true});RequestSheets.open(result.request_id);
+        status.textContent='Finish connecting in the approval sheet.';
+      }catch(_e){status.textContent='Connection setup is unconfirmed. Check your pending requests before retrying.';}
+      finally{releaseConnections(ticket);button.disabled=false;}
+    };
     // Default-hidden in HTML prevents a pre-script flash inside the native shell.
     // Reveal and initialise Voice only on the web surface; NATIVE covers both iOS
     // and Android Capacitor shells.
@@ -7659,7 +7698,7 @@
       const label=typeof row.label==="string"&&row.label?row.label:row.destination;
       // Every user-facing string here is textContent. A destination is account
       // data, and this sentence IS the thing being authorised.
-      name.textContent=label+" ";
+      name.textContent=label+(row.mcp?' — '+row.mcp.endpoint+' ('+row.mcp.state+')':'')+" ";
       reveal.type="button";reveal.className="btn btn--ghost";reveal.textContent="Disconnect";
       reveal.setAttribute("aria-expanded","false");reveal.setAttribute("aria-controls",panelId);
       panel.id=panelId;panel.className="connection-confirm";panel.hidden=true;
@@ -7675,6 +7714,28 @@
       cancel.type="button";cancel.className="btn btn--ghost";cancel.textContent="Cancel";
       panel.append(explain,approve,cancel);
       item.append(name,reveal,panel);
+      if(row.mcp&&row.mcp.state!=='revoked'){
+        const detach=document.createElement('button');detach.type='button';
+        detach.className='btn btn--ghost';detach.textContent='Disconnect MCP tools only';
+        detach.onclick=async()=>{
+          if(!sameConnectionFence(connectionFence(universeId),fence))return;
+          const ticket=holdConnections();if(!ticket)return;
+          detach.disabled=true;
+          try{
+            const response=await fetch('/app/connections',{method:'POST',credentials:'same-origin',
+              headers:Object.assign({'Content-Type':'application/json'},authHeaders()),
+              body:JSON.stringify({operation:'detach_mcp',universe_id:universeId,
+                destination:row.destination,incarnation:row.incarnation})});
+            const result=await response.json();
+            if(!sameConnectionFence(connectionFence(universeId),fence))return;
+            status.textContent=response.ok&&!result.error
+              ?'MCP tools disconnected. The HTTP connection and saved key remain. Reconnect with a new account label.'
+              :'Removal is unconfirmed. Refresh connections before retrying.';
+          }catch(_e){status.textContent='Removal is unconfirmed. Refresh connections before retrying.';}
+          finally{releaseConnections(ticket);}
+        };
+        item.append(detach);
+      }
       // `uncertain` latches when a write's result could not be read. The row
       // then describes a connection nobody can vouch for, so it stops being a
       // control: retrying from it is exactly the second write this design

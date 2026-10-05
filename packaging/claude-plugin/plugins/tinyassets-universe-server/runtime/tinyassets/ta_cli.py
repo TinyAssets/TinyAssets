@@ -98,9 +98,12 @@ def main(argv=None):
     if argv[0] == "search":
         words = [word.lower() for word in argv[1:]]
         return [
-            {"name": name, "description": item["description"]}
+            {"name": name, "description": item["description"],
+             **({"account_label": item["account_label"], "server_url": item["server_url"]}
+                if "account_label" in item else {})}
             for name, item in sorted(capabilities.items())
-            if all(word in (name + " " + item["description"]).lower() for word in words)
+            if all(word in (name + " " + item["description"] + " "
+                            + item.get("account_label", "")).lower() for word in words)
         ]
     if argv[0] == "describe" and len(argv) == 2:
         item = capabilities[argv[1]]

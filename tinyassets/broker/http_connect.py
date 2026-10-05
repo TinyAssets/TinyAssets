@@ -21,7 +21,8 @@ def validate(document):
                 len(document["expected"]) != 64
                 or any(c not in "0123456789abcdef" for c in document["expected"])))
             or not isinstance(policy, dict)
-            or set(policy) != {"auth_scheme", "scopes", "endpoints", "access_mode", "git_host"}
+            or set(policy) - {"mcp_draft"} != {
+                "auth_scheme", "scopes", "endpoints", "access_mode", "git_host"}
             or any(not isinstance(policy[k], str)
                    for k in ("auth_scheme", "access_mode", "git_host"))
             or not isinstance(policy["scopes"], list)
@@ -29,6 +30,14 @@ def validate(document):
             or not isinstance(policy["endpoints"], list)
             or not 1 <= len(policy["endpoints"]) <= _MAX_ENDPOINTS):
         raise ValueError("invalid HTTP connect operation")
+    if "mcp_draft" in policy:
+        from tinyassets.mcp_attachment import Attachment
+
+        draft = Attachment.parse(policy["mcp_draft"])
+        if (draft.state != "draft" or draft.revision != 1 or not draft.activation_request_id
+                or draft.tools or draft.catalog_hash or draft.protocol_version
+                or bool(draft.auth_header) != (policy["auth_scheme"] == "header")):
+            raise ValueError("invalid MCP deposit draft")
 
 
 def local_operation(ledger, *, principal, command_center, document):
@@ -60,11 +69,24 @@ def local_operation(ledger, *, principal, command_center, document):
                            (connection_id,)).fetchone()
         grow = conn.execute("SELECT * FROM outbound_connection_grants WHERE grant_id=?",
                             (grant_id,)).fetchone()
+        attachment = None
+        draft = policy.get("mcp_draft")
+        if draft is not None and row is not None:
+            attachment = conn.execute(
+                "SELECT descriptor_json FROM mcp_attachments WHERE owner_id=? "
+                "AND connection_id=? AND incarnation=?",
+                (principal, connection_id, row["incarnation"])).fetchone()
+            prior = json.loads(attachment[0]) if attachment else None
+            if (prior is None or prior.get("state") in {"revoked", "expired"}
+                    or any(prior.get(key, "") != draft.get(key, "") for key in
+                           ("activation_request_id", "endpoint", "auth_header"))):
+                return {"error": "account_label_in_use"}
         # Digest is a comparison value, not authority. Bind both rows and the
         # complete requested policy; no retained prepare state or replay queue.
         revision = hashlib.sha256(json.dumps(
             [principal, command_center, destination, policy,
-             dict(row) if row else None, dict(grow) if grow else None],
+             dict(row) if row else None, dict(grow) if grow else None,
+             attachment[0] if attachment else None],
             sort_keys=True, separators=(",", ":")).encode()).hexdigest()
         if document["action"] == "commit" and revision != document["expected"]:
             return {"error": "connection_conflict", "resource": "connection"}
@@ -115,6 +137,20 @@ def local_operation(ledger, *, principal, command_center, document):
                     git_host=host, _transaction=conn):
                 raise RuntimeError("connection policy changed")
         resource = ledger._get_connection_resource(connection_id, _transaction=conn)
+        if draft is not None and attachment is None:
+            from tinyassets.storage.outbound_connections import (
+                _enforce_endpoint_allowlist,
+                _parse_canonical_https_url,
+            )
+
+            _enforce_endpoint_allowlist(
+                _parse_canonical_https_url(draft["endpoint"], allowed_ports=frozenset({443})),
+                "POST", resource.allowed_endpoints, resource.access_mode)
+            incarnation = conn.execute(
+                "SELECT incarnation FROM outbound_connections WHERE connection_id=?",
+                (connection_id,)).fetchone()[0]
+            conn.execute("INSERT INTO mcp_attachments VALUES (?,?,?,?)",
+                         (principal, connection_id, incarnation, json.dumps(draft, sort_keys=True)))
         return {"projection": _project(resource, grant)}
 
 
@@ -135,6 +171,7 @@ def connect_operation(data_root, *, principal, command_center, destination, poli
     result = client.http_connect(document)
     if "error" in result:
         if result not in ({"error": "connection_conflict", "resource": "connection"},
+                          {"error": "account_label_in_use"},
                           {"error": "connection_conflict", "resource": "grant"}):
             raise ProxyRequestError("invalid broker connect refusal")
     elif action == "prepare":

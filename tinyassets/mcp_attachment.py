@@ -46,6 +46,7 @@ class Attachment:
     transport: str = "http"
     tools: list = field(default_factory=list)
     activation_request_id: str = ""
+    auth_header: str = ""
 
     @classmethod
     def parse(cls, value):
@@ -68,6 +69,17 @@ class Attachment:
                     or any(c not in "0123456789abcdef" for c in item.catalog_hash)))):
             raise ValueError("unsupported MCP metadata")
         validate_https_url(item.endpoint)
+        if not isinstance(item.auth_header, str) or len(item.auth_header) > 100:
+            raise ValueError("invalid MCP credential header")
+        if item.auth_header:
+            from tinyassets.storage.outbound_connections import _reject_forbidden_header_name
+
+            _reject_forbidden_header_name(item.auth_header)
+            if (not item.auth_header.isascii()
+                    or not all(c.isalnum() or c in "!#$%&'*+-.^_`|~" for c in item.auth_header)
+                    or item.auth_header.lower() in {
+                        "content-type", "accept", "mcp-session-id", "mcp-protocol-version"}):
+                raise ValueError("invalid MCP credential header")
         if (not isinstance(item.activation_request_id, str)
                 or len(item.activation_request_id) > 128):
             raise ValueError("invalid MCP activation reference")
@@ -156,6 +168,7 @@ def local_operation(ledger, *, principal, command_center, document):
             raise PermissionError("MCP activation requires negotiated discovery")
         if (current is not None and current["state"] != "draft"
                 and (item.endpoint != current["endpoint"]
+                     or item.auth_header != current["auth_header"]
                      or item.activation_request_id != current["activation_request_id"])):
             raise PermissionError("MCP endpoint changed after draft")
         if current is not None:
@@ -168,6 +181,8 @@ def local_operation(ledger, *, principal, command_center, document):
         if (resource.connection_type != "http"
                 or not _verb_within_scopes("POST", resource.scopes, resource.access_mode)):
             raise PermissionError("MCP requires HTTP POST authority")
+        if bool(item.auth_header) != (resource.auth_scheme == "header"):
+            raise PermissionError("MCP credential slot does not match HTTP custody")
         _enforce_endpoint_allowlist(
             _parse_canonical_https_url(item.endpoint, allowed_ports=frozenset({443})),
             "POST", resource.allowed_endpoints, resource.access_mode,
@@ -223,6 +238,7 @@ def bound_send(ledger, *, principal, command_center, grant_id, connection_id,
             if (item is None or item.revision != binding["revision"]
                     or item.state not in {"connecting", "active"}
                     or request.get("url") != item.endpoint or request.get("query")
+                    or request.get("header_name", "") != item.auth_header
                     or request.get("path")):
                 raise GrantResolutionError("MCP attachment authority changed")
             if item.state == "connecting":

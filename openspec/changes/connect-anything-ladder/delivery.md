@@ -276,3 +276,74 @@ Final committed hygiene for production slice `815daa2e42`, against the stacked
 foundation: **85 added / 0 removed / 0 tampering**, exit 0. Task 1.9 is complete.
 Transport slice `d6571b8c93` and production slice `815daa2e42` were pushed separately.
 The final documentation receipt follows them. Work remains draft and undeployed.
+
+
+## Lifecycle, multiple accounts and protected keys (2026-10-05)
+
+Merged the isolation foundation through `69ee880edc` as `80aa3f9ea7`, without
+rebase or force-push. The async client retains both MCP binding and the new
+foundation refresh callback. Merge verification: 44 Linux tests passed, no skips.
+The in-process broker fixture uses its real test user's group for vault files;
+production still uses the foundation's broker-read group. Git appended conflict
+annotations after the merge's co-author trailer; history was not rewritten.
+
+Tasks 1.5, 1.7 and 1.8 are implemented; 1.1 cleanup acceptance is now exercised:
+- Full removal fences the backing connection before vault deletion, records
+  unfinished cleanup durably, permits retry and reconnects with a new incarnation.
+  Old call packets and stale removal controls cannot affect the replacement.
+- Attachment-only removal atomically tombstones metadata and clears the catalog.
+  Independent HTTP custody/grants remain. The tombstone cannot reactivate under
+  that incarnation; reconnect removes the old HTTP connection or uses another
+  account label. Sessions are ephemeral; dispatch rechecks the persisted fence.
+- Account controls create the existing connect sheet without an LLM and require
+  the protected owner session. Distinct account labels produce separate connection
+  identities for the same MCP URL. ta catalog/search exposes the label and URL,
+  preserving the server description. Rules and owner classifications remain editable.
+- Bearer and named API-key headers use protected entry and broker-only custody.
+  The MCP header slot is pinned with the exact POST endpoint and incarnation.
+  Incorrect header slots, destinations and paths are refused. No arbitrary secret
+  templates or stdio raw-key injection are claimed by this remote slice.
+- The broker atomically commits the HTTP connection/grant and request-bound MCP
+  draft. A competing request or plain HTTP connection at the same label is refused
+  before credential deposit. An interrupted activation resumes its own draft.
+- Rollback cleanup deletes even unsupported metadata without affecting another
+  owner's HTTP row. Unsupported metadata never becomes a dispatchable HTTP fallback.
+
+Claude completed the required cross-family round: **ADAPT**, raw report
+[review-lifecycle.md](review-lifecycle.md). All findings adjudicated:
+1. **AGREE**: prevent an MCP answer from replacing a pre-existing plain HTTP key.
+   The broker prepare/commit path binds the request's draft, checks collisions
+   before vault writes, includes the descriptor in its comparison digest and
+   creates metadata transactionally with the connection/grant. Tests assert the
+   original credential and rows stay identical for both HTTP and MCP collisions,
+   and retry after a crash before initialization retains its incarnation.
+2. **AGREE**: stale or absent detach authority returns `connection_changed`.
+3. **AGREE**: consent says MCP uses the named header, without promising that an
+   independent HTTP use pins its header name. Its endpoint allowlist still applies.
+No second APPROVE verdict is implied. Detach relies on broker CAS rather than
+nesting owner-control inside the existing gesture lock, avoiding inverted lock order.
+
+Validation (separate overlapping runs, not additive):
+- Linux lifecycle/accounts/secret-entry: 91 passed, zero skips.
+- Broad post-review Linux: 198 passed, one catalog-description assertion failed.
+  Preserved the server description and moved the account label to its own field;
+  search now matches that field. Final targeted rerun recorded below.
+- Windows affected OAuth, pending requests, first-run browser and heavy MCP
+  instruction surfaces: 132 passed. Deposit/pending/storage after review: 97 passed.
+  ta/approval scopes: 49 passed. Earlier storage/lifecycle/removal: 58 passed.
+- Real Chromium approval-sheet suite: 11 passed, including phone and desktop
+  unpowered MCP forms opening the existing sheet for two labelled accounts.
+  Browser network responses are scripted; this is not a deployed-user proof.
+- Ruff, plugin build/import probe and 616-file mirror parity passed.
+
+Remaining: 1.4 isolated stdio and 1.10 deployment, public canary, real-user proof
+and full as-built spec sync. This is still draft, stacked on the unmerged isolation
+foundation. No deployed SHA, production MCP connection or live-user pass is claimed.
+
+
+Final targeted Linux oracle: **81 passed, zero skips** across the full connect
+flow, attachment storage, broker HTTP deposit, ta capabilities and the real ta jail.
+This includes the post-review collision/crash regressions, owner-editable defaults,
+labelled account search and the unchanged stale-catalog assertion.
+The previous final command had a mistyped test filename and ran no tests; it is
+not counted. The subsequent broad run and this rerun are the reported evidence.

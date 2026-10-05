@@ -183,3 +183,41 @@ def test_agent_connection_answer_uses_server_continuation_without_chat_relay(
     assert page.locator("#f_service-ask_secret").count() == 0
     assert "secret-for-vault-only" not in page.locator("#thread").inner_text()
     page.close()
+
+
+@pytest.mark.parametrize("width", [390, 1280])
+def test_unpowered_mcp_accounts_raise_existing_sheet(app_url, browser, width):
+    page = browser.new_page(viewport={"width": width, "height": 844})
+    _enter_chat(page, app_url)
+    page.evaluate("""() => {
+      token=()=>'owner';engineConnected=false;window.mcpOffers=[];window.mcpAsks=[];
+      Owner.listRequests=async()=>({pending:mcpAsks,recently_answered:[]});
+      const original=window.fetch;
+      window.fetch=async(url,opts)=>{
+        if(url==='/app/me')return Response.json({universe_id:'home-1',engine_connected:false});
+        if(url==='/app/connections'&&opts?.method==='POST'){
+          const data=JSON.parse(opts.body);mcpOffers.push(data);
+          const id='mcp-'+data.destination;
+          mcpAsks=[{request_id:id,kind:'API',title:'Connect '+data.destination,
+            body:'Connect your MCP account.',status:'pending',
+            fields:[{name:'secret',label:'API key',type:'secret'}],
+            action:{type:'connect',destination:data.destination,mcp_url:data.mcp_url}}];
+          return Response.json({request_id:id,status:'pending'});
+        }
+        if(url==='/app/connections')return Response.json({universe_id:'home-1',connections:[]});
+        return original(url,opts);
+      };
+      showView('account');
+    }""")
+    page.get_by_text("Connect an MCP server", exact=True).click()
+    for label in ("work", "personal"):
+        page.locator("#mcp-connect-url").fill("https://unknown.example/mcp")
+        page.locator("#mcp-connect-label").fill(label)
+        page.get_by_role("button", name="Review connection", exact=True).click()
+        page.wait_for_function("label=>railOpen==='mcp-'+label", arg=label)
+        assert page.locator("#request-rail").evaluate('el=>el.matches(":modal")')
+        assert page.locator("#rail-head").text_content() == "Connect " + label
+        page.locator("#request-sheet-close").click()
+    assert page.evaluate("mcpOffers.map(x=>x.destination)") == ["work", "personal"]
+    assert page.evaluate("mcpOffers.every(x=>x.universe_id==='home-1')")
+    page.close()

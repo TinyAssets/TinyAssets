@@ -589,12 +589,13 @@ def _canonical_policy(endpoints: list[dict[str, Any]]) -> str:
 
 def connect_http(
     *, universe_id: str = "", payload: Any = None, allow_oauth2: bool = False,
+    mcp_draft: dict | None = None,
 ) -> dict[str, Any]:
     from tinyassets.onboarding.serving import _gesture_lock
 
     with _gesture_lock(_request_universe(universe_id)):
         return _connect_http(universe_id=universe_id, payload=payload,
-                             allow_oauth2=allow_oauth2)
+                             allow_oauth2=allow_oauth2, mcp_draft=mcp_draft)
 
 
 def _deposit_http(*, uid, actor, destination, secret):
@@ -718,6 +719,7 @@ def _connect_plan(*, resource, raw_policy, existing_grant, actor, uid, destinati
 
 def _connect_http(
     *, universe_id: str = "", payload: Any = None, allow_oauth2: bool = False,
+    mcp_draft: dict | None = None,
 ) -> dict[str, Any]:
     """Provision (or rotate) a generic http connection for the owner's universe.
 
@@ -917,6 +919,8 @@ def _connect_http(
         policy = {"auth_scheme": scheme, "scopes": list(http_scopes),
                   "endpoints": requested_endpoints, "access_mode": asked_access,
                   "git_host": git_host}
+        if mcp_draft is not None:
+            policy["mcp_draft"] = mcp_draft
         prepared = connect_operation(base, principal=actor, command_center=uid,
                                      destination=destination, policy=policy, action="prepare")
         if "error" in prepared:
@@ -928,6 +932,8 @@ def _connect_http(
                                       destination=destination, policy=policy, action="commit",
                                       expected=prepared["revision"])
         return committed if "error" in committed else committed["projection"]
+    if mcp_draft is not None:
+        return {"error": "mcp_broker_required"}
     ledger = ConnectionLedger(
         Path(base) / "outbound.db",
         verify_authenticated_principal=lambda: actor,
@@ -1156,6 +1162,16 @@ def _remove_http(*, universe_id: str = "", payload: Any = None) -> dict[str, Any
     observed = document.get("incarnation")
     if observed is not None and resource is not None and observed != incarnation:
         return {"error": "connection_changed", "resource": "connection"}
+    if document.get("attachment_only") is True:
+        if not observed or resource is None:
+            return {"error": "connection_changed", "resource": "connection"}
+        from tinyassets.mcp_remote import McpError
+        from tinyassets.mcp_runtime import detach
+
+        try:
+            return detach(_universe_dir(uid), actor, grant_id, connection_id, observed)
+        except (McpError, GrantResolutionError):
+            return {"error": "connection_changed", "resource": "connection"}
     from tinyassets.providers.connection_lifecycle import complete_disconnect, fence_connection
 
     if resource is not None:

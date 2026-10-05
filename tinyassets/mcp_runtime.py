@@ -36,6 +36,27 @@ def activation_complete(home, bound):
                 and (row.get("answer") or {}).get("mcp_connection") == bound.connection_id)
 
 
+def detach(home, owner, grant_id, connection_id, incarnation):
+    """Atomically fence the wrapper and discard its catalog, retaining HTTP custody.
+
+    The tombstone cannot activate again. Reconnect uses a fresh HTTP incarnation
+    (or a new account label), so old approvals cannot attach to replacement tools.
+    No external cleanup is needed for ephemeral MCP sessions.
+    """
+    bound = binding(home, owner, grant_id, connection_id)
+    if bound.incarnation != incarnation:
+        raise McpError("MCP connection changed")
+    if bound.attachment.state != "revoked":
+        metadata(home.parent, principal=owner, command_center=home.name,
+                 grant_id=grant_id, connection_id=connection_id, incarnation=incarnation,
+                 expected=asdict(bound.attachment), value=asdict(replace(
+                     bound.attachment, state="revoked", revision=bound.attachment.revision + 1,
+                     tools=[], catalog_hash="", protocol_version="")))
+    return {"status": "removed", "connection_id": connection_id,
+            "attachment_removed": True, "connection_removed": False,
+            "receipt": "MCP tools disconnected. The independent HTTP connection is retained."}
+
+
 async def remote_work(home, owner, bound, work, *, check_execution=None):
     client = AsyncBrokerClient.for_owner(home.parent, principal=owner, command_center=home.name)
 
@@ -55,7 +76,8 @@ async def remote_work(home, owner, bound, work, *, check_execution=None):
         await client.close()
 
 
-def activate(home, owner, grant_id, connection_id, endpoint, display_name, request_id):
+def activate(home, owner, grant_id, connection_id, endpoint, display_name, request_id,
+             auth_header=""):
     """Called under the connect coordinator's owner lock after protected consent.
 
     A repeated answer reconciles the same incarnation and draft. Failure leaves
@@ -69,9 +91,10 @@ def activate(home, owner, grant_id, connection_id, endpoint, display_name, reque
     raw = metadata(home.parent, **scope)
     if raw is None:
         raw = metadata(home.parent, **scope, value=asdict(Attachment(
-            endpoint, display_name, activation_request_id=request_id)))
+            endpoint, display_name, activation_request_id=request_id, auth_header=auth_header)))
     item = Attachment.parse(raw)
-    if item.endpoint != endpoint or item.activation_request_id != request_id:
+    if (item.endpoint != endpoint or item.activation_request_id != request_id
+            or item.auth_header != auth_header):
         raise McpError("MCP endpoint changed; reconnect with a new connection")
     if item.state == "active":
         return {"mcp": {"state": "active", "catalog_hash": item.catalog_hash,
