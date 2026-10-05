@@ -71,10 +71,12 @@ TAIL_ANCHOR = "A branch is a stored graph SHAPE"
 #: `operation="create"`, and `read_graph target="handbook" query="write_graph.branch"`
 #: answered "no chapter 'branch'" -- there was no worked example anywhere the
 #: model could reach.
-CHAPTER_ORDER = (
+SPLIT_CHAPTER_ORDER = (
     "branches", "connections", "code_nodes", "workspaces", "delivering",
     "interfaces", "systems",
 )
+# New handbook content is not part of the historical docstring relocation.
+CHAPTER_ORDER = (*SPLIT_CHAPTER_ORDER, "connect")
 
 #: The passage a LATER change deliberately DELETED, verbatim.
 #:
@@ -275,7 +277,7 @@ def test_the_split_lost_no_guidance():
     baseline = _pre_split_word_counts()
     before = _renamed(baseline)
     text = _source_docstring() + "".join(
-        engine.SERVED_TOOL_CHAPTERS["write_graph"][name] for name in CHAPTER_ORDER
+        engine.SERVED_TOOL_CHAPTERS["write_graph"][name] for name in SPLIT_CHAPTER_ORDER
     )
     after = Counter(text.split())
     unexplained = {
@@ -362,7 +364,7 @@ def test_the_chapters_are_still_where_the_index_says_they_were():
     head, rest = description[:at], description[at:]
     tail = TAIL_ANCHOR + rest.split(TAIL_ANCHOR, 1)[1]
     chapters = engine.SERVED_TOOL_CHAPTERS["write_graph"]
-    recomposed = head + "".join(chapters[name] for name in CHAPTER_ORDER) + tail
+    recomposed = head + "".join(chapters[name] for name in SPLIT_CHAPTER_ORDER) + tail
     # The reconstruction reads in the original order: the operation catalogue
     # before the chapters, the delete/parity tail after them.
     assert recomposed.index('operation="create"') < recomposed.index("CODE NODES")

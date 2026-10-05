@@ -4,6 +4,16 @@ This is the sole implementation contract for parent `universe-agent-harness` §4
 
 ## Goals / Non-Goals
 
+The additive `clean-agent-start` change supplies the L9 three-personal-file
+profile, conservative legacy classification and sparse-reader acceptance. It
+uses this same manifest/receipt API; no second seed bundle may claim the same
+paths. Its delta syncs after this capability and leaves these transaction
+requirements intact. Clean-profile personal files without receipts are preserved
+even when they match predecessor templates; legacy companion files are never
+deleted by that migration. AGENTS/hooks cutover remains the starter consumer's.
+The clean profile publishes no predecessor hashes for its three personal paths,
+so only installed receipts select their automatic updates under this mechanism.
+
 Automatically deliver current seeds without changing owner customizations or making an absent owner a deployment dependency. Use the same receipt for every center. Do not build a second package system, alter D9 quarantine, migrate lessons, or preserve legacy runtime modes.
 
 ## Decisions

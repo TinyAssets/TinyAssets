@@ -9,7 +9,7 @@ carry no concept frontmatter — root ``index.md`` permits only ``okf_version``
 tracks the *latest-main* OKF spec on GitHub rather than a pinned copy, so it
 never goes stale.
 
-Files seeded (13):
+OKF files seeded (13), plus the editable skills/connect/SKILL.md:
 
     index.md  log.md  soul.md  soul.edit.md  identity.md  founder.md
     orgchart.md  projects.md  goals.md  body.md  origin.md
@@ -30,6 +30,7 @@ from pathlib import Path
 
 import yaml
 
+from tinyassets.starter_skills import CONNECT_SKILL_PATH, connect_skill
 from tinyassets.universe_files import write_data_path
 from tinyassets.universe_soul import (
     SOUL_FILENAME,
@@ -43,7 +44,7 @@ OKF_SPEC_URL = (
 )
 OKF_TRACKING_POLICY = "latest-main"
 
-# The complete blank baseline. Kept here so tests and callers share one list.
+# The OKF baseline. Starter skills are ordinary files, not OKF concepts.
 BASELINE_FILES: tuple[str, ...] = (
     "index.md",
     "log.md",
@@ -404,6 +405,13 @@ def seed_okf_bundle(
     for rel, content in files.items():
         # Link-free: a seed over an existing folder never writes through a link.
         write_data_path(universe_dir / rel, content)
+
+    # Creation only, not a turn-time default or an existing-center upgrade.
+    # Preserve an existing skill if a caller repeats provisioning.
+    try:
+        write_data_path(universe_dir / CONNECT_SKILL_PATH, connect_skill(), mode="exclusive")
+    except FileExistsError:
+        pass
 
     soul = read_universe_soul(universe_dir)
     # read_universe_soul returns None only if soul.md is unreadable, which we
