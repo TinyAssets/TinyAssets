@@ -69,3 +69,28 @@ New connection shapes SHALL reuse the existing coordinator, request idempotency,
 - **WHEN** an owner removes an attachment/browser connection and reconnects later
 - **THEN** old approvals, surrogates and transport sessions cannot authorize the new incarnation
 - **AND** removing an attachment preserves an independent backing HTTP connection while removing that backing connection fences its dependents
+
+### Requirement: One connect card supports labelled accounts and auth types
+The system SHALL use one connect card from chat and settings branching on OAuth, API key or MCP, with basic/none where supported. It SHALL preserve multiple independently labelled accounts per service and bind each call to a selected connection incarnation. MCP OAuth SHALL support metadata discovery, PKCE S256, DCR, client metadata documents and explicit static-client fallback according to server support, with resource-bound tokens and existing protected callback custody.
+
+#### Scenario: Connect a second account through MCP OAuth
+- **WHEN** the owner chooses MCP and completes the server-supported DCR or client metadata document flow with PKCE
+- **THEN** a distinct labelled connection is added without replacing the first account and its tools appear through ta
+- **AND** a server supporting neither dynamic method can use explicit static registration or report unsupported, never borrow another resource's token
+
+#### Scenario: Account choice or discovery is unsafe
+- **WHEN** two accounts match a request or discovery redirects credentials to an unbound resource
+- **THEN** the card requests account selection or refuses the unsafe destination respectively, without silent fallback
+
+### Requirement: Private secret entry and saved extensions share egress custody
+The protected secret-entry card SHALL deposit credentials directly into custody; the egress broker SHALL inject them only for the bound connection's allowlisted credential slots and authorized destination/method/path. Sandbox code SHALL receive no raw credentials. Agent-authored connectors SHALL be saved as exact-revision tested extensions, listed and revocable through connections, with declared credential slots and secret-free exports.
+
+#### Scenario: Agent builds a connector from OpenAPI
+- **WHEN** the owner's agent writes an extension from API docs/OpenAPI and a safe self-test succeeds
+- **THEN** the tested revision and receipt are saved as a reusable connection extension with revocation controls
+- **AND** an update requires a new test receipt; failed tests remain visibly failed
+
+#### Scenario: Extension tries another credential or leaks its own
+- **WHEN** an extension requests another connection's slot or the response contains injected credential bytes
+- **THEN** the broker denies the foreign slot or withholds the secret-bearing result and reports failure
+- **AND** credentials remain absent from sandbox files/environment, transcripts, logs and published packages

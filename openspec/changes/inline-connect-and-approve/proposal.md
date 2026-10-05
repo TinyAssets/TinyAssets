@@ -4,8 +4,8 @@ The bubble is always-present plumbing: emergency control and conversation with e
 
 ## What Changes
 
-- Put request cards in the bubble thread; demote the rail to history and consolidate connect entry points, retaining existing refresh transport.
-- Bind previews to protected normalized actions; Approve executes server-side and Edit revalidates. Once is a decision; task/always reuse owner rules with explicit scope and expiry. All scopes recheck the applicable policy digest at dispatch and refuse stale approval.
+- **Founder decision 2026-10-04:** foreground asks open a protected approval sheet at the point of need; away/background asks enter a small Needs you inbox with push notifications. Remove the side requests panel and its history rail; retain ordinary activity receipts and consolidate connect entry points.
+- Bind previews to protected normalized actions; Approve executes server-side and Edit revalidates. Once is a decision; task/site/always reuse owner rules with explicit scope and expiry. All scopes recheck the applicable policy digest at dispatch and refuse stale approval. Spend/unclassified effects require the exact-total once-only contract immediately; missing enforcement or unknown totals refuse execution even before the payment rail ships.
 - Authenticate approval through protected interactive owner sessions and single-use bound tokens; an owner's bearer-holding chatbot cannot approve.
 - First-connect follow-up: reuse protected server-PKCE login for normal web app sign-in, establishing app renewal and owner proof together; preserve native's separate browser proof requirement.
 - Resume the saved active agent/task server-side after answers/results, with Stop/expiry invalidation and boot recovery through existing activity events until processed-ack, yielding one committed processing result per answer.
@@ -27,7 +27,7 @@ The bubble is always-present plumbing: emergency control and conversation with e
 
 Future implementation touches pending-request storage/API, authenticated effectors, owner-session authentication, agent rules/turn dispatch, OAuth ingress and the app. Protected storage extensions, migration and public contracts are specified in design.md. Only the initiating agent's editable owner rules choose approval policy; cross-user isolation is the fixed policy floor. Connection grants, consent and secret custody remain enforced. Authenticating a claimed owner approval introduces no mandatory platform gate.
 
-Owner: Codex. Branch: `spec/inline-connect-and-approve`. One intent: complete connection and approval interruptions in the bubble. This delivery is proposal-only: no product code, deployment or new PR. Future implementation is one lane/PR coordinated with `addressed-agent-control-provenance`, `generic-oauth-connections` and `notify-owner-of-requests`.
+Owner: Codex. Branch: `spec/inline-connect-and-approve`. One intent: complete connection and approval interruptions through a protected sheet and Needs you inbox. This delivery is proposal-only: no product code, deployment or new PR. Future implementation is one lane/PR coordinated with `addressed-agent-control-provenance`, `generic-oauth-connections` and `notify-owner-of-requests`.
 
 ## Follow-ups (out of scope)
 

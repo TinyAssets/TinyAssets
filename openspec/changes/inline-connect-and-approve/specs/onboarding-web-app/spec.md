@@ -1,11 +1,11 @@
 ## ADDED Requirements
 
 ### Requirement: Requests appear inline at the point of need
-The bubble thread SHALL render one revision-aware card per request beside its originating turn, identifying the requesting agent. Connect SHALL show plain-word scope and Connect / Not now. Ask-first approval SHALL show the protected action summary, destination, editable draft, expiry, Approve / Edit / Deny and once / this task / always. Duplicate connect entry points SHALL focus this card; the rail SHALL be read-only history. Failure SHALL retain the card/draft with Try again / available alternative / skip. Existing owner-gated refresh transport SHALL remain in use.
+Foreground asks raised from chat SHALL open one revision-aware protected approval sheet at the point of need, identifying the requesting agent and originating turn. Connect SHALL show plain-word scope and Connect / Not now. Ask-first approval SHALL show the protected purpose, action class, destination, editable draft, expiry and Allow once / Allow for this task / Allow for this site / Always allow / Deny. Spend and effects not classifiable as non-spend SHALL expose only Allow once / Deny with the exact-total contract in request-continuations; unavailable enforcement or unknown totals SHALL visibly prevent approval. Duplicate connect entry points SHALL focus the same connect card. Background asks while the owner is away SHALL enter a small Needs you inbox with push notifications and open the same sheet on selection. The side requests panel and history rail SHALL be removed; receipts SHALL remain in ordinary activity history. Failure SHALL retain the request/draft with Try again / available alternative / skip. Existing owner-gated refresh transport SHALL remain in use.
 
 #### Scenario: Request appears on a phone
 - **WHEN** the app refreshes a connection or owner-rule approval request
-- **THEN** its card appears in the originating thread and the collapsed bubble shows waiting-for-owner
+- **THEN** its protected sheet opens from the originating thread and the collapsed bubble shows waiting-for-owner
 - **AND** account switches clear previous-owner cards and all reads enforce current ownership
 
 #### Scenario: Edit and select a scope
@@ -59,7 +59,7 @@ Connect SHALL first open a top-level TinyAssets hop in the popup or system brows
 ## MODIFIED Requirements
 
 ### Requirement: The chat with an agent floats over the command center
-The app SHALL present thread/inline requests, request history, model bar, composer and status in a floating cloud above the stage, draggable/resizable/collapsible by pointer, touch or keyboard. Without saved placement it SHALL fill the stage for owners without a layout and start as a corner bubble with a layout. Placement SHALL persist per owner, agent (default main) and viewport (phone below 760px, otherwise wide) in owner-ui-preferences with device fallback. Cloud/bubble SHALL remain wholly visible after resizing; dragging SHALL NOT also open it.
+The app SHALL present thread requests linked to the approval sheet, access to Needs you, model bar, composer and status in a floating cloud above the stage, draggable/resizable/collapsible by pointer, touch or keyboard. Without saved placement it SHALL fill the stage for owners without a layout and start as a corner bubble with a layout. Placement SHALL persist per owner, agent (default main) and viewport (phone below 760px, otherwise wide) in owner-ui-preferences with device fallback. Cloud/bubble SHALL remain wholly visible after resizing; dragging SHALL NOT also open it.
 
 The bubble SHALL remain reachable over broken/custom layouts as emergency control and conversation with every agent, retaining agent selection and addressed Stop. It SHALL show working/waiting-for-owner/failed/idle status from existing server reads even collapsed, and indicate replies received while collapsed. This change SHALL NOT migrate the working-state transport to a pushed stream.
 
@@ -107,3 +107,15 @@ CSRF, cross-user rejection and copied-callback defenses SHALL remain unchanged.
 - **THEN** the system browser gains no owner proof from the WebView credentials
 - **AND** its first Connect requires protected sign-in if its own owner cookie is absent
 - **AND** copied URLs or bearer credentials cannot replace that browser proof
+
+### Requirement: Background asks remain reachable without a side panel
+The app SHALL project unresolved protected requests into Needs you and send deduplicated, secret-free push notifications using existing notification delivery. Inbox and notification delivery SHALL NOT grant approval authority or acknowledge continuation. Answers SHALL use the existing bound-decision and durable server-resume path.
+
+#### Scenario: Owner answers an away-run ask on another device
+- **WHEN** a background run pauses while the owner is away and the owner opens its push on a second device
+- **THEN** the signed-in first-party sheet fetches the current protected request revision and records the answer once
+- **AND** the same inbox item resolves across devices and the saved active work resumes on its own, with no relayed chat answer
+
+#### Scenario: Push is repeated or stale
+- **WHEN** a notification is retried after denial, expiry, Stop or an answer elsewhere
+- **THEN** it opens current status without dispatching the stale action or exposing approval tokens, secrets or another owner's request

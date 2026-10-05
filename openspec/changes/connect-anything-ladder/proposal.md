@@ -28,3 +28,7 @@ Expected integration: `storage/outbound_connections.py`, `ta_capabilities.py`, p
 `inline-connect-and-approve` owns binding/approval/continuation and `generic-oauth-connections` owns OAuth; this extends their contracts instead of rebuilding them. D5 owns the browser itself and D6 owns ta. Audit L3 owns card consolidation, L4 owns the editable skill content and D10 its distribution. Audit L5's platform-specific registration plan is not a prerequisite and is superseded here by the founder's general-shapes-only direction.
 
 `broker-streaming-contract` is a prerequisite for HTTP MCP streaming, incremental credential scanning, cancellation and operation reconciliation; the current buffered broker is insufficient.
+
+## Research-driven scope and split (2026-10-04)
+
+Use [Muse parity matrix and build order](../../../docs/design-notes/2026-10-04-muse-connection-methods.md), preserving its evidence caveats. This change also owns one auth-shape connect card with labelled multi-account connections, standard MCP OAuth discovery/registration, private secret entry with egress injection, and tested/revocable saved connector extensions. Browser live view/takeover continues through D5. Separate bounded changes own `private-network-attach`, `companion-local-mcp` and `exact-total-spend-rail`; no implicit implementation claim for any report row.

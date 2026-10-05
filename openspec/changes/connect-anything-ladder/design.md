@@ -73,3 +73,31 @@ The D6a attached-MCP deferral now points here for implementation; ta discovery/l
 ## Open Questions
 
 None about authority, custody or storage. Exact protocol-version support is negotiated and advertised by the implementation; unsupported versions must fail visibly and cannot be marketed as connected.
+
+## Muse parity and build order (2026-10-04)
+
+Source: [connection methods](../../../docs/design-notes/2026-10-04-muse-connection-methods.md), sections 3–4. Build in this order; each row names one implementation owner rather than creating competing paths:
+
+| Order / research rows | Delivery owner and scope |
+|---|---|
+| 1 / 1,2,20,21 | This change consumes L3/L4: one connect card from chat or settings branching on OAuth / API key / MCP (and basic/none where supported), one connections list, several labelled accounts per service. |
+| 2–3 / 3,5,8 | This change + generic-oauth-connections + broker-streaming-contract: MCP attach and credential-blind secret entry/egress together, before enabling credentialed tools. |
+| 4 / 6,7,17 | inline-connect-and-approve: approval sheet, scoped classes/durations, Needs you and push; replaces all side requests panels. |
+| 5 / 4 | This change: agent-authored saved, self-tested, revocable connector extensions. |
+| 6 / 14,18,19 | Existing automation-event-triggers, channel-agnostic-inbound/outbound and activity history own triggers/ledger; channel bundle composition is agent-team-channel-templates. |
+| 7 / 9,10 | D5 plus this change's browser custody: cloud live view, Take over / Return control / Stop and Needs you challenge handoff. |
+| 8 / 13 | private-network-attach: owner overlay routes and first-contact host approval. |
+| 9 / 11,12 | companion-local-mcp: desktop then phone local capabilities through the same attach/grant protocol. |
+| 10 / 16,22 | exact-total-spend-rail owns payments; shared provider/connector publishing follows existing command-center-packages, recipient-updates and attribution ownership. |
+
+### Unified card, accounts and standard MCP OAuth
+
+The connect card carries a discriminated auth type and account label, not provider-specific form logic. Switching type keeps safe draft fields but invalidates staged credentials/approval for the old shape. Each service permits multiple independent connection IDs/incarnations; account identity is confirmed after authentication. Ambiguous account selection asks the owner and never overwrites an existing account or silently picks the first. Settings and ta connect enter the same request/finalization flow.
+
+MCP remote attach discovers protected-resource and authorization-server metadata. Support OAuth with PKCE S256, dynamic client registration (DCR), a TinyAssets-hosted HTTPS client metadata document (CIMD), and explicitly configured static-client fallback; advertise which method the server supports rather than requiring all simultaneously. Bearer/API-key auth uses private capture, never URL query credentials. Reuse generic-oauth-connections and protected server-side PKCE/state/session validation; bind resource/audience and the registered redirect URI, validate discovered endpoints through broker policy, and never forward one resource's token to another resource. Unsupported registration produces an actionable error. No per-provider code and no account credential export.
+
+### Secret entry and reusable connectors
+
+A protected secret-entry card deposits directly to vault custody. The agent gets scoped surrogate references only. The egress broker resolves an allowlist of credential slots per connection incarnation and exact destination/method/path predicate, substitutes at the network boundary, and applies DNS/IP/redirect SSRF checks and secret scanning. Connection A cannot request B's secret; raw credentials never enter sandbox environment/files, logs, transcript, tests or package bytes. Existing sandbox egress must not bypass broker-governed credential use. Read-data/taint evidence can inform editable owner policy; it cannot grant access.
+
+Given API docs or OpenAPI, the owner's agent writes an ordinary extension with declared credential slots and a connection binding, runs a non-destructive self-test (or separately approves a test effect), and saves the exact tested revision with test receipt. A failed test is visibly failed, never labelled connected. List saved connectors beside other connections with source/version and revoke/disconnect controls; updates invalidate the old test receipt until re-tested. Reuse the current extension runtime and activation permissions. Sharing exports code, slot requirements and safe test metadata, never credentials, sample private responses or live grants. Revocation fences new dispatch before cleanup.

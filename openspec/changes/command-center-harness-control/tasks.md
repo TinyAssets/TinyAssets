@@ -13,6 +13,8 @@ Implementation backlog only. D7 owns editor/history, D8/D9 own package/main sele
 
 ## 3. UI parity and acceptance
 
+- [ ] 3.0 Add permission-bound subscribe/unsubscribe, snapshot/cursor replay and live activity/tool/approval/task/process events; verify dedupe, resync after retention/backpressure, account switching and revocation.
+
 - [ ] 3.1 Expose shared ta search/describe/call through the existing bridge and installation permission binding; verify connections, memory, harness/history, rules and model/extension capabilities.
 - [ ] 3.2 Implement revision-checked edits and exact-revision permission/frame invalidation, including recipient updates and explicit author/ceiling auto-update grants; prove cross-user mutations, unchanged-scope hostile updates, guessed IDs, link escapes, copied bundles, account switching, stale responses and revocation cannot cross bindings.
 - [ ] 3.3 Coordinate D7/D8/D9 and starter acceptance: prove owner-controlled main replacement, hook disablement and model-independent recovery without duplicate installation or editor paths.

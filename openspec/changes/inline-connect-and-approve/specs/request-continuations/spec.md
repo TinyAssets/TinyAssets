@@ -30,7 +30,7 @@ Only protected first-party web/native owner surfaces SHALL approve using the dis
 - **AND** a duplicate of an already committed decision can only return its current state to the authorized owner
 
 ### Requirement: Approval scopes reuse owner rules and preserve preapproval semantics
-Once SHALL be a one-reservation decision, not a rule row. Task/always SHALL be visible revocable preapproval rows in existing rules, matching the displayed predicate and design.md policy basis. Valid once/task/always authority SHALL count for do_if_preapproved without widening consent or overriding later applicable policy changes. Missing preapproval SHALL NOT introduce mandatory ask_first.
+Once SHALL be a one-reservation decision, not a rule row. Task/site/always SHALL be visible revocable preapproval rows in existing rules, matching the displayed predicate and design.md policy basis. Valid once/task/site/always authority SHALL count for do_if_preapproved without widening consent or overriding later applicable policy changes. Missing preapproval SHALL NOT introduce mandatory ask_first.
 
 Immediately before dispatch, the system SHALL recompute and compare the applicable policy digest for every decision, including once, under the owner-control lock shared with policy edits, Stop and revocation. A mismatch SHALL invalidate the un-dispatched approval/reservation and refuse execution pending a fresh preview under current policy; an old decision SHALL NOT be reinterpreted under a new rule.
 
@@ -39,17 +39,17 @@ Immediately before dispatch, the system SHALL recompute and compare the applicab
 - **THEN** the grant gives no authority and the initiating agent's current rules apply
 
 #### Scenario: Broader scope and denial
-- **WHEN** the owner selects task or always and approves
-- **THEN** the displayed predicate and its scope are persisted in existing Rules, while once decisions appear only in request history
+- **WHEN** the owner selects task, site or always and approves
+- **THEN** the displayed predicate and its scope are persisted in existing Rules, while once decisions appear only in ordinary activity history (request receipts)
 - **AND** Deny writes no grant and executes nothing
 
 #### Scenario: Approving one card preserves other previews
-- **WHEN** card A receives a once, task or always approval while B is pending
+- **WHEN** card A receives a once, task, site or always approval while B is pending
 - **THEN** B's policy digest remains unchanged because all preapproval evidence is excluded
 - **AND** a later behavior-rule edit matching B requires a fresh preview, while an unrelated edit does not
 
 #### Scenario: Valid preapproval under an owner rule
-- **WHEN** do_if_preapproved applies and an unconsumed once decision or active matching task/always grant exists
+- **WHEN** do_if_preapproved applies and an unconsumed once decision or active matching task/site/always grant exists
 - **THEN** it satisfies preapproval within its exact scope and issuing policy, with normal consent and grant enforcement
 - **AND** revoked, expired or superseded evidence cannot satisfy it
 
@@ -108,7 +108,7 @@ The common answer path SHALL persist one sanitized logical outcome/wake per comm
 - **AND** defer preserves it; denial/skip records the outcome and resumes only a still-active task without the denied effect
 
 ### Requirement: Protected storage has one authority for each fact
-The system SHALL reuse pending_requests, rules, effect_intents and activity_events per design.md, with the pending tables migrated to protected activity storage. Request status SHALL be the sole request lifecycle authority; effect_intents SHALL own execution/uncertainty and API phase SHALL be derived. Task/always grant materialization across stores SHALL be idempotent and inert until finalized, never described as an atomic cross-database transaction.
+The system SHALL reuse pending_requests, rules, effect_intents and activity_events per design.md, with the pending tables migrated to protected activity storage. Request status SHALL be the sole request lifecycle authority; effect_intents SHALL own execution/uncertainty and API phase SHALL be derived. Task/site/always grant materialization across stores SHALL be idempotent and inert until finalized, never described as an atomic cross-database transaction.
 
 The server-side owner-control coordinator SHALL own the exclusive owner/home lock shared across workers for request mutations, grant finalization/recovery, policy edits, revocation, Stop, dispatch authorization and migration. Loss of lock ownership SHALL fence further writes/dispatch. Migration SHALL persist its pause, refuse new mutations with a retryable migration-unavailable result without queuing or partial success, drain admitted request mutations and verify the copy before committing its authoritative cutover marker with the copied data.
 
@@ -161,3 +161,19 @@ The server-side owner-control coordinator SHALL own the exclusive owner/home loc
 #### Scenario: Stop while request controls are busy
 - **WHEN** the owner stops a live turn while the approval coordinator is locked
 - **THEN** the live turn is interrupted and the response explicitly reports retryable incomplete approval-task invalidation
+
+### Requirement: Scoped grants distinguish action classes and exact sites
+Grant evaluation SHALL bind read, write (including destructive detail) and spend classifications to owner, initiating agent, connection incarnation, destination predicate, scope and expiry. Site scope SHALL cover only the displayed exact origin and permitted operations until its displayed deadline or revocation. Always SHALL cover only the displayed connector/action predicate until revoked. Untrusted tool hints SHALL NOT downgrade effects into read-only authority. From this change onward, spend and effects not classifiable as non-spend by the trusted operation contract SHALL offer only Allow once / Deny bound to merchant, exact total including fees, currency and current quote revision/expiry. Unknown totals or unavailable exact-total enforcement SHALL refuse execution visibly, including before exact-total-spend-rail is implemented. Task/site/always preapproval SHALL NOT authorize these effects. This payment contract qualifies the general owner-rule behavior; known non-spend operations retain editable approval policy.
+
+#### Scenario: A site grant encounters another destination or action class
+- **WHEN** a read grant for one exact origin encounters a redirect to another origin, a write, another connection incarnation or a revoked grant
+- **THEN** it supplies no authority and the current owner policy determines the next protected ask or refusal
+
+#### Scenario: Once and task grants expire
+- **WHEN** a once reservation is consumed or a task reaches its generation end, Stop or deadline
+- **THEN** that grant cannot authorize further effects; no site/always grant resurrects the cancelled pending request
+
+#### Scenario: Spend support has not shipped or classification is unknown
+- **WHEN** an action spends or cannot be classified as non-spend and exact-total enforcement is unavailable or its final total is unknown
+- **THEN** execution is refused visibly and no task/site/always grant is offered or accepted
+- **AND** implementing the later spend rail cannot retroactively authorize this request

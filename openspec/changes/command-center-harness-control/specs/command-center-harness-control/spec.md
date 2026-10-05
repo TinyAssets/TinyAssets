@@ -61,3 +61,15 @@ The existing custom-UI bridge SHALL expose capability search, describe and call 
 - **WHEN** a capability call requires interactive approval under the owner's current rules
 - **THEN** the bridge returns the existing protected inline request instead of minting approval
 - **AND** owner-authorized standing permission is honored without a new immutable platform policy gate
+
+### Requirement: Custom UI receives authorized replayable live events
+The owner-permitted ta bridge SHALL expose subscriptions to activity, tool calls, approval status, task changes and process health using a versioned envelope and snapshot/cursor replay. Streams SHALL enforce current owner/center/installation/revision permissions, omit credentials and decision tokens, and invalidate on account switch or revocation. A lost replay window or backpressure overflow SHALL require resynchronization rather than silently lose state.
+
+#### Scenario: Mission Control reconnects after missed events
+- **WHEN** a permitted screen reconnects with its last cursor
+- **THEN** it receives authorized replay with event-ID dedupe, or an explicit resync-required response and a new authoritative snapshot
+- **AND** it can open protected approval sheets by request reference without granting itself decision authority
+
+#### Scenario: Stream survives an account or permission change
+- **WHEN** the owner switches accounts, revokes permission or replaces the UI bundle
+- **THEN** the old stream and queued responses are invalidated before any payload can render under the new binding
