@@ -2,6 +2,8 @@
 import json
 import sqlite3
 
+import shutil
+
 import pytest
 
 from tests.cloud_runtime_fixture import cloud_runtime  # noqa: F401
@@ -238,6 +240,12 @@ def test_real_publish_completion_contains_rendered_public_screen(home, monkeypat
     receipt = done["completion"]
     assert receipt["listing_id"] == done["agent_definition_id"]
     assert receipt["change_kind"] == "new" and receipt["version"] == 1
+    if receipt["preview_status"] == "unavailable" and shutil.which("bwrap") is None:
+        # The renderer runs inside the bubblewrap jail. Hosts without it (the
+        # bare affected-tests runner) cannot render; real-browser-proof runs
+        # this case in the Linux oracle and fails on any skip.
+        pytest.skip("preview renderer needs bubblewrap; proven in real-browser-proof; "
+                    "owner=Jonnyton expires=2026-11-01")
     assert receipt["preview_status"] == "ready", done
     image = home / UNIVERSE / receipt["preview_image_path"].removeprefix("/u/")
     assert _pixel(image.read_bytes(), 500, 300) == (32, 80, 192)
