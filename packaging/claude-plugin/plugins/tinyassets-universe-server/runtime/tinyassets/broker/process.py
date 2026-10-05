@@ -1,20 +1,19 @@
 """The broker process: ``python -m tinyassets.broker.process``.
 
-Started and supervised by the daemon (:mod:`.supervisor`), with the daemon's
-environment minus the platform's own secrets (``platform_secrets.child_env``).
+Started and supervised by the privileged launcher with a static environment.
 It is the only process that resolves an outbound credential; every caller
 reaches it through the socket.
 
 Configuration is the command line, never the environment a caller could set:
 
-* ``--socket``: the Unix socket to serve (created 0600);
+* ``--socket``: the Unix socket to serve (0660 in the role-split IPC directory);
 * ``--state``: the broker's own state (op records, the fence);
 * ``--data-root``: where the connection ledger and the vaults live;
 * ``--owner-uid``: the uid served as the owner channel (the daemon's);
 * ``--proof-sha256``: the hash of the owner lease proof for the acquired generation.
 
 The lease: until the owner lease (S8a) holds a hashed proof per acquisition,
-the daemon mints a proof at start and hands its hash to the broker it spawns.
+the daemon mints a proof at start and hands its hash to the launcher.
 That is the single-process lease's own rule (one owner, one proof per acquisition) carried
 across the process boundary; ``verify_lease_proof`` switches to the lease
 authority when it exists.
@@ -37,12 +36,11 @@ from tinyassets.broker.ops import OpStore
 from tinyassets.broker.server import OWNER, BrokerServer
 
 
-def lease_verifier(proof_sha256: str, owner_generation: int | None = None):
+def lease_verifier(proof_sha256: str):
     expected = bytes.fromhex(proof_sha256)
 
     def verify(generation: int, proof: str) -> bool:
-        if (owner_generation is not None and generation != owner_generation) \
-                or not isinstance(proof, str):
+        if not isinstance(proof, str):
             return False
         return hmac.compare_digest(hashlib.sha256(proof.encode("utf-8")).digest(), expected)
 
@@ -114,8 +112,8 @@ async def serve(args: argparse.Namespace) -> None:
         ledger_for=dispatchers.ledger_for, dispatch_for=dispatchers.dispatch_for,
         ops=OpStore(state / "ops.db"),
         fence=Fence(state / "fence.json",
-                    verify_lease_proof=lease_verifier(args.proof_sha256, args.generation),
-                    lease_sha256=args.proof_sha256 if role_split else None),
+                    verify_lease_proof=lease_verifier(args.proof_sha256),
+                    lease_sha256=args.proof_sha256),
         roles={int(args.owner_uid): OWNER},
     )
     socket_path = Path(args.socket)
@@ -140,14 +138,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--data-root", required=True)
     parser.add_argument("--owner-uid", required=True, type=int)
     parser.add_argument("--proof-sha256", required=True)
-    parser.add_argument("--generation", type=int)
     parser.add_argument("--role-split", action="store_true")
     parser.add_argument("--allow-test-fixtures", action="store_true")
     args = parser.parse_args(argv)
-    if args.role_split and args.generation is not None:
-        parser.error("the broker allocates its generation under the role split")
-    if not args.role_split and args.generation is None:
-        parser.error("legacy broker startup requires --generation")
     asyncio.run(serve(args))
     return 0
 

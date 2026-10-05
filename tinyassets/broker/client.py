@@ -77,12 +77,14 @@ class BrokerClient:
     """One principal's view of the broker; one request at a time per client."""
 
     def __init__(self, path: Path, *, principal: str, command_center: str,
-                 fence: Callable[[], tuple[int, str]], timeout: float = 660.0) -> None:
+                 fence: Callable[[], tuple[int, str]], timeout: float = 660.0,
+                 verify_peer: Callable[[socket.socket], None] | None = None) -> None:
         self._path = Path(path)
         self._principal = principal
         self._command_center = command_center
         self._fence = fence
         self._timeout = timeout
+        self._verify_peer = verify_peer
         self._lock = threading.Lock()
 
     def request(self, *, grant_id: str, connection_id: str, verb: str, request: dict[str, Any],
@@ -111,6 +113,8 @@ class BrokerClient:
             except OSError:
                 # Nothing was sent: the broker never saw this request.
                 raise ProxyRequestError("the credential broker is unavailable") from None
+            if self._verify_peer is not None:
+                self._verify_peer(sock)  # before sending any owner-channel factor
             try:
                 head, body, end = self._exchange(sock, open_doc)
             except (OSError, rf.FrameError):

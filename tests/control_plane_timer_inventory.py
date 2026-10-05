@@ -69,11 +69,6 @@ SITES: dict[str, tuple[str, str]] = {
     "tinyassets/universe_seats.py::_refresh_loop": (
         CONTROL_PLANE, "account seat stamp refresh while a seat is held",
     ),
-    "tinyassets/broker/supervisor.py::BrokerSupervisor._supervise": (
-        CONTROL_PLANE,
-        "daemon-owned broker restart duty until stop(); production start_broker "
-        "still refuses activation pending the per-role UID split",
-    ),
     # -- bounded waits inside one call -----------------------------------------
     "tinyassets/ui_preview.py::_supervised": (
         CALL_SCOPED,
@@ -150,11 +145,6 @@ SITES: dict[str, tuple[str, str]] = {
         CALL_SCOPED,
         "inner credit wait for the same response; condition wait is bounded by "
         "the remaining stream deadline and cancellation wakes it",
-    ),
-    "tinyassets/broker/supervisor.py::BrokerSupervisor._spawn": (
-        CALL_SCOPED,
-        "one broker startup waits for its socket for at most 30 seconds, "
-        "refusing if the child exits or startup times out before fencing",
     ),
     "tinyassets/credential_refresh.py::_hold_vault": (CALL_SCOPED, "lock acquisition"),
     "tinyassets/credential_refresh.py::_refresh_locked": (CALL_SCOPED, "single-flight wait"),

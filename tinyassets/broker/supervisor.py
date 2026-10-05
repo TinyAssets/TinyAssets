@@ -1,183 +1,168 @@
-"""Start and keep the broker process alive from the daemon (S6, part 4).
+"""Daemon-side broker acquisition. The privileged launcher owns its lifecycle.
 
-``start_broker(data_root)`` spawns ``tinyassets.broker.process`` with the
-daemon's environment minus the platform's own secrets
-(``platform_secrets.child_env``), waits for its socket, runs the owner's fence
-barrier, and publishes what a caller in this deployment needs to open streams:
-
-    <data_root>/.broker/owner.json   (mode 0600: socket path, generation, token)
-
-A supervisor thread restarts the broker if it exits. The fence and the op
-records live in the broker's state directory, so a restarted broker reloads
-them before it serves; the same owner re-runs the barrier with the same
-proof, which is idempotent and returns the same token.
-
-Selected by ``TINYASSETS_CREDENTIAL_BROKER=process``; unset, callers keep the
-per-proxy worker. Until the per-role uid split, the daemon refuses to start
-with it selected (:func:`start_broker`, v1 deviation (c)). The switch is
-temporary: once the broker is proven it is the only path (change
-``broker-streaming-contract`` task 2.8).
+The lease proof and fence stay in this process; no owner-channel file exists.
+Production startup remains unavailable until the launcher admits the daemon.
 """
-
 from __future__ import annotations
 
+import ctypes
 import json
-import logging
 import os
 import secrets
 import socket
-import subprocess
-import sys
+import struct
 import threading
-import time
 from hashlib import sha256
 from pathlib import Path
-from typing import Any
 
 from tinyassets import rpc_frames as rf
 
-_LOG = logging.getLogger(__name__)
-
 ENV_SWITCH = "TINYASSETS_CREDENTIAL_BROKER"
 PROCESS = "process"
-OWNER_FILE = "owner.json"
-_START_TIMEOUT_S = 30.0
-_SUPERVISE_INTERVAL_S = 2.0
+LAUNCHER_SOCKET = Path("/run/tinyassets/launcher.sock")
+BROKER_SOCKET = Path("/run/tinyassets/broker/broker.sock")
+_START_TIMEOUT_S = 35.0
+_registry: dict[Path, BrokerSupervisor] = {}
+_registry_lock = threading.RLock()
+
+
+class BrokerUidSplitRequired(RuntimeError):
+    """The daemon has no authenticated role launcher/broker boundary."""
 
 
 def broker_selected() -> bool:
     return (os.environ.get(ENV_SWITCH) or "").strip().lower() == PROCESS
 
 
-def broker_dir(data_root: Path) -> Path:
-    return Path(data_root) / ".broker"
+def _peer(sock: socket.socket) -> tuple[int, int, int]:
+    return struct.unpack("3i", sock.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12))
 
 
-def read_owner(data_root: Path) -> dict[str, Any] | None:
-    """The published owner pair, or ``None`` when no broker serves this root."""
-    try:
-        document = json.loads((broker_dir(data_root) / OWNER_FILE).read_text("utf-8"))
-    except (FileNotFoundError, ValueError):
-        return None
-    if not isinstance(document, dict) or not {"socket", "generation", "token"} <= set(document):
-        return None
-    return document if Path(document["socket"]).exists() else None
+def _protect_daemon() -> None:
+    """After exec, before creating a proof, check retirement and deny ptrace."""
+    if not hasattr(socket, "SO_PEERCRED") or os.getuid() != 1001:
+        raise BrokerUidSplitRequired("credential broker needs the per-role uid split")
+    fields = dict(line.split(":", 1) for line in Path("/proc/self/status").read_text().splitlines())
+    if (os.getresuid() != (1001, 1001, 1001) or os.getresgid() != (1001, 1001, 1001)
+            or os.getgroups() != [1100, 1101, 1102]
+            or any(int(fields[key], 16) for key in
+                   ("CapInh", "CapPrm", "CapEff", "CapBnd", "CapAmb"))
+            or int(fields["NoNewPrivs"]) != 1):
+        raise BrokerUidSplitRequired("credential broker needs the per-role uid split")
+    libc = ctypes.CDLL(None, use_errno=True)
+    if libc.prctl(4, 0, 0, 0, 0) != 0 or libc.prctl(3, 0, 0, 0, 0) != 0:
+        raise BrokerUidSplitRequired("daemon non-dumpability failed")
 
 
 class BrokerSupervisor:
-    def __init__(self, data_root: Path, *, allow_test_fixtures: bool = False,
-                 child_env: Any = None) -> None:
-        self._root = Path(data_root)
-        self._child_env = child_env
-        self._dir = broker_dir(self._root)
-        self._socket = self._dir / "broker.sock"
-        try:
-            previous = json.loads((self._dir / OWNER_FILE).read_text("utf-8"))
-        except FileNotFoundError:
-            previous = {"generation": 0}
-        self._generation = int(previous["generation"]) + 1
+    def __init__(self, data_root: Path) -> None:
+        _protect_daemon()
+        self._root = Path(data_root).resolve()
+        self._pid = os.getpid()
         self._proof = secrets.token_urlsafe(32)
-        self._allow_test_fixtures = allow_test_fixtures
-        self._process: subprocess.Popen | None = None
-        self._stopping = threading.Event()
+        self._pair: tuple[int, str] | None = None
+        self._socket = BROKER_SOCKET
 
     @property
     def socket_path(self) -> Path:
         return self._socket
 
-    def _spawn(self) -> None:
-        child_env = self._child_env
-        if child_env is None:
-            # The platform's own secrets never reach the broker (#4267).
-            from tinyassets.platform_secrets import child_env
+    def _same_process(self) -> None:
+        if os.getpid() != self._pid:
+            raise BrokerUidSplitRequired("broker owner state cannot be inherited by a child")
 
-        self._dir.mkdir(parents=True, exist_ok=True, mode=0o700)
-        argv = [
-            sys.executable, "-m", "tinyassets.broker.process",
-            "--socket", str(self._socket), "--state", str(self._dir / "state"),
-            "--data-root", str(self._root), "--owner-uid", str(os.getuid()),
-            "--generation", str(self._generation),
-            "--proof-sha256", sha256(self._proof.encode("utf-8")).hexdigest(),
-        ]
-        if self._allow_test_fixtures:
-            argv.append("--allow-test-fixtures")
-        self._socket.unlink(missing_ok=True)
-        self._process = subprocess.Popen(argv, env=child_env(os.environ), close_fds=True)
-        deadline = time.monotonic() + _START_TIMEOUT_S
-        while not self._socket.exists():
-            if self._process.poll() is not None:
-                raise RuntimeError(f"the broker exited during startup ({self._process.returncode})")
-            if time.monotonic() > deadline:
-                raise RuntimeError("the broker did not start within its timeout")
-            time.sleep(0.05)
-        self._fence()
+    def _acquire(self) -> None:
+        self._same_process()
+        with socket.socket(socket.AF_UNIX, socket.SOCK_SEQPACKET) as sock:
+            sock.settimeout(_START_TIMEOUT_S)
+            sock.connect(str(LAUNCHER_SOCKET))
+            # Only our actual launcher parent may receive the lease hash.
+            if _peer(sock) != (os.getppid(), 0, 0):
+                raise BrokerUidSplitRequired("launcher peer is not the daemon parent")
+            sock.sendall(json.dumps({"op": "START_BROKER", "proof_sha256":
+                                    sha256(self._proof.encode()).hexdigest()}).encode())
+            payload, ancillary, flags, _ = sock.recvmsg(4096, 0)
+            if ancillary or flags & (socket.MSG_TRUNC | socket.MSG_CTRUNC):
+                raise BrokerUidSplitRequired("malformed launcher response")
+            try:
+                answer = json.loads(payload)
+            except (ValueError, UnicodeError, RecursionError):
+                raise BrokerUidSplitRequired("malformed launcher response") from None
+            if (not isinstance(answer, dict) or answer.get("op") != "BROKER_READY"
+                    or answer.get("socket") != str(self._socket)):
+                raise BrokerUidSplitRequired("launcher refused broker acquisition")
 
     def _fence(self) -> None:
+        self._same_process()
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
             sock.settimeout(_START_TIMEOUT_S)
             sock.connect(str(self._socket))
-            sock.sendall(rf.control(rf.CONNECTION, {"op": "FENCE", "generation": self._generation,
-                                                    "proof": self._proof}))
+            self.verify_broker(sock)
+            sock.sendall(rf.control(rf.CONNECTION, {"op": "FENCE", "proof": self._proof}))
             answer = rf.read_frame_blocking(sock)
         document = answer.control() if answer is not None else {}
-        if document.get("op") != "FENCE_ACK":
-            raise RuntimeError("the broker refused the owner's fence")
-        owner = {"socket": str(self._socket), "generation": document["generation"],
-                 "token": document["token"]}
-        target = self._dir / OWNER_FILE
-        temp = target.with_suffix(".tmp")
-        fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            json.dump(owner, handle)
-        os.replace(temp, target)
+        generation, token = document.get("generation"), document.get("token")
+        if (document.get("op") != "FENCE_ACK" or type(generation) is not int
+                or generation < 1 or not isinstance(token, str) or not token):
+            raise BrokerUidSplitRequired("the broker refused the owner's fence")
+        self._pair = generation, token
+
+    def verify_broker(self, sock: socket.socket) -> None:
+        self._same_process()
+        if _peer(sock)[1:] != (1002, 1002):
+            raise BrokerUidSplitRequired("broker peer does not have the broker identity")
+
+    def fence(self) -> tuple[int, str]:
+        self._same_process()
+        if self._pair is None:
+            from tinyassets.storage.outbound_connections import ProxyRequestError
+
+            raise ProxyRequestError("credential broker is not running")
+        return self._pair
 
     def start(self) -> None:
-        self._spawn()
-        threading.Thread(target=self._supervise, name="broker-supervisor", daemon=True).start()
-
-    def _supervise(self) -> None:
-        while not self._stopping.wait(_SUPERVISE_INTERVAL_S):
-            process = self._process
-            if process is not None and process.poll() is None:
-                continue
-            _LOG.warning("credential broker exited (%s); restarting",
-                         None if process is None else process.returncode)
+        self._same_process()
+        with _registry_lock:
+            if get_supervisor(self._root) is self:
+                return
+            if _registry:
+                raise BrokerUidSplitRequired("this daemon already holds a broker acquisition")
             try:
-                self._spawn()
-            except Exception:  # noqa: BLE001 - the supervisor never dies
-                _LOG.exception("credential broker restart failed")
+                self._acquire()
+                self._fence()
+            except (OSError, rf.FrameError) as exc:
+                raise BrokerUidSplitRequired(
+                    "credential broker needs the per-role uid split") from exc
+            _registry[self._root] = self
 
     def stop(self) -> None:
-        self._stopping.set()
-        process = self._process
-        if process is not None and process.poll() is None:
-            process.terminate()
-            try:
-                process.wait(timeout=10)
-            except subprocess.TimeoutExpired:
-                process.kill()
-        self._socket.unlink(missing_ok=True)
+        """Forget this process's authority; never signal or unlink across uids."""
+        self._same_process()
+        with _registry_lock:
+            if _registry.get(self._root) is self:
+                del _registry[self._root]
+            self._pair = None
 
 
-class BrokerUidSplitRequired(RuntimeError):
-    """The broker was selected on a host where every role shares one uid."""
+def get_supervisor(data_root: Path) -> BrokerSupervisor | None:
+    with _registry_lock:
+        result = _registry.get(Path(data_root).resolve())
+        if result is not None:
+            result._same_process()
+        return result
 
 
-def start_broker(data_root: Path | None = None) -> None:
-    """Daemon startup: nothing when the broker is not selected; a loud refusal when it is.
-
-    v1 deviation (c) of ``broker-streaming-contract``: the daemon, its engine
-    children and the broker share one uid, so any same-uid child can read
-    ``owner.json`` and claim another owner's principal on the owner channel.
-    The broker serves production only after the per-role uid split (daemon /
-    engine children / broker). Until then, selecting it fails the daemon's
-    start instead of quietly running without that boundary; the split's change
-    replaces this refusal with ``BrokerSupervisor(...).start()``.
-    """
+def start_broker(data_root: Path | None = None) -> BrokerSupervisor | None:
     if not broker_selected():
         return None
-    raise BrokerUidSplitRequired(
-        f"{ENV_SWITCH}={PROCESS} needs the per-role uid split (daemon / engine children / "
-        f"broker): every role here runs as uid {getattr(os, 'getuid', lambda: '?')()}, so "
-        f"the owner channel would "
-        f"trust any same-uid child. Unset {ENV_SWITCH} until the split is deployed.")
+    if data_root is None:
+        from tinyassets.storage import data_dir
+
+        data_root = data_dir()
+    with _registry_lock:
+        current = get_supervisor(data_root)
+        if current is not None:
+            return current
+        supervisor = BrokerSupervisor(data_root)
+        supervisor.start()
+        return supervisor

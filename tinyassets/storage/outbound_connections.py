@@ -1141,21 +1141,18 @@ def _broker_channel(data_root: Path, *, principal: str, command_center: str, gra
     Selected but not running is a loud refusal, never a silent fall back to the
     worker: a switch that quietly does nothing cannot be proven on.
     """
-    from tinyassets.broker.supervisor import broker_selected, read_owner
+    from tinyassets.broker.supervisor import broker_selected, get_supervisor
 
     if not broker_selected():
         return None
-    owner = read_owner(Path(data_root))
-    if owner is None:
+    supervisor = get_supervisor(Path(data_root))
+    if supervisor is None:
         raise ProxyRequestError("the credential broker is selected but not running")
     from tinyassets.broker.client import BrokerClient
 
-    def fence() -> tuple[int, str]:
-        current = read_owner(Path(data_root)) or owner
-        return int(current["generation"]), str(current["token"])
-
-    client = BrokerClient(Path(owner["socket"]), principal=principal,
-                          command_center=command_center, fence=fence)
+    client = BrokerClient(supervisor.socket_path, principal=principal,
+                          command_center=command_center, fence=supervisor.fence,
+                          verify_peer=supervisor.verify_broker)
     return _BrokerChannel(client, grant_id=grant_id, connection_id=connection_id)
 
 
@@ -6103,6 +6100,10 @@ class ConnectionLedger:
         owner_user_id: str,
         connection_type: str = "",
     ) -> ScopedConnectionProxy:
+        from tinyassets.broker.supervisor import broker_selected
+
+        if broker_selected():
+            raise ProxyRequestError("legacy proxy worker is forbidden while the broker is selected")
         factory_reference = "credential_broker_v1"
         factory_config = self.broker_dispatch_config(
             grant_id=grant_id, universe_id=universe_id, provider=provider,

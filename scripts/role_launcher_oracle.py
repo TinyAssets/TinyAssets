@@ -52,13 +52,26 @@ def _daemon(root, run, ready, control, launcher):
     assert os.read(ready, 1) == b"1"
     os.close(ready)
     path = run / "launcher.sock"
-    proof = "oracle-private-proof"
+    from tinyassets.broker import supervisor as supervisor_module
+
+    supervisor_module.LAUNCHER_SOCKET = path
+    supervisor_module.BROKER_SOCKET = run / "broker/broker.sock"
+    supervisor = supervisor_module.BrokerSupervisor(root)
+    proof = supervisor._proof
     start = {"op": "START_BROKER", "proof_sha256": hashlib.sha256(proof.encode()).hexdigest()}
     # Same uid is insufficient. The parent has not reaped this child, so this
     # exercise cannot accidentally test a recycled pid.
     wrong = os.fork()
     if wrong == 0:
         try:
+            for name in ("mem", "environ"):
+                try:
+                    descriptor = os.open(f"/proc/{os.getppid()}/{name}", os.O_RDONLY)
+                except PermissionError:
+                    pass
+                else:
+                    os.close(descriptor)
+                    raise AssertionError("same-uid child could open daemon private procfs")
             try:
                 assert _request(path, start)["op"] == "REFUSED"
             except (ConnectionResetError, BrokenPipeError):
@@ -87,6 +100,31 @@ def _daemon(root, run, ready, control, launcher):
     assert _fence(answer["socket"], proof) == fenced
     assert _fence(answer["socket"], "wrong")["op"] == "FENCE_REFUSED"
     assert _fence(answer["socket"], proof, generation=1)["op"] == "FENCE_REFUSED"
+    supervisor.start()
+    assert supervisor_module.get_supervisor(root) is supervisor
+    assert supervisor.fence() == (fenced["generation"], fenced["token"])
+    # A socket at the daemon uid must never receive a proof, even when its
+    # pathname was supplied by trusted startup configuration.
+    fake_path = root / "fake-broker.sock"
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as fake:
+        fake.bind(str(fake_path))
+        fake.listen(1)
+        fake.settimeout(5)
+        actual_path = supervisor._socket
+        supervisor._socket = fake_path
+        try:
+            supervisor._fence()
+        except supervisor_module.BrokerUidSplitRequired:
+            pass
+        else:
+            raise AssertionError("daemon accepted a same-uid broker")
+        finally:
+            supervisor._socket = actual_path
+        with fake.accept()[0] as received:
+            received.settimeout(5)
+            assert received.recv(1) == b"", "daemon disclosed proof before broker authentication"
+    fake_path.unlink()
+    print("daemon non-dumpable procfs; same-uid fake broker gets no proof: PASS", flush=True)
     from tinyassets import rpc_frames as rf
 
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
@@ -123,6 +161,36 @@ def _daemon(root, run, ready, control, launcher):
     else:
         raise AssertionError("launcher did not restart broker")
     assert _fence(answer["socket"], proof) == fenced
+    assert supervisor.fence() == (fenced["generation"], fenced["token"])
+    from tinyassets.storage.outbound_connections import (
+        GrantResolutionError,
+        ProxyRequestError,
+        _broker_channel,
+    )
+
+    os.environ[supervisor_module.ENV_SWITCH] = supervisor_module.PROCESS
+    channel = _broker_channel(root, principal="alice", command_center="alice",
+                              grant_id="absent", connection_id="absent")
+    try:
+        channel._client.request(grant_id="absent", connection_id="absent", verb="GET",
+                                request={}, op_id="00000000-0000-4000-8000-000000000002")
+    except GrantResolutionError:
+        pass
+    else:
+        raise AssertionError("broker admitted missing grant after restart")
+    supervisor.stop()
+    assert Path(answer["socket"]).is_socket(), "daemon stop unlinked broker socket"
+    assert _fence(answer["socket"], proof) == fenced, "daemon stop killed the broker"
+    try:
+        _broker_channel(root, principal="alice", command_center="alice",
+                        grant_id="absent", connection_id="absent")
+    except ProxyRequestError:
+        pass
+    else:
+        raise AssertionError("stopped supervisor retained owner authority")
+    print("daemon supervisor acquisition, private-memory channel after restart, "
+          "stop without signal: PASS",
+          flush=True)
     print("launcher broker crash/restart preserves in-memory owner fence: PASS", flush=True)
     os.write(control, b"D")
     # The launcher must signal this foreign uid at shutdown.

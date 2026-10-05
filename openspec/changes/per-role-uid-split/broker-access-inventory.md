@@ -23,6 +23,12 @@ accounting-state migration, refresh, backup and deletion rows below remain
 unimplemented. Normal broker startup is still refused and the image CMD is
 unchanged. See delivery.md for executable evidence and remaining integration.
 
+D18 routes only daemon broker acquisition and `_broker_channel` through the
+launcher-owned supervisor's authenticated in-memory fence. The disk token
+reader/writer and legacy generation argument are removed; selected legacy workers
+refuse before allocation. None of the ledger/accounting/refresh consumers below
+is claimed routed by D18. Image startup remains unactivated.
+
 ## Ledger construction entry points
 
 Each daemon route must preserve the current request's trusted principal and

@@ -1054,6 +1054,27 @@ and assert uid/gid/mode from fstat. SETGID is already required; do not add
 FSETID. Apply the same helper to relocation and startup IPC directory setup.
 The oracle asserts actual 2700 private parents and 2750 socket parents.
 
+### D18. Mechanical decision: daemon acquisition holds no disk credential
+
+Replace the old spawning supervisor with a daemon-process registry of acquired
+broker channels. The launcher parent is authenticated by SO_PEERCRED pid/uid/gid
+before sending the lease hash; the broker uid/gid is authenticated before any
+proof or owner token is sent, including each stream connection. Only uid 1001
+with the declared groups, retired capabilities and NNP may acquire a channel;
+it becomes non-dumpable before generating the proof. Registry objects reject
+use after fork and stop invalidates existing clients without signalling a broker
+or unlinking its socket. A repeated start in the same daemon reuses its acquisition.
+Generation is allocated by the broker in both the deployed and test process
+entry paths; remove the legacy generation argument and owner.json reader/writer.
+The per-grant worker refuses before constructing any worker or OAuth channel
+when broker mode is selected. These are D6/D7 consequences, not new authority.
+
+Production startup remains gated by the unactivated launcher CMD. The ordinary
+Linux unit fixture substitutes only process startup and peer identities so it
+can run without capabilities; production-image acceptance uses the real launcher,
+1001 supervisor and 1002 broker. Missing-grant refusal proves the live channel,
+not successful streaming or D11 ledger/accounting/refresh consumer routing.
+
 ## Risks / Trade-offs
 
 - **The launcher is root-adjacent code.** One file, stdlib-only, run `-I -S`, a static kind table,

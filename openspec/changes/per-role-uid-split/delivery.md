@@ -1,3 +1,125 @@
+# Current delivery: D18 daemon broker acquisition
+
+Started from `be34773f5f`; required fast-forward pull was already current.
+D12-D17 remain intact. D18 is a mechanical continuation of D6/D7: daemon
+supervisor acquires the launcher-owned broker, authenticates launcher parent
+and broker peers before sending proof/token, holds its fence in a process-bound
+registry and stops without signals or socket removal. The legacy owner file
+reader/writer and process generation argument are removed. Broker-selected
+legacy workers refuse before allocation. Production CMD remains unactivated.
+
+Release-critical paths under SENSITIVE_RE: zero in this step (cap 8).
+Security-sensitive runtime files: `tinyassets/broker/supervisor.py`,
+`tinyassets/broker/client.py`, `tinyassets/broker/process.py`,
+`tinyassets/storage/outbound_connections.py`; generated mirrors accompany them.
+Acceptance harness: `scripts/role_launcher_oracle.py`. Existing process test
+names remain, with assertions amended for the required in-memory contract.
+
+One cross-family code review through peer-agents returned ADAPT. AGREE with
+both blocking findings: removed the accidental UTF-8 BOM and stale timer-loop
+inventory. A second stale `_spawn` entry was found by the inventory suite;
+per AGENTS loop 7, handed that bounded reconciliation to another agent, which
+removed it and proved the inventory suite (5 passed) plus Ruff. No second review
+round. Also accepted the nonblocking suggestion to return ProxyRequestError
+when a stopped supervisor's existing client is used. Reviewer agreed with
+launcher/broker peer checks, retirement, non-dumpability, generation allocation,
+registry process binding and the distinction between test and kernel evidence.
+
+No additional
+2.1-2.8 task is checked complete. This step does not yet implement D11 consumers,
+engine cells, full migration/deletion, successful streams or actual old-image
+rollback. Startup activation still requires every mandatory probe to pass.
+
+
+## D18 verification receipt (2026-10-04 local / 2026-10-05 UTC)
+
+Final production-image command exited 0, with no skips:
+`python scripts/linux_oracle.py --production-image tinyassets-uid-supervisor:d18 --build`.
+The image includes the reviewed BOM/inventory/error-type fixes. Exact launch and
+acceptance output:
+```
+[oracle] production image sha256:4529835547a444f537ede81fd02c83f641fb2f12f22e00cb7039e250722dedd8
+[oracle] docker run --rm --network none --user 0:0 --cap-drop ALL --cap-add CHOWN --cap-add DAC_OVERRIDE --cap-add FOWNER --cap-add SETUID --cap-add SETGID --cap-add SETPCAP --cap-add KILL --security-opt no-new-privileges=true --security-opt seccomp=unconfined --security-opt apparmor=unconfined --security-opt systempaths=unconfined --entrypoint /opt/venv/bin/python sha256:4529835547a444f537ede81fd02c83f641fb2f12f22e00cb7039e250722dedd8 -I -B /app/scripts/role_image_oracle.py
+privileged chain: PASS (root owners, protected ancestors and link targets)
+non-root/writable descendant module chain refusal: PASS
+identity uid=1001 groups=[] caps=all-zero nnp=1
+image accounts, immutable paths, writable HOME, unprivileged bwrap: PASS
+overlapping consent migration refused without mutation: PASS
+broker private directory ownership/setgid readbacks without FSETID: PASS
+forward dry-run, apply, repeat; service remains unadmitted: PASS
+identity uid=1002 groups=[1102] caps=all-zero nnp=1
+broker actual ConnectionLedger existing/fresh writes and proxy mkdir: PASS
+identity uid=1001 groups=[1100, 1101, 1102] caps=all-zero nnp=1
+identity uid=1003 groups=[1100] caps=all-zero nnp=1
+direct daemon/engine-identity private path denials: PASS (not class acceptance)
+identity uid=1001 groups=[] caps=all-zero nnp=1
+reverse dry-run/apply/repeat and uid-1001 old-location writes: PASS
+forward/reverse abrupt-exit checkpoint and rename recovery: PASS (6 boundaries)
+symlink/hardlink/FIFO/conflicting-copy refusal without mutation: PASS
+launcher migration-capability retirement/readback and pre-bind refusal: PASS
+daemon non-dumpable procfs; same-uid fake broker gets no proof: PASS
+launcher exact-pid, malformed/oversized/SCM_RIGHTS/static-operation refusals: PASS
+launcher broker uid=1002; socket=1002:1101/0660; daemon fences without disk token: PASS
+daemon supervisor acquisition, private-memory channel after restart, stop without signal: PASS
+launcher broker crash/restart preserves in-memory owner fence: PASS
+privileged chain: PASS (root owners, protected ancestors and link targets)
+broker caps=all-zero nnp=1 non-dumpable; no received-fd leak; cross-uid shutdown: PASS
+launcher wrong-uid filesystem refusal; actual broker creates private ledger: PASS
+LAUNCHER/BROKER SUBSTEP ONLY: real daemon CMD, streams/accounting, engine classes pending
+FOUNDATION/EGRESS SUBSTEP ONLY: launcher, IPC, real engine classes, full rollback pending
+```
+
+Exact completed commands/results:
+```
+python -m pytest tests/test_broker_supervisor.py tests/test_broker_process.py tests/test_broker_fence.py tests/test_broker_server.py tests/test_broker_relocated_paths.py -q
+20 passed, 27 skipped (Windows; skips are not kernel acceptance)
+python scripts/linux_oracle.py -- tests/test_broker_supervisor.py tests/test_broker_process.py tests/test_broker_fence.py -q
+24 passed, zero skips
+python scripts/linux_oracle.py -- tests/test_broker_supervisor.py tests/test_broker_process.py tests/test_broker_fence.py tests/test_broker_server.py tests/test_broker_relocated_paths.py tests/test_outbound_connection_ledger.py tests/test_outbound_http_connection.py tests/test_outbound_effect_boundary.py tests/test_outbound_proxy_startup_diagnosis.py tests/test_request_budget_broker.py -q
+177 passed, zero skips
+python scripts/linux_oracle.py -- tests/test_broker_supervisor.py tests/test_broker_process.py tests/test_broker_fence.py tests/test_broker_server.py tests/test_broker_relocated_paths.py tests/test_role_launcher.py tests/test_broker_upstream_stream.py tests/test_broker_scan.py tests/test_platform_secret_scope.py -q
+181 passed, 17 skipped (skips are not acceptance)
+python -m pytest tests/test_control_plane_inventory.py -q
+5 passed (handoff and lead validation)
+python scripts/linux_oracle.py -- tests/test_control_plane_inventory.py -q
+5 passed, zero skips
+python -m ruff check tinyassets/broker/supervisor.py tinyassets/broker/client.py tinyassets/broker/process.py tinyassets/storage/outbound_connections.py tests/test_broker_supervisor.py tests/test_broker_process.py tests/control_plane_timer_inventory.py scripts/role_launcher_oracle.py
+All checks passed!
+python -m ruff check --output-format concise
+55 pre-existing errors outside changed files
+python packaging/claude-plugin/build_plugin.py
+Import probe: probe-ok
+python scripts/check_mirror_parity.py
+mirror-parity: all 596 canonical file(s) mirror-matched
+openspec validate per-role-uid-split --strict
+Change 'per-role-uid-split' is valid
+git diff --check
+exit 0
+```
+
+Broader Windows command (recorded as a failure, not a pass):
+```
+python -m pytest tests/test_outbound_connection_ledger.py tests/test_outbound_http_connection.py tests/test_outbound_effect_boundary.py tests/test_outbound_proxy_startup_diagnosis.py tests/test_request_budget_broker.py tests/test_platform_secret_scope.py tests/test_role_launcher.py -q
+2 failed, 144 passed, 32 skipped, 9 errors
+```
+All failures/errors are in unchanged test_request_budget_broker.py: nine Unix
+socket fixture setups use unavailable os.getuid, and two symlink probes hit
+WinError 1314. That entire file passed in the Linux 177-test run above. No test
+was removed, skipped anew or weakened to make Windows green. Initial D18 Windows
+fake-socket unit coverage also needed a test-only AF_UNIX constant; it now passes.
+No affected test file matches .github/heavy-test-files.txt.
+
+Remaining acceptance is unchanged beyond D18: real daemon launcher/CMD and
+allowlisted environment; every actual engine class/site and daemon reader matrix;
+D11 ledger/accounting/refresh/deletion/backup IPC consumers; complete role migration
+and runtime mode declarations; D10 two-pass deletion and actual old-image rollback;
+successful broker streaming; compose/ta-op capability parity and healthcheck;
+startup activation only after all probes pass. The relocation-only reverse probe
+is not full role rollback. No deployment, PR, added privilege or isolation-scope
+change is authorized or performed by this step.
+
+---
+
 # Current delivery: D16 staged launcher and broker lifecycle
 
 Started from `d43935b600`; the required fast-forward pull was already current.
