@@ -1,3 +1,57 @@
+# Current delivery: D43 accounting source binding
+
+D42 pushed as 11b4cc3a78; hygiene added 4 tests, removed 0, tampering 0.
+D43 routes accounting reference issuance's grant read through authenticated
+GRANTED_RESOURCE in selected mode. Installed definition/model checks remain;
+connection identity must match exactly. Broker outage/fence/revocation refuses
+without local fallback. Unsplit read-only query preserved.
+Cross-family peer-agents: AGREE, APPROVE; no floor/correctness findings. Added
+direct broker owner/center and resource-revocation probes after the review's
+coverage note. No full build task checked off, startup inactive, no PR/deployment.
+
+Release-critical files: **0; none**. Runtime storage/agent_request_usage.py and
+its mirror; role_launcher_oracle.py, test_broker_usage_source.py, tasks/inventory/
+delivery; D43 design was recorded in the preceding commit. No affected heavy file.
+
+```text
+python scripts/linux_oracle.py -- tests/test_broker_usage_source.py tests/test_request_usage_store.py -q -rs
+47 passed in 12.34s; zero skips
+python scripts/linux_oracle.py --production-image tinyassets-uid-usage-source:d43 --build --production-stream
+exit 0; sha256:22a36fd05ffc2f66ad0e335517be1d131d6955693daff45e05bfbb1e4abf36d6
+D43 actual accounting source binding via launcher broker: installed definition/model, foreign connection refusal, no daemon ledger: PASS (usage runtime IPC pending)
+```
+D43 passes before/after restart; D41/D42 and previous consumer proofs, actual
+D22/D24 HTTPS streams PASS. Egress/accounting forward/reverse dry-run/apply/
+repeat, all 6+8+3 crash boundaries and hostile-input refusals PASS. This is not
+full role migration/two-pass deletion or an actual old-image rollback.
+Seven entry capabilities and compose security options unchanged; synthetic
+network ta-uid-stream-68aa64c6d193-net and public CA cleaned by harness.
+
+Targeted Ruff, plugin build/import, mirror parity (604), strict OpenSpec and
+whitespace pass. Full python -m ruff check still reports 55 pre-existing errors
+outside touched files. Windows test_request_usage_store: 35 passed, 1 fails
+because the existing fd-leak test unconditionally opens /proc/self/fd; the same
+test passes on Linux. No skip or failure is reported as acceptance. The existing
+path-I/O ratchet failure in broker/supervisor.py::_protect_daemon remains as
+recorded under D42. No guard/test was weakened and no history rewritten.
+
+## Next work, in order
+
+1. Accounting runtime create/reserve/receipt/settle IPC, daemon-owned lock
+   creation and migration modes for broker read access, and daily evidence.
+   UsageStore still opens .tinyassets.db at runtime; do not activate the split.
+   Source binding's daemon grant read is now routed, but broker-local installed
+   definition access and complete inference POST acceptance remain unproven.
+2. Refresh: preserve admission before spending single-use tokens and daemon-only
+   vault writes. No broker vault-write privilege may be introduced.
+3. Every actual engine class through the launcher and per-class denial/positive
+   controls, including daemon planted-link/FIFO/hardlink readers and fd closure.
+4. Full role migration/ACLs and capability-free D10 two-pass deletion.
+5. Actual old-image rollback, then startup and healthcheck only after every
+   preceding proof passes. Existing storage reverse/old-uid proof is insufficient.
+
+---
+
 # Current delivery: D42 read-only kernel liveness
 
 D41 pushed as 4f8636e8cd; hygiene added 5 tests, removed 0, tampering 0.

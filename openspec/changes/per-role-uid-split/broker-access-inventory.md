@@ -331,3 +331,10 @@ D42: POSIX owner_state now probes locks read-only through guarded no-follow
 filesystem access. Real broker uid reads but cannot write fixture daemon/parent
 proofs; parent close and daemon death are independently observed. Runtime lock
 modes/migration and accounting IPC remain pending; this does not route UsageStore.
+
+D43: UsageStore._validate_source retains installed definition and model checks,
+then uses scoped GRANTED_RESOURCE in selected mode, including exact connection
+identity. No raw daemon outbound.db read on this path. Actual production-image
+source binding passes before/after broker restart. UsageStore create/reserve/
+receipt/settle and daily-evidence IPC still remain; table relocation alone and
+this read route do not establish runtime inference accounting.

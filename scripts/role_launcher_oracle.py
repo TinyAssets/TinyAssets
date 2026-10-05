@@ -159,6 +159,27 @@ def _query_consumers(root, supervisor):
     from tinyassets.providers.source_display import source_display_name
 
     provider = f"api_key_http:{definition.id}"
+    from types import SimpleNamespace
+
+    from tinyassets.exceptions import ProviderAuthorityHeldError
+    from tinyassets.storage.agent_request_usage import UsageStore
+
+    accounting = UsageStore(root)
+    source_args = dict(scope=("alice", "alice", "fixture-usage"),
+                       attempt=SimpleNamespace(source_ref=provider, model="alice-fixture"),
+                       grant_id="grant-alice", connection_id="conn-alice", verb="POST",
+                       request={"body": {"model": "alice-fixture"}})
+    accounting._validate_source(**source_args)
+    try:
+        accounting._validate_source(**(source_args | {"connection_id": "conn-bob"}))
+    except ProviderAuthorityHeldError:
+        pass
+    else:
+        raise AssertionError("accounting admitted a foreign source connection")
+    assert not (root / "outbound.db").exists()
+    print("D43 actual accounting source binding via launcher broker: installed definition/model, "
+          "foreign connection refusal, no daemon ledger: PASS (usage runtime IPC pending)",
+          flush=True)
     assert _validate_http_grant(base=root, universe_id="alice", actor="alice",
                                 grant_id="grant-alice") is None
     assert _validate_http_grant(base=root, universe_id="alice", actor="alice",
