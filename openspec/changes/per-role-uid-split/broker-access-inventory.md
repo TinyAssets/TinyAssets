@@ -6,7 +6,8 @@ D20 discovery HTTP, D23 compute-grant/incarnation/display reads,
 D24 effector authority/proxy and bound-preview reads,
 D25 serving context/connection-id custody reads,
 D26 HTTP compute authority reads and proxy acquisition; D27 connection-use and
-provider-capability configuration plus voice binding/proxy acquisition.** D11
+provider-capability configuration plus voice binding/proxy acquisition; D28 ta,
+account-page and command-center-summary catalogs.** D11
 records the lead decision; D12 resolves the physical parent: .broker/outbound.db and
 .broker/.outbound-proxy. The logical data root must remain explicit.
 
@@ -236,3 +237,12 @@ endpoint guards remain. No daemon ledger is constructed in selected mode.
 `connection_uses_view` still requires an injected ledger; model_bootstrap,
 model_bootstrap_candidate and agent_request_usage retain direct capability reads.
 Those rows, other ledger mutations, accounting and refresh remain obligations.
+
+## D28 consumer receipt
+
+`ta_capabilities.Capabilities.connections`, account connection GET and
+`universe_tools.command_center_summary` now use CONNECTION_CATALOG. Joined,
+scoped, redacted pages contain no credential reference; actual effects still
+reauthorize. Full catalogs iterate pages; account and summary retain limits.
+Package owner-wide lists, bootstrap recovery reads and remaining mutation,
+accounting, refresh and deletion routes are not claimed completed by D28.

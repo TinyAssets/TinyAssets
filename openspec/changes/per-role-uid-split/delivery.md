@@ -1,3 +1,67 @@
+# Current delivery: D28 bounded scoped catalogs
+
+D27 was committed/pushed as `66ec595bca`; its hygiene command against
+`90d7186cfe` returned `tests added 10, removed 0, tampering findings 0,
+product lines added 590`. Continued directly into D28, without ending the run.
+D28 routes the daemon's `ta` capability catalog, account connection GET and
+command-center summary through redacted scoped broker pages. Unlimited consumers
+iterate; explicit limits 100 and 21 remain. No credential reference is projected.
+One cross-family implementation review returned APPROVE; **AGREE**. No startup
+activation, PR, deployment, new privilege or security-scope change.
+
+Release-critical files: **0; list: none**. Runtime paths:
+`tinyassets/broker/{catalog,client,server}.py`, `tinyassets/ta_capabilities.py`,
+`tinyassets/onboarding/connections.py`, `tinyassets/universe_tools.py`, and their
+six generated mirrors. Oracle: `scripts/role_launcher_oracle.py`. New tests:
+`tests/test_broker_catalog.py`, `tests/test_broker_catalog_ipc.py`.
+No existing test names/assertions changed; no affected heavy-list file found.
+
+Windows: `tests/test_ta_capabilities.py tests/test_app_connection_controls.py`
+returned **66 passed**; catalog/lifecycle tests returned **18 passed**.
+One initial new unit fixture referenced nonexistent `.db_path`; fixed to the
+existing ledger path field. No product guard changed for that test correction.
+Linux commands:
+
+```text
+python scripts/linux_oracle.py -- tests/test_broker_catalog.py tests/test_broker_catalog_ipc.py tests/test_ta_capabilities.py tests/test_ta_capabilities_jail.py tests/test_connection_lifecycle.py tests/test_turn_request_economy.py -q -rs
+96 passed in 47.43s
+python scripts/linux_oracle.py -- tests/test_broker_catalog_ipc.py -q -rs
+10 passed in 1.14s
+```
+
+Zero skips. The final IPC run includes actual app GET and summary consumers,
+malformed projection, cursor/field bounds, stale/unavailable broker, multi-page
+redaction and revocation between pages. Existing jail regression is not new
+engine-through-launcher acceptance. Ruff for changed files, mirror parity
+(599 canonical files), strict OpenSpec validation and whitespace checks pass.
+
+Production image `sha256:e7318093c24c90c6261000dce9508d9d9abbe4486a52b2529bb5f3a3f991c767`:
+
+```text
+python scripts/linux_oracle.py --production-image tinyassets-uid-consumers:d28 --production-stream --build
+python scripts/linux_oracle.py --production-image tinyassets-uid-consumers:d28
+python scripts/linux_oracle.py --production-image tinyassets-uid-consumers:d28 --production-stream
+```
+
+All exit 0, zero skips. Same root entry argv, capability set and security options
+as D27 below. Final HTTPS fixture network `ta-uid-stream-61abea346cd7-net`, public
+CA volume `ta-uid-stream-61abea346cd7-ca`; same internal subnet/IP/host/env settings
+as D27, cleaned after proof. New output before and after actual broker restart:
+
+```text
+D28 actual capability catalog via launcher broker: 71 grants over bounded pages, redaction, foreign/fence refusal, no daemon ledger: PASS
+```
+
+D27 mutation and prior real HTTPS stream/lifecycle/denial probes also pass.
+Egress relocation dry-run/apply/repeat, reverse dry-run/apply/repeat, all six
+abrupt-exit recovery boundaries and link/FIFO/conflict refusal remain PASS.
+No full migration, two-pass deletion or actual old-image proof is claimed.
+Remaining order: D11 reads/mutations/accounting/refresh, every engine class/site
+through launcher, full migration/deletion, old-image rollback, startup/healthcheck.
+No whole task 2.1-2.8 checked off. Startup remains unactivated.
+
+---
+
 # Current delivery: D27 capability metadata and voice consumers
 
 Resumed at `90d7186cfe8e2587361b9add7e8b363842670bb8`; requested fast-forward

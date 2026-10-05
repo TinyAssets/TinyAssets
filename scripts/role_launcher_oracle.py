@@ -51,7 +51,7 @@ def _seed_ledger(root):
     from tinyassets.storage.outbound_connections import ConnectionLedger
 
     ledger = ConnectionLedger(root / ".broker/outbound.db", data_root=root)
-    for owner in ("alice", "bob"):
+    for owner in ("alice", "bob", "catalog"):
         ledger.create_connection(
             connection_id=f"conn-{owner}", owner_user_id=owner, connection_class="http",
             connection_type="http", auth_scheme="bearer", scopes=("GET", "POST"),
@@ -66,6 +66,9 @@ def _seed_ledger(root):
             descriptor={"wire": "chat_messages", "models": [
                 {"id": f"{owner}-fixture", "tools": True, "context": 20000}], "billing": "free"},
         )
+    for number in range(70):
+        ledger.grant_connection(grant_id=f"page-{number:03}", connection_id="conn-catalog",
+                                owner_user_id="catalog", universe_id="catalog")
     with ledger._connect() as conn:
         conn.execute("INSERT INTO connection_capabilities VALUES (?, ?, ?, 0)",
                      ("conn-bob", "model_discovery", "malformed pricing must still block"))
@@ -227,6 +230,7 @@ def _query_consumers(root, supervisor):
           "scoped reads/acquisition, foreign refusal, no daemon ledger: PASS "
           "(inference accounting/POST not claimed)", flush=True)
     _capability_consumers(root, supervisor)
+    _catalog_consumers(root, supervisor)
     for changes in ({"principal": "bob"}, {"command_center": "bob"},
                     {"grant_id": "grant-bob"}, {"connection_id": "conn-bob"}):
         try:
@@ -280,6 +284,39 @@ def _query_consumers(root, supervisor):
     assert not (root / "outbound.db").exists(), "daemon constructed a fallback ledger"
     print("D11 actual discovery/priced-source consumers via launcher broker; "
           "foreign scope, fence, SQL/path/method refusal; no local ledger: PASS", flush=True)
+
+
+def _catalog_consumers(root, supervisor):
+    import asyncio
+
+    from tinyassets.broker.catalog import connections
+    from tinyassets.broker.client import BrokerClient, BrokerRefused
+    from tinyassets.ta_capabilities import Capabilities, ExecutionContext
+
+    rows = list(connections(root, principal="catalog", command_center="catalog"))
+    assert len(rows) == 71 and len({g.grant_id for g, _, _ in rows}) == 71
+    assert all(g.owner_user_id == v.owner_user_id == "catalog" and incarnation
+               for g, v, incarnation in rows)
+    assert all(not hasattr(view, "credential_ref") for _, view, _ in rows)
+    assert list(connections(root, principal="alice", command_center="catalog")) == []
+    assert list(connections(root, principal="catalog", command_center="alice")) == []
+    backend = Capabilities(root / "catalog", ExecutionContext(
+        universe="catalog", owner="catalog", initiating_agent="main"), [], None, lambda: None)
+    result = asyncio.run(backend.dispatch({"op": "catalog"}))
+    assert {row["name"] for row in result["capabilities"]} == {
+        "connection:conn-catalog:GET", "connection:conn-catalog:POST"}
+    assert "credential_ref" not in json.dumps(result) and "vault://" not in json.dumps(result)
+    bad = BrokerClient(supervisor.socket_path, principal="catalog", command_center="catalog",
+                       fence=lambda: (1, "wrong"), verify_peer=supervisor.verify_broker, timeout=5)
+    try:
+        bad.connection_catalog(cursor="", limit=64)
+    except BrokerRefused:
+        pass
+    else:
+        raise AssertionError("catalog admitted invalid fence")
+    assert not (root / "outbound.db").exists()
+    print("D28 actual capability catalog via launcher broker: 71 grants over bounded pages, "
+          "redaction, foreign/fence refusal, no daemon ledger: PASS", flush=True)
 
 
 def _capability_consumers(root, supervisor):

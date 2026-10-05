@@ -298,6 +298,9 @@ class _Connection:
         elif op == "CAPABILITY":
             answer = await asyncio.to_thread(self._capability, doc)
             await self.send_async(rf.control(rf.CONNECTION, answer))
+        elif op == "CONNECTION_CATALOG":
+            answer = await asyncio.to_thread(self._connection_catalog, doc)
+            await self.send_async(rf.control(rf.CONNECTION, answer))
         elif op == "FENCE":
             try:
                 generation, token = await asyncio.to_thread(
@@ -348,6 +351,28 @@ class _Connection:
                 "GrantResolutionError" if type(exc).__name__ == "GrantResolutionError"
                 else "refused")
             return {"op": "LEDGER_REFUSED", "error_class": error}
+
+    def _connection_catalog(self, doc: dict[str, Any]) -> dict[str, Any]:
+        from tinyassets.broker.catalog import local_page, validate
+
+        try:
+            if set(doc) != {"op", "principal", "command_center", "generation", "token",
+                            "cursor", "limit"}:
+                raise ValueError("unsupported catalog fields")
+            _namespace(doc["principal"], doc["command_center"])
+            validate(doc["cursor"], doc["limit"])
+            if type(doc["generation"]) is not int or not isinstance(doc["token"], str):
+                raise Fenced("invalid fence")
+            with self._server._fence.send(doc["generation"], doc["token"]):
+                result = local_page(self._server._ledger_for(doc["principal"]),
+                                    principal=doc["principal"],
+                                    command_center=doc["command_center"],
+                                    cursor=doc["cursor"], limit=doc["limit"])
+                answer = {"op": "CATALOG_RESULT", "result": result}
+                rf.control(rf.CONNECTION, answer)
+                return answer
+        except Exception:  # noqa: BLE001 - fixed refusal, no persisted values on wire
+            return {"op": "CATALOG_REFUSED"}
 
     def _capability(self, doc: dict[str, Any]) -> dict[str, Any]:
         from tinyassets.broker.capabilities import local_operation, validate

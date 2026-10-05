@@ -1251,6 +1251,19 @@ route remains available only when broker selection is off. This is partial D11
 integration; accounting, refresh and the other remaining consumers still gate
 startup, together with all engine/migration/rollback acceptance.
 
+### D28. Mechanical decision: grant catalogs page within one admitted scope
+
+The named CONNECTION_CATALOG operation returns redacted connection views, grant
+metadata and custody incarnation for one admitted principal/center. Each bounded
+page uses a joined SQLite snapshot filtering both row owners and both revocations;
+the cursor is the last grant ID, never a path or SQL. The daemon iterates pages
+for consumers that require the complete catalog, retaining existing caller limits
+where explicitly bounded. Pages are individually consistent, not a promised
+multi-page snapshot; actual effects still reauthorize at use. No credential
+reference or capability descriptor is included. Malformed replies or broker
+outage never trigger a local fallback. This routes daemon catalogs, not engine
+filesystem access or startup activation, and adds no privilege.
+
 ## Risks / Trade-offs
 
 - **The launcher is root-adjacent code.** One file, stdlib-only, run `-I -S`, a static kind table,

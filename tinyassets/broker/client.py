@@ -119,6 +119,34 @@ class BrokerClient:
             raise ProxyRequestError("invalid credential broker query response")
         return answer["result"]
 
+    def connection_catalog(self, *, cursor: str, limit: int) -> dict[str, Any]:
+        from tinyassets.broker.catalog import validate
+        from tinyassets.storage.outbound_connections import ProxyRequestError
+
+        validate(cursor, limit)
+        generation, token = self._fence()
+        wire = {"op": "CONNECTION_CATALOG", "principal": self._principal,
+                "command_center": self._command_center, "generation": generation,
+                "token": token, "cursor": cursor, "limit": limit}
+        with self._lock, socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+            sock.settimeout(self._timeout)
+            try:
+                sock.connect(os.fspath(self._path))
+                if self._verify_peer is not None:
+                    self._verify_peer(sock)
+                sock.sendall(rf.control(rf.CONNECTION, wire))
+                frame = rf.read_frame_blocking(sock)
+                if frame is None or frame.kind != rf.CONTROL or frame.stream != rf.CONNECTION:
+                    raise rf.FrameError("invalid connection catalog response")
+                answer = frame.control()
+            except (OSError, rf.FrameError):
+                raise ProxyRequestError("credential broker catalog unavailable") from None
+        if answer.get("op") == "CATALOG_REFUSED":
+            raise BrokerRefused("credential broker catalog refused")
+        if answer.get("op") != "CATALOG_RESULT" or not isinstance(answer.get("result"), dict):
+            raise ProxyRequestError("invalid credential broker catalog response")
+        return answer["result"]
+
     def capability(self, document: dict[str, Any]) -> dict[str, Any]:
         """Bounded capability metadata operation; mutations are never replayed."""
         from tinyassets.broker.capabilities import validate
