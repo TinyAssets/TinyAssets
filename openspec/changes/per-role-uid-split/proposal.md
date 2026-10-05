@@ -55,18 +55,16 @@ Measured on prod (2026-10-02, read-only):
   1002-only at `/data/.broker/` 0700. The sockets move to the `/run` tmpfs with group `ta-brk`, and
   the launcher — not the owner — starts, restarts and stops the broker. The owner's
   `(socket, generation, token)` is held in process memory and `owner.json` is deleted.
-- **Volume permissions to match, with one rule: the migration never changes the owner of a path an
-  older image reads.** The vault keeps owner 1001 and gains group `ta-vault` at 0640, so the owner
-  stays its only writer and the broker becomes a read-only consumer; child-writable workspaces and
-  the per-launch credential snapshots get `ta-work` with setgid directories. Only
-  `/data/.broker/**`, which no older image opens, changes owner. The vault's group is set on the
-  temp file before the atomic replace rather than inherited, because its directory is the
-  command-center root and belongs to `ta-work` — an inherited group would hand every replacement
-  vault to the engine children. Every mode comes from one declaration shared by the migration and
-  the runtime sites that re-mode the same paths, so a later provider launch cannot restore
-  single-uid permissions. A startup migration applies this idempotently under the exclusive layout
-  lock, skipping workspace symlinks and re-moding their containing trees, with
-  link refusal in privileged/vault/broker sets and D9/F4's work-tree alias proof.
+- **Volume permissions follow role authority.** D11 assigns outbound.db and
+  .outbound-proxy to broker uid 1002, group ta-brk, with daemon ledger/accounting/
+  refresh operations mediated by authenticated broker IPC. Forward and reverse
+  migration happen in D10's privileged startup window. This replaces the prior
+  rule forbidding owner changes to any file an older image reads. Vault deposits
+  remain daemon-written and broker-readable only; workspaces retain ta-work.
+  One mode declaration governs startup and runtime creation. The ledger's
+  physical parent remains pending because SQLite cannot create journals under
+  D4's daemon-owned /data at 0755; see delivery.md. The access inventory names
+  raw SQL, account deletion, backup and refresh dependencies as well as callers.
 - `start_broker` replaces its refusal with the launcher-mediated start when it observes distinct
   uids. It still refuses when it does not.
 

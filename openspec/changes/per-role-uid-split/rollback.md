@@ -20,7 +20,11 @@ disposable copy. Production execution is outside this build authorization.
    migration in progress before mutation and completion afterward. Restore
    engine-created content, including 0600/0700 and later chmod, to uid 1001
    ownership and owner read/write/traverse access, retaining executable bits
-   and bytes. Keep credential and broker-state policies separate from ta-work.
+   and bytes. D11 also reverse-migrates broker-owned outbound ledger/sidecars
+   and proxy state to old-image ownership, and restores the old ledger location
+   if forward migration relocates it. Prove an actual SQLite write with journal
+   creation, not just file open. Preserve every retained row and proxy artifact.
+   Keep credential and broker-state policies separate from ta-work.
 5. The rollback startup exits before any role starts or forward migration can
    run. If interrupted, repeat that explicit opt-in startup to resume under the
    lock. A completed repeat makes no changes. Do not reopen admission against a

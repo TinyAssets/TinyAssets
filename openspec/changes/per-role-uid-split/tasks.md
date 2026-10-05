@@ -3,8 +3,10 @@ retains the confirmed controls. No fourth design review; normal cross-family
 code review for the eventual build. D10 records the lead's least-privilege
 amendment: capability-free two-pass deletion and opt-in startup reverse migration.
 The capability-lifetime conflict is resolved; no build task is proven yet.
-Build continuation found a separate broker filesystem-authority conflict;
-see delivery.md for the production-image diagnostic and required decision.
+D11 records the lead decision assigning egress persistence to the broker and
+requiring authenticated daemon IPC. The current diagnostic confirms a remaining
+ledger-parent issue: ownership alone cannot create SQLite journals under D4 /data.
+See delivery.md and broker-access-inventory.md; runtime routing is not implemented.
 
 ## 1. Design (this change)
 
@@ -81,6 +83,9 @@ Lands after #4299 (the broker) and #4267 (`platform_secrets`), amending both.
       - `scripts/check_privileged_chain.py` asserts the same against the built image, wired into
         the docker-build CI job, so the runtime refusal is a backstop not the only check.
 - [ ] 2.4 **Volume migration and vault permissions** (closes P1-3)
+      - D11 broker egress ownership (1002:1101), including SQLite sidecars and
+        .outbound-proxy, forward and reverse in the startup window. Resolve the
+        ledger physical parent before implementation; never widen /data writes.
       - D4's exact inventory, under the exclusive layout lock, idempotent, with
         `"roles": {"state": "migrating"}` in `/data/.layout.json` for crash recovery.
       - before traversal/chown, root idempotently unlinks legacy owner.json and only known
@@ -143,6 +148,11 @@ Lands after #4299 (the broker) and #4267 (`platform_secrets`), amending both.
         (`workspace_worker.py:667`).
 - [ ] 2.6 **`start_broker`, the in-memory fence, and the legacy path** (closes P1-2 and P1-4, part 2)
       - launcher-mediated start when the uids are distinct; refuse otherwise.
+      - route every broker-access-inventory.md entry: daemon ledger/accounting/
+        refresh operations through authenticated broker IPC, engine egress through
+        its cell proxy only. No direct daemon opens, raw-SQL RPC or silent fallback.
+        Preserve accounting liveness, refresh admission-before-spend, account
+        deletion and backup coverage; fail loudly on an unsupported route.
       - delete `owner.json`, `OWNER_FILE`, `read_owner` and `stop()`'s terminate-and-unlink
         (`supervisor.py:125-132,150-159`); the socket and the `(generation, token)` pair live in
         memory, and `_broker_channel` (`outbound_connections.py:1086-1108`) takes them from the
@@ -168,6 +178,11 @@ Lands after #4299 (the broker) and #4267 (`platform_secrets`), amending both.
       - remove `CAP_SYS_ADMIN` from both `cap_add` and `MASK` in one commit; no exception.
         Never diverge from `ta-op` silently.
 - [ ] 2.8 **Production-image Linux oracle proofs** (non-root payloads, like production)
+      - D11 actual broker opens/creates/transacts in ledger and proxy state;
+        daemon and every actual engine class denied direct access; daemon
+        accounting over IPC succeeds; startup rollback restores old-image
+        ledger ownership/location and working journals. Diagnostics are not
+        substitutes for these launcher/IPC/migration acceptance probes.
       - add production-image support to the oracle proof harness (the existing runner
         builds `docker/linux-oracle.Dockerfile`, which is not acceptance), then run
         `python scripts/linux_oracle.py` with that explicit mode and record image digest

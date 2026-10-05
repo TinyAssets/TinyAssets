@@ -78,7 +78,7 @@ This change's build tasks land **after** both of these, and amend them:
 | Role | uid:gid | Supplementary | Owns |
 |---|---|---|---|
 | owner (daemon, frontends, scheduler) | 1001:1001 `tinyassets` | 1100, 1101, 1102 | `/data` (unchanged) |
-| broker | 1002:1002 `ta-broker` | 1102 | `/data/.broker/` (0700) |
+| broker | 1002:1002 `ta-broker` | 1102 | `/data/.broker/` (0700), plus D11 broker egress ledger/proxy set (gid 1101) |
 | engine / provider children | 1003:1003 `ta-engine` | 1100 | nothing; `ta-work` access only inside D8 owner namespace |
 | boxhostd (S4/S5) | 1004 reserved | — | — |
 | per-box uids | 200000–299999 reserved | — | openshell-spike defines |
@@ -280,10 +280,11 @@ passes a pipe handle and the resource-tracker descriptor through its own protoco
 
 ### D4. Volume ownership and rollback requirements
 
-**Invariant: the migration never changes the OWNER of a path an older image reads.** It adds a
-group, sets setgid, and tightens other-bits. Only `/data/.broker/**` — which is new in #4299 and
-which no older image opens, because an older `start_broker` refuses outright
-(`supervisor.py:177-183`) — changes owner to 1002.
+**Ownership rule, amended by D11:** retain existing owners outside the broker
+egress set. The broker owns its ledger and proxy state as uid 1002, group ta-brk;
+the privileged startup migration transfers that set in both directions. Old
+images require completed reverse migration before opening the ledger. This
+replaces the earlier exception limited to `/data/.broker/**`.
 
 This preserves access to pre-existing stores, but does not prove access to new
 engine-owned files. D9/F5 adds access/default ACLs and umask 007; D10 requires
@@ -307,6 +308,8 @@ Exact inventory, from the code rather than from the shape of the tree:
 | `/data/.universe-sidecars/<cc>/` | 1001:1100 | 2710 | `universe_egress.py` egress and engine relay directory creation |
 | exact `egress-*.sock` / `engine-*.sock` relay entries | 1001:1100 | 0660 | runtime-created sockets; only the admitted owner's exact socket is bound |
 | `/data/.broker/`, `/data/.broker/state/` | **1002:1002** | 0700 | `supervisor.py:52-53`, `process.py:89-90` |
+| outbound ledger and SQLite sidecars | **1002:1101** | 0600; broker-only parent required (D11) | `outbound_connections.py:5148-5213`; final parent pending |
+| `/data/.outbound-proxy/` and private contents | **1002:1101** | dirs 2700, files 0600 | `outbound_connections.py:4931-4955,6087`; D11 |
 | `/data/.layout.lock` | 1001:1001 | 0666 | `storage_layout.py:63-70` creates it 0o666 for cross-uid `flock` |
 | shared root stores, sidecars and replacements | 1001:1001 | remove other permissions; retain owner access | D9/F1; never mount in cells |
 | remaining classified platform state | 1001:1001 | preserve declared access without widening shared stores | inventory required |
@@ -380,7 +383,8 @@ unjailed exception is removed. All other engine classes use D8's owner-bound vie
 **Authority.** The migration keeps owner 1001 on almost every path, so euid 0 is *not* the owner of
 what it re-modes. `chmod`, `setfacl` and the setgid bit on a 1001-owned path therefore need
 `CAP_FOWNER`, and traversing an existing `0700` owner directory needs `CAP_DAC_OVERRIDE`;
-`CAP_CHOWN` alone covers only the `/data/.broker/**` owner change. All three are in the migration
+`CAP_CHOWN` covers ownership transfers, including D11's egress set, but not the
+required chmod/traversal. All three are in the migration
 phase of D2's capability table, and the launcher drops them before it serves — so this authority
 exists only while the container holds a single process.
 
@@ -413,6 +417,10 @@ and applies only differences, so re-running completes a partial run. Mirroring
 `/data/.layout.json` durably before its first change and `"stable"` after its last; a start that
 finds `migrating` re-runs from the beginning rather than assuming the volume is consistent. Bounded
 by the volume (about 1.8 GB), and backups skip while the lock is held.
+
+Shared-root-store and remaining-platform-state rows exclude the D11 broker
+egress set. A ta-brk gid does not grant daemon file access: private egress files
+have no group bits. Only the authenticated IPC endpoint has group socket access.
 
 ### D5. The broker's role map and the refusal
 
@@ -879,6 +887,66 @@ Mandatory production-image Linux oracle rows (compose security options):
 The prior capability-lifetime ambiguity is resolved by moving reverse migration
 to startup and performing deletion with the owning identities. No retirement
 probe is weakened and no capability is reacquired after retirement.
+
+### D11. Lead decision: the broker owns its egress state
+
+The lead explicitly assigns `outbound.db` (ledger, accounting and refresh state)
+and `.outbound-proxy` to broker uid **1002**, group **ta-brk (1101)**. The reference
+shape is the supplied Meta Muse Sentinel + hatch-authd architecture: the sole
+egress/credential authority lives outside the agent cell. This is the selected
+TinyAssets authority boundary, not a claim of a new external security review.
+
+Create/migrate the complete egress set during the privileged startup window,
+including SQLite journals/WAL/SHM and proxy runtime files. Private files use
+0600 and private directories 2700 (0700 access plus setgid ta-brk inheritance).
+The socket exposed for authenticated daemon IPC retains D6's 2750 directory /
+0660 socket policy. Private proxy state never becomes daemon-readable merely
+because the daemon holds ta-brk. D10 reverse migration restores old-image access
+and location before an old uid-1001 process starts; no data is deleted.
+
+The daemon and every engine class never open these private paths directly.
+Daemon ledger queries/mutations, accounting reads and refresh triggers use the
+broker's authenticated daemon IPC (kernel role plus the live in-memory fence).
+Preserve authenticated principal and command-center admission, operation
+identity, revocation, accounting and cancellation checks. No raw SQL, arbitrary
+method dispatch, caller-selected filesystem path or serialized callable crosses
+the channel. Engine callers retain only the exact scoped proxy exposed into
+their admitted cell; no owner-channel token, ledger fd or private directory fd.
+An unsupported route fails loudly; no local-database or legacy-worker fallback.
+
+[broker-access-inventory.md](broker-access-inventory.md) enumerates current
+direct and indirect entry sites with their intended route. These are required
+implementation dispositions, not claims that IPC routing already exists.
+Account deletion's generic database walker and raw accounting SQL must be
+adapted too. Existing accounting is actually in `.tinyassets.db`, not
+`outbound.db`; its table migration and liveness preservation must accompany the
+IPC route. D4's read-only broker access to the vault remains a constraint: the
+current local refresh path cannot be called unchanged by uid 1002. Retain
+admission-before-spend and durable rotation; never grant vault write as a shortcut.
+
+**Unresolved physical parent:** D4 keeps `/data` 1001:1001/0755. Chowning
+`/data/outbound.db` alone permits file open but not a SQLite write requiring a
+sibling journal, nor fresh database creation. The production-image diagnostic
+in delivery.md proves both failures and a successful private-parent control.
+Requested clarification: relocate the ledger to `/data/.broker/state/outbound.db`
+with crash-safe forward/reverse relocation, or explicitly define another parent
+authority. No broad write ACL on `/data`, journal disabling, broker capabilities
+or symlink through a broker-set link refusal is inferred. Relocation also needs
+the generic account-deletion and strict backup inventories updated; ledger parent
+must cease to mean data root in broker dispatch/accounting configuration.
+
+Mandatory additional production-image oracle rows, alongside all D8-D10 rows:
+
+| Probe | Required result |
+|---|---|
+| Broker existing/fresh ledger and proxy state | actual uid-1002 create, schema upgrade, transactional write and proxy setup succeed with all capability sets zero |
+| Daemon direct access | uid 1001 with its real supplementary groups cannot open private ledger, sidecars or proxy state |
+| Each actual engine class direct access | no private egress bytes/fds through filesystem, procfs, IPC, aliases or inherited descriptors; legitimate scoped proxy still works |
+| Daemon accounting and ledger IPC | real authenticated request succeeds; wrong peer, fence, principal or scope is refused; no fallback open |
+| Refresh trigger | authenticated broker route preserves admission-before-spend, rotation durability and vault write denial |
+| Forward/reverse migration | dry-run unchanged; interrupted resume; repeat no-op; old-image uid 1001 reads/writes after reverse migration, including ledger journals |
+
+No build checkbox is proven by the diagnostic or this decision record.
 
 ## Risks / Trade-offs
 

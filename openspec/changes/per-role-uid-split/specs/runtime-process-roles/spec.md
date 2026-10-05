@@ -86,7 +86,7 @@ Because every process at the owner's uid — including short-lived tools the dae
 
 ### Requirement: Volume ownership follows the roles and supports prepared rollback
 
-The ownership migration SHALL NOT change the owning uid of any path an older image reads; it SHALL grant access by adding a service group, setting the setgid bit so new files inherit it, and tightening other-bits. Only the broker's own state directory, which no older image opens, SHALL change owner. The vault file and the materialized credential artifacts SHALL keep the owner uid as their only writer and SHALL become readable by the broker through the vault group, so that the owner's existing atomic sibling-temp-then-replace write keeps working with no privileged step. The vault's group SHALL be set explicitly on the temporary file before the atomic replace, not inherited from its directory, because that directory is the command-center root whose own group belongs to the work group; and because that assignment is a precondition of the write rather than a durability step, its failure SHALL propagate rather than commit a wrongly-grouped vault. Every mode and group these paths take SHALL come from one declaration read by both the migration and every runtime site that creates or re-modes them, so that a later provider launch cannot silently restore single-uid permissions. Child-writable workspaces SHALL be group-owned by the work group with setgid directories, and all other platform state SHALL stay owned by the owner uid. The migration SHALL be idempotent, SHALL run under the exclusive data-layout lock before any role starts, and SHALL hold the capabilities required to re-mode and traverse paths it does not own.
+The ownership migration SHALL preserve existing owning uids outside the broker egress set. Per D11, the outbound ledger and proxy state SHALL transfer to broker uid 1002 and group ta-brk during privileged startup, and reverse migration SHALL restore old-image access before an old image starts. Other classified paths SHALL gain service-group access and setgid inheritance without widening other-bits. The vault file and the materialized credential artifacts SHALL keep the owner uid as their only writer and SHALL become readable by the broker through the vault group, so that the owner's existing atomic sibling-temp-then-replace write keeps working with no privileged step. The vault's group SHALL be set explicitly on the temporary file before the atomic replace, not inherited from its directory, because that directory is the command-center root whose own group belongs to the work group; and because that assignment is a precondition of the write rather than a durability step, its failure SHALL propagate rather than commit a wrongly-grouped vault. Every mode and group these paths take SHALL come from one declaration read by both the migration and every runtime site that creates or re-modes them, so that a later provider launch cannot silently restore single-uid permissions. Child-writable workspaces SHALL be group-owned by the work group with setgid directories, and remaining platform state outside the broker egress set SHALL stay owned by the owner uid. The migration SHALL be idempotent, SHALL run under the exclusive data-layout lock before any role starts, and SHALL hold the capabilities required to re-mode and traverse paths it does not own.
 
 #### Scenario: Re-running the migration changes nothing
 - **WHEN** the container restarts on a volume already migrated
@@ -228,3 +228,43 @@ The production-image Linux oracle SHALL implement D9's F1-F7 and C1-C6 matrix us
 #### Scenario: Confirmed controls remain true after integration
 - **WHEN** the actual production image runs the complete refute matrix
 - **THEN** namespace availability, spawn coverage, private network/IPC/procfs/tmp, explicit vault group, exact launcher peer validation and absence of unjailed fallbacks each pass their named probes
+
+
+### Requirement: The broker owns egress persistence and mediates daemon access
+
+The broker SHALL own outbound.db, its SQLite sidecars and .outbound-proxy runtime
+state as uid 1002, group ta-brk. Private files SHALL be 0600 and private directories
+2700; authenticated daemon IPC SHALL retain D6's separate socket modes. The daemon
+and every engine class SHALL NOT directly open the private egress set. Daemon
+ledger queries/mutations, accounting reads and refresh triggers SHALL use the
+broker's authenticated daemon IPC. Engines SHALL reach egress only through their
+admitted cell's scoped proxy. Unroutable access SHALL fail loudly without local
+file, raw-SQL RPC or legacy-worker fallback. The file:line inventory in
+broker-access-inventory.md SHALL be reconciled with implementation, including raw
+SQL, account deletion, injected ledger clients and backup consumers.
+
+Forward and reverse ownership migration SHALL use D10's startup window, exclusive
+layout lock, non-mutating dry-run, idempotence, crash recovery and no-follow/alias
+protections. The physical ledger parent SHALL support broker SQLite journal
+creation without granting write access to the whole data root. The choice between
+relocation and a separately specified parent authority is pending in D11; no
+runtime implementation or probe completion is asserted by this requirement.
+
+#### Scenario: The broker can create and transact in its private egress set
+- **WHEN** the actual capability-free broker opens an existing ledger, creates a fresh ledger, upgrades its schema and creates per-grant proxy state
+- **THEN** all operations succeed, including durable SQLite transactions and journal lifecycle
+
+#### Scenario: Every other role is denied direct private egress access
+- **WHEN** the daemon with its real groups and each actual engine class attempts direct access to the ledger, SQLite sidecars or private proxy directory
+- **THEN** access is denied, including through procfs, inherited descriptors and aliases
+- **AND** daemon accounting via authenticated IPC and legitimate per-cell egress still work
+
+#### Scenario: Accounting and refresh retain their authority checks
+- **WHEN** the daemon requests accounting, a ledger operation or refresh through IPC
+- **THEN** the broker validates peer role, live fence and admitted principal/scope, and rejects forged or stale authority
+- **AND** refresh preserves admission-before-spend and durable rotation without granting the broker vault write permission
+
+#### Scenario: Reverse migration restores old-image ledger access
+- **WHEN** startup reverse migration runs dry-run, apply, interrupted resume and repeat against a disposable migrated copy
+- **THEN** dry-run changes nothing, resume completes, repeat is a no-op and the actual old uid-1001 image reads and writes the restored ledger with working journals
+- **AND** retained ledger and proxy data is not deleted

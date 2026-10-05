@@ -1,3 +1,247 @@
+# Current delivery: D11 broker ownership and ledger-parent clarification
+
+Starting HEAD `21096788fb04a3587b900ed1883ed5183d92be20`; the requested first
+command `git pull --ff-only origin feat/per-role-uid-split` returned `Already
+up to date.` Worktree was clean. OpenSpec admission returned `ALLOWED`.
+
+Recorded the lead decision in design.md D11 and reconciled proposal, role spec,
+tasks and rollback requirements. Broker uid 1002 owns outbound ledger/proxy
+persistence with group ta-brk; daemon ledger/accounting/refresh access must use
+authenticated broker IPC. D10 is unchanged. The ownership decision is accepted;
+the old question about giving the broker daemon-store access is superseded.
+
+The new [broker-access-inventory.md](broker-access-inventory.md) enumerates 41
+ledger constructor sites and 25 methods opening SQL connections, plus raw SQL,
+injected clients, proxy writes, account deletion and backup access. Each has an
+explicit implementation disposition. **No route has yet been implemented.**
+The trace also establishes that current inference accounting lives in
+`.tinyassets.db`, not outbound.db, and local OAuth refresh takes vault-write
+admission before spending. Those dependencies cannot be overlooked when routing.
+
+## Pending decision: physical ledger parent
+
+The ownership-only interpretation of the instruction cannot satisfy the broker
+write/create probe while retaining D4's exact `/data = 1001:1001/0755` row.
+SQLite needs directory write authority for its journal lifecycle. Even a
+1002:1101/0600 outbound.db that the broker opens O_RDWR fails an actual
+`ConnectionLedger.create_connection`; a fresh ledger cannot be created at all.
+Startup precreation of the database is insufficient. The proxy subtree works
+when startup creates it as broker-owned 2700.
+
+A user clarification is pending: **may startup relocate the ledger to
+`/data/.broker/state/outbound.db`, with reverse migration restoring the original
+path?** That is the recommended resolution, preserving private-parent authority.
+The alternative needs explicit parent-directory authority. Relocation must also
+amend backup's top-level glob, generic account deletion and code that derives the
+command-center/accounting root from the ledger parent. No relocation, root ACL,
+journal-mode weakening, symlink workaround or retained capability has been applied.
+
+The retained brief explicitly requires: **"If you hit a genuine design ambiguity,
+record it in delivery.md and stop rather than guess."** The OpenSpec apply skill
+also says **"Pause and ask (don't guess) on unclear tasks, design issues revealed
+mid-implementation, or blockers."** Source: [.agents/skills/openspec/SKILL.md](../../../.agents/skills/openspec/SKILL.md).
+This is the remaining path-layout decision, not another design review or a
+reopening of D10. Runtime work is paused pending that answer.
+
+## Production-image diagnostic (not task 2.8 acceptance)
+
+Used the previously built production Dockerfile image, confirmed by:
+
+```powershell
+docker image inspect tinyassets-uid-baseline:664a4361e7 --format '{{.Id}}'
+git diff 664a4361e7 HEAD -- Dockerfile tinyassets deploy
+```
+
+Image ID `sha256:7d30057f0d2f6a6259b44ee7164831d2c1919697c2d9cae55512051909e585d4`;
+runtime/image/deploy diff is empty. This reuses an unchanged production image;
+it is not a newly built launcher image. Synthetic files only, disposable
+network-disabled container, no host mounts, compose security options and the
+specified seven entry capabilities. Children read back all five capability
+sets as zero. No refresh/network request was made.
+
+Exact command (script is reproduced below for durable replay):
+
+```powershell
+Get-Content -Raw C:/Users/Jonathan/AppData/Local/Temp/uid-broker-parent-probe.py | docker run --rm -i --network none --user 0:0 --cap-drop ALL --cap-add CHOWN --cap-add DAC_OVERRIDE --cap-add FOWNER --cap-add SETUID --cap-add SETGID --cap-add SETPCAP --cap-add KILL --security-opt no-new-privileges=true --security-opt seccomp=unconfined --security-opt apparmor=unconfined --security-opt systempaths=unconfined --entrypoint /opt/venv/bin/python tinyassets-uid-baseline:664a4361e7 -
+```
+
+Exit 0: the diagnostic asserts the failures below, not that production works.
+The private-parent control uses `.broker/outbound.db` in a synthetic fixture;
+it demonstrates directory authority, not the proposed final state path/migration.
+
+```text
+uid=1002 groups=[1102] caps=all-zero nnp=1
+broker existing database file open=PASS
+broker actual ConnectionLedger write=FAIL: attempt to write a readonly database
+broker fresh root database create=FAIL: unable to open database file
+broker precreated proxy directory child create=PASS
+diagnostic private-parent control actual ledger create/write=PASS
+uid=1001 groups=[1100, 1101, 1102] caps=all-zero nnp=1
+direct access denied uid=1001 path=outbound.db=PASS
+direct access denied uid=1001 path=.outbound-proxy=PASS
+direct access denied uid=1001 path=.broker/outbound.db=PASS
+uid=1003 groups=[1100] caps=all-zero nnp=1
+direct access denied uid=1003 path=outbound.db=PASS
+direct access denied uid=1003 path=.outbound-proxy=PASS
+direct access denied uid=1003 path=.broker/outbound.db=PASS
+DIAGNOSTIC COMPLETE; not launcher, IPC, engine-class or migration acceptance
+```
+
+Diagnostic source:
+
+```python
+"""Diagnostic only: D4 parent permissions after broker ownership transfer."""
+import ctypes
+import os
+import sqlite3
+import tempfile
+import traceback
+from pathlib import Path
+
+from tinyassets.storage.outbound_connections import ConnectionLedger
+
+libc = ctypes.CDLL(None, use_errno=True)
+CAP_FIELDS = ('CapInh', 'CapPrm', 'CapEff', 'CapBnd', 'CapAmb')
+
+
+class Header(ctypes.Structure):
+    _fields_ = [('version', ctypes.c_uint32), ('pid', ctypes.c_int)]
+
+
+class Data(ctypes.Structure):
+    _fields_ = [('effective', ctypes.c_uint32), ('permitted', ctypes.c_uint32),
+                ('inheritable', ctypes.c_uint32)]
+
+
+def retire(uid, groups):
+    assert libc.prctl(38, 1, 0, 0, 0) == 0
+    for cap in range(int(Path('/proc/sys/kernel/cap_last_cap').read_text()) + 1):
+        assert libc.prctl(24, cap, 0, 0, 0) == 0
+    assert libc.prctl(47, 4, 0, 0, 0) == 0
+    os.setgroups(groups)
+    os.setresgid(uid, uid, uid)
+    os.setresuid(uid, uid, uid)
+    header, data = Header(0x20080522, 0), (Data * 2)()
+    assert libc.capset(ctypes.byref(header), ctypes.byref(data)) == 0
+    fields = dict(line.split(':', 1) for line in Path('/proc/self/status').read_text().splitlines())
+    assert all(int(fields[k].strip(), 16) == 0 for k in CAP_FIELDS)
+    assert os.getresuid() == (uid, uid, uid)
+    assert os.getresgid() == (uid, uid, uid)
+    assert os.getgroups() == groups
+    print(f'uid={uid} groups={groups} caps=all-zero nnp=1', flush=True)
+
+
+def child(uid, groups, fn):
+    pid = os.fork()
+    if pid == 0:
+        try:
+            retire(uid, groups)
+            fn()
+        except BaseException:
+            traceback.print_exc()
+            os._exit(1)
+        os._exit(0)
+    assert os.waitpid(pid, 0)[1] == 0
+
+
+root = Path(tempfile.mkdtemp(prefix='broker-parent-'))
+os.chown(root, 1001, 1001)
+root.chmod(0o755)
+existing = root / 'outbound.db'
+ConnectionLedger(existing)
+os.chown(existing, 1002, 1101)
+existing.chmod(0o600)
+proxy = root / '.outbound-proxy'
+proxy.mkdir()
+os.chown(proxy, 1002, 1101)
+proxy.chmod(0o2700)
+private = root / '.broker'
+private.mkdir()
+os.chown(private, 1002, 1101)
+private.chmod(0o2700)
+
+
+def insert(path):
+    ledger = ConnectionLedger(path)
+    ledger.create_connection(connection_id='synthetic', owner_user_id='alice',
+                             connection_class='http', connection_type='http',
+                             auth_scheme='bearer', scopes=('POST',), provider='http',
+                             destination='compute:synthetic', credential_ref='vault://http/synthetic',
+                             allowed_endpoints=[{'host': 'models.example.com',
+                                                 'path_template': '/v1/chat', 'methods': ['POST']}])
+
+
+def broker():
+    with existing.open('r+b'):
+        print('broker existing database file open=PASS', flush=True)
+    try:
+        insert(existing)
+    except sqlite3.OperationalError as exc:
+        assert 'readonly' in str(exc), str(exc)
+        print('broker actual ConnectionLedger write=FAIL: ' + str(exc), flush=True)
+    else:
+        raise AssertionError('unexpected write through unwritable journal parent')
+    try:
+        ConnectionLedger(root / 'new-outbound.db')
+    except sqlite3.OperationalError as exc:
+        assert 'unable to open database file' in str(exc), str(exc)
+        print('broker fresh root database create=FAIL: ' + str(exc), flush=True)
+    else:
+        raise AssertionError('unexpected create in daemon-owned parent')
+    (proxy / 'synthetic-grant').mkdir()
+    print('broker precreated proxy directory child create=PASS', flush=True)
+    insert(private / 'outbound.db')
+    print('diagnostic private-parent control actual ledger create/write=PASS', flush=True)
+
+
+child(1002, [1102], broker)
+
+
+def denied():
+    for path in (existing, proxy, private / 'outbound.db'):
+        try:
+            fd = os.open(path, os.O_RDONLY)
+        except PermissionError:
+            print(f'direct access denied uid={os.getuid()} path={path.relative_to(root)}=PASS', flush=True)
+        else:
+            os.close(fd)
+            raise AssertionError(f'unexpected access: {path}')
+
+
+child(1001, [1100, 1101, 1102], denied)
+child(1003, [1100], denied)
+print('DIAGNOSTIC COMPLETE; not launcher, IPC, engine-class or migration acceptance', flush=True)
+```
+
+## Verification and remaining work
+
+- `openspec validate per-role-uid-split --strict`: exit 0, change is valid.
+- `git diff --check`: exit 0.
+- `python -m pytest tests/test_ta_op_modes.py -q --basetemp=C:/Users/Jonathan/AppData/Local/Temp/uid-broker-parent-pytest`: exit 0, `10 passed in 0.33s`.
+- `python -m ruff check --output-format concise`: exit 1, `Found 55 errors.`
+  All are in unchanged files; no unrelated lint changes made.
+- `python scripts/linux_oracle.py -- tests/test_ta_op_modes.py -q`: exit 0,
+  `[oracle] python 3.11.16 | git 2.47.3 | bwrap 0.12.0 | uid 1001`,
+  `10 passed in 0.13s`. This is the existing capability baseline, not task 2.8
+  production-launcher acceptance.
+- `python scripts/test_hygiene_gate.py --base 21096788fb --head HEAD`: exit 0,
+  `tests added 0, removed 0, tampering findings 0, product lines added 0`.
+
+Release-critical files in this documentation step: **0; list: none**. Changed
+paths are seven Markdown artifacts under this change: design.md, proposal.md,
+tasks.md, specs/runtime-process-roles/spec.md, rollback.md, delivery.md and the
+new broker-access-inventory.md. No runtime, gate or test files changed. No plugin
+mirror regeneration applies. No fourth design review, PR or deployment.
+
+Tasks completed: decision/inventory documentation only; **no new task checkbox**.
+Tasks 2.1-2.8 remain incomplete. Actual per-class oracle probes, broker IPC
+accounting, launcher stream and healthcheck, migration dry-run/apply/repeat/
+interrupted-resume, rollback and deletion are **NOT RUN / NOT IMPLEMENTED**.
+Do not substitute this uid-only diagnostic for any required class probe.
+Continue the ordered build once the physical ledger-parent decision is resolved.
+
+---
+
 # Current delivery: least-privilege D10 amendment
 
 Starting HEAD `664a4361e7`; `git pull --ff-only origin feat/per-role-uid-split`
