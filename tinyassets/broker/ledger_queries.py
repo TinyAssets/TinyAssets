@@ -119,3 +119,23 @@ def query_ledger(data_root: Path, *, query: str, principal: str, command_center:
 
     ledger = ConnectionLedger(Path(data_root) / "outbound.db", data_root=data_root)
     return local_query(ledger, principal=principal, command_center=command_center, **arguments)
+
+
+def granted_resource_row(data_root: Path, *, principal: str, command_center: str, grant_id: str):
+    """Validated live resource projection, including its custody incarnation."""
+    from tinyassets.storage.outbound_connections import ProxyRequestError, _resource_from_row
+
+    facts = query_ledger(data_root, query=GRANTED_RESOURCE, principal=principal,
+                         command_center=command_center, grant_id=grant_id)
+    try:
+        row = facts["resource"]
+        if not isinstance(row, dict):
+            raise ValueError("invalid resource projection")
+        resource = _resource_from_row(row)
+        if resource.owner_user_id != principal or resource.revoked_at is not None:
+            raise ValueError("invalid resource authority")
+        if not isinstance(row.get("incarnation"), str):
+            raise ValueError("invalid resource incarnation")
+        return row
+    except (LookupError, TypeError, ValueError):
+        raise ProxyRequestError("invalid credential broker resource projection") from None

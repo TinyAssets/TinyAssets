@@ -1,3 +1,92 @@
+# Current delivery: D23 three more scoped broker consumers
+
+Continues from D22 implementation `69aafb4ae7`. D23 routes compute-grant
+validation, model-access custody-incarnation capture and source display names
+through GRANTED_RESOURCE, using one live principal/center/grant/connection
+snapshot. Malformed projections fail with a fixed transport error. Broker
+unavailability never creates a local ledger. Revoked sources now refuse in
+unsplit mode too. Display-only failures retain the existing empty-label result.
+
+Release-critical files: **zero** (cap 8). Runtime files:
+`tinyassets/broker/ledger_queries.py`, `tinyassets/api/compute_connection.py`,
+`tinyassets/api/model_access_requests.py`, `tinyassets/providers/source_display.py`
+and their four generated mirrors. Oracle: `scripts/role_launcher_oracle.py`.
+New tests: `tests/test_broker_resource_consumers.py`. Existing tests are unchanged.
+
+One cross-family implementation review through peer-agents returned APPROVE;
+**AGREE**. Also adopted its optional test-strength suggestion: an Alice-owned
+definition naming Bob's grant reaches the broker and is refused for incarnation
+capture and display, rather than testing only the earlier definition-owner check.
+No second review round. No new operation, privilege or security-scope change.
+
+## D23 verification receipt
+
+Final production build and both modes passed (exit 0, zero skips), including
+all final oracle edits and the additional foreign-definition probe:
+`python scripts/linux_oracle.py --production-image tinyassets-uid-consumers:d23 --production-stream --build`
+and `python scripts/linux_oracle.py --production-image tinyassets-uid-consumers:d23`.
+Final digest: `sha256:0cafbc6cb445cee4273ec297fea56820d7ac600d52e04b5f4372d64135d3c8d2`.
+The stream invocation used the exact D22 launch options with network
+`ta-uid-stream-ea91615167a5-net` and certificate volume
+`ta-uid-stream-ea91615167a5-ca`; default mode uses --network none, no mounts,
+no environment overrides. Both use /opt/venv/bin/python -I -B
+/app/scripts/role_image_oracle.py from that digest, root entry, cap-drop ALL,
+only CHOWN/DAC_OVERRIDE/FOWNER/SETUID/SETGID/SETPCAP/KILL and the recorded compose
+security options. Fixture resources were cleaned up after the stream run.
+
+Exact new output, before and after broker restart:
+```text
+D23 actual compute-grant/incarnation/display consumers via launcher broker: scoped reads, foreign refusal, no daemon ledger: PASS
+D22 actual launcher broker HTTPS stream: scoped discovery GET, vault bearer, verified TLS, real network/body, no daemon ledger: PASS
+```
+The network-none run correctly does not claim D22 HTTPS. Both modes also passed:
+```text
+forward dry-run, apply, repeat; service remains unadmitted: PASS
+reverse dry-run/apply/repeat and uid-1001 old-location writes: PASS
+forward/reverse abrupt-exit checkpoint and rename recovery: PASS (6 boundaries)
+symlink/hardlink/FIFO/conflicting-copy refusal without mutation: PASS
+launcher migration-capability retirement/readback and pre-bind refusal: PASS
+launcher broker crash/restart preserves in-memory owner fence: PASS
+broker caps=all-zero nnp=1 non-dumpable; no received-fd leak; cross-uid shutdown: PASS
+```
+The earlier combined image also passed (before the additional foreign-definition
+probe): `sha256:0f3d44f3b02415513109e2e782122e77568745c5cbf6a532eb77a182ff3e45ba`.
+Command: `python scripts/linux_oracle.py --production-image tinyassets-uid-consumers:d23 --production-stream --build`.
+D22 HTTPS and D23 actual consumers passed both before and after broker restart.
+
+Windows:
+`python -m pytest tests/test_broker_resource_consumers.py tests/test_compute_connection.py tests/test_model_access_requests.py tests/test_learning_never_locks_out.py tests/test_broker_ledger_queries.py -q`
+returned `92 passed in 24.11s` (before adding the foreign-definition test).
+`python -m pytest tests/test_engine_mcp_server.py tests/test_llm_policy_pin.py tests/test_broker_resource_consumers.py -q`
+returned `93 passed, 3 skipped in 6.35s`. The three existing symlink tests cannot
+create symlinks on this Windows host; they are NOT counted as passes.
+
+Linux, uid 1001, Python 3.11.16, bwrap 0.12.0, exit 0 and zero skips:
+`python scripts/linux_oracle.py -- tests/test_broker_resource_consumers.py tests/test_compute_connection.py tests/test_model_access_requests.py tests/test_learning_never_locks_out.py tests/test_broker_ledger_queries.py tests/test_broker_discovery_http.py tests/test_role_launcher.py tests/test_linux_oracle.py -q`
+returned `137 passed in 42.32s` (before the additional foreign-definition test).
+`python scripts/linux_oracle.py -- tests/test_engine_mcp_server.py tests/test_llm_policy_pin.py tests/test_broker_resource_consumers.py -q`
+returned `96 passed in 12.06s`, including that new test and all three Windows
+symlink skips. No touched/affected test file is in the heavy-test list.
+
+Mirror regeneration returned `probe-ok`; parity reports all 597 canonical files
+matched. Changed-file Ruff, strict OpenSpec validation and whitespace checks pass.
+Repository-wide Ruff still reports the same 55 pre-existing errors outside this
+diff, as recorded in D20/D21. No test was renamed or weakened.
+
+## Remaining and activation gate
+
+D22's real HTTPS streaming and these three D11 read consumers are proven substeps,
+not completion of any full task 2.1-2.8. Remaining: actual launcher integration
+for every engine class/site and the complete daemon-reader matrix; remaining
+D11 ledger/mutation/accounting/refresh/deletion consumers; full role migration,
+D10 two-pass deletion, full role/ACL backup restoration and actual old-image
+rollback; real daemon CMD/environment, capability parity and healthchecks.
+Startup stays unactivated until every required probe passes. No PR or deployment.
+Relocation dry-run/apply/repeat/recovery results below are not full-role rollback
+or deletion evidence. No new deletion or actual old-image result is claimed.
+
+---
+
 # Current delivery: D22 real launcher-backed HTTPS streaming
 
 Started at `b78457fc58`; required fast-forward pull was already current.

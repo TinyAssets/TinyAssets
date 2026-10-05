@@ -1167,6 +1167,20 @@ broker, credential resolver and TLS transport, including after broker restart.
 This proves HTTP streaming, not inference accounting, refresh or engine classes;
 startup activation remains gated on all of those and full migration/rollback.
 
+### D23. Mechanical decision: reuse live scoped facts for three daemon consumers
+
+Compute grant validation, model-access custody-incarnation capture and source
+display naming use the existing GRANTED_RESOURCE query. Its transaction checks
+the live grant, principal, center and connection together. Validate the received
+projection before use; preserve the incarnation from that same snapshot rather
+than opening a second ledger. No new broker operation or authority is added.
+Foreign/missing/revoked compute grants retain uniform not_found; model-access
+capture refuses changed authority. Display decoration retains its existing
+empty-label failure contract. None falls back to a daemon ledger in broker mode.
+The unsplit path uses the same query locally; a revoked source cannot now be
+captured or displayed there either. The launcher oracle exercises all three
+actual consumers before and after restart; this is partial D11 conversion only.
+
 ## Risks / Trade-offs
 
 - **The launcher is root-adjacent code.** One file, stdlib-only, run `-I -S`, a static kind table,

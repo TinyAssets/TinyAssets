@@ -112,6 +112,39 @@ def _query_consumers(root, supervisor):
     facts = query_ledger(root, **arguments)
     assert facts["resource"]["owner_user_id"] == "alice"
     assert "bob-fixture" not in json.dumps(facts)
+    from tinyassets.api.compute_connection import _validate_http_grant
+    from tinyassets.api.model_access_requests import _connection_incarnations
+    from tinyassets.providers.source_display import source_display_name
+
+    provider = f"api_key_http:{definition.id}"
+    assert _validate_http_grant(base=root, universe_id="alice", actor="alice",
+                                grant_id="grant-alice") is None
+    assert _validate_http_grant(base=root, universe_id="alice", actor="alice",
+                                grant_id="grant-bob") == {
+        "error": "not_found", "resource": "connection"}
+    assert _connection_incarnations(root, "alice", "alice", [provider]) == {
+        provider: facts["resource"]["incarnation"]}
+    try:
+        _connection_incarnations(root, "bob", "alice", [provider])
+    except PermissionError:
+        pass
+    else:
+        raise AssertionError("foreign principal captured an incarnation")
+    assert source_display_name(base=root, universe_id="alice", provider=provider) == "compute:alice"
+    foreign = register_definition(
+        universe_id="alice", owner_user_id="alice", access_method="api_key_http",
+        protocol="chat_messages", model="foreign-fixture", ref="grant-bob",
+    )
+    foreign_provider = f"api_key_http:{foreign.id}"
+    try:
+        _connection_incarnations(root, "alice", "alice", [foreign_provider])
+    except PermissionError:
+        pass
+    else:
+        raise AssertionError("owned definition captured a foreign grant incarnation")
+    assert source_display_name(base=root, universe_id="alice", provider=foreign_provider) == ""
+    print("D23 actual compute-grant/incarnation/display consumers via launcher broker: "
+          "scoped reads, foreign refusal, no daemon ledger: PASS", flush=True)
     for changes in ({"principal": "bob"}, {"command_center": "bob"},
                     {"grant_id": "grant-bob"}, {"connection_id": "conn-bob"}):
         try:

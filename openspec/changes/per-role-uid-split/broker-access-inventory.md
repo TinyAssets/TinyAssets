@@ -1,8 +1,8 @@
 # Broker egress access inventory
 
 Baseline: `21096788fb04a3587b900ed1883ed5183d92be20`. Line numbers below refer to
-that baseline runtime. **Routing status: partial; D19 routes only the two raw
-read consumers noted below; D20 additionally routes discovery HTTP.** D11
+that baseline runtime. **Routing status: partial; D19 routes two raw reads,
+D20 discovery HTTP, D23 compute-grant/incarnation/display reads.** D11
 records the lead decision; D12 resolves the physical parent: .broker/outbound.db and
 .broker/.outbound-proxy. The logical data root must remain explicit.
 
@@ -29,6 +29,14 @@ launcher-owned supervisor's authenticated in-memory fence. The disk token
 reader/writer and legacy generation argument are removed; selected legacy workers
 refuse before allocation. None of the ledger/accounting/refresh consumers below
 is claimed routed by D18. Image startup remains unactivated.
+
+D23 routes compute `_validate_http_grant`, model-access `_connection_incarnations`
+and `source_display_name` through the existing scoped GRANTED_RESOURCE query.
+It validates the projection, including the custody incarnation. Both authority
+consumers refuse missing/foreign/revoked rows; display preserves its empty-label
+contract. No local ledger is constructed when broker mode is selected. The
+remaining rows still require conversion. D22 additionally proves successful
+real discovery HTTPS streaming through the launcher-owned broker after restart.
 
 ## Ledger construction entry points
 
