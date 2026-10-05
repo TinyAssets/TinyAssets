@@ -1,6 +1,7 @@
 # Delivery status
 
-Implementation is pending a security-scope clarification. No build task is
+Implementation is pending; the security-scope decision is resolved by the lead amendment
+recorded in design.md D8 (2026-10-04). No build task is
 checked off, no runtime file has changed, and nothing has been deployed.
 
 Base: `22560b9d0f7f79582cfea482b3c4efb2cda27e5a` (`origin/main`, fetched during
@@ -8,24 +9,25 @@ this session). The existing clean worktree is already on
 `feat/per-role-uid-split`. Proposal, design, tasks and both spec deltas were read.
 OpenSpec apply reports ready; delivery admission reports `ALLOWED`.
 
-## Acceptance conflict requiring a decision
+## Acceptance scope resolved: every engine class
 
-The requested proof includes denial of other owners' data to an actual
-engine-identity process. D8 explicitly leaves `engine-mcp` and
-`provider-discovery` unjailed, sharing UID 1003 and supplementary GID 1100
-across command centers. D4 grants that group workspace access. Those mechanisms
-cannot establish general cross-owner filesystem denial. The runtime-process-roles
-spec explicitly reserves that boundary for boxes and promises jail containment
-only for jailed providers.
+The lead, applying founder principles, decided that cross-user isolation is the platform's
+ONLY invariant and is non-negotiable, using the supplied Muse per-user runtime-cell
+architecture as the reference. "Deny only for jailed providers" is REJECTED.
 
-Two possible acceptance scopes were presented to the user:
+D8 now requires every owner-scoped engine child and descendant to enter the owner's
+bubblewrap namespace through the launcher. Shared uid 1003 and `ta-work` remain for role
+separation and rollback compatibility, but their access is confined to the owner view.
+D8 records every known spawn site, including engine MCP, native discovery, preview,
+image decoding and additional utility/box/auth-probe paths. No class gets an unjailed
+fallback; a fresh implementation inventory must close any further sites before acceptance.
 
-- Follow D8 exactly and prove other-owner denial for an actual jailed provider
-  process at UID 1003; explicitly retain the unjailed-engine limitation.
-- Expand the design to isolate every engine process before claiming denial.
-
-Neither option has been selected as of this record. A synthetic denial from a
-jailed process must not be reported as denial for the unjailed engine classes.
+Acceptance is now the production-image Linux oracle matrix: owner A's actual process of
+EVERY engine class is denied B's data, owner.json, vault and owner token, including
+procfs/fd/IPC routes, with a working owner-A operation for each class. Synthetic uid probes
+and a single provider jail cannot substitute. Existing two-round refute fixes remain.
+The counterexample below is retained as evidence against the rejected shared-group-only
+mechanism; it is not acceptance evidence for the amended design.
 
 ## Linux counterexample (not production-image acceptance)
 
@@ -80,7 +82,9 @@ permission boundary and not a substitute for the required production-image proof
 - Both dependencies are now present: `tinyassets/broker/supervisor.py` and
   `tinyassets/platform_secrets.py`. The design's unmerged-dependency statements
   are historical.
-- The jail module is `tinyassets/providers/provider_jail.py`.
+- The jail module is `tinyassets/providers/provider_jail.py`. Current native discovery
+  already calls `aspawn_owned` with `metadata_view` and `require_confinement=True`;
+  preserve this narrower view when adding launcher identity enforcement.
 - `engine_mcp_http._EngineServer.start` now starts from `child_env(os.environ)`,
   supplies OAuth service configuration, and propagates the execution-owner tree
   environment in addition to the six engine configuration names. Its allowlist
@@ -92,8 +96,7 @@ permission boundary and not a substitute for the required production-image proof
   migration must preserve that document and its recovery semantics.
 - Additional direct subprocess sites exist in `ui_preview._supervised` and
   `tool_images._decode_in_child`. The former uses PID containment without
-  filesystem isolation. Their role disposition needs explicit accounting in
-  the complete spawn inventory.
+  filesystem isolation. D8 now assigns both to owner-scoped engine cells.
 
 These are audit findings, not implemented deviations.
 
@@ -139,5 +142,27 @@ Documentation checks: `git diff --check` passed. The hygiene gate
 files; no Python file was edited, and no unrelated lint fixes were made.
 
 Tasks 2.1-2.8 all remain incomplete. Tasks 2.9-2.10 remain unchecked; production
-deployment is explicitly outside this request. Resolve the acceptance scope,
-finish the write/spawn inventory, then implement and prove 2.1-2.8 in order.
+deployment is explicitly outside this request. The acceptance scope is resolved.
+Finish the write/spawn inventory, then implement and prove 2.1-2.8 in order.
+
+
+## Design-amendment verification (2026-10-04)
+
+Started from `aae57d3034` with `git pull --ff-only origin feat/per-role-uid-split`
+(already up to date). This amendment changes only the proposal, design, tasks, runtime
+process-role delta and this delivery record. No product code or gate file changed.
+`npx --yes @fission-ai/openspec validate per-role-uid-split --strict` and
+`git diff --check` pass. Task sections contain 2 and 10 checkboxes (12 total).
+`python -m ruff check` still reports 55 errors in unchanged files. The production-image
+Linux oracle matrix is specified, not executed: its implementation and production-image
+harness support belong to the still-unchecked build tasks. No deployment or PR is part
+of this amendment.
+
+
+Cross-family amendment review via `peer-agents` returned `DISAGREE_EVIDENCE`;
+**AGREE** with all four findings, corrected in this amendment: D4 now declares relay
+parent/directory/socket permissions and runtime mode-map updates; D8/spec/tasks explicitly
+require private networking and cross-owner port/socket denial; root migration owns legacy
+owner.json cleanup before chown; D7's owner-work exception and absent historical gh site
+are narrowed explicitly. The reviewer confirmed inventory coverage and preservation of
+both prior refute rounds. No second review round was dispatched.

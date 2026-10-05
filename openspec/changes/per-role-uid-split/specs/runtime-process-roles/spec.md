@@ -113,18 +113,34 @@ The ownership migration SHALL NOT change the owning uid of any path an older ima
 - **WHEN** the migration is killed part-way through
 - **THEN** the data-layout marker records that the role migration is in progress, and the next start re-runs it to completion before any role starts
 
-### Requirement: Shared-uid children are not separated by uid, and not all of them are jailed
+### Requirement: Every owner-scoped engine process is isolated from other owners
 
-All engine and provider children SHALL share one uid across every command center, so cross-command-center separation for them SHALL NOT be claimed from the uid; the reserved per-box uid range SHALL be what closes it by uid. For the jailed provider child, containment SHALL remain the bubblewrap jail, which binds only the owning command center's paths, refuses a bind resolving outside it, and masks every hidden platform entry. The child classes that run outside any such jail — the engine MCP child, native provider discovery, and the agent's own tool jail — SHALL be enumerated as such, and for them the uid and the allowlisted environment SHALL be stated as the whole of the containment rather than the jail being claimed on their behalf.
+Every engine process executing owner-scoped work SHALL enter an owner-bound bubblewrap mount/PID/IPC/network boundary with an empty network namespace before executing application code, using the launcher and existing provider-jail validated views. This includes every D8 inventory class and every descendant: provider CLI, provider discovery, engine MCP, node sandbox, tool jail, workspace provision/registry/worker, preview, image decoder, auth probe, local box execution and owner-scoped utilities. The common uid 1003 and work group SHALL NOT be claimed as cross-owner isolation. Work-group rights SHALL be usable by engine payloads only inside that owner's namespace. No engine payload SHALL run unjailed or be reused across owners; missing, mismatched or unsupported owner scope SHALL fail closed.
 
-#### Scenario: One child uid, jail-enforced separation where a jail exists
-- **WHEN** a jailed provider child for one command center runs
-- **THEN** its uid is the same as every other command center's provider child, and the paths it can reach are limited by its jail's binds and masks
+Views SHALL expose at most the admitted owner's command-center tree/workspace subset, approved immutable runtime dependencies, exact owner-scoped relay sockets and private scratch. They SHALL NOT expose shared data/HOME/tmp/run roots, host procfs, sibling runtime snapshots, foreign directory descriptors, the vault, materialized credentials, owner.json or the owner channel token. Discovery SHALL retain its narrower exact-snapshot metadata view. The launcher SHALL validate and pin sources and reject cross-owner aliases and replacement races. Owner identity SHALL derive from the authenticated daemon's admitted execution and trusted root mapping, not child-controlled argv/env/cwd. Every class SHALL have private networking, with no host network, loopback or abstract-socket access. Namespace-local procfs and scoped IPC/egress SHALL prevent bypass through sibling processes or trusted receivers. Descendants and nested jails SHALL preserve or narrow this boundary. A class unable to use the boundary SHALL be refused, never launched with only uid/group separation.
 
-#### Scenario: An unjailed child class is named, not assumed covered
-- **WHEN** the engine MCP child or native provider discovery runs
-- **THEN** it runs at the engine/provider uid outside the provider jail, with an environment built from its kind's allowlist rather than inherited whole, and the design records that the jail does not contain it
+#### Scenario: Every actual engine class is denied another owner's state
+- **WHEN** the Linux oracle using the production image launches an actual owner-A engine process through each class and spawn site in D8 and attempts to read or write owner B's data, workspace, legacy owner.json fixture, vault or materialized credentials
+- **THEN** every process runs with the production engine identity and owner boundary and obtains none of B's sentinel bytes or write authority, including via aliases, inherited descriptors, replaced bind sources or paths created after launch
+- **AND** every class successfully performs its legitimate owner-A operation; a generic uid-switch probe or skipped class is not acceptance
+
+#### Scenario: The owner channel token stays outside every engine cell
+- **WHEN** each actual engine class attempts to obtain the owner token via files, inherited environment/descriptors, sibling procfs or ptrace, or to use the owner channel through IPC
+- **THEN** all attempts fail, the real owner.json is removed and not recreated, and the daemon/broker retain the token only in protected memory
+
+#### Scenario: Scope cannot be widened to preserve compatibility
+- **WHEN** a spawn omits or mismatches the admitted owner, reuses another owner's engine server/worker, requests an out-of-scope mount or cannot initialize its jail or scoped transport
+- **THEN** the launcher refuses before executing the payload, without an unjailed fallback
+
+#### Scenario: A descendant cannot escape the work group's namespace restriction
+- **WHEN** a preview, git command, provisioning command, nested tool/node jail or other helper runs for owner A
+- **THEN** it inherits or enters A's boundary and cannot use shared ta-work membership, host procfs, a directory fd or a shared service to access owner B
 
 #### Scenario: The vault is not reachable from a child at all
-- **WHEN** a provider child looks for the vault file or the materialized artifact directory of its own command center inside its jail
-- **THEN** both are masked, and outside the jail the child's uid has no access to either
+- **WHEN** any engine class looks for the vault or materialized artifact directory of its own command center
+- **THEN** both are absent or masked, and its kernel identity also lacks access to either outside the jail
+
+#### Scenario: Relay access works only for the admitted owner
+- **WHEN** each actual engine class attempts to connect to owner B's engine-MCP port, relay socket or host abstract sockets
+- **THEN** the attempts fail, while its legitimate owner-A relay connection works at uid 1003 using the exact socket bind and D4's sidecar directory/socket modes
+- **AND** sidecar parent directories are never exposed inside the cell

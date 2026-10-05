@@ -10,7 +10,8 @@
       the vault in the wrong group; four runtime sites that re-mode the migrated paths; four spawn
       sites missing from the uid-1001 enumeration, one of them an unjailed provider launch;
       `PR_SET_DUMPABLE` reset by `execve`; and a reversed reading of Yama's ptrace rule. A third
-      round is the last available under AGENTS.md's three-round cap.
+      round was the last available under the then-current three-round cap. These two
+      rounds and their fixes remain intact; D8 now supersedes the deferred isolation scope.
 
 ## 2. Build (Codex implements; deploy-incident reviews and verifies)
 
@@ -49,8 +50,11 @@ Lands after #4299 (the broker) and #4267 (`platform_secrets`), amending both.
         not keep that authority (D2 phase table).
       - **not** `PR_SET_DUMPABLE(0)` here: `execve` resets it, so the daemon and broker each set
         it on themselves after exec, before any secret exists.
-      - the `engine-mcp` allowlist covers the six names `engine_mcp_http.py:271-275` sets, since
-        that site passes `dict(os.environ)` whole today (270).
+      - audit the current `engine-mcp` environment consumers (including OAuth service and
+        execution-owner configuration); preserve required scoped configuration without
+        passing owner channel tokens or platform credentials (D3/D8).
+      - validate owner scope, select and pin a static per-kind jail view, and complete D8
+        namespace/fd/IPC confinement before payload exec; no unjailed fallback.
       - unit tests in the Linux oracle.
 - [ ] 2.3 **Chain verification** (closes P1-1, part 3)
       - the launcher checks itself, the interpreter, `broker_main.py`, every privileged `sys.path`
@@ -63,6 +67,10 @@ Lands after #4299 (the broker) and #4267 (`platform_secrets`), amending both.
 - [ ] 2.4 **Volume migration and vault permissions** (closes P1-3)
       - D4's exact inventory, under the exclusive layout lock, idempotent, with
         `"roles": {"state": "migrating"}` in `/data/.layout.json` for crash recovery.
+      - before traversal/chown, root idempotently unlinks legacy owner.json and only known
+        stale relay sockets via pinned dirfds without following links (D4 cleanup). Add D4
+        sidecar directory/socket modes to the shared declaration and both egress/engine
+        relay runtime creation paths; bind only exact sockets, never sidecar parents.
       - traversal holds directory fds with `O_NOFOLLOW|O_DIRECTORY`, uses `*at()`/`lchown` only,
         and **refuses** on any symlink in the set, any regular file with `st_nlink > 1`, and
         anything that is not a directory or regular file.
@@ -82,13 +90,18 @@ Lands after #4299 (the broker) and #4267 (`platform_secrets`), amending both.
         `ta-work` — an inherited group would make every replacement vault readable by 1003.
       - confirm read-only on prod that `/data` is `ext4` with ACL support so `g:1102:x` gives the
         broker traverse on `/data/<cc>/` without widening `other`; else mode `2711`, recorded.
-- [ ] 2.5 **Spawn sites through the launcher** (closes P1-4, part 1)
+- [ ] 2.5 **Every owner-scoped spawn through the launcher and owner cell** (closes P1-4, part 1)
+      - reconcile D8's full inventory with a fresh repository-wide spawn search, including
+        indirect helpers; add every owner-work class/site to the oracle matrix. Route preview,
+        decoder, auth probe, local box and owner-scoped utility calls through the same owner
+        boundary. Scope engine-MCP servers, worker reuse and IPC to one owner, with private
+        PID/IPC/network namespaces, procfs/scratch and exact relay sockets; preserve narrower existing jail views.
       - `provider-cli` (`owned_process.py:539,650-652`), `engine-mcp`
         (`engine_mcp_http.py:277-283`), `node-sandbox` (`node_sandbox.py`) move to the launcher
         client at 1003.
       - and the four sites the first enumeration missed: `provider-discovery`
-        (`providers/base.py:1418-1420` → `native_jsonrpc_discovery.py:130-134`, which bypasses
-        `owned_process` and the jail and runs with a credential snapshot as its `cwd`),
+        (`providers/base.py:1418-1420` → `native_jsonrpc_discovery.py:130-134`, historically bypassing
+        the jail; current code uses `aspawn_owned` and the narrow metadata view),
         `tool-jail` (`universe_tools.py:777`), `workspace_provision_process.py:127`, and
         `workspace_registry_process.py:165`.
       - `workspace-worker` to 1003: its `multiprocessing.Pipe` channel
@@ -122,7 +135,17 @@ Lands after #4299 (the broker) and #4267 (`platform_secrets`), amending both.
         validator's capability assertions updated.
       - decide `CAP_SYS_ADMIN`: prove what needs it or remove it from both `cap_add` and `MASK`
         in one commit. Never diverge from `ta-op` silently.
-- [ ] 2.8 **Oracle proofs** (non-root, like production)
+- [ ] 2.8 **Production-image Linux oracle proofs** (non-root payloads, like production)
+      - add production-image support to the oracle proof harness (the existing runner
+        builds `docker/linux-oracle.Dockerfile`, which is not acceptance), then run
+        `python scripts/linux_oracle.py` with that explicit mode and record image digest
+        and launch configuration: D8's complete
+        per-class/per-site actual-process matrix denies B's data, owner.json, vault and
+        owner token to A, including procfs/ptrace, fd/env/IPC, alias/race and scope-reuse
+        probes, B-engine-port/relay/host-abstract-socket denial, plus legitimate A operations
+        and A relay access with D4 sidecar modes. Record identities/namespaces and deny results;
+        no generic jailed substitute or skip counts as a pass. Prove obsolete owner.json
+        removal separately from the seeded legacy-file denial fixture.
       - a 1003 child gets `EACCES` on `/data/.broker/state/fence.json` and on
         `/data/<cc>/.credential-vault.json`.
       - the broker reads the vault and **cannot write** it; the provider jail works under 1003

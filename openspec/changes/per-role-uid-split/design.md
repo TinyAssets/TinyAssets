@@ -39,8 +39,10 @@ constant have to move together.
   The owner cannot become the broker, a child cannot become either, and the broker serves.
 - **Goal:** no new long-lived privileged surface beyond one small, auditable launcher, and **no
   owner-writable path anywhere on a privileged import or exec chain.**
-- **Non-goal:** per-command-center uids for user content. Boxes (S4/S5) bring their own isolation;
-  this change only reserves their uid range.
+- **Goal:** every engine process executing owner-scoped work is inside that owner's
+  isolation boundary before application code runs, including all helpers and descendants.
+- **Non-goal:** allocating per-command-center uids; D8 establishes the boundary now with
+  per-owner namespaces, independently of the reserved S4/S5 box uid range.
 - **Non-goal:** splitting containers. One container, several uids, keeps the shared volume and the
   existing deploy transaction.
 - **Non-goal:** moving credential *deposits* to the broker. The owner stays the vault's only
@@ -63,13 +65,13 @@ This change's build tasks land **after** both of these, and amend them:
 |---|---|---|---|
 | owner (daemon, frontends, scheduler) | 1001:1001 `tinyassets` | 1100, 1101, 1102 | `/data` (unchanged) |
 | broker | 1002:1002 `ta-broker` | 1102 | `/data/.broker/` (0700) |
-| engine / provider children | 1003:1003 `ta-engine` | 1100 | nothing; writes only through group `ta-work` |
+| engine / provider children | 1003:1003 `ta-engine` | 1100 | nothing; `ta-work` access only inside D8 owner namespace |
 | boxhostd (S4/S5) | 1004 reserved | — | — |
 | per-box uids | 200000–299999 reserved | — | openshell-spike defines |
 
 | gid | Name | Members | For |
 |---|---|---|---|
-| 1100 | `ta-work` | 1001, 1003 | workspace roots, `2770`, setgid |
+| 1100 | `ta-work` | 1001, 1003 | workspace roots, `2770`, setgid; engine access confined by D8 |
 | 1101 | `ta-brk` | 1001 | connecting to the broker's socket |
 | 1102 | `ta-vault` | 1001, 1002 | reading the vault, `0640` |
 
@@ -192,7 +194,7 @@ as 1001 (`SO_PEERCRED` translates to the receiver's namespace). Only distinct ke
 ### D3. Who spawns what, and with exactly what
 
 Spawn sites move to the launcher client, one call shape:
-`launcher.spawn(kind, args) -> Popen-like`. Kinds and argv templates are a **static table in the
+`launcher.spawn(kind, owner_scope, args) -> Popen-like`. Kinds and argv templates are a **static table in the
 launcher**, never caller-supplied strings:
 
 | Kind | Site | Mechanism today |
@@ -205,6 +207,10 @@ launcher**, never caller-supplied strings:
 | `workspace-provision` | `workspace_provision_process.py:127` | `subprocess.Popen` with `pass_fds` |
 | `workspace-registry` | `workspace_registry_process.py:165` | `subprocess.Popen` of `sys.executable -I -B -c …` over a `socketpair` |
 | `workspace-worker` | `workspace_worker.py:677-684` | `multiprocessing` spawn — see D7(c) |
+
+**Historical inventory:** the table above records the original review baseline. D8 below
+is the amended, authoritative coverage inventory, including current discovery confinement
+and additional children; no historical "not jailed" entry authorizes an unjailed launch.
 
 The last four and `provider-discovery` were missing from the first draft of this table, and
 `provider-discovery` is the one that matters: it launches the provider binary directly with a
@@ -246,10 +252,14 @@ Per-kind spawn posture, all of it set by the launcher and read back before `exec
   calls `_sanitize_child_environment()` itself (`broker/process.py:88`); the allowlist is the
   outer bound, not a replacement.
 
-  The `engine-mcp` kind is where this matters most today: `engine_mcp_http.py:270` builds the
+  Historical baseline (superseded by the current consumer audit below): the `engine-mcp` kind is where this matters most today: `engine_mcp_http.py:270` builds the
   child's environment as `dict(os.environ)` — the daemon's *whole* environment, not even
   `child_env` — and then adds four `TINYASSETS_ENGINE_*` names plus the port and shared secret
   (271-275). Its allowlist is exactly those six plus the `PATH`/`LANG`/`TZ`/`HOME` basics.
+
+The current `engine-mcp` allowlist must also audit OAuth service and execution-owner tree
+consumers (delivery.md), retaining only owner-scoped configuration and scoped service
+capabilities. It must never carry the owner channel token or platform credentials.
 
 The `multiprocessing` spawn children do not go through the launcher as they stand: that bootstrap
 passes a pipe handle and the resource-tracker descriptor through its own protocol, which an
@@ -279,9 +289,18 @@ Exact inventory, from the code rather than from the shape of the tree:
 | `/data/<cc>/.runtime/` | 1001:1100 | 2750 | `credential_vault.py:1783` — created `0o700` today |
 | `/data/<cc>/.runtime/provider-launch-credentials/` and each snapshot under it | 1001:1100 | dirs 2750, files 0440 | `provider_jail.py:199`; `credential_vault.py:1784-1808,1846,2069` — the 1003 child's own snapshot |
 | workspace roots under `/data/<cc>/` | 1001:1100 | 2770 setgid | `workspace_pool.universe_paths` |
+| `/data/.universe-sidecars/` | 1001:1001 | 0711 | relay parent, never mounted into a cell |
+| `/data/.universe-sidecars/<cc>/` | 1001:1100 | 2710 | `universe_egress.py` egress and engine relay directory creation |
+| exact `egress-*.sock` / `engine-*.sock` relay entries | 1001:1100 | 0660 | runtime-created sockets; only the admitted owner's exact socket is bound |
 | `/data/.broker/`, `/data/.broker/state/` | **1002:1002** | 0700 | `supervisor.py:52-53`, `process.py:89-90` |
 | `/data/.layout.lock` | 1001:1001 | 0666 | `storage_layout.py:63-70` creates it 0o666 for cross-uid `flock` |
 | everything else | 1001:1001 | unchanged | — |
+
+**The shared work group is not an owner boundary.** Its host-side modes are retained for
+rollback compatibility, but every 1003 application process receives those rights only
+inside D8's namespace. No engine payload may execute with `ta-work` in the host mount
+namespace. `/data` itself, sibling centers, shared runtime directories and their directory
+fds are never exposed; a bind of the whole data root followed by partial masks is forbidden.
 
 Four things this table settles that the previous draft did not:
 
@@ -315,6 +334,12 @@ every time they run:
 | `credential_vault.py:1784-1793` | snapshot root → `0o700` | `2750` |
 | `credential_vault.py:1808,1846,2069` | each snapshot dir `0o700`, files `0o400` | `2750`, files `0o440` |
 
+The same declaration also covers `universe_egress.py`'s two sidecar directory
+creation sites (`mkdir(0o700)`) and both relay socket `chmod(0o600)` sites: use the
+D4 sidecar modes/groups on every creation, before publishing a socket. The daemon
+already holds 1100 and can assign that group. Only exact validated socket entries
+are mounted; directory traverse for jail setup never means exposing the parent.
+
 A literal in each place is how the migration gets quietly undone by the next provider launch. The
 modes become a single module-level map keyed on whether the role split is deployed, read by every
 one of these sites and by the migration, so the two cannot disagree. That map is the unit under
@@ -333,9 +358,9 @@ and `.credentials/` can stay owner+broker-only at 1003. What the child does read
 per-launch snapshot under `.runtime/provider-launch-credentials` (`provider_jail.py:199`), which
 is why those rows are in `ta-work`. Task 2.8 has the oracle enumerate which of the jail's binds
 the child must *write* and sets `2770/0660` for exactly those, `2750/0440` for the rest —
-measured, not guessed. `provider-discovery` (D3) is the exception that proves the rule: it runs
-*outside* the jail with the snapshot as its `cwd`, so its access comes from the uid and the group,
-not from a bind.
+measured, not guessed. `provider-discovery` uses the same boundary with the narrower
+`metadata_view`: only its exact launch snapshot, no ordinary owner content. The original
+unjailed exception is removed. All other engine classes use D8's owner-bound views too.
 
 **Authority.** The migration keeps owner 1001 on almost every path, so euid 0 is *not* the owner of
 what it re-modes. `chmod`, `setfacl` and the setgid bit on a 1001-owned path therefore need
@@ -358,6 +383,15 @@ not sufficient on its own: the volume is a bind mount, so a *previous* container
   exists, possibly outside the set, and changing the inode's group would hand that name the same
   access;
 - refuses on anything that is not a directory or a regular file.
+
+**Legacy runtime cleanup before traversal/chown.** Under the same exclusive lock,
+the root migration idempotently unlinks the obsolete `/data/.broker/owner.json`
+using its pinned parent dirfd and `unlinkat` without following links. Never log its
+contents. It also removes only known stale relay socket entries (verified socket
+type under pinned sidecar dirfds), which the daemon recreates at the declared mode;
+other non-regular entries remain a loud refusal. No recursive deletion or traversal
+through these entries. This permits the regular-file/directory traversal rule above
+to remain intact and avoids asking uid 1001 to clean a broker-owned 0700 directory.
 
 **Crash recovery.** Idempotent by construction — it computes the target owner/group/mode per path
 and applies only differences, so re-running completes a partial run. Mirroring
@@ -417,6 +451,7 @@ ta-entry.sh (root, 0555, outside /app)
   0. its existing work, unchanged: the _platform_credential_env unset loop (66-92) and
      the required-data-file check (117-128).
   1. NEW: ownership migration (D4), exclusive flock on /data/.layout.lock, released after.
+     Root removes legacy owner.json before the broker-directory chown (D4 cleanup).
      This is the one addition to the script's contents — "the entrypoint moves, it is not
      rewritten" (D2) means its install path and its existing logic, not that it gains
      nothing.
@@ -503,7 +538,7 @@ Every process that runs at 1001 today, from the code:
 | 8 | the universe agent's tool jail | `universe_tools.py:777` | → 1003 (D3, `tool-jail`) |
 | 9 | workspace provision child | `workspace_provision_process.py:127` | → 1003 (D3) |
 | 10 | workspace registry child | `workspace_registry_process.py:165` | → 1003 (D3) |
-| 11 | short-lived owner tools: `gh` (`effectors/github_pr.py`), `git`, the `ta-op` canary | direct exec from the daemon | **stay at 1001** |
+| 11 | short-lived owner tools: `gh` (historical site, absent from this checkout), `git`, the `ta-op` canary | direct exec from the daemon | fixed platform operations only at 1001; owner-scoped work moves to D8 cell at 1003 |
 
 Rows 7-10 were missing from the first draft of this table. Row 7 is the one that changes the
 picture: it launches the provider binary through `create_subprocess_exec` directly, bypassing
@@ -511,7 +546,8 @@ picture: it launches the provider binary through `create_subprocess_exec` direct
 directory. An enumeration that misses it would have left a provider process at the owner's uid,
 unjailed, holding credentials — the exact thing this change exists to prevent.
 
-Row 11 is why "move everything off 1001" is not available: those are the owner's own tools, running
+Historical reasoning, narrowed by D8: owner-scoped `gh`/`git` must now be jailed.
+Row 11 originally explained why "move everything off 1001" was not available: those are the owner's own tools, running
 on the owner's own data, and no file permission separates them from the daemon. So the decision is
 the explicit one the review asked for — **trust uid 1001 as the owner, and stop making the owner
 channel reachable from a file.** Four measures:
@@ -535,7 +571,7 @@ anyway (`5342-5348`: channel, factory reference, config, grant id, scopes), and 
 inherits no memory.
 
 **(c) The workspace worker moves to 1003.** It needs no credential — it runs git over workspace
-paths, which `ta-work` covers. Its channel has to change, because `multiprocessing` cannot be
+paths, which `ta-work` covers only inside its D8 owner namespace. Its channel has to change, because `multiprocessing` cannot be
 launcher-mediated: the launcher kind `workspace-worker` execs a root-owned entry at 1003 with a
 pre-connected `socketpair` passed by `SCM_RIGHTS`, and `run_workspace_worker` reads its channel
 from that descriptor instead of `context.Pipe()`. The seam already exists — `workspace_worker.py:667`
@@ -557,27 +593,111 @@ own `/proc` files breaks; none is known, and the oracle proves it (task 2.8). Th
 depth. **The hard boundary remains the uid split: 1002 cannot be reached from 1001 without a
 capability, and 1003 cannot read the vault at all.**
 
-### D8. What this change does not isolate
+### D8. Every owner-scoped engine runs inside an owner isolation boundary
 
-All engine and provider children share uid 1003 across every command center, so a 1003 child for
-command center A is not separated *by uid* from command center B's files. That is not a regression
-— today they share 1001 — and it is not what the uid split is for. The per-box uid range
-200000–299999 (D1) is what closes it by uid, in S4/S5.
+**Lead decision, applying founder principles (2026-10-04): cross-user isolation is the
+platform's ONLY invariant and is non-negotiable.** The reference shape is Meta Muse as
+recorded in [the supplied research](../../../docs/design-notes/2026-10-04-muse-connection-methods.md):
+each user's agent has its own `systemd-nspawn` runtime cell, root mapped to an unprivileged
+host user, no `CAP_SYS_PTRACE` or `CAP_NET_ADMIN`, a separate credential daemon minting
+surrogate tokens, and Sentinel as sole egress authority. This is the design reference,
+not a claim that TinyAssets has implemented every Muse mechanism. The decision here is
+that no engine identity may reach another owner's data or credential authority.
+**"Deny only for jailed providers" is REJECTED.** Waiting for S4/S5 is also rejected.
 
-**Only some of those children are jailed, and the first draft said all of them were.** For
-`provider-cli`, cross-command-center containment is the bubblewrap jail: `provider_jail` binds only
-the owning command center's paths, refuses a bind whose source resolves outside it
-(`provider_jail.py:169,386`), and masks every hidden root entry except `.runtime` (316-346). But
-three of D3's kinds run **outside** any jail:
+**Chosen mechanism:** extend the existing bubblewrap provider jail into the mandatory
+per-owner launch boundary for every engine kind. Keep uid 1003 and D1's role groups;
+namespace reachability, not the shared uid or `ta-work`, separates owners. This is the
+smallest sound extension: it reuses the existing jail's validated views, masks, egress
+relay and fd protocol, with no per-owner identity allocator or ownership migration.
+No class gets an unjailed fallback. If a class cannot run inside this boundary, its launch
+fails and implementation must amend the design before substituting per-owner uids/groups.
 
-| Kind | Containment under this change |
-|---|---|
-| `engine-mcp` | not jailed (`engine_mcp_http.py:277-283` has no `provider_jail` import). Contained by the uid and by D3's allowlist environment, which is a real tightening: today it inherits `dict(os.environ)` (270) |
-| `provider-discovery` | not jailed (`native_jsonrpc_discovery.py:130-134`). Uid and group only |
-| `tool-jail` | its own jail (`universe_tools.py`), not `provider_jail` |
+**Launcher contract and namespace construction:**
+- The authenticated daemon supplies a resolved owner/command-center scope, bound to the
+  admitted execution, for every request. The launcher validates that scope against the
+  trusted owner-to-root mapping and selects a static per-kind view; missing, mismatched or
+  multi-owner scope is refused. An engine's argv, env or cwd cannot select an owner.
+  Engine MCP servers, worker pools and discovery caches must be keyed by scope; no engine
+  process is reused across owners. Multi-owner scheduling remains in the trusted daemon.
+- The root-owned bootstrap drops identity/capabilities as D3 requires, then establishes
+  bubblewrap confinement before executing any provider, engine or owner-controlled code.
+  A fresh mount namespace exposes only the admitted command-center tree and workspace
+  subset (at most that owner's data), immutable runtime dependencies and private scratch.
+  Never bind `/`, the host `/data`, shared HOME, shared `/tmp` or the host `/run` wholesale.
+  Discovery gets only `metadata_view`'s exact snapshot; the decoder needs only input pipes.
+- Preserve hidden-root masks, including the vault and `.credentials`, and expose only the
+  current launch's runtime subset/snapshot. Do not expose the entire `.runtime` tree.
+  Resolve and pin bind sources without following substituted links; reject out-of-scope
+  sources, escaping cwd, symlink/hardlink aliases and bind-source replacement races.
+  Approved immutable installation mounts cannot contain owner data. A namespace must
+  remain closed when owner B creates a new path after A starts.
+- Use private PID, IPC and network namespaces (`--unshare-all` as in the provider jail),
+  namespace-local procfs and private scratch. Every class gets an empty network namespace;
+  no host loopback, host abstract sockets or host network fallback. Together these namespaces ensure a shared uid
+  cannot reach sibling processes' `/proc/<pid>/{root,fd,mem,environ}` or ptrace them. Keep
+  D7's post-exec non-dumpability for daemon/broker and all capability/no-new-privileges
+  readbacks. No host namespace handle, foreign directory/file fd, owner token, or launcher
+  socket may cross the fd sweep. Kind-declared IPC is scoped to the admitted owner and
+  cannot request another owner's paths or effects. Validate payloads at the trusted receiver.
+- Reuse the existing jail's network/egress relay. Bind only the exact owner-scoped relay
+  sockets, never their parent sidecar directory or an owner-channel socket. `engine-mcp`
+  transport must use an owner-scoped relay/Unix endpoint through that boundary, not regain
+  host networking to keep its old listener reachable. Credential authority stays outside
+  the cell. Descendants inherit the cell; a nested tool/node jail may narrow it, never widen it.
 
-So for those three the uid *is* the containment, which is an argument for the split rather than
-against it — but it is not the jail, and claiming the jail covers them would have been wrong.
+**Complete coverage contract (paths are under `tinyassets/`; line numbers in D3/D7 are
+historical):**
+
+| Engine class / helper | Spawn sites covered | Required disposition |
+|---|---|---|
+| `provider-cli` | `providers/owned_process.py`: `_aspawn_anchored` and `aspawn_owned` exec paths | launcher plus owner provider view; sync/async and descendants included |
+| `provider-discovery` | `providers/base.py` -> `providers/native_jsonrpc_discovery.py` -> `aspawn_owned` | launcher plus exact-snapshot `metadata_view`; current code already requests confinement, preserve it |
+| `engine-mcp` | `engine_mcp_http.py`: `_EngineServer.start` | owner-keyed server in owner view with scoped transport |
+| `node-sandbox` | `node_sandbox.py`: both `Popen` sites (workspace `_spawn` and main sandbox launch) | owner cell; nested workspace commands inherit it |
+| `tool-jail` | `universe_tools.py`: tool `Popen` | existing tool jail inside/equivalent to mandatory owner cell, not an exception |
+| `workspace-provision` | `workspace_provision_process.py`: `Popen`; `workspace_provision_execution.py`: embedded subprocess runner | owner cell; provisioning child inherits it |
+| `workspace-registry` | `workspace_registry_process.py`: `Popen`, including calls from provisioning | owner-specific broker, scoped socketpair; no shared cross-owner worker |
+| `workspace-worker` | `workspace_worker.py`: `context.Process`, subprocess runner; `workspace_git.py`: runner and `Popen` | D7(c) launcher/socketpair replacement inside owner cell; git descendants inherit |
+| `ui-preview` | `ui_preview.py`: `_supervised` | owner view with scoped preview transport; PID supervision alone is insufficient |
+| `image-decoder` | `tool_images.py`: `_decode_in_child` | owner-bound process with input/output pipes and private scratch, no data bind required |
+| provider auth probe | `providers/base.py`: direct `subprocess.run` auth probe | owner-bound launcher kind and snapshot, never inherited host auth/HOME |
+| local box execution | `boxes/local.py`: exec `Popen` | owner cell now for any served owner work; reserved box uids do not defer this requirement |
+| owner-scoped utility descendants | `git_bridge.py`, `bid/node_bid.py`, `ingestion/video_extractor.py`, `workspace_git.py`, `workspace_worker.py` subprocess calls | execute within admitting owner's cell; daemon-direct owner-work calls must route through a static launcher kind |
+
+**Remaining inventory dispositions:** the daemon and broker are trusted control-plane
+roles, not engine exceptions. `storage/outbound_connections.py`'s legacy proxy `Process`
+is refused while the broker is selected (D7(b)). D7 row 11's `gh`/`git` designation is
+narrowed: any invocation on an owner's behalf goes through the owner cell, including
+any restored equivalent of the historical `effectors/github_pr.py` site (absent from this checkout). Only fixed platform operator/health commands
+(`ta_cli.py`, `scoped_reset.py`, `ta-op` canary), runtime detection (`sandbox/detect.py`) and
+desktop launcher/updater/open-URL helpers may remain control-plane/local tooling, with no
+owner payload or credential snapshot. If used for owner work, they must be classified and
+jailed before execution. Windows taskkill helpers in `providers/owned_process.py` are not
+production Linux payloads. Task 2.5 must reconcile a fresh spawn search (including external
+modules and indirect wrappers) with this inventory; any newly found owner-work child is
+covered by this rule and added to the class-by-class oracle matrix, never silently exempted.
+
+**Acceptance:** in the Linux oracle built from the production Dockerfile, start owner A's
+actual engine-identity process through each production class/site above, not a generic
+substitute that only sets uid 1003. Record outer identity/groups, namespace identities and
+launch path, and attempt reads/writes of owner B's workspace/data, legacy `owner.json`,
+vault/materialized credentials and owner channel token. Every class must deny access;
+`ENOENT`/masked content as well as `EACCES` are valid filesystem denial, but B's sentinel
+bytes must never be returned. Seed legacy `owner.json` as an adversarial fixture while
+also proving startup removes the real obsolete file and never writes a replacement.
+Exercise the token held in daemon/broker memory via procfs/ptrace, inherited fds/env and
+owner-channel IPC; absence of a token file alone is not proof. Include sibling process
+paths, links, bind races, new B files created after A starts, and scope reuse/mismatch.
+For each class also attempt connections to owner B's engine-MCP port and relay socket
+(and host abstract sockets): all must fail. Prove the legitimate owner-A operation and
+relay connection work under uid 1003 with D4's socket/group modes. Preserve the existing
+vault write-denial, socket setgid, capability parity, migration and healthcheck proofs.
+The current `scripts/linux_oracle.py` builds `docker/linux-oracle.Dockerfile`, not the
+production Dockerfile; task 2.8 must add an explicit production-image proof mode/harness
+and record its image digest and launch configuration. Its default test image is insufficient.
+No skipped/unavailable class or Windows-only check counts as a pass. Implementation and
+production-image oracle execution remain pending; this amendment claims neither.
 
 ## Risks / Trade-offs
 
@@ -613,6 +733,8 @@ against it — but it is not the jail, and claiming the jail covers them would h
 - `scripts/check_privileged_chain.py` against the built image: no node of the entrypoint, launcher,
   broker or privileged `sys.path` chain — no ancestor directory of one, and no link or target in
   one's resolution — is non-root-owned or group/other-writable.
+- Every D8 class/site must pass the production-image Linux oracle cross-owner denial matrix
+  and its own positive control; one jailed provider is not representative of other classes.
 - A child kind spawned as 1003 gets `EACCES` on `/data/.broker/state/fence.json` and on
   `/data/<cc>/.credential-vault.json`, proven in the oracle and on prod by a probe child.
 - The broker, as 1002, can read the vault and **cannot write it** (`0640`) — and the vault that a

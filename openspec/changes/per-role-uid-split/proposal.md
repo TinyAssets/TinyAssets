@@ -17,6 +17,13 @@ Measured on prod (2026-10-02, read-only):
 
 ## What Changes
 
+- **Mandatory per-owner cells for every engine class.** The lead decision in D8 makes
+  cross-user isolation non-negotiable now: extend the existing bubblewrap jail through
+  the launcher to every owner-scoped child and descendant. Shared `ta-work` access is
+  confined inside that namespace. The provider-only denial option is rejected. D8 lists
+  all covered spawn sites and requires actual-process, per-class production-image oracle
+  denial of other owners' data, owner.json, vault and owner channel token.
+
 - **A uid per role, enforced by the kernel.** Owner/daemon 1001 (unchanged, it owns `/data`);
   broker 1002; engine and provider children 1003. Three service groups carry the cross-uid access
   the split needs: `ta-work` (1100) for workspaces, `ta-brk` (1101) for the broker socket,
@@ -76,7 +83,7 @@ Measured on prod (2026-10-02, read-only):
   1003); `deploy/native/ta_op.c` (`MASK`); and every spawn site that starts an engine or provider
   child goes through the launcher client — `providers/owned_process.py`, `engine_mcp_http.py`,
   `node_sandbox.py`, and the four the first enumeration missed:
-  `providers/native_jsonrpc_discovery.py` (reached from `providers/base.py`, and outside the jail),
+  `providers/native_jsonrpc_discovery.py` (reached from `providers/base.py`, historically outside the jail; now using the metadata view),
   `universe_tools.py`, `workspace_provision_process.py`, `workspace_registry_process.py`.
   New gate: `scripts/check_privileged_chain.py`.
 - **Dependencies:** lands after #4299 (the broker) and #4267 (`platform_secrets`), amending both.
