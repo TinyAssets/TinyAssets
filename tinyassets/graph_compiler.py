@@ -1986,6 +1986,7 @@ _NODE_MCP_ACTION_ALIASES: dict[str, tuple[str, str]] = {
     # Native delivery reuses explicit link authority; no arbitrary graph writes.
     "deliver_output": ("delivery", "deliver_output"),
     "read_run_file": ("run_files", "read_run_file"),
+    "notify": ("notifications", "notify"),
 }
 
 
@@ -2268,6 +2269,14 @@ def _build_node_mcp_invoker(
                 )
 
         tool_name, action = resolved
+        if tool_name == "notifications":
+            return _node_served_tool_call(
+                node, "write_graph",
+                {"target": "pending_request", "operation": "notify",
+                 "payload_json": json.dumps(kwargs)},
+                allowed={"write_graph"}, execution_context=execution_context,
+                should_cancel=should_cancel,
+            )
         if tool_name == "run_files":
             from tinyassets.run_file_node import read_node_file
 

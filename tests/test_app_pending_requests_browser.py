@@ -11,6 +11,34 @@ browser = _browser
 pytestmark = pytest.mark.real_browser
 
 
+def test_notification_is_informational_and_opens_source_chat(app_url, browser):
+    page = browser.new_page(viewport={"width": 390, "height": 844})
+    _enter_chat(page, app_url)
+    page.evaluate("""() => {
+        window.openedAgents=[]; window.dismissals=[];
+        addressAgent=async agent=>openedAgents.push(agent.agent_id);
+        MCP.callTool=async (name,args)=>{dismissals.push(args);return {status:'withdrawn'};};
+        renderRail([{request_id:'notice',title:'Report ready',body:'All tests passed',
+            agent:'social-manager',informational:true,requires_answer:false,
+            action:{type:'notify',attachment_ref:'file_report'},fields:[],items:[]}]);
+    }""")
+    page.locator('#needs-you-open').click()
+    page.get_by_role('button', name='Report ready', exact=False).click()
+    sheet = page.locator('#request-rail')
+    assert sheet.get_by_text('Notification · No answer needed').is_visible()
+    assert sheet.get_by_text('Attachment: file_report').is_visible()
+    assert sheet.locator('input:visible,textarea:visible').count() == 0
+    assert sheet.get_by_role('button', name='Accept', exact=True).count() == 0
+    sheet.get_by_role('button', name='Open chat', exact=True).click()
+    assert page.evaluate('openedAgents') == ['social-manager']
+    page.locator('#needs-you-open').click()
+    page.get_by_role('button', name='Report ready', exact=False).click()
+    sheet.get_by_role('button', name='Dismiss', exact=True).click()
+    page.wait_for_function('dismissals.length === 1 && railCache.length === 0')
+    assert page.evaluate('dismissals[0].operation') == 'withdraw_request'
+    page.close()
+
+
 @pytest.mark.parametrize("width", [390, 1280])
 @pytest.mark.parametrize("expanded", [False, True])
 def test_pending_requests_at_latest_and_new_arrival_answer(app_url, browser, width, expanded):
