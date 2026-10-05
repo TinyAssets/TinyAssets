@@ -120,3 +120,38 @@ def test_program_fd_holds_exactly_the_program():
         assert os.read(fd, 1 << 16) == PROVIDER
     finally:
         os.close(fd)
+
+
+@pytest.mark.parametrize("arch,symlinks,newuser", [
+    (X86_64, (88, 266), (272, 56)), (AARCH64, (36,), (97, 220)),
+])
+def test_cell_links_allows_links_without_namespace_privileges(arch, symlinks, newuser):
+    program = deny_program(profile="cell-links")
+    for nr in symlinks:
+        assert decide(program, arch, nr) == ALLOW
+    for nr in newuser:
+        assert decide(program, arch, nr, NEWUSER | 0x11) == EPERM
+    assert decide(program, arch, 435) == ENOSYS
+    for name, x86, arm in KERNEL_SURFACE:
+        assert decide(program, arch, x86 if arch == X86_64 else arm) == EPERM, name
+    assert decide(program, I386, 3) == EPERM
+    assert decide(program, X86_64, 0x40000000) == EPERM
+
+
+def test_named_profiles_preserve_existing_filter_bytes():
+    assert deny_program(profile="cell-deny") == TOOL
+    assert deny_program(profile="cell-nested") == PROVIDER
+
+
+@pytest.mark.parametrize("options", [
+    {"profile": "cell-links", "nested_sandbox": True},
+    {"profile": "cell-deny", "nested_sandbox": True},
+    {"profile": "cell-nested", "nested_sandbox": False},
+    {"profile": "unknown"}, {"profile": []},
+])
+def test_invalid_profile_refused_before_allocating_descriptors(monkeypatch, options):
+    def refuse_pipe():
+        raise AssertionError("invalid policy allocated pipe")
+    monkeypatch.setattr(jail_seccomp.os, "pipe", refuse_pipe)
+    with pytest.raises(ValueError):
+        jail_seccomp.program_fd(**options)

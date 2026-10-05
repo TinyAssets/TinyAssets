@@ -1,3 +1,63 @@
+# Current delivery: D52 named cell profiles for the remaining engine matrix
+
+D51 pushed as b32cea4ff4; hygiene: 5 tests added, 0 removed, 0 tampering.
+D52 implements D9's cell-deny/cell-links/cell-nested names in the shared
+seccomp compiler. Image-decoder explicitly selects cell-deny. No remaining
+engine kind is admitted and no payload can select its own profile. Both
+legacy filter byte streams match commit b32cea4ff4 exactly. cell-links
+permits symlink creation but keeps namespace, clone3, FIFO/device and kernel
+interface restrictions. Unknown or explicitly contradictory options refuse
+before pipe allocation; pipe write failure closes both ends.
+
+Cross-family peer-agents: ADAPT. AGREE with CI wiring: moved the new kernel
+cases into existing tests/test_provider_jail_network.py, already real_jail
+marked and covered by linux-jail-proof's paths and zero-skip assertion.
+No new skip on any existing test, no workflow or heavy-list change. Also
+fixed the minor explicit-False/nested contradiction using an unset default.
+No second round. Release-critical files in this slice: **1**,
+deploy/role_decoder.py (already changed in D51). Branch total against local
+origin/main: **8**, unchanged: .github/workflows/docker-build.yml, Dockerfile,
+deploy/backup.sh, deploy/broker_main.py, deploy/compose.yml,
+deploy/role_decoder.py, deploy/role_egress_migration.py, deploy/role_launcher.py.
+No affected heavy-list file.
+
+```text
+python scripts/linux_oracle.py -- tests/test_jail_seccomp.py tests/test_role_decoder.py tests/test_role_launcher.py tests/test_provider_jail_network.py tests/test_universe_tools_jail.py -q -rs
+107 passed in 32.09s; zero skips
+```
+This includes real-kernel symlink/FIFO/io_uring/new-user/clone3 decisions for
+all three profiles, plus the shipping provider and tool jail regression
+proofs. Initial new clone3 fixture used size zero and received EINVAL;
+corrected to a valid structure size with null pointer to distinguish EFAULT
+from the filter's ENOSYS. The runtime policy was not weakened. Marker-based
+CI collection includes the containing module. Targeted Ruff, mirror parity
+(609), plugin import and strict OpenSpec pass. Full Ruff still reports the
+same 55 unrelated errors.
+
+```text
+python scripts/linux_oracle.py --production-image tinyassets-uid-profiles:d52 --build --production-stream
+exit 0; sha256:114b5f77154b2f276b46dbfc92009d3cabe77883c816358cafbe976f43af325e
+```
+All D51 decoder, D49/D50 refresh, broker consumers/accounting, HTTPS streaming
+and migration-substep probes pass again. Forward/reverse dry/apply/repeat and
+6+8+3+4 crash boundaries remain substep evidence, not full migration/deletion
+or actual old-image rollback. Additional production-image profile probe:
+`python $env:TEMP/uid-d52-production-profiles.py` exit 0. It extracts the
+committed ROLE_PROFILE_PROBE from test_provider_jail_network.py and runs each
+profile from the immutable image's jail_seccomp.py via runpy, at uid 1001,
+cap-drop ALL, network none, nnp and the same seccomp/AppArmor/systempaths
+options. All three profile results match the 107-test Linux receipt. Initial
+ad-hoc import under python -I failed because /app is intentionally absent from
+sys.path; loading the fixed stdlib-only module by path matches the decoder.
+This probe uses a synthetic read-only runtime view, not an additional actual
+engine class. Startup inactive.
+Remaining: actual provider CLI/discovery/auth, thin engine-MCP, node/tool,
+workspace provision/registry/worker/git, preview, local box and utility class
+launcher integration with every paired daemon-reader probe; full migration
+and two-pass deletion; actual old-image rollback; startup/healthcheck only
+after all prior acceptance. No full task 2.1-2.8 checked off. No PR or deploy.
+
+---
 # Current delivery: D51 actual data-free image decoder through the launcher
 
 D49 pushed as 692b2d201b; D50 pushed as 8281f758fd (8 added tests,

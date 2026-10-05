@@ -32,7 +32,8 @@ def enter(mime, data_root):
     host = namespaces()
     # Load only the immutable stdlib-only filter definition; no package import
     # or application initialization before the owner boundary exists.
-    descriptor = runpy.run_path("/app/tinyassets/providers/jail_seccomp.py")["program_fd"]()
+    filter_factory = runpy.run_path("/app/tinyassets/providers/jail_seccomp.py")["program_fd"]
+    descriptor = filter_factory(profile="cell-deny")
     os.set_inheritable(descriptor, True)
     argv = ["/usr/bin/bwrap", "--die-with-parent", "--new-session", "--unshare-all",
             "--cap-drop", "ALL", "--clearenv", "--setenv", "PATH", "/usr/bin:/bin",

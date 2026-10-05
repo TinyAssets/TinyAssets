@@ -1563,6 +1563,19 @@ input/output and time; the launcher independently bounds
 lifetime. Unsupported kinds remain refused. This adds no privilege or helper
 process that retains privilege: the new bootstrap runs only after retirement.
 No global startup activation or all-class acceptance is implied.
+### D52. Mechanical decision: named cell profiles preserve existing callers
+
+Implement D9's three names in the existing seccomp compiler. cell-deny and
+cell-nested are byte-identical to the prior default and nested_sandbox=True
+policies. cell-links changes only symlink/symlinkat allowance; it retains
+CLONE_NEWUSER denial, clone3 ENOSYS, FIFO/device and kernel-surface denial.
+Keep the legacy keyword compatible; reject unknown or contradictory profile
+selection before allocating a descriptor. Only trusted static launch policy
+selects a profile. Image-decoder explicitly selects cell-deny; no engine
+payload chooses a profile, and no other class is admitted by this slice.
+The named profiles are prerequisites for the remaining D9 class matrix,
+not a substitute for actual class and paired daemon-reader probes.
+
 ## Risks / Trade-offs
 
 - **The launcher is root-adjacent code.** One file, stdlib-only, run `-I -S`, a static kind table,
