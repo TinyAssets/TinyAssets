@@ -94,7 +94,10 @@ html,body{margin:0;padding:0;height:100%;font:15px/1.5 system-ui,sans-serif;colo
     var node = document.getElementById("ta-ui-fault");
     node.textContent = String(text);
     node.hidden = false;
+    parentWindow.postMessage({ta_ui: PROTOCOL, type: "boot_failed"}, "*");
   }
+  window.addEventListener("error", function () { fault("This UI failed while starting."); });
+  window.addEventListener("unhandledrejection", function () { fault("This UI failed while starting."); });
 
   // The bundle's only capability. Every call is a request to the parent, which
   // decides whether the action exists at all; this side never assumes one does.

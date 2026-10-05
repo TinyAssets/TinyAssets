@@ -432,7 +432,7 @@
       frame.setAttribute("sandbox",this.SANDBOX);
       frame.setAttribute("referrerpolicy","no-referrer");
       frame.setAttribute("src",this.FRAME_SRC);
-      this.frame=frame; this.active=entry; this.ready=false;
+      this.frame=frame; this.active=entry; this.ready=false; this.bootFault=false;
       this.frameGen++; this.pending=0; this.sending=false; this.emitting=false; this.trying=false;
       this.defaultMounted=false;   // mountDefault sets it again after this call
       this.listener=event=>this.receive(event);
@@ -483,6 +483,11 @@
       if(!this.frame||event.source!==this.frame.contentWindow) return;
       const message=event.data;
       if(!message||typeof message!=="object"||message.ta_ui!==this.PROTOCOL) return;
+      if(message.type==="boot_failed"){
+        this.bootFault=true;
+        if(typeof AppRecovery!=="undefined")AppRecovery.fail(new Error("Command center failed to start"));
+        return;
+      }
       if(message.type==="ready"){ this.deliver(); return; }
       // The reserved key, handed back by a frame that would otherwise swallow
       // it. The frame can only ask for THIS: focus moves to the composer, and

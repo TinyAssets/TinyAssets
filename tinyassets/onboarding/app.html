@@ -445,7 +445,7 @@
       <div id="ui-frame-host" hidden></div>
       <section id="chat-cloud" class="chat-cloud" data-agent="main" data-mode="open"
                aria-label="Chat with your agent">
-      <div class="chat-discovery"><button id="btn-chat-browse" class="btn btn--link" type="button">Browse / Switch command centers</button></div>
+      <div class="chat-discovery"><button id="btn-chat-browse" data-app-recovery="browse" class="btn btn--link" type="button">Browse / Switch command centers</button></div>
       <div id="ui-install-receipt" role="status" aria-live="polite" hidden></div>
       <div id="chat-cloud-bar" class="chat-cloud-bar" tabindex="0"
            aria-label="Chat window. Arrow keys move it; Shift and arrow keys resize it."
@@ -685,7 +685,7 @@
         <span id="chat-cloud-badge" class="chat-cloud-badge" hidden></span>
       </button>
       <button id="bubble-needs-you" class="btn" type="button">Needs you</button>
-      <button id="btn-bubble-browse" class="btn" type="button" hidden>Browse / Switch</button>
+      <button id="btn-bubble-browse" data-app-recovery="browse" class="btn" type="button" hidden>Browse / Switch</button>
       </div>
     </section>
 
@@ -854,6 +854,17 @@
 
   </main>
 
+  <nav id="app-recovery-controls" aria-label="Command center recovery">
+    <a href="/app" data-app-recovery="refresh">Refresh command center</a>
+    <a href="/app" data-app-recovery="browse">Browse / Switch</a>
+    <a href="/app" data-app-recovery="chat">Open chat</a>
+    <span id="app-recovery-failed" role="alert" hidden>Something went wrong - <a href="/app" data-app-recovery="reload">Reload</a></span>
+  </nav>
+  <style nonce="__TA_NONCE__">
+    #app-recovery-controls{position:fixed;bottom:4px;left:8px;z-index:10000;display:flex;flex-wrap:wrap;gap:12px;padding:6px 10px;max-width:calc(100vw - 16px);box-sizing:border-box;background:var(--surface,#fff);border:1px solid var(--line,#ddd);border-radius:8px;font-size:12px}
+    #app-recovery-controls a{color:var(--ink,#111)}
+  </style>
+  <script nonce="__TA_NONCE__">__TA_APP_RECOVERY__</script>
   <script nonce="__TA_NONCE__">
   "use strict";
   // Server-injected config (client_id, AuthKit endpoints, resource). Public values only.
@@ -5944,6 +5955,9 @@
     const me = await fetchMe();
     if(epoch!==MCP._loginEpoch) return;          // a stale answer names no one
     if(me===null && !token()) return;            // fetchMe signed us out
+    // A deploy's 5xx is not evidence that the verified owner disconnected.
+    // Previously this fell through to AppUI.reset(), destroying the frame.
+    if(me===null){ AppRecovery.fail(new Error("Could not read your session")); return; }
     // Both halves of "is this mine?", taken from the VERIFIED account the
     // connector just described - never from a caller or a provider. Seeded
     // before anything this page may restore (held lines, the in-flight record,
@@ -5951,6 +5965,7 @@
     if(me&&me.universe_id) setQueueScope(me.universe_id);
     if(typeof showCommandCenterName === "function") showCommandCenterName(me&&me.name);
     if(me&&me.principal_id) setQueueOwner(me.principal_id);
+    AppRecovery.restoreDraft();
     if(typeof rebindBrowserNotifications === "function") rebindBrowserNotifications();
     // In this order: a reply left by a previous owner is discarded by the rebind
     // before this page can collect it.
@@ -5965,6 +5980,9 @@
     // it must not sit in front of the page they are waiting for.
     reportTimezone();
     HostedModelConnect.setup=me&&me.setup||"unavailable";
+    if(HostedModelConnect.setup==="unavailable"){
+      AppRecovery.fail(new Error("Could not confirm your command center's connections"));return;
+    }
     const connected=HostedModelConnect.setup==="connected";
     engineConnected = connected ? true : HostedModelConnect.setup==="unavailable" ? null : false;
     // The custom-UI switcher is gated on a verified identity and home: a
@@ -10242,7 +10260,28 @@
     }
     startSessionKeepAlive();
   }
-  boot();
+  AppRecovery.attach({
+    scope:()=>({owner:queueOwner,home:queueScope,agent:addressedAgentId()}),
+    health:()=>({expected:!$("view-chat").hidden&&
+        (engineConnected!==false||$("chat-cloud").dataset.mode==="bubble"),
+      healthy:!!(AppUI.enabled&&AppUI.frame&&AppUI.frame.isConnected&&AppUI.ready&&!AppUI.bootFault)}),
+    retryFrame:()=>{
+      if(!AppUI.enabled)return false;
+      if(AppUI.active)AppUI.mount(AppUI.active);else AppUI.load();
+      return true;
+    },
+    browse:()=>{
+      if(!AppUI.enabled)return false;
+      AppUI.openBrowse().catch(error=>AppRecovery.fail(error));return true;
+    },
+    openChat:()=>{
+      if($("view-chat").hidden)throw new Error("Chat has not started");
+      cloudState=cloudState||cloudDefaultState(false,cloudStageSize());
+      cloudState.mode="open";cloudState.userSet=true;applyChatCloud();
+      $("composer-input").focus();
+    }
+  });
+  boot().then(()=>AppRecovery.started(),error=>AppRecovery.fail(error));
   </script>
 </body>
 </html>
