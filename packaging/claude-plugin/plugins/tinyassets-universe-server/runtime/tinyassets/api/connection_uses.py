@@ -319,12 +319,21 @@ def configure_connection(*, universe_id: str = "", payload: Any = None) -> dict[
     return {"status": "configured", **applied}
 
 
-def connection_uses_view(ledger: Any, connection_id: str) -> dict[str, Any]:
+def connection_uses_view(ledger: Any, connection_id: str, *, data_root=None,
+                         principal=None, command_center=None, grant_id=None) -> dict[str, Any]:
     """The uses and constant headers a connection declares, for read surfaces."""
     view: dict[str, Any] = {"uses": {"call": {}}}
     try:
-        model = ledger.get_connection_capability(connection_id, "model_use")
-        headers = ledger.get_connection_capability(connection_id, "constant_headers")
+        if data_root is not None:
+            from tinyassets.broker.capabilities import capability_operation
+
+            scope = dict(principal=principal, command_center=command_center, grant_id=grant_id,
+                         connection_id=connection_id)
+            model = capability_operation(data_root, capability_kind="model_use", **scope)
+            headers = capability_operation(data_root, capability_kind="constant_headers", **scope)
+        else:
+            model = ledger.get_connection_capability(connection_id, "model_use")
+            headers = ledger.get_connection_capability(connection_id, "constant_headers")
     except (LookupError, ValueError):
         return {**view, "uses_unreadable": True}
     if model is not None:

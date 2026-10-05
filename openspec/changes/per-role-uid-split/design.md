@@ -1306,6 +1306,17 @@ continue to require live grants through existing operations. Selected mode never
 opens a local ledger, and broker errors remain explicit. This implements existing
 D11 bootstrap readers without changing their owner scope or adding privilege.
 
+### D32. Mechanical decision: graph connection inventory uses scoped pages and capabilities
+
+The authenticated graph connection-list consumer uses CONNECTION_CATALOG pages
+and CAPABILITY reads for model-use/constant-header metadata in selected mode.
+Scope derives from the authenticated actor and already-authorized center, never
+from returned rows. Each capability read rechecks live authority; revocation
+between the page and detail read refuses, and outage never opens a daemon ledger.
+Preserve the existing redacted projection, uses and per-center workspace consents.
+This closes the injected connection_uses_view reader for this consumer, adds no
+broker operation or privilege, and does not complete remaining mutations.
+
 ## Risks / Trade-offs
 
 - **The launcher is root-adjacent code.** One file, stdlib-only, run `-I -S`, a static kind table,

@@ -246,3 +246,28 @@ scoped, redacted pages contain no credential reference; actual effects still
 reauthorize. Full catalogs iterate pages; account and summary retain limits.
 Package owner-wide lists, bootstrap recovery reads and remaining mutation,
 accounting, refresh and deletion routes are not claimed completed by D28.
+
+## D29-D32 consumer receipt
+
+D29 proves offline transfer of the four accounting tables to/from the broker
+ledger, including WAL, verified copy before DROP, refusal and interrupted resume.
+It does not route UsageStore or admit normal service. D30 replaces request-budget
+source endpoint SQL with scoped broker facts; unavailable facts fail admission
+rather than become an unmetered classification. Daily usage SQL remains pending.
+
+D31 routes model_bootstrap pending-confirmation recovery through the metadata-only
+BOOTSTRAP_RECOVERY query and model_bootstrap_candidate profile reads through live
+GRANTED_RESOURCE/CAPABILITY. Revoked own metadata remains displayable for recovery
+but cannot authorize candidate preparation or activation. D32 routes the graph's
+cloud_connections list and its injected connection_uses_view reads through scoped
+catalog pages and capability IPC. Launcher probes exercise these actual readers
+before and after broker restart, including 71-row graph pagination. No other
+inventory row is discharged by these receipts.
+
+Next accounting integration must preserve the distinction between the logical
+data root and private ledger path: UsageStore still opens `.tinyassets.db`;
+_load checks both daemon and parent kernel liveness, and _validate_source reads
+installed definitions plus live grant SQL. process_liveness.owner_state currently
+opens lock files O_RDWR; a private-ledger path change alone cannot preserve these
+checks for uid 1002. Runtime create/reserve/receipt/settle IPC, daily evidence,
+source binding and kernel liveness all remain before inference POST acceptance.

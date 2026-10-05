@@ -14,8 +14,9 @@ HAS_PRICED_SOURCE = "HAS_PRICED_SOURCE"
 GRANTED_RESOURCE = "GRANTED_RESOURCE"
 AUTHORIZED_CONNECTION = "AUTHORIZED_CONNECTION"
 CONNECTION_GRANTS = "CONNECTION_GRANTS"
+BOOTSTRAP_RECOVERY = "BOOTSTRAP_RECOVERY"
 QUERIES = frozenset({DISCOVERY_FACTS, HAS_PRICED_SOURCE, GRANTED_RESOURCE,
-                     AUTHORIZED_CONNECTION, CONNECTION_GRANTS})
+                     AUTHORIZED_CONNECTION, CONNECTION_GRANTS, BOOTSTRAP_RECOVERY})
 
 
 def validate_query(query, principal, command_center, grant_id, connection_id):
@@ -38,6 +39,18 @@ def local_query(ledger, *, query: str, principal: str, command_center: str,
     validate_query(query, principal, command_center, grant_id, connection_id)
     with ledger._connect() as conn:
         conn.execute("BEGIN")
+        if query == BOOTSTRAP_RECOVERY:
+            row = conn.execute(
+                "SELECT c.destination, p.descriptor_json FROM outbound_connection_grants g "
+                "JOIN outbound_connections c ON c.connection_id=g.connection_id "
+                "LEFT JOIN connection_capabilities p ON p.connection_id=c.connection_id "
+                "AND p.capability_kind='model_discovery' "
+                "WHERE g.grant_id=? AND g.owner_user_id=? AND c.owner_user_id=? "
+                "AND g.universe_id=? AND (?='' OR c.connection_id=?)",
+                (grant_id, principal, principal, command_center, connection_id, connection_id),
+            ).fetchone()
+            return {"recovery": None if row is None else {
+                "destination": row[0], "descriptor": json.loads(row[1]) if row[1] else None}}
         if query == CONNECTION_GRANTS:
             rows = conn.execute(
                 "SELECT g.grant_id FROM outbound_connection_grants g "

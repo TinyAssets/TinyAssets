@@ -137,18 +137,31 @@ def cloud_connections(
         # build an authenticated_external_call node WITHOUT the owner pasting them
         # back by hand. Redacted views only (no credential_ref), scoped to the
         # owner's grants for THIS universe.
-        ledger = _ledger(actor)
         rows = []
         from tinyassets.api.connection_uses import connection_uses_view
+        from tinyassets.broker.supervisor import broker_selected
 
-        for grant in ledger.list_grants(owner_user_id=actor, universe_id=uid):
-            resource = ledger.get_connection(grant.connection_id)
+        selected = broker_selected()
+        if selected:
+            from tinyassets.broker.catalog import connections
+
+            base = Path(_base_path())
+            inventory = ((grant, resource) for grant, resource, _ in connections(
+                base, principal=actor, command_center=uid))
+            ledger = None
+        else:
+            ledger = _ledger(actor)
+            inventory = ((grant, ledger.get_connection(grant.connection_id))
+                         for grant in ledger.list_grants(owner_user_id=actor, universe_id=uid))
+        for grant, resource in inventory:
             if resource is not None:
                 # What the connection is used for (call / model) and its
                 # constant headers: the same connector reads the same way
                 # whether it reaches a platform or a model.
-                rows.append({**_project(resource, grant),
-                             **connection_uses_view(ledger, resource.connection_id)})
+                scope = (dict(data_root=base, principal=actor, command_center=uid,
+                              grant_id=grant.grant_id) if selected else {})
+                rows.append({**_project(resource, grant), **connection_uses_view(
+                    ledger, resource.connection_id, **scope)})
         return {
             "universe_id": uid,
             "connections": rows,

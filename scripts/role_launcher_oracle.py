@@ -72,6 +72,22 @@ def _seed_ledger(root):
     with ledger._connect() as conn:
         conn.execute("INSERT INTO connection_capabilities VALUES (?, ?, ?, 0)",
                      ("conn-bob", "model_discovery", "malformed pricing must still block"))
+    from tinyassets.onboarding.hosted_model_auth import load_preset
+    from tinyassets.onboarding.model_bootstrap import endpoint_policy
+
+    preset = load_preset("openrouter_user_models_v1")
+    ledger.create_connection(
+        connection_id="conn-bootstrap", owner_user_id="bootstrap", connection_class="http",
+        connection_type="http", auth_scheme="bearer", scopes=("GET", "POST"),
+        provider="http", destination="model:" + preset.id, credential_ref="vault://http/fixture",
+        allowed_endpoints=endpoint_policy(preset))
+    ledger.grant_connection(grant_id="grant-bootstrap", connection_id="conn-bootstrap",
+                            owner_user_id="bootstrap", universe_id="bootstrap")
+    ledger.configure_capability(
+        connection_id="conn-bootstrap", capability_kind="model_discovery", enabled=True,
+        expected_grant=ledger.get_grant("grant-bootstrap"),
+        descriptor={"protocol": preset.id, "catalogue_url": preset.catalogue_url,
+                    "benchmark_url": preset.benchmark_url})
     for path in (root / ".broker").glob("outbound.db*"):
         os.chown(path, 1002, 1101)
         path.chmod(0o600)
@@ -250,6 +266,7 @@ def _query_consumers(root, supervisor):
           "authority refusal, no daemon ledger: PASS", flush=True)
     _capability_consumers(root, supervisor)
     _catalog_consumers(root, supervisor)
+    _bootstrap_consumers(root)
     for changes in ({"principal": "bob"}, {"command_center": "bob"},
                     {"grant_id": "grant-bob"}, {"connection_id": "conn-bob"}):
         try:
@@ -305,6 +322,48 @@ def _query_consumers(root, supervisor):
           "foreign scope, fence, SQL/path/method refusal; no local ledger: PASS", flush=True)
 
 
+def _bootstrap_consumers(root):
+    from tinyassets.broker.ledger_queries import BOOTSTRAP_RECOVERY, query_ledger
+    from tinyassets.daemon_server import grant_universe_access, set_founder_home
+    from tinyassets.onboarding.hosted_model_auth import load_preset
+    from tinyassets.onboarding.model_bootstrap import _pending_confirmation
+    from tinyassets.onboarding.model_bootstrap_candidate import prepare_candidate
+    from tinyassets.provider_assignment_manifest import ModelAccess
+    from tinyassets.providers.definition import register_definition
+    from tinyassets.storage.pending_requests import create_request
+
+    universe = root / "bootstrap"
+    universe.mkdir(exist_ok=True)
+    set_founder_home(root, founder_sub="bootstrap", universe_id="bootstrap",
+                     platform_generated=True)
+    grant_universe_access(root, universe_id="bootstrap", actor_id="bootstrap", permission="admin")
+    preset = load_preset("openrouter_user_models_v1")
+    definition = register_definition(universe_id="bootstrap", owner_user_id="bootstrap",
+                                     access_method="api_key_http", protocol="chat_messages",
+                                     model="fixture", ref="grant-bootstrap")
+    assert prepare_candidate(base=root, uid="bootstrap", owner="bootstrap",
+                              grant_id="grant-bootstrap", preset=preset) == definition.id
+    access = {definition.id: ModelAccess("discovered").document()}
+    request = create_request(universe, kind="Models", title="Fixture", body="Fixture", fields=[],
+                             action={"type": "bind_model_access", "provider": definition.id,
+                                     "model_access": access, "previous_membership": {},
+                                     "proposed_membership": access}, dedupe_key="fixture")
+    pending = _pending_confirmation(root, universe=universe, uid="bootstrap",
+                                    owner="bootstrap", preset=preset)
+    assert pending["request_id"] == request["request_id"]
+    args = dict(query=BOOTSTRAP_RECOVERY, principal="bootstrap", command_center="bootstrap",
+                grant_id="grant-bootstrap")
+    facts = query_ledger(root, **args)
+    assert set(facts["recovery"]) == {"destination", "descriptor"}
+    assert "vault://" not in json.dumps(facts)
+    for change in ({"principal": "alice"}, {"command_center": "alice"},
+                   {"grant_id": "grant-alice"}, {"connection_id": "conn-alice"}):
+        assert query_ledger(root, **(args | change)) == {"recovery": None}
+    assert not (root / "outbound.db").exists()
+    print("D31 actual bootstrap candidate and pending-confirmation consumers through launcher "
+          "broker: scoped metadata, foreign refusal, no daemon ledger: PASS", flush=True)
+
+
 def _catalog_consumers(root, supervisor):
     import asyncio
 
@@ -336,6 +395,22 @@ def _catalog_consumers(root, supervisor):
     assert not (root / "outbound.db").exists()
     print("D28 actual capability catalog via launcher broker: 71 grants over bounded pages, "
           "redaction, foreign/fence refusal, no daemon ledger: PASS", flush=True)
+    from tinyassets.api.cloud_connections import cloud_connections
+    from tinyassets.auth.middleware import identity_context
+    from tinyassets.auth.provider import Identity
+    from tinyassets.daemon_server import grant_universe_access
+
+    (root / "catalog").mkdir(exist_ok=True)
+    grant_universe_access(root, universe_id="catalog", actor_id="catalog", permission="admin")
+    with identity_context(Identity(user_id="catalog", username="catalog", capabilities=["write"])):
+        graph = cloud_connections(action="list", universe_id="catalog")
+    assert graph["count"] == 71
+    assert all(row["uses"]["model"]["models"][0]["id"] == "catalog-fixture"
+               for row in graph["connections"])
+    assert "credential_ref" not in json.dumps(graph) and "vault://" not in json.dumps(graph)
+    assert not (root / "outbound.db").exists()
+    print("D32 actual graph connection inventory via launcher broker: 71 scoped rows with "
+          "capability metadata, no daemon ledger: PASS", flush=True)
 
 
 def _capability_consumers(root, supervisor):

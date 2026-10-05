@@ -1,4 +1,82 @@
-# Current delivery: D29 accounting transfer and D30 source-budget IPC
+# Current delivery: D31 bootstrap readers and D32 graph inventory
+
+D29-D30 are committed/pushed as `dbd7669f10`; hygiene against `0f54d41cfe`:
+`tests added 6, removed 0, tampering findings 0, product lines added 489`.
+Continued in the same run through D31 and D32. Both received separate cross-family
+implementation APPROVE reviews; **AGREE**. No scope/privilege change, startup
+activation, PR or deployment. No whole build task newly checked off.
+
+D31 preserves inert pending-confirmation display for revoked own connections
+through BOOTSTRAP_RECOVERY, while candidate reads still require live broker
+grant/capability authority. D32 routes graph connection inventory and its uses
+metadata through catalog pages and reauthorized capability reads. Broker outage
+and revocation between page and detail never fall back to a daemon ledger.
+
+Release-critical files for this step: **0; list: none**. Runtime files:
+`tinyassets/broker/ledger_queries.py`,
+`tinyassets/onboarding/{model_bootstrap,model_bootstrap_candidate}.py`,
+`tinyassets/api/{cloud_connections,connection_uses}.py`, and their five generated
+mirrors. Oracle: `scripts/role_launcher_oracle.py`. New test files:
+`tests/test_broker_bootstrap_ipc.py`, `tests/test_broker_graph_connections.py`.
+No affected heavy-list file. Existing test names/assertions remain unchanged.
+
+Verification:
+
+```text
+python -m pytest tests/test_model_bootstrap.py tests/test_model_bootstrap_candidate.py tests/test_unify_connection_uses.py -q
+47 passed in 31.09s
+python scripts/linux_oracle.py -- tests/test_broker_bootstrap_ipc.py tests/test_model_bootstrap.py tests/test_model_bootstrap_candidate.py tests/test_role_accounting_schema.py -q -rs
+25 passed, 9 fixture errors (missing expected_grant in new setup; corrected)
+python scripts/linux_oracle.py -- tests/test_broker_bootstrap_ipc.py tests/test_broker_graph_connections.py tests/test_unify_connection_uses.py -q -rs
+42 passed in 19.13s; zero skips
+python scripts/linux_oracle.py --production-image tinyassets-uid-consumers:d32 --production-stream
+exit 0
+python scripts/linux_oracle.py --production-image tinyassets-uid-consumers:d32
+exit 0
+```
+
+Final image: `sha256:4adb5e3ea6825e2263bb2b0a46ee71a4197e6bb62a8bddd5df18415c13af9178`.
+Built with `--production-stream --build`. Same root entry, seven capabilities,
+no-new-privileges and compose security options as D29. Final stream fixture:
+`ta-uid-stream-6165a5c544b0-net` (internal), public-CA volume
+`ta-uid-stream-6165a5c544b0-ca`, subnet `93.184.216.0/29`, client `.3`, synthetic
+`uid-stream.invalid` at `.2`; fixture resources cleaned after the command.
+
+New production output, each before and after broker restart:
+
+```text
+D31 actual bootstrap candidate and pending-confirmation consumers through launcher broker: scoped metadata, foreign refusal, no daemon ledger: PASS
+D32 actual graph connection inventory via launcher broker: 71 scoped rows with capability metadata, no daemon ledger: PASS
+```
+
+D22 discovery HTTPS GET and D24 effector HTTPS stream remain PASS, including vault
+bearer, verified TLS and actual body. All D29 accounting forward/reverse dry-run,
+apply, repeat, eight accounting crash boundaries, three accounting-to-egress
+reverse recovery boundaries, six existing relocation boundaries and hostile
+input refusals remain PASS. D31's candidate proof covers the existing-definition
+read branch, not a new full bootstrap acquisition/activation. Production engine
+classes, inference POST, full role migration, two-pass owner deletion and actual
+old-image rollback remain unproven.
+
+Ruff for changed files, mirror parity (599 canonical files), plugin build/import
+probe, strict OpenSpec validation and whitespace checks pass. One Linux retry
+refused an inconsistent tar snapshot while the next slice was being edited;
+reran against a stable tree. A new graph fixture initially expected an outer
+not_found; corrected it to explicitly grant a foreign actor center-read access
+and assert an empty broker-scoped connection catalog. No product guard changed.
+PowerShell `*>` logging marked native stderr as NativeCommandError despite PASS
+output; both production commands were rerun directly and exited 0.
+
+Next, keep the prescribed order: remaining D11 mutation/injected-ledger consumers,
+runtime accounting with source/liveness checks and daily evidence, refresh;
+then every actual engine class/site via launcher; full migration and two-pass
+deletion; actual old-image rollback; startup/healthcheck integration only after
+every prerequisite passes. The inventory now records D29-D32 receipts and the
+concrete UsageStore/liveness dependency trace. Startup remains unactivated.
+
+---
+
+# Previous delivery: D29 accounting transfer and D30 source-budget IPC
 
 Resumed from `0f54d41cfefae44a205d3980ce3ad521683f00ee`; fast-forward pull
 was current. Finished inherited accounting WIP, then continued directly into
