@@ -1,3 +1,42 @@
+# Current delivery: D48 runtime provider metadata publication
+
+D46/D47 pushed as e31def9356; additive hygiene correction 7be718b2b8
+removes an accidental skip from the existing D44 test (no history rewrite).
+D48 applies daemon-owned 1001:1102/0640 to each new provider-definition
+inode before atomic replacement. Unsplit creation remains private 0600;
+permission failure preserves the old definition and removes the unpublished temp.
+The HTTPS oracle now registers and replaces definitions as the actual daemon,
+then proves broker-local source validation and accounted POST before/after restart.
+No seeded provider-definition permissions remain in that proof.
+
+Cross-family peer-agents: ADAPT; AGREE and corrected the resource-consumer
+fixture to seed its foreign definition before broker mode is selected. Its
+cross-owner refusal assertions are unchanged. Same-uid transport fixtures use
+their actual group; the production oracle proves the real 1102 group.
+Release-critical files: **0; none**. No affected heavy-list test file.
+
+```text
+python scripts/linux_oracle.py -- tests/test_broker_definition_modes.py tests/test_provider_definition_registry.py tests/test_broker_usage_ipc.py tests/test_broker_usage_source.py tests/test_broker_discovery_http.py tests/test_broker_compute_consumers.py tests/test_broker_usage_evidence.py -q -rs
+77 passed in 4.85s; zero skips
+python -m pytest tests/test_broker_resource_consumers.py -q
+13 passed in 0.83s
+python scripts/linux_oracle.py -- tests/test_broker_resource_consumers.py tests/test_broker_serving_consumers.py tests/test_broker_bootstrap_ipc.py tests/test_broker_graph_connections.py tests/test_broker_usage_ipc.py tests/test_broker_definition_modes.py -q -rs
+48 passed in 8.40s; zero skips
+python scripts/linux_oracle.py --production-image tinyassets-uid-metadata:d48 --build --production-stream
+exit 0; sha256:4db53b5ca656e60b72d7a86c49cf7897e32e968930fdf70d789a97abbfb26553
+D48 actual daemon definition registration/replacement retains broker read mode before atomic publish; broker-local source binding succeeds: PASS
+```
+All prior production-image probes pass again, including D46/D47 before and
+after broker restart, using the same seven-capability startup harness. This
+proves runtime metadata publication, not existing-metadata migration.
+
+Remaining in order: coordinated refresh with admission before spending a
+single-use token and daemon-only durable vault publication; every actual engine
+class through the launcher; full migration and capability-free two-pass deletion;
+actual old-image rollback; then startup/healthcheck activation only after every
+prior proof passes. Startup remains inactive. No PR or deployment.
+
+---
 # Current delivery: D46 accounted inference POST and D47 daily evidence
 
 D45 pushed as e2780ee541; hygiene added 3 tests, removed 0, tampering 0.

@@ -198,7 +198,16 @@ def _write(universe_id: str, rows: list[dict[str, Any]]) -> None:
     tmp = Path(tmp_name)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            from tinyassets.broker.supervisor import broker_selected
+
+            if broker_selected():
+                from tinyassets.role_modes import BROKER_METADATA_FILE_MODE, BROKER_READ_GID
+
+                os.fchown(handle.fileno(), -1, BROKER_READ_GID)
+                os.fchmod(handle.fileno(), BROKER_METADATA_FILE_MODE)
             handle.write(json.dumps(rows, indent=2, sort_keys=True))
+            handle.flush()
+            os.fsync(handle.fileno())
         os.replace(tmp, path)
     except BaseException:
         tmp.unlink(missing_ok=True)

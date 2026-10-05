@@ -132,19 +132,6 @@ def seed(root):
         connection_id="stream-connection", capability_kind="model_use", enabled=True,
         descriptor={"wire": "chat_messages", "models": [{"id": "oracle-model", "tools": True,
                                                         "context": 20000}], "billing": "free"})
-    from tinyassets.providers.definition import _definition_id
-
-    fields = dict(universe_id="stream-owner", owner_user_id="stream-owner",
-                  access_method="api_key_http", protocol="chat_messages",
-                  ref="stream-grant", model="oracle-model")
-    definitions = universe / "provider_definitions.json"
-    definitions.write_text(json.dumps([fields | {"id": _definition_id(**fields),
-                                                "visibility": "private",
-                                                "created_at": "2026-10-05T00:00:00Z"}]))
-    # Existing metadata's target mode is seeded here; full metadata migration
-    # and replacement-mode preservation are still required before startup.
-    os.chown(definitions, 1001, 1102)
-    definitions.chmod(0o640)
     for path in (root / ".broker").glob("outbound.db*"):
         os.chown(path, 1002, 1101)
         path.chmod(0o600)
@@ -196,12 +183,17 @@ def inference_probe(root):
     from tinyassets.broker.ops import new_op_id
     from tinyassets.effectors.authenticated_external_call import _open_connection_proxy
     from tinyassets.exceptions import ProviderAuthorityHeldError
-    from tinyassets.providers.definition import _definition_id
+    from tinyassets.providers.definition import register_definition
     from tinyassets.request_budget import TurnRequestBudget, requests_today
 
-    definition = _definition_id(universe_id="stream-owner", owner_user_id="stream-owner",
-                                access_method="api_key_http", protocol="chat_messages",
-                                ref="stream-grant", model="oracle-model")
+    fields = dict(universe_id="stream-owner", owner_user_id="stream-owner",
+                  access_method="api_key_http", protocol="chat_messages", ref="stream-grant")
+    definition = register_definition(**fields, model="oracle-model").id
+    # Force a new atomic replacement on both passes, not only first creation.
+    register_definition(**fields, model="replacement-" + new_op_id())
+    metadata = root / "stream-owner/provider_definitions.json"
+    info = metadata.stat()
+    assert (info.st_uid, info.st_gid, info.st_mode & 0o7777) == (1001, 1102, 0o640)
     initial = requests_today(root, "stream-owner", "api_key_http:" + definition,
                              reset_timezone="UTC")
     assert initial is not None
@@ -273,7 +265,9 @@ def inference_probe(root):
         assert not (root / "outbound.db").exists()
         print("D46 actual accounted HTTPS inference POST via launcher broker: kernel leases, "
               "source binding, one-use claims, dispatch/settlement receipts, missing/replay "
-              "refusal: PASS (seeded metadata modes)", flush=True)
+              "refusal: PASS (runtime metadata modes)", flush=True)
+        print("D48 actual daemon definition registration/replacement retains broker read mode "
+              "before atomic publish; broker-local source binding succeeds: PASS", flush=True)
         print("D47 actual daily evidence via launcher broker: counted HTTPS attempts across "
               "restart, foreign history absent, daemon tables untouched: PASS", flush=True)
     finally:

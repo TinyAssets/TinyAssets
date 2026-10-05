@@ -7,10 +7,11 @@ D11 records the lead decision assigning egress persistence to the broker and
 requiring authenticated daemon IPC. D12 resolves the ledger-parent issue by relocation to /data/.broker; D13
 keeps private directories inaccessible to the daemon IPC group.
 See delivery.md and broker-access-inventory.md: runtime routing is partially
-implemented through D43, including injected cloud/effect consumers, read-only
-kernel liveness and accounting source binding. Accounting runtime/daily evidence
-IPC, refresh, real engine classes, full migration/deletion, old-image rollback
-and startup remain.
+implemented through D48, including injected cloud/effect consumers, runtime
+read-only kernel liveness, source-bound accounting IPC and daily evidence, actual
+accounted HTTPS inference through the launcher, and runtime provider metadata
+publication. Refresh, real engine classes, full migration/deletion, actual
+old-image rollback and startup remain. No full build task is proven complete.
 
 ## 1. Design (this change)
 

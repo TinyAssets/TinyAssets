@@ -1500,6 +1500,18 @@ An absent legacy daemon database means no legacy rounds, so complete broker
 evidence still yields counts; an existing unreadable legacy database is unknown.
 Activation requires all four accounting tables, including links, transferred.
 
+### D48. Mechanical decision: definition replacements retain broker read access
+
+Accounting's installed-source validator needs the existing daemon-owned provider
+definition file read-only in the broker. Selected-mode registration sets group
+1102 and 0640 on the new file before atomic replacement, from role_modes, and
+fails before replacement if that assignment fails. No other file or directory
+is widened; command-center traversal remains D4's full migration obligation.
+The HTTPS acceptance now registers/replaces definitions through the actual
+daemon writer instead of seeding their mode. Existing-file migration remains
+part of the pending full inventory. No new privilege, reader role or startup
+activation is introduced.
+
 ## Risks / Trade-offs
 
 - **The launcher is root-adjacent code.** One file, stdlib-only, run `-I -S`, a static kind table,
