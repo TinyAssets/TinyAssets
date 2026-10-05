@@ -1,5 +1,9 @@
 # Current delivery: D53 account erasure, D54 snapshots, D55 owner relay creation
 
+Implementation pushed as **58839ec354**. Test hygiene against 69ee880edc:
+12 tests added, 0 removed, 0 tampering findings. Pre-commit mirror parity,
+mojibake, import-graph, path-resolver, cross-provider and skill checks passed.
+
 Continued from 69ee880edc after ff-only pull (already current). D12 relocation
 was already implemented and recorded; no duplicate decision or history rewrite.
 D53 closes the missing daemon account-deletion ledger-row consumer through
