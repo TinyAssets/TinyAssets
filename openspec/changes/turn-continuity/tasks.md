@@ -19,3 +19,5 @@ Final verification: affected Windows selection 81 passed / 4 symlink-privilege s
 Cross-family review: Claude APPROVE, diagnosis AGREE, approach AGREE; no floor/correctness findings. Non-blocking inventory-error omission nit deferred: preserve existing fail-closed behavior and avoid hiding storage errors behind a partial inventory. Full review is in review.md.
 
 Deployment and real-user app pass remain pending for this draft; no shipped claim. PR #4493.
+
+CI repair (2026-10-05): merged origin/main while #4489 remained open. Moved detailed history retrieval/search/paging and missing-file inventory guidance to the served write_graph.systems handbook chapter, with one short head pointer. Head length is 1,136 characters (127 below the unchanged 1,263 ratchet); both systems-location phrases remain intact. Linux oracle: 27 passed, zero skips across test_converse_turn_cost.py, test_served_systems_guidance.py and test_turn_continuity.py. Ruff, plugin build/import probe and all 602 canonical mirror files pass. Continuity regressions follow the served handbook pointer and retain their content assertions.
