@@ -720,6 +720,53 @@ def test_the_rail_never_claims_a_declined_ask_is_waiting(world, monkeypatch):
     assert "is waiting in their rail" not in view["how"]
     assert "already declined or cleared" in view["how"]
     assert "do NOT raise another request" in view["how"]
+    # The way back it names must exist: a decline is not on the muted list.
+    assert "muted list in their rail" not in view["how"]
+    assert patch_intake.ACTION_TYPE in view["how"]
+    assert view["receiver_id"] in view["how"]
+
+
+@pytest.mark.parametrize(
+    "answer_kwargs",
+    [{"decision": "declined", "values": {}}, {"dismiss": True}],
+    ids=["denied", "cleared"],
+)
+def test_an_owner_who_changed_their_mind_has_a_way_back(
+    world, monkeypatch, answer_kwargs
+):
+    """Live 2026-10-05: the card was cleared, nothing was muted, nothing re-seeded.
+
+    The owner asked their command center to send a report and there was no tab
+    anywhere to say yes on. The ask the rail now describes must actually raise,
+    show up pending, and grant on approval.
+    """
+    base, auth = world
+    auth("receiver")
+    intake = _offered(monkeypatch)
+    auth("sender")
+    row = _seeded(_rail())
+    assert _answer(row["request_id"], **answer_kwargs).get("error") is None
+    assert _seeded(_rail()) is None
+
+    raised = api.request_from_user(
+        universe_id="u-sender",
+        payload=json.dumps({
+            "kind": patch_intake.REQUEST_KIND,
+            "title": "Let your command center report problems to TinyAssets",
+            "body": "You asked me to send reports again.",
+            "fields": [],
+            "action": {"type": patch_intake.ACTION_TYPE,
+                       "receiver_id": intake["receiver_id"], "label": "TinyAssets"},
+        }),
+    )
+    assert raised.get("error") is None, raised
+    rail = _rail()
+    assert _seeded(rail)["request_id"] == raised["request_id"]
+    assert rail["patch_intake"]["request_pending"] is True
+
+    assert _answer(raised["request_id"], values={}).get("error") is None
+    assert [g["destination"] for g in _grants(base)] == [intake["receiver_id"]]
+    assert _rail()["patch_intake"]["granted"] is True
 
 
 # ---------------------------------------------------------------------------
