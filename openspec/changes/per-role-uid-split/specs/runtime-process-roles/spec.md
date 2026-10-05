@@ -4,18 +4,18 @@
 
 ## ADDED Requirements
 
-### Requirement: Durable owner group identity (lead D58)
+### Requirement: Durable dedicated owner UID and GID (founder D60)
 
-This requirement SHALL supersede the shared workspace-group clause only. The
-launcher or broker SHALL allocate a dedicated GID per owner from a reserved
-range and record it durably. Owner roots and directories SHALL be setgid to
-that group, and each owner cell SHALL run with only its admitted owner's GID,
-never another owner's. Daemon and inspect readers SHALL validate the open
-descriptor's GID against that owner in addition to no-follow and link-count
-checks. Migration SHALL re-group existing trees with non-mutating dry-run,
-repeat, reverse and interrupted-resume proofs. Shared engine UID 1003 is
-conditional on satisfying the complete isolation acceptance, including D59's
-relabel/copy counterexample; no claim of completion is made here.
+D60 SHALL supersede historical shared engine UID/GID statements in this delta.
+The broker SHALL durably allocate each owner a dedicated UID AND GID from the
+reserved range. Identities SHALL NOT be reused while files bearing them exist;
+permanent reservation is permitted. Each cell SHALL run as its admitted owner's
+identity without another owner's groups. Daemon, inspect and broker readers
+SHALL validate both UID and GID on the open descriptor, plus no-follow and
+link-count checks. Migration SHALL support dry-run, repeat, reverse and crash
+recovery and SHALL NOT overwrite identified foreign inode provenance. The
+launcher SHALL retain only bounded identity mapping authority, with all other
+privileges retired. D59's relabel/copy acceptance SHALL return zero foreign bytes.
 
 #### Scenario: Foreign inode provenance survives retired names and engine mutation
 - **WHEN** a foreign inode is preplanted into an owner's tree and its original

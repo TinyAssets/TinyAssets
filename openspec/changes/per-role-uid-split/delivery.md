@@ -1,3 +1,38 @@
+# Current delivery: D60 accepted; D61 durable identity foundation (2026-10-05)
+
+Started at **48c9b0a225**; `git pull --ff-only origin feat/per-role-uid-split`
+reported already up to date; clean worktree. D60 supersedes D8 shared identity
+and D58. D12 already exists and is retained without duplicate numbering.
+
+Implemented broker-private append-only UID/GID allocation in
+`tinyassets/broker/owner_identities.py`. D61 reserves pairs 300000..399999,
+disjoint from per-box 200000..299999. Concurrent allocation is serialized and
+committed before return; retries/restarts preserve the pair. No delete/reuse
+API exists, exhaustion refuses, and ordinary opening refuses a missing map.
+Explicit first-volume initialization remains a startup migration integration
+step, not an automatic runtime fallback. No launcher admission is changed.
+
+Verification:
+- `python scripts/linux_oracle.py -- tests/test_owner_identities.py -q -rs`:
+  **5 passed in 0.21s**, zero skips; Linux Python 3.11.16, bwrap 0.12.0, uid1001.
+  Real SQLite concurrency/restart, lost map refusal, exhaustion, symlink/hardlink
+  and public parent refusal, process death before commit covered.
+- Targeted Ruff, strict OpenSpec validation and `git diff --check`: pass.
+- Full Ruff: the same **55 pre-existing findings**; no unrelated fixes.
+- Plugin rebuilt; no production Dockerfile or startup policy change in this slice.
+
+Remaining in order: broker identity IPC and descriptor enforcement; bounded
+launcher mapping with authority retirement; every actual engine class except
+ui-preview through launcher; full owner migration and two-pass deletion; actual
+old-image rollback; startup/healthcheck only after prior probes pass. Original
+alias and D59 production diagnostics have NOT yet passed under D60. The concern
+remains. ui-preview remains the sole deferred founder profile decision, stays
+unadmitted, and D9 profiles are unchanged. No task checkbox is newly complete.
+Release-critical files in D61: **0; none**.
+No PR or deployment; PR prerequisites remain unmet. This section will be updated
+with subsequent verified slices in the current run.
+
+---
 # Current delivery: D58 authorized; D59 shared-UID acceptance failure (2026-10-05)
 
 Started at **2b24d108f94cfdf08135c8a3914bcbaa365b6abe**; requested ff-only pull

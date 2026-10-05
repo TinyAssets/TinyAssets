@@ -1,5 +1,9 @@
 ## Founder amendment status
 
+**D60 (2026-10-05) supersedes all shared engine-identity statements below.**
+Every owner receives a dedicated UID AND GID. D8's shared identity clause and
+D58 are historical. Startup remains inactive; ui-preview remains unadmitted.
+
 **founder decision 2026-10-05: fold + build with probes.** D9 folds all seven
 round-3 required changes and supersedes conflicting historical decisions below.
 No fourth design review; the eventual build gets a normal cross-family code
@@ -1788,3 +1792,48 @@ approved mechanism preventing access to/relabeling foreign inodes before any
 engine executes, needs a security-design decision and its own proofs. Do not
 infer that migration can safely relabel an already retired alias: it has only
 one name, so name/link-count inventory alone cannot recover provenance.
+
+
+### D60. Founder decision: a dedicated UID AND GID for every owner
+
+The D59 counterexample demonstrates that a shared UID is authority to read a
+foreign inode even when its GID is unmapped. Relabeling and copying then defeat
+daemon descriptor predicates. Every owner therefore receives a distinct machine
+UID and GID; both labels must match the requesting owner on the open descriptor
+in daemon, inspect and broker readers, alongside no-follow and nlink checks.
+Each engine cell runs as that owner, with no foreign supplementary groups.
+
+The broker allocates identities durably and must never reuse an identity while
+any file bearing it exists. The launcher retains exactly the narrow ability to
+map the reserved owner range into cells, preferably through user namespaces or
+newuidmap/newgidmap; all other privileges are retired. The existing serving
+capability implementation is NOT D60 acceptance and must be replaced/proven
+before startup activation. No additional privileged component is authorized.
+
+Forward migration chowns/chgrps owner work trees, preserving protected vault and
+broker exclusions; it needs dry-run, repeat, reverse and interrupted-resume
+proofs. It must refuse unresolved foreign provenance instead of relabeling an
+identified foreign inode into the containing owner's identity. Two-pass deletion
+runs first as the owner identity in that owner's cell, then as the daemon.
+Production-image acceptance requires zero FOREIGN_BYTES for the original alias
+probe and the D59 relabel/copy matrix under all profiles. Every actual engine
+class except deferred ui-preview, full migration/deletion, actual old-image
+rollback, and startup/healthcheck remain required before the build PR. No deploy.
+
+### D61. Mechanical decision: permanent broker identity reservations
+
+Reserve UID/GID pairs 300000..399999, disjoint from D1's per-box reservation
+200000..299999. Allocate the same numeric UID and GID in a broker-private
+owner-identities.db, by a serialized SQLite transaction with synchronous FULL.
+The store is append-only: deletion, account erasure, reverse migration and
+rollback never release reservations. Exhaustion fails loudly instead of wrapping.
+Permanent reservations are stricter than scanning for last surviving files and
+avoid racing deletion, backups, retired names or partially reversed migrations.
+
+Only explicit first-volume initialization may create the map. Normal opens and
+lookups refuse a missing map; lookup alone never allocates. An allocation is
+published only after commit. Concurrent/retried requests for a principal return
+the committed pair. The private parent, database owner/mode, no-follow open and
+single-link descriptor are verified; paths and numeric identities are not client
+request parameters. This foundation alone does not activate broker IPC, owner
+cells, migration, or the launcher, and is not D60 acceptance.

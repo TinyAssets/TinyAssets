@@ -115,3 +115,10 @@ owner UIDs or another mechanism preventing access before engine execution
 needs a lead security decision. No additional privileges or policy changes
 were made. Keep this concern open until the complete class/path/reader matrix
 passes; the promotion/recovery issue above also remains unresolved.
+
+
+D60 follow-up (2026-10-05): founder now requires dedicated owner UID AND GID,
+superseding D58. D61 adds a broker-private permanent identity allocator with
+five zero-skip Linux transaction/storage tests. This is foundation only; it
+has not repaired the reader/launcher matrix and is not a zero-foreign-bytes
+receipt. Keep this concern until full acceptance, including promotion recovery.
