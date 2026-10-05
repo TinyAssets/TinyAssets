@@ -1,3 +1,46 @@
+# Current delivery: D45 runtime liveness modes and reverse migration
+
+D44 pushed as 52136836ae; hygiene added 5 tests, removed 0, tampering 0.
+D45 replaces fixture lock preparation with no-follow daemon runtime creation:
+1001:1102 directories 2750, proofs 0640, no new PID sidecars. Same-inode process
+proof upgrades preserve the held lock. The startup migration substep shares the
+literal role_modes declaration and restores 1001:1001 0700/0600 on reverse.
+Cross-family peer-agents: AGREE, APPROVE; no floor/correctness findings.
+No full build task complete; startup inactive. No PR or deployment.
+
+Release-critical files: **1: deploy/role_egress_migration.py**. Runtime changes:
+process_liveness, universe_files, role_modes, storage/agent_request_usage and
+mirrors; both role oracles, liveness creation tests and accounting fixture.
+No affected heavy-list test file.
+
+```text
+python scripts/linux_oracle.py -- tests/test_broker_liveness_creation.py tests/test_broker_usage_ipc.py tests/test_broker_readonly_liveness.py tests/test_request_usage_store.py tests/test_parent_turn_request_budget.py -q -rs
+125 passed in 59.00s; zero skips
+python scripts/linux_oracle.py -- tests/test_universe_file_reads_are_bounded.py tests/test_role_accounting_schema.py tests/test_broker_liveness_creation.py -q -rs
+30 passed in 0.55s; zero skips
+python scripts/linux_oracle.py --production-image tinyassets-uid-locks:d45 --build --production-stream
+exit 0; sha256:d54afe8fd44066ea9b0dbcb14d932d364256706b755aafa7d1a95cb74504c638
+D42/D45 runtime-created read-only daemon/parent kernel liveness, independent parent close, daemon death, engine denial: PASS
+D45 liveness forward/reverse dry-run/apply/repeat, four crash boundaries, hostile aliases and foreign owner refused without mutation: PASS
+D44/D45 actual accounting create/reserve/dispatch/settle/receipt/close via launcher broker, foreign refusal and committed budget stop: PASS (runtime lock creation; inference POST pending)
+```
+All previous egress/accounting migration and launcher consumers, plus real HTTPS
+GET streams, pass before/after restart. Same seven capabilities/compose security
+options. No proof of full role migration/deletion or actual old-image rollback.
+Targeted Ruff, plugin build/import, strict OpenSpec and whitespace pass. Full
+Ruff baseline remains 55 unrelated errors. The initial test run caught a legacy
+lease-registration hook rejecting the added keyword; the unsplit call signature
+was preserved, and the unchanged regression then passed. No test weakened.
+
+Review notes: the old singleton helper may create informational .pid sidecars
+with group write in a setgid directory; the authoritative .lock creation mode
+is 0644 before umask and cannot grant group write. D45's broker-readable path
+creates no .pid. Full startup orchestration must order reverse liveness with
+accounting/egress reversal while roles are stopped; this substep never admits
+service. Continue this run with actual inference POST, daily evidence and
+refresh, then engine classes, full migration/deletion, old-image and startup.
+
+---
 # Current delivery: D44 runtime accounting IPC
 
 D44 routes create/reserve/check/dispatch/settle/receipt/link/close and reference

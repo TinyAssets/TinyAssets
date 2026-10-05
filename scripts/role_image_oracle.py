@@ -314,14 +314,8 @@ def liveness_probes():
             os.close(ready_read)
             os.close(command_write)
             retire(1001, [1100, 1101, 1102])
-            directory = root / ".consumer_liveness"
-            directory.mkdir(mode=0o750)
-            os.chown(directory, -1, 1102)
-            directory.chmod(0o2750)
-            daemon = hold_liveness(root, "daemon")
-            parent = hold_liveness(root, "parent")
-            for token in ("daemon", "parent"):
-                (directory / f"{token}.lock").chmod(0o640)
+            daemon = hold_liveness(root, "daemon", broker_readable=True)
+            parent = hold_liveness(root, "parent", broker_readable=True)
             os.write(ready_write, b"1")
             assert os.read(command_read, 1) == b"r"
             _unlock_fd(parent.fd)
@@ -367,8 +361,74 @@ def liveness_probes():
             import signal
             os.kill(holder, signal.SIGKILL)
             os.waitpid(holder, 0)
-    print("D42 broker read-only daemon/parent kernel liveness, independent parent close, "
-          "daemon death, engine denial: PASS (runtime accounting IPC pending)", flush=True)
+    print("D42/D45 runtime-created read-only daemon/parent kernel liveness, independent parent "
+          "close, daemon death, engine denial: PASS", flush=True)
+
+
+def liveness_migration_probes(migration):
+    modes = runpy.run_path("/app/tinyassets/role_modes.py")
+    migrate, refused = migration["migrate_liveness"], migration["MigrationRefused"]
+
+    def seed():
+        root = fixture()
+        directory = root / ".consumer_liveness"
+        directory.mkdir(mode=0o700)
+        os.chown(directory, 1001, 1001)
+        path = directory / "retained.lock"
+        path.write_bytes(b"retained proof bytes")
+        os.chown(path, 1001, 1001)
+        path.chmod(0o600)
+        return root
+
+    root = seed()
+    for reverse in (False, True):
+        before = snapshot(root)
+        assert migrate(root, modes=modes, reverse=reverse, dry_run=True)
+        assert snapshot(root) == before
+        migrate(root, modes=modes, reverse=reverse)
+        stable = snapshot(root)
+        assert migrate(root, modes=modes, reverse=reverse) == []
+        assert snapshot(root) == stable
+        assert (root / ".consumer_liveness/retained.lock").read_bytes() == b"retained proof bytes"
+    for reverse in (False, True):
+        for boundary in ("liveness-marker", "liveness-entry"):
+            root = seed()
+            if reverse:
+                migrate(root, modes=modes)
+            pid = os.fork()
+            if pid == 0:
+                migrate(root, modes=modes, reverse=reverse,
+                        after_step=lambda step: os._exit(79) if step == boundary else None)
+                os._exit(1)
+            assert os.waitpid(pid, 0)[1] == 79 << 8
+            migrate(root, modes=modes, reverse=reverse)
+            proof = root / ".consumer_liveness/retained.lock"
+            assert proof.read_bytes() == b"retained proof bytes"
+            assert migrate(root, modes=modes, reverse=reverse) == []
+    for kind in ("symlink", "hardlink", "fifo", "foreign_owner"):
+        root = seed()
+        target = root / ".consumer_liveness/attack.lock"
+        outside = root / "unrelated"
+        outside.write_bytes(b"retained outside")
+        if kind == "symlink":
+            target.symlink_to(outside)
+        elif kind == "hardlink":
+            os.link(outside, target)
+        elif kind == "fifo":
+            os.mkfifo(target)
+        else:
+            target.touch()
+            os.chown(target, 1003, 1100)
+        before = snapshot(root)
+        try:
+            migrate(root, modes=modes)
+        except refused:
+            pass
+        else:
+            raise AssertionError("hostile liveness migration accepted")
+        assert snapshot(root) == before
+    print("D45 liveness forward/reverse dry-run/apply/repeat, four crash boundaries, "
+          "hostile aliases and foreign owner refused without mutation: PASS", flush=True)
 
 
 def assert_unknown_liveness(root, owner_state, unknown):
@@ -540,6 +600,7 @@ def main():
         assert snapshot(root) == before
     print("symlink/hardlink/FIFO/conflicting-copy refusal without mutation: PASS", flush=True)
     accounting_probes(migration)
+    liveness_migration_probes(migration)
     runpy.run_path("/app/scripts/role_launcher_oracle.py")["main"]()
     print("FOUNDATION/EGRESS SUBSTEP ONLY: launcher, IPC, real engine classes, "
           "full rollback pending")

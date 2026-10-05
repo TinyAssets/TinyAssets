@@ -13,6 +13,16 @@ from tinyassets.request_budget import RequestBudgetExceeded, TurnRequestBudget
 from tinyassets.storage.agent_request_usage import UsageStore
 
 
+@pytest.fixture(autouse=True)
+def local_group(monkeypatch):
+    import os
+
+    from tinyassets import role_modes
+
+    # Unit oracle has one group; production uses the actual broker-read group.
+    monkeypatch.setattr(role_modes, "BROKER_READ_GID", os.getgid())
+
+
 def make_budget(source, **policy):
     budget = TurnRequestBudget("alice", "cc-alice", **policy)
     budget.persist(source.root)

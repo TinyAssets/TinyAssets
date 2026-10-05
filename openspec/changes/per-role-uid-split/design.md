@@ -1463,6 +1463,19 @@ failure grants no capacity. Legacy unsplit accounting remains in the daemon DB.
 Runtime lock permissions, daily evidence, refresh and inference POST production
 proofs remain separate prerequisites; this decision does not activate startup.
 
+### D45. Mechanical decision: daemon kernel proofs have a broker-read-only group
+
+The liveness directory is daemon-owned 2750 and its regular proof files 0640,
+group 1102 (the broker's existing read group). No new group or privilege is
+retained. Runtime creation pins directories, refuses links/FIFOs/hardlinks and
+non-daemon ownership before re-moding, and creates no PID sidecar. Existing
+process locks are upgraded on the same inode. The literal role_modes declaration
+is shared with offline forward/reverse migration under the layout lock; reverse
+restores 1001:1001 at 0700/0600. Dry-run changes nothing, interrupted metadata
+changes resume idempotently, and no proof bytes are deleted. Full role migration
+and startup remain gated separately. Production acceptance must use the real
+creator, removing D44's fixture permission wrapper.
+
 ## Risks / Trade-offs
 
 - **The launcher is root-adjacent code.** One file, stdlib-only, run `-I -S`, a static kind table,

@@ -72,12 +72,13 @@ if hasattr(os, "register_at_fork"):
 
 
 class ParentUsageLease:
-    def __init__(self, base, token):
+    def __init__(self, base, token, *, broker_readable=False):
         from tinyassets.process_liveness import hold_liveness
 
         self.token = token
         with _PARENT_LEASES_LOCK:
-            _PARENT_LEASES[token] = hold_liveness(base, token)
+            _PARENT_LEASES[token] = (hold_liveness(base, token, broker_readable=True)
+                                     if broker_readable else hold_liveness(base, token))
 
     def close(self):
         from tinyassets.singleton_lock import release_singleton_lock
@@ -228,9 +229,9 @@ class UsageStore:
             "deadline",
         )}
         scope = (budget.owner, budget.universe, usage_id)
-        token = owner_token(self.base)
+        token = owner_token(self.base, broker_readable=self._remote)
         parent_token = "request_" + usage_id
-        lease = ParentUsageLease(self.base, parent_token)
+        lease = ParentUsageLease(self.base, parent_token, broker_readable=self._remote)
         try:
             if self._remote:
                 self._rpc(scope, "create", policy=policy, failures=budget._failures,

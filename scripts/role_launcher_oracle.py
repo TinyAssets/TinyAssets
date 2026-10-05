@@ -915,24 +915,9 @@ def _daemon(root, run, ready, control, launcher):
 
 
 def _accounting_runtime(root, provider):
-    from tinyassets import process_liveness
     from tinyassets.exceptions import ProviderAuthorityHeldError
     from tinyassets.request_budget import RequestBudgetExceeded, TurnRequestBudget
 
-    # D44 tests IPC with declared permissions. D45 must replace this fixture
-    # preparation with the runtime creator and migration before activation.
-    original = process_liveness.hold_liveness
-
-    def hold(base, token):
-        held = original(base, token)
-        directory = Path(base) / process_liveness.LIVENESS_DIR
-        os.chown(directory, -1, 1102)
-        directory.chmod(0o2750)
-        os.fchown(held.fd, -1, 1102)
-        os.fchmod(held.fd, 0o640)
-        return held
-
-    process_liveness.hold_liveness = hold
     budget = TurnRequestBudget("alice", "alice", max_requests=1)
     try:
         budget.persist(root)
@@ -958,13 +943,12 @@ def _accounting_runtime(root, provider):
             raise AssertionError("foreign accounting receipt exposed")
         budget.close()
         assert budget.receipt()["closed"]
-        print("D44 actual accounting create/reserve/dispatch/settle/receipt/close via launcher "
+        print("D44/D45 actual accounting create/reserve/dispatch/settle/receipt/close via launcher "
               "broker, foreign refusal and committed budget stop: PASS "
-              "(fixture lock modes; inference POST and runtime permissions pending)", flush=True)
+              "(runtime lock creation; inference POST pending)", flush=True)
     finally:
         if budget._lease is not None:
             budget._lease.close()
-        process_liveness.hold_liveness = original
 
 
 def main():

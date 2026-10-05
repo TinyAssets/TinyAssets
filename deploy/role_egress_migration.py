@@ -27,6 +27,77 @@ PRIVATE_DIR_MODE = 0o2700
 PRIVATE_FILE_MODE = 0o600
 
 
+def migrate_liveness(data_root, *, modes, reverse=False, dry_run=False, after_step=None):
+    """Offline proof-mode substep. ``modes`` is the chain-verified role_modes declaration.
+
+    The full startup caller has stopped every role before taking this lock.
+    No content is read, deleted or rewritten, and no liveness claim is minted.
+    """
+    import fcntl
+
+    direction = "reverse" if reverse else "forward"
+    uid = modes["DAEMON_UID"]
+    gid = uid if reverse else modes["BROKER_READ_GID"]
+    directory_mode = modes["LEGACY_LIVENESS_DIRECTORY_MODE" if reverse
+                           else "LIVENESS_DIRECTORY_MODE"]
+    file_mode = modes["LEGACY_LIVENESS_FILE_MODE" if reverse else "LIVENESS_FILE_MODE"]
+    with ExitStack() as stack:
+        root = stack.enter_context(_directory(data_root))
+        if _regular(root, ".layout.lock") is None:
+            raise MigrationRefused("liveness migration requires the layout lock")
+        lock = os.open(".layout.lock", os.O_RDONLY | os.O_NOFOLLOW, dir_fd=root)
+        stack.callback(os.close, lock)
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        document = _read_marker(root)
+        roles = document.get("roles", {})
+        progress = roles.get("liveness", {})
+        if (document.get("layout") != 2
+                or document.get("moves", {}).get("consents_outside_command_centers") != "done"
+                or document.get("state") not in {"stable", "migrating"}
+                or document.get("state") == "migrating" and roles.get("state") != "migrating"):
+            raise MigrationRefused("complete unrelated layout migration first")
+        if progress.get("state") == "migrating" and progress.get("direction") != direction:
+            raise MigrationRefused("finish interrupted liveness direction before reversing")
+        name = ".consumer_liveness"
+        if _stat(root, name) is None:
+            return []  # runtime creates it using the same declaration
+        parent = stack.enter_context(_directory(name, parent=root))
+        if os.fstat(parent).st_uid != uid or os.fstat(parent).st_dev != os.fstat(root).st_dev:
+            raise MigrationRefused("liveness directory owner or device changed")
+        entries = []
+        for child in sorted(os.listdir(parent)):
+            info = _regular(parent, child)
+            if info.st_uid != uid or not child.endswith((".lock", ".lock.pid")):
+                raise MigrationRefused("unexpected liveness entry")
+            fd = os.open(child, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent)
+            stack.callback(os.close, fd)
+            opened = os.fstat(fd)
+            if not os.path.samestat(info, opened) or opened.st_nlink != 1:
+                raise MigrationRefused("liveness proof changed")
+            entries.append((child, fd, opened, file_mode))
+        entries.append((name, parent, os.fstat(parent), directory_mode))
+        changes = [(child, fd, mode) for child, fd, info, mode in entries
+                   if (info.st_uid, info.st_gid, stat.S_IMODE(info.st_mode)) != (uid, gid, mode)]
+        plan = [f"{direction}: liveness {child} -> {uid}:{gid} {mode:04o}"
+                for child, _, mode in changes]
+        if dry_run:
+            return plan
+        if not changes and progress == {"state": "stable", "direction": direction}:
+            return []
+        document = _mark(root, document, {"state": "migrating", "direction": direction},
+                         section="liveness")
+        if after_step:
+            after_step("liveness-marker")
+        for child, fd, mode in changes:
+            _permissions(fd, uid, gid, mode)
+            os.fsync(fd)
+            if after_step:
+                after_step("liveness-entry")
+        os.fsync(parent)
+        _mark(root, document, {"state": "stable", "direction": direction}, section="liveness")
+        return plan
+
+
 class MigrationRefused(RuntimeError):
     """Unsafe or inconsistent input; retained data needs operator attention."""
 
