@@ -124,8 +124,15 @@ def local_operation(ledger, *, principal, command_center, document):
         if current != expected:
             raise GrantResolutionError("MCP metadata revision changed")
         item = Attachment.parse(payload["value"])
+        if item.state == "active":
+            raise PermissionError("MCP activation requires the connection coordinator")
+        if (current is not None and current["state"] != "draft"
+                and item.endpoint != current["endpoint"]):
+            raise PermissionError("MCP endpoint changed after draft")
         if current is not None:
-            if current["state"] == "revoked" or item.revision != current["revision"] + 1:
+            if (current["state"] in {"revoked", "expired"}
+                    or (current["state"] != "draft" and item.state == "draft")
+                    or item.revision != current["revision"] + 1):
                 raise GrantResolutionError("MCP metadata revision changed")
         elif item.revision != 1 or item.state != "draft":
             raise ValueError("MCP attachment must start as a draft")
@@ -189,4 +196,11 @@ def bound_send(ledger, *, principal, command_center, grant_id, connection_id,
                     or request.get("url") != item.endpoint or request.get("query")
                     or request.get("path")):
                 raise GrantResolutionError("MCP attachment authority changed")
+            if item.state == "connecting":
+                try:
+                    method = json.loads(request.get("body", "")).get("method")
+                except (ValueError, TypeError, AttributeError):
+                    method = None
+                if method not in {"initialize", "notifications/initialized", "tools/list"}:
+                    raise GrantResolutionError("MCP tools require completed activation")
         yield

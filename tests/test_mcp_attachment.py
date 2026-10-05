@@ -61,6 +61,20 @@ def test_cas_rejects_stale_revision(ledger):
         operation(ledger, value=draft(revision=2, state="connecting"))
 
 
+def test_metadata_api_cannot_claim_activation_or_change_a_connecting_endpoint(ledger):
+    operation(ledger, value=draft())
+    with pytest.raises(PermissionError, match="coordinator"):
+        operation(ledger, value=draft(revision=2, state="active"), expected=draft())
+    connecting = draft(revision=2, state="connecting")
+    operation(ledger, value=connecting, expected=draft())
+    with pytest.raises(GrantResolutionError):
+        operation(ledger, value=draft(revision=3), expected=connecting)
+    with pytest.raises(PermissionError, match="endpoint"):
+        operation(ledger, value=draft(revision=3, state="connecting",
+                                     endpoint="https://models.example.com/other"),
+                  expected=connecting)
+
+
 @pytest.mark.parametrize("changes", [
     {"endpoint": "https://elsewhere.example.com/mcp"},
     {"endpoint": "https://models.example.com/v1/chat?token=secret"},

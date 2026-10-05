@@ -58,6 +58,20 @@ async def test_real_broker_initialization_pagination_and_revocation(broker, ledg
         assert await remote.discover() == TOOLS
         from tinyassets.broker.ops import new_op_id
 
+        count = len(broker.sent)
+        with pytest.raises(GrantResolutionError, match="authority"):
+            await remote.call("read", {}, catalog_hash=remote.catalog_hash, op_id=new_op_id())
+        assert len(broker.sent) == count
+        # The activation coordinator is not implemented in this slice. Seed its
+        # future committed result solely to test the active transport boundary.
+        active = configured | {"revision": 3, "state": "active"}
+        with ledger._connect() as conn:
+            conn.execute("UPDATE mcp_attachments SET descriptor_json=? WHERE connection_id=?",
+                         (json.dumps(active), "conn-alice"))
+        binding = Binding(binding.grant_id, binding.connection_id, binding.incarnation,
+                          Attachment.parse(active))
+        remote = RemoteMcp(client, binding, check_authority=lambda _: None)
+        assert await remote.discover() == TOOLS
         assert await remote.call("read", {}, catalog_hash=remote.catalog_hash,
                                  op_id=new_op_id()) == {
             "content": [{"type": "text", "text": "broker result"}]}
@@ -72,8 +86,8 @@ async def test_real_broker_initialization_pagination_and_revocation(broker, ledg
             assert len(broker.sent) == count
         finally:
             await foreign_client.close()
-        operation(ledger, value=asdict(Attachment.parse(configured)) | {
-            "revision": 3, "state": "revoked"}, expected=configured)
+        operation(ledger, value=asdict(Attachment.parse(active)) | {
+            "revision": 4, "state": "revoked"}, expected=active)
         count = len(broker.sent)
         with pytest.raises(GrantResolutionError):
             await remote.call("read", {}, catalog_hash=remote.catalog_hash, op_id=new_op_id())

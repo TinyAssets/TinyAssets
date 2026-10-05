@@ -1,7 +1,9 @@
 # Remote MCP delivery - 2026-10-05
 
 Branch: `feat/mcp-connect-ladder`, stacked on `feat/per-role-uid-split`
-at `688a3e91f121c5b299afe2df536e75c5b4f78a00`.
+initially at `688a3e91f121c5b299afe2df536e75c5b4f78a00`, now integrated
+through foundation `dc34dd2b10` (merge `7cb44172be`).
+Draft PR: https://github.com/TinyAssets/TinyAssets/pull/4496.
 
 ## Verified slice: typed attachment metadata
 
@@ -69,3 +71,53 @@ surfaces this lane must consume. The isolation foundation concurrently advanced
 through dc34dd2b10, including HTTP deposit and owner-metadata broker routing.
 Keep the PR draft and reconcile dependencies before editing their overlapping
 request/approval integration surfaces. Do not add a parallel approval mechanism.
+
+
+## Cross-family review and final verification
+
+Claude review completed successfully (317 seconds); raw report: [review.md](review.md).
+Reviewer verdict: **ADAPT**, not APPROVE. One review round, as required. All six
+findings were adjudicated and corrected; there was no second review verdict.
+
+1. **AGREE**: enforce the original HTTP endpoint allowlist before narrowing a
+   resource-bound token's egress. Regression proves a matching resource URL
+   outside the owner's allowlist sends nothing.
+2. **AGREE** with the activation authority risk: generic metadata operations
+   refuse `active`, reject endpoint changes after draft, and cannot regress a
+   connecting record back to draft. Connecting records admit initialization and
+   tool discovery only. The active-state transport test explicitly seeds the
+   future coordinator result in its fixture; production activation is absent.
+   The broker owner channel is not directly available to agent processes;
+   nevertheless no future consumer should trust agent-configurable activation.
+3. **AGREE**: post-send malformed replies, authority loss and ambiguous HTTP
+   statuses become AmbiguousProxyOutcome, with no automatic replay. Matching
+   JSON-RPC errors/auth/session refusals retain their typed outcomes. A broker
+   END that proves an authority rejection before every network write remains a
+   definite GrantResolutionError; a regression verifies this distinction.
+4. **AGREE**: authentication failure clears session, negotiated version and
+   catalog; subsequent discovery initializes again. Failed initialization also
+   resets state.
+5. **AGREE**: remove the substring session-echo heuristic, which rejected valid
+   short session IDs. Session headers remain private instance state and are not
+   projected into metadata/catalog responses. Broker credential scanning remains.
+6. **AGREE**: untrusted pattern/patternProperties schemas are refused explicitly
+   until isolated, bounded validation exists. A worker thread alone cannot stop
+   a Python regex holding the GIL. External schema reference retrieval is denied.
+
+Validation:
+- Full post-foundation Linux run before review fixes: 220 passed, no skips.
+- Expanded review-fix Linux run including SSRF/HTTP suites: 365 passed, one
+  error-classification regression (pre-send revocation reported as uncertain).
+  Fixed using the broker's actual END evidence, without weakening that test.
+- Final Linux rerun of all changed MCP suites plus capability IPC: **55 passed,
+  no skips**. Includes real broker cross-owner denial, inactive-call rejection,
+  active calls, revocation, OAuth local server and all six review regressions.
+- Final focused Windows run: 44 passed. Ruff and plugin build/import probe pass.
+- Mirror parity: 606 canonical files matched after foundation integration.
+- Hygiene before the review-fix commit: 21 added / 0 removed / 0 tampering;
+  final post-commit result is recorded in the PR.
+
+The final Linux command was `MSYS_NO_PATHCONV=1 python scripts/linux_oracle.py --
+-q tests/test_mcp_attachment.py tests/test_mcp_remote.py tests/test_mcp_broker.py
+ tests/test_mcp_oauth.py tests/test_broker_capability_ipc.py --basetemp /tmp/b`.
+No tests were removed or loosened to accommodate the corrections.

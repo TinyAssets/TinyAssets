@@ -15,7 +15,7 @@ from typing import Any
 
 from tinyassets.broker.ops import new_op_id
 from tinyassets.mcp_attachment import Attachment
-from tinyassets.storage.outbound_connections import AmbiguousProxyOutcome
+from tinyassets.storage.outbound_connections import AmbiguousProxyOutcome, GrantResolutionError
 
 VERSIONS = ("2025-06-18", "2025-03-26")
 MAX_MESSAGE = 4 * 1024 * 1024
@@ -24,6 +24,10 @@ TOOL_NAME = re.compile(r"[A-Za-z0-9_.-]{1,128}\Z")
 
 class McpError(RuntimeError):
     """Fixed, credential-free protocol failure."""
+
+
+class ProtocolRejected(McpError):
+    """The server returned a matching JSON-RPC error response."""
 
 
 class SessionExpired(McpError):
@@ -106,7 +110,36 @@ class RemoteMcp:
         self._tools: dict[str, dict] = {}
         self.catalog_hash = ""
 
+    def _reset(self):
+        self._session = self._version = ""
+        self._tools = {}
+        self.catalog_hash = ""
+
     async def _rpc(self, method, params, *, op_id, notify=None, notification=False):
+        attempt = {}
+        try:
+            return await self._exchange(method, params, op_id=op_id, notify=notify,
+                                        notification=notification, attempt=attempt)
+        except (SignInRequired, SessionExpired, ProtocolRejected):
+            if method in {"initialize", "notifications/initialized"}:
+                self._reset()
+            raise
+        except BaseException as exc:
+            if method in {"initialize", "notifications/initialized"}:
+                self._reset()
+            if isinstance(exc, asyncio.CancelledError):
+                raise  # Broker CANCEL retains its durable uncertain operation outcome.
+            stream = attempt.get("stream")
+            end = getattr(stream, "end", None)
+            if (isinstance(exc, GrantResolutionError) and isinstance(end, dict)
+                    and end.get("stream_sent") is False and not attempt.get("response")):
+                raise  # Broker proved the authority refusal preceded every network write.
+            if method == "tools/call" and (
+                    attempt.get("response") or getattr(stream, "admitted", False)):
+                raise AmbiguousProxyOutcome("MCP tool outcome unknown; do not replay") from None
+            raise
+
+    async def _exchange(self, method, params, *, op_id, notify, notification, attempt):
         self._check_authority(self._binding)
         self._sequence += 1
         request_id = self._sequence
@@ -128,15 +161,15 @@ class RemoteMcp:
             op_id=op_id, mcp_binding={"incarnation": binding.incarnation,
                                     "revision": binding.attachment.revision},
         ) as stream:
+            attempt["stream"] = stream
             head = await stream.head()
+            attempt["response"] = True
             status = head["status"]
             if status in (401, 403):
-                self._session = ""
+                self._reset()
                 raise SignInRequired("MCP sign-in required")
             if status == 404 and self._session:
-                self._session = self._version = ""
-                self._tools = {}
-                self.catalog_hash = ""
+                self._reset()
                 raise SessionExpired("MCP session expired; refresh the catalog")
             if notification:
                 if status != 202:
@@ -157,8 +190,6 @@ class RemoteMcp:
             content_type = str(response_headers.get("content-type", "")).split(";")[0].strip()
             async for message in messages(stream.body(), content_type):
                 self._check_authority(binding)
-                if self._session and self._session in json.dumps(message, ensure_ascii=False):
-                    raise McpError("MCP response exposed session material")
                 if "method" in message:
                     if "id" in message:
                         raise McpError("MCP server requested an unadvertised client capability")
@@ -170,7 +201,11 @@ class RemoteMcp:
                 if found is not None:
                     raise McpError("duplicate MCP response")
                 if "error" in message:
-                    raise McpError("MCP server returned a protocol error")
+                    error = message["error"]
+                    if (not isinstance(error, dict) or type(error.get("code")) is not int
+                            or not isinstance(error.get("message"), str) or "result" in message):
+                        raise McpError("invalid MCP error response")
+                    raise ProtocolRejected("MCP server returned a protocol error")
                 if not isinstance(message.get("result"), dict):
                     raise McpError("invalid MCP result")
                 found = message["result"]
@@ -196,6 +231,8 @@ class RemoteMcp:
 
     async def discover(self):
         async with self._lock:
+            self._tools = {}
+            self.catalog_hash = ""
             # Only read-only discovery is retried after an explicit session expiry.
             for attempt in range(2):
                 try:
@@ -215,6 +252,7 @@ class RemoteMcp:
                                     or tool["name"] in tools
                                     or not isinstance(tool.get("inputSchema"), dict)):
                                 raise McpError("invalid MCP tool")
+                            _safe_schema(tool["inputSchema"])
                             tools[tool["name"]] = tool
                         if len(json.dumps(tools)) > MAX_MESSAGE:
                             raise McpError("MCP catalog too large")
@@ -255,6 +293,22 @@ class RemoteMcp:
                 raise McpError("MCP tool arguments do not match the catalog") from None
             return await self._rpc("tools/call", {"name": name, "arguments": arguments},
                                    op_id=op_id, notify=notify)
+
+
+def _safe_schema(schema):
+    """Do not execute an arbitrary remote regular expression in the daemon.
+
+    Until schema checking has its own isolated CPU budget, regex-constrained
+    schemas are explicitly unsupported, rather than silently under-validated.
+    """
+    if isinstance(schema, dict):
+        if "pattern" in schema or "patternProperties" in schema:
+            raise McpError("MCP schemas with regular expressions require isolated validation")
+        for value in schema.values():
+            _safe_schema(value)
+    elif isinstance(schema, list):
+        for value in schema:
+            _safe_schema(value)
 
 
 def requires_approval(tool):

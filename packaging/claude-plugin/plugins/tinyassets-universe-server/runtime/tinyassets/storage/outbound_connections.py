@@ -1408,6 +1408,10 @@ class CredentialBlindBroker:
                 if (not isinstance(request, dict) or request.get("url") != original.resource
                         or request.get("path") or request.get("query")):
                     raise GrantResolutionError("OAuth token belongs to another resource")
+                _enforce_endpoint_allowlist(
+                    _parse_canonical_https_url(original.resource, allowed_ports=frozenset({443})),
+                    verb, resource.allowed_endpoints, resource.access_mode,
+                )
                 # Resource-bound tokens never follow a redirect, even when the
                 # backing HTTP grant has a broader owner-approved allowlist.
                 target = urllib.parse.urlsplit(original.resource)

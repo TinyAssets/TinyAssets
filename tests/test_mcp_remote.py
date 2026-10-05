@@ -26,6 +26,10 @@ class FakeBroker:
         self.incomplete = False
         self.version = "2025-06-18"
         self.closed = 0
+        self.fail_status = None
+        self.session = "opaque-session"
+        self.bad_reply = False
+        self.tools = json.loads(json.dumps(TOOLS))
 
     @asynccontextmanager
     async def stream(self, **kwargs):
@@ -39,16 +43,20 @@ class FakeBroker:
             result = {}
         elif method == "initialize":
             result = {"protocolVersion": self.version, "capabilities": {"tools": {}}}
-            session = "opaque-session"
+            session = self.session
         elif method == "notifications/initialized":
             status, result = 202, None
         elif method == "tools/list":
-            result = ({"tools": TOOLS[:1], "nextCursor": "next"}
-                      if not request["params"] else {"tools": TOOLS[1:]})
+            result = ({"tools": self.tools[:1], "nextCursor": "next"}
+                      if not request["params"] else {"tools": self.tools[1:]})
         else:
             content_type = "text/event-stream"
             result = {"content": [{"type": "text", "text": "done"}]}
         raw = json.dumps({"jsonrpc": "2.0", "id": request.get("id"), "result": result})
+        if method == "tools/call":
+            status = self.fail_status or status
+            if self.bad_reply:
+                raw = "invalid JSON"
         body = raw.encode() if content_type == "application/json" else (
             'data: {"jsonrpc":"2.0","method":"notifications/progress","params":{}}\r\n\r\n'
             + "data: " + raw + "\r\n\r\n").encode()
@@ -179,3 +187,75 @@ async def test_server_schema_cannot_resolve_external_references():
     with pytest.raises(McpError, match="arguments"):
         await remote.call("read", {}, catalog_hash=remote.catalog_hash, op_id="one")
     assert len(broker.calls) == 4
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", [408, 429, 500, 502])
+async def test_post_send_http_failure_is_uncertain(status):
+    broker = FakeBroker()
+    remote = client(broker)
+    await remote.discover()
+    broker.fail_status = status
+    with pytest.raises(AmbiguousProxyOutcome):
+        await remote.call("write", {}, catalog_hash=remote.catalog_hash, op_id="one")
+    assert len(broker.calls) == 5
+
+
+@pytest.mark.asyncio
+async def test_post_send_invalid_message_or_authority_failure_is_uncertain():
+    broker = FakeBroker()
+    remote = client(broker)
+    await remote.discover()
+    broker.bad_reply = True
+    with pytest.raises(AmbiguousProxyOutcome):
+        await remote.call("write", {}, catalog_hash=remote.catalog_hash, op_id="one")
+    broker.bad_reply = False
+
+    async def revoked(_):
+        raise PermissionError("revoked during response")
+
+    with pytest.raises(AmbiguousProxyOutcome):
+        await remote.call("write", {}, catalog_hash=remote.catalog_hash,
+                          op_id="two", notify=revoked)
+    assert len(broker.calls) == 6
+
+
+@pytest.mark.asyncio
+async def test_auth_failure_invalidates_catalog_and_discovery_initializes_again():
+    from tinyassets.mcp_remote import SignInRequired
+
+    broker = FakeBroker()
+    remote = client(broker)
+    await remote.discover()
+    old_hash = remote.catalog_hash
+    broker.fail_status = 401
+    with pytest.raises(SignInRequired):
+        await remote.call("write", {}, catalog_hash=old_hash, op_id="one")
+    assert not remote.catalog_hash and not remote._version and not remote._session
+    with pytest.raises(McpError, match="stale"):
+        await remote.call("write", {}, catalog_hash=old_hash, op_id="two")
+    broker.fail_status = None
+    assert await remote.discover() == TOOLS
+    assert json.loads(broker.calls[5]["request"]["body"])["method"] == "initialize"
+
+
+@pytest.mark.asyncio
+async def test_short_session_id_does_not_reject_ordinary_results():
+    broker = FakeBroker()
+    broker.session = "1"
+    remote = client(broker)
+    assert await remote.discover() == TOOLS
+    assert await remote.call("read", {}, catalog_hash=remote.catalog_hash, op_id="one")
+    assert broker.calls[-1]["request"]["headers"]["MCP-Session-Id"] == "1"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("keyword", ["pattern", "patternProperties"])
+async def test_remote_regex_schema_is_refused_before_daemon_validation(keyword):
+    broker = FakeBroker()
+    broker.tools[0]["inputSchema"][keyword] = "(a+)+$" if keyword == "pattern" else {
+        "(a+)+$": {"type": "string"}}
+    remote = client(broker)
+    with pytest.raises(McpError, match="isolated validation"):
+        await remote.discover()
+    assert not remote.catalog_hash

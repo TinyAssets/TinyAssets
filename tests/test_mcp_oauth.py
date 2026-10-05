@@ -108,6 +108,10 @@ def test_broker_never_sends_resource_token_to_another_resource(provider, app, tm
     dispatch = _broker(app, UID, OWNER, grant_id, tmp_path / "rt")
     with pytest.raises(GrantResolutionError, match="another resource"):
         _call(dispatch, grant_id)
+    from tinyassets.storage.outbound_connections import SsrfValidationError
+
+    with pytest.raises(SsrfValidationError):
+        dispatch(grant_id, "POST", {"url": ENDPOINT, "body": {}})
     assert provider.api_calls == []
     assert provider.refresh_calls == 0
     keeper._write("tasklark", replace(original, resource=f"https://{API}/v1/tasks"))

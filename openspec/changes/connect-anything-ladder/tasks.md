@@ -1,5 +1,8 @@
 Implementation backlog only. Card ownership belongs to inline-connect-and-approve; browser and saved extensions have separate changes.
 
+Partial implementation and outstanding prerequisites: [delivery.md](delivery.md).
+No checkbox is complete merely because its lower-level components pass tests.
+
 ## 1. MCP attach, secret entry and OAuth
 
 - [ ] 1.1 Verify generic OAuth, streaming broker and existing request/card prerequisites; add typed MCP metadata preserving HTTP rows and rollback cleanup.
