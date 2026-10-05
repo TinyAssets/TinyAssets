@@ -1,5 +1,12 @@
 # Current delivery: D26 HTTP compute broker consumers
 
+Implementation committed and pushed as `4cec6e6fc9187e616f344c052bd32e375b2dfd9b`.
+Commit hooks passed and the worktree was clean after the push. Final hygiene:
+`python scripts/test_hygiene_gate.py --base 2df167974443c8cc3fb0b5e309d6f8b80d0dc0b3 --head 4cec6e6fc9187e616f344c052bd32e375b2dfd9b`
+returned `tests added 13, removed 0, tampering findings 0, product lines added 206`.
+The new tests execute 20 cases; the hygiene counts above are its own counters.
+This receipt-only follow-up changes no runtime and needs no image rebuild.
+
 Resumed from `2df167974443c8cc3fb0b5e309d6f8b80d0dc0b3`; the requested
 `git pull --ff-only origin feat/per-role-uid-split` was already current.
 D10-D25 retained, including the existing D12 relocation decision. D26 routes
@@ -80,7 +87,7 @@ after adding the router release proof, final new-file run returned 17 passed.
 
 Changed-file Ruff, mirror build/import probe, parity (597 canonical files), strict
 OpenSpec validation and whitespace checks pass. Whole-repository Ruff still has
-55 pre-existing errors outside this diff. Hygiene receipt follows the commit.
+55 pre-existing errors outside this diff. Final hygiene receipt is recorded above.
 
 ## Remaining and activation gate
 
