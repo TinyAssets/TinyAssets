@@ -189,6 +189,24 @@ The phone app (Capacitor, `server.url` = the live `/app`) and the desktop app
 - **WHEN** a free account and a subscription account with the same data read the rail, status and bindings
 - **THEN** the documents are identical apart from tier-derived numbers
 
+### Requirement: Open requests stay in view above the composer
+Pending requests that need the owner SHALL render in a dedicated region directly
+above the composer, outside the scrolling conversation history, so a reader at
+the latest messages always sees them without scrolling. The region SHALL be
+hidden when nothing is pending, SHALL be bounded in height and scroll on its
+own when many are pending, and SHALL use compact one-line tabs at phone width.
+Answer paths SHALL be unchanged. Answered request history stays read-only in the
+rail. This is the interim placement until the approval sheet and "Needs you"
+inbox replace it.
+
+#### Scenario: Requests with a long conversation
+- **WHEN** an owner with more than 80 messages is reading the latest messages and two requests are pending
+- **THEN** both requests are visible above the composer at phone and desktop width
+
+#### Scenario: A new request arrives
+- **WHEN** a request arrives while the owner reads the latest messages
+- **THEN** it appears in the pending region without scrolling, and answering it uses the existing path
+
 ### Requirement: An owner surface never vanishes silently
 
 A failed or unreadable owner read SHALL leave its surface visible with a
