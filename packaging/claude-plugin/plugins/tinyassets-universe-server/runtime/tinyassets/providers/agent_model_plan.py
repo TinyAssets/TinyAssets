@@ -82,3 +82,24 @@ class AgentModelPlan:
     def next_candidate(self, owner, universe, exhaustion=()):
         order = self.order(owner, universe, exhaustion)
         return order.candidates[0].ref if order.candidates else None
+
+    def capacity_order(self, owner, universe, exhaustion=()):
+        """Conversation recovery: a model preference is not an only-model grant.
+
+        Keep requested fallbacks ahead of other models within each source kind,
+        with accepted subscriptions ahead of HTTP sources. This never discovers credentials or widens model/cost access.
+        Workflow pins continue to use ``order`` through WorkCandidateData.
+        """
+        preferred = self.order(owner, universe, exhaustion)
+        automatic = replace(self, policy=replace(
+            self.policy, mode="automatic", current_selection=None,
+            saved_default=None, fallbacks=(),
+        )).order(owner, universe, exhaustion)
+        seen = {item.ref for item in preferred.candidates}
+        candidates = preferred.candidates + tuple(
+            item for item in automatic.candidates if item.ref not in seen
+        )
+        kinds = {item.connection_id: item.source_kind for item in self.catalog.connections}
+        return replace(preferred, candidates=tuple(sorted(
+            candidates, key=lambda item: kinds[item.ref.connection_id] == "http",
+        )))

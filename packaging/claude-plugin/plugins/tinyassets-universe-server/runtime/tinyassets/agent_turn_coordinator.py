@@ -120,6 +120,8 @@ class AgentTurnCoordinator:
         if self.plan is not None and type(self.plan) is not AgentModelPlan:
             raise ValueError("invalid interactive candidate plan")
         self.exhaustion = ()
+        self.capacity_recovery = False
+        self.capacity_switch = None
         self.retrying_capacity = False
         self.visited = set()
         self.execution_kind = None
@@ -168,7 +170,8 @@ class AgentTurnCoordinator:
             return self.adapter.next_candidate(
                 self.owner, self.context.universe_dir.name, self.exhaustion,
             )
-        order = self.plan.order(self.owner, self.context.universe_dir.name, self.exhaustion)
+        order_fn = self.plan.capacity_order if self.capacity_recovery else self.plan.order
+        order = order_fn(self.owner, self.context.universe_dir.name, self.exhaustion)
         return next((item.ref for item in order.candidates
                      if item.ref not in self._budget_skipped), None)
 
@@ -638,7 +641,7 @@ class AgentTurnCoordinator:
                         # commit and outside the try, so a catalog write can
                         # neither be mistaken for a turn failure nor rewrite one.
                         self._learn_verified_model(response)
-                        return response
+                        return self._capacity_notice(response)
                     if response.agent_reply is None:
                         raise ProviderProtocolError("HTTP agent response lacks validated progress")
                     self._accept(
@@ -655,7 +658,7 @@ class AgentTurnCoordinator:
                     # The model answered: whatever refused it before does not now.
                     self._forget_refusal()
                     if self.turn.state == "completed":
-                        return response
+                        return self._capacity_notice(response)
                     if self.turn.state != "tools_pending":
                         raise ProviderProtocolError(
                             "agent response requires attention: " + self.turn.state,
@@ -1168,6 +1171,10 @@ class AgentTurnCoordinator:
         )
         if boundary is None:
             return False
+        # Only a validated, replay-safe capacity boundary can extend a chat's
+        # preference order. Work adapters retain their admitted graph order.
+        if self.plan is not None:
+            self.capacity_recovery = True
         failed = self.context.model_selection
         self.visited.add(failed)
         base = self.exhaustion
@@ -1193,6 +1200,10 @@ class AgentTurnCoordinator:
             self._cool_abandoned_source(failed, boundary)
             return False
         if candidate.connection_id != failed.connection_id:
+            if self.plan is not None and self.capacity_switch is None:
+                delay = boundary.cooling_s or boundary.retry_after_s
+                self.capacity_switch = (failed.connection_id,
+                                        None if delay is None else time.time() + delay)
             # Moving to another source: this one is done for the turn, so the
             # cooldown the router withheld for it now applies.
             self._cool_abandoned_source(failed, boundary)
@@ -1210,6 +1221,21 @@ class AgentTurnCoordinator:
         self.context = replace(self.context, model_selection=candidate)
         self.retrying_capacity = self.turn.state != "ready"
         return True
+
+    def _capacity_notice(self, response):
+        """One local notice after the final reply; never provider-authored facts."""
+        if self.capacity_switch is None:
+            return response
+        from datetime import datetime, timezone
+
+        original, reset_at = self.capacity_switch
+        reset = ("The original source did not report a reset time." if reset_at is None else
+                 "The original source can be retried after "
+                 + datetime.fromtimestamp(reset_at, timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+                 + ".")
+        notice = (f"Answered by {response.provider_display or response.provider} because "
+                  f"{original} is cooling down or out of capacity. {reset}")
+        return replace(response, text=response.text + "\n\n" + notice)
 
     def _carry_spent_attempts(self, exc):
         """Prepend the replaced rounds' diagnostics to the failure that escapes.

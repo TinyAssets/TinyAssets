@@ -399,9 +399,13 @@ The app SHALL allow switching the interactive agent, saving a default and orderi
 - **WHEN** two owners choose different models on the same provider family
 - **THEN** each next authorized inference uses its own choice without process-global preference leakage
 
-#### Scenario: No accepted fallback
-- **WHEN** the owner saves a model with an empty fallback sequence
-- **THEN** exhaustion leaves that selection unchanged and does not substitute another source
+#### Scenario: Conversation capacity recovery preserves the saved preference
+- **WHEN** the chosen conversation source is cooling down, rate-limited or exhausted and another source is accepted for the same owner
+- **THEN** a replay-safe capacity failure advances to an eligible accepted source, preferring subscriptions to HTTP models and retaining automatic quality ranking
+- **AND** an empty saved fallback sequence is a preference, not an explicit only-model restriction, and the stored selection remains unchanged
+- **AND** every attempt revalidates that owner's source, model and cost authority; a connected credential without accepted access is not a fallback grant
+- **AND** the final reply contains one notice naming the answering source and the original source's retry time, or says that no reset time was reported
+- **AND** unknown or committed native effects refuse replay, and workflow model pins retain their existing strict semantics
 
 #### Scenario: A fallback edit is saved when it is made
 - **WHEN** the owner adds, moves or removes a fallback in the model dialog
