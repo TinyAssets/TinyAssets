@@ -1,5 +1,9 @@
 ## Founder amendment status
 
+**Founder D61 (legacy provenance, 2026-10-05) supersedes D63's stop.**
+The earlier mechanical allocation decision labelled D61 below remains historical;
+references to "founder D61" mean the newer reachability/quarantine rule.
+
 **D60 (2026-10-05) supersedes all shared engine-identity statements below.**
 Every owner receives a dedicated UID AND GID. D8's shared identity clause and
 D58 are historical. Startup remains inactive; ui-preview remains unadmitted.
@@ -1899,3 +1903,42 @@ to keep legitimate legacy owner data operational without such a source. No
 security scope exception, quarantine policy, data deletion or trusted-source
 assumption is selected here. Hand off the finding rather than patching around it.
 D60, D10, D11, D12 and deferred ui-preview remain in force; no startup activation.
+
+### Founder D61. Legacy provenance is reachability; cross-owner names quarantine
+
+The founder explicitly resolves D63: at the pre-migration boundary an inode whose
+ONLY names are in one owner tree belongs to that owner. A retired original name
+does not make the remaining sole-reachability file foreign under this legacy
+bookkeeping rule. The 114 D63 reads therefore become correctly assigned legacy
+reads, not successful denials. The historical diagnostic remains reproducible
+with `--historical`; steady-state D60 foreign-identity denial is unchanged.
+
+An inode named in two or more owner trees must be moved, with every name intact,
+to a platform-only quarantine area, assigned to neither owner, and alarmed. Owner
+assignment for it refuses. It must never be chowned to either reachable owner.
+This authorizes quarantine, not data deletion. No privileges or profiles change.
+
+`scripts/role_legacy_alias_scan.py` is the read-only production preflight. It
+reports cross-owner inodes, special entries and unexpected legacy identities,
+without reading payloads or following symlinks. Live evidence is observational;
+the mutating migration must repeat/revalidate it with all writers stopped.
+
+### D64. Mechanical scan completeness and unresolved names
+
+Scan direct `u-*` trees including incomplete trees, plus legacy directories with
+the daemon's `universe.json` discovery marker. Explicit owner-root lists support
+synthetic proofs. Pinned directory descriptors, O_NOFOLLOW and O_NOATIME avoid
+link traversal and atime writes. Root ancestors are pinned the same way. If a
+capability-stripped container cannot use O_NOATIME, use the verified Docker
+volume source read-only on the host; do not add a capability or change production.
+
+Group regular names by device/inode. `st_nlink` must equal the number of observed
+names before sole ownership can be established. Missing names, changed entries,
+changed directories, foreign identities or traversal failures are unresolved,
+not zero findings. Workspace symlinks are reported for D9's skip rule; sockets
+need the existing exact stale-runtime inventory. A live scan never asserts
+assignment readiness. Root-level identity is checked as well as descendants.
+
+The D61 diagnostic includes a separate two-name cross-tree quarantine MODEL,
+which preserves both names/inode/bytes and proves daemon denial. It is not the
+crash-safe migration implementation, engine-class acceptance or rollback proof.

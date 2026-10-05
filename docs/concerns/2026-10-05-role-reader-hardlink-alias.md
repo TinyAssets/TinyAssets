@@ -5,6 +5,24 @@ filed: '2026-10-05'
 summary: 'D59: shared engine UID can relabel or copy a preplanted foreign inode despite dedicated owner GIDs; 114 reader failures across all three D9 profiles. Synthetic acceptance counterexample, not current-production exploit. D58 is authorized but insufficient with shared UID.'
 ---
 
+## Founder D61 continuation
+
+The founder's explicit legacy reachability rule supersedes the D63 provenance
+stop below. The revised diagnostic reports **114 ASSIGNED_LEGACY_BYTES, zero
+FOREIGN_BYTES**, across the same three profiles and two relabel/copy variants.
+These bytes are returned by design; this is not a claim that 114 reads were
+denied. A separate cross-tree model preserves two names of one quarantined
+inode, assigns neither owner, and proves daemon denial. Product quarantine,
+full descriptor identity enforcement and actual engine matrix remain pending;
+retain this concern until the entire matrix passes.
+
+Read-only production census on 2026-10-05: 5 owner trees, 65,742 entries,
+52,167 regular names / 52,162 sole-owner inodes; **0 cross-owner inodes,
+0 unseen names, 0 foreign identities, 0 scan errors**. The 57 special entries
+are **33 symlinks and 24 sockets**, not regular-file leaks. No file payloads
+were read or printed, no symlink followed, and no production data changed.
+This live observation is not a quiescent migration receipt.
+
 The required D9/F2 reader matrix found a cross-owner alias that no-follow
 traversal does not reject. `workspace_fs._open_regular_beneath` checks the open
 descriptor's type and size but does not validate its hardlink aliases.

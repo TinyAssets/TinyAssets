@@ -1,3 +1,61 @@
+# Current delivery: founder D61 provenance rule implemented in scan/diagnostic
+
+Started at **a904cb73ff**; requested ff-only pull was already current. Founder
+D61 supersedes the historical D63 stop below; the earlier allocation decision
+also labelled D61 remains historical. D64 records scan mechanics. No startup
+activation, ui-preview admission, profile change, PR or deployment.
+
+Production READ-ONLY scan, 2026-10-05, via the requested deployment SSH key:
+
+```powershell
+$env:TINYASSETS_DROPLET_KEY = "$env:USERPROFILE/.ssh/workflow_deploy_ed25519"
+Get-Content -Raw scripts/role_legacy_alias_scan.py | python scripts/droplet.py ssh -- 'python3 -I -B - --root /var/lib/docker/volumes/tinyassets-data/_data'
+```
+
+The source is the `/data` volume path verified by Docker inspect on the healthy
+`tinyassets-daemon` container. Metadata only; no payload reads/printing, no link
+following, no production writes. Root host scanning preserves directory atimes
+with O_NOATIME; a first container-root attempt refused EPERM because production
+correctly drops FOWNER. No privileges were added to that container.
+
+Receipt: **5 owner trees; 65,742 entries; 52,167 regular names; 52,162 sole-owner
+inodes; 0 cross-owner inodes; 0 unseen inode names; 0 foreign identities; 0 scan
+errors**. **57 special entries = 33 symlinks + 24 sockets**. Scan exit 3 reports
+those entries; this is not a clean migration/assignment claim. D9 skips work
+symlinks, and socket handling still requires the exact stale-runtime inventory.
+Live scanning is observational; migration must scan again while quiescent.
+
+```text
+python scripts/role_owner_migration_provenance_probe.py --image tinyassets-uid-d60:foundation
+exit 0; foreign_reads=0; assigned_legacy_reads=114; profiles=3; attacks=2
+unchanged_outside=true; positive_control=true; foreign_metadata_denied=true
+quarantined_inodes=1; quarantined_names=2; owner_assigned=false; daemon_denied=true
+```
+
+Image: `sha256:2ded0b0cdd8628d4bc77eba7d4cae55dfb2f51578448b7f906453256ae1be1b7`.
+The revised matrix preserves the 114 original actual reader operations and
+explicitly reports ALLOWED sole-reachability legacy bytes, as the founder now
+requires. These are not 114 denials. A separate two-owner alias is quarantined
+in the diagnostic model, preserving both names/inode/bytes and alarming. This
+is not a product migration or crash/reverse proof. `--historical` preserves the
+prior D63 classification. The first setup attempt found a root-owned synthetic
+outside control; assigning its intended legacy identity fixed the fixture.
+
+`python scripts/linux_oracle.py --as-root -- tests/test_role_legacy_alias_scan.py -q -rs`:
+**3 passed in 0.12s, zero skips**. Covers cross-tree links, unseen names, same-tree
+links, surviving names, foreign IDs, FIFO/symlink refusal, legacy discovery,
+linked roots and unchanged atime/mtime/ctime/identity. The initial non-root run
+refused O_NOATIME on `/`; the scanner requires the documented root venue.
+Targeted Ruff, strict OpenSpec validation and diff whitespace checks pass.
+Release-critical files this slice: **0; none**. No tinyassets code changed.
+
+Continuing prerequisites: actual descriptor identity enforcement and bounded
+launcher integration; then every actual class except deferred ui-preview; full
+migration/quarantine/two-pass deletion; actual old-image rollback; startup and
+healthcheck only after all acceptance passes. The concern remains. No full
+2.x task is newly complete. The final build PR prerequisites remain unmet.
+
+---
 # Current delivery: D60 foundations pushed; D63 legacy-provenance stop
 
 Pushed implementation slices: **4cd932f044** (durable identity store) and

@@ -30,6 +30,16 @@ privileges retired. D59's relabel/copy acceptance SHALL return zero foreign byte
 - **THEN** owner identities remain unambiguous, no user bytes are deleted, and
   reverse migration restores actual old-image access before capability drop
 
+#### Scenario: Founder D61 classifies legacy reachability before assignment
+- **WHEN** the quiescent legacy inventory finds all names of an inode in one
+  owner tree, with no unresolved names or foreign dedicated identity
+- **THEN** that inode belongs to the reachable owner for initial migration,
+  including a sole surviving name; these are allowed legacy reads, not foreign
+- **AND** an inode with names across owner trees is preserved in platform-only
+  quarantine, alarmed, and assigned to neither owner
+- **AND** the production preflight reads only metadata, never follows symlinks
+  or modifies data, and reports special/foreign entries and incomplete coverage
+
 ### Requirement: Distinct kernel uids per runtime role
 
 The production runtime SHALL run the owner (daemon), the credential broker, and engine/provider child processes as distinct kernel uids: 1001, 1002 and 1003 respectively. The daemon SHALL hold no Linux capability that lets it change uid. Only a root launcher SHALL start other roles, and it SHALL start engine/provider children only from a static allowlist of kinds and argv templates, accepting a request only from the exact pid of the daemon it started. Cross-uid access SHALL be carried by named service groups rather than by widening ownership: `ta-work` (1100) for workspaces, `ta-brk` (1101) for the broker socket, `ta-vault` (1102) for vault reads. No supplementary membership SHALL be written into `/etc/group`; the launcher SHALL set each role's groups at spawn, so that an operator `docker exec` and the container healthcheck keep their single-group identity.
