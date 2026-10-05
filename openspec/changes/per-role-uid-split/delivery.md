@@ -1,3 +1,51 @@
+# Current delivery: D61 scan, D65 readers, D67 actual old-image egress rollback
+
+Pushed **52fcbfd47e** (legacy inventory/provenance model) and **4e112da74c**
+(dedicated descriptor enforcement plus D66 snapshot probe repair). Both hygiene
+receipts: 3 tests added, 0 removed, 0 tampering. This continuation also proves
+D12's ledger/proxy reverse move with the actual deployed image, not merely a
+uid-1001 process in the new image. No history rewrite; MCP stack preserved.
+
+D67 production image discovery was read-only:
+
+```text
+TINYASSETS_DROPLET_KEY=~/.ssh/workflow_deploy_ed25519 python scripts/droplet.py ssh -- docker image inspect --format={{.RepoDigests}} 199755799eba
+[ghcr.io/tinyassets/tinyassets-daemon@sha256:199755799ebadd71f42f239536a1e55c0b85e4d101af83e79726bc316cd774da]
+```
+
+Pulled that exact digest locally. The probe uses only a fresh synthetic Docker
+volume with networking disabled; the production volume is never mounted.
+
+```text
+python scripts/role_old_image_rollback_probe.py --image tinyassets-uid-d61:readers --old-image ghcr.io/tinyassets/tinyassets-daemon@sha256:199755799ebadd71f42f239536a1e55c0b85e4d101af83e79726bc316cd774da
+exit 0
+old-image-seed: uid=1001; caps=zero; uncheckpointed_wal=true
+candidate-relocate-reverse: forward_dry_repeat=true; reverse_dry_repeat=true;
+  broker_write=true; full_startup_admitted=false
+actual-old-image-rollback: uid=1001; groups=[1001]; capabilities=zero;
+  retained_wal=true; retained_broker_write=true; ledger_read_write=true;
+  journals=true; proxy_read_write_delete=true; owner_tree_rollback=false;
+  old_cmd_boot=false
+```
+
+Candidate: `sha256:acf2491ff6729c7d8d105b100eb1924a831b7ed09704d53b5a54fb47fa2a7392`.
+The old image seeds real ConnectionLedger state and committed uncheckpointed
+WAL. The candidate performs actual forward/dry-run/repeat, broker writes,
+reverse/dry-run/repeat. The old image then preserves both writes, creates working
+WAL/SHM, and reads/writes/deletes proxy test data with zero capabilities and no
+work-group membership. The synthetic volume was removed after completion.
+Targeted Ruff and diff checks pass. Release-critical files: **0; none**.
+
+**Not complete:** bounded mapper integrated into the launcher; every actual
+engine class under D60 (ui-preview remains unadmitted); full broker reader
+inventory; full owner migration including crash-safe quarantine and two-pass
+deletion; rollback of engine-created restrictive owner files and actual old CMD
+boot; startup/healthcheck. No full build task is checked off. This egress proof
+is not substituted for the full rollback requirement. Startup stays inactive;
+no final build PR or deployment. The reader concern remains until all class/path/
+reader rows pass. Full evidence and previous failure receipts follow.
+
+---
 # Current delivery: D65 dedicated reader enforcement; D66 oracle repair
 
 D61 scan/diagnostic slice pushed as **52fcbfd47e**. Hygiene: 3 tests added,

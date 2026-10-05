@@ -1986,3 +1986,17 @@ D64 scanner refinement: ancestors use pinned O_PATH descriptors (no directory
 listing and no atime updates), then the scanned root uses O_NOATIME. This permits
 an ordinary owner to scan its own tree without requiring ownership of `/` or
 `/tmp`; production-wide scans still use the verified host root venue.
+
+### D67. Mechanical actual-image rollback substep venue
+
+Pin the deployed image's registry digest from read-only Docker inspection. In a
+new disposable local Docker volume, let that actual old image seed its ledger
+and committed uncheckpointed WAL as UID1001, no work groups/capabilities. Run
+the candidate's real D12 forward/reverse relocation, including dry-run and
+repeat checks and a broker-identity write. Reopen with the actual old image and
+exercise old ConnectionLedger reads/writes, WAL/SHM and proxy read/write/delete.
+Remove only this newly created synthetic volume. No production volume is mounted.
+
+This proves ledger/proxy compatibility with the old image, not full owner-tree
+rollback, restrictive engine-created files, or old daemon CMD startup. Keep the
+layout unadmitted and retain those remaining acceptance requirements.
