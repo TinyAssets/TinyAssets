@@ -132,6 +132,13 @@ above prove the actual host behavior; these Windows failures/skips are not passe
 
 ## Remaining and activation gate
 
+Implementation commit: `5440f8e7cd32ab1ccecd33134dc4a34714cc53de`.
+Staged explicit paths only; all commit hooks passed. Final hygiene command
+`python scripts/test_hygiene_gate.py --base 415e976897 --head HEAD` returned
+`tests added 9, removed 0, tampering findings 0, product lines added 202`.
+The implementation worktree was clean. This receipt is a documentation-only
+follow-up; both commits are destined for origin/feat/per-role-uid-split.
+
 No task 2.1-2.8 is newly complete. Startup remains unactivated; no PR or deployment.
 Remaining: actual engine-class launcher integration for every class and daemon
 reader matrix; remaining D11 ledger/mutation/accounting/refresh/deletion consumers;
