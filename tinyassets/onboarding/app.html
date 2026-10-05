@@ -1925,7 +1925,117 @@
   const $=(id)=>document.getElementById(id);
   const views={signin:$("view-signin"),chat:$("view-chat"),account:$("view-account")};
   let viewGeneration=0;
-  function showView(n){ viewGeneration++; for(const k in views) views[k].hidden=(k!==n); }
+  function showView(n){
+    viewGeneration++; for(const k in views) views[k].hidden=(k!==n);
+    if(n==="chat" && typeof followChatLatest==="function") followChatLatest(true);
+  }
+
+  // All agent surfaces share #thread. Follow content/layout changes until the
+  // reader explicitly scrolls away; an open or foreground event starts afresh.
+  // Scrolling once during append cannot work while the cloud is display:none,
+  // or before an async card/image has acquired its final height.
+  function followChatLatest(reset=false){
+    const thread=$("thread"); if(!thread) return;
+    if(!thread.chatScroll){
+      const state=thread.chatScroll={following:true,frame:0,opening:0,gesture:false,lastTop:thread.scrollTop};
+      const atBottom=()=>thread.scrollHeight-thread.clientHeight-thread.scrollTop<=2;
+      state.atBottom=atBottom;
+      let gestureTimer=0;
+      const settleGesture=()=>{
+        clearTimeout(gestureTimer);
+        // Wheel default actions can arrive after the next animation frame.
+        gestureTimer=setTimeout(()=>{
+          state.following=atBottom();
+          if(state.following) state.gesture=false;
+        },120);
+      };
+      state.schedule=()=>{
+        if(state.frame) return;
+        state.frame=requestAnimationFrame(()=>{
+          state.frame=0;
+          if(!state.following || !thread.clientHeight) return;
+          thread.scrollTop=thread.scrollHeight;
+          state.lastTop=thread.scrollTop; state.gesture=false;
+        });
+      };
+      thread.addEventListener("wheel",e=>{
+        state.gesture=true;
+        if(e.deltaY<0 && thread.scrollTop>0) state.following=false;
+        settleGesture();
+      },{passive:true});
+      let touchY=0;
+      thread.addEventListener("touchstart",e=>{touchY=e.touches[0].clientY;},{passive:true});
+      thread.addEventListener("touchmove",e=>{
+        state.gesture=true;
+        if(e.touches[0].clientY>touchY && thread.scrollTop>0) state.following=false;
+        touchY=e.touches[0].clientY;
+      },{passive:true});
+      // Only the scrollbar is a pointer scroll gesture. Clicking a card that
+      // grows must not mistake the browser's layout anchoring for user intent.
+      thread.addEventListener("pointerdown",e=>{
+        if(e.target===thread && e.offsetX>=thread.clientWidth){
+          state.gesture=true; state.following=false;
+        }
+      },{passive:true});
+      window.addEventListener("pointerup",()=>{if(state.gesture) settleGesture();},{passive:true});
+      thread.addEventListener("keydown",e=>{
+        if(e.target.closest("button,input,textarea,select,[contenteditable]")) return;
+        if(["ArrowUp","ArrowDown","PageUp","PageDown","Home","End"," "].includes(e.key))
+          state.gesture=true;
+        if(["ArrowUp","PageUp","Home"].includes(e.key) || (e.key===" " && e.shiftKey))
+          state.following=false;
+      });
+      thread.addEventListener("scroll",()=>{
+        // A queued scroll event from our last write may arrive AFTER a wheel
+        // gesture. It must not cancel that gesture before the browser moves.
+        if(state.gesture && thread.scrollTop!==state.lastTop){
+          state.following=atBottom();
+          if(state.following) state.gesture=false;
+        }
+        state.lastTop=thread.scrollTop;
+      },{passive:true});
+      const resize=new ResizeObserver(state.schedule);
+      resize.observe(thread);
+      Array.from(thread.children).forEach(node=>resize.observe(node));
+      new MutationObserver(records=>{
+        for(const record of records){
+          if(record.target!==thread) continue;
+          record.removedNodes.forEach(node=>{if(node.nodeType===1) resize.unobserve(node);});
+          record.addedNodes.forEach(node=>{if(node.nodeType===1) resize.observe(node);});
+        }
+        state.schedule();
+      }).observe(thread,{childList:true,subtree:true,characterData:true});
+      const returned=()=>followChatLatest(true);
+      document.addEventListener("visibilitychange",()=>{
+        if(document.visibilityState==="visible" && !pickerOpen) returned();
+      });
+      let leftWindow=false, pickerOpen=false;
+      const fileInput=$("file-input");
+      fileInput.addEventListener("click",()=>{pickerOpen=true;});
+      const pickerClosed=()=>{setTimeout(()=>{pickerOpen=false;},0);};
+      fileInput.addEventListener("cancel",pickerClosed);
+      fileInput.addEventListener("change",pickerClosed);
+      window.addEventListener("blur",()=>{
+        // activeElement is updated after blur when focus enters the UI frame.
+        const pickerWasOpen=pickerOpen;
+        setTimeout(()=>{leftWindow=!pickerWasOpen && document.activeElement?.tagName!=="IFRAME";},0);
+      });
+      window.addEventListener("focus",()=>{
+        // Capture the departure before the command-center focus handler can
+        // focus its iframe and queue a nested blur that clears leftWindow.
+        const wasAway=leftWindow;
+        setTimeout(()=>{
+          if(wasAway && !pickerOpen) returned();
+          leftWindow=false;
+        },0);
+      },true);
+      window.addEventListener("pageshow",returned);
+      document.addEventListener("resume",()=>{if(!pickerOpen) returned();});
+    }
+    const state=thread.chatScroll;
+    if(reset){state.following=true;state.gesture=false;state.opening++;}
+    state.schedule();
+  }
   let hasMessages=false, statusTimer=null, workingTimer=null;
 
   function formatMessageTimestamp(epochSeconds, locale, timeZone){
@@ -2013,7 +2123,6 @@
     const waiting=queued?null:firstQueuedBubble(thread);
     if(waiting&&thread.insertBefore) thread.insertBefore(el,waiting);
     else thread.appendChild(el);
-    thread.scrollTop=thread.scrollHeight;
     return el;
   }
   function setStatusLine(t){ $("status-line").textContent=t||""; }
@@ -4026,6 +4135,7 @@
   // home) rather than silently reattaching them here.
   function setQueueScope(next){
     const value=String(next||queueScope||"");
+    if(value!==queueScope && typeof followChatLatest==="function") followChatLatest(true);
     if(value!==queueScope && typeof invalidateChatCloudPrefs==="function") invalidateChatCloudPrefs();
     if(queueScope && value && value!==queueScope && Uploads) Uploads.abort();
     // The recovery row is keyed by the OWNER AND HOME pair. The same account
@@ -4082,6 +4192,7 @@
   }
   // A chat shrunk to a bubble opens when a screen asks to talk to an agent.
   function openAddressedChat(){
+    if(typeof followChatLatest==="function") followChatLatest(true);
     if(typeof setChatCloudMode==="function"&&typeof cloudState!=="undefined"&&
        cloudState&&cloudState.mode==="bubble") setChatCloudMode("open");
   }
@@ -5572,11 +5683,13 @@
   function applyChatCloud(){
     const cloud=$("chat-cloud"), bubble=$("chat-cloud-bubble"), s=cloudState;
     if(!cloud || !bubble || !s) return;
+    const wasOpen=cloud.dataset.mode==="open";
     // A default layout may arrive while the owner is still writing a draft.
     // Leave it unsaved so the next refresh can shrink once typing focus leaves.
     if(s.mode==="bubble" && !s.userSet && bubble.hidden &&
        cloud.contains(document.activeElement) && isTypingTarget(document.activeElement)) s.mode="open";
     cloud.dataset.mode=s.mode;
+    if(s.mode==="open" && !wasOpen && typeof followChatLatest==="function") followChatLatest(true);
     cloud.style.left=s.open.x+"px"; cloud.style.top=s.open.y+"px";
     cloud.style.width=s.open.w+"px"; cloud.style.height=s.open.h+"px";
     bubble.style.left=s.bubble.x+"px"; bubble.style.top=s.bubble.y+"px";
@@ -6016,6 +6129,7 @@
   // when the queue is empty and would destroy rows the owner is still owed.
   function clearThread(){
     const thread=$("thread"); if(!thread) return;
+    if(typeof followChatLatest==="function") followChatLatest(true);
     Array.from(thread.children||[]).forEach(node=>{
       if(node&&!['thread-empty','rail-items','request-entry-points'].includes(node.id)&&node.remove) node.remove(); });
     hasMessages=false;
@@ -9818,6 +9932,7 @@
     thread.insertBefore(button, thread.firstChild);
   }
   async function loadEarlier(button, before, stillOwner){
+    const scrollState=$("thread").chatScroll, opening=scrollState && scrollState.opening;
     button.disabled=true; button.textContent="Loading earlier messages…";
     const failed=(reason)=>{
       button.disabled=false;
@@ -9836,10 +9951,17 @@
       return failed((conv && conv.error) || "no page came back");
     // Drawn at the end, then moved as one block to just below the button, so
     // the older page lands above everything already on screen.
-    const thread=$("thread"), anchor=button.nextSibling, start=thread.children.length;
+    const thread=$("thread"), anchor=button.nextElementSibling||button.nextSibling, start=thread.children.length;
+    // Measure the retained message, not scrollHeight: the button can disappear
+    // on the final page and browser scroll anchoring may already compensate.
+    const anchorTop=anchor && anchor.getBoundingClientRect ? anchor.getBoundingClientRect().top : null;
+    const preserve=!scrollState || opening===scrollState.opening;
+    if(scrollState && preserve) scrollState.following=false;
     drawHistoryTurns(conv.turns);
     Array.from(thread.children).slice(start).forEach(node=>thread.insertBefore(node, anchor));
     offerEarlier(conv.has_more===true ? conv.next_before : null, stillOwner);
+    if(preserve && anchorTop!==null) thread.scrollTop+=anchor.getBoundingClientRect().top-anchorTop;
+    if(scrollState && preserve) scrollState.following=scrollState.atBottom();
   }
 
   // The conversation could not be read: say so in the thread, once, and clear
