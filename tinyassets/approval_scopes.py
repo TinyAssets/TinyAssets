@@ -34,6 +34,8 @@ def predicate(envelope, scope):
 
     if scope not in SCOPES:
         raise RequestRefused("Choose once, task, site or always.")
+    if "mcp" in envelope["arguments"] and scope != "once":
+        raise RequestRefused("MCP approvals support once; edit owner rules for defaults.")
     if scope != "once" and envelope["action_class"] in ("spend", "money.move"):
         raise RequestRefused(
             "Standing payments need a budget-capped grant; use once for this preview."

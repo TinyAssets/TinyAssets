@@ -5,11 +5,12 @@ initially at `688a3e91f121c5b299afe2df536e75c5b4f78a00`, now integrated
 through foundation `c7a43a85af` (merge `cb6aad0141`).
 Draft PR: https://github.com/TinyAssets/TinyAssets/pull/4496.
 
-Current resume status: task 1.2's OAuth machinery is implemented and verified.
-MCP request-shape discovery/activation and ta integration remain under 1.6;
-the founder's pasted-link-to-tools flow is **not complete**. Earlier remaining-task
-lists below are historical receipts. The branch has integrated #4469 and #4483,
-including #4483's later `dda3c01331` repair. No deployment is claimed.
+Current resume status: the remote MCP core now connects through the existing
+owner card, performs OAuth and broker discovery, activates one request-bound
+attachment, exposes tools through ta, and continues the originating task. The
+production integration and review receipt at the end supersede earlier remaining
+lists below. Draft PR #4496 remains stacked on the unmerged isolation foundation.
+No deployment or real-user browser pass is claimed.
 
 ## Verified slice: typed attachment metadata
 
@@ -216,3 +217,56 @@ a completed HTTP transport does not prove an external effect's semantic result.
 Windows protocol: 22 passed. Linux protocol/real broker/server/upstream: 69 passed,
 zero skips. Ruff passed. Task 1.3 stays open for end-to-end production wiring.
 
+
+## Production remote path and review acceptance (2026-10-05)
+
+Implemented tasks 1.1, 1.3 and 1.6 on the already verified 1.2 machinery.
+`connect` accepts `mcp_url`; the existing owner sheet discovers MCP OAuth or
+uses its protected key entry. The callback negotiates through the real streaming
+broker, then commits typed catalog metadata. An active descriptor alone grants
+nothing: dispatch requires the matching answered request's connection/incarnation
+marker. Stop before completion refuses activation. Retrying an interrupted
+answer reconciles the same attachment and commits one continuation event.
+
+`ta search`, describe and calls expose `mcp:<connection-id>:<tool>` with schemas
+and annotations. Calls rediscover and reject a stale catalog before tools/call;
+search refreshes catalog revisions. Read-only hints select read policy; destructive
+or unknown effects default to ask-first, with explicit owner classifications and
+matching owner rules taking precedence. MCP approvals consume the existing
+protected sheet and effect intent; only once is supported for these sheets.
+Standing task/site/always scopes are explicitly refused. Owner Rules remain editable.
+No provider-specific runtime code, direct MCP HTTP client or credential export.
+
+Approved operations persist the broker op_id before dispatch. Reopening an
+uncertain preview queries durable broker status without replay. Completed transport
+with missing semantic result stays unknown. Failed approved calls record a fixed
+receipt and wake rather than remaining approved. Streaming cancellation closes the
+broker stream and sends notifications/cancelled; authority reads do not block the
+async loop. One unavailable attachment does not hide platform tools.
+
+Claude review completed in 242 seconds: **ADAPT**; raw report review-production.md.
+One round, no subsequent APPROVE verdict implied. Adjudication:
+- F1 **AGREE**: only the rule actually selected by owner policy can override the
+  annotation default. An unrelated edited connection rule regression asks first.
+- F2 **AGREE**: persist operation ID with the effect intent, retain it in every
+  receipt and reconcile through the existing preview operation, without resend.
+- F3 **AGREE**: convert changed MCP authority into RequestRefused during preview;
+  approved failures settle failed/unknown with a sanitized receipt and durable wake.
+- F4 **AGREE**: isolate attachment discovery errors, retain the platform catalog,
+  and report a connection-specific retry error (also surfaced by ta on stderr).
+
+Verification:
+- Broader pre-review Linux oracle: 207 passed, no skips, including affected heavy
+  MCP instruction surfaces, OAuth, broker metadata, ta and approval/continuation suites.
+- Post-review Linux oracle: 116 passed, no skips, including nine full-flow cases,
+  protocol/real broker, ta, inline approvals and approval scopes.
+- Latest Windows protocol/storage/OAuth: 83 passed. Additional affected Windows
+  regressions: 130 passed and 84 passed. These are separate, overlapping runs.
+- Ruff passed; plugin build/import probe passed; all 610 canonical mirrors matched.
+- No deployed-SHA assertion, public deployment or live browser user proof is claimed.
+
+Remaining outside this remote-core run: 1.4 jailed stdio, 1.5 broader secret-slot
+acceptance, 1.7 durable lifecycle cleanup/reconnect acceptance, 1.8 multi-account
+real-user acceptance, and 1.10 deployment/canary/user proof/as-built sync. Task 1.9
+is finalized with the committed hygiene receipt. The full implementation retains
+explicit unsupported errors for regex-constrained tool schemas and unavailable brokers.

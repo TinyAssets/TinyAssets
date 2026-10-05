@@ -46,6 +46,7 @@ class Capabilities:
         self.call_platform, self.check_authority = call_platform, check_authority
         self.connections_granted = connections_granted
         self.review_provider = review_provider
+        self._mcp_catalog = {}
 
     def connections(self):
         # A launch whose grant withholds connections neither lists nor calls one.
@@ -74,6 +75,18 @@ class Capabilities:
             return {"error": "request must be an object"}
         if message.get("op") == "catalog" and set(message) == {"op"}:
             items = list(self.platform.values())
+            connection_errors = []
+            if self.connections_granted:
+                from tinyassets.mcp_runtime import refresh_catalog
+
+                attached = await refresh_catalog(self.root, self.context.owner,
+                                                  errors=connection_errors)
+                self._mcp_catalog = attached
+                for name, (binding, tool) in attached.items():
+                    items.append({"name": name, "description": str(tool.get("description", "")),
+                                  "arguments": tool["inputSchema"],
+                                  "annotations": tool.get("annotations", {}),
+                                  "catalog_hash": binding.attachment.catalog_hash})
             for name, (_grant, view, verb) in self.connections().items():
                 items.append({
                     "name": name, "description": f"{view.destination}: {verb}",
@@ -84,7 +97,8 @@ class Capabilities:
                     "endpoints": [ep.as_dict() for ep in view.allowed_endpoints],
                     "access_mode": view.access_mode,
                 })
-            return {"capabilities": items, "extension_roots": {
+            return {"capabilities": items, "connection_errors": connection_errors,
+                    "extension_roots": {
                 "shared": "/u/extensions",
                 "agent": f"/u/agents/{self.context.initiating_agent}/extensions",
             }}
@@ -96,6 +110,18 @@ class Capabilities:
             return {"error": "invalid capability name"}
         if name in self.platform:
             return {"result": await self.call_platform(name, arguments)}
+        if name.startswith("mcp:") and self.connections_granted:
+            from tinyassets.mcp_runtime import call, catalog, packet
+
+            attached = await asyncio.to_thread(catalog, self.root, self.context.owner)
+            if name not in attached:
+                return {"error": "unknown capability"}
+            binding, tool = attached[name]
+            if name in self._mcp_catalog and self._mcp_catalog[name][0] != binding:
+                return {"error": "stale MCP catalog; discover tools again"}
+            return {"result": await call(self.root, self.context.owner,
+                                          self.context.initiating_agent,
+                                          packet(binding, tool, arguments))}
         match = self.connections().get(name)
         if match is None:
             return {"error": "unknown capability"}

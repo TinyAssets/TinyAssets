@@ -94,7 +94,7 @@ def validate_action(raw):
 
     if not isinstance(raw, dict) or set(raw) != {"executor", "arguments"}:
         raise RequestRefused("Use executor and arguments only; identity is server-bound.")
-    if raw["executor"] != "authenticated_external_call":
+    if raw["executor"] not in {"authenticated_external_call", "mcp_call"}:
         raise RequestRefused("This executor does not support bound previews yet.")
     packet = raw["arguments"]
     if not isinstance(packet, dict) or set(packet) - {
@@ -102,8 +102,11 @@ def validate_action(raw):
         "grant_id",
         "verb",
         "request",
+        "mcp",
     }:
         raise RequestRefused("Invalid action arguments.")
+    if (raw["executor"] == "mcp_call") != ("mcp" in packet):
+        raise RequestRefused("MCP calls require their bound catalog reference.")
     if not all(
         isinstance(packet.get(k), str) and packet[k] for k in ("connection_id", "grant_id", "verb")
     ):
@@ -139,9 +142,14 @@ def validate_action(raw):
 
     no_secret_fields(raw)
     wire = json.dumps(raw, ensure_ascii=False, allow_nan=False)
+    scanned = wire
+    if "mcp" in packet:
+        # Catalog checksums are server references, not pasted credential input.
+        # _authority resolves every field against the live attachment before use.
+        scanned = json.dumps(request, ensure_ascii=False, allow_nan=False)
     # Raw headers and unresolved file/state transforms are not supported here.
     # Inline strings remain byte-for-byte; another slice can add versioned blobs.
-    if len(wire.encode()) > 65536 or "$ta." in wire or looks_like_credential(wire):
+    if len(wire.encode()) > 65536 or "$ta." in wire or looks_like_credential(scanned):
         raise RequestRefused("Use non-secret bounded inputs and connection references only.")
     return json.loads(wire)
 
@@ -193,6 +201,15 @@ def _authority(home, packet, owner, agent):
     cls, operation = agent_rules.classify(
         home, packet["connection_id"], packet["verb"], effector._request_path(packet["request"])
     )
+    if "mcp" in packet:
+        from tinyassets.mcp_remote import McpError
+        from tinyassets.mcp_runtime import policy
+        from tinyassets.storage.outbound_connections import GrantResolutionError
+
+        try:
+            cls, operation, _ = policy(home, owner, agent, packet)
+        except (McpError, GrantResolutionError):
+            raise RequestRefused("MCP authority changed; refresh the tool catalog.") from None
     with closing(agent_rules._connect(home)) as conn:
         agent_rules.list_rules(home, agent)
         matching = [
@@ -242,7 +259,7 @@ def _authority(home, packet, owner, agent):
         "policy_digest": policy,
         "connection_revision": digest(
             [
-                view.as_dict(),
+                view.as_dict(), packet.get("mcp"),
                 incarnation,
             ]
         ),
@@ -277,7 +294,12 @@ def capture(home, raw):
             operation=authority["operation"],
             agent=agent,
         )
-        if decision.behaviour != agent_rules.ASK_FIRST:
+        behaviour = decision.behaviour
+        if "mcp" in action["arguments"]:
+            from tinyassets.mcp_runtime import policy
+
+            _, _, behaviour = policy(home, owner, agent, action["arguments"])
+        if behaviour not in {agent_rules.ASK_FIRST, agent_rules.DO_IF_PREAPPROVED}:
             raise RequestRefused("The initiating agent's current rule does not ask first.")
         task = conn.execute(
             "SELECT activity_id,task_generation,task_expires_at FROM activities "
@@ -392,7 +414,9 @@ def card(conn, request_id):
         "status": row["status"],
         "phase": phase,
         "agent": envelope["subject"]["agent"],
-        "title": f"{envelope['arguments']['verb']} {envelope['destination']}",
+        "title": (f"MCP {envelope['arguments']['mcp']['tool']} {envelope['destination']}"
+                  if "mcp" in envelope["arguments"] else
+                  f"{envelope['arguments']['verb']} {envelope['destination']}"),
         "draft": envelope["arguments"]["request"].get("body"),
         "purpose": agent_rules.ACTION_CLASSES.get(envelope["action_class"], "Requested action"),
         "destination": envelope["destination"],
@@ -452,6 +476,23 @@ def preview(home, request_id, session, *, draft=None, edit=False, scope="once"):
     owner = json.loads(session["identity_json"])["user_id"]
     with control(home), closing(connect(home)) as conn:
         current = _owned(home, conn, request_id, owner)
+        if (current["phase"] in {"unknown", "sent"}
+                and current["action"]["envelope"]["executor"] == "mcp_call"):
+            from tinyassets.mcp_runtime import reconcile
+            from tinyassets.storage.outbound_connections import ProxyRequestError
+
+            receipt = current.get("result") or {}
+            if receipt.get("op_id"):
+                try:
+                    status = reconcile(home, owner, receipt["op_id"])
+                    receipt["broker_status"] = status
+                except ProxyRequestError:
+                    receipt["broker_status"] = {"state": "unavailable",
+                                                "side_effect_state": "unknown"}
+                conn.execute("UPDATE effect_intents SET receipt_json=? WHERE request_id=?",
+                             (json.dumps(receipt), request_id))
+                conn.commit()
+                current = _owned(home, conn, request_id, owner)
         if current["status"] not in ("pending", "deferred", "unresolved"):
             return current
         unavailable = ""
@@ -628,6 +669,10 @@ def _decide(home, data, session):
                 return card(conn, request_id)
             key = f"{request_id}:{current['revision']}"
             args = env["arguments"]
+            if env["executor"] == "mcp_call":
+                from tinyassets.broker.ops import new_op_id
+
+                mcp_op_id = new_op_id()
             conn.execute(
                 "INSERT INTO effect_intents (intent_key,activity_id,run_id,node_key,effect_index,"
                 "wire_digest,connection_id,operation,path,state,created_at,updated_at,request_id,"
@@ -653,13 +698,29 @@ def _decide(home, data, session):
                 "WHERE request_id=?",
                 (key, request_id),
             )
+            if env["executor"] == "mcp_call":
+                conn.execute("UPDATE effect_intents SET receipt_json=? WHERE intent_key=?",
+                             (json.dumps({"op_id": mcp_op_id}), key))
             conn.commit()
             if stored['scope'] != 'once':
                 from tinyassets.approval_scopes import materialize
 
                 materialize(home, conn, request_id, stored, env)
             # Current policy/Stop cannot race this check: their writers share control.
-            _current(home, conn, request_id, owner)
+            try:
+                _current(home, conn, request_id, owner)
+            except RequestRefused:
+                if env["executor"] != "mcp_call":
+                    raise
+                receipt = {"error_kind": "mcp_call_refused", "state": "failed",
+                           "op_id": mcp_op_id}
+                conn.execute("UPDATE effect_intents SET state='failed',receipt_json=? "
+                             "WHERE intent_key=?", (json.dumps(receipt), key))
+                conn.execute("UPDATE pending_requests SET status='unresolved' WHERE request_id=?",
+                             (request_id,))
+                _wake(conn, current, receipt)
+                conn.commit()
+                return card(conn, request_id)
             conn.execute(
                 "UPDATE effect_intents SET state='sent',updated_at=? WHERE intent_key=?",
                 (time.time(), key),
@@ -668,13 +729,18 @@ def _decide(home, data, session):
     packet = {"sink": env["executor"], **args}
     token = _dispatch.set((str(home.resolve()), digest(packet), env["subject"]["agent"]))
     try:
-        result = run_authenticated_external_call_effector(
-            node_id="owner_approval",
-            output_keys=["action"],
-            run_state={"action": packet},
-            base_path=home,
-            run_id=key,
-        )
+        if env["executor"] == "mcp_call":
+            from tinyassets.mcp_runtime import approved_call
+
+            result = approved_call(home, args, env["subject"]["agent"], request_id, mcp_op_id)
+        else:
+            result = run_authenticated_external_call_effector(
+                node_id="owner_approval",
+                output_keys=["action"],
+                run_state={"action": packet},
+                base_path=home,
+                run_id=key,
+            )
     finally:
         _dispatch.reset(token)
     # The effector's broker response is already sanitized. Never retain exceptions,
@@ -685,6 +751,8 @@ def _decide(home, data, session):
     else:
         state = "confirmed"
         receipt = {k: result[k] for k in ("response", "status", "reason") if k in result}
+    if env["executor"] == "mcp_call":
+        receipt["op_id"] = mcp_op_id
     with control(home), closing(connect(home)) as conn:
         conn.execute("BEGIN IMMEDIATE")
         conn.execute(

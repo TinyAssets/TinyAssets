@@ -3149,6 +3149,11 @@ def write_graph(
             To connect ANY model or platform, ask with pending_request action
             type "connect": the connect_http fields plus "uses" and
             "constant_headers". An LLM is just a connection with uses.model.
+            For a pasted remote MCP link, use that same connect action with
+            "mcp_url": "https://server/path" and a destination label. The owner
+            signs in or enters a key on one card. After activation, `ta search`
+            lists `mcp:<connection-id>:<tool>`; call it with `ta <name> --json`.
+            Never ask for tokens in chat or send tools/call as an ordinary HTTP call.
             When the provider offers OAuth (found ONLY by standard discovery on
             the connection's own host; say what the use needs with "oauth":
             {"scopes": [...], optional public "client_id"}; endpoints are never

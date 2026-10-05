@@ -12,7 +12,7 @@ def validate(document):
         raise ValueError("invalid capability operation fields")
     validate_query(AUTHORIZED_CONNECTION, "scope", "scope", document["grant_id"],
                    document["connection_id"])
-    if (document["action"] not in {"read", "configure"}
+    if (document["action"] not in {"read", "configure", "activate"}
             or document["capability_kind"] not in {
                 "constant_headers", "model_use", "model_discovery", "realtime_voice", "mcp"}
             or type(document["enabled"]) is not bool
@@ -23,6 +23,8 @@ def validate(document):
 
         validate_operation(document)
         return
+    if document["action"] == "activate":
+        raise ValueError("only MCP supports coordinated activation")
     if document["action"] == "read" and (
             document["descriptor"] is not None or document["enabled"] or document["preview"]):
         raise ValueError("invalid capability read")

@@ -90,6 +90,8 @@ def main(argv=None):
     if not argv:
         raise ValueError("usage: ta search <words> | describe <name> | <name> --json '<args>'")
     catalog = remote({"op": "catalog"})
+    for unavailable in catalog.get("connection_errors", []):
+        print("ta: " + json.dumps(unavailable), file=sys.stderr)
     local = extensions(catalog["extension_roots"])
     capabilities = {item["name"]: item for item in catalog["capabilities"]}
     capabilities.update(local)

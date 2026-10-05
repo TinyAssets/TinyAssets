@@ -96,3 +96,19 @@ def answered(conn, request_id, decision):
     }
     # Never copy pasted fields, provider tokens, or arbitrary response text.
     bound_requests._wake(conn, current, {"connection": decision})
+
+
+def require_current(home, request_id):
+    """A delayed MCP sign-in cannot activate a stopped originating task."""
+    with closing(bound_requests.connect(home)) as conn:
+        row = conn.execute("SELECT context_json FROM pending_requests WHERE request_id=?",
+                           (request_id,)).fetchone()
+        context = json.loads(row[0]) if row else {}
+        if not context:
+            return  # Settings connections have no initiating agent task.
+        task = conn.execute("SELECT task_generation,task_expires_at,status FROM activities "
+                            "WHERE activity_id=? AND owner_principal=? AND agent_id=?",
+                            (context["task_id"], context["owner"], context["agent"])).fetchone()
+        if (task is None or task[0] != context["task_generation"] or task[1] <= time.time()
+                or task[2] in {"paused", "completed", "failed"}):
+            raise bound_requests.RequestRefused("The originating task stopped or expired.")

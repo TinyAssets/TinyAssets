@@ -497,6 +497,20 @@ def _validated_connect(action: dict[str, Any]) -> dict[str, Any]:
     )
     from tinyassets.connection_oauth.discovery import validate_request
 
+    mcp_endpoint = action.get("mcp_url")
+    if mcp_endpoint is not None:
+        from urllib.parse import urlsplit
+
+        from tinyassets.connection_oauth.transport import OAuthError, validate_https_url
+
+        try:
+            mcp_endpoint = validate_https_url(mcp_endpoint)
+        except OAuthError:
+            raise ValueError("MCP URL requires HTTPS without credentials or query") from None
+        endpoint = urlsplit(mcp_endpoint)
+        action = {**action, "access": "exact", "endpoints": [{
+            "host": endpoint.netloc, "path_template": endpoint.path or "/", "methods": ["POST"],
+        }], "scopes": []}
     deposit = _validated_action({**action, "type": "connect_http"})
     try:
         uses = validate_uses(action.get("uses"))
@@ -514,7 +528,8 @@ def _validated_connect(action: dict[str, Any]) -> dict[str, Any]:
             "a model use needs a POST endpoint for inference (the model URL path)"
         )
     return {**deposit, "type": "connect", "uses": uses, "constant_headers": headers,
-            "oauth_request": oauth_request}
+            "oauth_request": oauth_request,
+            **({"mcp_url": mcp_endpoint} if mcp_endpoint else {})}
 
 
 def _has_sign_in(action: dict[str, Any]) -> bool:
@@ -542,6 +557,15 @@ def _with_sign_in_offer(
     from tinyassets.connection_oauth.flow import configured_redirect_uri
 
     requested = action.pop("oauth_request", {}) or {}
+    if action.get("mcp_url"):
+        from tinyassets.connection_oauth.mcp import discover
+        from tinyassets.connection_oauth.transport import OAuthError
+
+        try:
+            offer = discover(action["mcp_url"], requested)
+        except OAuthError as exc:
+            return action, {"oauth_unavailable": exc.code}
+        return {**action, "oauth": offer}, {"primary": "sign_in"}
     # ``sign_in_hosts`` are installed data from the platform's own source card
     # (an issuer that is not the inference host), tried first. Server-set like
     # ``origin``: never read from the payload, so a requester cannot root
@@ -1870,6 +1894,8 @@ def _grant_sentence(row: dict[str, Any]) -> str:
         return ""
     if action.get("type") == "connect":
         base = _grant_sentence({**row, "action": {**action, "type": "connect_http"}})
+        if action.get("mcp_url"):
+            base += f' Connect the MCP tools at {action["mcp_url"]}.'
         return (base + _uses_sentence(action) + _sign_in_sentence(row)) if base else ""
     if action.get("type") in ("extend_http", "connect_http") and action.get("access") == "full":
         return _full_channel_sentence(action)
@@ -3330,6 +3356,14 @@ def _deposit_answer(
 
     action = row["action"]
     request_id = row["request_id"]
+    if action.get("mcp_url"):
+        from tinyassets.bound_requests import RequestRefused
+        from tinyassets.connection_continuations import require_current
+
+        try:
+            require_current(udir, request_id)
+        except RequestRefused:
+            return {"error": "originating_task_stopped", "request_pending": True}
     deposited = connect_http(
         universe_id=universe_id,
         payload=json.dumps(
@@ -3355,12 +3389,21 @@ def _deposit_answer(
         return deposited
     extra: dict[str, Any] = {}
     if action.get("type") == "connect":
-        extra = _complete_connect(uid, action, deposited)
+        from tinyassets.mcp_remote import McpError
+        from tinyassets.storage.outbound_connections import GrantResolutionError, ProxyRequestError
+
+        try:
+            extra = _complete_connect(uid, action, deposited, request_id=request_id)
+        except (McpError, GrantResolutionError, ProxyRequestError):
+            return {"error": "mcp_activation_unavailable", "request_pending": True}
         if extra.get("error"):
             # The key is in the vault, but the uses did not land. Leave the
             # ask PENDING: answering again re-deposits idempotently and
             # retries the uses, so nothing is half-granted for long.
             return {**extra, "request_pending": True}
+    if extra.get("mcp"):
+        answer = {**answer, "mcp_connection": deposited["connection_id"],
+                  "mcp_incarnation": extra["mcp"]["incarnation"]}
     if not resolve_request(udir, request_id, status="answered", answer=answer,
                            feedback=feedback, dont_ask_again=dont_ask_again,
                            decision="allowed"):
@@ -3441,7 +3484,7 @@ def _model_use_refusal(uid: str, action: dict[str, Any]) -> dict[str, Any] | Non
 
 
 def _complete_connect(
-    uid: str, action: dict[str, Any], deposited: dict[str, Any],
+    uid: str, action: dict[str, Any], deposited: dict[str, Any], *, request_id: str = "",
 ) -> dict[str, Any]:
     """The rest of one ``connect`` answer, after the deposit landed.
 
@@ -3470,6 +3513,17 @@ def _complete_connect(
         "grant_id": applied["grant_id"],
         "uses": applied["uses"],
     }
+    if action.get("mcp_url"):
+        from tinyassets.api.helpers import _universe_dir
+        from tinyassets.mcp_runtime import activate
+
+        out.update(activate(_universe_dir(uid), actor, applied["grant_id"],
+                            deposited["connection_id"], action["mcp_url"], action["destination"],
+                            request_id))
+        from tinyassets.storage.effector_consents import grant_consent
+
+        grant_consent(_universe_dir(uid), sink="authenticated_external_call",
+                      destination=action["destination"], granted_by=actor)
     if "constant_headers" in applied:
         out["constant_headers"] = applied["constant_headers"]
     if "provider" in applied:

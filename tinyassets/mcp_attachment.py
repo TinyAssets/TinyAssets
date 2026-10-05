@@ -9,7 +9,7 @@ import json
 import threading
 import weakref
 from contextlib import contextmanager
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 
 from tinyassets.connection_oauth.transport import validate_https_url
 
@@ -44,6 +44,8 @@ class Attachment:
     catalog_hash: str = ""
     schema_version: int = 1
     transport: str = "http"
+    tools: list = field(default_factory=list)
+    activation_request_id: str = ""
 
     @classmethod
     def parse(cls, value):
@@ -66,6 +68,28 @@ class Attachment:
                     or any(c not in "0123456789abcdef" for c in item.catalog_hash)))):
             raise ValueError("unsupported MCP metadata")
         validate_https_url(item.endpoint)
+        if (not isinstance(item.activation_request_id, str)
+                or len(item.activation_request_id) > 128):
+            raise ValueError("invalid MCP activation reference")
+        if not isinstance(item.tools, list) or len(json.dumps(item.tools)) > 4 * 1024 * 1024:
+            raise ValueError("invalid MCP catalog")
+        if item.tools:
+            import hashlib
+
+            from tinyassets.mcp_remote import TOOL_NAME, _safe_schema
+
+            catalog = {}
+            for tool in item.tools:
+                if (not isinstance(tool, dict) or not isinstance(tool.get("name"), str)
+                        or not TOOL_NAME.fullmatch(tool["name"]) or tool["name"] in catalog
+                        or not isinstance(tool.get("inputSchema"), dict)):
+                    raise ValueError("invalid MCP catalog")
+                _safe_schema(tool["inputSchema"])
+                catalog[tool["name"]] = tool
+            checksum = hashlib.sha256(json.dumps(
+                catalog, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+            if checksum != item.catalog_hash:
+                raise ValueError("MCP catalog checksum mismatch")
         return item
 
 
@@ -124,10 +148,15 @@ def local_operation(ledger, *, principal, command_center, document):
         if current != expected:
             raise GrantResolutionError("MCP metadata revision changed")
         item = Attachment.parse(payload["value"])
-        if item.state == "active":
+        if item.state == "active" and document["action"] != "activate":
             raise PermissionError("MCP activation requires the connection coordinator")
+        if document["action"] == "activate" and (
+                current is None or current["state"] not in {"connecting", "active"}
+                or item.state != "active" or not item.protocol_version or not item.catalog_hash):
+            raise PermissionError("MCP activation requires negotiated discovery")
         if (current is not None and current["state"] != "draft"
-                and item.endpoint != current["endpoint"]):
+                and (item.endpoint != current["endpoint"]
+                     or item.activation_request_id != current["activation_request_id"])):
             raise PermissionError("MCP endpoint changed after draft")
         if current is not None:
             if (current["state"] in {"revoked", "expired"}

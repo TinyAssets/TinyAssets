@@ -87,9 +87,27 @@ class FakeProvider:
                 return
 
             def _reply(self, status, doc):
-                payload = json.dumps(doc).encode()
+                from types import GeneratorType
+
+                if isinstance(doc, GeneratorType):
+                    self.send_response(status)
+                    self.send_header("Content-Type", "text/event-stream")
+                    self.send_header("Transfer-Encoding", "chunked")
+                    self.end_headers()
+                    try:
+                        for chunk in doc:
+                            self.wfile.write(f"{len(chunk):x}\r\n".encode() + chunk + b"\r\n")
+                            self.wfile.flush()
+                        self.wfile.write(b"0\r\n\r\n")
+                    except (BrokenPipeError, ConnectionResetError):
+                        pass  # The test deliberately cancelled its streaming client.
+                    return
+                payload = doc if isinstance(doc, bytes) else json.dumps(doc).encode()
+                if status == 202:
+                    payload = b""
                 self.send_response(status)
-                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Type", "text/event-stream" if isinstance(doc, bytes)
+                                 else "application/json")
                 self.send_header("Content-Length", str(len(payload)))
                 self.end_headers()
                 self.wfile.write(payload)

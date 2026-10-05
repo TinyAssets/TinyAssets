@@ -150,7 +150,7 @@ class RemoteMcp:
             raise
 
     async def _exchange(self, method, params, *, op_id, notify, notification, attempt):
-        self._check_authority(self._binding)
+        await asyncio.to_thread(self._check_authority, self._binding)
         self._sequence += 1
         request_id = self._sequence
         attempt["request_id"] = request_id
@@ -200,7 +200,7 @@ class RemoteMcp:
                 self._session = session
             content_type = str(response_headers.get("content-type", "")).split(";")[0].strip()
             async for message in messages(stream.body(), content_type):
-                self._check_authority(binding)
+                await asyncio.to_thread(self._check_authority, binding)
                 if "method" in message:
                     if "id" in message:
                         raise McpError("MCP server requested an unadvertised client capability")
@@ -306,7 +306,7 @@ class RemoteMcp:
                                    op_id=op_id, notify=notify)
 
     async def reconcile(self, op_id):
-        self._check_authority(self._binding)
+        await asyncio.to_thread(self._check_authority, self._binding)
         return await self._broker.status(op_id)
 
 
