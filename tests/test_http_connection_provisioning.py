@@ -19,7 +19,10 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sqlite3
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from threading import Barrier
 from typing import Any
 
 import pytest
@@ -229,10 +232,11 @@ def _seed_legacy_http_connection(
     grant_universe: str | None = None,
 ) -> tuple[Path, str, str]:
     """Write a PRE-FIX http connection: the legacy ("http",) scope token + an old
-    secret + a grant carrying the real ``_HTTP_ACTION_CAP`` (the shape a connection
-    provisioned before the #2521 scope fix actually has)."""
-    from tinyassets.api.http_connection import _HTTP_ACTION_CAP, _ids
+    secret + a grant carrying the legacy ``http_requests`` cap (the shape a
+    connection provisioned before the #2521 scope fix actually has)."""
+    from tinyassets.api.http_connection import _ids
     from tinyassets.credential_vault import write_credential_vault
+    from tinyassets.storage.outbound_connections import ActionCap
 
     udir = _make_universe(base, uid, admin="founder")
     conn_id, grant_id = _ids(universe_id=uid, destination="webhook:acme")
@@ -267,7 +271,7 @@ def _seed_legacy_http_connection(
         connection_id=conn_id,
         owner_user_id="founder",
         universe_id=grant_universe or uid,
-        unprompted_action_cap=_HTTP_ACTION_CAP,
+        unprompted_action_cap=ActionCap("http_requests", 100, "requests"),
     )
     assert tuple(ledger._get_connection_resource(conn_id).scopes) == ("http",)
     return udir, conn_id, grant_id
@@ -1201,3 +1205,138 @@ def test_an_unchanged_redeposit_is_still_idempotent(base: Path) -> None:
     assert again["status"] == "provisioned"
     assert again["connection_id"] == first["connection_id"]
     assert again["allowed_endpoints"] == first["allowed_endpoints"]
+
+
+def test_new_http_connection_has_no_per_connection_request_cap(base: Path) -> None:
+    """Accounts are limited by total storage and simultaneous agent runs only;
+    a provisioned HTTP connection carries no fixed request cap."""
+    from tinyassets.api.http_connection import _ids
+
+    _make_universe(base, "u-nocap", admin="founder")
+    _login("founder")
+    ledger = _ledger(base, "founder")
+    result = _connect("u-nocap")
+    assert result["status"] == "provisioned"
+    _conn_id, grant_id = _ids(universe_id="u-nocap", destination="webhook:acme")
+    # Use the pre-existing ledger: reopening would let migration hide a capped
+    # grant accidentally written by provisioning.
+    grant = ledger.require_active_grant(grant_id)
+    assert grant.unprompted_action_cap is None
+
+
+def test_legacy_http_requests_cap_is_cleared_on_open(base: Path) -> None:
+    """A grant stored with the old per-connection ``http_requests`` cap reads
+    back uncapped the next time the ledger opens."""
+    _udir, _conn_id, grant_id = _seed_legacy_http_connection(base, "u-oldcap")
+    grant = _ledger(base, "founder").require_active_grant(grant_id)
+    assert grant.unprompted_action_cap is None
+
+
+def test_http_cap_migration_preserves_other_caps_and_malformed_rows(base: Path) -> None:
+    from tinyassets.storage.outbound_connections import ConnectionLedger
+
+    ledger = _ledger(base, "founder")
+    _udir, conn_id, grant_id = _seed_legacy_http_connection(base, "u-preserve")
+    caps = [
+        '{"name":"one_pull_request","maximum":1,"unit":"pull_requests"}',
+        '{broken', 'null', '42', '[]', '"http_requests"',
+        '{"name":"HTTP_REQUESTS"}', None,
+    ]
+    for index, cap in enumerate(caps):
+        other_id = f"other-{index}"
+        ledger.grant_connection(
+            grant_id=other_id, connection_id=conn_id,
+            owner_user_id="founder", universe_id=f"other-universe-{index}",
+        )
+        with ledger._connect() as conn:
+            conn.execute(
+                "UPDATE outbound_connection_grants SET unprompted_action_cap_json = ? "
+                "WHERE grant_id = ?", (cap, other_id),
+            )
+    with ledger._connect() as conn:
+        before = conn.execute(
+            "SELECT * FROM outbound_connection_grants ORDER BY grant_id"
+        ).fetchall()
+    ConnectionLedger(base / "outbound.db")
+    ConnectionLedger(base / "outbound.db")
+    with ledger._connect() as conn:
+        after = conn.execute(
+            "SELECT * FROM outbound_connection_grants ORDER BY grant_id"
+        ).fetchall()
+    expected = [dict(row) for row in before]
+    for row in expected:
+        if row["grant_id"] == grant_id:
+            row["unprompted_action_cap_json"] = None
+    assert [dict(row) for row in after] == expected
+    preserved_cap = ledger.get_grant("other-0").unprompted_action_cap
+    assert preserved_cap.name == "one_pull_request"
+    assert preserved_cap.maximum == 1
+
+
+def test_http_cap_migration_concurrent_opens(base: Path) -> None:
+    from tinyassets.storage.outbound_connections import ConnectionLedger
+
+    _udir, _conn_id, grant_id = _seed_legacy_http_connection(base, "u-concurrent")
+    barrier = Barrier(8)
+
+    def open_ledger(_index: int) -> Any:
+        barrier.wait(timeout=10)
+        return ConnectionLedger(base / "outbound.db").get_grant(grant_id)
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        grants = list(pool.map(open_ledger, range(8)))
+    assert len(grants) == 8
+    assert all(grant.unprompted_action_cap is None for grant in grants)
+
+
+def test_http_cap_migration_lock_failure_preserves_cap_then_retries(
+    base: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from tinyassets.storage.outbound_connections import ConnectionLedger
+
+    _udir, _conn_id, grant_id = _seed_legacy_http_connection(base, "u-locked")
+    original = ConnectionLedger._connect
+
+    def short_timeout(self: Any) -> sqlite3.Connection:
+        conn = original(self)
+        conn.execute("PRAGMA busy_timeout = 1")
+        return conn
+
+    monkeypatch.setattr(ConnectionLedger, "_connect", short_timeout)
+    with sqlite3.connect(base / "outbound.db") as writer:
+        writer.execute("BEGIN IMMEDIATE")
+        with pytest.raises(sqlite3.OperationalError, match="locked"):
+            ConnectionLedger(base / "outbound.db")
+        cap = writer.execute(
+            "SELECT unprompted_action_cap_json FROM outbound_connection_grants WHERE grant_id = ?",
+            (grant_id,),
+        ).fetchone()[0]
+        assert json.loads(cap)["name"] == "http_requests"
+    assert ConnectionLedger(base / "outbound.db").get_grant(grant_id).unprompted_action_cap is None
+
+
+def test_initialized_http_cap_reopen_does_not_write_under_writer_lock(
+    base: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from tinyassets.storage.outbound_connections import ConnectionLedger
+
+    _udir, _conn_id, grant_id = _seed_legacy_http_connection(base, "u-reopen")
+    ConnectionLedger(base / "outbound.db")
+    statements: list[str] = []
+    original = ConnectionLedger._connect
+
+    def traced_connect(self: Any) -> sqlite3.Connection:
+        conn = original(self)
+        conn.execute("PRAGMA busy_timeout = 1")
+        conn.set_trace_callback(statements.append)
+        return conn
+
+    monkeypatch.setattr(ConnectionLedger, "_connect", traced_connect)
+    with sqlite3.connect(base / "outbound.db") as writer:
+        writer.execute("BEGIN IMMEDIATE")
+        reopened = ConnectionLedger(base / "outbound.db")
+        assert reopened.get_grant(grant_id).unprompted_action_cap is None
+    assert not any(
+        sql.lstrip().upper().startswith(("UPDATE", "INSERT", "DELETE", "REPLACE", "BEGIN"))
+        for sql in statements
+    )
