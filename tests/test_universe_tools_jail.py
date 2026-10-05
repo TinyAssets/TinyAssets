@@ -134,6 +134,22 @@ def _run(coro):
 # ── (a) the folder is the universe, and only the universe ───────────────────
 
 
+def test_exports_survive_fresh_tool_processes_and_appear_next_turn(world, monkeypatch):
+    from tinyassets.universe_tools import harness_prompt
+
+    engine = _engine(monkeypatch, world)
+    content = "month,interest,principal\n1,2166.67,361.60\n"
+    assert _run(engine.write_file(path="exports/mortgage.csv", content=content)).startswith("wrote")
+    assert "[exit code 0]" in _run(engine.run_bash(
+        command="cp exports/mortgage.csv exports/copy.csv"))
+    # Each call starts a new jail; the prompt runs outside it, as on the next turn.
+    for name in ("mortgage.csv", "copy.csv"):
+        assert name in _run(engine.run_bash(command="find /u/exports -type f"))
+        assert "2166.67" in _run(engine.read_file(path="exports/" + name))
+        assert "exports/" + name in harness_prompt(world.universe_a)
+        assert (world.universe_a / ".agent-workspace/exports" / name).read_text() == content
+
+
 def test_tools_reach_their_own_universe_and_nothing_else(world, monkeypatch):
     import tinyassets
 

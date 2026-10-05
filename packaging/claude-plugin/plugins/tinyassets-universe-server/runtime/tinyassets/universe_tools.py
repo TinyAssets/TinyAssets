@@ -1222,12 +1222,12 @@ _HARNESS_HEAD = (
     "create, change and delete files/folders; platform soul.md and config.yaml are read-only.\n"
     "In bash, `ta search <words>` discovers capabilities, `ta describe <name>` "
     "lists args; `ta <name> --json '<args>'` calls them.\n"
+    "Earlier turns and missing files: handbook write_graph.systems.\n"
     "Skills: `skills/<name>/SKILL.md`, frontmatter `name:` and one-line `description:`. "
     "I follow matching skills; editing them changes the next turn.\n"
     "I call independent reads or checks together in one reply, not one per reply.\n"
-    "App downloads: verify a /u file (up to 8 MiB), reply with a fenced file "
-    "block: {\"path\":\"exports/a.csv\"}. Its Download chip fetches it "
-    "in the owner's session; no public URL.\n"
+    "Downloads: a fenced file block {\"path\":\"exports/a.csv\"} (a /u file, max 8 MiB) "
+    "gives the owner a private Download chip.\n"
     "App UI: one component via `write_graph target=\"app_ui\" "
     "operation=\"add_ui\"` and `payload_json={\"component\": {...}}` (handbook "
     "write_graph.interfaces), rather than staging pieces in /u files and reading them back.\n"
@@ -1248,17 +1248,29 @@ def _folder_section(universe_dir: Path) -> str:
         remaining -= len(entries)
         return entries
 
-    def visit(directory: str, depth: int, entries: list) -> None:
+    def visit(directory: str, depth: int, entries: list, *, prefix: str = "") -> None:
         for name, info in entries:
             if stat.S_ISLNK(info.st_mode) or getattr(info, "st_reparse_tag", 0):
                 continue
-            path = f"{directory}/{name}"
+            path = f"{directory}/{name}" if directory else name
+            if prefix and not directory and not name.startswith("."):
+                # The tool jail overlays visible root entries on the workspace.
+                # lstat reads metadata only and never follows a planted link.
+                try:
+                    overlay = (universe_dir / name).lstat()
+                except FileNotFoundError:
+                    pass
+                else:
+                    if (not getattr(overlay, "st_reparse_tag", 0)
+                            and (stat.S_ISDIR(overlay.st_mode)
+                                 or stat.S_ISREG(overlay.st_mode))):
+                        continue
             # Escape unusual names so a filename cannot inject extra prompt lines.
             shown = path.encode("unicode_escape").decode("ascii")
             if stat.S_ISDIR(info.st_mode):
                 lines.append(f"- {shown}/")
                 if depth < 2 and remaining:
-                    visit(path, depth + 1, read(path))
+                    visit(path, depth + 1, read(prefix + path), prefix=prefix)
             elif stat.S_ISREG(info.st_mode):
                 lines.append(f"- {shown} ({info.st_size / 1024:.1f} KB)")
 
@@ -1271,6 +1283,12 @@ def _folder_section(universe_dir: Path) -> str:
             except FileNotFoundError:
                 continue  # Optional top-level folders need not exist yet.
             visit(directory, 1, entries)
+        if remaining:
+            try:
+                entries = read(WORKSPACE_DIR)
+            except FileNotFoundError:
+                entries = []
+            visit("", 0, entries, prefix=WORKSPACE_DIR + "/")
     except (OSError, NotImplementedError, RecursionError, ValueError):
         return ""
     lines.sort()
