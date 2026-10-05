@@ -1,39 +1,35 @@
 """Chromium scroll contracts for the SPA shared by web and native shells."""
-import os
-
 import pytest
 
 from tests.test_app_chat_cloud_browser import _enter_chat
 from tests.test_app_chat_cloud_browser import app_url as _app_url
+from tests.test_app_two_surfaces_browser import browser as _browser
 
 app_url = _app_url
+browser = _browser
 pytestmark = pytest.mark.real_browser
 
 
 @pytest.fixture(params=[390, 1280], ids=["phone", "desktop"])
-def chat_page(app_url, request):
-    from playwright.sync_api import sync_playwright
-
-    with sync_playwright() as p:
-        browser = p.chromium.launch(executable_path=os.environ.get("TINYASSETS_TEST_CHROMIUM"))
-        page = browser.new_page(viewport={"width": request.param, "height": 844})
-        page.route("**/*", lambda route: route.continue_() if
-                   route.request.url.startswith(app_url.rsplit("/", 1)[0] + "/")
-                   else route.abort())
-        _enter_chat(page, app_url)
-        page.evaluate("""() => {
-            setQueueScope('home-1');
-            sessionStorage.setItem(TOKEN_KEY,'hermetic-token');
-            window.turns=Array.from({length:80},(_,i)=>({speaker:i%2?'universe':'founder',
-                text:'Message '+i+' '+('Long conversation line. '.repeat(12)),ts:i+100}));
-            Owner.getConversation=async()=>({universe_id:'home-1',recent_conversation:{
-                turns,has_more:true,next_before:100}});
-            window.hiddenForTest=false;
-            Object.defineProperty(document,'visibilityState',{
-                configurable:true,get:()=>hiddenForTest?'hidden':'visible'});
-        }""")
-        yield page
-        browser.close()
+def chat_page(app_url, request, browser):
+    page = browser.new_page(viewport={"width": request.param, "height": 844})
+    page.route("**/*", lambda route: route.continue_() if
+               route.request.url.startswith(app_url.rsplit("/", 1)[0] + "/")
+               else route.abort())
+    _enter_chat(page, app_url)
+    page.evaluate("""() => {
+        setQueueScope('home-1');
+        sessionStorage.setItem(TOKEN_KEY,'hermetic-token');
+        window.turns=Array.from({length:80},(_,i)=>({speaker:i%2?'universe':'founder',
+            text:'Message '+i+' '+('Long conversation line. '.repeat(12)),ts:i+100}));
+        Owner.getConversation=async()=>({universe_id:'home-1',recent_conversation:{
+            turns,has_more:true,next_before:100}});
+        window.hiddenForTest=false;
+        Object.defineProperty(document,'visibilityState',{
+            configurable:true,get:()=>hiddenForTest?'hidden':'visible'});
+    }""")
+    yield page
+    page.close()
 
 
 def _bottom(page):

@@ -3,69 +3,63 @@
 Only fetch is scripted. The shipped send, SSE reader, watchdog, recovery UI and
 owner read client execute in the rendered page. No live account/provider is used.
 """
-import os
-
 import pytest
 
 from tests.test_app_chat_cloud_browser import _enter_chat
 from tests.test_app_chat_cloud_browser import app_url as _app_url
+from tests.test_app_two_surfaces_browser import browser as _browser
 
 app_url = _app_url
+browser = _browser
 
 pytestmark = pytest.mark.real_browser
 
 
 @pytest.fixture
-def recovery_page(app_url):
-    sync_api = pytest.importorskip(
-        "playwright.sync_api", reason="owner=codex runs-in=real-browser-proof"
-    )
-    with sync_api.sync_playwright() as p:
-        browser = p.chromium.launch(executable_path=os.environ.get("TINYASSETS_TEST_CHROMIUM"))
-        context = browser.new_context(viewport={"width": 390, "height": 844},
-                                      is_mobile=True, has_touch=True)
-        page = context.new_page()
-        # Refuse external traffic, including any accidental production call.
-        page.route("**/*", lambda route: route.continue_() if
-                   route.request.url.startswith(app_url.rsplit("/", 1)[0] + "/")
-                   else route.abort())
-        _enter_chat(page, app_url)
-        page.evaluate(r"""() => {
-            setQueueScope('home-1');
-            window.wire = {sends:[], stops:[], reads:[], turns:[], hidden:false};
-            Object.defineProperty(document, 'visibilityState', {
-                configurable:true, get:()=>wire.hidden?'hidden':'visible'});
-            MCP.sessionId='hermetic-session';
-            const original=window.fetch;
-            window.fetch=async (url, opts) => {
-                if(url==='/mcp') {
-                    const frame=JSON.parse(opts.body);
-                    if(frame.method==='tools/call' && frame.params.name==='converse') {
-                        wire.sends.push(frame);
-                        return new Response(new ReadableStream({start(c){wire.stream=c;}}),
-                            {headers:{'Content-Type':'text/event-stream'}});
-                    }
-                    throw new Error('unexpected MCP mutation/handshake');
+def recovery_page(app_url, browser):
+    context = browser.new_context(viewport={"width": 390, "height": 844},
+                                  is_mobile=True, has_touch=True)
+    page = context.new_page()
+    # Refuse external traffic, including any accidental production call.
+    page.route("**/*", lambda route: route.continue_() if
+               route.request.url.startswith(app_url.rsplit("/", 1)[0] + "/")
+               else route.abort())
+    _enter_chat(page, app_url)
+    page.evaluate(r"""() => {
+        setQueueScope('home-1');
+        window.wire = {sends:[], stops:[], reads:[], turns:[], hidden:false};
+        Object.defineProperty(document, 'visibilityState', {
+            configurable:true, get:()=>wire.hidden?'hidden':'visible'});
+        MCP.sessionId='hermetic-session';
+        const original=window.fetch;
+        window.fetch=async (url, opts) => {
+            if(url==='/mcp') {
+                const frame=JSON.parse(opts.body);
+                if(frame.method==='tools/call' && frame.params.name==='converse') {
+                    wire.sends.push(frame);
+                    return new Response(new ReadableStream({start(c){wire.stream=c;}}),
+                        {headers:{'Content-Type':'text/event-stream'}});
                 }
-                if(url==='/app/api/status') {
-                    const args=JSON.parse(opts.body); wire.reads.push(args);
-                    if(wire.readError) throw new Error('offline');
-                    if(wire.delayRead) await new Promise(r=>wire.releaseRead=r);
-                    return Response.json({recent_conversation:{turns:wire.turns}});
-                }
-                if(url==='/app/turn/interrupt'){
-                    wire.stops.push(opts);return Response.json({interrupted:1});
-                }
-                if(url==='/app/turn/pending') return Response.json({pending:[],active:wire.active});
-                if(url==='/app/api/read') return Response.json({});
-                return original(url,opts);
-            };
-            MCP._pause=async()=>{};
-            startSessionKeepAlive();
-        }""")
-        yield page
-        context.close()
-        browser.close()
+                throw new Error('unexpected MCP mutation/handshake');
+            }
+            if(url==='/app/api/status') {
+                const args=JSON.parse(opts.body); wire.reads.push(args);
+                if(wire.readError) throw new Error('offline');
+                if(wire.delayRead) await new Promise(r=>wire.releaseRead=r);
+                return Response.json({recent_conversation:{turns:wire.turns}});
+            }
+            if(url==='/app/turn/interrupt'){
+                wire.stops.push(opts);return Response.json({interrupted:1});
+            }
+            if(url==='/app/turn/pending') return Response.json({pending:[],active:wire.active});
+            if(url==='/app/api/read') return Response.json({});
+            return original(url,opts);
+        };
+        MCP._pause=async()=>{};
+        startSessionKeepAlive();
+    }""")
+    yield page
+    context.close()
 
 
 def _send_and_interrupt(page, mode="cut"):

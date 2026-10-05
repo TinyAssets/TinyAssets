@@ -139,7 +139,6 @@ import os
 import re
 import sys
 
-import yaml
 
 STATE_PATH = os.environ["FAKE_DOCKER_STATE"]
 CALL_LOG = os.environ["FAKE_DOCKER_CALLS"]
@@ -288,6 +287,9 @@ def compose_config(compose_file, env_values, interpolate_values=True):
     unresolved. The earlier fake kept `env_file` verbatim, which is why #2685
     was green in CI and refused in production ("daemon.env_file is []",
     2026-08-30 00:34Z)."""
+    # Only compose config needs YAML; inspect/pull/run are frequent cheap calls.
+    import yaml
+
     with open(compose_file, encoding="utf-8") as handle:
         raw = handle.read()
     # Shell environment wins over the env file, exactly as compose interpolates.
@@ -1261,13 +1263,12 @@ def test_back_to_back_deploys_get_distinct_snapshots(box: Box):
 
 def test_snapshot_retention_keeps_the_last_five(box: Box):
     box.stage_bundle()
-    for _ in range(7):
-        # A UTC-second stamp would collide across a fast loop; seed distinct
-        # older directories and let the run add its own.
-        completed = box.run(NEW_IMAGE)
-        assert completed.returncode == 0, completed.stderr
-        box.set_docker_state(containers=box.docker_state_json()["containers"])
-    for index in range(9):
+    # One real snapshot plus older directories is enough to cross the retention
+    # boundary; seven full deploys only repeat the setup proved elsewhere.
+    completed = box.run(NEW_IMAGE)
+    assert completed.returncode == 0, completed.stderr
+    box.set_docker_state(containers=box.docker_state_json()["containers"])
+    for index in range(BUNDLE_KEEP):
         (box.snapshots / f"20260101T00000{index}Z").mkdir(exist_ok=True)
     completed = box.run(NEW_IMAGE)
     assert completed.returncode == 0, completed.stderr
@@ -2005,13 +2006,17 @@ def test_a_snapshot_without_a_manifest_is_refused(box: Box):
 
 
 def test_retention_never_deletes_the_pointed_snapshot(box: Box):
-    """Seven deploys, five kept — but the pointed one is kept regardless.
+    """An overfull snapshot directory keeps the pointed one regardless.
 
     Asserting `count <= 5` alone also passes when the pointer's target was the
     directory deleted, which is the failure this guards.
     """
     box.stage_bundle()
-    for index in range(7):
+    # Retention reads directory names, not old payload sizes. Seed the excess
+    # history and perform two real installs so the pointer still advances.
+    for index in range(BUNDLE_KEEP + 1):
+        (box.snapshots / f"20260101T00000{index}Z-aaaaaa").mkdir(parents=True)
+    for index in range(2):
         completed = box.run(NEW_IMAGE if index % 2 == 0 else OTHER_IMAGE)
         assert completed.returncode == 0, f"deploy {index}: {completed.stderr}"
 

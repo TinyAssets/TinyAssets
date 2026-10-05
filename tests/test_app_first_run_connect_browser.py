@@ -1,85 +1,80 @@
 """Chromium proof of the shipped send/card/popup/resume code, with scripted HTTP."""
 
-import os
-
 import pytest
 
 from tests.test_app_chat_cloud_browser import _enter_chat
 from tests.test_app_chat_cloud_browser import app_url as _app_url
+from tests.test_app_two_surfaces_browser import browser as _browser
 
 app_url = _app_url
+browser = _browser
 pytestmark = pytest.mark.real_browser
 
 
 @pytest.fixture(params=[390, 1280])
-def page(app_url, request):
-    from playwright.sync_api import sync_playwright
-
-    with sync_playwright() as p:
-        browser = p.chromium.launch(executable_path=os.environ.get("TINYASSETS_TEST_CHROMIUM"))
-        width, native = (
-            request.param if isinstance(request.param, tuple) else (request.param, False)
-        )
-        context = browser.new_context(viewport={"width": width, "height": 844})
-        if native:
-            context.add_init_script("""window.nativeOpened=[];
-                window.Capacitor={isNativePlatform:()=>true,Plugins:{Browser:{
-                    open:async options=>{nativeOpened.push(options);},close:async()=>{}
-                }}};""")
-        context.route("**/*", lambda route: route.continue_() if
-                      route.request.url.startswith(app_url.rsplit("/", 1)[0] + "/")
-                      else route.abort())
-        page = context.new_page()
-        _enter_chat(page, app_url)
-        page.evaluate(r"""() => {
-            setQueueScope('home-1');MCP.sessionId='test-session';
-            sessionStorage.setItem(TOKEN_KEY,'test-token');
-            sessionStorage.setItem(EXP_KEY,String(Date.now()+3600000));
-            window.wire={sends:[],answers:0,connected:false,flow:'waiting'};
-            const original=window.fetch;
-            window.fetch=async(url,opts)=>{
-                if(url==='/mcp'){
-                    const frame=JSON.parse(opts.body);
-                    if(frame.method==='tools/call'){
-                        let result;
-                        if(frame.params.name==='converse'){
-                            wire.sends.push(frame.params.arguments);
-                            result=wire.connected?{reply:'Your day is planned.'}:{
-                                status:'held',reason:'setup_required',history_saved:true,
-                                turn_failure:{code:'setup_required',effects:'none'},
-                                needs_connection:{action:{type:'connect',setup:{primary:{
-                                    preset_id:'test_source',name:wire.provider||'OpenRouter',
-                                    label:'Connect '+(wire.provider||'OpenRouter')
-                                }}}}
-                            };
-                        }else{
-                            wire.answers++;wire.connected=true;result={status:'answered'};
-                        }
-                        return Response.json({jsonrpc:'2.0',id:frame.id,result:{
-                            content:[{type:'text',text:JSON.stringify(result)}]}});
+def page(app_url, request, browser):
+    width, native = (
+        request.param if isinstance(request.param, tuple) else (request.param, False)
+    )
+    context = browser.new_context(viewport={"width": width, "height": 844})
+    if native:
+        context.add_init_script("""window.nativeOpened=[];
+            window.Capacitor={isNativePlatform:()=>true,Plugins:{Browser:{
+                open:async options=>{nativeOpened.push(options);},close:async()=>{}
+            }}};""")
+    context.route("**/*", lambda route: route.continue_() if
+                  route.request.url.startswith(app_url.rsplit("/", 1)[0] + "/")
+                  else route.abort())
+    page = context.new_page()
+    _enter_chat(page, app_url)
+    page.evaluate(r"""() => {
+        setQueueScope('home-1');MCP.sessionId='test-session';
+        sessionStorage.setItem(TOKEN_KEY,'test-token');
+        sessionStorage.setItem(EXP_KEY,String(Date.now()+3600000));
+        window.wire={sends:[],answers:0,connected:false,flow:'waiting'};
+        const original=window.fetch;
+        window.fetch=async(url,opts)=>{
+            if(url==='/mcp'){
+                const frame=JSON.parse(opts.body);
+                if(frame.method==='tools/call'){
+                    let result;
+                    if(frame.params.name==='converse'){
+                        wire.sends.push(frame.params.arguments);
+                        result=wire.connected?{reply:'Your day is planned.'}:{
+                            status:'held',reason:'setup_required',history_saved:true,
+                            turn_failure:{code:'setup_required',effects:'none'},
+                            needs_connection:{action:{type:'connect',setup:{primary:{
+                                preset_id:'test_source',name:wire.provider||'OpenRouter',
+                                label:'Connect '+(wire.provider||'OpenRouter')
+                            }}}}
+                        };
+                    }else{
+                        wire.answers++;wire.connected=true;result={status:'answered'};
                     }
-                    throw new Error('Unexpected handshake');
+                    return Response.json({jsonrpc:'2.0',id:frame.id,result:{
+                        content:[{type:'text',text:JSON.stringify(result)}]}});
                 }
-                if(url==='/app/model-connect/inline_begin')return Response.json({
-                    flow:'a'.repeat(43),launch_path:'/app/model-callback/'+'a'.repeat(43)+'?launch=1'});
-                if(url==='/app/model-connect/inline_poll')return Response.json(
-                    wire.flow==='ready'?{status:'confirmation_required',request_id:'free-request',
-                        request:{request_id:'free-request',action:{type:'bind_model_access'}}
-                    }:{status:wire.flow});
-                if(url==='/app/model-connect/inline_cancel'){
-                    if(wire.delayCancel)await new Promise(resolve=>wire.releaseCancel=resolve);
-                    wire.flow='cancelled';return Response.json({status:'cancelled'});}
-                if(url==='/app/me')return Response.json({
-                    setup:wire.connected?'connected':'empty',
-                    principal_id:'owner-1',universe_id:'home-1'});
-                if(url==='/app/turn/pending')return Response.json({pending:[]});
-                if(url==='/app/api/read'||url==='/app/api/status')return Response.json({});
-                return original(url,opts);
-            };
-        }""")
-        yield page
-        context.close()
-        browser.close()
+                throw new Error('Unexpected handshake');
+            }
+            if(url==='/app/model-connect/inline_begin')return Response.json({
+                flow:'a'.repeat(43),launch_path:'/app/model-callback/'+'a'.repeat(43)+'?launch=1'});
+            if(url==='/app/model-connect/inline_poll')return Response.json(
+                wire.flow==='ready'?{status:'confirmation_required',request_id:'free-request',
+                    request:{request_id:'free-request',action:{type:'bind_model_access'}}
+                }:{status:wire.flow});
+            if(url==='/app/model-connect/inline_cancel'){
+                if(wire.delayCancel)await new Promise(resolve=>wire.releaseCancel=resolve);
+                wire.flow='cancelled';return Response.json({status:'cancelled'});}
+            if(url==='/app/me')return Response.json({
+                setup:wire.connected?'connected':'empty',
+                principal_id:'owner-1',universe_id:'home-1'});
+            if(url==='/app/turn/pending')return Response.json({pending:[]});
+            if(url==='/app/api/read'||url==='/app/api/status')return Response.json({});
+            return original(url,opts);
+        };
+    }""")
+    yield page
+    context.close()
 
 
 def send(page):
