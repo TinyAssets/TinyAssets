@@ -226,6 +226,11 @@ def test_chat_moves_to_a_different_source_after_the_openrouter_daily_cap(pool, m
 
     reply = _converse(pool.base, monkeypatch, "Write a morning focus note.")
 
-    assert reply == "morning focus note"
+    reset = datetime.fromtimestamp(int(_RESET_MS) / 1000, UTC).strftime("%Y-%m-%d %H:%M UTC")
+    assert reply == (
+        f"morning focus note\n\nAnswered by model-groq because {pool.first} "
+        "is cooling down or out of capacity. "
+        f"The original source can be retried after {reset}."
+    )
     assert pool.first_wire.sent_models == [parity.LIVE_MODELS[0]]
     assert pool.second_wire.sent_models == [pool.second_wire.models[0]]
