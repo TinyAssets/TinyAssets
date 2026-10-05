@@ -1,3 +1,55 @@
+# Current delivery: D60 foundations pushed; D63 legacy-provenance stop
+
+Pushed implementation slices: **4cd932f044** (durable identity store) and
+**39a1ce6887** (fenced identity IPC, reserved mapper slot, bounded namespace
+feasibility). D62 hygiene: 2 tests added, 0 removed, 0 tampering. No history
+rewrite; the MCP stack remains mergeable. No PR, startup activation or deploy.
+
+**STOP under the founder's cross-user-exposure rule.** Dedicated UID/GID
+protects a foreign inode while it retains that foreign label. Legacy shared
+identity data can already have a retired-original alias. A migration that
+infers the new identity from the surviving pathname launders that inode into
+the requesting owner's exact UID/GID. D63 records the concrete counterexample
+and leaves trusted legacy provenance unresolved; no unsafe migration was added.
+
+```text
+python scripts/role_owner_migration_provenance_probe.py --image tinyassets-uid-d60:foundation
+native exit 3; foreign_reads=114; profiles=3; attacks=2
+unchanged_outside=true; positive_control=true; foreign_metadata_denied=true
+```
+
+Image: `sha256:2ded0b0cdd8628d4bc77eba7d4cae55dfb2f51578448b7f906453256ae1be1b7`.
+The diagnostic MODELS pathname-based chown on synthetic retired aliases, then
+runs the actual D59 reader/profile matrix with dedicated Alice 300001:300001.
+It does not run a product migration. All final open descriptors satisfy exact
+UID/GID/nlink1. Two initial diagnostic setup runs failed an indentation check;
+they are not acceptance evidence. No live data, host mounts or external traffic.
+
+```text
+python scripts/role_reader_alias_probe.py --image tinyassets-uid-d60:foundation
+native exit 3; 19 foreign reads (original unchanged reader probe)
+```
+
+Completed: D60/D61/D62 recorded; append-only broker identity allocation and
+fenced IPC; 28 passing Linux tests (zero skips); bounded mapping feasibility
+with zero foreign bytes in all three existing profiles; rebuilt foundation /
+HTTPS broker streaming-accounting-refresh rerun passed. Details and the first
+intermittent D54 failure are retained below. Release-critical files per slice:
+**0; none**, including this diagnostic/docs slice. No task 2.x newly complete.
+
+Not completed: full descriptor enforcement; bounded mapping integrated into the
+launcher; EVERY actual engine class under D60; full owner migration and two-pass
+deletion; actual old-image rollback; startup/healthcheck. Existing D12/D29/D45
+substep dry-run/repeat/reverse/crash receipts are not substitutes. ui-preview
+remains unadmitted, with its founder profile decision still pending. The concern
+is retained. Full PR prerequisites are unmet; do not open the final build PR.
+
+Handoff: establish a trusted legacy provenance source (or explicitly justified
+legacy-snapshot trust precondition) before enabling owner-tree chown. Current
+names/link counts cannot establish retired inode origin. No privilege expansion,
+quarantine/deletion policy or weakening of the acceptance matrix was inferred.
+
+---
 # D62 continuation: fenced identity IPC and bounded mapping proof
 
 D61 foundation pushed as **4cd932f044**. Hygiene: 5 added, 0 removed,

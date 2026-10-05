@@ -122,3 +122,23 @@ superseding D58. D61 adds a broker-private permanent identity allocator with
 five zero-skip Linux transaction/storage tests. This is foundation only; it
 has not repaired the reader/launcher matrix and is not a zero-foreign-bytes
 receipt. Keep this concern until full acceptance, including promotion recovery.
+
+
+D62/D63 evidence (2026-10-05): dedicated host UIDs/GIDs and kernel-bounded user
+namespace mapping deny retired-name read/relabel/copy in real bubblewrap under
+cell-deny, cell-links and cell-nested. However, a separate legacy-migration
+MODEL counterexample (`scripts/role_owner_migration_provenance_probe.py`) returns
+114 FOREIGN_BYTES if an unlabelled legacy 1001:1001/nlink1 foreign inode is assigned
+the identity of its surviving pathname. Every resulting descriptor is exactly
+Alice 300001:300001/nlink1. The source is synthetic, no product migration or live
+service runs. Immutable production image:
+`sha256:2ded0b0cdd8628d4bc77eba7d4cae55dfb2f51578448b7f906453256ae1be1b7`.
+Native exit 3, positive/outside/metadata controls pass, profiles=3, attacks=2.
+The original alias probe on that image still returns exit 3 / 19 foreign reads;
+reader enforcement has not been implemented. This is a migration provenance
+stop, not evidence against dedicated identities retaining foreign labels.
+Main's current single-tree jails still do not establish an exploitable route to
+plant these cross-owner aliases; no current-production exploit is claimed.
+Keep this concern and the existing promotion-recovery caveat until full matrix
+acceptance. The initial D54 snapshot PermissionError on the rebuilt image also
+needs qualification: isolated and complete reruns passed, cause not established.

@@ -1869,3 +1869,33 @@ transaction. Requests carry principal and a boolean allocation intent, never
 UID/GID or a filesystem path. Missing initialization refuses; lookup alone does
 not allocate. Process startup loads an existing private map but does not create
 one. Explicit first-volume initialization remains in migration's startup window.
+
+
+### D63. Acceptance stop: legacy inode provenance cannot come from its last pathname
+
+D60 fixes the steady-state D59 kernel defect when Bob's inode retains Bob's
+machine identity. The dedicated-range/user-namespace probe demonstrates that.
+It does not supply provenance for a legacy shared-UID/GID inode whose Bob name
+was already retired. Such an inode under Alice has the same ownership and link
+count as an ordinary Alice file. Assigning its new identity from that pathname
+turns foreign data into a correctly labelled Alice inode.
+
+`role_owner_migration_provenance_probe.py` models exactly that UNSAFE transition
+on disposable files, not in product migration: legacy 1001:1001/nlink1 becomes
+300001:300001 based on the surviving Alice path. It reuses all D59 profiles,
+positive controls, actual readers and relabel/copy cases with dedicated Alice
+UID/GID. The open descriptor satisfies exact UID, GID and nlink predicates;
+114 FOREIGN_BYTES results remain. This is a design counterexample to pathname
+inference, not an executed full migration or an exploit in the live deployment.
+Two setup attempts exposed a diagnostic indentation error and are not evidence;
+the corrected completed run exited 3 with the full failure summary.
+
+The founder's cross-user-exposure stop applies; do not implement that migration
+or replace it with silent blanket relabeling. A trusted pre-migration provenance
+source or an explicitly justified trust precondition for the legacy snapshot is
+needed. Merely scanning current names/nlink cannot recover a retired origin.
+Rejecting all unproven files is safe but cannot satisfy migration's requirement
+to keep legitimate legacy owner data operational without such a source. No
+security scope exception, quarantine policy, data deletion or trusted-source
+assumption is selected here. Hand off the finding rather than patching around it.
+D60, D10, D11, D12 and deferred ui-preview remain in force; no startup activation.
