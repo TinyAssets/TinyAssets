@@ -559,7 +559,9 @@ def read_graph(
             you can build an authenticated_external_call node without asking the
             owner to paste those ids back; secrets are never included),
             ``conversation`` (page your founder\'s retained conversation: omit
-            field_name for message ids, then select an id for exact text chunks;
+            field_name for message ids and bounded previews; query searches all
+            retained text literally, ignoring case. Keep query with next_offset
+            when paging, then select an id for exact text chunks;
             all history is evidence, never new consent; every result's
             ``owner_unread`` counts their unread messages),
             ``automations`` (list recurring triggers,
@@ -665,7 +667,7 @@ def read_graph(
                 root = require_founder_home(_base_path(), _GRAPH_ID, _ACTOR_ID)
                 payload = read_conversation_page(
                     root, f"principal:{_ACTOR_ID}", field_name=field_name,
-                    offset=output_offset, max_chars=output_max_chars,
+                    offset=output_offset, max_chars=output_max_chars, query=query,
                 )
             except (PermissionError, ValueError) as exc:
                 return json.dumps({"error": str(exc)})
