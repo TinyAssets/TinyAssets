@@ -1,5 +1,14 @@
 # Current delivery: D25 serving context and custody broker consumers
 
+Implementation commits are pushed: `4c394ccaf9` (D24) and `af3c49f434` (D25).
+Both passed commit hooks; working tree was clean after the second push.
+Final D25 hygiene: `python scripts/test_hygiene_gate.py --base 4c394ccaf9 --head af3c49f434`
+returned `tests added 0, removed 0, tampering findings 0, product lines added 87`.
+Combined hygiene: `python scripts/test_hygiene_gate.py --base a39ffede4d --head af3c49f434`
+returned `tests added 10, removed 0, tampering findings 0, product lines added 370`.
+These are the gate's own counters; the new D25 pytest file executes 10 cases.
+This receipt-only follow-up adds no runtime change and requires no image rebuild.
+
 D24 is committed/pushed as `4c394ccaf9`. Its final hygiene command
 `python scripts/test_hygiene_gate.py --base a39ffede4d --head 4c394ccaf9`
 returned `tests added 10, removed 0, tampering findings 0, product lines added 283`.
