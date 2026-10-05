@@ -116,6 +116,29 @@ def test_names_real_creators_write_into_a_home_are_classified(tmp_path):
     assert classify(".provider-authority") == PLATFORM
 
 
+@pytest.mark.parametrize("name", ["AGENTS.md", "identity.md", "MEMORY.md", "settings.yaml"])
+def test_root_harness_content_does_not_block_cutover_inventory(tmp_path, name):
+    from tinyassets.command_center_packages import HARNESS_ROOT_FILES, destination
+
+    assert name in HARNESS_ROOT_FILES
+    assert destination(name, "helper") == f"agents/helper/{name}"
+    home = tmp_path / HOME
+    home.mkdir()
+    content = "model: owner-choice\n" if name == "settings.yaml" else "- Remember this\n"
+    (home / name).write_text(content, encoding="utf-8")
+    before = _digest(tmp_path)
+
+    report = inv.inventory(tmp_path)
+
+    assert report["homes"][HOME]["unclassified"] == []
+    assert report["homes"][HOME]["user"] == [name]
+    assert report["homes"][HOME]["platform"] == []
+    assert report["totals"]["unclassified_entries"] == 0
+    assert report["complete"]
+    assert inv.main([str(tmp_path)]) == 0
+    assert _digest(tmp_path) == before
+
+
 def _fixture(root: Path) -> None:
     home = root / HOME
     home.mkdir(parents=True)
