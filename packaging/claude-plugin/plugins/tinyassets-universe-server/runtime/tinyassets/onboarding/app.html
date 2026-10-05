@@ -4489,6 +4489,20 @@
     const reply=at<0?-1:turns.findIndex((t,i)=>i>at&&
       (t.speaker==="universe"||t.speaker==="platform"));
     const held=readInflight();
+    if(!watched.client_send_id){
+      // Connector/pre-deploy turns have no send id. This is display only:
+      // matching text cannot confirm or forget a device's unconfirmed send.
+      let displayAt=-1;
+      turns.forEach((t,i)=>{
+        if(t.speaker==="founder"&&t.text===watched.text) displayAt=i;
+      });
+      if(displayAt>=0){
+        const nextFounder=turns.findIndex((t,i)=>i>displayAt&&t.speaker==="founder");
+        drawHistoryTurns(turns.slice(displayAt+1,nextFounder<0?turns.length:nextFounder)
+          .filter(t=>t.speaker==="universe"||t.speaker==="platform"));
+      }
+      return;
+    }
     if(reply>=0){
       drawHistoryTurns(turns.slice(at+1,reply+1));
       if(held&&held.client_send_id&&held.client_send_id===watched.client_send_id)
