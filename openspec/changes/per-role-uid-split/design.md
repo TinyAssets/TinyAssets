@@ -1075,6 +1075,34 @@ can run without capabilities; production-image acceptance uses the real launcher
 1001 supervisor and 1002 broker. Missing-grant refusal proves the live channel,
 not successful streaming or D11 ledger/accounting/refresh consumer routing.
 
+### D19. Mechanical decision: named consistent broker ledger reads
+
+Route the two raw-SQL consumers `discovery_snapshot._context` and
+`connection_uses.model_use_refusal` through `DISCOVERY_FACTS` and
+`HAS_PRICED_SOURCE` on the existing daemon broker socket. Authenticate the
+kernel owner role and live in-memory fence before constructing a ledger; hold
+the fence across one transaction that checks the principal, command center,
+live grant and live connection. Return an explicit projection, never a database
+handle, caller-selected method, SQL or path. Discovery selects the priced
+catalogue before a declared list in that same snapshot, retaining its existing
+digest and typed refusal contract. Malformed pricing remains a refusal rather
+than an unpriced declaration.
+
+Connect asks precede first deposit. For the pricing-presence query only, a
+transaction proving both proposed connection and grant IDs absent may return
+false. Any existing row requires the full scoped live-grant check; missing,
+foreign, mismatched or revoked authority is not treated as free. This query is
+advisory: mutation-time pricing/admission checks remain required.
+
+Select routing before ledger construction. Broker-selected-but-unavailable
+fails loudly; the local route is only for unsplit runtimes with broker mode off.
+This is an incremental D11 consumer conversion, not a generic RPC facade or
+activation. Remaining discovery HTTP, mutation, accounting, refresh, deletion
+and backup consumers stay unproven; startup remains disabled. The production
+oracle seeds only synthetic ledger rows before capability retirement and then
+exercises both actual daemon consumer functions through the launcher-owned
+broker, before and after restart, while direct ledger access stays denied.
+
 ## Risks / Trade-offs
 
 - **The launcher is root-adjacent code.** One file, stdlib-only, run `-I -S`, a static kind table,

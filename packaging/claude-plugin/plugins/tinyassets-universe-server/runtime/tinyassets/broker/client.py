@@ -87,6 +87,38 @@ class BrokerClient:
         self._verify_peer = verify_peer
         self._lock = threading.Lock()
 
+    def ledger_query(self, *, query: str, grant_id: str,
+                     connection_id: str = "") -> dict[str, Any]:
+        """One named, read-only operation; never retry through a local ledger."""
+        from tinyassets.broker.ledger_queries import validate_query
+        from tinyassets.storage.outbound_connections import GrantResolutionError, ProxyRequestError
+
+        validate_query(query, self._principal, self._command_center, grant_id, connection_id)
+        generation, token = self._fence()
+        document = {"op": "LEDGER_QUERY", "query": query, "principal": self._principal,
+                    "command_center": self._command_center, "grant_id": grant_id,
+                    "connection_id": connection_id, "generation": generation, "token": token}
+        with self._lock, socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+            sock.settimeout(self._timeout)
+            try:
+                sock.connect(os.fspath(self._path))
+                if self._verify_peer is not None:
+                    self._verify_peer(sock)
+                sock.sendall(rf.control(rf.CONNECTION, document))
+                frame = rf.read_frame_blocking(sock)
+                if frame is None or frame.kind != rf.CONTROL or frame.stream != rf.CONNECTION:
+                    raise rf.FrameError("invalid ledger response")
+                answer = frame.control()
+            except (OSError, rf.FrameError):
+                raise ProxyRequestError("credential broker query unavailable") from None
+        if answer.get("op") == "LEDGER_REFUSED":
+            if answer.get("error_class") == "GrantResolutionError":
+                raise GrantResolutionError("outbound connection grant identity mismatch")
+            raise BrokerRefused("credential broker query refused")
+        if answer.get("op") != "LEDGER_RESULT" or not isinstance(answer.get("result"), dict):
+            raise ProxyRequestError("invalid credential broker query response")
+        return answer["result"]
+
     def request(self, *, grant_id: str, connection_id: str, verb: str, request: dict[str, Any],
                 op_id: str, idle_s: float | None = None,
                 inference_usage: dict[str, Any] | None = None) -> dict[str, Any]:

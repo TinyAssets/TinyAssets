@@ -46,6 +46,97 @@ def _fence(path, proof, **extra):
         return rf.read_frame_blocking(connection).control()
 
 
+def _seed_ledger(root):
+    """Synthetic setup before role retirement; never a daemon ledger open."""
+    from tinyassets.storage.outbound_connections import ConnectionLedger
+
+    ledger = ConnectionLedger(root / ".broker/outbound.db", data_root=root)
+    for owner in ("alice", "bob"):
+        ledger.create_connection(
+            connection_id=f"conn-{owner}", owner_user_id=owner, connection_class="http",
+            connection_type="http", auth_scheme="bearer", scopes=("GET", "POST"),
+            provider="http", destination=f"compute:{owner}", credential_ref="vault://http/fixture",
+            allowed_endpoints=[{"host": "models.example.com", "path_template": "/v1/chat",
+                                "methods": ["POST"]}],
+        )
+        ledger.grant_connection(grant_id=f"grant-{owner}", connection_id=f"conn-{owner}",
+                                owner_user_id=owner, universe_id=owner)
+        ledger.configure_capability(
+            connection_id=f"conn-{owner}", capability_kind="model_use", enabled=True,
+            descriptor={"wire": "chat_messages", "models": [
+                {"id": f"{owner}-fixture", "tools": True, "context": 20000}], "billing": "free"},
+        )
+    with ledger._connect() as conn:
+        conn.execute("INSERT INTO connection_capabilities VALUES (?, ?, ?, 0)",
+                     ("conn-bob", "model_discovery", "malformed pricing must still block"))
+    for path in (root / ".broker").glob("outbound.db*"):
+        os.chown(path, 1002, 1101)
+        path.chmod(0o600)
+
+
+def _query_consumers(root, supervisor):
+    from tinyassets import rpc_frames as rf
+    from tinyassets.api.connection_uses import model_use_refusal
+    from tinyassets.broker.client import BrokerClient, BrokerRefused
+    from tinyassets.broker.ledger_queries import DISCOVERY_FACTS, HAS_PRICED_SOURCE, query_ledger
+    from tinyassets.providers.definition import register_definition
+    from tinyassets.providers.discovery_snapshot import _context
+    from tinyassets.storage.outbound_connections import GrantResolutionError
+
+    os.environ["TINYASSETS_DATA_DIR"] = str(root)
+    os.environ["TINYASSETS_CREDENTIAL_BROKER"] = "process"
+    definition = register_definition(
+        universe_id="alice", owner_user_id="alice", access_method="api_key_http",
+        protocol="chat_messages", model="alice-fixture", ref="grant-alice",
+    )
+    context = _context(root, "alice", "alice", definition.id)
+    assert context.profile.descriptor()["models"][0]["id"] == "alice-fixture"
+    assert len(context.digest) == 64
+    assert model_use_refusal(base=root, uid="alice", actor="alice", connection_id="conn-alice",
+                             grant_id="grant-alice") is None
+    from tinyassets.storage.outbound_connections import MODEL_USE_PRICED_CONFLICT
+
+    assert model_use_refusal(base=root, uid="bob", actor="bob", connection_id="conn-bob",
+                             grant_id="grant-bob")["detail"] == MODEL_USE_PRICED_CONFLICT
+    arguments = dict(query=DISCOVERY_FACTS, principal="alice", command_center="alice",
+                     grant_id="grant-alice", connection_id="conn-alice")
+    facts = query_ledger(root, **arguments)
+    assert facts["resource"]["owner_user_id"] == "alice"
+    assert "bob-fixture" not in json.dumps(facts)
+    for changes in ({"principal": "bob"}, {"command_center": "bob"},
+                    {"grant_id": "grant-bob"}, {"connection_id": "conn-bob"}):
+        try:
+            query_ledger(root, **(arguments | changes))
+        except GrantResolutionError:
+            pass
+        else:
+            raise AssertionError("broker returned foreign discovery facts")
+    assert query_ledger(root, **(arguments | {"query": HAS_PRICED_SOURCE})) == {"priced": False}
+    bad = BrokerClient(supervisor.socket_path, principal="alice", command_center="alice",
+                       fence=lambda: (1, "wrong"), verify_peer=supervisor.verify_broker, timeout=5)
+    try:
+        bad.ledger_query(query=DISCOVERY_FACTS, grant_id="grant-alice")
+    except BrokerRefused:
+        pass
+    else:
+        raise AssertionError("broker admitted unfenced ledger query")
+    generation, token = supervisor.fence()
+    for extra in ({"query": "_connect"}, {"sql": "SELECT * FROM outbound_connections"},
+                  {"path": "/data/outbound.db"}):
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
+            connection.settimeout(5)
+            connection.connect(str(supervisor.socket_path))
+            supervisor.verify_broker(connection)
+            connection.sendall(rf.control(rf.CONNECTION, {
+                "op": "LEDGER_QUERY", "generation": generation, "token": token,
+                **arguments, **extra,
+            }))
+            assert rf.read_frame_blocking(connection).control()["op"] == "LEDGER_REFUSED"
+    assert not (root / "outbound.db").exists(), "daemon constructed a fallback ledger"
+    print("D11 actual discovery/priced-source consumers via launcher broker; "
+          "foreign scope, fence, SQL/path/method refusal; no local ledger: PASS", flush=True)
+
+
 def _daemon(root, run, ready, control, launcher):
     launcher["retire_child"]("daemon")
     launcher["close_descriptors"]((ready, control))
@@ -103,6 +194,7 @@ def _daemon(root, run, ready, control, launcher):
     supervisor.start()
     assert supervisor_module.get_supervisor(root) is supervisor
     assert supervisor.fence() == (fenced["generation"], fenced["token"])
+    _query_consumers(root, supervisor)
     # A socket at the daemon uid must never receive a proof, even when its
     # pathname was supplied by trusted startup configuration.
     fake_path = root / "fake-broker.sock"
@@ -162,6 +254,7 @@ def _daemon(root, run, ready, control, launcher):
         raise AssertionError("launcher did not restart broker")
     assert _fence(answer["socket"], proof) == fenced
     assert supervisor.fence() == (fenced["generation"], fenced["token"])
+    _query_consumers(root, supervisor)
     from tinyassets.storage.outbound_connections import (
         GrantResolutionError,
         ProxyRequestError,
@@ -215,6 +308,7 @@ def main():
         directory = root / child
         directory.mkdir(mode=0o2700)
         directory_permissions(directory, 1002, 1101, 0o2700)
+    _seed_ledger(root)
     run = Path(tempfile.mkdtemp(prefix="uid-launcher-", dir="/run"))
     run.chmod(0o755)
     ipc = run / "broker"
@@ -320,7 +414,7 @@ def main():
     info = (root / ".broker/outbound.db").stat()
     assert (info.st_uid, info.st_gid, info.st_mode & 0o777) == (1002, 1101, 0o600)
     assert not (root / "outbound.db").exists()
-    print("launcher wrong-uid filesystem refusal; actual broker creates private ledger: PASS",
+    print("launcher wrong-uid filesystem refusal; actual broker uses private ledger: PASS",
           flush=True)
     print("LAUNCHER/BROKER SUBSTEP ONLY: real daemon CMD, streams/accounting, "
           "engine classes pending",

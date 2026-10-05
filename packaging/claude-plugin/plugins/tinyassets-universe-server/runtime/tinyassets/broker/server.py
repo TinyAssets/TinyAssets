@@ -292,7 +292,10 @@ class _Connection:
     async def _connection_op(self, op: str, doc: dict[str, Any]) -> None:
         if self._role != OWNER:
             raise rf.FrameError("only the owner channel may send connection operations")
-        if op == "FENCE":
+        if op == "LEDGER_QUERY":
+            answer = await asyncio.to_thread(self._ledger_query, doc)
+            await self.send_async(rf.control(rf.CONNECTION, answer))
+        elif op == "FENCE":
             try:
                 generation, token = await asyncio.to_thread(
                     self._server._fence.barrier, doc.get("generation"), doc.get("proof"),
@@ -311,6 +314,37 @@ class _Connection:
             await self.send_async(rf.control(rf.CONNECTION, {
                 "op": "STATUS_IS", "op_id": doc.get("op_id"), "state": state,
                 "side_effect_state": effect}))
+
+    def _ledger_query(self, doc: dict[str, Any]) -> dict[str, Any]:
+        from tinyassets.broker.ledger_queries import local_query, validate_query
+
+        try:
+            if set(doc) != {"op", "query", "principal", "command_center", "grant_id",
+                            "connection_id", "generation", "token"}:
+                raise ValueError("unsupported ledger query fields")
+            validate_query(doc["query"], doc["principal"], doc["command_center"],
+                           doc["grant_id"], doc["connection_id"])
+            if type(doc["generation"]) is not int or not isinstance(doc["token"], str):
+                raise Fenced("invalid fence")
+            # Authenticate before even constructing the private ledger. Hold
+            # the generation across the transaction, just as for an egress send.
+            with self._server._fence.send(doc["generation"], doc["token"]):
+                ledger = self._server._ledger_for(doc["principal"])
+                result = local_query(
+                    ledger, query=doc["query"], principal=doc["principal"],
+                    command_center=doc["command_center"], grant_id=doc["grant_id"],
+                    connection_id=doc["connection_id"],
+                )
+                answer = {"op": "LEDGER_RESULT", "result": result}
+                # Validate the bounded wire representation in the worker, so
+                # malformed persisted data cannot terminate the server handler.
+                rf.control(rf.CONNECTION, answer)
+                return answer
+        except Exception as exc:  # noqa: BLE001 - no paths, SQL or values on the wire
+            error = "fenced" if isinstance(exc, Fenced) else (
+                "GrantResolutionError" if type(exc).__name__ == "GrantResolutionError"
+                else "refused")
+            return {"op": "LEDGER_REFUSED", "error_class": error}
 
     def _operation_state(self, namespace: str, op_id: str) -> tuple[str, str]:
         """``(state, side_effect_state)`` of an operation, never ``none`` on a guess."""

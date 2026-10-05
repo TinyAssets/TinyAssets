@@ -1,7 +1,8 @@
 # Broker egress access inventory
 
 Baseline: `21096788fb04a3587b900ed1883ed5183d92be20`. Line numbers below refer to
-that unchanged runtime. **Routing status: specified, NOT IMPLEMENTED.** D11
+that baseline runtime. **Routing status: partial; D19 routes only the two raw
+read consumers noted below.** D11
 records the lead decision; D12 resolves the physical parent: .broker/outbound.db and
 .broker/.outbound-proxy. The logical data root must remain explicit.
 
@@ -30,6 +31,13 @@ refuse before allocation. None of the ledger/accounting/refresh consumers below
 is claimed routed by D18. Image startup remains unactivated.
 
 ## Ledger construction entry points
+
+D19 replaces `discovery_snapshot._context`'s local construction/raw transaction
+and `connection_uses.model_use_refusal`'s capability SQL with named authenticated
+broker reads. Their local path exists only with broker mode off; selected mode
+has no local fallback. Other functions in those same files, including discovery
+HTTP and capability mutations, still require conversion. All rows below remain
+obligations except those two read operations. See D19's verification receipt.
 
 Each daemon route must preserve the current request's trusted principal and
 scope. Engine-MCP handlers move to the daemon per D9; engine code never imports

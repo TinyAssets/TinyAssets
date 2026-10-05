@@ -118,21 +118,18 @@ def model_use_refusal(
     connection, and no accepted access with spending caps on a model source
     registered for its grant. Unreadable state refuses (fail closed).
     """
+    from tinyassets.broker.ledger_queries import HAS_PRICED_SOURCE, query_ledger
     from tinyassets.providers.definition import list_definitions
     from tinyassets.storage.outbound_connections import (
         MODEL_USE_PRICED_CONFLICT,
-        ConnectionLedger,
     )
 
     try:
-        ledger = ConnectionLedger(Path(base) / "outbound.db")
-        with ledger._connect() as conn:
-            priced = conn.execute(
-                "SELECT 1 FROM connection_capabilities WHERE connection_id = ? "
-                "AND capability_kind = 'model_discovery'",
-                (connection_id,),
-            ).fetchone()
-        if priced is not None:
+        facts = query_ledger(Path(base), query=HAS_PRICED_SOURCE, principal=actor,
+                             command_center=uid, grant_id=grant_id, connection_id=connection_id)
+        if type(facts.get("priced")) is not bool:
+            raise ValueError("invalid priced-source response")
+        if facts["priced"]:
             return {"error": "connection_setup_invalid", "detail": MODEL_USE_PRICED_CONFLICT}
         sources = {
             f"api_key_http:{d.id}" for d in list_definitions(uid)

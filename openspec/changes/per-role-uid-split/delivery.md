@@ -1,3 +1,110 @@
+# Current delivery: D19 named broker ledger reads
+
+Started from `e5f48c5ee9`; required fast-forward pull was already current.
+D12-D18 remain intact. D19 is a mechanical D11 continuation: the discovery
+snapshot and priced-source guard now use two named authenticated broker reads.
+No raw SQL, path or arbitrary method dispatch crosses IPC. The broker checks
+scope in one transaction; selected-mode failures never open a local ledger.
+Connect asks preserve the predeposit case only when both proposed IDs are
+proven absent. Revoked discovery preserves its typed source_revoked response.
+
+Release-critical paths under SENSITIVE_RE: zero (cap 8). Security-sensitive
+runtime files: `tinyassets/broker/ledger_queries.py`, `broker/client.py`,
+`broker/server.py`, `providers/discovery_snapshot.py`, `api/connection_uses.py`
+(the last four also under tinyassets). Generated mirrors accompany them.
+Oracle: `scripts/role_launcher_oracle.py`; new tests:
+`tests/test_broker_ledger_queries.py`. No existing test name or assertion changed.
+
+One cross-family review through peer-agents returned AGREE / APPROVE with no
+blocking findings. The review noted the intentionally tighter orphan-row refusal,
+consistent with the existing connect_http refusal. No second review round.
+
+No task 2.1-2.8 is newly checked complete. Startup is
+still unactivated. Remaining: every actual engine class and reader matrix;
+remaining D11 ledger/mutation/discovery HTTP/accounting/refresh/deletion/backup
+consumers; full migration and D10 deletion; successful streams; actual old-image
+rollback; daemon CMD/environment, capability parity and healthchecks. No PR or
+deployment. Only these two D11 read consumers are claimed implemented.
+
+## D19 verification receipt
+
+Production Dockerfile build: `python scripts/linux_oracle.py --production-image tinyassets-uid-queries:d19 --build`.
+Final direct verification command (exit 0, zero skips):
+`python scripts/linux_oracle.py --production-image tinyassets-uid-queries:d19`.
+The final image includes the additional malformed-pricing guard fixture. The
+redirected PowerShell build wrapper reported NativeCommandError for Docker's
+stderr progress despite completing the build/probes; the direct command above
+independently returned exit 0. Exact image/launch/probe output:
+
+```text
+[oracle] production image sha256:8edbf229667a6ee555b69e813fded7b095961aba20f06e0e4fa07dbddba5c2c9
+[oracle] docker run --rm --network none --user 0:0 --cap-drop ALL --cap-add CHOWN --cap-add DAC_OVERRIDE --cap-add FOWNER --cap-add SETUID --cap-add SETGID --cap-add SETPCAP --cap-add KILL --security-opt no-new-privileges=true --security-opt seccomp=unconfined --security-opt apparmor=unconfined --security-opt systempaths=unconfined --entrypoint /opt/venv/bin/python sha256:8edbf229667a6ee555b69e813fded7b095961aba20f06e0e4fa07dbddba5c2c9 -I -B /app/scripts/role_image_oracle.py
+privileged chain: PASS (root owners, protected ancestors and link targets)
+non-root/writable descendant module chain refusal: PASS
+identity uid=1001 groups=[] caps=all-zero nnp=1
+image accounts, immutable paths, writable HOME, unprivileged bwrap: PASS
+overlapping consent migration refused without mutation: PASS
+broker private directory ownership/setgid readbacks without FSETID: PASS
+forward dry-run, apply, repeat; service remains unadmitted: PASS
+identity uid=1002 groups=[1102] caps=all-zero nnp=1
+broker actual ConnectionLedger existing/fresh writes and proxy mkdir: PASS
+identity uid=1001 groups=[1100, 1101, 1102] caps=all-zero nnp=1
+identity uid=1003 groups=[1100] caps=all-zero nnp=1
+direct daemon/engine-identity private path denials: PASS (not class acceptance)
+identity uid=1001 groups=[] caps=all-zero nnp=1
+reverse dry-run/apply/repeat and uid-1001 old-location writes: PASS
+forward/reverse abrupt-exit checkpoint and rename recovery: PASS (6 boundaries)
+symlink/hardlink/FIFO/conflicting-copy refusal without mutation: PASS
+launcher migration-capability retirement/readback and pre-bind refusal: PASS
+D11 actual discovery/priced-source consumers via launcher broker; foreign scope, fence, SQL/path/method refusal; no local ledger: PASS
+daemon non-dumpable procfs; same-uid fake broker gets no proof: PASS
+launcher exact-pid, malformed/oversized/SCM_RIGHTS/static-operation refusals: PASS
+launcher broker uid=1002; socket=1002:1101/0660; daemon fences without disk token: PASS
+D11 actual discovery/priced-source consumers via launcher broker; foreign scope, fence, SQL/path/method refusal; no local ledger: PASS
+daemon supervisor acquisition, private-memory channel after restart, stop without signal: PASS
+launcher broker crash/restart preserves in-memory owner fence: PASS
+privileged chain: PASS (root owners, protected ancestors and link targets)
+broker caps=all-zero nnp=1 non-dumpable; no received-fd leak; cross-uid shutdown: PASS
+launcher wrong-uid filesystem refusal; actual broker uses private ledger: PASS
+LAUNCHER/BROKER SUBSTEP ONLY: real daemon CMD, streams/accounting, engine classes pending
+FOUNDATION/EGRESS SUBSTEP ONLY: launcher, IPC, real engine classes, full rollback pending
+```
+
+Completed Windows commands:
+```text
+python -m pytest tests/test_broker_ledger_queries.py tests/test_discovery_snapshot.py tests/test_unify_connection_uses.py -q
+63 passed
+python -m pytest tests/test_broker_supervisor.py tests/test_broker_relocated_paths.py tests/test_model_discovery_capability.py tests/test_discovery_http.py -q
+120 passed
+```
+
+The first regression run found six failures from the initial query conversion:
+revocation mapping and predeposit asks. Both were fixed without changing any
+existing tests, then the complete affected suites above passed. Added probes
+cover cross-owner/mismatched/revoked scope, malformed pricing, absent pairs,
+concurrent SQLite snapshot consistency, fence-before-open and no local fallback.
+
+Changed-file Ruff passed; repository-wide Ruff remains at the same 55 pre-existing
+errors outside this diff. No affected test file is in the heavy-test list.
+Plugin regeneration: import probe `probe-ok`; mirror parity: all 597 canonical
+files matched. `openspec validate per-role-uid-split --strict` passed and
+`git diff --check` passed. Linux regression command (exit 0, zero skips):
+
+```text
+python scripts/linux_oracle.py -- tests/test_broker_ledger_queries.py tests/test_discovery_snapshot.py tests/test_unify_connection_uses.py tests/test_broker_server.py tests/test_broker_process.py tests/test_broker_fence.py tests/test_model_discovery_capability.py tests/test_discovery_http.py -q
+[oracle] python 3.11.16 | git 2.47.3 | bwrap 0.12.0 | uid 1001
+214 passed in 29.55s
+```
+
+Commit/hygiene receipt follows.
+
+Migration results here are relocation-substep results: dry-run/apply/repeat in
+both directions and six abrupt-exit boundaries passed. Full role migration,
+two-pass deletion and actual old-image rollback are NOT proven. No startup
+activation or complete engine-class/streaming/accounting acceptance is claimed.
+
+---
+
 # Current delivery: D18 daemon broker acquisition
 
 Started from `be34773f5f`; required fast-forward pull was already current.
