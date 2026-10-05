@@ -243,6 +243,7 @@ def test_route_is_apex_app_get(monkeypatch):
         "/app/api/read", "/app/api/status",
         # The bytes a custom UI loads, fetched by the app for its sealed frame.
         "/app/api/ui-asset",
+        "/app/api/file",
     }
     assert by_path["/app/files"].methods == {"POST"}
     assert by_path["/app/api/read"].methods == {"POST"}
