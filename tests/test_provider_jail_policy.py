@@ -345,7 +345,7 @@ def test_a_provider_launch_has_no_host_network_only_its_universe_proxy(wired):
         inner = argv[argv.index("--") + 1:]
         assert inner[0] == "/usr/bin/prlimit"
         assert {a.split("=")[0] for a in inner[1:inner.index("--")]} == {
-            "--nproc", "--nofile", "--fsize", "--core"}
+            "--nproc", "--nofile", "--core"}
         forwarder = inner[inner.index("--") + 1:]
         assert forwarder[:5] == ["/usr/bin/python3", "-I", "-S", "-c", universe_egress.FORWARDER]
         assert forwarder[5:] == [f"3128={universe_egress.JAIL_SOCKET}", "--", "cli", "-p"]

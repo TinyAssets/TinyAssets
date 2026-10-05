@@ -320,9 +320,13 @@ def _launch(universe: Path, script: str, *, env=None):
 
 def test_a_provider_process_writing_past_its_budget_is_stopped(world, monkeypatch):
     from tinyassets import jail_disk
+    from tinyassets.daemon_server import grant_universe_ownership, initialize_author_server
     from tinyassets.providers import owned_process
 
-    monkeypatch.setattr(jail_disk, "LAUNCH_BYTES_CAP", 24 * _MiB)
+    initialize_author_server(world.data_root)
+    grant_universe_ownership(world.data_root, universe_id=world.universe_a.name,
+                             owner_id="workos|alice")
+    monkeypatch.setenv("TINYASSETS_FREE_STORAGE_GIB", str(24 * _MiB / 1024**3))
     monkeypatch.setattr(owned_process, "DISK_POLL_SECONDS", 0.1)
     try:
         proc, out = _launch(world.universe_a, _FILL)
@@ -364,9 +368,13 @@ def test_a_provider_launch_below_the_volume_floor_never_starts(world, monkeypatc
 def test_a_provider_filling_its_runtime_dir_is_stopped_too(world, monkeypatch):
     """Persistent writable runtime is charged and the launch walk bounds growth."""
     from tinyassets import jail_disk
+    from tinyassets.daemon_server import grant_universe_ownership, initialize_author_server
     from tinyassets.providers import owned_process
 
-    monkeypatch.setattr(jail_disk, "LAUNCH_BYTES_CAP", 24 * _MiB)
+    initialize_author_server(world.data_root)
+    grant_universe_ownership(world.data_root, universe_id=world.universe_a.name,
+                             owner_id="workos|alice")
+    monkeypatch.setenv("TINYASSETS_FREE_STORAGE_GIB", str(24 * _MiB / 1024**3))
     monkeypatch.setattr(owned_process, "DISK_POLL_SECONDS", 0.1)
     target = world.universe_a / ".runtime" / "many"
     try:

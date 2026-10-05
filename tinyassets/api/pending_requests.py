@@ -2776,6 +2776,9 @@ def _answer_request(*, universe_id: str = "", payload: Any = None,
         return {"error": ("preview_required" if owner_session is not None
                           else "interactive_approval_required"),
                 "detail": "Open the protected inline owner card to decide this action."}
+    if row["action"].get("type") == "notify":
+        return {"error": "not_answerable",
+                "detail": "This notification needs no answer; dismiss it with withdraw."}
     # Consult the immutable pin too: editing a publish/install row into a plain
     # question must not let a bearer reach its pinned executable action.
     pinned = _consent_pin(_uid, request_id)

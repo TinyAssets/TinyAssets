@@ -248,6 +248,11 @@ RUN set -e; \
     groupadd --system --gid 1001 tinyassets; \
     useradd --system --uid 1001 --gid tinyassets --home /app --shell /bin/bash tinyassets
 
+# The jail binds /usr, not the daemon's /opt/venv. Install the basic test
+# runner on its Python so a checkout can run tests without platform imports.
+RUN /usr/local/bin/python -m pip install --no-cache-dir "pytest==8.4.2" && \
+    /usr/local/bin/python -m pytest --version
+
 # Copy the codex install tree from builder and install the flock
 # wrapper as /usr/local/bin/codex. The wrapper takes an exclusive
 # flock on a sentinel in /app/.codex before exec'ing the real codex

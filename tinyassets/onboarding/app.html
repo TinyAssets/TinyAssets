@@ -9698,6 +9698,30 @@
 
   function railBody(req){
     const box = document.createElement("div"); box.className = "rtab-body";
+    if(req.action?.type==='notify'){
+      const label=document.createElement('p');label.textContent='Notification · No answer needed';box.appendChild(label);
+      const body=document.createElement('p');body.textContent=req.body||'';box.appendChild(body);
+      if(req.action.attachment_ref){
+        const ref=document.createElement('p');ref.textContent='Attachment: '+req.action.attachment_ref;box.appendChild(ref);
+      }
+      const status=document.createElement('p');box.appendChild(status);
+      const chat=document.createElement('button');chat.type='button';chat.className='btn';chat.textContent='Open chat';
+      chat.onclick=async()=>{try{
+        const agent=req.action.thread_agent||req.agent||'main';
+        await addressAgent({agent_id:agent,name:agent==='main'?'Your agent':agent});
+        $('request-rail').close();
+        const item=Array.from($('thread').children).find(node=>node.dataset.itemId===req.action.item_id);
+        if(item&&req.action.item_id)item.scrollIntoView({block:'center'});
+      }catch(e){status.textContent=e.message;}};box.appendChild(chat);
+      const dismiss=document.createElement('button');dismiss.type='button';dismiss.className='btn';dismiss.textContent='Dismiss';
+      dismiss.onclick=async()=>{dismiss.disabled=true;try{
+        const result=await MCP.callTool('write_graph',{target:'connection',operation:'withdraw_request',
+          payload_json:JSON.stringify({request_id:req.request_id,reason:'Notification dismissed'})});
+        if(result?.error)throw new Error(result.detail||result.error);
+        renderRail(railCache.filter(row=>row.request_id!==req.request_id));
+      }catch(e){status.textContent=e.message;dismiss.disabled=false;}};box.appendChild(dismiss);
+      return box;
+    }
     (req.items||[]).forEach(item=>{
       const id=req.request_id + "::" + item.item_id;
       const entry=document.createElement("section"); entry.id="item_" + id; entry.className="rtab-item";
@@ -10073,6 +10097,7 @@
         who==="universe"?answerExecutionDetail({execution:t.execution}):null, t.ts);
       place(drawn);
       drawn.clientSendId=t.client_send_id||"";
+      if(drawn?.dataset&&t.consumer_turn_id)drawn.dataset.itemId=t.consumer_turn_id;
       // The peek said this turn is longer than what it returned. Offer the
       // rest instead of letting the preview pass for the message; the bubble
       // and its metadata (time, provider/model detail) are untouched.
