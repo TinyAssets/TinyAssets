@@ -7,6 +7,6 @@ summary: every ChatGPT/Codex model, including the founder-verified gpt-6-astra, 
 
 # Codex models stay 'catalogue refresh pending' and OpenRouter is not accepted as a model source
 
-In the founder's command center, every Codex model, including gpt-6-astra (which the founder verified works), shows 'catalogue refresh pending' and can't be chosen. A 10-04 fix did not take effect. The OpenRouter connection also shows as not accepted as a model source. Check catalogue discovery and refresh for subscription providers, and the OpenRouter acceptance path.
+In the founder's command center, every Codex model, shows 'catalogue refresh pending' and can't be chosen (5:27 PM). The agent's 3:06 PM report adds that this includes gpt-6-astra, "which you already verified", and that "the 10-04 fix didn't take effect here". The OpenRouter connection also shows as not accepted as a model source. Check catalogue discovery and refresh for subscription providers, and the OpenRouter acceptance path.
 
-**Source:** the founder's command-center agent re-tested its known issues on 2026-10-05 at 00:27Z (5:27 PM PDT), with live run IDs in its notes/command-center-playbook.md. Main at that time was 51db6894f3 (#4458 not yet merged). Re-verify against current main before fixing.
+**Source:** the founder's command-center agent, in the founder's app thread on 2026-10-04: its 3:06 PM PDT status report and its 5:27 PM PDT live re-test (plus its 5:58 PM and 6:25 PM replies where noted). Its run IDs are in its notes/command-center-playbook.md. Re-verify against current main before fixing.

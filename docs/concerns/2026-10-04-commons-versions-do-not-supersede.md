@@ -9,4 +9,4 @@ summary: the public library shows 4 Fantasy Villages, 2 Mission Controls, 2 Vill
 
 Republishing a command center adds a new listing next to the old one instead of superseding it, so there are four Fantasy Village entries from one author. The agent also can't see any other user's published command centers, so cross-user discovery is unproven. This relates to the creator-revenue-share bundle identity and command-center-recipient-updates release chains.
 
-**Source:** the founder's command-center agent re-tested its known issues on 2026-10-05 at 00:27Z (5:27 PM PDT), with live run IDs in its notes/command-center-playbook.md. Main at that time was 51db6894f3 (#4458 not yet merged). Re-verify against current main before fixing.
+**Source:** the founder's command-center agent, in the founder's app thread on 2026-10-04: its 3:06 PM PDT status report and its 5:27 PM PDT live re-test (plus its 5:58 PM and 6:25 PM replies where noted). Its run IDs are in its notes/command-center-playbook.md. Re-verify against current main before fixing.

@@ -7,6 +7,6 @@ summary: the founder's app shows 177-182 unread messages while they read the thr
 
 # The app's unread counter keeps growing (177 to 182)
 
-The unread badge went from 177 to 182 during the day while the founder was actively reading. #4458's investigation found a counter of messages unread by the agent, but not the badge's source. A large unread count also buries request tabs.
+The agent reported the unread count going from 177 to 180 (5:27 PM) and 182 (6:25 PM). The agent suggested a large count could bury request tabs; that is its hypothesis. (Separately, the two open request tabs were found rendered at the top of the thread, out of view; a fix is in progress.) See also return-to-app-live-stop-label.md, which records #4458's partial investigation of the counter.
 
-**Source:** the founder's command-center agent re-tested its known issues on 2026-10-05 at 00:27Z (5:27 PM PDT), with live run IDs in its notes/command-center-playbook.md. Main at that time was 51db6894f3 (#4458 not yet merged). Re-verify against current main before fixing.
+**Source:** the founder's command-center agent, in the founder's app thread on 2026-10-04: its 3:06 PM PDT status report and its 5:27 PM PDT live re-test (plus its 5:58 PM and 6:25 PM replies where noted). Its run IDs are in its notes/command-center-playbook.md. Re-verify against current main before fixing.
