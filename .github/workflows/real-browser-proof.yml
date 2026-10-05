@@ -58,10 +58,13 @@ on:
       - "tinyassets/onboarding/ui_frame.py"
       - "tinyassets/ui_preview.py"
       - "tinyassets/onboarding/app.html"
+      - "tinyassets/onboarding/chat_render.js"
+      - "tinyassets/onboarding/app/mermaid_vendor.js"
       - "pyproject.toml"
       # The proofs.
       - "tests/test_custom_ui_forms_browser.py"
       - "tests/test_app_chat_cloud_browser.py"
+      - "tests/test_chat_renderer_browser.py"
       - "tests/test_app_chat_latest_browser.py"
       - "tests/test_app_pending_requests_browser.py"
       - "tests/test_owner_ui_prefs_browser.py"
