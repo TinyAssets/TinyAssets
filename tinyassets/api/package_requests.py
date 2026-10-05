@@ -572,7 +572,7 @@ def _write_files(uid: str, plan: dict[str, Any], files: dict[str, bytes],
 
 def list_packages(*, query: str = "", author: str = "", limit: int = 30,
                   offset: int = 0) -> list[dict[str, Any]]:
-    """The listing: one row per published package version, from its definition.
+    """The listing: one row per current bundle, from its immutable definition.
 
     Name, description and author are the publisher's words; size, version, file
     count, agents and needs are the platform's summary. Nothing else of the
@@ -606,11 +606,14 @@ def list_packages(*, query: str = "", author: str = "", limit: int = 30,
         if matched <= offset:
             continue
         rows.append({
+            **{key: definition[key] for key in (
+                "bundle_id", "bundle_version", "previous_definition_id", "current_definition_id"
+            ) if key in definition},
             "agent_definition_id": definition["agent_definition_id"],
             "name": definition.get("name", ""),
             "description": definition.get("description", ""),
             "author_id": definition.get("author_id", ""),
-            "version": component.get("version"),
+            "version": definition.get("bundle_version", component.get("version")),
             "size": human(int(component.get("size_bytes") or 0)),
             "file_count": component.get("file_count"),
             "agents": component.get("agents") or [],

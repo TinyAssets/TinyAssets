@@ -571,6 +571,9 @@ def agent_summary(row, *, compact=False):
         "agent_definition_id", "author_id", "name", "description", "tags",
         "content_fingerprint", "created_at",
     )}
+    result.update({key: row[key] for key in (
+        "bundle_id", "bundle_version", "previous_definition_id", "current_definition_id"
+    ) if key in row})
     result["component_count"] = len(components)
     result["component_kinds"] = sorted({str(c.get("kind", ""))[:64]
                                         for c in components.values()})[:8]

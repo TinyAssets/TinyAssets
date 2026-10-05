@@ -868,7 +868,7 @@ def build_blob(manifest: dict[str, Any], files: dict[str, bytes]) -> bytes:
 def build_publish_package(universe_dir: Path, *, name: str, description: str,
                           options: dict[str, Any], branch_rows: Any,
                           workflows: list[dict[str, Any]], ui: str,
-                          automations: list[dict[str, Any]]) -> dict[str, Any]:
+                          automations: list[dict[str, Any]], bundle_id: str = "") -> dict[str, Any]:
     """Everything the ``publish`` ask pins for a package. Reads the folder only."""
     files, excluded = collect(universe_dir, exclude=options["exclude"],
                               memory_items=options["memory_items"])
@@ -883,6 +883,8 @@ def build_publish_package(universe_dir: Path, *, name: str, description: str,
         profile=PROFILE_PUBLISH, name=name, description=description, files=files,
         workflows=workflows, ui=ui, automations=automations,
         connections=connection_names(branch_rows))
+    if bundle_id:
+        manifest["bundle_id"] = bundle_id
     blob = build_blob(manifest, files)
     if len(blob) > MAX_PACKAGE_BYTES:
         raise PackageError(f"this package is {human(len(blob))}, over the "
@@ -906,6 +908,8 @@ def narrow_package(blob: bytes, leave_out: list[str]) -> dict[str, Any]:
         profile=PROFILE_PUBLISH, name=manifest["name"], description=manifest["description"],
         files=kept, workflows=manifest["workflows"], ui=manifest["ui"],
         automations=manifest["automations"], connections=manifest["needs"]["connections"])
+    if "bundle_id" in manifest:
+        narrowed["bundle_id"] = manifest["bundle_id"]
     new_blob = build_blob(narrowed, kept)
     return {"blob": new_blob, "sha256": hashlib.sha256(new_blob).hexdigest(),
             "manifest": narrowed}

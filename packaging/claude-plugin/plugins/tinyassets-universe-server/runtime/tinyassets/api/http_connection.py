@@ -59,7 +59,6 @@ from tinyassets.storage.outbound_connections import (
     _URL_SECRET_SCHEME,
     ACCESS_EXACT,
     ACCESS_FULL,
-    ActionCap,
     ConnectionLedger,
     SsrfValidationError,
     _parse_allowed_endpoints,
@@ -468,8 +467,10 @@ def _git_scopes_in(scopes_json: str) -> frozenset[str]:
             found.add(format_git_scope(*parsed))
     return frozenset(found)
 
-# Conservative fixed unprompted cap for an MVP outbound channel; tune later.
-_HTTP_ACTION_CAP = ActionCap("http_requests", 10_000, "requests")
+# No per-connection request cap. An account is limited only by its total
+# storage and its number of simultaneous agent runs; a fixed per-channel
+# "http_requests" cap was a leftover of the old account model (it was stored
+# and displayed but never enforced on HTTP calls).
 
 # Uniform absent-resource envelope for not-authenticated / not-admin / unknown
 # universe — a caller cannot probe existence through this surface (mirrors
@@ -979,7 +980,6 @@ def _connect_http(
             connection_id=connection_id,
             owner_user_id=actor,
             universe_id=uid,
-            unprompted_action_cap=_HTTP_ACTION_CAP,
         )
 
     # 8. Bounded legacy-scope migration — applied ONLY now that the grant-conflict
