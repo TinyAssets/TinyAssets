@@ -1712,7 +1712,7 @@ exposure for a preplanted alias, not an engine's ability to plant it after
 migration. No privilege, profile, migration or isolation-scope change is made.
 
 
-### D58. Mechanical decision: reject aliased descriptors in shared daemon readers
+### D57 follow-up (historically labelled D58): reject aliased descriptors
 
 The founder authorizes repairing D57. `_open_regular_beneath` now refuses
 regular descriptors whose `st_nlink != 1` before reading or copying bytes.
@@ -1731,10 +1731,60 @@ The link-count guard is independently useful in the current single-UID image.
 Do not claim full D57 completion or retire its concern from this substep.
 
 
-D58 final acceptance: the expanded production-image probe also removes the
+Prior acceptance: the expanded production-image probe also removes the
 foreign original name after preplanting. The surviving alias has one link;
 19 reader/path cases return FOREIGN_BYTES. Original 57 cases still deny.
 The identity clarification is therefore a demonstrated isolation blocker,
 not only documentation terminology. Stop further integration under the
 founder's cross-user-exposure rule. No per-owner allocator is authorized by
 this mechanical decision and no full D57 completion is claimed.
+
+### D58. Lead decision: dedicated durable owner GIDs
+
+Founder decision 2026-10-05 supersedes **only D8's shared-group clause** and
+resolves the prior D8/D57 identity clarification. Each owner gets a dedicated
+GID allocated by the launcher or broker from a reserved range, recorded
+durably. Owner roots/directories are setgid to that GID. Each cell has only
+its owner's GID as primary or supplementary membership, never another owner's.
+Daemon/inspect readers validate the OPEN descriptor's GID against the
+requesting owner's GID, retaining no-follow and link-count guards. Forward
+migration re-groups existing trees with dry-run, repeat, reverse and crash
+boundaries. Shared engine UID 1003 may remain only if GID-based checks actually
+meet the complete isolation acceptance. No new retained privilege is approved.
+
+The rationale is to preserve the inode's owner label after its original name
+is removed, when link count alone cannot identify the surviving foreign alias.
+The allocator and migration remain unimplemented. The conditional shared-UID
+claim fails the D59 diagnostic below; D58 is authorization, not passing evidence.
+ui-preview remains unadmitted and D9's profile assignments are unchanged.
+
+### D59. Acceptance stop: shared UID can relabel or copy a foreign inode
+
+`scripts/role_owner_gid_probe.py` tests D58 with synthetic GIDs 200000/200001,
+setgid owner directories, the declared daemon ACLs, and shared engine UID 1003.
+After preplanting an alias of a Bob engine-owned file into Alice and retiring
+Bob's original name, Alice's cell can read it by UID ownership despite Bob's
+unmapped GID. The capability-free cell can either chgrp it to its own primary
+GID, or read/unlink/recreate it in the setgid parent. Both leave a regular
+1003:200000 inode with one link and Bob's bytes. Merely blocking chown would
+not prevent the copy variant.
+
+All three existing D9 profiles reproduce this in the pinned production image,
+with private mount/PID/IPC/network namespaces, no retained fds/capabilities,
+NNP and seccomp enabled; Bob's host path is inaccessible. The daemon's actual
+no-follow file descriptor passes the proposed UID/GID/link-count predicate,
+then actual universe-file, platform-text, file-API and authenticated inspect
+readers return foreign bytes: **114 reader failures** over six path categories,
+three profiles and two variants. This is a diagnostic of the required
+preplanted acceptance, not proof of post-admission alias creation or an actual
+engine-class launch through the launcher. No current-production exploit is
+claimed. Synthetic outside data/metadata and positive controls are checked.
+
+The founder's explicit cross-user-exposure stop applies. No runtime policy,
+allocator, startup or migration change is admitted from this diagnostic.
+Hand off the concrete conflict: shared UID is itself authority over the
+preplanted inode. A dedicated owner UID (alongside D58's GID), or another
+approved mechanism preventing access to/relabeling foreign inodes before any
+engine executes, needs a security-design decision and its own proofs. Do not
+infer that migration can safely relabel an already retired alias: it has only
+one name, so name/link-count inventory alone cannot recover provenance.

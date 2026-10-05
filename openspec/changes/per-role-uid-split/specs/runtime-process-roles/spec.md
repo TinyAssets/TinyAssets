@@ -4,6 +4,32 @@
 
 ## ADDED Requirements
 
+### Requirement: Durable owner group identity (lead D58)
+
+This requirement SHALL supersede the shared workspace-group clause only. The
+launcher or broker SHALL allocate a dedicated GID per owner from a reserved
+range and record it durably. Owner roots and directories SHALL be setgid to
+that group, and each owner cell SHALL run with only its admitted owner's GID,
+never another owner's. Daemon and inspect readers SHALL validate the open
+descriptor's GID against that owner in addition to no-follow and link-count
+checks. Migration SHALL re-group existing trees with non-mutating dry-run,
+repeat, reverse and interrupted-resume proofs. Shared engine UID 1003 is
+conditional on satisfying the complete isolation acceptance, including D59's
+relabel/copy counterexample; no claim of completion is made here.
+
+#### Scenario: Foreign inode provenance survives retired names and engine mutation
+- **WHEN** a foreign inode is preplanted into an owner's tree and its original
+  name is removed, including an inode written by another owner's engine
+- **THEN** neither the cell nor its daemon-side readers return its foreign bytes
+- **AND** changing its group or copying its bytes to a fresh own-group inode
+  cannot bypass that boundary
+
+#### Scenario: Repeated and reversed owner identity migration retains data
+- **WHEN** owner-group migration runs dry-run, apply, repeat, interrupted resume
+  and reverse against a disposable copy
+- **THEN** owner identities remain unambiguous, no user bytes are deleted, and
+  reverse migration restores actual old-image access before capability drop
+
 ### Requirement: Distinct kernel uids per runtime role
 
 The production runtime SHALL run the owner (daemon), the credential broker, and engine/provider child processes as distinct kernel uids: 1001, 1002 and 1003 respectively. The daemon SHALL hold no Linux capability that lets it change uid. Only a root launcher SHALL start other roles, and it SHALL start engine/provider children only from a static allowlist of kinds and argv templates, accepting a request only from the exact pid of the daemon it started. Cross-uid access SHALL be carried by named service groups rather than by widening ownership: `ta-work` (1100) for workspaces, `ta-brk` (1101) for the broker socket, `ta-vault` (1102) for vault reads. No supplementary membership SHALL be written into `/etc/group`; the launcher SHALL set each role's groups at spawn, so that an operator `docker exec` and the container healthcheck keep their single-group identity.

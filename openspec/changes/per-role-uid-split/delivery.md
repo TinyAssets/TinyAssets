@@ -1,4 +1,90 @@
-# Current delivery: D58 descriptor hardlink refusal (2026-10-05)
+# Current delivery: D58 authorized; D59 shared-UID acceptance failure (2026-10-05)
+
+Started at **2b24d108f94cfdf08135c8a3914bcbaa365b6abe**; requested ff-only pull
+was already current. The worktree was clean. D58 is recorded as the lead's
+dedicated durable owner-GID decision, replacing the earlier identity ambiguity
+and D8's shared-group clause only. The historical section previously numbered
+D58 is now labelled D57 follow-up. D10/D11/D12 and the preview deferral remain.
+
+**STOP under the explicit cross-user-exposure rule:** the shared-UID option in
+D58 fails the prescribed preplanted-inode scenario even when all requested
+descriptor checks pass. A synthetic Bob engine-owned file at uid1003/gid200001
+is pre-aliased into Alice's setgid200000 tree and its original name retired.
+Alice's capability-free uid1003 cell can read it by UID ownership. It can then
+chgrp it to gid200000 **or copy the bytes into a new gid200000 file**. Both
+variants yield uid1003/gid200000/nlink1, satisfying the proposed descriptor
+predicate. Denying chown alone would leave the copy variant.
+
+`role_owner_gid_probe.py` verifies this under each unchanged D9 profile with
+private mount/PID/IPC/network namespaces, NNP, seccomp and all capability sets
+zero. Bob's host path is invisible. The real no-follow descriptor is inspected
+before invoking the actual readers. This is a production-image **diagnostic**,
+not an actual engine class launched through the launcher, not evidence of alias
+creation after admission, and not a current-production exploit. Main's identical
+reader gap is not exploitable through today's single-tree jail because engines
+cannot see cross-owner paths to create the alias; the concern now says so.
+
+## Receipts
+
+Image for all commands:
+`sha256:832b7055dce8a3eb48e6a0af5c776aa81a55f7cd8fa3dc397304e42f7c62e37f`.
+The diagnostic executes its repository source from stdin against that immutable
+image, with no host mounts/network, the seven declared entry capabilities and
+production seccomp/AppArmor/systempaths options. It adds no runtime policy.
+
+```text
+python scripts/role_owner_gid_probe.py --image tinyassets-uid-readers:d57
+native exit 3
+foreign_reads=114 profiles=3 attacks=2
+unchanged_outside=true positive_control=true foreign_metadata_denied=true
+cell uid=1003 gid=200000 groups=[] capabilities=zero nnp=1 seccomp=2
+host_path_denied=true
+
+python scripts/role_reader_alias_probe.py --image tinyassets-uid-readers:d57
+native exit 3; 19 FOREIGN_BYTES; positive_control=true foreign_unchanged=true
+
+python scripts/linux_oracle.py --production-image tinyassets-uid-readers:d57 --production-stream
+exit 0; existing foundation/egress/launcher decoder and HTTPS broker probes PASS
+```
+
+114 = three profiles x two variants x 19 reader/path pairs: universe-file,
+platform-text and file API over six paths, plus authenticated activity inspect.
+The original alias probe remains unchanged. These are completed security
+failures, not test skips. The baseline still passes D12 relocation and D29/D45
+accounting/liveness dry-run/apply/repeat, 6+8+3+4 crash boundaries, broker
+streaming/accounting/refresh and decoder launch. It does **not** prove full
+owner migration, D10 two-pass deletion or actual old-image rollback.
+
+## Scope and handoff
+
+Release-critical files in this slice: **0; none**. Only the diagnostic and
+OpenSpec/concern documentation change; no runtime or generated plugin edit.
+No task newly completed. No allocator, engine admission, migration activation,
+startup/healthcheck activation, PR or deployment is claimed. A draft reader
+change was removed before delivery because it cannot close this failure.
+
+Lead decision needed: whether owner identity must include a dedicated UID as
+well as D58's GID, or another mechanism that prevents access to foreign inodes
+before engine execution. This changes the security design, so it is not
+inferred as a mechanical implementation detail. Merely relabeling every inode
+under its surviving pathname at migration can erase the foreign provenance.
+
+Remaining: resolve D59, durable identities and descriptor enforcement, all
+other actual engine classes through launcher plus paired readers, full
+migration/two-pass deletion, actual production old-image rollback, then
+startup/healthcheck integration. ui-preview remains the outstanding founder
+profile decision and stays unadmitted. PR criteria remain unmet. The retained
+concern includes both the new evidence and the earlier promotion recovery issue.
+
+Validation: targeted Ruff passes; strict OpenSpec validation passes after
+correcting the new requirement's opening normative sentence; whole-tree plugin
+mirror parity passes (611 files); diff whitespace passes. Full Ruff retains
+55 findings in unchanged files. No affected application/heavy test file exists
+for this diagnostic/docs-only diff; the real production-image diagnostic and
+baseline oracle above are its verification. Hygiene and push receipt follow.
+
+---
+# Prior delivery: descriptor hardlink refusal (historically D58, 2026-10-05)
 
 Implementation/evidence pushed as **8414c9c3c1**. Hygiene against 3f4dc2c451:
 2 test functions added (3 parametrized cases), 0 removed, 0 tampering findings.

@@ -2,7 +2,7 @@
 severity: P1
 title: Preplanted cross-owner hardlink leaks through daemon file and inspect readers
 filed: '2026-10-05'
-summary: 'D9 preplanted alias acceptance fails on production image 7c8bb8846244: an Alice activity.log hardlink to a synthetic Bob file returns Bob bytes through read_universe_file, _read_platform_text and authenticated Alice inspect. Symlink and FIFO controls refuse. Engine planting after migration is not established.'
+summary: 'D59: shared engine UID can relabel or copy a preplanted foreign inode despite dedicated owner GIDs; 114 reader failures across all three D9 profiles. Synthetic acceptance counterexample, not current-production exploit. D58 is authorized but insufficient with shared UID.'
 ---
 
 The required D9/F2 reader matrix found a cross-owner alias that no-follow
@@ -51,10 +51,11 @@ class/path/reader matrix. Keep this concern until that matrix passes.
 Current main was fetched and inspected at
 `26993ec47c71a8fa36d62410bb361cf5ee8898c9`: its identical common reader checks
 type/size but not link count; read_universe_file and the platform/inspect
-chain use it. The preplanted cross-owner alias therefore matters for the
-single-UID design too: both owners' files are readable by uid1001. This is
-source evidence of the reader gap, not proof that a production engine can
-plant the alias, and no live production data was tested or changed.
+chain use it. Per the lead's clarification, this is **not exploitable on
+today's single-tree jail**: cross-owner paths are never visible to an engine,
+so it cannot create the alias. The source reader gap exists but that fact is
+not a current-production exploit. Closure when this change lands still needs
+the full prescribed preplanted-reader matrix. No live data was tested or changed.
 
 Descriptor uid/gid validation remains pending the D58 identity-design
 clarification. D8 explicitly forbids substituting per-owner identities without
@@ -80,3 +81,37 @@ or unlink failure can leave two links permanently; the stricter reader refuses
 that brain file. Follow-up must repair promotion/recovery without creating a
 cross-owner hardlink exception or deleting user data. No unsafe automatic
 cleanup was introduced. This remains tracked here with the identity blocker.
+
+## Lead D58 and D59 shared-UID counterexample
+
+The lead now explicitly authorizes dedicated durable per-owner GIDs, superseding
+D8's shared-group clause. The prior request for identity clarification is
+resolved. The new diagnostic `scripts/role_owner_gid_probe.py` nevertheless
+shows that keeping UID 1003 shared does not meet preplanted acceptance:
+
+- Alice and Bob have distinct GIDs 200000/200001, setgid trees and daemon ACLs.
+- A Bob engine-owned inode, aliased into Alice before launch with its original
+  name removed, remains owned by shared UID 1003. Alice can read it even though
+  Bob's group appears as unmapped 65534 in Alice's private user namespace.
+- Under **cell-deny, cell-links and cell-nested**, with all capabilities zero,
+  Alice can chgrp the inode to its own group. Independently, it can copy its
+  bytes into a fresh own-group inode; this needs no chown syscall.
+- Both resulting descriptors pass the proposed D58 uid/gid/nlink predicate.
+  Actual daemon file/platform/API/inspect readers return **114 FOREIGN_BYTES**
+  rows (three profiles, two variants, six paths, 19 reader/path pairs per case).
+
+Command: `python scripts/role_owner_gid_probe.py --image tinyassets-uid-readers:d57`.
+Native exit **3**, image
+`sha256:832b7055dce8a3eb48e6a0af5c776aa81a55f7cd8fa3dc397304e42f7c62e37f`.
+Own-file positive controls, foreign metadata denial, host-path denial and
+unrelated outside data/metadata preservation pass. This is a synthetic
+preplant diagnostic, not an actual-class launcher pass or an allegation that
+today's jailed engines can plant such aliases. The script asserts the proposed
+descriptor predicate explicitly; no D58 runtime implementation is claimed.
+
+The explicit cross-user-exposure stop now applies to this demonstrated
+shared-UID limitation, not the superseded ambiguity about GIDs. Dedicated
+owner UIDs or another mechanism preventing access before engine execution
+needs a lead security decision. No additional privileges or policy changes
+were made. Keep this concern open until the complete class/path/reader matrix
+passes; the promotion/recovery issue above also remains unresolved.
