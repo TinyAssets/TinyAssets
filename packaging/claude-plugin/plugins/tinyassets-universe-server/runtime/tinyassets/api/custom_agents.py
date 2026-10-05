@@ -144,7 +144,7 @@ def custom_agents(
             return {"agents": agents, "count": len(agents)}
 
         if normalized == "get_agent":
-            agent = get_definition(base, definition_id)
+            agent = get_definition(base, definition_id, include_catalogue=True)
             return {"agent": agent} if agent is not None else _not_found("agent_definition")
 
         if normalized == "get_import_stage":

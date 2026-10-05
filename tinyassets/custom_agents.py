@@ -461,6 +461,11 @@ def _normalize_definition_payload(payload: Any) -> dict[str, Any]:
         "lineage": lineage,
         "external_origins": external_origins,
     }
+    if "bundle_id" in cloned:
+        bundle_id = cloned["bundle_id"]
+        if not isinstance(bundle_id, str) or not re.fullmatch(r"bundle_[0-9a-f]{32}", bundle_id):
+            raise AgentValidationError("bundle_id must be a platform-minted bundle identity")
+        normalized["bundle_id"] = bundle_id
     _check_secret_fields(normalized)
     _check_size(normalized)
     return normalized
@@ -518,6 +523,11 @@ def _ensure_schema(base_path: str | Path) -> Path:
             with conn:
                 conn.executescript(_SCHEMA)
                 _migrate_serving_status(conn)
+                from tinyassets.commons_bundles import backfill, ensure_schema
+
+                conn.execute("BEGIN IMMEDIATE")
+                ensure_schema(conn)
+                backfill(conn, base_path)
         finally:
             conn.close()
         _SCHEMA_INITIALIZED.add(key)
@@ -814,7 +824,17 @@ def _publish_normalized(
     key: str,
     imported: bool,
 ) -> dict[str, Any]:
+    from tinyassets.commons_bundles import _source_bundle, append, authorize
+
+    if not conn.in_transaction:
+        conn.execute("BEGIN IMMEDIATE")
     stored = copy.deepcopy(normalized) if imported else _enrich_local_lineage(conn, normalized)
+    bundle_id = stored.get("bundle_id", "")
+    if bundle_id and imported:
+        bundle_id = _source_bundle(conn, actor, "import", {"name": bundle_id + ":" + key})
+        stored["bundle_id"] = bundle_id
+    if bundle_id:
+        authorize(conn, author=actor, bundle_id=bundle_id)
     content_fingerprint = _fingerprint(stored)
 
     if key:
@@ -838,6 +858,14 @@ def _publish_normalized(
         if imported
         else _verified_local_lineage(conn, stored["lineage"])
     )
+    package = stored["components"].get("package", {})
+    if bundle_id and not imported and package.get("bundle_id") == bundle_id:
+        expected = conn.execute(
+            "SELECT COALESCE(MAX(version), 0) + 1 FROM commons_bundle_versions WHERE bundle_id=?",
+            (bundle_id,),
+        ).fetchone()[0]
+        if package.get("version") != expected:
+            raise AgentConflictError("another bundle version was published meanwhile; ask again")
     definition_id = f"agent_{new_ulid()}"
     created_at = time.time()
     insert_sql = """
@@ -906,6 +934,8 @@ def _publish_normalized(
         )
     row = _read_definition_row(conn, definition_id)
     assert row is not None
+    if bundle_id:
+        append(conn, author=actor, bundle_id=bundle_id, definition_id=definition_id)
     return _definition_from_row(conn, row)
 
 
@@ -933,10 +963,19 @@ def publish_definition(
 def get_definition(
     base_path: str | Path,
     definition_id: str,
+    *,
+    include_catalogue: bool = False,
 ) -> dict[str, Any] | None:
     with _agent_connect(base_path) as conn:
         row = _read_definition_row(conn, (definition_id or "").strip())
-        return _definition_from_row(conn, row) if row is not None else None
+        if row is None:
+            return None
+        definition = _definition_from_row(conn, row)
+        if include_catalogue:
+            from tinyassets.commons_bundles import metadata
+
+            definition.update(metadata(conn, row["agent_definition_id"]))
+        return definition
 
 
 def list_definitions(
@@ -962,7 +1001,13 @@ def list_definitions(
         rows = conn.execute(
             """
             SELECT *
-            FROM agent_definitions
+            FROM agent_definitions AS d
+            WHERE NOT EXISTS (
+                SELECT 1 FROM commons_bundle_versions AS v
+                JOIN commons_bundle_versions AS newer
+                  ON newer.bundle_id = v.bundle_id AND newer.version > v.version
+                WHERE v.definition_id = d.agent_definition_id
+            )
             ORDER BY created_at DESC, agent_definition_id DESC
             """
         ).fetchall()
@@ -982,7 +1027,10 @@ def list_definitions(
             matched += 1
             if matched <= offset:
                 continue
-            results.append(_definition_from_row(conn, row))
+            from tinyassets.commons_bundles import metadata
+
+            results.append({**_definition_from_row(conn, row),
+                            **metadata(conn, row["agent_definition_id"])})
             if len(results) >= bounded_limit:
                 break
         return results

@@ -467,6 +467,11 @@ def build_snapshot(uid: str, action: dict[str, Any]) -> dict[str, Any]:
     definition = {"schema_version": AGENT_SCHEMA_VERSION, "name": action["name"],
                   "description": action["description"], "tags": tags,
                   "components": components}
+    if action.get("ui_id") or package:
+        from tinyassets.commons_bundles import publication_bundle
+
+        definition["bundle_id"] = publication_bundle(
+            base, author=actor, universe_id=uid, action=action)
     try:
         # One scanner for everything that becomes public (astra round 2, P1: a
         # credential in a prompt_template reached a public version while the
@@ -502,9 +507,11 @@ def _package(uid: str, actor: str, action: dict[str, Any], branches: dict[str, A
         PackageError,
         build_publish_package,
         human,
-        next_version,
         scan_public,
     )
+    from tinyassets.commons_bundles import next_version, publication_bundle
+
+    bundle_id = publication_bundle(_base_path(), author=actor, universe_id=uid, action=action)
 
     workflows = [{"key": k, "name": c["name"]} for k, c in components.items()
                  if c.get("kind") == BRANCH_REF_KIND]
@@ -514,15 +521,17 @@ def _package(uid: str, actor: str, action: dict[str, Any], branches: dict[str, A
         built = build_publish_package(
             _universe_dir(uid), name=action["name"], description=action["description"],
             options=action["package"], branch_rows=branches, workflows=workflows,
-            ui=str(components.get("ui", {}).get("name", "")), automations=automations)
+            ui=str(components.get("ui", {}).get("name", "")), automations=automations,
+            bundle_id=bundle_id)
         manifest = built["manifest"]
         component = {
             "kind": PACKAGE_KIND,
+            "bundle_id": bundle_id,
             "format_version": FORMAT_VERSION,
             # Allocated at ask time and pinned in the action, so a retry after
             # the version was recorded still names the same number.
             "version": int(action.get("package_version")
-                           or next_version(_base_path(), actor, action["name"])),
+                           or next_version(_base_path(), bundle_id)),
             "blob_sha256": built["sha256"],
             "size_bytes": len(built["blob"]),
             "file_count": len(manifest["files"]),
@@ -806,7 +815,7 @@ def execute_action(uid: str, action: dict[str, Any], *, request_id: str,
     if package:
         # First, before any version is minted: a package refused by quota
         # publishes nothing, and a blob stored but never listed stays charged.
-        _store_package(actor, package, action["name"])
+        _store_package(actor, package, package["component"].get("bundle_id", action["name"]))
     try:
         return _publish_snapshot(actor, action, snap, request_id=request_id)
     except BaseException:
@@ -815,7 +824,8 @@ def execute_action(uid: str, action: dict[str, Any], *, request_id: str,
             # re-records the same pinned version.
             from tinyassets.command_center_packages import drop_version
 
-            drop_version(_base_path(), author_id=actor, name=action["name"],
+            drop_version(_base_path(), author_id=actor,
+                         name=package["component"].get("bundle_id", action["name"]),
                          version=package["version"])
         raise
 
@@ -885,7 +895,8 @@ def _publish_snapshot(actor: str, action: dict[str, Any], snap: dict[str, Any], 
     if package:
         from tinyassets.command_center_packages import set_version_definition
 
-        set_version_definition(_base_path(), author_id=actor, name=action["name"],
+        set_version_definition(_base_path(), author_id=actor,
+                               name=package["component"].get("bundle_id", action["name"]),
                                version=package["version"],
                                definition_id=agent["agent_definition_id"])
         receipt["package"] = {"version": package["version"],
