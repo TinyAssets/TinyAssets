@@ -152,3 +152,42 @@ def test_bearer_cannot_mint_retry_or_write_authority(home, monkeypatch, door):
     response = asyncio.run(handler(request))
     assert response.status_code == 403
     assert json.loads(response.body)["error"] == "interactive_approval_required"
+
+
+@pytest.mark.parametrize("cookie", ["", "__Host-ta-owner=expired"])
+@pytest.mark.parametrize("choice", [{"values": {}}, {"dismiss": True}, {"decision": "declined"}])
+@pytest.mark.parametrize("kind", ["answer", "connect_http"])
+def test_app_answer_without_live_cookie_uses_server_classification(home, cookie, choice, kind):
+    shown = ["Question", "Choose", "Reply",
+             [{"name": "note", "type": "text", "label": "Note"}], {"type": kind}]
+    key = store.scoped_dedupe_key(
+        json.dumps(shown, sort_keys=True, separators=(",", ":")), "main")
+    row = store.create_request(
+        home, kind=shown[0], title=shown[1], body=shown[2],
+        fields=shown[3], action=shown[4], dedupe_key=key,
+    )
+    result = owner_answer(universe_id=home.name, cookie=cookie, payload={
+        "request_id": row["request_id"], **choice,
+    })
+    if kind == "answer":
+        assert result["status"] == ("dismissed" if choice.get("dismiss") else "answered")
+    else:
+        assert result["error"] == "interactive_approval_required"
+        assert "approval sheet in the app" in result["detail"]
+        assert store.get_request(home, row["request_id"])["status"] == "pending"
+
+
+def test_plain_app_answer_without_cookie_still_requires_same_origin(home):
+    row = ask(home, "answer")
+    result = owner_answer(universe_id=home.name, cookie="", origin="https://evil.example",
+                          payload={"request_id": row["request_id"], "values": {}})
+    assert result["error"] == "interactive_approval_required"
+    assert store.get_request(home, row["request_id"])["status"] == "pending"
+
+
+def test_signed_in_bound_action_answer_requires_preview_not_another_login(home):
+    row = ask(home, "approve_action")
+    result = owner_answer(universe_id=home.name, payload={"request_id": row["request_id"]})
+    assert result["error"] == "preview_required"
+    assert "inline owner card" in result["detail"]
+    assert store.get_request(home, row["request_id"])["status"] == "pending"

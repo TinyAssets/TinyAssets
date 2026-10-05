@@ -20,7 +20,9 @@ async def handle_approval(request):
         return denied
     identity = current_identity()
     try:
-        session = require(request, owner=identity.user_id)
+        session = require(
+            request, owner=identity.user_id, optional=request.path_params["operation"] == "answer"
+        )
     except PermissionError:
         return JSONResponse(
             {"error": "interactive_approval_required"}, status_code=403, headers=HEADERS
@@ -57,9 +59,10 @@ async def handle_approval(request):
 
     try:
         result = await run_in_threadpool(perform)
-        return JSONResponse(
-            result, status_code=404 if result.get("error") else 200, headers=HEADERS
+        status = {"interactive_approval_required": 403, "preview_required": 409}.get(
+            result.get("error"), 404 if result.get("error") else 200
         )
+        return JSONResponse(result, status_code=status, headers=HEADERS)
     except bound_requests.RequestRefused as exc:
         return JSONResponse(
             {"error": "preview_required", "detail": str(exc)}, status_code=409, headers=HEADERS

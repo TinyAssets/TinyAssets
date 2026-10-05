@@ -113,8 +113,14 @@ def _ask(uid, **over):
     return request_from_user(universe_id=uid, payload=json.dumps({**_CRED, **over}))
 
 
-def _answer(uid, **doc):
+def _owner_answer(uid, **doc):
     from tests.owner_answer import answer_request
+
+    return answer_request(universe_id=uid, payload=json.dumps(doc))
+
+
+def _answer(uid, **doc):
+    from tinyassets.api.pending_requests import answer_request
 
     return answer_request(universe_id=uid, payload=json.dumps(doc))
 
@@ -196,7 +202,7 @@ def test_a_credential_ask_records_no_answer_at_all(base):
         {"name": "secret", "label": "Key", "type": "secret"},
     ])
 
-    _answer("u-1", request_id=asked["request_id"],
+    _owner_answer("u-1", request_id=asked["request_id"],
             values={"secret": "ghp_" + "x" * 36})
 
     answered = _rail("u-1")["recently_answered"][0]
@@ -228,7 +234,7 @@ def test_answering_deposits_under_the_policy_on_the_request(base):
     _login("alice")
     asked = _ask("u-1")
 
-    out = _answer("u-1", request_id=asked["request_id"],
+    out = _owner_answer("u-1", request_id=asked["request_id"],
                   values={"secret": "ghp_" + "x" * 36},
                   host="api.evil.example", path_template="/steal",
                   destination="evil")
@@ -267,7 +273,7 @@ def test_dismissing_writes_nothing(base):
     _login("alice")
     asked = _ask("u-1")
 
-    assert _answer("u-1", request_id=asked["request_id"],
+    assert _owner_answer("u-1", request_id=asked["request_id"],
                    dismiss=True)["status"] == "dismissed"
     assert load_credential_vault(udir) == []
     assert _rail("u-1")["count"] == 0
@@ -277,9 +283,9 @@ def test_one_answer_counts_once(base):
     _make_universe(base, "u-1", admin="alice")
     _login("alice")
     asked = _ask("u-1")
-    _answer("u-1", request_id=asked["request_id"], values={"secret": "ghp_" + "x" * 36})
+    _owner_answer("u-1", request_id=asked["request_id"], values={"secret": "ghp_" + "x" * 36})
 
-    again = _answer("u-1", request_id=asked["request_id"],
+    again = _owner_answer("u-1", request_id=asked["request_id"],
                     values={"secret": "ghp_" + "y" * 36})
     assert again["error"] == "already_resolved"
 
@@ -289,7 +295,7 @@ def test_a_failed_deposit_leaves_the_tab_open(base):
     _login("alice")
     asked = _ask("u-1")
 
-    assert "error" in _answer("u-1", request_id=asked["request_id"],
+    assert "error" in _owner_answer("u-1", request_id=asked["request_id"],
                               values={"secret": "   "})
     assert _rail("u-1")["count"] == 1
 
@@ -391,7 +397,7 @@ def test_dispatch_through_the_pinned_handles(base):
                                   {"request_id": rid,
                                    "values": {"secret": "ghp_" + "z" * 36}}))
         assert json.loads(done)["error"] == "interactive_approval_required"
-        done = json.dumps(_answer("u-1", request_id=rid,
+        done = json.dumps(_owner_answer("u-1", request_id=rid,
                                   values={"secret": "ghp_" + "z" * 36}))
         assert json.loads(done)["status"] == "answered"
     finally:
@@ -437,7 +443,7 @@ def test_a_dismissal_can_also_mute(base):
     _login("alice")
     asked = _ask("u-1")
 
-    out = _answer("u-1", request_id=asked["request_id"], dismiss=True,
+    out = _owner_answer("u-1", request_id=asked["request_id"], dismiss=True,
                   feedback="I will do this myself", dont_ask_again=True)
     assert out["suppressed"] is True
     settled = _ask("u-1")
@@ -451,7 +457,7 @@ def test_muting_is_visible_and_undoable(base):
     _make_universe(base, "u-1", admin="alice")
     _login("alice")
     asked = _ask("u-1")
-    _answer("u-1", request_id=asked["request_id"], dismiss=True, dont_ask_again=True)
+    _owner_answer("u-1", request_id=asked["request_id"], dismiss=True, dont_ask_again=True)
 
     muted = _rail("u-1")["muted"]
     assert len(muted) == 1 and muted[0]["kind"] == "API"
@@ -515,7 +521,7 @@ def test_muting_one_ask_does_not_mute_a_different_one(base):
     _make_universe(base, "u-1", admin="alice")
     _login("alice")
     first = _ask("u-1")
-    _answer("u-1", request_id=first["request_id"], dismiss=True, dont_ask_again=True)
+    _owner_answer("u-1", request_id=first["request_id"], dismiss=True, dont_ask_again=True)
 
     other = _ask("u-1", title="Different key for a different repo",
                  action={**_CRED["action"], "path_template": "/repos/o/other/pulls"})
@@ -570,7 +576,7 @@ def test_one_request_can_cover_the_several_calls_a_real_flow_needs(base):
     assert "/repos/o/r/pulls" in out["grant_sentence"]
     assert "/repos/o/r/git/refs" in out["grant_sentence"]
 
-    done = _answer("u-1", request_id=out["request_id"],
+    done = _owner_answer("u-1", request_id=out["request_id"],
                    values={"secret": "ghp_" + "x" * 36})
     assert done["status"] == "answered"
 
@@ -644,7 +650,7 @@ def test_codex_feedback_cannot_carry_a_credential(base, mode):
         doc["dismiss"] = True
     else:
         doc["values"] = {"secret": "ghp_" + "x" * 36}
-    out = _answer("u-1", **doc)
+    out = _owner_answer("u-1", **doc)
 
     assert out["error"] == "request_invalid"
     assert "credential" in out["detail"]
@@ -692,7 +698,7 @@ def test_codex_a_lifted_mute_is_recorded_because_the_agent_shares_the_principal(
     _make_universe(base, "u-1", admin="alice")
     _login("alice")
     asked = _ask("u-1")
-    _answer("u-1", request_id=asked["request_id"], dismiss=True, dont_ask_again=True)
+    _owner_answer("u-1", request_id=asked["request_id"], dismiss=True, dont_ask_again=True)
     key = _rail("u-1")["muted"][0]["dedupe_key"]
 
     unmute_request(universe_id="u-1", payload=json.dumps({"dedupe_key": key}))
@@ -761,7 +767,7 @@ def test_extending_a_grant_needs_no_secret_and_no_new_field(base):
     assert ask["fields"] == [], "nothing to type - it is a yes/no"
     assert "do not need to paste it again" in ask["grant_sentence"]
 
-    out = _answer("u-1", request_id=ask["request_id"], values={})
+    out = _owner_answer("u-1", request_id=ask["request_id"], values={})
     assert out["status"] == "answered"
     assert out["secret_reused"] is True
 
@@ -791,7 +797,7 @@ def test_extending_never_writes_a_second_vault_record(base):
                        "endpoints": [{"host": "api.github.com",
                                       "path_template": "/repos/o/r/contents/t.json",
                                       "methods": ["PUT"]}]})
-    _answer("u-1", request_id=ask["request_id"], values={})
+    _owner_answer("u-1", request_id=ask["request_id"], values={})
 
     after = [r for r in load_credential_vault(udir) if r["credential_type"] == "http"]
     assert len(after) == len(before) == 1

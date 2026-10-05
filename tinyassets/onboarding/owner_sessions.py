@@ -65,7 +65,7 @@ def lookup(cookie):
         return dict(row) if row else None
 
 
-def require(request, *, owner=None):
+def require(request, *, owner=None, optional=False):
     from tinyassets.onboarding import _same_origin_json, app_config
 
     if not _same_origin_json(request, app_config()["resource"]):
@@ -74,6 +74,8 @@ def require(request, *, owner=None):
     if request.headers.get("origin") != f"{origin.scheme}://{origin.netloc}":
         raise PermissionError("Exact protected origin required.")
     session = lookup(getattr(request, "cookies", {}).get(COOKIE, ""))
+    if session is None and optional:
+        return None
     if session is None:
         raise PermissionError("Sign in to the protected owner view to approve.")
     if owner is not None and json.loads(session["identity_json"])["user_id"] != owner:

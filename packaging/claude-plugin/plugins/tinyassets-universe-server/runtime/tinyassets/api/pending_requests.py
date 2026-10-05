@@ -2773,7 +2773,8 @@ def _answer_request(*, universe_id: str = "", payload: Any = None,
     if row is None:
         return {"error": "not_found", "resource": "pending_request"}
     if row["action"].get("type") == "approve_action":
-        return {"error": "interactive_approval_required",
+        return {"error": ("preview_required" if owner_session is not None
+                          else "interactive_approval_required"),
                 "detail": "Open the protected inline owner card to decide this action."}
     # Consult the immutable pin too: editing a publish/install row into a plain
     # question must not let a bearer reach its pinned executable action.

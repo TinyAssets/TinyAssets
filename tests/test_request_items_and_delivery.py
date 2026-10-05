@@ -73,7 +73,7 @@ def _items(*ids: str) -> list[dict]:
 
 
 def _answer(universe_id: str, **payload):
-    from tests.owner_answer import answer_request
+    from tinyassets.api.pending_requests import answer_request
 
     return answer_request(universe_id=universe_id, payload=dict(payload))
 

@@ -127,6 +127,36 @@ def test_history_is_read_only(page):
     assert rail.locator("button,input,textarea").count() == 0
 
 
+@pytest.mark.parametrize("operation", ["answer", "preview", "decide"])
+def test_unauthenticated_response_preserves_auth_required(page, operation):
+    result = page.evaluate("""async operation => {
+      window.fetch=async()=>({ok:false,status:401,json:async()=>({error:'authentication_required'})});
+      try { await InlineApprovals.post(operation,{}); return null; }
+      catch(error) { return {authRequired:error.authRequired}; }
+    }""", operation)
+    assert result == {"authRequired": True}
+
+
+def test_model_answer_displays_protected_sign_in_and_keeps_request(page):
+    html, _ = render_app_html()
+    start = html.index("    async answer(accepted){")
+    end = html.index("    wire(){", start)
+    page.evaluate("""source => {
+      document.body.insertAdjacentHTML('beforeend','<div id="hosted-model-status"></div>');
+      window.model={epoch:1,busy:false,request:{request_id:'model-request'},
+        paint(){},status(text){document.getElementById('hosted-model-status').textContent=text;}};
+      Object.assign(window.model,eval('({' + source + '})'));
+      MCP.answerRequest=()=>InlineApprovals.post('answer',{});
+      window.fail=true;
+    }""", html[start:end])
+    page.evaluate("window.model.answer(true)")
+    assert page.get_by_role("link", name="Sign in to approve").is_visible()
+    link = page.get_by_role("link", name="Sign in to approve")
+    assert link.get_attribute("href") == "/app/owner-sign-in"
+    assert page.evaluate("window.model.request.request_id") == "model-request"
+    assert page.evaluate("window.model.busy") is False
+
+
 def test_stale_preview_disables_effects_but_allows_skip(page):
     page.evaluate("window.card.approval_unavailable='This task stopped or expired'")
     page.get_by_role("button", name="Review / Try again").click()

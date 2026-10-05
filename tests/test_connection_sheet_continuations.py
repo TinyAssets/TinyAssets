@@ -5,7 +5,7 @@ from contextlib import closing
 
 import pytest
 
-from tests.test_pending_requests import _CRED, _answer, _ask, _login, _make_universe
+from tests.test_pending_requests import _CRED, _ask, _login, _make_universe, _owner_answer
 from tests.test_pending_requests import _reset_auth as _auth_fixture
 from tests.test_pending_requests import base as _base_fixture
 from tinyassets import bound_requests, request_continuations, turn_interrupt
@@ -24,9 +24,10 @@ def test_agent_connection_answer_commits_one_sanitized_wake(base, deny):
     assert ask.get("server_continuation") is True, ask
     assert pending_requests.get_request(home, ask["request_id"])["server_continuation"]
     if deny:
-        result = _answer("u-1", request_id=ask["request_id"], decision="declined")
+        result = _owner_answer("u-1", request_id=ask["request_id"], decision="declined")
     else:
-        result = _answer("u-1", request_id=ask["request_id"], values={"secret": "private-key"})
+        result = _owner_answer("u-1", request_id=ask["request_id"],
+                               values={"secret": "private-key"})
     assert not result.get("error"), result
     with closing(bound_requests.connect(home)) as conn:
         events = conn.execute(
@@ -54,7 +55,7 @@ def test_settings_connection_does_not_invent_an_agent_continuation(base):
     _login("alice")
     ask = _ask("u-1", **_CRED)
     assert not ask.get("server_continuation")
-    result = _answer("u-1", request_id=ask["request_id"], values={"secret": "private-key"})
+    result = _owner_answer("u-1", request_id=ask["request_id"], values={"secret": "private-key"})
     assert not result.get("error"), result
     with closing(bound_requests.connect(home)) as conn:
         assert (
@@ -76,11 +77,11 @@ def test_wake_failure_rolls_back_answer_and_never_reports_success(base, monkeypa
         raise RuntimeError("simulated wake write failure")
 
     monkeypatch.setattr(connection_continuations, "answered", crash)
-    result = _answer("u-1", request_id=ask["request_id"], values={"secret": "private-key"})
+    result = _owner_answer("u-1", request_id=ask["request_id"], values={"secret": "private-key"})
     assert result["error"] == "request_storage_unavailable"
     assert pending_requests.get_request(home, ask["request_id"])["status"] == "pending"
     monkeypatch.setattr(connection_continuations, "answered", original)
-    result = _answer("u-1", request_id=ask["request_id"], values={"secret": "private-key"})
+    result = _owner_answer("u-1", request_id=ask["request_id"], values={"secret": "private-key"})
     assert result["status"] == "answered"
     with closing(bound_requests.connect(home)) as conn:
         assert (

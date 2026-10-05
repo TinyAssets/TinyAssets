@@ -17,7 +17,7 @@ classification and payment-scope contracts are not claimed complete.
 | served chatbot/agent `write_graph(target=pending_request)` | Existing operation allowlist excludes answers/unmute; direct connector calls still meet central guard |
 | Item, Deny, Clear, retry and `dont_ask_again` variants | Guard precedes every branch, including resolved-request retries |
 | Immutable publish/install pin with edited row type | Guard looks up pin before trusting the row type |
-| `/app/approvals/answer` | Exact-origin JSON + live matching-owner cookie supplies server-side proof |
+| `/app/approvals/answer` | Exact-origin JSON always required; optional matching-owner cookie supplies proof; central server classification requires it only for consent |
 | `/app/approvals/preview`, `/edit`, `/decide` (including retries) | Owner-cookie gate; bound actions retain single-use revision/action/scope tokens |
 | `/app/model-connect/oauth_exchange` → OAuth `complete` → `answer_connect_with_token` | Cookie check before flow consumption/exchange; internally passed proof; both helpers refuse absent proof |
 | `/app/rules` writes | Owner-cookie gate; rules cannot bypass consent answer classification |
@@ -36,7 +36,7 @@ with stored cookies; no existing assertion is removed or relaxed.
 The consent matrix covers all ten kinds through API and direct write_graph,
 invalid proof, Clear/Deny recovery and unmute; it also tests OAuth token answers,
 preview/edit/decide and rule-write refusal. Ordinary question/item/proposal suites
-retain bearer coverage.
+now retain bearer coverage after the round-1 correction; the earlier wholesale owner-helper conversion had removed question/item bearer coverage.
 
 ## Verification results
 
@@ -64,18 +64,25 @@ proof. POSIX cases run in the Linux oracle and the junction case runs on Windows
 
 ## Cross-family review
 
-Claude's read-only review of draft PR #4483 returned ADAPT with no floor/security
-bypass. AGREE: centralized early refusal, immutable pin lookup, OAuth completion
-checks, exact-origin matching-owner proof, unmute/withdraw non-authority and
-unchanged bound HTTP scopes. No colliding lane was found.
+The full round-1 Claude review of draft PR #4483 returned **BLOCK**.
+AGREE: centralized consent refusal, immutable pin lookup, OAuth completion,
+matching-owner proof and bound HTTP scopes hold. AGREE with the correctness
+finding: requiring the cookie before classifying every app answer regressed
+native and expired-session non-consent answers. AGREE with the coverage finding:
+ordinary question/item tests had been switched to the owner helper.
 
-AGREE with the review's DISAGREE_EVIDENCE correctness finding: routing app answers
-through `InlineApprovals.post` turned structured server errors into exceptions,
-making pending/retry guidance and rejected-grant relay unreachable. The answer
-transport now returns non-authentication error bodies to its existing consumers;
-missing owner proof still throws a sign-in error. Five new real-browser cases
-cover structured pending/invalid responses and missing proof on answer/preview/
-decide. The affected browser/onboarding suites are rerun on Windows and Linux.
+The answer route now requests optional owner proof while preserving exact-origin
+JSON checks. Missing/expired cookies produce `owner_session=None`; the existing
+server classification alone decides consent requirements. Preview/edit/decide
+still require proof. No action-kind list was added to JavaScript. A 401 sets
+`authRequired`; ModelAccess preserves the request and shows the protected sign-in
+link on missing proof. A signed-in `approve_action` answer returns 409
+`preview_required`, directing the user to its bound card rather than another login.
+Plain-question/item helpers exercise bearer answers again; consent consumers use
+an explicit owner helper and the refusal matrix remains intact.
+
+The review's classification concern describes future extensibility, not a current
+bypass; this correction retains the existing central classification as requested.
 
 No deployment or live-user acceptance is claimed by this draft PR. The existing
 change's broader spec sync/deployment acceptance stays open.
@@ -93,5 +100,31 @@ These are reruns of earlier coverage plus the five new error-transport cases,
 not 728 additional distinct tests. The earlier consumer/recovery evidence above
 remains applicable. Changed-file Ruff, strict OpenSpec change validation,
 plugin build/import probe, and parity for all four runtime mirrors passed again.
-The one required cross-family round is complete; its sole correctness finding
-is addressed, with no existing assertions removed or weakened.
+Those results predate the full round-1 BLOCK review; the correction and fresh
+verification below supersede that earlier completion claim.
+
+
+## Round-1 BLOCK correction verification (2026-10-05)
+
+Final complete runs: **Windows Python 3.14: 547 passed; Linux oracle Python 3.11:
+547 passed. Zero failures and zero skips on both.** The 16-file selection includes
+the previous eight-suite resume selection, request_items_and_delivery,
+model_access_requests, connection_sheet_continuations,
+four_boxes_become_a_signed_request, multi_value_credential_ask,
+replacing_a_rejected_credential, request_rail_honest_asks, and
+taking_a_key_back_and_putting_it_back. The six dependent consent suites now import
+`_owner_answer` explicitly; `_answer` is again the bearer-only test transport.
+
+New coverage includes absent/expired owner cookies for ordinary answers,
+Clear and Deny versus consent refusal; cross-origin refusal without a cookie;
+a signed-in bound action receiving preview guidance; 401 authentication flags;
+and a real Chromium model-answer sign-in link with the pending request retained.
+Initial test-fixture failures were corrected before these final complete runs:
+the no-cookie fixture needed the canonical displayed-row deduplication key.
+That repeated fixture failure was handed off using peer-agents; no runtime
+change or assertion relaxation was required.
+
+Changed-file Ruff and `git diff --check` passed. Plugin build/import probe passed;
+all **601** canonical files mirror-match. Full-PR hygiene reports **14 test
+functions added, 0 removed, 0 tampering findings**. This is a draft-PR push,
+not deployment or live-user acceptance.

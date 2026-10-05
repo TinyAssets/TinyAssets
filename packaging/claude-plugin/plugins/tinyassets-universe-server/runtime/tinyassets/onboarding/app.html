@@ -6631,6 +6631,13 @@
       }catch(error){
         if(epoch!==this.epoch) return;
         if(error&&error.authRequired){ this.busy=false; enterSignedOut(); return; }
+        this.status(error.message||"Your answer could not finish. Try again.");
+        if(error.signIn){
+          const link=document.createElement("a");link.href="/app/owner-sign-in";
+          link.target="_blank";link.rel="noopener";link.textContent="Sign in to approve";
+          $("hosted-model-status").append(" ",link);
+        }
+        return;
       }finally{if(epoch===this.epoch){this.busy=false;this.paint();}}
       if(epoch!==this.epoch) return;
       // Either way, re-read what powers the command center: an answer whose reply was
@@ -8968,6 +8975,7 @@
         if(operation==='answer' && response.status!==401 && response.status!==403 &&
             result.error && result.error!=='interactive_approval_required') return result;
         const error=new Error(result.detail||result.error||'The request could not finish.');
+        error.authRequired=response.status===401;
         error.signIn=result.error==='interactive_approval_required'; throw error;
       }
       return result;
