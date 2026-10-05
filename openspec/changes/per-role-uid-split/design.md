@@ -1317,6 +1317,20 @@ Preserve the existing redacted projection, uses and per-center workspace consent
 This closes the injected connection_uses_view reader for this consumer, adds no
 broker operation or privilege, and does not complete remaining mutations.
 
+### D33. Mechanical decision: disconnect is a fenced, incarnation-bound broker operation
+
+HTTP removal uses named inspect/fence/erase steps on the existing owner channel.
+The broker derives the HTTP identity from the admitted center and destination,
+checks the owner and custody slot in the same transaction, and requires the
+observed incarnation for both mutations. Erase requires prior revocation and
+removes only that connection's ledger rows. Missing rows are idempotent; a
+replacement incarnation refuses. Revoked rows and interrupted deposits without
+grants remain recoverable through the deterministic center identity. The daemon
+keeps assignment admission and vault writes: fence egress before releasing
+assignment admission, then delete custody, then erase ledger rows. A lost ACK
+fails loudly without automatic replay or local fallback. This implements D11's
+existing removal authority, adding no privilege or scope. Startup stays inactive.
+
 ## Risks / Trade-offs
 
 - **The launcher is root-adjacent code.** One file, stdlib-only, run `-I -S`, a static kind table,

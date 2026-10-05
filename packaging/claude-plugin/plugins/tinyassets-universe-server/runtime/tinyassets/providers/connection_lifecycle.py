@@ -245,7 +245,14 @@ def fence_connection(
             # A bind can race this gesture using exclusive admission, not the
             # app gesture lock. Revoke egress before releasing admission so it
             # cannot adopt the old grant in the gap before vault deletion.
-            ConnectionLedger(Path(base) / "outbound.db").revoke_connection(connection_id)
+            from tinyassets.broker.disconnect import disconnect
+            from tinyassets.broker.supervisor import broker_selected
+
+            if broker_selected():
+                disconnect(base, principal=owner, command_center=uid, destination=destination,
+                           action="fence", incarnation=incarnation)
+            else:
+                ConnectionLedger(Path(base) / "outbound.db").revoke_connection(connection_id)
             conn.commit()
         from tinyassets.storage.pending_requests import list_pending, resolve_request
 

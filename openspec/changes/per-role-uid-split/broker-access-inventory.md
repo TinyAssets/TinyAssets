@@ -271,3 +271,13 @@ installed definitions plus live grant SQL. process_liveness.owner_state currentl
 opens lock files O_RDWR; a private-ledger path change alone cannot preserve these
 checks for uid 1002. Runtime create/reserve/receipt/settle IPC, daily evidence,
 source binding and kernel liveness all remain before inference POST acceptance.
+
+## D33 consumer receipt
+
+HTTP `_remove_http` and `connection_lifecycle.fence_connection` use the named
+DISCONNECT inspect/fence/erase operation. Principal, deterministic center identity,
+custody slot and incarnation are checked transactionally. The daemon keeps vault
+writes and dependent-authority admission. Actual launcher removal/repeat/foreign
+and stale refusals pass before/after restart without daemon ledger access.
+Request capture, intentionally_disconnected, connect/rotate/extend and other
+mutation/accounting/refresh rows remain pending.

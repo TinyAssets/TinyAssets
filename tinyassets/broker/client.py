@@ -147,6 +147,36 @@ class BrokerClient:
             raise ProxyRequestError("invalid credential broker catalog response")
         return answer["result"]
 
+    def disconnect(self, document: dict[str, Any]) -> dict[str, Any]:
+        from tinyassets.broker.disconnect import validate
+        from tinyassets.storage.outbound_connections import GrantResolutionError, ProxyRequestError
+
+        validate(document)
+        generation, token = self._fence()
+        wire = {"op": "DISCONNECT", "principal": self._principal,
+                "command_center": self._command_center, "generation": generation,
+                "token": token, "document": document}
+        with self._lock, socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+            sock.settimeout(self._timeout)
+            try:
+                sock.connect(os.fspath(self._path))
+                if self._verify_peer is not None:
+                    self._verify_peer(sock)
+                sock.sendall(rf.control(rf.CONNECTION, wire))
+                frame = rf.read_frame_blocking(sock)
+                if frame is None or frame.kind != rf.CONTROL or frame.stream != rf.CONNECTION:
+                    raise rf.FrameError("invalid disconnect response")
+                answer = frame.control()
+            except (OSError, rf.FrameError):
+                raise ProxyRequestError("broker disconnect outcome unavailable") from None
+        if answer.get("op") == "DISCONNECT_REFUSED":
+            if answer.get("error_class") == "GrantResolutionError":
+                raise GrantResolutionError("outbound connection identity changed")
+            raise BrokerRefused("credential broker disconnect refused")
+        if answer.get("op") != "DISCONNECT_RESULT" or not isinstance(answer.get("result"), dict):
+            raise ProxyRequestError("invalid credential broker catalog response")
+        return answer["result"]
+
     def capability(self, document: dict[str, Any]) -> dict[str, Any]:
         """Bounded capability metadata operation; mutations are never replayed."""
         from tinyassets.broker.capabilities import validate

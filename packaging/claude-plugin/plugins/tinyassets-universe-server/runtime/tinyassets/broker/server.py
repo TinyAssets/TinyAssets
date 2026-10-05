@@ -295,6 +295,9 @@ class _Connection:
         if op == "LEDGER_QUERY":
             answer = await asyncio.to_thread(self._ledger_query, doc)
             await self.send_async(rf.control(rf.CONNECTION, answer))
+        elif op == "DISCONNECT":
+            answer = await asyncio.to_thread(self._disconnect, doc)
+            await self.send_async(rf.control(rf.CONNECTION, answer))
         elif op == "CAPABILITY":
             answer = await asyncio.to_thread(self._capability, doc)
             await self.send_async(rf.control(rf.CONNECTION, answer))
@@ -373,6 +376,30 @@ class _Connection:
                 return answer
         except Exception:  # noqa: BLE001 - fixed refusal, no persisted values on wire
             return {"op": "CATALOG_REFUSED"}
+
+    def _disconnect(self, doc: dict[str, Any]) -> dict[str, Any]:
+        from tinyassets.broker.disconnect import local_operation, validate
+
+        try:
+            if set(doc) != {"op", "principal", "command_center", "generation", "token",
+                            "document"}:
+                raise ValueError("unsupported disconnect fields")
+            _namespace(doc["principal"], doc["command_center"])
+            validate(doc["document"])
+            if type(doc["generation"]) is not int or not isinstance(doc["token"], str):
+                raise Fenced("invalid fence")
+            with self._server._fence.send(doc["generation"], doc["token"]):
+                result = local_operation(self._server._ledger_for(doc["principal"]),
+                                    principal=doc["principal"],
+                                    command_center=doc["command_center"],
+                                    document=doc["document"])
+                answer = {"op": "DISCONNECT_RESULT", "result": result}
+                rf.control(rf.CONNECTION, answer)
+                return answer
+        except Exception as exc:  # noqa: BLE001 - fixed refusal, no persisted values on wire
+            return {"op": "DISCONNECT_REFUSED", "error_class":
+                    "GrantResolutionError" if type(exc).__name__ == "GrantResolutionError"
+                    else "refused"}
 
     def _capability(self, doc: dict[str, Any]) -> dict[str, Any]:
         from tinyassets.broker.capabilities import local_operation, validate

@@ -1,3 +1,51 @@
+# Current delivery: D33 broker HTTP disconnect
+
+D33 implements HTTP removal through authenticated broker inspect/fence/erase.
+The daemon retains assignment admission and vault cleanup; each broker mutation
+checks owner, deterministic center/destination and incarnation in its transaction.
+Erasure requires revocation. Lost ACKs fail loudly; retry preserves denial.
+Cross-family implementation review: APPROVE, **AGREE**, no floor findings.
+No whole 2.1-2.8 task newly checked off; startup inactive, no PR or deployment.
+
+Release-critical files: **0; none**. Canonical runtime files:
+`tinyassets/broker/{disconnect,client,server}.py`,
+`tinyassets/api/http_connection.py`, `tinyassets/providers/connection_lifecycle.py`,
+plus their five generated mirrors. New tests: `tests/test_broker_disconnect.py`.
+Oracle: `scripts/role_launcher_oracle.py`. No affected heavy-list file.
+
+Verification:
+```text
+python -m pytest tests/test_http_connection_removal.py tests/test_connection_lifecycle.py -q
+22 passed in 5.95s
+python scripts/linux_oracle.py -- tests/test_broker_disconnect.py tests/test_http_connection_removal.py tests/test_connection_lifecycle.py -q -rs
+33 passed in 11.21s; zero skips
+python scripts/linux_oracle.py --production-image tinyassets-uid-disconnect:d33 --build --production-stream
+exit 0; sha256:fcbe4a100e8e0aa1b7238439b9a8fe9cb26a448509f3767ab7abd5fe2d69cf5a
+D33 actual HTTP disconnect via launcher broker: fence/erase/repeat, foreign/stale refusal, no daemon ledger: PASS
+```
+The D33 row passes before and after real broker restart. D22 discovery and D24
+effector HTTPS streams still pass. Existing egress/accounting forward/reverse
+dry-run/apply/repeat, 6 egress crash boundaries, 8 accounting boundaries and
+3 reverse recovery boundaries all PASS; these are not full migration or actual
+old-image rollback. Entry uses exactly seven planned capabilities and compose
+security options; private internal fixture network `ta-uid-stream-b2eb3abf7c1a-net`,
+public CA volume with matching prefix, subnet 93.184.216.0/29, client .3/server .2.
+Fixture resources cleaned by oracle. No external request or real credential.
+
+Initial new test repeat hook incorrectly dereferenced the deleted row; corrected
+fixture, no product guard changed. Initial production run passed D33 and streams
+but failed the unchanged exact FD-count assertion: cyclic SQLite fixture handles
+were collected after baseline. Collect setup handles before fork; exact assertion
+retained with diagnostic output. Final full run passes. Ruff, mirror parity
+(600 files), plugin build/import, strict OpenSpec and whitespace checks pass.
+
+Remaining: removal request capture/lifecycle readers; other D11 mutations/injected
+consumers, accounting/source/liveness/daily evidence and refresh; every engine
+class/site; full migration/two-pass deletion; actual old-image rollback;
+startup/healthcheck only after all prerequisites pass. Continue in this run.
+
+---
+
 # Current delivery: D31 bootstrap readers and D32 graph inventory
 
 D29-D30 are committed/pushed as `dbd7669f10`; hygiene against `0f54d41cfe`:

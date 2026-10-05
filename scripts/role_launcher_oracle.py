@@ -88,6 +88,18 @@ def _seed_ledger(root):
         expected_grant=ledger.get_grant("grant-bootstrap"),
         descriptor={"protocol": preset.id, "catalogue_url": preset.catalogue_url,
                     "benchmark_url": preset.benchmark_url})
+    from tinyassets.api.http_connection import _ids
+
+    for destination in ("remove-first", "remove-restart"):
+        connection, grant = _ids(universe_id="disconnect", destination=destination)
+        ledger.create_connection(
+            connection_id=connection, owner_user_id="disconnect", connection_class="http",
+            connection_type="http", auth_scheme="bearer", scopes=("GET",), provider="http",
+            destination=destination, credential_ref="vault://http/" + destination,
+            allowed_endpoints=[{"host": "models.example.com", "path_template": "/catalogue",
+                                "methods": ["GET"]}])
+        ledger.grant_connection(grant_id=grant, connection_id=connection,
+                                owner_user_id="disconnect", universe_id="disconnect")
     for path in (root / ".broker").glob("outbound.db*"):
         os.chown(path, 1002, 1101)
         path.chmod(0o600)
@@ -267,6 +279,7 @@ def _query_consumers(root, supervisor):
     _capability_consumers(root, supervisor)
     _catalog_consumers(root, supervisor)
     _bootstrap_consumers(root)
+    _disconnect_consumer(root)
     for changes in ({"principal": "bob"}, {"command_center": "bob"},
                     {"grant_id": "grant-bob"}, {"connection_id": "conn-bob"}):
         try:
@@ -320,6 +333,43 @@ def _query_consumers(root, supervisor):
     assert not (root / "outbound.db").exists(), "daemon constructed a fallback ledger"
     print("D11 actual discovery/priced-source consumers via launcher broker; "
           "foreign scope, fence, SQL/path/method refusal; no local ledger: PASS", flush=True)
+
+
+def _disconnect_consumer(root):
+    from tinyassets.api.http_connection import remove_http
+    from tinyassets.auth.middleware import identity_context
+    from tinyassets.auth.provider import Identity
+    from tinyassets.broker.disconnect import disconnect
+    from tinyassets.daemon_server import grant_universe_access
+    from tinyassets.storage.outbound_connections import GrantResolutionError
+
+    (root / "disconnect").mkdir(exist_ok=True)
+    grant_universe_access(root, universe_id="disconnect", actor_id="disconnect", permission="admin")
+    scope = dict(principal="disconnect", command_center="disconnect")
+    for destination in ("remove-first", "remove-restart"):
+        snapshot = disconnect(root, **scope, destination=destination)
+        if snapshot["resource"] is not None:
+            break
+    else:
+        raise AssertionError("no seeded disconnect remains")
+    for changes in ({"principal": "bob"}, {"action": "fence", "incarnation": "stale"},
+                    {"action": "erase", "incarnation": snapshot["incarnation"]}):
+        try:
+            disconnect(root, **(scope | changes), destination=destination)
+        except GrantResolutionError:
+            pass
+        else:
+            raise AssertionError("disconnect accepted foreign/stale/unfenced mutation")
+    with identity_context(Identity(user_id="disconnect", username="disconnect",
+                                   capabilities=["write"])):
+        result = remove_http(universe_id="disconnect", payload={"destination": destination})
+        assert result["status"] == "removed" and result["connection_removed"] is True
+        again = remove_http(universe_id="disconnect", payload={"destination": destination})
+        assert again["connection_removed"] is False
+    assert disconnect(root, **scope, destination=destination)["resource"] is None
+    assert not (root / "outbound.db").exists()
+    print("D33 actual HTTP disconnect via launcher broker: fence/erase/repeat, foreign/stale "
+          "refusal, no daemon ledger: PASS", flush=True)
 
 
 def _bootstrap_consumers(root):
@@ -645,6 +695,12 @@ def main():
     ipc = run / "broker"
     ipc.mkdir()
     directory_permissions(ipc, 1002, 1101, 0o2750)
+    # Ledger fixture connections use SQLite's transaction context, which does
+    # not close the handle. Collect those cyclic setup handles before forking;
+    # their later collection must not change the launcher's fd-leak baseline.
+    import gc
+
+    gc.collect()
     runner = os.fork()
     if runner == 0:
         server = None
@@ -723,7 +779,8 @@ def main():
                         except BaseException:
                             os._exit(1)
                     assert os.waitpid(sibling, 0)[1] == 0
-                    assert len(os.listdir("/proc/self/fd")) == baseline
+                    assert len(os.listdir("/proc/self/fd")) == baseline, (
+                        baseline, os.listdir("/proc/self/fd"))
                     os.kill(server.broker_pid, signal.SIGKILL)
                 elif command == b"D":
                     complete = True

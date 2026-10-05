@@ -1083,18 +1083,30 @@ def _remove_http(*, universe_id: str = "", payload: Any = None) -> dict[str, Any
 
     connection_id, grant_id = _ids(universe_id=uid, destination=destination)
 
-    ledger = ConnectionLedger(
-        Path(base) / "outbound.db",
-        verify_authenticated_principal=lambda: actor,
-    )
-    resource = ledger._get_connection_resource(connection_id)
+    from tinyassets.broker.disconnect import disconnect
+    from tinyassets.broker.supervisor import broker_selected
+    from tinyassets.storage.outbound_connections import GrantResolutionError, _resource_from_row
+
+    selected = broker_selected()
+    if selected:
+        try:
+            snapshot = disconnect(base, principal=actor, command_center=uid,
+                                  destination=destination)
+        except GrantResolutionError:
+            return dict(_NOT_FOUND)
+        resource = _resource_from_row(snapshot["resource"]) if snapshot["resource"] else None
+        incarnation = snapshot["incarnation"]
+    else:
+        ledger = ConnectionLedger(
+            Path(base) / "outbound.db", verify_authenticated_principal=lambda: actor)
+        resource = ledger._get_connection_resource(connection_id)
+        incarnation = ledger.incarnation(connection_id)
     if resource is not None and resource.owner_user_id != actor:
         # Mirrors extend_http: an admin may act on the universe, but not on
         # another principal's deposited credential.
         return dict(_NOT_FOUND)
 
     observed = document.get("incarnation")
-    incarnation = ledger.incarnation(connection_id)
     if observed is not None and resource is not None and observed != incarnation:
         return {"error": "connection_changed", "resource": "connection"}
     from tinyassets.providers.connection_lifecycle import complete_disconnect, fence_connection
@@ -1105,7 +1117,8 @@ def _remove_http(*, universe_id: str = "", payload: Any = None) -> dict[str, Any
                          incarnation=incarnation or "", destination=destination)
         # Deny new direct HTTP dispatch before secret/ledger cleanup; an already
         # dispatched request may still finish, which the receipt states explicitly.
-        ledger.revoke_connection(connection_id)
+        if not selected:
+            ledger.revoke_connection(connection_id)
 
     # Read the SHAPE before destroying it. Endpoints and git scopes are the two
     # things a re-deposit has to reproduce, and scopes in particular die with
@@ -1142,7 +1155,12 @@ def _remove_http(*, universe_id: str = "", payload: Any = None) -> dict[str, Any
     secrets_removed = forget_credential(
         _universe_dir(uid), credential_type="http", destination=destination
     )
-    rows_removed = ledger.delete_connection(connection_id)
+    if selected:
+        rows_removed = disconnect(base, principal=actor, command_center=uid,
+                                  destination=destination, action="erase",
+                                  incarnation=incarnation)["removed"]
+    else:
+        rows_removed = ledger.delete_connection(connection_id)
     # Everything this key authorized goes with it. The connection id is
     # deterministic per (universe, destination), so a re-deposit under the same
     # name used to inherit the old repository consents -- a grant the owner
