@@ -320,8 +320,10 @@ A matching saved exchange SHALL clear its uncertainty notice and local inflight
 record. Other saved messages SHALL remain visible without confirming that send.
 Dismiss SHALL hide the notice immediately without stopping observation or blocking
 the composer. Repeated observations SHALL deduplicate saved rows and merge late
-arrivals in server sequence order, falling back to timestamps for legacy rows and
-local notices, preserving the chat-follow-latest behavior. Optional connection suggestions
+arrivals by server timestamp with row ID breaking ties (the store's turn order).
+Local live messages SHALL append without trusting device/server clock alignment,
+preserving the chat-follow-latest behavior. Live sends and replies SHALL carry
+the send identity for display deduplication when later saved rows arrive. Optional connection suggestions
 MUST NOT appear as Open requests.
 
 #### Scenario: repeated short prompt

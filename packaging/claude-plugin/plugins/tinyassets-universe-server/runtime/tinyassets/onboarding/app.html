@@ -2139,10 +2139,7 @@
     // earlier turn's reply — composed before the click arrived — landed BELOW
     // it, so the thread read as though the agent had ignored the approval
     // (founder, 2026-09-26).
-    const waiting=queued?null:Array.from(thread.children).find(n=>
-      String(n.className||"").split(" ").includes("msg--queued")||
-      (Number.isFinite(el.messageTime)&&Number.isFinite(n.messageTime)&&
-        n.messageTime>el.messageTime));
+    const waiting=queued?null:firstQueuedBubble(thread);
     if(waiting&&thread.insertBefore) thread.insertBefore(el,waiting);
     else thread.appendChild(el);
     return el;
@@ -4839,6 +4836,7 @@
     opts.clientSendId=crypto.randomUUID();
     const recoveryBubble=opts.recoveryBubble||(!opts.echoed
       ?appendMessage("founder", display || message, null, sentAt/1000):null);
+    if(recoveryBubble) recoveryBubble.clientSendId=opts.clientSendId;
     // A line sent from a restore offer is a SIDE send: it must not take over
     // the in-flight record of an unconfirmed turn still on screen.
     if(!opts.keepInflight) rememberInflight(
@@ -4876,7 +4874,12 @@
         unconfirmed=true;
         return;
       }
+      const beforeReply=new Set(Array.from($("thread").children));
       renderConverse(answer);
+      for(const node of Array.from($("thread").children)){
+        if(!beforeReply.has(node)&&String(node.className||"").includes("msg--universe"))
+          node.replyToClientSendId=opts.clientSendId;
+      }
       settleSteered((answer&&answer.steering)||{delivered:[],undelivered:[]});
       delivered=true;setStatusLine("");
       if(typeof AppUI!=="undefined") AppUI.turnSettled();
@@ -4966,6 +4969,7 @@
     const recoveryBubble=appendMessage("founder",message);
     const voiceSentAt=Date.now();
     opts.clientSendId=crypto.randomUUID();
+    recoveryBubble.clientSendId=opts.clientSendId;
     rememberInflight(message,message,voiceSentAt,"spoken",opts.modelChoice,null,opts.agentId,opts.clientSendId);
     // A spoken turn takes the composer too, so a typed turn's late cleanup can
     // see that it is no longer the one holding it.
@@ -4996,7 +5000,12 @@
         if(payload&&(payload.error||payload.turn_failure))throw servedFailureError(payload);
         throw new Error("voice_converse_invalid");
       }
+      const beforeReply=new Set(Array.from($("thread").children));
       renderConverse(payload);
+      for(const node of Array.from($("thread").children)){
+        if(!beforeReply.has(node)&&String(node.className||"").includes("msg--universe"))
+          node.replyToClientSendId=opts.clientSendId;
+      }
       delivered=true;forgetInflight();
       return payload.reply;
     }catch(error){
@@ -5007,7 +5016,8 @@
       if(error&&error.authRequired){ sessionExpired(); throw error; }
       if(error.historySaved){
         forgetInflight();
-        appendFailureNotice(error.message,{speaker:"founder",text:message,truncated:false},undefined,error.failureCode,error.failure);
+        const notice=appendFailureNotice(error.message,{speaker:"founder",text:message,truncated:false},undefined,error.failureCode,error.failure);
+        notice.replyToClientSendId=opts.clientSendId;
       }else{
         unconfirmed=!!(error&&error.transport)&&!error.notSent;
         offerResend(message,message,error,
@@ -5088,20 +5098,15 @@
     const turns=(conv&&Array.isArray(conv.turns))?conv.turns:[];
     const at=savedSendIndex(turns,sent);
     // Paint every saved arrival, even if this particular send is still unknown.
-    // A different send's answer cannot settle this one.
+    // Only this send's own saved founder row confirms delivery; a different
+    // answer cannot. Existence is sufficient, including exchanges with steers.
     drawHistoryTurns(turns);
-    let reply=-1;
-    for(let i=at+1;at>=0&&i<turns.length;i++){
-      if(turns[i].speaker==="founder") break;
-      if(turns[i].speaker==="universe"||turns[i].speaker==="platform"){reply=i;break;}
-    }
-    if(reply>=0){
+    if(at>=0){
       if(sent.record) forgetInflightIf(sent.record);
       note.remove();
       return;
     }
-    line.textContent=at>=0?"Received; waiting for the saved reply. Nothing was sent again.":
-      "Not confirmed yet; your agent may still be working. Nothing was sent again.";
+    line.textContent="Not confirmed yet; your agent may still be working. Nothing was sent again.";
   }
 
   // A resume is an observation, never permission to replay a possibly accepted
@@ -9952,12 +9957,15 @@
     }
   }
 
-  // Merge saved rows in server sequence, falling back to timestamps for legacy
-  // rows and local notices. A late page/reply belongs in place, not at the end.
+  // Merge saved rows by timestamp, with row ID breaking ties as in the store.
+  // A late page/reply belongs in place, not at the end.
   function drawHistoryTurns(turns){
     const sequence=t=>t&&/^[0-9]+$/.test(String(t.id||""))?BigInt(t.id):null;
-    const compare=(a,b)=>sequence(a)!==null&&sequence(b)!==null
-      ? (sequence(a)<sequence(b)?-1:sequence(a)>sequence(b)?1:0) : (a.ts-b.ts)||0;
+    const compare=(a,b)=>{
+      const time=Number.isFinite(a.ts)&&Number.isFinite(b.ts)?a.ts-b.ts:0;
+      return time||(sequence(a)!==null&&sequence(b)!==null
+        ? (sequence(a)<sequence(b)?-1:sequence(a)>sequence(b)?1:0) : 0);
+    };
     const stamped = turns.every(t=>t && typeof t.ts==="number");
     const ordered = stamped||turns.every(t=>sequence(t)!==null) ? turns.slice().sort(compare) : turns.slice();
     ordered.forEach((t,index)=>{
@@ -9975,8 +9983,11 @@
           else thread.appendChild(node);
         }
       };
+      const founder=ordered.slice(0,index).reverse().find(row=>row.speaker==="founder");
+      const replySendId=t.speaker!=="founder"&&founder&&founder.client_send_id;
       const existing=Array.from($("thread").children).find(n=>n.savedTurnKey===key||
-        (t.client_send_id&&n.clientSendId===t.client_send_id));
+        (t.client_send_id&&n.clientSendId===t.client_send_id)||
+        (replySendId&&n.replyToClientSendId===replySendId));
       if(existing){place(existing);return;}
       if(t.consumer_turn_id){
         const seen=t.speaker==="founder"?renderedConsumerFounders:renderedConsumerTurns;

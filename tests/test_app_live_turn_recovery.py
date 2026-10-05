@@ -671,6 +671,7 @@ Owner.getConversation=async()=>({recent_conversation:{turns:[
   {id:"1",speaker:"founder",text:"recover me",client_send_id:"recover-send",ts:1},
   {id:"2",speaker:"universe",text:"saved answer",ts:2}]}});
 document.visibilityState="visible";
+if(typeof navigator==="undefined")globalThis.navigator={};
 scheduled[scheduled.length-1].fn();
 await new Promise(r=>realTimeout(r,20));
 console.log(JSON.stringify({delays:scheduled.map(t=>t.ms),reads,hidden,

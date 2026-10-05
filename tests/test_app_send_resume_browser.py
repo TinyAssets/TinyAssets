@@ -512,3 +512,46 @@ def test_late_history_inserts_before_newer_notice_without_duplicates(recovery_pa
     }""")
     assert result == ['Earlier question', 'Late answer', 'Newer notice']
     assert page.evaluate("wire.sends.length") == 0
+
+
+def test_recovery_deduplicates_previously_delivered_live_exchange(recovery_page):
+    from playwright.sync_api import expect
+
+    page = recovery_page
+    page.evaluate("""async () => {
+        const original=MCP.converse;
+        MCP.converse=async()=>({reply:'First live answer'});
+        await sendTurn('First live question');
+        MCP.converse=original;
+        wire.firstId=document.querySelector('#thread .msg--founder').clientSendId;
+    }""")
+    _send_and_interrupt(page)
+    page.evaluate("""() => {
+        const sent=readInflight();
+        wire.turns=[{id:'1',speaker:'founder',text:'First live question',ts:1,
+            client_send_id:wire.firstId},
+            {id:'2',speaker:'universe',text:'First live answer',ts:1},
+            {id:'3',speaker:'founder',text:sent.message,ts:2,client_send_id:sent.client_send_id},
+            {id:'4',speaker:'universe',text:'Second saved answer',ts:2}];
+        wire.hidden=false;window.dispatchEvent(new Event('focus'));
+    }""")
+    expect(page.locator('#thread .msg--universe .msg-body')).to_have_text(
+        ['First live answer', 'Second saved answer'])
+    expect(page.locator('#thread .msg--founder')).to_have_count(2)
+    assert page.evaluate('readInflight()') is None
+    assert page.evaluate('wire.sends.length') == 1
+
+
+def test_history_uses_server_timestamps_before_row_ids_and_live_appends(recovery_page):
+    page = recovery_page
+    result = page.evaluate("""() => {
+        drawHistoryTurns([{id:'20',speaker:'universe',text:'Later stored',ts:200},
+            {id:'40',speaker:'founder',text:'Earlier but committed later',ts:100},
+            {id:'21',speaker:'platform',text:'Same time next row',ts:200}]);
+        appendMessage('founder','New live send on a slow clock',null,50);
+        return Array.from(document.querySelectorAll('#thread .msg-body'),n=>n.textContent);
+    }""")
+    assert result[0:2] == ['Earlier but committed later', 'Later stored']
+    assert result[2].startswith('Same time next row')
+    assert result[3] == 'New live send on a slow clock'
+    assert page.evaluate('wire.sends.length') == 0
