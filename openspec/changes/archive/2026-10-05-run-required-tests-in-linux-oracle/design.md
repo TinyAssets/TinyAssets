@@ -47,7 +47,10 @@ the runner see the environment they saw on the bare runner.
 - Jail probe fails: exit 3 before the runner starts; same outcome.
 - Nothing retries, and no step carries `continue-on-error` or `|| true`.
 
-## D5. What is not proven yet
+## D5. Hosted acceptance
+
+All five items were verified on 2026-10-05; see `gate.md` for the independent
+acceptance review and `tasks.md` for the full, browser and selective run IDs.
 
 Hosted runs must establish every item below. Items 1 and 3-5 gate the
 implementation PR. Item 2 runs on the immediate documentation follow-up after
