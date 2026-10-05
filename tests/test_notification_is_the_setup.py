@@ -274,6 +274,9 @@ def test_the_page_has_no_full_page_setup_and_no_vendor_cards():
 _RAIL_HARNESS = r"""
 const els=new Map();
 function mk(id){return {id,textContent:'',hidden:false,value:'',open:false,
+ showModal(){this.open=true;},close(){this.open=false;},
+ remove(){if(this.parentNode)this.parentNode.children=this.parentNode.children.filter(c=>c!==this);this.parentNode=null;},
+ querySelectorAll(){return [];},
  children:[],parentNode:null,
  classList:{set:new Set(),toggle(c,on){on?this.set.add(c):this.set.delete(c);},
   contains(c){return this.set.has(c);}},
@@ -291,6 +294,7 @@ $('rail-items'); const rail=$('request-rail'); rail.appendChild($('connect-panel
 const host=$('rail-items');
 Object.defineProperty(host,'textContent',{get(){return '';},set(v){this.replaceChildren();}});
 let railOpen=null, railCache=[], NATIVE=false, connectWasBlocking=null;
+$('rail-head').textContent='Request history';$('connect-panel').hidden=true;
 // renderRail now REUSES a card node whose row and open state are unchanged, so
 // a 15-second poll cannot delete what the user typed into it.
 let railNodes=new Map();
@@ -316,7 +320,9 @@ def _run_rail(rows, extra=""):
     html, _ = render_app_html()
     source = "\n".join(_js_function(html, name) for name in (
         "isSetupRequest", "isOptionalRequest", "forgetFinishedSetup", "foldedModelAccess",
-        "renderRail", "connectBody"))
+        "renderRail", "connectBody", "clearTypedValues", "updateRailItems"))
+    source += html[html.index("  const RequestSheets = {"):
+                   html.index("  function renderRail(items, options){")]
     shapes = html[html.index("  const ConnectShapes={"):
                   html.index("  // A declared model list needs")]
     script = (_RAIL_HARNESS.replace("__SOURCE__", source + "\n" + shapes)
@@ -324,7 +330,7 @@ def _run_rail(rows, extra=""):
 const tabs=host.children.map(t=>({text:text(t),
   hasPanel:t.children.some(c=>c.children.includes($('connect-panel')))}));
 console.log(JSON.stringify({tabs,panelHidden:$('connect-panel').hidden,
-  setupWide:rail.classList.contains('rail--setup'),primary:HostedModelConnect.primary,
+  sheetOpen:rail.open,primary:HostedModelConnect.primary,
   adopted:HostedModelConnect.adopt_seen||null,otherOpen:$('connect-other').open,
   shapes:$('connect-shapes').children.map(b=>b.textContent)}));
 """)
@@ -350,7 +356,7 @@ def test_an_unpowered_user_sees_the_setup_inside_the_request_first():
     out = _run_rail([_SETUP, {"request_id": "req_b", "kind": "API", "title": "Key please",
                                "fields": [], "action": {"type": "answer"}}])
     assert out["tabs"][0]["hasPanel"] is True, "the setup is not inside the first request"
-    assert out["panelHidden"] is False and out["setupWide"] is True
+    assert out["panelHidden"] is False and out["sheetOpen"] is True
     assert out["primary"]["label"] == "Continue with Example"
     assert out["shapes"] == ["API key", "Your own server"]
     assert "Accept" not in out["tabs"][0]["text"], "the setup rendered as a generic ask"
@@ -372,7 +378,7 @@ def test_a_powered_user_sees_only_a_collapsed_connect_another():
     out = _run_rail([_ACCESS, powered])
     assert [t["hasPanel"] for t in out["tabs"]] == [False, False], \
         "setup expanded for a powered user"
-    assert out["panelHidden"] is True and out["setupWide"] is False
+    assert out["panelHidden"] is True and out["sheetOpen"] is False
     assert len(out["tabs"]) == 2, "a powered universe's own model request was hidden"
     opened = _run_rail([powered], "railOpen='sys_connect_llm';renderRail(railCache);")
     assert opened["tabs"][0]["hasPanel"] is True

@@ -286,3 +286,45 @@ Post-commit hygiene passes against both the Round 2 starting SHA and the PR
 merge base: **8 new test functions this round / 20 across the PR, 0 removed,
 0 tampering findings**. Commit hooks also pass mirror parity, mojibake scanning,
 import-graph smoke, path-resolver lint, cross-provider drift and skill validation.
+
+
+### PR #4469 full-source CI repair
+
+Started from 72873ee582 after a fast-forward pull and exact HEAD/origin check.
+Read all six supplied logs; reproduced 15 failures / 108 passes in the six full
+failing modules on Windows. No test removed, renamed, skipped or weakened.
+
+- Phone: migrate obsolete strip/parent/disclosure selectors to inbox/history
+  dialogs, preserving geometry, controls, empty history and keyboard checks.
+  Keep the inbox control within the original 44px compact-height contract.
+- Late steer: the extracted send harness lacked refreshRail; its ReferenceError
+  entered the error path and replaced the receipt. Supply the UI read stub.
+- Setup/optional rows: extract real RequestSheets plus its dialog/removal DOM
+  dependencies. Restore folded model-access rows and removal of closed optional
+  cards. Assert setup dialog open state instead of the retired rail CSS class.
+- Notification links: wait for the request, open its sheet, focus the exact item,
+  and consume the link. New Chromium cases prove this at 390 and 1280px.
+- Inventory: classify approval_scopes and connection_continuations as owner
+  writers requiring lease fences before C2. Both already use owner-control;
+  neither is infrastructure or lease-fenced, and handover remains disabled.
+
+Focused Windows checks: 132 passed plus all 16 phone cases. The peer-agents
+phone handoff verified the remaining DOM and retained/increased assertion counts.
+Full affected CI shards, affected heavy modules and omitted prior-validation
+modules are running on Windows and Linux 3.11; final counts follow below.
+
+
+Repair review: peer-agents Claude returned APPROVE (floor/correctness only).
+AGREE: consume a stale notification item with its request, and do not focus an
+unrelated request while waiting for the linked row. Added a real-browser proof.
+DISAGREE_EVIDENCE with reopening setup automatically when an already-open access
+row becomes folded: this request remains accessible in the inbox; not stealing
+focus for an already-seen background request is the reviewed sheet behavior.
+
+Final focused UI: 100/100 Windows; full failure-related modules plus card/sheet
+browser coverage: 154/154 Linux 3.11.16, uid 1001, bwrap 0.12.0, no skips.
+Expanded heavy/prior-extra runs: Windows 946 passed, 80 failed, 10 skipped across
+two disjoint runs; Linux 977 passed, 59 failed, zero skips. All 59 Linux failures
+are already in .github/known-failing-tests.txt (deployment-contract tests).
+Windows has those same 59 plus 21 host-installer failures: Git Bash lacks flock.
+Those 21 pass in Linux. No quarantine/skip edits were made.
