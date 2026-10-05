@@ -87,7 +87,8 @@ class AgentModelPlan:
         """Conversation recovery: a model preference is not an only-model grant.
 
         Keep requested fallbacks ahead of other models within each source kind,
-        with accepted subscriptions ahead of HTTP sources. This never discovers credentials or widens model/cost access.
+        with accepted subscriptions ahead of HTTP sources. This never discovers
+        credentials or widens model/cost access.
         Workflow pins continue to use ``order`` through WorkCandidateData.
         """
         preferred = self.order(owner, universe, exhaustion)

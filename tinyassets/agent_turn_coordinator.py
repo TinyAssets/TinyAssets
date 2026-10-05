@@ -173,7 +173,10 @@ class AgentTurnCoordinator:
         order_fn = self.plan.capacity_order if self.capacity_recovery else self.plan.order
         order = order_fn(self.owner, self.context.universe_dir.name, self.exhaustion)
         return next((item.ref for item in order.candidates
-                     if item.ref not in self._budget_skipped), None)
+                     if item.ref not in self._budget_skipped
+                     and (not self._text_only or self.router.selected_agent_execution_kind(
+                         item.ref,
+                     ) == "engine_inference")), None)
 
     def _accept(self, transition):
         if transition.status != "applied":

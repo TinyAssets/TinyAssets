@@ -170,3 +170,26 @@ def test_cancelled_native_step_never_calls_fallback(agent, monkeypatch):
         preferences._converse(agent, monkeypatch)
     assert agent.served.native.calls == 1 and agent.wires == []
     assert agent.latest().state == "held_native_unknown"
+
+
+def test_text_only_capacity_skips_native_and_reaches_http_fallback(agent, monkeypatch):
+    from tinyassets.providers import discovery_snapshot
+
+    original = discovery_snapshot.read_http_discovery_document
+    alternate = "future-vendor/text-fallback"
+
+    def added(**kwargs):
+        value = original(**kwargs)
+        if "models/user" in kwargs["url"]:
+            value["data"].append(preferences.authority.snapshot_tests._model(alternate))
+        return value
+
+    monkeypatch.setattr(discovery_snapshot, "read_http_discovery_document", added)
+    select(agent, http_ref(agent), (ModelRef(http_ref(agent).connection_id, alternate),))
+    agent.capacity_failures[1] = 429
+    assert preferences._converse(agent, monkeypatch, message="hello") == "finished exact answer"
+    assert agent.served.native.calls == 0 and agent.tools == []
+    assert len(agent.wires) == 2
+    assert agent.wires[-1][1]["body"]["model"] == alternate
+    assert all(not wire[1]["body"].get("tools") for wire in agent.wires)
+    assert agent.latest().state == "completed"
