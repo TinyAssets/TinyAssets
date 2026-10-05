@@ -3035,3 +3035,5 @@ require private networking and cross-owner port/socket denial; root migration ow
 owner.json cleanup before chown; D7's owner-work exception and absent historical gh site
 are narrowed explicitly. The reviewer confirmed inventory coverage and preservation of
 both prior refute rounds. No second review round was dispatched.
+
+D47 hygiene correction: the per-commit gate rejected adding a Windows skip to the already-committed D44 IPC tests (1 tampering finding). Restored those tests without the skip in an additive follow-up; no exception, test-removal approval, or history rewrite. D47's newly introduced evidence tests retain their own Unix prerequisite. All acceptance receipts above are zero-skip Linux runs.
