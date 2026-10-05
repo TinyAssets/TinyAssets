@@ -1837,3 +1837,35 @@ the committed pair. The private parent, database owner/mode, no-follow open and
 single-link descriptor are verified; paths and numeric identities are not client
 request parameters. This foundation alone does not activate broker IPC, owner
 cells, migration, or the launcher, and is not D60 acceptance.
+
+
+### D62. Mechanical decision: bound mapping authority in an owner user namespace
+
+The reserved map is `0 300000 100000` for both UID and GID. Reserve host
+300000 (inner 0) for the launcher itself; **owner allocation starts at 300001**
+and ends at 399999. This narrows D61 before any runtime allocation is activated.
+An owner must never share the mapper's own identity. UID/GID labels exposed to
+daemon readers and stored in the broker are host labels; inner labels are host
+minus 300000, and a nested single-identity bubblewrap maps only that inner pair.
+
+The production-image feasibility probe installs maps in the privileged startup
+window, then retires the parent to daemon identity with zero capabilities. The
+candidate launcher keeps only SETUID/SETGID permitted/effective within that user
+namespace; bounding, ambient and inheritable are zero. Out-of-range setresuid
+and setresgid fail in the kernel. Each child drops all five capability sets.
+No setuid binary, SYS_ADMIN, CHOWN, FOWNER, DAC_OVERRIDE, KILL or extra privileged
+service is retained. Real bubblewrap cells under all three unchanged D9 profiles
+deny read, relabel and copy of a retired-name foreign inode; own writes succeed.
+
+This is a feasibility probe, NOT the integrated launcher. Integration must
+preserve exact daemon authentication while those service UIDs are unmapped,
+bootstrap broker/daemon before retirement, and make role death terminate the
+container rather than regaining host privilege to restart a role. It must not
+silently weaken peer checks. Startup and class admission remain off pending that
+integration and every required acceptance matrix.
+
+Identity IPC is OWNER-channel-only, exact-field, and fenced across the durable
+transaction. Requests carry principal and a boolean allocation intent, never
+UID/GID or a filesystem path. Missing initialization refuses; lookup alone does
+not allocate. Process startup loads an existing private map but does not create
+one. Explicit first-volume initialization remains in migration's startup window.

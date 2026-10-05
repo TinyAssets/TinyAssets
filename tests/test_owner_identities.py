@@ -30,7 +30,7 @@ def test_parallel_allocation_restart_and_no_reuse(tmp_path):
                           "UPDATE owner_identities SET machine_id=399999"):
             with pytest.raises(sqlite3.IntegrityError, match="permanent"):
                 db.execute(statement)
-    assert restarted.resolve("dave", allocate=True).uid == 300003
+    assert restarted.resolve("dave", allocate=True).uid == 300004
 
 
 def test_missing_map_refused_and_lookup_does_not_allocate(tmp_path):
@@ -78,7 +78,7 @@ def test_uncommitted_allocation_crash_leaves_no_published_identity(tmp_path):
 import os, sqlite3, sys
 db = sqlite3.connect(sys.argv[1])
 db.execute('BEGIN IMMEDIATE')
-db.execute('INSERT INTO owner_identities VALUES (?, ?)', ('unpublished', 300001))
+db.execute('INSERT INTO owner_identities VALUES (?, ?)', ('unpublished', 300002))
 os._exit(23)
 """, str(identities.path)], check=False)
     assert result.returncode == 23
@@ -86,4 +86,4 @@ os._exit(23)
     assert restarted.resolve("alice") == first
     with pytest.raises(LookupError):
         restarted.resolve("unpublished")
-    assert restarted.resolve("bob", allocate=True).uid == 300001
+    assert restarted.resolve("bob", allocate=True).uid == 300002

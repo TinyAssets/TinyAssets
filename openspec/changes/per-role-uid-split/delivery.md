@@ -1,3 +1,44 @@
+# D62 continuation: fenced identity IPC and bounded mapping proof
+
+D61 foundation pushed as **4cd932f044**. Hygiene: 5 added, 0 removed,
+0 tampering. Continued without stopping after that slice.
+
+Implemented OWNER-only, fenced broker identity lookup/allocation and the daemon
+client. Missing initialization, stale authority and UID/GID/path override fields
+refuse without allocating. The broker loads an existing private map and never
+automatically recreates a lost one. D62 reserves 300000 for the mapper; owner
+pairs now start at **300001** (through 399999), avoiding a launcher/owner collision.
+
+`python scripts/linux_oracle.py -- tests/test_owner_identities.py tests/test_owner_identity_ipc.py tests/test_broker_server.py -q -rs`:
+**28 passed in 2.97s**, zero skips, one existing broker-fixture loop-close warning.
+This includes the corrected allocation range. Targeted Ruff passes.
+
+`python scripts/role_owner_namespace_probe.py --image tinyassets-uid-readers:d57`:
+**exit 0** on immutable image
+`sha256:832b7055dce8a3eb48e6a0af5c776aa81a55f7cd8fa3dc397304e42f7c62e37f`.
+Mapping `0 300000 100000`; out-of-range UID/GID changes denied; candidate mapper
+retains only SETUID/SETGID in its bounded user namespace and has zero bounding,
+ambient and inheritable sets. Alice/Bob children have all five sets zero, own
+read/write controls pass, foreign owner and broker directory access fail.
+Actual bubblewrap under cell-deny, cell-links and cell-nested: **zero foreign
+reads**, retired-name read/relabel/copy denied, NNP=1, seccomp=2. No profile edits.
+This is a kernel feasibility probe, NOT actual engine-class launcher acceptance
+or the full daemon reader matrix. The old D59 diagnostic is preserved.
+
+A production Dockerfile rebuild was also exercised (`tinyassets-uid-d60:foundation`,
+image `sha256:2ded0b0cdd8628d4bc77eba7d4cae55dfb2f51578448b7f906453256ae1be1b7`).
+The first full stream oracle failed D54's engine snapshot read (PermissionError).
+An isolated rerun of liveness plus D54 on the SAME image passed; the complete
+rerun completed **exit 0**: foundation/egress, existing image-decoder, actual
+HTTPS streaming/accounting/refresh, restart and relocation crash proofs pass.
+The initial intermittent snapshot denial remains a qualification, not erased
+by the rerun. This image predates the final 300001 range
+correction, so it is not a production receipt for that correction.
+
+Release-critical files for this slice: **0; none**. No startup, class admission,
+PR or deployment. Remaining order and deferred ui-preview are unchanged below.
+
+---
 # Current delivery: D60 accepted; D61 durable identity foundation (2026-10-05)
 
 Started at **48c9b0a225**; `git pull --ff-only origin feat/per-role-uid-split`

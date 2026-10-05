@@ -13,8 +13,9 @@ from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
 
-# D61: disjoint from D1's reserved per-box 200000..299999 range.
-OWNER_ID_FIRST = 300000
+# D62: 300000 is the bounded launcher; owners never share its identity.
+# The entire range is disjoint from D1's per-box 200000..299999 reservation.
+OWNER_ID_FIRST = 300001
 OWNER_ID_LAST = 399999
 
 
@@ -60,7 +61,7 @@ class OwnerIdentities:
             db.execute("CREATE TABLE IF NOT EXISTS owner_identities ("
                        "principal TEXT PRIMARY KEY NOT NULL, "
                        "machine_id INTEGER NOT NULL UNIQUE "
-                       "CHECK(machine_id BETWEEN 300000 AND 399999))")
+                       "CHECK(machine_id BETWEEN 300001 AND 399999))")
             for operation in ("DELETE", "UPDATE"):
                 db.execute(f"CREATE TRIGGER IF NOT EXISTS no_identity_{operation.lower()} "
                            f"BEFORE {operation} ON owner_identities BEGIN "
@@ -93,3 +94,36 @@ class OwnerIdentities:
             if type(machine_id) is not int or not OWNER_ID_FIRST <= machine_id <= OWNER_ID_LAST:
                 raise RuntimeError("invalid durable owner identity")
             return OwnerIdentity(machine_id, machine_id)
+
+
+def owner_identity(data_root: Path, *, principal: str, allocate: bool = False) -> OwnerIdentity:
+    """Resolve through the authenticated broker; never open its database locally."""
+    import socket
+
+    from tinyassets import rpc_frames as rf
+    from tinyassets.broker.supervisor import get_supervisor
+
+    validate_principal(principal)
+    if type(allocate) is not bool:
+        raise ValueError("allocate must be boolean")
+    supervisor = get_supervisor(data_root)
+    if supervisor is None:
+        raise RuntimeError("owner identity broker is unavailable")
+    generation, token = supervisor.fence()
+    request = {"op": "OWNER_IDENTITY", "principal": principal, "allocate": allocate,
+               "generation": generation, "token": token}
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as channel:
+        channel.settimeout(30)
+        channel.connect(os.fspath(supervisor.socket_path))
+        supervisor.verify_broker(channel)
+        channel.sendall(rf.control(rf.CONNECTION, request))
+        frame = rf.read_frame_blocking(channel)
+        if frame is None or frame.kind != rf.CONTROL or frame.stream != rf.CONNECTION:
+            raise RuntimeError("invalid owner identity reply")
+        answer = frame.control()
+    if (set(answer) != {"op", "uid", "gid"} or answer["op"] != "OWNER_IDENTITY_IS"
+            or type(answer["uid"]) is not int or type(answer["gid"]) is not int
+            or answer["uid"] != answer["gid"]
+            or not OWNER_ID_FIRST <= answer["uid"] <= OWNER_ID_LAST):
+        raise RuntimeError("owner identity refused")
+    return OwnerIdentity(answer["uid"], answer["gid"])

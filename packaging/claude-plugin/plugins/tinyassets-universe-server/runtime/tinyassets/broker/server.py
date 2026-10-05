@@ -146,13 +146,15 @@ class BrokerServer:
     def __init__(self, *, ledger_for: Callable[[str], Any],
                  dispatch_for: Callable[..., Callable[..., Any]],
                  ops: OpStore, fence: Fence, roles: Mapping[int, str],
-                 uid_of: Callable[[socket.socket], int] = peer_uid) -> None:
+                 uid_of: Callable[[socket.socket], int] = peer_uid,
+                 owner_identities: Any = None) -> None:
         self._ledger_for = ledger_for
         self._dispatch_for = dispatch_for
         self._ops = ops
         self._fence = fence
         self._roles = dict(roles)
         self._uid_of = uid_of
+        self._owner_identities = owner_identities
         self._streams: dict[tuple[int, int], _Stream] = {}
         self._streams_lock = threading.Lock()
         self._ops.recover()
@@ -305,7 +307,10 @@ class _Connection:
     async def _connection_op(self, op: str, doc: dict[str, Any]) -> None:
         if self._role != OWNER:
             raise rf.FrameError("only the owner channel may send connection operations")
-        if op == "LEDGER_QUERY":
+        if op == "OWNER_IDENTITY":
+            answer = await asyncio.to_thread(self._owner_identity, doc)
+            await self.send_async(rf.control(rf.CONNECTION, answer))
+        elif op == "LEDGER_QUERY":
             answer = await asyncio.to_thread(self._ledger_query, doc)
             await self.send_async(rf.control(rf.CONNECTION, answer))
         elif op == "ERASE_ACCOUNT":
@@ -348,6 +353,25 @@ class _Connection:
             await self.send_async(rf.control(rf.CONNECTION, {
                 "op": "STATUS_IS", "op_id": doc.get("op_id"), "state": state,
                 "side_effect_state": effect}))
+
+    def _owner_identity(self, doc: dict[str, Any]) -> dict[str, Any]:
+        from tinyassets.broker.owner_identities import validate_principal
+
+        try:
+            if set(doc) != {"op", "principal", "allocate", "generation", "token"}:
+                raise ValueError("unsupported identity fields")
+            validate_principal(doc["principal"])
+            if (type(doc["allocate"]) is not bool or type(doc["generation"]) is not int
+                    or not isinstance(doc["token"], str)):
+                raise ValueError("invalid identity request")
+            with self._server._fence.send(doc["generation"], doc["token"]):
+                if self._server._owner_identities is None:
+                    raise RuntimeError("owner identities are not initialized")
+                identity = self._server._owner_identities.resolve(
+                    doc["principal"], allocate=doc["allocate"])
+                return {"op": "OWNER_IDENTITY_IS", "uid": identity.uid, "gid": identity.gid}
+        except Exception:  # noqa: BLE001 - no identity, path or persisted state on refusal
+            return {"op": "OWNER_IDENTITY_REFUSED"}
 
     def _erase_account(self, doc: dict[str, Any]) -> dict[str, Any]:
         from tinyassets.broker.account_erasure import local_erase, validate

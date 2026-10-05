@@ -110,6 +110,12 @@ async def serve(args: argparse.Namespace) -> None:
     dispatchers = _Dispatchers(Path(args.data_root),
                                allow_test_fixtures=args.allow_test_fixtures,
                                role_split=role_split)
+    # Initialization belongs to the privileged, fenced volume migration. A
+    # missing map must never silently restart allocation at the first UID.
+    from tinyassets.broker.owner_identities import OwnerIdentities
+
+    identity_path = state / "owner-identities.db"
+    identities = OwnerIdentities(identity_path) if role_split and identity_path.exists() else None
     server = BrokerServer(
         ledger_for=dispatchers.ledger_for, dispatch_for=dispatchers.dispatch_for,
         ops=OpStore(state / "ops.db"),
@@ -117,6 +123,7 @@ async def serve(args: argparse.Namespace) -> None:
                     verify_lease_proof=lease_verifier(args.proof_sha256),
                     lease_sha256=args.proof_sha256),
         roles={int(args.owner_uid): OWNER},
+        owner_identities=identities,
     )
     socket_path = Path(args.socket)
     socket_path.unlink(missing_ok=True)
