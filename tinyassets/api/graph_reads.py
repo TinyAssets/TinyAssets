@@ -136,7 +136,7 @@ def read_graph(
             session = addressed_agents.memory_session(actor, agent.agent_id if agent else "main")
             payload = read_conversation_page(
                 root, session, field_name=field_name,
-                offset=output_offset, max_chars=output_max_chars,
+                offset=output_offset, max_chars=output_max_chars, query=query,
             )
         except addressed_agents.AgentNotAddressable as exc:
             return json.dumps({"error": str(exc), "agent_not_found": True})

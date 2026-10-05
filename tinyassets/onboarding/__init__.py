@@ -225,11 +225,16 @@ def render_app_html(build: str | None = None) -> tuple[str, str]:
     """
     import json
 
+    from tinyassets.onboarding.app_modules import chat_renderer_source, module_url, recovery_source
+
     nonce = secrets.token_urlsafe(16)
     cfg = app_config() if build is None else app_config(build=build)
     blob = json.dumps(cfg).replace("<", "\\u003c").replace("\u2028", "").replace("\u2029", "")
     html = (
         _HTML_PATH.read_text("utf-8")
+        .replace("__TA_APP_RECOVERY__", recovery_source())
+        .replace("__TA_CHAT_RENDER__", chat_renderer_source())
+        .replace("__TA_MERMAID_URL__", module_url("mermaid_vendor.js"))
         .replace("__TA_APP_UI__", _HTML_PATH.with_name("app_ui.js").read_text("utf-8"))
         .replace(_NONCE_PLACEHOLDER, nonce)
         .replace(_CONFIG_PLACEHOLDER, blob)

@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import json
 import time
+from functools import lru_cache
 
 import pytest
 
@@ -243,6 +244,7 @@ def test_route_is_apex_app_get(monkeypatch):
         "/app/api/read", "/app/api/status",
         # The bytes a custom UI loads, fetched by the app for its sealed frame.
         "/app/api/ui-asset",
+        "/app/api/file",
     }
     assert by_path["/app/files"].methods == {"POST"}
     assert by_path["/app/api/read"].methods == {"POST"}
@@ -603,7 +605,7 @@ def test_the_app_restores_the_conversation_on_load():
     # order: `load_recent_readonly` returns oldest-first (it reverses its DESC
     # page), and a blind reverse drew the thread upside down after every reload
     # ("the conversation is reset to the past" — founder, 2026-08-29).
-    assert "turns.slice().sort((a,b)=>a.ts-b.ts)" in html
+    assert "turns.slice().sort(compare)" in html
     assert "turns.slice().reverse()" not in html
     # It must never block the chat on a history failure.
     assert "History never blocks the chat" in html
@@ -615,8 +617,14 @@ def _js_function(html: str, name: str) -> str:
     script, by brace matching that skips strings and comments."""
     import re
 
-    m = re.search(r"(?:async\s+)?function\s+" + re.escape(name) + r"\s*\(", html)
+    # A literal prefix lets the regex engine skip directly to "function".
+    # An optional async prefix makes it retry at every character of this large page.
+    m = re.search(r"function\s+" + re.escape(name) + r"\s*\(", html)
     assert m, f"app.html has no function {name}"
+    start = m.start()
+    prefix = html[:start].rstrip()
+    if len(prefix) < start and prefix.endswith("async"):
+        start = len(prefix) - len("async")
     i = html.index("{", m.end())
     depth, j, n = 0, i, len(html)
     while j < n:
@@ -636,7 +644,7 @@ def _js_function(html: str, name: str) -> str:
         elif c == "}":
             depth -= 1
             if depth == 0:
-                return html[m.start(): j + 1]
+                return html[start: j + 1]
         j += 1
     raise AssertionError(f"unbalanced braces in {name}")
     # No regex-literal or nested-template lexing (Codex round 2, P2): the
@@ -1595,7 +1603,10 @@ class El{
     this.listeners={}; this.scrollTop=0; this.scrollHeight=0;
   }
   appendChild(c){ this.children.push(c); c.parentNode=this; return c; }
-  remove(){ this.removed=true; this.parentNode=null; }
+  remove(){ this.removed=true;
+    if(this.parentNode&&this.tagName==="BUTTON")
+      this.parentNode.children=this.parentNode.children.filter(c=>c!==this);
+    this.parentNode=null; }
   addEventListener(n,f){ this.listeners[n]=f; }
   click(){ (this.listeners.click||(()=>{}))(); }
 }
@@ -1659,7 +1670,8 @@ const MCP={ converse: async (m,inputMethod,modelChoice,consumerRequest) => {
   consumerRequests.push(consumerRequest?JSON.parse(JSON.stringify(consumerRequest)):null);
   active++; maxActive=Math.max(maxActive, active);
   try{
-    if(SCENARIO.transportError){ const e=new Error("offline"); e.transport=true; throw e; }
+    if(SCENARIO.transportError){ const e=new Error("offline");
+      e.transport=true; e.notSent=!!SCENARIO.notSent; throw e; }
     if(SCENARIO.slowFirst && converseCalls.length===1){ await new Promise(r=>setTimeout(r, 40)); }
     const payloads=SCENARIO.payloads||[SCENARIO.payload];
     return payloads[Math.min(converseCalls.length-1, payloads.length-1)];
@@ -1844,19 +1856,11 @@ __APP_FUNCTIONS__
 """
 
 
-def _run_app(tmp_path, scenario: dict) -> dict:
-    import json
-    import os
+@lru_cache(maxsize=1)
+def _app_functions() -> str:
+    """Assemble immutable shipped JS once; each scenario still gets a fresh Node VM."""
     import re
-    import shutil
-    import subprocess
 
-    node = shutil.which("node")
-    if not node:  # pragma: no cover - environment dependent
-        if os.environ.get("TINYASSETS_SKIP_JS_PROBE_TESTS"):
-            pytest.skip("node absent; skip explicitly requested via env")
-        pytest.fail("node executable not found - the app's send/resend behaviour is "
-                    "JavaScript; install Node or set TINYASSETS_SKIP_JS_PROBE_TESTS=1")
     html, _csp = onboarding.render_app_html()
     decls = "\n".join(
         re.search(pat, html).group(0)
@@ -1909,9 +1913,31 @@ def _run_app(tmp_path, scenario: dict) -> dict:
         "claimHeldLines", "pinLineAgent", "alreadyHandled", "showActiveTurn", "finishActiveTurn",
         "readPendingTurns", "sendBatch",
     ))
+    return decls + "\n" + funcs
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _clear_app_functions():
+    yield
+    _app_functions.cache_clear()
+
+
+def _run_app(tmp_path, scenario: dict) -> dict:
+    import json
+    import os
+    import shutil
+    import subprocess
+
+    node = shutil.which("node")
+    if not node:  # pragma: no cover - environment dependent
+        if os.environ.get("TINYASSETS_SKIP_JS_PROBE_TESTS"):
+            pytest.skip("node absent; skip explicitly requested via env")
+        pytest.fail("node executable not found - the app's send/resend behaviour is "
+                    "JavaScript; install Node or set TINYASSETS_SKIP_JS_PROBE_TESTS=1")
+    app_functions = _app_functions()
     program = (_APP_SHIM
                .replace("__SCENARIO__", json.dumps(scenario))
-               .replace("__APP_FUNCTIONS__", decls + "\n" + funcs))
+               .replace("__APP_FUNCTIONS__", app_functions))
     script = tmp_path / "app_case.js"
     script.write_text(program, encoding="utf-8")
     proc = subprocess.run([node, str(script)], capture_output=True, text=True,
@@ -2110,7 +2136,7 @@ def test_typed_input_method_survives_queue_and_retry(tmp_path):
             "kind": "send",
             "message": "retry me",
             "inputMethod": "typed",
-            "transportError": True,
+            "transportError": True, "notSent": True,
             "clickResend": True,
         },
     )
@@ -2124,12 +2150,13 @@ def test_restored_turn_without_input_provenance_is_unknown(tmp_path):
         {
             "kind": "restore",
             "pending": "old unconfirmed turn",
-            "clickAfterRestore": "Send it again",
+            "clickAfterRestore": "Check saved conversation",
             "payload": {"reply": "ok"},
         },
     )
 
-    assert out["converseMethods"] == ["unknown"]
+    assert out["converseMethods"] == []
+    assert out["inflight"].get("inputMethod") is None
 
 
 def test_restored_turn_preserves_recorded_spoken_provenance(tmp_path):
@@ -2139,12 +2166,13 @@ def test_restored_turn_preserves_recorded_spoken_provenance(tmp_path):
             "kind": "restore",
             "pending": "spoken unconfirmed turn",
             "pendingInputMethod": "spoken",
-            "clickAfterRestore": "Send it again",
+            "clickAfterRestore": "Check saved conversation",
             "payload": {"reply": "ok"},
         },
     )
 
-    assert out["converseMethods"] == ["spoken"]
+    assert out["converseMethods"] == []
+    assert out["inflight"]["inputMethod"] == "spoken"
 
 
 def test_a_served_error_keeps_the_message_resendable_with_the_servers_sentence(tmp_path):
@@ -2249,7 +2277,7 @@ def test_a_held_message_is_restored_on_an_empty_thread(tmp_path):
     assert [m["role"] for m in out["messages"]] == ["founder"]          # once, not twice
     notes = [n for n in out["notes"] if "msg--system" in n["cls"]]
     assert len(notes) == 1 and "never confirmed" in notes[0]["text"]
-    assert notes[0]["buttons"] == ["Send it again", "Check saved conversation", "Dismiss"]
+    assert notes[0]["buttons"] == ["Check saved conversation", "Dismiss"]
 
 
 def test_a_held_message_is_restored_when_the_peek_fails(tmp_path):
@@ -2655,7 +2683,7 @@ def test_an_offer_below_an_unconfirmed_turn_leaves_that_turn_alone(tmp_path):
     assert out["callsAfterRestore"] == []
     unconfirmed = [n for n in out["notes"] if "never confirmed" in n["text"]]
     assert unconfirmed and unconfirmed[0]["buttons"] == [
-        "Send it again", "Check saved conversation", "Dismiss",
+        "Check saved conversation", "Dismiss",
     ]
     assert out["converseCalls"] == [line]
     assert out["inflight"]["message"] == "first"                # A's record survived B's send
@@ -2784,9 +2812,9 @@ def test_a_failed_side_send_retries_as_a_side_send(tmp_path):
     out = _run_app(tmp_path, {"kind": "restore", "pending": "first", "history": [],
                               "queued": [{"message": line, "display": line, "ts": _NOW_MS,
                                           "owner": "p-1", "scope": "u-1"}],
-                              "transportError": True,
+                              "transportError": True, "notSent": True,
                               "clickAfterRestore": "Send it now",
-                              "clickAfterRestore2": "Send it again"})
+                              "clickAfterRestore2": "Send again"})
     assert out["converseCalls"] == [line, line]
     assert out["inflight"]["message"] == "first"                # never taken over
 

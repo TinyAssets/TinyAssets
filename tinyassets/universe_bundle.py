@@ -31,8 +31,10 @@ from pathlib import Path
 import yaml
 
 from tinyassets.starter_skills import (
+    CAPABILITIES_SKILL_PATH,
     CONNECT_SKILL_PATH,
     SHARE_SKILL_PATH,
+    capabilities_skill,
     connect_skill,
     share_skill,
 )
@@ -424,6 +426,11 @@ def seed_okf_bundle(
         pass
 
     soul = read_universe_soul(universe_dir)
+    try:
+        write_data_path(universe_dir / CAPABILITIES_SKILL_PATH,
+                        capabilities_skill(), mode="exclusive")
+    except FileExistsError:
+        pass
     # read_universe_soul returns None only if soul.md is unreadable, which we
     # just wrote — fall back to a blank soul rather than propagate None.
     return soul if soul is not None else UniverseSoul()

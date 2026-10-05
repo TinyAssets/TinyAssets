@@ -14,8 +14,13 @@ the real API host, authentication shape and a harmless read to test access.
    `ta describe write_graph`. Raise a `pending_request` with operation `ask`
    and action type `connect`. This checks the registered provider directory
    (`providers.json`) first, then standard OAuth discovery on the API host.
-   Supply the needed OAuth scopes/use from the docs, never invented OAuth
-   endpoints. If the reply says `primary: sign_in`, point to the inline
+   Name the actual API host in `action.endpoints` and the needed scopes in
+   `action.oauth.scopes` (or a declared `action.oauth.use`), never invented
+   OAuth endpoints. For Calendar reads, use `www.googleapis.com` with
+   `"oauth":{"scopes":["https://www.googleapis.com/auth/calendar.readonly"]}`;
+   a shared API host alone cannot identify which API's scope is needed.
+   The directory maps covered API hosts to their provider's sign-in issuer.
+   If the reply says `primary: sign_in`, point to the inline
    one-tap Connect/sign-in card and wait for completion.
 2. **Use a key when sign-in is unavailable.** If the service offers an API key,
    include a field of type `secret` in that same request, labelled as the

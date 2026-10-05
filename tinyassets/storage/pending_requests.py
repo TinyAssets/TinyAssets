@@ -467,6 +467,7 @@ def _item_state(
 
 
 def _project(row: Any, answers: dict[str, dict[str, Any]] | None = None) -> dict[str, Any]:
+    informational = json.loads(row[5] or "{}").get("type") == "notify"
     items = json.loads(row[13] or "[]") if len(row) > 13 else []
     if not isinstance(items, list):
         items = []
@@ -487,6 +488,8 @@ def _project(row: Any, answers: dict[str, dict[str, Any]] | None = None) -> dict
         "agent": (row[14] if len(row) > 14 else None) or "main",
         "items": items,
         "item_answers": _item_state(items, answers or {}, str(row[6])),
+        "informational": informational,
+        "requires_answer": not informational,
     }
 
 

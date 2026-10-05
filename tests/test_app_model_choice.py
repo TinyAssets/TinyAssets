@@ -50,9 +50,10 @@ def test_restored_inflight_keeps_its_choice_or_legacy_no_override(tmp_path, save
     result = _run_app(tmp_path, {
         "kind": "restore", "pending": "hello", "pendingModelChoice": saved,
         "modelChoice": choice("later"), "history": [], "payload": {"reply": "answer"},
-        "clickAfterRestore": "Send it again",
+        "clickAfterRestore": "Check saved conversation",
     })
-    assert result["converseChoices"] == [saved]
+    assert result["converseChoices"] == []
+    assert result["inflight"].get("modelChoice") == saved
 
 
 @pytest.mark.parametrize("saved", [None, choice("original")])

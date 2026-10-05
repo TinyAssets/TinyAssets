@@ -2764,6 +2764,9 @@ def _answer_request(*, universe_id: str = "", payload: Any = None,
     if row["action"].get("type") == "approve_action":
         return {"error": "interactive_approval_required",
                 "detail": "Open the protected inline owner card to decide this action."}
+    if row["action"].get("type") == "notify":
+        return {"error": "not_answerable",
+                "detail": "This notification needs no answer; dismiss it with withdraw."}
     if row["action"].get("type") == PATCH_INTAKE_ACTION and owner_session is None:
         return {"error": "interactive_approval_required",
                 "detail": "Only the owner can answer patch-intake consent in the "

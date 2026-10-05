@@ -567,6 +567,7 @@ const Uploads={ aborted:0, abort(){ this.aborted++; } };
 const Voice={ refreshCapability(){} };
 const ModelPicker={ reset(){} };
 const AppUI={ reset(){ LOG.push(["uiReset"]); }, enable(u,p){ LOG.push(["ui",u,p]); } };
+const AppRecovery={ restoreDraft(){}, fail(){ LOG.push(["recovery"]); } };
 const HostedModelConnect={ setup:"empty", busy:false, request:null,
   async begin(){ LOG.push(["begin"]); }, paint(){}, status(t){ LOG.push(["status",t]); } };
 function token(){ return "t1"; }
