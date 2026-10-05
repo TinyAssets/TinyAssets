@@ -229,10 +229,11 @@ def _seed_legacy_http_connection(
     grant_universe: str | None = None,
 ) -> tuple[Path, str, str]:
     """Write a PRE-FIX http connection: the legacy ("http",) scope token + an old
-    secret + a grant carrying the real ``_HTTP_ACTION_CAP`` (the shape a connection
-    provisioned before the #2521 scope fix actually has)."""
-    from tinyassets.api.http_connection import _HTTP_ACTION_CAP, _ids
+    secret + a grant carrying the legacy ``http_requests`` cap (the shape a
+    connection provisioned before the #2521 scope fix actually has)."""
+    from tinyassets.api.http_connection import _ids
     from tinyassets.credential_vault import write_credential_vault
+    from tinyassets.storage.outbound_connections import ActionCap
 
     udir = _make_universe(base, uid, admin="founder")
     conn_id, grant_id = _ids(universe_id=uid, destination="webhook:acme")
@@ -267,7 +268,7 @@ def _seed_legacy_http_connection(
         connection_id=conn_id,
         owner_user_id="founder",
         universe_id=grant_universe or uid,
-        unprompted_action_cap=_HTTP_ACTION_CAP,
+        unprompted_action_cap=ActionCap("http_requests", 100, "requests"),
     )
     assert tuple(ledger._get_connection_resource(conn_id).scopes) == ("http",)
     return udir, conn_id, grant_id
@@ -1201,3 +1202,25 @@ def test_an_unchanged_redeposit_is_still_idempotent(base: Path) -> None:
     assert again["status"] == "provisioned"
     assert again["connection_id"] == first["connection_id"]
     assert again["allowed_endpoints"] == first["allowed_endpoints"]
+
+
+def test_new_http_connection_has_no_per_connection_request_cap(base: Path) -> None:
+    """Accounts are limited by total storage and simultaneous agent runs only;
+    a provisioned HTTP connection carries no fixed request cap."""
+    from tinyassets.api.http_connection import _ids
+
+    _make_universe(base, "u-nocap", admin="founder")
+    _login("founder")
+    result = _connect("u-nocap")
+    assert result["status"] == "provisioned"
+    _conn_id, grant_id = _ids(universe_id="u-nocap", destination="webhook:acme")
+    grant = _ledger(base, "founder").require_active_grant(grant_id)
+    assert grant.unprompted_action_cap is None
+
+
+def test_legacy_http_requests_cap_is_cleared_on_open(base: Path) -> None:
+    """A grant stored with the old per-connection ``http_requests`` cap reads
+    back uncapped the next time the ledger opens."""
+    _udir, _conn_id, grant_id = _seed_legacy_http_connection(base, "u-oldcap")
+    grant = _ledger(base, "founder").require_active_grant(grant_id)
+    assert grant.unprompted_action_cap is None
