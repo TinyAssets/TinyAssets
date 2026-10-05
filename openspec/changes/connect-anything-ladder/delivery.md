@@ -2,7 +2,7 @@
 
 Branch: `feat/mcp-connect-ladder`, stacked on `feat/per-role-uid-split`
 initially at `688a3e91f121c5b299afe2df536e75c5b4f78a00`, now integrated
-through foundation `dc34dd2b10` (merge `7cb44172be`).
+through foundation `c7a43a85af` (merge `cb6aad0141`).
 Draft PR: https://github.com/TinyAssets/TinyAssets/pull/4496.
 
 Current resume status: task 1.2's OAuth machinery is implemented and verified.
@@ -181,3 +181,27 @@ real first-run browser, sign-in source and inline approvals. The preceding
 last prerequisite repair. Ruff, plugin build/import, 608-file mirror parity,
 strict OpenSpec and whitespace checks pass. Task 1.2 is checked for the complete
 OAuth machinery; request-shape hookup and full-flow proof stay in task 1.6.
+
+## Final resume verification
+
+Pushed verified slices 8b6f2bf6ea (sheet/consent prerequisites), 9ab9c52ccb
+(MCP PKCE/session binding), and 12f1ec901a (latest consent repair). Merged the
+advancing isolation foundation through c7a43a85af as cb6aad0141, without rewriting
+history. Post-merge Linux oracle: 223 passed, one skip, explicitly the Windows
+junction test test_in_platform_agent_systems.py:205. A skip is not counted as a
+pass; the affected Linux broker/isolation tests passed. Command included all four
+MCP suites plus broker injected authority, read-only liveness, usage source,
+outbound ledger, cloud automation/control, and in-platform agent systems.
+
+Final Ruff, 609-file mirror parity and whitespace checks pass. Plugin import probe
+passed before the final foundation merge; the merge's generated mirrors match.
+Hygiene against c7a43a85af: 75 added / 0 removed / 0 tampering. Claude's resumed
+review verdict remains ADAPT, findings corrected as recorded above.
+
+Current remaining work: 1.1 rollback/cleanup acceptance; 1.3 production transport
+wiring, MCP cancellation and durable reconciliation; 1.6 request-shape discovery,
+coordinator activation, ta catalog/dispatch, annotation policy, original-turn
+continuation, and the full pasted-link integration test. 1.4 remains deferred;
+1.5 and 1.7-1.10 remain open. The separate local OAuth sign-in/custody and broker
+initialize/list/call tests are NOT a full pasted-link/app acceptance test.
+No deployment, deployed-SHA assertion, real-user MCP proof or capability sync.
