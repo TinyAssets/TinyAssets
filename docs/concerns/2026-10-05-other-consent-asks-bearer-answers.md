@@ -1,5 +1,5 @@
 ---
-severity: floor
+severity: P1
 title: Other consent-bearing requests still accept bearer answers
 filed: '2026-10-05'
 summary: PR 4477 protects grant_patch_intake; other authority-bearing answer branches lack interactive owner proof.
