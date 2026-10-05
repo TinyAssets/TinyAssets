@@ -1,3 +1,40 @@
+# Current delivery: D40 intent custody
+
+D39 pushed as e1a413ba99; hygiene added 4 tests, removed 0, tampering 0.
+D40 resolves reconciliation custody through broker authority using persisted
+root-run owner and center; validates host, git-write scope and push consent.
+Missing/foreign/revoked/outage defers without network or local ledger fallback.
+No full build task complete, startup inactive. Cross-family review APPROVE;
+AGREE, no floor/correctness findings. No PR or deployment.
+
+Release-critical files: **0; none**. Runtime tinyassets/workspace_intents.py and
+its mirror; test_broker_workspace_intents.py; role_launcher_oracle.py, design,
+inventory and delivery. No affected heavy-list file.
+
+```text
+python -m pytest tests/test_workspace_intents.py -q
+23 passed in 1.52s
+python scripts/linux_oracle.py -- tests/test_broker_workspace_intents.py tests/test_workspace_intents.py -q -rs
+31 passed in 3.44s, zero skips
+python scripts/linux_oracle.py --production-image tinyassets-uid-intents:d40 --build --production-stream
+exit 0; sha256:d5941f67eea12c43e6ed707127cff6a08b5cc61d6d653804cd6bd73b33b6ba51
+D40 actual intent custody resolver via launcher broker: persisted run scope, foreign refusal, no daemon ledger: PASS (worker transport not claimed)
+```
+D40 passes before/after broker restart; all earlier consumer proofs and real
+D22/D24 HTTPS streams PASS. Egress/accounting dry-run/apply/repeat/reverse,
+6+8+3 crash boundaries and refusal rows PASS. Same seven-capability entry and
+compose security options; internal synthetic fixture network
+ ta-uid-stream-694c53c8d43f-net and matching public CA, cleaned by harness.
+Ruff, plugin build/import, strict OpenSpec and whitespace pass. No schema or
+privilege changes. Revoked scope/consent or missing legacy authority deliberately
+leaves the intent owed; this does not claim worker/credential transport acceptance.
+
+Continue: injected cloud/effect consumers (D41 in progress), accounting runtime
+and refresh, every actual engine class, full migration/two-pass deletion, actual
+old-image rollback, then startup/healthcheck only after all probes pass.
+
+---
+
 # Current delivery: D39 workspace authority reads
 
 D39 carries immutable run owner/center through compiler effect dispatch into

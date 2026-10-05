@@ -367,7 +367,7 @@ def _disconnect_consumer(root):
 
         fresh = "connect-" + destination
         deposit = dict(destination=fresh, secret="synthetic-deposit-only", auth_scheme="bearer",
-                       scopes=["git_read:owner/repo"],
+                       scopes=["git_read:owner/repo", "git_write:owner/repo"],
                        allowed_endpoints=[{"host": "models.example.com",
                                            "path_template": "/catalogue", "methods": ["GET"]}])
         for _ in range(2):
@@ -384,7 +384,7 @@ def _disconnect_consumer(root):
             "kind": "Approval", "title": "Checkout", "body": "Fixture checkout", "fields": [],
             "action": {"type": "grant_workspace_consent",
                        "connection_id": result["connection_id"], "repo": "owner/repo",
-                       "consents": ["workspace_checkout"]}})
+                       "consents": ["workspace_checkout", "workspace_push"]}})
         assert consent.get("status") == "pending", consent
         granted = answer_request(universe_id="disconnect", payload={
             "request_id": consent["request_id"], "values": {}})
@@ -427,6 +427,31 @@ def _disconnect_consumer(root):
             raise AssertionError("foreign workspace mount revalidation admitted")
         print("D39 actual compiler/workspace admission and mount revalidation via launcher broker: "
               "trusted owner, foreign refusal, no daemon ledger: PASS", flush=True)
+        from tinyassets import runs, workspace_intents
+
+        runs.initialize_runs_db(root)
+        with runs._connect(root) as conn:
+            conn.execute("INSERT OR REPLACE INTO runs "
+                         "(run_id,branch_def_id,thread_id,actor,owner_user_id,queue_universe_id,"
+                         "started_at) VALUES ('intent-probe','b','t','universe:disconnect',"
+                         "'disconnect','disconnect',0)")
+        intent = workspace_intents.PushIntent(
+            intent_id="probe", run_id="intent-probe", node_id="push",
+            connection_id=result["connection_id"], grant_id=result["grant_id"],
+            universe_id="disconnect", repo="owner/repo", host="models.example.com",
+            remote_ref="refs/heads/tiny/disconnect/work", sha="a" * 40, state="sent")
+        assert workspace_intents._broker_credential_ref(root / "disconnect", intent) == (
+            "vault://http/" + fresh)
+        with runs._connect(root) as conn:
+            conn.execute("UPDATE runs SET owner_user_id='bob' WHERE run_id='intent-probe'")
+        try:
+            workspace_intents._broker_credential_ref(root / "disconnect", intent)
+        except GrantResolutionError:
+            pass
+        else:
+            raise AssertionError("intent accepted foreign persisted owner")
+        print("D40 actual intent custody resolver via launcher broker: persisted run scope, "
+              "foreign refusal, no daemon ledger: PASS (worker transport not claimed)", flush=True)
         from tinyassets.credential_vault import load_credential_vault
 
         assert any(row.get("token") == "synthetic-deposit-only"

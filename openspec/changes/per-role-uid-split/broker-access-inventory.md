@@ -317,3 +317,7 @@ D39: workspace initial admission and push mount revalidation use AUTHORIZED_CONN
 with immutable BranchExecutionContext owner/center threaded through compiler dispatch.
 Direct daemon calls use authenticated ambient identity; no packet owner or local
 ledger fallback in selected mode. Intent custody and actual worker transport remain.
+
+D40: intent custody in selected mode uses persisted daemon run scope and live
+AUTHORIZED_CONNECTION, host/scope/consent revalidation. Unscoped helper refuses;
+missing or unavailable authority defers without network. Worker transport remains.
