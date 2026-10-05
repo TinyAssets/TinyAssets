@@ -351,3 +351,62 @@ not counted. The subsequent broad run and this rerun are the reported evidence.
 Committed hygiene for `e76dc6d0c8`, against merged foundation `69ee880edc`:
 **94 added / 0 removed / 0 tampering**, exit 0. The implementation and review
 receipt are committed together; the final documentation commit records this check.
+
+## Stdio prerequisite assessment (2026-10-05)
+
+Fetched and attempted the requested foundation merge first: initially already
+up to date at `69ee880edc`. The remote-tracking base subsequently advanced to
+`71df3620de`; merged it without rebase as `611fb20c30`. D53-D55 integrate broker
+account erasure, credential snapshot modes and role relay ownership. No conflict
+resolution or hand-edited generated mirror was needed.
+
+Task 1.4 remains **unimplemented and blocked**. The premise that the foundation
+already provides an owner package cell is false at this revision. The launcher's
+only admitted engine kind is the data-free image decoder; it has no package
+exec/argv/cwd or scoped proxy credential channel. The provider jail is not the
+separate-user server boundary the approved raw-key spec requires. Implementing
+that missing foundation inside this lane would collide with its active authority
+and launch work. No host fallback, same-agent-jail raw-key injection or unconsented
+activation was added. The precise handoff is recorded in
+[the concern](../../../docs/concerns/2026-10-05-mcp-stdio-owner-cell-prerequisite.md).
+
+Cross-family review via `peer-agents`: Claude completed in 71 seconds, exit 0;
+[raw report](review-stdio-readiness.md), **VERDICT: APPROVE** for the readiness
+assessment only. This is not a stdio implementation or security acceptance verdict.
+
+Adjudication:
+- **AGREE**: the package launch kind, scoped cell proxy and raw-key identity are
+  missing; keep 1.4 unchecked and hand off to the isolation foundation.
+- **AGREE**: record the distinct-user requirement explicitly; shared engine UID
+  1003 is not the separate-user variant required by this spec. Namespace isolation
+  still matters; shared UID alone is not proof of a cross-cell read vulnerability.
+- **DISAGREE_EVIDENCE** with requiring production enablement before any task 1.4
+  implementation: the user explicitly excludes 1.10. A proven test-admitted cell
+  API can support implementation before production entrypoint rollout. The actual
+  blocker is the absent API/boundary, not an instruction to deploy this stack.
+
+No MCP implementation was added in this continuation. Remote-flow acceptance from
+the preceding slices remains distinct from stdio acceptance. Task 1.10 was not
+attempted; no deployment, public canary or live-user proof is claimed.
+
+Verification refreshed for task 1.9:
+- Pre-merge Linux protocol/flow/ta/launcher/seccomp/heavy instruction run:
+  **190 passed, zero skips**. This run used the pre-merge snapshot only.
+- Post-merge Linux oracle: **254 passed, zero skips**. Command:
+  `MSYS_NO_PATHCONV=1 python scripts/linux_oracle.py -- -q
+  tests/test_mcp_connect_flow.py tests/test_mcp_attachment.py
+  tests/test_mcp_remote.py tests/test_mcp_broker.py tests/test_mcp_oauth.py
+  tests/test_broker_account_erasure.py tests/test_broker_disconnect.py
+  tests/test_credential_vault.py tests/test_role_relays.py
+  tests/test_role_launcher.py tests/test_jail_seccomp.py
+  tests/test_ta_capabilities.py tests/test_ta_capabilities_jail.py
+  tests/test_mcp_instruction_surfaces.py --basetemp /tmp/b`.
+- Ruff passed over canonical changed Python files and tests, including imported
+  foundation changes. Plugin build and import probe passed; all **618** canonical
+  mirror files matched. Strict OpenSpec validation and whitespace checks passed.
+- Committed merge hygiene against `71df3620de`: **94 added / 0 removed /
+  0 tampering**, exit 0. No tests or implementation were changed after this run.
+- Verified merge `611fb20c30` pushed separately before the documentation receipt.
+
+These are regression checks of the existing remote path and imported foundation,
+not task 1.4's missing stdio/raw-key process isolation proofs.
