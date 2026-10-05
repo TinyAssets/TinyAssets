@@ -25,6 +25,7 @@ PLATFORM = "platform"
 USER_NAMES = frozenset({
     # brain and harness (AGENT_BRAIN_FILES / AGENT_HARNESS_DIRS)
     "AGENTS.md", "soul.md", "soul_versions", "voice.md", "identity.md", "founder.md",
+    "MEMORY.md", "settings.yaml",
     "origin.md", "body.md", "orgchart.md", "projects.md", "goals.md", "index.md",
     "log.md", "skills", "prompts", "extensions", "workflows", "bin", "notes",
     "notes.json", "wiki",
