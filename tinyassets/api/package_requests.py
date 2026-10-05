@@ -143,7 +143,13 @@ def _plan(uid: str, action: dict[str, Any]) -> dict[str, Any]:
     """Everything the tab shows and the answer will do, from verified inputs."""
     from tinyassets.api import permissions
     from tinyassets.api.helpers import _universe_dir
-    from tinyassets.command_center_packages import PackageError, human, plan_install
+    from tinyassets.command_center_packages import (
+        PackageError,
+        human,
+        install_review_groups,
+        plan_install,
+        scan_install,
+    )
     from tinyassets.principals import named_principal
 
     actor = named_principal(permissions.current_actor_id())
@@ -174,11 +180,15 @@ def _plan(uid: str, action: dict[str, Any]) -> dict[str, Any]:
     have = _connections_you_have(actor)
     connections = [{"name": str(name), "you_have": None if have is None else name in have}
                    for name in needs.get("connections") or []]
+    # The content screen runs on the verified files at quarantine time; its
+    # findings join the pinned plan so the tab shows exactly what was seen.
+    safety = install_review_groups(scan_install(files))
     digest = hashlib.sha256(json.dumps({
         "definition": definition["agent_definition_id"],
         "blob": component["blob_sha256"],
         "agent": action["agent"],
         "placement": placement,
+        "safety": safety,
     }, sort_keys=True).encode("utf-8")).hexdigest()
     return {
         "definition_id": definition["agent_definition_id"],
@@ -200,6 +210,7 @@ def _plan(uid: str, action: dict[str, Any]) -> dict[str, Any]:
         "ui": parts["ui"][0] if parts["ui"] else None,
         "model": str(needs.get("model") or ""),
         "connections": connections,
+        "safety": safety,
         "digest": digest,
     }
 
@@ -231,6 +242,14 @@ def tab_text(action: dict[str, Any]) -> tuple[str, str, str]:
     placement = plan["placement"]
     lines = [f"Package: {_shown(plan['name'], 120)} (version {plan['version']}, "
              f"{plan['size']}), published by {_shown(plan['author'], 80)}"]
+    safety = plan.get("safety") or []
+    if safety:
+        lines.append("Worth a careful look before installing — this package:")
+        for group in safety:
+            shown = ", ".join(_shown(p, 60) for p in group["shown"])
+            extra = (f" (+{group['count'] - len(group['shown'])} more)"
+                     if group["count"] > len(group["shown"]) else "")
+            lines.append(f"- {group['kind']}: {shown}{extra}")
     if plan["workflows"]:
         lines.append("Workflows, as your own private copies:")
         lines.extend(f"- {_shown(w['name'])}" for w in plan["workflows"])
@@ -572,7 +591,7 @@ def _write_files(uid: str, plan: dict[str, Any], files: dict[str, bytes],
 
 def list_packages(*, query: str = "", author: str = "", limit: int = 30,
                   offset: int = 0) -> list[dict[str, Any]]:
-    """The listing: one row per current bundle, from its immutable definition.
+    """The listing: one row per published package version, from its definition.
 
     Name, description and author are the publisher's words; size, version, file
     count, agents and needs are the platform's summary. Nothing else of the
@@ -606,14 +625,11 @@ def list_packages(*, query: str = "", author: str = "", limit: int = 30,
         if matched <= offset:
             continue
         rows.append({
-            **{key: definition[key] for key in (
-                "bundle_id", "bundle_version", "previous_definition_id", "current_definition_id"
-            ) if key in definition},
             "agent_definition_id": definition["agent_definition_id"],
             "name": definition.get("name", ""),
             "description": definition.get("description", ""),
             "author_id": definition.get("author_id", ""),
-            "version": definition.get("bundle_version", component.get("version")),
+            "version": component.get("version"),
             "size": human(int(component.get("size_bytes") or 0)),
             "file_count": component.get("file_count"),
             "agents": component.get("agents") or [],
