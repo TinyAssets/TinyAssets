@@ -209,17 +209,6 @@ def resumable(ref: AgentSessionRef | None, *, adapter: str, model: str,
     return record
 
 
-def resume_input(ref: AgentSessionRef, record: dict, system: str) -> str:
-    """What a resumed session receives: the new input, plus changed instructions."""
-    if record.get("system_digest") == digest(system or "") or not system:
-        return ref.resume_prompt
-    return (
-        "My standing instructions have changed since my last turn. They now read:\n"
-        "<<< INSTRUCTIONS >>>\n" + system + "\n<<< END INSTRUCTIONS >>>\n\n"
-        + ref.resume_prompt
-    )
-
-
 @contextlib.contextmanager
 def exclusive(ref: AgentSessionRef | None) -> Iterator[bool]:
     """Hold the session for one launch; yields ``False`` when another launch has it.

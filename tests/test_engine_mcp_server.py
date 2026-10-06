@@ -8,11 +8,14 @@ silently re-opening a cross-universe read.
 """
 from __future__ import annotations
 
+import asyncio
 import json
+import os
 
 import pytest
 
 from tests.engine_authority_helpers import mock_engine_admission
+from tests.test_codex_app_server import served  # noqa: F401 - the shared fixture
 
 # ── engine_mcp_server: fail-closed + confinement ────────────────────────────
 
@@ -768,10 +771,137 @@ def test_sandbox_cli_args_includes_strict_when_installed(monkeypatch, tmp_path):
     assert "--strict-mcp-config" in flags
 
 
-# Codex no longer wires an MCP server: its served turn declares the granted
-# tools as app-server dynamicTools and dials this route from the platform
-# process (tests/test_codex_app_server.py; route resolution in
-# tests/test_engine_mcp_routes.py).
+# ── codex: no MCP server in the CLI; the platform process dials the route ─────
+#
+# Codex's served turn declares the granted tools as app-server dynamicTools and
+# forwards each call over this route (tests/test_codex_app_server.py). These
+# keep the guarantees the old `mcp_servers` wiring had: the workspace stays
+# untrusted, the route fails closed, and its secret never reaches the CLI.
+
+_UNTRUSTED = ("-c", 'projects."/workspace".trust_level="untrusted"')
+
+
+def _codex_route(tmp_path, monkeypatch, **entry):
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("TINYASSETS_ENGINE_MCP_TOOLS", "1")
+    from tests.engine_authority_helpers import seed_engine_authority
+    seed_engine_authority(tmp_path, actor="sub", graph="u-9")
+    if entry:
+        (tmp_path / ".engine_mcp_http_routes.json").write_text(json.dumps({"u-9": {
+            "version": 1, "actor_id": "sub", "port": 8790,
+            "url": "http://127.0.0.1:8790/mcp", **entry}}), encoding="utf-8")
+
+
+def _codex_session(monkeypatch, config):
+    """Open the codex adapter's engine tools for real; only the client is faked."""
+    import contextlib
+
+    from mcp.types import ListToolsResult, Tool
+
+    from tinyassets import engine_tool_client
+    from tinyassets.providers import codex_provider
+
+    dialled = []
+
+    class Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_):
+            return None
+
+        def is_connected(self):
+            return False
+
+        async def list_tools_mcp(self, *, cursor=None):
+            return ListToolsResult(tools=[Tool(name=name, inputSchema={"type": "object"})
+                                          for name in ("read", "write", "edit", "bash",
+                                                       "publish_shape")])
+
+    def make(route, timeout):
+        dialled.append(route)
+        return Client()
+
+    monkeypatch.setattr(engine_tool_client, "_make_client", make)
+
+    async def go():
+        async with contextlib.AsyncExitStack() as stack:
+            session = await codex_provider._served_engine_tools(stack, config, timeout=0.2)
+            return [tool.name for tool in session.tools] if session is not None else None
+
+    return asyncio.run(go()), dialled
+
+
+@pytest.mark.asyncio
+async def test_codex_engine_mcp_args_off_adds_only_untrusted_workspace(served):  # noqa: F811
+    """Engine tools off: no route, no tools, and /workspace is still forced
+    untrusted so no project .codex/config.toml (or its mcp_servers) loads."""
+    run, launch, state, config, _ = served
+    _, server = await run(cfg=config(engine_mcp_enabled=False))
+    argv = launch.call_args.args
+    assert _UNTRUSTED in set(zip(argv, argv[1:]))
+    assert state["opened"] == [] and server.requests("thread/start")[0]["params"][
+        "dynamicTools"] == []
+    assert not any("mcp_servers" in arg for arg in argv)
+
+
+def test_codex_engine_mcp_args_fail_closed_without_route(tmp_path, monkeypatch):
+    """Engine tools requested but no running route: the turn fails before any
+    launch rather than running without its tools."""
+    from tinyassets.exceptions import ProviderUnavailableError
+    from tinyassets.providers.base import ModelConfig
+
+    _codex_route(tmp_path, monkeypatch)                      # no routes file
+    cfg = ModelConfig(engine_mcp_enabled=True, engine_mcp_actor_id="sub",
+                      engine_mcp_graph_id="u-9")
+    dialled = []
+    with pytest.raises(ProviderUnavailableError, match="engine_tools_unavailable"):
+        _, dialled = _codex_session(monkeypatch, cfg)
+    assert dialled == []
+
+
+def test_codex_engine_mcp_args_wires_trusted_http_server(tmp_path, monkeypatch):
+    from tinyassets import agent_sessions
+    from tinyassets.providers.base import ModelConfig
+    from tinyassets.served_tools import FOUR_MODEL_TOOLS
+
+    secret, grant_key = "s" * 43, "k" * 43
+    _codex_route(tmp_path, monkeypatch, secret=secret, grant_key=grant_key)
+    session = agent_sessions.AgentSessionRef(
+        universe_dir=tmp_path, key="thread:sub:main", fresh_prompt_digest="d",
+        resume_prompt="", built_at=1.0)
+    cfg = ModelConfig(engine_mcp_enabled=True, engine_mcp_actor_id="sub",
+                      engine_mcp_graph_id="u-9", agent_session=session)
+    names, dialled = _codex_session(monkeypatch, cfg)
+    (route,) = dialled
+    # The one owner-pinned route, dialled for this session with a signed grant.
+    assert (route.actor_id, route.graph_id) == ("sub", "u-9")
+    assert route.url.startswith("http://127.0.0.1:8790/mcp?")
+    assert "session=thread%3Asub%3Amain" in route.url
+    assert "grant=" in route.url
+    # The secret authenticates the platform's own client, never a URL or env.
+    assert route.secret == secret
+    assert secret not in route.url and grant_key not in route.url
+    assert "TINYASSETS_ENGINE_MCP_BEARER" not in os.environ
+    # Exactly the definition's tools; publish is NOT among them.
+    assert tuple(names) == FOUR_MODEL_TOOLS
+    assert "publish_shape" not in names
+    for tool in FOUR_MODEL_TOOLS:
+        assert tool in names
+    assert len(names) == 4
+
+
+def test_codex_engine_mcp_args_fail_closed_missing_secret(tmp_path, monkeypatch):
+    from tinyassets.exceptions import ProviderUnavailableError
+    from tinyassets.providers.base import ModelConfig
+
+    _codex_route(tmp_path, monkeypatch, secret="")
+    cfg = ModelConfig(engine_mcp_enabled=True, engine_mcp_actor_id="sub",
+                      engine_mcp_graph_id="u-9")
+    dialled = []
+    with pytest.raises(ProviderUnavailableError):
+        _, dialled = _codex_session(monkeypatch, cfg)
+    assert dialled == []
 
 
 # ── connect_compute (slice 4): served compute-provider registration ──────────
@@ -1730,3 +1860,40 @@ def test_custom_agent_write_tool_passes_session_agent_to_runner(monkeypatch, tmp
     assert calls[0][0] == udir
     assert calls[0][1] == agent_id
     assert calls[0][3]["stdin"] == b"shared learning"
+
+
+@pytest.mark.skipif(os.name != "posix", reason="the tool jail and its bash are Linux-only")
+def test_an_activity_bash_is_handed_the_stop_its_activity_polls(monkeypatch, tmp_path):
+    """A bash run for an activity is killed when the activity stops: the
+    engine hands the jail runner that activity's stop check."""
+    from types import SimpleNamespace
+    from urllib.parse import parse_qsl, urlsplit
+
+    from fastmcp.server import dependencies
+
+    from tinyassets import agent_activities, universe_tools
+    from tinyassets import engine_mcp_server as s
+    from tinyassets.activity_fence import STOPPED
+    from tinyassets.engine_steering import route_with_session
+
+    udir = _seed_brain_universe(monkeypatch, tmp_path)
+    record = agent_activities.create(udir, owner_principal="sub-brain", title="t", brief="b",
+                                     origin_kind="ask")
+    aid = record["activity_id"]
+    generation = agent_activities.claim(udir, aid, replaceable=lambda _: False)
+    assert agent_activities.bind_run(udir, aid, generation, "run-1")
+    route = route_with_session("http://localhost/mcp", f"activity:{aid}")
+    monkeypatch.setattr(dependencies, "get_http_request", lambda: SimpleNamespace(
+        query_params=dict(parse_qsl(urlsplit(route).query))))
+    calls = []
+
+    def runner(universe_dir, inner, *, agent_id, **kwargs):
+        calls.append(kwargs)
+        return universe_tools.ToolRun(0, b"", None, 0.0)
+
+    monkeypatch.setattr(universe_tools, "RUNNER", runner)
+    asyncio.run(s.run_bash(command="echo hi"))
+    (kwargs,) = calls
+    assert kwargs["stop"]() is None
+    agent_activities.wait_on(udir, aid, "req-1", "asked")
+    assert kwargs["stop"]() == STOPPED

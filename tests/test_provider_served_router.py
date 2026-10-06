@@ -922,6 +922,16 @@ os.execvpe(command[0], command, env)
     monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
     # The shared spawn point resolves bubblewrap through its injection seam.
     monkeypatch.setattr(provider_jail, "BWRAP_RESOLVER", lambda: str(fake_bwrap))
+    from tinyassets.providers import jail_seccomp
+
+    profiles = []
+    program_fd = jail_seccomp.program_fd
+
+    def record_profile(*, nested_sandbox):
+        profiles.append(nested_sandbox)
+        return program_fd(nested_sandbox=nested_sandbox)
+
+    monkeypatch.setattr(jail_seccomp, "program_fd", record_profile)
 
     try:
         with patch(
@@ -950,11 +960,25 @@ os.execvpe(command[0], command, env)
     assert response.output_tokens == 2
     captured = json.loads(bwrap_log.read_text(encoding="utf-8"))
     inner = captured[captured.index("--") + 1 :]
+    # The full OS sandbox wraps the app server: bubblewrap with the full deny
+    # seccomp profile (no nested sandbox), then the jail's own process limits,
+    # then the egress forwarder, then codex itself.
+    assert profiles == [False]
+    assert "--seccomp" in captured
+    assert os.path.basename(inner[0]) == "prlimit"
+    limits = inner[1:inner.index("--")]
+    assert [arg.split("=")[0] for arg in limits] == [
+        flag for flag, _name, _value in provider_jail.PROVIDER_LIMITS]
+    assert 0 < int(limits[0].removeprefix("--nproc=")) <= 512
+    forwarder = inner[inner.index("--") + 1:]
+    assert forwarder[1:3] == ["-I", "-S"]
+    codex = forwarder[forwarder.index("--") + 1:]
+    assert codex[0] in {str(wrapper), str(real_codex)}
     # The served turn is the app server with every native tool off and the
     # reduced catalog bound into its private home (codex_app_server).
     from tinyassets.providers.codex_app_server import SERVED_LAUNCH_ARGS
 
-    assert inner[1:1 + len(SERVED_LAUNCH_ARGS)] == list(SERVED_LAUNCH_ARGS)
+    assert codex[1:1 + len(SERVED_LAUNCH_ARGS)] == list(SERVED_LAUNCH_ARGS)
     assert inner[-2:] == ["-c", 'model_catalog_json="/codex-home/model-catalog.json"']
     for absent in ("exec", "--json", "--sandbox", "--full-auto"):
         assert absent not in inner
@@ -1687,3 +1711,32 @@ def test_real_input_above_prompt_estimate_is_not_withheld(tmp_path):
         assert provider.calls == 1
     finally:
         revoke_provider_request(capability)
+
+
+def test_a_provider_error_is_logged_without_its_secrets(tmp_path, caplog):
+    """The router's cooldown log line is shared daemon output: a provider's
+    error text is scrubbed before it is written (cross-family review
+    2026-10-06 reproduced `refused initialize: bad token sk-...` there)."""
+    import logging
+
+    from tinyassets.auth.middleware import revoke_provider_request
+    from tinyassets.exceptions import AllProvidersExhaustedError, ProviderError
+    from tinyassets.providers.router import ProviderRouter
+
+    _, _, capability, context = _served_context(tmp_path)
+    secret = "sk-SyntheticReviewSecret12345"
+
+    class RejectingProvider(_RecordingProvider):
+        async def complete(self, *args, **kwargs):
+            raise ProviderError(f"codex app-server refused initialize: bad token {secret}")
+
+    router = ProviderRouter(providers={"codex": RejectingProvider("codex")})
+    try:
+        with caplog.at_level(logging.WARNING, logger="tinyassets.providers.router"):
+            with pytest.raises(AllProvidersExhaustedError):
+                asyncio.run(router.call("writer", "hello", "system", universe_context=context,
+                                        operation="converse"))
+    finally:
+        revoke_provider_request(capability)
+    assert "refused initialize" in caplog.text
+    assert secret not in caplog.text

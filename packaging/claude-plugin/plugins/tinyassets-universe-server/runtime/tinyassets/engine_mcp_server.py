@@ -4798,9 +4798,12 @@ async def run_bash(command: str, timeout: int = 0) -> str:
         except (ValueError, KeyError, TypeError) as exc:
             return json.dumps({"error": str(exc)})
     else:
+        from tinyassets.activity_fence import stop_check
+        from tinyassets.engine_steering import _session_key
+
         text = await _universe_tool(
             universe_tools.bash, agent_id=_acting_agent(), command=command, timeout=timeout,
-            ta_dispatch=dispatch,
+            ta_dispatch=dispatch, stop=stop_check(_universe_dir_for_fence(), _session_key()),
         )
     if not completed:
         return text

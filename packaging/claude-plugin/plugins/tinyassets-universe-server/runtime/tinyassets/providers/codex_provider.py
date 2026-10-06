@@ -595,7 +595,9 @@ class CodexProvider(BaseProvider):
                                    session_ref.key)
                     resume_record = None
                 if resume_record is not None:
-                    input_text = agent_sessions.resume_input(session_ref, resume_record, system)
+                    # The current instructions travel as the thread's own
+                    # (``thread_resume_params``), never inside the user's input.
+                    input_text = session_ref.resume_prompt
             sandbox_chat = getattr(config, "sandbox_chat", False)
             # A chat turn gets an empty scratch /workspace; other served turns
             # see the universe read-only. Codex has no tool to touch either.
@@ -662,12 +664,15 @@ class CodexProvider(BaseProvider):
                                      turn_wait=_TURN_WAIT_S, tool_wait=_TOOL_WAIT_S)
             saved = False
             try:
-                outcome = await turn.run(
-                    start_params=None if resume_record is not None else app.thread_start_params(
-                        definition, model=model or None, cwd="/workspace", ephemeral=not persist),
-                    resume_id=str(resume_record["handle"]) if resume_record is not None else None,
-                    input_text=input_text, effort=None,
+                thread = (
+                    ("thread/resume", app.thread_resume_params(
+                        definition, str(resume_record["handle"])))
+                    if resume_record is not None else
+                    ("thread/start", app.thread_start_params(
+                        definition, model=model or None, cwd="/workspace",
+                        ephemeral=not persist))
                 )
+                outcome = await turn.run(thread=thread, input_text=input_text, effort=None)
                 elapsed_ms = (time.monotonic() - start) * 1000
                 stderr_text = b"".join(stderr_chunks).decode("utf-8", errors="replace")
                 if outcome.status != "completed":

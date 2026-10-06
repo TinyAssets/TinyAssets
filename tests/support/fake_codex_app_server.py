@@ -138,6 +138,100 @@ class FakeAppServer:
                 self._next()
 
 
+#: A script step that closes stdout while the "process" keeps running.
+EOF = object()
+
+
+def finished(reply: str = "done", usage: tuple[int, int] = (1, 1),
+             status: str = "completed", error: str = "") -> list[tuple[float, dict]]:
+    """The steps that end a turn: its reply, its usage, ``turn/completed``."""
+    steps: list[tuple[float, dict]] = []
+    if reply:
+        steps.append((0, {"method": "item/completed", "params": {"item": {
+            "type": "agentMessage", "id": "m-end", "text": reply}}}))
+    steps.append((0, {"method": "thread/tokenUsage/updated", "params": {"tokenUsage": {
+        "last": {"inputTokens": usage[0], "outputTokens": usage[1],
+                 "reasoningOutputTokens": 0}}}}))
+    steps.append((0, {"method": "turn/completed", "params": {"turn": {
+        "id": "turn-1", "status": status,
+        "error": {"message": error} if error else None}}}))
+    return steps
+
+
+class ScriptedAppServer(FakeAppServer):
+    """Plays a timed script once ``turn/start`` is answered.
+
+    Each step is ``(delay_s, step)``: a protocol message, raw stdout bytes,
+    ``("call", tool, arguments)`` (a tool request it waits on the answer to),
+    ``("call_nowait", tool, arguments)``, or :data:`EOF`. A step that is itself
+    an ``item/tool/call`` request (a recording) is sent as-is and waited on. ``launch_delay``
+    holds the ``initialize`` answer back, a CLI that never starts talking.
+    ``exit_code`` is what the process reports once the turn has completed.
+    """
+
+    def __init__(self, script, *, launch_delay: float = 0.0, exit_code: int | None = None,
+                 **kwargs) -> None:
+        super().__init__(Turn(), **kwargs)
+        self.script = list(script)
+        self.launch_delay = launch_delay
+        self.exit_code = exit_code
+        self.player: asyncio.Task | None = None
+        self._answers: dict[str, asyncio.Event] = {}
+
+    def kill(self) -> None:
+        if self.player is not None:
+            self.player.cancel()
+        super().kill()
+
+    def handle(self, message: dict) -> None:
+        method, ident = message.get("method"), message.get("id")
+        if method is None and ident in self._answers:
+            self.received.append(message)
+            self.tool_results.append(message.get("result") or {})
+            self._answers.pop(ident).set()
+            return
+        if method == "initialize" and self.launch_delay:
+            self.received.append(message)
+            asyncio.get_running_loop().call_later(
+                self.launch_delay, self.emit, {"id": ident, "result": {}})
+            return
+        if method == "turn/start":
+            self.received.append(message)
+            self.emit({"id": ident, "result": {"turn": {"id": "turn-1",
+                                                        "status": "inProgress"}}})
+            self.player = asyncio.ensure_future(self._play())
+            return
+        super().handle(message)
+
+    async def _play(self) -> None:
+        for delay, step in self.script:
+            if delay:
+                await asyncio.sleep(delay)
+            if step is EOF:
+                self.stdout.feed_eof()
+                return
+            if isinstance(step, bytes):
+                if not self.stdout.at_eof():
+                    self.stdout.feed_data(step)
+            elif isinstance(step, tuple):
+                kind, tool, arguments = step
+                ident = self._server_request("item/tool/call", {
+                    "threadId": self.thread_id, "turnId": "turn-1",
+                    "callId": f"call-{self._serial}", "tool": tool, "arguments": arguments})
+                answered = self._answers[ident] = asyncio.Event()
+                if kind == "call":
+                    await answered.wait()
+            elif step.get("method") == "item/tool/call" and "id" in step:
+                # A recorded request, verbatim: wait for the answer to its id.
+                answered = self._answers[step["id"]] = asyncio.Event()
+                self.emit(step)
+                await answered.wait()
+            else:
+                if step.get("method") == "turn/completed" and self.exit_code is not None:
+                    self.returncode = self.exit_code
+                self.emit(step)
+
+
 class _Stdin:
     def __init__(self, server: FakeAppServer) -> None:
         self._server = server

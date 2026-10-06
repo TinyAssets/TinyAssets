@@ -41,16 +41,59 @@ def _write(root, entry):
     )
 
 
+def _codex_dials(config=None, *, child_env=None):
+    """The routes the codex adapter dials for a served turn.
+
+    The real ``_served_engine_tools`` and ``open_engine_tools`` (route read,
+    owner check, signed dial); only the MCP client is a stand-in. The child
+    process environment plays no part: the platform process dials.
+    """
+    import asyncio
+    import contextlib
+
+    from mcp.types import ListToolsResult, Tool
+
+    from tinyassets import engine_tool_client
+    from tinyassets.exceptions import ProviderUnavailableError
+    from tinyassets.providers import codex_provider
+    from tinyassets.served_tools import FOUR_MODEL_TOOLS
+
+    dialled = []
+
+    class Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_):
+            return None
+
+        def is_connected(self):
+            return False
+
+        async def list_tools_mcp(self, *, cursor=None):
+            return ListToolsResult(tools=[Tool(name=name, inputSchema={"type": "object"})
+                                          for name in FOUR_MODEL_TOOLS])
+
+    def make(route, timeout):
+        dialled.append(route)
+        return Client()
+
+    async def go():
+        async with contextlib.AsyncExitStack() as stack:
+            await codex_provider._served_engine_tools(stack, config or _config(), timeout=0.2)
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(engine_tool_client, "_make_client", make)
+        for name, value in (child_env or {}).items():
+            patch.setenv(name, value)
+        with contextlib.suppress(ProviderUnavailableError):
+            asyncio.run(go())
+    return dialled
+
+
 def _cli_uses_http(kind, tmp_path, *, root=None):
     if kind == "codex":
-        # Codex dials the route from the platform process, through the same
-        # owner-checked resolution as the HTTP agent loop (open_engine_tools).
-        from tinyassets import storage
-        from tinyassets.engine_mcp_http import read_engine_mcp_route
-
-        return read_engine_mcp_route(
-            actor_id="actor-a", graph_id="u-a", root=storage.data_dir(),
-        ) is not None
+        return bool(_codex_dials())
     from tinyassets.providers.claude_provider import _engine_mcp_flags
 
     _engine_mcp_flags(_config(), tmp_path)
@@ -203,6 +246,21 @@ def test_replacement_record_cannot_be_used_by_previous_owner(tmp_path):
         conn.execute("UPDATE agent_bindings SET created_by = 'actor-b'")
         conn.execute("UPDATE universe_acl SET actor_id = 'actor-b'")
     assert _read(actor_id="actor-b").secret == second.secret != first.secret
+
+
+def test_codex_drops_stale_bearer_and_ignores_child_env_root(tmp_path):
+    """A stale bearer in the environment never picks the route: the adapter
+    dials the canonical owner-checked route from the platform process, and
+    nothing once that route belongs to someone else. (The child has no route,
+    bearer or data root to give: test_codex_app_server's launch tests.)"""
+    _write(tmp_path, _entry())
+    stale = {"TINYASSETS_ENGINE_MCP_BEARER": "stale-" + "b" * 40}
+    (route,) = _codex_dials(child_env=stale)
+    assert route.secret == "s" * 43 and route.actor_id == "actor-a"
+    assert route.url.startswith("http://127.0.0.1:8790/mcp") and route.graph_id == "u-a"
+    assert "stale-" not in repr(route) + route.url
+    _write(tmp_path, _entry(actor_id="actor-b"))
+    assert _codex_dials(child_env=stale) == []
 
 
 def test_conflicting_serving_owners_are_not_picked_by_order(tmp_path, monkeypatch):

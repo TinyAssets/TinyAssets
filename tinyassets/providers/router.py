@@ -1747,7 +1747,7 @@ class ProviderRouter:
                               owner=quota_owner, reason="provider_error"):
                     logger.warning(
                         "Provider %s error, cooldown %ds: %s",
-                        provider_name, COOLDOWN_OTHER, exc,
+                        provider_name, COOLDOWN_OTHER, redacted_failure_detail(str(exc)),
                     )
                 attempts.append(ProviderAttemptDiagnostic(
                     provider=provider_name, status="failed",

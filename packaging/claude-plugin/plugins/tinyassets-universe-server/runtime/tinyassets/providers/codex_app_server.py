@@ -123,6 +123,18 @@ def tools_digest(definition) -> str:
     return hashlib.sha256(body.encode("utf-8")).hexdigest()[:16]
 
 
+def thread_resume_params(definition, thread_id: str) -> dict:
+    """``thread/resume`` with the definition's CURRENT instructions.
+
+    A resumed thread otherwise keeps the instructions it started with: on
+    codex-cli 0.160.0 a resume without ``baseInstructions`` sends the stored
+    ones, and one with them sends only the new ones (request capture,
+    2026-10-06, K2 implementation evidence). The tools persist with the
+    thread, and a changed tool set never resumes (``tools_digest``).
+    """
+    return {"threadId": thread_id, "baseInstructions": definition.instructions}
+
+
 def thread_start_params(definition, *, model: str | None, cwd: str, ephemeral: bool) -> dict:
     """``thread/start`` carrying exactly the definition's tools and instructions."""
     params = {
@@ -169,6 +181,13 @@ def _failure_items(text: str) -> dict:
     return {"success": False, "contentItems": [{"type": "inputText", "text": text}]}
 
 
+def _scrubbed(text: str, limit: int = 300) -> str:
+    """Server-supplied text with secrets removed BEFORE clipping: it reaches logs."""
+    from tinyassets.providers.codex_provider import _redacted_stderr_excerpt
+
+    return _redacted_stderr_excerpt(" ".join(str(text).splitlines()), limit=limit)
+
+
 @dataclass
 class TurnOutcome:
     """What one served app-server turn produced."""
@@ -190,8 +209,14 @@ class AppServerTurn:
     Timing follows the exec reader it replaces: before the first server
     message the launch budget applies; inside the turn silence is generation
     (``turn_wait``); while one of OUR tool calls is running the allowance is
-    ``tool_wait``; the absolute cap bounds the whole turn. ``turn/completed``
-    ends it -- the process is ours and is ended by the caller.
+    ``tool_wait``; the absolute cap bounds the whole turn. Only protocol
+    messages are progress, never unparsable output. ``turn/completed`` ends
+    it -- the process is ours and is ended by the caller.
+
+    Tool calls run one at a time, in the order Codex asked for them, so a call
+    queued behind one that stops an activity meets the engine route's fence
+    after the stop. A tool call that fails outside the engine client's typed
+    errors fails the turn with that cause instead of leaving Codex waiting.
     """
 
     def __init__(self, proc, *, tools, profile, start: float,
@@ -206,10 +231,16 @@ class AppServerTurn:
         self._next_id = 0
         self._pending: dict[int, asyncio.Future] = {}
         self._write_lock = asyncio.Lock()
+        self._tool_lock = asyncio.Lock()
         self._tool_tasks: set[asyncio.Task] = set()
+        self._other_tasks: set[asyncio.Task] = set()
         self._last_progress = start
+        self._heard = False
         self._in_turn = False
         self._done = asyncio.Event()
+        self._failed = asyncio.Event()
+        self._failure: BaseException | None = None
+        self._last_error = ""
 
     async def _write(self, message: dict) -> None:
         async with self._write_lock:
@@ -221,8 +252,11 @@ class AppServerTurn:
         ident = self._next_id
         future = asyncio.get_running_loop().create_future()
         self._pending[ident] = future
-        await self._write({"id": ident, "method": method, "params": params})
-        return await future
+        try:
+            await self._write({"id": ident, "method": method, "params": params})
+            return await future
+        finally:
+            self._pending.pop(ident, None)
 
     async def notify(self, method: str, params: dict) -> None:
         await self._write({"method": method, "params": params})
@@ -230,47 +264,73 @@ class AppServerTurn:
     async def _call_tool(self, ident, params: dict) -> None:
         from tinyassets.engine_tool_client import EngineToolError
 
-        self.outcome.tool_calls += 1
-        name, arguments = params.get("tool"), params.get("arguments")
-        try:
-            if params.get("namespace") or not isinstance(name, str):
-                response = _failure_items(f"unknown tool {name!r}")
-            elif not isinstance(arguments, dict):
-                response = _failure_items("tool arguments must be an object")
-            else:
-                success, items = tool_result_items(await self.tools.call(name, arguments))
-                response = {"success": success, "contentItems": items}
-        except EngineToolError as exc:
-            response = _failure_items(f"tool call failed: {exc.code}")
-        try:
-            await self._write({"id": ident, "result": response})
-        finally:
-            self._last_progress = time.monotonic()
+        async with self._tool_lock:
+            self.outcome.tool_calls += 1
+            name, arguments = params.get("tool"), params.get("arguments")
+            try:
+                if params.get("namespace") or not isinstance(name, str):
+                    response = _failure_items(f"unknown tool {name!r}")
+                elif not isinstance(arguments, dict):
+                    response = _failure_items("tool arguments must be an object")
+                else:
+                    success, items = tool_result_items(await self.tools.call(name, arguments))
+                    response = {"success": success, "contentItems": items}
+            except EngineToolError as exc:
+                response = _failure_items(f"tool call failed: {exc.code}")
+            except Exception:
+                # Answer Codex so it is not left waiting, then fail the turn
+                # with the real cause (``_settle``).
+                with contextlib.suppress(Exception):
+                    await self._write({"id": ident, "result": _failure_items(
+                        "tool call failed: internal error")})
+                raise
+            try:
+                await self._write({"id": ident, "result": response})
+            finally:
+                self._last_progress = time.monotonic()
+
+    def _spawn(self, coro, tasks: set[asyncio.Task]) -> None:
+        task = asyncio.create_task(coro)
+        tasks.add(task)
+        task.add_done_callback(lambda done: self._settle(done, tasks))
+
+    def _settle(self, task: asyncio.Task, tasks: set[asyncio.Task]) -> None:
+        tasks.discard(task)
+        if task.cancelled():
+            return
+        error = task.exception()
+        if error is not None and self._failure is None:
+            self._failure = error
+            self._failed.set()
 
     def _dispatch(self, message: dict) -> None:
         method = message.get("method")
         if method is None:
-            future = self._pending.pop(message.get("id"), None)
+            future = self._pending.get(message.get("id"))
             if future is not None and not future.done():
                 future.set_result(message)
             return
         self._last_progress = time.monotonic()
+        self._heard = True
         params = message.get("params") or {}
         if "id" in message:
             if method == _TOOL_CALL:
-                task = asyncio.create_task(self._call_tool(message["id"], params))
-                self._tool_tasks.add(task)
-                task.add_done_callback(self._tool_tasks.discard)
+                self._spawn(self._call_tool(message["id"], params), self._tool_tasks)
             else:
                 # Approvals, user input, elicitation, token refresh: none of
                 # these exist in the definition, so none is ever granted.
-                task = asyncio.create_task(self._write({"id": message["id"], "error": {
-                    "code": -32601, "message": f"{method} is not available"}}))
-                self._tool_tasks.add(task)
-                task.add_done_callback(self._tool_tasks.discard)
+                self._spawn(self._write({"id": message["id"], "error": {
+                    "code": -32601, "message": f"{method} is not available"}}),
+                    self._other_tasks)
             return
         if method == "turn/started":
             self._in_turn = True
+        elif method == "error":
+            # Reported, never terminal: Codex may be retrying. Kept only as the
+            # reason for a failed turn that names none of its own.
+            error = params.get("error") or {}
+            if isinstance(error, dict) and error.get("message"):
+                self._last_error = str(error["message"])
         elif method == "item/completed":
             item = params.get("item") or {}
             if item.get("type") == "agentMessage" and isinstance(item.get("text"), str):
@@ -290,85 +350,134 @@ class AppServerTurn:
             error = turn.get("error") or {}
             if isinstance(error, dict):
                 self.outcome.error = str(error.get("message") or "")
+            if self.outcome.status != "completed" and not self.outcome.error:
+                self.outcome.error = self._last_error
+            # The turn is over: nothing it started is still owed an answer.
+            for task in list(self._tool_tasks):
+                task.cancel()
             self._done.set()
 
     def _allowance(self) -> tuple[float, bool]:
         now = time.monotonic()
         if self._tool_tasks:
             allow = min(self.profile.absolute_cap_s, self.tool_wait)
-        elif self._in_turn:
+        elif self._in_turn or self._heard:
             allow = min(self.profile.absolute_cap_s, self.turn_wait)
         else:
-            allow = self.profile.init_s if self._last_progress == self.start else min(
-                self.profile.absolute_cap_s, self.turn_wait)
+            allow = self.profile.init_s
         idle_deadline = self._last_progress + allow
         absolute = self.start + self.profile.absolute_cap_s
         return min(idle_deadline, absolute) - now, absolute <= idle_deadline
 
+    def _attach(self, exc: ProviderError) -> ProviderError:
+        """Name where the turn was when it stopped, as the exec reader did."""
+        exc.attempt_telemetry = {
+            "provider": "codex",
+            "failure_class": getattr(exc, "failure_class", None),
+            "phase": "streaming" if self._heard else "launch",
+            "tool_phase": ("in_tool" if self._tool_tasks
+                           else "in_turn" if self._in_turn and not self._done.is_set()
+                           else None),
+            "last_progress_age_ms": (time.monotonic() - self._last_progress) * 1000,
+            "exit_code": getattr(self.proc, "returncode", None),
+        }
+        return exc
+
+    def _tool_failure(self) -> ProviderError:
+        error = self._attach(ProviderError(
+            f"codex tool call failed unexpectedly: {type(self._failure).__name__}"))
+        error.__cause__ = self._failure
+        return error
+
     async def read(self) -> None:
         """Read until ``turn/completed``; raise the classified stop otherwise."""
-        while not self._done.is_set():
-            budget, absolute = self._allowance()
-            if budget <= 0:
-                self._timeout(absolute)
-            try:
-                line = await asyncio.wait_for(self.proc.stdout.readline(), timeout=budget)
-            except asyncio.TimeoutError:
-                continue
-            except (ValueError, asyncio.LimitOverrunError):
-                raise ProviderProtocolError(
-                    "codex app-server line exceeded the reader buffer limit") from None
-            if not line:
-                for future in self._pending.values():
-                    if not future.done():
-                        future.set_exception(ProviderError("codex app-server exited"))
-                raise ProviderError("codex app-server exited before the turn completed")
-            try:
-                message = json.loads(line)
-            except ValueError:
-                continue
-            if isinstance(message, dict):
-                self._dispatch(message)
+        failed = asyncio.ensure_future(self._failed.wait())
+        line_task: asyncio.Future | None = None
+        try:
+            while not self._done.is_set():
+                if self._failure is not None:
+                    raise self._tool_failure()
+                budget, absolute = self._allowance()
+                if budget <= 0:
+                    self._timeout(absolute)
+                if line_task is None:
+                    line_task = asyncio.ensure_future(self.proc.stdout.readline())
+                done, _ = await asyncio.wait({line_task, failed}, timeout=budget,
+                                             return_when=asyncio.FIRST_COMPLETED)
+                if line_task not in done:
+                    continue
+                finished, line_task = line_task, None
+                try:
+                    line = finished.result()
+                except (ValueError, asyncio.LimitOverrunError):
+                    raise self._attach(ProviderProtocolError(
+                        "codex app-server line exceeded the reader buffer limit")) from None
+                if not line:
+                    for future in self._pending.values():
+                        if not future.done():
+                            future.set_exception(ProviderError("codex app-server exited"))
+                    raise self._attach(
+                        ProviderError("codex app-server exited before the turn completed"))
+                try:
+                    message = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(message, dict):
+                    self._dispatch(message)
+            if self._failure is not None:
+                raise self._tool_failure()
+        finally:
+            leftovers = [task for task in (failed, line_task)
+                         if task is not None and not task.done()]
+            for task in leftovers:
+                task.cancel()
+            if leftovers:
+                await asyncio.wait(leftovers, timeout=1)
 
     def _timeout(self, absolute: bool) -> None:
         if absolute:
-            raise InteractiveDeadlineError(
+            raise self._attach(InteractiveDeadlineError(
                 f"codex exceeded the {self.profile.absolute_cap_s:.0f}s absolute "
-                "interactive cap while still progressing")
-        raise ProviderIdleTimeoutError(
+                "interactive cap while still progressing"))
+        raise self._attach(ProviderIdleTimeoutError(
             "codex app-server produced no protocol event within its allowance "
-            "(idle watchdog fired; no provider cooldown)")
+            "(idle watchdog fired; no provider cooldown)"))
 
-    async def run(self, *, start_params: dict | None, resume_id: str | None,
-                  input_text: str, effort: str | None) -> TurnOutcome:
+    async def run(self, *, thread: tuple[str, dict], input_text: str,
+                  effort: str | None) -> TurnOutcome:
+        """``thread`` is ``("thread/start", params)`` or ``("thread/resume", params)``."""
         reader = asyncio.create_task(self.read())
         try:
             async def call(method, params):
                 waiter = asyncio.create_task(self.request(method, params))
-                done, _ = await asyncio.wait({waiter, reader},
-                                             return_when=asyncio.FIRST_COMPLETED)
-                if waiter not in done:
-                    waiter.cancel()
-                    reader.result()  # raises the reader's classified stop
-                    raise ProviderError(f"codex app-server ended during {method}")
-                reply = waiter.result()
+                try:
+                    done, _ = await asyncio.wait({waiter, reader},
+                                                 return_when=asyncio.FIRST_COMPLETED)
+                    if waiter not in done:
+                        reader.result()  # raises the reader's classified stop
+                        raise ProviderError(f"codex app-server ended during {method}")
+                    reply = waiter.result()
+                finally:
+                    # Never leave a request behind: not after a reader stop, and
+                    # not when the caller cancels mid-handshake.
+                    if not waiter.done():
+                        waiter.cancel()
+                        await asyncio.wait({waiter}, timeout=1)
                 if "error" in reply:
-                    message = str((reply.get("error") or {}).get("message") or "")[:300]
-                    raise ProviderError(f"codex app-server refused {method}: {message}")
+                    message = (reply.get("error") or {}).get("message") or ""
+                    raise ProviderError(
+                        f"codex app-server refused {method}: {_scrubbed(message)}")
                 return reply.get("result") or {}
 
             await call("initialize", {"clientInfo": {"name": "tinyassets", "version": "1"},
                                       "capabilities": {"experimentalApi": True}})
             await self.notify("initialized", {})
-            if resume_id:
-                thread = await call("thread/resume", {"threadId": resume_id})
-            else:
-                thread = await call("thread/start", start_params or {})
-            record = thread.get("thread") or {}
+            started = await call(*thread)
+            record = started.get("thread") or {}
             self.outcome.thread_id = str(record.get("id") or "")
             # The model the thread is configured with -- the CLI's own pick when
             # none was requested. Configuration, never answering-model evidence.
-            self.outcome.configured_model = _label(record.get("model") or thread.get("model"))
+            self.outcome.configured_model = _label(record.get("model") or started.get("model"))
             if not self.outcome.thread_id:
                 raise ProviderProtocolError("codex app-server returned no thread id")
             turn: dict[str, Any] = {"threadId": self.outcome.thread_id,
@@ -382,9 +491,9 @@ class AppServerTurn:
         finally:
             if not reader.done():
                 reader.cancel()
-            for task in list(self._tool_tasks):
+            helpers = [*self._tool_tasks, *self._other_tasks]
+            for task in helpers:
                 task.cancel()
             with contextlib.suppress(Exception):
                 await asyncio.wait_for(asyncio.gather(
-                    reader, *self._tool_tasks, return_exceptions=True), timeout=5)
-
+                    reader, *helpers, return_exceptions=True), timeout=5)

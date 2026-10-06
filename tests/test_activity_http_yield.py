@@ -72,15 +72,20 @@ def test_http_activity_yield_stops_tools_and_inference_and_releases_claim(
             body = json.loads(result["body"])
             message = body["choices"][0]["message"]
             if "tool_calls" in message:
+                # The model sees the four tools; platform calls go through
+                # ``ta`` in bash.
+                ask = json.dumps({"target": "pending_request", "operation": "ask",
+                                  "payload_json": "{}"})
                 message["tool_calls"][0]["function"] = {
-                    "name": "write_graph", "arguments": json.dumps({
-                        "target": "pending_request", "operation": "ask", "payload_json": "{}",
-                    }),
+                    "name": "bash",
+                    "arguments": json.dumps({"command": f"ta call write_graph --json '{ask}'"}),
                 }
                 if batched_tool:
                     message["tool_calls"].append({
                         "id": "must-not-run", "type": "function", "function": {
-                            "name": "write_graph", "arguments": '{"target":"branch"}',
+                            "name": "bash", "arguments": json.dumps({
+                                "command": "ta call write_graph --json '{\"target\":\"branch\"}'",
+                            }),
                         },
                     })
             return {**result, "body": json.dumps(body)}
@@ -89,7 +94,7 @@ def test_http_activity_yield_stops_tools_and_inference_and_releases_claim(
                         lambda *a, **k: AskThenAct(resolve_proxy(*a, **k)))
 
     def yield_after_ask():
-        assert work_agent.tools[-1][1]["target"] == "pending_request"
+        assert '"target": "pending_request"' in work_agent.tools[-1][1]["command"]
         result = engine_mcp_server._yield_activity({"request_id": "req-http-yield"})
         assert result["activity_waiting"]
         if immediate_answer:

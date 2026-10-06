@@ -41,3 +41,21 @@ async def test_an_unprintable_configured_model_is_never_named(served, label):  #
     run, *_ = served
     result, _ = await run(server=FakeAppServer(default_model=label))
     assert result.configured_model == ""
+
+
+@pytest.mark.parametrize("claim", [
+    {"method": "turn/started", "params": {"turn": {"id": "old", "model": "previous-turn"}}},
+    {"method": "item/completed", "params": {"item": {
+        "type": "agentMessage", "text": "I am assistant-claim", "model": "assistant-claim"}}},
+    {"method": "thread/started", "params": {"thread": {"id": "thr-1", "model": "bad\nlabel"}}},
+])
+@pytest.mark.asyncio
+async def test_rollout_never_attributes_old_turns_or_assistant_claims(served, claim):  # noqa: F811
+    """Only the thread record names the configured model; nothing streamed
+    during the turn -- an earlier turn, the assistant's own words -- does."""
+    from tests.support.fake_codex_app_server import ScriptedAppServer, finished
+
+    run, *_ = served
+    result, _ = await run(server=ScriptedAppServer([(0, claim), *finished()]))
+    assert result.configured_model == "cli-selected"
+    assert result.reported_model == ""

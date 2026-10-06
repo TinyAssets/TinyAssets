@@ -343,3 +343,69 @@ async def test_a_changed_tool_set_starts_a_new_thread(served, monkeypatch):
     _, server = await run(cfg=config(agent_session=ref))
     assert server.requests("thread/resume") == []
     assert len(server.requests("thread/start")) == 1
+
+
+# --- lifecycle: errors, failures and stops (cross-family review 2026-10-06) ---
+
+class _Refusing(FakeAppServer):
+    """Refuses one handshake method with a message that carries a secret."""
+
+    def __init__(self, method, message):
+        super().__init__()
+        self.refused, self.message = method, message
+
+    def handle(self, message):
+        if message.get("method") == self.refused:
+            self.received.append(message)
+            self.emit({"id": message["id"], "error": {"code": -32000, "message": self.message}})
+            return
+        super().handle(message)
+
+
+@pytest.mark.parametrize("method", ["initialize", "thread/start", "turn/start"])
+@pytest.mark.asyncio
+async def test_a_refused_request_is_reported_without_its_secrets(served, method):
+    run, *_ = served
+    secret = "sk-SyntheticReviewSecret12345"
+    text = f"bad token {secret} " + "x" * 400 + " tail: Bearer abc.def.ghi"
+    with pytest.raises(ProviderError, match=f"refused {method}") as failure:
+        await run(server=_Refusing(method, text))
+    assert secret not in str(failure.value)
+    assert "abc.def.ghi" not in str(failure.value), "scrubbed before clipping"
+
+
+@pytest.mark.asyncio
+async def test_an_unexpected_tool_failure_fails_the_turn_with_its_cause(served):
+    run, _launch, state, *_ = served
+    state["tools"] = FakeTools({"bash": RuntimeError("route vanished")})
+    server = FakeAppServer(Turn(calls=[{"tool": "bash", "arguments": {"command": "x"}}],
+                                hang=True))
+    with pytest.raises(ProviderError, match="failed unexpectedly: RuntimeError") as failure:
+        await asyncio.wait_for(run(server=server), timeout=5)
+    assert isinstance(failure.value.__cause__, RuntimeError)
+    assert server.tool_results == [{"success": False, "contentItems": [
+        {"type": "inputText", "text": "tool call failed: internal error"}]}], (
+        "Codex was answered rather than left waiting")
+    assert server.killed
+
+
+@pytest.mark.asyncio
+async def test_tool_calls_run_one_at_a_time_in_the_order_asked(served):
+    from tests.support.fake_codex_app_server import ScriptedAppServer, finished
+    from tests.test_codex_stream_watchdog import SlowTools
+
+    run, _launch, state, *_ = served
+    tools = state["tools"] = SlowTools({"bash": 0.2, "read": 0})
+    end = finished()
+    steps = [(0, ("call_nowait", "bash", {"command": "x"})),
+             (0, ("call_nowait", "read", {"path": "y"})), (0.6, end[0][1]), *end[1:]]
+    response, _ = await run(server=ScriptedAppServer(steps))
+    assert tools.calls == ["bash", "read"]
+    assert tools.most_at_once == 1, "a call behind an activity's yield meets the fence after it"
+    assert response.text == "done"
+
+
+def test_a_resumed_thread_gets_the_current_instructions_as_its_own():
+    definition = agent_definition(_engine_tools(), "new standing instructions")
+    assert app.thread_resume_params(definition, "thr-9") == {
+        "threadId": "thr-9", "baseInstructions": "new standing instructions"}

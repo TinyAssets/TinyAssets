@@ -9,6 +9,7 @@ the same native session with only the input it has not seen.
 
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -101,15 +102,6 @@ def test_the_native_file_check_never_follows_a_link(tmp_path):
     assert agent_sessions.native_file_exists(store, "abc.jsonl")
 
 
-def test_resumed_input_resends_instructions_only_when_they_changed(tmp_path):
-    ref = _ref(tmp_path, resume="hello again")
-    agent_sessions.save(ref, adapter="codex", model="", handle="h", system="old system")
-    record = agent_sessions.load(tmp_path, ref.key)
-    assert agent_sessions.resume_input(ref, record, "old system") == "hello again"
-    changed = agent_sessions.resume_input(ref, record, "new system")
-    assert "new system" in changed and changed.endswith("hello again")
-
-
 def test_unseen_keeps_only_later_messages_of_the_named_speakers():
     history = [
         Msg(speaker="founder", text="old", ts=50.0),
@@ -157,8 +149,31 @@ async def test_next_turn_resumes_and_sends_only_what_is_new(served):  # noqa: F8
     _, server = await run(cfg=config(agent_session=ref))
 
     assert server.requests("thread/start") == []
-    assert server.requests("thread/resume")[0]["params"] == {"threadId": handle}
+    # The thread's own instructions are replaced with the current ones; the
+    # turn carries only what is new.
+    assert server.requests("thread/resume")[0]["params"] == {
+        "threadId": handle, "baseInstructions": "system"}
     assert _sent(server) == "[now]\nwhat did that command print?"
+
+
+@posix_only
+@pytest.mark.asyncio
+async def test_changed_instructions_replace_the_resumed_threads_own(served):  # noqa: F811
+    """A resumed thread otherwise keeps the instructions it started with
+    (codex-cli 0.160.0 request capture, K2 evidence): the current ones are
+    sent as its own, and never folded into the user's input."""
+    run, _launch, _state, config, udir = served
+    ref = _ref(udir, resume="next message")
+    handle = "0a1b2c3d-0000-4000-8000-000000000003"
+    agent_sessions.save(ref, adapter="codex", model=_session_model(), handle=handle,
+                        system="old system")
+    store = agent_sessions.native_store(udir, "codex")
+    (store / f"rollout-x-{handle}.jsonl").write_text("{}")
+    _, server = await run(cfg=config(agent_session=ref), system="new system")
+    (resume,) = server.requests("thread/resume")
+    assert resume["params"]["baseInstructions"] == "new system"
+    assert _sent(server) == "next message"
+    assert "old system" not in json.dumps(server.received)
 
 
 @posix_only

@@ -38,7 +38,8 @@ class ExecutionContext:
 class Capabilities:
     def __init__(self, root: Path, context: ExecutionContext, platform: list[dict],
                  call_platform, check_authority: Callable, *,
-                 connections_granted: bool = True, review_provider=None):
+                 connections_granted: bool = True, review_provider=None,
+                 stopped: Callable[[], str | None] | None = None):
         if (root.name != context.universe or not context.owner
                 or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", context.initiating_agent)
                 or context.initiating_agent == "unresolved-agent"):
@@ -48,6 +49,9 @@ class Capabilities:
         self.call_platform, self.check_authority = call_platform, check_authority
         self.connections_granted = connections_granted
         self.review_provider = review_provider
+        # An activity's launch: every request is refused once it stops running
+        # (tinyassets/activity_fence.py), connection calls included.
+        self.stopped = stopped
 
     def connections(self):
         # A launch whose grant withholds connections neither lists nor calls one.
@@ -71,6 +75,9 @@ class Capabilities:
         error = self.check_authority()
         if error:
             return {"error": "serving owner authority unavailable"}
+        stopped = await asyncio.to_thread(self.stopped) if self.stopped is not None else None
+        if stopped is not None:
+            return {"error": stopped}
         if self.context.research:
             return {"error": "research_is_read_only"}
         if not isinstance(message, dict):
@@ -199,6 +206,7 @@ async def engine_dispatch(server, *, completed: list | None = None):
     shell authority, run_bash accepts only a parsed ta invocation; no shell or
     local extension process runs. Delegation never increases authority.
     """
+    from tinyassets.activity_fence import stop_check
     from tinyassets.api.helpers import _universe_dir
     from tinyassets.engine_steering import _session_key, launch_tools
     from tinyassets.research_capability import is_research_session
@@ -241,10 +249,12 @@ async def engine_dispatch(server, *, completed: list | None = None):
         return {"content": blocks}
 
     loop = asyncio.get_running_loop()
-    backend = Capabilities(_universe_dir(context.universe), context, platform,
+    universe_dir = _universe_dir(context.universe)
+    backend = Capabilities(universe_dir, context, platform,
                            call_platform, server._binding_error,
                            review_provider=_turn_reviewer(loop),
-                           connections_granted=connections_granted(granted))
+                           connections_granted=connections_granted(granted),
+                           stopped=stop_check(universe_dir, _session_key()))
 
     def dispatch(message):
         future = asyncio.run_coroutine_threadsafe(backend.dispatch(message), loop)

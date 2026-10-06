@@ -266,7 +266,7 @@ class ToolRun:
     exit_code: int | None
     output: bytes
     #: ``timeout``, ``output_limit``, ``memory_limit``, ``process_limit``,
-    #: ``disk_limit``, ``storage_limit`` or None.
+    #: ``disk_limit``, ``storage_limit``, ``activity_stopped`` or None.
     killed: str | None
     elapsed: float
     #: Seconds this call spent QUEUED for a host tool slot before it started.
@@ -645,12 +645,15 @@ def run_jailed(
     on_wait: Callable[[float], None] | None = None,
     egress_socket: Path | None = None,
     ta_socket: Path | None = None,
+    stop: Callable[[], str | None] | None = None,
 ) -> ToolRun:
     """Run ``inner`` in the command center's tool jail under ``limits``.
 
     If every host slot is taken the call WAITS for one; it is not refused for the
     host being busy. ``on_wait`` is invoked once when that happens, so a caller
-    with a user in front of it can surface a waiting state.
+    with a user in front of it can surface a waiting state. ``stop`` is polled
+    while the jail runs; once it names a reason the jail is killed
+    (``activity_stopped``): an activity that yielded, paused or stopped.
     """
     if not agent_id.strip():
         raise UniverseToolError("agent_id is required")
@@ -698,7 +701,7 @@ def run_jailed(
                                 str(cgroup / "cgroup.procs"), *argv]
                     run = _supervise(
                         argv, root, filter_fd, stdin=stdin, limits=limits, wall=wall,
-                        cap=cap, process_cap=process_cap, budget=budget,
+                        cap=cap, process_cap=process_cap, budget=budget, stop=stop,
                     )
             finally:
                 budget.settle()
@@ -793,7 +796,7 @@ def _remove_cgroup(path: Path) -> None:
 def _supervise(
     argv: list[str], root: Path, filter_fd: int, *, stdin: bytes | None,
     limits: ToolLimits, wall: float, cap: int, process_cap: int,
-    budget: jail_disk.DiskBudget,
+    budget: jail_disk.DiskBudget, stop: Callable[[], str | None] | None = None,
 ) -> ToolRun:
     """Start the jail and watch it until it ends or a limit kills it."""
     started = time.monotonic()
@@ -824,7 +827,7 @@ def _supervise(
     killed = None
     try:
         killed = _watch(proc, out, budget, limits=limits, wall=wall,
-                        process_cap=process_cap, started=started)
+                        process_cap=process_cap, started=started, stop=stop)
     finally:
         try:
             proc.wait(timeout=_KILL_GRACE_SECONDS)
@@ -860,6 +863,7 @@ def _supervise(
 def _watch(
     proc: subprocess.Popen, out: _Drain, budget: jail_disk.DiskBudget, *,
     limits: ToolLimits, wall: float, process_cap: int, started: float,
+    stop: Callable[[], str | None] | None = None,
 ) -> str | None:
     """Poll the running jail; kill it and name the limit the moment one breaks."""
     next_tree = 0.0
@@ -877,6 +881,8 @@ def _watch(
                 killed = "process_limit"
             elif rss > limits.tree_memory_bytes:
                 killed = "memory_limit"
+            elif stop is not None and stop() is not None:
+                killed = "activity_stopped"
             else:
                 killed = budget.breach()
         if killed:
@@ -934,6 +940,8 @@ def _waited_note(run: ToolRun) -> str:
 def _trailer(run: ToolRun, limits: ToolLimits, wall: float) -> str:
     if run.killed == "timeout":
         return f"[killed: ran longer than {wall:g}s]"
+    if run.killed == "activity_stopped":
+        return "[killed: the activity stopped running (waiting on the owner, paused or stopped)]"
     if run.killed == "output_limit":
         return f"[killed: output passed {limits.output_bytes} bytes]"
     if run.killed == "memory_limit":
@@ -1105,8 +1113,13 @@ def _egress_socket(universe_dir: Path) -> Path | None:
 def bash(
     universe_dir: Path, command: str, timeout: float = 0,
     *, agent_id: str, limits: ToolLimits = DEFAULT_LIMITS, ta_dispatch=None,
+    stop: Callable[[], str | None] | None = None,
 ) -> str:
-    """Run ``command`` with bash in ``/u``; stdout and stderr, then the outcome."""
+    """Run ``command`` with bash in ``/u``; stdout and stderr, then the outcome.
+
+    ``stop`` (an activity's :func:`tinyassets.activity_fence.stop_check`) ends
+    the command once the activity stops running.
+    """
     from tinyassets.research_capability import research_refusal
 
     # D3a refuses all bash, stricter than a read-only mount: no shell or egress
@@ -1129,6 +1142,8 @@ def bash(
 
         inner = universe_egress.forwarder_argv(python, inner)
         egress = {"egress_socket": socket_path}
+    if stop is not None:
+        egress["stop"] = stop
     if ta_dispatch is None:
         run = RUNNER(universe_dir, inner, agent_id=agent_id, limits=limits,
                      wall_seconds=wall, **egress)
