@@ -1,5 +1,8 @@
 # Current U1 delivery: founder D73 preview renderer and owner screenshot writer
 
+Implementation pushed at **91c244c079**, exact remote SHA verified.
+Hygiene against b8f9c258bd: **4 tests added, 0 removed, 0 tampering**.
+
 Started at b8f9c258bd with the requested ff-only pull (already current).
 U1 owns engine integration only; U2 owns migration/quarantine/deletion,
 old-image rollback and startup/healthcheck. No U2 PR was available at the
@@ -63,6 +66,34 @@ rollback, Dockerfile, deployment or healthcheck change.
 
 All other remaining actual classes and the full class/path/reader matrix
 remain open. No full 2.x task checkbox is newly complete.
+
+## U1/U2 handoff after the verified preview slice
+
+U2 PR **#4509** targets this branch; at head 34a85c9e356297f8e2ee237f4e3602c569cd7c4e
+it remains explicitly draft/not merge-ready, with cross-family review and the
+installed-image migration probe pending. Do not merge that draft merely because
+GitHub reports a conflict-free merge. #4510 is U2's separate main-target draft,
+not a completed U1 build PR. No U1 PR was opened, and no deployment occurred.
+
+Both supported session coordination routes are unavailable (local proxy 10061,
+app discovery pipe ENOENT); no direct U2 message delivery is claimed. Branch
+records remain the coordination backstop. U2's current migration keeps root
+metadata daemon-owned and grants the owner read/traverse through a named UID
+ACL. That satisfies preview traversal; it must also classify/precreate the
+dedicated writable `previews` subtree. The U1 probe's equivalent group traversal
+is evidence of the writer's protected-root support, not an installed U2 migration
+receipt. U2's request for an owner-delete launcher admission remains pending a
+fixed deletion entry contract; U1 has not edited deletion code or routed it
+through git/decoder as an arbitrary command.
+
+After the successful build/probes/push, the Docker Linux API disappeared:
+`open //./pipe/dockerDesktopLinuxEngine: The system cannot find the file specified`.
+Further actual-class production-image acceptance cannot run in this venue.
+Do not count Windows, a refused unknown kind, or the generic namespace diagnostic
+as another actual class. No Docker daemon restart, cache/volume purge or unrelated
+session takeover was attempted. Next U1 work remains actual provider/discovery/
+auth, engine-MCP proxy, node/tool, provision/registry/worker, remote git, local box
+and ingestion/video integration plus their complete path/reader matrices.
 
 ---
 # Prior delivery: D74 raw-I/O guard closed without changing its assertions
