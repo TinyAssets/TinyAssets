@@ -23,9 +23,6 @@ Public surface (back-compat re-exported via ``tinyassets.universe_server``):
       _ensure_standalone_branch(base): SQLite/JSON migration probe
       _load_nodes() / _save_nodes(nodes) : SQLite-backed registry I/O
 
-    Action dispatch the canonical routers call in-process:
-      _extensions_impl(action, **kwargs) : dispatch-shim into 12 Step-4-8 tables
-
     Standalone-node action handlers:
       _ext_register / _ext_list / _ext_inspect / _ext_manage
 
@@ -225,12 +222,6 @@ ALLOWED_DEPENDENCIES = {
     "dataclasses", "typing", "math", "statistics", "textwrap",
     "difflib", "hashlib", "urllib", "pathlib",
 }
-
-
-# ───────────────────────────────────────────────────────────────────────────
-# Action dispatch. Not an MCP tool: the canonical handles in
-# ``tinyassets/universe_server.py`` call it with the actions they route.
-# ───────────────────────────────────────────────────────────────────────────
 
 
 def _dispatch_scope_error(tool: str, action: str) -> str | None:
@@ -463,7 +454,6 @@ def _extensions_impl(
     output_offset: int = 0,
     output_max_chars: int = 8192,
 ) -> str:
-    """Dispatch one extensions action; the canonical routers call this in-process."""
     if action == "get_action_scope_status":
         from tinyassets.auth.provider import action_scope_audit
 

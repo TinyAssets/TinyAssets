@@ -3457,11 +3457,6 @@ _mcp_converse = _register_structured_tool(
 )
 
 
-# ---------------------------------------------------------------------------
-# Daemon Status / Routing Evidence
-# ---------------------------------------------------------------------------
-
-
 def get_status(
     command_center_id: str = "",
     include_conversation: bool = False,
