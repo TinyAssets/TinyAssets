@@ -1,3 +1,25 @@
+# Owner dynamic admission (spec #4541, `owner-dynamic-admission`, F1 = (b))
+
+Lane D implementation on U1. Startup OFF; no deploy. Spec references are DA1-DA8
+in that change's design.md.
+
+## Task 1: DA3 kernel facts (PASS)
+
+`python scripts/role_admission_kernel_probe.py --image <production image>`
+runs daemon 1001 and owner 300001 as real processes with zero capability sets
+(CapInh/Prm/Eff/Amb read back 0 in every step) on a Docker ext4 named volume
+and on tmpfs (kernel 6.6.87.2-microsoft-standard-WSL2):
+
+| Fact | ext4 | tmpfs |
+|---|---|---|
+| 1. daemon `mkdirat(g, root, 0750)` under owner-owned 02777 `g` is `1001:300001` mode 02750 | PASS | PASS |
+| 2. inherited access ACL equals the canonical root ACL byte for byte; default ACL copied | PASS | PASS |
+| 3. daemon removes the default ACL, `fchmod(0750)` leaves 0750, no S_ISGID, ACL unchanged | PASS | PASS |
+| 4. `renameat2(RENAME_NOREPLACE)` publishes (same inode), refuses an existing name (EEXIST), `g` and S removed, `previews` is 1001:1001 0700 | PASS | PASS |
+
+The cell's `g` is `300001:300001` 02777 and inherits S's canonical default ACL.
+Staging S reads back `1001:1001` 0770 (the group class is the ACL mask; `group::---`).
+
 # Current U1 delivery: D87 package egress relay and caller-owned lifetime
 
 D86 is pushed at 4aad725f28. D87 closes the two gaps D84 left for K1's
