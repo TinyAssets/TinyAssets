@@ -1,5 +1,18 @@
 # Current U1 delivery: D82 offline provider metadata discovery
 
+Final merged-tree verification: origin/main merged without conflicts at
+2add14ea70. Sequential plugin regeneration/import probe and changed-file Ruff
+PASS. Root oracle 189 passed, zero skips; additional uid1001 identity/provider/
+disk-accounting oracle 181 passed, zero skips (one legacy teardown warning).
+Whole branch versus origin/main hygiene: 266 added, zero removed, zero tampering.
+Rebuilt production image tinyassets-uid-d82:merged:
+sha256:c477b1f408085c0ba5a3a3cd07e7f5980b48c630fdc8fe54352bbb94696f636a.
+Actual metadata and video probes PASS with ZERO FOREIGN_BYTES on this image.
+D76 independent lifetime probe also PASS with zero foreign reads, including
+EOF revocation, reaping, reuse, concurrency and fixed deadline enforcement.
+Two probe invocations preceded completion of image export and had no image to
+inspect; they were rerun after build exit 0 and are not acceptance evidence.
+
 D81 is pushed at d3f99e9134d1743c39f9b6cd22a756b2788d7de9. D82 adds the
 actual native metadata API to the dedicated provider-discovery owner cell.
 Installed Codex app-server model/list returns 11 models for both Alice and Bob.
@@ -28,8 +41,16 @@ Additional uid1001 oracle: 99 passed, zero skips (owner_launcher_client,
 native_model_discovery, native_discovery_integration,
 provider_real_adapter_deadline_reap). One pre-existing legacy transport teardown
 warning remains in the malformed-readiness test. Ruff, plugin regeneration and
-OpenSpec audit pass; no static prompt budget changed. Independent Claude
-floor/correctness review is running; record its verdict before final push.
+OpenSpec audit pass; no static prompt budget changed. D82 hygiene: 15 tests
+added, zero removed, zero tampering. D82 pushed at 1a095dfc40.
+Independent Claude floor/correctness review (peer-agents, read-only, 183s):
+VERDICT: APPROVE, no floor/correctness findings. AGREE. Receipt:
+C:/Users/Jonathan/AppData/Local/Temp/uid-d82-review.md. Reviewed D81/D82 owner
+isolation, sealed snapshot/config boundary, resource bounds and receipt lifetime.
+Non-blocking observations retained: synchronous admission can block the event
+loop for its bounded exchange; validate absolute CLI argv and proof-object shape
+more explicitly; V8 cannot use the current address-space cap, and aggregate
+memory/tmpfs accounting still needs the general capacity gate.
 
 Exactly remaining for activation, in execution order:
 1. Provider CLI execution, auth/refresh and network metadata; engine-MCP thin
@@ -43,7 +64,8 @@ Exactly remaining for activation, in execution order:
    and resource caps; K1 depends on this.
 4. Dynamic center admission and remaining broker readers, plus U2 D61 quarantine,
    migration, two-pass deletion, old-image rollback, startup and health checks.
-5. Integrated production proof for every class/caller, final floor review and
+5. Aggregate cell memory/tmpfs capacity enforcement, integrated production proof
+   for every class/caller, review of the remaining floor changes and
    spec sync. Startup stays OFF; no deploy or ready/final PR is authorized.
 
 ---
