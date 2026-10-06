@@ -285,16 +285,31 @@ class OwnerLauncher:
         return True
 
     def _decoder(self, request, received):
+        kind = request.get('kind') if isinstance(request, dict) else None
+        fields = {'op', 'kind', 'principal', 'command_center'}
+        if kind == 'image-decoder':
+            fields.add('mime')
         if (not isinstance(request, dict)
-                or set(request) != {'op', 'kind', 'principal', 'command_center', 'mime'}
-                or request['op'] != 'SPAWN' or request['kind'] != 'image-decoder'
-                or not isinstance(request['mime'], str)
-                or request['mime'] not in {'image/png', 'image/jpeg', 'image/webp', 'image/gif'}
+                or set(request) != fields or request['op'] != 'SPAWN'
+                or kind not in {'image-decoder', 'workspace-git'}
+                or (kind == 'image-decoder' and (
+                    not isinstance(request['mime'], str)
+                    or request['mime'] not in {
+                        'image/png', 'image/jpeg', 'image/webp', 'image/gif'}))
                 or not isinstance(request['principal'], str)
-                or not isinstance(request['command_center'], str) or len(received) != 1):
+                or not isinstance(request['command_center'], str)
+                or len(received) != (2 if kind == 'workspace-git' else 1)):
             raise ValueError('unsupported owner engine')
         machine = self.bindings[(request['principal'], request['command_center'])]
         inner = machine - FIRST
+        if kind == 'workspace-git':
+            info = os.fstat(received[1])
+            if not stat.S_ISDIR(info.st_mode) or (info.st_uid, info.st_gid) != (inner, inner):
+                raise ValueError('git directory is not owned by the admitted owner')
+            source = os.readlink(f'/proc/self/fd/{received[1]}')
+            prefix = self.data_root + '/' + request['command_center'] + '/'
+            if not source.startswith(prefix) or source.endswith(' (deleted)'):
+                raise ValueError('git directory is outside the admitted command center')
         fd = received[0]
         if not stat.S_ISSOCK(os.fstat(fd).st_mode):
             raise ValueError('decoder needs daemon socketpair')
@@ -312,7 +327,9 @@ class OwnerLauncher:
                 os.dup2(fd, 1)
                 null = os.open('/dev/null', os.O_WRONLY)
                 os.dup2(null, 2)
-                self.launch['close_descriptors']()
+                if kind == 'workspace-git':
+                    os.dup2(received[1], 3)
+                self.launch['close_descriptors']((3,) if kind == 'workspace-git' else ())
                 os.setgroups([])
                 os.setresgid(inner, inner, inner)
                 os.setresuid(inner, inner, inner)
@@ -320,14 +337,15 @@ class OwnerLauncher:
                 self.launch['_assert_caps'](0)
                 os.umask(0o007)
                 os.chdir('/')
-                os.execve('/opt/venv/bin/python', ['/opt/venv/bin/python', '-I', '-B',
-                    '/usr/local/libexec/ta-decoder.py', 'enter-owner', request['mime'],
-                    self.data_root, str(inner)],
+                command = (['/usr/local/libexec/ta-git.py', 'enter', str(inner), self.data_root]
+                    if kind == 'workspace-git' else ['/usr/local/libexec/ta-decoder.py',
+                    'enter-owner', request['mime'], self.data_root, str(inner)])
+                os.execve('/opt/venv/bin/python', ['/opt/venv/bin/python', '-I', '-B', *command],
                     {'PATH': '/usr/bin:/bin', 'LANG': 'C.UTF-8', 'HOME': '/tmp',
                      'PYTHONDONTWRITEBYTECODE': '1'})
             except BaseException:
                 os._exit(126)
-        deadline = time.monotonic() + 35
+        deadline = time.monotonic() + (65 if kind == 'workspace-git' else 35)
         while True:
             waited, status = os.waitpid(pid, os.WNOHANG)
             if waited:

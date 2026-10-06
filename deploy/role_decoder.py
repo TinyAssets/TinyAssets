@@ -51,7 +51,7 @@ def enter(mime, data_root, uid=1003):
     os.execv(argv[0], argv)
 
 
-def decode(mime, host, data_root, uid=1003):
+def prove_cell(host, data_root, uid=1003, profile='cell-deny'):
     # bwrap does not promise to close caller mount/seccomp fds. Close them here,
     # before the decoder (or any native image parser) imports or reads bytes.
     for name in os.listdir("/proc/self/fd"):
@@ -117,9 +117,12 @@ def decode(mime, host, data_root, uid=1003):
             else:
                 os.mkfifo("/tmp/planted-fifo")
         except PermissionError:
-            pass
+            if kind == 'symlink' and profile == 'cell-links':
+                raise RuntimeError('cell-links does not permit its declared symlinks') from None
         else:
-            raise RuntimeError("decoder cell-deny profile is absent")
+            if kind != 'symlink' or profile != 'cell-links':
+                raise RuntimeError("cell seccomp profile is absent")
+            os.unlink('/tmp/planted-link')
     for address in (("127.0.0.1", 39281), "\0ta-uid-cross-owner"):
         family = socket.AF_INET if isinstance(address, tuple) else socket.AF_UNIX
         with socket.socket(family, socket.SOCK_STREAM) as connection:
@@ -132,8 +135,13 @@ def decode(mime, host, data_root, uid=1003):
                 raise RuntimeError("decoder reached host network or IPC")
     proof = {"uid": os.getuid(), "gid": os.getgid(), "fds": sorted(retained),
              "groups": os.getgroups(),
-             "namespaces": current, "host_namespaces": host, "profile": "cell-deny",
+             "namespaces": current, "host_namespaces": host, "profile": profile,
              "denied": denied, "caps": "zero", "nnp": 1}
+    return proof
+
+
+def decode(mime, host, data_root, uid=1003):
+    proof = prove_cell(host, data_root, uid)
     sys.stdout.buffer.write(json.dumps({"cell": proof}).encode() + b"\n")
     sys.stdout.buffer.flush()
     sys.path.insert(0, "/app")

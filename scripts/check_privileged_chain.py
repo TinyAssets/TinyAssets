@@ -92,6 +92,7 @@ def main() -> int:
         "/usr/local/libexec/ta-launch.py",
         "/usr/local/libexec/ta-owner-launch.py",
         "/usr/local/libexec/ta-decoder.py",
+        "/usr/local/libexec/ta-git.py",
         "/usr/local/libexec/ta-op",
         "/app/broker_main.py",
         "/app",

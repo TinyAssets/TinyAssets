@@ -2077,3 +2077,36 @@ entrypoint. Migration, every other actual class, the deferred ui-preview decisio
 full rollback, and healthcheck acceptance still gate activation. The new oracle
 must exercise application admission plus real broker identity IPC for Alice/Bob
 decoding, not merely pass fixture IDs directly into the client.
+
+### D71. Mechanical workspace-git cell and pinned working directory
+
+Route workspace_git.run_git through the installed bounded client. The daemon
+admits its authenticated principal/center, resolves identity through broker IPC,
+and opens the canonical work directory without following any component. The
+launcher requires both exact dedicated UID/GID on the received directory and a
+kernel descriptor path beneath the admitted center; no path or UID is a launch
+packet field. Bind only that directory at /workspace. Close all mount and filter
+handles before invoking the actual run_git implementation in the cell.
+
+Use unchanged cell-links, private namespaces, no host networking, umask 007,
+zero capabilities/groups and protected safe.directory reset plus exact
+/workspace. Request data carries git subcommand/options and a deadline bounded
+to 60 seconds, consumed only after confinement. The entry executable is static.
+Other binaries, custom launchers, pass_fds, inherited lease descriptors and
+preexec functions refuse in selected mode; no daemon fallback. These unsupported
+caller modes still need explicit integration, so this is not completion of the
+entire workspace-worker/git inventory. ui-preview and startup remain unadmitted.
+
+Acceptance adds actual init/add/commit/show/symlink-checkout for Alice and Bob,
+foreign symlink and hardlink reads, and the existing per-cell namespace/fd/IPC/
+network assertions. Full writable-path/daemon-reader matrix remains separately
+required; a local git positive does not substitute for remote checkout or worker
+credential/relay integration.
+
+D71 review correction: **AGREE** that textual /proc/self/fd bind sources can be
+re-resolved by bubblewrap. The installed production binary is bubblewrap 0.12.0;
+its --help declares --bind-fd. Use --bind-fd 3 /workspace and independently compare
+the mounted device/inode before user code, then require the same source identity
+in the authenticated completion consumed by the daemon. No path re-resolution
+is accepted as proof of a pin. The class has a 1 GiB address-space, 60-second CPU
+and zero-core limit in addition to its wall clock and bounded request/response.

@@ -10,7 +10,7 @@ import time
 import uuid
 
 CONTAINER = r'''
-import gc, io, json, os, runpy, socket, sys, tempfile
+import gc, io, json, os, runpy, socket, subprocess, sys, tempfile
 from pathlib import Path
 sys.path.insert(0, '/app')
 launch = runpy.run_path('/usr/local/libexec/ta-launch.py')
@@ -44,6 +44,24 @@ for owner,uid in identities.items():
         path=center/name; path.write_text(owner+'-sentinel')
         os.chown(path,uid,uid); path.chmod(0o600)
     bindings[(owner,center.name)]=uid
+    if GIT:
+        work=center/'workspace'; work.mkdir(); os.chown(work,uid,uid); work.chmod(0o700)
+        own=work/'own.txt'; own.write_text(owner+'-own-bytes'); os.chown(own,uid,uid)
+        own.chmod(0o600)
+        os.symlink('own.txt',work/'own-link')
+        subprocess.run(['setfacl','-m','u:1001:rwx,d:u:1001:rwx',
+                        str(center),str(work)],check=True)
+        subprocess.run(['setfacl','-m','u:1001:r',str(own)],check=True)
+if GIT:
+    foreign=root/'decoder-bob/workspace/foreign.txt'; foreign.write_text('bob-foreign-sentinel')
+    os.chown(foreign,300002,300002); foreign.chmod(0o600)
+    subprocess.run(['setfacl','-m','u:1001:r',str(foreign)],check=True)
+    os.link(foreign,root/'decoder-alice/workspace/foreign-hardlink')
+    os.symlink(str(foreign),
+               root/'decoder-alice/workspace/foreign-symlink')
+    outside=root/'not-admitted'; outside.mkdir(); os.chown(outside,300001,300001)
+    outside.chmod(0o700)
+    subprocess.run(['setfacl','-m','u:1001:rwx',str(outside)],check=True)
 run=Path(tempfile.mkdtemp(prefix='role-services-',dir='/run')); run.chmod(0o755)
 ipc=run/'broker'; ipc.mkdir(); directory(ipc,1002,1101,0o2750)
 if os.environ.get('TA_ORACLE_HTTPS')=='1':
@@ -96,6 +114,58 @@ for path in (root/'.broker/outbound.db',root/'.broker/state/owner-identities.db'
     try: path.read_bytes()
     except PermissionError: pass
     else: raise AssertionError('daemon opened broker state')
+if GIT:
+    import array
+    from tinyassets.workspace_git import run_git
+    git_home=Path(tempfile.mkdtemp(prefix='git-empty-home-'))
+    # Bypass client validation deliberately: the real mapper must reject the
+    # wrong owner's inode AND same-owner directory outside the admitted center.
+    for wrong in (root/'decoder-bob/workspace',root/'not-admitted'):
+        fd=os.open(wrong,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
+        try:
+            left,right=socket.socketpair()
+            with left,right:
+                client._channel.sendmsg([json.dumps(dict(op='SPAWN',kind='workspace-git',
+                    principal='alice',command_center='decoder-alice')).encode()],[(
+                    socket.SOL_SOCKET,socket.SCM_RIGHTS,array.array('i',[right.fileno(),fd]))])
+                assert client._reply()==dict(op='REFUSED')
+        finally: os.close(fd)
+    for owner in identities:
+        work=root/('decoder-'+owner)/'workspace'
+        with identity_context(Identity(owner,owner)):
+            def git(*argv):
+                return run_git(argv,cwd=work,home_dir=git_home,path='/usr/bin:/bin',
+                    options=('-c','user.name=Oracle','-c','user.email=oracle@example.invalid'),
+                    timeout_s=10)
+            for argv in (('init',),('add','own.txt','own-link'),('commit','-m','owner commit'),
+                         ('status','--porcelain'),('show','HEAD:own.txt')):
+                result=git(*argv)
+                assert result.returncode==0,(argv,result)
+                assert 'bob-own-bytes' not in result.stdout_tail if owner=='alice' else True
+            (work/'own-link').unlink()
+            assert git('checkout','--','own-link').returncode==0
+            assert (work/'own-link').is_symlink()
+            if owner=='alice':
+                for path in ('foreign-hardlink','foreign-symlink'):
+                    result=git('hash-object',path)
+                    assert result.returncode!=0 and 'bob-foreign-sentinel' not in result.stdout_tail
+                from tinyassets.owner_launcher_client import OwnerLaunchRefused
+                try:
+                    run_git(['stall'],cwd=work,home_dir=git_home,path='/usr/bin:/bin',
+                            options=('-c','alias.stall=!sleep 30'),timeout_s=0.1)
+                except OwnerLaunchRefused: pass
+                else: raise AssertionError('git timeout did not refuse')
+                assert git('status','--porcelain').returncode==0
+            from tinyassets.universe_files import read_universe_file
+            assert (owner+'-own-bytes').encode() in read_universe_file(
+                root/('decoder-'+owner),'workspace/own.txt')
+    for alias in ('foreign-hardlink','foreign-symlink'):
+        try:
+            result=read_universe_file(root/'decoder-alice','workspace/'+alias)
+        except (OSError,ValueError): pass
+        else: raise AssertionError('daemon reader admitted a git foreign alias')
+    print('workspace-git: actual run_git init/add/commit/show/checkout for Alice/Bob; '
+          'foreign aliases denied; cell-links and descriptor checks passed',flush=True)
 if os.environ.get('TA_ORACLE_HTTPS')=='1':
     stream['probe'](root)
 print(json.dumps(dict(bootstrap=True,daemon_pid=1,daemon_caps='zero',
@@ -124,6 +194,7 @@ def main():
     parser.add_argument('--broker-death', action='store_true')
     parser.add_argument('--bootstrap-failure', action='store_true')
     parser.add_argument('--stream', action='store_true')
+    parser.add_argument('--git', action='store_true')
     args = parser.parse_args()
     if sum((args.stream, args.service_death, args.broker_death, args.bootstrap_failure)) > 1:
         parser.error('run stream and failure modes independently')
@@ -139,7 +210,7 @@ def main():
     command += ['--entrypoint', '/opt/venv/bin/python', digest, '-I', '-B', '-']
     print('production image:', digest, flush=True)
     death = 'broker' if args.broker_death else 'mapper' if args.service_death else ''
-    script = f'DEATH={death!r}\nFAIL={args.bootstrap_failure!r}\n' + CONTAINER
+    script = f'DEATH={death!r}\nFAIL={args.bootstrap_failure!r}\nGIT={args.git!r}\n' + CONTAINER
     if args.stream:
         from linux_oracle import production_stream_oracle
 

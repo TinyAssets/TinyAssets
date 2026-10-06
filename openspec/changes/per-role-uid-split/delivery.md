@@ -1,3 +1,71 @@
+# Current delivery: D71 local workspace-git through the bounded launcher
+
+D70 pushed at **5b020514d9** (3 tests added, 0 removed, 0 tampering). Continued
+into the actual local workspace_git.run_git class path. The installed client
+admits principal/center through application authorization and broker identity IPC,
+passes an open no-follow owner directory, and the mapper requires exact UID/GID
+plus a source beneath that center. The static git entry binds only that directory
+at /workspace using --bind-fd and checks its device/inode before application code.
+The daemon also checks the source inode in the completion. Existing cell-links,
+private namespaces, fd closure, zero caps/groups and umask 007 remain unchanged.
+
+Production Dockerfile image:
+`sha256:cadc9f5cf07d7b6abeb82a50fffd6aab3b89ab8fc3d96c22d7eaf1bcee5f9d44`.
+
+```
+python scripts/role_service_bootstrap_probe.py --image tinyassets-uid-d71:git --git --stream
+exit 0
+workspace-git: actual run_git init/add/commit/show/checkout for Alice/Bob;
+foreign aliases denied; cell-links and descriptor checks passed
+bootstrap=true; daemon_pid=1; daemon_caps=zero; live_identity_ipc=true;
+application_png_owners=2; foreign_application_refused=true;
+legacy_launcher_absent=true; startup_activated=false
+```
+
+The real mapper also refuses a Bob directory and a same-owner directory outside
+the admitted center, sent directly on the authenticated transport to bypass client
+validation. Alice's actual git refuses preplanted foreign hardlink/symlink reads.
+A real sleeping git alias hits the inner deadline, refuses, and the next git
+request succeeds. The common daemon file reader returns both owners' normal files
+and denies the foreign aliases despite explicit daemon ACL read access to the
+foreign inode. These rows do not complete the whole class/path/reader matrix.
+The same run passes real broker HTTPS GET, accounted inference POST, one-use
+claims/replay refusal, source-bound daily evidence and two OAuth refresh rotations.
+Historical fixture output says restart; this run has one service lifetime.
+
+Verification:
+- Linux oracle targeted role/git/launcher/chain suite: **206 passed**, zero skips
+  with the sole Windows-only test deselected. That exact Windows-only transport
+  test ran separately on Windows: **1 passed**. The initial broad Linux selection
+  reported 206 passed / 1 Windows-only skip; that skip is not counted as a pass.
+- Final-image role_reader_alias_probe: **114 denied, 19 own reads, 0 foreign reads**,
+  foreign data unchanged. The concern remains open for the full reader matrix.
+- Targeted Ruff, mirror regeneration/parity and strict OpenSpec validation pass.
+  D70 full Ruff retains the 55 baseline findings; no baseline fixes mixed in.
+
+One cross-family review via peer-agents: **AGREE** with the textual bind-source
+race finding. Replaced it with the installed bubblewrap 0.12.0 --bind-fd operation,
+plus independent cell and client inode checks. Final image acceptance above is
+after that fix. No new capability or seccomp exception, no second review round.
+The first git fixture used a nonempty HOME and failed the existing runner guard;
+it now supplies a fresh empty daemon-side HOME, with a separate empty home inside
+the cell. No existing guard or test assertion was loosened.
+
+Release-critical files for D71: **4**: Dockerfile, deploy/role_owner_launcher.py,
+deploy/role_decoder.py, deploy/role_git.py. The privileged-chain gate file
+scripts/check_privileged_chain.py also changed and was included in review.
+
+Limitations and remaining work: this admits local run_git calls with canonical
+owner work directories, not the entire workspace worker/remote checkout class.
+Custom launchers, other binaries, caller preexec functions and caller-held/inherited
+lease descriptors refuse in selected mode, with no daemon fallback. Those callers
+need their own complete scoped integration. Every other actual engine class,
+dynamic center admissions, remaining broker readers, full D61 quarantine/migration
+and two-pass deletion, restrictive owner-file rollback and actual old CMD boot,
+then startup/healthcheck remain. ui-preview remains the one founder-deferred class.
+No full 2.x checkbox newly complete. No startup activation, PR or deployment.
+
+---
 # Current delivery: D70 staged broker/mapper bootstrap and application path
 
 D69 was already current at b4b430f727. D70 forks the existing broker and bounded

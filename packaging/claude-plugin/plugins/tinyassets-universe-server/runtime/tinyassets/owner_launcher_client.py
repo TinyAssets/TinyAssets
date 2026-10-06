@@ -10,6 +10,7 @@ import json
 import os
 import select
 import socket
+import stat
 import struct
 import threading
 from types import SimpleNamespace
@@ -164,3 +165,73 @@ class OwnerLauncherClient:
                     raise RuntimeError('owner launcher did not stop')
             finally:
                 self._close()
+
+    def git(self, argv, *, options, timeout_s, directory_fd, principal, command_center,
+            identity: OwnerIdentity):
+        """Execute the actual git runner in one pinned, admitted owner directory."""
+        info = os.fstat(directory_fd)
+        if (type(identity) is not OwnerIdentity or identity.uid != identity.gid
+                or not OWNER_ID_FIRST <= identity.uid <= OWNER_ID_LAST
+                or not stat.S_ISDIR(info.st_mode)
+                or (info.st_uid, info.st_gid) != (identity.uid, identity.gid)
+                or type(timeout_s) not in (int, float) or not 0 < timeout_s <= 60):
+            raise ValueError('invalid admitted git directory or deadline')
+        data = json.dumps(dict(argv=list(argv), options=list(options),
+                               timeout_s=timeout_s)).encode()
+        if len(data) > 65536:
+            raise ValueError('git request exceeds its bound')
+        document = dict(op='SPAWN', kind='workspace-git', principal=principal,
+                        command_center=command_center)
+        with self._lock:
+            self._check()
+            self._channel.settimeout(75)
+            try:
+                parent, child = socket.socketpair()
+                with parent, child:
+                    parent.settimeout(75)
+                    self._channel.sendmsg([json.dumps(document).encode()], [(
+                        socket.SOL_SOCKET, socket.SCM_RIGHTS,
+                        array.array('i', [child.fileno(), directory_fd]))])
+                    child.close()
+                    output = bytearray()
+                    try:
+                        parent.sendall(data)
+                        parent.shutdown(socket.SHUT_WR)
+                        while part := parent.recv(65536):
+                            output.extend(part)
+                            if len(output) > 1024 * 1024:
+                                raise RuntimeError('git output exceeds its bound')
+                    except (BrokenPipeError, ConnectionResetError):
+                        pass  # authenticate and drain the control refusal
+                answer = self._reply()
+                if answer == {'op': 'REFUSED'}:
+                    raise OwnerLaunchRefused('owner launcher refused git scope')
+                if (set(answer) != {'op', 'returncode', 'uid', 'gid'}
+                        or answer['op'] != 'SPAWN_DONE' or type(answer['returncode']) is not int
+                        or type(answer['uid']) is not int or type(answer['gid']) is not int):
+                    raise RuntimeError('invalid git completion')
+                if (answer['uid'], answer['gid']) != (identity.uid, identity.gid):
+                    raise OwnerLaunchRefused('owner launcher refused git identity')
+                if answer['returncode'] != 0:
+                    raise OwnerLaunchRefused('git cell did not complete')
+                header, _, payload = bytes(output).partition(b'\n')
+                cell = json.loads(header)['cell']
+                inner = identity.uid - 300000
+                if (cell.get('uid') != inner or cell.get('gid') != inner
+                        or cell.get('fds') != [0, 1, 2] or cell.get('groups') != []
+                        or cell.get('caps') != 'zero' or cell.get('nnp') != 1
+                        or cell.get('profile') != 'cell-links'
+                        or cell.get('source') != [info.st_dev, info.st_ino]):
+                    raise RuntimeError('dedicated git cell proof is absent')
+                result = json.loads(payload)
+                if (set(result) != {'returncode', 'stdout', 'stderr'}
+                        or type(result['returncode']) is not int
+                        or not isinstance(result['stdout'], str)
+                        or not isinstance(result['stderr'], str)):
+                    raise RuntimeError('invalid git result')
+                return SimpleNamespace(**result, cell=cell)
+            except OwnerLaunchRefused:
+                raise
+            except BaseException:
+                self._close()
+                raise
