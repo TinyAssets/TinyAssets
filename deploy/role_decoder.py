@@ -81,7 +81,7 @@ def enter(mime, data_root, uid=1003, *, preview=False, preview_write=False, node
     # A package names its sockets after the 64-hex revision, which may itself
     # contain 'e'; only the suffix selects descriptors.
     selector = mime[64:] if package else mime
-    views = []
+    views, late = [], []
     if provider_exec:
         # D88: the scratch or persistent owner workspace and its session store.
         # Only the trusted entry, already the owner identity, creates the two
@@ -93,7 +93,10 @@ def enter(mime, data_root, uid=1003, *, preview=False, preview_write=False, node
                 raise RuntimeError('provider workspace source is invalid')
             host['workspace'] = [info.st_dev, info.st_ino]
             host['views'] = {}
-            for name, target in (('work', '/workspace'), ('sessions', '/session')):
+            # The session store is bound inside the private home, after /tmp
+            # exists: the strict profile admits no link to put it there.
+            for name, target in (('work', '/workspace'),
+                                 ('sessions', '/tmp/provider-auth/sessions')):
                 try:
                     os.mkdir(name, 0o770, dir_fd=6)
                 except FileExistsError:
@@ -104,7 +107,8 @@ def enter(mime, data_root, uid=1003, *, preview=False, preview_write=False, node
                     raise RuntimeError('provider workspace child is not owner-owned')
                 os.set_inheritable(child, True)
                 host['views'][target] = [info.st_dev, info.st_ino]
-                views.extend(['--bind-fd', str(child), target])
+                (views if target == '/workspace' else late).extend(
+                    ['--bind-fd', str(child), target])
         else:
             views.extend(['--size', str(256 * 1024 * 1024), '--tmpfs', '/workspace'])
     if tool or provider or package:
@@ -171,7 +175,7 @@ def enter(mime, data_root, uid=1003, *, preview=False, preview_write=False, node
     argv.extend(["--proc", "/proc", "--dev", "/dev"])
     if package or provider_exec:
         argv.extend(['--size', str(256 * 1024 * 1024)])
-    argv.extend(["--tmpfs", "/tmp",
+    argv.extend(["--tmpfs", "/tmp", *late,
                  "--chdir", "/tmp", "--seccomp", str(descriptor), "--",
                  "/opt/venv/bin/python", "-I", "-B", "/usr/local/libexec/ta-decoder.py",
                  'inside-owner-delete' if owner_delete else
@@ -358,7 +362,8 @@ if __name__ == "__main__":
         if sys.argv[1] == 'inside-provider-exec':
             if (workspace is None) != ('w' not in sys.argv[2]):
                 raise RuntimeError('provider workspace differs from its admitted flag')
-            for target in ('/workspace', '/session') if workspace else ():
+            for target in (('/workspace', '/tmp/provider-auth/sessions')
+                           if workspace else ()):
                 info = os.stat(target, follow_symlinks=False)
                 if [info.st_dev, info.st_ino] != views[target] or not stat.S_ISDIR(info.st_mode):
                     raise RuntimeError('provider workspace mount differs from pinned source')

@@ -118,7 +118,7 @@ def _nofollow_dirs(root: Path, parts: tuple[str, ...]) -> Path:
 def native_store(universe_dir: Path, adapter: str) -> Path:
     """The persistent directory an adapter keeps its native session files in.
 
-    Under owner cells (D88) it is the owner's own provider workspace store,
+    Under owner cells (D88) it is the owner's one provider session store,
     which only that owner's cell creates: the daemon returns the path and
     never makes it. A store not made yet holds no session, so none resumes.
     """
@@ -129,7 +129,7 @@ def native_store(universe_dir: Path, adapter: str) -> Path:
     from tinyassets.providers.provider_jail import PROVIDER_WORKSPACE_DIR
 
     if role_decoder._bounded_client is not None or broker_selected():
-        return Path(universe_dir) / PROVIDER_WORKSPACE_DIR / "sessions" / adapter
+        return Path(universe_dir) / PROVIDER_WORKSPACE_DIR / "sessions"
     return _nofollow_dirs(Path(universe_dir), (*SESSIONS_DIR.parts, "native", adapter))
 
 

@@ -800,6 +800,10 @@ class OwnerCellProcess:
         self._waiter = None
 
     def revoke(self) -> None:
+        # The identity-checked receipt already proved the cell gone, and its
+        # handle is closed: an adapter's usual teardown after a finished turn.
+        if self.returncode is not None:
+            return
         self.cell.revoke()
 
     async def wait(self, timeout=5):

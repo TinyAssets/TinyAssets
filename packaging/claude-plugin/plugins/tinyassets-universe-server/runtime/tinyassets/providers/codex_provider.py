@@ -1058,12 +1058,11 @@ class CodexProvider(BaseProvider):
                 setenv=(("CODEX_HOME", _JAIL_HOME), ("HOME", "/tmp")),
             )
             # The same launch in its owner's provider-exec cell (D88): the
-            # snapshot copy is CODEX_HOME there and `sessions` persists in the
+            # snapshot copy is CODEX_HOME there and its `sessions` is the
             # owner's own store. A chat turn keeps scratch.
             cell_view = CellView(
                 persistent=not sandbox_chat,
                 home=next(name for name, value in universe_view.setenv if value == _JAIL_HOME),
-                session=None if session_store is None else ("sessions", self.name),
             )
             proc_env["CODEX_HOME"] = _JAIL_HOME
             proc_env["HOME"] = "/tmp"

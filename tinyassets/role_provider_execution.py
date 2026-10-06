@@ -12,7 +12,6 @@ from tinyassets.providers.owned_process import OwnerCellProcess
 from tinyassets.providers.provider_jail import ProviderConfinementError
 
 _ENV_NAME = re.compile(r'[A-Z_][A-Z0-9_]{0,127}')
-_STORE_NAME = re.compile(r'[a-z0-9][a-z0-9._-]{0,63}')
 _RELATIVE = re.compile(r'[A-Za-z0-9._-]{1,128}(/[A-Za-z0-9._-]{1,128}){0,3}')
 
 
@@ -28,8 +27,8 @@ class CellView:
     and the launch's own center path (its cwd or an argv item equal to it) is
     presented there. Otherwise ``/workspace`` is private scratch.
     ``home``: an environment variable set to the private copy of the sealed
-    launch snapshot. ``session``: ``(path under that home, store name)``; the
-    path persists in the owner's session store ``/session/<store name>``.
+    launch snapshot. In a persistent view that home's ``sessions`` directory is
+    the owner's session store, bind-mounted by the cell entry (no link exists).
     ``secret_fds``: ``(environment variable, snapshot file)`` pairs; the file's
     bytes arrive on an inherited pipe named by the variable, never in the
     environment, and that file is left out of the private home copy.
@@ -37,7 +36,6 @@ class CellView:
 
     persistent: bool = False
     home: str | None = None
-    session: tuple[str, str] | None = None
     secret_fds: tuple[tuple[str, str], ...] = ()
 
     def document(self):
@@ -49,12 +47,6 @@ class CellView:
         if (type(self.persistent) is not bool
                 or (self.home is not None and (
                     type(self.home) is not str or not _ENV_NAME.fullmatch(self.home)))
-                or (self.session is not None and (
-                    self.home is None or not self.persistent
-                    or type(self.session) is not tuple or len(self.session) != 2
-                    or not relative(self.session[0])
-                    or type(self.session[1]) is not str
-                    or not _STORE_NAME.fullmatch(self.session[1])))
                 or type(self.secret_fds) is not tuple or len(self.secret_fds) > 4
                 or any(type(item) is not tuple or len(item) != 2
                        or type(item[0]) is not str or not _ENV_NAME.fullmatch(item[0])
@@ -63,8 +55,30 @@ class CellView:
                 or len({name for name, _ in self.secret_fds}) != len(self.secret_fds)):
             raise ProviderConfinementError('provider execution cell view is not admitted')
         return {'persistent': self.persistent, 'home': self.home,
-                'session': None if self.session is None else list(self.session),
                 'secret_fds': [list(item) for item in self.secret_fds]}
+
+
+class _CellStdin:
+    """A subprocess stdin over the cell's duplex stream: ``close`` is EOF.
+
+    Adapters close a child's stdin pipe once the prompt is written. Here stdin
+    and stdout share one transport, so a real close would also end stdout
+    before the reply; only the write side is shut. The stream itself closes
+    when the process is reaped.
+    """
+
+    def __init__(self, writer):
+        self._writer = writer
+
+    def __getattr__(self, name):
+        return getattr(self._writer, name)
+
+    def close(self):
+        if not self._writer.is_closing():
+            try:
+                self._writer.write_eof()
+            except (OSError, RuntimeError):
+                pass  # Already shut or reset: the child has its EOF.
 
 
 class ExecutionProcess(OwnerCellProcess):
@@ -72,6 +86,7 @@ class ExecutionProcess(OwnerCellProcess):
 
     def __init__(self, cell, reader, writer, error_reader, error_writer):
         super().__init__(cell, reader, writer)
+        self.stdin = _CellStdin(writer)
         self.stderr = error_reader
         self._error_writer = error_writer
         self._stdio_finalizer = weakref.finalize(self, self._close_stdio, writer, error_writer)

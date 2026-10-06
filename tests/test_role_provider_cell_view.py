@@ -45,7 +45,7 @@ def test_cell_view_replaces_a_caller_view_and_presents_the_center_as_workspace(
         tmp_path, monkeypatch):
     seen = _capture(monkeypatch)
     center, scope = _scope(tmp_path)
-    view = CellView(persistent=True, home='CODEX_HOME', session=('sessions', 'codex'))
+    view = CellView(persistent=True, home='CODEX_HOME')
     result = asyncio.run(role_provider_execution.spawn(
         ['/installed/cli', '-C', str(center), 'exec'], scope=scope, shell=False,
         view=object(), nested_sandbox=False, cell_view=view,
@@ -54,8 +54,7 @@ def test_cell_view_replaces_a_caller_view_and_presents_the_center_as_workspace(
     argv, kwargs = seen[0]
     assert argv == ['/installed/cli', '-C', '/workspace', 'exec']
     assert kwargs['execution'] and kwargs['cell_view'] == {
-        'persistent': True, 'home': 'CODEX_HOME', 'session': ['sessions', 'codex'],
-        'secret_fds': []}
+        'persistent': True, 'home': 'CODEX_HOME', 'secret_fds': []}
 
 
 @pytest.mark.parametrize('change', ['scratch-cwd', 'foreign-cwd', 'sub-cwd', 'nested',
@@ -82,11 +81,7 @@ def test_cell_view_admits_nothing_beyond_the_owner_workspace(tmp_path, monkeypat
 
 
 @pytest.mark.parametrize('fields', [
-    dict(home='lower'), dict(home='A=B'), dict(session=('sessions', 'codex')),
-    dict(home='H', session=('sessions', 'codex')),
-    dict(persistent=True, home='H', session=('../out', 'codex')),
-    dict(persistent=True, home='H', session=('sessions', 'Codex')),
-    dict(persistent=True, home='H', session=('sessions',)),
+    dict(home='lower'), dict(home='A=B'), dict(home=''),
     dict(secret_fds=(('FD', '../auth.json'),)), dict(secret_fds=(('FD', '/auth.json'),)),
     dict(secret_fds=(('FD', 'a'), ('FD', 'b'))), dict(home='FD', secret_fds=(('FD', 'a'),)),
     dict(secret_fds=tuple((f'F{index}', 'a') for index in range(5))),
@@ -122,45 +117,42 @@ def _cell_document(argv, view=None):
 
 def test_in_cell_validation_rechecks_the_view_and_admits_empty_arguments(monkeypatch):
     monkeypatch.setattr(role_provider_cell, 'shipped_executable', lambda path: True)
-    view = CellView(persistent=True, home='CODEX_HOME',
-                    session=('sessions', 'codex')).document()
+    view = CellView(persistent=True, home='CODEX_HOME').document()
     empty = str()
     argv, env, checked = role_provider_cell.validate(
         _cell_document(['/opt/a-install/cli', '--tools', empty], view), '/data', execution=True)
     assert argv[-1] == empty and checked == view and env['HOME'] == '/tmp'
     argv, env, checked = role_provider_cell.validate(
         _cell_document(['/opt/a-install/cli']), '/data', execution=True)
-    assert checked == {'persistent': False, 'home': None, 'session': None, 'secret_fds': []}
+    assert checked == {'persistent': False, 'home': None, 'secret_fds': []}
     for raw, execution in ((_cell_document([empty], view), True),
                            (_cell_document(['/opt/a-install/cli'], view), False),
                            (_cell_document(['/opt/a-install/cli'], {**view, 'extra': 1}), True),
                            (_cell_document(['/opt/a-install/cli'],
-                                           {**view, 'session': ['..', 'codex']}), True),
+                                           {**view, 'session': ['sessions', 'codex']}), True),
                            (_cell_document(['/opt/a-install/cli'],
-                                           {**view, 'persistent': False}), True)):
+                                           {**view, 'home': 'lower'}), True),
+                           (_cell_document(['/opt/a-install/cli'],
+                                           {**view, 'persistent': 1}), True)):
         with pytest.raises(ValueError):
             role_provider_cell.validate(raw, '/data', execution=execution)
 
 
-@pytest.mark.skipif(os.name != 'posix', reason='in-cell pipes and links are POSIX; '
+@pytest.mark.skipif(os.name != 'posix', reason='in-cell pipes are POSIX; '
                     'runs-in=the Linux oracle')
-def test_prepare_view_links_sessions_and_pipes_secrets_without_copies(tmp_path):
-    snapshot, private, sessions = tmp_path / 'snapshot', tmp_path / 'private', tmp_path / 's'
+def test_home_copy_keeps_the_sessions_mount_and_pipes_secrets_without_copies(tmp_path):
+    snapshot, private = tmp_path / 'snapshot', tmp_path / 'private'
     snapshot.mkdir()
-    sessions.mkdir()
+    (private / 'sessions').mkdir(parents=True)  # the entry's bind mount point
     (snapshot / 'auth.json').write_text('sk-ant-oat01-owner\n')
     (snapshot / 'config.toml').write_text('x=1')
     role_provider_cell.copy_snapshot(str(snapshot), str(private), exclude={'auth.json'})
-    assert sorted(path.name for path in private.iterdir()) == ['config.toml']
+    assert sorted(path.name for path in private.iterdir()) == ['config.toml', 'sessions']
     env = {}
     role_provider_cell.prepare_view(
-        {'persistent': True, 'home': 'CODEX_HOME', 'session': ['sessions', 'codex'],
-         'secret_fds': [['TOKEN_FD', 'auth.json']]},
-        str(private), env, snapshot=str(snapshot), session_root=str(sessions))
+        {'persistent': True, 'home': 'CODEX_HOME', 'secret_fds': [['TOKEN_FD', 'auth.json']]},
+        str(private), env, snapshot=str(snapshot))
     assert env['CODEX_HOME'] == str(private)
-    assert os.readlink(private / 'sessions') == str(sessions / 'codex')
-    (private / 'sessions' / 'rollout.jsonl').write_text('kept')
-    assert (sessions / 'codex' / 'rollout.jsonl').read_text() == 'kept'
     descriptor = int(env['TOKEN_FD'])
     try:
         assert os.read(descriptor, 4096) == b'sk-ant-oat01-owner\n'
@@ -169,11 +161,16 @@ def test_prepare_view_links_sessions_and_pipes_secrets_without_copies(tmp_path):
         os.close(descriptor)
     assert all(b'sk-ant' not in path.read_bytes() for path in private.rglob('*')
                if path.is_file())
-    with pytest.raises(FileExistsError):  # the snapshot never names the store
-        role_provider_cell.prepare_view(
-            {'persistent': True, 'home': 'H', 'session': ['sessions', 'codex'],
-             'secret_fds': []}, str(private), {}, snapshot=str(snapshot),
-            session_root=str(sessions))
+    # The sealed snapshot never decides what lands in the session store, and
+    # only the home itself may pre-exist.
+    (snapshot / 'sessions').mkdir()
+    mounted = tmp_path / 'mounted'
+    (mounted / 'sessions').mkdir(parents=True)
+    with pytest.raises(FileExistsError):
+        role_provider_cell.copy_snapshot(str(snapshot), str(mounted))
+    (tmp_path / 'not-a-home').write_text('x')
+    with pytest.raises(FileExistsError):
+        role_provider_cell.copy_snapshot(str(snapshot), str(tmp_path / 'not-a-home'))
 
 
 def test_claude_states_its_cell_view_and_moves_a_raw_token_to_a_pipe(monkeypatch, tmp_path):
@@ -233,7 +230,7 @@ def test_selected_session_store_is_the_owner_workspace_and_is_never_daemon_made(
 
     monkeypatch.setattr(role_decoder, '_bounded_client', object())
     store = agent_sessions.native_store(tmp_path / 'alice', 'codex')
-    assert store == tmp_path / 'alice/.provider-workspace/sessions/codex'
+    assert store == tmp_path / 'alice/.provider-workspace/sessions'
     assert not (tmp_path / 'alice').exists()
     assert not agent_sessions.native_file_exists(store, 'thread.jsonl')
 
@@ -251,3 +248,47 @@ def test_client_sends_a_workspace_descriptor_only_with_its_flag():
             client.start_cell(kind='provider-exec', principal='alice', command_center='alice',
                               identity=identity, extra=extra, directory_fd=5,
                               workspace_fd=workspace_fd)
+
+
+def test_teardown_after_a_reaped_cell_is_a_no_op():
+    from tinyassets.providers.owned_process import OwnerCellProcess, kill_owned_tree
+
+    class Cell:
+        revoked = 0
+
+        def revoke(self):
+            self.revoked += 1
+
+    class Writer:
+        transport = None
+
+    cell = Cell()
+    process = OwnerCellProcess(cell, None, Writer())
+    kill_owned_tree(process)
+    assert cell.revoked == 1
+    process.returncode = 0
+    kill_owned_tree(process)
+    assert cell.revoked == 1
+
+
+def test_closing_execution_stdin_half_closes_and_keeps_stdout():
+    class Writer:
+        transport = None
+        closed = eof = False
+
+        def is_closing(self):
+            return self.closed
+
+        def write_eof(self):
+            self.eof = True
+
+        def close(self):
+            self.closed = True
+
+    writer = Writer()
+    process = role_provider_execution.ExecutionProcess(
+        SimpleNamespace(), SimpleNamespace(), writer, SimpleNamespace(), Writer())
+    process.stdin.close()  # what both adapters do after writing the prompt
+    assert writer.eof and not writer.closed
+    process.stdin.close()
+    assert not writer.closed
