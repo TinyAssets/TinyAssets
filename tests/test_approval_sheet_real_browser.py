@@ -93,8 +93,18 @@ def test_foreground_sheet_scopes_inbox_history_and_account_fence(app_url, browse
     page.locator("#needs-you-open").click()
     page.get_by_role("button", name="Answered history", exact=True).click()
     assert "answered" in page.locator("#request-history").inner_text()
-    assert page.locator("#request-history button, #request-history input").count() == 0
-    page.locator("#request-sheet-close").click()
+    history = page.locator("#request-history")
+    assert history.locator("button").all_text_contents() == ["Ask again"]
+    assert history.locator("input,textarea,select,a,[role=button]").count() == 0
+    page.evaluate("() => { window.relays=[];sendTurn=(...args)=>relays.push(args); }")
+    history.get_by_role("button", name="Ask again", exact=True).click()
+    assert page.evaluate("calls.length") == 3  # No answer, grant, or approval replay.
+    assert page.evaluate("rows") == []
+    assert page.evaluate("receipts[0].status") == "answered"
+    assert page.evaluate("relays.length") == 1
+    assert "request_id=bound-1" in page.evaluate("relays[0][0]")
+    assert page.evaluate("relays[0][2].agentId") == "main"
+    assert not sheet.is_visible()
     page.evaluate("""() => {
       readInflight=()=>null;
       rows=[{...row,request_id:'away',draft:'Private away draft'}];renderRail(rows);
