@@ -681,6 +681,11 @@ def _initiating_agent(universe_dir: Path) -> str | None:
     from tinyassets.addressed_agents import agent_of_session
     from tinyassets.auth.middleware import current_identity_or_none
     from tinyassets.engine_steering import STEERED_PREFIX, _session_key
+    from tinyassets.request_answers import launch_context
+
+    launch = launch_context(universe_dir)
+    if launch:
+        return launch["agent"]
 
     live = turn_interrupt.current()
     if live is not None:

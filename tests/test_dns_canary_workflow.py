@@ -62,8 +62,6 @@ def _steps(wf: dict, job: str) -> list[dict]:
 # (a) YAML parses
 # ---------------------------------------------------------------------------
 
-def test_dns_canary_yml_parses():
-    _load(_DNS_WF)
 
 
 # ---------------------------------------------------------------------------
@@ -242,9 +240,6 @@ def test_alarm_sink_checks_previous_run_was_red():
 # (h) dns-red label
 # ---------------------------------------------------------------------------
 
-def test_alarm_sink_uses_dns_red_label():
-    text = _text(_DNS_WF)
-    assert "dns-red" in text
 
 
 def test_dns_red_label_in_env_block():

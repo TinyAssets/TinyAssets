@@ -57,6 +57,11 @@ CLASSIFICATION: dict[str, tuple[str, str]] = {
     "tinyassets/api/runs.py::start_run_owner_watcher._watch": (
         CONTROL_PLANE, "dead-owner run recovery and terminal-event redelivery",
     ),
+    "tinyassets/turn_interrupt.py::LiveTurn.cancel_on_stop.watch": (
+        CALL_SCOPED,
+        "lives only while one stop-aware call is awaited; polls the turn's stop flag "
+        "so a Stop or retirement cancels a native provider call; ends with the call",
+    ),
     "tinyassets/engine_mcp_http.py::start_engine_mcp_http_servers._supervise": (
         CONTROL_PLANE, "per-command-center engine MCP server supervision",
     ),

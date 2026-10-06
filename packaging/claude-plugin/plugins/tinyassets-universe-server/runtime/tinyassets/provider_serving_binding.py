@@ -575,6 +575,8 @@ def bind_serving_provider(
             raise PermissionError("only the binding creator may assign its provider")
         if int(agent["revision"]) != expected_revision:
             raise ValueError("agent binding revision is stale")
+        if agent.get("retired"):
+            raise PermissionError("agent retired; restore it before assigning a provider")
         current_assignment = load_provider_assignment(base, universe_id=uid)
         if expected_assignment_digest is not None and expected_assignment_digest != (
             current_assignment.assignment_digest if current_assignment is not None else ""
@@ -1052,6 +1054,8 @@ def set_serving(
         current = get_binding(base_path, universe_id=uid, binding_id=binding_id)
         if current is None:
             raise LookupError("agent binding was not found")
+        if current.get("retired"):
+            raise PermissionError("agent retired; restore it before changing serving state")
         if (expected_binding_updated_at is not None
                 and current["updated_at"] != expected_binding_updated_at):
             raise PermissionError("agent serving intent changed")

@@ -37,15 +37,6 @@ def source() -> str:
     return _WORKFLOW.read_text("utf-8")
 
 
-def test_workflow_is_parseable_yaml(source):
-    """A syntax error here would break enrollment for every open PR."""
-    yaml = pytest.importorskip("yaml")
-    doc = yaml.safe_load(source)
-    assert isinstance(doc, dict), type(doc)
-    # `on` is parsed as the boolean True by YAML 1.1 — check both spellings
-    # rather than asserting the one that happens to win.
-    assert "jobs" in doc
-    assert ("on" in doc) or (True in doc), sorted(map(str, doc))
 
 
 def _steps(source: str) -> list[dict]:

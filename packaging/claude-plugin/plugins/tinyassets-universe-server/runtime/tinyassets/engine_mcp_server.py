@@ -1431,6 +1431,21 @@ def _sanitize_served_branch_spec(spec: dict) -> None:
 # by tests/test_served_branch_create_errors.py and must land. Editing an example
 # without running that file is how a worked example becomes a wrong one.
 _WRITE_GRAPH_BRANCHES_CHAPTER = """\
+    **Recurring work:** ``target="automation"`` supports ``operation="create"``,
+    ``operation="pause"``, ``operation="resume"`` and ``operation="delete"``.
+    Create takes ``payload_json`` with name, branch_def_id, optional inputs, and
+    exactly one of interval_seconds, not_before/delay_seconds (one wake) or
+    cron_expr. A cron_expr runs in the owner's timezone and is never stated
+    without it (``branches``).
+    Runs never overlap per branch:
+    a short interval_seconds reruns as each run ends; runs count to usage
+    limits. overlap ``skip``/``cancel_previous`` drops a due cadence run (a
+    one-shot wake waits) or stops the running one. Or event_type ``run_completed`` (event_filter
+    ``{"branch_def_id"}``), ``pending_request_answered`` or ``owner_message``
+    wakes it with ``inputs.event``.
+    None cancels an already-running job. Read back the trigger and its last run
+    before claiming work has stopped.
+
     **The smallest branch that builds.** ``target="branch"``,
     ``operation="create"``, and ``payload_json`` is ONE JSON object. I pass the
     object itself as the argument, not a string holding it: then no newline or
@@ -1531,9 +1546,44 @@ _WRITE_GRAPH_BRANCHES_CHAPTER = """\
       Use explicit null to clear either choice; saved versions keep their choices.
       These settings select among existing permissions and do not grant access.
 
+
+    Requests and notifications raised from an agent or its workflow remember the
+    asking agent and run. Owner replies return to that agent through the shared
+    request path, independent of which chat the owner has selected. Do not relay
+    an answer by hand. Removed or retired askers fall back to main with a note.
 """
 
 _WRITE_GRAPH_CONNECTIONS_CHAPTER = """\
+    **Inbound webhooks:** ``target="webhook"`` supports ``operation="create"``
+    and ``operation="revoke"``. Create takes ``branch_id`` (one of YOUR OWN
+    branches) and returns a URL any service can POST to (GitHub, Stripe, a form,
+    another workflow); each POST runs that branch in your command center on your own
+    provider, with the body under ``webhook.payload`` and the raw bytes under
+    ``webhook.raw_base64``. The URL is shown ONCE: give it to your user right
+    away. ``read_graph target="webhooks"`` lists active hooks by token_prefix;
+    revoke takes ``payload_json`` ``{"token_prefix": "..."}``. Triggered runs
+    appear in ``read_graph target="runs"`` with run_name ``webhook``.
+
+            connection/configure_provider_capability accepts model_discovery
+            metadata only, on an already owned registered compute definition.
+            connection/configure sets constant headers on a held connection:
+            {"destination", "constant_headers": {name: value}}. It cannot add or
+            change a model use: models and billing need the owner's answer to a
+            connect ask with "uses": {"model": {"wire": "chat_messages"|
+            "content_blocks", "models": [{"id", "tools", "context"}],
+            "billing": "free"|"flat"}}.
+            Metadata never adds endpoints or grants inference/spending. Read your
+            existing connections/compute before asking for new credentials.
+            To connect ANY model or platform, ask with pending_request action
+            type "connect": the connect_http fields plus "uses" and
+            "constant_headers". An LLM is just a connection with uses.model.
+            When the provider offers OAuth (found ONLY by standard discovery on
+            the connection's own host; say what the use needs with "oauth":
+            {"scopes": [...], optional public "client_id"}; endpoints are never
+            supplied), signing in is the ask's primary action and key fields are
+            optional; the reply says primary "sign_in", or oauth_unavailable
+            with the reason.
+
     **Outbound channel node — the channel-agnostic way to add Slack, a webhook, or
     ANY HTTPS API with no service-specific code.** A node declaring
     ``effects: ["authenticated_external_call"]`` fires ONE outbound HTTP call after
@@ -2460,6 +2510,15 @@ _WRITE_GRAPH_DELIVERING_CHAPTER = """\
 """
 
 _WRITE_GRAPH_SYSTEMS_CHAPTER = """\
+    **Retire or restore one of your agents.** Read `agent_bindings` for active
+    bindings, or `agent_binding` with its ID for the current revision (including
+    retired bindings). Call write_graph target="agent_binding" operation="retire"
+    or "restore", expected_revision=<revision>, payload_json={"agent_binding_id":"<id>"}.
+    The same call works through `ta write_graph --json '<arguments>'`.
+    Retirement hides the agent from the switcher and stops its work; history and
+    files remain. Restore brings back the same agent, without replaying stopped
+    work. Keep the returned ID and revision for undo. Main cannot be retired.
+
     **Personal memory and forgetting.**
     The owner's Account screen exposes soul.md, identity.md and MEMORY.md.
     MEMORY.md is editable memory, not an instruction or authority source. When
@@ -2613,6 +2672,7 @@ _WRITE_GRAPH_SYSTEMS_CHAPTER = """\
       person's own compute, and never reaches the author's command center.
 
 """
+
 
 #: Chapter name -> text, in the order the resident index names them.
 _WRITE_GRAPH_CHAPTERS: dict[str, str] = {
@@ -3155,15 +3215,8 @@ def write_graph(
 
     Read ``delivering`` for binary custody and linked delivery.
 
-    **Inbound webhooks:** ``target="webhook"`` supports ``operation="create"``
-    and ``operation="revoke"``. Create takes ``branch_id`` (one of YOUR OWN
-    branches) and returns a URL any service can POST to (GitHub, Stripe, a form,
-    another workflow); each POST runs that branch in your command center on your own
-    provider, with the body under ``webhook.payload`` and the raw bytes under
-    ``webhook.raw_base64``. The URL is shown ONCE: give it to your user right
-    away. ``read_graph target="webhooks"`` lists active hooks by token_prefix;
-    revoke takes ``payload_json`` ``{"token_prefix": "..."}``. Triggered runs
-    appear in ``read_graph target="runs"`` with run_name ``webhook``.
+    **Inbound webhooks:** ``target="webhook"``, ``operation="create"`` or
+    ``operation="revoke"``. Read ``connections`` for payloads and URL handling.
 
     **Background work (activities):** ``target="activity"`` with
     ``operation="start"`` and ``payload_json`` ``{"title": "...", "brief": "..."}``
@@ -3172,20 +3225,9 @@ def write_graph(
     ``"resume"`` take ``{"activity_id": "..."}``; stop keeps the result so far.
     Read them with ``read_graph target="activities"``.
 
-    **Recurring work:** ``target="automation"`` supports ``operation="create"``,
-    ``operation="pause"``, ``operation="resume"`` and ``operation="delete"``.
-    Create takes ``payload_json`` with name, branch_def_id, optional inputs, and
-    exactly one of interval_seconds, not_before/delay_seconds (one wake) or
-    cron_expr. A cron_expr runs in the owner's timezone and is never stated
-    without it (``branches``).
-    Runs never overlap per branch:
-    a short interval_seconds reruns as each run ends; runs count to usage
-    limits. overlap ``skip``/``cancel_previous`` drops a due cadence run (a
-    one-shot wake waits) or stops the running one. Or event_type ``run_completed`` (event_filter
-    ``{"branch_def_id"}``), ``pending_request_answered`` or ``owner_message``
-    wakes it with ``inputs.event``.
-    None cancels an already-running job. Read back the trigger and its last run
-    before claiming work has stopped.
+    **Recurring work:** ``target="automation"``, ``operation="create"``,
+    ``operation="pause"``, ``operation="resume"`` or ``operation="delete"``.
+    Read ``branches`` for payloads, timezones, overlap and event triggers.
 
     - ``operation="create"`` — create a new Branch graph from a complete Branch
       spec in ``payload_json`` (stored PRIVATE to your command center). A prompt node
@@ -3279,25 +3321,8 @@ def write_graph(
             fallback order from model_options, plus optional per-model
             ``efforts`` (provider_ref/model_id/level) using only the levels that
             model advertised in model_options. This grants no model access.
-            connection/configure_provider_capability accepts model_discovery
-            metadata only, on an already owned registered compute definition.
-            connection/configure sets constant headers on a held connection:
-            {"destination", "constant_headers": {name: value}}. It cannot add or
-            change a model use: models and billing need the owner's answer to a
-            connect ask with "uses": {"model": {"wire": "chat_messages"|
-            "content_blocks", "models": [{"id", "tools", "context"}],
-            "billing": "free"|"flat"}}.
-            Metadata never adds endpoints or grants inference/spending. Read your
-            existing connections/compute before asking for new credentials.
-            To connect ANY model or platform, ask with pending_request action
-            type "connect": the connect_http fields plus "uses" and
-            "constant_headers". An LLM is just a connection with uses.model.
-            When the provider offers OAuth (found ONLY by standard discovery on
-            the connection's own host; say what the use needs with "oauth":
-            {"scopes": [...], optional public "client_id"}; endpoints are never
-            supplied), signing in is the ask's primary action and key fields are
-            optional; the reply says primary "sign_in", or oauth_unavailable
-            with the reason.
+            Read the connections chapter before configuring capabilities, constant
+            headers, model uses or an OAuth connect ask; it grants no authority.
         operation: branch create/patch/delete; automation create/pause/resume/delete;
             webhook create/revoke;
             pending_request ask, or withdraw (payload_json {"request_id",
@@ -3511,6 +3536,28 @@ def write_graph(
 
             return json.dumps(configure_provider_capability(
                 universe_id=_GRAPH_ID, payload=document,
+            ))
+        finally:
+            _current_identity.reset(token)
+    if t == "agent_binding":
+        from tinyassets.api.custom_agents import custom_agents
+        from tinyassets.auth.middleware import _current_identity
+
+        if operation not in {"retire", "restore"}:
+            return json.dumps({"error": "unknown_agent_operation",
+                               "allowed_operations": ["retire", "restore"]})
+        try:
+            document = json.loads(payload_json or "{}")
+        except (ValueError, TypeError):
+            return json.dumps({"error": "payload_json must be a JSON object"})
+        if (not isinstance(document, dict) or set(document) != {"agent_binding_id"}
+                or not isinstance(document["agent_binding_id"], str)):
+            return json.dumps({"error": "payload requires exactly agent_binding_id"})
+        token = _bind_founder_identity(("write",))
+        try:
+            return json.dumps(custom_agents(
+                action=operation + "_binding", universe_id=_GRAPH_ID,
+                binding_id=document["agent_binding_id"], expected_revision=expected_revision,
             ))
         finally:
             _current_identity.reset(token)
@@ -4776,6 +4823,16 @@ async def edit_file(path: str, old_text: str, new_text: str) -> str:
         universe_tools.edit_file, agent_id=_acting_agent(), path=path,
         old_text=old_text, new_text=new_text,
     )
+
+
+@mcp.resource("ta-bridge://request/{payload}")
+async def remote_ta_request(payload: str) -> str:
+    """Private turn-bound ta transport; never part of the agent tool inventory."""
+    import sys
+
+    from tinyassets.agent_loop.box_ta import engine_resource
+
+    return await engine_resource(sys.modules[__name__], payload)
 
 
 @mcp.tool(name="bash")

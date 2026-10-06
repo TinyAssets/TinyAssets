@@ -523,6 +523,20 @@ def _ensure_schema(base_path: str | Path) -> Path:
             with conn:
                 conn.executescript(_SCHEMA)
                 _migrate_serving_status(conn)
+                if "retired" not in {row[1] for row in conn.execute(
+                    "PRAGMA table_info(agent_bindings)"
+                )}:
+                    conn.execute(
+                        "ALTER TABLE agent_bindings ADD COLUMN retired INTEGER NOT NULL "
+                        "DEFAULT 0 CHECK (retired IN (0, 1))"
+                    )
+                if "retirement_revision" not in {row[1] for row in conn.execute(
+                    "PRAGMA table_info(agent_bindings)"
+                )}:
+                    conn.execute(
+                        "ALTER TABLE agent_bindings ADD COLUMN retirement_revision "
+                        "INTEGER NOT NULL DEFAULT 0"
+                    )
                 from tinyassets.commons_bundles import backfill, ensure_schema
 
                 conn.execute("BEGIN IMMEDIATE")
@@ -1071,6 +1085,8 @@ def _binding_from_row(row: sqlite3.Row) -> dict[str, Any]:
         "configuration": json.loads(str(row["configuration_json"])),
         "revision": int(row["revision"]),
         "status": str(row["status"]),
+        "retired": bool(row["retired"]),
+        "retirement_revision": int(row["retirement_revision"]),
         "created_by": str(row["created_by"]),
         "updated_by": str(row["updated_by"]),
         "created_at": float(row["created_at"]),
@@ -1250,6 +1266,7 @@ def list_bindings(
     *,
     universe_id: str,
     limit: int | None = 30,
+    include_retired: bool = True,
 ) -> list[dict[str, Any]]:
     """The owner's bindings, newest first, at most ``limit`` of them.
 
@@ -1270,13 +1287,76 @@ def list_bindings(
             """
             SELECT *
             FROM agent_bindings
-            WHERE universe_id = ?
+            WHERE universe_id = ? AND (? OR retired = 0)
             ORDER BY updated_at DESC, agent_binding_id DESC
             LIMIT ?
             """,
-            (uid, page),
+            (uid, include_retired, page),
         ).fetchall()
         return [_binding_from_row(row) for row in rows]
+
+
+def set_binding_retired(
+    base_path: str | Path, *, universe_id: str, binding_id: str,
+    expected_revision: int, updated_by: str, retired: bool,
+) -> dict[str, Any]:
+    """Reversibly retire an owner's agent; keep its identity and all content."""
+    from tinyassets.addressed_agents import is_conversable
+    from tinyassets.principals import named_principal
+    from tinyassets.provider_assignment import provider_assignment_admission
+
+    actor = named_principal(updated_by)
+    uid, bid = universe_id.strip(), binding_id.strip()
+    if not actor or not uid or not bid:
+        raise AgentValidationError("owner, command center and binding are required")
+    if bid == "main":
+        raise AgentValidationError("the main agent cannot be retired")
+    if (isinstance(expected_revision, bool) or not isinstance(expected_revision, int)
+            or expected_revision < 1):
+        raise AgentValidationError("expected_revision must be a positive integer")
+    with provider_assignment_admission().exclusive(Path(base_path) / uid):
+        with _agent_connect(base_path) as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = _read_binding_row(conn, universe_id=uid, binding_id=bid)
+            if row is None or row["created_by"] != actor:
+                raise AgentNotFoundError("agent binding was not found")
+            binding = _binding_from_row(row)
+            definition = _read_definition_row(conn, binding["agent_definition_id"])
+            from tinyassets.onboarding.serving import (
+                PLATFORM_DEFINITION_AUTHOR,
+                RETIRED_PLATFORM_DEFINITION_AUTHOR,
+            )
+
+            if (definition["author_id"] in {
+                PLATFORM_DEFINITION_AUTHOR, RETIRED_PLATFORM_DEFINITION_AUTHOR,
+            } or "provider_ref" in binding["configuration"]):
+                raise AgentValidationError("the main agent cannot be retired")
+            if not is_conversable({**binding, "retired": False}, owner=actor, universe_id=uid):
+                raise AgentValidationError(
+                    "the main agent or a non-agent binding cannot be retired"
+                )
+            cursor = conn.execute(
+                "UPDATE agent_bindings SET retired=?, "
+                "retirement_revision=CASE WHEN ? THEN revision+1 ELSE retirement_revision END, "
+                "revision=revision+1, updated_by=?, "
+                "updated_at=? WHERE universe_id=? AND agent_binding_id=? "
+                "AND created_by=? AND revision=?",
+                (int(retired), int(retired), actor, time.time(), uid, bid, actor,
+                 expected_revision),
+            )
+            if cursor.rowcount != 1:
+                raise AgentConflictError("binding revision conflict; read the binding again")
+            result = _binding_from_row(_read_binding_row(conn, universe_id=uid, binding_id=bid))
+        if retired:
+            from tinyassets.turn_interrupt import request_interrupt
+
+            request_interrupt(actor, uid, agent_id=bid, reason="agent retired")
+            from tinyassets.activity_runner import stop
+            from tinyassets.agent_activities import fence_agent
+
+            for run_id in fence_agent(Path(base_path) / uid, owner=actor, agent_id=bid):
+                stop(Path(base_path), run_id)
+    return result
 
 
 def update_binding(
@@ -1322,6 +1402,10 @@ def update_binding(
             )
             if current is None:
                 raise AgentNotFoundError(f"agent binding {bid!r} was not found")
+            if current["retired"]:
+                raise AgentValidationError(
+                    "agent retired; restore it before updating configuration"
+                )
             selected_definition = requested_definition or str(
                 current["agent_definition_id"]
             )
@@ -1392,6 +1476,8 @@ def set_binding_provider_ref_in_transaction(
         raise AgentNotFoundError(f"agent binding {binding_id!r} was not found")
     if str(current["created_by"]) != owner_user_id.strip():
         raise PermissionError("only the binding creator may assign its provider")
+    if current["retired"]:
+        raise PermissionError("agent retired; restore it before assigning a provider")
     if int(current["revision"]) != expected_revision:
         raise AgentConflictError(
             f"binding revision conflict: expected {expected_revision}, "
@@ -1449,6 +1535,8 @@ def set_binding_serving_in_transaction(
         raise AgentNotFoundError(f"agent binding {binding_id!r} was not found")
     if str(current["created_by"]) != owner_user_id.strip():
         raise PermissionError("only the binding creator may change serving state")
+    if current["retired"]:
+        raise PermissionError("agent retired; restore it before changing serving state")
     if int(current["revision"]) != expected_revision:
         raise AgentConflictError(
             f"binding revision conflict: expected {expected_revision}, "

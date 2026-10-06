@@ -501,6 +501,19 @@ def test_sign_in_round_trip_through_the_real_callback(provider, app, tmp_path):
     assert done.status_code == 200, done.text
     body = done.json()
     assert body["status"] == "answered" and body["signed_in"] is True
+    assert body["server_continuation"] is True
+    from contextlib import closing
+
+    from tinyassets.storage.pending_requests import _db
+
+    with closing(_db(app / UID)) as conn:
+        delivery, = conn.execute(
+            "SELECT origin_json,outcome_json FROM request_answer_deliveries WHERE request_id=?",
+            (asked["request_id"],),
+        ).fetchall()
+    assert json.loads(delivery[0])["owner"] == OWNER
+    assert json.loads(delivery[0])["agent"] == asked["agent"]
+    assert json.loads(delivery[1])["status"] == "answered"
     for token in list(provider.access) + list(provider.refresh_live):
         assert token not in done.text  # no token ever crosses back to the app
 
@@ -824,7 +837,7 @@ console.log(JSON.stringify({first:first.textContent,folded:b.box.children[1].tag
     assert out["onlyAcceptHidden"] is True and out["keyAcceptHidden"] is False
 
 
-@pytest.mark.parametrize("origin,source,turn_count", [("platform", True, 0), ("agent", False, 1)])
+@pytest.mark.parametrize("origin,source,turn_count", [("platform", True, 0), ("agent", False, 0)])
 def test_rail_sign_in_uses_server_provenance_for_relay(origin, source, turn_count):
     out = _run_rail("""
 const req={request_id:'r1',title:'Connect source',origin:__ORIGIN__,action:{type:'connect',
@@ -835,11 +848,12 @@ const saved=JSON.parse(storage.get('ta_connect_oauth'));
 window.location.pathname='/app/model-callback/connect';
 window.location.search='?code=abc&state='+saved.flow;
 ConnectOAuth.pending=ConnectOAuth.takeCallback();
-ConnectOAuth.post=async()=>({status:'answered',signed_in:true});
+ConnectOAuth.post=async()=>({status:'answered',signed_in:true,server_continuation:true});
 await ConnectOAuth.finish();
 console.log(JSON.stringify({saved,turns}));
 """.replace("__ORIGIN__", json.dumps(origin)))
     assert out["saved"]["source"] is source
+    # Both kinds use server-bound delivery; the selected chat is never a relay.
     assert len(out["turns"]) == turn_count
 
 

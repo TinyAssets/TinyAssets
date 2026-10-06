@@ -102,7 +102,10 @@ def test_budgets_bound_skips_and_summed_seconds(monkeypatch):
     monkeypatch.setattr(gate, "MAX_TEST_SECONDS", 100)
     assert gate.budget_failures({"a", "b"}, 100.0) == []
     over = gate.budget_failures({"a", "b", "c"}, 100.5)
-    assert len(over) == 2 and "SKIPPED" in over[0] and "100s" in over[1]
+    assert len(over) == 1 and "SKIPPED" in over[0]
+    assert gate.budget_failures(set(), 100.5) == []
+    assert "100s" in gate.cost_warnings(100.5)[0]
+    assert gate.cost_warnings(100.0) == []
 
 
 def test_parse_quarantine_reports_malformed_lines(tmp_path):
@@ -859,3 +862,14 @@ def test_pruning_an_all_selection_is_a_no_op(tmp_path, monkeypatch):
     ])
     assert gate.main() == 0
     assert path.read_text(encoding="utf-8").strip() == "ALL"
+
+
+def test_slow_clean_union_reports_cost_without_blocking(shards, monkeypatch, capsys):
+    monkeypatch.setattr(gate, "MAX_TEST_SECONDS", 1)
+    for i in (1, 2, 3):
+        _shard(shards, i, 3, _cases(f"test_s{i}", 4).replace(
+            '<testcase ', '<testcase time="10" '))
+    assert _aggregate(shards) == 0
+    output = capsys.readouterr().out
+    assert "ADVISORY" in output and "120" in output
+    assert "does not block merging" in output

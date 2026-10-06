@@ -46,6 +46,7 @@ import contextvars
 import threading
 import uuid
 from contextlib import contextmanager
+from pathlib import Path
 
 
 class TurnInterrupted(Exception):
@@ -70,15 +71,43 @@ class LiveTurn:
 
         self.approval_task = continuation_task.get()
         self._requested = threading.Event()
+        self.reason = "the owner stopped this turn"
+        self.base_path = None
+        self.retirement_revision = 0
         self._lock = threading.Lock()
         self._wakers: set[tuple[asyncio.AbstractEventLoop, asyncio.Event]] = set()
 
     def requested(self) -> bool:
+        if not self._requested.is_set() and self.base_path is not None and self.agent_id != "main":
+            from tinyassets.custom_agents import get_binding
+
+            binding = get_binding(self.base_path, universe_id=self.universe_id,
+                                  binding_id=self.agent_id)
+            if (binding is None or binding.get("retired")
+                    or binding["created_by"] != self.actor_id
+                    or binding["retirement_revision"] != self.retirement_revision):
+                self.request("agent retired")
+        if not self._requested.is_set() and self.approval_task and len(self.approval_task) == 3:
+            from tinyassets import bound_requests
+            from tinyassets.approval_scopes import task_is_current
+
+            task_home, task_id, generation = self.approval_task
+            home = Path(task_home)
+            # This immutable wake fence survives admission, worker threads, and
+            # every later provider/tool boundary, including retire then restore.
+            if (self.base_path is None
+                    or home != (Path(self.base_path) / self.universe_id).resolve()):
+                self.request("continuation task changed")
+            else:
+                with contextlib.closing(bound_requests.connect(home)) as conn:
+                    if not task_is_current(conn, task_id, self.actor_id, self.agent_id, generation):
+                        self.request("continuation task changed")
         return self._requested.is_set()
 
-    def request(self) -> None:
+    def request(self, reason: str = "the owner stopped this turn") -> None:
         """Ask the turn to stop. Thread-safe; wakes an in-flight native round."""
         with self._lock:
+            self.reason = reason
             self._requested.set()
             wakers = list(self._wakers)
         for loop, event in wakers:
@@ -88,7 +117,7 @@ class LiveTurn:
     def check(self) -> None:
         """Raise :class:`TurnInterrupted` at a boundary if a stop was asked for."""
         if self.requested():
-            raise TurnInterrupted("the owner stopped this turn")
+            raise TurnInterrupted(self.reason)
 
     async def run(self, awaitable):
         """Await ``awaitable``, cancelling it the moment a stop is asked for.
@@ -102,13 +131,13 @@ class LiveTurn:
         try:
             return await self.cancel_on_stop(awaitable)
         except asyncio.CancelledError:
-            if not self.requested():
+            if not self._requested.is_set():
                 raise
         except BaseException as exc:
-            if not self.requested():
+            if not self._requested.is_set():
                 raise
-            raise TurnInterrupted("the owner stopped this turn") from exc
-        raise TurnInterrupted("the owner stopped this turn")
+            raise TurnInterrupted(self.reason) from exc
+        raise TurnInterrupted(self.reason)
 
     async def cancel_on_stop(self, awaitable):
         """:meth:`run` for code BELOW the turn's owner: a stop surfaces as plain
@@ -121,8 +150,14 @@ class LiveTurn:
         source. The turn's owner converts it to :class:`TurnInterrupted`.
         """
         task = asyncio.ensure_future(awaitable)
-        if self.requested():
+        try:
+            if self.requested():
+                task.cancel()
+        except BaseException:
             task.cancel()
+            with contextlib.suppress(BaseException):
+                await task
+            raise
         loop = asyncio.get_running_loop()
         waker = asyncio.Event()
         entry = (loop, waker)
@@ -130,9 +165,19 @@ class LiveTurn:
             self._wakers.add(entry)
             if self._requested.is_set():
                 waker.set()
-        watcher = asyncio.ensure_future(waker.wait())
+        async def watch():
+            while not self.requested():
+                try:
+                    await asyncio.wait_for(waker.wait(), timeout=0.25)
+                    return
+                except TimeoutError:
+                    pass
+
+        watcher = asyncio.ensure_future(watch())
         try:
             await asyncio.wait({task, watcher}, return_when=asyncio.FIRST_COMPLETED)
+            if watcher.done():
+                await watcher  # A failed lifecycle read must surface, never fabricate a stop.
             if not task.done():
                 task.cancel()
             return await task
@@ -165,10 +210,13 @@ def _key(actor_id: str, universe_id: str) -> tuple[str, str]:
 
 
 @contextmanager
-def interactive_turn(actor_id: str, universe_id: str, *, agent_id: str = "main"):
+def interactive_turn(actor_id: str, universe_id: str, *, agent_id: str = "main", base_path=None,
+                     retirement_revision: int = 0):
     """Register the served turn running in this context until it returns."""
     key = _key(actor_id, universe_id)
     live = LiveTurn(*key, agent_id=agent_id)
+    live.base_path = base_path
+    live.retirement_revision = retirement_revision
     with _LOCK:
         _LIVE.setdefault(key, set()).add(live)
     token = _CURRENT.set(live)
@@ -209,6 +257,7 @@ def bound(live: LiveTurn | None):
 
 
 def request_interrupt(actor_id: str, universe_id: str, *, agent_id: str | None = None,
+                      reason: str = "the owner stopped this turn",
                       base_path=None) -> int:
     """Stop the live turns THIS caller is running in THIS universe: the
     addressed agent's when ``agent_id`` is given, every agent's (stop-all)
@@ -222,7 +271,7 @@ def request_interrupt(actor_id: str, universe_id: str, *, agent_id: str | None =
         targets = [live for live in _LIVE.get(key, ())
                    if agent_id is None or live.agent_id == agent_id]
     for live in targets:
-        live.request()
+        live.request(reason)
     recovered = []
     if base_path is not None:
         from tinyassets.agent_turn_reconcile import reconcile_orphaned_turns

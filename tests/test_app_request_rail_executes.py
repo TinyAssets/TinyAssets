@@ -120,7 +120,7 @@ answerRail(req, "accept", note, buttons).then(() => {
     result = json.loads(run.stdout)
     assert result["disabled"] is False
     if succeeds:
-        assert result["sent"] == ['Approved: "Model access"']
+        assert result["sent"] == []  # The answer transaction owns the asking-agent wake.
         assert "Reconnected" in result["note"]
     else:
         assert result["sent"] == []
@@ -163,7 +163,7 @@ answerRail(req, MODE, note, buttons).then(()=>{
                                 {"dismiss": True}),
     }}]
     assert result["disabled"] is False
-    assert len(result["sent"]) == int(signed_in)
+    assert result["sent"] == []  # Neither success nor refusal targets the selected chat.
     assert [link["href"] for link in result["links"]] == (
         [] if signed_in else ["/app/owner-sign-in"]
     )
