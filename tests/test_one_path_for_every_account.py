@@ -154,7 +154,7 @@ def test_a_paid_source_is_not_cooled_by_a_transient_refusal(agent, monkeypatch):
     with pytest.raises(AllProvidersExhaustedError):
         integration.run(agent)
     provider = agent.served.context.model_selection.connection_id
-    assert agent.served.router._quota.cooldown_remaining(provider) == 0
+    assert agent.served.router._quota.cooldown_remaining(provider, owner="owner") == 0
     assert priced, "the paid ceilings never reached a real authority"
 
 
@@ -179,7 +179,7 @@ def test_a_paid_source_still_honours_a_window_longer_than_the_turn(agent, monkey
         integration.run(agent)
     provider = agent.served.context.model_selection.connection_id
     # The rig's source names 60s; a turn that may live 10s cannot outlast it.
-    assert 60 <= agent.served.router._quota.cooldown_remaining(provider) <= 61
+    assert 60 <= agent.served.router._quota.cooldown_remaining(provider, owner="owner") <= 61
     assert priced, "the paid ceilings never reached a real authority"
 
 
@@ -263,7 +263,7 @@ def test_the_routers_own_window_rule_is_live(agent):
     with pytest.raises(AllProvidersExhaustedError):
         integration.run(agent)
     remaining = agent.served.router._quota.cooldown_remaining(
-        agent.served.context.model_selection.connection_id)
+        agent.served.context.model_selection.connection_id, owner="owner")
     # 60s (+1s margin), read back through a truncating remaining-seconds call.
     # Discriminates both ways: no cooling at all reads 0, and ignoring the
     # source's own number reads the fixed 120s default.
@@ -279,7 +279,7 @@ def test_a_short_window_leaves_the_source_hot(agent):
     with pytest.raises(AllProvidersExhaustedError):
         integration.run(agent)
     assert agent.served.router._quota.cooldown_remaining(
-        agent.served.context.model_selection.connection_id) == 0
+        agent.served.context.model_selection.connection_id, owner="owner") == 0
 
 
 def _coordinator(kind="engine_inference", *, retry_after, budget):
@@ -396,8 +396,8 @@ def test_cooling_a_source_after_the_fact_is_still_recorded():
     from tinyassets.providers.router import ProviderRouter
 
     router = ProviderRouter({}, quota=QuotaTracker())
-    assert router.cool_source("codex", retry_after_s=45) == 46
-    assert router._quota.cooldown_remaining("codex") > 0
+    assert router.cool_source("codex", retry_after_s=45, owner="owner") == 46
+    assert router._quota.cooldown_remaining("codex", owner="owner") > 0
 
 
 # --------------------------------------------------------------------------

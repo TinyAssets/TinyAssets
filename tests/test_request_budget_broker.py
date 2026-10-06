@@ -280,6 +280,40 @@ def test_direct_broker_without_factory_still_requires_usage_before_credentials(r
     assert events == []
 
 
+def test_missing_inference_usage_explains_recovery_before_credentials(rig):
+    from tinyassets.storage.agent_request_usage import InferenceUsageRequired
+
+    events = []
+    dispatch = build_dispatch(rig.base, events=events)
+    with pytest.raises(InferenceUsageRequired, match="prompt_template.*run_graph"):
+        invoke(dispatch)
+    assert events == []
+    # An accounted call on the SAME grant works: wider HTTP permission is not needed.
+    budget, ordinal, reference = reserve(rig)
+    assert invoke(dispatch, reference)["status"] == 200
+    budget.settle_invocation(ordinal, "succeeded")
+    assert events.count("send") == 1
+
+
+def test_worker_pipe_preserves_missing_accounting_recovery(rig):
+    from tinyassets.storage.agent_request_usage import InferenceUsageRequired
+
+    context = multiprocessing.get_context("spawn")
+    client, server = context.Pipe()
+    process = context.Process(target=worker_main, args=(server, rig.base, (200,)))
+    process.start()
+    server.close()
+    assert client.poll(10)
+    assert outbound._receive_message(client) == {"op": "ready"}
+    proxy = outbound._ProxyChannel(client, process)
+    try:
+        with pytest.raises(InferenceUsageRequired, match="write_graph.connections"):
+            proxy.request("POST", WIRE)
+    finally:
+        proxy.close()
+    assert not process.is_alive()
+
+
 @pytest.mark.parametrize("boundary", ["checkpoint", "on_connect"])
 def test_parent_closure_during_connect_fences_send_and_does_not_count(rig, boundary):
     budget, ordinal, reference = reserve(rig)
@@ -386,6 +420,38 @@ def uds_invoke(uds, reference, **changes):
                   op_id=reference.operation_id, inference_usage=reference.document())
     kwargs.update(changes)
     return uds.client.request(**kwargs)
+
+
+def test_unix_broker_preserves_missing_accounting_recovery(uds_broker, rig):
+    from tinyassets.storage.agent_request_usage import InferenceUsageRequired
+
+    events = []
+    uds_broker.state["dispatch"] = build_dispatch(rig.base, events=events)
+    with pytest.raises(InferenceUsageRequired, match="owner-approved model"):
+        uds_broker.client.request(
+            grant_id=GRANT, connection_id=CONNECTION, verb="POST", request=WIRE,
+            op_id=new_op_id(),
+        )
+    assert events == []
+
+
+def test_inference_recovery_never_uses_remote_exception_text():
+    from tinyassets.broker.client import _raise_for
+    from tinyassets.storage.agent_request_usage import InferenceUsageRequired
+
+    with pytest.raises(InferenceUsageRequired) as held:
+        _raise_for({"error_class": "InferenceUsageRequired", "message": "secret-canary"})
+    assert "secret-canary" not in str(held.value)
+    assert "parent usage reference" in str(held.value)
+
+
+def test_inference_recovery_handbook_names_real_owner_approval():
+    from tinyassets.engine_mcp_server import _WRITE_GRAPH_CONNECTIONS_CHAPTER
+
+    assert "bind_model_access" in _WRITE_GRAPH_CONNECTIONS_CHAPTER
+    assert "expected_revision" in _WRITE_GRAPH_CONNECTIONS_CHAPTER
+    assert "prompt_template" in _WRITE_GRAPH_CONNECTIONS_CHAPTER
+    assert "accounting bypass" in _WRITE_GRAPH_CONNECTIONS_CHAPTER
 
 
 @pytest.mark.parametrize("limit", [1, 2])

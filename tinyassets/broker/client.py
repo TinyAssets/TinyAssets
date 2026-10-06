@@ -45,6 +45,10 @@ def _raise_for(end: dict[str, Any]) -> None:
         from tinyassets.storage.agent_request_usage import InferenceUsageStopped
 
         raise InferenceUsageStopped(end.get("reason"), end.get("usage_id"))
+    if error_class == "InferenceUsageRequired":
+        from tinyassets.storage.agent_request_usage import InferenceUsageRequired
+
+        raise InferenceUsageRequired()
     if error_class == "ProviderAuthorityHeldError":
         from tinyassets.exceptions import ProviderAuthorityHeldError
 

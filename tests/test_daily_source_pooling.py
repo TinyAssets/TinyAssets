@@ -79,9 +79,9 @@ def _assert_pool(pool):
 
     assert pool.first_wire.sent_models == [parity.LIVE_MODELS[0]]
     assert pool.second_wire.sent_models == [pool.second_wire.models[0]]
-    assert _real_router._quota.cooldown_remaining(pool.first) > 86000
-    assert _real_router._quota.daily_detail(pool.first)
-    assert _real_router._quota.available(pool.second)
+    assert _real_router._quota.cooldown_remaining(pool.first, owner=parity.A_OWNER) > 86000
+    assert _real_router._quota.daily_detail(pool.first, owner=parity.A_OWNER)
+    assert _real_router._quota.available(pool.second, owner=parity.A_OWNER)
     assert pool.foreign.requests == [] and pool.foreign.reads == []
 
 

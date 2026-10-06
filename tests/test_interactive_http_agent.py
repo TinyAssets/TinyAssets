@@ -365,7 +365,8 @@ def test_capacity_scope_survives_real_router_without_false_spend(agent, status, 
     assert len(agent.wires) == 1 and not agent.tools
     assert agent.latest().state == "held_transport"
     provider = agent.served.context.model_selection.connection_id
-    remaining = agent.served.router._quota.cooldown_remaining(provider)
+    remaining = agent.served.router._quota.cooldown_remaining(provider, owner="owner")
+    assert agent.served.router._quota.cooldown_remaining(provider, owner="other-owner") == 0
     # A source-wide cooldown needs proof the source is unhealthy. ``model``
     # scope never had it; ``unknown`` scope on a source that cannot spend no
     # longer counts as it either, because cooling the connection also skips the

@@ -96,7 +96,7 @@ def test_native_auth_notice_keeps_served_retry_fenced(
                     "writer", "hello", "system", universe_context=context,
                     operation="converse",
                 ))
-        cooldown.assert_called_once_with("codex", COOLDOWN_OTHER)
+        cooldown.assert_called_once_with("codex", COOLDOWN_OTHER, owner="owner-1")
         aggregate = caught.value
         assert aggregate.failure_class is None
         assert aggregate.native_evidence == (None,)
