@@ -11,6 +11,90 @@ browser = _browser
 pytestmark = pytest.mark.real_browser
 
 
+def test_cleared_reconnect_returns_on_later_failure_and_history_can_reask(app_url, tmp_path,
+                                                                        monkeypatch):
+    from playwright.sync_api import expect, sync_playwright
+
+    from tests.test_pending_requests import (
+        _ask,
+        _login,
+        _logout,
+        _make_universe,
+        _owner_answer,
+        _rail,
+    )
+
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    _make_universe(tmp_path, "u-1", admin="alice")
+
+    # The agent sees a failed connection and raises its ask through the real API.
+    # Browser transport is bridged to that API; lifecycle state is never mocked.
+    def connection_failed():
+        _login("alice")
+        return _ask("u-1", kind="Reconnect", title="Reconnect GitHub",
+                    body="The stored token was rejected by the connection.")
+
+    def read_rail():
+        _login("alice")
+        return _rail("u-1")
+
+    def answer(payload):
+        _login("alice")
+        return _owner_answer("u-1", **payload)
+
+    try:
+        first = connection_failed()
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch()
+            page = browser.new_page()
+            page.expose_function("readRequests", read_rail)
+            page.expose_function("answerRequest", answer)
+            page.expose_function("raiseConnectionFailure", connection_failed)
+            page.route('**/reask-test-connection', lambda route: route.fulfill(
+                status=401, content_type='application/json', body='{"error":"token_rejected"}'))
+            _enter_chat(page, app_url)
+            page.evaluate("""async () => {
+                token=()=> 'test-session'; window.relays=[];
+                Owner.listRequests=()=>readRequests();
+                MCP.answerRequest=payload=>answerRequest(payload);
+                sendTurn=async (...args)=>relays.push(args);
+                await refreshRail();
+            }""")
+            page.locator('#needs-you-open').click()
+            page.get_by_role('button', name='Reconnect GitHub', exact=False).click()
+            page.get_by_role('button', name='Clear', exact=True).click()
+            page.wait_for_function('() => relays.length === 1')
+            assert not read_rail()["pending"]
+            # Polling alone cannot resurrect a cleared ask.
+            page.evaluate('refreshRail()')
+            page.locator('#needs-you-open').click()
+            page.get_by_role('button', name='Answered history', exact=True).click()
+            expect(page.locator('#request-history')).to_contain_text('Reconnect GitHub')
+            page.get_by_role('button', name='Ask again', exact=True).click()
+            page.wait_for_function('() => relays.length === 2')
+            relay = page.evaluate('relays[1]')
+            assert first['request_id'] in relay[0]
+            assert relay[2]['agentId'] == 'main'
+            assert not read_rail()["pending"]  # The tap does not grant or replay anything.
+
+            second = page.evaluate("""async () => {
+                const response=await fetch('/reask-test-connection');
+                if(response.status!==401) throw Error('Expected a rejected connection');
+                return await raiseConnectionFailure();
+            }""")
+            assert second['request_id'] != first['request_id']
+            assert connection_failed()['request_id'] == second['request_id']
+            page.evaluate('refreshRail()')
+            page.locator('#needs-you-open').click()
+            returned = page.get_by_role('button', name='Reconnect GitHub', exact=False)
+            expect(returned).to_have_count(1)
+            page.get_by_role('button', name='Reconnect GitHub', exact=False).click()
+            expect(page.get_by_role('button', name='Clear', exact=True)).to_be_visible()
+            browser.close()
+    finally:
+        _logout()
+
+
 def test_notification_is_informational_and_opens_source_chat(app_url, browser):
     page = browser.new_page(viewport={"width": 390, "height": 844})
     _enter_chat(page, app_url)

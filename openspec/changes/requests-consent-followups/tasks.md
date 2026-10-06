@@ -19,3 +19,15 @@ proposals, consent owner answers, notifications, inline approvals and prompt bud
 Local correction check: 94 passed. Ruff and regenerated mirror passed again.
 Origin/main was current when merged before the final push. Deployment and live
 owner proof are deliberately pending: this lane delivers a draft PR only.
+
+## Reask lane completion of the history surface
+- [x] 3.1 Reconcile merged #4504 recovery and #4500 consent spec sync; add one
+  history revisit action for all kinds and all-action dedupe/context assertions.
+- [x] 3.2 Add Chromium clear, history revisit, later failure and returning-card proof.
+- [ ] 3.3 Linux oracle, ruff, mirror, hygiene, Claude review and draft PR push.
+
+The two requested concern paths are already absent from main. The consent spec
+already names #4477's protected owner answers and Clear/Deny recovery. This lane
+preserves it and records generic recovery in the as-built request-consent-recovery
+spec. Linux initial test run: 233 passed; new browser wait rejected by CSP, fixed
+to a function expression and passed locally. Full Linux rerun in progress.
