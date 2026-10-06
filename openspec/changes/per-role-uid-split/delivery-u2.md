@@ -585,3 +585,24 @@ the merge, import probe passes, and there is no generated diff. Ruff passes on
 changed Python files and main-merge Python files. Merged-stack hygiene before
 this final regression: 281 added, **0 removed / 0 tampering**. Static prompt
 budgets are unchanged. Final post-merge test and image receipts follow below.
+
+## D216 final verification receipt
+
+Post-main-merge root oracle selection:
+`tests/test_role_volume_migration.py tests/test_role_volume_inventory.py tests/test_command_center_agent_templates.py tests/test_command_center_system_browser.py tests/test_delivery_account_deletion.py tests/test_converse_turn_cost.py`
+returned **118 passed, zero skips**. The subsequent metadata-marker regression
+is included in the final coordinator/inventory run: **32 passed, zero skips**.
+Both use `MSYS_NO_PATHCONV=1 python scripts/linux_oracle.py --as-root -- -q ... --basetemp /tmp/b`.
+This does not erase the separately reported 153-pass/1-fail baseline migration
+receipt. No third retry of that repeated failure was used to obtain green.
+
+Final merged-stack hygiene at `3fb4b00ab2`: **282 added, 0 removed, 0 tampering**.
+Ruff, plugin mirror/import probe and diff checks pass. The post-main-merge
+production Dockerfile build passes its privileged-chain check. Image
+`sha256:154e60c7d51d25e11621fc2a30386024967a1f6b7c70faf29e0ae4fd5682b4c0`
+passes `python scripts/role_owner_migration_probe.py --image tinyassets-uid-u2:d216-final`.
+The receipt covers only the installed owner substep, explicitly retaining
+`old_cmd_boot=false` and `startup_active=false`. It is not the required full
+coordinator/old-CMD acceptance. Draft #4510 is updated with all limitations,
+Claude APPROVE for D216, and the inherited-U1 isolation gap. Code and main merge
+are pushed; this final commit only records receipts. Working tree will be clean.
