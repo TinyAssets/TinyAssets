@@ -125,7 +125,7 @@ def test_no_file_grows_past_its_pin(cb) -> None:
     another (test_raising_a_pin_requires_displacing_another).
     """
     for budget in cb.CONFIG:
-        actual = len((REPO_ROOT / budget.path).read_bytes())
+        actual = cb.measure(budget, REPO_ROOT).bytes
         assert actual <= budget.max_bytes, (
             f"{budget.path} is {actual} B, past its {budget.max_bytes} B pin. "
             "The rulebook only shrinks: cut it, or raise this pin by lowering another."
@@ -196,7 +196,55 @@ def test_the_rule_is_stated_where_it_now_lives() -> None:
     assert "A new rule deletes an old one" in agents
 
 
+def _load_sync_module():
+    spec = importlib.util.spec_from_file_location(
+        "sync_direction_ratchet", REPO_ROOT / "scripts" / "sync_direction.py")
+    assert spec is not None and spec.loader is not None
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_the_direction_copy_matches_readme() -> None:
+    """The ratchet skips AGENTS.md's Direction block; this is why that is safe.
+
+    The block must be README's verbatim, and capped, or it is an unpinned place
+    to write rules. Fix: edit README.md, then run python scripts/sync_direction.py.
+    """
+    assert _load_sync_module().problems(REPO_ROOT) == []
+
+
 # ------------------------------------------------------- can it actually fail?
+
+
+def test_a_drifted_or_oversized_direction_goes_red(tmp_path: Path) -> None:
+    sd = _load_sync_module()
+
+    def block(body: str) -> str:
+        return f"{sd.START}\n{body}\n{sd.END}\n"
+
+    (tmp_path / "README.md").write_text("# R\n" + block("1. new"), encoding="utf-8")
+    (tmp_path / "AGENTS.md").write_text("# A\n" + block("1. old") + "rules\n", encoding="utf-8")
+    assert sd.main(["--check", "--root", str(tmp_path)]) == 1
+
+    assert sd.main(["--root", str(tmp_path)]) == 0
+    agents = (tmp_path / "AGENTS.md").read_text(encoding="utf-8")
+    assert agents == "# A\n" + block("1. new") + "rules\n"
+
+    long = "\n".join(f"{n}. line" for n in range(sd.MAX_LINES + 1))
+    (tmp_path / "README.md").write_text(block(long), encoding="utf-8")
+    assert sd.main(["--root", str(tmp_path)]) == 1, "over the line cap even when synced"
+
+
+def test_rules_written_outside_the_direction_block_still_count(cb, tmp_path: Path) -> None:
+    """Only the marked block is exempt; the rest of AGENTS.md is still pinned."""
+    _fake_repo(cb, tmp_path)
+    agents = tmp_path / "AGENTS.md"
+    agents.write_bytes(b"<!-- direction:start -->" + b"d" * 500 + b"<!-- direction:end -->"
+                       + agents.read_bytes())
+    assert not cb.run(tmp_path)[2], "the direction block is not a rule"
+    agents.write_bytes(agents.read_bytes() + b"x")
+    assert cb.run(tmp_path)[2], "one rule byte past the pin is red"
 
 
 def _fake_repo(cb, root: Path, overrides: dict[str, int] | None = None) -> dict[str, int]:

@@ -161,13 +161,19 @@ class Result:
         return "OVER-HARD" if self.kind == "hard" else "OVER-soft"
 
 
+# README.md's Direction block, mirrored into AGENTS.md by scripts/sync_direction.py.
+# It is founder-owned direction, not a rule, so it is not ratcheted here: the
+# sync check holds the copy verbatim to README and caps its size.
+_DIRECTION_RE = re.compile(rb"<!-- direction:start -->.*?<!-- direction:end -->", re.S)
+
+
 def measure(budget: Budget, root: Path) -> Result:
     fp = root / budget.path
     if not fp.is_file():
         return Result(budget.path, budget.kind, False, 0, 0,
                       budget.max_bytes, budget.max_lines, False, False, budget.note,
                       budget.always_loaded)
-    data = fp.read_bytes()
+    data = _DIRECTION_RE.sub(b"", fp.read_bytes())
     nbytes = len(data)
     nlines = data.count(b"\n") + (0 if data.endswith(b"\n") or not data else 1)
     # `max_lines == 0` means unchecked: bytes are the ratchet. A file that shrinks
