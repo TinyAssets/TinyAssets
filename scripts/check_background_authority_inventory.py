@@ -145,6 +145,14 @@ EXPECTED_SENSITIVE_CALL_SITES: tuple[CallSite, ...] = (
         "Frontend.__call__",
         "request.stream",
     ),
+    # L7 durable ingress: bounded Starlette HTTP-body reads, not graph streams.
+    # Acceptance grants no execution authority; register both shipped copies.
+    CallSite("tinyassets/ingress.py", "AppIngressMiddleware.__call__", "request.stream"),
+    CallSite(
+        "packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/tinyassets/ingress.py",
+        "AppIngressMiddleware.__call__",
+        "request.stream",
+    ),
     CallSite(
         "fantasy_daemon/__main__.py",
         "DaemonController._try_execute_soul_loop",
