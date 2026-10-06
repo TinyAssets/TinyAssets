@@ -1,6 +1,6 @@
 # K1 merge-queue repair
 
-PR #4519 remains draft. Final catch-up: main dd82fd3d4a merged as 442743f2b5; final-tree full verification is rerunning in `C:/Users/Jonathan/k1-final-verification`. The counts below currently describe the preceding b87bf5956c tree. `origin/main` was fetched and merged before repair (already contained). Original head: b3dfa3ca88. Initial Linux reproduction: 15 failed, 393 passed, no skips.
+PR #4519 remains draft. Final catch-up: main dd82fd3d4a merged as 442743f2b5; final-tree full verification completed in `C:/Users/Jonathan/k1-final-verification`. Final result: 27,290 required tests passed, 0 failed, 96 skipped; the aggregate fails its 3,936s / 3,000s timing guard. Historical counts are explicitly separated below. `origin/main` was fetched and merged before repair (already contained). Original head: b3dfa3ca88. Initial Linux reproduction: 15 failed, 393 passed, no skips.
 
 ## Root fixes
 
@@ -56,4 +56,41 @@ plus the new orphan-ready coordinator/turn guards) passed **936 tests, zero
 skips**, with six deprecation warnings. Full required shards are rerunning
 with CI=true, GITHUB_ACTIONS=true, TINYASSETS_DATA_DIR=/tmp/ta-data and the
 unchanged CI ALL profile; at most two required shards run concurrently.
-Final required, heavy and slow results are pending.
+Final heavy: **2,132 passed, 59 failed, zero skips**; all 59 failures are already quarantined (42 deployment-workflow, 17 retired deploy-fence). Four quarantined tests pass: `test_access_gate_blocks_on_200`, `test_access_gate_step_present`, `test_failed_candidate_diagnostics_are_preserved_before_rollback`, and `test_terminal_receipt_does_not_assign_manual_image_source_from_github_sha`, all in `test_deploy_prod_workflow.py`. They are stale quarantine entries under the heavy CI runner; no ledger edits were made.
+
+Final slow selection: **10 passed, zero skips**, 29,544 non-slow cases deselected.
+The final required selection is **ALL**, selected against main dd82fd3d4a.
+All six Linux shards exited 0 on the merged code:
+
+| Shard | Passed | Failed | Skipped |
+|---|---:|---:|---:|
+| 1 | 3,710 | 0 | 4 |
+| 2 | 4,006 | 0 | 71 |
+| 3 | 7,997 | 0 | 15 |
+| 4 | 3,494 | 0 | 1 |
+| 5 | 3,770 | 0 | 3 |
+| 6 | 4,313 | 0 | 2 |
+| Total | **27,290** | **0** | **96** |
+
+The real CI aggregate accepts the shard set, finds no new failures and no
+stale required-test quarantine entries, but **fails the unchanged summed-time
+guard: 3,936 seconds against 3,000**. The strict zero-skip request is also
+unmet. Existing platform/dependency/live-integration skips were neither added
+nor converted into passes. Browser-proof assertion over the final union
+passes all marked cases; no browser proof is satisfied by a skip.
+
+The final commands use CI's ALL branch: `--required-runner`,
+`--exclude-from .github/heavy-test-files.txt --shard N/6 --profile shard`,
+`--pytest-arg=--basetemp=/tmp/b`, and oracle environment
+`TINYASSETS_DATA_DIR=/tmp/ta-data`, `CI=true`, `GITHUB_ACTIONS=true`.
+The aggregate uses `--expect-shards 6 --shard-job-result success --min-ran 10700`.
+Final logs: `C:/Users/Jonathan/k1-final-required-N.log`,
+`k1-final-aggregate.log`, and `k1-final-browser-proof.log`.
+
+No test, skip marker, prompt budget, time budget or quarantine was weakened.
+Hygiene against the merged main base is 74 added / 0 removed / 0 tampering.
+The fake-Codex case passed in this entire final selection, but its earlier
+recurrence remains recorded in its existing concern. Timing measurement is
+handed off in `docs/concerns/2026-10-04-required-suite-time-drift.md`.
+PR #4519 remains DRAFT. No merge, deployment, live-owner app acceptance or
+post-deploy spec sync is claimed.
