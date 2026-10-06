@@ -1498,6 +1498,11 @@ _WRITE_GRAPH_BRANCHES_CHAPTER = """\
       Use explicit null to clear either choice; saved versions keep their choices.
       These settings select among existing permissions and do not grant access.
 
+
+    Requests and notifications raised from an agent or its workflow remember the
+    asking agent and run. Owner replies return to that agent through the shared
+    request path, independent of which chat the owner has selected. Do not relay
+    an answer by hand. Removed or retired askers fall back to main with a note.
 """
 
 _WRITE_GRAPH_CONNECTIONS_CHAPTER = """\
@@ -2613,6 +2618,7 @@ _WRITE_GRAPH_SYSTEMS_CHAPTER = """\
       person's own compute, and never reaches the author's command center.
 
 """
+
 
 #: Chapter name -> text, in the order the resident index names them.
 _WRITE_GRAPH_CHAPTERS: dict[str, str] = {
