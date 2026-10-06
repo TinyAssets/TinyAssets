@@ -20,6 +20,7 @@ import json
 
 import pytest
 
+from tinyassets.api.pending_requests import CONSENT_ACTIONS, NON_CONSENT_ACTIONS
 from tinyassets.auth.middleware import auth_middleware, set_provider
 from tinyassets.auth.provider import AuthProvider, DevAuthProvider, Identity
 
@@ -277,6 +278,86 @@ def test_dismissing_writes_nothing(base):
                    dismiss=True)["status"] == "dismissed"
     assert load_credential_vault(udir) == []
     assert _rail("u-1")["count"] == 0
+
+
+def test_every_validated_action_has_an_explicit_consent_classification():
+    import ast
+    import inspect
+
+    from tinyassets.api import pending_requests as requests
+
+    # Derive from the validator itself, not a second list a new branch can evade.
+    tree = ast.parse(inspect.getsource(requests._validated_action))
+    accepted = set()
+    for node in ast.walk(tree):
+        if (isinstance(node, ast.Compare) and isinstance(node.left, ast.Name)
+                and node.left.id == "kind"):
+            for value in node.comparators:
+                if isinstance(value, ast.Constant):
+                    accepted.add(value.value)
+                elif isinstance(value, ast.Name):
+                    accepted.add(getattr(requests, value.id))
+                else:
+                    pytest.fail("Update action coverage for the new validator dispatch shape")
+    assert not CONSENT_ACTIONS & NON_CONSENT_ACTIONS
+    assert accepted == CONSENT_ACTIONS | NON_CONSENT_ACTIONS
+
+
+@pytest.mark.parametrize("action_type",
+                         sorted(CONSENT_ACTIONS | NON_CONSENT_ACTIONS | {"future_effect"}))
+@pytest.mark.parametrize("mute", [False, True])
+@pytest.mark.parametrize("status", ["dismissed", "answered"])
+def test_every_ask_kind_can_return_after_clear_only_mute_suppresses(
+    base, action_type, mute, status,
+):
+    from tinyassets.storage.pending_requests import create_request, resolve_request
+
+    udir = _make_universe(base, "u-1", admin="alice")
+    _login("alice")
+    document = dict(kind="Reconnect", title="Reconnect service", body="Needed again",
+                    fields=[], action={"type": action_type}, dedupe_key=action_type)
+    first = create_request(udir, **document)
+    assert resolve_request(udir, first["request_id"], status=status, dont_ask_again=mute,
+                           decision="declined")
+    again = create_request(udir, **document)
+    if mute:
+        assert again["settled"] is True
+        assert again["decision"] == "declined"
+    else:
+        assert again["request_id"] != first["request_id"]
+        assert again["status"] == "pending"
+    assert "Clear or decline" in _rail("u-1")["request_recovery"]
+
+
+@pytest.mark.parametrize("action_type", ["connect_http", "connect"])
+@pytest.mark.parametrize("kind", ["Connect", "Reconnect"])
+def test_connect_and_reconnect_can_be_raised_again_through_the_api(base, action_type, kind):
+    _make_universe(base, "u-1", admin="alice")
+    _login("alice")
+    action = {**_CRED["action"], "type": action_type}
+    if action_type == "connect":
+        action["uses"] = {"call": True}
+    first = _ask("u-1", kind=kind, action=action)
+    assert "request_id" in first, first
+    cleared = _owner_answer("u-1", request_id=first["request_id"], dismiss=True)
+    assert cleared["status"] == "dismissed"
+    second = _ask("u-1", kind=kind, action=action)
+    assert second["request_id"] != first["request_id"]
+    assert any(row["request_id"] == second["request_id"] for row in _rail("u-1")["pending"])
+    assert not _rail("u-1")["muted"]
+
+
+@pytest.mark.parametrize("action_type", ["future_effect", "", None])
+def test_unknown_effectful_request_requires_protected_owner(base, action_type):
+    from tinyassets.storage.pending_requests import create_request, get_request
+
+    udir = _make_universe(base, "u-1", admin="alice")
+    _login("alice")
+    row = create_request(udir, kind="Future", title="Future effect", body="", fields=[],
+                         action={"type": action_type}, dedupe_key="future")
+    result = _answer("u-1", request_id=row["request_id"], dismiss=True)
+    assert result["error"] == "interactive_approval_required"
+    assert get_request(udir, row["request_id"])["status"] == "pending"
 
 
 def test_one_answer_counts_once(base):

@@ -987,3 +987,43 @@ def test_unbound_legacy_oauth_flow_cannot_be_upgraded_at_completion(provider, ap
             assert result.status_code == 403
             assert result.json()["error"] == "interactive_approval_required"
     assert provider.access == {}
+
+
+def test_generic_exchange_refuses_cookieless_replay_and_foreign_handle(provider, app):
+    from tinyassets.connection_oauth import pkce
+
+    with _as(OWNER):
+        asked = _ask()
+        begun = _post("oauth_begin", {"request_id": asked["request_id"],
+                                     "code_challenge": CHALLENGE}).json()
+        back = dict(parse_qsl(urlsplit(provider.authorize(begun["authorize_url"])).query))
+    payload = {"flow": back["state"], "code": back["code"], "code_verifier": VERIFIER}
+    with _as(OTHER):
+        refused = _post("oauth_exchange", payload, cookie="")
+    assert refused.status_code == 404
+    assert refused.json()["error"] == "unknown_sign_in"
+    assert provider.access == {}
+    with pkce.flows_db(app) as (conn, _):
+        assert conn.execute("SELECT COUNT(*) FROM connection_oauth_flows").fetchone()[0] == 1
+    with _as(OWNER):
+        assert _post("oauth_exchange", payload, cookie="").status_code == 200
+        issued = dict(provider.access)
+        replay = _post("oauth_exchange", payload, cookie="")
+    assert replay.status_code == 404
+    assert replay.json()["error"] == "unknown_sign_in"
+    assert provider.access == issued
+
+
+def test_owner_revocation_prevents_outstanding_generic_exchange(provider, app):
+    from tinyassets.onboarding.owner_sessions import revoke_owner
+
+    with _as(OWNER):
+        asked = _ask()
+        begun = _post("oauth_begin", {"request_id": asked["request_id"],
+                                     "code_challenge": CHALLENGE}).json()
+        back = dict(parse_qsl(urlsplit(provider.authorize(begun["authorize_url"])).query))
+        revoke_owner(OWNER)
+        result = _post("oauth_exchange", {"flow": back["state"], "code": back["code"],
+                                         "code_verifier": VERIFIER}, cookie="")
+    assert result.status_code == 404
+    assert provider.access == {}
