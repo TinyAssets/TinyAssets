@@ -38,3 +38,11 @@ coverage and a due-date UI text assertion. The read-only publisher test now
 forbids filesystem mutations explicitly; it does not prove installer policy.
 Ruff and rebuilt plugin/import probe pass after the fixes. Review and dispositions
 are in review.md and review-response.md. Draft PR: #4520.
+
+Merged origin/main at a97c17c26e through merge commit 16778f1d71 with no conflicts;
+upstream changes are founder direction and copied-agent directory bindings, not
+K3 assets. Final hygiene: **11 added / 0 removed / 0 tampering**. The draft keeps
+Claude's actual ADAPT verdict with fixed findings, not a fabricated APPROVE
+receipt. Consequently the required scope/review-receipt gate is still blocked;
+fresh-account, ta discovery, activation and live proof prerequisites are also
+open. No merge or deployment is requested by this draft.
