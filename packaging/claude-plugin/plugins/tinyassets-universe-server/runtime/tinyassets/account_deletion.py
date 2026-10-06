@@ -115,6 +115,13 @@ OWNER_ONLY_TABLES = MappingProxyType({
     "extension_revisions": "owner_id",
     "extension_activations": "owner_id",
     "extension_bindings": "owner_id",
+    "extension_ui_projections": "owner_id",
+    "extension_hook_events": "owner_id",
+    "outside_families": "owner",
+    "outside_effects": "owner",
+    "outside_grants": "owner",
+    "outside_audit": "owner",
+    "outside_revocations": "owner",
     "pins": "owner_id",
     "universe_app_ui": "owner_user_id",
     "owner_view_receipts": "owner_user_id",
@@ -701,6 +708,9 @@ def _root_databases(root: Path) -> list[Path]:
     ]
     if database_path(root).is_file():
         stores.append(database_path(root))
+    outside = root / ".outside-client-authority.sqlite3"
+    if outside.is_file():
+        stores.append(outside)
     return sorted(stores)
 
 

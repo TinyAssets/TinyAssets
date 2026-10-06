@@ -182,8 +182,10 @@ def _emit(
         # The branch is read as its owner: a private branch is refused to an
         # unbound thread. owner_run_identity binds only an admin of this
         # universe, and register_automation re-checks admin AND home.
-        with owner_run_identity(base, uid, owner):
-            try:
+        from tinyassets.outside_authority import OutsideRefused, automation_identity
+
+        try:
+            with owner_run_identity(base, uid, owner), automation_identity(base, sub):
                 wake = register_automation(
                     base,
                     universe_id=uid,
@@ -205,13 +207,14 @@ def _emit(
                     now=now,
                     event_key=key,
                 )
-            except AutomationUnavailable as exc:
-                reason = f"event_wake_refused:{exc.reason}"
-                _record_refusal(base, sub, reason)
-                _record_fire(base, sub, reason, now)
-                if exc.reason in RETRYABLE_REFUSALS:
-                    retry.append(exc.reason)
-                continue
+        except (AutomationUnavailable, OutsideRefused) as exc:
+            detail = exc.reason if isinstance(exc, AutomationUnavailable) else "outside_refused"
+            reason = f"event_wake_refused:{detail}"
+            _record_refusal(base, sub, reason)
+            _record_fire(base, sub, reason, now)
+            if detail in RETRYABLE_REFUSALS:
+                retry.append(detail)
+            continue
         _record_fire(base, sub, f"{EVENT_WOKE_PREFIX}{wake.automation_id}", now)
         stored.append(wake.automation_id)
     if retry:

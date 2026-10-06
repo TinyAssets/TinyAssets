@@ -16,6 +16,8 @@ extension, with one lifecycle and permissions that cannot grow through authoring
   `command-center-harness-control` (#4503/#4508), all `saved-agent-connectors`
   (#4511), MCP attachment lifecycle in `connect-anything-ladder` (#4496), and
   installed-directory resolution in `command-center-agent-templates` (#4515).
+  Credential-blind git (#4513, agent-box-git-credentials) and outside-client
+  grants (#4501, outside-agent-grants) are also folded into this lane.
   Settings, generic transports and unrelated package UI remain their own work.
 - Preserve today's jail for execution; consume U1's package-revision boundary
   before credential-scoped package execution or stdio server admission.

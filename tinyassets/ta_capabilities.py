@@ -48,6 +48,9 @@ class Capabilities:
         self.call_platform, self.check_authority = call_platform, check_authority
         self.connections_granted = connections_granted
         self.review_provider = review_provider
+        from tinyassets.auth.middleware import current_identity_or_none
+
+        self.outside_identity = current_identity_or_none()
 
     def connections(self):
         # A launch whose grant withholds connections neither lists nor calls one.
@@ -68,6 +71,17 @@ class Capabilities:
         return found
 
     async def dispatch(self, message):
+        from tinyassets.outside_authority import check_identity
+
+        identity = self.outside_identity
+        if identity is not None and identity.metadata.get("outside_origin") is not None:
+            try:
+                check_identity(identity, universe=self.context.universe,
+                               agent=self.context.initiating_agent,
+                               capability=message.get("name") if isinstance(message, dict)
+                               and message.get("op") == "call" else "ta:catalog")
+            except PermissionError:
+                return {"error": "outside client capability not granted"}
         error = self.check_authority()
         if error:
             return {"error": "serving owner authority unavailable"}

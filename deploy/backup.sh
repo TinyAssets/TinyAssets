@@ -160,7 +160,7 @@ done
 for f in "${VOLUME_DIR}"/*.json; do
     [[ -f "${f}" ]] && cp -a "${f}" "${BRAIN_STAGE}/"
 done
-for db in "${VOLUME_DIR}"/*.db; do
+for db in "${VOLUME_DIR}"/*.db "${VOLUME_DIR}/.outside-client-authority.sqlite3"; do
     [[ -f "${db}" ]] || continue
     if ! python3 - "${db}" "${BRAIN_STAGE}/$(basename "${db}")" <<'PY'
 import sqlite3

@@ -2,7 +2,7 @@
 severity: P2
 title: Harness control continuation lacks required runtime integrations
 filed: '2026-10-05'
-summary: K1 owns consolidated extension lifecycle and roster resolution; automatic hooks, UI projections and U1 package admission remain runtime dependencies.
+summary: K1 implements roster resolution, automatic extension hooks and UI projections; stdio package admission and the separate editable starter loader retain their named owners.
 ---
 
 Consolidation: [`one-extension-unit`](../../openspec/changes/one-extension-unit/proposal.md)
@@ -17,7 +17,7 @@ reimplement those owners' paths.
 
 | Required integration | Owner and concrete handoff |
 | --- | --- |
-| Authenticated installed roster directory | D8/D9 / command-center-agent-templates: connect `addressed_agents.resolve()`'s bound agent to `command_center_packages.plan_install()`'s `agent_slug`. Do not guess a directory from a binding ID. |
+| Authenticated installed roster directory | Implemented in K1 / #4519 with completed recipient-pin resolution and isolation tests. |
 | Editable starter hook loader | starter-agent-out-of-plumbing task 1.3: supply the loader consumed by the settings toggle; retain that lane's extraction/main-replacement ownership. |
 | Raw-key stdio custody | connect-anything-ladder task 1.4: separate process/user/filesystem sandbox, exact-revision owner opt-in, broker-scanned stdout and stderr, cancellation and revocation. Harness task 2.1 must prove activated hooks cannot inspect it. |
 
@@ -33,3 +33,10 @@ or finish task 2.1. All subsequent requested boxes remain unchecked. Resume in
 order with the actual integrations, then perform Linux hostile-hook/stdio and
 recipient-update proofs, the remaining UI/orchestration work, review and live
 acceptance. Delete this concern once the integrations and their proofs exist.
+
+
+K1 continuation: automatic extension hooks and app_ui projection are implemented
+and reviewed in #4519, with local connection bindings, remote MCP and git on the
+current broker. The older runtime-unavailable paragraph above describes the L5b
+baseline. It no longer describes K1's extension contributions. This concern stays
+open only for U1 stdio/package-cell proof and the separately owned starter loader.

@@ -200,3 +200,70 @@ carry credentials, are proxy/launch bound, recheck current extension authority,
 and expire on launch exit. The broker independently verifies host, exact repo,
 verb, grant and incarnation; it injects credentials and refuses redirects.
 No per-owner git_bridge or U1 filesystem/process changes are included.
+
+
+Outside-client continuation uses the #4501 verified-claims probe and the named
+platform-root .outside-client-authority.sqlite3 store. Exact owner/client scopes
+name universe, agent and capability; authoring code never changes them. The
+protected owner-session endpoint is the only remote grant editor. Revocation
+retires every observed family; reconnect needs a newly verified family and a
+new explicit owner grant. A durable switch defaults denied and a process override
+can only deny. There is no positive authorization cache. Origin/generation rides
+inside the signed engine launch grant, not mutable request headers, and ta and
+engine calls recheck it. Production client/family claim configuration remains
+unset until the founder's live AuthKit evidence check; no brand inference or
+silent migration of existing connectors is introduced. Existing primary clients
+must be explicitly grandfathered or owner-reconsented before that cutover.
+
+
+## Lifecycle continuation review dispositions (Claude)
+
+Verdict ADAPT. AGREE with required findings 1?5; no second approval is claimed.
+The complete review is retained in review-lifecycle.md.
+
+1. Effect admission now commits a durable in-flight lease under a short
+   transaction. Network work holds no global SQLite lock. Revoke/kill-switch
+   commits fence subsequent admissions immediately. Already admitted network
+   work may finish; failure records an unknown outcome and never authorizes
+   replay. An acknowledged revoke is not a claim to undo an earlier send.
+   Authority-store errors fail closed, including verified-claims observation.
+2. Outside launches require both a signed tool list and a nonempty grant key;
+   unsigned route fallback is refused before spawning an engine session.
+3. Runs capture outside owner/client/family/generation atomically in their run
+   row; normal execution, queued recovery and resume restore it. Schedules and
+   event subscriptions store the same private origin; event wakes inherit it.
+   Dispatch and current-node authority checks revalidate it. Outside bearers
+   cannot mint independent webhook/source credentials through run_graph.
+4. Hooks are observational, never an authorization gate. Failure and no-bash
+   skips are persisted in the existing package database and discoverable via
+   ta extension:events. A failed turn_end does not change completed tool effects
+   into a retryable failure. Stop never starts another hook.
+5. Elevated engine identity is bound only around each jailed hook invocation,
+   restored before the original handler. A real-jail regression makes a hook
+   invoke ta read_graph and checks that it does not recursively trigger itself.
+
+AGREE on indirect resource scope: outside calls with indirect IDs must state
+an explicit universe; command_center_id is also a supported selector. Existing
+resolved-universe ACL checks additionally reject objects outside the admitted
+universe. Named-agent operations use exact agent bindings; main is the scope for
+command-center-wide handles. Granting a center-wide handle intentionally covers
+its existing center-level behavior; it is not an agent-row filter. Engine/ta
+calls retain independent exact capability checks. Running an owner-authored
+workflow delegates its existing effect permissions, but retains outside origin
+and the live client revocation fence. Connection-backed extension use additionally
+requires exact connection capability scopes. No authored code creates a grant.
+
+Owner grant editing accepts only current home/admin authority through the
+protected interactive session. It is not available to an OAuth bearer, including
+a first-party bearer. Scope changes require the current generation. Existing
+client grants are never copied from imported packages. Production classification
+remains gated solely on founder-verified AuthKit claim evidence; the probe has
+no tokens in its output. Default outside admission is deny.
+
+UI cards project immutable HTML or app_ui JSON assets through the existing UI
+library on activation, with owner/agent/revision/generation-specific IDs. The
+read fence hides revoked, superseded, disabled or edited projections even when
+cleanup fails. The sandboxed frame owns no bearer; its parent verifies the live
+projection before each bridge action, retaining the existing owner/session/frame
+checks. Activation validates renderability before committing. A failed projection
+write is reported; reactivation with the read-back generation repairs projection.

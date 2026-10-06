@@ -26,9 +26,11 @@ _MCP_ARGS = _schema({"action": {"enum": ["discover", "call"]}, "tool": _TEXT,
                      "arguments": {"type": "object"}, "catalog_hash": _TEXT}, ["action"])
 LIFECYCLE = [
     {"name": "extension:help", "description": "Read the extension authoring handbook",
-     "arguments": _schema({})},
+     "arguments": _schema({"chapter": {"enum": ["overview", "ui"]}})},
     {"name": "extension:install", "description": "Install inert extension bytes; no grants",
      "arguments": _schema({"files": {"type": "object", "additionalProperties": _TEXT}}, ["files"])},
+    {"name": "extension:events", "description": "Read recent hook failures or skipped events",
+     "arguments": _schema({})},
     {"name": "extension:list", "description": "List this agent's extension revisions",
      "arguments": _schema({})},
     *[{"name": f"extension:{action}",
@@ -44,8 +46,12 @@ Tools/commands: name, description, arguments (JSON Schema); supply one package
 executable, a relative file with a shebang. It receives entry name and JSON
 arguments as argv[1:3] and writes one JSON result to stdout. Hooks use the same
 entry contract plus event: input, turn_start, context, before_tool, after_tool,
-turn_end. Hooks can currently be invoked explicitly through ta; automatic turn
-events are not wired. Cards: name, description, asset (relative HTML file).
+turn_end. These events execute automatically with the triggering turn's current
+bash grant, in the existing jail. Failures/skips are visible through
+extension:events; observational hooks never cause completed effects to retry.
+Hooks observe bounded version/event/payload
+JSON and cannot widen authority. Stop does not launch a new hook. Cards: name,
+description, asset (relative HTML or app_ui JSON file); read chapter ui.
 Connection needs: name (logical slot), description, verbs (e.g. ["GET"]).
 MCP: name, description, transport remote with url and optional declared slot,
 or transport stdio with executable and args. No credentials/env/grants in manifests.
@@ -64,7 +70,8 @@ new install and explicit activation. settings.yaml extensions.enabled may narrow
 the active set but cannot activate anything. Revoke fences new ta dispatch;
 pre-U1 code already running in the same bash launch is not forcibly terminated.
 
-Cards/UI projection and stdio admission are currently unavailable.
+Cards project through app_ui on activation and disappear on revoke.
+Only stdio/package-cell admission remains unavailable pending U1.
 Activate may include bindings: {"slot":{"connection_id":"...","grant_id":"..."}}.
 Bindings use existing local grants only, pin their incarnation and never create
 or widen grants. A new activation generation is required to change a binding.
@@ -80,6 +87,28 @@ recipients install and activate their own copy with their own local authority.
 Never include credentials or private test responses in shared files.
 """
 
+UI_HANDBOOK = """Declare cards: [{name, description, asset}] in extension.json.
+An HTML asset is body markup; script tags inside markup do not execute. For an
+interactive card, use a .json asset containing a tinyassets.app-ui.v1 component:
+{kind:'tinyassets.app-ui.v1', version:1, ui_id:'working', name:'My UI',
+ markup:'<button>Go</button>', style:'', script:''}. Use JSON double quotes.
+Activation assigns a revision/generation-specific ui_id and projects the bytes
+into the existing app_ui library. Select it using the existing UI picker. The
+component version is always FORMAT version 1, not an extension revision.
+Revoke removes the projection and fences stale reads even if cleanup failed.
+Working-file edits have no effect: install and activate a new extension revision.
+Editing the projected backend row directly cannot change its pinned code.
+
+Optional app_ui fields, assets, libraries and script_type retain the existing
+renderer contract. Text is bounded to 1048576 UTF-8 bytes per component. UI code
+runs in the existing isolated frame and uses its capability bridge; protected
+owner approvals remain outside that frame. No grant or credential is in a card.
+Static HTML keeps source bytes in the package; interactive scripts belong in the
+JSON component's script field. Read_graph target=app_ui query=index lists UIs,
+and query=<ui_id> reads one component. Runtime validation reports renderability.
+Sharing carries package files, never activation, local bindings or credentials.
+"""
+
 
 class ExtensionCapabilities:
     def __init__(self, backend):
@@ -88,7 +117,17 @@ class ExtensionCapabilities:
         self.store = ExtensionStore(backend.root.parent, owner=ctx.owner,
                                     universe=ctx.universe, agent=ctx.initiating_agent)
 
-    def _authority(self):
+    def _authority(self, *, lifecycle=False):
+        from tinyassets.auth.middleware import current_identity_or_none
+
+        identity = getattr(self.backend, "outside_identity", None) or current_identity_or_none()
+        if identity is not None:
+            from tinyassets.outside_authority import check_identity
+
+            check_identity(identity)
+        if (lifecycle and identity is not None
+                and identity.metadata.get("outside_origin") is not None):
+            raise ExtensionError("outside clients cannot mutate extension owner lifecycle")
         ctx = self.backend.context
         if (ctx.research or ctx.delegated_authority != "serving-owner"
                 or ctx.approval_id is not None or self.backend.check_authority()):
@@ -138,6 +177,14 @@ class ExtensionCapabilities:
                 raise ExtensionError("connection binding authority unavailable")
         if verb is not None and verb not in row["verbs"]:
             raise ExtensionError("connection slot does not declare required verb")
+        identity = getattr(self.backend, "outside_identity", None)
+        if identity is not None:
+            from tinyassets.outside_authority import check_identity
+
+            for required in row["verbs"]:
+                check_identity(identity, universe=self.backend.context.universe,
+                               agent=self.backend.context.initiating_agent,
+                               capability=f"connection:{pin['connection_id']}:{required}")
         return pin
 
     def materialize(self, directory):
@@ -212,8 +259,10 @@ class ExtensionCapabilities:
                                       and row["transport"] == "remote" else
                                       row.get("arguments", _schema({}))),
                         "kind": kind, "revision": state["revision"],
+                        **({"event": row["event"]} if kind == "hooks" else {}),
                         "generation": state["generation"],
-                        "availability": ("remote" if kind == "mcp_servers"
+                        "availability": ("projected" if kind == "cards" else
+                                         "remote" if kind == "mcp_servers"
                                          and row["transport"] == "remote" else
                                          "requirement" if kind == "connections" else
                                          "jailed" if kind in {"tools", "commands", "hooks"}
@@ -235,9 +284,14 @@ class ExtensionCapabilities:
             if not Draft202012Validator(capability["arguments"]).is_valid(arguments):
                 raise ExtensionError("invalid extension lifecycle arguments")
             if name == "extension:help":
-                return {"handbook": HANDBOOK}
+                return {"handbook": UI_HANDBOOK if arguments.get("chapter") == "ui" else HANDBOOK}
+            if name == "extension:events":
+                from tinyassets.extension_hooks import read_evidence
+
+                return read_evidence(self.store)
             if name == "extension:list":
                 return {"extensions": self.store.list()}
+            self._authority(lifecycle=True)
             if name == "extension:install":
                 try:
                     files = {path: base64.b64decode(data, validate=True)
@@ -245,7 +299,13 @@ class ExtensionCapabilities:
                 except (ValueError, binascii.Error):
                     raise ExtensionError("files must contain base64 bytes") from None
                 return self.store.install(files)
-            return self.store.transition(
+            if name == "extension:activate":
+                from tinyassets.extension_ui import component
+
+                doc, content = self.store.load(arguments["name"], arguments["revision"]).content()
+                for card in doc.get("cards", []):
+                    component(arguments, card, content, self.store.identity)
+            state = self.store.transition(
                 arguments["name"], arguments["revision"],
                 expected_generation=arguments["expected_generation"],
                 active=name == "extension:activate", ceiling=sorted(self._current()),
@@ -253,6 +313,9 @@ class ExtensionCapabilities:
                                         arguments.get("bindings", {}))
                 if name == "extension:activate" else {},
             )
+            from tinyassets.extension_ui import project
+
+            return {**state, "ui_ids": project(self, state)}
         # Resolve from daemon state, never trust revision/generation claims from the client.
         for state in self.store.list():
             if state["state"] != "active":
@@ -294,6 +357,15 @@ class ExtensionCapabilities:
                         from tinyassets.extension_remote import invoke
 
                         return invoke(self, state, doc, row, arguments)
+                    if kind == "cards":
+                        if arguments:
+                            raise ExtensionError("UI contribution takes no arguments")
+                        from tinyassets.extension_ui import component
+
+                        _, content = self.store.load(state["name"], state["revision"]).content()
+                        entry = component(state, row, content, self.store.identity)
+                        return {"ui_id": entry["ui_id"], "state": "projected",
+                                "revision": state["revision"], "generation": state["generation"]}
                     return {"error": "extension_runtime_unavailable", "kind": kind,
                             "revision": state["revision"],
                             "detail": "Installed metadata; contribution runtime is not admitted"}

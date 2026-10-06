@@ -1291,8 +1291,9 @@ def _run(
         )
         if scoped:
             from tinyassets.approval_scopes import dispatch
+            from tinyassets.outside_authority import effect_admission
 
-            with dispatch(
+            with effect_admission(), dispatch(
                 universe_dir, {k:v for k,v in packet.items() if k != 'sink'},
                 grant.owner_user_id, rule_agent, run_id=run_id, node_id=node_id,
             ) as receipt:
@@ -1300,7 +1301,10 @@ def _run(
                 if isinstance(response.get('status'), int):
                     receipt['status'] = response['status']
         else:
-            response = proxy.request(verb, wire_request)
+            from tinyassets.outside_authority import effect_admission
+
+            with effect_admission():
+                response = proxy.request(verb, wire_request)
     except Exception as exc:
         # Secret-free by construction: the proxy/broker raise only sanitized,
         # credential-free errors across the governed boundary.

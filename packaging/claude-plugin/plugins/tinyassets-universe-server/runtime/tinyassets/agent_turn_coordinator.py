@@ -459,7 +459,11 @@ class AgentTurnCoordinator:
             with request_budget_scope(
                 self.request_budget, close_on_exit=self._owns_request_budget,
             ):
-                return await self._run()
+                result = await self._run()
+                from tinyassets.extension_hooks import turn_event
+
+                await turn_event(self, "turn_end", {"status": "completed"})
+                return result
         except BaseException as exc:
             try:
                 exc.turn_effects, exc.turn_stage, exc.turn_ref = self.effects_evidence()
@@ -519,6 +523,11 @@ class AgentTurnCoordinator:
 
         self.request_budget.persist(self.context.universe_dir.parent)
         self.request_budget.link("turn", self.turn.turn_id)
+        from tinyassets.extension_hooks import turn_event
+
+        await turn_event(self, "input", {"input": self.prompt})
+        await turn_event(self, "turn_start", {"turn_id": self.turn.turn_id})
+        await turn_event(self, "context", {"system": self.system})
         timeout = self.config.stream_timeout_profile().absolute_cap_s
         # Every round is told what is LEFT of the turn, not the whole cap again:
         # a provider that cannot be cancelled mid-request (the HTTP broker) is

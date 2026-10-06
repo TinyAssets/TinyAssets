@@ -8,10 +8,10 @@
 - [x] 2.1 Validate complete v2 manifests and package byte revisions with negative tests.
 - [x] 2.2 Add owner-bound install/activate/revoke state with generation conflicts and isolation tests.
 - [x] 2.3 Expose lifecycle, contribution discovery and connection requirement dispatch through ta.
-- [ ] 2.4 Dispatch tools/commands/hooks in today's jail with exact bytes and revocation checks.
-- [ ] 2.5 Project UI/cards and workflows through existing backends under the same lifecycle.
-- [ ] 2.6 Integrate package sharing and authenticated installed-agent resolution without exporting grants.
-- [ ] 2.7 Consume U1 package admission for scoped connections and MCP; retain explicit unavailable results until ready.
+- [x] 2.4 Dispatch tools/commands/hooks in today's jail with exact bytes and revocation checks.
+- [x] 2.5 Project UI/cards through app_ui and preserve scoped workflow provenance.
+- [x] 2.6 Integrate package sharing and authenticated installed-agent resolution without exporting grants.
+- [ ] 2.7 Consume U1 package cells for stdio/process admission; remote MCP, git and local bindings use today's broker.
 
 ## 3. Verification and delivery
 
@@ -74,3 +74,45 @@ skips, including real jail clone/fetch/binary push and negative transport tests;
 one existing broker teardown warning reported, no test skip or weakening.
 Claude git review APPROVE; nonblocking pump-scope recommendation incorporated.
 Per-owner git_bridge stays with U1; this remote git path does not wait for it.
+
+
+## Lifecycle continuation (supersedes the earlier slice limitations above)
+
+Remote MCP and git were pushed as verified slices 0366f1e934, 6eaa04328a and
+edb93dc1b0. Claude remote review ADAPT was incorporated (explicit refusal instead
+of orphaned per-frame approval); git review APPROVE is recorded in review-git.md.
+
+Automatic input/turn_start/context/before_tool/after_tool/turn_end events now use
+the signed triggering turn and current jail. Failures and grant-limited skips
+are observational evidence available through extension:events. Cards project
+immutable HTML/app_ui JSON into the existing app_ui rows; generation checks hide
+stale or edited projections. Local bindings pin private grant/connection IDs and
+incarnations per activation; discovery and dispatch remain one ta surface.
+
+Outside-client authority includes the verified-claims probe, exact scoped grants,
+protected owner grant editing, durable deny switch, family/auth_time reconnect
+fences, signed launches, queued run recovery and scheduled/event work provenance.
+Claude lifecycle review ADAPT: all five required findings accepted and addressed;
+read design.md for dispositions and precise in-flight-effect semantics. A real
+AuthKit check is founder-owned in docs/host-actions.md. There is no claim that
+production classification or the durable switch is enabled.
+
+Pre-review broader Linux verification: 431 passed / zero skips, including affected
+heavy provider_work_authority, universe_server_isolation and branch_runner, run
+admission/waiter recovery, OAuth, git jail and governed outbound calls. Earlier
+lifecycle Linux check: 108 passed / zero skips. Post-review verification is recorded
+in the final continuation entry below. Static prompt budgets are unchanged.
+
+Only stdio/package-cell runtime admission waits on U1. Draft delivery still does
+not claim deployment, live acceptance, or as-built spec sync. Source PRs #4496,
+#4511, #4513 and #4501 remain open until this PR's folded content is on main, per
+the founder's explicit condition; their future close comments must point to #4519.
+
+
+Post-review Linux oracle: 286 passed / zero skips (hooks invoking ta without
+recursion, UI lifecycle, automatic turns, ta, prompt budgets, outside authority,
+automations/events, account deletion); 322 passed / zero skips (OAuth, steering,
+protected owner sessions, affected heavy authoring/visibility/cycle tests, remote
+MCP, credential-blind git and authenticated effects). Ruff passes all 47 changed
+Python files; strict OpenSpec validation and rebuilt plugin/import probe pass.
+The protected owner grant endpoint regression additionally passes locally.
