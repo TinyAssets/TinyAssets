@@ -1,4 +1,100 @@
-# Current U1 delivery: D77 application adoption of independent cells
+# Current U1 delivery: D78 actual code-node engine integration
+
+Started at d1f84c63e5 with the requested ff-only pull, already current. U1 only:
+fixed node-sandbox admission, its existing D9 nested jail, graph and authoring
+callers, and acceptance probes. U2 migration/rollback/startup files are untouched.
+PR #4509 is draft at 827d84c8797def5a6962124c4cc0732e4ac62e99 and explicitly
+not merge-ready; it was not merged. Package cells remain after actual classes.
+
+D78 records the mechanics in design.md. This is actual node execution rather
+than a transport-only slice: dedicated owner outer cell, optional exact-owner
+pinned workspace, existing nested node jail/resource checks, bounded data/RPC
+transport, and cancellation/reaping independent of blocked daemon callbacks.
+Graph compilation passes the center and skips daemon bwrap probes when selected.
+Authoring supplies its session owner's protected home binding; absent admission
+still refuses. No token or raw credential enters the cell. Other classes are
+not implicitly admitted, and no full task checkbox is newly complete.
+
+Initial production probe exposed the inner jail's missing read-only
+`/etc/ld.so.cache`: the copied production Python could not locate libpython.
+Added that public system file to the existing system read-only set. A corrected
+probe fixture also uses a unique post-git marker. Neither failure was acceptance.
+The subsequent image `sha256:7c2411a135a52a9cc07c3078d71a5fe8b34914b117b3549b1f53435737cc75a9`
+passed actual Alice/Bob node data, git, venv/native descendant, RPC, blocked-RPC
+cancellation and post-cancel reuse; zero foreign bytes. That image predates
+the review corrections and is not final evidence.
+
+Cross-family peer-agents review (Claude, exit 0): ADAPT, no floor breach found.
+Receipt: `C:/Users/Jonathan/AppData/Local/Temp/uid-d78-review.md`.
+- **AGREE** compiler factory finding: skip the daemon probe and cover the real
+  compiler workspace entry, not only direct NodeSandbox calls.
+- **AGREE** transport robustness: check proof before sending data; nonblocking
+  deadline/cancellation-aware writes; UTF-8 encoding and a structured failed
+  SandboxResult on transport result overflow. Authoring scope is now carried.
+- **DISAGREE_EVIDENCE** request to remove cumulative output protection:
+  `node_sandbox._BoundedDrain.run` explicitly counts RPC bytes before its
+  `on_line` callback discards them. The existing inner ceiling is 8 MiB; the
+  proposed 700 x 100 KB workload already fails there. Keep both guards.
+
+Linux source receipts so far (all exit 0, zero skips): 141 initial node/launcher
+tests; 178 workspace plus affected heavy tests; 309 expanded node/workspace/
+graph-diagnostic/heavy tests; then 358 tests including new compiler coverage
+and authoring tests after review corrections. Full Ruff remains
+55 unchanged findings; targeted Ruff and strict OpenSpec pass. Alias probe on
+the intermediate image: 132 denied, 22 own reads, zero foreign reads.
+
+Final production Dockerfile image, build exit 0 and privileged chain PASS:
+`sha256:523e79ad5a95bbbf39e79881e1abaf39bf28c2b4449b21e44b97759d61e77572`
+(`tinyassets-uid-d78:guarded`). Final commands, each exit 0:
+- `python scripts/role_node_launcher_probe.py --image tinyassets-uid-d78:guarded`:
+  Alice/Bob actual compiler workspace nodes AND authoring draft node execution,
+  data-only nodes, git, venv/native descendants, scoped RPC, cancellation while
+  callback blocks, post-cancel reuse. Dedicated identities, zero caps, NNP,
+  descriptors 0/1/2, host-parent traversal/foreign aliases/relabel/network denied;
+  **ZERO FOREIGN_BYTES**. Synthetic state only.
+- `python scripts/role_preview_launcher_probe.py --image tinyassets-uid-d78:guarded`:
+  actual sandbox-enabled Chromium, screenshot writes, existing git/bridge pass.
+- `python scripts/role_reader_alias_probe.py --image tinyassets-uid-d78:guarded`:
+  **132 denied, 22 own reads, zero foreign reads**, foreign bytes unchanged.
+- `python scripts/role_owner_namespace_probe.py --image tinyassets-uid-d78:guarded`:
+  all three profiles deny foreign read/relabel/copy and out-of-range mapping.
+- `python scripts/role_service_bootstrap_probe.py --image tinyassets-uid-d78:guarded --snapshots --git --stream`:
+  sealed snapshots, decoder/git, broker HTTPS GET/POST, accounting/replay refusal
+  and two OAuth rotations PASS.
+- `python scripts/linux_oracle.py -- tests/test_universe_path_io_guard.py tests/test_role_node.py tests/test_node_sandbox.py tests/test_node_sandbox_workspace.py tests/test_authoring_sandbox.py tests/test_authoring_sessions.py tests/test_node_enqueue_concurrency.py tests/test_nodes_real.py -q -rs`:
+  **362 passed, zero skips** after review and guard fixes.
+- `python scripts/linux_oracle.py -- tests/test_universe_tools.py tests/test_universe_tools_jail.py -q -rs`:
+  **85 passed, zero skips**, covering shared process-tree monitoring.
+- `python scripts/linux_oracle.py -- tests/test_owner_launcher_client.py tests/test_role_launcher.py tests/test_role_decoder.py tests/test_role_git.py tests/test_role_preview.py -q -rs`:
+  **47 passed, zero skips** on final source.
+- Plugin regenerated with import probe; all 618 canonical files mirror-match.
+  Targeted Ruff, strict OpenSpec and diff checks PASS.
+
+The raw-I/O guard run found four existing node-module operations newly
+in scope because of the owner path, and the new in-cell workspace open. Routed
+them through existing filesystem helpers without changing any guard/test pin:
+fixed `/proc` reads through read_data_path; temporary script unlink through
+unlink_data_path; scratch cleanup through RealPoolFilesystem; cell mount reopen
+through open_dir_nofollow. The final guarded image above includes those changes;
+all five production probes were rerun on it and passed. No test pin was edited.
+
+Release-critical files in this slice: **2**, `deploy/role_owner_launcher.py`
+(engine dispatch only), `deploy/role_decoder.py` (unprivileged fixed node entry).
+No Dockerfile, migration, rollback, startup or healthcheck edit. Migration
+dry-run/two-pass deletion/actual old-image rollback are U2 work, not run here.
+Startup stays OFF. No final build PR or deployment.
+
+Remaining U1: actual provider CLI/discovery/auth, engine-MCP proxy, tool-jail,
+workspace provision/registry/worker, remote git and local-box, ingestion/video,
+then immutable package revision cells with scoped broker credential slots and
+egress (PR #4511). The complete all-class matrix is still unfinished; the reader
+concern stays open. U2 still owns full migration/quarantine/two-pass deletion,
+old-image CMD rollback and startup/healthcheck. General ffmpeg/ffprobe remains
+absent from the image; coordinate image dependencies with U2. No activation or
+final build PR until the complete acceptance set is verified.
+
+---
+# Prior U1 delivery: D77 application adoption of independent cells
 
 D76 is pushed at **eeeeb0ff49dedf2a9b5b8b487e4b8fd65c7b08cb**, remote SHA
 asserted. Hygiene: **2 tests added, 0 removed, 0 tampering**. Continued into

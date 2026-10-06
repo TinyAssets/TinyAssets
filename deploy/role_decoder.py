@@ -27,10 +27,11 @@ def identity(uid=1003):
         raise RuntimeError("decoder role retirement is absent")
 
 
-def enter(mime, data_root, uid=1003, *, preview=False, preview_write=False):
+def enter(mime, data_root, uid=1003, *, preview=False, preview_write=False, node=False):
     identity(uid)
     host = namespaces()
-    if preview_write:
+    mounted = preview_write or (node and mime == 'workspace')
+    if mounted:
         info = os.fstat(3)
         if not stat.S_ISDIR(info.st_mode) or info.st_gid != uid:
             raise RuntimeError('preview output source is invalid')
@@ -39,7 +40,7 @@ def enter(mime, data_root, uid=1003, *, preview=False, preview_write=False):
     # Load only the immutable stdlib-only filter definition; no package import
     # or application initialization before the owner boundary exists.
     filter_factory = runpy.run_path("/app/tinyassets/providers/jail_seccomp.py")["program_fd"]
-    descriptor = filter_factory(profile="cell-nested" if preview else "cell-deny")
+    descriptor = filter_factory(profile="cell-nested" if preview or node else "cell-deny")
     os.set_inheritable(descriptor, True)
     argv = ["/usr/bin/bwrap", "--die-with-parent", "--new-session", "--unshare-all",
             "--cap-drop", "ALL", "--clearenv", "--setenv", "PATH", "/usr/bin:/bin",
@@ -54,12 +55,12 @@ def enter(mime, data_root, uid=1003, *, preview=False, preview_write=False):
         for path in ('/opt/ms-playwright', '/etc/fonts'):
             argv.extend(['--ro-bind', path, path])
         argv.extend(['--setenv', 'PLAYWRIGHT_BROWSERS_PATH', '/opt/ms-playwright'])
-    if preview_write:
+    if mounted:
         argv.extend(['--bind-fd', '3', '/workspace'])
     argv.extend(["--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp",
                  "--chdir", "/tmp", "--seccomp", str(descriptor), "--",
                  "/opt/venv/bin/python", "-I", "-B", "/usr/local/libexec/ta-decoder.py",
-                 'inside-preview-write' if preview_write else
+                 'inside-node' if node else 'inside-preview-write' if preview_write else
                  "inside-preview" if preview else "inside-owner", mime,
                  json.dumps(host, sort_keys=True), data_root, str(uid)])
     os.execv(argv[0], argv)
@@ -222,7 +223,26 @@ def decode(mime, host, data_root, uid=1003):
 
 
 if __name__ == "__main__":
-    if (len(sys.argv) == 5 and sys.argv[1] == 'enter-preview-write'
+    if (len(sys.argv) == 5 and sys.argv[1] == 'enter-node'
+            and sys.argv[2] in {'data', 'workspace'} and 0 < int(sys.argv[4]) < 100000):
+        enter(sys.argv[2], sys.argv[3], int(sys.argv[4]), node=True)
+    elif (len(sys.argv) == 6 and sys.argv[1] == 'inside-node'
+            and sys.argv[2] in {'data', 'workspace'} and 0 < int(sys.argv[5]) < 100000):
+        host = json.loads(sys.argv[3])
+        source = host.pop('source', None)
+        if source is not None:
+            mounted = os.stat('/workspace', follow_symlinks=False)
+            if [mounted.st_dev, mounted.st_ino] != source:
+                raise RuntimeError('node mount differs from pinned source')
+        proof = prove_cell(host, sys.argv[4], int(sys.argv[5]), 'cell-nested')
+        proof['source'] = source
+        sys.stdout.buffer.write(json.dumps({'cell': proof}).encode() + b'\n')
+        sys.stdout.buffer.flush()
+        sys.path.insert(0, '/app')
+        from tinyassets.role_node import cell_main
+
+        raise SystemExit(cell_main(sys.argv[2] == 'workspace'))
+    elif (len(sys.argv) == 5 and sys.argv[1] == 'enter-preview-write'
             and 0 < int(sys.argv[4]) < 100000):
         enter(sys.argv[2], sys.argv[3], int(sys.argv[4]), preview_write=True)
     elif (len(sys.argv) == 6 and sys.argv[1] == 'inside-preview-write'

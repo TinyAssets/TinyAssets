@@ -297,16 +297,22 @@ class OwnerLauncher:
             fields.add('mime')
         if kind == 'preview-write':
             fields.add('ui_id')
+        if kind == 'node-sandbox':
+            fields.add('workspace')
+        mounted = kind in {'workspace-git', 'preview-write'} or (
+            kind == 'node-sandbox' and request.get('workspace') is True)
         if (not isinstance(request, dict)
                 or set(request) != fields or request['op'] not in {'SPAWN', 'START'}
-                or kind not in {'image-decoder', 'workspace-git', 'ui-preview', 'preview-write'}
+                or kind not in {'image-decoder', 'workspace-git', 'ui-preview', 'preview-write',
+                                'node-sandbox'}
+                or (kind == 'node-sandbox' and type(request['workspace']) is not bool)
                 or (kind == 'image-decoder' and (
                     not isinstance(request['mime'], str)
                     or request['mime'] not in {
                         'image/png', 'image/jpeg', 'image/webp', 'image/gif'}))
                 or not isinstance(request['principal'], str)
                 or not isinstance(request['command_center'], str)
-                or len(received) != (2 if kind in {'workspace-git', 'preview-write'} else 1)
+                or len(received) != (2 if mounted else 1)
                     + int(streaming)):
             raise ValueError('unsupported owner engine')
         if not streaming and self.jobs:
@@ -330,7 +336,7 @@ class OwnerLauncher:
                     or os.readlink(f'/proc/self/fd/{received[1]}') !=
                     self.data_root + '/' + request['command_center']):
                 raise ValueError('preview output root does not match admitted center')
-        if kind == 'workspace-git':
+        if kind == 'workspace-git' or (kind == 'node-sandbox' and mounted):
             info = os.fstat(received[1])
             if not stat.S_ISDIR(info.st_mode) or (info.st_uid, info.st_gid) != (inner, inner):
                 raise ValueError('git directory is not owned by the admitted owner')
@@ -361,10 +367,10 @@ class OwnerLauncher:
                 os.dup2(fd, 1)
                 null = os.open('/dev/null', os.O_WRONLY)
                 os.dup2(null, 2)
-                if kind in {'workspace-git', 'preview-write'}:
+                if mounted:
                     os.dup2(received[1], 3)
                 self.launch['close_descriptors'](
-                    (3,) if kind in {'workspace-git', 'preview-write'} else ())
+                    (3,) if mounted else ())
                 os.setgroups([])
                 os.setresgid(inner, inner, inner)
                 os.setresuid(inner, inner, inner)
@@ -372,7 +378,10 @@ class OwnerLauncher:
                 self.launch['_assert_caps'](0)
                 os.umask(0o007)
                 os.chdir('/')
-                if kind == 'workspace-git':
+                if kind == 'node-sandbox':
+                    command = ['/usr/local/libexec/ta-decoder.py', 'enter-node',
+                               'workspace' if mounted else 'data', self.data_root, str(inner)]
+                elif kind == 'workspace-git':
                     command = ['/usr/local/libexec/ta-git.py', 'enter', str(inner), self.data_root]
                 elif kind == 'ui-preview':
                     command = ['/usr/local/libexec/ta-decoder.py', 'enter-preview',
@@ -388,7 +397,8 @@ class OwnerLauncher:
                      'PYTHONDONTWRITEBYTECODE': '1'})
             except BaseException:
                 os._exit(126)
-        deadline = time.monotonic() + (75 if kind == 'ui-preview' else
+        deadline = time.monotonic() + (1810 if kind == 'node-sandbox' else
+                                     75 if kind == 'ui-preview' else
                                      65 if kind == 'workspace-git' else 35)
         if streaming:
             self.jobs[pid] = (inner, machine, deadline, status_channel)

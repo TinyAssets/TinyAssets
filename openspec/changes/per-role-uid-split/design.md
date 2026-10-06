@@ -1,3 +1,28 @@
+### D78. Mechanical node-sandbox integration through the bounded owner launcher
+
+The existing code-node executor runs inside a dedicated owner's outer cell,
+using D9's already-assigned cell-nested profile and its existing inner jail.
+The mapper accepts a fixed node-sandbox kind and boolean workspace selector,
+never executable/environment/profile fields. An optional pinned directory must
+have the exact owner UID/GID and remain beneath the admitted center. Mount
+source descriptors close before application imports; only the mounted directory
+is reopened for the inner jail. No owner store or credential is mounted.
+
+The graph compiler supplies its admitted command-center path. Selected-broker
+calls without that scope or bounded client refuse, with no daemon subprocess
+fallback. Data-only nodes require the same admission. Existing source/input,
+output, memory, timeout and workspace checks remain in the inner executor.
+The mapper's fixed node lifetime is 1810 seconds (the existing 1800-second
+workspace maximum plus transport/teardown). The daemon relays bounded RPC frames
+to the existing per-run callback; this adds no action authority or broker token.
+Callback execution does not block cell cancellation. All result dataclass fields,
+including cancellation/workspace-timeout, survive transport. Startup stays OFF.
+This does not admit provider/tool/registry/worker/package cells by implication.
+Adding explicit owner scope subjects the existing node module to the raw-I/O
+guard. Keep the guard unchanged: route fixed kernel-stat reads and private
+temporary-file cleanup through the existing filesystem helpers, and reopen the
+in-cell workspace with open_dir_nofollow. No raw-I/O baseline growth is allowed.
+
 ### D77. Mechanical adoption of independent lifetimes by existing engine APIs
 
 Decoder, preview renderer/writer and workspace-git clients now use START and

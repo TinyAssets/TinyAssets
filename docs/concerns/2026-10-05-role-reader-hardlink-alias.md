@@ -7,6 +7,22 @@ summary: 'D65: dedicated-label daemon reader matrix passes with 114 denials and 
 
 ## Founder D61 continuation
 
+D78 adds actual code-node compiler/authoring execution, workspace git and venv
+descendants through the dedicated-owner launcher. The image
+`sha256:523e79ad5a95bbbf39e79881e1abaf39bf28c2b4449b21e44b97759d61e77572`
+passes Alice/Bob native descendant foreign-alias/read/relabel/host-fd checks with
+zero foreign bytes, alongside **132 daemon denials, 22 own reads, zero foreign
+reads** and all three profile read/relabel/copy diagnostics. This final image
+includes raw-I/O guard cleanup; commands and receipts live in delivery.md.
+Retain this concern: other actual engine classes and U2 migration are unfinished.
+
+Main rechecked at `22bc0f728e989813630d54c8378921370fafe7f2`: its common
+`workspace_fs._open_regular_beneath` still has no nlink or dedicated UID/GID
+descriptor predicate. Thus a preplanted reachable foreign hardlink remains
+relevant to common daemon readers in the single-UID design. This is a source
+assessment, not evidence that a production cell can plant that link; no new
+live-production file access or exploit is claimed.
+
 D76 recheck on production Dockerfile image
 `sha256:93f86ca0e5ef9ac4894ad0cb3bf57497336cb6d4a6675874bc4eb879b43b7c36`:
 **132 denials, 22 own reads, zero foreign reads**, including preview outputs;

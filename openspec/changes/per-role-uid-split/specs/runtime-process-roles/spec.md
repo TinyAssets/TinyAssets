@@ -4,6 +4,23 @@
 
 ## ADDED Requirements
 
+### Requirement: Code-node execution retains its inner jail inside the owner cell
+
+When the broker role split is selected, code-node execution SHALL enter the
+bounded owner launcher with the admitted command center and broker-resolved
+dedicated UID/GID. The fixed node-sandbox class SHALL retain D9's cell-nested
+profile and the existing inner sandbox. Its optional workspace SHALL be a pinned
+directory with exact owner UID/GID beneath that center; source descriptors SHALL
+close before application code. Missing scope or launcher SHALL refuse without
+daemon subprocess fallback. Callback actions SHALL retain the daemon's existing
+per-run authorization, without exposing broker credentials to either jail.
+
+#### Scenario: Actual owner node execution and cancellation
+- **WHEN** Alice and Bob execute code nodes with data, scoped action callbacks and their own workspaces
+- **THEN** actual nested execution and workspace git/venv operations succeed under their dedicated identities
+- **AND** foreign workspaces, planted aliases and inherited host descriptors are denied
+- **AND** cancellation reaps the cell even while a daemon callback is blocked, and a subsequent node still succeeds
+
 ### Requirement: Independent bounded owner-cell lifetimes
 
 The bounded launcher SHALL support independent bidirectional data streams and

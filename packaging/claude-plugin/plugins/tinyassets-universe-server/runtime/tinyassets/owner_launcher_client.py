@@ -187,7 +187,7 @@ class OwnerLauncherClient:
                 or not OWNER_ID_FIRST <= identity.uid <= OWNER_ID_LAST):
             raise ValueError('invalid admitted cell identity')
         document = dict(extra or {})
-        if set(document) - {'mime', 'ui_id'}:
+        if set(document) - {'mime', 'ui_id', 'workspace'}:
             raise ValueError('unsupported cell parameters')
         document.update(op='START', kind=kind, principal=principal, command_center=command_center)
         data, child = socket.socketpair()
