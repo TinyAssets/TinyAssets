@@ -49,6 +49,7 @@ on:
       # This job and its assertion helper.
       - ".github/workflows/real-browser-proof.yml"
       - "scripts/ci_assert_junit_case.py"
+      - "scripts/generate_guard_inventories.py"
       # The venue.
       - "scripts/linux_oracle.py"
       - "docker/linux-oracle.Dockerfile"

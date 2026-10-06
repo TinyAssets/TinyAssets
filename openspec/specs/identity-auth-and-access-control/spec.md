@@ -264,8 +264,20 @@ dispatch. Every probe script in `scripts/` that calls the MCP endpoint
 SHALL send the bearer; without the variable set the script SHALL exit 2
 naming it. `scripts/mcp_public_canary.py` SHALL assert that an
 unauthenticated `initialize` answers the 401 challenge, then use the bearer
-for `--assert-handles`. `scripts/deployed_sha.py` SHALL read `/mcp/pulse` with
-the canary bearer and keep its `image_tag` corroboration.
+for `--assert-handles`. With an explicit MCP URL, `scripts/deployed_sha.py`
+SHALL read `/mcp/pulse` with the canary bearer and keep its `image_tag`
+corroboration. Deploy assertions and build-image's production-receipt read
+SHALL explicitly select this authenticated mode.
+
+The default local deployed-SHA read SHALL use unauthenticated `HEAD /app` and
+the existing `X-TinyAssets-Build` projection of `release_state.git_sha`. This
+mode SHALL read no response body, require a full 40-character hexadecimal SHA,
+and identify its evidence as a public receipt projection without image-tag
+corroboration or binary-freshness proof. It SHALL NOT widen access to
+`/mcp/pulse` or expose additional receipt fields. Missing or malformed headers
+and network failures SHALL exit 2; a known commit absent from the served
+history and not runtime-equivalent SHALL exit 1; a proved assertion SHALL
+exit 0. Canary-only provenance SHALL remain unknown in public mode.
 
 #### Scenario: canary without its token
 - **WHEN** `mcp_public_canary.py --assert-handles` runs with the variable unset
