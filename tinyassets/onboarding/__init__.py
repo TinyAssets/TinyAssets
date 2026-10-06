@@ -1284,6 +1284,12 @@ async def _handle_memory(request: Any) -> Any:
         if not _same_origin_json(request, str(app_config().get("resource") or "")):
             return JSONResponse({"error": "cross_origin_rejected"}, status_code=403,
                                 headers=_NO_STORE)
+        from tinyassets.onboarding.owner_sessions import require
+        try:
+            require(request, owner=current_identity().user_id)
+        except PermissionError:
+            return JSONResponse({"error": "interactive_approval_required"},
+                                status_code=403, headers=_NO_STORE)
         data = await _read_small_json(request)
         if data is None:
             raise ValueError("invalid JSON")
@@ -2549,6 +2555,7 @@ def onboarding_routes() -> list[Any]:
         handle_service_worker,
     )
     from tinyassets.onboarding.owner_sessions import begin as owner_sign_in
+    from tinyassets.onboarding.soul import handle_soul
     from tinyassets.onboarding.ui_frame import handle_ui_frame
     from tinyassets.owner_door import owner_door_routes
 
@@ -2583,6 +2590,7 @@ def onboarding_routes() -> list[Any]:
         Route("/app/ui-prefs", _handle_ui_prefs, methods=["GET", "POST"]),
         Route("/app/rules", _handle_rules, methods=["GET", "POST"]),
         Route("/app/memory", _handle_memory, methods=["GET", "POST"]),
+        Route("/app/soul", handle_soul, methods=["GET", "POST"]),
         Route("/app/profile", _handle_profile, methods=["GET"]),
         Route("/app/turn/interrupt", _handle_turn_interrupt, methods=["POST"]),
         Route("/app/live", _handle_live, methods=["POST"]),
