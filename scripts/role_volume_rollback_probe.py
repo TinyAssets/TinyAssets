@@ -42,17 +42,31 @@ helpers=dict(owner=owner,egress=load('egress-migration'),
     metadata=load('metadata-migration'),inventory=load('volume-inventory'),
     modes=runpy.run_path('/app/tinyassets/role_modes.py'),launch=launch)
 migrate=load('volume-migration')['migrate']
+original=snapshot(root)
 before=snapshot(root); migrate(root,dry_run=True,**helpers); assert snapshot(root)==before
 migrate(root,**helpers)
 before=snapshot(root); migrate(root,**helpers); assert snapshot(root)==before
 machine=(root/'alice/work').stat().st_uid
+assert 300001 <= machine < 400000
+assert (root/'bob/work').stat().st_uid != machine
 def engine():
     private=root/'alice/work/private'; private.mkdir(mode=0o700)
     (private/'payload').write_bytes(b'engine-created'); (private/'payload').chmod(0o600)
 child(machine,[],engine)
+assert (root/'alice/work/private/payload').stat().st_uid==machine
 before=snapshot(root); migrate(root,reverse=True,dry_run=True,**helpers)
 assert snapshot(root)==before
 migrate(root,reverse=True,**helpers)
+assert (root/'alice/work/private/payload').stat().st_uid==1001
+restored=snapshot(root)
+for path,old in original.items():
+    if path=='alice' or path=='bob' or path.startswith(('alice/','bob/')):
+        new=restored[path]
+        assert new[:2]==old[:2], (path,new,old)
+        assert new[4]==old[4], (path,'content changed')
+        # D211 retains live modes; only the protected center root is narrowed.
+        expected_mode=old[2] if '/' in path else (old[2] & ~0o7777)|(old[2] & 0o2750)
+        assert new[2]==expected_mode, (path,new,old)
 before=snapshot(root); migrate(root,reverse=True,**helpers); assert snapshot(root)==before
 assert json.loads((root/'.layout.json').read_text())['state']=='stable'
 print(json.dumps(dict(full_coordinator=True,forward_reverse_dry_repeat=True,
@@ -87,9 +101,7 @@ def main():
     subprocess.run(['docker', 'volume', 'create', name], check=True, capture_output=True)
     common = ['--network', 'none', '--cap-drop', 'ALL', '--security-opt',
               'no-new-privileges=true', '--mount', f'type=volume,src={name},dst=/data']
-    booted = False
     network = False
-    metadata = False
     try:
         command = ['docker', 'run', '--rm', '-i', *common, '--user', '0:0',
                    '--security-opt', 'seccomp=unconfined']
@@ -110,16 +122,29 @@ def main():
                         '--ip', '169.254.169.254', '--user', '1001:1001', '--cap-drop', 'ALL',
                         '--security-opt', 'no-new-privileges=true', '--entrypoint',
                         '/opt/venv/bin/python', old, '-c', server], check=True, capture_output=True)
-        metadata = True
         # No entrypoint/CMD override: exercise the actual previous production startup.
         boot_options = common.copy()
         boot_options[1] = name
+        boot_options += ['--security-opt', 'seccomp=unconfined', '--security-opt',
+                         'apparmor=unconfined', '--security-opt', 'systempaths=unconfined']
+        environment = {
+            'HOME': '/app', 'TINYASSETS_REPO_ROOT': '/data/community-pool',
+            'TINYASSETS_CLOUD_DAEMON_SUBSCRIPTION_ONLY': '1', 'TINYASSETS_GOAL_POOL': 'off',
+            'TINYASSETS_AUTO_SHIP_RUBRIC_MODE': 'enforce',
+            'TINYASSETS_AUTO_SHIP_TRAJECTORY_MODE': 'enforce',
+            'TINYASSETS_MCP_CANARY_URL': 'http://127.0.0.1:8001/mcp',
+            'TINYASSETS_ONBOARDING_APP': '1', 'TINYASSETS_ALLOW_CLAUDE_SERVING': '1',
+            # The old WorkOS path rejects the synthetic canary as a non-JWT.
+            # This fixture proves storage/boot compatibility, not production auth.
+            'UNIVERSE_SERVER_AUTH': 'false',
+            'UNIVERSE_SERVER_DEV_USER': 'u2-synthetic-operator',
+        }
+        for key, value in environment.items():
+            boot_options += ['-e', key+'='+value]
         subprocess.run(['docker', 'run', '-d', '--name', name, *boot_options, '--user', '1001:1001',
                         '-e', 'TINYASSETS_DATA_DIR=/data', '-e', 'TINYASSETS_IMAGE='+old,
                         '-e', 'TINYASSETS_WIKI_CANARY_TOKEN=synthetic-u2-rollback-only',
-                        '-e', 'UNIVERSE_SERVER_DEV_USER=u2-synthetic-operator',
                         old], check=True, capture_output=True)
-        booted = True
         deadline = time.monotonic() + 180
         while True:
             result = subprocess.run(['docker', 'exec', name, '/opt/venv/bin/python', '-c',
@@ -143,13 +168,12 @@ def main():
         print(json.dumps(dict(candidate=candidate, old_image=old, old_cmd_boot=True,
                               old_healthcheck=True, owner_tree_rollback=True,
                               old_uid=1001, old_capabilities='zero', synthetic_volume=True,
-                              synthetic_metadata=True)))
+                              synthetic_metadata=True, auth_fixture='dev-operator')))
     finally:
-        if booted:
-            subprocess.run(['docker', 'rm', '-f', name], check=True, capture_output=True)
-        if metadata:
-            subprocess.run(['docker', 'rm', '-f', name+'-metadata'],
-                           check=True, capture_output=True)
+        # A failed start can still create a container; cleanup must not mask it.
+        subprocess.run(['docker', 'rm', '-f', name], check=False, capture_output=True)
+        subprocess.run(['docker', 'rm', '-f', name+'-metadata'],
+                       check=False, capture_output=True)
         if network:
             subprocess.run(['docker', 'network', 'rm', name], check=True, capture_output=True)
         subprocess.run(['docker', 'volume', 'rm', name], check=True, capture_output=True)

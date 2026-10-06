@@ -668,3 +668,72 @@ Ruff passes. D217 code and tests are untouched.
 Affected root-oracle selection: tests/test_privileged_chain.py,
 tests/test_dockerfile_shape.py, tests/test_converse_turn_cost.py:
 51 passed, zero skips. Production Dockerfile build and chain validation pass.
+
+## Remaining integration and exact U1 isolation decision
+
+Step 1 is NOT complete. Neither the U2 dispatcher at
+`deploy/role_owner_launcher.py:302` nor current U1's dispatcher admits
+`owner-delete`. The U2 client has no deletion operation. D10 requires pass 1
+through authenticated normal owner-cell admission, followed by daemon pass 2;
+calling the traversal as root or adding a separate maintenance helper would
+violate the accepted capability/owner boundary. Pool removal and scoped reset
+still call the existing daemon traversal. Verified migration is now available;
+the old D216 generation blocker is resolved and is not a reason to defer this.
+
+Step 3 is NOT complete. `deploy/role_launcher.py:435` still refuses startup,
+and `bootstrap_services` requires PID1 while the legacy image starts through
+tini. Default OFF is preserved, but no completed ON path or switched healthcheck
+is claimed. Activation needs the reconciled U1 class matrix plus owner-delete,
+then PID1 startup/entrypoint and healthcheck integration under one tested chain.
+
+Step 4 uses the requested documented-dependency alternative, not a claim of a
+U2-only diff. #4510 targets main but inherits U1 through merge-base
+`d1f84c63e5e57d44f20d9204584eb15d0a61cc5b`. U1 remains open as draft #4523.
+U2's coordinator imports `tinyassets.broker.owner_identities` in the retired
+broker and consumes U1's role retirement/chain functions and shared role mode
+map; the image and paired runtime readers are U1 changes. Rebasing only U2
+commits to main therefore leaves missing runtime dependencies. Cherry-picking
+those dependencies too still carries U1. Reverting U1 files breaks the proved
+candidate and does not isolate U2. No rewrite or U1 merge is performed here.
+
+The independently evolving shared files are deploy/role_owner_launcher.py,
+tinyassets/owner_launcher_client.py and Dockerfile. U1 adds node-sandbox
+(ff6506c757), tool-jail (220f612a81/f65af2de53) and ingestion-video (d3f99e9134)
+after this branch's admission base. The peer-agents collision instruction says
+to stop rather than work around a colliding lane. Integration must be reconciled
+with #4523 into one owner of these files, followed by serialized landing of U1
+and a U2 rebase (or one explicitly folded integration PR). This continuation
+only adds U2 helper installation and rollback evidence; it does not implement a
+competing dispatcher. No production deploy, real-user app pass or complete spec
+sync is claimed; the shared tasks remain unchecked because these items remain.
+
+## Cross-family review and final receipt
+
+Claude via peer-agents completed one read-only round, exit 0, VERDICT: ADAPT.
+Result: C:/Users/Jonathan/AppData/Local/Temp/u2-rollback-review-result.md.
+No floor-class or production-code correctness defect was found. Dispositions:
+- AGREE: assert forward uid in the reserved owner range, distinct Bob identity,
+  private-file uid before/after reverse, and every seeded owner entry's restored
+  ids/content/modes (D211's narrowed center mode retained; live modes never reset).
+- AGREE: include old compose literal settings, HOME, subscription-only branch,
+  onboarding flags and security options. The old WorkOS path returns 401 for
+  the synthetic non-JWT canary, so the final receipt explicitly records
+  auth_fixture=dev-operator. Production authentication is NOT proved.
+- AGREE: exact #4523 dependency and admission gap are now documented above.
+- AGREE: failed container starts are cleaned even when docker run exits nonzero.
+- AGREE: fixed internal metadata subnet is exclusive; run this probe serially.
+  A conflicting network causes a loud refusal, not a replacement or cleanup of
+  any pre-existing network.
+No second review round, no D214/D215/D217 changes. The corrected probe passed
+with old_cmd_boot=true, old_healthcheck=true, owner_tree_rollback=true and
+explicit synthetic_metadata=true/auth_fixture=dev-operator. Candidate and old
+image digests are unchanged (probe changes are host-side only).
+
+Final verification: migration 161/161/161, affected image/chain/static-budget
+selection 51, all root Linux oracle, zero skips. Installed owner-substep probe
+also passes nine crash boundaries (its legacy old_cmd_boot=false refers only to
+that substep; the new full-coordinator probe owns the actual boot receipt).
+Ruff and diff checks pass. Plugin mirror/import probe pass with no generated
+diff. Whole-stack hygiene: 286 added, 0 removed, 0 tampering. Fresh fetch and
+`git merge origin/main` report already up to date at a97c17c26e. No production
+deployment or complete U2 acceptance; steps 1 and 3 remain unfinished.

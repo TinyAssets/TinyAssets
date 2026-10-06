@@ -1,8 +1,9 @@
 # Role-split rollback runbook
 
-Status: specified, not yet executable or production-image proven. Task 2.4 must
-record the actual env/flag invocation and task 2.8 must prove every step on a
-disposable copy. Production execution is outside this build authorization.
+Status: full coordinator reversal and unchanged old-image CMD boot are proven
+on a disposable synthetic volume. The operator-facing startup switch remains
+unimplemented; this is not yet an executable production runbook. Production
+execution is outside this build authorization.
 
 1. Record split and old-image digests and take a recoverable volume copy under
    the layout-lock/backup protocol. Retain the split image until verification.
@@ -41,16 +42,26 @@ disposable copy. Production execution is outside this build authorization.
 
 Record image digests, exact commands, dry-run before/after metadata, repeat no-op,
 crash/resume markers, alias/symlink refusal and old-image read/write/delete. All
-acceptance results are currently **NOT RUN**. The previous capability-lifetime
-conflict is resolved by the lead's startup-only reverse-migration decision.
+startup-switch and two-pass API deletion acceptance remain **NOT RUN**. The
+capability-lifetime conflict is resolved by startup-only reverse migration.
 
-## Implemented substep, not an operational rollback command
+## Image acceptance command, not an operational rollback command
 
-D12's egress move is available as `relocate(root, reverse=True, dry_run=True)`
-in the immutable `ta-egress-migration.py` startup library. Apply sets dry_run=False.
-It requires the layout lock and completed consent migration; it leaves the
-whole layout migrating. Do not manually clear that marker or start an old image:
-workspace/ACL reversal and the complete startup command are not implemented yet.
-The production-image oracle exercises this substep on synthetic disposable copies,
-including old-location writes as uid 1001 without work groups. That is not an
-actual old-image or full rollback acceptance result.
+```
+python scripts/role_volume_rollback_probe.py --image tinyassets-uid-u2:rollback --old-image tinyassets-uid-baseline:664a4361e7
+```
+
+The probe pins both digests and calls the installed full coordinator, including
+owner/metadata/egress phases, under its layout lock. It proves nonmutating
+dry-runs and repeat no-ops in both directions, preserves restrictive new owner
+content, and then starts the old image without overriding its ENTRYPOINT/CMD.
+Its uid-1001 process reads/writes/deletes that content without work groups or
+capabilities and passes `ta-op pulse`. Receipt: `old_cmd_boot=true`,
+`old_healthcheck=true`, `owner_tree_rollback=true`.
+
+Only newly created Docker resources are used and cleaned. Cloud metadata,
+operator/canary identity and release receipt are explicitly synthetic inputs
+on an internal-only network; this does not prove real cloud provenance or a
+production deployment. Image digests and remaining integration are recorded in
+`delivery-u2.md`. Never invoke only the egress substep and manually clear its
+migrating marker; only the full coordinator owns completion.
