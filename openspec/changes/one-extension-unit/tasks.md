@@ -16,7 +16,7 @@
 ## 3. Verification and delivery
 
 - [x] 3.1 Add on-demand guidance, run affected Linux tests/heavy files, Ruff, mirror and hygiene checks.
-- [ ] 3.2 Open draft PR, obtain Claude implementation review, fold findings, merge main and push verified commits.
+- [x] 3.2 Open draft PR, obtain Claude implementation review, fold findings, merge main and push verified commits.
 - [ ] 3.3 After deployment assert SHA, run real-user app acceptance and sync verified specs.
 
 ## Verified slice (2026-10-06)
@@ -32,6 +32,12 @@ are recorded in review-implementation.md and design.md. Recovery/concurrency
 fixes: focused Linux oracle 127 passed, zero skips; Windows unit tests 36 passed.
 Hygiene after the initial implementation commit: 0 removed / 0 tampering.
 Ruff and rebuilt mirror/import probe pass after the review fixes.
+
+Merged origin/main at 22bc0f728e without conflicts. Post-merge Linux oracle
+(starter instructions, extension unit/jail and prompt costs): 57 passed, zero
+skips. Final hygiene: 15 tests added, 0 removed, 0 tampering. Plugin mirror/import
+probe remains clean after merge. PR stays draft; pending runtime tasks above are
+not superseded by these verification results.
 
 2.4 currently supports explicit ta tools/commands/hook entries using read-only
 per-bash snapshots; automatic turn-event hook launches are not wired. 2.5 is
