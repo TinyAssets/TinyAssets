@@ -57,10 +57,11 @@ def tool_mounts(uid):
 
 
 def enter(mime, data_root, uid=1003, *, preview=False, preview_write=False, node=False,
-          tool=False, video=False, provider=False, tool_files=False, package=False):
+          tool=False, video=False, provider=False, tool_files=False, package=False,
+          owner_delete=False):
     identity(uid)
     host = namespaces()
-    mounted = (preview_write or tool or provider or tool_files or package
+    mounted = (preview_write or tool or provider or tool_files or package or owner_delete
                or (node and mime == 'workspace'))
     if provider or package:
         # D82: the daemon-sealed snapshot is daemon-owned; D73 grants the owner
@@ -138,6 +139,7 @@ def enter(mime, data_root, uid=1003, *, preview=False, preview_write=False, node
     argv.extend(["--tmpfs", "/tmp",
                  "--chdir", "/tmp", "--seccomp", str(descriptor), "--",
                  "/opt/venv/bin/python", "-I", "-B", "/usr/local/libexec/ta-decoder.py",
+                 'inside-owner-delete' if owner_delete else
                  'inside-package' if package else 'inside-tool-files' if tool_files else
                  'inside-provider' if provider else 'inside-video' if video else
                  'inside-tool' if tool else 'inside-node' if node else
@@ -371,6 +373,53 @@ if __name__ == "__main__":
         if json.loads(read_config()) != {'start': True}:
             raise ValueError('package execution was not acknowledged')
         raise SystemExit(run(doc, broker='t' in sockets))
+    elif (len(sys.argv) == 5 and sys.argv[1] == 'enter-owner-delete'
+            and sys.argv[2] == 'delete' and 0 < int(sys.argv[4]) < 100000):
+        enter(sys.argv[2], sys.argv[3], int(sys.argv[4]), owner_delete=True)
+    elif (len(sys.argv) == 6 and sys.argv[1] == 'inside-owner-delete'
+            and sys.argv[2] == 'delete' and 0 < int(sys.argv[5]) < 100000):
+        host = json.loads(sys.argv[3])
+        source = host.pop('source')
+        info = os.stat('/workspace', follow_symlinks=False)
+        if [info.st_dev, info.st_ino] != source:
+            raise RuntimeError('owner deletion source differs from pinned source')
+        proof = prove_cell(host, sys.argv[4], int(sys.argv[5]))
+        proof['source'] = source
+        import resource
+
+        for kind, bound in ((resource.RLIMIT_AS, 256 * 1024 * 1024),
+                            (resource.RLIMIT_CPU, 25), (resource.RLIMIT_NOFILE, 192),
+                            (resource.RLIMIT_FSIZE, 0), (resource.RLIMIT_CORE, 0)):
+            resource.setrlimit(kind, (bound, bound))
+        sys.path.insert(0, '/app')
+        from tinyassets.role_owner_delete_cell import remove_owned
+        from tinyassets.role_provider_cell import read_config
+
+        sys.stdout.buffer.write(json.dumps({'cell': proof}).encode() + b'\n')
+        sys.stdout.buffer.flush()
+        if json.loads(read_config()) != {}:
+            raise ValueError('invalid fixed owner deletion request')
+        fd = os.open('/workspace', os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        import array
+
+        control = socket.socket(fileno=os.dup(0))
+        def classify_daemon(descriptor):
+            control.sendmsg([b'?'], [(socket.SOL_SOCKET, socket.SCM_RIGHTS,
+                                     array.array('i', [descriptor]))])
+            response = control.recv(1)
+            if response not in (b'0', b'1'):
+                raise RuntimeError('owner deletion classifier ended early')
+            return response == b'1'
+        try:
+            result = remove_owned(fd, classify_daemon=classify_daemon)
+        except (OSError, RuntimeError) as exc:
+            sys.stdout.buffer.write(b'!' + json.dumps(
+                {'error': str(exc)[:2048]}).encode() + b'\n')
+            raise SystemExit(1) from exc
+        finally:
+            os.close(fd)
+            control.close()
+        sys.stdout.buffer.write(b'!' + json.dumps(result).encode() + b'\n')
     elif (len(sys.argv) == 5 and sys.argv[1] == 'enter-tool-files'
             and sys.argv[2] == 'files' and 0 < int(sys.argv[4]) < 100000):
         enter(sys.argv[2], sys.argv[3], int(sys.argv[4]), tool_files=True)

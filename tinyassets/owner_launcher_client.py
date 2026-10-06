@@ -191,7 +191,8 @@ class OwnerLauncherClient:
                 or not OWNER_ID_FIRST <= identity.uid <= OWNER_ID_LAST):
             raise ValueError('invalid admitted cell identity')
         document = dict(extra or {})
-        if set(document) - {'mime', 'ui_id', 'workspace', 'egress', 'ta', 'revision'}:
+        if set(document) - {'mime', 'ui_id', 'workspace', 'egress', 'ta',
+                            'revision', 'delete_token'}:
             raise ValueError('unsupported cell parameters')
         if socket_fds and (kind not in ('tool-jail', 'package') or len(socket_fds) > 2):
             raise ValueError('unsupported cell sockets')
@@ -296,6 +297,25 @@ class OwnerLauncherClient:
             identity=identity, kind='preview-write', extra={'ui_id': ui_id}, profile='cell-deny',
             input_bound=MAX_CHILD_OUTPUT, output_bound=16384, timeout=45,
             directory_fd=directory_fd)
+
+    def finish_delete(self, *, principal, command_center, token):
+        """Release an exact authenticated two-pass fence, never implicitly."""
+        with self._lock:
+            self._check()
+            self._channel.settimeout(5)
+            try:
+                self._channel.sendall(json.dumps(dict(op='DELETE_DONE', principal=principal,
+                    command_center=command_center, delete_token=token)).encode())
+                answer = self._reply()
+                if answer == {'op': 'REFUSED'}:
+                    raise OwnerLaunchRefused('owner deletion finish refused')
+                if answer != {'op': 'DELETE_FINISHED'}:
+                    raise RuntimeError('invalid owner deletion finish receipt')
+            except OwnerLaunchRefused:
+                raise
+            except BaseException:
+                self._close()
+                raise
 
     def stop(self):
         with self._lock:

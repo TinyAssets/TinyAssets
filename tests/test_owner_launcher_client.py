@@ -69,6 +69,7 @@ def test_cell_concurrency_refuses_before_fork_or_descriptor_use(machines):
     module = runpy.run_path(str(Path(__file__).resolve().parents[1]
                                / 'deploy' / 'role_owner_launcher.py'))
     launcher = object.__new__(module['OwnerLauncher'])
+    launcher.delete_fences = {}
     launcher.bindings = {('alice', 'alice'): 300001}
     launcher.jobs = {i: (machine - 300000, machine, 0, None)
                      for i, machine in enumerate(machines)}

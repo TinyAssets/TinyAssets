@@ -1,3 +1,36 @@
+### D85. Authenticated owner-delete admission and two-pass fence
+
+The fixed owner-delete class accepts only the admitted principal, center and
+opaque deletion token. It mounts that exact center, exposes no relay, executable
+or caller path, and runs capability-free under its dedicated owner UID/GID with
+cell-deny and fixed resource bounds. It unlinks only exact-owner entries using
+no-follow descriptors; regular file contents are never read. Restrictive owner
+directories are restored through pinned descriptors. Daemon-owned directories
+may be traversed but are never chmodded or removed; their entries remain for
+U2's daemon pass. Other mapped owners are refused with a bounded relative path.
+Unmapped legacy entries remain for migration/daemon verification, never claimed
+deleted by this pass. Partial failures are loud and resumable, not rollback.
+
+Nested user namespaces collapse all non-owner UIDs to overflow. For each such
+inode the trusted cell passes its exact O_PATH descriptor to the daemon, which
+returns only whether the kernel host UID is 1001. No contents, paths or descriptor
+go back to the cell. This distinguishes daemon custody from foreign identity
+before traversal or mutation; overflow itself is never custody evidence.
+
+The mapper refuses deletion while that owner has any running cell. Successful
+admission installs an owner-wide fence, retained across pass-one completion,
+failure and cancellation. Only an exact matching token may retry or explicitly
+finish the fence through the authenticated daemon channel; a stale finish cannot
+release a later deletion. Normal cells remain denied between both passes. U2
+must serialize daemon writes and persist its deletion intent/token across daemon
+restart, perform its verified daemon pass, then release. Explicit abort can also
+release a quiescent failed deletion after U2 cancels pending cleanup and records
+partial loss; it is never rollback or deletion success. This is the recovery for
+inaccessible daemon directories or over-depth trees that cannot make progress by
+retry. No automatic finally release, runtime root authority, startup activation
+or U2 consumer edit. An admin grant alone cannot select a different owner's UID:
+the mapper still requires the principal's admitted binding and exact root identity.
+
 ### D84. Provider-neutral immutable package cells
 
 A package is a sealed daemon-owned tree at the admitted center's fixed

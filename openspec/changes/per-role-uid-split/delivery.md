@@ -1,3 +1,61 @@
+# Current U1 delivery: D85 authenticated owner-delete admission
+
+D84 is pushed at 3344d96b5931966c9455a97b95115acf7fecc601 (package commit
+35df4b4ecd, main merge included). Startup OFF; draft #4523.
+
+D85 adds fixed owner-delete admission and role_owner_delete.begin/finish/abort.
+The mapper authenticates the live daemon, binds principal/center to dedicated
+owner identity and exact center descriptor, requires owner-wide quiescence and
+retains an owner-wide token fence until explicit completion or abort. No path,
+UID, executable, socket or policy can be selected by the request. Retry requires
+the same center/token; other owners continue. Cancellation/EOF/failure do not
+automatically release the fence. Explicit abort reports partial deletion, never
+rollback or success, and lets U2 recover over-depth/inaccessible trees without
+permanently disabling the owner. Finish survives removal of center metadata and
+broker identity records; the mapper binding and live token remain authoritative.
+
+The fixed strict owner cell removes exact-owner entries with no-follow pinned
+descriptors and never reads file contents. It restores only owner directory
+modes and preserves daemon entries/structure for U2 pass two. Nested userns
+collapses every non-owner identity to overflow, so the trusted cell sends exact
+O_PATH descriptors to the daemon for a host-UID1001 custody boolean; no contents,
+paths or descriptor go back. Foreign entries fail loudly before traversal or
+mutation. CPU, AS, fd, file and wall ceilings bound maintenance. Partial failures
+name bounded relative paths. U2 must serialize daemon writes, persist deletion
+intent/token across restart, verify its daemon pass, and explicitly finish; U1
+does not wire account/reset/pool consumers or startup. An admin grant alone
+cannot substitute another owner's mapper binding/UID.
+
+Claude peer-agents review, 163s exit 0: VERDICT ADAPT. AGREE F1 namespace overflow:
+the first actual probe confirmed the issue; fixed exact-descriptor host custody
+classification, retaining the original foreign-failure assertion. AGREE F2
+non-progressing bounded/inaccessible trees: explicit, quiescent abort recovery,
+never automatic successful cleanup. F3 fails-safe admin mismatch is documented:
+only an admitted principal/root identity pair can delete. Receipt
+C:/Users/Jonathan/AppData/Local/Temp/uid-d85-review.md. No second review round.
+
+Final root Linux oracle: 83 passed, zero skips (role_owner_delete, role_packages,
+role_provider_discovery, role_launcher, universe_path_io_guard, converse_turn_cost).
+Supporting UID1001 owner_launcher_client oracle: 5 passed, zero skips. Ruff,
+plugin regeneration/import and strict OpenSpec PASS; no test weakened.
+Final production Dockerfile tinyassets-uid-d85:reviewed, chain PASS:
+sha256:1f7d8de7b6d47c5af61bfae9836bf26e0f18e8b081435b3b286a8d2096fcb93d.
+role_owner_delete_probe exit 0 passed Alice/Bob owner+daemon passes,
+deep-tree abort recovery, active-owner refusal, cancellation fence, same-token
+retry, stale-token refusal, foreign hardlink/symlink protection, other-owner
+concurrency and post-finish app reuse. ZERO FOREIGN_BYTES; startup_activated=false.
+One harness-only failure was a sentinel variable collision with the reused base
+probe; renamed the fixture variable, no assertion changed. The first root run
+caught mixed cell/daemon raw-I/O guard scope; split the helper into its trusted
+cell module without weakening the guard. No U2 migration files changed.
+
+Remaining: provider execution/auth/network discovery and other engine callers;
+U2 two-pass consumer integration; dynamic center admission, full denial/reader
+matrix, aggregate capacity, startup/healthchecks/rollback integration, integrated
+production proofs and main spec sync. No full build checkbox is newly complete.
+
+---
+
 # Current U1 delivery: D84 PACKAGE cells
 
 Startup OFF; draft #4523. D83 is pushed at 2f07b72490. D84 supplies

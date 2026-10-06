@@ -4,6 +4,28 @@
 
 ## ADDED Requirements
 
+### Requirement: Authenticated owner deletion retains a two-pass admission fence
+The launcher SHALL admit only the fixed owner-delete class under the authenticated
+principal's dedicated identity and exact pinned center. It SHALL require owner
+quiescence, reject caller paths/identities/programs, and retain an owner-wide
+admission fence until the daemon explicitly finishes the exact deletion token.
+An explicit abort MAY release a quiescent failed deletion only as reported partial
+deletion, never automatic rollback or success. The daemon SHALL classify exact
+non-owner descriptors by host UID; in-cell overflow SHALL NOT prove daemon custody.
+The cell SHALL unlink only exact-owner entries without following links or reading
+file contents, preserve daemon entries for pass two, and fail loudly on unsafe
+or incomplete traversal. U2 SHALL own daemon-pass integration and restart intent.
+
+#### Scenario: Pass one ends before daemon cleanup
+- **WHEN** the owner-delete cell completes, fails or is cancelled
+- **THEN** new owner cells remain refused until authenticated matching-token finish
+- **AND** a retry can use only that same center and token after cell reaping
+
+#### Scenario: Foreign entry or symlink is encountered
+- **WHEN** deletion encounters another mapped owner's entry or a symlink
+- **THEN** foreign contents are never read or changed and the foreign entry fails loudly
+- **AND** an exact-owner symlink is unlinked without traversing its target
+
 ### Requirement: Installed package execution is immutable and owner-bound
 
 The package class SHALL pin a daemon-sealed exact manifest revision and all

@@ -281,6 +281,7 @@ class OwnerLauncher:
         self.overflow_gid = int(Path('/proc/sys/kernel/overflowgid').read_text())
         self.jobs = {}
         self.package_jobs = set()
+        self.delete_fences = {}
 
     def _alive(self):
         return not select.select([self.daemon_pidfd], [], [], 0)[0]
@@ -325,6 +326,9 @@ class OwnerLauncher:
         return True
 
     def _decoder(self, request, received):
+        if isinstance(request, dict) and request.get('op') == 'DELETE_DONE':
+            self._finish_delete(request, received)
+            return
         kind = request.get('kind') if isinstance(request, dict) else None
         streaming = isinstance(request, dict) and request.get('op') == 'START'
         fields = {'op', 'kind', 'principal', 'command_center'}
@@ -340,18 +344,23 @@ class OwnerLauncher:
             fields.add('egress')
         if kind == 'package':
             fields.update(('revision', 'ta'))
+        if kind == 'owner-delete':
+            fields.add('delete_token')
         socket_count = (sum(request.get(key) is True for key in ('egress', 'ta'))
                         if kind == 'tool-jail' else int(request.get('ta') is True)
                         if kind == 'package' else int(request.get('egress') is True)
                         if kind == 'provider-discovery' else 0)
         mounted = kind in {'workspace-git', 'preview-write', 'tool-jail', 'tool-files',
-                           'provider-discovery', 'package'} or (
+                           'provider-discovery', 'package', 'owner-delete'} or (
             kind == 'node-sandbox' and request.get('workspace') is True)
         if (not isinstance(request, dict)
                 or set(request) != fields or request['op'] not in {'SPAWN', 'START'}
                 or kind not in {'image-decoder', 'workspace-git', 'ui-preview', 'preview-write',
                                 'node-sandbox', 'tool-jail', 'ingestion-video',
-                                'provider-discovery', 'tool-files', 'package'}
+                                'provider-discovery', 'tool-files', 'package', 'owner-delete'}
+                or (kind == 'owner-delete' and (not streaming
+                    or type(request['delete_token']) is not str
+                    or not re.fullmatch('[a-f0-9]{32}', request['delete_token'])))
                 or (kind == 'package' and (not streaming or type(request['ta']) is not bool
                     or type(request['revision']) is not str
                     or not re.fullmatch('[a-f0-9]{64}', request['revision'])))
@@ -372,6 +381,7 @@ class OwnerLauncher:
         if not streaming and self.jobs:
             raise ValueError('blocking spawn cannot suspend active cell supervision')
         machine = self.bindings[(request['principal'], request['command_center'])]
+        self._check_delete_fence(machine, request)
         inner = machine - FIRST
         if streaming:
             if (len(self.jobs) >= MAX_CELLS or sum(
@@ -390,7 +400,7 @@ class OwnerLauncher:
                     or os.readlink(f'/proc/self/fd/{received[1]}') !=
                     self.data_root + '/' + request['command_center']):
                 raise ValueError('preview output root does not match admitted center')
-        if kind in ('tool-jail', 'tool-files', 'package'):
+        if kind in ('tool-jail', 'tool-files', 'package', 'owner-delete'):
             info = os.fstat(received[1])
             expected = self.data_root + '/' + request['command_center']
             if kind == 'package':
@@ -458,6 +468,9 @@ class OwnerLauncher:
                 status_channel.close()
                 raise
         try:
+            if kind == 'owner-delete':
+                self.delete_fences[machine] = (request['principal'],
+                    request['command_center'], request['delete_token'])
             pid = os.fork()
         except BaseException:
             if status_channel is not None:
@@ -506,6 +519,9 @@ class OwnerLauncher:
                 elif kind == 'ingestion-video':
                     command = ['/usr/local/libexec/ta-decoder.py', 'enter-video',
                                'video', self.data_root, str(inner)]
+                elif kind == 'owner-delete':
+                    command = ['/usr/local/libexec/ta-decoder.py', 'enter-owner-delete',
+                               'delete', self.data_root, str(inner)]
                 elif kind == 'tool-files':
                     command = ['/usr/local/libexec/ta-decoder.py', 'enter-tool-files',
                                'files', self.data_root, str(inner)]
@@ -574,6 +590,29 @@ class OwnerLauncher:
         self.channel.sendall(json.dumps({'op': 'SPAWN_DONE',
             'returncode': os.waitstatus_to_exitcode(status), 'uid': machine,
             'gid': machine}).encode())
+
+    def _check_delete_fence(self, machine, request):
+        fence = self.delete_fences.get(machine)
+        if request['kind'] == 'owner-delete':
+            expected = (request['principal'], request['command_center'], request['delete_token'])
+            if ((fence is not None and fence != expected)
+                    or any(job[1] == machine for job in self.jobs.values())):
+                raise ValueError('owner deletion is not quiescent or token differs')
+        elif fence is not None:
+            raise ValueError('owner deletion fence is active')
+
+    def _finish_delete(self, request, received):
+        if (received or set(request) != {'op', 'principal', 'command_center', 'delete_token'}
+                or any(type(request[key]) is not str for key in
+                       ('principal', 'command_center', 'delete_token'))):
+            raise ValueError('invalid deletion finish')
+        machine = self.bindings[(request['principal'], request['command_center'])]
+        expected = (request['principal'], request['command_center'], request['delete_token'])
+        if (self.delete_fences.get(machine) != expected
+                or any(job[1] == machine for job in self.jobs.values())):
+            raise ValueError('deletion finish does not match quiescent fence')
+        del self.delete_fences[machine]
+        self.channel.sendall(b'{"op":"DELETE_FINISHED"}')
 
     def _daemon_endpoint(self, fd, kind):
         if not stat.S_ISSOCK(os.fstat(fd).st_mode):

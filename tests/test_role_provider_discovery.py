@@ -284,6 +284,7 @@ def _launcher(tmp_path, overflow=None):
     launcher.daemon_pid = os.getpid()
     launcher.bindings = {('alice', 'alice'): module['FIRST'] + 1}
     launcher.jobs = {}
+    launcher.delete_fences = {}
     launcher._daemon_endpoint = lambda fd, kind: None
     return launcher
 
