@@ -88,3 +88,46 @@ def test_full_crash_recovery(volume, boundary, reverse):
     stable = metadata(volume)
     run(volume, reverse=reverse)
     assert metadata(volume) == stable
+
+@pytest.mark.parametrize("reverse", [False, True])
+def test_completed_volume_reconciles_visible_work_names(volume, reverse):
+    setup(volume)
+    run(volume)
+    added = volume / "alice/new-work"
+    added.mkdir(mode=0o700)
+    os.chown(added, 300001, 300001)
+    (added / "private").write_bytes(b"owner-created")
+    (added / "private").chmod(0o600)
+    os.chown(added / "private", 300001, 300001)
+    (volume / "bob/work/execute").unlink()
+    before = metadata(volume)
+    run(volume, reverse=reverse, dry_run=True)
+    assert metadata(volume) == before
+    run(volume, reverse=reverse)
+    assert added.stat().st_uid == (1001 if reverse else 300001)
+    assert (added / "private").read_bytes() == b"owner-created"
+    stable = metadata(volume)
+    run(volume, reverse=reverse)
+    assert metadata(volume) == stable
+    if not reverse:
+        run(volume, reverse=True)
+        assert added.stat().st_uid == 1001
+        assert (added / "private").stat().st_uid == 1001
+
+
+def test_interrupted_volume_refuses_changed_work_configuration(volume):
+    setup(volume)
+
+    def crash(step):
+        if step == "journal":
+            raise InterruptedError(step)
+
+    with pytest.raises(InterruptedError):
+        run(volume, after_step=crash)
+    added = volume / "alice/extra"
+    added.mkdir()
+    os.chown(added, 1001, 1001)
+    before = metadata(volume)
+    with pytest.raises(owner.MigrationRefused, match="bindings/classification"):
+        run(volume)
+    assert metadata(volume) == before

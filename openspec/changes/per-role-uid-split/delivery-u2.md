@@ -537,3 +537,33 @@ CMD boot or startup. No full task checkbox is newly complete.
 Cross-family review and production-image receipt are pending. Both session-control
 routes were unavailable: local Codex proxy connection refused, app-tools discovery
 pipe absent. No U1 message delivery claimed; no session takeover attempted.
+
+# U2 continuation D216: verified work-name reconciliation; baseline handoff
+
+D214/D215 remain unchanged and their prior approval is not reopened. D216 adds
+coordinator-only reconciliation of completed work-name configurations with fixed
+principal/numeric owner bindings. Interrupted phase configurations stay exact;
+standalone phase callers stay strict. New tests cover forward restart, reverse,
+dry-run immutability, repeat no-op, restrictive new content and interrupted
+configuration refusal. This closes the visible-work growth prerequisite only.
+
+Verification so far:
+- Baseline root oracle: 150 passed, 1 failed, zero skips.
+- Root oracle with D216: 153 passed, the same 1 failed, zero skips.
+- Focused coordinator/inventory root oracle: 31 passed, zero skips.
+- Ruff on all four changed Python files and diff checks pass.
+- Production Dockerfile build and privileged-chain check pass. Image
+  `sha256:4595e301b91c16cc6f6fdfc05c6529b3e739610c0b69db249879189ff910e123`.
+- Installed owner migration probe passes, including nine crash boundaries,
+  zero-capability/empty-group children, no foreign access and restrictive-file
+  rollback. It explicitly reports `old_cmd_boot=false`, `startup_active=false`.
+
+The repeated baseline failure is recorded in
+`docs/concerns/2026-10-05-u2-baseline-oracle-failure.md`; no speculative fix or test
+weakening is made. Under the founder's no-reopen instruction and AGENTS rule 7,
+this evidence needs another implementation owner. Deletion must wait for fully
+verified migration. Full previous-production CMD boot and startup/healthcheck
+integration remain undone. The existing draft main PR is #4510; its inherited
+U1 stack means it is not yet a U2-only diff (258 files before this continuation).
+No history rewrite or U1 file edit is used to hide that dependency. Cross-family
+review and final main merge receipts follow below. No deployment or app pass.

@@ -13,7 +13,7 @@ import stat
 
 
 def migrate(data_root, *, bindings, work, owner, modes, reverse=False,
-            dry_run=False, layout_lock=None, after_step=None):
+            dry_run=False, layout_lock=None, after_step=None, reconcile_work=False):
     if os.geteuid() != 0:
         raise owner["MigrationRefused"]("metadata migration requires the pre-drop window")
     refused = owner["MigrationRefused"]
@@ -82,7 +82,11 @@ def migrate(data_root, *, bindings, work, owner, modes, reverse=False,
                         raise refused("metadata journal parent is not root-private")
                     if owner["_stat"](state, "metadata.json") is not None:
                         journal = owner["_read"](state, "metadata.json", private=True)
-            if journal and journal["configuration"] != configuration:
+            configuration_changed = journal and journal["configuration"] != configuration
+            if configuration_changed and not (
+                reconcile_work and journal["state"] == "stable"
+                and journal["configuration"]["bindings"] == bindings
+            ):
                 raise refused("metadata authority/classification changed")
             if journal and journal["direction"] != direction and journal["state"] != "stable":
                 raise refused("finish interrupted metadata direction before reversing")
@@ -187,7 +191,8 @@ def migrate(data_root, *, bindings, work, owner, modes, reverse=False,
             with owner["_directory"](root, owner["STATE"]) as state:
                 current = dict(configuration=configuration, direction=direction,
                                state="migrating", rows=rows)
-                if journal is None or journal["direction"] != direction or journal["rows"] != rows:
+                if (journal is None or journal["direction"] != direction
+                        or journal["rows"] != rows or configuration_changed):
                     owner["_write"](state, "metadata.json", current)
                     checkpoint("metadata-journal")
                 progress = {"direction": direction, "state": "migrating"}

@@ -2279,3 +2279,15 @@ closed. An xattr nonce was rejected: `trusted.*` needs `CAP_SYS_ADMIN`, which
 the startup window does not hold, and the engine can copy or strip `user.*`,
 which also cannot be set on symlinks. Root migration tests use `/dev/shm`
 (tmpfs, which has birth time) because the oracle's basetemp is its overlay rootfs.
+
+### D216. Reconcile work names only after a completed phase
+
+The complete coordinator derives work names from its fixed on-disk classifier
+under the exclusive layout lock. It may reconcile a completed phase's changed
+work-name set only while the durable principal and numeric bindings remain
+identical. Standalone phase callers remain strict by default. Interrupted
+journals retain exact configuration matching. Reconciliation inventories all
+entries and retains the existing D214/D215 generation/provenance rules unchanged.
+This permits newly created or removed visible entries on restart without
+silently reallocating owners or discarding the journal. New principals remain
+a loud refusal pending a separate admission generation contract.

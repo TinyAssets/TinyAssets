@@ -457,7 +457,7 @@ def _move(root, state, row):
 
 
 def migrate(data_root, *, bindings, work, reverse=False, dry_run=False, after_step=None,
-            layout_lock=None):
+            layout_lock=None, reconcile_work=False):
     """Migrate all supplied owner trees under one durable inventory.
 
     ``bindings`` maps canonical center names to already-reserved broker IDs.
@@ -520,7 +520,11 @@ def migrate(data_root, *, bindings, work, reverse=False, dry_run=False, after_st
                         raise MigrationRefused("migration state is not root-private")
                     if _stat(state, "journal.json") is not None:
                         journal = _read(state, "journal.json", private=True)
-            if journal and journal["configuration"] != configuration:
+            configuration_changed = journal and journal["configuration"] != configuration
+            if configuration_changed and not (
+                reconcile_work and journal["state"] == "stable"
+                and journal["configuration"]["bindings"] == bindings
+            ):
                 raise MigrationRefused("owner bindings/classification differ from durable journal")
             if journal and journal["direction"] != direction and journal["state"] != "stable":
                 raise MigrationRefused("finish interrupted direction before reversing")
@@ -550,12 +554,12 @@ def migrate(data_root, *, bindings, work, reverse=False, dry_run=False, after_st
                     if r["kind"] != "quarantine"
                 }
                 actual = {r["path"]: signature(r) for r in fresh}
-                if actual != expected:
+                if actual != expected or configuration_changed:
                     # A completed migration may have served real owner writes.
                     # Re-scan ALL names before admitting its next generation;
                     # never extend an incomplete journal in this way.
                     escrow = [r for r in journal["rows"] if r["kind"] == "quarantine"]
-                    journal = {**journal, "state": "migrating",
+                    journal = {**journal, "state": "migrating", "configuration": configuration,
                                "rows": _retain_originals(fresh, journal) + escrow}
             rows = journal["rows"]
             present = _names(root, bindings)

@@ -121,7 +121,8 @@ def migrate(data_root, *, owner, egress, metadata, inventory, modes, launch,
                 planned = {p: next(available) for p in facts["unallocated"]}
                 bindings = {c: bindings.get(c, planned.get(p))
                             for c, p in facts["principals"].items()}
-            common = dict(bindings=bindings, work=work, reverse=reverse, layout_lock=lock)
+            common = dict(bindings=bindings, work=work, reverse=reverse, layout_lock=lock,
+                          reconcile_work=True)
             # Validate every owner inode and protected/shared entry before the
             # first mutation. Other phases preserve their own crash manifests.
             owner_plan = owner["migrate"](data_root, dry_run=True, **common)
