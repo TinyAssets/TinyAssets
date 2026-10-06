@@ -9,14 +9,29 @@ from role_service_bootstrap_probe import CONTAINER
 PROBE = r'''
 from tinyassets.broker.owner_identities import owner_identity
 from tinyassets.owner_launcher_client import OwnerLaunchRefused
+import array
+def legacy_decode():
+    left,right=socket.socketpair()
+    with left,right,client._lock:
+        left.settimeout(10)
+        doc=dict(op='SPAWN',kind='image-decoder',principal='alice',
+                 command_center='decoder-alice',mime='image/png')
+        client._channel.sendmsg([json.dumps(doc).encode()],[(socket.SOL_SOCKET,
+            socket.SCM_RIGHTS,array.array('i',[right.fileno()]))])
+        right.close()
+        try:
+            left.sendall(out.getvalue()); left.shutdown(socket.SHUT_WR)
+            while left.recv(65536): pass
+        except (BrokenPipeError,ConnectionResetError): pass
+        return client._reply()
 def start(owner):
     return client.start_cell(kind='image-decoder', principal=owner,
         command_center='decoder-'+owner, identity=owner_identity(root,principal=owner),
         extra={'mime':'image/png'})
 alice=start('alice')  # Intentionally withhold EOF; this decoder cannot finish.
-with client._lock:
-    client._channel.sendall(b'{"op":"STOP"}')
-    assert client._reply()=={'op':'REFUSED'}
+try: client.stop()
+except OwnerLaunchRefused: pass
+else: raise AssertionError('STOP admitted active cells')
 try:
     client.start_cell(kind='image-decoder',principal='alice',command_center='decoder-bob',
         identity=owner_identity(root,principal='alice'),extra={'mime':'image/png'})
@@ -34,11 +49,10 @@ with start('bob') as bob:
     assert proof['fds']==[0,1,2] and proof['groups']==[] and not proof['nested_userns']
     _,_,png=payload.partition(b'\n')
     assert Image.open(io.BytesIO(png)).size==(8,8)
-try:
-    client.decode(out.getvalue(),'image/png',principal='alice',command_center='decoder-alice',
-                  identity=owner_identity(root,principal='alice'))
-except OwnerLaunchRefused: pass
-else: raise AssertionError('blocking spawn suspended active cell supervision')
+assert legacy_decode()=={'op':'REFUSED'}
+# The actual application decoder uses independent START, not the old control lock.
+with identity_context(Identity('bob','bob')):
+    assert role_decoder.decode(out.getvalue(),'image/png',root/'decoder-bob').returncode==0
 assert alice.cancel()==-9
 alice.close()
 with start('alice') as completed:
@@ -64,8 +78,7 @@ while orphan.stream.recv(65536): pass
 orphan.stream.close()
 import time
 time.sleep(2)
-assert client.decode(out.getvalue(),'image/png',principal='alice',command_center='decoder-alice',
-    identity=owner_identity(root,principal='alice')).returncode==0  # no orphan jobs remain
+assert legacy_decode()['returncode']==0  # no orphan jobs remain
 with start('bob') as after:
     assert after.cancel()==-9
 with start('alice') as timed:

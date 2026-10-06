@@ -55,6 +55,7 @@ class OwnerCell:
         answer = self._client._reply(channel=self._status)
         if (set(answer) != {'op', 'returncode', 'uid', 'gid'}
                 or answer['op'] != 'SPAWN_DONE' or type(answer['returncode']) is not int
+                or type(answer['uid']) is not int or type(answer['gid']) is not int
                 or (answer['uid'], answer['gid']) != (self._identity.uid, self._identity.gid)):
             raise RuntimeError('invalid owner cell completion')
         self._result = answer['returncode']
@@ -206,8 +207,16 @@ class OwnerLauncherClient:
                     reply = self._reply()
                     if reply == {'op': 'REFUSED'}:
                         raise OwnerLaunchRefused('owner launcher refused cell scope')
-                    if reply != dict(op='STARTED', uid=identity.uid, gid=identity.gid):
-                        raise RuntimeError('owner launcher start identity mismatch')
+                    if (set(reply) != {'op', 'uid', 'gid'} or reply['op'] != 'STARTED'
+                            or type(reply['uid']) is not int or type(reply['gid']) is not int
+                            or reply['uid'] != reply['gid']
+                            or not OWNER_ID_FIRST <= reply['uid'] <= OWNER_ID_LAST):
+                        raise RuntimeError('invalid owner launcher start receipt')
+                    if reply['uid'] != identity.uid:
+                        actual = OwnerIdentity(reply['uid'], reply['gid'])
+                        with OwnerCell(self, data, status, actual) as refused:
+                            refused.cancel()  # Reap before returning a reusable refusal.
+                        raise OwnerLaunchRefused('owner launcher refused cell identity')
                 except OwnerLaunchRefused:
                     raise
                 except BaseException:
@@ -238,8 +247,6 @@ class OwnerLauncherClient:
                 or type(identity) is not OwnerIdentity or identity.uid != identity.gid
                 or not OWNER_ID_FIRST <= identity.uid <= OWNER_ID_LAST):
             raise ValueError('invalid admitted decoder input')
-        document = dict(op='SPAWN', kind=kind, principal=principal,
-                        command_center=command_center, **extra)
         source = None
         if directory_fd is not None:
             info = os.fstat(directory_fd)
@@ -247,58 +254,33 @@ class OwnerLauncherClient:
                     or info.st_uid not in (1001, identity.uid)):
                 raise ValueError('invalid preview output root')
             source = [info.st_dev, info.st_ino]
-        with self._lock:
-            self._check()
-            self._channel.settimeout(timeout)
+        with self.start_cell(kind=kind, principal=principal, command_center=command_center,
+                             identity=identity, extra=extra, directory_fd=directory_fd) as job:
+            job.stream.settimeout(timeout)
+            output = bytearray()
+            data_failure = False
             try:
-                parent, child = socket.socketpair()
-                with parent, child:
-                    parent.settimeout(timeout)
-                    handles = [child.fileno()]
-                    if directory_fd is not None:
-                        handles.append(directory_fd)
-                    self._channel.sendmsg([json.dumps(document).encode()], [(
-                        socket.SOL_SOCKET, socket.SCM_RIGHTS, array.array('i', handles))])
-                    child.close()
-                    output = bytearray()
-                    data_failure = False
-                    try:
-                        parent.sendall(data)
-                        parent.shutdown(socket.SHUT_WR)
-                        while part := parent.recv(65536):
-                            output.extend(part)
-                            if len(output) > output_bound:
-                                raise RuntimeError('decoder output exceeds its bound')
-                    except (BrokenPipeError, ConnectionResetError):
-                        # Refusal closes the received input endpoint without
-                        # consuming its bytes. Still authenticate/drain control.
-                        data_failure = True
-                answer = self._reply()
-                if answer == {'op': 'REFUSED'}:
-                    raise OwnerLaunchRefused('owner launcher refused decoder scope')
-                if (set(answer) != {'op', 'returncode', 'uid', 'gid'}
-                        or answer['op'] != 'SPAWN_DONE' or type(answer['returncode']) is not int
-                        or type(answer['uid']) is not int or type(answer['gid']) is not int):
-                    raise RuntimeError('invalid owner launcher completion')
-                if (answer['uid'], answer['gid']) != (identity.uid, identity.gid):
-                    raise OwnerLaunchRefused('owner launcher refused decoder identity')
-                if data_failure or (not output and answer['returncode'] != 0):
-                    raise OwnerLaunchRefused('decoder ended before returning its cell proof')
-                header, _, payload = bytes(output).partition(b'\n')
-                cell = json.loads(header)['cell']
-                inner = identity.uid - 300000
-                if (cell.get('uid') != inner or cell.get('gid') != inner
-                        or cell.get('fds') != [0, 1, 2] or cell.get('groups') != []
-                        or cell.get('caps') != 'zero' or cell.get('nnp') != 1
-                        or cell.get('profile') != profile
-                        or (source is not None and cell.get('source') != source)):
-                    raise RuntimeError('dedicated decoder cell proof is absent')
-                return SimpleNamespace(returncode=answer['returncode'], stdout=payload, cell=cell)
-            except OwnerLaunchRefused:
-                raise
-            except BaseException:
-                self._close()
-                raise
+                job.stream.sendall(data)
+                job.stream.shutdown(socket.SHUT_WR)
+                while part := job.stream.recv(65536):
+                    output.extend(part)
+                    if len(output) > output_bound:
+                        raise RuntimeError('decoder output exceeds its bound')
+            except (BrokenPipeError, ConnectionResetError):
+                data_failure = True
+            code = job.wait(timeout)
+            if data_failure or (not output and code != 0):
+                raise OwnerLaunchRefused('decoder ended before returning its cell proof')
+            header, _, payload = bytes(output).partition(b'\n')
+            cell = json.loads(header)['cell']
+            inner = identity.uid - 300000
+            if (cell.get('uid') != inner or cell.get('gid') != inner
+                    or cell.get('fds') != [0, 1, 2] or cell.get('groups') != []
+                    or cell.get('caps') != 'zero' or cell.get('nnp') != 1
+                    or cell.get('profile') != profile
+                    or (source is not None and cell.get('source') != source)):
+                raise RuntimeError('dedicated decoder cell proof is absent')
+            return SimpleNamespace(returncode=code, stdout=payload, cell=cell)
 
     def write_preview(self, data, ui_id, *, directory_fd, principal, command_center, identity):
         from tinyassets.ui_preview import MAX_CHILD_OUTPUT
@@ -314,10 +296,17 @@ class OwnerLauncherClient:
             self._channel.settimeout(5)
             try:
                 self._channel.sendall(b'{"op":"STOP"}')
-                if self._reply(terminal=True) != {'op': 'STOPPED'}:
+                answer = self._reply(terminal=True)
+                if answer == {'op': 'REFUSED'}:
+                    raise OwnerLaunchRefused('owner cells are still running')
+                if answer != {'op': 'STOPPED'}:
                     raise RuntimeError('owner launcher did not stop')
-            finally:
+            except OwnerLaunchRefused:
+                raise
+            except BaseException:
                 self._close()
+                raise
+            self._close()
 
     def git(self, argv, *, options, timeout_s, directory_fd, principal, command_center,
             identity: OwnerIdentity):
@@ -333,58 +322,15 @@ class OwnerLauncherClient:
                                timeout_s=timeout_s)).encode()
         if len(data) > 65536:
             raise ValueError('git request exceeds its bound')
-        document = dict(op='SPAWN', kind='workspace-git', principal=principal,
-                        command_center=command_center)
-        with self._lock:
-            self._check()
-            self._channel.settimeout(75)
-            try:
-                parent, child = socket.socketpair()
-                with parent, child:
-                    parent.settimeout(75)
-                    self._channel.sendmsg([json.dumps(document).encode()], [(
-                        socket.SOL_SOCKET, socket.SCM_RIGHTS,
-                        array.array('i', [child.fileno(), directory_fd]))])
-                    child.close()
-                    output = bytearray()
-                    try:
-                        parent.sendall(data)
-                        parent.shutdown(socket.SHUT_WR)
-                        while part := parent.recv(65536):
-                            output.extend(part)
-                            if len(output) > 1024 * 1024:
-                                raise RuntimeError('git output exceeds its bound')
-                    except (BrokenPipeError, ConnectionResetError):
-                        pass  # authenticate and drain the control refusal
-                answer = self._reply()
-                if answer == {'op': 'REFUSED'}:
-                    raise OwnerLaunchRefused('owner launcher refused git scope')
-                if (set(answer) != {'op', 'returncode', 'uid', 'gid'}
-                        or answer['op'] != 'SPAWN_DONE' or type(answer['returncode']) is not int
-                        or type(answer['uid']) is not int or type(answer['gid']) is not int):
-                    raise RuntimeError('invalid git completion')
-                if (answer['uid'], answer['gid']) != (identity.uid, identity.gid):
-                    raise OwnerLaunchRefused('owner launcher refused git identity')
-                if answer['returncode'] != 0:
-                    raise OwnerLaunchRefused('git cell did not complete')
-                header, _, payload = bytes(output).partition(b'\n')
-                cell = json.loads(header)['cell']
-                inner = identity.uid - 300000
-                if (cell.get('uid') != inner or cell.get('gid') != inner
-                        or cell.get('fds') != [0, 1, 2] or cell.get('groups') != []
-                        or cell.get('caps') != 'zero' or cell.get('nnp') != 1
-                        or cell.get('profile') != 'cell-links'
-                        or cell.get('source') != [info.st_dev, info.st_ino]):
-                    raise RuntimeError('dedicated git cell proof is absent')
-                result = json.loads(payload)
-                if (set(result) != {'returncode', 'stdout', 'stderr'}
-                        or type(result['returncode']) is not int
-                        or not isinstance(result['stdout'], str)
-                        or not isinstance(result['stderr'], str)):
-                    raise RuntimeError('invalid git result')
-                return SimpleNamespace(**result, cell=cell)
-            except OwnerLaunchRefused:
-                raise
-            except BaseException:
-                self._close()
-                raise
+        done = self._data_cell(data, principal=principal, command_center=command_center,
+            identity=identity, kind='workspace-git', extra={}, profile='cell-links',
+            input_bound=65536, output_bound=1024 * 1024, timeout=75, directory_fd=directory_fd)
+        if done.returncode != 0:
+            raise OwnerLaunchRefused('git cell did not complete')
+        result = json.loads(done.stdout)
+        if (set(result) != {'returncode', 'stdout', 'stderr'}
+                or type(result['returncode']) is not int
+                or not isinstance(result['stdout'], str)
+                or not isinstance(result['stderr'], str)):
+            raise RuntimeError('invalid git result')
+        return SimpleNamespace(**result, cell=done.cell)

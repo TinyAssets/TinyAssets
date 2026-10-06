@@ -1,3 +1,14 @@
+### D77. Mechanical adoption of independent lifetimes by existing engine APIs
+
+Decoder, preview renderer/writer and workspace-git clients now use START and
+their own authenticated lifetime receipts. Their input/output bounds, cell
+proof predicates, directory-descriptor identity checks and fixed class profiles
+remain enforced. Cancellation or a failed data exchange revokes/reaps that
+cell instead of holding or poisoning the shared control exchange. STOP with
+active cells raises a refusal while preserving the client for cancellation.
+Legacy SPAWN is retained only as a protocol compatibility path. This adoption
+does not count as admission of a new engine class or a package launch API.
+
 ### D76. Mechanical independent cell streams and mapper-owned lifetimes
 
 Remaining provider, tool-RPC, worker and package integrations require live
