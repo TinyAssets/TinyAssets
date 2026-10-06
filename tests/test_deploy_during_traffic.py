@@ -230,7 +230,8 @@ def test_durable_cutover_send_replays_after_process_replacement(tmp_path):
     assert journal(tmp_path).events(SCOPE, SEND_ID) == [
         {"sequence": 1, "payload": b"CUTOVER_SEND_FINISHED", "terminal": 1}]
     assert journal(tmp_path).receipt(SCOPE, SEND_ID).state == "terminal"
-    evidence.update({"cutover_send": "GREEN", "long_turn": "RED", "replay": receipts})
+    evidence.update({"acceptance_import": "GREEN", "execution": "transactional fixture sink",
+                     "long_turn": "RED", "replay": receipts})
     (tmp_path / "evidence.json").write_text(json.dumps(evidence, indent=2))
     output = os.environ.get("DEPLOY_TRAFFIC_EVIDENCE")
     if output:

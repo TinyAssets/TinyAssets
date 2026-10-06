@@ -177,7 +177,7 @@ def test_import_loss_uses_real_atomic_conversation_admission(journal, tmp_path):
                         context={"version": 1, "history": []},
                         selection={"version": 1, "branch_def_id": "fixture", "reply_key": "reply"},
                         inputs={"message": item.payload.decode()})["admission_id"]
-                result = import_in_transaction(conn, envelope, reserve)
+                result = import_in_transaction(conn, scope, envelope, reserve)
                 if rollback:
                     raise RuntimeError("before admission commit")
         if lose_ack:
@@ -199,14 +199,56 @@ def test_import_loss_uses_real_atomic_conversation_admission(journal, tmp_path):
     with sqlite3.connect(runs_db_path(base)) as conn:
         assert conn.execute("SELECT count(*) FROM runs").fetchone()[0] == 1
         assert conn.execute("SELECT count(*) FROM ingress_imports").fetchone()[0] == 1
-        conn.execute("BEGIN IMMEDIATE")
-        with pytest.raises(Conflict):
-            import_in_transaction(conn,
+    with (cr.authorized_scope(base, owner=OWNER.principal_id,
+                              universe=OWNER.command_center_id) as scope,
+          cr.runs_transaction(scope) as conn):
+        with pytest.raises(PermissionError):
+            import_in_transaction(conn, scope,
                                   replace(accepted, scope=replace(OWNER, principal_id="other")),
                                   lambda *_: pytest.fail("cross-owner reservation"))
+        for field in ("command_center_id", "thread_id", "operation"):
+            with pytest.raises(PermissionError):
+                import_in_transaction(conn, scope,
+                                      replace(accepted, scope=replace(OWNER, **{field: "other"})),
+                                      lambda *_: pytest.fail("aliased runtime scope"))
         with pytest.raises(Conflict):
-            import_in_transaction(conn, replace(accepted, payload=b"tampered"),
+            import_in_transaction(conn, scope, replace(accepted, client_send_id="changed"),
+                                  lambda *_: pytest.fail("aliased client key"))
+        with pytest.raises(Conflict):
+            import_in_transaction(conn, scope, replace(accepted, payload=b"tampered"),
                                   lambda *_: pytest.fail("tampered reservation"))
+
+
+def test_importer_cannot_return_another_principals_admission(journal, tmp_path):
+    from tinyassets.daemon_server import grant_universe_access, set_founder_home
+    from tinyassets.runs import runs_db_path
+    from tinyassets.storage import conversation_run_admissions as cr
+
+    base = tmp_path / "runtime"
+    for owner, center in [(OWNER.principal_id, OWNER.command_center_id), ("user-b", "center-b")]:
+        (base / center).mkdir(parents=True)
+        set_founder_home(base, founder_sub=owner, universe_id=center, platform_generated=True)
+        grant_universe_access(base, universe_id=center, actor_id=owner,
+                              permission="admin", granted_by=owner)
+    cr.initialize(base)
+    with sqlite3.connect(runs_db_path(base)) as conn:
+        initialize_imports(conn)
+    with (cr.authorized_scope(base, owner="user-b", universe="center-b") as foreign,
+          cr.runs_transaction(foreign) as conn):
+        other = cr.reserve_in_transaction(conn, foreign, request_key=KEY,
+            intent={"version": 1, "message": "private", "input_method": "typed",
+                    "model_choice": None, "binding_id": "b", "binding_revision": 1},
+            context={"version": 1, "history": []},
+            selection={"version": 1, "branch_def_id": "fixture", "reply_key": "reply"},
+            inputs={"message": "private"})
+    accepted = journal.accept(OWNER, KEY, b"own input")
+    with (cr.authorized_scope(base, owner=OWNER.principal_id,
+                              universe=OWNER.command_center_id) as scope,
+          cr.runs_transaction(scope) as conn):
+        with pytest.raises(PermissionError, match="unavailable"):
+            import_in_transaction(conn, scope, accepted, lambda *_: other["admission_id"])
+        assert conn.execute("SELECT count(*) FROM ingress_imports").fetchone()[0] == 0
+    assert journal.receipt(OWNER, KEY).state == "pending"
 
 
 def test_unprovisioned_or_incompatible_schema_refused(journal, tmp_path):

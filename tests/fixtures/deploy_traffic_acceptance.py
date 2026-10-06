@@ -68,7 +68,7 @@ def replay(root):
                         context={"version": 1, "history": []},
                         selection={"version": 1, "branch_def_id": "fixture", "reply_key": "reply"},
                         inputs={"message": message})["admission_id"]
-                result = import_in_transaction(conn, envelope, reserve)
+                result = import_in_transaction(conn, scope, envelope, reserve)
         return result
 
     admission_id = store.replay(SCOPE, SEND_ID, importer)

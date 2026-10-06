@@ -48,14 +48,19 @@ transaction; loss of either acknowledgement does not create a second run.
 The same Linux traffic exercise now has a candidate variant. A send made while
 the old listener is closed receives 202. A fresh process reopens the journal
 and imports using real `conversation_run_admissions`; two replay attempts
-produce one admission and one deterministic fixture effect. Its terminal reply
-is durable. The old long turn STILL cuts off: overall continuity stays RED.
+produce one admission and one deterministic transactional fixture effect. The
+fixture's terminal event is durable, but no actual runtime turn executes:
+`acceptance_import` is GREEN, execution is a fixture, and the old long turn STILL
+cuts off. Overall continuity stays RED; this is not send-completion proof.
 `l7-acceptance-evidence.json` records this distinction.
 
-Verification: Linux oracle **71 passed, zero skipped** across
+Verification after review corrections: Linux oracle **72 passed, zero skipped** across
 `test_ingress_journal.py`, `test_deploy_during_traffic.py`,
 `test_conversation_run_admissions.py`, and `test_converse_turn_cost.py`.
 Changed Python ruff checks pass; plugin mirror rebuilt and import probe passes.
+Actionlint and strict OpenSpec validation pass. Hygiene: 0 removed / 0 tampering.
+Merged `origin/main` at `69612a32d6` before final push (merge `917a73d9da`);
+no runtime code from the acceptance slice conflicted.
 
 Task 2.1 remains unchecked: public authenticated adapters, principal deletion
 and custody policy, quotas, production receipt/status integration, the S8b pump,
@@ -68,3 +73,31 @@ Data-loss/cross-user mutation cases: reject pre-commit failure; roll back both
 admission and mapping; replay after lost post-commit ack; preserve exact bytes;
 deny changed payload/key scope; deny revoked access; preserve terminal
 tombstones. Each is exercised by the focused journal tests.
+
+## Claude review (one cross-family round)
+
+Verdict **ADAPT**. Dispositions:
+
+- **AGREE** (findings 2/3): bind import to the live canonical runtime scope and
+  verify the returned admission under that scope on first import AND replay.
+  Store runtime identity in the mapping. This adapter explicitly refuses
+  noncanonical threads and non-converse operations rather than aliasing them;
+  they need separate adapters. Tests cover every scope dimension and a callback
+  returning another principal's admission. The current canonical adapter also
+  requires the UUIDv4 keys used by the app; the independent journal preserves
+  the broader existing `client_send_id` syntax for future adapters.
+- **AGREE** (finding 4): label only acceptance/import GREEN. The deterministic
+  transactional effect sink is fixture evidence, not execution fencing or real
+  turn completion. Overall continuity remains RED.
+- **DISAGREE_EVIDENCE** (finding 1): required shards already run through
+  `scripts/linux_oracle.py` with Chromium and the `ta-jail-userns` AppArmor
+  profile (`.github/workflows/tests.yml`, Allow user namespaces for the jail
+  container only / Run this shard). No need to remove this test from required
+  coverage. The dedicated job also runs the journal guards explicitly.
+- **AGREE** (finding 5): policy callback is a pure check, not external quota
+  charging. Provisioning tightens the containing directory to 0700 so SQLite
+  sidecars are private too, and closes its connection explicitly.
+- **AGREE** on incomplete task order/completion: full 1.1 and 2.1 remain
+  unchecked; no production adapter/ingress rollout is authorized by these
+  component results. Reviewer found no lane collision. No approval verdict is
+  claimed after corrections; this remains a draft with outstanding full proof.

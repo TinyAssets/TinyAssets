@@ -4,7 +4,7 @@
   "http": [
     {
       "status": 202,
-      "body": "{\"ingress_id\": \"ecfe8743-5e41-4bcd-9d3f-d072db84e272\", \"client_send_id\": \"cc2e9e60-89dd-43a8-9bea-f87c333b21e4\"}",
+      "body": "{\"ingress_id\": \"1107e3a1-3647-4068-a00b-ceb402a7dee2\", \"client_send_id\": \"cc2e9e60-89dd-43a8-9bea-f87c333b21e4\"}",
       "request": "{\"client_send_id\":\"cc2e9e60-89dd-43a8-9bea-f87c333b21e4\",\"message\":\"send during cutover\"}"
     }
   ],
@@ -20,16 +20,17 @@
     "tinyassets/universe_server.py": "671d1aec6a1797fa3d5996bb4195673789ad860c9c05c0899ab0d60df27a6654",
     "tests/fixtures/deploy_traffic_process.py": "dfad4337b07095030b6d020474d587711fe36e6d0e152f2ff96043f4cbddebfb"
   },
-  "cutover_send": "GREEN",
+  "acceptance_import": "GREEN",
+  "execution": "transactional fixture sink",
   "long_turn": "RED",
   "replay": [
     {
-      "admission_id": "e2c997b1f00540f3b6d09635e67a23f3",
+      "admission_id": "10651f9ad9c04b9f8aab7cd022641fd3",
       "effects": 1,
       "admissions": 1
     },
     {
-      "admission_id": "e2c997b1f00540f3b6d09635e67a23f3",
+      "admission_id": "10651f9ad9c04b9f8aab7cd022641fd3",
       "effects": 1,
       "admissions": 1
     }

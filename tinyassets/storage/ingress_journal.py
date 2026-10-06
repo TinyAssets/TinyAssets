@@ -18,7 +18,7 @@ import re
 import sqlite3
 import time
 import uuid
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -78,8 +78,9 @@ def initialize(root: Path):
     """Explicit schema provisioning only; normal opens never create or migrate."""
     root = Path(root)
     root.mkdir(mode=0o700, parents=True, exist_ok=True)
+    root.chmod(0o700)
     path = root / "ingress-v1.sqlite3"
-    with sqlite3.connect(path) as conn:
+    with closing(sqlite3.connect(path)) as conn, conn:
         version = conn.execute("PRAGMA user_version").fetchone()[0]
         if version == 0:
             conn.executescript("BEGIN IMMEDIATE;" + _SCHEMA + "COMMIT;")
@@ -147,8 +148,9 @@ class IngressJournal:
                 if row["digest"] != digest:
                     raise Conflict("client_send_id payload conflict")
             else:
-                # Rate/size/storage/consent policy belongs to the adapter; it
-                # must fail closed. Retries do not consume admission twice.
+                # Pure rate/size/storage/consent CHECKS belong to the adapter;
+                # no external charging here: a failed commit must not consume
+                # a quota outside this transaction.
                 self.admission_policy(scope, payload)
                 conn.execute("INSERT INTO requests VALUES (?,?,?,?,?,?,?,?,?,?,?,?)", (
                     str(uuid.uuid4()), *scope.values(), client_send_id, digest, payload,
@@ -252,34 +254,57 @@ def initialize_imports(conn):
     """Explicit runtime schema provisioning alongside existing admission tables."""
     conn.execute("CREATE TABLE IF NOT EXISTS ingress_imports ("
                  "ingress_id TEXT PRIMARY KEY, scope_digest TEXT NOT NULL, "
-                 "payload_digest TEXT NOT NULL, runtime_id TEXT NOT NULL UNIQUE)")
+                 "payload_digest TEXT NOT NULL, runtime_id TEXT NOT NULL UNIQUE, "
+                 "runtime_principal_id TEXT NOT NULL, runtime_center_id TEXT NOT NULL, "
+                 "runtime_session_id TEXT NOT NULL, runtime_operation TEXT NOT NULL "
+                 "CHECK(runtime_operation='converse'))")
+    columns = {r[1] for r in conn.execute("PRAGMA table_info(ingress_imports)")}
+    if columns != {"ingress_id", "scope_digest", "payload_digest", "runtime_id",
+                   "runtime_principal_id", "runtime_center_id", "runtime_session_id",
+                   "runtime_operation"}:
+        raise RuntimeError("incompatible runtime ingress mapping; explicit migration required")
 
 
-def import_in_transaction(conn, envelope, reserve):
-    """Reserve using an EXISTING authorized runtime writer and original send key.
+def import_in_transaction(conn, runtime_scope, envelope, reserve):
+    """Reserve canonical conversation admission under its actual authorized scope.
 
     Caller holds current authority and owns BEGIN IMMEDIATE/commit. ``reserve``
     writes admission in this exact connection; no network/effects/own commit.
-    No new scheduler or execution queue is introduced.
+    This first adapter supports only the canonical principal thread/converse.
+    Other threads/operations require their own authorized runtime adapter; never
+    alias them into the canonical session. No execution queue is introduced.
     """
-    if not conn.in_transaction:
-        raise RuntimeError("ingress import requires an admission transaction")
     import json
 
+    from tinyassets.storage import conversation_run_admissions as cr
+
+    cr._transaction(conn, runtime_scope)
+    runtime_identity = (runtime_scope.owner, runtime_scope.universe,
+                        runtime_scope.session, "converse")
+    if envelope.scope.values() != runtime_identity:
+        raise PermissionError("ingress identity does not match authorized runtime scope")
     scope_digest = hashlib.sha256(json.dumps(
         [*envelope.scope.values(), envelope.client_send_id], ensure_ascii=False,
     ).encode()).hexdigest()
     if hashlib.sha256(envelope.payload).hexdigest() != envelope.digest:
         raise Conflict("ingress payload digest mismatch")
-    row = conn.execute("SELECT scope_digest,payload_digest,runtime_id FROM ingress_imports "
+    row = conn.execute("SELECT scope_digest,payload_digest,runtime_id,runtime_principal_id,"
+                       "runtime_center_id,runtime_session_id,runtime_operation "
+                       "FROM ingress_imports "
                        "WHERE ingress_id=?", (envelope.ingress_id,)).fetchone()
     if row:
-        if (row[0], row[1]) != (scope_digest, envelope.digest):
+        if ((row[0], row[1]) != (scope_digest, envelope.digest)
+                or tuple(row[3:]) != runtime_identity):
             raise Conflict("ingress import identity conflict")
+        cr._read(conn, runtime_scope, row[2])
         return row[2]
     runtime_id = reserve(conn, envelope)
     if not isinstance(runtime_id, str) or not runtime_id or not conn.in_transaction:
         raise RuntimeError("reservation must remain in the admission transaction")
-    conn.execute("INSERT INTO ingress_imports VALUES (?,?,?,?)",
-                 (envelope.ingress_id, scope_digest, envelope.digest, runtime_id))
+    # Verify the reservation actually belongs to the supplied authority, not
+    # merely that an adapter returned a plausible-looking ID.
+    cr._read(conn, runtime_scope, runtime_id)
+    conn.execute("INSERT INTO ingress_imports VALUES (?,?,?,?,?,?,?,?)",
+                 (envelope.ingress_id, scope_digest, envelope.digest, runtime_id,
+                  *runtime_identity))
     return runtime_id
