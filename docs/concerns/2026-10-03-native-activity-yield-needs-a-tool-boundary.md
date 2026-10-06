@@ -47,3 +47,15 @@ Related, still open: the yield's activity id comes from the caller-supplied
 route session parameter (`engine_steering.py` via `_calling_session`), so any
 engine call in the same universe can force an activity to `WAITING_ON_YOU` and
 end its run. Owner-scoped, not cross-user.
+
+## Orphan-ready incident, 2026-10-06
+
+Run a8248a4f0ad54349 failed before inference at 04:59:36Z on the owner's
+subscription. Turn 57cadc0f43974776aa19cd319df207ce remained ready with zero
+rounds; the server tree stayed alive and Stop could not reach it. The orphan
+repair adds task-lifetime claims, recovery, failure delivery, and refuses a
+native-only activity start before creating it. It does not lift the native
+execution guard. Remaining work is a native pre-tool fence covering ALL native
+tools, with owner-request yield completion and process/seat release proved on
+Linux, then removal of both admission and per-round refusals. Polling/cancelling
+alone cannot prove that no further effects occurred after yielding.

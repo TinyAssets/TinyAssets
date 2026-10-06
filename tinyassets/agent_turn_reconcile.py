@@ -33,14 +33,11 @@ A ``planned`` tool is settled ``not_sent`` rather than ``unknown`` because the
 journal PROVES it: a tool is recorded ``started`` before it is dispatched, so one
 still ``planned`` was never sent.
 
-Keyed on the OWNER LEASE GENERATION, never on age or on which process booted
-(change execution-owner-lease D2): for each command center with progressing
-rows, the sweep first ACQUIRES that command center's key -- which succeeds only
-when the previous owner released it or its whole owner tree is proven dead --
-and then settles only rows whose ``owner_generation`` is below the generation it
-now holds. A turn the current owner is running is at the current generation and
-survives however old it is; every row an earlier owner left is settled however
-young it is; and a standby process that cannot take the key settles nothing.
+The sweep acquires the command center's owner lease before writing. Earlier
+owner generations are recoverable; current-generation rows additionally need
+proof that their unique runner claim is dead (or absent on legacy rows).
+Unknown nonempty claims are preserved. Tokens are never reused for execution,
+so a dead runner cannot restart between observation and settlement.
 """
 
 from __future__ import annotations
@@ -52,6 +49,7 @@ from pathlib import Path
 from tinyassets import owner_lease
 from tinyassets.agent_turn_coordinator import turn_effects
 from tinyassets.conversation_failure import failure_notice, turn_failure
+from tinyassets.storage import agent_turn_runner as runner
 from tinyassets.storage import db_path
 from tinyassets.storage.agent_native_records import NativeTerminal
 from tinyassets.storage.agent_turn_journal import (
@@ -61,17 +59,16 @@ from tinyassets.storage.agent_turn_journal import (
 
 _LOG = logging.getLogger(__name__)
 
-#: Recorded with every settlement. The journal rows carry no free-text field, so
-#: the reason lives in the log and in this function's return value rather than
-#: being wedged into a record shape that validates its own bytes.
-REASON = "server restarted during this turn"
+#: Recovery reason for operator logs. Quiescent abandonment also persists its
+#: reason in agent_turns.settled_reason.
+REASON = "turn runner exited without settling this turn"
 #: The class the notice is composed from. "something broke on our side; this is
 #: not a problem with your account, your credentials or your usage limits, and
 #: sending again may well work" is exactly what a killed container is.
 INTERRUPTED_CODE = "platform_fault"
 
 
-def _progressing_rows(path: Path) -> list[tuple[str, str, str, str, int]]:
+def _progressing_rows(path: Path) -> list[tuple[str, str, str, str, int, str, str]]:
     """Every progressing row, with the generation of the owner that created it.
 
     Observational, like the status projection: ``mode=rw`` opens an existing
@@ -92,8 +89,11 @@ def _progressing_rows(path: Path) -> list[tuple[str, str, str, str, int]]:
             return []
         columns = {r[1] for r in conn.execute("PRAGMA table_info(agent_turns)")}
         generation = "owner_generation" if "owner_generation" in columns else "0"
+        claim = "runner_token" if "runner_token" in columns else "''"
+        agent = "agent_id" if "agent_id" in columns else "'main'"
         rows = conn.execute(
-            f"SELECT owner_user_id, universe_id, turn_id, state, {generation} AS g "
+            f"SELECT {claim} AS runner_token, {agent} AS agent_id, owner_user_id, "
+            f"universe_id, turn_id, state, {generation} AS g "
             f"FROM agent_turns WHERE state IN ({','.join('?' * len(WORKING_STATES))}) "
             "ORDER BY created_at",
             tuple(sorted(WORKING_STATES)),
@@ -101,7 +101,8 @@ def _progressing_rows(path: Path) -> list[tuple[str, str, str, str, int]]:
     finally:
         conn.close()
     return [
-        (row["owner_user_id"], row["universe_id"], row["turn_id"], row["state"], int(row["g"]))
+        (row["owner_user_id"], row["universe_id"], row["turn_id"], row["state"], int(row["g"]),
+         row["runner_token"], row["agent_id"])
         for row in rows
     ]
 
@@ -167,7 +168,7 @@ def _settle_tool(journal: AgentTurnJournal, owner: str, universe: str, turn):
     )
 
 
-def _notify(base_path: Path, owner: str, universe: str, turn) -> bool:
+def _notify(base_path: Path, owner: str, universe: str, turn, agent_id="main") -> bool:
     """Leave the interrupted turn visible in the founder's thread.
 
     Without this the turn does not merely stop reading as "thinking" -- it
@@ -204,13 +205,14 @@ def _notify(base_path: Path, owner: str, universe: str, turn) -> bool:
     record = turn_failure(
         INTERRUPTED_CODE, stage=stage or "platform", effects=effects, ref=ref,
     )
+    from tinyassets.addressed_agents import memory_session
     from tinyassets.conversation_store import record_turn
 
     try:
         # ``ext_id`` makes this idempotent on the journal's own turn id: a sweep
         # that runs twice over one row leaves one notice, never two.
         return bool(record_turn(
-            Path(base_path) / universe, f"principal:{owner}", "platform",
+            Path(base_path) / universe, memory_session(owner, agent_id), "platform",
             failure_notice(record), ext_id=f"interrupted:{turn.turn_id}", failure=record,
         ))
     except Exception:  # noqa: BLE001 - a settled row must not be reported unsettled
@@ -218,8 +220,10 @@ def _notify(base_path: Path, owner: str, universe: str, turn) -> bool:
         return False
 
 
-def reconcile_orphaned_turns(base_path: str | Path) -> list[dict[str, str]]:
-    """Settle every progressing turn row an EARLIER owner generation left.
+def reconcile_orphaned_turns(base_path: str | Path, *, owner_id: str | None = None,
+                             universe_id: str | None = None,
+                             agent_id: str | None = None) -> list[dict[str, str]]:
+    """Settle progressing rows whose owner generation or task runner has ended.
 
     Returns one record per row it touched: ``universe_id``, ``turn_id``, the
     ``was`` state, and either the ``settled`` state plus whether the thread was
@@ -240,7 +244,11 @@ def reconcile_orphaned_turns(base_path: str | Path) -> list[dict[str, str]]:
     journal = AgentTurnJournal(base_path)
     settled: list[dict[str, object]] = []
     held: dict[str, int | None] = {}
-    for owner, universe, turn_id, state, generation in _progressing_rows(path):
+    for owner, universe, turn_id, state, generation, token, agent in _progressing_rows(path):
+        if ((owner_id is not None and owner != owner_id)
+                or (universe_id is not None and universe != universe_id)
+                or (agent_id is not None and agent != agent_id)):
+            continue
         if universe not in held:
             try:
                 held[universe] = owner_lease.acquire(
@@ -250,7 +258,9 @@ def reconcile_orphaned_turns(base_path: str | Path) -> list[dict[str, str]]:
                 # A LIVE owner holds this command center: its rows are its own,
                 # whatever their age. This process settles none of them.
                 held[universe] = None
-        if held[universe] is None or generation >= held[universe]:
+        if held[universe] is None:
+            continue
+        if generation >= held[universe] and not runner.orphan(base_path, token):
             continue
         record: dict[str, object] = {
             "universe_id": universe, "turn_id": turn_id, "was": state,
@@ -259,7 +269,7 @@ def reconcile_orphaned_turns(base_path: str | Path) -> list[dict[str, str]]:
             turn = _settle(journal, owner, universe, turn_id)
             record["settled"] = "" if turn is None else turn.state
             record["notified"] = turn is not None and _notify(
-                base_path, owner, universe, turn,
+                base_path, owner, universe, turn, agent,
             )
         except Exception as exc:  # noqa: BLE001 - one unreachable row is not the sweep
             record["error"] = type(exc).__name__
