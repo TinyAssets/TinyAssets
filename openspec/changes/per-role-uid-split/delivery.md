@@ -1,4 +1,58 @@
-# Current U1 delivery: D76 independent bounded cell lifetimes
+# Current U1 delivery: D77 application adoption of independent cells
+
+D76 is pushed at **eeeeb0ff49dedf2a9b5b8b487e4b8fd65c7b08cb**, remote SHA
+asserted. Hygiene: **2 tests added, 0 removed, 0 tampering**. Continued into
+D77 in the same run rather than leaving START as unused transport scaffolding.
+
+Decoder, preview renderer/writer and workspace-git now use independent START
+lifetimes. Input/output limits and all descriptor/cell proof predicates remain.
+Active STOP refuses without poisoning the client. A mismatched broker/mapper
+identity is cancelled and reaped before a reusable refusal; no payload is sent.
+These are existing engine classes, **not completion of a remaining new class**.
+
+Final production Dockerfile image (build exit 0, chain PASS):
+`sha256:2c4f5a5327b43ee093137cf193f30a214aab9097f9ce083743c2079e375dc88b`
+(`tinyassets-uid-d77:final`). All following commands exited 0:
+- `python scripts/linux_oracle.py -- tests/test_owner_launcher_client.py tests/test_role_launcher.py tests/test_role_decoder.py tests/test_role_git.py tests/test_role_preview.py tests/test_ui_preview.py tests/test_universe_path_io_guard.py -q -rs`:
+  **87 passed, zero skips** on the final source.
+- `python scripts/role_cell_lifetime_probe.py --image tinyassets-uid-d77:final`:
+  D76 lifetime matrix plus actual application Bob decode while Alice blocks PASS.
+- `python scripts/role_owner_launcher_probe.py --image tinyassets-uid-d77:final --client`:
+  authenticated receipts, wrong owner and mismatched identity refusal recovery,
+  fork closure, concurrent Alice/Bob decodes, terminal acknowledgement PASS.
+  The first run found an outdated zero-retained-FD assumption in this probe:
+  START now retains exactly one registered status socket per live job. The
+  assertion now counts those precise sockets after every request and requires
+  the original FD baseline and zero jobs after STOP; no unregistered FD is allowed.
+- `python scripts/role_preview_launcher_probe.py --image tinyassets-uid-d77:final`:
+  real Alice/Bob sandboxed Chromium and owner screenshot writes, aliases,
+  application round trip and existing local git/bridge operations PASS.
+- `python scripts/role_service_bootstrap_probe.py --image tinyassets-uid-d77:final --snapshots --git --stream`:
+  sealed snapshots, real decoders/git, broker HTTPS GET/POST, accounting/replay
+  refusal and two OAuth rotations PASS.
+- `python scripts/role_reader_alias_probe.py --image tinyassets-uid-d77:final`:
+  **132 denied, 22 own reads, zero foreign reads**, foreign bytes unchanged.
+- Targeted Ruff, mirror regeneration/parity, strict OpenSpec and diff checks PASS.
+  Full Ruff's unchanged baseline is 55 findings (D76 receipt below).
+
+D77 cross-family peer-agents review (Claude): **APPROVE**, no floor/correctness
+findings. Receipt: `C:/Users/Jonathan/AppData/Local/Temp/uid-d77-review.md`.
+Release-critical files in D77: **0**; only the daemon client/mirror and probes
+changed. D76's one critical file remains `deploy/role_owner_launcher.py`.
+
+U2 advanced to **0080f20a3706daab2c700795e378ab909b6e346d**. PR #4509 now has
+91-pass Linux evidence, installed-image migration-substep evidence and a resolved
+review, but explicitly remains draft/not merge-ready because full migration,
+deletion, old CMD boot and startup/healthcheck are unfinished. It is not merged.
+U1 did not edit or run U2's migration/deletion/rollback implementation here.
+
+No full task checkbox is newly complete. All remaining actual engine classes,
+their complete path/reader matrices and then exact-revision package cells with
+broker-scoped credential slots/egress still require implementation. The full
+request is **unfinished**. Startup remains inactive; no final build PR or deploy.
+
+---
+# Prior U1 delivery: D76 independent bounded cell lifetimes
 
 Started from b714cfc571 with the requested ff-only pull (already current).
 Docker Linux is available again. U2 PR #4509 remains draft at

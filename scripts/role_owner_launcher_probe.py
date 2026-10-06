@@ -58,8 +58,13 @@ if mapper == 0:
         ready_child.sendall(b'S'); ready_child.close()
         baseline=len(os.listdir('/proc/self/fd'))
         while server.serve_one():
-            assert len(os.listdir('/proc/self/fd'))==baseline, 'received descriptor leak'
+            # START retains exactly its registered lifetime socket until reaping.
+            # Transferred data/mount descriptors must still close on every request.
+            held={job[3].fileno() for job in server.jobs.values()}
+            assert len(held)==len(server.jobs) and all(fd>=0 for fd in held)
+            assert len(os.listdir('/proc/self/fd'))==baseline+len(held), 'received descriptor leak'
             bounded['assert_mapper'](launch)
+        assert not server.jobs and len(os.listdir('/proc/self/fd'))==baseline
         print(json.dumps(dict(bounded_launcher=True,retained='SETUID/SETGID in owner userns',
                               bounding='zero',out_of_range_denied=True)),flush=True)
         os._exit(0)
