@@ -262,6 +262,46 @@ def install(base: Any, uid: str, actor: str, pin_id: str, template: dict) -> str
     return intended
 
 
+def installed_agent_slug(base: Any, *, binding: dict) -> str | None:
+    """Placement for an already owner-authenticated binding, from completed pins.
+
+    Called by addressed_agents.resolve AFTER its owner/home checks. The consent
+    store is platform-owned; mutable binding configuration is not path authority.
+    No separate index or migration is needed, including for existing installs.
+    """
+    from tinyassets.command_center_packages import _db, database_path
+
+    if not database_path(base).exists():
+        return None
+    uid, owner = binding["universe_id"], binding["created_by"]
+    wanted = binding["agent_binding_id"]
+    with _db(base) as conn:
+        rows = conn.execute(
+            "SELECT pin_id, record_json, progress_json FROM pins "
+            "WHERE universe_id = ? AND owner_id = ? AND kind = 'install' "
+            "AND state = 'activated'", (uid, owner),
+        ).fetchall()
+    for row in rows:
+        progress = json.loads(row["progress_json"])
+        plan = json.loads(row["record_json"]).get("action", {}).get("plan", {})
+        for template in plan.get("agent_templates", []):
+            key = template["key"]
+            if (progress.get("agents", {}).get(key) != wanted
+                    or binding_id(uid, owner, row["pin_id"], key) != wanted
+                    or template["agent_definition_id"] != binding["agent_definition_id"]):
+                continue
+            placement = plan.get("placement", {})
+            slug = placement.get("agent_slug")
+            if not isinstance(slug, str) or not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", slug):
+                return None
+            prefix = f"agents/{slug}/"
+            landed = set(progress.get("files", []))
+            if any(entry["to"].startswith(prefix) and entry["to"] in landed
+                   for entry in placement.get("land", [])):
+                return slug
+    return None
+
+
 def consent_lines(agents: list[dict], *, has_screen: bool) -> list[str]:
     from tinyassets.api.publish_requests import _shown
 

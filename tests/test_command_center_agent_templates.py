@@ -143,11 +143,68 @@ def test_copy_agents_maps_references_preserves_existing_and_source(home, package
         existing["agent_binding_id"],
     }
     agent = resolve(home, universe_id=BOB_UNIVERSE, owner=BOB, agent_id=target)
+    from tinyassets.command_center_packages import pin_for_request
+
+    pin = pin_for_request(home, universe_id=BOB_UNIVERSE, request_id=request_id)
+    assert agent.agent_slug == (pin["record"]["action"]["plan"]["placement"]["agent_slug"]
+                                if package else None)
     assert agent.instructions == (
         ("identity", "instructions", "Help prepare a task; ask before sending anything."),
     )
     with pytest.raises(AgentNotAddressable):
         resolve(home, universe_id=BOB_UNIVERSE, owner=OWNER, agent_id=target)
+
+
+@pytest.mark.parametrize("missing_evidence", [
+    "owner", "home", "complete", "progress", "files", "definition", "key", "unsafe_slug",
+])
+def test_installed_directory_requires_exact_completed_recipient_evidence(home, missing_evidence):
+    from tinyassets.command_center_packages import _db, pin_for_request, slug
+
+    source, _definition, original = _publish(home, package=True)
+    taken = home / BOB_UNIVERSE / "agents" / slug(get_definition(home, source)["name"])
+    taken.mkdir(parents=True, exist_ok=True)
+    (taken / "AGENTS.md").write_text("Existing agent stays mine.", encoding="utf-8")
+    request_id = _copy_request(source)
+    result = _answer(BOB, BOB_UNIVERSE, request_id)
+    assert result.get("installed"), result
+    target = result["agents"]["village-scout"]
+    pin = pin_for_request(home, universe_id=BOB_UNIVERSE, request_id=request_id)
+    expected = pin["record"]["action"]["plan"]["placement"]["agent_slug"]
+    assert expected != taken.name and expected != target
+    addressed = resolve(home, universe_id=BOB_UNIVERSE, owner=BOB, agent_id=target)
+    assert addressed.agent_slug == expected
+    assert resolve(home, universe_id=UNIVERSE, owner=OWNER,
+                   agent_id=original["agent_binding_id"]).agent_slug is None
+    with pytest.raises(AgentNotAddressable):
+        resolve(home, universe_id=UNIVERSE, owner=BOB, agent_id=target)
+    with pytest.raises(AgentNotAddressable):
+        resolve(home, universe_id=BOB_UNIVERSE, owner=OWNER, agent_id=target)
+    with _db(home) as conn:
+        if missing_evidence == "owner":
+            conn.execute("UPDATE pins SET owner_id = '' WHERE request_id = ?", (request_id,))
+        elif missing_evidence == "home":
+            conn.execute("UPDATE pins SET universe_id = 'elsewhere' WHERE request_id = ?",
+                         (request_id,))
+        elif missing_evidence == "complete":
+            conn.execute("UPDATE pins SET state = 'activating' WHERE request_id = ?", (request_id,))
+        elif missing_evidence in {"definition", "key", "unsafe_slug"}:
+            record = pin["record"]
+            plan = record["action"]["plan"]
+            if missing_evidence == "unsafe_slug":
+                plan["placement"]["agent_slug"] = "../another-agent"
+            else:
+                field = "agent_definition_id" if missing_evidence == "definition" else "key"
+                plan["agent_templates"][0][field] = "unrelated"
+            conn.execute("UPDATE pins SET record_json = ? WHERE request_id = ?",
+                         (json.dumps(record), request_id))
+        else:
+            progress = pin["progress"]
+            progress["agents" if missing_evidence == "progress" else "files"] = {}
+            conn.execute("UPDATE pins SET progress_json = ? WHERE request_id = ?",
+                         (json.dumps(progress), request_id))
+    assert resolve(home, universe_id=BOB_UNIVERSE, owner=BOB, agent_id=target).agent_slug is None
+    assert (taken / "AGENTS.md").read_text(encoding="utf-8") == "Existing agent stays mine."
 
 
 @pytest.mark.parametrize("package", [False, True])

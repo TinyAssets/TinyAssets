@@ -2,8 +2,13 @@
 severity: P2
 title: Harness control continuation lacks required runtime integrations
 filed: '2026-10-05'
-summary: L5b cannot complete ordered hook activation and acceptance until the delegated roster, starter loader and isolated stdio runtime are available.
+summary: K1 owns consolidated extension lifecycle and roster resolution; automatic hooks, UI projections and U1 package admission remain runtime dependencies.
 ---
+
+Consolidation: [`one-extension-unit`](../../openspec/changes/one-extension-unit/proposal.md)
+now owns extension activation, hooks/cards and installed-directory resolution.
+Do not continue parallel authoring paths in the source changes. U1 owns package
+process admission; the starter lane retains its editable starter hook loader.
 
 Observed on `ae7790a388` after #4503 merged. That slice completed only
 `command-center-harness-control` task 1.1. Its design and review already explain

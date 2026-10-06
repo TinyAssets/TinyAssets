@@ -102,6 +102,10 @@ def main(argv=None):
     catalog = remote({"op": "catalog"})
     local = extensions(catalog["extension_roots"])
     capabilities = {item["name"]: item for item in catalog["capabilities"]}
+    capabilities.update({item["name"]: item
+                         for item in catalog.get("extension_capabilities", [])})
+    if catalog.get("extension_error"):
+        print(f"ta: extensions unavailable: {catalog['extension_error']}", file=sys.stderr)
     capabilities.update(local)
     if argv[0] == "search":
         words = [word.lower() for word in argv[1:]]
@@ -128,7 +132,16 @@ def main(argv=None):
         return json.loads(result.stdout)
     if name not in capabilities:
         raise ValueError(f"unknown capability: {name}")
-    return remote({"op": "call", "name": name, "arguments": arguments})["result"]
+    result = remote({"op": "call", "name": name, "arguments": arguments})["result"]
+    if (name.startswith("extension:") and isinstance(result, dict)
+            and "extension_execution" in result):
+        launch = result["extension_execution"]
+        completed = subprocess.run(
+            [launch["executable"], launch["entry"], json.dumps(launch["arguments"])],
+            cwd=launch["cwd"], stdout=subprocess.PIPE, check=True,
+        )
+        return json.loads(completed.stdout)
+    return result
 
 
 if __name__ == "__main__":
