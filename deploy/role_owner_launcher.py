@@ -21,6 +21,7 @@ from pathlib import Path
 FIRST, COUNT = 300000, 100000
 MAPPING = f"0 {FIRST} {COUNT}\n"
 CAPS = (1 << 6) | (1 << 7)
+MAX_CELLS, MAX_OWNER_CELLS = 32, 4
 
 
 def bootstrap_services(data_root, run_root, bindings, launch):
@@ -245,6 +246,7 @@ class OwnerLauncher:
         self.channel.settimeout(1)
         self.overflow_uid = int(Path('/proc/sys/kernel/overflowuid').read_text())
         self.overflow_gid = int(Path('/proc/sys/kernel/overflowgid').read_text())
+        self.jobs = {}
 
     def _alive(self):
         return not select.select([self.daemon_pidfd], [], [], 0)[0]
@@ -252,6 +254,7 @@ class OwnerLauncher:
     def serve_one(self):
         if not self._alive():
             raise RuntimeError('daemon exited')
+        self._service_jobs()
         try:
             packet, ancillary, flags, _ = self.channel.recvmsg(
                 4096, socket.CMSG_SPACE(12) + socket.CMSG_SPACE(32), socket.MSG_CMSG_CLOEXEC)
@@ -274,6 +277,8 @@ class OwnerLauncher:
                 raise ValueError('unauthenticated daemon request')
             request = json.loads(packet)
             if request == {'op': 'STOP'} and not received:
+                if self.jobs:
+                    raise ValueError('owner cells are still running')
                 self.channel.sendall(b'{"op":"STOPPED"}')
                 return False
             self._decoder(request, received)
@@ -286,13 +291,14 @@ class OwnerLauncher:
 
     def _decoder(self, request, received):
         kind = request.get('kind') if isinstance(request, dict) else None
+        streaming = isinstance(request, dict) and request.get('op') == 'START'
         fields = {'op', 'kind', 'principal', 'command_center'}
         if kind == 'image-decoder':
             fields.add('mime')
         if kind == 'preview-write':
             fields.add('ui_id')
         if (not isinstance(request, dict)
-                or set(request) != fields or request['op'] != 'SPAWN'
+                or set(request) != fields or request['op'] not in {'SPAWN', 'START'}
                 or kind not in {'image-decoder', 'workspace-git', 'ui-preview', 'preview-write'}
                 or (kind == 'image-decoder' and (
                     not isinstance(request['mime'], str)
@@ -300,10 +306,18 @@ class OwnerLauncher:
                         'image/png', 'image/jpeg', 'image/webp', 'image/gif'}))
                 or not isinstance(request['principal'], str)
                 or not isinstance(request['command_center'], str)
-                or len(received) != (2 if kind in {'workspace-git', 'preview-write'} else 1)):
+                or len(received) != (2 if kind in {'workspace-git', 'preview-write'} else 1)
+                    + int(streaming)):
             raise ValueError('unsupported owner engine')
+        if not streaming and self.jobs:
+            raise ValueError('blocking spawn cannot suspend active cell supervision')
         machine = self.bindings[(request['principal'], request['command_center'])]
         inner = machine - FIRST
+        if streaming:
+            if (len(self.jobs) >= MAX_CELLS or sum(
+                    job[1] == machine for job in self.jobs.values()) >= MAX_OWNER_CELLS):
+                raise ValueError('owner cell concurrency is exhausted')
+            self._daemon_endpoint(received[-1], socket.SOCK_SEQPACKET)
         if kind == 'preview-write':
             ui_id = request['ui_id']
             if (not isinstance(ui_id, str) or not 1 <= len(ui_id) <= 64
@@ -325,16 +339,22 @@ class OwnerLauncher:
             if not source.startswith(prefix) or source.endswith(' (deleted)'):
                 raise ValueError('git directory is outside the admitted command center')
         fd = received[0]
-        if not stat.S_ISSOCK(os.fstat(fd).st_mode):
-            raise ValueError('decoder needs daemon socketpair')
-        with socket.socket(fileno=os.dup(fd)) as endpoint:
-            if (endpoint.family != socket.AF_UNIX or endpoint.type != socket.SOCK_STREAM
-                    or endpoint.getsockname() or endpoint.getpeername()
-                    or struct.unpack('3i', endpoint.getsockopt(socket.SOL_SOCKET,
-                        socket.SO_PEERCRED, 12)) !=
-                    (self.daemon_pid, self.overflow_uid, self.overflow_gid)):
-                raise ValueError('decoder endpoint is not daemon-owned')
-        pid = os.fork()
+        self._daemon_endpoint(fd, socket.SOCK_STREAM)
+        status_channel = None
+        if streaming:
+            status_channel = socket.socket(fileno=os.dup(received[-1]))
+            try:
+                status_channel.setsockopt(socket.SOL_SOCKET, socket.SO_PASSCRED, 1)
+                status_channel.setblocking(False)
+            except BaseException:
+                status_channel.close()
+                raise
+        try:
+            pid = os.fork()
+        except BaseException:
+            if status_channel is not None:
+                status_channel.close()
+            raise
         if pid == 0:
             try:
                 os.dup2(fd, 0)
@@ -370,6 +390,16 @@ class OwnerLauncher:
                 os._exit(126)
         deadline = time.monotonic() + (75 if kind == 'ui-preview' else
                                      65 if kind == 'workspace-git' else 35)
+        if streaming:
+            self.jobs[pid] = (inner, machine, deadline, status_channel)
+            try:
+                self.channel.sendall(json.dumps(
+                    dict(op='STARTED', uid=machine, gid=machine)).encode())
+            except BaseException:
+                self.jobs[pid] = (inner, machine, 0, status_channel)
+                self._service_jobs()
+                raise
+            return
         while True:
             waited, status = os.waitpid(pid, os.WNOHANG)
             if waited:
@@ -395,3 +425,55 @@ class OwnerLauncher:
         self.channel.sendall(json.dumps({'op': 'SPAWN_DONE',
             'returncode': os.waitstatus_to_exitcode(status), 'uid': machine,
             'gid': machine}).encode())
+
+    def _daemon_endpoint(self, fd, kind):
+        if not stat.S_ISSOCK(os.fstat(fd).st_mode):
+            raise ValueError('owner cell needs daemon socketpair')
+        with socket.socket(fileno=os.dup(fd)) as endpoint:
+            if (endpoint.family != socket.AF_UNIX or endpoint.type != kind
+                    or endpoint.getsockname() or endpoint.getpeername()
+                    or struct.unpack('3i', endpoint.getsockopt(socket.SOL_SOCKET,
+                        socket.SO_PEERCRED, 12)) !=
+                    (self.daemon_pid, self.overflow_uid, self.overflow_gid)):
+                raise ValueError('owner endpoint is not daemon-owned')
+
+    def _service_jobs(self):
+        for pid, (inner, machine, deadline, channel) in list(self.jobs.items()):
+            waited, status = os.waitpid(pid, os.WNOHANG)
+            cancel = time.monotonic() >= deadline
+            if not waited and select.select([channel], [], [], 0)[0]:
+                # EOF revokes this launch. Any malformed or forged control
+                # also cancels only this cell; it can never select another PID.
+                _, ancillary, _, _ = channel.recvmsg(
+                    32, socket.CMSG_SPACE(12) + socket.CMSG_SPACE(32), socket.MSG_CMSG_CLOEXEC)
+                for level, kind, payload in ancillary:
+                    if level == socket.SOL_SOCKET and kind == socket.SCM_RIGHTS:
+                        handles = array.array('i')
+                        handles.frombytes(payload[:len(payload) - len(payload) % handles.itemsize])
+                        for handle in handles:
+                            os.close(handle)
+                cancel = True
+            if not waited and cancel:
+                try:
+                    os.kill(pid, signal.SIGKILL)
+                except PermissionError:
+                    os.seteuid(inner)
+                    try:
+                        os.kill(pid, signal.SIGKILL)
+                    finally:
+                        os.seteuid(0)
+                except ProcessLookupError:
+                    pass
+                _, status = os.waitpid(pid, 0)
+                waited = pid
+            if waited:
+                try:
+                    receipt = dict(op='SPAWN_DONE', returncode=os.waitstatus_to_exitcode(status),
+                                   uid=machine, gid=machine)
+                    channel.sendall(json.dumps(receipt).encode())
+                except (BrokenPipeError, ConnectionResetError):
+                    pass
+                finally:
+                    channel.close()
+                    del self.jobs[pid]
+        assert_mapper(self.launch)

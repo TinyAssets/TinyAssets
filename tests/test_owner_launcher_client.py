@@ -39,3 +39,39 @@ def test_rejected_reply_closes_all_received_descriptors(tmp_path):
             assert len(list(Path('/proc/self/fd').iterdir())) == before
         finally:
             client._close()
+
+
+def test_independent_cell_receipt_rejects_daemon_impersonation():
+    from tinyassets.broker.owner_identities import OwnerIdentity
+    from tinyassets.owner_launcher_client import OwnerCell
+
+    daemon, mapper = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
+    status, impostor = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
+    stream, peer = socket.socketpair()
+    with daemon, mapper, status, impostor, stream, peer:
+        client = OwnerLauncherClient(daemon, os.getpid())
+        status.setsockopt(socket.SOL_SOCKET, socket.SO_PASSCRED, 1)
+        cell = OwnerCell(client, stream, status, OwnerIdentity(300001, 300001))
+        try:
+            impostor.sendall(
+                b'{"op":"SPAWN_DONE","returncode":0,"uid":300001,"gid":300001}')
+            with pytest.raises(RuntimeError, match='unauthenticated'):
+                cell.wait()
+        finally:
+            cell._after_fork()
+            client._close()
+
+
+@pytest.mark.parametrize('machines', [[300001] * 4, list(range(300002, 300034))])
+def test_cell_concurrency_refuses_before_fork_or_descriptor_use(machines):
+    import runpy
+
+    module = runpy.run_path(str(Path(__file__).resolve().parents[1]
+                               / 'deploy' / 'role_owner_launcher.py'))
+    launcher = object.__new__(module['OwnerLauncher'])
+    launcher.bindings = {('alice', 'alice'): 300001}
+    launcher.jobs = {i: (machine - 300000, machine, 0, None)
+                     for i, machine in enumerate(machines)}
+    with pytest.raises(ValueError, match='concurrency is exhausted'):
+        launcher._decoder(dict(op='START', kind='image-decoder', principal='alice',
+                               command_center='alice', mime='image/png'), [-1, -1])
