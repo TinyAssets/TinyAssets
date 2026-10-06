@@ -289,19 +289,33 @@ class OwnerLauncher:
         fields = {'op', 'kind', 'principal', 'command_center'}
         if kind == 'image-decoder':
             fields.add('mime')
+        if kind == 'preview-write':
+            fields.add('ui_id')
         if (not isinstance(request, dict)
                 or set(request) != fields or request['op'] != 'SPAWN'
-                or kind not in {'image-decoder', 'workspace-git'}
+                or kind not in {'image-decoder', 'workspace-git', 'ui-preview', 'preview-write'}
                 or (kind == 'image-decoder' and (
                     not isinstance(request['mime'], str)
                     or request['mime'] not in {
                         'image/png', 'image/jpeg', 'image/webp', 'image/gif'}))
                 or not isinstance(request['principal'], str)
                 or not isinstance(request['command_center'], str)
-                or len(received) != (2 if kind == 'workspace-git' else 1)):
+                or len(received) != (2 if kind in {'workspace-git', 'preview-write'} else 1)):
             raise ValueError('unsupported owner engine')
         machine = self.bindings[(request['principal'], request['command_center'])]
         inner = machine - FIRST
+        if kind == 'preview-write':
+            ui_id = request['ui_id']
+            if (not isinstance(ui_id, str) or not 1 <= len(ui_id) <= 64
+                    or ui_id[0] not in 'abcdefghijklmnopqrstuvwxyz0123456789'
+                    or any(c not in 'abcdefghijklmnopqrstuvwxyz0123456789-' for c in ui_id)):
+                raise ValueError('invalid preview output name')
+            info = os.fstat(received[1])
+            if (not stat.S_ISDIR(info.st_mode) or info.st_gid != inner
+                    or info.st_uid not in (inner, self.overflow_uid)
+                    or os.readlink(f'/proc/self/fd/{received[1]}') !=
+                    self.data_root + '/' + request['command_center']):
+                raise ValueError('preview output root does not match admitted center')
         if kind == 'workspace-git':
             info = os.fstat(received[1])
             if not stat.S_ISDIR(info.st_mode) or (info.st_uid, info.st_gid) != (inner, inner):
@@ -327,9 +341,10 @@ class OwnerLauncher:
                 os.dup2(fd, 1)
                 null = os.open('/dev/null', os.O_WRONLY)
                 os.dup2(null, 2)
-                if kind == 'workspace-git':
+                if kind in {'workspace-git', 'preview-write'}:
                     os.dup2(received[1], 3)
-                self.launch['close_descriptors']((3,) if kind == 'workspace-git' else ())
+                self.launch['close_descriptors'](
+                    (3,) if kind in {'workspace-git', 'preview-write'} else ())
                 os.setgroups([])
                 os.setresgid(inner, inner, inner)
                 os.setresuid(inner, inner, inner)
@@ -337,15 +352,24 @@ class OwnerLauncher:
                 self.launch['_assert_caps'](0)
                 os.umask(0o007)
                 os.chdir('/')
-                command = (['/usr/local/libexec/ta-git.py', 'enter', str(inner), self.data_root]
-                    if kind == 'workspace-git' else ['/usr/local/libexec/ta-decoder.py',
-                    'enter-owner', request['mime'], self.data_root, str(inner)])
+                if kind == 'workspace-git':
+                    command = ['/usr/local/libexec/ta-git.py', 'enter', str(inner), self.data_root]
+                elif kind == 'ui-preview':
+                    command = ['/usr/local/libexec/ta-decoder.py', 'enter-preview',
+                               self.data_root, str(inner)]
+                elif kind == 'preview-write':
+                    command = ['/usr/local/libexec/ta-decoder.py', 'enter-preview-write',
+                               request['ui_id'], self.data_root, str(inner)]
+                else:
+                    command = ['/usr/local/libexec/ta-decoder.py', 'enter-owner',
+                               request['mime'], self.data_root, str(inner)]
                 os.execve('/opt/venv/bin/python', ['/opt/venv/bin/python', '-I', '-B', *command],
                     {'PATH': '/usr/bin:/bin', 'LANG': 'C.UTF-8', 'HOME': '/tmp',
                      'PYTHONDONTWRITEBYTECODE': '1'})
             except BaseException:
                 os._exit(126)
-        deadline = time.monotonic() + (65 if kind == 'workspace-git' else 35)
+        deadline = time.monotonic() + (75 if kind == 'ui-preview' else
+                                     65 if kind == 'workspace-git' else 35)
         while True:
             waited, status = os.waitpid(pid, os.WNOHANG)
             if waited:
