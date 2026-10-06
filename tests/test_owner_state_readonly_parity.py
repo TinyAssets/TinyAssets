@@ -109,7 +109,7 @@ def test_empty_token_is_orphan_without_probing(tmp_path):
 
 
 @pytest.mark.skipif(getattr(os, "geteuid", lambda: -1)() == 0,
-                    reason="root ignores the mode bits; runs-in=linux_oracle as uid 1001")
+                    reason="Linux root ignores the mode bits; runs-in=linux_oracle")
 def test_unwritable_dead_proof_was_unknown_and_is_now_dead(tmp_path):
     """The one intended change: main needed O_RDWR to prove death."""
     token = _dead_token(tmp_path)
