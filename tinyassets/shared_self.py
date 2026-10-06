@@ -131,8 +131,6 @@ def prepare_shared_self_turn(base_path, universe_id, principal_id, prompt, confi
         )
     history = [] if activity else load_recent_readonly(root, f"principal:{principal_id}")
     history_block = intelligence._conversation_history_block(history) if history else ""
-    if history_block:
-        system += "\n\n" + intelligence._CROSS_SURFACE_CONTINUITY
     system += "\n\n" + intelligence._turn_input_method_context("unknown")
     shared_config = intelligence._sandboxed_config(
         ctx, founder_principal=principal_id, universe_id=universe_id, granted=True,
@@ -172,12 +170,14 @@ def prepare_shared_self_turn(base_path, universe_id, principal_id, prompt, confi
 
 def _granted_config(config, node):
     """Narrow every tool surface to the node's grant (``None`` keeps them all)."""
-    from tinyassets.served_tools import BACKEND_ENGINE_CAPABILITIES, node_tool_grant
+    from tinyassets.served_tools import BACKEND_ENGINE_CAPABILITIES, model_tools, node_tool_grant
 
     grant = node_tool_grant(node.get("tools_allowed"))
     if grant is None:
         return config
-    withheld = {f"mcp__tinyassets__{t}" for t in BACKEND_ENGINE_CAPABILITIES if t not in grant}
+    visible = model_tools(replace(config, engine_tool_grant=grant))
+    withheld = {f"mcp__tinyassets__{t}" for t in BACKEND_ENGINE_CAPABILITIES
+                if t not in grant and t not in visible}
     return replace(
         config,
         engine_tool_grant=grant,

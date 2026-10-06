@@ -211,7 +211,9 @@ async def open_engine_tools(
     if (any(not isinstance(name, str) for name in grant)
             or len(set(grant)) != len(grant)
             or not set(grant).issubset(BACKEND_ENGINE_CAPABILITIES)
-            or not set(enabled).issubset(grant)):
+            or not set(enabled).issubset(
+                set(grant) | ({"bash"} if set(grant) - {"read", "write", "edit", "bash"} else set())
+            )):
         raise EngineToolError("engine_tools_invalid_grant")
     if (
         isinstance(timeout, bool)

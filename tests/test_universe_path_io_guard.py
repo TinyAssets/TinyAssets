@@ -403,9 +403,6 @@ PINNED: dict[str, list[str]] = {
     "tinyassets/universe_egress.py": [
         "__init__: .unlink()",
     ],
-    "tinyassets/universe_intelligence.py": [
-        "read_operating_instructions: os.open()",
-    ],
     "tinyassets/ui_preview.py": [
         # The host-wide render slot's flock holder at the DATA ROOT
         # (.ui-preview.lock): no jail binds the data root, and flock needs the

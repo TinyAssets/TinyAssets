@@ -676,7 +676,9 @@ def run_jailed(
         if ta_socket is not None:
             egress["ta_socket"] = ta_socket
         argv = TOOL_JAIL_ARGV(root, limited, agent_id=agent_id, seccomp_fd=filter_fd, **egress)
-        with _slot(root, on_wait=on_wait, waited=queued):
+        from tinyassets.starter_seeds import seed_boundary
+
+        with seed_boundary(root), _slot(root, on_wait=on_wait, waited=queued):
             try:
                 budget = jail_disk.open_budget(
                     root, min_free_bytes=limits.min_free_disk_bytes,
@@ -1213,25 +1215,9 @@ def skill_index(universe_dir: Path) -> list[tuple[str, str]]:
 
 
 _HARNESS_HEAD = (
-    "# My folder and my four tools\n"
-    "/u is my workspace: `read` reads files/lines, `write` creates/replaces files, "
-    "`edit` replaces an exact passage, `bash` runs a shell with public internet via "
-    "HTTP(S)_PROXY (pip, npm, git, urllib) and bounded memory, processes and time. "
-    "Long-running work is workflows and automations in this command center, never "
-    "a service hosted elsewhere (write_graph.systems). Relative paths: /u. I can "
-    "create, change and delete files/folders; platform soul.md and config.yaml are read-only.\n"
-    "In bash, `ta search <words>` discovers capabilities, `ta describe <name>` "
-    "lists args; `ta <name> --json '<args>'` calls them.\n"
-    "Earlier turns and missing files: handbook write_graph.systems.\n"
-    "Skills: `skills/<name>/SKILL.md`, frontmatter `name:` and one-line `description:`. "
-    "I follow matching skills; editing them changes the next turn.\n"
-    "I call independent reads or checks together in one reply, not one per reply.\n"
-    "Downloads: a fenced file block {\"path\":\"exports/a.csv\"} (a /u file, max 8 MiB) "
-    "gives the owner a private Download chip.\n"
-    "App UI: one component via `write_graph target=\"app_ui\" "
-    "operation=\"add_ui\"` and `payload_json={\"component\": {...}}` (handbook "
-    "write_graph.interfaces), rather than staging pieces in /u files and reading them back.\n"
-    "## My skills\n"
+    "/u is the workspace. Use read/write/edit/bash. In bash: `ta search <words>`, "
+    "`ta describe <name>`, `ta call <name> --json '<args>'`. "
+    "Read matching skills at skills/<name>/SKILL.md; owner files are editable.\nSkills:\n"
 )
 
 
@@ -1345,16 +1331,13 @@ def harness_prompt(universe_dir: Path) -> str:
     Runs in the shared daemon on every founder turn, so a bad skill folder
     never breaks the turn; an unreadable inventory is omitted.
     """
-    from tinyassets.onboarding_note import onboarding_note
-
-    note = onboarding_note(universe_dir)
     try:
         skills = skill_index(universe_dir)
     except (OSError, RecursionError, ValueError):
         skills = []
     lines = [
-        f"- `{name}`: {description} ({SKILLS_DIR}/{name}/SKILL.md)"
+        f"- `{name}`: {description}"
         for name, description in skills
     ]
     return (_HARNESS_HEAD + "\n".join(lines or ["(none yet)"])
-            + _folder_section(universe_dir) + note)
+            + _folder_section(universe_dir))

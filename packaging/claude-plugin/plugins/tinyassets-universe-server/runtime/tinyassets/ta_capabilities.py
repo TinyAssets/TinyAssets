@@ -190,13 +190,14 @@ class JailBridge:
         self._directory.cleanup()
 
 
-async def engine_dispatch(server):
+async def engine_dispatch(server, *, completed: list | None = None):
     """Capture the engine launch and schedule nested calls on its existing loop.
 
     ``ta`` reaches exactly the launch's own grant: the served tools the platform
     signed onto this launch's route (an agent node's ``tools_allowed``, else the
-    whole served set). A launch with no signed grant, or one without ``bash``,
-    gets no ``ta`` at all (``None``); delegation never increases authority.
+    whole served set). A launch with no signed grant gets no ``ta``. Without
+    shell authority, run_bash accepts only a parsed ta invocation; no shell or
+    local extension process runs. Delegation never increases authority.
     """
     from tinyassets.api.helpers import _universe_dir
     from tinyassets.engine_steering import _session_key, launch_tools
@@ -204,14 +205,15 @@ async def engine_dispatch(server):
     from tinyassets.served_tools import connections_granted
 
     granted = launch_tools()
-    if granted is None or "bash" not in granted:
+    if granted is None:
         return None
     context = ExecutionContext(server._GRAPH_ID, server._ACTOR_ID, server._acting_agent(),
                                research=is_research_session(_session_key()))
     allowed = set(granted) - {"read", "write", "edit", "bash"}
     platform = [{"name": tool.name, "description": tool.description or "",
                  "arguments": tool.parameters}
-                for tool in await server.mcp.list_tools() if tool.name in allowed]
+                for tool in await server.mcp.list_tools(run_middleware=False)
+                if tool.name in allowed]
 
     async def call_platform(name, arguments):
         from fastmcp.exceptions import ToolError
@@ -227,7 +229,13 @@ async def engine_dispatch(server):
         blocks = [block.model_dump(exclude_none=True) for block in result.content]
         if len(blocks) == 1 and blocks[0].get("type") == "text":
             try:
-                return json.loads(blocks[0]["text"])
+                value = json.loads(blocks[0]["text"])
+                if (completed is not None and name == "write_brain"
+                        and not getattr(result, "isError", False)
+                        and isinstance(value, dict) and value.get("ok") is True
+                        and value.get("written")):
+                    completed.append("write_brain")
+                return value
             except ValueError:
                 return blocks[0]["text"]
         return {"content": blocks}

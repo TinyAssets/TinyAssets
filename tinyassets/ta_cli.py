@@ -95,12 +95,15 @@ def _unique_keys(pairs):
     return result
 
 
-def main(argv=None):
+def main(argv=None, *, dispatch=None, load_extensions=True):
     argv = list(sys.argv[1:] if argv is None else argv)
     if not argv:
         raise ValueError("usage: ta search <words> | describe <name> | <name> --json '<args>'")
-    catalog = remote({"op": "catalog"})
-    local = extensions(catalog["extension_roots"])
+    invoke = dispatch or remote
+    catalog = invoke({"op": "catalog"})
+    if "error" in catalog:
+        return catalog
+    local = extensions(catalog["extension_roots"]) if load_extensions else {}
     capabilities = {item["name"]: item for item in catalog["capabilities"]}
     capabilities.update(local)
     if argv[0] == "search":
@@ -113,6 +116,8 @@ def main(argv=None):
     if argv[0] == "describe" and len(argv) == 2:
         item = capabilities[argv[1]]
         return {key: value for key, value in item.items() if key not in ("executable", "tool")}
+    if argv[0] == "call":
+        argv = argv[1:]
     if len(argv) != 3 or argv[1] != "--json":
         raise ValueError("a call requires <name> --json '<args>'")
     arguments = json.loads(argv[2])
@@ -128,7 +133,8 @@ def main(argv=None):
         return json.loads(result.stdout)
     if name not in capabilities:
         raise ValueError(f"unknown capability: {name}")
-    return remote({"op": "call", "name": name, "arguments": arguments})["result"]
+    response = invoke({"op": "call", "name": name, "arguments": arguments})
+    return response.get("result", response)
 
 
 if __name__ == "__main__":

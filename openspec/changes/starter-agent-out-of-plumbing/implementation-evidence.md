@@ -227,3 +227,93 @@ Consumer integration and other review findings are still being verified. Native
 Codex built-in tools and the opt-in remote thin-loop capability bridge remain
 release blockers; a four-MCP-schema projection is not proof of those actual
 model inventories. Do not merge or deploy this draft as a completed cutover.
+
+
+## K2 continuation: consumer cutover and capability proofs
+
+This section supersedes the earlier prerequisite-only and API-only status.
+The D10 API is implemented and wired to new center provisioning, shared turn
+admission, and persona assembly using the authenticated canonical center owner.
+The renderer reads editable instructions without reseeding or default substitution.
+Automatic migration preserves custom, empty, deleted and linked files, installs
+independent hooks/skills, delivers a durable version notice, and exposes owner-only
+hash-bound adoption and conditional Undo. Failed new provisioning archives its new
+sidecar before rollback so a later center cannot inherit a false install receipt.
+D7 extraction is retained; successful ta memory writes carry daemon-produced
+structured receipts so they do not trigger duplicate extraction.
+
+The ordinary HTTP adapter and Claude engine inventory expose read/write/edit/bash;
+backend grants remain independent. Backend-only grants get a restricted ta command
+transport without arbitrary shell or extension execution. Real Linux ta-jail tests
+exercise the signed broker, including forged stdout and denied-write controls.
+The public MCP connector surface is unchanged.
+
+The 2026-10-06 founder Muse-fit matrix (PR #4518, head
+4a2d09680a650d838ef54bdb42306d025f8899d5) is covered by real store/engine task
+proofs: multi-step chat and skill discovery; sensitive connection/publication
+approval requests; HTTP/MCP connections and Google Calendar OAuth requests;
+automation/workflow creation, reads and pause; notifications; memory read/write/
+forget; editable name/preferences and onboarding; document file creation;
+app_ui add/activate; and owner-confirmed publishing with private-file exclusion.
+These are deterministic adapter/ta task proofs, not live model-family trials or
+proof of a completed Google OAuth consent flow.
+
+### Payload measurement
+
+Budget uses Unicode characters / 4, an estimate rather than a vendor tokenizer.
+Real input schemas are included; dynamic owner content is measured separately and
+is not truncated to make the stock budget pass. Stock system text is 2,350 chars.
+
+| Adapter-supplied payload | Schema chars | Total chars | Estimated tokens |
+| --- | ---: | ---: | ---: |
+| HTTP | 1,574 | 3,924 | 981 |
+| Claude MCP projection | 1,510 | 3,860 | 965 |
+| Codex MCP projection | 1,442 | 3,792 | 948 |
+
+The pinned owner-context fixture adds 1,214 chars in every row. The external audit
+baseline is 47,203 total chars; the earlier reproduced 14-tool schemas alone were
+38,748 chars. Descriptions fall from 32,353 to 490 chars. Static ratchets remain
+in tests/test_converse_turn_cost.py and tighten to 500 description chars and 220
+harness-head chars (actual 215), plus the new 4,000-char stock envelope budget.
+**Native projections exclude opaque CLI-added instructions/tools.** They do not
+prove the whole native envelope fits 1,000 tokens. The opt-in remote thin-loop
+adapter also remains outside the claimed four-tool cutover.
+
+### Final review disposition
+
+Required cross-family review via peer-agents/Claude: **ADAPT**, one read-only
+round, 258 seconds, no reviewer tests. AGREE F1: moved preparation to shared
+admission/persona entrypoints and provisioning. AGREE F2/F3: preserve original
+install offers after Undo, reject adoption from owner-choice transactions, use
+read-only owner snapshots without seed locks, bound mutation waits to five seconds.
+DISAGREE_EVIDENCE only with F3's uncaught-PermissionError subclaim: PermissionError
+is an OSError subclass already handled by the existing handler. AGREE F4/F5 remain
+open: native Codex inventory and the remote box ta bridge block release. These are
+recorded in docs/concerns/2026-10-06-k2-native-and-box-inventories.md.
+
+The repeated node fixture failure was handed to Claude for bounded diagnosis and
+fixture repair under AGENTS rule 7, not another review round. The fixture now signs
+a real route; the subsequent wire regression fixes FastMCP ToolResult metadata
+rather than serializing an MCP result as a string. All 27 agent-node tests pass.
+
+Linux verification batches: 238 passed (UI, memory, approvals, engine security,
+provider sandbox and file-read guards); 282 passed (workflow, common-task ta,
+provisioning, first contact, visibility/privacy, learning and payload); 162 passed
+in the earlier mixed batch with six workflow-fixture failures, all six fixed and
+covered in the 282-pass run. Earlier 173-pass and 132-pass batches cover the other
+changed guidance/grant suites; the latter's sole old resident-guidance expectation
+was moved to the on-demand skill and passed in the 238-test batch. No skipped,
+xfail or removed assertions were introduced to handle failures. Final checks follow.
+
+Do not merge/deploy this draft as a complete cutover. Native inventory/envelope,
+remote authenticated ta transport, atomic exclusion of native apply_patch,
+N>=10 paired model-family trials, deployed-SHA assertion, real owner app acceptance,
+and spec sync/archive remain undone. No provider substitution or native inference
+shutdown was used to claim compliance.
+
+Final additional Linux batches: **215 passed** (lifecycle, renderer, sessions,
+harness, raw-I/O ratchet and guidance) and **187 passed** (tightened payload
+ratchets plus affected heavy provider authority/retry, server isolation and
+cycle suites). Ruff passes all changed canonical Python files; plugin rebuild
+copies 630 files and its import probe passes; whitespace check passes. Staged
+hygiene against origin/main reports **39 added / 0 removed / 0 tampering**.

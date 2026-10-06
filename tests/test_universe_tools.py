@@ -739,7 +739,7 @@ def test_only_a_founder_turn_with_the_tools_is_shown_the_folder_and_skills(
     seed_engine_authority(root, actor="actor-a", graph="u-a")
 
     founder = _founder_turn(monkeypatch, root, "u-a", "hi", founder=True)
-    assert "# My folder and my four tools" in founder
+    assert "/u is the workspace. Use read/write/edit/bash." in founder
     assert "- `standup`:" in founder
 
     visitor = _founder_turn(monkeypatch, root, "u-a", "hi again", founder=False)

@@ -86,8 +86,16 @@ def turn(agent, monkeypatch, signed_in):
             ])
 
         async def call_tool_mcp(self, name, arguments):
+            try:
+                decoded = json.loads(state.tool_result)
+            except ValueError:
+                decoded = None
+            completed = (state.tool == "write_brain" and not state.tool_is_error
+                         and isinstance(decoded, dict) and decoded.get("ok") is True
+                         and bool(decoded.get("written")))
             return CallToolResult(
                 content=[TextContent(type="text", text=state.tool_result)],
+                structuredContent={"completed_capabilities": ["write_brain"] if completed else []},
                 isError=state.tool_is_error,
             )
 
@@ -120,8 +128,9 @@ def turn(agent, monkeypatch, signed_in):
                         "id": "call-1",
                         "type": "function",
                         "function": {
-                            "name": state.tool,
-                            "arguments": json.dumps({"founder": "Favourite colour: cobalt."}),
+                            "name": "bash",
+                            "arguments": json.dumps({
+                                "command": f"ta call {state.tool} --json '{{}}'"}),
                         },
                     }],
                 }
@@ -168,10 +177,12 @@ def test_the_turn_is_told_it_has_not_recorded_the_lesson(turn):
     _converse(turn)
     first = turn.calls[0]
     assert first["kind"] == "writer_1"
-    assert "NOT YET RECORDED" in first["system"]
-    assert "write_brain" in first["system"]
-    # It must not read as an instruction to invent something to save.
-    assert "I write NOTHING and simply answer" in first["system"]
+    skill = (turn.universe_dir / "skills/starter-memory/SKILL.md").read_text()
+    assert "starter-memory" in first["system"]
+    assert "write_brain" in skill
+    # This advice is discoverable on demand, without adding it to each turn.
+    assert "Do not store jokes, hypotheticals" in skill
+    assert "NOT YET RECORDED" not in first["system"]
 
 
 def test_recording_in_turn_skips_the_extraction_round_trip(turn):
@@ -475,10 +486,13 @@ def test_an_unknown_latest_turn_refuses_rather_than_settling_nothing(monkeypatch
 
 def test_the_prompt_block_does_not_vary_by_anything(turn):
     """Founder rule: all accounts behave the same. The block is a constant."""
-    first = universe_intelligence._UNRECORDED_LESSON
+    from tinyassets.starter_skills import starter_agent_files
+
+    first = starter_agent_files()["skills/starter-memory/SKILL.md"]
     _converse(turn)
     told = [c["system"] for c in turn.calls if c["kind"].startswith("writer")]
-    assert all(first in system for system in told)
+    assert all("starter-memory" in system and first not in system for system in told)
+    assert (turn.universe_dir / "skills/starter-memory/SKILL.md").read_text() == first
     for banned in ("plan", "tier", "free", "paid", "premium"):
         assert banned not in first.lower()
 

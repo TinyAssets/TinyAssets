@@ -33,6 +33,14 @@ MARK = "I am the agent node, and I remember the orchard ledger."
 
 
 def _call(name, **arguments):
+    import shlex
+
+    from tinyassets.served_tools import FOUR_MODEL_TOOLS
+
+    if name not in FOUR_MODEL_TOOLS:
+        args = shlex.quote(json.dumps(arguments))
+        return {"name": "bash", "arguments": json.dumps({
+            "command": f"ta call {name} --json {args}"})}
     return {"name": name, "arguments": json.dumps(arguments)}
 
 
@@ -64,6 +72,8 @@ def engine(tmp_path, monkeypatch, work_agent):
     udir.mkdir(exist_ok=True)
     seed_okf_bundle(udir, purpose="Tend the orchard ledger.", loop_branch_def_id="")
     ensure_universe_registered(tmp_path, universe_id="universe_alice", universe_path=udir)
+    from tinyassets.daemon_server import grant_universe_ownership
+    grant_universe_ownership(tmp_path, universe_id="universe_alice", owner_id="acct_alice")
     visibility.set_universe_visibility("universe_alice", "private", source="owner")
     monkeypatch.setattr("tinyassets.shared_self.prepare_shared_self_turn", _REAL_PREPARE)
     # The real persona and the whole served tool block do not fit the 32k
@@ -76,10 +86,25 @@ def engine(tmp_path, monkeypatch, work_agent):
     monkeypatch.setattr(engine_mcp_server, "_ACTOR_ID", "acct_alice")
     monkeypatch.setattr(engine_mcp_server, "_GRAPH_ID", "universe_alice")
     state = work_agent
+    # work_agent publishes its route without a grant key; this fixture's launches
+    # sign ``ta`` grants, so republish the same route with the real key.
+    from types import SimpleNamespace
+
+    from tests.test_ta_capabilities import GRANT_KEY
+    from tinyassets import engine_mcp_http
+    engine_mcp_http._write_routes(tmp_path, [SimpleNamespace(
+        universe_id="universe_alice", owner="acct_alice", port=8790, secret="s" * 43,
+        grant_key=GRANT_KEY,
+    )])
     state.routes, state.offered, state.results, state.script = [], [], [], []
     state.plain = []
 
     def client(route, timeout):
+        from tests.test_ta_capabilities import signed_launch
+
+        signed_launch(monkeypatch, url=route.url, key=route.grant_key)
+        from tinyassets.served_tools import LAUNCH_GRANT_KEY_ENV
+        monkeypatch.setenv(LAUNCH_GRANT_KEY_ENV, route.grant_key)
         state.routes.append((route.actor_id, route.graph_id))
         return Client(engine_mcp_server.mcp)
 
@@ -200,11 +225,12 @@ def test_a_narrowed_grant_offers_and_allows_only_the_granted_tools(
     engine.script = [[_call("read_brain"), _call("write_brain", identity=MARK)]]
     result = _run(tmp_path, monkeypatch, authenticate_request, ["agent", "read_brain"])
 
-    assert engine.offered[0] == ["read_brain"]
+    assert engine.offered[0] == ["bash"]
     # The ungranted write never reached the handler: the brain is unchanged, and the
     # turn stops rather than completing with an effect it was not given.
     assert MARK not in (tmp_path / "universe_alice" / "identity.md").read_text(encoding="utf-8")
-    assert result["terminal_status"] != "completed", result
+    assert any("unknown capability" in text for text in engine.results)
+    assert result["terminal_status"] == "completed", result
 
 
 def test_an_unknown_grant_refuses_before_any_model_round(
@@ -268,7 +294,7 @@ def test_a_workflow_mixes_plain_steps_and_differently_granted_agents(
 
     assert result["terminal_status"] == "completed", (result, engine.errors)
     assert len(engine.plain) == 1
-    assert [o for o in engine.offered if o] == [["read_brain"], ["read_brain"],
+    assert [o for o in engine.offered if o] == [["bash"], ["bash"],
                               sorted(SERVED_ENGINE_MCP_TOOLS), sorted(SERVED_ENGINE_MCP_TOOLS)]
     assert MARK in (tmp_path / "universe_alice" / "identity.md").read_text(encoding="utf-8")
 
@@ -374,7 +400,7 @@ def test_codex_native_turn_enables_only_the_grant(tmp_path, monkeypatch):
 
     assert enabled(config) == ",".join(f'"{t}"' for t in SERVED_ENGINE_MCP_TOOLS)
     narrowed = replace(config, engine_tool_grant=("read_brain", "write_graph"))
-    assert enabled(narrowed) == '"write_graph","read_brain"'
+    assert enabled(narrowed) == '"bash"'
 
 
 def test_claude_native_turn_denies_what_the_grant_withholds():
@@ -387,7 +413,7 @@ def test_claude_native_turn_denies_what_the_grant_withholds():
     assert _granted_config(base, {"tools_allowed": ["agent"]}) is base
     narrowed = _granted_config(base, {"tools_allowed": ["agent", "read_brain"]})
     assert narrowed.engine_tool_grant == ("read_brain",)
-    assert narrowed.allowed_tools == ("WebFetch", "mcp__tinyassets__read_brain")
+    assert narrowed.allowed_tools == ("WebFetch", "mcp__tinyassets__bash")
     assert "mcp__tinyassets__write_brain" in narrowed.disallowed_tools
     assert "Bash" in narrowed.disallowed_tools
     assert "mcp__tinyassets__read_brain" not in narrowed.disallowed_tools

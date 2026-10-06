@@ -154,11 +154,10 @@ BACKEND_ENGINE_CAPABILITIES: tuple[str, ...] = (
     "bash",
 )
 
-# Model visibility is independent of the signed backend grant. Keep the current
-# surface until the coordinated starter cutover can install guidance in existing
-# centers; shrinking this tuple must never narrow ta's backend authority.
-SERVED_ENGINE_MCP_TOOLS = BACKEND_ENGINE_CAPABILITIES
+# Model visibility is independent of the signed backend grant. The D10 consumer
+# installs guidance before rendering; shrinking this tuple never narrows ta.
 FOUR_MODEL_TOOLS = ("read", "write", "edit", "bash")
+SERVED_ENGINE_MCP_TOOLS = FOUR_MODEL_TOOLS
 
 #: ``tools_allowed`` entries that make a prompt node an agent node rather than
 #: naming a tool. ``universe_self`` is the original spelling (#3836).
@@ -194,7 +193,9 @@ def granted_tools(config) -> tuple[str, ...]:
 def model_tools(config) -> tuple[str, ...]:
     """Only model-visible handles that this turn's backend grant permits."""
     granted = set(granted_tools(config))
-    return tuple(t for t in SERVED_ENGINE_MCP_TOOLS if t in granted)
+    backend = granted - set(FOUR_MODEL_TOOLS)
+    return tuple(t for t in SERVED_ENGINE_MCP_TOOLS
+                 if t in granted or (t == "bash" and backend))
 
 
 #: The engine server's environment variable holding the key that signs launch grants.

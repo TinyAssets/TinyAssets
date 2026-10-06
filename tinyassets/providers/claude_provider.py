@@ -506,19 +506,33 @@ def _engine_mcp_flags(config: ModelConfig, universe_dir: Path) -> list[str]:
     # holds internally — never surfaced to the LLM), not the prompt.
     route = read_engine_mcp_route(actor_id=actor_id, graph_id=graph_id, root=root)
     if route is not None:
+        model_url = route_with_session(
+            route.url, session_key, turn_of(),
+            grant_key=getattr(route, "grant_key", ""), tools=granted_tools(config),
+        )
+        model_url += ("&" if "?" in model_url else "?") + "model_inventory=four"
         mcp_config = {
             "mcpServers": {
                 "tinyassets": {
                     "type": "http",
                     # Names this launch's session for owner steering (S2).
-                    "url": route_with_session(
-                        route.url, session_key, turn_of(),
-                        grant_key=getattr(route, "grant_key", ""), tools=granted_tools(config)),
+                    "url": model_url,
                     "headers": {"Authorization": "Bearer " + route.secret},
                 }
             }
         }
     else:
+        import secrets
+
+        from tinyassets.served_tools import LAUNCH_GRANT_KEY_ENV, launch_grant
+
+        # The platform owns the subprocess environment; none of this enters /u.
+        key = secrets.token_hex(32)
+        server_env[LAUNCH_GRANT_KEY_ENV] = key
+        server_env["TINYASSETS_ENGINE_STDIO_GRANT"] = launch_grant(
+            key, "", "", granted_tools(config),
+        )
+        server_env["TINYASSETS_ENGINE_MODEL_INVENTORY"] = "four"
         mcp_config = {
             "mcpServers": {
                 "tinyassets": {
@@ -601,6 +615,10 @@ def _sandbox_cli_args(
     if config.workflow_node:
         config = _confine_workflow_node(config)
     if config.sandbox_workspace:
+        if config.engine_mcp_enabled:
+            # No native tools or deferred ToolSearch handle in a served turn.
+            # MCP discovery is projected by the bound private engine route.
+            flags += ["--tools", ""]
         # Load ONLY project-tier settings. A universe dir is bare, so this loads
         # NOTHING — critically it excludes the USER's global settings, which carry
         # MCP servers and `bypassPermissions`. Without it, the sandboxed engine
@@ -788,6 +806,8 @@ class ClaudeProvider(BaseProvider):
             universe_dir=universe_dir,
             credential_snapshot_dir=config.credential_snapshot_dir,
         )
+        if config.engine_mcp_enabled:
+            proc_env["ENABLE_TOOL_SEARCH"] = "false"
         # Spawn as an owned FAMILY: on POSIX a live anchor holds the group id
         # so teardown reaches what the CLI starts without ever naming a group
         # integer that could have been recycled. Fails closed if it cannot.
@@ -1291,6 +1311,8 @@ class ClaudeProvider(BaseProvider):
             universe_dir=universe_dir,
             credential_snapshot_dir=config.credential_snapshot_dir,
         )
+        if config.engine_mcp_enabled:
+            proc_env["ENABLE_TOOL_SEARCH"] = "false"
         # Same owned-family spawn as the streamed path.
         proc = await aspawn_owned(
             cmd,

@@ -381,6 +381,7 @@ def seed_okf_bundle(
     *,
     purpose: str = "",
     loop_branch_def_id: str = "",
+    owner_id: str = "",
 ) -> UniverseSoul:
     """Seed the blank OKF soul bundle into ``universe_dir`` and return the
     parsed :class:`UniverseSoul` view of the new ``soul.md``.
@@ -425,6 +426,10 @@ def seed_okf_bundle(
     except FileExistsError:
         pass
 
+    if owner_id:
+        from tinyassets.starter_release import prepare_starter
+
+        prepare_starter(universe_dir, owner_id=owner_id, center_id=universe_dir.name, fresh=True)
     soul = read_universe_soul(universe_dir)
     try:
         write_data_path(universe_dir / CAPABILITIES_SKILL_PATH,

@@ -222,6 +222,7 @@ class SharedSelfTests(unittest.TestCase):
             self.assertEqual(first[0], "history:olddirection")
             self.assertEqual(second[0], "history:newdirection")
             self.assertIn("current brain", first[1])
+            self.assertNotIn("continuity", first[1])
             self.assertEqual(first[2].allowed_tools, ("same",))
             self.assertEqual(first[2].engine_mcp_actor_id, "owner")
             history.assert_called_with(Path("/tmp/u-own"), "principal:owner")

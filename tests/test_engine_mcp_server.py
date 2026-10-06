@@ -671,15 +671,14 @@ def test_sandboxed_config_on_when_all_conditions_met(monkeypatch):
         _fake_ctx(), founder_principal="sub-9", universe_id="u-9", granted=True
     )
     assert cfg.engine_mcp_enabled is True
-    assert "mcp__tinyassets__read_graph" in cfg.allowed_tools
-    assert "mcp__tinyassets__get_status" in cfg.allowed_tools
+    assert "mcp__tinyassets__read" in cfg.allowed_tools
+    assert "mcp__tinyassets__bash" in cfg.allowed_tools
     # read-only commons + brain handles are admitted; remix + publish are held
     # off every served allowlist pending the closure-sanitize / consent gate.
-    for _h in (
-        "browse_commons", "read_commons_shape",
-        "read_brain", "write_brain",
-    ):
-        assert f"mcp__tinyassets__{_h}" in cfg.allowed_tools, _h
+    from tinyassets.served_tools import granted_tools
+    for _h in ("browse_commons", "read_commons_shape", "read_brain", "write_brain"):
+        assert _h in granted_tools(cfg), _h
+        assert f"mcp__tinyassets__{_h}" not in cfg.allowed_tools, _h
     assert "mcp__tinyassets__publish_shape" not in cfg.allowed_tools
     assert "mcp__tinyassets__remix_shape" not in cfg.allowed_tools
     # the wildcard deny is dropped so the tinyassets handles are admittable...
@@ -1060,11 +1059,12 @@ def test_connect_compute_is_exposed_in_both_provider_allowlists():
     it (live 2026-08-23: served agent got tool_search "Found 0 tools" because it was
     missing). Guard both served paths so it cannot silently drop out again."""
     from tinyassets.providers.codex_provider import _ENGINE_MCP_ENABLED_TOOLS
+    from tinyassets.served_tools import BACKEND_ENGINE_CAPABILITIES
     from tinyassets.universe_intelligence import _ENGINE_MCP_ALLOWED, _ENGINE_MCP_TOOLS
-
-    assert "connect_compute" in _ENGINE_MCP_ENABLED_TOOLS  # codex served path
-    assert "connect_compute" in _ENGINE_MCP_TOOLS  # claude served path
-    assert "mcp__tinyassets__connect_compute" in _ENGINE_MCP_ALLOWED
+    assert "connect_compute" in BACKEND_ENGINE_CAPABILITIES
+    assert "bash" in _ENGINE_MCP_ENABLED_TOOLS  # Codex reaches it through ta.
+    assert "bash" in _ENGINE_MCP_TOOLS  # Claude reaches it through ta.
+    assert "mcp__tinyassets__bash" in _ENGINE_MCP_ALLOWED
     # And the server actually registers a handler by that name (exposure is real).
     from tinyassets import engine_mcp_server as s
     assert callable(getattr(s, "connect_compute", None))
@@ -1237,7 +1237,9 @@ def test_served_allowlists_do_not_drift():
     assert claude_tools is SERVED_ENGINE_MCP_TOOLS
     assert codex_tools is claude_tools
     # run_graph is the capability that lets a universe RUN automations from the app.
-    assert "run_graph" in SERVED_ENGINE_MCP_TOOLS
+    from tinyassets.served_tools import BACKEND_ENGINE_CAPABILITIES
+    assert SERVED_ENGINE_MCP_TOOLS == ("read", "write", "edit", "bash")
+    assert "run_graph" in BACKEND_ENGINE_CAPABILITIES
 
 
 def test_served_write_graph_refuses_unmounted_targets(monkeypatch):

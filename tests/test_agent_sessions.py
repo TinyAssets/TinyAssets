@@ -301,7 +301,13 @@ def data_dir(tmp_path, monkeypatch):
 def test_the_founder_prompt_is_result_first_and_proactive(data_dir):
     udir = _seed(data_dir)
     prompt = ui._build_persona_system_prompt(udir, universe_id="u-test", tier=interlocutor.FOUNDER)
-    assert "Inside my command center I act without asking" in prompt
+    from tinyassets.starter_release import starter_manifest
+    from tinyassets.starter_seeds import seed_store
+
+    with seed_store(udir, owner_id="test-owner::u-test", center_id="u-test") as seeds:
+        seeds.install(starter_manifest(), fresh=True)
+    prompt = ui._build_persona_system_prompt(udir, universe_id="u-test", tier=interlocutor.FOUNDER)
+    assert "Finish authorized work" in prompt
     assert "the result first" in prompt
     for teaches_hedging in ("warmly", "genuinely curious", "being raised", "raising",
                             "getting to know", "ask to clarify"):
@@ -311,8 +317,15 @@ def test_the_founder_prompt_is_result_first_and_proactive(data_dir):
 def test_operating_instructions_are_seeded_once_and_then_the_universes_own(data_dir):
     udir = _seed(data_dir)
     ui._build_persona_system_prompt(udir, universe_id="u-test", tier=interlocutor.FOUNDER)
+    assert not (udir / "AGENTS.md").exists()  # Rendering never provisions.
+    from tinyassets.starter_release import starter_manifest
+    from tinyassets.starter_seeds import seed_store
+    from tinyassets.starter_skills import starter_agent_files
+
+    with seed_store(udir, owner_id="test-owner::u-test", center_id="u-test") as seeds:
+        seeds.install(starter_manifest(), fresh=True)
     seeded = (udir / "AGENTS.md").read_text(encoding="utf-8")
-    assert seeded.strip() == ui.DEFAULT_OPERATING_INSTRUCTIONS
+    assert seeded == starter_agent_files()["AGENTS.md"]
     (udir / "AGENTS.md").write_text("Answer in one sentence.\n", encoding="utf-8")
     prompt = ui._build_persona_system_prompt(udir, universe_id="u-test", tier=interlocutor.FOUNDER)
     assert "Answer in one sentence." in prompt
@@ -335,7 +348,8 @@ def test_a_linked_instructions_file_is_never_followed_or_overwritten(data_dir, t
     (udir / "AGENTS.md").symlink_to(outside)
     prompt = ui._build_persona_system_prompt(udir, universe_id="u-test", tier=interlocutor.FOUNDER)
     assert "FOREIGN RULES" not in prompt
-    assert ui.DEFAULT_OPERATING_INSTRUCTIONS in prompt
+    assert "no substitute instructions loaded" in prompt
+    assert "Finish authorized work" not in prompt
     assert outside.read_text(encoding="utf-8") == "FOREIGN RULES\n"
 
 

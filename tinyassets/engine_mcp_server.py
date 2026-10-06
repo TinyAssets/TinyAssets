@@ -435,6 +435,22 @@ class RefusalsAreErrors(Middleware):
         raise ToolError(text if bounded is None else bounded)
 
 
+class ModelInventory(Middleware):
+    """Native CLI discovery projection; backend capabilities remain registered."""
+
+    async def on_list_tools(self, context, call_next):
+        tools = await call_next(context)
+        from fastmcp.server.dependencies import get_http_request
+
+        from tinyassets.served_tools import FOUR_MODEL_TOOLS
+
+        try:
+            projected = get_http_request().query_params.get("model_inventory") == "four"
+        except RuntimeError:
+            projected = os.environ.get("TINYASSETS_ENGINE_MODEL_INVENTORY") == "four"
+        return [t for t in tools if t.name in FOUR_MODEL_TOOLS] if projected else tools
+
+
 class ResearchReadOnly(Middleware):
     """Positive allowlist before any handler or response middleware runs."""
 
@@ -452,6 +468,7 @@ class ResearchReadOnly(Middleware):
 
 # First added is OUTERMOST: new tools default to refused in research.
 mcp.add_middleware(ResearchReadOnly())
+mcp.add_middleware(ModelInventory())
 # Attention acknowledges only the final bounded
 # result, then the ceiling wraps the refusal flag.
 mcp.add_middleware(OwnerSteering())
@@ -4675,8 +4692,14 @@ async def _universe_tool(op, /, **kwargs) -> str:
         return err
     from tinyassets import universe_tools
     from tinyassets.api.helpers import _universe_dir
+    from tinyassets.engine_steering import launch_tools
     from tinyassets.providers.provider_jail import ProviderConfinementError
 
+    grant = launch_tools()
+    required = {universe_tools.read_file: "read", universe_tools.write_file: "write",
+                universe_tools.edit_file: "edit", universe_tools.bash: "bash"}[op]
+    if grant is not None and required not in grant:
+        return "error: workspace operation not granted to this turn"
     udir = _universe_dir(_GRAPH_ID)
     try:
         return await asyncio.to_thread(op, udir, **kwargs)
@@ -4724,12 +4747,15 @@ async def edit_file(path: str, old_text: str, new_text: str) -> str:
     )
 
 
-@mcp.tool(name="bash")
+@mcp.tool(name="bash", output_schema=None)
 async def run_bash(command: str, timeout: int = 0) -> str:
     """Run a bash command in /u. Public internet goes through HTTP(S)_PROXY
     (pip, npm, git, urllib); memory, processes and time are limited.
     timeout: seconds (default 120, max 600)."""
     import sys
+
+    from fastmcp.tools.base import ToolResult
+    from mcp.types import TextContent
 
     from tinyassets import universe_tools
     from tinyassets.ta_capabilities import engine_dispatch
@@ -4738,11 +4764,41 @@ async def run_bash(command: str, timeout: int = 0) -> str:
     if err is not None:
         return err
     # The tool jail itself is Linux-only; non-POSIX callers retain its refusal.
-    dispatch = await engine_dispatch(sys.modules[__name__]) if os.name == "posix" else None
+    completed: list[str] = []
+    dispatch = (await engine_dispatch(sys.modules[__name__], completed=completed)
+                if os.name == "posix" else None)
 
-    return await _universe_tool(
-        universe_tools.bash, agent_id=_acting_agent(), command=command, timeout=timeout,
-        ta_dispatch=dispatch,
+    from tinyassets.engine_steering import launch_tools
+
+    grant = launch_tools()
+    if grant is not None and "bash" not in grant:
+        import asyncio
+        import json
+        import shlex
+
+        from tinyassets.ta_cli import main as ta_main
+
+        try:
+            argv = shlex.split(command)
+            if not argv or argv[0] != "ta" or dispatch is None:
+                raise ValueError("only ta search/describe/call is granted; shell execution is not")
+            answer = await asyncio.to_thread(ta_main, argv[1:], dispatch=dispatch,
+                                             load_extensions=False)
+            text = json.dumps(answer)
+        except (ValueError, KeyError, TypeError) as exc:
+            return json.dumps({"error": str(exc)})
+    else:
+        text = await _universe_tool(
+            universe_tools.bash, agent_id=_acting_agent(), command=command, timeout=timeout,
+            ta_dispatch=dispatch,
+        )
+    if not completed:
+        return text
+    # Shell stdout cannot forge this receipt: only completed platform handlers
+    # populate it, outside the jail. Preserve in the ordinary tool journal.
+    return ToolResult(
+        content=[TextContent(type="text", text=text)],
+        structured_content={"completed_capabilities": sorted(set(completed))},
     )
 
 

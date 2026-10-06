@@ -160,6 +160,11 @@ class AgentTurnCoordinator:
         owner = self.adapter.check(self.context, self.config)
         if self.owner is not None and owner != self.owner:
             raise ProviderAuthorityHeldError("interactive agent owner changed")
+        if self.owner is None:
+            from tinyassets.starter_release import prepare_starter
+
+            prepare_starter(self.context.universe_dir, owner_id=owner,
+                            center_id=self.context.universe_dir.name)
         return owner
 
     def _has_candidate_order(self):

@@ -232,6 +232,7 @@ def _parent_dir_fd(root: Path, parts: list[str], *, create: bool) -> int:
             if create:
                 try:
                     os.mkdir(part, 0o777, dir_fd=current)
+                    os.fsync(current)
                 except FileExistsError:
                     pass
             child = fs.open_subdir_nofollow(current, part)
@@ -308,6 +309,8 @@ def write_universe_file(
                 raise UniverseFileError(f"{relpath!r} is a link; nothing was written")
             with open(target, "xb" if mode == "exclusive" else "ab") as handle:  # noqa: PTH123
                 handle.write(data)
+                handle.flush()
+                os.fsync(handle.fileno())
             return
         temp = parent / f".{name}.{uuid.uuid4().hex[:12]}.tmp"
         try:
@@ -333,8 +336,10 @@ def write_universe_file(
                 raise
             try:
                 _write_all(fd, data)
+                os.fsync(fd)
             finally:
                 os.close(fd)
+            os.fsync(dir_fd)
             return
         tmp = f".{name}.{uuid.uuid4().hex[:12]}.tmp"
         fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | nofollow, 0o666, dir_fd=dir_fd)
@@ -345,6 +350,7 @@ def write_universe_file(
             finally:
                 os.close(fd)
             os.replace(tmp, name, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
+            os.fsync(dir_fd)
         except BaseException:
             try:
                 os.unlink(tmp, dir_fd=dir_fd)
@@ -403,6 +409,7 @@ def unlink_universe_file(universe_dir: Path | str, relpath: str) -> None:
     dir_fd = _parent_dir_fd(root, parts, create=False)
     try:
         os.unlink(parts[-1], dir_fd=dir_fd)
+        os.fsync(dir_fd)
     finally:
         os.close(dir_fd)
 
