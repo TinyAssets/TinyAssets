@@ -663,7 +663,7 @@
       try{
         await this.verify();
         if(this.active&&this.active.ui_id.startsWith("ta-ext-")){
-          const live=await MCP.callTool("read_graph",{target:"app_ui",graph_id:home,
+          const live=await Owner.read({target:"app_ui",graph_id:home,
             query:this.active.ui_id});
           if(!live||live.error||!live.ui||live.ui.ui_id!==this.active.ui_id){
             const err=new Error("This extension revision is no longer active.");

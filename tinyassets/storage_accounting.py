@@ -607,6 +607,10 @@ ROOT_ENTRIES: dict[str, str] = {
         "platform: the agent's recent tool calls for its owner's live view, inside "
         ".agent-sessions/<universe>/ (harness S4); the latest 200 per session"
     ),
+    ".outside-client-authority.sqlite3": (
+        "platform: outside-client grants, revocation generations and effect leases; "
+        "authorization bookkeeping, never quota gated"
+    ),
     ".auth.db": "platform: sessions (never gated)",
     ".hosted-model-auth.db": "platform: credential vault (never gated)",
     ".owner_devices.db": "platform: device registrations",

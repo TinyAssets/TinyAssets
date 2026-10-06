@@ -2139,8 +2139,29 @@ _WRITE_GRAPH_INTERFACES_CHAPTER = """\
     not need it.
 
     Extension cards project pinned HTML or app_ui JSON into this library on
-    activation; revoke fences the projection. For the component format, limits
-    and update rules, run `ta extension:help --json '{"chapter":"ui"}'`.
+    activation; revoke fences the projection. Editing a working file does not
+    update an activated revision. For package activation and pinning, run
+    `ta extension:help --json '{"chapter":"ui"}'`. Direct app_ui authoring uses
+    the component and update calls below.
+
+    **The UI component.** These seven fields, plus the optional ``assets``,
+    ``libraries`` and ``script_type`` below, and no others, or the app refuses it
+    and says which field it did not expect:
+
+        {"kind": "tinyassets.app-ui.v1", "version": 1,
+         "ui_id": "office-tower",              # lowercase letters, digits, dashes
+         "name": "Office tower",
+         "markup": "<div id=lobby>...</div>",  # body markup only, no <html>/<head>
+         "style": ".floor{display:grid}",
+         "script": "async function enter(room){...}"}
+
+    **Only these calls change what the person sees.** A UI exists in that row
+    and nowhere else. Keeping a copy under ``extensions/<name>/component.json``
+    in my own folder is fine as a working file, but editing that file changes
+    NOTHING the person looks at -- the platform never reads it. Every change has
+    to go through ``write_graph target="app_ui"`` (``add_ui``, ``replace_ui``,
+    ``edit_ui``), and I confirm it landed by reading the row back. If I edit the
+    file and tell the person their screen is updated, I am wrong.
 
     ``version`` is the FORMAT version of this component and is always ``1``. It
     is not a revision, a build number or a cache-buster: the app renders version
@@ -3189,7 +3210,11 @@ def write_graph(
       Everything else of yours deletes and is gone from
       ``read_graph target="branches"``.
 
-    For byte-preserving file uploads and base64 APIs, read ``connections``.
+    **Writing a file through an API that takes base64 (a contents API):
+    NEVER generate base64 and NEVER re-type a file - both corrupt it (live
+    2026-08-29: `422 not valid Base64`, then a file with 87 lines collapsed,
+    then a "repair" with 36 typos).** The `connections` chapter has the
+    two-node shape that does it correctly.
 
     THE HANDBOOK. Read the relevant chapter on demand, like a matching skill's SKILL.md:
 
@@ -3199,9 +3224,40 @@ def write_graph(
     too; code steps grant ``notify`` and call
     ``invoke_mcp_action("notify", title=..., body=...)``.
 
-    Chapters: capabilities, branches, connections, connect, share-after-publish,
-    code_nodes, workspaces, delivering, interfaces and systems. The handbook
-    index describes each chapter; read the relevant one on demand.
+    * ``capabilities`` -- persistent box, git, egress, Python/pytest, file delivery
+      and notifications. Editable starter skill: save as
+      ``skills/capabilities/SKILL.md``; read first and preserve user edits.
+
+    * ``branches`` -- the minimal branch that builds, field by field: a working
+      one-node and two-node ``operation="create"`` payload, which keys have
+      defaults, every accepted edge spelling, and scheduling it every morning.
+    * ``connections`` -- raising a credential ask (``target="pending_request"``),
+      naming each field the way the site names it, looking the service up before
+      asking rather than from memory, path patterns so one ask covers the job,
+      extending or taking back a key, and writing a file through an API that
+      takes base64.
+    * ``connect`` -- the editable connect-anything starter skill. To install it
+      in an existing account, save the chapter's text as ``skills/connect/SKILL.md``
+      with ``write``. Read any existing file first and preserve the user's edits.
+    * ``share-after-publish`` -- editable starter skill for offering a post and
+      public preview after a successful publish or update. Existing accounts can
+      save it as ``skills/share-after-publish/SKILL.md`` with ``write``; read first
+      and preserve edits. Completion is in the publish response and the resolved
+      request's ``answer.completion``. Publishing approval never approves a post.
+    * ``code_nodes`` -- a node that runs my own Python instead of a prompt: the
+      ``run(state, effects)`` contract, what ``effects`` exposes, reading the
+      exact bytes of a file the user attached, and agent nodes.
+    * ``workspaces`` -- a directory my code nodes share across a run, the
+      ``"sink": "workspace"`` packet every one of them carries, the two ways to
+      get a workspace, and a repository checkout.
+    * ``delivering`` -- other users' command centers sending into one of my steps, and
+      mine sending into theirs: receivers, connecting an output, who sent what,
+      filing a patch request to TinyAssets (no token).
+    * ``interfaces`` -- the screen the user looks at. A dashboard, a game, an
+      office plan, any interface they ask for: I write its HTML/CSS/JS myself.
+    * ``systems`` -- anything always on, several agents working together, or a
+      product for others: built HERE, never hosted elsewhere. PUBLISHING,
+      SHARING and INSTALLING a command center are here.
 
     I read one with ``read_graph target="handbook"
     query="write_graph.<chapter>"``; ``read_graph target="handbook"`` with no

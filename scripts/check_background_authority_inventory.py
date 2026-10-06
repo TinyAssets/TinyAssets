@@ -55,6 +55,13 @@ SENSITIVE_EXECUTION_CALLS = frozenset(
 # Populated from the reviewed current-main scan.  Any addition/removal is a
 # review event: update the audit and this exact set together.
 EXPECTED_SENSITIVE_CALL_SITES: tuple[CallSite, ...] = (
+    # K1 remote MCP transport uses the governed connection effector stream, not
+    # a graph executor. Exact launch/connection authority is rechecked per reply.
+    CallSite("tinyassets/mcp_remote.py", "RemoteMcp._exchange", "self.stream"),
+    CallSite(
+        "packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/tinyassets/mcp_remote.py",
+        "RemoteMcp._exchange", "self.stream",
+    ),
     # D2 Activities launches through the existing owner-bound run entrypoint.
     # Keep canonical and shipped copies exact; the activities root below records
     # the owner/provider checks, generation fence, and agent start barrier.

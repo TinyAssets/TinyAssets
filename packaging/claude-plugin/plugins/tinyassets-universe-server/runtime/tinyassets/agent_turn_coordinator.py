@@ -459,11 +459,7 @@ class AgentTurnCoordinator:
             with request_budget_scope(
                 self.request_budget, close_on_exit=self._owns_request_budget,
             ):
-                result = await self._run()
-                from tinyassets.extension_hooks import turn_event
-
-                await turn_event(self, "turn_end", {"status": "completed"})
-                return result
+                return await self._run()
         except BaseException as exc:
             try:
                 exc.turn_effects, exc.turn_stage, exc.turn_ref = self.effects_evidence()
@@ -503,6 +499,15 @@ class AgentTurnCoordinator:
         )
 
     async def _run(self):
+        # Lifecycle hooks belong to the initialized execution, not the release
+        # wrapper that must also settle interrupted or recovered turn bodies.
+        result = await self._run_turn()
+        from tinyassets.extension_hooks import turn_event
+
+        await turn_event(self, "turn_end", {"status": "completed"})
+        return result
+
+    async def _run_turn(self):
         self.owner = self._check_scope()
         uid = self.context.universe_dir.name
         if self._has_candidate_order():

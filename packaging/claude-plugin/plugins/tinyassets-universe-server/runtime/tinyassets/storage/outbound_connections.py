@@ -1303,7 +1303,10 @@ class CredentialBlindBroker:
             from tinyassets.broker.git_http import dispatch
 
             if not stream:
-                raise PermissionError("git requires binary broker IPC")
+                raise PermissionError(
+                    f"verb {verb!r} is outside the granted connection scope; "
+                    "git requires binary broker IPC"
+                )
             return dispatch(self, grant_id, verb, request, body=body, guard=guard,
                             checkpoint=checkpoint, on_connect=on_connect,
                             deadline_at=deadline_at)

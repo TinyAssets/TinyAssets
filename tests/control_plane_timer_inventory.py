@@ -245,6 +245,10 @@ SITES: dict[str, tuple[str, str]] = {
     "tinyassets/workspace_staging.py::_lock_tree_exclusive#2": (
         CALL_SCOPED, "lock acquisition",
     ),
+    "tinyassets/broker/git_upload.py::Upload.read": (
+        CALL_SCOPED,
+        "K1 binary upload credit wait; broker deadline, cancellation and grant rechecked",
+    ),
     # -- should not exist in the target shape ----------------------------------
     "tinyassets/host_pool/bid_poller.py::BidPoller.run": (
         DELETE, "host-pool fleet client; no production importer (dark code)",
