@@ -800,6 +800,13 @@
         <p id="profile-name"></p>
         <p id="profile-responsibility"></p>
         <div id="profile-status" class="notice" role="status"></div>
+        <h3>Soul and memory</h3>
+        <p>Edit who your agent is, its name and style, and what it remembers.
+        You can also say “forget X” in chat to remove a remembered fact.</p>
+        <div id="soul-editors"></div>
+        <button id="btn-soul-reload" class="btn btn--link" type="button">Reload files</button>
+        <div id="soul-status" class="notice" role="status"></div>
+        <a id="soul-owner-sign-in" href="/app/owner-sign-in" target="_blank" rel="noopener" hidden>Sign in to save your agent</a>
         <h3>What your agent remembers</h3>
         <div id="memory-list"></div>
         <div class="rule-row">
@@ -6292,6 +6299,10 @@
     clearMemoryState();
   }
   function clearMemoryState(){
+    const editors=$("soul-editors");
+    if(editors){ clearTypedValues(editors); editors.textContent=""; }
+    const soulStatus=$("soul-status"); if(soulStatus) soulStatus.textContent="";
+    const soulSignIn=$("soul-owner-sign-in"); if(soulSignIn) soulSignIn.hidden=true;
     const list=$("memory-list");
     if(list){ clearTypedValues(list); list.textContent=""; }
     const draft=$("memory-new"); if(draft) draft.value="";
@@ -7588,7 +7599,7 @@
       openExternal(a.getAttribute("href"));
     });
     // ---- account / deletion (the in-app path Google Play requires) ----
-    function showAccount(){ Voice.stop(false); $("delete-confirm").value=""; $("btn-delete-account").disabled=true; $("delete-status").textContent=""; showView("account"); loadConnections(); loadNotifications(); loadProfile(); loadRules(); loadMemory(); }
+    function showAccount(){ Voice.stop(false); $("delete-confirm").value=""; $("btn-delete-account").disabled=true; $("delete-status").textContent=""; showView("account"); loadConnections(); loadNotifications(); loadProfile(); loadRules(); loadMemory(); loadSoul(); }
     async function loadProfile(){
       const epoch=MCP._loginEpoch, owner=queueOwner, home=queueScope;
       const current=()=>epoch===MCP._loginEpoch&&owner===queueOwner&&home===queueScope;
@@ -7604,6 +7615,56 @@
         $("profile-status").textContent=({working:"Working",idle:"Idle",waiting_on_you:"Waiting on you"})[doc.status]||"";
       }catch(e){ if(current()) $("profile-status").textContent="Your agent could not be loaded."; }
     }
+    // ---- Personal documents: protected owner saves -------------------
+    async function soulRequest(body){
+      const init={method:body?"POST":"GET",credentials:"same-origin",headers:authHeaders()};
+      if(body){init.headers=Object.assign({"Content-Type":"application/json"},init.headers);init.body=JSON.stringify(body);}
+      const response=await fetch("/app/soul",init);
+      return {ok:response.ok,doc:await response.json()};
+    }
+    function renderSoul(doc,context){
+      if(!ownsMemory(context)) return;
+      const host=$("soul-editors"); clearTypedValues(host); host.textContent="";
+      const labels={"soul.md":"Soul — purpose and style","identity.md":"Identity — name and personality","MEMORY.md":"Memory — full file"};
+      (doc.documents||[]).forEach(file=>{
+        const section=document.createElement("section"), label=document.createElement("label");
+        label.textContent=labels[file.path]||file.path;
+        const input=document.createElement("textarea"); input.value=file.text;
+        input.rows=8; input.style.width="100%"; input.style.boxSizing="border-box";
+        input.setAttribute("aria-label",label.textContent); label.appendChild(input);
+        const save=document.createElement("button"); save.type="button"; save.className="btn btn--link";
+        save.textContent="Save "+file.path;
+        save.addEventListener("click",async()=>{
+          if(!ownsMemory(context)||save.disabled) return;
+          save.disabled=true;
+          try{
+            const res=await soulRequest({path:file.path,text:input.value,revision:file.revision});
+            if(!ownsMemory(context)) return;
+            $("soul-owner-sign-in").hidden=res.doc.error!=="interactive_approval_required";
+            if(!res.ok){$("soul-status").textContent=res.doc.detail||"Sign in to save your agent.";return;}
+            // Update only this editor; preserve drafts in the other files.
+            file.revision=res.doc.saved.revision;
+            $("soul-status").textContent="Saved "+file.path+".";
+            loadMemory(); loadProfile();
+          }catch(e){if(ownsMemory(context)) $("soul-status").textContent="The file was not saved. Try again.";}
+          finally{if(ownsMemory(context)) save.disabled=false;}
+        });
+        section.appendChild(label);section.appendChild(save);host.appendChild(section);
+      });
+    }
+    async function loadSoul(){
+      const context=memoryContext();
+      const host=$("soul-editors");clearTypedValues(host);host.textContent="";
+      $("soul-status").textContent="";$("soul-owner-sign-in").hidden=true;
+      if(!ownsMemory(context)) return;
+      try{
+        const res=await soulRequest(null);
+        if(!ownsMemory(context)) return;
+        if(!res.ok){$("soul-status").textContent=res.doc.detail||"Your agent's files could not be loaded.";return;}
+        renderSoul(res.doc,context);
+      }catch(e){if(ownsMemory(context)) $("soul-status").textContent="Your agent's files could not be loaded.";}
+    }
+    $("btn-soul-reload").addEventListener("click",loadSoul);
     // ---- Memory items and Undo (harness D7a) ---------------------------
     function memoryContext(){
       return {epoch:MCP._loginEpoch,owner:queueOwner,home:queueScope};
@@ -7619,10 +7680,10 @@
       const r=await fetch("/app/memory",init);
       const doc=await r.json().catch(()=>({}));
       if(doc.error==='interactive_approval_required'){
-        let link=$('rules-owner-sign-in');
-        if(!link){link=document.createElement('a');link.id='rules-owner-sign-in';
+        let link=$('memory-owner-sign-in');
+        if(!link){link=document.createElement('a');link.id='memory-owner-sign-in';
           link.href='/app/owner-sign-in';link.target='_blank';link.rel='noopener';
-          link.textContent='Sign in to change your rules';$('rules-status').after(link);}
+          link.textContent='Sign in to save memory';$('memory-status').after(link);}
       }
       return {ok:r.ok,status:r.status,doc};
     }

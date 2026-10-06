@@ -210,6 +210,11 @@ def test_app_api_route_challenges_through_the_middleware(require_auth_provider):
     assert _drive("/app/me") == 401
 
 
+def test_personal_file_routes_challenge_through_real_middleware(require_auth_provider):
+    assert _drive("/app/soul") == 401
+    assert _drive("/app/memory") == 401
+
+
 # --- pure predicate: the exemption itself ---
 
 
