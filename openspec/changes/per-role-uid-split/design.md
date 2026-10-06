@@ -2054,3 +2054,26 @@ D69 fixture ordering: construct the client on the pristine inherited pair,
 before any send. SO_PASSCRED can auto-bind a sending Unix endpoint to an abstract
 name. The strict unnamed-pair bootstrap guard remains; raw protocol probes run
 in their original separate default mode, not before constructing the client.
+
+### D70. Mechanical bootstrap: fork services before host authority retirement
+
+The same privileged startup window forks the broker and D62 mapper before PID1
+becomes the capability-free daemon. The mapper retains only its reserved-range
+namespace SETUID/SETGID. No host-privileged launcher survives and no role restarts
+in place. A pidfd watcher exits PID1 on either service death so the container
+tears down all descendants; process identities remain unreaped until exit.
+
+Generate the owner lease proof after all service forks and daemon retirement.
+Send only its hash to the already-retired broker on a private inherited pair.
+The mapper never inherits the proof. Adopt the actual broker using its exact PID
+and UID/GID, then fence through existing IPC. The bootstrapped supervisor cannot
+fall back to START_BROKER. Install D69's inherited mapper client in the daemon.
+Validate startup root labels against the pre-resolved binding table. Dynamic
+identity allocation uses the live broker IPC; dynamic center admission remains
+separate and must not accept caller-selected numeric identities or paths.
+
+This function is staged, requires container PID1, and is not wired to CMD or
+entrypoint. Migration, every other actual class, the deferred ui-preview decision,
+full rollback, and healthcheck acceptance still gate activation. The new oracle
+must exercise application admission plus real broker identity IPC for Alice/Bob
+decoding, not merely pass fixture IDs directly into the client.

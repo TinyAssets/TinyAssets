@@ -23,6 +23,162 @@ MAPPING = f"0 {FIRST} {COUNT}\n"
 CAPS = (1 << 6) | (1 << 7)
 
 
+def bootstrap_services(data_root, run_root, bindings, launch):
+    """Staged PID1 bootstrap; never called by the production entrypoint yet.
+
+    Migration/owner bindings must already be verified with all writers stopped.
+    Fork both services in the existing privileged startup window, then turn
+    PID1 into the capability-free daemon. No host-privileged process survives.
+    A service death exits PID1: the container tears down every descendant.
+    """
+    if os.getpid() != 1:
+        raise RuntimeError('service bootstrap requires container PID1')
+    try:
+        return _bootstrap_services(data_root, run_root, bindings, launch)
+    except BaseException:
+        # Especially before daemon retirement, returning an exception to a
+        # caller would let a caught startup failure retain host authority.
+        try:
+            os.write(2, b'bounded bootstrap failed; container restart required\n')
+        finally:
+            os._exit(78)
+
+
+def _bootstrap_services(data_root, run_root, bindings, launch):
+    if os.getresuid() != (0, 0, 0) or os.getresgid() != (0, 0, 0):
+        raise RuntimeError('service bootstrap requires root entry identity')
+    launch['_assert_caps'](launch['ENTRY_CAPS'])
+    launch['verify_chain']()
+    data_root, run_root = Path(data_root), Path(run_root)
+    for path in (data_root, run_root):
+        if not path.is_absolute():
+            raise RuntimeError('bootstrap paths must be absolute')
+        for ancestor in (path, *path.parents):
+            if not stat.S_ISDIR(ancestor.lstat().st_mode):
+                raise RuntimeError('bootstrap path contains an alias')
+    for ancestor in (run_root, *run_root.parents):
+        info = ancestor.lstat()
+        if info.st_uid != 0 or info.st_mode & 0o022:
+            raise RuntimeError('bootstrap IPC parent is writable or not root-owned')
+    broker_dir = run_root / 'broker'
+    info = broker_dir.lstat()
+    if (not stat.S_ISDIR(info.st_mode) or (info.st_uid, info.st_gid,
+            stat.S_IMODE(info.st_mode)) != (1002, 1101, 0o2750)):
+        raise RuntimeError('invalid bootstrap broker socket directory')
+    # These are startup-resolved principal bindings, not client request data.
+    for (_, center), machine in bindings.items():
+        if (not isinstance(center, str) or not center or center in {'.', '..'}
+                or any(c not in 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_'
+                       for c in center)
+                or type(machine) is not int or not FIRST < machine < FIRST + COUNT):
+            raise RuntimeError('invalid bootstrap owner binding')
+        info = (data_root / center).lstat()
+        if (not stat.S_ISDIR(info.st_mode) or info.st_gid != machine
+                or info.st_uid not in (1001, machine)):
+            raise RuntimeError('owner root does not match bootstrap binding')
+
+    proof_parent, proof_child = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
+    broker_pid = os.fork()
+    if broker_pid == 0:
+        try:
+            proof_parent.close()
+            launch['retire_child']('broker')
+            launch['close_descriptors']((proof_child.fileno(),))
+            proof_child.settimeout(30)
+            digest = proof_child.recv(65).decode('ascii')
+            proof_child.close()
+            if len(digest) != 64 or any(c not in '0123456789abcdef' for c in digest):
+                raise RuntimeError('invalid startup proof hash')
+            argv = ['/opt/venv/bin/python', '-I', '-B', '/app/broker_main.py',
+                    '--socket', str(broker_dir / 'broker.sock'),
+                    '--state', str(data_root / '.broker' / 'state'),
+                    '--data-root', str(data_root), '--owner-uid', '1001',
+                    '--proof-sha256', digest, '--role-split']
+            os.chdir('/')
+            os.execve(argv[0], argv, launch['broker_environment'](data_root))
+        except BaseException:
+            os.write(2, b'bounded bootstrap broker failed\n')
+            os._exit(78)
+    proof_child.close()
+    parent, child = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
+    ready_parent, ready_child = socket.socketpair()
+    daemon_pidfd = os.pidfd_open(1)
+    mapper_pid = os.fork()
+    if mapper_pid == 0:
+        try:
+            parent.close()
+            ready_parent.close()
+            launch['close_descriptors']((child.fileno(), ready_child.fileno(), daemon_pidfd))
+            enter_namespace(ready_child, launch)
+            server = OwnerLauncher(child, 1, daemon_pidfd, bindings, data_root, launch)
+            ready_child.sendall(b'S')
+            ready_child.close()
+            while server.serve_one():
+                pass
+            os._exit(0)
+        except BaseException:
+            os.write(2, b'bounded bootstrap mapper failed\n')
+            os._exit(78)
+    child.close()
+    ready_child.close()
+    os.close(daemon_pidfd)
+    ready_parent.settimeout(30)
+    install_maps(mapper_pid, ready_parent)
+    launch['retire_child']('daemon')
+    launch['close_descriptors']((parent.fileno(), ready_parent.fileno(), proof_parent.fileno()))
+    if ready_parent.recv(1) != b'S':
+        raise RuntimeError('bounded mapper did not start')
+    ready_parent.close()
+
+    # Application imports and owner proof generation happen only after all
+    # service forks and host-capability retirement. Mapper never inherits proof.
+    import secrets
+    import sys
+    import threading
+    from hashlib import sha256
+
+    sys.path.insert(0, '/app')
+    from tinyassets.broker.supervisor import BrokerSupervisor, _protect_daemon
+    from tinyassets.owner_launcher_client import OwnerLauncherClient
+    from tinyassets.role_decoder import install_bounded_client
+
+    _protect_daemon()
+    proof = secrets.token_urlsafe(32)
+    proof_parent.sendall(sha256(proof.encode()).hexdigest().encode('ascii'))
+    proof_parent.close()
+    client = OwnerLauncherClient(parent, mapper_pid)
+    supervisor = BrokerSupervisor.from_bootstrap(data_root, broker_pid=broker_pid,
+        socket_path=broker_dir / 'broker.sock', proof=proof)
+    # Hold unreaped child identities. Any role death ends the whole container;
+    # never reacquire host capabilities or restart a role with a new PID.
+    watched = (os.pidfd_open(broker_pid), os.pidfd_open(mapper_pid))
+
+    def watch():
+        try:
+            select.select(watched, [], [])
+            os.write(2, b'bounded service exited; container restart required\n')
+        finally:
+            os._exit(78)
+
+    threading.Thread(target=watch, name='role-lifetime', daemon=True).start()
+    deadline = time.monotonic() + 30
+    while True:
+        supervisor._same_process()
+        try:
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
+                connection.settimeout(0.2)
+                connection.connect(str(supervisor.socket_path))
+                supervisor.verify_broker(connection)
+            break
+        except (FileNotFoundError, ConnectionRefusedError, TimeoutError):
+            if time.monotonic() >= deadline:
+                raise RuntimeError('bootstrapped broker readiness timeout') from None
+            time.sleep(0.02)
+    supervisor.start()
+    install_bounded_client(client)
+    return supervisor, client
+
+
 def enter_namespace(channel, launch):
     """Child side of startup; parent must install maps before acknowledging."""
     os.setgroups([])

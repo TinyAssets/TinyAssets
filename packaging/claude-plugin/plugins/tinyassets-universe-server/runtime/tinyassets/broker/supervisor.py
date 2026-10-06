@@ -9,6 +9,7 @@ import ctypes
 import json
 import os
 import secrets
+import select
 import socket
 import struct
 import threading
@@ -62,6 +63,26 @@ class BrokerSupervisor:
         self._proof = secrets.token_urlsafe(32)
         self._pair: tuple[int, str] | None = None
         self._socket = BROKER_SOCKET
+        self._bootstrap_pid: int | None = None
+        self._bootstrap_pidfd: int | None = None
+
+    @classmethod
+    def from_bootstrap(cls, data_root: Path, *, broker_pid: int,
+                       socket_path: Path, proof: str) -> BrokerSupervisor:
+        """Adopt the broker forked before host authority was retired.
+
+        Startup-only memory handoff, never discovered from an environment value.
+        This instance cannot use the legacy launcher or restart a dead broker.
+        """
+        if (type(broker_pid) is not int or broker_pid <= 0
+                or not isinstance(proof, str) or len(proof) < 32):
+            raise BrokerUidSplitRequired("invalid broker bootstrap")
+        result = cls(data_root)
+        result._bootstrap_pid = broker_pid
+        result._bootstrap_pidfd = os.pidfd_open(broker_pid)
+        result._proof = proof
+        result._socket = Path(socket_path)
+        return result
 
     @property
     def socket_path(self) -> Path:
@@ -70,9 +91,16 @@ class BrokerSupervisor:
     def _same_process(self) -> None:
         if os.getpid() != self._pid:
             raise BrokerUidSplitRequired("broker owner state cannot be inherited by a child")
+        if (self._bootstrap_pidfd is not None
+                and select.select([self._bootstrap_pidfd], [], [], 0)[0]):
+            raise BrokerUidSplitRequired("bootstrapped broker exited; container restart required")
 
     def _acquire(self) -> None:
         self._same_process()
+        if self._bootstrap_pid is not None:
+            # Startup already proved listening readiness. Fence only this exact
+            # live process; there is no retained authority to start another one.
+            return
         with socket.socket(socket.AF_UNIX, socket.SOCK_SEQPACKET) as sock:
             sock.settimeout(_START_TIMEOUT_S)
             sock.connect(str(LAUNCHER_SOCKET))
@@ -109,7 +137,9 @@ class BrokerSupervisor:
 
     def verify_broker(self, sock: socket.socket) -> None:
         self._same_process()
-        if _peer(sock)[1:] != (1002, 1002):
+        peer = _peer(sock)
+        if (peer[1:] != (1002, 1002)
+                or (self._bootstrap_pid is not None and peer[0] != self._bootstrap_pid)):
             raise BrokerUidSplitRequired("broker peer does not have the broker identity")
 
     def fence(self) -> tuple[int, str]:

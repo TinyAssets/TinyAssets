@@ -1,3 +1,67 @@
+# Current delivery: D70 staged broker/mapper bootstrap and application path
+
+D69 was already current at b4b430f727. D70 forks the existing broker and bounded
+mapper before PID1 retires to daemon UID1001 with zero capabilities. No host-root
+launcher survives. The lease proof is minted after both forks; the broker receives
+only its hash. Exact broker PID/UID/GID verification pins the live service. Any
+bootstrap exception or role death terminates PID1; there is no privileged restart.
+This is staged code, not CMD activation. ui-preview remains unadmitted.
+
+Production Dockerfile candidate:
+`sha256:db2abd43e9d2cac426b96f5b7269a21aece49d263d1d7ee3ae29b0e695885961`.
+
+The new `scripts/role_service_bootstrap_probe.py --image tinyassets-uid-d70:bootstrap`
+exercises real application admission, fenced broker identity IPC and actual PNG
+decoding for Alice and Bob through D69's installed client. Foreign application
+scope refuses. Missing identity lookup refuses; explicit allocation returns a
+durable identity through IPC. Daemon opens of private ledger/map/token paths deny.
+No legacy launcher socket exists. No full engine-class matrix is claimed.
+
+Acceptance commands (all exited 0 on the final candidate):
+- `python scripts/role_service_bootstrap_probe.py --image tinyassets-uid-d70:bootstrap --stream`
+  reuses the isolated HTTPS fixture: actual broker GET and accounted POST, one-use
+  claims/replay refusal, source-bound daily evidence, and two OAuth rotations.
+  The fixture's historical output mentions restart; D70 runs one service lifetime,
+  so it does not claim in-place broker restart or full owner-tree migration.
+- `--bootstrap-failure`: injected exception immediately before daemon retirement
+  exits the container 78, even while PID1 still has entry capabilities.
+- `--broker-death`: kill the actual broker from a test-only Docker exec; PID1 exits
+  78. `--service-death`: authenticated mapper STOP causes the same container exit.
+
+Cross-family code review via peer-agents: **AGREE** with the failure-unwind finding;
+bootstrap now catches BaseException and unconditionally exits PID1, including if
+stderr is unavailable. **AGREE** with mirror drift found during the build; mirror
+regenerated after Ruff sorting. Reviewer found no cross-user floor violation.
+Also strengthened IPC ancestor owner/mode checks. No second review round.
+
+The first fixture attempt lacked setgid after chmod without CAP_FSETID: use the
+existing migration permission helper, retaining the capability set. The second
+attempt incorrectly statted private owner.json from the daemon: absence is checked
+before retirement and denied access afterward. Neither failed setup is acceptance.
+
+Verification: `python scripts/linux_oracle.py -- tests/test_broker_bootstrap.py
+ tests/test_broker_supervisor.py tests/test_owner_launcher_client.py
+ tests/test_role_decoder.py tests/test_role_launcher.py tests/test_privileged_chain.py -q -rs`
+reported **43 passed, zero skips**. The unchanged raw owner-launcher probe and
+`--client` mode pass, including actual decodes, credential/refusal recovery,
+descriptor baseline and timeout reaping. `role_reader_alias_probe.py` passes
+114 denials, 19 own reads and zero foreign reads; `role_owner_namespace_probe.py`
+passes all three unchanged D9 profiles with zero foreign reads/relabel/copy.
+Targeted Ruff, mirror parity and strict OpenSpec validation pass. Full Ruff
+retains the 55 unchanged baseline findings.
+
+Release-critical files in D70: **1**, `deploy/role_owner_launcher.py`. Product
+supervisor and its plugin mirror, the synthetic probe and tests also changed.
+No deployment, PR, production-volume mutation, profile change or new privilege.
+
+Remaining in priority order: every other actual engine class through the bounded
+launcher (ui-preview remains the one founder-deferred class); dynamic center
+admissions and remaining broker reader matrix; full D61 quarantine/owner migration
+and two-pass deletion; restrictive owner-file reverse migration and actual old CMD
+boot; startup and healthcheck integration/activation only after prerequisites pass.
+No full 2.x task newly complete. The reader concern remains open.
+
+---
 # Current delivery: D69 authenticated daemon client and refusal recovery
 
 D68 is pushed at **cfc766bf2d**. This slice adds the startup-installed in-memory
