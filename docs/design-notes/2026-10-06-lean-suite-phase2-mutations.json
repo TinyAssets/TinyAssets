@@ -1,0 +1,329 @@
+{
+  "baseline_exit": 0,
+  "baseline_cases": 33,
+  "results": [
+    {
+      "candidate": "tests/test_app_working_indicator.py::test_a_turn_this_page_never_sent_still_shows_the_indicator",
+      "survivor": "tests/test_app_working_indicator.py::test_a_reload_mid_turn_shows_the_indicator_history_cannot",
+      "function": "renderWorking",
+      "statement": "return;",
+      "property": "Live activity paints the working indicator",
+      "index": 1,
+      "exit": 1,
+      "failed": [
+        "tests.test_app_working_indicator::test_a_turn_this_page_never_sent_still_shows_the_indicator",
+        "tests.test_app_working_indicator::test_a_reload_mid_turn_shows_the_indicator_history_cannot"
+      ],
+      "proved": true
+    },
+    {
+      "candidate": "tests/test_app_working_indicator.py::test_an_idle_server_and_a_stale_row_are_both_left_unpainted",
+      "survivor": "tests/test_app_working_indicator.py::test_a_turn_this_page_never_sent_still_shows_the_indicator",
+      "function": "renderWorking",
+      "statement": "return;",
+      "property": "Live activity paints the working indicator",
+      "index": 2,
+      "exit": 1,
+      "failed": [
+        "tests.test_app_working_indicator::test_an_idle_server_and_a_stale_row_are_both_left_unpainted",
+        "tests.test_app_working_indicator::test_a_turn_this_page_never_sent_still_shows_the_indicator"
+      ],
+      "proved": true
+    },
+    {
+      "candidate": "tests/test_app_working_indicator.py::test_a_held_or_unreadable_row_is_not_activity",
+      "survivor": "tests/test_app_working_indicator.py::test_a_reload_mid_turn_shows_the_indicator_history_cannot",
+      "function": "renderWorking",
+      "statement": "return;",
+      "property": "Live activity paints the working indicator",
+      "index": 3,
+      "exit": 1,
+      "failed": [
+        "tests.test_app_working_indicator::test_a_held_or_unreadable_row_is_not_activity",
+        "tests.test_app_working_indicator::test_a_reload_mid_turn_shows_the_indicator_history_cannot"
+      ],
+      "proved": true
+    },
+    {
+      "candidate": "tests/test_app_working_indicator.py::test_a_failed_poll_neither_clears_nor_outlives_the_claim",
+      "survivor": "tests/test_app_working_indicator.py::test_a_turn_this_page_never_sent_still_shows_the_indicator",
+      "function": "renderWorking",
+      "statement": "return;",
+      "property": "Live activity paints the working indicator",
+      "index": 4,
+      "exit": 1,
+      "failed": [
+        "tests.test_app_working_indicator::test_a_failed_poll_neither_clears_nor_outlives_the_claim",
+        "tests.test_app_working_indicator::test_a_turn_this_page_never_sent_still_shows_the_indicator"
+      ],
+      "proved": true
+    },
+    {
+      "candidate": "tests/test_app_working_indicator.py::test_this_pages_own_turn_paints_without_waiting_for_a_poll",
+      "survivor": "tests/test_app_working_indicator.py::test_a_local_turn_and_a_server_turn_do_not_both_speak",
+      "function": "setStatusLine",
+      "statement": "return;",
+      "property": "A local turn paints the shared status line",
+      "index": 5,
+      "exit": 1,
+      "failed": [
+        "tests.test_app_working_indicator::test_this_pages_own_turn_paints_without_waiting_for_a_poll",
+        "tests.test_app_working_indicator::test_a_local_turn_and_a_server_turn_do_not_both_speak"
+      ],
+      "proved": true
+    },
+    {
+      "candidate": "tests/test_app_working_indicator.py::test_this_pages_own_turn_says_which_step_and_model_it_waits_on",
+      "survivor": "tests/test_app_working_indicator.py::test_a_native_agent_step_names_its_model_too",
+      "function": "shortModelName",
+      "statement": "return \"\";",
+      "property": "The waiting line includes the displayed model name",
+      "index": 6,
+      "exit": 1,
+      "failed": [
+        "tests.test_app_working_indicator::test_this_pages_own_turn_says_which_step_and_model_it_waits_on",
+        "tests.test_app_working_indicator::test_a_native_agent_step_names_its_model_too"
+      ],
+      "proved": true
+    },
+    {
+      "candidate": "tests/test_app_working_indicator.py::test_another_model_is_offered_only_after_a_long_wait",
+      "survivor": "tests/test_app_working_indicator.py::test_this_pages_own_turn_says_which_step_and_model_it_waits_on",
+      "function": "shortModelName",
+      "statement": "return \"\";",
+      "property": "The waiting line includes the displayed model name",
+      "index": 7,
+      "exit": 1,
+      "failed": [
+        "tests.test_app_working_indicator::test_another_model_is_offered_only_after_a_long_wait",
+        "tests.test_app_working_indicator::test_this_pages_own_turn_says_which_step_and_model_it_waits_on"
+      ],
+      "proved": true
+    },
+    {
+      "candidate": "tests/test_app_working_indicator.py::test_a_native_agent_step_names_its_model_too",
+      "survivor": "tests/test_app_working_indicator.py::test_this_pages_own_turn_says_which_step_and_model_it_waits_on",
+      "function": "shortModelName",
+      "statement": "return \"\";",
+      "property": "The waiting line includes the displayed model name",
+      "index": 8,
+      "exit": 1,
+      "failed": [
+        "tests.test_app_working_indicator::test_a_native_agent_step_names_its_model_too",
+        "tests.test_app_working_indicator::test_this_pages_own_turn_says_which_step_and_model_it_waits_on"
+      ],
+      "proved": true
+    },
+    {
+      "candidate": "tests/test_app_working_indicator.py::test_a_model_is_named_as_a_person_would_say_it",
+      "survivor": "tests/test_app_working_indicator.py::test_this_pages_own_turn_says_which_step_and_model_it_waits_on",
+      "function": "shortModelName",
+      "statement": "return \"\";",
+      "property": "The waiting line includes the displayed model name",
+      "index": 9,
+      "exit": 1,
+      "failed": [
+        "tests.test_app_working_indicator::test_a_model_is_named_as_a_person_would_say_it[qwen/qwen3.8-27b:free-qwen3.8-27b]",
+        "tests.test_app_working_indicator::test_a_model_is_named_as_a_person_would_say_it[openai/gpt-5.4-gpt-5.4]",
+        "tests.test_app_working_indicator::test_a_model_is_named_as_a_person_would_say_it[anthropic/claude-sonnet-4.6-claude-sonnet-4.6]",
+        "tests.test_app_working_indicator::test_a_model_is_named_as_a_person_would_say_it[nvidia/nemotron-3-ultra-550b-a55b:free-nemotron-3-ultra-550b]",
+        "tests.test_app_working_indicator::test_a_model_is_named_as_a_person_would_say_it[plain-model-plain-model]",
+        "tests.test_app_working_indicator::test_this_pages_own_turn_says_which_step_and_model_it_waits_on"
+      ],
+      "proved": true
+    },
+    {
+      "candidate": "tests/test_app_working_indicator.py::test_a_live_turn_shows_one_inline_pending_update",
+      "survivor": "tests/test_app_working_indicator.py::test_the_pending_update_line_clears",
+      "function": "renderWorking",
+      "statement": "return;",
+      "property": "Pending deploy text is painted during a live turn",
+      "index": 10,
+      "exit": 1,
+      "failed": [
+        "tests.test_app_working_indicator::test_a_live_turn_shows_one_inline_pending_update",
+        "tests.test_app_working_indicator::test_the_pending_update_line_clears[endTurn]",
+        "tests.test_app_working_indicator::test_the_pending_update_line_clears[clearPending]",
+        "tests.test_app_working_indicator::test_the_pending_update_line_clears[omitPending]"
+      ],
+      "proved": true
+    },
+    {
+      "candidate": "tests/test_app_chat_cloud.py::test_no_layout_starts_big",
+      "survivor": "tests/test_app_chat_cloud.py::test_a_layout_starts_small_in_the_corner",
+      "function": "cloudDefaultState",
+      "statement": "stage={w:1,h:1};",
+      "property": "Default cloud geometry respects the available viewport",
+      "index": 11,
+      "exit": 1,
+      "failed": [
+        "tests.test_app_chat_cloud::test_no_layout_starts_big",
+        "tests.test_app_chat_cloud::test_a_layout_starts_small_in_the_corner"
+      ],
+      "proved": true
+    },
+    {
+      "candidate": "tests/test_app_chat_cloud.py::test_no_layout_on_a_phone_starts_as_the_whole_stage",
+      "survivor": "tests/test_app_chat_cloud.py::test_a_stage_smaller_than_the_minimum_gets_the_whole_stage",
+      "function": "cloudDefaultState",
+      "statement": "stage={w:1,h:1};",
+      "property": "Default cloud geometry respects the available viewport",
+      "index": 12,
+      "exit": 1,
+      "failed": [
+        "tests.test_app_chat_cloud::test_no_layout_on_a_phone_starts_as_the_whole_stage",
+        "tests.test_app_chat_cloud::test_a_stage_smaller_than_the_minimum_gets_the_whole_stage"
+      ],
+      "proved": true
+    },
+    {
+      "candidate": "tests/test_app_chat_cloud.py::test_a_layout_starts_small_in_the_corner",
+      "survivor": "tests/test_app_chat_cloud.py::test_no_layout_starts_big",
+      "function": "cloudDefaultState",
+      "statement": "stage={w:1,h:1};",
+      "property": "Default cloud geometry respects the available viewport",
+      "index": 13,
+      "exit": 1,
+      "failed": [
+        "tests.test_app_chat_cloud::test_a_layout_starts_small_in_the_corner",
+        "tests.test_app_chat_cloud::test_no_layout_starts_big"
+      ],
+      "proved": true
+    },
+    {
+      "candidate": "tests/test_app_chat_cloud.py::test_a_stage_smaller_than_the_minimum_gets_the_whole_stage",
+      "survivor": "tests/test_app_chat_cloud.py::test_no_layout_on_a_phone_starts_as_the_whole_stage",
+      "function": "cloudDefaultState",
+      "statement": "stage={w:1,h:1};",
+      "property": "Default cloud geometry respects the available viewport",
+      "index": 14,
+      "exit": 1,
+      "failed": [
+        "tests.test_app_chat_cloud::test_a_stage_smaller_than_the_minimum_gets_the_whole_stage",
+        "tests.test_app_chat_cloud::test_no_layout_on_a_phone_starts_as_the_whole_stage"
+      ],
+      "proved": true
+    },
+    {
+      "candidate": "tests/test_app_chat_cloud.py::test_the_owners_last_state_wins_over_either_default",
+      "survivor": "tests/test_app_chat_cloud.py::test_shrinking_is_remembered_and_restored_on_the_next_load",
+      "function": "cloudResolveState",
+      "statement": "saved=null;",
+      "property": "An existing placement overrides the default",
+      "index": 15,
+      "exit": 1,
+      "failed": [
+        "tests.test_app_chat_cloud::test_the_owners_last_state_wins_over_either_default",
+        "tests.test_app_chat_cloud::test_shrinking_is_remembered_and_restored_on_the_next_load"
+      ],
+      "proved": true
+    },
+    {
+      "candidate": "tests/test_app_chat_cloud.py::test_an_unreadable_saved_state_falls_back_to_the_default",
+      "survivor": "tests/test_app_chat_cloud.py::test_a_layout_starts_small_in_the_corner",
+      "function": "cloudDefaultState",
+      "statement": "hasLayout=false;",
+      "property": "A layout starts the unsaved cloud as a bubble",
+      "index": 16,
+      "exit": 1,
+      "failed": [
+        "tests.test_app_chat_cloud::test_an_unreadable_saved_state_falls_back_to_the_default",
+        "tests.test_app_chat_cloud::test_a_layout_starts_small_in_the_corner"
+      ],
+      "proved": true
+    },
+    {
+      "candidate": "tests/test_app_chat_cloud.py::test_clamping_keeps_it_wholly_on_the_stage",
+      "survivor": "tests/test_app_chat_cloud.py::test_keyboard_moves_and_resizes_within_the_stage",
+      "function": "cloudClamp",
+      "statement": "return state;",
+      "property": "Movement remains clamped to the visible stage",
+      "index": 17,
+      "exit": 1,
+      "failed": [
+        "tests.test_app_chat_cloud::test_clamping_keeps_it_wholly_on_the_stage",
+        "tests.test_app_chat_cloud::test_keyboard_moves_and_resizes_within_the_stage"
+      ],
+      "proved": true
+    },
+    {
+      "candidate": "tests/test_onboarding_app.py::test_answer_model_receipt_is_visible_on_typed_and_spoken_reply",
+      "survivor": "tests/test_onboarding_app.py::test_history_restores_reply_receipt_and_latest_unknown",
+      "function": "answerExecutionDetail",
+      "statement": "return \"\";",
+      "property": "A reply displays its provider/model receipt",
+      "index": 18,
+      "exit": 1,
+      "failed": [
+        "tests.test_onboarding_app::test_answer_model_receipt_is_visible_on_typed_and_spoken_reply[send]",
+        "tests.test_onboarding_app::test_answer_model_receipt_is_visible_on_typed_and_spoken_reply[voice]",
+        "tests.test_onboarding_app::test_history_restores_reply_receipt_and_latest_unknown"
+      ],
+      "proved": true
+    },
+    {
+      "candidate": "tests/test_onboarding_app.py::test_history_restores_reply_receipt_and_latest_unknown",
+      "survivor": "tests/test_onboarding_app.py::test_answer_model_receipt_is_visible_on_typed_and_spoken_reply",
+      "function": "answerExecutionDetail",
+      "statement": "return \"\";",
+      "property": "A restored reply displays its provider/model receipt",
+      "index": 19,
+      "exit": 1,
+      "failed": [
+        "tests.test_onboarding_app::test_history_restores_reply_receipt_and_latest_unknown",
+        "tests.test_onboarding_app::test_answer_model_receipt_is_visible_on_typed_and_spoken_reply[send]",
+        "tests.test_onboarding_app::test_answer_model_receipt_is_visible_on_typed_and_spoken_reply[voice]"
+      ],
+      "proved": true
+    },
+    {
+      "candidate": "tests/test_onboarding_app.py::test_the_rail_offers_feedback_and_dont_ask_again",
+      "survivor": "tests/test_onboarding_app.py::test_feedback_rides_along_and_clear_is_relayed_too",
+      "old": "if(text) payload.feedback = text;",
+      "new": "if(text) payload.note = text;",
+      "property": "The typed rail feedback reaches the answer",
+      "index": 20,
+      "exit": 1,
+      "failed": [
+        "tests.test_onboarding_app::test_the_rail_offers_feedback_and_dont_ask_again",
+        "tests.test_onboarding_app::test_feedback_rides_along_and_clear_is_relayed_too"
+      ],
+      "proved": true
+    }
+  ],
+  "source_commit": "838a22e087",
+  "source_path": "tinyassets/onboarding/app.html",
+  "source_sha256": "3117ff03390014c8459d880eaedce4299c16e4530de34b136627d08fd43d2c71",
+  "venue": "Linux oracle: Python 3.11.17, git 2.47.3, bubblewrap 0.12.0, uid 1001",
+  "baseline_skips": 0,
+  "initial_unproved": [
+    {
+      "candidate": "tests/test_app_working_indicator.py::test_this_pages_own_turn_paints_without_waiting_for_a_poll",
+      "survivor": "tests/test_app_working_indicator.py::test_a_local_turn_and_a_server_turn_do_not_both_speak",
+      "function": "renderWorking",
+      "statement": "return;",
+      "property": "Live activity paints the working indicator",
+      "index": 5,
+      "exit": 1,
+      "failed": [
+        "tests.test_app_working_indicator::test_a_local_turn_and_a_server_turn_do_not_both_speak"
+      ],
+      "proved": false
+    },
+    {
+      "candidate": "tests/test_onboarding_app.py::test_the_rail_offers_feedback_and_dont_ask_again",
+      "survivor": "tests/test_onboarding_app.py::test_feedback_rides_along_and_clear_is_relayed_too",
+      "old": "if(text) payload.feedback = text;",
+      "new": "if(text) payload.feedback = \"\";",
+      "property": "The typed rail feedback reaches the answer",
+      "index": 20,
+      "exit": 1,
+      "failed": [
+        "tests.test_onboarding_app::test_feedback_rides_along_and_clear_is_relayed_too"
+      ],
+      "proved": false
+    }
+  ],
+  "limit": "One-at-a-time shared-property mutation evidence, not proof that all scenarios are redundant or that all candidates can be removed together. Survivor tests are KEEP for the individual proposed removal.",
+  "source_hash_kind": "git blob bytes (LF)"
+}
