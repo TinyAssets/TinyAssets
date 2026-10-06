@@ -73,7 +73,46 @@ import probe. Prompt budgets are unchanged. Final hygiene against origin/main: *
 0 tampering**. Runtime/fix SHA: eb9c9f836ecd5cf9fb61a5be4c6a04827375ebfd. Main spec has been synced and both change and
 spec validate strictly.
 
-## Remaining delivery scope
+## Round 2 merge-queue repair (2026-10-06)
+
+Implementation: `f54474fff3`. Merged `origin/main`
+`fb22e770bd74333f54786233ba6046ccfb0b03c2` first and re-fetched/re-merged before
+push (already up to date). PR #4525 is draft again. #4529 and #4530 were still
+open, so neither the structural runner nor workflow generator was available.
+
+1. Added `tests/test_remote_box_ta.py` and its bridge implementation to the
+   linux-jail-proof trigger paths.
+2. Fenced the receipt store with a captured execution-owner generation. Schema,
+   intent and answer transactions use BEGIN IMMEDIATE plus check_fence. Added
+   FENCED inventory and independent restore discovery, with no exemption.
+   Tests prove a stale bridge cannot insert or dispatch; handover during dispatch
+   cannot write an answer; successor retries remain unknown and fresh requests work.
+
+Linux oracle, Python 3.11.17, bubblewrap 0.12.0, uid 1001:
+
+```text
+MSYS_NO_PATHCONV=1 python scripts/linux_oracle.py -- -q tests/test_owner_stores.py tests/test_linux_jail_proof_workflow.py tests/test_real_browser_proof_workflow.py tests/test_storage_registry_complete.py tests/test_control_plane_inventory.py tests/test_background_authority_inventory.py tests/test_remote_ta_owner_fence.py tests/test_owner_lease.py tests/test_remote_box_ta.py tests/test_agent_loop_box_tools.py tests/test_converse_turn_cost.py tests/test_ta_capabilities.py tests/test_ta_capabilities_jail.py --basetemp /tmp/b
+210 passed in 74.39s; zero skips
+
+MSYS_NO_PATHCONV=1 python scripts/linux_oracle.py -- -q tests/test_agent_turn_journal.py tests/test_agent_loop_tool_session.py --basetemp /tmp/b
+103 passed in 24.57s; zero skips
+```
+
+Ruff on all changed Python sources and tests: pass. Plugin mirror: 645 files,
+import probe and commit mirror parity pass. Whitespace and strict change/spec
+validation pass. Hygiene against origin/main: 14 added, 0 removed, 0 tampering.
+No test weakened, skipped or xfailed; static prompt budgets unchanged.
+
+Cross-family review via peer-agents / Claude: exit 0 in 145 seconds,
+VERDICT: APPROVE; no floor or correctness findings. AGREE with approval.
+Two nonblocking observations accepted: a reserved dispatch may race with handover
+and retain an unknown receipt (existing at-most-once contract); database.parent
+and the journal's universe parent both resolve to data_dir in production.
+No new scope or post-review runtime edits. Main and delta specifications synced.
+The optional local actionlint hook lacked its binary; workflow structural checks
+passed, and CI remains responsible for actionlint.
+
+### Unperformed deployment work
 
 No deployed remote driver exists in this checkout. Deployment, deployed-SHA
 assertion and a real-user app pass remain unperformed; this is a draft plumbing
