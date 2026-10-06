@@ -18,6 +18,21 @@ continuation_task = ContextVar("approval_continuation_task", default=None)
 SCOPES = ("once", "task", "site", "always")
 
 
+def task_is_current(conn, task_id, owner, agent, generation):
+    """Check the originating task fence, never adopt its latest generation."""
+    task = conn.execute(
+        "SELECT * FROM activities WHERE activity_id=?", (task_id,),
+    ).fetchone()
+    return bool(
+        task
+        and task["owner_principal"] == owner
+        and task["agent_id"] == agent
+        and task["task_generation"] == generation
+        and task["task_expires_at"] > time.time()
+        and task["status"] not in ("paused", "completed", "failed")
+    )
+
+
 def task_for(home, owner, agent):
     from tinyassets import turn_interrupt
     from tinyassets.engine_steering import _route_params
@@ -26,7 +41,15 @@ def task_for(home, owner, agent):
     route = continuation_task.get() or (live.approval_task if live else None)
     if route is None:
         route = turn_interrupt.approval_task_for(owner, home.name, agent, _route_params()[1])
-    return route[1] if route and route[0] == str(home.resolve()) else None
+    if not route or route[0] != str(home.resolve()):
+        return None
+    if len(route) == 3:
+        from tinyassets import bound_requests
+
+        with closing(bound_requests.connect(home)) as conn:
+            if not task_is_current(conn, route[1], owner, agent, route[2]):
+                raise turn_interrupt.TurnInterrupted("continuation task changed")
+    return route[1]
 
 
 def predicate(envelope, scope):

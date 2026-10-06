@@ -1498,6 +1498,11 @@ _WRITE_GRAPH_BRANCHES_CHAPTER = """\
       Use explicit null to clear either choice; saved versions keep their choices.
       These settings select among existing permissions and do not grant access.
 
+
+    Requests and notifications raised from an agent or its workflow remember the
+    asking agent and run. Owner replies return to that agent through the shared
+    request path, independent of which chat the owner has selected. Do not relay
+    an answer by hand. Removed or retired askers fall back to main with a note.
 """
 
 _WRITE_GRAPH_CONNECTIONS_CHAPTER = """\
@@ -2451,6 +2456,15 @@ _WRITE_GRAPH_DELIVERING_CHAPTER = """\
 """
 
 _WRITE_GRAPH_SYSTEMS_CHAPTER = """\
+    **Retire or restore one of your agents.** Read `agent_bindings` for active
+    bindings, or `agent_binding` with its ID for the current revision (including
+    retired bindings). Call write_graph target="agent_binding" operation="retire"
+    or "restore", expected_revision=<revision>, payload_json={"agent_binding_id":"<id>"}.
+    The same call works through `ta write_graph --json '<arguments>'`.
+    Retirement hides the agent from the switcher and stops its work; history and
+    files remain. Restore brings back the same agent, without replaying stopped
+    work. Keep the returned ID and revision for undo. Main cannot be retired.
+
     **Personal memory and forgetting.**
     The owner's Account screen exposes soul.md, identity.md and MEMORY.md.
     MEMORY.md is editable memory, not an instruction or authority source. When
@@ -2604,6 +2618,7 @@ _WRITE_GRAPH_SYSTEMS_CHAPTER = """\
       person's own compute, and never reaches the author's command center.
 
 """
+
 
 #: Chapter name -> text, in the order the resident index names them.
 _WRITE_GRAPH_CHAPTERS: dict[str, str] = {
@@ -3467,6 +3482,28 @@ def write_graph(
 
             return json.dumps(configure_provider_capability(
                 universe_id=_GRAPH_ID, payload=document,
+            ))
+        finally:
+            _current_identity.reset(token)
+    if t == "agent_binding":
+        from tinyassets.api.custom_agents import custom_agents
+        from tinyassets.auth.middleware import _current_identity
+
+        if operation not in {"retire", "restore"}:
+            return json.dumps({"error": "unknown_agent_operation",
+                               "allowed_operations": ["retire", "restore"]})
+        try:
+            document = json.loads(payload_json or "{}")
+        except (ValueError, TypeError):
+            return json.dumps({"error": "payload_json must be a JSON object"})
+        if (not isinstance(document, dict) or set(document) != {"agent_binding_id"}
+                or not isinstance(document["agent_binding_id"], str)):
+            return json.dumps({"error": "payload requires exactly agent_binding_id"})
+        token = _bind_founder_identity(("write",))
+        try:
+            return json.dumps(custom_agents(
+                action=operation + "_binding", universe_id=_GRAPH_ID,
+                binding_id=document["agent_binding_id"], expected_revision=expected_revision,
             ))
         finally:
             _current_identity.reset(token)
