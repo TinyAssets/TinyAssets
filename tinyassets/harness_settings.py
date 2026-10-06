@@ -127,7 +127,7 @@ def parse_settings(raw: bytes | None) -> SettingsSnapshot:
         # Apply the shared byte/alias/depth bound before constructing mappings.
         load_untrusted_yaml(text, max_bytes=MAX_SETTINGS_BYTES)
         doc = yaml.load(text, Loader=_UniqueLoader)
-    except (OSError, UnicodeError, yaml.YAMLError, RecursionError) as exc:
+    except (OSError, ValueError, yaml.YAMLError, RecursionError) as exc:
         raise SettingsError("invalid settings YAML") from exc
     doc = _object(doc, {"schema_version", "model", "tools", "skills", "extensions",
                         "starter", "loop"}, "settings")

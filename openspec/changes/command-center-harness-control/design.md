@@ -144,6 +144,16 @@ The Linux ratchet passes, and no prompt budget or existing test was changed.
 Changed-Python Ruff, plugin rebuild/import probe and strict OpenSpec validation
 pass. Task 1.2 onward remains unverified and unimplemented by this slice.
 
+Final parser edge-case verification: oversized YAML integers and invalid YAML
+timestamps also become `SettingsError`. **45 settings tests pass on both Windows
+and the Linux 3.11 oracle, zero skips**; the package and prompt-cost regression
+run above remains applicable. Plugin rebuild/import probe and Ruff pass. Hygiene
+at the first slice commit reports **0 removed / 0 tampering**. Claude's required
+cross-family review returned **APPROVE** with no floor/correctness findings and
+independently confirmed the task 1.2 dependencies; see [review.md](review.md).
+Lead disposition: **AGREE**. Draft PR #4503 remains an incomplete capability;
+there is no deployment, live pass or as-built spec sync claim.
+
 ## Live events and orchestration ownership (2026-10-04)
 
 Extend the same owner-bound bridge with subscribe/unsubscribe and a versioned event envelope: opaque event ID/cursor, kind, owner-bound center/agent/run references, resource revision and sanitized payload. Kinds cover activity, tool-call lifecycle, approvals, task-board changes and process health. A subscription applies the same installation capability ceiling and current authority as ta reads. Approval events carry protected request references/status, never decision tokens; clicking opens the first-party approval sheet or Needs you flow, not custom-UI approval chrome.

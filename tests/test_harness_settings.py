@@ -51,6 +51,9 @@ def test_absent_sparse_and_empty_are_distinct():
     b"schema_version: 1\nloop: &a {}", b"!!python/object:evil {}",
     b"schema_version: [", b"\xff",
     pytest.param(b"#" * (64 * 1024 + 1), id="oversized"),
+    pytest.param(b"schema_version: 1\nloop: {retry: {attempts: " + b"9" * 5000 + b"}}",
+                 id="oversized-integer"),
+    b"schema_version: 1\nmodel: 2026-99-99",
 ])
 def test_invalid_settings_never_fall_back(raw):
     with pytest.raises(SettingsError):
