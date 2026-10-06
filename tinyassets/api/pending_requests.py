@@ -76,8 +76,11 @@ logger = logging.getLogger(__name__)
 CONSENT_ACTIONS = frozenset({
     "publish", "install", "connect", "connect_http", "extend_http", "rotate_http",
     "remove_http", "grant_workspace_consent", "bind_model_access", PATCH_INTAKE_ACTION,
+    "start_activity", "approve_action",
 })
-NON_CONSENT_ACTIONS = frozenset({"answer"})
+# System-created approve_action and notify use dedicated branches before the
+# general gate; classify them too so creation paths cannot escape the inventory.
+NON_CONSENT_ACTIONS = frozenset({"answer", "notify"})
 REQUEST_RECOVERY_DETAIL = (
     "Clear or decline closes this ask; it is not a mute, for any ask kind. "
     "When the need recurs or the user asks again, raise a new pending_request "

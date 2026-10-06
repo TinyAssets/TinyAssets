@@ -8,7 +8,7 @@ The rail and on-demand guidance SHALL distinguish clear/decline from explicit mu
 - **THEN** the agent can raise it again; only an explicit don't-ask-again suppression blocks it, and connection controls remain available.
 
 ### Requirement: Consent classification fails closed
-Every validated action SHALL have an explicit consent or non-consent classification, checked by a regression test. Unknown effectful actions MUST require protected owner proof.
+Every validated or system-created action SHALL have an explicit consent or non-consent classification, checked by a regression test. Unknown effectful actions and proposed activity decisions MUST require protected owner proof.
 
 #### Scenario: A new action is added
 - **WHEN** an action is accepted without classification

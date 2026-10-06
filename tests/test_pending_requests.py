@@ -284,6 +284,8 @@ def test_every_validated_action_has_an_explicit_consent_classification():
     import ast
     import inspect
 
+    from tinyassets import bound_requests
+    from tinyassets.api import agent_notifications
     from tinyassets.api import pending_requests as requests
 
     # Derive from the validator itself, not a second list a new branch can evade.
@@ -299,6 +301,35 @@ def test_every_validated_action_has_an_explicit_consent_classification():
                     accepted.add(getattr(requests, value.id))
                 else:
                     pytest.fail("Update action coverage for the new validator dispatch shape")
+    # System-created requests bypass _validated_action. Follow literal action
+    # dictionaries (including a local action/bound variable) at their creators.
+    for module in (requests, agent_notifications, bound_requests):
+        for function in ast.walk(ast.parse(inspect.getsource(module))):
+            if not isinstance(function, ast.FunctionDef):
+                continue
+            for call in ast.walk(function):
+                if not isinstance(call, ast.Call):
+                    continue
+                name = getattr(call.func, "id", getattr(call.func, "attr", ""))
+                if name != "create_request":
+                    continue
+                for keyword in call.keywords:
+                    if keyword.arg != "action":
+                        continue
+                    candidates = [keyword.value]
+                    if isinstance(keyword.value, ast.Name):
+                        candidates = [node.value for node in ast.walk(function)
+                                      if isinstance(node, ast.Assign) and any(
+                                          isinstance(target, ast.Name)
+                                          and target.id == keyword.value.id
+                                          for target in node.targets)]
+                    for value in candidates:
+                        if not isinstance(value, ast.Dict):
+                            continue  # Normal asks already use _validated_action.
+                        for key, kind in zip(value.keys, value.values):
+                            if isinstance(key, ast.Constant) and key.value == "type":
+                                assert isinstance(kind, ast.Constant), "Classify dynamic creator"
+                                accepted.add(kind.value)
     assert not CONSENT_ACTIONS & NON_CONSENT_ACTIONS
     assert accepted == CONSENT_ACTIONS | NON_CONSENT_ACTIONS
 
