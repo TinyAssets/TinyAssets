@@ -366,6 +366,7 @@ COPY deploy/role_launcher.py /usr/local/libexec/ta-launch.py
 COPY deploy/role_owner_launcher.py /usr/local/libexec/ta-owner-launch.py
 COPY deploy/role_decoder.py /usr/local/libexec/ta-decoder.py
 COPY deploy/role_git.py /usr/local/libexec/ta-git.py
+COPY --chmod=0555 deploy/role_admission_contract.py /usr/local/libexec/ta-admission-contract.py
 COPY deploy/broker_main.py /app/broker_main.py
 COPY scripts/role_image_oracle.py /app/scripts/role_image_oracle.py
 COPY scripts/role_launcher_oracle.py scripts/role_account_erasure_oracle.py /app/scripts/

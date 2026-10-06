@@ -35,12 +35,27 @@ if seed == 0:
     from tinyassets.broker.owner_identities import OwnerIdentities
     store = OwnerIdentities(root / '.broker/state/owner-identities.db', initialize=True)
     uids = {owner: store.resolve(owner, allocate=True).uid for owner in ('alice', 'bob')}
-    store.admission('admit', 'alice', 'decoder-alice')
-    # A logged row at or below the bootstrap generation is never bound at runtime.
-    generation = store.admission('admit', 'bob', 'bob-old').generation
-    writer.sendall(json.dumps([uids, generation]).encode()); os._exit(0)
-writer.close(); identities, generation = json.loads(reader.recv(4096)); reader.close()
-assert os.waitpid(seed, 0)[1] == 0 and generation == 2
+    writer.sendall(json.dumps(uids).encode()); os._exit(0)
+writer.close(); identities = json.loads(reader.recv(4096)); reader.close()
+assert os.waitpid(seed, 0)[1] == 0
+# DA7 startup: sweep admission staging, then seed rows through a retired
+# broker child (root never opens the broker database). bob-old is a logged row
+# at the bootstrap generation, so it is never bound at runtime.
+contract = runpy.run_path('/usr/local/libexec/ta-admission-contract.py')
+stale = root / '.role-admission' / ('f' * 32) / 'g'; stale.mkdir(parents=True)
+root_fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY)
+assert contract['clear_staging'](root_fd) == 3 and not (root / '.role-admission').exists()
+os.close(root_fd)
+seeded = contract['broker_log'](root, launch, append=[('alice', 'decoder-alice'),
+                                                      ('bob', 'bob-old')])
+assert [(r['generation'], r['event'], r['center']) for r in seeded] == [
+    (1, 'admit', 'decoder-alice'), (2, 'admit', 'bob-old')], seeded
+assert contract['broker_log'](root, launch, append=[('alice', 'decoder-alice')]) == seeded
+try: contract['broker_log'](root, launch, append=[('bob', 'decoder-alice')])
+except contract['ContractRefused']: pass
+else: raise AssertionError('startup seeded a conflicting admission')
+assert contract['broker_log'](root, launch, after=1) == seeded[1:]
+generation = seeded[-1]['generation']
 center = root / 'decoder-alice'; center.mkdir()
 os.chown(center, identities['alice'], identities['alice']); center.chmod(0o700)
 bindings = {('alice', 'decoder-alice'): identities['alice']}
@@ -177,6 +192,7 @@ evidence['retired_name_never_readmitted'] = refused(
     lambda: admit_center(root, principal='carol', center='carol-home'))
 assert not (root / 'carol-home').exists()
 evidence['daemon_caps_zero'] = zero_caps()
+evidence['startup_log_via_retired_broker'] = True
 print(json.dumps(dict(evidence, startup_activated=False)), flush=True)
 assert all(value for key, value in evidence.items() if isinstance(value, bool)), evidence
 os._exit(0)

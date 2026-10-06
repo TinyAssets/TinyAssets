@@ -96,6 +96,64 @@ and the name is never re-admitted. U1's pass-one cell predates U2's D218 change
 that retains daemon directories the owner may only search, so the probe's
 daemon removes its own empty `previews` first.
 
+## Tasks 8 and 10: restart contract (DA7) and F1 (b)
+
+`deploy/role_admission_contract.py` (stdlib only, installed root-owned 0555 at
+`/usr/local/libexec/ta-admission-contract.py`, in the chain checker's list):
+`clear_staging` (sweep `.role-admission/` before the inventory), `reconcile`
+(the DA7 plan, refusing before any mutation), `journal_fields`,
+`phase_explained`, `raise_alarms` (F1 b) and `broker_log` (append admit rows
+and read the delta through a fully retired broker child; root never opens the
+database). F1 = (b) as decided: an admitted center whose tree is missing, with
+no retire row and no deletion intent, goes to `missing`, stays unbound, prints
+`ROLE ADMISSION ALARM: ...` on stderr and writes a concern record
+`<state>/admission-concerns/<date>-missing-center-<center>.md` (docs/concerns
+shape, 0600, root-private) at every restart until it is restored (bound
+again) or retired (dropped). Everyone else starts. No option for (a) remains.
+
+tests/test_admission_restart_contract.py (root oracle, 16): signup + new center
++ deletion between restarts; deleting the only center then a signup; an
+unexplained tree, a changed owner, a log row naming another owner and a
+retired center with a tree refuse; orphan adoption only when the label check
+passes; pending deletion explained with and without its tree; F1 (b) missing,
+re-checked, restored, retired; first volume and forward-after-reverse seed and
+never retire; interrupted journals keep exact matching; malformed deltas
+refuse; phase lag; the deploy and daemon canonical ACL encodings are equal;
+the staging sweep and the alarm record on a real filesystem. Probe t8 adds the
+staging sweep and seeding through a retired broker child, an idempotent
+re-seed, a refused conflicting seed and a delta read.
+
+### Note for the U2 lane (feat/per-role-uid-split-migration; not edited here)
+
+D216's refusal sites and D218 live only on U2. To replace them:
+
+1. `role_startup._helpers`: load `admission-contract`.
+2. `role_volume_migration.migrate`, under the layout lock and before
+   `inventory(...)`: `contract["clear_staging"](root)`.
+3. Replace `if journal and journal["principals"] != facts["principals"]: refuse`
+   with: `rows = contract["broker_log"](data_root, launch, after=journal
+   generation if stable forward else 0)`; `plan = contract["reconcile"](
+   journal=journal, discovered=facts["principals"], rows=rows,
+   pending=<names in .role-owner-delete>, adoptable=<label == canonical_label(
+   reservation) via read_label, and the broker append refuses a retired or
+   foreign name>)`. `ContractRefused` is a `MigrationRefused` for the caller.
+4. After `_allocate`: `appended = contract["broker_log"](data_root, launch,
+   after=plan["generation"], append=plan["adopt"] + plan["seed"])`;
+   `contract["raise_alarms"](state, plan["alarms"])`; write `volume.json` with
+   `contract["journal_fields"](plan, appended)` (adds `generation`, `missing`).
+5. `role_metadata_migration.migrate` and `role_owner_migration.migrate`: after a
+   completed phase, accept `contract["phase_explained"](recorded,
+   previous_volume_bindings, bindings)` instead of exact equality; an empty
+   binding set skips inode work but still rewrites the phase journal's
+   configuration before `volume.json` advances.
+6. `role_startup.bindings`: bindings are every discovered center (in E or
+   pending deletion); pass `generation=journal_fields["generation"]` to
+   `bootstrap_services(..., generation=)` (now a required keyword on U1).
+7. `role_owner_tree_deletion.delete_center`: call `role_owner_delete.retire`
+   before `finish` on the normal path, the tree-gone resume, and for a center on
+   `missing` (task 7).
+8. `role_volume_inventory.reserved`'s changed-principal refusal stays.
+
 # Current U1 delivery: D87 package egress relay and caller-owned lifetime
 
 D86 is pushed at 4aad725f28. D87 closes the two gaps D84 left for K1's
