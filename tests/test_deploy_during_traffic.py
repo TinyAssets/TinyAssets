@@ -37,15 +37,18 @@ def eventually(predicate, timeout=30):
 
 
 class Origin:
-    def __init__(self, root):
+    def __init__(self, root, *, script="tests/fixtures/deploy_traffic_process.py",
+                 ready_status=406, log_name="origin.log"):
         self.root = root
+        self.ready_status = ready_status
+        self.log_path = root / log_name
         self.listener = socket.socket()
         self.listener.bind(("127.0.0.1", 0))
         self.listener.listen()
         self.port = self.listener.getsockname()[1]
-        self.log = (root / "origin.log").open("w")
+        self.log = self.log_path.open("w")
         self.process = subprocess.Popen(
-            [sys.executable, "tests/fixtures/deploy_traffic_process.py", str(root),
+            [sys.executable, script, str(root),
              str(self.listener.fileno())],
             cwd=ROOT, pass_fds=(self.listener.fileno(),), stdout=self.log,
             stderr=subprocess.STDOUT, env={**os.environ, "PYTHONPATH": str(ROOT)},
@@ -54,9 +57,10 @@ class Origin:
         eventually(self.ready)
 
     def ready(self):
-        assert self.process.poll() is None, (self.root / "origin.log").read_text()
+        assert self.process.poll() is None, self.log_path.read_text()
         try:
-            return httpx.get(f"http://127.0.0.1:{self.port}/mcp", timeout=1).status_code == 406
+            return (httpx.get(f"http://127.0.0.1:{self.port}/mcp", timeout=1).status_code
+                    == self.ready_status)
         except httpx.TransportError:
             return False
 
@@ -238,3 +242,87 @@ def test_durable_cutover_send_replays_after_process_replacement(tmp_path):
         import shutil
 
         shutil.copytree(tmp_path, Path(output) / "acceptance", dirs_exist_ok=True)
+
+
+def test_authenticated_ingress_accepts_while_execution_listener_is_closed(tmp_path):
+    from tests.fixtures.deploy_ingress_process import provision
+    from tests.fixtures.deploy_traffic_acceptance import SCOPE, SEND_ID, journal
+    from tests.test_ingress_http import headers, wire
+
+    assert sys.platform == "linux", "run with scripts/linux_oracle.py; no skipped evidence"
+    provision(tmp_path)
+    origin = Origin(tmp_path)
+    frontend_options = {"script": "tests/fixtures/deploy_ingress_process.py",
+                        "ready_status": 401, "log_name": "frontend.log"}
+    frontend = Origin(tmp_path, **frontend_options)
+    body = wire(message="send during cutover")
+    try:
+        origin.process.send_signal(signal.SIGTERM)
+
+        def closed():
+            with socket.socket() as probe:
+                return probe.connect_ex(("127.0.0.1", origin.port)) != 0
+
+        eventually(closed)
+        with sync_playwright() as pw:
+            browser = pw.chromium.launch(chromium_sandbox=True)
+            try:
+                page = browser.new_page()
+                page.goto(f"http://127.0.0.1:{frontend.port}/fixture-browser")
+                page.locator("#draft").fill("private unsent draft")
+                accepted = page.evaluate("""async ({body, headers}) => {
+                    const r = await fetch('/mcp', {method:'POST', headers, body});
+                    document.querySelector('#status').textContent = r.status;
+                    return {status:r.status, body:await r.json()};
+                }""", {"body": body.decode(), "headers": headers()})
+                assert accepted["status"] == 202
+                assert accepted["body"]["state"] == "pending"
+                assert page.locator("#draft").input_value() == "private unsent draft"
+                page.screenshot(path=str(tmp_path / "ingress-browser.png"))
+            finally:
+                browser.close()
+        # No executor exists when the acknowledgement is returned. Crash the
+        # frontend too: the next process must recover entirely from storage.
+        assert closed()
+        assert journal(tmp_path).receipt(SCOPE, SEND_ID).payload == body
+        frontend.close()
+        frontend = Origin(tmp_path, **frontend_options)
+        receipt_request = json.loads(body)
+        receipt_request["params"]["arguments"] = {
+            "graph_id": SCOPE.command_center_id, "client_send_id": SEND_ID,
+        }
+        receipt = httpx.post(  # hermetic-ok: isolated loopback frontend subprocess
+            f"http://127.0.0.1:{frontend.port}/mcp", json=receipt_request,
+            headers=headers("receipt-v1"))
+        assert receipt.status_code == 200
+        assert receipt.json()["ingress_id"] == accepted["body"]["ingress_id"]
+        retry = httpx.post(  # hermetic-ok: isolated loopback frontend subprocess
+            f"http://127.0.0.1:{frontend.port}/mcp", content=body, headers=headers())
+        assert retry.status_code == 202
+        assert retry.json() == accepted["body"]
+        command = [sys.executable, "tests/fixtures/deploy_traffic_acceptance.py", str(tmp_path)]
+        results = [subprocess.run(command, cwd=ROOT, capture_output=True, text=True, timeout=60,
+                                  env={**os.environ, "PYTHONPATH": str(ROOT)}, check=True)
+                   for _ in range(2)]
+        receipts = [json.loads(result.stdout) for result in results]
+        assert receipts[0] == receipts[1]
+        assert receipts[0]["admissions"] == 1
+        assert receipts[0]["effects"] == 1
+        assert journal(tmp_path).receipt(SCOPE, SEND_ID).state == "terminal"
+        evidence = {"ingress_520_case": "GREEN", "acceptance": accepted,
+                    "receipt_after_frontend_crash": receipt.json(), "replay": receipts,
+                    "path": "production create_streamable_http_app /mcp",
+                    "execution": "transactional fixture sink", "long_turn": "RED",
+                    "cloud_and_token_issuer": "isolated fixture observations",
+                    "source_digests": {p: hashlib.sha256((ROOT / p).read_bytes()).hexdigest()
+                        for p in ("tinyassets/ingress.py", "tinyassets/universe_server.py",
+                                  "tests/fixtures/deploy_ingress_process.py")}}
+        (tmp_path / "ingress-evidence.json").write_text(json.dumps(evidence, indent=2))
+        output = os.environ.get("DEPLOY_TRAFFIC_EVIDENCE")
+        if output:
+            import shutil
+
+            shutil.copytree(tmp_path, Path(output) / "authenticated-ingress", dirs_exist_ok=True)
+    finally:
+        frontend.close()
+        origin.close()

@@ -1,6 +1,9 @@
 ## 1. Baseline before implementation
 
-Design-only lane: all tasks are future implementation work. Consume S4/S8a/S8b; no competing lease implementation. No production ingress slice ships before task 1.1 exists and its candidate traffic gate passes.
+Implementation lane: bounded L7 component slices are recorded in `l7-evidence.md`
+and `l7-ingress-slice.md`. Full tasks remain incomplete. Consume S4/S8a/S8b; no
+competing lease implementation. No production ingress slice ships before task
+1.1 exists and its candidate traffic gate passes.
 
 - [ ] 1.1 FIRST build the required Linux deploy-during-traffic PR harness from design.md. Record a red baseline reproducing today's 520 and cut-off turn on wait/recreate, with digests, HTTP/turn/browser/effect evidence. Run the same oracle for every slice; enforce it before anything touching production ingress ships.
 - [ ] 1.2 Implement the proposed delta specs consuming target-architecture D11/S8a/S8b and PLAN.md:875; inventory work origins and prerequisites. Integrate merged #4497 recovery and #4490 client_send_id without duplicating either contract.

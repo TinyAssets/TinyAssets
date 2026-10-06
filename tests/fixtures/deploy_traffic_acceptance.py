@@ -60,7 +60,9 @@ def replay(root):
                                  universe=SCOPE.command_center_id) as scope:
             with cr.runs_transaction(scope) as conn:
                 def reserve(writer, item):
-                    message = json.loads(item.payload)["message"]
+                    document = json.loads(item.payload)
+                    arguments = document.get("params", {}).get("arguments", document)
+                    message = arguments["message"]
                     return cr.reserve_in_transaction(writer, scope,
                         request_key=item.client_send_id,
                         intent={"version": 1, "message": message, "input_method": "typed",

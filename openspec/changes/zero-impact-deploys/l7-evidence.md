@@ -106,3 +106,59 @@ Verdict **ADAPT**. Dispositions:
 
 Merged origin/main before work. Classified ingress_journal.py in FENCE_BEFORE_C2: it writes acceptance and reply state without owner-generation fencing; handover remains disabled and the existing gate remains intact. Plugin mirror regenerated. Linux oracle: 34 passed / 0 skipped (owner_stores, ingress_journal, deploy_during_traffic, converse_turn_cost); changed-file ruff PASS. No production configuration changes.
 
+
+## Authenticated HTTP ingress slice, 2026-10-05
+
+CI repair 0996d37699 is green on GitHub: all six affected shards, the dedicated
+traffic job, required-tests, invariants, lint and scope gate. Claude approved
+that exact dormant slice; raw review is in l7-ci-repair-review.md.
+
+The next slice installs an optional adapter in create_streamable_http_app,
+inside the real AuthContextMiddleware and outside runtime MCP dispatch. Default
+startup supplies no adapter. A receipt-aware harness client negotiates accept-v1
+on /mcp; receipt-v1 observes the same client_send_id. The authenticated principal
+and current home/admin authority are held through acceptance and receipt reads.
+The policy callback is required; only the fixture supplies a policy in this
+slice. See l7-ingress-slice.md for supported arguments and exact-body retry rules.
+No production deploy config, app defaults, prompt head or static budget changed.
+
+The retained RED control still maps real listener refusal to fixture HTTP 520.
+The candidate browser receives 202 through the production HTTP factory while
+the execution listener is closed. After killing and replacing the frontend,
+receipt-v1 returns the same ingress_id, exact-body retry returns that receipt,
+and two fresh importer processes produce one canonical admission. Evidence:
+l7-ingress-evidence.json. Runtime effects/terminal completion remain the explicitly
+labelled transactional fixture sink; long-turn continuity remains RED. The
+fixture substitutes only token issuer/cloud observations and disables execution
+lifespan startup. This is component proof, not Compose or production app proof.
+
+Verification before the final main merge: Linux oracle 190 passed / 0 skipped,
+including test_ingress_http, test_ingress_journal, test_deploy_during_traffic,
+test_owner_stores, test_conversation_run_admissions, test_converse_turn_cost,
+test_universe_server_isolation (heavy), test_mcp_discovery_html,
+test_onboarding_auth_boundary and test_cloud_admission_serving_startup.
+An earlier oracle copy stopped on a changing __pycache__ during local feedback;
+that was not counted as verification. Local HTTP feedback: 15 passed.
+
+Claude cross-family review for this separate next slice: APPROVE, no floor or
+correctness findings (l7-ingress-review.md). AGREE with its scope limitation:
+no execution/production enablement claim. Merged origin/main 70c30da9f9 via
+9e71824e2e before final verification/push; merge was clean.
+
+Data-loss/cross-user guard evidence: real middleware refuses unsigned/bad-token
+requests with its existing MCP linking error (never an ingress receipt); foreign
+principal and revoked ACL cannot accept or read receipts; payload conflict is
+409; injected failed commit is 503 with zero stored rows; exact payload and
+receipt survive frontend process death. No test was removed, skipped or xfailed.
+Full 1.1/2.1, quota/custody erasure integration, S8b pump, production client
+negotiation, long-turn continuity, rollout and as-built spec sync remain undone.
+
+Final merged-main verification: the same ten-file Linux oracle command passed
+again, **190 passed / 0 skipped** in 42.41s. Changed-file ruff PASS, plugin build
+and import probe PASS, strict OpenSpec validation PASS, git diff --check PASS.
+Final fetch confirms origin/main 70c30da9f9 is already merged. Both cross-family
+reviews approved their bounded slices; production configuration is unchanged.
+
+Command (PowerShell sets MSYS_NO_PATHCONV=1 first):
+
+    python scripts/linux_oracle.py --out <external-temp>/l7-ingress-final --env DEPLOY_TRAFFIC_EVIDENCE=/out -- -q tests/test_ingress_http.py tests/test_ingress_journal.py tests/test_deploy_during_traffic.py tests/test_owner_stores.py tests/test_conversation_run_admissions.py tests/test_converse_turn_cost.py tests/test_universe_server_isolation.py tests/test_mcp_discovery_html.py tests/test_onboarding_auth_boundary.py tests/test_cloud_admission_serving_startup.py --basetemp /tmp/b
