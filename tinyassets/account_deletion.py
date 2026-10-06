@@ -1149,7 +1149,9 @@ def delete_account(
         billing = _phase(
             "billing", lambda: (cancel_billing or cancel_stripe_billing)(home)
         ) or "error"
-    identity = _phase(
+    # A failed two-pass deletion resumes only under this principal's own
+    # authenticated identity, so the sign-in identity outlives it.
+    identity = "deferred:owner_tree" if owner_tree_failed else _phase(
         "identity", lambda: (delete_identity or delete_workos_user)(principal)
     ) or "error"
     # An outcome that is neither "done" nor "nothing to do" is UNFINISHED, even
@@ -1173,6 +1175,15 @@ def delete_account(
         "unfinished_phases": sorted(failures),
         "retained": list(RETAINED),
     }
+    if owner_tree_failed:
+        from tinyassets.role_owner_tree_deletion import pending
+
+        # Pass one may already have removed part of the home; say so. None
+        # means the intent store itself could not be read (also unfinished).
+        try:
+            receipt["home_deletion_pending"] = os.name == "posix" and home in pending(root)
+        except (OSError, RuntimeError):
+            receipt["home_deletion_pending"] = None
     if failures:
         receipt["host_receipt_path"] = _write_unfinished_receipt(root, receipt)
     logger.info(

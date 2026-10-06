@@ -1288,12 +1288,16 @@ def test_failed_two_pass_owner_tree_keeps_the_binding_and_retry_resumes(
         calls.append((center, principal))
         raise role_owner_tree_deletion.OwnerTreeDeletionRefused("injected pass failure")
 
+    identities = []
     with monkeypatch.context() as patch:
         patch.setattr(role_owner_tree_deletion, "delete_center", failing)
         receipt = delete_account(two_users, founder_sub=A, cancel_billing=lambda _: "none",
-                                 delete_identity=lambda _: "deleted")
+                                 delete_identity=lambda p: identities.append(p) or "deleted")
     assert calls == [(HOME_A, A)]
-    assert {"owner_tree", "root_rows"} <= set(receipt["unfinished_phases"])
+    assert {"owner_tree", "root_rows", "identity"} <= set(receipt["unfinished_phases"])
+    # Only this principal's own sign-in can resume pass one, so it survives.
+    assert identities == [] and receipt["identity"] == "deferred:owner_tree"
+    assert receipt["home_deletion_pending"] is False  # the stub wrote no intent
     assert not receipt["home_removed"] and receipt["home_staged_path"] == ""
     assert (two_users / HOME_A).is_dir() and not (two_users / ".deleting").exists()
     assert get_founder_home(two_users, A) == HOME_A

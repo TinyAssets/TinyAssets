@@ -1,3 +1,61 @@
+# U2 continuation: U1 D85 merged; two-pass deletion (D218); switched startup OFF
+
+D214/D215/D217 unchanged. The "U1 admits no owner-delete cell" statement below
+is superseded: U1's D85 (9657e679b7), D86 and D87 are merged at e336a36a50
+(merge, not rebase; the one conflict, the launcher-oracle consent answer, keeps
+U2's stronger side that also asserts the bearer refusal).
+
+**Step 1 (merge):** done, pushed.
+
+**Step 2 (two-pass deletion, D218):** `tinyassets/role_owner_tree_deletion.py`.
+Account deletion of a verified forward-migrated home runs a durable intent, then
+U1 pass one, then the daemon pass, then `finish`, before broker erasure and root
+rows. Legacy or stably reversed layouts keep the old traversal; any other layout
+refuses. The root oracle showed U1's cell could never finish on a real migrated
+center (it could not unlink names in the `1001:<owner>` 2750 root or list the
+search-only `.runtime`). The cell now keeps exactly those, and the daemon pass
+removes them, refusing anything foreign or left over with its path. Reverse
+startup migration refuses while an intent exists. Pool removal and scoped reset
+stay on the daemon traversal: D85's cell is whole-center only.
+
+**Step 3 (startup/healthcheck, default OFF):** `deploy/role_startup.py`
+(`ta-role-start.py start|reverse|health`) plus the `deploy/compose.role-split.yml`
+overlay. No deploy script names the overlay; the image ENTRYPOINT/CMD and the
+base healthcheck are unchanged; every mode refuses unless
+`TINYASSETS_ROLE_SPLIT=1`.
+
+Verification (root Linux oracle unless noted, zero skips everywhere):
+- Migration selection (owner, metadata, inventory, volume, tree deletion,
+  owner-delete), three consecutive runs: **186/186/186**.
+- Role suite + account deletion + chain/Dockerfile + launcher client: 494
+  passed. The 6 that fail as root also fail as root on U1's head
+  (`origin/feat/per-role-uid-split`, measured in a temporary worktree). They pass
+  24/24 in their UID1001 venue.
+- After review fixes: account deletion + tree deletion 78 passed; Windows
+  account deletion 48 passed (3 POSIX-only skips, unchanged).
+- Image `tinyassets-uid-u2:startup`
+  `sha256:9668b66c6f85be85c2d29a4b280029b456ad362df849c9c2ae96bc6e603ed15b`:
+  `role_owner_migration_probe.py` PASS (9 crash boundaries; it reports its
+  substep-only `old_cmd_boot=false`); `role_startup_probe.py` PASS (OFF 78
+  untouched; ON PID1 1001 zero caps NNP, broker 1002, no root process,
+  switched health, reverse exit 0, default OFF boot + pulse after reverse);
+  `role_owner_delete_probe.py` PASS; `role_volume_rollback_probe.py` against
+  old `sha256:7d30057f…` PASS (`old_cmd_boot=true`, `old_healthcheck=true`).
+- `role_image_oracle.py` FAILS at the broker setgid readback, on this image and
+  on U2's pre-merge `sha256:96669aed…` alike (D211). Concern filed, not patched.
+
+Review: one fresh-context Claude round (Codex at its limit), **ADAPT**, no floor
+findings. AGREE F1: identity deletion is deferred when the owner tree fails.
+AGREE F3: `home_deletion_pending` added to the receipt. DISAGREE_EVIDENCE F2:
+with the center gone, a finish refusal can only mean there is no matching fence.
+
+Activation stays OFF. Blockers (concerns):
+`2026-10-06-u2-principal-set-change-blocks-startup-migration.md` (any signup or
+completed deletion makes the next startup migration fail closed, both
+directions; also PID1 zombie reaping) and
+`2026-10-06-u2-broker-dir-setgid-lost-under-d211.md`. No deploy, no app pass,
+no spec sync.
+
 # U2 D214: replacement-inode provenance fixed (Claude takeover of D213)
 
 ### D214. Migration provenance is bound to one inode generation

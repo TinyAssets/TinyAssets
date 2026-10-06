@@ -2617,7 +2617,10 @@ and never reads or changes the owner inode.
 
 Account deletion runs this before broker erasure and root rows, while the
 binding and identity still admit pass one. A failure keeps the binding, skips
-staging that home and reports `owner_tree` and `root_rows` unfinished. The
+staging that home, defers the sign-in identity deletion (only that principal's
+own authenticated call can resume pass one) and reports `owner_tree`,
+`root_rows` and `identity` unfinished, with `home_deletion_pending` when a
+durable intent shows the home may be partly removed. The
 startup reverse migration refuses while any intent exists; forward stays
 admitted so the daemon can resume. Pool removal and scoped reset delete
 subtrees, which D85's whole-center cell does not admit; they stay on the
