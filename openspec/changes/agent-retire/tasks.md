@@ -54,7 +54,48 @@ Static prompt-budget tests were not modified. Chromium runs the shipped
 switcher with real roster reads; Playwright is imported inside the test.
 
 Claude review: **ADAPT**, all four findings accepted and addressed. Details:
-`docs/reviews/2026-10-05-agent-retire.md`. No second review round. The draft has
+`openspec/changes/agent-retire/review.md`. The draft has
 no current-head Drain-Review approval receipt; that merge gate remains pending.
 Production deployment, deployed-SHA assertion and live authenticated app-agent
 proof are not claimed by this draft delivery.
+
+## Round 2 CI regressions (2026-10-06)
+
+Compared against detached `origin/main` at
+`dd82fd3d4aca76e280acd4b2899bd3cff671c676` on the Linux oracle: the full
+rulebook and live-view files plus the selected-proof case passed **22 tests,
+zero skips**. The same selection on this lane reproduced all four failures
+(18 passed). All are retire-lane interactions, not main-only failures:
+
+- Both rulebook tests: the 3,420-byte retire review pushed `docs/reviews/*`
+  from 538,389 to 541,809 bytes. Moved that change-specific record intact to
+  `openspec/changes/agent-retire/review.md`; the existing pin is unchanged.
+- Live-view owner-wait states: retirement admission correctly rejects the
+  fabricated `agent_binding_1`. Publish and bind a real owner agent in the
+  fixture, preserving every state, privacy and count assertion.
+- Selected jail-proof helper: the new single-case retire browser file sorts
+  first. Select an actually multi-case marked file; retain the full-pass and
+  missing-sibling-fails assertions and the multi-case requirement.
+
+Final Linux oracle: **152 passed, zero skips**, Python 3.11.17, bubblewrap
+0.12.0, uid 1001. Prefix `MSYS_NO_PATHCONV=1 python scripts/linux_oracle.py
+-- -q`, suffix `--basetemp /tmp/b`, files:
+`test_rulebook_ratchet.py`, `test_live_view.py`,
+`test_linux_jail_proof_workflow.py`, `test_agent_retire.py`,
+`test_orphan_ready_turn.py`, `test_orphan_ready_coordinator.py`,
+`test_orphan_ready_browser.py`, `test_orphaned_turn_reconcile.py`,
+`test_turn_interrupt.py`, `test_interrupted_run_surface.py`, and
+`test_converse_turn_cost.py` (all under `tests/`).
+
+Ruff passed for all changed canonical Python/test files. Plugin build/import
+probe passed (643 staged runtime files), producing no diff. No pins, static
+prompt budgets, skips, xfails or production admission checks changed.
+
+Claude round 2 via `peer-agents`, read-only, completed in 97 seconds:
+**APPROVE**, no floor/correctness findings. **AGREE** with its only wording
+note: remove the fixed "eight" sibling count from the proof-test docstring.
+The review checked the rename, binding scope/ownership, all retained assertions,
+and fail-loud behavior if no multi-case browser file exists.
+
+Merged `origin/main` at `dd82fd3d4a` before verification; fetched again after
+verification and it had not moved. Draft PR #4528 remains the delivery boundary.

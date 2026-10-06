@@ -560,12 +560,14 @@ def test_only_files_passes_a_clean_selected_proof(tmp_path):
     """EVERY marked case in a selected file, not just one of them.
 
     The restriction is by FILE, so selecting a file asks for all of its proofs.
-    One clean case does not cover its eight siblings -- which is the same
+    One clean case does not cover its siblings -- which is the same
     "no case covers for another" property the unrestricted mode has.
     """
-    file_ = _marked_browser()[0].split("::")[0]
+    marked = _marked_browser()
+    files = [n.split("::")[0] for n in marked]
+    file_ = next(path for path in files if files.count(path) > 1)
     classname = file_[:-3].replace("/", ".")
-    in_file = [n for n in _marked_browser() if n.split("::")[0] == file_]
+    in_file = [n for n in marked if n.split("::")[0] == file_]
     assert len(in_file) > 1, "pick a file with several cases or this proves less"
     clean = "".join(
         f'<testcase classname="{classname}" name="{n.split("::")[-1]}"/>' for n in in_file
