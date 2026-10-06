@@ -104,3 +104,17 @@ def test_binding_incarnation_fences_replaced_connection(tmp_path):
         conn.execute("UPDATE outbound_connections SET incarnation='replacement'")
     assert "incarnation" in call(service, name, {"action": "discover"})["error"]
     assert asyncio.run(service.dispatch({"op": "catalog"}))["extension_capabilities"]
+
+
+def test_ask_first_never_captures_an_orphaned_protocol_frame(tmp_path, monkeypatch):
+    from tinyassets import agent_rules, bound_requests
+
+    service, extensions, args = setup(tmp_path)
+    name = activate(service, extensions, args)
+    agent_rules.set_rule(service.root, "app.write", agent_rules.ASK_FIRST, agent="main")
+    monkeypatch.setattr(bound_requests, "capture", lambda *a, **k:
+                        pytest.fail("MCP protocol frame must not become an approval"))
+    result = call(service, name, {"action": "discover"})["result"]
+    assert result["error_kind"] == "rule_ask_first"
+    assert "standing rule" in result["hint"]
+    assert "request_id" not in result and not result.get("delivered")

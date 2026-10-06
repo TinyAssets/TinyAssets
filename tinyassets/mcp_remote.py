@@ -135,9 +135,9 @@ class RemoteMcp:
                 self._reset()
             if isinstance(exc, asyncio.CancelledError):
                 if method == "tools/call" and attempt.get("request_id") is not None:
-                    # The stream context has already sent broker CANCEL. Notify
-                    # the MCP server too, using a new operation, never replaying
-                    # the original call. Failure cannot turn cancellation into success.
+                    # Ask the server to cancel without replaying. A collecting
+                    # effector transport cannot stop an already-running worker;
+                    # this notification is best effort, never a cancellation receipt.
                     with contextlib.suppress(Exception):
                         async with asyncio.timeout(5):
                             await self._rpc("notifications/cancelled", {

@@ -127,7 +127,7 @@ class ExtensionStore:
                 "revision=excluded.revision,generation=excluded.generation,"
                 "bindings_json=excluded.bindings_json",
                 (*self.identity, name, revision, generation,
-                 json.dumps(bindings or {} if active else {})),
+                 json.dumps((bindings or {}) if active else {})),
             )
         return {"name": name, "revision": revision, "generation": generation, "state": state}
 

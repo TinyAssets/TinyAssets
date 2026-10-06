@@ -37,6 +37,7 @@ class EffectorTransport:
                 run_authenticated_external_call_effector,
                 node_id="extension-mcp", output_keys=["call"], base_path=backend.root,
                 execution_context=backend.context,
+                allow_deferred=False,
                 run_state={"call": {"sink": "authenticated_external_call",
                                    "connection_id": connection_id, "grant_id": grant_id,
                                    "verb": verb, "request": request}},

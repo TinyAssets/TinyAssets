@@ -985,6 +985,7 @@ def run_authenticated_external_call_effector(
     allowed_state_keys: list[str] | set[str] | None = None,
     prior_effects: dict[str, Any] | None = None,
     execution_context=None,
+    allow_deferred: bool = True,
 ) -> dict[str, Any]:
     """Dispatch one ``authenticated_external_call`` packet. NEVER raises.
 
@@ -1003,6 +1004,7 @@ def run_authenticated_external_call_effector(
             allowed_state_keys=allowed_state_keys,
             prior_effects=prior_effects,
             execution_context=execution_context,
+            allow_deferred=allow_deferred,
         )
     except Exception as exc:  # defensive — never raise from the completion path
         logger.exception(
@@ -1024,6 +1026,7 @@ def _run(
     allowed_state_keys: list[str] | set[str] | None = None,
     prior_effects: dict[str, Any] | None = None,
     execution_context=None,
+    allow_deferred: bool = True,
 ) -> dict[str, Any]:
     matched_key, packet = _find_packet(output_keys=output_keys, run_state=run_state)
     if packet is None:
@@ -1162,6 +1165,10 @@ def _run(
                 universe_dir, connection_id, verb, _request_path(request),
                 evidence=_review_evidence(request), agent=rule_agent, preapproved=True)
     if rule_refusal is not None:
+        if rule_refusal.get("error_kind") == "rule_ask_first" and not allow_deferred:
+            return {**rule_refusal, "dry_run": True,
+                    "hint": "This protocol session cannot defer individual HTTP frames. "
+                            "An owner standing rule is required; nothing was sent."}
         # Pin the actual attempted packet at the point of need. A continuation
         # never has to reconstruct it from the agent's description of a refusal.
         if rule_refusal.get("error_kind") == "rule_ask_first" and not approved_agent:
