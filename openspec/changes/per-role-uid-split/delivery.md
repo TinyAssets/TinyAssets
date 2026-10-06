@@ -20,6 +20,38 @@ and on tmpfs (kernel 6.6.87.2-microsoft-standard-WSL2):
 The cell's `g` is `300001:300001` 02777 and inherits S's canonical default ACL.
 Staging S reads back `1001:1001` 0770 (the group class is the ACL mask; `group::---`).
 
+## Tasks 2-5: log, mapper channel, center-root cell, runtime bind
+
+- DA1 `center_admissions` (append-only by trigger, `UNIQUE(center, event)`),
+  OWNER-channel `CENTER_ADMISSION`; tests/test_center_admissions.py.
+- DA2 mapper pair: created before the broker fork, mapper PID sent with the
+  proof hash, per-packet SCM_CREDENTIALS (pidfd-pinned) as host 300000; any
+  other op/field/descriptor/sender refuses and closes. The mapper authenticates
+  answers as the broker PID and poisons the pair on failure.
+- DA3 `center-root` class and `tinyassets/role_center_admission.py`.
+  Measured change: `.role-admission` is 1001:1001 **0711**, not 0700.
+  bubblewrap resolves the cell's `--bind-fd` source by path, so the owner
+  needs search on the parent; S stays ACL-private (daemon and that owner)
+  behind a 128-bit name. With 0700 the real cell failed: `bwrap: Can't find
+  source path /proc/self/fd/3: Permission denied`.
+- DA4/DA5 mapper `ADMIT`/`RETIRE`, `bootstrap_services(..., generation=)`.
+  Found by the probe and fixed: a retry for an already-bound center returned
+  ADMITTED before checking the attached root's inode; the root check now runs
+  first on every admit.
+
+Evidence (production Dockerfile `tinyassets-uid-adm:t5`):
+`python scripts/role_center_admission_probe.py --image tinyassets-uid-adm:t5`
+(real PID1 bootstrap, broker, mapper pair, bwrap center-root and decoder cells):
+alice-second (300001, gen 3) and carol-home (new signup, 300003, gen 4) carry
+the canonical label, run decoder cells as inner 1/3 with zero caps; bound and
+unreserved center-root refused; absent row, other principal, stale generation,
+other root inode and a cell for an unbound logged center refused, then a valid
+bind still served; broker refuses a conflicting admit; foreign application
+scope refused; daemon cannot open the broker log; PID1 caps zero. Unchanged
+probes on the same image: role_service_bootstrap_probe (and --service-death,
+--broker-death, --bootstrap-failure on t3), role_owner_delete_probe (ZERO
+FOREIGN_BYTES), role_owner_launcher_probe --client.
+
 # Current U1 delivery: D87 package egress relay and caller-owned lifetime
 
 D86 is pushed at 4aad725f28. D87 closes the two gaps D84 left for K1's

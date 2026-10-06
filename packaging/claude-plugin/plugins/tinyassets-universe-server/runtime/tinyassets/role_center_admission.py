@@ -75,13 +75,20 @@ def _renameat2(src_dir, src, dst_dir, dst):
 
 
 def _staging(root_fd):
-    """``<data>/.role-admission``: 1001:1001 0700, no ACL; created on first use."""
+    """``<data>/.role-admission``: 1001:1001 0711, no ACL; created on first use.
+
+    Search-only for others: bubblewrap resolves the cell's staging descriptor
+    by path, so the owner must traverse here. Nobody else can list it, and each
+    S is a 128-bit name whose ACL admits only the daemon and that one owner.
+    """
     try:
-        os.mkdir(STAGING, 0o700, dir_fd=root_fd)
+        os.mkdir(STAGING, 0o711, dir_fd=root_fd)
     except FileExistsError:
         pass
     fd = _open_dir(STAGING, root_fd)
-    if read_label(fd) != (1001, 1001, 0o700, None, None):
+    if stat.S_IMODE(os.fstat(fd).st_mode) != 0o711:
+        os.fchmod(fd, 0o711)  # mkdir applied the daemon umask
+    if read_label(fd) != (1001, 1001, 0o711, None, None):
         os.close(fd)
         raise AdmissionRefused('admission staging is not daemon-private')
     return fd
@@ -233,6 +240,55 @@ def _seed_entries(root_fd, center, key):
         os.fsync(fd)
     finally:
         os.close(fd)
+
+
+def bounded_client():
+    """The installed D69/D70 client, or None: every rule here is inert without it."""
+    from tinyassets import role_decoder
+
+    return role_decoder._bounded_client
+
+
+def admit_center(data_root, *, principal, center):
+    """DA4: reserve, label, publish, append ``admit``, bind; returns the generation.
+
+    Idempotent for the same principal and center: a repeat resumes at the first
+    unfinished step, and an already-bound center is a success. Nothing here
+    removes a published root, and there is no legacy mkdir fallback.
+    """
+    from tinyassets.broker.owner_identities import center_admission, owner_identity
+
+    client = bounded_client()
+    if client is None:
+        raise AdmissionRefused('runtime admission requires the bounded mapper client')
+    identity = owner_identity(data_root, principal=principal, allocate=True)
+    root_fd = os.open(data_root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    try:
+        key = published_root(root_fd, center, identity.gid)
+        if key is None:
+            key = label_root(root_fd, client=client, principal=principal, center=center,
+                             identity=identity)
+        else:
+            _seed_entries(root_fd, center, key)
+        generation, machine = center_admission(data_root, event='admit',
+                                               principal=principal, center=center)
+        if machine != identity.uid:
+            raise AdmissionRefused('admission row names another machine')
+        fd = os.open(center, os.O_PATH | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                     dir_fd=root_fd)
+        try:
+            # The mapper cannot see host uid 1001; this descriptor-bound check
+            # is the daemon's assertion (D85), so it is made here, now.
+            info = os.fstat(fd)
+            if (info.st_dev, info.st_ino) != key or info.st_uid != 1001:
+                raise AdmissionRefused('published root changed before the bind')
+            client.admit(principal=principal, command_center=center,
+                         generation=generation, root_fd=fd)
+        finally:
+            os.close(fd)
+    finally:
+        os.close(root_fd)
+    return generation
 
 
 def published_root(root_fd, center, machine):

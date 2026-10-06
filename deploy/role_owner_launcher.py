@@ -429,6 +429,9 @@ class OwnerLauncher:
         if isinstance(request, dict) and request.get('op') == 'DELETE_DONE':
             self._finish_delete(request, received)
             return
+        if isinstance(request, dict) and request.get('op') in ('ADMIT', 'RETIRE'):
+            (self._admit if request['op'] == 'ADMIT' else self._retire)(request, received)
+            return
         kind = request.get('kind') if isinstance(request, dict) else None
         streaming = isinstance(request, dict) and request.get('op') == 'START'
         fields = {'op', 'kind', 'principal', 'command_center'}
@@ -754,13 +757,72 @@ class OwnerLauncher:
         elif fence is not None:
             raise ValueError('owner deletion fence is active')
 
+    def _admission_request(self, request, received, event, descriptors):
+        """DA4/DA6: verify the daemon's {principal, center, generation} against the log."""
+        if (set(request) != {'op', 'principal', 'command_center', 'generation'}
+                or len(received) != descriptors or type(request['generation']) is not int
+                or request['generation'] < 1):
+            raise ValueError('unsupported admission request')
+        principal, center = request['principal'], request['command_center']
+        self._scope(principal, center)
+        row = self._admission_row(request['generation'])
+        if (row is None or row['event'] != event or row['principal'] != principal
+                or row['center'] != center):
+            raise ValueError('admission row does not match the request')
+        return principal, center, row['machine']
+
+    def _admit(self, request, received):
+        """DA4 step 5: bind a published, labelled, logged center; idempotent."""
+        principal, center, machine = self._admission_request(request, received, 'admit', 1)
+        # The daemon asserted host uid 1001 on this descriptor (D85 trust);
+        # the mapper sees 1001 only as overflow and checks the rest itself,
+        # on a retry of a bound center too.
+        attached = os.fstat(received[0])
+        fd = os.open(self.data_root + '/' + center,
+                     os.O_PATH | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+        try:
+            info = os.fstat(fd)
+        finally:
+            os.close(fd)
+        if ((info.st_dev, info.st_ino) != (attached.st_dev, attached.st_ino)
+                or not stat.S_ISDIR(info.st_mode) or info.st_uid != self.overflow_uid
+                or info.st_gid != machine - FIRST or stat.S_IMODE(info.st_mode) != 0o750):
+            raise ValueError('center root does not carry the admitted label')
+        if self.bindings.get((principal, center)) == machine:
+            self.channel.sendall(b'{"op":"ADMITTED"}')
+            return
+        if (request['generation'] <= self.generation
+                or any(bound == center for _, bound in self.bindings)
+                or any(owner != principal and value == machine
+                       for (owner, _), value in self.bindings.items())
+                or self._center_state(center) != 'admitted'):
+            raise ValueError('center is not admissible at this generation')
+        self.bindings[(principal, center)] = machine
+        self.channel.sendall(b'{"op":"ADMITTED"}')
+
+    def _retire(self, request, received):
+        """DA6: drop a binding only under its deletion fence with no running cell."""
+        principal, center, machine = self._admission_request(request, received, 'retire', 0)
+        bound = self.bindings.get((principal, center))
+        if bound is not None:
+            fence = self.delete_fences.get(bound)
+            if (bound != machine or fence is None or fence[:2] != (principal, center)
+                    or any(job[1] == bound for job in self.jobs.values())):
+                raise ValueError('retire requires a quiescent deletion fence')
+            del self.bindings[(principal, center)]
+        self.channel.sendall(b'{"op":"RETIRED"}')
+
     def _finish_delete(self, request, received):
         if (received or set(request) != {'op', 'principal', 'command_center', 'delete_token'}
                 or any(type(request[key]) is not str for key in
                        ('principal', 'command_center', 'delete_token'))):
             raise ValueError('invalid deletion finish')
-        machine = self.bindings[(request['principal'], request['command_center'])]
         expected = (request['principal'], request['command_center'], request['delete_token'])
+        # DA6 retires the binding before finish; the fence alone names the owner.
+        machine = self.bindings.get(expected[:2]) or next(
+            (key for key, fence in self.delete_fences.items() if fence == expected), None)
+        if machine is None:
+            raise ValueError('deletion finish does not match quiescent fence')
         if (self.delete_fences.get(machine) != expected
                 or any(job[1] == machine for job in self.jobs.values())):
             raise ValueError('deletion finish does not match quiescent fence')

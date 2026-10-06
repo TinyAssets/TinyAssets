@@ -25,6 +25,18 @@ def identities(tmp_path):
     return store
 
 
+def make_channel(broker_end, identities):
+    """The test process is the mapper; as container PID 1 (root oracle) the
+    production pid guard (a mapper is never PID 1) is bypassed, nothing else."""
+    if os.getpid() > 1:
+        return mapper_channel.MapperChannel(broker_end, os.getpid(), identities)
+    channel = object.__new__(mapper_channel.MapperChannel)
+    channel._channel, channel._pid = broker_end, os.getpid()
+    channel._pidfd, channel._identities = os.pidfd_open(os.getpid()), identities
+    broker_end.setsockopt(socket.SOL_SOCKET, socket.SO_PASSCRED, 1)
+    return channel
+
+
 @pytest.fixture
 def pair(monkeypatch, identities):
     """The test process plays the mapper; its own uid stands in for host 300000."""
@@ -32,7 +44,7 @@ def pair(monkeypatch, identities):
         pytest.skip("credential stand-in needs uid == gid")
     monkeypatch.setattr(mapper_channel, "MAPPER_HOST_ID", os.getuid())
     broker_end, mapper_end = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
-    channel = mapper_channel.MapperChannel(broker_end, os.getpid(), identities)
+    channel = make_channel(broker_end, identities)
     mapper_end.settimeout(5)
     yield channel, mapper_end
     mapper_end.close()
@@ -107,7 +119,7 @@ def test_missing_map_refuses(monkeypatch):
         pytest.skip("credential stand-in needs uid == gid")
     monkeypatch.setattr(mapper_channel, "MAPPER_HOST_ID", os.getuid())
     broker_end, mapper_end = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
-    channel = mapper_channel.MapperChannel(broker_end, os.getpid(), None)
+    channel = make_channel(broker_end, None)
     with mapper_end:
         mapper_end.settimeout(5)
         assert ask(channel, mapper_end, {"op": "CENTER_STATE", "center": "a"}) == (
@@ -117,7 +129,12 @@ def test_missing_map_refuses(monkeypatch):
 def test_channel_must_be_an_unnamed_seqpacket_pair(identities):
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as stream:
         with pytest.raises(PermissionError):
-            mapper_channel.MapperChannel(stream, os.getpid(), identities)
+            mapper_channel.MapperChannel(stream, os.getpid() + (os.getpid() == 1), identities)
+    left, right = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
+    with left, right:
+        for pid in (1, 0, True):  # PID1 is the daemon, never the mapper
+            with pytest.raises(PermissionError):
+                mapper_channel.MapperChannel(left, pid, identities)
 
 
 def mapper(broker, broker_pid):
