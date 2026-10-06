@@ -17,4 +17,4 @@
 
 ## 3. Land
 - [x] 3.1 Sync the as-built delta into `openspec/specs/connect-cross-user-nodes/` (2026-10-05, #4477).
-- [ ] 3.2 Archive only after deployment and live proof (2.4?2.6); keep this change active.
+- [ ] 3.2 Archive only after deployment and live proof (2.4-2.6); keep this change active.

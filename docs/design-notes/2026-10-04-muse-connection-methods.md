@@ -31,7 +31,7 @@ aggregator offerings are evidence for the generic flow, not a TinyAssets depende
 
 **Founder direction:** copy the generic ladder: directory as data, then a custom
 MCP link with OAuth sign-in, then agent-written connectors, then browser fallback.
-No per-platform app registration and no third-party aggregators. The owner?s
+No per-platform app registration and no third-party aggregators. The owner's
 agent builds its social workflow from those primitives; the platform does not
 ship a separate integration for each social network.
 

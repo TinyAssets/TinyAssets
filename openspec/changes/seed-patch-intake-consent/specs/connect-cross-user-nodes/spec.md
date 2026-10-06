@@ -36,7 +36,7 @@ exposure remains their whole authority.
 - **WHEN** a universe delivers to a receiver that is not the configured intake
 - **THEN** no `patch_intake` consent is required and the receiving owner's exposure alone decides
 
-### Requirement: The consent request is seeded at first sign-in and never re-asked
+### Requirement: The consent request is seeded at first sign-in and never re-seeded
 
 The rail read SHALL seed one platform-origin pending request offering the
 configured intake, so it is present at a new user's first sign-in and at an
