@@ -137,7 +137,10 @@ def test_every_periodic_loop_is_classified_and_none_is_stale():
 
 
 def test_no_timer_is_classified_as_living_in_a_box():
-    assert {cls for cls, _note in inventory.SITES.values()} <= inventory.CLASSES
+    assert {cls for cls, _note in inventory.SITES.values()} <= inventory.CLASSES, (
+        "CLASSIFICATION is required: review each generated UNCLASSIFIED timer "
+        "as CONTROL_PLANE, CALL_SCOPED, CLIENT, DELETE or forbidden BOX"
+    )
     assert [site for site, (cls, _n) in inventory.SITES.items() if cls == inventory.BOX] == []
 
 

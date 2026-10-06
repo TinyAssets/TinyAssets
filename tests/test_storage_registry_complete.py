@@ -56,7 +56,10 @@ def test_every_root_entry_names_a_real_store_or_the_platform():
         if where.startswith("platform:"):
             continue
         named = {part.split(" ")[0].strip("(),") for part in where.split(",")}
-        assert named & set(sa.STORES), f"{name}: {where!r} names no registered store"
+        assert named & set(sa.STORES), (
+            f"{name}: {where!r} names no registered store; CLASSIFICATION is required: "
+            "review generated UNCLASSIFIED entries as a charging store or platform: <why>"
+        )
 
 
 def test_the_production_root_listing_is_classified():
