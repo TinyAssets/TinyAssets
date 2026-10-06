@@ -49,3 +49,20 @@ discoverable but not attached. U1 admission remains unimplemented here.
 
 No deployment, real-user pass or as-built spec-sync claim. The proposal spec is
 the intended complete contract, not a claim that all requirements have shipped.
+
+
+## Remote MCP continuation (2026-10-06)
+
+Ported #4496's streamable-HTTP protocol client onto today's governed connection
+effector, retaining consent/rules/review, OAuth custody and endpoint restrictions.
+No U1 broker metadata or stdio launcher dependency. Remote contribution dispatch
+supports explicit discovery and catalog-hash-pinned calls, with no tool replay.
+Replies are bounded by today's effector, including SSE framing; no persistent
+server event subscription is claimed. Private activation bindings pin current
+local grants and connection incarnations; rebind requires a new generation.
+
+Linux oracle: 207 passed / zero skips (extension state/jail/remote, ta, existing
+authenticated effector, account deletion and static prompt costs). Changed-file
+Ruff and plugin mirror/import probe pass. Claude continuation review running;
+verdict will be recorded before final push. Git/outside authority, automatic
+hooks and UI projection remain in progress. No deployment or live proof claim.

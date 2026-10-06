@@ -114,6 +114,7 @@ UNIVERSE_KEY = "universe_id"
 OWNER_ONLY_TABLES = MappingProxyType({
     "extension_revisions": "owner_id",
     "extension_activations": "owner_id",
+    "extension_bindings": "owner_id",
     "pins": "owner_id",
     "universe_app_ui": "owner_user_id",
     "owner_view_receipts": "owner_user_id",

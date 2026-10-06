@@ -71,9 +71,9 @@ versioned bounded JSON; errors remain visible and do not silently approve effect
 No daemon imports or executes package code. Before U1, ordinary code runs only
 inside today's bash jail with its existing launch authority, and no new secret
 access. An implementation must not claim a narrower package credential ceiling
-while sharing the broader launch socket. Credential-scoped executable dispatch,
-remote attachment with newly scoped authority, and persistent stdio admission
-remain explicitly unavailable until U1 supplies the boundary.
+while sharing the broader launch socket. Package-scoped executable credentials and persistent stdio admission remain
+unavailable until U1 supplies the boundary. Remote HTTPS MCP and credential-blind
+git use today's broker/egress and existing grants; neither waits for U1.
 
 U1 admission consumes owner/center/agent, installation ID, content digest,
 activation generation, capability ceiling and recipient-local slot bindings.
@@ -168,3 +168,26 @@ copied context and propagates with each daemon dispatch, rather than mutable sha
 backend state. Tests cover two independent launch contexts and real jailed calls.
 AGREE on mirror parity; regenerated after the on-demand handbook addition.
 No second review round is claimed. Full review is in review-implementation.md.
+
+## Continued fold-in decisions (2026-10-06)
+
+Remote MCP ports the #4496 protocol client, using the existing authenticated
+connection effector for each HTTP exchange. Its current consent, rules, review,
+OAuth refresh, endpoint validation and response scanning remain authoritative.
+There is no independent MCP activation table. A server contribution exposes
+explicit discover/call operations; calls pin the discovered catalog hash and
+never replay an uncertain tool outcome. Only bounded HTTP responses are admitted
+by today's effector; persistent stdio still waits for U1.
+
+Local connection bindings are private activation metadata, never package bytes.
+Activation can optionally bind declared slots to exact current connection/grant
+IDs and connection incarnations. Every use rechecks those pins, required verbs,
+current launch authority and the activation ceiling. Rebinding requires a new
+activation generation; absent bindings remain visible requirements. This plumbing
+is implemented with remote MCP because the remote contribution needs it.
+
+The remaining fold-ins are credential-blind git through today's egress, and
+outside-client scoped authority with durable revocation/kill switch. Outside
+clients must not gain lifecycle-owner authority by authoring extension code.
+Live AuthKit identity evidence remains founder-owned; stdio/package-cell
+admission is the only runtime item deferred to U1.

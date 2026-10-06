@@ -109,7 +109,10 @@ class Capabilities:
             from tinyassets.extension_capabilities import ExtensionCapabilities
 
             try:
-                return {"result": ExtensionCapabilities(self).call(name, arguments)}
+                import inspect
+
+                result = ExtensionCapabilities(self).call(name, arguments)
+                return {"result": await result if inspect.isawaitable(result) else result}
             except (ValueError, LookupError, OSError) as exc:
                 return {"error": str(exc)}
         if name in self.platform:

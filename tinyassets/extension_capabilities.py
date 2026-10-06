@@ -20,6 +20,10 @@ def _schema(properties, required=()):
 _TEXT = {"type": "string"}
 _PIN = {"name": _TEXT, "revision": _TEXT,
         "expected_generation": {"type": "integer", "minimum": 0}}
+_BINDINGS = {"type": "object", "additionalProperties": _schema(
+    {"connection_id": _TEXT, "grant_id": _TEXT}, ["connection_id", "grant_id"])}
+_MCP_ARGS = _schema({"action": {"enum": ["discover", "call"]}, "tool": _TEXT,
+                     "arguments": {"type": "object"}, "catalog_hash": _TEXT}, ["action"])
 LIFECYCLE = [
     {"name": "extension:help", "description": "Read the extension authoring handbook",
      "arguments": _schema({})},
@@ -29,7 +33,9 @@ LIFECYCLE = [
      "arguments": _schema({})},
     *[{"name": f"extension:{action}",
        "description": f"{action.title()} an exact extension revision",
-       "arguments": _schema(_PIN, _PIN)} for action in ("activate", "revoke")],
+       "arguments": _schema({**_PIN, **({"bindings": _BINDINGS}
+                                      if action == "activate" else {})}, _PIN)}
+      for action in ("activate", "revoke")],
 ]
 
 HANDBOOK = """Author one extension.json with schema_version: 2 and a name.
@@ -58,8 +64,15 @@ new install and explicit activation. settings.yaml extensions.enabled may narrow
 the active set but cannot activate anything. Revoke fences new ta dispatch;
 pre-U1 code already running in the same bash launch is not forcibly terminated.
 
-Cards/UI projection and MCP admission are currently unavailable, not connected.
-Connection requirement calls describe unmet needs and create no grants.
+Cards/UI projection and stdio admission are currently unavailable.
+Activate may include bindings: {"slot":{"connection_id":"...","grant_id":"..."}}.
+Bindings use existing local grants only, pin their incarnation and never create
+or widen grants. A new activation generation is required to change a binding.
+Remote MCP contributions accept {"action":"discover"}, returning tools and a
+catalog_hash; call with {"action":"call","tool":"name","arguments":{},
+"catalog_hash":"..."}. Every exchange uses existing connection effect policy,
+OAuth custody and endpoint restrictions. Session headers stay outside the box.
+Unknown outcomes are never replayed. Unbound slots report binding_required.
 Package-specific credentials and persistent stdio need U1 admission. Existing
 platform/connection tools keep their own live authority and owner approval rules.
 Share extension files using existing command-center publishing/install consent;
@@ -83,6 +96,49 @@ class ExtensionCapabilities:
 
     def _current(self):
         return set(self.backend.platform) | set(self.backend.connections())
+
+    def _bindings(self, name, revision, requested):
+        from tinyassets.storage.outbound_connections import ConnectionLedger
+
+        doc, _ = self.store.load(name, revision).content()
+        slots = {row["name"]: row for row in doc.get("connections", [])}
+        ledger = ConnectionLedger(self.backend.root.parent / "outbound.db")
+        available = self.backend.connections()
+        result = {}
+        for slot, pin in requested.items():
+            if slot not in slots:
+                raise ExtensionError("unknown extension connection slot")
+            for verb in slots[slot]["verbs"]:
+                match = available.get(f"connection:{pin['connection_id']}:{verb}")
+                if match is None or match[0].grant_id != pin["grant_id"]:
+                    raise ExtensionError("connection binding exceeds current grant")
+            incarnation = ledger.incarnation(pin["connection_id"])
+            if not incarnation:
+                raise ExtensionError("connection binding unavailable")
+            result[slot] = {**pin, "incarnation": incarnation}
+        return result
+
+    def connection(self, state, row, verb=None):
+        """Resolve only private, revision-bound local authority; never author credentials."""
+        from tinyassets.storage.outbound_connections import ConnectionLedger
+
+        pin = self.store.bindings(state).get(row["name"])
+        if pin is None:
+            return None
+        ceiling = self.store.active(state["name"], state["revision"], state["generation"],
+                                    current_capabilities=self._current())
+        ledger = ConnectionLedger(self.backend.root.parent / "outbound.db")
+        if ledger.incarnation(pin["connection_id"]) != pin["incarnation"]:
+            raise ExtensionError("connection binding incarnation changed")
+        available = self.backend.connections()
+        for required in row["verbs"]:
+            key = f"connection:{pin['connection_id']}:{required}"
+            match = available.get(key)
+            if key not in ceiling or match is None or match[0].grant_id != pin["grant_id"]:
+                raise ExtensionError("connection binding authority unavailable")
+        if verb is not None and verb not in row["verbs"]:
+            raise ExtensionError("connection slot does not declare required verb")
+        return pin
 
     def materialize(self, directory):
         """Trusted private staging, mounted read-only for exactly one bash launch."""
@@ -152,10 +208,14 @@ class ExtensionCapabilities:
                     entries.append({
                         "name": self._key(state, kind, row["name"]),
                         "description": row["description"],
-                        "arguments": row.get("arguments", _schema({})),
+                        "arguments": (_MCP_ARGS if kind == "mcp_servers"
+                                      and row["transport"] == "remote" else
+                                      row.get("arguments", _schema({}))),
                         "kind": kind, "revision": state["revision"],
                         "generation": state["generation"],
-                        "availability": ("requirement" if kind == "connections" else
+                        "availability": ("remote" if kind == "mcp_servers"
+                                         and row["transport"] == "remote" else
+                                         "requirement" if kind == "connections" else
                                          "jailed" if kind in {"tools", "commands", "hooks"}
                                          and self._mounted(state) else "runtime_unavailable"),
                     })
@@ -189,6 +249,9 @@ class ExtensionCapabilities:
                 arguments["name"], arguments["revision"],
                 expected_generation=arguments["expected_generation"],
                 active=name == "extension:activate", ceiling=sorted(self._current()),
+                bindings=self._bindings(arguments["name"], arguments["revision"],
+                                        arguments.get("bindings", {}))
+                if name == "extension:activate" else {},
             )
         # Resolve from daemon state, never trust revision/generation claims from the client.
         for state in self.store.list():
@@ -221,8 +284,16 @@ class ExtensionCapabilities:
                     if kind == "connections":
                         if arguments:
                             raise ExtensionError("connection requirement takes no arguments")
+                        pin = self.connection(state, row)
                         return {"slot": row["name"], "verbs": row["verbs"],
-                                "state": "binding_required", "grants_created": False}
+                                "state": "bound" if pin else "binding_required",
+                                "grants_created": False}
+                    if kind == "mcp_servers" and row["transport"] == "remote":
+                        if not Draft202012Validator(_MCP_ARGS).is_valid(arguments):
+                            raise ExtensionError("invalid remote MCP arguments")
+                        from tinyassets.extension_remote import invoke
+
+                        return invoke(self, state, doc, row, arguments)
                     return {"error": "extension_runtime_unavailable", "kind": kind,
                             "revision": state["revision"],
                             "detail": "Installed metadata; contribution runtime is not admitted"}

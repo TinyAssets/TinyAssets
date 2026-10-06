@@ -24,6 +24,12 @@ CREATE TABLE IF NOT EXISTS extension_activations (
  ceiling_json TEXT NOT NULL,
  PRIMARY KEY(owner_id, universe_id, agent_id, name)
 );
+CREATE TABLE IF NOT EXISTS extension_bindings (
+ owner_id TEXT NOT NULL, universe_id TEXT NOT NULL, agent_id TEXT NOT NULL,
+ name TEXT NOT NULL, revision TEXT NOT NULL, generation INTEGER NOT NULL,
+ bindings_json TEXT NOT NULL,
+ PRIMARY KEY(owner_id, universe_id, agent_id, name)
+);
 """
 
 
@@ -86,7 +92,7 @@ class ExtensionStore:
             ).fetchall()
         return [dict(row) for row in rows]
 
-    def transition(self, name, revision, *, expected_generation, active, ceiling=()):
+    def transition(self, name, revision, *, expected_generation, active, ceiling=(), bindings=None):
         if active:
             self.load(name, revision).content()
         else:
@@ -115,7 +121,24 @@ class ExtensionStore:
                 (*self.identity, name, revision, generation, state,
                  json.dumps(sorted(set(ceiling)) if active else [])),
             )
+            conn.execute(
+                "INSERT INTO extension_bindings VALUES (?,?,?,?,?,?,?) "
+                "ON CONFLICT(owner_id,universe_id,agent_id,name) DO UPDATE SET "
+                "revision=excluded.revision,generation=excluded.generation,"
+                "bindings_json=excluded.bindings_json",
+                (*self.identity, name, revision, generation,
+                 json.dumps(bindings or {} if active else {})),
+            )
         return {"name": name, "revision": revision, "generation": generation, "state": state}
+
+    def bindings(self, state):
+        with self._db() as conn:
+            row = conn.execute(
+                "SELECT bindings_json FROM extension_bindings WHERE owner_id=? "
+                "AND universe_id=? AND agent_id=? AND name=? AND revision=? AND generation=?",
+                (*self.identity, state["name"], state["revision"], state["generation"]),
+            ).fetchone()
+        return json.loads(row[0]) if row else {}
 
     def active(self, name, revision, generation, *, current_capabilities):
         with self._db() as conn:
