@@ -412,6 +412,12 @@ def _journal_paths(data_root: Path) -> list[Path]:
     return [path] if path.is_file() else []
 
 
+@store_kind("remote_ta_receipts")
+def _remote_ta_paths(data_root: Path) -> list[Path]:
+    path = data_root / ".remote-ta-receipts.sqlite3"
+    return [path] if path.is_file() else []
+
+
 def register_store(base_path: str | Path, store_path: str | Path, kind: str) -> None:
     if kind not in STORE_ENUMERATORS:
         raise ValueError(f"unknown owner store kind {kind!r}")

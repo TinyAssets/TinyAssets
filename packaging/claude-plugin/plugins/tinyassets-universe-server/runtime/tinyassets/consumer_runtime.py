@@ -113,6 +113,8 @@ def read_turn(base, *, owner, universe, request_key):
 
 def _observe_or_repair(base, *, owner, universe, row):
     with canonical.authorized_scope(base, owner=owner, universe=universe) as scope:
+        with canonical.runs_transaction(scope) as conn:
+            row = canonical._read(conn, scope, row["admission_id"])
         projected = _project(scope, row)
         with canonical.runs_transaction(scope) as conn:
             result = _envelope(scope, canonical._read(conn, scope, row["admission_id"]), conn)

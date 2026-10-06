@@ -107,6 +107,7 @@ async def open_loop_tools(
     timeout: float,
     session_key: str = "",
     turn: str = "",
+    ta_turn: str = "",
 ) -> AsyncIterator[LoopToolSession]:
     """Open the turn's tools. ``bind_box`` binds the handle once, here.
 
@@ -126,13 +127,27 @@ async def open_loop_tools(
             box, root = await asyncio.to_thread(bind_box)
         engine = None
         engine_tools: dict[str, Tool] = {}
-        if engine_names:
+        transport_names = ((*engine_names, "bash")
+                           if ta_turn and "bash" in box_names else engine_names)
+        if transport_names:
             actor_id, graph_id = engine_identity()
             engine = await stack.enter_async_context(open_engine_tools(
-                actor_id=actor_id, graph_id=graph_id, enabled_tools=engine_names,
+                actor_id=actor_id, graph_id=graph_id, enabled_tools=transport_names,
                 timeout=timeout, session_key=session_key, turn=turn,
             ))
             engine_tools = {tool.name: tool for tool in engine.tools}
+        if ta_turn and "bash" in box_names:
+            from tinyassets.agent_loop.box_ta import TurnBridge, engine_ta
+            from tinyassets.storage import data_dir
+
+            if (actor_id, graph_id) != (owner, universe_dir.name):
+                raise EngineToolError("remote_ta_binding_refused")
+            bridge = TurnBridge(owner=owner, center=universe_dir.name, turn=ta_turn,
+                                handle=box._exec.handle,
+                                database=data_dir() / ".remote-ta-receipts.sqlite3",
+                                dispatch=lambda message: engine_ta(engine, message))
+            stack.callback(bridge.close)
+            box._exec.enable_ta(bridge)
         box_definitions = box_tool_definitions(root)
         read_definitions = owner_read_definitions()
         tools = tuple(

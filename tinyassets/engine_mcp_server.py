@@ -4734,6 +4734,16 @@ async def edit_file(path: str, old_text: str, new_text: str) -> str:
     )
 
 
+@mcp.resource("ta-bridge://request/{payload}")
+async def remote_ta_request(payload: str) -> str:
+    """Private turn-bound ta transport; never part of the agent tool inventory."""
+    import sys
+
+    from tinyassets.agent_loop.box_ta import engine_resource
+
+    return await engine_resource(sys.modules[__name__], payload)
+
+
 @mcp.tool(name="bash")
 async def run_bash(command: str, timeout: int = 0) -> str:
     """Run a bash command in /u. Public internet goes through HTTP(S)_PROXY
