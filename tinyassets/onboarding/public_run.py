@@ -3,11 +3,11 @@ from __future__ import annotations
 
 import hashlib
 import html
-import os
 import re
-import tempfile
 from pathlib import Path
 from urllib.parse import quote
+
+from tinyassets.universe_files import write_data_path
 
 _ID = re.compile(r"[A-Za-z0-9_-]{1,160}\Z")
 
@@ -30,15 +30,7 @@ def preview_path(base: str | Path, definition_id: str) -> Path:
 
 def save_preview(base: str | Path, definition_id: str, png: bytes) -> None:
     """Only called with the renderer's public-component output after publication."""
-    path = preview_path(base, definition_id)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.NamedTemporaryFile(dir=path.parent, delete=False) as stream:
-        temporary = Path(stream.name)
-        stream.write(png)
-    try:
-        os.replace(temporary, path)
-    finally:
-        temporary.unlink(missing_ok=True)
+    write_data_path(preview_path(base, definition_id), png)
 
 
 async def handle_public_run(request):

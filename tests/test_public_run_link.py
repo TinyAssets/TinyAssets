@@ -7,13 +7,38 @@ from starlette.requests import Request
 
 from tests.test_custom_agents import _definition
 from tinyassets.custom_agents import publish_definition
-from tinyassets.onboarding.public_run import handle_public_run, save_preview, share_url
+from tinyassets.onboarding.public_run import (
+    handle_public_run,
+    preview_path,
+    save_preview,
+    share_url,
+)
 
 
 def request(path, ident):
     return Request({"type": "http", "method": "GET", "path": path,
                     "query_string": b"", "headers": [(b"host", b"tinyassets.io")],
                     "path_params": {"listing": ident}})
+
+
+def test_preview_replacement_preserves_exact_bytes(tmp_path, monkeypatch):
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    save_preview(tmp_path, "published", b"old-preview")
+    save_preview(tmp_path, "published", b"\x89PNG\r\n\x00new")
+    assert preview_path(tmp_path, "published").read_bytes() == b"\x89PNG\r\n\x00new"
+
+
+def test_preview_write_refuses_linked_cache_directory(tmp_path, monkeypatch):
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    other_home = tmp_path / "other-home"
+    other_home.mkdir()
+    victim = other_home / preview_path(tmp_path, "published").name
+    victim.write_bytes(b"other-owner-data")
+    (tmp_path / "published_previews").symlink_to(other_home, target_is_directory=True)
+    with pytest.raises(OSError):
+        save_preview(tmp_path, "published", b"public-preview")
+    assert victim.read_bytes() == b"other-owner-data"
+    assert list(other_home.iterdir()) == [victim]
 
 
 def test_public_listing_is_escaped_and_picture_is_only_public_output(tmp_path, monkeypatch):
