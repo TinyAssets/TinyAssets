@@ -32,7 +32,9 @@ def recover(home, run=None):
         os.close(fd)
         return 0
     try:
-        return _recover(home, run or _run)
+        from tinyassets import request_answers
+
+        return request_answers.recover(home, run) + _recover(home, run or _run)
     finally:
         _unlock_fd(fd)
         os.close(fd)
@@ -148,13 +150,22 @@ def _recover(home, run):
                 conn.commit()
         except ControlUnavailable:
             continue
+        except Exception:
+            import logging
+
+            logging.getLogger(__name__).exception("Bound request continuation failed; retained")
+            continue
     return count
 
 
 def _run(home, payload):
     from tinyassets.auth.middleware import identity_context
     from tinyassets.auth.provider import Identity
+    from tinyassets.request_answers import destination
     from tinyassets.universe_server import converse
+
+    agent, note = destination(home, {**payload, "home": home.name})
+    payload = {**payload, "agent": agent, "routing_note": note}
 
     # Server-persisted owner identity, rechecked by converse's ordinary owner
     # and provider gates. No selected-agent fallback and no borrowed model.
@@ -206,7 +217,8 @@ def tick(base):
                 ensure_protected(home, recover=True)
             with closing(__import__("sqlite3").connect(store)) as conn:
                 if not conn.execute(
-                    "SELECT 1 FROM sqlite_master WHERE name='request_wake_dedupe'"
+                    "SELECT 1 FROM sqlite_master WHERE name IN "
+                    "('request_wake_dedupe','request_answer_deliveries')"
                 ).fetchone():
                     continue
             recover(home)

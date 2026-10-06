@@ -388,7 +388,16 @@ def _call_work_agent(session, *, prompt, system, config, policy, principal_id, u
             turn = WorkflowAgentTurn(adapter=adapter, router=router, prompt=prompt, system=system,
                                      universe_context=context, config=config)
             try:
-                response = asyncio.run(turn.run())
+                from tinyassets.engine_steering import session_of
+                from tinyassets.request_answers import workflow_launch
+
+                with workflow_launch(
+                    session._universe_dir, owner=principal_id, session_key=session_of(config),
+                    run_id=str(getattr(session, "_run_id", "") or adapter.receipt.work_item_id),
+                    workflow_id=str(getattr(session, "_branch_def_id", "") or
+                                    adapter.receipt.branch_def_id or ""),
+                ):
+                    response = asyncio.run(turn.run())
             except ActivityYielded:
                 # Platform lifecycle output, not a fabricated provider answer.
                 # The committed inference/tool evidence remains in the journal.

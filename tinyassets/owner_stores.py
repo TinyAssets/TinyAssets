@@ -95,6 +95,7 @@ FENCE_BEFORE_C2: frozenset[str] = frozenset({
     "tinyassets/provider_assignment_manifest.py",
     "tinyassets/providers/connection_lifecycle.py",
     "tinyassets/request_continuations.py",
+    "tinyassets/request_answers.py",
     "tinyassets/reset.py",
     "tinyassets/run_admission_envelope.py",
     "tinyassets/runs.py",
