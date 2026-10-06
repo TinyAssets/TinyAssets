@@ -246,6 +246,11 @@ def test_rules_written_outside_the_direction_block_still_count(cb, tmp_path: Pat
     agents.write_bytes(agents.read_bytes() + b"x")
     assert cb.run(tmp_path)[2], "one rule byte past the pin is red"
 
+    _fake_repo(cb, tmp_path)
+    claude = tmp_path / "CLAUDE.md"
+    claude.write_bytes(b"<!-- direction:start --><!-- direction:end -->" + claude.read_bytes())
+    assert cb.run(tmp_path)[2], "only AGENTS.md carries the synced block"
+
 
 def _fake_repo(cb, root: Path, overrides: dict[str, int] | None = None) -> dict[str, int]:
     """A tree that satisfies every pin exactly, so one deliberate change is the

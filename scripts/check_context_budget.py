@@ -173,7 +173,9 @@ def measure(budget: Budget, root: Path) -> Result:
         return Result(budget.path, budget.kind, False, 0, 0,
                       budget.max_bytes, budget.max_lines, False, False, budget.note,
                       budget.always_loaded)
-    data = _DIRECTION_RE.sub(b"", fp.read_bytes())
+    data = fp.read_bytes()
+    if budget.path == "AGENTS.md":   # the only file sync_direction.py writes
+        data = _DIRECTION_RE.sub(b"", data)
     nbytes = len(data)
     nlines = data.count(b"\n") + (0 if data.endswith(b"\n") or not data else 1)
     # `max_lines == 0` means unchecked: bytes are the ratchet. A file that shrinks
