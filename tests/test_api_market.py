@@ -281,9 +281,6 @@ def test_gates_enabled_truthy_values(monkeypatch):
         assert _gates_enabled() is True, f"expected True for GATES_ENABLED={v!r}"
 
 
-# ── universe_server.goals/gates wrapper sanity ──────────────────────────────
-
-
 # Arc A re-export shims removed in Task #18 retarget sweep — the parametrized
 # `test_universe_server_reexport_identity` covering 40+ market symbols is gone
 # alongside the shim block.
