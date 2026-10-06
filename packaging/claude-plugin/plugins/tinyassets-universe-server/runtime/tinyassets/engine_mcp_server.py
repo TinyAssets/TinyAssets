@@ -3146,8 +3146,8 @@ def write_graph(
 
     Read ``delivering`` for binary custody and linked delivery.
 
-    **Inbound webhooks:** use ``target="webhook"``; read ``connections`` for
-    create/revoke payloads and safe handling of the once-shown URL.
+    **Inbound webhooks:** ``target="webhook"``, ``operation="create"`` or
+    ``operation="revoke"``. Read ``connections`` for payloads and URL handling.
 
     **Background work (activities):** ``target="activity"`` with
     ``operation="start"`` and ``payload_json`` ``{"title": "...", "brief": "..."}``
@@ -3156,8 +3156,9 @@ def write_graph(
     ``"resume"`` take ``{"activity_id": "..."}``; stop keeps the result so far.
     Read them with ``read_graph target="activities"``.
 
-    **Recurring work:** use ``target="automation"``; read ``branches`` for
-    create/pause/resume/delete payloads, timezones, overlap and event triggers.
+    **Recurring work:** ``target="automation"``, ``operation="create"``,
+    ``operation="pause"``, ``operation="resume"`` or ``operation="delete"``.
+    Read ``branches`` for payloads, timezones, overlap and event triggers.
 
     - ``operation="create"`` — create a new Branch graph from a complete Branch
       spec in ``payload_json`` (stored PRIVATE to your command center). A prompt node

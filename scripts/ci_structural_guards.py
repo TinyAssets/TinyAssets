@@ -90,7 +90,7 @@ GUARDS = {
     ),
     "test_onboarding_app": (
         'Repair onboarding.onboarding_routes() and its app path constants to match the '
-        'asserted public /app routes; remove retired /mcp/app mounts. '
+        'asserted public /app routes; remove retired app mounts. '
     ),
     "test_concerns_index_matches_the_directory": (
         'Give each docs/concerns file YAML front matter with severity, title, '
