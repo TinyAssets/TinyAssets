@@ -91,6 +91,10 @@ def test_pending_requests_at_latest_and_new_arrival_answer(app_url, browser, wid
         assert thread['y'] < last['y'] + last['height']
         assert last['y'] + last['height'] <= thread['y'] + thread['height'] + 1
 
+    page.wait_for_function("""() => {
+        const el=document.getElementById('thread');
+        return Math.abs(el.scrollHeight-el.clientHeight-el.scrollTop)<2;
+    }""")
     at_latest()
     page.evaluate('renderRail(asks)')
     at_latest()

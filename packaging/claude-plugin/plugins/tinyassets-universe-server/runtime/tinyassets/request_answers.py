@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import json
+import logging
 import time
 from contextlib import closing, contextmanager
 from contextvars import ContextVar
 
 _launch = ContextVar("request_asking_launch", default=None)
+_LOG = logging.getLogger(__name__)
 
 
 def remember_workflow(base, branch):
@@ -70,9 +72,14 @@ def workflow_launch(home, *, owner, session_key, run_id, workflow_id):
     from tinyassets.storage.pending_requests import _db
 
     if _owner_of(home.parent, home.name) != owner:
-        raise PermissionError("request_owner_changed")
+        # Routing is narrower than workflow execution authority. An ambiguous
+        # notification owner holds answers; it cannot revoke an admitted run.
+        _LOG.warning("Workflow answer provenance unavailable: owner is ambiguous")
+        yield None
+        return
     agent = _initiating_agent(home)
-    if session_key.startswith("activity:"):
+    is_activity = session_key.startswith("activity:")
+    if is_activity:
         activity = agent_activities.get(home, session_key.split(":", 1)[1])
         if not activity or activity["owner_principal"] != owner:
             raise PermissionError("request_activity_owner_mismatch")
@@ -81,7 +88,7 @@ def workflow_launch(home, *, owner, session_key, run_id, workflow_id):
         previous = conn.execute("SELECT origin_json FROM request_workflow_agents "
                                 "WHERE workflow_id=?",
                                 (workflow_id,)).fetchone()
-        if agent is None and previous:
+        if previous and not is_activity:
             saved = json.loads(previous[0])
             if saved["owner"] != owner:
                 raise PermissionError("request_workflow_owner_mismatch")
@@ -89,8 +96,9 @@ def workflow_launch(home, *, owner, session_key, run_id, workflow_id):
         live = turn_interrupt.current()
         origin = {"owner": owner, "home": home.name, "agent": agent or "main",
                   "run_id": run_id, "workflow_id": workflow_id, "session": session_key,
-                  "turn": uuid.uuid4().hex, "parent_turn": live.live_id if live else ""}
-        conn.execute("INSERT INTO request_asking_launches VALUES (?,?,?)",
+                  "turn": live.live_id if live else uuid.uuid4().hex,
+                  "parent_turn": live.live_id if live else ""}
+        conn.execute("INSERT OR REPLACE INTO request_asking_launches VALUES (?,?,?)",
                      (origin["turn"], session_key, json.dumps(origin)))
         if workflow_id:
             conn.execute("INSERT OR IGNORE INTO request_workflow_agents VALUES (?,?)",
@@ -104,6 +112,7 @@ def workflow_launch(home, *, owner, session_key, run_id, workflow_id):
 
 def capture(home, agent):
     from tinyassets import turn_interrupt
+    from tinyassets.addressed_agents import AgentNotAddressable, resolve
     from tinyassets.auth.middleware import current_identity_or_none
     from tinyassets.engine_steering import _route_params
     from tinyassets.owner_notifications import _owner_of
@@ -112,14 +121,19 @@ def capture(home, agent):
     owner = _owner_of(home.parent, home.name)
     if not identity or identity.user_id != owner:
         return {}  # Internal/platform creation without an owner conversation.
+    try:
+        addressed = resolve(home.parent, universe_id=home.name, owner=owner, agent_id=agent)
+        name = addressed.name if addressed else "Your agent"
+    except AgentNotAddressable:
+        name = agent
     launch = launch_context(home)
     if launch:
-        return {**launch, "agent": agent}
+        return {**launch, "agent": agent, "agent_name": name}
     session, turn = _route_params()
     live = turn_interrupt.current()
     if live and live.actor_id == owner and live.universe_id == home.name:
         turn = live.live_id
-    return {"owner": owner, "home": home.name, "agent": agent,
+    return {"owner": owner, "home": home.name, "agent": agent, "agent_name": name,
             "session": session, "turn": turn}
 
 
@@ -171,7 +185,8 @@ def check(home, row):
 
 def enqueue(conn, request_id, outcome, *, key="answer"):
     row = conn.execute(
-        "SELECT asking_context_json,action_json FROM pending_requests WHERE request_id=?",
+        "SELECT asking_context_json,action_json,title,kind "
+        "FROM pending_requests WHERE request_id=?",
         (request_id,),
     ).fetchone()
     if not row or not json.loads(row[0]):
@@ -189,16 +204,17 @@ def enqueue(conn, request_id, outcome, *, key="answer"):
     conn.execute(
         "INSERT OR IGNORE INTO request_answer_deliveries "
         "(request_id,event_key,origin_json,outcome_json) VALUES (?,?,?,?)",
-        (request_id, key, row[0], json.dumps(outcome)),
+        (request_id, key, row[0], json.dumps({"title": row[2], "kind": row[3], **outcome})),
     )
 
 
-def reply(home, row, text, reply_id):
+def reply(home, row, text, reply_id, *, item_id=""):
     from tinyassets.storage.pending_requests import _db
 
     check(home, row)
     with closing(_db(home)) as conn, conn:
-        enqueue(conn, row["request_id"], {"reply": text}, key="reply:" + reply_id)
+        outcome = {"reply": text, **({"item_id": item_id} if item_id else {})}
+        enqueue(conn, row["request_id"], outcome, key="reply:" + reply_id)
     return {"status": "reply_queued", "request_id": row["request_id"], "server_continuation": True}
 
 
@@ -213,20 +229,29 @@ def recover(home, run=None):
         rows = conn.execute("SELECT * FROM request_answer_deliveries WHERE delivered_at IS NULL "
                             "AND next_attempt_at<=? ORDER BY rowid", (time.time(),)).fetchall()
         for row in rows:
-            origin = json.loads(row["origin_json"])
             try:
+                origin = json.loads(row["origin_json"])
                 agent, note = destination(home, origin)
             except PermissionError:
                 continue  # Retain evidence, never rehome an answer across owners.
+            except Exception:
+                _LOG.exception("Request answer destination unavailable; retained for retry")
+                continue
             if turn_interrupt.live_count(origin["owner"], home.name):
                 continue
-            conn.execute("UPDATE request_answer_deliveries SET next_attempt_at=? "
+            delay = min(3600, 60 * 2 ** min(row["attempt_count"], 6))
+            conn.execute("UPDATE request_answer_deliveries SET next_attempt_at=?,"
+                         "attempt_count=attempt_count+1 "
                          "WHERE request_id=? AND event_key=?",
-                         (time.time() + 60, row["request_id"], row["event_key"]))
+                         (time.time() + delay, row["request_id"], row["event_key"]))
             conn.commit()
             payload = {**origin, "agent": agent, "routing_note": note,
                        "request_id": row["request_id"], "outcome": json.loads(row["outcome_json"])}
-            result = (run or _run)(home, payload)
+            try:
+                result = (run or _run)(home, payload)
+            except Exception:
+                _LOG.exception("Request answer delivery failed; retained for retry")
+                continue
             if not result or result.get("error") or result.get("interrupted") or result.get(
                     "status") in {"failed", "interrupted"}:
                 continue

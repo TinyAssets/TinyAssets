@@ -225,6 +225,9 @@ const localStorage={getItem:k=>k in store?store[k]:null};
 const fields={'fb_req_1::one':{value:''},'note_req_1::one':{},'fb_req_1':{value:''},
   'note_req_1':{},'composer-input':{value:''}};
 const $=id=>fields[id]; const answered=[], refreshed=[];
+const replies=[],MCP={_loginEpoch:0,answerRequest:async p=>{
+  replies.push(p);return {status:'reply_queued'};}};
+const appendMessage=()=>{};
 const answerRail=(target,mode,note,buttons)=>answered.push(
   {target,mode,text:fields['fb_'+target.request_id].value});
 const refreshRail=()=>refreshed.push(1);
@@ -295,12 +298,15 @@ def test_a_reply_to_a_request_already_answered_elsewhere_is_kept_not_lost():
     out = run_reply("""
 pendingReply={request_id:'req_1',item_id:'one',text:'too late',seen:0};
 railCache=[{request_id:'req_1',items:[{item_id:'one',status:'answered'}]}];
-applyPendingReply(); const mid=pendingReply!==null; applyPendingReply();
-console.log(JSON.stringify({answered,mid,pending:pendingReply,composer:fields['composer-input'].value}));""")
+await applyPendingReply(); const mid=pendingReply!==null; await applyPendingReply();
+console.log(JSON.stringify({answered,replies,mid,pending:pendingReply,
+  composer:fields['composer-input'].value}));""")
 
     assert out["answered"] == []          # never re-answers a resolved item
     assert out["mid"] is True and out["pending"] is None
-    assert out["composer"] == "too late"
+    assert out["composer"] == ""
+    assert out["replies"][0]["request_id"] == "req_1"
+    assert out["replies"][0]["item_id"] == "one" and out["replies"][0]["reply"] == "too late"
 
 
 def test_a_reply_never_overwrites_what_the_owner_is_typing():

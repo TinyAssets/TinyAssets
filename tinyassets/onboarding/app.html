@@ -8842,7 +8842,7 @@
       }
     }catch(_error){ /* no reply waiting */ }
   }
-  function applyPendingReply(){
+  async function applyPendingReply(){
     const p=pendingReply;
     if(!p) return;
     const req=(railCache||[]).find(r=>r.request_id===p.request_id);
@@ -8850,12 +8850,25 @@
     if(req && p.item_id) item=(req.items||[]).find(i=>i.item_id===p.item_id) || null;
     const answered=!req || (p.item_id && (!item || (item.status && item.status!=="pending")));
     if(answered){
-      // Answered on another device meanwhile. Keep the words rather than lose
-      // them: the composer, when the owner has nothing typed there.
+      // A late reply still belongs to the stored request, never the selected
+      // chat's composer. The shared door can reply to a resolved request.
       if(++p.seen>=2){
-        pendingReply=null;
-        const box=$("composer-input");
-        if(box && !box.value) box.value=p.text;
+        if(p.sending)return;
+        p.sending=true;p.reply_id=p.reply_id||crypto.randomUUID();
+        const epoch=MCP._loginEpoch;
+        try{
+          const r=await MCP.answerRequest({request_id:p.request_id,item_id:p.item_id||"",
+            reply:p.text,reply_id:p.reply_id});
+          if(epoch!==MCP._loginEpoch||pendingReply!==p)return;
+          if(r&&r.error)throw new Error(r.detail||r.error);
+          pendingReply=null;
+          appendMessage("system","Notification reply sent to the asking agent.");
+        }catch(err){
+          if(epoch===MCP._loginEpoch&&pendingReply===p){
+            p.sending=false;
+            appendMessage("system","Notification reply is still waiting: "+err.message);
+          }
+        }
       }
       return;
     }

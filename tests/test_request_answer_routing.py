@@ -209,8 +209,65 @@ def test_unacknowledged_delivery_retries_without_changing_agent(world):
     assert received["agent"] == agent
 
 
+def test_workflow_provenance_preserves_live_steering_turn(world):
+    from tinyassets.engine_steering import turn_of
+
+    home, agent = world
+    with turn_interrupt.interactive_turn(OWNER, home.name, agent_id=agent) as live:
+        for session in ("node:first", "node:second"):
+            with request_answers.workflow_launch(home, owner=OWNER, session_key=session,
+                                                 run_id="run", workflow_id="workflow") as origin:
+                assert turn_of() == live.live_id == origin["turn"]
+                assert origin["agent"] == agent
+        assert turn_of() == live.live_id
+    with closing(store._db(home)) as conn:
+        assert conn.execute("SELECT count(*) FROM request_asking_launches").fetchone()[0] == 2
+
+
+def test_ambiguous_notification_owner_does_not_revoke_workflow_execution(world):
+    from tinyassets.daemon_server import grant_universe_access
+
+    home, _ = world
+    grant_universe_access(home.parent, universe_id=home.name, actor_id=OTHER,
+                          permission="admin", granted_by=OWNER)
+    with request_answers.workflow_launch(home, owner=OWNER, session_key="node:agent",
+                                         run_id="run", workflow_id="workflow") as origin:
+        assert origin is None
+        assert request_answers.capture(home, "main") == {}
+
+
+def test_delivery_failure_backs_off_and_does_not_starve_other_answers(world, monkeypatch):
+    home, agent = world
+    first = ask(home, agent, title="First")
+    second = ask(home, agent, title="Second")
+    for row in (first, second):
+        answer_request(universe_id=home.name, payload={
+            "request_id": row["request_id"], "values": {"reply": "Keep going"}})
+    monkeypatch.setattr(request_answers.time, "time", lambda: 1000)
+    delivered = []
+
+    def run(_home, payload):
+        if payload["request_id"] == first["request_id"]:
+            raise RuntimeError("provider unavailable")
+        delivered.append(payload)
+        return {"reply": "done"}
+
+    assert request_continuations.recover(home, run=run) == 1
+    assert [r["request_id"] for r in delivered] == [second["request_id"]]
+    with closing(store._db(home)) as conn, conn:
+        assert conn.execute("SELECT attempt_count,next_attempt_at FROM request_answer_deliveries "
+                            "WHERE request_id=?", (first["request_id"],)).fetchone() == (1, 1060)
+    monkeypatch.setattr(request_answers.time, "time", lambda: 1060)
+    assert request_continuations.recover(home, run=run) == 0
+    with closing(store._db(home)) as conn:
+        assert conn.execute("SELECT attempt_count,next_attempt_at FROM request_answer_deliveries "
+                            "WHERE request_id=?", (first["request_id"],)).fetchone() == (2, 1180)
+
+
 @pytest.mark.real_browser
-@pytest.mark.parametrize("surface", ["app_sheet", "inline_card", "phone_push", "desktop"])
+@pytest.mark.parametrize("surface", [
+    "app_sheet", "inline_card", "phone_push", "desktop", "phone_push_after_resolution",
+])
 def test_subagent_card_answer_in_real_browser(world, surface):
     from playwright.sync_api import sync_playwright
 
@@ -218,6 +275,11 @@ def test_subagent_card_answer_in_real_browser(world, surface):
 
     home, agent = world
     row = ask(home, agent)
+    if surface == "phone_push_after_resolution":
+        assert not answer_request(universe_id=home.name, payload={
+            "request_id": row["request_id"], "values": {"reply": "First answer"}}).get("error")
+        original, = drain(home)
+        assert original["agent"] == agent
     responses = []
 
     def answer(payload):
@@ -242,6 +304,7 @@ def test_subagent_card_answer_in_real_browser(world, surface):
             const ConnectOAuth={decorate(){}};
             const refreshRail=async()=>{};
             const sendTurn=()=>{throw new Error('A request answer must not use selected chat');};
+            const appendMessage=(_,text)=>{document.querySelector('[id^=note_]').textContent=text;};
             const NATIVE=true,NATIVE_PUSH_RECIPIENT='recipient';
             let pendingReply=null,railCache=[],phoneReply=null;
             const nativePlugin=()=>({consume:async()=>phoneReply});
@@ -256,14 +319,22 @@ def test_subagent_card_answer_in_real_browser(world, surface):
                     text:'Use the Social Media Manager account',recipient:'owner-device'};
                 await collectNotificationReply();applyPendingReply();
             }""", row)
+        elif surface == "phone_push_after_resolution":
+            # The card disappeared on another device before the OS delivered
+            # the reply. Its request id still determines the conversation.
+            page.evaluate("""async row=>{
+                railCache=[];pendingReply={request_id:row.request_id,item_id:'',
+                    text:'Use the Social Media Manager account',seen:1};
+                await applyPendingReply();
+            }""", row)
         else:
             page.locator('[id^="f_"]').fill("Use the Social Media Manager account")
             page.get_by_role("button", name="Accept", exact=True).click()
-        page.wait_for_function("document.querySelector('[id^=note_]').textContent.includes('Sent')")
+        page.wait_for_function(
+            "document.querySelector('[id^=note_]').textContent.toLowerCase().includes('sent')")
         assert responses and not responses[0].get("error"), responses
-        assert "Sent" in page.locator('[id^="note_"]').inner_text()
+        assert "sent" in page.locator('[id^="note_"]').inner_text().lower()
         browser.close()
     received, = drain(home)
     assert received["agent"] == agent
     assert "Social Media Manager account" in json.dumps(received["outcome"])
-

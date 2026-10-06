@@ -2778,7 +2778,8 @@ def _answer_request(*, universe_id: str = "", payload: Any = None,
     if row is None:
         return {"error": "not_found", "resource": "pending_request"}
     if row["action"].get("type") == "approve_action" and "reply" not in document:
-        return {"error": ("preview_required" if owner_session else "interactive_approval_required")}
+        return {"error": ("preview_required" if owner_session else "interactive_approval_required"),
+                "detail": "Open the protected inline owner card to decide this action."}
     from tinyassets import request_answers
 
     try:
@@ -2794,11 +2795,10 @@ def _answer_request(*, universe_id: str = "", payload: Any = None,
         reply_id = document.get("reply_id")
         if not isinstance(reply_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", reply_id):
             return _bad("reply_id must identify this reply for safe retries")
-        return request_answers.reply(udir, row, text.strip(), reply_id)
-    if row["action"].get("type") == "approve_action":
-        return {"error": ("preview_required" if owner_session is not None
-                          else "interactive_approval_required"),
-                "detail": "Open the protected inline owner card to decide this action."}
+        item_id = str(document.get("item_id") or "")
+        if item_id and item_id not in {item["item_id"] for item in row.get("items", [])}:
+            return {"error": "not_found", "resource": "request_item"}
+        return request_answers.reply(udir, row, text.strip(), reply_id, item_id=item_id)
     if row["action"].get("type") == "notify":
         return {"error": "not_answerable",
                 "detail": "This notification needs no answer; dismiss it with withdraw."}

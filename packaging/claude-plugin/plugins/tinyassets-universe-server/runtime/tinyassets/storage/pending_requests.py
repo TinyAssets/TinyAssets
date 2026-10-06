@@ -119,13 +119,15 @@ CREATE TABLE IF NOT EXISTS request_answer_deliveries (
     origin_json TEXT NOT NULL,
     outcome_json TEXT NOT NULL,
     next_attempt_at REAL NOT NULL DEFAULT 0,
+    attempt_count INTEGER NOT NULL DEFAULT 0,
     delivered_at REAL,
     PRIMARY KEY (request_id, event_key)
 );
 CREATE TABLE IF NOT EXISTS request_asking_launches (
-    turn_id TEXT PRIMARY KEY,
+    turn_id TEXT NOT NULL,
     session_key TEXT NOT NULL,
-    origin_json TEXT NOT NULL
+    origin_json TEXT NOT NULL,
+    PRIMARY KEY (turn_id, session_key)
 );
 CREATE TABLE IF NOT EXISTS request_workflow_agents (
     workflow_id TEXT PRIMARY KEY,
@@ -174,6 +176,7 @@ _ADDED_COLUMNS: tuple[tuple[str, str, str], ...] = (
     # dedupe and "don't ask again" are its own. ``main`` is only the seed.
     ("pending_requests", "agent", "TEXT NOT NULL DEFAULT 'main'"),
     ("pending_requests", "asking_context_json", "TEXT NOT NULL DEFAULT '{}'"),
+    ("request_answer_deliveries", "attempt_count", "INTEGER NOT NULL DEFAULT 0"),
 )
 
 
@@ -511,6 +514,7 @@ def _project(row: Any, answers: dict[str, dict[str, Any]] | None = None) -> dict
         "origin": row[12] or ORIGIN_AGENT,
         "agent": (row[14] if len(row) > 14 else None) or "main",
         "asking_context": json.loads(row[15]) if len(row) > 15 else {},
+        "agent_name": (json.loads(row[15]).get("agent_name", "") if len(row) > 15 else ""),
         "server_continuation": bool(len(row) > 15 and json.loads(row[15])),
         "items": items,
         "item_answers": _item_state(items, answers or {}, str(row[6])),

@@ -69,12 +69,11 @@ def turn_of() -> str:
     from tinyassets import turn_interrupt
     from tinyassets.request_answers import _launch
 
-    launch = _launch.get()
-    if launch:
-        return launch["turn"]
-
     live = turn_interrupt.current()
-    return str(getattr(live, "live_id", "") or "")
+    if live:
+        return live.live_id
+    launch = _launch.get()
+    return launch["turn"] if launch else ""
 
 
 def _route_params() -> tuple[str, str]:

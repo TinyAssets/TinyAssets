@@ -149,6 +149,11 @@ def _recover(home, run):
                 conn.commit()
         except ControlUnavailable:
             continue
+        except Exception:
+            import logging
+
+            logging.getLogger(__name__).exception("Bound request continuation failed; retained")
+            continue
     return count
 
 
