@@ -39,3 +39,43 @@ mismatches before queue admission. The measured 36% historical failure rate
 is a baseline, not a predicted new rate. Interaction defects and queue cascades
 remain possible. Phase 2 inventory generation/test removal and queue tuning
 are deferred. This draft does not merge or deploy the change.
+
+
+## Cross-family review and validation
+
+Claude reviewed the complete Phase 1 diff through peer-agents (196 seconds),
+verdict **ADAPT**. Lead disposition:
+
+- **AGREE:** make the shell result-propagation tests portable to Windows/WSL.
+  The repeated local quoting failure was handed off under AGENTS loop item 7.
+- **AGREE:** exercise the unconditional structural gate on success, failure,
+  cancellation, skip and missing result, not just the PR-only gate.
+- **AGREE:** add ci_structural_guards.py to the scope guard's release-critical
+  paths and its classification regression test. Removing targets now requires
+  the same declared review as changing the other gate machinery.
+- **AGREE:** measure the runtime before judging the five-minute job timeout.
+  The standalone Linux oracle runner executed 568 cases, zero skips, in 76.58s
+  (79.62s including Python startup). Hosted CI dependency install took 29s.
+
+The broader Linux oracle run passed 680 tests with zero skips in 112.98s,
+including the changed runner/selection/workflow tests, every structural target
+and the full converse-turn-cost file. Static prompt limits are unchanged.
+The plugin mirror was rebuilt and import-probed. Ruff and pre-commit invariants
+passed. Actionlint covers both edited workflows, using CI's existing
+SC2002/SC2129 style exclusions for the scope workflow's legacy shell blocks.
+Hygiene reports zero removed tests and zero tampering findings.
+
+The peer also confirmed fail-closed result propagation, retained queue coverage,
+unchanged skip/quarantine budgets, verbatim handbook relocation, and no conflicting
+lane edits. Its ADAPT verdict is recorded as such; the lead accepts the corrected
+implementation after the focused checks below, rather than claiming a second
+Claude approval round.
+
+Focused post-review validation: Linux oracle **163 passed, zero skips, 4.73s**;
+Windows **163 passed, 20.37s**. The two result-propagation tests send LF-preserving
+binary stdin to bash, avoiding both WSL quoting and Windows newline conversion.
+Hosted structural job [112147412256](https://github.com/TinyAssets/TinyAssets/actions/runs/37426408176/job/112147412256)
+passed all 568 checks: 109.15s pytest time, 112s guard step, 29s dependency install,
+150s total. This is above the roughly one-minute target, but well within the
+five-minute timeout; further scanner/runtime optimization is left visible rather
+than removing guards to manufacture a faster number.
