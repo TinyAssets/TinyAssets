@@ -150,10 +150,11 @@ jobs:
           TINYASSETS_WIKI_CANARY_TOKEN: ${{ secrets.TINYASSETS_WIKI_CANARY_TOKEN }}
         run: |
           set -uo pipefail
-          # The protected release receipt, through the same reader Hard Rule 14
-          # uses. Any failure leaves the sha empty, and an empty sha builds.
+          # Explicit protected-receipt mode keeps image-tag corroboration even
+          # though the reader defaults to the public app header for local use.
+          # Any failure leaves the sha empty, and an empty sha builds.
           served=""
-          if receipt="$(python scripts/deployed_sha.py --json)"; then
+          if receipt="$(python scripts/deployed_sha.py --json --url https://tinyassets.io/mcp)"; then
             served="$(printf '%s' "${receipt}" | python -c 'import json, sys; print(json.load(sys.stdin).get("deployed_sha") or "")')" || served=""
           else
             echo "::warning::could not read production's release receipt; building"
