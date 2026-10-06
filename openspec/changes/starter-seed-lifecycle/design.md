@@ -73,6 +73,15 @@ For legacy empty `AGENTS.md`, the note must say: "Your instructions file is empt
 
 ## Migration Plan
 
+Native CLI launches take the same shared sidecar file lock before spawning.
+The descriptor is held by bubblewrap via `--sync-fd` until its sandbox ends,
+including direct native writes that do not call the engine. The daemon closes
+its descriptor after spawn without unlocking the shared open-file description.
+An exclusive migration cannot enter while that descriptor survives. Launch
+failure closes all descriptors; the lock file is never mounted inside the box.
+Concurrent engine tools retain shared access. This extends the existing boundary
+without removing native inference or its file-writing capabilities.
+
 1. Land this single D10 mechanism and verify new-center receipts before consuming it in the starter release; no implicit per-turn seeding. Resuming a versioned release transaction before a dormant center's first turn is distinct from recreating missing files on each turn.
 2. Expose the versioned provisioning/upgrade/resume API and per-path outcomes to the starter consumer; test against stock/custom/deleted fixtures with a manifest supplied by the test.
 3. Depend on `starter-agent-out-of-plumbing` task 2.3 for publishing/consuming the bundle at the release boundary, renderer wiring and all-center/dormant-center integration proof. This change does not own or repeat that work; its API emits a durable notice even when no path can change.

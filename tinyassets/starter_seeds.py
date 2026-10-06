@@ -104,9 +104,12 @@ def _regular_or_absent(path: Path) -> None:
         raise OSError("unsafe seed database or SQLite sidecar")
 
 
-@contextlib.contextmanager
-def seed_boundary(center_root: Path, *, exclusive: bool = False, timeout: float = 5):
-    """Exclude seed transactions from jailed tools and owner file writes."""
+def open_seed_boundary(center_root: Path, *, exclusive: bool = False, timeout: float = 5):
+    """Return (sidecar, locked fd); closing the last copy releases a POSIX lock.
+
+    Native jails pass this fd to bubblewrap's --sync-fd. Explicit LOCK_UN would
+    release its inherited copy too, allowing migration beside a native writer.
+    """
     from tinyassets.providers.provider_jail import UNIVERSE_SIDECARS_DIR
 
     root = Path(center_root).absolute()
@@ -131,16 +134,18 @@ def seed_boundary(center_root: Path, *, exclusive: bool = False, timeout: float 
                 if time.monotonic() >= deadline:
                     raise TimeoutError("starter file boundary is busy; retry the turn") from None
                 time.sleep(min(0.025, max(0, deadline - time.monotonic())))
-        try:
-            yield sidecar
-        finally:
-            if os.name == "nt":
-                import msvcrt
-                os.lseek(fd, 0, 0)
-                msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
-            else:
-                import fcntl
-                fcntl.flock(fd, fcntl.LOCK_UN)
+        return sidecar, fd
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+@contextlib.contextmanager
+def seed_boundary(center_root: Path, *, exclusive: bool = False, timeout: float = 5):
+    """Exclude seed transactions from jailed tools and owner file writes."""
+    sidecar, fd = open_seed_boundary(center_root, exclusive=exclusive, timeout=timeout)
+    try:
+        yield sidecar
     finally:
         os.close(fd)
 
