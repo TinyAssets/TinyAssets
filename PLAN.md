@@ -8,11 +8,11 @@ For how to work on the project, and where live state lives, see AGENTS.md. **Cha
 
 ## Project Thesis
 
-**TinyAssets is a global goals engine.** Humanity declares shared Goals — research breakthroughs, novels, prosecutions, cures, open datasets — and a legion of diverse AI-augmented workflows pursues each Goal in parallel. Branches evolve, cross-pollinate, and get ranked by how far their outputs advance up each Goal's real-world outcome-gate ladder. The value is the evolving ecology of many workflows chasing the same outcomes and learning from each other.
+**TinyAssets is a Muse-level agent in the chat bubble, on pi.dev-style plumbing, that users build from** (founder, 2026-10-06). Each user's command center is the agent's harness and workspace; what users build there — workflows, goals, apps, agents — is shared, remixed and evolved in a public commons. The value is that evolving ecology.
 
 No domain is privileged. Every Goal — research breakthroughs, novels, prosecutions, cures, open datasets, restoring a legacy app — stands in equal standing: each inherits the engine, not a topology. A reader should not be able to tell from the architecture which domain the engine was first exercised against. (Where the current code still privileges one domain as the default/only runtime, that is residue to remove, not design intent — tracked in `docs/audits/2026-06-24-fantasy-architecture-residue-audit.md`.)
 
-The real abstraction is an open workflow playground, multiplayer daemon platform, and long-horizon agent research lab. The system should maintain explicit state across many cycles; search and manage memory across multiple backends; use tools instead of one giant prompt; separate generation from evaluation from environmental truth; learn through durable artifacts, not hidden chat; coordinate across timescales, users, and daemons; let users conversationally design and reshape state architecture; connect to tracked real-world outcomes, not only text output; and evolve itself as models and community practice improve.
+The system should maintain explicit state across many cycles; use tools instead of one giant prompt; separate generation from evaluation from environmental truth; learn through durable artifacts, not hidden chat; and evolve itself as models and community practice improve.
 
 The system should get simpler as models improve. Every scaffold is temporary unless evals prove it still earns its keep.
 
@@ -87,7 +87,7 @@ the loop and the facts a model would otherwise get wrong.
 
 ## Scoping Rules
 
-These five rules govern what features, primitives, and architecture get built — and what does not. They run in scoping cadence: irreducibility test first, then composition test, then privacy specialization, then architectural placement, then runtime tier targeting. Any new feature, design note, or audit recommendation must clear all five before it is shippable as platform code. Cross-provider readers (Codex, Cursor, OSS contributors): read these before proposing a new tool, action, evaluator, or primitive. Depth and worked examples live in lead memory files; PLAN.md carries the rule + why + how-to-apply only.
+These five rules govern what features, primitives, and architecture get built — and what does not. They run in scoping cadence: irreducibility test first, then composition test, then privacy specialization, then architectural placement, then runtime tier targeting. Any new feature, design note, or audit recommendation must clear all five before it is shippable as platform code. Cross-provider readers (Codex, Cursor, OSS contributors): read these before proposing a new tool, action, evaluator, or primitive. PLAN.md carries the rule + why + how-to-apply only.
 
 ### 1. Minimal primitives — fewest building blocks that compose to everything
 
@@ -99,14 +99,7 @@ These five rules govern what features, primitives, and architecture get built �
 
 **Irreducibility finding — the only door a new top-level primitive comes through (host-approved 2026-07-25).** The primitive set is minimal and irreducible, like a low-level coding language: small, orthogonal, and composed rather than extended. A new top-level primitive (a new MCP handle, a new substrate concept) ships ONLY on an explicit *irreducibility finding* — a recorded finding that the behavior has essentially **one working useful shape**, so there is nothing for the commons to disagree about. Everything else ships as actions and parameters under the existing canonical handles, or not at all. The corollary is the important half: a behavior with **many plausible custom shapes is user-buildable by definition** — including sandbox behaviors — and belongs to the commons, so the standard emerges from what users actually build and remix rather than from a shape the platform froze first. This is the rule that governs how architecture-note tool names become real: a design note naming a standalone tool is naming a *behavior target*, and that target lands as an action under a canonical handle unless someone records the irreducibility finding.
 
-**The universe is the harness** (founder, 2026-09-24; reference shape: pi.dev, whose agent gets exactly four tools, `read` / `write` / `edit` / `bash`, and everything else comes from user-built or shared extensions, skills, prompt templates and packages). A user's universe IS their agent harness, project folder and workspace. It exposes a small set of powerful primitives with which the user and their agent build whatever they want, in the pi style. The universe ships no pre-built features. New universes start from a seed harness: the founder's main account harness for now, then the most popular starting harness in the commons. The whole system has exactly three components:
-1. **The universe (harness + primitives)**, which the user owns and customizes.
-2. **Platform things**: identity, connections, compute routing, storage, scheduling, isolation and moderation, which let universes run with no host online.
-3. **The community commons**: shared libraries of everything users publish, and nodes opened to cross-user interaction.
-
-Isolation makes this safe. The floor is cross-user only, and every provider process is OS-jailed to its owner's universe, so powerful primitives (shell and file work included) are safe inside a universe. The platform never trades a universe's power for a shared-host safety it can get from the jail.
-
-Depth: lead memory `project_minimal_primitives_principle.md`.
+**The universe is the harness** (founder, 2026-09-24): a user's command center is their agent harness, project folder and workspace, in the pi style. It ships no pre-built features; isolation (every provider process OS-jailed to its owner's box) makes powerful primitives safe. Shape: § *Module: Agent Harness*.
 
 ### 2. Community-build over platform-build
 
@@ -146,58 +139,16 @@ as one ordinary private Branch composition; drain-specific scheduling,
 refinery, retry, evaluator, and prioritization policy do not become platform
 services merely because the first fixture needs them.
 
-**Custom-agent corollary (host-confirmed 2026-07-30; interchange shape
-confirmed 2026-07-31):** Users compose
-agents—not merely fixed workflow templates—from the same public commons.
-An agent definition is a public, immutable composition whose user-named
-components are all replaceable or extensible; an agent binding privately
-connects that definition to one universe's goals, authority, governed
-resources, provider policy, channels, and runtime configuration; a daemon is
-the running instance of that binding. OpenClaw-like operators, Hermes-like
-assistants, coding agents, configurations that become common, and blends of
-several users' agents are examples the community can build on this substrate,
-not a finite platform-maintained starter catalog, privileged archetypes, or
-enum values. TinyAssets builds the pipeline for arbitrary agents: lossless
-canonical import/export, private staged and secret-scrubbed foreign import,
-versioned loss-aware conversion adapters and receipts, and direct remix from
-any public definition made by any user. A remix may select components from any
-number of creators, replace or remove them, add new components, and publish one
-child with verified component-level lineage where the referenced sources
-resolve. Agents may create, run, evaluate, and iterate user-authored
-automations only through the same permissioned Branch, Evaluator, provider,
-and effect primitives available to every other actor. TinyAssets must keep the
-composition envelope open enough that power users do not hit a product ceiling:
-unknown component kinds remain portable and remixable, while execution waits
-for a governed adapter instead of silently dropping them or bypassing safety
-boundaries. The platform advantage is the commons, component-level lineage and
-evaluation evidence, host-independent operation, plug-and-play bindings to
-subscriptions the user already controls, and collaboration—not lock-in or a
-privileged built-in agent.
-
-**First V1 custom-agent golden path (host-approved 2026-08-01):** A
-browser-only user discovers a public agent made by another user, blends
-components from at least one additional creator, replaces/removes/adds any
-component conversationally, and privately binds the result to the user's
-chosen provider authority, Slack destination, goals, governed resources, and
-cloud runtime. In Slack the user asks the bound agent to create a recurring
-intelligence workflow; the agent drafts it through ordinary Branch primitives,
-dry-tests it without external effects, evaluates it against frozen criteria,
-shows one evidence-backed revision, and requests activation. After approval,
-the workflow produces a cited Slack result during a genuine PC-off window.
-Canonical export/re-import and a second-account remix prove portability while
-private bindings, credentials, conversations, goals, and runtime data remain
-absent from the public definition and lineage. The intelligence domain is demo
-content, not a privileged agent type or starter configuration; coding agents,
-OpenClaw-like operators, Hermes-like assistants, foreign imports, and other
-community shapes use the same pipeline. This first demo selects the user's
-private cloud-universe custody mode without settling other user-selectable
-custody modes.
+**Custom agents are packages** (founder, 2026-10-06). A user's agent is the
+starter package or any package from the commons, edited, blended and shared
+like any other commons artifact, with lineage. There is no finite
+platform-maintained catalog, privileged archetype or platform conversion
+pipeline; private bindings, credentials, conversations and memory never travel
+with a published package.
 
 **Why:** TinyAssets' product soul is users + chatbots evolving the system through wiki + remix + autoresearch. Platform-shipped primitives are scarce, intentional, and expensive — they crowd out community evolution and lock users into our taste. Community-buildable features compound: every new primitive composition becomes a remixable artifact other users discover and extend. Platform-shipped features are frozen at ship date; community-evolved features iterate continuously across thousands of remixes.
 
 **How to apply:** Imagine the implementation first. Then ask: could the user's chatbot easily compose this from existing primitives (workflow nodes, evaluators, branches, gates, autoresearch, wiki content)? If yes → don't ship as platform primitive; surface the community-build path in the design note + idea triage. If no (structural gap) → identify the gap precisely, ship the smallest primitive that closes it, not the policy. Platform-build is justified only when the gap is structurally impossible to compose around, OR the platform-shipped version unblocks 10x more community evolution than it crowds out.
-
-Depth: lead memory `project_community_build_over_platform_build.md`.
 
 ### 3. Privacy + threat-model patterns are community-build
 
@@ -209,8 +160,6 @@ Depth: lead memory `project_community_build_over_platform_build.md`.
 
 **Guidance is community-built; the platform owns enforcement boundaries only (host-approved 2026-07-25).** Privacy *guidance* — how to handle an invoice, what a HIPAA-shaped workflow should avoid, which redaction pattern fits a threat model — is commons content the community writes and remixes, not platform code and not a platform-authored policy surface. Architecture proposals for platform privacy-guidance tools or a platform-authored privacy taxonomy do not clear this rule. **A seeded, remixable wiki taxonomy is acceptable commons content** — seeding a starting vocabulary is not the same as freezing one, exactly as `_WIKI_CATEGORIES` seeds wiki categories while custom categories are sanitized and accepted. The test: can a user replace or extend it without asking us? If yes, seed it in the commons. If it is a boundary a user must not be able to move, it is enforcement, and it is platform code.
 
-Depth: lead memory `project_privacy_via_community_composition.md`.
-
 ### 4. Commons-first architecture
 
 **Rule:** Public data lives in the platform commons. Two settled parts: (a) Platform-stored data that is *in the commons* is open-source community data — public-by-definition. (b) Community designs published to the commons become the tool surface for next users via discovery + similarity + remix; the platform doesn't build features, the community evolves them. **Where a user's *private* data lives is a scoped open research question, not a settled rule** — see below.
@@ -219,9 +168,7 @@ Depth: lead memory `project_privacy_via_community_composition.md`.
 
 **Private-data custody is an OPEN RESEARCH QUESTION (host-approved 2026-07-25 — reopened, previously stated here as settled).** Custody is **per-situation and user-chosen**, not one architecture. It depends on the use case (a HIPAA-class workflow and a full-cloud personal brain are not the same problem) and on how much trust the user is willing to extend to us. The custody modes to research, none of them ruled in or out: **host machine** (data never leaves the user's hardware), **private universe brain** (the user's own brain bundle, wherever they choose to run it), **vault** (encrypted custody with the key held outside platform reach), and **platform-held** (we store it, under stated boundaries). The design constant is the customer: they hate lock-in and can build a ground-up alternative if we take their optionality away — so whatever custody a mode uses must stay exportable and replaceable, and the *user* picks the mode.
 
-**How to apply:** Before adding ANY platform feature, ask: "Could a user compose this from existing primitives + community remix?" If yes, the answer is to make discovery / similarity / remix work well, not to ship the feature. Commons content is public-by-definition. For anything touching private data: **do not encode either custody answer as settled.** Do not ship a design that assumes the platform can never hold private content, and do not ship platform private storage or private catalog rows as though that question were already answered — name the custody mode your lane assumes, scope the lane to it, and record the assumption. `docs/design-notes/2026-04-18-full-platform-architecture.md` §17 (per-piece privacy, private Supabase Storage, field-level platform records) is **research input to this question, neither canonical nor retracted** — cite it as one candidate custody mode, never as authority. Async availability remains acceptable for host-resident modes: content gated on a host being online yields a graceful "no host online" signal. Standing anti-patterns regardless of custody mode: discovery surfaces that bias toward platform-built content (commons content is equal first-class), and any custody design a user cannot export out of.
-
-Depth: lead memory `project_commons_first_architecture.md`.
+**How to apply:** Before adding ANY platform feature, ask: "Could a user compose this from existing primitives + community remix?" If yes, the answer is to make discovery / similarity / remix work well, not to ship the feature. Commons content is public-by-definition. For anything touching private data: **do not encode either custody answer as settled.** Do not ship a design that assumes the platform can never hold private content, and do not ship platform private storage or private catalog rows as though that question were already answered — name the custody mode your lane assumes, scope the lane to it, and record the assumption. The 2026-04-18 per-piece privacy design (private Supabase Storage, field-level platform records; recoverable from git history) is **research input to this question, neither canonical nor retracted** — cite it as one candidate custody mode, never as authority. Async availability remains acceptable for host-resident modes: content gated on a host being online yields a graceful "no host online" signal. Standing anti-patterns regardless of custody mode: discovery surfaces that bias toward platform-built content (commons content is equal first-class), and any custody design a user cannot export out of.
 
 ### 5. User capability axis — browser-only vs local-app, across providers
 
@@ -232,8 +179,6 @@ Depth: lead memory `project_commons_first_architecture.md`.
 **How to apply:** Every feature design names its target capability tier and host coverage. Local-app: daemon hosting, file system I/O, local program invocation, autoresearch overnight, multi-tenant tray, OSS-clone-and-extend. Browser-only: cloud-mediated equivalents for everything actionable. Launch parity: test on both Claude and ChatGPT before claiming a public chatbot feature ships. Matrix parity: for any other host, say exactly which host was verified and what caveat remains. A primitive earns its keep MORE if it works equivalently across both capability tiers and many MCP hosts; a primitive that only helps local-app users or one provider is a much higher bar to ship. Hopeful future: the gap collapses (Claude.ai gaining computer-use, ChatGPT gaining MCP local-file capabilities, browser sandboxing improving) — primitives should compose the same way regardless of capability tier; tier just determines leverage paths, not feature existence.
 
 **Identity invariant (founder, 2026-09-08):** Identity follows the authenticated account, not the client. The same user signing in through ChatGPT, Claude, a local agent, or another MCP host resolves to the same principal and home universe everywhere.
-
-Depth: lead memory `project_user_capability_axis.md`; host matrix `docs/design-notes/2026-05-01-mcp-host-customer-matrix.md`. Refines `project_user_tiers` (which is about install friction); both lenses are valid.
 
 ---
 
@@ -258,7 +203,7 @@ The six base concepts describe durable work at the graph layer:
 | `Run` | An execution attempt with inputs, outputs, provider traces, checkpoints, and evidence. |
 | `Trigger` | The event or schedule that asks the platform to start, resume, replay, or route work. |
 
-The seven MCP handles describe the small permissioned control surface agents use to inspect and act on those concepts:
+The seven MCP handles are the **external connector** surface: what an outside chatbot uses to inspect and act on those concepts. The in-app agent sees only its four tools plus `ta` (§ *Module: Agent Harness*).
 
 | Handle | Authority |
 |---|---|
@@ -272,35 +217,13 @@ The seven MCP handles describe the small permissioned control surface agents use
 
 The live surface asserts exactly this set: `CANONICAL_HANDLES` in `scripts/mcp_public_canary.py` (`--assert-handles`, Hard Rule #11), as-built in `openspec/specs/live-mcp-connector-surface/spec.md`. **New behavior arrives as actions and parameters under these handles by default** (see Scoping Rule 1 for when a genuinely new handle may ship). Architecture notes that name standalone RPC/MCP tools describe target *behaviors*, not an approved tool count.
 
-These names are substrate vocabulary, not a mandate that every runtime function or MCP tool be named exactly this way. Concrete tool names may remain client-shaped for compatibility, but they should map back to one or more of these handles in docs, permission checks, and tool descriptions. The older 8-engine-primitive framing in `docs/design-notes/2026-04-26-engine-primitive-substrate.md` remains a useful historical pressure test over implementation modules; it is no longer the canonical primitive count for project architecture. The canonical source for the promotion rationale is `docs/design-notes/proposed/2026-05-10-promote-work-substrate-vocabulary.md`.
+Concrete tool names map back to one or more of these handles in docs, permission checks, and tool descriptions.
 
 ---
 
 ## Cross-Cutting Principles
 
 These principles apply to every module. They do not own a module each; they constrain how modules behave.
-
-**Cloud-only platform; personal computers are never platform dependencies**
-(founder directive, September21,2026 PDT). The public platform and its hosted
-universe service paths run exclusively on cloud infrastructure and cloud
-dependencies. `DESKTOP-KCPMGP3` is the founder's personal home desktop: it must
-never serve platform traffic, execute platform/universe work, provide a model
-relay, hold required runtime state, schedule recovery, or become a temporary,
-emergency, development-labelled or fallback production dependency. Availability
-of a local process, credential, tunnel, registration or heartbeat does not make
-it eligible. Admission and routing must enforce the boundary before any work or
-traffic can reach it; deployment and recovery must preserve it. Unknown
-provenance is not proof of a cloud executor. A hostname denylist alone is not
-the architectural boundary: hosted service admission requires independently
-established cloud eligibility and excludes the personal desktop regardless of
-aliases or local configuration. Development tools and client browsers on a PC
-are not platform services and must not be silently promoted into them. This
-supersedes earlier host/tray bridge, host-fleet and local-fallback language for
-the hosted production platform; those passages cannot authorize this machine
-or make the hosted service depend on any user's device. Required acceptance is
-negative admission/routing tests plus real cloud-only service behavior, including
-new-user free-provider onboarding. This is the required design, not a claim that
-all existing code and deployed bindings already enforce it.
 
 **Agentic hybrid search is memory.** Durable memory is a policy over multiple stores (KG traversal, vector similarity, hierarchical summaries, notes, world-state, direct tool calls). No single *index* owns truth — truth lives in the brain's canonical store and every index over it is derived and rebuildable. For the commons, and as the default organization for a universe brain, that store is the OKF bundle (Brain Module); a founder may design their own brain organization (host-approved 2026-07-25, Design Decisions), and this source-vs-index split holds for whatever organization they choose. Routing across those indexes matters more than any one of them.
 
@@ -325,19 +248,13 @@ mode this rule prevents. Change: `openspec/changes/archive/2026-09-30-owner-door
 
 **Every scaffold is a falsifiable hypothesis.** Counters, thresholds, phase gates, routing rules all encode a claim about model weakness. Prove the simpler approach fails before adding; prove removing hurts before defending. When a stronger model lands, re-test the harness. Trend toward less prescriptive control.
 
-**Harness design is part of the cognition stack.** Initializers, traces, browser harnesses, replayable tests, dashboards, status files, artifact stores materially change what the system can do.
-
-**Tools are the agent-computer interface.** Tool shape is architecture — names, parameters, return schemas, failure semantics. Prefer a smaller number of reliable composable tools over many overlapping ones. **Trust-critical tools include their own caveats** (the self-auditing-tools pattern, see `docs/design-notes/2026-04-19-self-auditing-tools.md`); structured evidence + structured caveats lets the chatbot compose trustworthy narratives without the system having to police its honesty.
+**Tools are the agent-computer interface.** Tool shape is architecture — names, parameters, return schemas, failure semantics. Prefer a smaller number of reliable composable tools over many overlapping ones. **Trust-critical tools include their own caveats:** structured evidence + structured caveats lets the chatbot compose trustworthy narratives without the system having to police its honesty.
 
 **Generator, evaluator, and ground truth stay separate.** Self-evaluation bias is real. Keep them as separate channels, often separate model families. The evaluator needs a different failure profile, not a better creator.
-
-**State lives on multiple timescales.** Scene = short-horizon action. Chapter = medium-horizon consolidation. Book = longer-horizon recovery and planning. Universe = global maintenance, synthesis, strategy. The hierarchy exists because timescales differ, not because fiction has chapters.
 
 **Learning is write-back compression.** Agents improve by promoting stable lessons into reusable artifacts (notes, style rules, facts, summaries, revised tools and prompts), not by hoarding transcripts.
 
 **Evals grade process and outcome.** Final quality isn't enough. Inspect retrieval choices, tool usage, stopping behavior, handoff quality, grounding, artifacts. When a run fails, traces should explain why.
-
-**Module shape is part of the architecture.** A flat namespace of 35 modules at `tinyassets/` root signals "no opinion about boundaries." A god-module of 10k lines signals "boundaries deferred indefinitely." Both are forms of architectural debt. The Module Map below codifies the target shape; the per-module sections that follow codify what each owns.
 
 **Foundation builds to the end state; features may iterate** (host, refined 2026-04-19).
 *Foundation* is infrastructure everything else depends on — multi-user support, storage schema,
@@ -354,13 +271,6 @@ to match; each foundation ship is itself end-state-shaped. **Foundation does not
 features do, temporarily.** Carve-out: atomic-commit discipline stands — "end-state" means each
 commit is atomic *and* takes the code to its final shape, not that related work is squashed
 together. Cited from `tinyassets/storage/__init__.py` and `tinyassets/bid/__init__.py`.
-
-**The daemon economy is foundation; chatbot experience is always-on** (host, 2026-04-19). Both are
-needed, but the daemon economy is foundationally important rather than a side feature. Chatbot
-experience work is standing high-priority throughout — yet the daemon-economy first draft is the
-thing to have shipped before big chatbot-UX investment. When choosing among available work, tracks
-shipping daemon-economy primitives (paid-market bids, settlements, node capability resolution,
-fulfillment routing, moderation-for-the-market) rank above chatbot-experience polish.
 
 **Code before agents: if an invariant can be enforced mechanically, build the check** (host,
 2026-04-19). Every scheduled agent check-in for "is X still true?" is a place a script-that-never-
@@ -387,46 +297,23 @@ run, but they never invoke an LLM or act as a universe. Stated while deciding th
 retired cloud-worker fleet still declared in `deploy/compose.yml`; the fleet is out, the
 user-owned background loop stays.
 
-**Cleanup operations against scene-attributed data must scope across all DBs that hold scene-attributed rows.** Generalizes the Fix E lesson (task #49): a cleanup path that prunes one DB but not its sibling leaves orphan derivatives that masquerade as canon on the next retrieval cycle. When a new DELETE or mutation operates on rows keyed to scene_id (or any cross-store attribution), scope it against both `knowledge.db` and `story.db` from the start, or explicitly document the opt-out with reason. Per the migration-audit follow-up at `docs/audits/2026-04-19-schema-migration-followups.md`.
-
----
-
-## How to Use This PLAN
-
-PLAN.md is the working theory of what each module is and how it works. **Everyone references it before building** — human contributors, AI provider sessions, user chatbots, user-authored automations, and agent teams. If your work doesn't fit one of the modules below, that gap is the design conversation.
-
-**Skill anchors.** Each named project skill ties into one PLAN.md surface; invoke the skill before or during module work, not after:
-
-| Skill | When to invoke | What it does for PLAN.md |
-|---|---|---|
-| `openspec` | Before writing code for any substantive change | Produces the change proposal + delta specs; this PLAN.md is the design-truth artifact the specs complement |
-| `implementation-precedent-scout` | Before building something the codebase may already do | Finds the existing primitive so a module gains a caller, not a parallel implementation |
-| `external-research-implications` | When an outside project, paper, or benchmark is proposed as a direction | Compares module-by-module against these modules and writes durable implications |
-| `security-and-hardening` | When a change touches auth, credentials, permissions, or an external effect | Maps to the Boundary, Providers, and API & MCP Interface modules |
-
-The ten-row table that stood here until 2026-08-26 named `improve-codebase-architecture`, `auto-iterate`, `spec-driven-development`, `planning-and-task-breakdown`, `incremental-implementation`, `domain-model`, `ubiquitous-language`, `api-and-interface-design`, `code-simplification`, and `zoom-out` — **every one of which was deleted by the harness reset.** The whole table pointed at nothing, and so did the audit-machinery paragraph below it. Recover the text from git history if the shape is ever wanted back.
-
 ---
 
 ## Module Map
 
 The codebase target shape, with each PLAN.md module mapped to its primary code package(s). Where the current state diverges from this target, the gap is in-flight work — not architectural disagreement. Anchored by the spaghetti audit at `docs/audits/2026-04-19-project-folder-spaghetti.md`.
 
-`tinyassets/` is the engine package. Domain packages (`fantasy_daemon/`, future `research_daemon/`, etc.) consume from it.
+`tinyassets/` is the engine package.
 
 | PLAN.md Module | Primary code package(s) |
 |---|---|
-| Engine & Domains | `tinyassets/`, `domains/<name>/` |
+| Agent Harness | `tinyassets/agent_loop/`, `tinyassets/starter/` |
 | Daemon Platform | `tinyassets/identity.py`, `tinyassets/discovery.py`, `tinyassets/branch_tasks.py`, `tinyassets/runtime/` |
 | **Brain** | `tinyassets/memory/`, `tinyassets/retrieval/`, `tinyassets/knowledge/`, `tinyassets/storage/__init__.py` (memory_kinds), `tinyassets/learning/` |
-| Goals & Gates | `tinyassets/storage/goals_gates.py`, `tinyassets/api/market.py` (goals + gates actions) |
-| Evolution & Evaluation | `tinyassets/evaluation/`, `tinyassets/learning/`, autoresearch surface |
 | Providers | `tinyassets/providers/` |
 | API & MCP Interface | `tinyassets/api/` (mounted submodules per cluster), `tinyassets/servers/` |
 | Distribution & Discoverability | `packaging/`, `packaging/registry/`, `packaging/claude-plugin/`, maintained connector submission artifacts |
-| Harness & Coordination | `AGENTS.md`, `openspec/`, `docs/concerns/`, `scripts/invariants/`, `scripts/supervisor.py`, `scripts/worktree_status.py`, `scripts/provider_context_feed.py`, `.agents/`, `.claude/hooks/` |
 | Uptime & Alarms | `deploy/`, `.github/workflows/uptime-canary.yml`, `.github/workflows/p0-outage-triage.yml`, `scripts/uptime_canary.py` |
-| Constraints | `tinyassets/constraints/`, `data/world_rules.lp` |
 
 Engine subpackage target shape (the durable commitment — anything new must fit one of these or earn its root spot with a one-line explanation):
 
@@ -458,81 +345,45 @@ Every module section below follows the same shape so PLAN.md reads as reference:
 
 ---
 
-## Module: Engine & Domains
+## Module: Agent Harness
 
-**Purpose:** `tinyassets/` is reusable infrastructure that any domain can adopt; `domains/*` own their graph topology and import what they need.
-
-**In scope:** Engine-shared primitives (state, edges, runs, triggers), the engine/domain seam, domain registration, scene/chapter/book/universe timescale hierarchy as a generic shape.
-
-**Out of scope:** Domain-specific graph topology (lives under `domains/<name>/`); paid-market mechanics (Daemon Platform); evaluation logic (Evolution & Evaluation).
+**Purpose:** The product: a Muse-level agent in each command center's chat bubble, on pi.dev-style plumbing (founder, 2026-10-06). Users build from there.
 
 **Principles:**
-- *Extract infrastructure first, prove topology second.* A second domain pressures the engine to prove it's actually domain-agnostic — fantasy is the benchmark, not the trunk.
-- *Engine = `tinyassets/`. Domains = `domains/<name>/`.* The engine-vs-domain seam is named. Once the separation lands, every action lives in exactly one of: shared engine API (`tinyassets/api/`) or a domain API (`domains/<name>/api/`). No third location.
-- *State transitions are the core abstraction.* Orient → plan → draft → commit → learn → reflect → enrich → task selection. If the state model is wrong, the system feels smart locally and breaks over long runs.
-- *Scene Loop is a state-transition pattern, not a fiction-specific concept.* Orient → plan → draft → commit is useful only if each step adds value; flatten the loop when a stronger model + better tools can do equivalent work in fewer steps.
+- *Four tools plus `ta`.* The model sees `read`, `write`, `edit` and `bash`, running inside the command center's sealed box, plus `ta` for platform primitives. Nothing else is model-visible.
+- *One definition for every provider.* One agent definition renders identically on every model provider: same instructions, same tools, no provider-specific code, names or branches. Users connect any model source, and the agent defaults to their strongest connected one.
+- *One extension unit.* Everything beyond the plumbing (skills, prompts, hooks, settings, app UI) arrives as one kind of unit: files in an editable package.
+- *Abilities are editable files, not platform features.* The starter package is files and skills the agent and user edit; prompts and defaults are never Python strings. The platform builds no feature editors and no pre-built features: the agent edits its own files, and users build UI with `app_ui`.
+- *Clean cutover.* When the shape changes, the old path, its tests and its docs are deleted in the same change; no aliases or compatibility paths.
 
-**Substrate:** `tinyassets/` (engine package), `domains/fantasy_daemon/` (only live domain today), `tinyassets/domain_registry.py`, `tinyassets/registry.py`, `tinyassets/protocols.py`. Pending engine/domain API separation: `docs/design-notes/2026-04-17-engine-domain-api-separation.md`. Fantasy domain keeps scene/chapter/book/universe names in its own graph; shared `tinyassets/` infrastructure uses domain-agnostic names.
+**Substrate:** `tinyassets/agent_loop/` (`box_tools.py`, `box_ta.py`), `tinyassets/starter/`. Changes: `openspec/changes/universe-agent-harness`, `starter-agent-out-of-plumbing`, `starter-muse-package`.
 
-**Open evolution:** Second domain adoption (research_daemon, journalism_daemon) is the unblocking proof that the engine is domain-agnostic. Until then, every "engine" decision risks fantasy-shaped bias.
-
-_Last audited: 2026-05-19_
+_Last audited: 2026-10-06_
 
 ---
 
 ## Module: Daemon Platform
 
-**Purpose:** A multi-tenant workflow platform where many users and daemons collaborate without collapsing into one shared chat or one hidden runtime.
+**Purpose:** A multi-tenant platform where every user's agent runs in its own command center, under that user's control, with no host online.
 
-**In scope:** Daemon identity (souls, fingerprints, forks), universe agent rosters, public agent definitions and common configurations, universe-private agent bindings, runtime instance allocation, host pool registry, soul eligibility per node/gate, soul-guided dispatch, capacity-bounded fleet sizing, the live file-locked claim bridge, and its fail-closed migration to server-authoritative transactional activation and claiming across cloud + host executor classes.
+**In scope:** Agent definitions and private bindings, command-center export, the sealed box per command center, and host-independent user loops.
 
-**Out of scope:** What a daemon *knows* (Brain); what a daemon *evaluates* (Evolution & Evaluation); goal/gate ladder definitions (Goals & Gates); MCP tool surface (API & MCP Interface).
+**Out of scope:** What the agent sees and how it is extended (Agent Harness); what it knows (Brain); model connections (Providers); the MCP surface (API & MCP Interface).
 
 **Principles:**
-- *Separate identity from runtime.* Daemons are public, forkable, summonable agent identities defined by soul files; runtime instances are resource allocations bound to providers, models, and executor hosts. Every `(user, daemon, executor)` tuple is independently addressable; today's N=1 is the degenerate case.
-- *Public definition, private universe binding.* "Custom agent" is the user-facing role; its canonical identity is a daemon. The reusable definition — soul, capabilities, default graph/configuration, and declared evaluator expectations — is public and forkable. Its installation in a universe — role, authority, goals, resource/model bindings, channel mappings, credentials, conversations, private inputs, and learned memory — is private to that universe and is never inherited by a fork or remix.
-- *Creation is open-ended and commons-shaped.* A user may start from a blank definition, instantiate a common public configuration, fork one definition, or blend many definitions into a new one. General operators, assistants, coding agents, and future forms are configurations over the same daemon/graph substrate, not platform-baked agent classes. A "common configuration" is simply a public definition that the community reuses; it has no privileged platform status.
-- *No artificial power-user ceiling.* Every behavioral component is inspectable, replaceable, removable, composable, versioned, importable, and exportable: soul and operating policy, prompts/context policy, tools and custom code, capabilities/adapters, graph topology, triggers/schedules, memory policy/schema, provider/model requirements, evaluators, budgets, and stop/promotion rules. Users may select components from any number of public definitions or ask an agent to propose an inspectable blend with per-component lineage. TinyAssets enforces substrate invariants — authorization, secret isolation, sandboxing, attribution, action/spend caps, and exactly-once external effects — but does not impose agent categories, fixed topology, or a simplified ceiling that forces advanced users to leave.
-- *Definitions, bindings, and runtimes are distinct.* The public
-  `AgentDefinition` is the complete remixable component composition; the
-  private `AgentBinding` supplies universe-specific role, goals, authority and
-  governed resource/provider/channel references; the daemon runtime executes
-  that binding. Soul identity is one replaceable component, not the ceiling of
-  agent customization. The v1 binding stores control-plane metadata under the
-  universe's already-selected custody mode and excludes credentials,
-  conversations, and effect payloads; it does not settle private-content
-  custody for other use cases.
-- *No power-user ceiling in the composition contract.* Component names and
-  kinds are user-defined, so a popular community configuration and a deeply
-  customized agent use the same artifact shape. Runtime support is
-  capability-gated: the platform preserves unfamiliar components for
-  export/remix but executes only kinds backed by installed, governed adapters.
-- *Interchange is infrastructure; configurations are commons content.* The
-  platform maintains a versioned canonical definition format, exact native
-  round-tripping, private import staging, secret scrubbing, structured loss
-  reports, conversion receipts, and a governed adapter contract. It does not
-  maintain a finite starter catalog. Foreign adapters are replaceable,
-  remixable, evaluable commons artifacts composed from ordinary workflow and
-  Engine OS primitives where possible; their untrusted output must pass the
-  canonical validator and cannot carry ambient credentials or authority.
+- *Public definition, private binding.* An agent's reusable definition (its package: instructions, skills, settings, default workflows) is public and remixable with lineage. Its installation in a command center — role, authority, goals, model and channel bindings, credentials, conversations, private inputs and learned memory — is private and never travels with a fork or remix.
+- *No power-user ceiling.* Every component is inspectable, replaceable, removable and exportable; the platform enforces authorization, secret isolation, sandboxing, attribution and spend caps, not agent categories or fixed topology.
 - *Users can always take their command center with them* (founder, 2026-10-01). One action exports a whole command center to a folder on the user's computer: harness, roster, rules, workspace, wiki and brain, workflows and schedules, selected memory, and UI layouts. It uses the same bundle format as sharing and import. The folder runs standalone with a local model through a small pi-shaped runner, with no platform account, and it is publish-ready as a repository: README, license placeholder, secret-excluding `.gitignore` and `.env.example`, with credentials never exported. Publishing it anywhere stays user-built. The exportability principle is permanent; the module that implements it is refactored as the harness changes (`openspec/changes/universe-agent-harness` §4.17).
-- *Daemon-driven.* Let the daemon make creative and structural decisions whenever the model can reliably do so. Hardcoded thresholds and stage gates are scaffolding — test each by removing it. When the daemon decides badly, improve goals/context/tools/evals rather than layering recipes.
-- *Always ready for the next user and daemon fleet.* Multi-tenant from the first build. Storage, authorization, queues, budgets, audits, daemon bindings, and runtime activations carry tenant/owner boundaries.
+- *Multi-tenant from the first build.* Storage, authorization, queues, budgets, audits, agent bindings and runtime activations carry tenant/owner boundaries.
 - *Every command center is a sealed box; the control plane is the only always-on layer* (founder-approved 2026-10-01: "approved, go with the sealed box design"; target shape now, capacity later, 2026-10-02). Each command center runs in exactly one box with its own kernel boundary (Firecracker microVM with snapshot/restore; gVisor behind the same `BoxProvider` interface where KVM is unusable), its own fixed-size disk allocated from the account's storage quota, and no network interface. Tool calls and any CLI run inside it. The daemon reaches box contents only through `BoxProvider` (never a host path) and treats them as untrusted. Platform state (vault, run/consent/usage/attention/conversation stores, rules, activity, sessions) lives outside every box. Boxes are awake only while acting and suspend after at most 60 s idle; the scheduler, triggers, inbox and notifications live in the control plane, and a box keeps no timers. Growth adds cells and box hosts behind fixed seams (`home_cell`, ownership generation, outbox); no code path checks the stage or the tier. Change: `openspec/changes/target-architecture`.
 - *Zero daemons required for authoring.* Node/branch/goal creation, editing, forking, and collaboration work with no daemon running anywhere. Daemon hosting is opt-in for execution work. Load-bearing requirement — any architecture where authoring depends on a running daemon violates it.
-- *Host-independent user loops live with their universe.* If a user asks a recurring workflow to run continuously, its durable definition, schedule, checkpoints, receipts, and health live in that user's cloud universe. Cloud and tray executors may understand the same versioned Branch, but one activation authority owns a normal loop at a time; a host-to-cloud migration stops the host activation before proving cloud acceptance. Turning off a tray cannot erase or pause an accepted cloud-owned loop.
-- *Epoch-2 transactional claiming is the approved sole-authority target (host-approved 2026-07-29; not yet active).* The target transactional control plane owns activation epochs, conditional claims, lease generations, executor identity, fencing, recovery, and integrity checks. A target-state claim is valid only while its `(universe, automation, activation epoch, immutable Branch version, executor class, lease generation)` still matches authoritative state. As built on 2026-07-29, epoch 2 is dark/inactive and epoch-1 file locking remains the live bridge. Migration closes epoch-1 admission and drains or fences already-admitted work before fail-closed epoch-2 activation. After an automation cuts over, epoch 1 cannot admit or mutate it; retained epoch-1 machinery may only reconcile and retire legacy records outside epoch-2-owned automation. The two claim authorities are never dual-active for the same automation.
-- *Host fleets are capacity-bounded, not product-capped.* A host may summon as many daemons as they can afford and operate, including multiple daemons on the same provider. Second-and-later same-provider summons show warning-only subscription/rate-limit guidance; no platform subscription gate.
-- *No host model login exists (retired 2026-09-24, Hard Rule 15).* The former shared host logins (`CODEX_HOME=/data/.codex`, `CLAUDE_CONFIG_DIR=/data/.claude`) and their keepalives are gone; each universe's provider child runs on that universe's own credentials. The `codex` flock wrapper still serializes concurrent launches against one universe's Codex home.
-- *Soul eligibility.* Nodes and gates may declare whether daemon souls are allowed, forbidden, required, replaced, or combined with a temporary node/gate header. They may declare domain requirements (scientific, legal, artistic, local-model-only). Claim-time verification checks soul fingerprint + required claims/proofs before execution.
-- *Soul-guided dispatch.* A soul-bearing daemon returns to a decision step listing eligible work + soul policy + domain requirements + required capability + offer. The daemon may choose money, interests, reputation, public-good impact, or refusal per its soul. Soulless daemons use the default platform dispatcher.
-- *Two executor classes, one transactional authority after cutover.* Cloud workers and opt-in host trays may execute the same immutable Branch contract. In the target state, only the executor class named by the current server-authoritative activation epoch can claim. Stop/cutover/rollback advance that epoch with compare-and-swap; stale, partitioned, or alternate local identities are fenced rather than trusted.
+- *Host-independent user loops live with their universe.* A recurring workflow's definition, schedule, checkpoints, receipts and health live in the user's cloud command center and keep running with every user device off.
 
-**Substrate:** As built on 2026-07-30, `tinyassets/branch_tasks.py` / `tinyassets/singleton_lock.py` remain the live epoch-1 bridge and production cloud workers still consume that file-locked queue. `tinyassets/branch_tasks_v2.py` and `tinyassets/storage/request_admissions.py` provide dark transactional successor seams. The server-authoritative activation record/store and activation-bound claim checks are built but dark; the background binding/attempt store and server-owned binding-transition service are also dark, while just-in-time attempt issuance and epoch-2 queue consumption remain unbuilt/disabled. The target also uses `tinyassets/identity.py`, `tinyassets/discovery.py`, `tinyassets/runtime/`, and the canonical transactional control plane. Soul/fork machinery currently lives in the `author_definitions` substrate transitioning to a domain-agnostic daemon registry (content provenance retains `author_id` + `author_kind` discriminator). The approved custom-agent successor is specified in `openspec/changes/universe-custom-agents/`: immutable public definitions, component lineage, and private universe bindings precede runtime activation. Host pool registry: `docs/design-notes/2026-04-18-full-platform-architecture.md §5`. Soul-guided dispatch read path landed via open-brain v2 slice B 2026-05-19.
+**Substrate:** `tinyassets/custom_agents.py`, `tinyassets/agent_interchange.py`, `tinyassets/runtime/`, `tinyassets/branch_tasks.py`. Sealed box and control plane: `openspec/changes/target-architecture`.
 
-**Open evolution:** Cross-host node-execution hopping is not supported (cross-host software donation IS, see Distribution). N-of-M multi-actor approval as a generic primitive (founder vote, treasury multisig, scientific publication co-signature) is unscoped.
+**Open evolution:** N-of-M multi-actor approval as a generic primitive (founder vote, treasury multisig, publication co-signature) is unscoped.
 
-_Last audited: 2026-07-31_
+_Last audited: 2026-10-06_
 
 ---
 
@@ -544,10 +395,9 @@ _Last audited: 2026-07-31_
 - Tiered memory across multiple stores (KG, vector, hierarchical summaries, world-state, notes, direct tool calls).
 - The `memory_kinds` typed catalog — canon fact, attribution snapshot, soul fingerprint, gate-evidence, contributor weight, etc.
 - Promotion state machine: candidate → accepted → promoted → rejected → superseded. No memory becomes load-bearing without earning promotion.
-- Soul-guided dispatch *read path* — what work is a daemon eligible to claim?
 - Treasury status *read path* — bounded budget + spend visibility.
 - Bounded autonomous spend guardrails — per-Goal / per-daemon / per-cycle caps.
-- Authority-condition policy (per `docs/design-notes/proposed/2026-05-19-external-write-authority-and-rewards.md`) — Brain conditions every external-write authority decision on past-decision memory.
+- Authority-condition policy — Brain conditions every external-write authority decision on past-decision memory.
 - Attribution graph snapshot at the moment a reward releases — authoritative for payout.
 
 **Out of scope:** Treasury *write path* (future Treasury Module); goal/gate ladder definitions (Goals & Gates); provider routing (Providers); evaluation logic (Evolution & Evaluation); MCP surface (API & MCP Interface).
@@ -565,67 +415,11 @@ _Last audited: 2026-07-31_
 - *Redaction ordering.* The operational index stops serving the entry **FIRST** (tombstone/block reads), *then* the bundle body is deleted at the source, *then* the index is rebuilt and rollups purged. Reversing that order keeps serving stale content from the index after the source is gone. A secrets-class tombstone omits any recoverable content hash.
 - *Build boundary.* OKF **conformance validation is `[substrate]`** — a guarantee, not a forkable default. The **upstream-watch steward is `[composable]`**: a forkable branch that holds a vigil on the OKF spec, pins `okf_version`, and *proposes* migrations on backward-compatible minor bumps. A major bump is a deliberate reviewed migration, never automatic.
 - *Backup.* The nightly git snapshot **is** the canonical durable store, not a backup of an authoritative database. Self-host and fork export emit the bundle wholesale as a portable OKF bundle consumable with no Tiny-specific tooling — this is what "format, not platform" buys, and it is the same no-lock-in guarantee Scoping Rule 4 owes the customer.
-- *Status.* Architecture only. There is no `tinyassets/brain/` package, no bundle write path, and no commit protocol. What ships today is a one-way curated **export** (`tinyassets/wiki/okf_export.py`, as-built in `openspec/specs/knowledge-retrieval-and-memory/spec.md`), whose narrow local `conformant` flag does not claim canonical-store authority. Provenance for the decision: `openspec/changes/brain-okf-canonical-store/` and the Codex review at `docs/audits/2026-06-24-brain-okf-canonical-codex-review.md`. Earlier SQLite-canonical wording in the June legacy documents is superseded provenance, not authority.
+- *Status.* Architecture only. There is no `tinyassets/brain/` package, no bundle write path, and no commit protocol. What ships today is a one-way curated **export** (`tinyassets/wiki/okf_export.py`, as-built in `openspec/specs/knowledge-retrieval-and-memory/spec.md`), whose narrow local `conformant` flag does not claim canonical-store authority. Provenance for the decision: `openspec/changes/archive/2026-07-25-brain-okf-canonical-store/` and the Codex review at `docs/audits/2026-06-24-brain-okf-canonical-codex-review.md`. Earlier SQLite-canonical wording in the June legacy documents is superseded provenance, not authority.
 
 **Substrate:** `tinyassets/memory/`, `tinyassets/retrieval/`, `tinyassets/knowledge/`, `tinyassets/learning/`, `tinyassets/storage/__init__.py` (memory_kinds + promotion state). Open-brain v2 slices landed 2026-05-19: A=memory_kinds registry, B=soul-guided dispatch read, C=treasury status read, D=bounded autonomous spend. Companion artifacts on main: #903 amendment-verdict carrier, #870 wiki-bug body inclusion, #866 dedup safety net.
 
-**Open evolution:** Authority-condition strict-mode rollout (per the 2026-05-19 design note open questions). Brain's role in N-of-M multi-actor approval state. Brain ↔ Evolution feedback — which Brain-snapshotted attributions feed back into evaluator training signal? Cross-universe Brain federation (shared scientific corpus across Goals).
-
-_Last audited: 2026-05-19_
-
----
-
-## Module: Goals & Gates
-
-**Purpose:** A Goal is a named pursuit ("research-paper", "fantasy-novel"); a Branch is one concrete take; many Branches bind to one Goal. Gates are the outcome ladder that turns Goal progress into a truth signal.
-
-**In scope:**
-- Goal as first-class object: `goals` table, `Branch.goal_id`, per-Goal browsing.
-- Work-target registry (the unit of intentional work — uploads, canon repair, world notes, plans, scenes). Foundation review hard-blocks on unsynthesized uploads only; authorial review may choose any justified move once hard blockers clear. Targets carry role (notes/publishable), publish stage, lifecycle, tags, artifact refs.
-- Outcome-gate ladders per Goal (draft → peer feedback → submission → acceptance → publication → citations → breakthrough for research; ladder shape varies per Goal).
-- Rung-claim recommendations on branch tasks.
-- `archive_consultation` parent-rank surface (quality + outcome + diversity).
-- Per-Goal leaderboards, cross-branch node library.
-- Outcome gates: rung claims are the trigger that fires external writes via the authority + idempotency model in the Brain (see 2026-05-19 design note).
-
-**Out of scope:** Brain memory (Brain); evaluation logic (Evolution & Evaluation); external-write execution (the *trigger* is here; the *execution* is policed by Brain + connector registration).
-
-**Principles:**
-- *Goal is first-class above Branch.* Many Branches bind to one Goal. "Simultaneously pursue the same Goal via different Branches" is the default collaboration pattern.
-- *Outcome gates — real-world impact is the truth signal.* Leaderboards rank on outcome progression, not draft polish.
-- *Tags stay loose; role and lifecycle stay guarded.* Publishable-vs-notes role, publish stage, and true discard are explicit state transitions; `marked_for_discard` is not the same as `discarded`.
-- *Two review gates, one target registry.* Foundation review hard-blocks; authorial review chooses.
-- *Diverse-by-default.* 100 different research-paper workflows from 100 users is a feature, not duplication. Consolidation into "the best" workflow is an anti-pattern.
-
-**Substrate:** `tinyassets/storage/goals_gates.py`, `tinyassets/api/market.py` (goals actions: propose, update, bind, list, get, search, leaderboard, common_nodes, archive_consultation, set_canonical). `BranchTask.rung_claim_recommendations` field landed via PR #899.
-
-**Open evolution:** Parent-rank scoring formula as an evolvable workflow node (see follow-up #913) — formula competes via autoresearch, not as a fixed platform constant. Tracking of outcome gates (self-report first, automated later via DOI / court-docket / sales / awards). Per-piece privacy: concept-public default, instance-private when user data involved, chatbot-judged per piece (refines earlier branch-private framing).
-
-_Last audited: 2026-05-19_
-
----
-
-## Module: Evolution & Evaluation
-
-**Purpose:** Improve workflow quality through feedback, not brittle gates. Optimization is a native run type, not a sidecar.
-
-**In scope:** Layered evaluation (deterministic checks + editorial reader + environment-grounded artifacts + traces); the `Evaluator` primitive that unifies fantasy judges, autoresearch metrics, moderation rubrics, real-world outcomes, and discovery ranking; `OptimizationRun` surface; `EvalResult` schema; acceptance scenario packs; quality-diversity search; lineage; attribution; community remix.
-
-**Out of scope:** Goal/gate ladder definitions (Goals & Gates); provider routing for evaluator runs (Providers); MCP action surface (API & MCP Interface).
-
-**Principles:**
-- *Layered evaluation.* Deterministic checks for provable failures; an editorial reader for natural-language critique; environment-grounded artifacts + traces for verification. One strong independent reader beats a committee of shallow scorers.
-- *Evals grade process and outcome.* Inspect retrieval choices, tool usage, stopping behavior, handoff quality, grounding, artifacts. When a run fails, traces should explain why.
-- *Evaluation is platform-wide, not fantasy-specific.* Fantasy judges, autoresearch metrics, moderation rubrics, real-world outcomes, and discovery ranking are instantiations of one `Evaluator` primitive.
-- *Native optimization, not an ASI-Evolve clone.* TinyAssets adopts the ASI-Evolve / AlphaEvolve lesson as an engine-native pattern: users ask through any MCP-connected chatbot; the platform runs bounded evaluator-driven optimization over nodes, branches, evaluators, prompts, policies, topology; accepted changes land through normal versioned/provenance-aware branch history. Do not vendor or parallel-run a separate ASI pipeline.
-- *Community model.* Branches, nodes, evaluators, and lessons are remixable public commons when privacy policy permits. The platform preserves many competing solution families rather than collapsing to one "best" workflow.
-- *Agent-definition remix preserves lineage.* Blending multiple public agent definitions creates a new versioned definition with every parent reference, contribution attribution, and supporting evaluation evidence intact. Remix never mutates its sources and never copies their universe-private bindings, memory, conversations, inputs, or credentials.
-- *Safety model.* Candidate generators cannot edit the evaluator or the locked harness they are being judged by. Optimization runs declare editable surface, evaluator chain, budget, stop conditions, merge policy, provenance, and visibility up front. Private instance data must not be promoted into reusable cognition unless privacy layer permits.
-- *Acceptance Scenario Packs.* Host-approved 2026-05-02 direction (pending opposite-provider review): TinyAssets grows reusable long-horizon scenario packs combining user simulation, rubric checks, MCP/API or browser evidence, and artifact capture into `EvalResult` evidence. No vendoring of AgencyBench or its harness — define TinyAssets-native scenario contracts.
-
-**Substrate:** `tinyassets/evaluation/`, `tinyassets/learning/`. `EvalResult` evidence/artifact/cost/freshness contract landed 2026-05-02. Canonical rationale: `docs/audits/2026-05-02-asi-evolve-architecture-implications.md`; integration design: `docs/design-notes/2026-05-02-community-evolvable-optimization-integration.md`.
-
-**Open evolution:** `OptimizationRun` substrate spec (review-blocked on opposite-provider verdicts for ExperiencePool + GroupEvolutionRun, Acceptance Scenario Packs, Private Trace Commons, Origin Quantum Q0/Q1 — see STATUS Work table). Quality-diversity vs. linear ranking — the parent-rank formula divergence in Goals & Gates is a special case of this same evolvable-formula question.
+**Open evolution:** Authority-condition strict-mode rollout. Brain's role in N-of-M multi-actor approval state. Brain ↔ Evolution feedback — which Brain-snapshotted attributions feed back into evaluator training signal? Cross-universe Brain federation (shared scientific corpus across Goals).
 
 _Last audited: 2026-05-19_
 
@@ -635,13 +429,13 @@ _Last audited: 2026-05-19_
 
 **Purpose:** Pick the best provider per role and preserve role separation without hiding failure.
 
-**In scope:** Provider registry, fallback chains, parallel diversity, the writer-pin override (`TINYASSETS_PIN_WRITER`), local-LLM endpoint binding (`OLLAMA_HOST`, `ANTHROPIC_BASE_URL`), provider-specific config.
+**In scope:** Vendor-neutral connection primitives, the user's model choice and fallback order, failure records.
 
 **Out of scope:** What a provider is asked to do (the requesting module); evaluation of provider output (Evolution & Evaluation).
 
 **Principles:**
 - *The platform has no LLM* (founder hard rule, 2026-09-24; AGENTS Hard Rule 15). There is no concept of "the platform's LLM". Only a powered universe makes LLM calls, using the credentials its owner connected, for that universe alone. The platform never makes, needs or brokers an LLM call for its own operation: onboarding, selection, moderation, ranking, investigation, maintenance and monitoring all run without one. No platform, host, maintainer or shared credential ever serves a universe, including as a fallback. The founder's subscription belongs to the founder's own universe, like any user's.
-- *The agent loop is thin, shared and vendor-neutral; credentials stay outside the box* (target architecture, 2026-10-02). Turns over standard HTTP model protocols run in the control plane's asynchronous loop, which forwards tool calls to the turn's bound box and never executes model output. Model and API calls go through the credential broker (bound to owner, connection and grant; the only holder of the vault key); API-key CLIs in a box reach it through an in-box endpoint, so neither the loop nor any box holds a credential. A CLI runs inside the owning command center's box only for a command adapter or a credential the CLI must hold itself (file OAuth); one CLI process never serves two accounts. A Claude subscription is used server-side only for its owner's own command center, behind an owner-scoped setting that defaults off (Anthropic's consumer terms; the founder's decision).
+- *The agent loop is thin, shared and vendor-neutral; credentials stay outside the box* (target architecture, 2026-10-02). Turns over standard HTTP model protocols run in the control plane's asynchronous loop, which forwards tool calls to the turn's bound box and never executes model output. Model and API calls go through the credential broker (bound to owner, connection and grant; the only holder of the vault key); API-key CLIs in a box reach it through an in-box endpoint, so neither the loop nor any box holds a credential. A CLI runs inside the owning command center's box only for a command adapter or a credential the CLI must hold itself (file OAuth); one CLI process never serves two accounts.
 - *The platform is vendor-neutral: any compute source through standard connections, with no vendor code* (founder directive, 2026-09-24). Users connect ANY LLM or compute source to their universe, including ones that do not exist yet, with no patch from TinyAssets. The platform offers only standard, vendor-neutral connection primitives:
   - generic OAuth (with token refresh);
   - API key, bearer or custom-header auth;
@@ -719,14 +513,12 @@ _Last audited: 2026-05-19_
   limitation. Voice MUST NOT introduce a second credential flow, silently
   switch writers, use platform or maintainer credentials, or aggregate usage
   across users.
-- *Fallback chain correctness is a first-class invariant.* Every provider named in a fallback chain must be either registered AND reachable at startup, or explicitly excluded with a logged reason. Phantom chain entries are a bug. A chain that reads `[claude-code, codex, gemini-free, ...]` but whose first entry's CLI binary is absent silently degrades the whole chain; operators reading config see one chain, the runtime iterates a different one. Register-and-probe at startup; emit structured evidence of the effective chain via `get_status`; refuse to advertise unreachable providers. (Corroborated by BUG-025 + 2026-04-21 prod-LLM-binding incident + 2026-04-23 revert-loop P0.)
-- *Required files must be probed at startup and fail loud if missing.* When code declares a required on-disk artifact (ASP rule files, schema definitions, seeded fixtures, vendored configs), startup must probe for it and refuse to start if absent — not log a WARNING and continue with an empty fallback. Silent substrate-degradation from missing artifacts produces runs that report success while behaving as no-ops; that violates Hard Rule #8 at an earlier lifecycle phase. (Corroborated by BUG-026: `data/world_rules.lp` absent silently reduced the ASP constraint engine to a no-op.)
 
-**Substrate:** `tinyassets/providers/`. Required-files probe lives at startup; chain probe emits via `get_status`.
+**Substrate:** `tinyassets/providers/`.
 
-**Open evolution:** Auth-parity work for non-Claude/ChatGPT providers in the MCP-host customer matrix.
+**Open evolution:** Existing vendor-specific paths are migration debt, deleted as each one is replaced by a vendor-neutral connector.
 
-_Last audited: 2026-05-19_
+_Last audited: 2026-10-06_
 
 ---
 
@@ -739,17 +531,16 @@ _Last audited: 2026-05-19_
 **Out of scope:** Action implementations behind the surface (each module owns its actions); the control plane wiring (Daemon Platform); discoverability outside MCP (Distribution & Discoverability).
 
 **Principles:**
-- *Any MCP-compatible client is a control station, not a creator.* The daemon does the creative work. If a chat surface writes story content itself, that indicates a missing daemon path.
+- *An outside MCP client is a relay, not the author.* The command center's own agent does the work and speaks in the first person through `converse`; the connecting chatbot relays.
 - *The chatbot + connector path is the canonical first-class user experience.* Users who only talk through a real chatbot with the TinyAssets connector installed are complete product users, not a reduced tier. Core interaction design, uptime, and acceptance evidence optimize for that path first.
-- *Agent Village was deleted 2026-08-26.* The local `command_center` web app visualised a fleet of concurrent provider sessions and read the retired `STATUS.md` board; with two providers and no fleet it observed a system that no longer exists. The principle it encoded survives and still applies to any future operator view: **observability follows the platform, it does not shape it.** Such a surface MUST NOT drive core architecture or displace connector uptime work. Recover from git at `e4180697` if one is wanted again.
 - *Tools publish explicit titles, tags, and behavior hints.* The daemon exposes a small number of coarse-grained tools; discoverability metadata is part of the interface contract.
-- *Trust-critical tools are self-auditing.* Tools that touch privacy, cost, routing, scope, or moderation expose structured evidence + structured caveats; the chatbot composes the user-facing narrative on top. Caveats are part of the tool's contract. (See `docs/design-notes/2026-04-19-self-auditing-tools.md`.)
+- *Trust-critical tools are self-auditing.* Tools that touch privacy, cost, routing, scope, or moderation expose structured evidence + structured caveats; the chatbot composes the user-facing narrative on top. Caveats are part of the tool's contract.
 - *Release state is a status contract.* `get_status.release_state` reads the deploy-published receipt that ties the live daemon to source SHA, image tag/digest, build/deploy runs, config hash, canary status, deployment time, rollback target, and actor metadata. Missing receipts surface as caveats, not probe failures.
 - *Module shape rule.* API surfaces live in `tinyassets/api/` as mounted submodules per capability cluster. Server shells in `tinyassets/servers/` route to them. **No god-modules.**
 
 **Substrate:** `tinyassets/api/` (helpers, wiki, status, runs, evaluation, runtime_ops, market, branches), `tinyassets/servers/` (workflow_server, daemon_server, mcp_server). Universe-server decomposition is in-flight per `docs/audits/2026-04-25-universe-server-decomposition.md` — universe_server.py is down from 14k peak to 972 LOC live in main.
 
-**Open evolution:** Final cluster extraction completion. ChatGPT-host first-response UX caveat (large MCP responses → "something went wrong"; see memory `project_chatgpt_response_too_large_failure.md`) — SUMMARY-by-default response shape with `verbose=true` opt-in is unscoped.
+**Open evolution:** Final cluster extraction completion. ChatGPT-host first-response UX caveat: large MCP responses render as "something went wrong"; a summary-by-default response shape is unscoped.
 
 _Last audited: 2026-05-28_
 
@@ -768,9 +559,8 @@ _Last audited: 2026-05-28_
 - *Plug-and-play and power-user control share one path.* A common configuration should install into the cloud or a host against existing subscription grants in minutes; a fully custom definition uses the same manifest, runtime, and evidence path. Ease of setup is a default experience, not a separate restricted product tier.
 - *One remote product identity.* Every maintained remote registration uses exact name `TinyAssets` and `https://tinyassets.io/mcp`. Retired route families are ordinary absent routes, never aliases, redirects, translation layers, or compatibility products.
 - *One visual identity source.* `tinyassets/desktop/icon_gen.py` owns the mark geometry and palette. Website marks and cache-versioned browser icons, desktop/tray package icons, the shared iOS source, Android densities, and store exports are generated together by `WebSite/brand/render_marks.py`; a checked-in hash receipt is enforced by site build and deploy gates so no surface can retain a different mark silently.
-- *MCP host coverage is matrix-driven.* Claude and ChatGPT are P0 launch gates, but every MCP-capable host is a possible customer surface. Caveats + acceptance proofs live in `docs/design-notes/2026-05-01-mcp-host-customer-matrix.md`.
+- *MCP host coverage is matrix-driven.* Claude and ChatGPT are P0 launch gates, but every MCP-capable host is a possible customer surface; name the host verified and the caveat that remains.
 - *Install-readiness is continuous.* Main is a downloadable release at all times. Every change preserves flawless first-install — packaging auto-builds via CI (import probe + plugin drift check), user-facing copy is branded and unambiguous, broken install is a production bug.
-- *Discovery via entry points, not filesystem scan.* Domain discovery uses `importlib.metadata.entry_points(group="tinyassets.domains")`. Filesystem scan of `domains/*/skill.py` is a dev-mode fallback for editable worktrees only. Old-name aliases stay out of discovery and are not part of the domain registry contract.
 - *Software surface is declarative and multi-layer-authorized.* Nodes declare `required_capabilities`. Per-host capability registry resolves what's installed. Missing software auto-installs (host-policy gated). Daemons can invoke arbitrary local software via a dedicated `external_tool_node` type that bypasses the Python sandbox but layers security: bundled handler signatures, binary signature verification, universe-level allow-list, per-software host approval, subprocess isolation. Any single layer fails, the others hold. Cross-host software donation supported; cross-host node-execution hopping is not.
 
 **Substrate:** `packaging/`, `packaging/registry/`, `packaging/claude-plugin/`, MCP Registry surface, maintained connector submission artifacts, and no-login deployment packs for Open WebUI / LibreChat.
@@ -778,84 +568,6 @@ _Last audited: 2026-05-28_
 **Open evolution:** First-user evidence after no-dev-mode acceptance proofs land. ChatGPT-mobile proof.
 
 _Last audited: 2026-07-24_
-
----
-
-## Module: Harness & Coordination
-
-**Purpose:** Make the system operable, testable, replayable, and improvable across both product runtime and AI-to-AI development. Harness is first-class architecture.
-
-**In scope:** Two Living Files (AGENTS.md / PLAN.md) plus the typed homes for live
-state; the GitHub-shaped lane spine (branch → worktree → PR/draft PR); executable
-gates and the invariant framework; the trajectory supervisor; provider-context
-feed; cross-provider drift detection.
-
-**Out of scope:** What individual agents produce (other modules); skill content
-(`.agents/skills/`, mirrored to `.claude/skills/` — content is per-skill, the
-harness orchestrates invocation).
-
-**Principles:**
-- *Harness design is part of the cognition stack.* Browser harnesses, builder
-  automation, traces, regression tests, and dashboards materially improve system
-  intelligence by making behavior legible and correctable. NVIDIA's AVO reports
-  100 RHAE across all 25 public ARC-AGI-3 environments using 12.17% fewer actions
-  than VISTA (6,624 vs 7,542) — but NVIDIA states this is **not a controlled
-  ablation**, so "the harness alone caused 30% → 100%" is not a claim the
-  evidence supports. What AVO does establish is that one architecture — inspect/
-  plan/edit/evaluate over a scored git lineage, persistent history, and a
-  supervisor responding to stalled *evaluated* search — transferred across
-  unrelated domains without redesign.
-- *Two living files, and live state is typed.* AGENTS.md = how to work.
-  PLAN.md = how the system works. Live state has homes by KIND rather than one
-  always-loaded board: `openspec/changes/` (queue), `docs/concerns/` (unresolved
-  findings), `docs/host-actions.md` (founder-only), git branches and PRs
-  (ownership), `.agents/activity.log` (narrative), the git log (landings).
-  `STATUS.md` held all of these at once and reached 5.2× its own declared
-  ceiling; it was retired 2026-08-25.
-- *Every gate is executable or honestly labelled judgement.* A rule that reads
-  like a gate but enforces nothing is worse than no rule — it buys confidence it
-  has not earned. Gates live as invariants in `scripts/invariants/`, run by
-  `invariants_run.py` from both the tracked pre-commit hook and CI. Catalogue:
-  `docs/reference/executable-gates.md`.
-- *A check that cannot go red is decoration.* Mutation-test every gate: break
-  what it guards, confirm it fails, restore, confirm it passes. Three checks in
-  this repo could not go red until 2026-08-25 — the invariant framework
-  downgraded crashed checks to SKIPPED, two skill tests had been failing on main
-  while testing nothing, and no invariant ran in CI at all.
-- *Scaffolds are dated hypotheses about model weakness.* Before adding one, name
-  the weakness it encodes and whether a current model still has it; re-test that
-  each model generation and delete what no longer earns its place. Applied
-  2026-08-25: 24 of 34 skills, 10 of 15 hooks, and every agent-team role were
-  deleted on exactly this test.
-- *Watch the trajectory, not the step.* `scripts/supervisor.py` observes
-  repetition without progress — the same command failing identically, the same
-  file rewritten with nothing landed — and injects one redirect. It warns and
-  never blocks: a supervisor that could stop a session would be a new ratchet.
-- *GitHub/worktree spine.* Buildable work flows through a purpose-named branch,
-  a sibling `../wf-<slug>` worktree, and a PR or draft PR. `ideas/INBOX.md` is a
-  loose idea feed — not design truth or build authority.
-- *Provider-context feed.* Provider-specific memory and automation are INPUTS to
-  the spine, not separate planning authorities. Queried on demand rather than
-  injected every turn (the per-turn injection hook was itself a large part of
-  the endless-process surface).
-- *Capabilities, not a standing team.* Verification, adversarial review, and
-  fresh-context work are capabilities each provider implements through its own
-  harness. In practice that is a Codex subprocess on Codex's budget
-  (`peer-agents`), not a same-family teammate reviewing its own family's work.
-
-**Substrate:** `AGENTS.md`, `PLAN.md`, `openspec/`, `docs/concerns/`,
-`docs/host-actions.md`, `scripts/invariants_run.py`, `scripts/invariants/`,
-`scripts/check_context_budget.py`, `scripts/deployed_sha.py`,
-`scripts/supervisor.py`, `scripts/openspec_flow.py`, `scripts/worktree_status.py`,
-`scripts/provider_context_feed.py`, `scripts/check_cross_provider_drift.py`,
-`.agents/skills/`, `.claude/hooks/`.
-
-**Open evolution:** The harness is re-tested against each model generation, not
-maintained forever. Baseline and outcome of the last pass:
-`docs/audits/2026-08-25-harness-reset-baseline.md` and
-`docs/audits/2026-08-26-harness-reset-outcome.md`.
-
-_Last audited: 2026-05-19_
 
 ---
 
@@ -884,82 +596,17 @@ _Last audited: 2026-05-28_
 
 ---
 
-## Module: Constraints
-
-**Purpose:** Formally verify world rules only where symbolic checking clearly adds value.
-
-**In scope:** Neurosymbolic constraint engine (ASP rules), universe-specific rule packs, constraint evaluation as `Evaluator` primitive instantiation.
-
-**Out of scope:** General quality evaluation (Evolution & Evaluation); domain topology (Engine & Domains).
-
-**Principles:**
-- *Neurosymbolic methods are optional leverage.* Universe-specific rules are the only version likely to earn ongoing complexity; generic boilerplate constraints are not enough.
-- *Required-files probe applies.* `data/world_rules.lp` (or equivalent) must be probed at startup — silent absence reducing the engine to a no-op violates Hard Rule #8.
-
-**Substrate:** `tinyassets/constraints/`, `data/world_rules.lp` (universe-specific rule packs).
-
-**Open evolution:** Second universe's rule pack as the test that constraint engine is domain-agnostic.
-
-_Last audited: 2026-05-19_
-
----
-
-## Reference: System Shape
-
-```text
-Users / Hosts
-    <->
-MCP-compatible clients / Host dashboard
-    <->
-FastAPI + TinyAssets MCP Server control plane
-    <->
-Daemon (LangGraph)
-    |
-    +-----------+---------------+---------------+
-    |           |               |               |
-State/Artifacts Search/Tools  Evaluation    Providers
-    |
-Harness / Traces / Tests / Coordination
-```
-
-The daemon writes autonomously. MCP clients and the host dashboard are the user-facing interfaces. Communication is file- and artifact-based: daemon writes to disk, API/MCP expose state and actions, harness inspects artifacts and traces.
+## Reference: Target Architecture
 
 **Target architecture (founder-approved 2026-10-01/02; `openspec/changes/target-architecture`):** per cell, an always-on control plane (MCP + app API, thin agent loop, scheduler/triggers/inbox/notifications, egress proxy, platform state in per-account SQLite under a platform root, continuously replicated off-region) in front of a box host running one sealed box per command center (Firecracker with snapshot/restore, gVisor fallback; fixed-size disk from the account quota; no NIC; awake only while acting). Postgres holds the cross-user transactional domains (catalog, ledger, inbox, market) behind an outbox. The edge routes each user to their home cell (one cell today). Box hosts and cells are capacity; the interfaces are fixed.
 
-**Backend stack (target):** Postgres for catalog, ledger, inbox and market (decided 2026-07-25); the vendor is open (Supabase was the 2026-04-18 candidate: Realtime broadcast, Row-Level Security, S3-compatible Storage), and the choice is made when `target-architecture` S10 stands Postgres up. Identity is provided by WorkOS AuthKit. Postgres remains self-hostable without application rewrite. Prior reasoning: `docs/design-notes/2026-04-18-full-platform-architecture.md §3.2`.
+**Backend stack (target):** Postgres for catalog, ledger, inbox and market (decided 2026-07-25); the vendor is open (Supabase was the 2026-04-18 candidate: Realtime broadcast, Row-Level Security, S3-compatible Storage), and the choice is made when `target-architecture` S10 stands Postgres up. Identity is provided by WorkOS AuthKit. Postgres remains self-hostable without application rewrite.
 
-**Auth + identity:** WorkOS AuthKit is the identity primitive across browser and local MCP clients. OAuth 2.1 + PKCE at the MCP edge (MCP spec 2025-11-25 mandate) maps every client session to the same stable WorkOS subject and therefore the same user universe. There is no anonymous principal and no unauthenticated access to platform data or actions: an unauthenticated request fails closed. Protocol discovery and sign-in bootstrap may be reachable before authentication only when they confer no principal, platform data, or platform action; operational probes use a named service principal. Session tokens are short-lived and scoped per user; refresh, logout, revocation, and concurrent sessions are explicit lifecycle operations. RLS enforces per-user visibility at the DB layer. Decision: founder directive 2026-09-03; supersedes the GitHub-OAuth-at-launch identity choice in `docs/design-notes/2026-04-18-full-platform-architecture.md §7`.
+**Auth + identity:** WorkOS AuthKit is the identity primitive across browser and local MCP clients. OAuth 2.1 + PKCE at the MCP edge (MCP spec 2025-11-25 mandate) maps every client session to the same stable WorkOS subject and therefore the same user universe. There is no anonymous principal and no unauthenticated access to platform data or actions: an unauthenticated request fails closed. Protocol discovery and sign-in bootstrap may be reachable before authentication only when they confer no principal, platform data, or platform action; operational probes use a named service principal. Session tokens are short-lived and scoped per user; refresh, logout, revocation, and concurrent sessions are explicit lifecycle operations. RLS enforces per-user visibility at the DB layer. Decision: founder directive 2026-09-03 (supersedes GitHub OAuth at launch).
 
-**Real-time strategy — versioned rows + broadcast, NOT CRDT.** User collaboration is coarse-grained: users edit different nodes concurrently, or edit the same node with last-write-wins + update-since-you-viewed conflicts. Comments are append-only. Versioned Postgres rows + Supabase Realtime + presence channels covers this at a fraction of CRDT's complexity. CRDT is an escalation path for any specific artifact needing it later, not a baseline. Decision: `docs/design-notes/2026-04-18-full-platform-architecture.md §2.2`.
+**Real-time strategy — versioned rows + broadcast, NOT CRDT.** User collaboration is coarse-grained: users edit different nodes concurrently, or edit the same node with last-write-wins + update-since-you-viewed conflicts. Comments are append-only. Versioned Postgres rows + Supabase Realtime + presence channels covers this at a fraction of CRDT's complexity. CRDT is an escalation path for any specific artifact needing it later, not a baseline. Decision: 2026-04-18.
 
 **Single canonical public entry point.** The daemon surface has exactly one public URL: `https://tinyassets.io/mcp`. Debug/diagnostic access is via Cloudflare Worker observability + tunnel logs, NOT a second public DNS record. The Worker requires a `mcp.tinyassets.io` hostname for internal tunnel-routing subrequests; this record is retained as Access-gated internal plumbing, not a second public surface. Host directive 2026-04-20; runbook: `docs/ops/dns-tunnel-single-entry-cutover.md`.
-
----
-
-## Reference: State & Artifacts
-
-Strong agents run on explicit typed state and external artifacts, not hidden chat memory. If state shapes drift or artifacts become untrustworthy, the system looks smart locally and fails over time.
-
-**Live state stays thin.** Identity, intent, control flags, and artifact handles. Rich context, prior outputs, and durable memory belong in saved artifacts and registries. Persist each step immediately; the next node may cache the just-finished result locally, but saved refs are authoritative.
-
-**Durable artifacts outlive context windows.** Plans, notes, checkpoints, logs, learned heuristics, subagent outputs belong in external storage.
-
-**Scene commits emit structured packets.** Every accepted scene writes a validated JSON packet (facts, promises, entities, POV, deltas) beside the prose. Packets are the backbone for timelines, promise tracking, continuity, typed retrieval.
-
----
-
-## Reference: Full-Platform Architecture
-
-**Status: integrated, with three carve-outs.** The architectural commitments — multi-tenant multiplayer platform, Postgres-canonical catalog with GitHub as export sink, versioned-rows real-time strategy, opt-in daemon hosting, paid-market on top of a free authoring substrate, full uptime with zero hosts online, three user tiers, evaluation-as-platform-primitive, node discovery + remix surface — are the durable canonical architecture, distributed across the modules above.
-
-**Carve-outs (host-approved 2026-07-25) — do not transcribe these three straight out of the design note:**
-1. *Canonical store.* "Postgres-canonical" is scoped to catalog / ledger / inbox / market. The commons is OKF-bundle-canonical (Brain Module).
-2. *Private data.* §17's per-piece privacy architecture — private Supabase Storage, private concept visibility, field-level platform records — is **research input to the open custody question, neither canonical nor retracted** (Scoping Rule 4). A lane may cite it as one candidate custody mode; no lane may build from it as settled, and no lane may treat "the platform never stores private content" as settled either.
-3. *Tool surface.* The many standalone RPC/MCP tools named across §§15, 21, 23, 27, 31, and 33 are **behavior targets, not an approved tool count**. They land as actions and parameters under the seven canonical handles unless someone records the Scoping Rule 1 irreducibility finding.
-
-**Single source of detail:** `docs/design-notes/2026-04-18-full-platform-architecture.md` (~3000 LOC) carries the full reasoning, tradeoff analysis, scale-audit numbers, and host-decision lineage. PLAN.md modules are the principle-level reference; the design note is the integrated detail. Citation chain: PLAN.md module principle → design-note section → host-decision lineage. No layer skipped.
-
-**Phased rollout — explicitly rejected.** The earlier "Phase 1 thin relay → Phase 2 state migration → Phase 3 paid failover" plan was rejected 2026-04-18 because (a) authoring must work with zero daemons running, which Phase 1 ships 0% of, and (b) building the final shape in one push avoids three throwaway migrations that each require re-teaching users + re-cutting Claude.ai connectors. The single-build target ("weeks not months") is canonical sequencing. Historical phased plan retained as superseded context only.
 
 ---
 
@@ -967,49 +614,31 @@ Strong agents run on explicit typed state and external artifacts, not hidden cha
 
 ADR-style index of decisions that don't fit cleanly inside one module.
 
-- **Universe = single consistent reality.** Alternative realities are separate universes. Data isolation between universes is the only hard boundary.
-- **Upload provenance.** Each upload is tagged ("published book", "rough notes") and the writer weights canon sources accordingly.
 - **Unified notes.** All feedback is timestamped, attributed notes on files. One system, one format, one durable store per universe.
-- **Writer self-indexes.** The writer produces entity and fact data when it commits. No separate extraction role is the end state.
 - **Editorial feedback, not scoring.** Natural-language notes about what works, what's concerning, and whether a concern is provably wrong. No numeric rubric in the core loop.
-- **Graph hierarchy is scaffolding.** Structure should emerge from the daemon's choices wherever possible, not fixed counters.
 - **TinyAssets MCP Server, not single-user daemon.** Control plane runs in the cloud (currently DO Droplet, formerly a host laptop); many named users connect through MCP clients.
-- **Multi-tenant by design, single-tenant today as N=1.** Every daemon-related design must scale from `(user, daemon)` to `(N users, M daemons per user)` without rewrite. Any architecture that would require a migration to multi-user is rejected. Memory `project_daemons_are_multi_tenant_by_design.md`.
+- **Multi-tenant by design, single-tenant today as N=1.** Every daemon-related design must scale from `(user, daemon)` to `(N users, M daemons per user)` without rewrite. Any architecture that would require a migration to multi-user is rejected.
 - **TinyAssets-first, domain-agnostic identity.** Fantasy authoring is an early benchmark domain, not the trunk.
-- **MCP clients + local host dashboard.** MCP is the shared collaborative surface; host operational controls live in a local dashboard.
-- **Daemons are the public agent identity.** Summonable, forkable, defined by durable soul files. Soul changes create new forks rather than overwriting.
-- **Custom agents split public definitions from private bindings.** Users create universe-scoped agents from scratch, from common public configurations, by forking one definition, or by blending many definitions. The resulting agent remains a daemon: its reusable definition and remix lineage are public, while its universe role, authority, resources, channels, credentials, conversations, private inputs, and learned memory remain private to that universe.
 - **TinyAssets competes on leverage, not lock-in or a lowered ceiling.** A power user can customize, compose, import, export, and run every agent component they would control in a bespoke setup. TinyAssets should remain the better choice because it adds the remix commons, preserved lineage and evaluation evidence, cloud/hostless uptime, plug-and-play installation, collaboration, and bindings to subscriptions users already pay for. If an advanced user must leave solely to express a legitimate agent architecture, the platform design is incomplete.
-- **Daemon identity is platform-wide, not domain-specific authoring.** Migrate or rename the current `author_definitions` substrate into the general daemon registry. Content provenance retains `author_id` + `author_kind` discriminator.
 - **Branch-first collaboration.** Branches are first-class, long-lived, public-forkable. Reconciliation optional, no fixed mainline.
-- **Swarm runtime.** No universe-wide single active daemon. Runtime capacity and daemon identity are separate resources.
 - **Canonical store is per-domain, not one store for everything (host-approved 2026-07-25).** The question "Postgres-canonical or file-canonical?" was miscast as global; it resolves by scoping each domain to the store that fits it. **Postgres is canonical for the platform's transactional domains** — catalog, ledger, inbox, and market. The 2026-04-18 one-way-door decision stands, now explicitly scoped to those four rather than to all state. **The OKF bundle is canonical for the commons** (see the Brain Module): knowledge is markdown + frontmatter files, and the SQLite/FTS/vector store over it is a rebuildable index. Neither store is canonical for the other's domain.
 - **GitHub is an export sink for the transactional domains, not their canonical store.** GitHub receives a periodic flat-YAML export of public goals/branches/nodes; contributions via GitHub PR are accepted via a round-trip YAML → webhook → Postgres import path. (This says nothing about the commons bundle, whose *canonical* form is already files — for it, a git snapshot is the store, not an export of one.)
 - **A user's brain organization is theirs to design (host-approved 2026-07-25).** The target experience is that a founder **designs their own custom MCP cloud brain organization** — modeled on Hermes, on OpenClaw, on an org-brain shape, or on something nobody has built yet. **OKF is the default organization when a user does not specify one, not a mandate.** Brain organizations are user-designable and remixable commons patterns: a good one is published, discovered, and remixed like any other commons artifact. This is Scoping Rule 1's corollary applied to the brain — "how should a brain be organized" has many plausible shapes, so it belongs to the commons, and the platform ships the substrate that makes any of them expressible.
-- **Local-first execution, git-native sync (bridge state).** DO Droplet self-host is the current bridge. Postgres-canonical replaces local-first when the control-plane backend ships.
 - **Target architecture now, capacity later (founder, 2026-10-02: "i would like to move towards the architecture and dependencies we want later sooner rather than later. i want to do things correct the first time").** The final interfaces and data placement are built at small capacity: sealed command-center boxes behind `BoxProvider`, a thin loop and all timers in the control plane, platform state outside every box, Postgres for the four transactional domains, a user-to-cell seam with one cell, storage + seats with box-lifecycle metering and first-come host admission (wait, never refuse; a compute-hour budget stays a founder decision), one execution owner behind replaceable frontends, a fenced second-region standby and a scheduled off-region drill. Growth adds cells and box hosts; it never adds a code path. Firecracker on the DigitalOcean droplet or on a bare-metal box host is decided by a measured nested-KVM validation (slice S0). Change: `openspec/changes/target-architecture`.
 - **User-controllable state architecture.** Users should eventually inspect, steer, and redesign tinyassets/state structure conversationally.
-- **Multi-host is the destination.** Local-host is important, but end-state is a network of hosts contributing model capacity to shared projects.
-- **Epoch-2 transactional claiming is the approved single-authority target (host-approved 2026-07-29; cutover pending).** The target transactional control plane owns activation, claim, lease, fence, and recovery truth across cloud and host executor classes. Epoch 1 remains the live file-locked bridge until a fail-closed cutover closes legacy admission and drains or fences admitted work; afterward its machinery is compatibility-reconciliation-only and never dual-active for the same automation. This resolves the design choice identified in `docs/audits/2026-07-29-cloud-drain-current-main-prerequisites.md`; it does not claim the runtime migration is complete.
 - **Capabilities are primitives the user's agent composes, not platform operators (founder-approved 2026-08-30).** The user's agent builds whatever workflow it wants from a small set of powerful primitives — ground-up design, build, test, redesign — remixes what others built in the commons, and can build a graph automation it was handed a link to. When a live failure suggests "add an operator / a special case", the question is which *primitive* is missing that would let the agent solve it itself; that primitive ships, the operator does not. Measured cause: 2026-08-29/30, four deploys of `$ta.*` body-transform operators to change one line of a fetched file, because nothing deterministic could run between a fetch and a write. The shape that follows: **effects fire at node time in graph order** (a node's declared channel calls run the moment it returns, a refused or failed write fails the node, later nodes can read earlier responses), and a **sandboxed code node** (deterministic Python with the node's data and every ancestor's response, no credentials, no network — authorship, not host approval, decides whose code runs; the OS sandbox bounds what it touches). The `$ta.*` vocabulary is frozen. **No structural cap on graph size** — nodes, effect nodes, edges — anywhere, served or connector; a big graph is bounded by usage (admissions, budget, consent, the sandbox's limits), never by its shape (founder, 2026-08-30; change `no-graph-size-caps`). OpenSpec change `sandboxed-code-node` (archived 2026-08-30, live proof #2728); next primitive: the `workspace` (change `workspace-node`).
 - **An agent is a node (founder-approved 2026-09-27).** An agent's access is whatever context and tools its owner gives it, and the owner's own agents are "the same as itself" by default. A prompt node whose `tools_allowed` holds `agent` runs the same turn `converse` runs: the persona and brain, the shared agent loop, the engine tools pinned to the run's own universe and owner, and the owner's model preferences, with the node's `llm_policy` as a per-node override. It runs as one workflow step, foreground or background, until the turn finishes (the converse turn's own runaway backstop, not a node timeout), and writes its answer to graph state. A branch may hold any number of agent nodes beside ordinary steps. The run session resolves which node is calling from its admitted snapshot, and refuses a branch another user authored. The rest of `tools_allowed` is the owner's grant: the marker alone means everything the owner's chat has, and listed tool names narrow the node to exactly those on every provider surface. Each round is metered against the run's existing work receipt; no cap is added. A custom agent is a stored configuration of an agent node (instructions, grant, model, inputs and outputs), shared and remixed as a branch. That makes the `agent_runtime_*` second compiler, provider loop and grant model redundant; they are removed in a later lane. Change `agent-node-and-tool-grants`; code nodes reaching granted served tools through `invoke_mcp_action` is its second slice.
 - **The system must evolve itself.** Stagnation is the worst failure mode.
-- **Context is tools, not pre-assembly.** The writer should query through tools. Pre-assembly is transitional.
 - **Bad decisions are data.** When the daemon decides poorly, improve goals/tools/state/evals. Don't reflexively add rules.
 - **Human control belongs at irreversible boundaries.** Bounded loops for autonomy; pause/stop/takeover/confirmation at the edge.
-- **Engine is infrastructure, not topology.** `tinyassets/` is a shared library plus optional profiles. Each domain owns its own graph.
 - **Currency naming + test rail.** Real currency reference is `Destiny (tiny)` with symbol `tiny`. Current paid-market tests use `test tiny` on Base Sepolia only. Mainnet Destiny/tiny settlement, staking, DAO voting, and treasury flows are deferred. See `docs/design-notes/2026-04-29-token-naming-and-test-currency.md`.
 
 ---
 
 ## Open Tensions
 
-- **Tool-driven context is the target; pre-assembly is transitional.** If the writer is mostly fed pre-assembled blobs, this architecture is not finished.
 - **Structural scaffolding should shrink** as models improve — hard maxima and routing thresholds only survive if evals prove they help.
 - **Hybrid memory must become one policy.** Retrieval and memory may be separate implementations but should behave like one coherent decision system from the daemon's perspective (Brain Module is the convergence point).
 - **State contract mismatches are bugs.** TypedDicts, node outputs, and downstream consumers must agree.
-- **God-module decomposition is in-flight, not done.** `tinyassets/universe_server.py` is down from 14k peak to 972 LOC live in main; remaining cluster extractions sequenced per `docs/audits/2026-04-25-universe-server-decomposition.md`.
 - **Postgres-canonical vs GitHub-canonical — RESOLVED BY SCOPING (host-approved 2026-07-25).** It was never one decision. Postgres is canonical for catalog / ledger / inbox / market; the OKF bundle is canonical for the commons; GitHub is an export sink for the former and a snapshot of the latter. The two design shapes no longer compete — they own different domains. See Design Decisions and the Brain Module.
 - **Private-data custody is an open research question, deliberately.** Custody is per-situation and user-chosen (host machine / private universe brain / vault / platform-held) and no lane may treat either the never-store or the platform-store position as settled. This tension stays open on purpose until the custody modes are researched against real use cases; see Scoping Rule 4.
-- **External-write authority + idempotency + reward release.** Per the 2026-05-19 design note draft, the holistic model is awaiting host steering on 6 open questions before implementation begins.
-- **Per-Goal strict-mode rollout for Brain authority-condition policy.** Permissive by default; strict-mode opt-in is unscoped.

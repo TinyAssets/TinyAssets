@@ -1376,8 +1376,7 @@ def _sanitize_served_branch_spec(spec: dict) -> None:
 #
 # A chapter is guidance the agent can tell it needs BEFORE composing a call.
 # Guidance whose absence produces a WRONG call rather than an absent one stays
-# resident in the description -- see
-# openspec/specs/served-agent-tool-guidance/spec.md.
+# resident in the description.
 # ------------------------------------------------------------------------
 # Every JSON object in this chapter is submitted to the REAL served create path
 # by tests/test_served_branch_create_errors.py and must land. Editing an example

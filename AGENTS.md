@@ -23,7 +23,7 @@ Orient: `python scripts/docview.py headings PLAN.md`, one section, then
 3. Run the tests your diff touches plus affected heavy files, and `ruff`; CI does
    the rest. Mutation tables only for data-loss or cross-user guards.
 4. Review only floor-class changes and gate files: one cross-family round
-   (`peer-agents`), floor and correctness findings only, `AGREE`/`DISAGREE_EVIDENCE`.
+   (`peer-agents`), floor, correctness, Shape findings, `AGREE`/`DISAGREE_EVIDENCE`.
 5. No lane cap: fold colliding or superseded lanes into one; serialize merges.
 6. Done = sha asserted deployed, one real-user app pass, spec synced.
 7. Same error three times, or the same finding twice: hand off, do not patch.
@@ -31,14 +31,8 @@ Orient: `python scripts/docview.py headings PLAN.md`, one section, then
 
 ## Facts (numbers are cited repo-wide)
 
-1. `SqliteSaver`, never `AsyncSqliteSaver`.
-2. Reuse the LanceDB connection object; never recreate it.
 3. Vendor-neutral compute only — `PLAN.md`.
 4. Gates default autonomously — `PLAN.md`.
-5. Accumulating state needs `Annotated[list, operator.add]` —
-   `domains/fantasy_daemon/state/book_state.py`.
-6. `FactWithContext` carries truth-value typing — `tinyassets/knowledge/models.py`.
-7. Python 3.11+ — `pyproject.toml`.
 8. Fail loudly; a mock fallback that looks real is worse than a crash.
 9. Uploads are verbatim — `PLAN.md`.
 10. Ship-time attribution — `tinyassets/attribution/`.
@@ -49,6 +43,11 @@ Orient: `python scripts/docview.py headings PLAN.md`, one section, then
     a dirty worktree to `main`.
 14. `python scripts/deployed_sha.py --assert-contains <sha>` before "shipped".
 15. The platform has no LLM — `PLAN.md`.
+16. Shape: the model sees read/write/edit/bash + `ta`, one agent definition for
+    every provider; no vendor names, aliases or compat paths.
+17. Shape: abilities and prompts are package files and skills, not Python
+    strings; no platform editors or features. Breaking Shape is wrong even if
+    green; delete the old path with its tests and docs.
 
 Required CI excludes `.github/heavy-test-files.txt`; `heavy-tests` skips PRs.
 Sandbox, filesystem or process-limit work needs `python scripts/linux_oracle.py`;
