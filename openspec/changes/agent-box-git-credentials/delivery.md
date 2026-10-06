@@ -55,3 +55,18 @@ The original Docker-blocked concern is resolved. This is synthetic Linux proof
 through the served `/u` jail, not a production `/cc` rollout. Task 2.4 remains
 open: no deploy SHA assertion, live real-user app pass, or production provider
 integration is claimed. No real repository was used as a capability probe.
+
+## Continuation: protected consent fixture (2026-10-05)
+
+Merged the latest parent owner-cell lifetime changes and origin/main without
+rebasing. The disconnect fixture now answers through tests.owner_answer, which
+uses the actual cookie/origin-checked approval handler. Its incarnation-refusal
+and retained-connection assertions are unchanged; no consent bypass was added.
+The resolved concern was removed after verifying its committed history.
+
+Linux oracle: 126 passed, zero skips across test_broker_disconnect,
+test_consent_owner_answers and test_owner_launcher_client. After merging main,
+the first two files passed again: 121 passed, zero skips. Commands use
+MSYS_NO_PATHCONV=1 python scripts/linux_oracle.py -- -q <the named tests under
+tests/, with .py suffix> --basetemp /tmp/b. Ruff passed for the fixture and
+merged launcher client.

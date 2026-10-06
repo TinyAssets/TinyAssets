@@ -22,7 +22,8 @@
 
 Docker recovered. The synthetic IPC/jail proof and affected Linux suites pass:
 322 tests, zero skips. The earlier broader run passed 224 tests and failed one
-parent disconnect consent-context test, recorded in
-docs/concerns/2026-10-05-broker-disconnect-consent-test.md. Cross-family review:
+parent disconnect consent-context test. The continuation fixed its protected
+owner-answer transport: 121 post-main-merge tests pass with zero skips, and the
+resolved concern is removed. Cross-family review:
 ADAPT, findings addressed (review.md). See delivery.md for exact commands.
 Task 2.4 remains open: no production deployment or real-user app pass is claimed.

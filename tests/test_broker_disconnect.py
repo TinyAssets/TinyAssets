@@ -177,7 +177,8 @@ def test_wrong_fence_refuses_before_mutation(removal):
 
 
 def test_pending_remove_captures_broker_incarnation_and_rejects_replacement(removal):
-    from tinyassets.api.pending_requests import answer_request, request_from_user
+    from tests.owner_answer import answer_request
+    from tinyassets.api.pending_requests import request_from_user
     from tinyassets.auth.middleware import identity_context
     from tinyassets.auth.provider import Identity
 
