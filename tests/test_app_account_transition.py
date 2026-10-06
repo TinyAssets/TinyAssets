@@ -156,6 +156,7 @@ function $(id){
   // clear the controls under it (clearRailCards), and an element without the
   // property is not a DOM element at all.
   if(!DOM.other[id]) DOM.other[id]={id, value:"", textContent:"", style:{}, children:[],
+    classList:{contains(){return false;}},setAttribute(name,value){this[name]=value;},
     open:false, showModal(){this.open=true;}, close(){this.open=false;},
     appendChild(node){
       if(node.parentNode)node.parentNode.children=node.parentNode.children.filter(c=>c!==node);
@@ -566,7 +567,8 @@ const MCP={ _loginEpoch:0, endLogin(){ this._loginEpoch++; } };
 const Uploads={ aborted:0, abort(){ this.aborted++; } };
 const Voice={ refreshCapability(){} };
 const ModelPicker={ reset(){} };
-const AppUI={ reset(){ LOG.push(["uiReset"]); }, enable(u,p){ LOG.push(["ui",u,p]); } };
+const AppUI={ reset(){ LOG.push(["uiReset"]); }, enable(u,p){ LOG.push(["ui",u,p]); },
+ resumePublicRun(home){LOG.push(['publicRun',home]);} };
 const AppRecovery={ restoreDraft(){}, fail(){ LOG.push(["recovery"]); } };
 const HostedModelConnect={ setup:"empty", busy:false, request:null,
   async begin(){ LOG.push(["begin"]); }, paint(){}, status(t){ LOG.push(["status",t]); } };

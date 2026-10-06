@@ -74,6 +74,10 @@ class Request:
 def test_owner_door_and_cross_user_refusal(monkeypatch, universe):
     from tinyassets.api import helpers
     from tinyassets.auth import middleware
+    from tinyassets.onboarding import owner_sessions
+
+    monkeypatch.setattr(owner_sessions, "lookup", lambda cookie: {
+        "identity_json": json.dumps({"user_id": "owner"})})
 
     monkeypatch.setattr(helpers, "_base_path", lambda: universe.parent)
     monkeypatch.setattr(onboarding, "onboarding_enabled", lambda: True)

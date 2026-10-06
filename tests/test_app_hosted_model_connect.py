@@ -413,6 +413,7 @@ def test_finishing_keeps_custom_ui_current_owner_hooks():
 const assert=require('node:assert/strict'),layoutCalls=[];
 globalThis.AppUI={init(){layoutCalls.push(['init']);},
  reset(){layoutCalls.push(['reset']);},
+ resumePublicRun(home){layoutCalls.push(['resumePublicRun',home]);},
  enable(home,principal){layoutCalls.push(['enable',home,principal]);}};
 answerResult=()=>{me={setup:'connected',universe_id:'u-owner',principal_id:'owner'};
  return {status:'answered'};};
@@ -420,6 +421,7 @@ await boot();
 assert(layoutCalls.some(call=>call[0]==='init'));
 assert(layoutCalls.some(call=>call[0]==='reset'));
 assert.deepEqual(layoutCalls.filter(call=>call[0]==='enable'),[['enable','u-owner','owner']]);
+assert.deepEqual(layoutCalls.filter(call=>call[0]==='resumePublicRun'),[['resumePublicRun','u-owner']]);
 """)
     assert len(result["answers"]) == 1
     assert result["setup"] == "connected"

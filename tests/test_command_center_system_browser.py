@@ -91,6 +91,11 @@ def system_server(home):
                                        agent_id=query.get("agent", ["main"])[0],
                                        viewport=query.get("viewport", [""])[0])
                 self.reply({"prefs": prefs})
+            elif path == "/app/unread":
+                from tinyassets.storage.owner_unread import attention
+
+                assert self.headers.get("Authorization") == "Bearer synthetic-bob"
+                self.reply(attention(home, home / BOB_UNIVERSE, BOB, BOB_UNIVERSE))
             else:
                 self.reply({"error": "not_found"}, status=404)
 
@@ -100,7 +105,7 @@ def system_server(home):
                 self.reply({"error": "authentication_required"}, status=401)
                 return
             if (self.path in {"/app/api/read", "/app/api/status", "/app/turn/pending",
-                              "/app/ui-prefs"}
+                              "/app/ui-prefs", "/app/unread"}
                     and not self.headers.get("Authorization")):
                 # Background reads can finish during the real signed-out reload.
                 self.reply({"error": "authentication_required"}, status=401)
@@ -110,6 +115,14 @@ def system_server(home):
                 args = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
                 # Thread-local actor binding for EVERY RPC, never a process-wide actor.
                 with _as(BOB):
+                    if self.path == "/app/unread":
+                        from tinyassets.storage.owner_unread import attention
+
+                        assert args["universe"] == BOB_UNIVERSE
+                        self.reply(attention(home, home / BOB_UNIVERSE, BOB, BOB_UNIVERSE,
+                                             messages=args.get("messages", []),
+                                             asks=args.get("asks", [])))
+                        return
                     if self.path == "/app/api/read":
                         assert args.get("graph_id", BOB_UNIVERSE) == BOB_UNIVERSE
                         args.setdefault("graph_id", BOB_UNIVERSE)

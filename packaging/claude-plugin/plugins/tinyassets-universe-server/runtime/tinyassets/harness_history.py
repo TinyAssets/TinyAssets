@@ -32,7 +32,8 @@ def _path(path: str) -> str:
 
     parts = path.split("/")
     if (any(p in ("", ".", "..") for p in parts) or "\\" in path or "\x00" in path
-            or not (path in AGENT_BRAIN_FILES or (parts[0] == "skills" and len(parts) > 1))):
+            or not (path == "soul.md" or path in AGENT_BRAIN_FILES
+                    or (parts[0] == "skills" and len(parts) > 1))):
         raise ValueError("not a harness file")
     return path
 
@@ -94,6 +95,8 @@ def _write(conn, universe_dir: Path, path: str, content: bytes | None, who: str)
     path = _path(path)
     if who not in ("owner", "agent"):
         raise ValueError("unknown history actor")
+    if path == "soul.md" and who != "owner":
+        raise ValueError("soul.md requires the owner")
     prior, state = _prior(universe_dir, path)
     cursor = conn.execute(
         "INSERT INTO changes (path, prior_content, prior_state, new_digest, who, changed_at) "

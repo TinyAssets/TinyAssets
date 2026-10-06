@@ -221,6 +221,7 @@ def test_route_is_apex_app_get(monkeypatch):
     # fixed, unauthenticated bundle host a custom UI runs inside (GET).
     assert set(by_path) == {
         "/app", "/app/token", "/app/me", "/app/ui-frame",
+        "/app/run/{listing}", "/app/run/{listing}/preview.png", "/app/unread",
         "/app/owner-sign-in", "/app/approvals/{operation}",
         "/app/model-connect/{operation}", "/app/model-callback/{flow}",
         # The public OAuth client metadata document a sign-in source names.
@@ -232,7 +233,7 @@ def test_route_is_apex_app_get(monkeypatch):
         "/app/billing/status", "/app/billing/checkout",
         "/app/billing/cancel", "/app/billing/webhook",
         "/app/account/delete", "/app/account/timezone", "/app/ui-prefs",
-        "/app/rules", "/app/profile", "/app/memory",
+        "/app/rules", "/app/profile", "/app/memory", "/app/soul",
         "/app/turn/interrupt", "/app/turn/steer", "/app/turn/pending",
         # The activities live projection (harness D2a).
         "/app/live",

@@ -113,6 +113,7 @@ FENCE_BEFORE_C2: frozenset[str] = frozenset({
     "tinyassets/storage/deliveries.py",
     "tinyassets/storage/effector_consents.py",
     "tinyassets/storage/external_write_receipts.py",
+    "tinyassets/storage/ingress_journal.py",
     "tinyassets/storage/model_preferences.py",
     "tinyassets/storage/outbound_connections.py",
     "tinyassets/storage/owner_devices.py",
