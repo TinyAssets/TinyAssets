@@ -1,0 +1,742 @@
+{
+ "source_commit": "3fa149e659",
+ "app_html_sha256_lf_bytes_as_checked_out": "953582a9726b35fc5c2d1f28dffc5e2ea74163143073eaf3e608e50391d5ac9e",
+ "venue": "scripts/linux_oracle.py (python 3.11.17, bwrap 0.12.0, uid 1001)",
+ "pre": {
+  "baseline_exit": 0,
+  "baseline_cases": 24,
+  "results": [
+   {
+    "group": "rail-dont-ask-again",
+    "exit": 1,
+    "checked_removed": [
+     "tests/test_onboarding_app.py::test_the_rail_offers_feedback_and_dont_ask_again"
+    ],
+    "removed_failed": true,
+    "survivor_failed": true,
+    "clean": true,
+    "proved": true,
+    "failed": [
+     "tests.test_onboarding_app::test_dont_ask_again_and_agent_authored_titles_are_framed",
+     "tests.test_onboarding_app::test_the_rail_offers_feedback_and_dont_ask_again"
+    ]
+   },
+   {
+    "group": "inflight-unconfirmed",
+    "exit": 1,
+    "checked_removed": [
+     "tests/test_onboarding_app.py::test_an_unconfirmed_message_survives_a_reload_and_says_so"
+    ],
+    "removed_failed": true,
+    "survivor_failed": true,
+    "clean": true,
+    "proved": true,
+    "failed": [
+     "tests.test_onboarding_app::test_a_held_message_is_restored_on_an_empty_thread",
+     "tests.test_onboarding_app::test_an_unconfirmed_message_survives_a_reload_and_says_so"
+    ]
+   },
+   {
+    "group": "sticky-setup-primary",
+    "exit": 1,
+    "checked_removed": [
+     "tests/test_onboarding_app.py::test_a_sticky_ask_renders_expanded_and_offers_no_dismiss"
+    ],
+    "removed_failed": true,
+    "survivor_failed": true,
+    "clean": true,
+    "proved": true,
+    "failed": [
+     "tests.test_notification_is_the_setup::test_an_unpowered_user_sees_the_setup_inside_the_request_first",
+     "tests.test_onboarding_app::test_a_sticky_ask_renders_expanded_and_offers_no_dismiss"
+    ]
+   },
+   {
+    "group": "history-comment",
+    "exit": 1,
+    "checked_removed": [
+     "tests/test_onboarding_app.py::test_the_app_restores_the_conversation_on_load"
+    ],
+    "removed_failed": true,
+    "survivor_failed": true,
+    "clean": true,
+    "proved": true,
+    "failed": [
+     "tests.test_onboarding_app::test_the_app_restores_the_conversation_on_load"
+    ]
+   },
+   {
+    "group": "settings-connect-opens-sheet",
+    "exit": 1,
+    "checked_removed": [
+     "tests/test_onboarding_app.py::test_the_connect_nav_button_is_gone_and_the_rail_is_the_way_in"
+    ],
+    "removed_failed": true,
+    "survivor_failed": true,
+    "clean": true,
+    "proved": true,
+    "failed": [
+     "tests.test_approval_sheet_real_browser::test_settings_connection_shapes_clear_staged_secrets_and_label_accounts[390]",
+     "tests.test_approval_sheet_real_browser::test_settings_connection_shapes_clear_staged_secrets_and_label_accounts[1280]",
+     "tests.test_onboarding_app::test_the_connect_nav_button_is_gone_and_the_rail_is_the_way_in"
+    ]
+   },
+   {
+    "group": "retired-btn-connect",
+    "exit": 1,
+    "checked_removed": [
+     "tests/test_onboarding_app.py::test_the_connect_nav_button_is_gone_and_the_rail_is_the_way_in"
+    ],
+    "removed_failed": true,
+    "survivor_failed": true,
+    "clean": true,
+    "proved": true,
+    "failed": [
+     "tests.test_onboarding_app::test_the_connect_nav_button_is_gone_and_the_rail_is_the_way_in"
+    ]
+   },
+   {
+    "group": "voice-tool-result-verbatim",
+    "exit": 1,
+    "checked_removed": [
+     "tests/test_onboarding_app.py::test_voice_client_keeps_converse_as_the_only_writer"
+    ],
+    "removed_failed": true,
+    "survivor_failed": true,
+    "clean": true,
+    "proved": true,
+    "failed": [
+     "tests.test_onboarding_app::test_voice_adapter_barge_in_duplicate_guard_exact_output_and_teardown",
+     "tests.test_onboarding_app::test_voice_client_keeps_converse_as_the_only_writer"
+    ]
+   },
+   {
+    "group": "voice-untrusted-audio",
+    "exit": 1,
+    "checked_removed": [
+     "tests/test_onboarding_app.py::test_voice_client_keeps_converse_as_the_only_writer"
+    ],
+    "removed_failed": true,
+    "survivor_failed": true,
+    "clean": true,
+    "proved": true,
+    "failed": [
+     "tests.test_onboarding_app::test_voice_adapter_barge_in_duplicate_guard_exact_output_and_teardown",
+     "tests.test_onboarding_app::test_voice_client_keeps_converse_as_the_only_writer"
+    ]
+   },
+   {
+    "group": "voice-teardown-draft",
+    "exit": 1,
+    "checked_removed": [
+     "tests/test_app_addressed_agent.py::test_switch_retires_buffered_browser_voice_before_changing_agent"
+    ],
+    "removed_failed": true,
+    "survivor_failed": true,
+    "clean": true,
+    "proved": true,
+    "failed": [
+     "tests.test_app_addressed_agent::test_switch_retires_buffered_browser_voice_before_changing_agent",
+     "tests.test_onboarding_app::test_voice_adapter_barge_in_duplicate_guard_exact_output_and_teardown"
+    ]
+   },
+   {
+    "group": "upload-transport-url",
+    "exit": 1,
+    "checked_removed": [
+     "tests/test_app_file_upload_ui.py::test_the_upload_route_is_the_one_new_boundary"
+    ],
+    "removed_failed": true,
+    "survivor_failed": true,
+    "clean": true,
+    "proved": true,
+    "failed": [
+     "tests.test_app_file_upload_ui::test_the_shipped_transport_forwards_the_controllers_abort_signal",
+     "tests.test_app_file_upload_ui::test_the_upload_route_is_the_one_new_boundary"
+    ]
+   },
+   {
+    "group": "upload-transport-headers",
+    "exit": 1,
+    "checked_removed": [
+     "tests/test_app_file_upload_ui.py::test_the_upload_route_is_the_one_new_boundary"
+    ],
+    "removed_failed": true,
+    "survivor_failed": true,
+    "clean": true,
+    "proved": true,
+    "failed": [
+     "tests.test_app_file_upload_ui::test_the_shipped_transport_forwards_the_controllers_abort_signal",
+     "tests.test_app_file_upload_ui::test_the_upload_route_is_the_one_new_boundary"
+    ]
+   },
+   {
+    "group": "upload-transport-raw-body",
+    "exit": 1,
+    "checked_removed": [
+     "tests/test_app_file_upload_ui.py::test_the_upload_route_is_the_one_new_boundary"
+    ],
+    "removed_failed": true,
+    "survivor_failed": true,
+    "clean": true,
+    "proved": true,
+    "failed": [
+     "tests.test_app_file_upload_ui::test_the_shipped_transport_forwards_the_controllers_abort_signal",
+     "tests.test_app_file_upload_ui::test_the_upload_route_is_the_one_new_boundary"
+    ]
+   },
+   {
+    "group": "upload-route-literal-count",
+    "exit": 1,
+    "checked_removed": [
+     "tests/test_app_file_upload_ui.py::test_the_upload_route_is_the_one_new_boundary"
+    ],
+    "removed_failed": true,
+    "survivor_failed": true,
+    "clean": true,
+    "proved": true,
+    "failed": [
+     "tests.test_app_file_upload_ui::test_the_upload_route_is_the_one_new_boundary"
+    ]
+   },
+   {
+    "group": "memory-heading-copy",
+    "exit": 1,
+    "checked_removed": [
+     "tests/test_app_memory_panel.py::test_memory_panel_load_edit_delete_undo_and_conflict"
+    ],
+    "removed_failed": true,
+    "survivor_failed": true,
+    "clean": true,
+    "proved": true,
+    "failed": [
+     "tests.test_app_memory_panel::test_memory_panel_load_edit_delete_undo_and_conflict"
+    ]
+   },
+   {
+    "group": "connection-native-dialog",
+    "exit": 1,
+    "checked_removed": [
+     "tests/test_app_connection_controls.py::test_connection_ui_raises_no_native_dialog"
+    ],
+    "removed_failed": true,
+    "survivor_failed": true,
+    "clean": true,
+    "proved": true,
+    "failed": [
+     "tests.test_app_connection_controls::test_connection_ui_raises_no_native_dialog",
+     "tests.test_app_connection_controls::test_disconnect_uses_observed_connection_and_shows_unpowered_reconnect"
+    ]
+   },
+   {
+    "group": "sign-in-help-copy",
+    "exit": 1,
+    "checked_removed": [
+     "tests/test_app_sign_in_again.py::test_the_shape_renders_a_button_and_offers_nothing_to_paste"
+    ],
+    "removed_failed": true,
+    "survivor_failed": true,
+    "clean": true,
+    "proved": true,
+    "failed": [
+     "tests.test_app_sign_in_again::test_the_shape_renders_a_button_and_offers_nothing_to_paste"
+    ]
+   },
+   {
+    "group": "header-name-guard",
+    "exit": 1,
+    "checked_removed": [
+     "tests/test_app_header_name.py::test_nothing_else_writes_the_header"
+    ],
+    "removed_failed": true,
+    "survivor_failed": true,
+    "clean": true,
+    "proved": true,
+    "failed": [
+     "tests.test_app_header_name::test_a_learned_name_is_shown",
+     "tests.test_app_header_name::test_nothing_else_writes_the_header"
+    ]
+   },
+   {
+    "group": "removed-working-banner-absence",
+    "exit": 1,
+    "checked_removed": [
+     "tests/test_app_working_indicator.py::test_the_page_has_no_second_working_indicator"
+    ],
+    "removed_failed": true,
+    "survivor_failed": true,
+    "clean": true,
+    "proved": true,
+    "failed": [
+     "tests.test_app_working_indicator::test_the_page_has_no_second_working_indicator"
+    ]
+   },
+   {
+    "group": "removed-connect-screen-absence",
+    "exit": 1,
+    "checked_removed": [
+     "tests/test_notification_is_the_setup.py::test_the_page_has_no_full_page_setup_and_no_vendor_cards"
+    ],
+    "removed_failed": true,
+    "survivor_failed": true,
+    "clean": true,
+    "proved": true,
+    "failed": [
+     "tests.test_notification_is_the_setup::test_the_page_has_no_full_page_setup_and_no_vendor_cards"
+    ]
+   },
+   {
+    "group": "connect-other-markup-default",
+    "exit": 1,
+    "checked_removed": [
+     "tests/test_app_connect_disclosure.py::test_the_markup_still_ships_closed"
+    ],
+    "removed_failed": true,
+    "survivor_failed": true,
+    "clean": true,
+    "proved": true,
+    "failed": [
+     "tests.test_app_connect_disclosure::test_the_markup_still_ships_closed"
+    ]
+   },
+   {
+    "group": "cc-switch-label-copy",
+    "exit": 1,
+    "checked_removed": [
+     "tests/test_command_center_copy.py::test_the_app_greets_a_new_commander_and_switches_command_centers"
+    ],
+    "removed_failed": true,
+    "survivor_failed": true,
+    "clean": true,
+    "proved": true,
+    "failed": [
+     "tests.test_command_center_copy::test_the_app_greets_a_new_commander_and_switches_command_centers"
+    ]
+   },
+   {
+    "group": "stop-agent-id",
+    "exit": 1,
+    "checked_removed": [
+     "tests/test_app_stop_turn.py::test_stop_is_addressed_for_main_too_rather_than_stopping_everything"
+    ],
+    "removed_failed": true,
+    "survivor_failed": true,
+    "clean": true,
+    "proved": true,
+    "failed": [
+     "tests.test_app_stop_turn::test_stop_is_addressed_for_main_too_rather_than_stopping_everything",
+     "tests.test_app_stop_turn::test_stop_sends_every_queued_line_as_one_turn_in_order"
+    ]
+   },
+   {
+    "group": "stop-button-click",
+    "exit": 1,
+    "checked_removed": [
+     "tests/test_app_stop_turn.py::test_stop_is_wired_to_the_button_escape_and_every_entry_point"
+    ],
+    "removed_failed": true,
+    "survivor_failed": true,
+    "clean": true,
+    "proved": true,
+    "failed": [
+     "tests.test_app_stop_turn::test_stop_is_wired_to_the_button_escape_and_every_entry_point",
+     "tests.test_orphan_ready_browser::test_stop_clears_orphan_and_sends_queued_messages"
+    ]
+   },
+   {
+    "group": "heartbeat-heal",
+    "exit": 1,
+    "checked_removed": [
+     "tests/test_connect_is_the_whole_gesture.py::test_the_heartbeat_calls_the_heal"
+    ],
+    "removed_failed": true,
+    "survivor_failed": true,
+    "clean": true,
+    "proved": true,
+    "failed": [
+     "tests.test_app_live_turn_recovery::test_a_status_poll_does_not_restore_the_turn_the_live_page_owns",
+     "tests.test_connect_is_the_whole_gesture::test_the_heartbeat_calls_the_heal"
+    ]
+   },
+   {
+    "group": "resend-offer",
+    "exit": 1,
+    "checked_removed": [
+     "tests/test_onboarding_mcp_session_recovery.py::test_a_failed_turn_offers_to_send_again"
+    ],
+    "removed_failed": true,
+    "survivor_failed": true,
+    "clean": true,
+    "proved": true,
+    "failed": [
+     "tests.test_onboarding_app::test_send_it_again_resends_the_same_message_once_without_a_second_bubble",
+     "tests.test_onboarding_mcp_session_recovery::test_a_failed_turn_offers_to_send_again"
+    ]
+   },
+   {
+    "group": "rail-verb-labels",
+    "exit": 1,
+    "checked_removed": [
+     "tests/test_request_rail_honest_asks.py::test_the_app_no_longer_offers_send_or_not_now",
+     "tests/test_app_request_rail_executes.py::test_the_rail_renders_the_four_verbs_and_only_those"
+    ],
+    "removed_failed": true,
+    "survivor_failed": true,
+    "clean": true,
+    "proved": true,
+    "failed": [
+     "tests.test_app_request_rail_executes::test_the_rail_renders_the_four_verbs_and_only_those",
+     "tests.test_app_send_resume_browser::test_request_chat_keeps_history_open_and_nudges_decisions[Yes]",
+     "tests.test_app_send_resume_browser::test_request_chat_keeps_history_open_and_nudges_decisions[No!]",
+     "tests.test_app_send_resume_browser::test_request_chat_keeps_history_open_and_nudges_decisions[okay]",
+     "tests.test_app_send_resume_browser::test_request_chat_keeps_history_open_and_nudges_decisions[Please explain the changes first]",
+     "tests.test_request_rail_honest_asks::test_the_app_no_longer_offers_send_or_not_now"
+    ]
+   },
+   {
+    "group": "rail-deny-payload",
+    "exit": 1,
+    "checked_removed": [
+     "tests/test_app_request_rail_executes.py::test_the_rail_renders_the_four_verbs_and_only_those"
+    ],
+    "removed_failed": true,
+    "survivor_failed": true,
+    "clean": true,
+    "proved": true,
+    "failed": [
+     "tests.test_app_request_rail_executes::test_patch_consent_rail_uses_protected_owner_door[True-deny]",
+     "tests.test_app_request_rail_executes::test_patch_consent_rail_uses_protected_owner_door[False-deny]",
+     "tests.test_app_request_rail_executes::test_the_rail_renders_the_four_verbs_and_only_those"
+    ]
+   },
+   {
+    "group": "rail-accept-label",
+    "exit": 1,
+    "checked_removed": [
+     "tests/test_app_request_rail_executes.py::test_the_rail_renders_the_four_verbs_and_only_those"
+    ],
+    "removed_failed": true,
+    "survivor_failed": true,
+    "clean": true,
+    "proved": true,
+    "failed": [
+     "tests.test_app_request_rail_executes::test_the_rail_renders_the_four_verbs_and_only_those",
+     "tests.test_app_send_resume_browser::test_request_chat_keeps_history_open_and_nudges_decisions[Yes]",
+     "tests.test_app_send_resume_browser::test_request_chat_keeps_history_open_and_nudges_decisions[No!]",
+     "tests.test_app_send_resume_browser::test_request_chat_keeps_history_open_and_nudges_decisions[okay]"
+    ]
+   },
+   {
+    "group": "rail-clear-label",
+    "exit": 1,
+    "checked_removed": [
+     "tests/test_app_request_rail_executes.py::test_the_rail_renders_the_four_verbs_and_only_those"
+    ],
+    "removed_failed": true,
+    "survivor_failed": true,
+    "clean": true,
+    "proved": true,
+    "failed": [
+     "tests.test_app_pending_requests_browser::test_cleared_reconnect_returns_on_later_failure_and_history_can_reask",
+     "tests.test_app_request_rail_executes::test_the_rail_renders_the_four_verbs_and_only_those"
+    ]
+   },
+   {
+    "group": "rail-deny-label-copy",
+    "exit": 1,
+    "checked_removed": [
+     "tests/test_app_request_rail_executes.py::test_the_rail_renders_the_four_verbs_and_only_those"
+    ],
+    "removed_failed": true,
+    "survivor_failed": true,
+    "clean": true,
+    "proved": true,
+    "failed": [
+     "tests.test_app_request_rail_executes::test_the_rail_renders_the_four_verbs_and_only_those"
+    ]
+   },
+   {
+    "group": "rail-tab-opens",
+    "exit": 1,
+    "checked_removed": [
+     "tests/test_onboarding_app.py::test_pending_requests_render_as_a_side_rail_of_tabs"
+    ],
+    "removed_failed": true,
+    "survivor_failed": true,
+    "clean": true,
+    "proved": true,
+    "failed": [
+     "tests.test_app_pending_requests_browser::test_cleared_reconnect_returns_on_later_failure_and_history_can_reask",
+     "tests.test_onboarding_app::test_pending_requests_render_as_a_side_rail_of_tabs"
+    ]
+   }
+  ],
+  "phase": "pre: unedited tree; removed tests + survivors"
+ },
+ "post": {
+  "baseline_exit": 0,
+  "baseline_cases": 24,
+  "results": [
+   {
+    "group": "rail-dont-ask-again",
+    "exit": 1,
+    "checked_removed": [],
+    "removed_failed": true,
+    "survivor_failed": true,
+    "clean": true,
+    "proved": true,
+    "failed": [
+     "tests.test_onboarding_app::test_dont_ask_again_and_agent_authored_titles_are_framed"
+    ]
+   },
+   {
+    "group": "inflight-unconfirmed",
+    "exit": 1,
+    "checked_removed": [],
+    "removed_failed": true,
+    "survivor_failed": true,
+    "clean": true,
+    "proved": true,
+    "failed": [
+     "tests.test_onboarding_app::test_a_held_message_is_restored_on_an_empty_thread"
+    ]
+   },
+   {
+    "group": "sticky-setup-primary",
+    "exit": 1,
+    "checked_removed": [],
+    "removed_failed": true,
+    "survivor_failed": true,
+    "clean": true,
+    "proved": true,
+    "failed": [
+     "tests.test_notification_is_the_setup::test_an_unpowered_user_sees_the_setup_inside_the_request_first"
+    ]
+   },
+   {
+    "group": "settings-connect-opens-sheet",
+    "exit": 1,
+    "checked_removed": [],
+    "removed_failed": true,
+    "survivor_failed": true,
+    "clean": true,
+    "proved": true,
+    "failed": [
+     "tests.test_approval_sheet_real_browser::test_settings_connection_shapes_clear_staged_secrets_and_label_accounts[390]",
+     "tests.test_approval_sheet_real_browser::test_settings_connection_shapes_clear_staged_secrets_and_label_accounts[1280]"
+    ]
+   },
+   {
+    "group": "voice-tool-result-verbatim",
+    "exit": 1,
+    "checked_removed": [],
+    "removed_failed": true,
+    "survivor_failed": true,
+    "clean": true,
+    "proved": true,
+    "failed": [
+     "tests.test_onboarding_app::test_voice_adapter_barge_in_duplicate_guard_exact_output_and_teardown"
+    ]
+   },
+   {
+    "group": "voice-untrusted-audio",
+    "exit": 1,
+    "checked_removed": [],
+    "removed_failed": true,
+    "survivor_failed": true,
+    "clean": true,
+    "proved": true,
+    "failed": [
+     "tests.test_onboarding_app::test_voice_adapter_barge_in_duplicate_guard_exact_output_and_teardown"
+    ]
+   },
+   {
+    "group": "voice-teardown-draft",
+    "exit": 1,
+    "checked_removed": [],
+    "removed_failed": true,
+    "survivor_failed": true,
+    "clean": true,
+    "proved": true,
+    "failed": [
+     "tests.test_onboarding_app::test_voice_adapter_barge_in_duplicate_guard_exact_output_and_teardown"
+    ]
+   },
+   {
+    "group": "upload-transport-url",
+    "exit": 1,
+    "checked_removed": [],
+    "removed_failed": true,
+    "survivor_failed": true,
+    "clean": true,
+    "proved": true,
+    "failed": [
+     "tests.test_app_file_upload_ui::test_the_shipped_transport_forwards_the_controllers_abort_signal"
+    ]
+   },
+   {
+    "group": "upload-transport-headers",
+    "exit": 1,
+    "checked_removed": [],
+    "removed_failed": true,
+    "survivor_failed": true,
+    "clean": true,
+    "proved": true,
+    "failed": [
+     "tests.test_app_file_upload_ui::test_the_shipped_transport_forwards_the_controllers_abort_signal"
+    ]
+   },
+   {
+    "group": "upload-transport-raw-body",
+    "exit": 1,
+    "checked_removed": [],
+    "removed_failed": true,
+    "survivor_failed": true,
+    "clean": true,
+    "proved": true,
+    "failed": [
+     "tests.test_app_file_upload_ui::test_the_shipped_transport_forwards_the_controllers_abort_signal"
+    ]
+   },
+   {
+    "group": "connection-native-dialog",
+    "exit": 1,
+    "checked_removed": [],
+    "removed_failed": true,
+    "survivor_failed": true,
+    "clean": true,
+    "proved": true,
+    "failed": [
+     "tests.test_app_connection_controls::test_disconnect_uses_observed_connection_and_shows_unpowered_reconnect"
+    ]
+   },
+   {
+    "group": "header-name-guard",
+    "exit": 1,
+    "checked_removed": [],
+    "removed_failed": true,
+    "survivor_failed": true,
+    "clean": true,
+    "proved": true,
+    "failed": [
+     "tests.test_app_header_name::test_a_learned_name_is_shown"
+    ]
+   },
+   {
+    "group": "stop-agent-id",
+    "exit": 1,
+    "checked_removed": [],
+    "removed_failed": true,
+    "survivor_failed": true,
+    "clean": true,
+    "proved": true,
+    "failed": [
+     "tests.test_app_stop_turn::test_stop_sends_every_queued_line_as_one_turn_in_order"
+    ]
+   },
+   {
+    "group": "stop-button-click",
+    "exit": 1,
+    "checked_removed": [],
+    "removed_failed": true,
+    "survivor_failed": true,
+    "clean": true,
+    "proved": true,
+    "failed": [
+     "tests.test_orphan_ready_browser::test_stop_clears_orphan_and_sends_queued_messages"
+    ]
+   },
+   {
+    "group": "heartbeat-heal",
+    "exit": 1,
+    "checked_removed": [],
+    "removed_failed": true,
+    "survivor_failed": true,
+    "clean": true,
+    "proved": true,
+    "failed": [
+     "tests.test_app_live_turn_recovery::test_a_status_poll_does_not_restore_the_turn_the_live_page_owns"
+    ]
+   },
+   {
+    "group": "resend-offer",
+    "exit": 1,
+    "checked_removed": [],
+    "removed_failed": true,
+    "survivor_failed": true,
+    "clean": true,
+    "proved": true,
+    "failed": [
+     "tests.test_onboarding_app::test_send_it_again_resends_the_same_message_once_without_a_second_bubble"
+    ]
+   },
+   {
+    "group": "rail-verb-labels",
+    "exit": 1,
+    "checked_removed": [],
+    "removed_failed": true,
+    "survivor_failed": true,
+    "clean": true,
+    "proved": true,
+    "failed": [
+     "tests.test_app_send_resume_browser::test_request_chat_keeps_history_open_and_nudges_decisions[Yes]",
+     "tests.test_app_send_resume_browser::test_request_chat_keeps_history_open_and_nudges_decisions[No!]",
+     "tests.test_app_send_resume_browser::test_request_chat_keeps_history_open_and_nudges_decisions[okay]",
+     "tests.test_app_send_resume_browser::test_request_chat_keeps_history_open_and_nudges_decisions[Please explain the changes first]"
+    ]
+   },
+   {
+    "group": "rail-deny-payload",
+    "exit": 1,
+    "checked_removed": [],
+    "removed_failed": true,
+    "survivor_failed": true,
+    "clean": true,
+    "proved": true,
+    "failed": [
+     "tests.test_app_request_rail_executes::test_patch_consent_rail_uses_protected_owner_door[True-deny]",
+     "tests.test_app_request_rail_executes::test_patch_consent_rail_uses_protected_owner_door[False-deny]"
+    ]
+   },
+   {
+    "group": "rail-accept-label",
+    "exit": 1,
+    "checked_removed": [],
+    "removed_failed": true,
+    "survivor_failed": true,
+    "clean": true,
+    "proved": true,
+    "failed": [
+     "tests.test_app_send_resume_browser::test_request_chat_keeps_history_open_and_nudges_decisions[Yes]",
+     "tests.test_app_send_resume_browser::test_request_chat_keeps_history_open_and_nudges_decisions[No!]",
+     "tests.test_app_send_resume_browser::test_request_chat_keeps_history_open_and_nudges_decisions[okay]"
+    ]
+   },
+   {
+    "group": "rail-clear-label",
+    "exit": 1,
+    "checked_removed": [],
+    "removed_failed": true,
+    "survivor_failed": true,
+    "clean": true,
+    "proved": true,
+    "failed": [
+     "tests.test_app_pending_requests_browser::test_cleared_reconnect_returns_on_later_failure_and_history_can_reask"
+    ]
+   },
+   {
+    "group": "rail-tab-opens",
+    "exit": 1,
+    "checked_removed": [],
+    "removed_failed": true,
+    "survivor_failed": true,
+    "clean": true,
+    "proved": true,
+    "failed": [
+     "tests.test_app_pending_requests_browser::test_cleared_reconnect_returns_on_later_failure_and_history_can_reask"
+    ]
+   }
+  ],
+  "phase": "post: final tree; survivors only (reason-b groups have none)"
+ }
+}

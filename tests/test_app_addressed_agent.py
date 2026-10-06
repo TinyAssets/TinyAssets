@@ -239,7 +239,6 @@ def test_switch_retires_buffered_browser_voice_before_changing_agent():
     assert "this.epoch++" in stop and "this._teardownTransport()" in stop
     teardown = page.split("_teardownTransport(){", 1)[1].split("\n    },", 1)[0]
     assert "clearTimeout(this.browserCommitTimer)" in teardown
-    assert 'this.browserDraftUtterance=""' in teardown
     assert 'this.browserPendingUtterance=""' in teardown
     commit = page.split("this.browserCommitTimer=setTimeout(()=>{", 1)[1].split("},900)", 1)[0]
     assert "generation!==this.epoch" in commit

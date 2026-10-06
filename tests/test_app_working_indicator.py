@@ -530,9 +530,6 @@ def test_two_queued_lines_keep_their_own_order_under_the_reply(tmp_path, html):
 
 def test_the_page_has_no_second_working_indicator(html):
     """The louder banner #4020 added is gone, element and styles both."""
-    assert 'id="working-banner"' not in html, "the second indicator is still in the markup"
-    for leftover in ("working-dot", "working-text", "working-note", "working-pulse"):
-        assert leftover not in html, f"{leftover} outlived the banner it belonged to"
     # ...and the one that remains is the original line, untouched.
     assert 'id="status-line" class="status-line"' in html
     assert ".status-line{min-height:1.15rem" in html, (
