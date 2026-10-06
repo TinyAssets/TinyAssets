@@ -223,7 +223,8 @@ def check_mcp_request(identity, document):
 
     scopes = {arguments[k] for k in ("universe_id", "graph_id", "command_center_id")
               if arguments.get(k)}
-    agents = {arguments[k] for k in ("agent_id", "agent_binding_id") if arguments.get(k)}
+    agents = {arguments[k] for k in ("agent_id", "agent_binding_id", "conversation_agent")
+              if arguments.get(k)}
     indirect = {"run_id", "branch_def_id", "branch_id", "branch_version_id", "automation_id",
                 "agent_definition_id", "source_id", "goal_id"}
     if any(arguments.get(k) for k in indirect) and not scopes:

@@ -7,6 +7,28 @@ from tests.test_inline_owner_sessions import setup as owner_setup  # noqa: F401
 from tinyassets.outside_authority import OutsideClientAuthority, OutsideRefused, origin
 
 
+@pytest.mark.parametrize("selector", ["agent_id", "agent_binding_id", "conversation_agent"])
+def test_every_named_agent_selector_requires_exact_grant(tmp_path, monkeypatch, selector):
+    from tinyassets.auth.provider import Identity
+    from tinyassets.outside_authority import check_mcp_request
+
+    store = OutsideClientAuthority(tmp_path)
+    monkeypatch.setattr("tinyassets.outside_authority.current_store", lambda: store)
+    source = {"client": "a", "family": "s", "authenticated_at": 100}
+    store.observe("owner", source)
+    store.set_enabled(True)
+    store.change("owner", "a", expected_generation=0, family="s", scopes=[
+        {"universe": "home", "agent": "main", "capability": "get_status"}])
+    identity = Identity("owner", "owner", metadata={"outside_origin": store.admit("owner", source)})
+    def request(agent):
+        check_mcp_request(identity, {"method": "tools/call", "params": {
+            "name": "get_status", "arguments": {"universe_id": "home",
+                "include_conversation": True, selector: agent}}})
+    request("main")
+    with pytest.raises(OutsideRefused):
+        request("private-agent")
+
+
 def test_independent_clients_revoke_reconnect_and_kill_switch(tmp_path, monkeypatch):
     monkeypatch.setattr("tinyassets.outside_authority.time.time", lambda: 200)
     first, worker = OutsideClientAuthority(tmp_path), OutsideClientAuthority(tmp_path)

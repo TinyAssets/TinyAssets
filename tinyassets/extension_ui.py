@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 
 from tinyassets import command_center_packages as packages
 from tinyassets import custom_agents
@@ -94,7 +95,16 @@ def fence(base, owner, universe, document):
 
         ctx = SimpleNamespace(owner=owner, universe=universe, initiating_agent=row["agent_id"])
         service = ExtensionCapabilities(SimpleNamespace(root=base / universe, context=ctx))
-        if service._enabled(row["name"]):
+        from tinyassets.harness_settings import SettingsError
+
+        try:
+            enabled = service._enabled(row["name"])
+        except SettingsError:
+            logging.getLogger(__name__).warning(
+                "Extension UI %s hidden: SettingsError for agent %s",
+                row["ui_id"], row["agent_id"], exc_info=True)
+            continue
+        if enabled:
             library.append(entry)
     selection = document["ui_selection"]
     if isinstance(selection, dict) and selection.get("ui_id") in projections and not any(

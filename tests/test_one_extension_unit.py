@@ -141,6 +141,26 @@ def call(service, name, arguments):
     return asyncio.run(service.dispatch({"op": "call", "name": name, "arguments": arguments}))
 
 
+@pytest.mark.parametrize("kind", ["tools", "commands", "hooks"])
+def test_new_connection_does_not_break_mounted_contributions(tmp_path, monkeypatch, kind):
+    from tinyassets.extension_capabilities import ExtensionCapabilities
+
+    service = backend(tmp_path)
+    ext = ExtensionCapabilities(service)
+    installed = ext.store.install(files())
+    state = call(service, "extension:activate", {"name": "sample",
+        "revision": installed["revision"], "expected_generation": 0})["result"]
+    import contextvars
+
+    launch = contextvars.copy_context()
+    launch.run(ext.materialize, tmp_path / "mount")
+    monkeypatch.setattr(service, "connections", lambda: {"connection:new:GET": None})
+    key = next(row["name"] for row in ext.catalog() if row.get("kind") == kind)
+    assert "extension_execution" in launch.run(call, service, key, {})["result"]
+    assert ext.store.active("sample", installed["revision"], state["generation"],
+                            current_capabilities=ext._current()) == set()
+
+
 def test_ta_lifecycle_and_settings_only_narrow(tmp_path):
     import asyncio
     import base64

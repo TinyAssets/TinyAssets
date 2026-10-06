@@ -331,12 +331,10 @@ class ExtensionCapabilities:
                     if self._key(state, kind, row["name"]) != name:
                         continue
                     current = self._current()
-                    ceiling = self.store.active(
+                    self.store.active(
                         state["name"], state["revision"], state["generation"],
                         current_capabilities=current)
                     if kind in {"tools", "commands", "hooks"} and self._mounted(state):
-                        if current - ceiling:
-                            raise ExtensionError("launch authority exceeds activation ceiling")
                         if not Draft202012Validator(row["arguments"]).is_valid(arguments):
                             raise ExtensionError("invalid extension contribution arguments")
                         root = f"/ta/extensions/{state['name']}/{state['revision']}"

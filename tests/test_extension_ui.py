@@ -8,6 +8,25 @@ from tinyassets.custom_agents import change_app_ui_entry, get_app_ui
 from tinyassets.extension_capabilities import ExtensionCapabilities
 
 
+def test_malformed_settings_hide_only_affected_projection(tmp_path, caplog):
+    service = backend(tmp_path)
+    ext = ExtensionCapabilities(service)
+    installed = ext.store.install(files())
+    active = call(service, "extension:activate", {"name": "sample",
+        "revision": installed["revision"], "expected_generation": 0})["result"]
+    ordinary = {"kind": "tinyassets.app-ui.v1", "version": 1, "ui_id": "ordinary",
+                "name": "Ordinary", "markup": "<p>OK</p>", "style": "", "script": ""}
+    change_app_ui_entry(tmp_path, owner_user_id="user-1", universe_id="home",
+                        operation="add_ui", payload={"component": ordinary})
+    change_app_ui_entry(tmp_path, owner_user_id="user-1", universe_id="home",
+                        operation="activate", payload={"ui_id": active["ui_ids"][0]})
+    (service.root / "settings.yaml").write_text("schema_version: INVALID", encoding="utf-8")
+    result = get_app_ui(tmp_path, owner_user_id="user-1", universe_id="home")
+    assert [row["ui_id"] for row in result["ui_library"]] == ["ordinary"]
+    assert result["ui_selection"] == {"version": 1, "state": "default"}
+    assert "SettingsError" in caplog.text and active["ui_ids"][0] in caplog.text
+
+
 def test_projection_update_revoke_and_private_rows(tmp_path, monkeypatch):
     service = backend(tmp_path)
     ext = ExtensionCapabilities(service)
