@@ -1,4 +1,4 @@
-"""Browser proofs must collect in the merge-group job without Playwright."""
+"""Tests must collect in the merge-group job without Playwright."""
 
 import ast
 from pathlib import Path
@@ -8,10 +8,6 @@ import pytest
 
 def _collection_imports(source):
     tree = ast.parse(source)
-    if not any(isinstance(node, ast.Attribute) and node.attr == "real_browser"
-               for node in ast.walk(tree)):
-        return []
-
     imports = []
 
     class CollectionImports(ast.NodeVisitor):
@@ -36,7 +32,7 @@ def test_real_browser_modules_do_not_import_playwright_during_collection():
     root = Path(__file__).parent
     violations = {
         str(path.relative_to(root)): lines
-        for path in sorted(root.rglob("test_*.py"))
+        for path in sorted(set(root.rglob("test_*.py")) | set(root.rglob("conftest.py")))
         if (lines := _collection_imports(path.read_text(encoding="utf-8")))
     }
     assert not violations, f"Move Playwright imports into fixtures/tests: {violations}"
@@ -52,6 +48,10 @@ def test_real_browser_modules_do_not_import_playwright_during_collection():
 ])
 def test_guard_catches_collection_imports(statement):
     assert _collection_imports("pytestmark = pytest.mark.real_browser\n" + statement)
+
+
+def test_guard_also_catches_unmarked_collection_imports():
+    assert _collection_imports("from playwright.sync_api import sync_playwright\n") == [1]
 
 
 @pytest.mark.parametrize("definition", ["def", "async def"])

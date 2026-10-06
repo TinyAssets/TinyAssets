@@ -3,7 +3,7 @@
 Lane: `chore/guard-followups`. Reconciled against main at `a97c17c26e`.
 Existing fixes are retained rather than duplicated or reverted.
 
-1. Added `tests/test_real_browser_import_guard.py`: scan marked test modules
+1. Added `tests/test_real_browser_import_guard.py`: scan all test modules and conftest files
    without importing them, rejecting collection-time Playwright imports,
    including conditional imports and class bodies. Fixtures and test functions
    may import Playwright when executed. Synthetic regression cases exercise
@@ -35,5 +35,11 @@ Existing fixes are retained rather than duplicated or reverted.
    and browser support is secondary. This records the founder's supplied
    correction, not a new independent external research claim.
 
-Verification and Claude review results are recorded in the draft PR. This lane
+Claude review: ADAPT. AGREE with widening the collection guard to unmarked tests
+and conftest files, because pytest collects those before marker deselection too;
+added unmarked regression coverage. DISAGREE_EVIDENCE with adding a Node-missing
+skip: the user requires no new skips, and the Linux oracle supplies Node. The
+new renderer test instead fails explicitly when its required tool is missing.
+
+Verification and final Claude review results are recorded in the draft PR. This lane
 requests draft delivery only; it does not claim deployment or a live-user pass.

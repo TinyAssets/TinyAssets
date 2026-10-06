@@ -164,6 +164,7 @@ def _render_links(urls):
 def test_long_request_link_reaches_the_rendered_anchor_in_full(length):
     from tinyassets.api.pending_requests import _validated_fields
 
+    assert _NODE is not None, "Node is required to verify the shipped request-link renderer"
     prefix = "https://example.com/authorize?state="
     url = prefix + "a" * (length - len(prefix) - len("#finish")) + "#finish"
     [field] = _validated_fields(
