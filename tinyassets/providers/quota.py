@@ -28,23 +28,30 @@ MAX_COOLDOWN_S = 86_400
 
 
 class QuotaTracker:
-    """Tracks cooldowns for every provider."""
+    """Tracks cooldowns by owner and provider; the empty scope is local-only.
+
+    Production routing always supplies its admitted owner. The default scope
+    supports standalone trackers and never affects an owner-scoped call.
+    """
 
     def __init__(self) -> None:
         # Absolute monotonic time when cooldown expires (0 = not in cooldown).
-        self._cooldowns: dict[str, float] = {}
-        self._daily_details: dict[str, str] = {}
+        self._cooldowns: dict[tuple[str, str], float] = {}
+        self._daily_details: dict[tuple[str, str], str] = {}
 
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
 
-    def available(self, provider: str) -> bool:
+    def available(self, provider: str, *, owner: str = "") -> bool:
         """Return True if *provider* is not in cooldown."""
-        return not self._in_cooldown(provider)
+        return not self._in_cooldown(provider, owner=owner)
 
-    def cooldown(self, provider: str, seconds: int, *, daily_detail: str = "") -> None:
+    def cooldown(
+        self, provider: str, seconds: int, *, daily_detail: str = "", owner: str = "",
+    ) -> None:
         """Mark *provider* as unavailable for *seconds* (sticky)."""
+        provider = (owner, provider)
         expiry = time.monotonic() + seconds
         if self._cooldowns.get(provider, 0) > expiry and provider in self._daily_details:
             return
@@ -55,28 +62,31 @@ class QuotaTracker:
             self._daily_details.pop(provider, None)
         logger.info("Provider %s in cooldown for %ds (until %.1f)", provider, seconds, expiry)
 
-    def daily_detail(self, provider: str) -> str:
-        return self._daily_details.get(provider, "") if self._in_cooldown(provider) else ""
+    def daily_detail(self, provider: str, *, owner: str = "") -> str:
+        if not self._in_cooldown(provider, owner=owner):
+            return ""
+        return self._daily_details.get((owner, provider), "")
 
-    def cooldown_remaining(self, provider: str) -> int:
+    def cooldown_remaining(self, provider: str, *, owner: str = "") -> int:
         """Return seconds of cooldown remaining for *provider*, or 0."""
-        expiry = self._cooldowns.get(provider, 0.0)
+        expiry = self._cooldowns.get((owner, provider), 0.0)
         if expiry == 0.0:
             return 0
         remaining = expiry - time.monotonic()
         return max(0, int(remaining))
 
-    def cooldown_remaining_dict(self, providers: list[str]) -> dict[str, int]:
+    def cooldown_remaining_dict(self, providers: list[str], *, owner: str = "") -> dict[str, int]:
         """Return {provider: seconds_remaining} for every provider in *providers*.
 
         Providers not in cooldown appear with value 0.
         """
-        return {p: self.cooldown_remaining(p) for p in providers}
+        return {p: self.cooldown_remaining(p, owner=owner) for p in providers}
 
     def all_api_providers_in_cooldown(
         self,
         chain: list[str],
         local_providers: set[str] | None = None,
+        *, owner: str = "",
     ) -> bool:
         """Return True when every non-local provider in *chain* is in cooldown.
 
@@ -90,20 +100,20 @@ class QuotaTracker:
         api_providers = [p for p in chain if p not in local_providers]
         if not api_providers:
             return False
-        return all(self._in_cooldown(p) for p in api_providers)
+        return all(self._in_cooldown(p, owner=owner) for p in api_providers)
 
     # ------------------------------------------------------------------
     # Internal
     # ------------------------------------------------------------------
 
-    def _in_cooldown(self, provider: str) -> bool:
-        expiry = self._cooldowns.get(provider, 0.0)
+    def _in_cooldown(self, provider: str, *, owner: str = "") -> bool:
+        expiry = self._cooldowns.get((owner, provider), 0.0)
         if expiry == 0.0:
             return False
         if time.monotonic() >= expiry:
             # Cooldown expired -- clear it.
-            self._cooldowns.pop(provider, None)
-            self._daily_details.pop(provider, None)
+            self._cooldowns.pop((owner, provider), None)
+            self._daily_details.pop((owner, provider), None)
             logger.info("Provider %s cooldown expired", provider)
             return False
         return True

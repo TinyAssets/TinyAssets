@@ -72,6 +72,9 @@ class LiveTurn:
         #: is only the seed.
         self.agent_id = agent_id or "main"
         self.live_id = uuid.uuid4().hex
+        from tinyassets.approval_scopes import continuation_task
+
+        self.approval_task = continuation_task.get()
         self._requested = threading.Event()
         self._lock = threading.Lock()
         self._wakers: set[tuple[asyncio.AbstractEventLoop, asyncio.Event]] = set()
@@ -190,6 +193,15 @@ def interactive_turn(actor_id: str, universe_id: str, *, agent_id: str = "main")
 def current() -> LiveTurn | None:
     """The live turn this code runs under, or ``None`` outside a served turn."""
     return _CURRENT.get()
+
+
+def approval_task_for(actor_id: str, universe_id: str, agent_id: str, turn_id: str):
+    """Resolve task routing only from a live, server-created initiating turn."""
+    with _LOCK:
+        for live in _LIVE.get(_key(actor_id, universe_id), ()):
+            if live.live_id == turn_id and live.agent_id == agent_id:
+                return live.approval_task
+    return None
 
 
 @contextmanager

@@ -66,7 +66,10 @@ def unseal(handle, value):
     return json.loads(AESGCM(seal_key()).decrypt(value[:12], value[12:], handle.encode()))
 
 
-def begin(*, owner, home, preset_id, resource):
+def begin(*, owner, home, preset_id, resource, owner_session=None):
+    if (owner_session is None
+            or json.loads(owner_session.get("identity_json", "{}")).get("user_id") != owner):
+        raise hosted.HostedAuthError("interactive_approval_required", 403)
     verifier = secrets.token_urlsafe(32)
     result = hosted.begin_flow(owner=owner, universe_id=home, preset_id=preset_id,
                                challenge=hosted._challenge(verifier), public_resource=resource)
@@ -76,7 +79,8 @@ def begin(*, owner, home, preset_id, resource):
                      "(handle_hash,owner,home,sealed,status,expires) VALUES (?,?,?,?,?,?)",
                      (hashed(handle), owner, home, seal(handle, {
                          "verifier": verifier, "authorize_url": result["authorize_url"],
-                         "preset_id": preset_id}), "waiting", time.time() + result["expires_in"]))
+                         "preset_id": preset_id, "owner_session": owner_session}),
+                      "waiting", time.time() + result["expires_in"]))
     return {"flow": handle, "authorize_url": hosted.load_preset(preset_id).authorize_url,
             "launch_path": hosted.CALLBACK_PREFIX + handle + "?launch=1",
             "expires_in": result["expires_in"]}
@@ -98,6 +102,8 @@ def take(*, owner, home, handle, cancel=False):
         if status != "ready":
             return {"status": status}
         data = unseal(handle, row["sealed"])
+        if not data.get("owner_session"):
+            raise hosted.HostedAuthError("interactive_approval_required", 403)
         conn.execute("UPDATE inline_model_flows SET status='consumed',sealed=? "
                      "WHERE handle_hash=?", (seal(handle, {}), hashed(handle)))
         return {"status": "ready", **data}
@@ -140,8 +146,7 @@ def callback(request):
             return response
         cookie = request.cookies.get(cookie_name, "")
         if (not cookie or not secrets.compare_digest(row["browser_hash"], hashed(cookie))
-                or session is None
-                or json.loads(session["identity_json"])["user_id"] != row["owner"]):
+                or not data.get("owner_session")):
             return denied
         codes = request.query_params.getlist("code")
         valid = (not request.query_params.get("error") and len(codes) == 1

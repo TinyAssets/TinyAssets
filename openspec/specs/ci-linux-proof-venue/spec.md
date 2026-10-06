@@ -1,12 +1,12 @@
 # ci-linux-proof-venue Specification
 
 ## Purpose
-Execute browser containment proofs and required test shards in the reviewed Linux oracle while preserving the existing gate contracts.
+Execute browser containment proofs, source-PR affected tests and required test shards in the reviewed Linux oracle while preserving the existing gate contracts.
 
 ## Requirements
 
 ### Requirement: Jail-backed tests execute in the Linux oracle, never skip
-The browser-proof job and both required-test shard paths SHALL run their tests
+The browser-proof job, source-PR affected-test shards and both required-test shard paths SHALL run their tests
 inside the Linux oracle container as the unprivileged
 oracle user, behind the oracle's bubblewrap probe. A venue in which bubblewrap
 cannot create a jail SHALL fail the job before any test runs.
@@ -49,3 +49,20 @@ quarantine comparison and the `required-tests` aggregate job SHALL be unchanged.
 #### Scenario: The runner mode is misused
 - **WHEN** `--required-runner` is combined with `--shell`, `--no-bwrap` or `--as-root`, or is given no `--out` or no single `--junit` under `/out`
 - **THEN** the oracle refuses and runs nothing
+
+### Requirement: Source-PR feedback uses the same capable venue
+The `affected-tests` job SHALL select its files from the pull-request merge
+checkout against `HEAD^1` before entering the oracle, then pass that selection,
+the existing heavy-file exclusions, the six-way shard and `affected` profile to
+the unchanged gate runner through `--required-runner`. It SHALL publish the
+runner summary and retain each shard's JUnit and manifest in an artifact, including
+on failure. Source-PR feedback SHALL remain non-required; it SHALL NOT replace
+or relax the authoritative merge-group `required-tests` gate.
+
+#### Scenario: An affected test renders a protected preview
+- **WHEN** the selected source-PR tests include a real preview render
+- **THEN** they run as the oracle user behind the jail preflight with the same per-container exceptions as the merge queue, and an unavailable jail fails instead of bypassing the render
+
+#### Scenario: Source-PR tests fail
+- **WHEN** an affected shard fails its existing test/quarantine comparison
+- **THEN** the shard reports failure and uploads its available JUnit, manifest and summary; it does not retry in a less restricted venue or report success through a fallback

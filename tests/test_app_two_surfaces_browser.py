@@ -19,7 +19,7 @@ from tinyassets.onboarding.ui_frame import BOOTSTRAP_HTML, FRAME_HEADERS
 pytestmark = pytest.mark.real_browser
 
 
-@pytest.fixture
+@pytest.fixture(scope="module")
 def app_url():
     html, csp = render_app_html()
 
@@ -61,7 +61,22 @@ def app_url():
         httpd.server_close()
 
 
-@pytest.fixture
+@pytest.fixture(scope="module")
+def required_browser():
+    """Share Chromium without converting import or launch failures into skips."""
+    from playwright.sync_api import sync_playwright
+
+    with sync_playwright() as runtime:
+        chromium = runtime.chromium.launch(
+            executable_path=os.environ.get("TINYASSETS_TEST_CHROMIUM") or None
+        )
+        try:
+            yield chromium
+        finally:
+            chromium.close()
+
+
+@pytest.fixture(scope="module")
 def browser():
     sync_api = pytest.importorskip(
         "playwright.sync_api", reason="owner=codex runs-in=real-browser-proof"
@@ -87,7 +102,8 @@ def _enter_chat(page, url, *, layout=False):
     # Let the page finish its own boot first: with no session it lands on the
     # sign-in view, and a boot that finished later would hide the chat again.
     page.wait_for_selector("#view-signin", state="visible")
-    page.wait_for_load_state("networkidle")
+    # enterSignedOut reveals this view at the end of boot. The visible-view
+    # wait above is the readiness signal; networkidle adds a fixed 500 ms.
     page.evaluate("""(layout) => {
         setQueueOwner('owner-1');
         if (layout) document.getElementById('view-chat').classList.add('ui-custom-active');

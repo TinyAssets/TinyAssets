@@ -30,13 +30,23 @@ from tinyassets.command_center_picker import BUILD_PROMPT, PLATFORM_DEFAULT_UI, 
 pytestmark = pytest.mark.usefixtures("cloud_runtime")
 
 
-def _publish(name="First"):
-    action = {**_publish_action(), "name": name}
+def _publish(name="First", *, ui_id="village"):
+    action = {**_publish_action(), "name": name, "ui_id": ui_id}
     ask = _ask(OWNER, UNIVERSE, action)
     assert "request_id" in ask, ask
     done = _answer(OWNER, UNIVERSE, ask["request_id"])
     assert done.get("published"), done
     return done["agent_definition_id"]
+
+
+def _add_screen(home, ui_id):
+    from tinyassets.custom_agents import get_app_ui, save_app_ui
+
+    doc = get_app_ui(home, owner_user_id=OWNER, universe_id=UNIVERSE)
+    screen = {**doc["ui_library"][0], "ui_id": ui_id}
+    save_app_ui(home, owner_user_id=OWNER, universe_id=UNIVERSE,
+                expected_revision=doc["revision"],
+                changes={"ui_library": [*doc["ui_library"], screen]})
 
 
 def _read(actor=BOB, uid=BOB_UNIVERSE, door=read_graph):
@@ -49,17 +59,20 @@ def test_both_doors_offer_two_latest_packages(home):
 
     first = _publish()
     assert _read()["can_try"] is True
-    second = _publish("Second")
+    # Names do not define bundles: use a distinct source screen for the second.
+    _add_screen(home, "second")
+    second = _publish("Second", ui_id="second")
     for door in (read_graph, model_read):
         result = _read(door=door)
         assert {p["agent_definition_id"] for p in result["packages"]} == {first, second}
         assert result["can_try"] is True
         assert result["build_prompt"] == BUILD_PROMPT
-    # A newer publication of a name replaces its older version, not another card.
-    newer = _publish()
-    result = _read()
-    assert {p["agent_definition_id"] for p in result["packages"]} == {newer, second}
-    assert result["packages"][0]["agent_definition_id"] == newer
+    # Renaming the first screen still supersedes only that bundle's old card.
+    newer = _publish("Renamed first")
+    for door in (read_graph, model_read):
+        result = _read(door=door)
+        assert {p["agent_definition_id"] for p in result["packages"]} == {newer, second}
+        assert result["packages"][0]["agent_definition_id"] == newer
 
 
 @pytest.mark.parametrize("broken", ["blob", "private", "missing"])
@@ -445,7 +458,11 @@ console.log('spoiled picker fallback passed');
 def test_try_offer_tracks_usable_package_count_through_both_doors(home, count):
     from tinyassets.universe_server import read_graph as model_read
 
-    ids = {_publish(f"Package {i}") for i in range(count)}
+    ids = set()
+    for i in range(count):
+        # Count distinct bundles, not successive renames of the village screen.
+        _add_screen(home, f"screen-{i}")
+        ids.add(_publish(f"Package {i}", ui_id=f"screen-{i}"))
     for door in (read_graph, model_read):
         result = _read(door=door)
         assert {p["agent_definition_id"] for p in result["packages"]} == ids
@@ -456,7 +473,9 @@ def test_try_offer_tracks_usable_package_count_through_both_doors(home, count):
 def test_package_discovery_filters_author_and_search_without_changing_publications(home):
     from tinyassets.api.package_requests import list_packages
 
-    village, office = _publish("Zebra Observatory"), _publish("Office")
+    _add_screen(home, "office")
+    village = _publish("Zebra Observatory")
+    office = _publish("Office", ui_id="office")
     with _as(BOB):
         assert {p["agent_definition_id"] for p in list_packages(author=OWNER)} == {village, office}
         assert list_packages(author=BOB) == []

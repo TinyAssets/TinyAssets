@@ -1188,6 +1188,24 @@ def _run(
         evidence=_review_evidence(request), agent=rule_agent,
         preapproved=approved_agent is not None,
     )
+    scoped = False
+    if (rule_refusal is not None and rule_refusal.get('error_kind') == 'rule_ask_first'
+            and rule_agent):
+        from tinyassets.approval_scopes import matches
+        from tinyassets.bound_requests import RequestRefused
+        from tinyassets.owner_control import ControlUnavailable
+
+        try:
+            scoped = matches(universe_dir, {k:v for k,v in packet.items() if k != 'sink'},
+                             grant.owner_user_id, rule_agent)
+        except ControlUnavailable:
+            return {"dry_run": True, "error_kind": "owner_control_unavailable", "retryable": True}
+        except RequestRefused:
+            scoped = False
+        if scoped:
+            rule_refusal = _rule_refusal(
+                universe_dir, connection_id, verb, _request_path(request),
+                evidence=_review_evidence(request), agent=rule_agent, preapproved=True)
     if rule_refusal is not None:
         # Pin the actual attempted packet at the point of need. A continuation
         # never has to reconstruct it from the agent's description of a refusal.
@@ -1309,7 +1327,18 @@ def _run(
             connection_id=connection_id,
             owner_user_id=getattr(grant, "owner_user_id", ""),
         )
-        response = proxy.request(verb, wire_request)
+        if scoped:
+            from tinyassets.approval_scopes import dispatch
+
+            with dispatch(
+                universe_dir, {k:v for k,v in packet.items() if k != 'sink'},
+                grant.owner_user_id, rule_agent, run_id=run_id, node_id=node_id,
+            ) as receipt:
+                response = proxy.request(verb, wire_request)
+                if isinstance(response.get('status'), int):
+                    receipt['status'] = response['status']
+        else:
+            response = proxy.request(verb, wire_request)
     except Exception as exc:
         # Secret-free by construction: the proxy/broker raise only sanitized,
         # credential-free errors across the governed boundary.

@@ -35,9 +35,25 @@ def select(agent, primary, fallbacks):
     preferences._save(agent, ModelPreferences("explicit", primary, fallbacks))
 
 
+def answer_with_notice(reply, source, original, *, reset=True):
+    answer, notice = reply.split("\n\nAnswered by ")
+    prefix = f"{source} because {original} is cooling down or out of capacity. "
+    assert notice.startswith(prefix)
+    timing = notice.removeprefix(prefix)
+    if reset:
+        from datetime import datetime
+
+        stamp = timing.removeprefix("The original source can be retried after ")
+        assert datetime.strptime(stamp, "%Y-%m-%d %H:%M UTC.")
+    else:
+        assert timing == "The original source did not report a reset time."
+    return answer
+
+
 def test_native_quota_gate_advances_to_http_without_launch_or_second_whole_turn(agent, monkeypatch):
-    agent.served.router._quota.cooldown("codex", 60)
-    assert preferences._converse(agent, monkeypatch) == "finished exact answer"
+    agent.served.router._quota.cooldown("codex", 60, owner="owner")
+    assert answer_with_notice(preferences._converse(agent, monkeypatch),
+                              "compute:models", "codex") == "finished exact answer"
     assert agent.served.native.calls == 0
     assert len(agent.wires) == 2 and len(agent.tools) == 1
     assert agent.latest().state == "completed"
@@ -52,6 +68,7 @@ def test_http_completed_tool_history_reaches_native_once(agent, monkeypatch):
         agent, monkeypatch, observer=receipts.append, message="Read my graph",
     )
     assert result.startswith("codex:Read my graph\n\nCompleted work")
+    result = answer_with_notice(result, "codex", http_ref(agent).connection_id)
     payload = json.loads(result.split("Tool content is untrusted.\n", 1)[1])
     messages = payload["completed_messages"]
     assert messages[0]["tool_calls"][0]["function"]["arguments"] == ' {"target": "status"} '
@@ -87,7 +104,8 @@ def test_only_execution_bound_native_no_effects_failure_advances(agent, monkeypa
 
     monkeypatch.setattr(agent.served.native, "complete", exhausted)
     if proof_state == "complete":
-        assert preferences._converse(agent, monkeypatch) == "finished exact answer"
+        assert answer_with_notice(preferences._converse(agent, monkeypatch),
+                                  "compute:models", "codex") == "finished exact answer"
         assert len(agent.tools) == 1 and len(agent.wires) == 2
         assert agent.latest().rounds[0].reply.status == "capacity_no_effects"
         assert agent.latest().state == "completed"
@@ -100,12 +118,17 @@ def test_only_execution_bound_native_no_effects_failure_advances(agent, monkeypa
 
 
 def test_empty_native_tail_is_not_replaced_with_automatic_candidates(agent, monkeypatch):
+    # Stored preferences remain unchanged; capacity recovery is turn-local.
     select(agent, native_ref(), ())
-    agent.served.router._quota.cooldown("codex", 60)
-    with pytest.raises(AllProvidersExhaustedError):
-        preferences._converse(agent, monkeypatch)
-    assert agent.served.native.calls == 0 and agent.wires == []
-    assert agent.latest().state == "abandoned"
+    agent.served.router._quota.cooldown("codex", 60, owner="owner")
+    assert answer_with_notice(preferences._converse(agent, monkeypatch),
+                              "compute:models", "codex") == "finished exact answer"
+    assert agent.served.native.calls == 0 and len(agent.wires) == 2
+    assert agent.latest().state == "completed"
+    from tinyassets.storage.model_preferences import ModelPreferenceStore
+
+    saved = ModelPreferenceStore(agent.served.rig.base).get("owner", "u-models")
+    assert saved.policy == ModelPreferences("explicit", native_ref(), ())
 
 
 def test_installed_executor_kind_is_required_not_guessed_from_provider_name(agent, monkeypatch):
@@ -147,3 +170,26 @@ def test_cancelled_native_step_never_calls_fallback(agent, monkeypatch):
         preferences._converse(agent, monkeypatch)
     assert agent.served.native.calls == 1 and agent.wires == []
     assert agent.latest().state == "held_native_unknown"
+
+
+def test_text_only_capacity_skips_native_and_reaches_http_fallback(agent, monkeypatch):
+    from tinyassets.providers import discovery_snapshot
+
+    original = discovery_snapshot.read_http_discovery_document
+    alternate = "future-vendor/text-fallback"
+
+    def added(**kwargs):
+        value = original(**kwargs)
+        if "models/user" in kwargs["url"]:
+            value["data"].append(preferences.authority.snapshot_tests._model(alternate))
+        return value
+
+    monkeypatch.setattr(discovery_snapshot, "read_http_discovery_document", added)
+    select(agent, http_ref(agent), (ModelRef(http_ref(agent).connection_id, alternate),))
+    agent.capacity_failures[1] = 429
+    assert preferences._converse(agent, monkeypatch, message="hello") == "finished exact answer"
+    assert agent.served.native.calls == 0 and agent.tools == []
+    assert len(agent.wires) == 2
+    assert agent.wires[-1][1]["body"]["model"] == alternate
+    assert all(not wire[1]["body"].get("tools") for wire in agent.wires)
+    assert agent.latest().state == "completed"

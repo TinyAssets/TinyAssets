@@ -32,6 +32,7 @@ from pathlib import Path
 
 import pytest
 
+from tests.app_sheet_harness import rail_source
 from tests.test_onboarding_app import _js_function
 from tinyassets.onboarding import render_app_html
 
@@ -274,6 +275,8 @@ _NOTE = "do we still need this? you said people can use it through the commons n
 _LIVE_DOM_HARNESS = r"""
 function mk(id){return {id:id||'',textContent:'',hidden:false,value:'',open:false,
  rows:0,placeholder:'',type:'',href:'',target:'',rel:'',
+ showModal(){this.open=true;},close(){this.open=false;},
+ remove(){if(this.parentNode){this.parentNode.children=this.parentNode.children.filter(c=>c!==this);blurSubtree(this);this.parentNode=null;}},
  children:[],parentNode:null,attrs:{},dataset:{},
  classList:{set:new Set(),toggle(c,on){on?this.set.add(c):this.set.delete(c);},
   contains(c){return this.set.has(c);}},
@@ -284,6 +287,7 @@ function mk(id){return {id:id||'',textContent:'',hidden:false,value:'',open:fals
  replaceChildren(){this.children.forEach(c=>{c.parentNode=null;blurSubtree(c);});
    this.children=[];},
  querySelectorAll(){return [];},
+ contains(node){return node===this || this.children.some(child=>child.contains(node));},
  addEventListener(e,f){this['on'+e]=f;},scrollIntoView(){},
  // Focus follows the DOM: a browser blurs an element that leaves the tree,
  // and re-appending it does NOT give focus back. Modelling that is the whole
@@ -303,9 +307,11 @@ const document={createElement:t=>{const e=mk('');e.tag=t;return e;},
 // The page's own fixed elements, which exist whatever the rail is showing.
 const els=new Map();
 for(const id of ['request-rail','rail-items','rail-head','connect-panel',
-                 'connect-other','connect-shapes','hosted-model-status'])
+                 'connect-other','connect-shapes','hosted-model-status','needs-you','needs-you-items',
+                 'rail-add-panel','btn-rail-add'])
   els.set(id, mk(id));
 const rail=els.get('request-rail'), host=els.get('rail-items');
+els.get('rail-head').textContent='Request history';
 rail.appendChild(host);
 rail.appendChild(els.get('connect-panel'));
 Object.defineProperty(host,'textContent',{get(){return '';},set(v){this.replaceChildren();}});
@@ -333,14 +339,11 @@ __SOURCE__
 
 def _run_rail(rows, extra):
     html, _ = render_app_html()
-    source = "\n".join(_js_function(html, name) for name in (
-        "isSetupRequest", "isOptionalRequest", "forgetFinishedSetup",
-        "foldedModelAccess", "renderRail", "connectBody", "railFieldLink",
-        "railFieldControl", "railBody", "updateRailItems", "frameTitle", "answerLine",
-        "clearTypedValues", "clearRailCards"))
-    shapes = html[html.index("  const ConnectShapes={"):
-                  html.index("  // A declared model list needs")]
-    script = (_LIVE_DOM_HARNESS.replace("__SOURCE__", source + "\n" + shapes)
+    source = rail_source(html) + "\n" + "\n".join(
+        _js_function(html, name) for name in (
+            "railFieldLink", "railFieldControl", "railBody", "frameTitle",
+            "answerLine", "clearRailCards"))
+    script = (_LIVE_DOM_HARNESS.replace("__SOURCE__", source)
               + "\nrenderRail(" + json.dumps(rows) + ");\n" + extra + r"""
 console.log(JSON.stringify(result));
 """)

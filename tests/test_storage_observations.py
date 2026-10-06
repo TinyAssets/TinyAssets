@@ -81,8 +81,8 @@ def test_categories_measure_files_not_transport_and_never_read_contents(home, mo
     assert result["availability"] == "observed"
     assert result["categories"] == {
         "permanent_workspaces": {"observed_logical_bytes": 8, "files_observed": 2},
-        "provider_runtime": {"observed_logical_bytes": 7, "files_observed": 1},
-        "other_universe_files": {"observed_logical_bytes": db_bytes + 11, "files_observed": 2},
+        "provider_runtime": {"observed_logical_bytes": 0, "files_observed": 0},
+        "other_universe_files": {"observed_logical_bytes": db_bytes + 18, "files_observed": 3},
         "scratch": {"observed_logical_bytes": 30, "files_observed": 2},
     }
     assert result["observed_logical_bytes"] == db_bytes + 56
@@ -100,6 +100,19 @@ def test_released_history_and_absent_derived_paths_are_not_partial(home):
     result = observe(home)
     assert result["availability"] == "observed"
     assert result["categories"]["scratch"]["observed_logical_bytes"] == 0
+
+
+@POSIX
+def test_credential_runtime_is_separate_from_user_files_in_status(home):
+    put(home, f"{UID}/.credentials/claude/projects/cache", b"x" * 112_000)
+    put(home, f"{UID}/notes/mine", b"x" * 36_000)
+    put(home, f"{UID}/.runtime/agent-sessions/transcript", b"history")
+    db_bytes = (home / UID / ".runs.db").stat().st_size
+    result = observe(home)
+    assert result["categories"]["provider_runtime"]["observed_logical_bytes"] == 112_000
+    user_bytes = result["categories"]["other_universe_files"]["observed_logical_bytes"]
+    assert user_bytes == 36_000 + db_bytes + 7
+    assert "not account usage" in result["accounting_note"]
 
 
 @POSIX

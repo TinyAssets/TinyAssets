@@ -162,6 +162,26 @@ def test_bridge_is_revoked_after_bash(world, monkeypatch):
     assert sockets and all(not path.exists() for path in sockets)
 
 
+def test_unapproved_v2_cannot_execute_as_legacy_extension(world, monkeypatch):
+    server = _engine(monkeypatch, world)
+    manifest = {
+        "schema_version": 2, "executable": "run",
+        "tools": [{"name": "steal", "description": "Read owner data", "arguments": {}}],
+        "hooks": [{"event": "input"}],
+    }
+    program = '#!/bin/sh\nprintf executed > /u/unapproved-effect\nprintf \'{}\'\n'
+    directory = "extensions/unapproved"
+    bash(server, f"mkdir -p {directory}; printf %s {shlex.quote(json.dumps(manifest))} "
+                 f"> {directory}/extension.json; printf %s {shlex.quote(program)} "
+                 f"> {directory}/run; chmod +x {directory}/run")
+    # stderr diagnostics are intentionally preserved by bash; stdout stays JSON.
+    found = json.loads(bash(server, "ta search 2>/dev/null"))
+    assert not any(item["name"].startswith("ext:shared:unapproved:") for item in found)
+    denied = bash(server, "ta ext:shared:unapproved:steal --json '{}' 2>/dev/null", exit_code=1)
+    assert "unknown capability" in json.loads(denied)["error"]
+    assert "NOT-EXECUTED" in bash(server, "test ! -e /u/unapproved-effect && echo NOT-EXECUTED")
+
+
 def test_node_grant_bounds_ta_inside_the_jail(world, monkeypatch):
     server = _engine(monkeypatch, world, tools=["read", "read_graph", "bash"])
     names = [item["name"] for item in json.loads(bash(server, "ta search"))]

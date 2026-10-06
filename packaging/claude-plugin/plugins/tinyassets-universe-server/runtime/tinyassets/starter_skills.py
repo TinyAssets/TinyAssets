@@ -6,9 +6,23 @@ starter-seed-lifecycle manifest can consume the same source file.
 from pathlib import Path
 
 CONNECT_SKILL_PATH = "skills/connect/SKILL.md"
+SHARE_SKILL_PATH = "skills/share-after-publish/SKILL.md"
+CAPABILITIES_SKILL_PATH = "skills/capabilities/SKILL.md"
+
+
+def capabilities_skill() -> str:
+    return Path(__file__).with_name("skills").joinpath("capabilities", "SKILL.md").read_text(
+        encoding="utf-8",
+    )
 
 
 def connect_skill() -> str:
     return Path(__file__).with_name("skills").joinpath("connect", "SKILL.md").read_text(
+        encoding="utf-8",
+    )
+
+
+def share_skill() -> str:
+    return Path(__file__).with_name("skills").joinpath("share-after-publish", "SKILL.md").read_text(
         encoding="utf-8",
     )

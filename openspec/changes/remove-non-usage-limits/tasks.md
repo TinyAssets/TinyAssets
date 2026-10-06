@@ -15,6 +15,12 @@
 - [ ] 2.5 Inbound keeps per-token anti-flood only; per-universe rate/in-flight go and runs queue (`webhook_inbound.py`). Voice per-user windows go.
 - [ ] 2.6 Serving-binding hourly/token/cost windows go; dark `_HTTP_ACTION_CAP` and market `_MAX_FANOUT` deleted after confirming no live caller.
 
+  HTTP portion completed by PR #4476: new HTTP grants are uncapped, legacy
+  `http_requests` caps are cleared on ledger open, and listings return `null`.
+  Preservation, concurrent-open, and initialized-open locking regressions are
+  covered; as-built contract is in `http-connections-and-outbound-authority`.
+  Serving-binding windows and market fanout remain in this task.
+
 ## 3. Text, docs, specs (PR 3)
 - [ ] 3.1 `get_status` `resource_usage` publishes storage and seats only (`api/resource_usage.py`).
 - [ ] 3.2 Served handbook, connector docs and compiler guidance describe two dimensions (`engine_mcp_server.py`, `universe_server.py`, `graph_compiler.py`).

@@ -19,10 +19,10 @@ import json
 import pathlib
 
 from tests.test_pending_requests import (  # noqa: F401 - fixtures ride the import
-    _answer,
     _ask,
     _login,
     _make_universe,
+    _owner_answer,
     _rail,
     _reset_auth,
     _seed_connection,
@@ -107,7 +107,7 @@ def test_denying_an_action_ask_executes_nothing(base):  # noqa: F811
                                       "methods": ["PUT"]}]})
     assert ask["status"] == "pending"
 
-    out = _answer("u-1", request_id=ask["request_id"], decision="declined",
+    out = _owner_answer("u-1", request_id=ask["request_id"], decision="declined",
                   feedback="not that file")
 
     assert out == {"status": "answered", "decision": "declined",
@@ -126,7 +126,7 @@ def test_a_standing_deny_is_told_to_the_agent_next_time(base):  # noqa: F811
                              "path_template": "/repos/o/r/contents/t.json",
                              "methods": ["PUT"]}]}
     ask = _ask("u-1", kind="API", title="also the theme file", fields=[], action=action)
-    out = _answer("u-1", request_id=ask["request_id"], decision="declined",
+    out = _owner_answer("u-1", request_id=ask["request_id"], decision="declined",
                   dont_ask_again=True)
     assert out["suppressed"] is True
 
@@ -151,7 +151,7 @@ def test_extending_never_stores_a_duplicate_endpoint(base):  # noqa: F811
                             "path_template": "/repos/o/r/contents/t.json",
                             "methods": ["PUT"]}]})
     assert ask["status"] == "pending"
-    out = _answer("u-1", request_id=ask["request_id"], values={})
+    out = _owner_answer("u-1", request_id=ask["request_id"], values={})
     assert out["status"] == "answered", out
     assert _stored_paths(base) == ["/repos/o/r/contents/t.json", "/repos/o/r/pulls"]
 
@@ -181,7 +181,7 @@ def test_a_tab_whose_key_was_revoked_after_it_was_raised_refuses_at_answer(base)
     _conn_id, grant_id = _ids(universe_id="u-1", destination="github")
     assert _ledger(base).revoke_grant(grant_id) is True
 
-    out = _answer("u-1", request_id=ask["request_id"], values={})
+    out = _owner_answer("u-1", request_id=ask["request_id"], values={})
 
     assert out == {"error": "not_found", "resource": "connection"}
     assert _stored_paths(base) == ["/repos/o/r/pulls"]

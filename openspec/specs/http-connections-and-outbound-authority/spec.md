@@ -16,6 +16,28 @@ archives.
 
 ## Requirements
 
+### Requirement: HTTP connection grants have no fixed request cap
+
+New HTTP connection grants SHALL be created without an unprompted action cap.
+Opening the ledger SHALL clear legacy caps named exactly `http_requests`, while
+preserving other caps (including `one_pull_request`), other grant fields, and
+malformed cap rows. Connection listings SHALL return `null` for the absent cap.
+Owner rules, destination consent, and outbound authority checks still apply.
+
+#### Scenario: a new HTTP connection is provisioned
+- **WHEN** provisioning creates an HTTP grant
+- **THEN** its stored cap is absent immediately, without a ledger reopen, and listings return `null`
+
+#### Scenario: a legacy HTTP request cap is migrated
+- **WHEN** the ledger opens with a grant carrying the `http_requests` cap
+- **THEN** that cap is cleared and other caps and grant fields remain unchanged
+- **AND** concurrent opens safely converge on the same uncapped state
+- **AND** lock failure leaves the cap intact for a later retry
+
+#### Scenario: an initialized ledger reopens during another writer's transaction
+- **WHEN** no legacy HTTP request caps or other pending migrations remain
+- **THEN** opening the ledger performs no data write and does not require a writer lock
+
 ### Requirement: Owner connection writes follow owner rules without mandatory model review
 
 An authenticated external call through the owner's connection SHALL proceed

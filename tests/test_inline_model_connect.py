@@ -36,7 +36,8 @@ def protected_browser(request):
 
 
 def start():
-    result = post("inline_begin", {"preset_id": PRESET})
+    result = post("inline_begin", {"preset_id": PRESET},
+                  cookie="__Host-ta-owner=owner-cookie")
     assert result.status_code == 200, result.text
     assert "verifier" not in result.text
     return result.json()
@@ -55,6 +56,10 @@ def callback(flow, query="code=synthetic-code", *, cookie=True):
             assert "HttpOnly" in launch.headers["set-cookie"]
             if not cookie:
                 client.cookies.clear()
+            else:
+                # The provider return retains its per-flow browser binding,
+                # but does not require the owner login cookie a second time.
+                client.cookies.delete(owner_sessions.COOKIE)
             path = urlsplit(flow["launch_path"]).path
             return await client.get(path + "?" + query)
     return asyncio.run(run())
@@ -74,6 +79,8 @@ def test_popup_callback_and_once_only_server_held_exchange(monkeypatch):
     reply = post("inline_poll", {"flow": flow["flow"]})
     assert reply.status_code == 200, reply.text
     assert reply.json()["status"] == "confirmation_required"
+    assert reply.json()["answer"]["status"] == "answered"
+    assert "owner_session" not in reply.text
     assert "synthetic-private-key" not in reply.text
     assert "verifier" not in reply.text
     assert len(calls) == 1
@@ -165,3 +172,25 @@ def test_failed_exchange_is_not_replayed(monkeypatch):
     assert post("inline_poll", {"flow": flow["flow"]}).status_code == 503
     assert post("inline_poll", {"flow": flow["flow"]}).json() == {"status": "consumed"}
     assert len(calls) == 1
+
+
+@pytest.mark.parametrize("cookie", ["", "__Host-ta-owner=forged",
+                                  "__Host-ta-owner=stranger-cookie"])
+def test_inline_start_without_owner_proof_creates_no_flow(cookie):
+    result = post("inline_begin", {"preset_id": PRESET}, cookie=cookie)
+    assert result.status_code == 403
+    assert result.json()["error"] == "interactive_approval_required"
+    with inline.flows() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM inline_model_flows").fetchone()[0] == 0
+
+
+def test_legacy_inline_flow_without_bound_proof_cannot_complete():
+    flow = start()
+    with inline.flows() as conn:
+        row = conn.execute("SELECT sealed FROM inline_model_flows").fetchone()
+        data = inline.unseal(flow["flow"], row["sealed"])
+        data.pop("owner_session")
+        conn.execute("UPDATE inline_model_flows SET sealed=?",
+                     (inline.seal(flow["flow"], data),))
+    assert callback(flow).status_code == 409
+    assert post("inline_poll", {"flow": flow["flow"]}).json() == {"status": "waiting"}

@@ -253,16 +253,42 @@ def preview_app_ui(*, universe_id: str = "", ui_id: str = "") -> dict[str, Any]:
         return {"error": "app_ui_validation_error",
                 "detail": "query must name the ui_id to preview"}
     try:
-        report = ui_preview.preview_app_ui(
-            _base_path(), owner_user_id=actor, universe_id=uid, ui_id=selector)
-        report["screenshot"] = ui_preview.write_preview(
-            _universe_dir(uid), selector, report.pop("png"))
+        if selector.startswith("publication:"):
+            report = _preview_publication(uid, actor, selector.removeprefix("publication:"))
+            if "error" in report:
+                return report
+        else:
+            report = ui_preview.preview_app_ui(
+                _base_path(), owner_user_id=actor, universe_id=uid, ui_id=selector)
+            report["screenshot"] = ui_preview.write_preview(
+                _universe_dir(uid), selector, report.pop("png"))
     except AgentNotFoundError as exc:
         return {"error": "app_ui_not_found", "detail": str(exc)}
     except ui_preview.PreviewUnavailable as exc:
         reason = str(exc)
         return {"error": reason.split(":", 1)[0], "detail": reason}
     report["see_it"] = f'read path="{report["screenshot"]}"'
+    return report
+
+
+def _preview_publication(uid: str, actor: str, definition_id: str) -> dict[str, Any]:
+    """Owner-only preview of immutable public content, never the private UI row."""
+    import hashlib
+
+    from tinyassets import ui_preview
+    from tinyassets.api.helpers import _universe_dir
+    from tinyassets.custom_agents import get_definition
+
+    definition = get_definition(_base_path(), definition_id)
+    if definition is None or definition["author_id"] != actor:
+        return {"error": "app_ui_not_found"}
+    screen = next((c for c in definition["components"].values()
+                   if c.get("kind") == "tinyassets.app-ui.v1"), None)
+    if screen is None:
+        return {"error": "app_ui_not_found"}
+    report = ui_preview.preview_public_component(screen)
+    name = "publication-" + hashlib.sha256(definition_id.encode()).hexdigest()[:32]
+    report["screenshot"] = ui_preview.write_preview(_universe_dir(uid), name, report.pop("png"))
     return report
 
 

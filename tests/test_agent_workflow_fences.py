@@ -48,6 +48,7 @@ def test_selected_http_tools_require_the_coordinator(tmp_path, monkeypatch):
     authority = SimpleNamespace(
         provider="owned-http", selected_model=SimpleNamespace(provider="owned-http"),
         native_selection=None, settlement_owner=None,
+        _receipt=SimpleNamespace(principal_id="owner"),
     )
     monkeypatch.setattr(module, "_provider_invocation_carrier", lambda *a, **k: authority)
     with pytest.raises(

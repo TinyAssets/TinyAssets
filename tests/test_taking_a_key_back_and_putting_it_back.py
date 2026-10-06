@@ -27,10 +27,10 @@ import json
 import pytest
 
 from tests.test_pending_requests import (  # noqa: F401 - fixtures and harness
-    _answer,
     _ask,
     _login,
     _make_universe,
+    _owner_answer,
     _reset_auth,
 )
 
@@ -62,7 +62,7 @@ def _remove_through_the_rail(uid):
     ask = _ask(uid, kind="API", title="Remove the GitHub key", fields=[],
                action={"type": "remove_http", "destination": "github"})
     assert ask.get("request_id"), ask
-    return _answer(uid, request_id=ask["request_id"], values={})
+    return _owner_answer(uid, request_id=ask["request_id"], values={})
 
 
 def _connection(basedir, uid, actor="alice"):
@@ -129,7 +129,7 @@ def test_removing_the_key_takes_back_what_it_authorized(base):
                            "connection_id": conn_id, "host": "github.com",
                            "consents": ["workspace_checkout"]})
     assert granted.get("request_id"), granted
-    assert not _answer("u-1", request_id=granted["request_id"], values={}).get("error")
+    assert not _owner_answer("u-1", request_id=granted["request_id"], values={}).get("error")
 
     def _keys():
         return {r.get("destination")
@@ -292,7 +292,7 @@ def test_an_oauth1a_connection_with_a_PATTERNED_endpoint_rotates_too(base):
 
     ask = _ask("u-1", kind="API", title="Rotate the X keys", fields=[],
                action={"type": "remove_http", "destination": "x:posting"})
-    gone = _answer("u-1", request_id=ask["request_id"], values={})
+    gone = _owner_answer("u-1", request_id=ask["request_id"], values={})
 
     assert gone["auth_scheme"] == "oauth1a", "the scheme did not survive"
     [read_back] = gone["removed_endpoints"]
@@ -423,7 +423,7 @@ def test_an_endpoint_with_QUERY_policy_survives_the_round_trip(base):
 
     ask = _ask("u-1", kind="API", title="Rotate svc", fields=[],
                action={"type": "remove_http", "destination": "svc"})
-    gone = _answer("u-1", request_id=ask["request_id"], values={})
+    gone = _owner_answer("u-1", request_id=ask["request_id"], values={})
 
     [read_back] = gone["removed_endpoints"]
     assert read_back["allowed_query"] == ["ref", "page"]

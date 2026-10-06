@@ -365,7 +365,8 @@ def test_capacity_scope_survives_real_router_without_false_spend(agent, status, 
     assert len(agent.wires) == 1 and not agent.tools
     assert agent.latest().state == "held_transport"
     provider = agent.served.context.model_selection.connection_id
-    remaining = agent.served.router._quota.cooldown_remaining(provider)
+    remaining = agent.served.router._quota.cooldown_remaining(provider, owner="owner")
+    assert agent.served.router._quota.cooldown_remaining(provider, owner="other-owner") == 0
     # A source-wide cooldown needs proof the source is unhealthy. ``model``
     # scope never had it; ``unknown`` scope on a source that cannot spend no
     # longer counts as it either, because cooling the connection also skips the
@@ -454,13 +455,12 @@ def test_account_capacity_skips_sibling_models_and_keeps_known_results(agent, mo
 
 
 def test_explicit_empty_fallback_stays_empty(agent, monkeypatch):
-    from tinyassets.exceptions import AllProvidersExhaustedError
-
-    _with_fallback(agent, monkeypatch, empty=True)
+    alternate = _with_fallback(agent, monkeypatch, empty=True)
     agent.capacity_failures[1] = 503
-    with pytest.raises(AllProvidersExhaustedError):
-        run(agent)
-    assert len(agent.wires) == 1 and not agent.tools
+    assert run(agent) == "finished exact answer"
+    assert len(agent.wires) == 2 and not agent.tools
+    assert agent.wires[-1][1]["body"]["model"] == alternate
+    assert agent.served.context.agent_model_plan.policy.fallbacks == ()
 
 
 def test_replacement_revalidates_revoked_discovery_authority(agent, monkeypatch):

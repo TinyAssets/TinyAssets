@@ -38,6 +38,7 @@ FENCE_BEFORE_C2: frozenset[str] = frozenset({
     "tinyassets/api/command_center_updates.py",
     "tinyassets/api/market.py",
     "tinyassets/api/publish_requests.py",
+    "tinyassets/approval_scopes.py",
     "tinyassets/auth/provider.py",
     "tinyassets/authoring/store.py",
     "tinyassets/automations.py",
@@ -52,7 +53,10 @@ FENCE_BEFORE_C2: frozenset[str] = frozenset({
     "tinyassets/command_center_release_series.py",
     "tinyassets/command_center_update_executor.py",
     "tinyassets/command_center_update_policy.py",
+    # Shares custom_agents' store; author checks are not owner-generation fences.
+    "tinyassets/commons_bundles.py",
     "tinyassets/conformance_packs.py",
+    "tinyassets/connection_continuations.py",
     "tinyassets/connection_oauth/flow.py",
     "tinyassets/connection_oauth/pkce.py",
     "tinyassets/context/compaction.py",

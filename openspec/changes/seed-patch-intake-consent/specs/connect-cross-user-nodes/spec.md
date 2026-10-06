@@ -36,7 +36,7 @@ exposure remains their whole authority.
 - **WHEN** a universe delivers to a receiver that is not the configured intake
 - **THEN** no `patch_intake` consent is required and the receiving owner's exposure alone decides
 
-### Requirement: The consent request is seeded at first sign-in and never re-asked
+### Requirement: The consent request is seeded at first sign-in and never re-seeded
 
 The rail read SHALL seed one platform-origin pending request offering the
 configured intake, so it is present at a new user's first sign-in and at an
@@ -75,6 +75,13 @@ with the reason and no consent SHALL be written.
 
 ### Requirement: The patch-intake consent is the owner's tap, never self-granted
 
+Every answer to `grant_patch_intake`, including Deny and Clear, SHALL require
+the protected interactive owner session. The ordinary bearer answer route
+(including chatbot, MCP and CLI callers) SHALL refuse with
+`interactive_approval_required`, leaving the request and consent unchanged.
+The rail SHALL use the protected owner-session route and offer owner sign-in
+when that session is absent. A bearer payload cannot supply owner proof.
+
 `patch_intake` SHALL be a person-only consent sink: the agent's own channel-approval
 verb SHALL refuse to write it, checked in the function that performs the grant so
 the refusal does not depend on one entry point, and under every spelling that verb
@@ -83,6 +90,10 @@ actually offered, recorded per universe, so changing or removing the configured
 intake cannot release an intake a universe already holds a link to. Approving
 SHALL resolve the pending request before recording the consent, so a losing or
 failed resolution never leaves an active consent behind a request nobody answered.
+
+#### Scenario: Recovery after Clear or Deny still requires the owner
+- **WHEN** an agent raises a replacement ask after the owner cleared or declined the previous ask
+- **THEN** a bearer answer is refused without granting consent or resolving the replacement, and the owner can approve it through the protected session
 
 #### Scenario: The agent approves the sink for itself
 - **WHEN** it calls the channel-approval verb with the `patch_intake` sink, under either the `sink` or `channel_type` key
@@ -102,8 +113,12 @@ The rail read SHALL carry, when an intake is configured, the intake's
 `receiver_id`, its display label, whether the grant is held, and how to proceed.
 Served guidance SHALL state that filing a patch request involves no token, URL
 or credential, SHALL describe filing one when the grant is held, and SHALL
-direct a universe without the grant to the already-seeded request rather than to
-a connection or credential ask of its own.
+direct a universe with a pending ask to that request rather than to a connection
+or credential ask of its own. After Clear or Deny, guidance SHALL say that
+nothing is waiting and SHALL NOT autonomously re-ask. Only when the owner asks
+to send reports again may the agent raise one no-field `grant_patch_intake` ask
+for the configured `receiver_id`. Plain Clear and Deny SHALL NOT be described
+as entries on the muted list. The replacement still requires owner-session approval.
 
 #### Scenario: A universe without the grant is asked to report a bug
 - **WHEN** it reads `read_graph target="pending_requests"`

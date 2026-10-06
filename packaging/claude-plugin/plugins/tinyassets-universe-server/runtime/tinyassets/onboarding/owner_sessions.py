@@ -65,7 +65,7 @@ def lookup(cookie):
         return dict(row) if row else None
 
 
-def require(request, *, owner=None):
+def require(request, *, owner=None, optional=False):
     from tinyassets.onboarding import _same_origin_json, app_config
 
     if not _same_origin_json(request, app_config()["resource"]):
@@ -74,6 +74,8 @@ def require(request, *, owner=None):
     if request.headers.get("origin") != f"{origin.scheme}://{origin.netloc}":
         raise PermissionError("Exact protected origin required.")
     session = lookup(getattr(request, "cookies", {}).get(COOKIE, ""))
+    if session is None and optional:
+        return None
     if session is None:
         raise PermissionError("Sign in to the protected owner view to approve.")
     if owner is not None and json.loads(session["identity_json"])["user_id"] != owner:
@@ -87,7 +89,19 @@ def revoke(cookie):
 
 
 def revoke_owner(owner):
-    with store() as conn:
+    from tinyassets.api.helpers import _base_path
+    from tinyassets.connection_oauth.pkce import flows_db
+    from tinyassets.onboarding.inline_model_connect import flows
+
+    # Cancel the authority captured at begin, including cookie-less callbacks.
+    with flows_db(_base_path()) as (conn, _):
+        for table in ("hosted_model_flows", "connection_oauth_flows"):
+            conn.execute(f"DELETE FROM {table} WHERE owner_user_id=?", (owner,))  # noqa: S608
+    with flows() as conn:
+        conn.execute(
+            "UPDATE inline_model_flows SET status='cancelled',sealed=? "
+            "WHERE owner=? AND status IN ('waiting','ready')", (b"", owner),
+        )
         rows = conn.execute("SELECT session_hash,identity_json FROM owner_sessions").fetchall()
         conn.executemany(
             "DELETE FROM owner_sessions WHERE session_hash=?",
