@@ -81,7 +81,7 @@ ERROR_CLASSES = frozenset({
     "PermissionError", "GrantResolutionError", "AmbiguousProxyOutcome",
     "OutboundDeadlineExceeded", "ConnectionAuthorizationError", "ProxyRequestError",
     "SsrfValidationError", "fenced", "duplicate", "expired", "refused",
-    "InferenceUsageStopped", "ProviderAuthorityHeldError",
+    "InferenceUsageStopped", "InferenceUsageRequired", "ProviderAuthorityHeldError",
 })
 
 

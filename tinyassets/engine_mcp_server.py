@@ -1622,6 +1622,25 @@ _WRITE_GRAPH_CONNECTIONS_CHAPTER = """\
     failure this replaces: you are not being careful, you are making them
     answer the same question in three shapes.
 
+    **Inference recovery (including a second-model review).** A direct POST to
+    a model connection can fail with ``InferenceUsageRequired``: "HTTP inference
+    requires a parent usage reference" (older brokers said "inference usage
+    authority refused"). This is missing accounting, not a request to extend
+    the HTTP grant. Do not retry the POST or ask the owner to approve an
+    accounting bypass. Build a ``prompt_template`` node and run it through
+    ``run_graph``; the model router supplies its parent usage reference.
+    Read ``model_options`` and the owner's model preferences, then use the
+    node's ``llm_policy`` to select the approved review model. Read back the
+    saved branch before running it and the run output before claiming a review.
+    If the selected model needs owner access, raise a fieldless pending_request
+    with action ``type: bind_model_access``, the actual ``agent_binding_id``,
+    ``expected_revision``, ``provider`` and complete ``model_access`` from that
+    binding. Wait for the owner's answer. If the connection itself has no model
+    use, use the existing ``connect`` ask with ``uses.model`` and the real wire,
+    models and billing declaration. Never request a new key merely to fix
+    missing accounting. An invalid or closed usage reference is a platform
+    failure to report, not permission to mint your own reference.
+
     **If you ALREADY hold a key for that destination, do not ask for it again.**
     Check ``read_graph target="connections"`` first. To widen an existing grant
     the action is ``extend_http`` on the same destination — new endpoints only,
