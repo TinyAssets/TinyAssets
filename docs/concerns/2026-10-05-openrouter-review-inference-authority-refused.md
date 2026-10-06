@@ -29,8 +29,8 @@ then proves an accounted call on the same grant succeeds. The change preserves
 the guard and carries `InferenceUsageRequired` with fixed recovery instructions
 instead of the generic dead end. The on-demand connections handbook directs an
 agent to a prompt-template review node through run_graph and, only when model
-access is absent, the existing fieldless `bind_model_access` owner ask (or a
-model-use connect ask when the connection itself lacks that use).
+access is absent, the existing fieldless `bind_model_access` owner ask, preserving
+the other accepted providers. It does not ask for the existing key again.
 
 The historical founder call has not been replayed against production, so this
 is a reproduced cause consistent with the report, not proof of that specific

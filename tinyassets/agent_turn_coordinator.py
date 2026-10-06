@@ -875,7 +875,7 @@ class AgentTurnCoordinator:
             if not self._free_source_refusal(boundary, window=False):
                 return
             self.router.cool_source(
-                failed.connection_id, retry_after_s=boundary.retry_after_s,
+                failed.connection_id, owner=self.owner, retry_after_s=boundary.retry_after_s,
                 reason=boundary.failure_class or "",
             )
         except Exception:  # noqa: BLE001 - cooling is hygiene, never the failure

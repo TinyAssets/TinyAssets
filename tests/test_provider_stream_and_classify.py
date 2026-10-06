@@ -1128,6 +1128,7 @@ def _bound(provider: str = "claude-code", role: str = "writer") -> dict:
     from tinyassets.providers.base import UniverseContext
 
     carrier = MagicMock(spec=ProviderInvocationCarrier)
+    carrier._receipt = MagicMock(principal_id="owner")
     carrier.provider = provider
     carrier.role = role
     carrier.operation = "run_graph"
@@ -1168,7 +1169,7 @@ class TestRouterCooldownMap:
         with pytest.raises(AllProvidersExhaustedError) as ei:
             await router.call("writer", "prompt", "system", **_bound())
 
-        assert quota.available("claude-code") is True  # NOT cooled
+        assert quota.available("claude-code", owner="owner") is True  # NOT cooled
         assert ei.value.failure_class == "provider_idle_timeout"
 
     @pytest.mark.asyncio
@@ -1179,7 +1180,7 @@ class TestRouterCooldownMap:
         with pytest.raises(AllProvidersExhaustedError) as ei:
             await router.call("writer", "prompt", "system", **_bound())
 
-        assert quota.available("claude-code") is True
+        assert quota.available("claude-code", owner="owner") is True
         assert ei.value.failure_class == "interactive_deadline"
 
     @pytest.mark.asyncio
@@ -1204,8 +1205,8 @@ class TestRouterCooldownMap:
         with pytest.raises(AllProvidersExhaustedError) as ei:
             await router.call("writer", "prompt", "system", **_bound())
 
-        assert quota.available("claude-code") is False  # cooled
-        remaining = quota.cooldown_remaining("claude-code")
+        assert quota.available("claude-code", owner="owner") is False  # cooled
+        remaining = quota.cooldown_remaining("claude-code", owner="owner")
         assert 25 <= remaining <= 32  # honors retry_after (+1s margin)
         assert ei.value.failure_class == "provider_rate_limited"
 
@@ -1219,8 +1220,8 @@ class TestRouterCooldownMap:
         with pytest.raises(AllProvidersExhaustedError):
             await router.call("writer", "prompt", "system", **_bound())
 
-        assert quota.available("claude-code") is False
-        assert 3 <= quota.cooldown_remaining("claude-code") <= 10
+        assert quota.available("claude-code", owner="owner") is False
+        assert 3 <= quota.cooldown_remaining("claude-code", owner="owner") <= 10
 
 
 # ---------------------------------------------------------------------------

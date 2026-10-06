@@ -87,6 +87,7 @@ def _router_with_all_providers() -> tuple[
 
 def _bound_call(router, *, provider: str, allowed_providers):
     carrier = MagicMock(spec=ProviderInvocationCarrier)
+    carrier._receipt = MagicMock(principal_id="owner")
     carrier.provider = provider
     carrier.role = "writer"
     carrier.operation = "run_graph"

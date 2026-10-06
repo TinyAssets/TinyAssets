@@ -436,7 +436,7 @@ def test_a_spent_source_is_cooled_once_the_nodes_order_runs_out(
     assert record["status"] == "failed"
     router = call_module.get_provider_router()
     assert router is not None
-    assert router._quota.cooldown_remaining(provider) > 0, (
+    assert router._quota.cooldown_remaining(provider, owner=A_OWNER) > 0, (
         "a source that refused every model was left hot"
     )
 
@@ -458,7 +458,7 @@ def test_a_source_that_still_has_a_sibling_is_not_cooled_mid_node(
     assert record["status"] == "completed", record["error"]
     router = call_module.get_provider_router()
     assert router is not None
-    assert router._quota.cooldown_remaining(provider) == 0
+    assert router._quota.cooldown_remaining(provider, owner=A_OWNER) == 0
 
 
 def test_a_5xx_does_not_replay_the_node_on_another_model(
@@ -518,7 +518,7 @@ def test_a_withheld_cooldown_is_settled_even_when_the_node_raises(
     assert len(calls) == 2, calls
     router = call_module.get_provider_router()
     assert router is not None
-    assert router._quota.cooldown_remaining(provider) > 0, (
+    assert router._quota.cooldown_remaining(provider, owner=A_OWNER) > 0, (
         "a node that raised between attempts left its source hot"
     )
 

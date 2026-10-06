@@ -1635,9 +1635,8 @@ _WRITE_GRAPH_CONNECTIONS_CHAPTER = """\
     If the selected model needs owner access, raise a fieldless pending_request
     with action ``type: bind_model_access``, the actual ``agent_binding_id``,
     ``expected_revision``, ``provider`` and complete ``model_access`` from that
-    binding. Wait for the owner's answer. If the connection itself has no model
-    use, use the existing ``connect`` ask with ``uses.model`` and the real wire,
-    models and billing declaration. Never request a new key merely to fix
+    binding. Preserve the other accepted providers. Wait for the owner's answer.
+    Never request a new key merely to fix
     missing accounting. An invalid or closed usage reference is a platform
     failure to report, not permission to mint your own reference.
 
