@@ -574,6 +574,10 @@ def _auth_challenge_path(path: str) -> bool:
     """
     if path in _DISCOVERY_PATHS:
         return False
+    from tinyassets.onboarding.public_run import public_path
+
+    if public_path(path):
+        return False
     if path.startswith("/app/model-callback/"):
         from tinyassets.onboarding.hosted_model_auth import is_callback_path
 
