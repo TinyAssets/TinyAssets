@@ -20,3 +20,16 @@ Hosted browser cases and the no-skip assertion passed in
 The PR records the review receipt and final evidence. Directory provenance does
 not authorize hooks: harness control still owns activation and safe file reads.
 Task 2.3 remains deliberately unchecked; this is not a deployment claim.
+
+CI repair (2026-10-05, PR #4515): merged `origin/main` before repair and
+rechecked before push. Job `112088492334` shows the request-continuations thread
+calling the test's process-wide fake `time.sleep(5)` and raising `StopLoop`.
+The extracted maintenance loop now receives a private import scope for its
+clock and update-maintenance dependency. All prior assertions remain; update
+failure isolation, update call counts and unchanged process sleep are asserted.
+No runtime or static prompt changes; Playwright imports remain test/fixture-local.
+Linux oracle: 118 passed, zero skips (delivery account deletion/reservations,
+update maintenance, static prompt budgets, agent templates and system Chromium
+browser). Ruff and plugin rebuild/import probe passed. Claude cross-family
+review: APPROVE, no floor/correctness findings; lead AGREE. Hygiene: 0 removed,
+0 tampering. Reuse the existing draft PR; task 2.3 remains unchecked.
