@@ -1,5 +1,7 @@
 # Current delivery: D72 local git_bridge through the bounded launcher
 
+D72 implementation pushed at **93c6dd98b2**; remote SHA verified. Hygiene:
+3 tests added, 0 removed, 0 tampering findings.
 Started from 340318fe4d with the requested ff-only pull (already current).
 All git_bridge subprocess sites now route through D71's authenticated pinned
 workspace-git cell when the bounded client is installed. Selected capability
@@ -30,6 +32,11 @@ Acceptance (all native probe exits 0):
 - `python scripts/linux_oracle.py -- tests/test_git_bridge.py tests/test_role_git.py -q -rs`
   **24 passed, zero skips**. Targeted Ruff, mirror parity and strict OpenSpec
   validation pass. Full Ruff retains 55 baseline findings.
+- Affected backend caller suite: `python scripts/linux_oracle.py --
+  tests/test_backend_factory.py tests/test_git_author_identity.py
+  tests/test_outcome_gate_git_backend.py tests/test_storage_phase7_backend.py
+  tests/test_storage_phase7_git_integration.py tests/test_storage_git_commit_failure.py
+  -q -rs`: **73 passed, zero skips**.
 
 Cross-family review via peer-agents: **AGREE** with the correctness finding that
 out-of-scope catalog probes must return git-disabled rather than raising through
