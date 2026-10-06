@@ -20,6 +20,8 @@ PR #4519 remains draft. `origin/main` was fetched and merged before repair (alre
 - Gate selection: `python scripts/affected_tests.py --gate --base origin/main` returns ALL. Advisory selection also returns ALL because auth middleware is in conftest import closure.
 - Full CI required runner and supplementary inventory/guidance/storage runs are in progress. No full-green claim until exact outcomes are recorded.
 - Plugin rebuild and import probe pass. Ruff checked across changed Python files.
-- Claude cross-family review dispatched through peer-agents, pending.
+- Claude cross-family review: ADAPT, one finding AGREE. The `_run` split moved owner initialization out of the method the learned-catalog authority guard inspects. Restored `self.owner = self._check_scope()` at the start of `_run`; no guard edits. Its nine tests pass locally; the full Linux run was restarted as the six CI shards with this correction. Reviewer verified the agreed one-line correction and returned APPROVE; no additional findings. Review and disposition confirmation: `review-k1-merge-queue-claude.md`.
+- Supplement: every test file named inventory/guidance/storage, 552 passed, zero skips (6 deprecation warnings).
+- Hygiene: 74 added test functions, 0 removed, 0 tampering.
 
 This repair does not claim deployed SHA or real-user acceptance. No guard was removed, skipped, xfailed or weakened. The only guard edit extends the exact route inventory with a POST assertion.
