@@ -637,3 +637,34 @@ Only ext4 and tmpfs are accepted; every other filesystem refuses.
   profile. The daemon service runs `seccomp=unconfined` (compose.yml), the same
   as the probe. Under a default profile, migration refuses loudly rather than
   misattributing provenance.
+
+## U2 continuation: full coordinator and unchanged old CMD rollback proof
+
+D214/D215/D217 remain closed. Root Linux oracle migration selection passed three
+consecutive times: 161/161/161, zero skips (2026-10-05 local date).
+
+The production Dockerfile now installs the metadata, inventory and coordinator
+helpers alongside the owner/egress helpers. The privileged-chain gate checks
+all five. `scripts/role_volume_rollback_probe.py` pins both images, allocates a
+fresh named volume, runs full forward/reverse dry/apply/repeat, allocates the
+owner through the retired broker, and creates a real 0700/0600 owner file.
+It then runs the OLD image's unmodified ENTRYPOINT and CMD, as 1001:1001 with
+zero capabilities and no work groups. That process serves HTTP and passes
+`ta-op pulse`; old-image uid 1001 reads/writes/deletes the engine-created file.
+
+PASS receipt: old_cmd_boot=true, old_healthcheck=true, owner_tree_rollback=true.
+Candidate: sha256:96669aed7c51ce455ce2684df0ffd27ad8fb9400362470ff345b583abc5e9c11.
+Old baseline (664a4361e7):
+sha256:7d30057f0d2f6a6259b44ee7164831d2c1919697c2d9cae55512051909e585d4.
+The fixture uses an internal-only Docker network with a synthetic metadata
+server, synthetic canary/operator and release receipt. No host route, published
+port, production volume, production secret or cloud credential is used. This
+is image compatibility evidence, not a production deployment/provenance proof.
+The old startup logs nonfatal staging sweeps denied on the retained private
+.broker and .role-owner-migration directories; their permissions stay private.
+Initial probe attempts exposed missing synthetic environment/auth/release
+fixtures; those fixture inputs are now explicit. No application gate changed.
+Ruff passes. D217 code and tests are untouched.
+Affected root-oracle selection: tests/test_privileged_chain.py,
+tests/test_dockerfile_shape.py, tests/test_converse_turn_cost.py:
+51 passed, zero skips. Production Dockerfile build and chain validation pass.
