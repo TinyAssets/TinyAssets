@@ -34,6 +34,10 @@ Delivery SHALL recheck the recorded owner and target binding; removed or retired
 - **WHEN** a request has no recorded asker, from before provenance or created without an admin identity
 - **THEN** only the sole admin or the creator of the asking binding may answer it and becomes its recorded owner; any other caller is refused and nothing is written
 
+#### Scenario: Unrecorded asker with no sole owner
+- **WHEN** a request has no recorded asker and neither a sole admin nor an admin who created the asking binding owns it
+- **THEN** every answer, decline and reply is refused with `unrecorded_asker_ambiguous` and an explanation, while any admin may dismiss it; the dismissal delivers nothing to any agent
+
 #### Scenario: Caller-supplied target
 - **WHEN** an answer or reply carries its own `agent`, `agent_id`, owner or origin
 - **THEN** those fields are ignored and delivery uses only the stored origin

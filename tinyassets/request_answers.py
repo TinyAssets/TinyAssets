@@ -169,27 +169,38 @@ def destination(home, origin):
                         "this answer is routed to main.")
 
 
-def _owns_unrecorded(home, agent, actor):
-    """Whether ``actor`` is unambiguously the owner of an ask with no recorded asker.
+class UnrecordedAskerAmbiguous(PermissionError):
+    """An admin met an ask whose asker was never recorded and has no sole owner.
 
-    Only the sole admin, or the creator of the asking binding. Being any admin
-    is not enough: another admin's attempt must never stamp itself as owner.
+    Answering would have to guess which owner's agent asked, so it is refused;
+    any admin may still dismiss the card, which delivers nothing.
+    """
+
+    detail = ("This older request can't be answered safely because it doesn't "
+              "record which agent asked. Dismiss it, or ask your agent again.")
+
+
+def _unrecorded_owner(home, agent):
+    """The unambiguous owner of an ask with no recorded asker, else ``None``.
+
+    Only the sole admin, or the admin who created the asking binding. Being any
+    admin is not enough: another admin's attempt must never stamp itself as owner.
     """
     from tinyassets.custom_agents import _agent_connect
     from tinyassets.daemon_server import list_universe_acl
 
     admins = {row.get("actor_id") for row in list_universe_acl(home.parent, universe_id=home.name)
               if row.get("permission") == "admin"}
-    if not actor or actor not in admins:
-        return False
-    if admins == {actor}:
-        return True
+    if len(admins) == 1:
+        return next(iter(admins))
     if agent == "main":
-        return False
+        return None
     with _agent_connect(home.parent) as conn:
         binding = conn.execute("SELECT created_by,universe_id FROM agent_bindings "
                                "WHERE agent_binding_id=?", (agent,)).fetchone()
-    return bool(binding) and (binding[0], binding[1]) == (actor, home.name)
+    if binding and binding[1] == home.name and binding[0] in admins:
+        return binding[0]
+    return None
 
 
 def check(home, row):
@@ -205,7 +216,10 @@ def check(home, row):
         # Pre-provenance rows retain their recorded agent. Never guess from
         # the currently selected chat or accept a target in the answer.
         agent = row.get("agent") or "main"
-        if not _owns_unrecorded(home, agent, actor):
+        owner = _unrecorded_owner(home, agent)
+        if owner is None and _admin(home, actor):
+            raise UnrecordedAskerAmbiguous("request_unrecorded_asker_ambiguous")
+        if not actor or actor != owner:
             raise PermissionError("request_owner_changed")
         origin = capture(home, agent)
     if not actor or actor != origin.get("owner"):

@@ -326,22 +326,78 @@ def test_co_admin_attempt_never_stamps_an_unrecorded_ask(world):
     assert (received["owner"], received["agent"]) == (OWNER, agent)
 
 
-@pytest.mark.parametrize("shape", ["values", "reply"])
-def test_co_admin_cannot_answer_an_unrecorded_main_ask(world, shape):
-    """Review 4532 r2 probe 2: the co-admin's answer was delivered as their own."""
+def deliveries(home):
+    with closing(store._db(home)) as conn:
+        return conn.execute("SELECT count(*) FROM request_answer_deliveries").fetchone()[0]
+
+
+@pytest.mark.parametrize("actor", [OWNER, OTHER])
+@pytest.mark.parametrize("shape", ["values", "reply", "declined"])
+def test_co_admin_cannot_answer_an_unrecorded_main_ask(world, actor, shape):
+    """Review 4532 r2 probe 2, and the explained refusal from its final review."""
     home, _ = world
     row = ask(home)
     unrecorded(home, row)
     co_admin(home)
-    payload = ({"values": {"reply": "steal"}} if shape == "values"
-               else {"reply": "steal", "reply_id": "cross-owner"})
-    with as_other():
+    payload = {"values": {"reply": "Mine"}, "reply": {"reply": "Mine", "reply_id": "amb"},
+               "declined": {"decision": "declined"}}[shape]
+    with identity_context(Identity(user_id=actor, username=actor,
+                                   capabilities=["tinyassets.universe.write"])):
         result = answer_request(universe_id=home.name,
                                 payload={"request_id": row["request_id"], **payload})
+    assert result["error"] == "unrecorded_asker_ambiguous"
+    assert "doesn't record which agent asked" in result["detail"]
+    assert result["request_pending"] is True
+    stored = store.get_request(home, row["request_id"])
+    assert (stored["status"], stored["asking_context"]) == ("pending", {})
+    assert deliveries(home) == 0
+    assert drain(home) == []
+
+
+@pytest.mark.parametrize("actor", [OWNER, OTHER])
+def test_any_admin_dismisses_an_ambiguous_unrecorded_ask_delivering_nothing(world, actor):
+    home, _ = world
+    row = ask(home)
+    unrecorded(home, row)
+    co_admin(home)
+    with identity_context(Identity(user_id=actor, username=actor,
+                                   capabilities=["tinyassets.universe.write"])):
+        result = answer_request(universe_id=home.name, payload={
+            "request_id": row["request_id"], "dismiss": True})
+    assert result["status"] == "dismissed", result
+    stored = store.get_request(home, row["request_id"])
+    assert (stored["status"], stored["asking_context"]) == ("dismissed", {})
+    assert deliveries(home) == 0
+    assert drain(home) == []
+
+
+def test_co_admin_cannot_dismiss_an_unrecorded_ask_with_a_known_owner(world):
+    """The binding's creator owns it unambiguously, so a co-admin is cross-owner."""
+    home, agent = world
+    row = ask(home, agent)
+    unrecorded(home, row)
+    co_admin(home)
+    with as_other():
+        result = answer_request(universe_id=home.name, payload={
+            "request_id": row["request_id"], "dismiss": True})
     assert result["error"] == "not_found"
     stored = store.get_request(home, row["request_id"])
     assert (stored["status"], stored["asking_context"]) == ("pending", {})
     assert drain(home) == []
+
+
+def test_non_admin_cannot_dismiss_an_ambiguous_unrecorded_ask(world):
+    home, _ = world
+    row = ask(home)
+    unrecorded(home, row)
+    co_admin(home)
+    stranger = "stranger"
+    with identity_context(Identity(user_id=stranger, username=stranger,
+                                   capabilities=["tinyassets.universe.write"])):
+        result = answer_request(universe_id=home.name, payload={
+            "request_id": row["request_id"], "dismiss": True})
+    assert result["error"] == "not_found"
+    assert store.get_request(home, row["request_id"])["status"] == "pending"
 
 
 def test_sole_admin_still_answers_an_unrecorded_ask(world):
