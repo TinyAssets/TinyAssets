@@ -44,3 +44,41 @@ its inherited changes are not claimed as L12 implementation. No tests or prompt
 budgets were changed. Main specs are not synced to claim an unimplemented feature.
 No deployment, real-user browser connect/cancel/revoke proof or public canary
 is claimed. Task 1.8 remains open until the actual implementation is deployed.
+
+## Verification
+
+- `openspec validate browser-login-custody --strict`: passed.
+- `git diff --check`: passed.
+- Ruff on all existing Python paths changed against the stacked base, excluding
+  the generated mirror: passed (including the required main merge).
+- `python packaging/claude-plugin/build_plugin.py`: 634 files staged, import
+  probe passed, no generated diff.
+- L12-only hygiene (`--base 70742af8d3 --head cdc98985f7`): 0 added,
+  0 removed, 0 tampering. The broader stacked PR check is recorded separately.
+- Linux oracle attempted with `MSYS_NO_PATHCONV=1` and arguments
+  `-- -q tests/test_role_preview.py tests/test_ui_preview.py --basetemp /tmp/b`.
+  First run exited 1: `error waiting for container: unexpected EOF`. One retry
+  exited 1 because the Docker Linux engine named pipe was absent. No pytest
+  result was produced; this is not a pass or a skip. No Docker restart or
+  infrastructure change was attempted.
+
+Draft PR: https://github.com/TinyAssets/TinyAssets/pull/4512.
+
+Full stacked PR hygiene against `origin/feat/per-role-uid-split`: 254 added
+tests, 0 removed, 0 tampering. Added tests/product code belong to the inherited
+main merge; L12 itself remains documentation-only.
+
+## Cross-family review
+
+Claude via `peer-agents` reviewed commit `cdc98985f7` and inspected the cited
+implementation and prerequisite tasks. Wrapper exited 0; verdict **APPROVE**,
+dependency assessment **AGREE**, no floor/correctness findings. The reviewer
+confirmed that preview is offline, the launcher lacks a browser-session kind,
+and D5/MCP prerequisites are unfinished. The founder contract is consistent with
+credential blindness and no false completion claim was found.
+
+Nonblocking terminology note: older prohibitions name DOM snapshots while the
+new agent surface is accessibility-only. Those prohibitions still apply to any
+DOM-derived artifact and do not authorize a raw-DOM channel; retain them alongside
+the stricter new requirement. No rebase is authorized: continue merging the stack
+base, and retarget the draft when that base lands.
