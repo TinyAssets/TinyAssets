@@ -133,6 +133,49 @@ with identity_context(Identity('carol', 'carol')):
         lambda: role_decoder.decode(png, 'image/png', root / 'alice-second'))
 for path in (root / '.broker/state/owner-identities.db',):
     evidence['daemon_cannot_open_broker_log'] = refused(path.read_bytes)
+# Application path (task 6): a new user's first home through first contact,
+# _universe_impl and admit_center, then a real decoder cell in it.
+from tinyassets.api.first_contact import ensure_founder_home
+from tinyassets.auth.middleware import auth_middleware, set_provider
+from tinyassets.auth.provider import AuthProvider
+dave = Identity('dave', 'dave', capabilities=['read', 'write', 'costly', 'submit_request',
+                                              'list'])
+class Signed(AuthProvider):  # the authenticated request a real connector carries
+    def resolve_token(self, token): return dave if token == 'ok' else None
+    def is_auth_required(self): return False
+    def resolve_always_writes(self): return True
+    def register_client(self, metadata): return {'client_id': 't', **metadata}
+    def create_authorization(self, *a, **k): return 'c'
+    def exchange_code(self, *a, **k): return None
+set_provider(Signed()); auth_middleware('ok')
+with identity_context(dave):
+    home = ensure_founder_home(root, 'dave')
+    assert home and (root / home / 'soul.md').is_file(), home
+    fd = os.open(root / home, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try: assert read_label(fd) == canonical_label(owner_identity(root, principal='dave').uid)
+    finally: os.close(fd)
+    done = role_decoder.decode(png, 'image/png', root / home)
+    assert done.returncode == 0 and done.cell['caps'] == 'zero'
+evidence['first_contact_home_admitted'] = dict(center=home, decoder_cell_uid=done.cell['uid'])
+# DA6 through real IPC: pass one, the daemon pass, retire (twice: resume), finish.
+from tinyassets import role_owner_delete as deletion
+token = '0123456789abcdef' * 2
+with identity_context(Identity('carol', 'carol')):
+    # U1's pass-one cell predates U2's D218 change that retains daemon
+    # directories the owner may only search; the daemon's own empty previews
+    # goes first here. D218's daemon pass and its intent store live on U2.
+    os.rmdir(root / 'carol-home' / 'previews')
+    deletion.begin(root / 'carol-home', token=token)
+    os.rmdir(root / 'carol-home')  # the daemon pass: the tree is gone
+    retired = deletion.retire(root / 'carol-home', token=token)
+    assert deletion.retire(root / 'carol-home', token=token) == retired
+    deletion.finish(root / 'carol-home', token=token)
+evidence['retired_cell_refused'] = refused(lambda: client.start_cell(
+    kind='ui-preview', principal='carol', command_center='carol-home',
+    identity=owner_identity(root, principal='carol')))
+evidence['retired_name_never_readmitted'] = refused(
+    lambda: admit_center(root, principal='carol', center='carol-home'))
+assert not (root / 'carol-home').exists()
 evidence['daemon_caps_zero'] = zero_caps()
 print(json.dumps(dict(evidence, startup_activated=False)), flush=True)
 assert all(value for key, value in evidence.items() if isinstance(value, bool)), evidence

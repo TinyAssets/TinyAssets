@@ -73,6 +73,29 @@ id, complete or foreign id never resumed, no write site or implicit parent can
 mkdir a root, legacy unchanged); existing test_first_contact,
 test_a_universe_needs_an_owner, test_api, link-free and IO-guard suites pass.
 
+## Task 7: deletion retires the binding (DA6)
+
+`role_owner_delete.retire(universe_dir, token=)` runs after the daemon pass
+removed the tree and before `finish`: broker `retire` row (an existing row is
+returned), then mapper `RETIRE` (bound: exact fence, no running cell; unbound:
+verified no-op). The fence outlives the binding until `finish`, which now finds
+it by its exact tuple. tests/test_admission_deletion_retire.py wires the real
+broker log to the real mapper handlers: normal path, a crash after the row and
+after the unbind each resume to one retire row, an unbound (post-restart or
+missing-list) retire, and a non-quiescent bound retire. **U2 lane:** D218's
+`role_owner_tree_deletion.delete_center` (U2 only) must call
+`role_owner_delete.retire` before `finish` on the normal path, on the
+tree-gone resume, and for a center on `volume.json` `missing` (today that one
+falls through to the legacy traversal).
+
+Probe `tinyassets-uid-adm:t7` adds: a new user's first home through
+`ensure_founder_home` -> `_universe_impl` -> `admit_center` (canonical label,
+decoder cell inner 4, zero caps), and carol-home deleted through real IPC
+(pass one, daemon removal, retire twice, finish), after which a cell refuses
+and the name is never re-admitted. U1's pass-one cell predates U2's D218 change
+that retains daemon directories the owner may only search, so the probe's
+daemon removes its own empty `previews` first.
+
 # Current U1 delivery: D87 package egress relay and caller-owned lifetime
 
 D86 is pushed at 4aad725f28. D87 closes the two gaps D84 left for K1's
