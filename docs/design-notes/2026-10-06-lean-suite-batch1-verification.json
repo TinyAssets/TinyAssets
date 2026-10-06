@@ -1,0 +1,194 @@
+{
+  "snapshot": "2d725d2802",
+  "cases": 1914,
+  "passed": 1868,
+  "failed": [
+    {
+      "node": "tests.test_deploy_prod_workflow::test_manual_unsafe_fence_recovery_is_separate_and_source_bound",
+      "message": "AssertionError: assert 'unsafe_fence_source_run_id' in {'image_tag': {'description': 'Image tag to deploy (default = build head / current main short-SHA)', 'required': False...l deploys install it set-once and fail closed on a mismatch.', 'required': False, 'type': 'boolean', 'default': False}}"
+    },
+    {
+      "node": "tests.test_deploy_prod_workflow::test_manual_image_tag_is_env_bound_and_validated_before_use",
+      "message": "AssertionError: deploy job must include a 'Resolve image tag' step\nassert None is not None"
+    },
+    {
+      "node": "tests.test_deploy_prod_workflow::test_resolved_digest_is_canonical_before_any_host_write",
+      "message": "AssertionError: deploy job must include a 'Resolve image tag' step\nassert None is not None"
+    },
+    {
+      "node": "tests.test_deploy_prod_workflow::test_capture_previous_uses_configured_and_running_digest_observations",
+      "message": "AssertionError: deploy job must include a 'Capture previous image tag (for rollback)' step\nassert None is not None"
+    },
+    {
+      "node": "tests.test_deploy_prod_workflow::test_capture_previous_transports_bounded_prior_receipt_read_only",
+      "message": "AssertionError: deploy job must include a 'Capture previous image tag (for rollback)' step\nassert None is not None"
+    },
+    {
+      "node": "tests.test_deploy_prod_workflow::test_capture_previous_does_not_emit_untrusted_image_labels_as_outputs",
+      "message": "AssertionError: deploy job must include a 'Capture previous image tag (for rollback)' step\nassert None is not None"
+    },
+    {
+      "node": "tests.test_deploy_prod_workflow::test_canary_step_only_probes_canonical",
+      "message": "AssertionError: Canary step 'Capture current image (for public-canary rollback)' must probe CANARY_URL (canonical)\nassert 'CANARY_URL' in 'set -euo pipefail\\n# What is RUNNING, not what the env file says: after a failed deploy\\n# the env file already names...;\\nesac\\necho \"prev_image=${prev}\" >> \"$GITHUB_OUTPUT\"\\necho \"current prod image (running, digest): ${prev:-<none>}\"\\n'"
+    },
+    {
+      "node": "tests.test_deploy_prod_workflow::test_rollback_step_present",
+      "message": "AssertionError: deploy job must have a 'Rollback on failure' step\nassert False\n +  where False = any(<generator object test_rollback_step_present.<locals>.<genexpr> at 0x71e2a8118f20>)"
+    },
+    {
+      "node": "tests.test_deploy_prod_workflow::test_rollback_runs_always_and_eligibility_keys_to_image_marker",
+      "message": "AssertionError: deploy job must include a 'Rollback on failure' step\nassert None is not None"
+    },
+    {
+      "node": "tests.test_deploy_prod_workflow::test_disk_preflight_runs_before_deploy_image_pull",
+      "message": "StopIteration"
+    },
+    {
+      "node": "tests.test_deploy_prod_workflow::test_disk_preflight_prunes_disposable_state_and_fails_before_restart",
+      "message": "StopIteration"
+    },
+    {
+      "node": "tests.test_deploy_prod_workflow::test_deploy_retires_legacy_workflow_service_before_restart",
+      "message": "assert None is not None"
+    },
+    {
+      "node": "tests.test_deploy_prod_workflow::test_production_marker_is_immediately_before_first_scrub_host_write",
+      "message": "AssertionError: the scrub step needs an id so later always-running steps can consume production_mutation_started even when the SSH write fails\nassert None\n +  where None = <built-in method get of dict object at 0x71e2a87b1c00>('id')\n +    where <built-in method get of dict object at 0x71e2a87b1c00> = {'name': 'Scrub stale cloud env overrides', 'run': 'set -euo pipefail\\nssh -i ~/.ssh/do_deploy -o BatchMode=yes \\\\\\n  ...LIENT_SECRET\" || {\\n  echo \"::error::shared env still contains the retired GITHUB_OAUTH_CLIENT_SECRET\"\\n  exit 1\\n}\\n'}.get"
+    },
+    {
+      "node": "tests.test_deploy_prod_workflow::test_image_marker_is_immediately_before_first_tinyassets_image_write",
+      "message": "StopIteration"
+    },
+    {
+      "node": "tests.test_deploy_prod_workflow::test_rollback_and_terminal_receipt_are_ordered_under_always",
+      "message": "AssertionError: deploy job must include a 'Post-deploy canary \u2014 canonical URL only' step\nassert None is not None"
+    },
+    {
+      "node": "tests.test_deploy_prod_workflow::test_daemon_deploy_owns_exact_public_server_name_assertion",
+      "message": "AssertionError: deploy job must include a 'Post-deploy canary \u2014 canonical URL only' step\nassert None is not None"
+    },
+    {
+      "node": "tests.test_deploy_prod_workflow::test_terminal_receipt_keys_to_production_marker",
+      "message": "AssertionError: deploy job must include a run step containing 'terminal_receipt_result='\nassert None is not None"
+    },
+    {
+      "node": "tests.test_deploy_prod_workflow::test_rollback_emits_safe_defaults_and_final_outputs_before_exit",
+      "message": "AssertionError: deploy job must include a 'Rollback on failure' step\nassert None is not None"
+    },
+    {
+      "node": "tests.test_deploy_prod_workflow::test_terminal_receipt_invokes_pure_helper_and_preserves_atomic_writer",
+      "message": "AssertionError: deploy job must include a run step containing 'terminal_receipt_result='\nassert None is not None"
+    },
+    {
+      "node": "tests.test_deploy_prod_workflow::test_terminal_receipt_never_mutates_the_deployed_image_after_publication",
+      "message": "AssertionError: deploy job must include a run step containing 'terminal_receipt_result='\nassert None is not None"
+    },
+    {
+      "node": "tests.test_deploy_prod_workflow::test_terminal_receipt_summary_python_is_executable",
+      "message": "AssertionError: deploy job must include a run step containing 'terminal_receipt_result='\nassert None is not None"
+    },
+    {
+      "node": "tests.test_deploy_prod_workflow::test_terminal_writer_outputs_are_visible_before_fallible_work",
+      "message": "AssertionError: deploy job must include a run step containing 'terminal_receipt_result='\nassert None is not None"
+    },
+    {
+      "node": "tests.test_deploy_prod_workflow::test_terminal_canary_output_preserves_the_raw_applicable_canary",
+      "message": "AssertionError: deploy job must include a run step containing 'terminal_receipt_result='\nassert None is not None"
+    },
+    {
+      "node": "tests.test_deploy_prod_workflow::test_forward_green_terminal_identity_failure_stays_red_after_publication",
+      "message": "AssertionError: deploy job must include a run step containing 'terminal_receipt_result='\nassert None is not None"
+    },
+    {
+      "node": "tests.test_deploy_prod_workflow::test_deploy_failure_issue_consumes_rollback_and_terminal_outputs",
+      "message": "AssertionError: deploy job must include a 'Rollback on failure' step\nassert None is not None"
+    },
+    {
+      "node": "tests.test_deploy_prod_workflow::test_deploy_failure_issue_rejects_partial_or_contradictory_tuples",
+      "message": "AssertionError: assert 'productionNotStarted' in ''"
+    },
+    {
+      "node": "tests.test_deploy_prod_workflow::test_deploy_failure_issue_has_truthful_bounded_wording",
+      "message": "AssertionError: assert 'Production host write did not start; image rollback was not attempted.' in ''"
+    },
+    {
+      "node": "tests.test_deploy_prod_workflow::test_unsafe_recovery_validates_both_hmac_prerequisites_before_mutation",
+      "message": "KeyError: 'recover-unsafe'"
+    },
+    {
+      "node": "tests.test_deploy_prod_workflow::test_stop_writer_preflight_runs_before_image_mutation",
+      "message": "AssertionError: deploy job must include a 'Transitional task 2.1 stop-writer preflight' step\nassert None is not None"
+    },
+    {
+      "node": "tests.test_deploy_prod_workflow::test_disk_preflight_precedes_every_remote_image_pull",
+      "message": "AssertionError: deploy job must include a 'Preflight droplet disk before image pull' step\nassert None is not None"
+    },
+    {
+      "node": "tests.test_deploy_prod_workflow::test_stop_writer_workflow_invokes_transitional_helper_subcommands",
+      "message": "assert 'scripts/retire_cheat_loop_deploy_fence.py' in 'name: Deploy prod\\n\\n# Fail-safe single-daemon deploy (host directive 2026-08-18). Replaces the\\n# \"retire-cheat-loop...\"\\n            echo \"- image retention: \\\\`${{ steps.retention.outcome }}\\\\`\"\\n          } >> \"$GITHUB_STEP_SUMMARY\"\\n'"
+    },
+    {
+      "node": "tests.test_deploy_prod_workflow::test_stop_writer_deploy_proves_exact_safe_image_and_drains_old_ids",
+      "message": "AssertionError: deploy job must include a 'Transitional task 2.1 stop-writer preflight' step\nassert None is not None"
+    },
+    {
+      "node": "tests.test_deploy_prod_workflow::test_stop_writer_blocks_unsafe_rollback_image",
+      "message": "AssertionError: deploy job must include a 'Transitional task 2.1 stop-writer preflight' step\nassert None is not None"
+    },
+    {
+      "node": "tests.test_deploy_prod_workflow::test_stop_writer_compares_post_deploy_and_post_canary_snapshots",
+      "message": "AssertionError: deploy job must include a 'Transitional task 2.1 prove exact fleet and unchanged receipts' step\nassert None is not None"
+    },
+    {
+      "node": "tests.test_deploy_prod_workflow::test_stop_writer_restores_timers_only_for_safe_fleet_and_uploads_evidence",
+      "message": "AssertionError: deploy job must include a 'Transitional task 2.1 restore restart racers when safe' step\nassert None is not None"
+    },
+    {
+      "node": "tests.test_deploy_prod_workflow::test_terminal_never_reports_deployed_without_exact_cleanup_restoration",
+      "message": "AssertionError: deploy job must include a run step containing 'terminal_receipt_result='\nassert None is not None"
+    },
+    {
+      "node": "tests.test_deploy_prod_workflow::test_cleanup_derives_cutover_only_from_current_run_generation",
+      "message": "AssertionError: deploy job must include a 'Transitional task 2.1 restore restart racers when safe' step\nassert None is not None"
+    },
+    {
+      "node": "tests.test_deploy_prod_workflow::test_recovery_canary_waits_for_the_daemon_instead_of_probing_instantly",
+      "message": "KeyError: 'recover-unsafe'"
+    },
+    {
+      "node": "tests.test_deploy_prod_workflow::test_active_universe_repoint_is_explicit_input_only_and_validated",
+      "message": "AssertionError: assert 'set_active_universe' in {'image_tag': {'description': 'Image tag to deploy (default = build head / current main short-SHA)', 'required': False...l deploys install it set-once and fail closed on a mismatch.', 'required': False, 'type': 'boolean', 'default': False}}"
+    },
+    {
+      "node": "tests.test_deploy_prod_workflow::test_level2_quiesced_restore_is_gated_and_ordered_before_legacy_cleanup",
+      "message": "AssertionError: deploy job must include a 'Transitional task 2.1 restore restart racers when safe' step\nassert None is not None"
+    },
+    {
+      "node": "tests.test_deploy_prod_workflow::test_level2_quiesced_restore_keeps_rollback_and_receipt_tuple_valid",
+      "message": "ValueError: substring not found"
+    },
+    {
+      "node": "tests.test_deploy_prod_workflow::test_level2_quiesced_restore_is_bounded_and_isolated_to_current_run",
+      "message": "AssertionError: deploy job must include a 'Transitional task 2.1 restore restart racers when safe' step\nassert None is not None"
+    }
+  ],
+  "skipped": [
+    {
+      "node": "tests.desktop_install.test_release_workflow::test_windows_lifecycle_supervisor_bounds_and_reports_hung_child",
+      "message": "Windows PowerShell process-tree contract"
+    },
+    {
+      "node": "tests.desktop_install.test_release_workflow::test_windows_lifecycle_supervisor_terminates_escaped_descendants",
+      "message": "Windows inherited descendant-handle contract"
+    },
+    {
+      "node": "tests.test_drop_first_exec_gate::test_gate_would_have_been_red_before_this_change",
+      "message": "base object e4c921820d8c834e974c89435e5031f0e82c60d4 unavailable: fatal: path '.github/workflows/claude-auth-keepalive.yml' does not exist in 'e4c921820d8c834e974c89435e5031f0e82c60d4'"
+    },
+    {
+      "node": "tests.test_runtime_paths::test_the_real_3936_merge_builds",
+      "message": "shallow checkout lacks #3936"
+    }
+  ],
+  "errors": []
+}
