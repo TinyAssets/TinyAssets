@@ -384,6 +384,9 @@ class AgentTurnCoordinator:
         if self.turn is None:
             return
         try:
+            from tinyassets.storage.agent_turn_runner import release
+
+            release(self.context.universe_dir.parent, self.turn.turn_id)
             BOOT.release(self.context.universe_dir.name, self.turn.turn_id)
         except Exception:  # noqa: BLE001 - bookkeeping never replaces the outcome
             _LOG.warning("could not release agent turn boot ownership")
@@ -478,18 +481,19 @@ class AgentTurnCoordinator:
                 self._carry_spent_attempts(exc)
             except Exception:  # noqa: BLE001 - evidence never replaces the failure
                 _LOG.warning("agent turn effects evidence unavailable")
-            # A later pre-intent failure has no uncertain action to preserve.
-            # Keep zero-round roots ready for the writer's one all-skipped retry.
-            if self.turn is not None and self.turn.state == "ready" and self.turn.rounds:
-                try:
-                    self.close_quiescent()
-                except Exception:
-                    _LOG.exception("could not close settled interactive agent progress")
             raise
         finally:
-            if self._owns_request_budget:
-                self.request_budget.close()
-            self._release_turn()
+            try:
+                # A retry starts a fresh root; no returned task owns a ready row.
+                if self.turn is not None and self.turn.state == "ready":
+                    try:
+                        self.close_quiescent()
+                    except Exception:  # noqa: BLE001 - preserve the original failure
+                        _LOG.exception("could not close settled agent turn progress")
+            finally:
+                self._release_turn()
+                if self._owns_request_budget:
+                    self.request_budget.close()
 
     def _daily_budget(self):
         """Refresh advisory evidence without manufacturing provider exhaustion.

@@ -1770,7 +1770,9 @@ async def _handle_turn_interrupt(request: Any) -> Any:
         from tinyassets.api.helpers import _universe_dir
         from tinyassets.bound_requests import stop
         # The live turn must stop even when durable approval controls are busy.
-        count = request_interrupt(identity.user_id, universe_id, agent_id=agent_id)
+        count = await _in_thread(
+            request_interrupt, identity.user_id, universe_id,
+            agent_id=agent_id, base_path=_base_path())
         if (_base_path() / universe_id).is_dir():
             await _in_thread(stop, _universe_dir(universe_id), identity.user_id, agent_id)
     except ControlUnavailable as exc:

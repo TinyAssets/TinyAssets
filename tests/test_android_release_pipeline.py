@@ -244,19 +244,23 @@ def test_merged_release_manifest_gate_catches_debuggable_and_version_drift(
     tmp_path: Path,
 ) -> None:
     release = _release()
-    text = _source_manifest().replace(
-        '<manifest xmlns:android="http://schemas.android.com/apk/res/android">',
-        '<manifest xmlns:android="http://schemas.android.com/apk/res/android" '
-        'package="io.tinyassets.app" android:versionCode="27" '
-        'android:versionName="1.4.2">\n'
-        '  <uses-sdk android:minSdkVersion="24" android:targetSdkVersion="36"/>\n'
-        '  <uses-permission '
-        'android:name="io.tinyassets.app.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION"/>',
-    ).replace(
-        "</application>",
-        '<receiver android:name="androidx.profileinstaller.ProfileInstallReceiver" '
-        'android:exported="true" android:permission="android.permission.DUMP"/>\n'
-        "  </application>",
+    text = (
+        _source_manifest()
+        .replace(
+            '<manifest xmlns:android="http://schemas.android.com/apk/res/android">',
+            '<manifest xmlns:android="http://schemas.android.com/apk/res/android" '
+            'package="io.tinyassets.app" android:versionCode="27" '
+            'android:versionName="1.4.2">\n'
+            '  <uses-sdk android:minSdkVersion="24" android:targetSdkVersion="36"/>\n'
+            "  <uses-permission "
+            'android:name="io.tinyassets.app.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION"/>',
+        )
+        .replace(
+            "</application>",
+            '<receiver android:name="androidx.profileinstaller.ProfileInstallReceiver" '
+            'android:exported="true" android:permission="android.permission.DUMP"/>\n'
+            "  </application>",
+        )
     )
     manifest = tmp_path / "AndroidManifest.xml"
     manifest.write_text(text, encoding="utf-8")
@@ -375,6 +379,67 @@ def test_release_workflow_has_fail_closed_release_gates() -> None:
     debug = (ROOT / ".github/workflows/android-build.yml").read_text(encoding="utf-8")
     assert "configure_android_release.py" in debug
     assert "verify_android_release.py" in debug
+
+
+def test_offline_page_is_reachable_in_the_packaged_shell(tmp_path: Path) -> None:
+    mobile = tmp_path / "mobile"
+    assets = mobile / "android/app/src/main/assets"
+    (assets / "public").mkdir(parents=True)
+    (mobile / "www").mkdir()
+    config = (MOBILE / "capacitor.config.json").read_bytes()
+    page = (MOBILE / "www/index.html").read_bytes()
+    (mobile / "capacitor.config.json").write_bytes(config)
+    (mobile / "www/index.html").write_bytes(page)
+    (assets / "capacitor.config.json").write_bytes(config)
+    (assets / "public/index.html").write_bytes(page)
+    verify.verify_offline_page(mobile)
+    verify.verify_offline_page(mobile, generated=True)
+
+    broken = json.loads(config)
+    del broken["server"]["errorPath"]
+    (assets / "capacitor.config.json").write_text(json.dumps(broken), encoding="utf-8")
+    with pytest.raises(ValueError, match="errorPath"):
+        verify.verify_offline_page(mobile, generated=True)
+    (assets / "capacitor.config.json").write_bytes(config)
+    (assets / "public/index.html").write_text("stale page", encoding="utf-8")
+    with pytest.raises(ValueError, match="differs from committed"):
+        verify.verify_offline_page(mobile, generated=True)
+    (assets / "public/index.html").unlink()
+    with pytest.raises(ValueError, match="offline page is missing"):
+        verify.verify_offline_page(mobile, generated=True)
+
+
+@pytest.mark.real_browser
+@pytest.mark.parametrize("online", [False, True])
+def test_offline_try_again_returns_to_live_app_in_same_phone_view(online: bool) -> None:
+    from playwright.sync_api import sync_playwright
+
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch()
+        try:
+            context = browser.new_context(viewport={"width": 360, "height": 640})
+            page = context.new_page()
+            page.goto((MOBILE / "www/index.html").as_uri())
+            context.set_offline(not online)
+            # A failed load can happen even when navigator.onLine says true.
+            retry = page.get_by_role("link", name="Try again", exact=True)
+            assert retry.is_visible()
+            box = retry.bounding_box()
+            assert box and box["height"] >= 48
+            assert 0 <= box["x"] < box["x"] + box["width"] <= 360
+            assert 0 <= box["y"] < box["y"] + box["height"] <= 640
+            assert page.evaluate("document.documentElement.scrollWidth") == 360
+            context.set_offline(False)
+            # Intercept the destination, proving navigation without a production write.
+            page.route("https://tinyassets.io/app", lambda route: route.fulfill(body="Recovered"))
+            history_length = page.evaluate("history.length")
+            retry.click()
+            page.wait_for_url("https://tinyassets.io/app")
+            assert page.locator("body").inner_text() == "Recovered"
+            assert len(context.pages) == 1
+            assert page.evaluate("history.length") == history_length
+        finally:
+            browser.close()
 
 
 def test_release_runbook_version_matches_android_release_json() -> None:

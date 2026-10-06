@@ -163,6 +163,25 @@ def owner_unavailable(base_path: Path, universe_id: str, owner_principal: str) -
     return _runtime_authority_reason(base_path, _Owner(universe_id, owner_principal))
 
 
+def require_supported_executor(base_path: Path, universe_id: str) -> None:
+    """Refuse a known unsupported subscription before promising background work."""
+    from tinyassets.provider_assignment import load_provider_assignment
+    from tinyassets.provider_serving_binding import _is_open_provider
+
+    assignment = load_provider_assignment(base_path, universe_id=universe_id)
+    if assignment is None:
+        return  # ordinary admission reports missing authority
+    providers = [c.provider for c in assignment.candidates] or [assignment.provider]
+    # The serving binding's transport discriminator also works in engine children,
+    # which have no inference router installed. No vendor names or credentials.
+    if providers and not any(_is_open_provider(p) for p in providers):
+        raise activities.ActivityRefused(
+            "This connected model cannot run background activities yet: its native "
+            "tool loop cannot safely pause for your requests. No background job was started. "
+            "Continue this work in chat, or select an engine-inference connection.",
+            kind="activity_executor_unsupported")
+
+
 def start(base_path: Path, universe_id: str, record: dict, generation: int) -> str:
     """Start a run of the Activities branch for ``record``, bind it, return its id.
 
@@ -176,6 +195,7 @@ def start(base_path: Path, universe_id: str, record: dict, generation: int) -> s
 
     base_path = Path(base_path)
     owner = record["owner_principal"]
+    require_supported_executor(base_path, universe_id)
     branch = ensure_branch(base_path, universe_id, owner)
     who = _Owner(universe_id, owner, automation_id=record["activity_id"])
     provider_call = _bind_automation_provider_call(base_path, who)

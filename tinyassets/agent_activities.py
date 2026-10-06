@@ -458,7 +458,8 @@ def transition(universe_dir: Path, activity_id: str, to: str, *,
             (*changes.values(), activity_id),
         )
         record.update(changes)
-        _event(conn, record, event or to, changes["waiting_reason"])
+        _event(conn, record, event or to,
+               record["result_summary"] if to == FAILED else changes["waiting_reason"])
     return record
 
 

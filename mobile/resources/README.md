@@ -2,8 +2,8 @@
 
 - `icon.png` — 1024×1024 source (the TinyAssets badge on the ink ground,
   `#14140f`). Every launcher icon and adaptive foreground is rendered from this.
-- `splash.png` — 2732×2732 source (the badge centred on `#14140f`, matching the
-  loading page and the site ground). Every splash size is a cover-fit centre-crop of this, so editing
+- `splash.png` — 2732×2732 source (the badge centred on `#0f1020`, matching the
+  dark app, bundled offline page and native window). Every splash size is a cover-fit centre-crop of this, so editing
   it changes what ships.
 - iOS uses those two sources directly: `scripts/add_ios_assets.py` replaces the
   generated Xcode asset catalog's 1024×1024 icon and all three 2732×2732 splash
