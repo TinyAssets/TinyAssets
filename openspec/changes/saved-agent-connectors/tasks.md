@@ -2,6 +2,10 @@ Implementation backlog only; dependent work starts after the prerequisites in de
 
 ## 1. Delivery
 
+2026-10-05 assessment: no implementation tasks completed. Exact-revision and
+slot-scoped dispatch require the shared package-cell API; see `delivery.md`,
+`readiness-review.md` and the linked concern. Keep all acceptance items open.
+
 - [ ] 1.1 Consume MCP-lane credential slots, egress and connection lifecycle without implementing another card.
 - [ ] 1.2 Save exact extension revision, declared slots, local bindings and test receipts using existing extension storage.
 - [ ] 1.3 Run safe self-tests or owner-authorized effectful tests; keep failed and changed revisions visibly untested.
