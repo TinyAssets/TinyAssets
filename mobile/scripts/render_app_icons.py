@@ -47,7 +47,8 @@ REPO = MOBILE.parent
 RES = MOBILE / "resources"
 OUT = RES / "android"
 PLAY = REPO / "docs" / "ops" / "play-assets"
-BG = (0x14, 0x14, 0x0F)  # capacitor.config.json android.backgroundColor
+BG = (0x14, 0x14, 0x0F)  # launcher icon and store artwork ground
+SPLASH_BG = (0x0F, 0x10, 0x20)  # app --bg and capacitor shell backgrounds
 
 LAUNCHER = {"mdpi": 48, "hdpi": 72, "xhdpi": 96, "xxhdpi": 144, "xxxhdpi": 192}
 FOREGROUND = {"mdpi": 108, "hdpi": 162, "xhdpi": 216, "xxhdpi": 324, "xxxhdpi": 432}
@@ -91,7 +92,7 @@ def render_sources(
     icon.paste(big, (0, 0), big)
     _save(icon, RES / "icon.png")
 
-    splash = Image.new("RGB", (2732, 2732), BG)
+    splash = Image.new("RGB", (2732, 2732), SPLASH_BG)
     side = 820
     mark = logo.resize((side, side), Image.LANCZOS)
     splash.paste(mark, ((2732 - side) // 2, (2732 - side) // 2), mark)
