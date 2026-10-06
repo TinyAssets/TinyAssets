@@ -212,3 +212,18 @@ recovery with concurrent edits, Undo choices across versions, adoption, links,
 schema mismatch, and forged transaction/blob/notice IDs across owners and centers.
 No public MCP handle changed. Remaining D10 integration, whole-payload budgets,
 four-tool activation, Muse capability proofs and final Claude review remain open.
+
+## K2 continuation: lifecycle review corrections
+
+Claude peer review (read-only, one round, 258 seconds) returned **ADAPT**.
+AGREE: preserve the original install transaction/candidate set across Undo;
+reject adoption from Undo/adopt transactions; retain per-version notice identity;
+bound seed lock waits and make owner GET a read-only committed snapshot. These
+API corrections are covered by regressions. The owner snapshot does not create
+sidecars and does not take the tool boundary lock. The working-tree lifecycle
+and release-consumer oracle passed **39 tests** on Linux Python 3.11.
+
+Consumer integration and other review findings are still being verified. Native
+Codex built-in tools and the opt-in remote thin-loop capability bridge remain
+release blockers; a four-MCP-schema projection is not proof of those actual
+model inventories. Do not merge or deploy this draft as a completed cutover.

@@ -209,3 +209,57 @@ def test_stale_adoption_and_manifest_mutation_refused(tmp_path):
         with pytest.raises(ValueError, match="version changed"):
             seeds.install(bundle(body=b"changed immutable version"))
         assert (root / "AGENTS.md").read_bytes() == b"owner"
+
+
+def test_undo_retains_install_candidates_and_preserved_paths(tmp_path):
+    root = tmp_path / "center"
+    root.mkdir()
+    (root / "AGENTS.md").write_bytes(b"custom")
+    with store(root) as seeds:
+        install = seeds.install(bundle())
+        notice = seeds.notices()[0]
+        seeds.mark_delivered(notice["notification_key"])
+        undo = seeds.undo(install["transaction_id"], request_key="undo")
+        after = seeds.notices()[0]
+        assert after["payload"]["transaction_id"] == install["transaction_id"]
+        assert after["payload"]["paths"] == notice["payload"]["paths"]
+        assert after["delivered"] == 1  # No duplicate version notification.
+        assert after["payload"]["choices"][0]["transaction_id"] == undo["transaction_id"]
+        with pytest.raises(ValueError, match="original seed"):
+            seeds.adopt(undo["transaction_id"], "starter/hooks.md",
+                        expected_hash=None, request_key="wrong-target")
+        seeds.adopt(install["transaction_id"], "starter/hooks.md",
+                    expected_hash=None, request_key="restore-new-version")
+        assert (root / "starter/hooks.md").read_bytes() == b"hooks"
+        assert (root / "AGENTS.md").read_bytes() == b"custom"
+
+
+def test_seed_boundary_has_bounded_wait_and_snapshot_does_not_block(tmp_path):
+    from tinyassets.starter_seeds import seed_boundary, seed_snapshot
+
+    root = tmp_path / "center"
+    with store(root) as seeds:
+        seeds.install(bundle(), fresh=True)
+    with seed_boundary(root):
+        with pytest.raises(TimeoutError, match="busy"):
+            with seed_boundary(root, exclusive=True, timeout=0):
+                pytest.fail("exclusive transaction entered beside a tool")
+        with seed_snapshot(root, owner_id="owner", center_id="center") as snapshot:
+            assert len(snapshot.notices()) == 1
+            with pytest.raises(Exception, match="readonly"):
+                snapshot.db.execute("DELETE FROM seed_binding")
+
+
+def test_snapshot_does_not_provision_and_refuses_wrong_binding(tmp_path):
+    from tinyassets.starter_seeds import seed_snapshot
+
+    root = tmp_path / "center"
+    with seed_snapshot(root, owner_id="owner", center_id="center") as snapshot:
+        assert snapshot is None
+    assert not root.exists()
+    assert not (tmp_path / ".universe-sidecars").exists()
+    with store(root) as seeds:
+        seeds.install(bundle(), fresh=True)
+    with pytest.raises(PermissionError):
+        with seed_snapshot(root, owner_id="other", center_id="center"):
+            pytest.fail("wrong owner read the seed snapshot")

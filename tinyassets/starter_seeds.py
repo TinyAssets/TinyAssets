@@ -82,7 +82,10 @@ def _safe_directory(path: Path) -> None:
         try:
             info = part.lstat()
         except FileNotFoundError:
-            part.mkdir(mode=0o700)
+            try:
+                part.mkdir(mode=0o700)
+            except FileExistsError:
+                pass  # Another bound operation created it; still validate below.
             info = part.lstat()
         if (
             stat.S_ISLNK(info.st_mode)
@@ -102,33 +105,65 @@ def _regular_or_absent(path: Path) -> None:
 
 
 @contextlib.contextmanager
+def seed_boundary(center_root: Path, *, exclusive: bool = False, timeout: float = 5):
+    """Exclude seed transactions from jailed tools and owner file writes."""
+    from tinyassets.providers.provider_jail import UNIVERSE_SIDECARS_DIR
+
+    root = Path(center_root).absolute()
+    _safe_directory(root)
+    sidecar = root.parent / UNIVERSE_SIDECARS_DIR / root.name
+    _safe_directory(sidecar)
+    fd = open_lock_file(sidecar, "starter-seeds.lock", mode=0o600)
+    try:
+        deadline = time.monotonic() + timeout
+        while True:
+            try:
+                if os.name == "nt":
+                    import msvcrt
+                    os.lseek(fd, 0, 0)
+                    msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+                else:
+                    import fcntl
+                    mode = fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH
+                    fcntl.flock(fd, mode | fcntl.LOCK_NB)
+                break
+            except (BlockingIOError, PermissionError):
+                if time.monotonic() >= deadline:
+                    raise TimeoutError("starter file boundary is busy; retry the turn") from None
+                time.sleep(min(0.025, max(0, deadline - time.monotonic())))
+        try:
+            yield sidecar
+        finally:
+            if os.name == "nt":
+                import msvcrt
+                os.lseek(fd, 0, 0)
+                msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(fd, fcntl.LOCK_UN)
+    finally:
+        os.close(fd)
+
+
+@contextlib.contextmanager
 def seed_store(center_root: Path, *, owner_id: str, center_id: str):
     """Open a bound store under the canonical root supplied by the platform.
 
     Caller MUST resolve root/IDs from its authenticated binding, never a tool
     argument. The sidecar is deliberately outside all agent jail mounts.
     """
-    from tinyassets.providers.provider_jail import UNIVERSE_SIDECARS_DIR
-
     root = Path(center_root).absolute()
     if not owner_id or not center_id:
         raise ValueError("authenticated owner and center are required")
-    _safe_directory(root)
-    sidecar = root.parent / UNIVERSE_SIDECARS_DIR / root.name
-    _safe_directory(sidecar)
-    fd = open_lock_file(sidecar, "starter-seeds.lock", mode=0o600)
+    with seed_boundary(root, exclusive=True) as sidecar:
+        with _open_store(root, sidecar, owner_id, center_id) as store:
+            yield store
+
+
+@contextlib.contextmanager
+def _open_store(root, sidecar, owner_id, center_id):
     conn = None
-    locked = False
     try:
-        if os.name == "nt":
-            import msvcrt
-
-            msvcrt.locking(fd, msvcrt.LK_LOCK, 1)
-        else:
-            import fcntl
-
-            fcntl.flock(fd, fcntl.LOCK_EX)
-        locked = True
         path = sidecar / "starter-seeds.sqlite3"
         for suffix in ("", "-wal", "-shm", "-journal"):
             _regular_or_absent(Path(str(path) + suffix))
@@ -139,7 +174,7 @@ def seed_store(center_root: Path, *, owner_id: str, center_id: str):
         if not exists:
             if conn.execute("SELECT 1 FROM sqlite_master").fetchone():
                 raise ValueError("unrecognized seed database; refusing reset")
-            conn.executescript(_SCHEMA)
+            conn.executescript("BEGIN IMMEDIATE;\n" + _SCHEMA)
             conn.execute("INSERT INTO seed_binding VALUES (?,?,1)", (owner_id, center_id))
             conn.commit()
         binding = [tuple(row) for row in conn.execute("SELECT * FROM seed_binding")]
@@ -151,17 +186,41 @@ def seed_store(center_root: Path, *, owner_id: str, center_id: str):
     finally:
         if conn is not None:
             conn.close()
-        if locked:
-            if os.name == "nt":
-                import msvcrt
 
-                os.lseek(fd, 0, 0)
-                msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
-            else:
-                import fcntl
 
-                fcntl.flock(fd, fcntl.LOCK_UN)
-        os.close(fd)
+@contextlib.contextmanager
+def seed_snapshot(center_root: Path, *, owner_id: str, center_id: str):
+    """Read a committed owner snapshot without provisioning or waiting on tools."""
+    from tinyassets.providers.provider_jail import UNIVERSE_SIDECARS_DIR
+
+    root = Path(center_root).absolute()
+    sidecar = root.parent / UNIVERSE_SIDECARS_DIR / root.name
+    for part in (sidecar.parent, sidecar):
+        try:
+            info = part.lstat()
+        except FileNotFoundError:
+            yield None
+            return
+        if not stat.S_ISDIR(info.st_mode) or getattr(info, "st_reparse_tag", 0):
+            raise OSError("unsafe seed storage directory")
+    path = sidecar / "starter-seeds.sqlite3"
+    _regular_or_absent(path)
+    if not path.exists():
+        yield None
+        return
+    for suffix in ("-wal", "-shm", "-journal"):
+        _regular_or_absent(Path(str(path) + suffix))
+    conn = sqlite3.connect(path.as_uri() + "?mode=ro", uri=True, timeout=0.1)
+    try:
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA query_only=ON")
+        conn.execute("BEGIN")
+        binding = [tuple(row) for row in conn.execute("SELECT * FROM seed_binding")]
+        if binding != [(owner_id, center_id, 1)]:
+            raise PermissionError("seed database binding or schema mismatch")
+        yield SeedStore(root, conn, owner_id, center_id)
+    finally:
+        conn.close()
 
 
 class SeedStore:
@@ -445,8 +504,13 @@ class SeedStore:
             )
             notice = self._notice(tx, rows)
             where, params = "bundle_id=? AND version=?", (tx["bundle_id"], tx["version"])
-            if self._rows("seed_notices", where, params):
-                self._update("seed_notices", where, params, payload=json.dumps(notice), delivered=0)
+            existing = self._rows("seed_notices", where, params)
+            if existing:
+                # Offers always retain the immutable install transaction and target
+                # blobs. An owner choice adds history; it never replaces candidates.
+                original = json.loads(existing[0]["payload"])
+                original.setdefault("choices", []).append(notice)
+                self._update("seed_notices", where, params, payload=json.dumps(original))
             else:
                 self._insert(
                     "seed_notices",
@@ -524,6 +588,8 @@ class SeedStore:
         """Explicit adoption is bound to the current hash (None means absence)."""
         self.recover()
         prior = self._one("seed_transactions", "transaction_id=?", (transaction,))
+        if prior["operation"] not in ("provision", "upgrade"):
+            raise ValueError("adoption requires an original seed installation")
         return self._choice(prior, request_key, "adopt", relative_path(path), expected_hash)
 
     def _choice(self, prior, request_key, operation, path=None, expected_hash=None):
