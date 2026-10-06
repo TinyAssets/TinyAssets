@@ -1,5 +1,27 @@
 ## ADDED Requirements
 
+### Requirement: Browser fallback uses the owner cell and visible control
+Browser fallback SHALL be used only after directory, MCP and usable API routes
+are exhausted. It SHALL consume D5's owner/center/activity-bound browser inside
+the owner's per-owner cell, with Chromium's own sandbox enabled. It SHALL
+identify itself to sites as TinyAssets agent automation, including an explicit
+User-Agent product token, and SHALL NOT hide that identity to evade a refusal.
+The agent SHALL observe only sanitized accessibility snapshots and SHALL NOT
+receive raw DOM. The app SHALL provide a live view, Take control, Return control
+and Stop without requiring an LLM response.
+
+#### Scenario: Owner takes control or stops during a browser action
+- **WHEN** the owner selects Take control
+- **THEN** the broker pauses agent input and observation before owner interaction
+- **AND** Return control resumes only after custody checks pass
+- **WHEN** the owner selects Stop
+- **THEN** the task ends and outstanding actions and login callbacks cannot resume it
+
+#### Scenario: A site refuses an identified agent
+- **WHEN** a site blocks the identified TinyAssets browser
+- **THEN** the app reports the refusal or an owner-only handoff
+- **AND** the broker does not remove its agent identity to retry
+
 ### Requirement: Browser login keeps reusable credentials out of agent context
 Browser login SHALL reuse the D5 context and protected owner takeover with an owner/session/draft/origin/expiry binding. Passwords, MFA values, cookies and reusable session credentials SHALL remain in daemon custody; agent code SHALL receive only scoped surrogate handles. Agent observation/control and login artifact capture SHALL be suspended during credential entry, and credential-bearing data SHALL be excluded when returning control.
 

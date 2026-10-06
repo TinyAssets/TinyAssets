@@ -12,6 +12,28 @@ Dependency order: `connect-anything-ladder` connection metadata/lifecycle and se
 
 ### Browser custody through D5
 
+Lane L12 consumes the owner's per-owner cell and Chromium's own sandbox
+(founder D73). The existing offline `ui-preview` renderer demonstrates that
+nested sandbox placement; it is not the interactive D5 browser. D5 must supply
+an owner/center/activity-bound browser, live app view, and serialized control
+ownership before this lane adds credential custody. Do not add a second browser
+launcher or relax the preview's network restrictions to emulate D5.
+
+The agent observes a sanitized accessibility snapshot, never raw DOM. Its
+structured actions address broker-issued references from that snapshot. The
+app's **Take control** pauses agent browser input and observation; **Return
+control** resumes only after the broker's custody checks; **Stop** ends the
+task and fences outstanding actions and capture callbacks. These controls work
+without an LLM response. The protected custom client UI captures login values
+and sends them directly to the daemon, which injects them only at the bound
+origin's point of need. The model never receives the values.
+
+The browser identifies itself to sites as TinyAssets agent automation through
+its browser identity (including an explicit User-Agent product token). No
+stealth/identity-hiding path is offered. Site refusal remains a visible failure
+or owner-only handoff, not a reason to remove the identification. Browser fallback
+is the last route after directory, MCP and usable API options are exhausted.
+
 Reuse D5's owner/center/activity-bound browser context, live view and Take over/Return control. Add a daemon-owned login session bound to owner, connection draft/incarnation, expected origin, initiating owner session, task and expiry. The inline control launches a protected owner-only capture view; credentials, MFA codes, cookies and session storage flow to the daemon/browser broker and never through an agent message or extension payload. The agent receives only an opaque surrogate handle and public status. Surrogates authorize broker use under current owner permissions; they cannot be exchanged for raw vault material.
 
 During login takeover, agent input, screenshots, DOM snapshots, network/body inspection and traces of the capture context are suspended. The broker suppresses password/OTP values and cookies from artifacts, error payloads and logging, not just from the chat renderer. Credentials may be injected only into the bound origin/context; redirects to a new credential-receiving origin require a new explicit binding in the protected capture view. Cross-origin pages cannot redeem capture handles. On successful return, discard login traces and expose only the ordinary authenticated page state with credential-bearing fields/headers excluded. Authenticated content is available according to owner permission; reusable credentials are not.
