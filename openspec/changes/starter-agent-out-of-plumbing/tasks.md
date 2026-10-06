@@ -1,4 +1,7 @@
-Implementation backlog only; this revision changes no product code. D7 owns extraction retirement; starter-seed-lifecycle owns D10 seed machinery. Validation evidence is recorded in review-response.md.
+Implementation in progress on feat/starter-agent-out-of-plumbing (wf-L14).
+D7 owns extraction retirement; starter-seed-lifecycle owns D10 seed machinery.
+Preparation evidence and remaining prerequisites are in implementation-evidence.md.
+Checkboxes below represent whole tasks, not completed preparation substeps.
 
 ## 1. Prepare
 
