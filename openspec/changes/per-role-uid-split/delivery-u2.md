@@ -51,6 +51,82 @@ execute, and reverse provides daemon read/write/traverse: rollback restores the
 old runtime's usable ownership, not the original read-only bits. This implements
 D4/D10 and never changes bytes. Full protected-metadata migration remains separate.
 
+### D202. One lock across all startup migration substeps
+
+The full caller must retain one open `.layout.lock` descriptor across egress,
+accounting, liveness and owner phases. Each substep can duplicate this description,
+checks its inode against that volume's single-link regular lock, and takes the
+same exclusive nonblocking flock. Closing a substep's duplicate cannot release
+the caller's lock. Standalone substep callers retain their existing behavior.
+The caller must still stop all writers; a flock is not a process quiescence proof.
+Directory and layout-marker reads in egress planning use O_NOATIME so dry-run
+does not change access times. No capability or runtime admission changes.
+
+The combined Linux test executes all four substeps forward/reverse under one
+lock and forks competing lock attempts between phases, preserving ledger bytes.
+Wrong-volume descriptors refuse before mutation; forced-old-atime fixtures stay
+unchanged during dry-run. Targeted Linux selection: **35 passed, zero skips**.
+Production image `sha256:5c6d18db40ed085a667d77c082c28e181f65cb25c5537a1365ee0ea61622a042`
+passed the expanded installed owner-migration probe, including competing lock
+attempts throughout both directions. Claude cross-family review: **APPROVE**,
+no floor/correctness finding; targeted Ruff passes. The broader existing
+production-image oracle reached the HTTP-deposit consumer and failed because
+the main merge removed `_HTTP_ACTION_CAP` but the stacked broker still imports
+it. That run is not a full oracle pass. D203 records the merge reconciliation.
+
+### D203. Reconcile the broker deposit with main's uncapped HTTP grants
+
+Main commit 5e4090e05a (#4476) removes `_HTTP_ACTION_CAP` and stops attaching the
+unused per-connection HTTP request cap. The stacked broker deposit retained the
+deleted import, making every prepare fail closed. Remove that import and the
+obsolete grant argument in the broker path as well; do not restore the retired
+cap or alter the authentication, prepare/commit or conflict checks. Assert the
+actual broker-created grant is uncapped and regenerate the plugin mirror.
+This is a required merge reconciliation, not a new authority or activation.
+Affected Linux tests: **85 passed, zero skips**. Targeted Ruff and regenerated
+plugin parity pass. Image `sha256:bb95bc79da08457a44b82b3ad29f8eebd1cf9340cbdfe35e5c100f984f1e8746`
+passes the original egress/accounting/liveness migration receipts and gets past
+the deposit, then correctly refuses the legacy probe's bearer consent answer.
+That broader run is still not a pass; D205 updates its transport.
+
+### D205. Preserve interactive consent in the inherited launcher fixture
+
+Main now requires a protected owner session for workspace consent. Keep the
+original grant/result assertions, add assertions that the bearer answer refuses
+and leaves the request pending, then use the real protected HTTP handler with
+a disposable seeded owner-session cookie and its exact configured origin.
+No consent guard is mocked or bypassed and no runtime authorization changes.
+This is the same synthetic signed-in-owner premise as the existing application
+tests, not proof of an IdP login or a live-user app pass. Revoke the fixture
+cookie afterward; no production data or sessions participate.
+
+Production image `sha256:f43b2fca35306478456fb7c683358936047cddc7b933bd1cc9740bf6635eed0e`
+passes `python scripts/linux_oracle.py --production-image tinyassets-uid-u2:consent`
+(exit 0), including the existing foundation, broker-consumer, restart, migration
+and old-UID-write probes. This does not claim an old production CMD boot.
+
+### D204. Complete stopped-volume authority discovery
+
+Discover every `u-*` name (including incomplete trees) and legacy nonhidden
+directories with `universe.json`, using pinned no-follow/no-atime descriptors.
+Resolve their principal from the daemon's stored `founder_home` binding. A
+tree without a home binding must have exactly one stored admin; missing
+or competing records refuse instead of guessing from names, display text or
+host_path. SQL views cannot substitute for authority tables. Read SQLite/WAL
+through the existing private-copy snapshot helper so source metadata is unchanged.
+
+Read the broker-private append-only reservation map without allocating. Report
+unallocated principals separately; startup must allocate using the retired
+broker identity before any owner chown. Invalid IDs, duplicates, or a missing
+map after owner migration refuse. This inventory library is under construction,
+not installed or wired to startup; no full migration completion is claimed.
+
+Linux inventory tests: **14 passed, zero skips**, including missing and reassigned
+permanent reservations after forward/reverse owner migration. Claude's D203-D205
+cross-family review: **APPROVE**, no floor/correctness finding. AGREE with its
+wording observation: the single-admin fallback applies to every non-home tree.
+Multiple-admin trees refuse; switching authority models is outside this slice.
+
 Branch: `feat/per-role-uid-split-migration`, stacked on
 `feat/per-role-uid-split`; initial parent `b8f9c258bd9a8ae20a0b57614b39c9b9af57e760`.
 Activation remains OFF. U1 owns all engine-class launch admission, decoder and

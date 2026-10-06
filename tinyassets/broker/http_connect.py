@@ -32,7 +32,7 @@ def validate(document):
 
 
 def local_operation(ledger, *, principal, command_center, document):
-    from tinyassets.api.http_connection import _HTTP_ACTION_CAP, _connect_plan, _ids, _project
+    from tinyassets.api.http_connection import _connect_plan, _ids, _project
     from tinyassets.broker.ledger_queries import AUTHORIZED_CONNECTION, validate_query
     from tinyassets.storage.outbound_connections import (
         _SUPPORTED_HTTP_AUTH_SCHEMES,
@@ -98,7 +98,7 @@ def local_operation(ledger, *, principal, command_center, document):
         if grant is None:
             grant = ledger.grant_connection(
                 grant_id=grant_id, connection_id=connection_id, owner_user_id=principal,
-                universe_id=command_center, unprompted_action_cap=_HTTP_ACTION_CAP,
+                universe_id=command_center,
                 _transaction=conn)
         if plan["legacy_scope_upgrade"]:
             ledger._upgrade_http_connection_scopes(

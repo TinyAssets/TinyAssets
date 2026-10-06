@@ -33,6 +33,52 @@ def _request(path, document, *, descriptor=None):
         return json.loads(connection.recv(4096))
 
 
+def _protected_owner_answer(universe_id, payload):
+    """Synthetic signed-in owner fixture through the real cookie/origin route.
+
+    This seeds only disposable session state, never upgrades a bearer answer
+    or bypasses the application's consent check. It is not an IdP login proof.
+    """
+    import asyncio
+    import secrets
+    from urllib.parse import urlsplit
+
+    from starlette.requests import Request
+
+    from tinyassets.auth.middleware import current_identity
+    from tinyassets.onboarding import app_config, owner_sessions
+    from tinyassets.onboarding.inline_requests import handle_approval
+
+    cookie = secrets.token_urlsafe(32)
+    with owner_sessions.store() as db:
+        db.execute("INSERT INTO owner_sessions VALUES (?,?,?)",
+                   (owner_sessions.hashed(cookie), json.dumps(current_identity().to_dict()),
+                    time.time() + 60))
+    origin = urlsplit(app_config()["resource"])
+    body = json.dumps({**payload, "universe_id": universe_id}).encode()
+
+    async def receive():
+        return {"type": "http.request", "body": body, "more_body": False}
+
+    request = Request({"type": "http", "method": "POST", "path": "/app/approvals/answer",
+                       "path_params": {"operation": "answer"}, "headers": [
+                           (b"origin", f"{origin.scheme}://{origin.netloc}".encode()),
+                           (b"host", origin.netloc.encode()),
+                           (b"content-type", b"application/json"),
+                           (b"cookie", f"{owner_sessions.COOKIE}={cookie}".encode())]}, receive)
+    previous = os.environ.get("TINYASSETS_ONBOARDING_APP")
+    os.environ["TINYASSETS_ONBOARDING_APP"] = "1"
+    try:
+        response = asyncio.run(handle_approval(request))
+        return json.loads(response.body)
+    finally:
+        owner_sessions.revoke(cookie)
+        if previous is None:
+            os.environ.pop("TINYASSETS_ONBOARDING_APP", None)
+        else:
+            os.environ["TINYASSETS_ONBOARDING_APP"] = previous
+
+
 def _fence(path, proof, **extra):
     from tinyassets import rpc_frames as rf
 
@@ -481,8 +527,11 @@ def _disconnect_consumer(root):
                        "connection_id": result["connection_id"], "repo": "owner/repo",
                        "consents": ["workspace_checkout", "workspace_push"]}})
         assert consent.get("status") == "pending", consent
-        granted = answer_request(universe_id="disconnect", payload={
-            "request_id": consent["request_id"], "values": {}})
+        answer = {"request_id": consent["request_id"], "values": {}}
+        refused = answer_request(universe_id="disconnect", payload=answer)
+        assert refused.get("error") == "interactive_approval_required", refused
+        assert refused.get("request_pending") is True, refused
+        granted = _protected_owner_answer("disconnect", answer)
         assert granted.get("status") == "answered", granted
         assert "models.example.com/owner/repo" in granted["destinations"][0]
         print("D38 actual workspace consent capture/answer via launcher broker: owner metadata "
