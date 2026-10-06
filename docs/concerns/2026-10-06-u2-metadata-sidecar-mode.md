@@ -33,4 +33,4 @@ preserved worktree, with Linux mode/WAL/SHM tests passing and Claude confirming
 no newly added regular-file execute/setuid/setgid. This concern stays open
 because the implementation is uncommitted and stable configuration growth is
 still incomplete. D210 records a newly discovered permission-replay stop;
-see 2026-10-06-u2-stale-mode-replay.md. Activation remains OFF.
+D214 later resolved that replay concern. Activation remains OFF.

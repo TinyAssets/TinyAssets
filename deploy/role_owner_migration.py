@@ -103,6 +103,53 @@ def _key(info):
     return [info.st_dev, info.st_ino, stat.S_IFMT(info.st_mode)]
 
 
+LEGACY_IDS = [1001, 1001]
+
+
+def _generation(parent, name, info):
+    """Inode birth time: an unlinked inode number is reused, a birth is not."""
+    libc = ctypes.CDLL(None, use_errno=True)
+    buffer = ctypes.create_string_buffer(256)
+    # AT_SYMLINK_NOFOLLOW; mask STATX_INO | STATX_BTIME.
+    if libc.statx(parent, os.fsencode(name), 0x100, 0x900, buffer) != 0:
+        code = ctypes.get_errno()
+        raise OSError(code, os.strerror(code), name)
+    mask, inode = struct.unpack_from("<I", buffer, 0)[0], struct.unpack_from("<Q", buffer, 0x20)[0]
+    if not mask & 0x800:
+        raise MigrationRefused(f"filesystem lacks inode birth time: {name}")
+    if inode != info.st_ino:
+        raise MigrationRefused(f"entry replaced during scan: {name}")
+    seconds, nanoseconds = struct.unpack_from("<qI", buffer, 0x50)
+    return [seconds, nanoseconds]
+
+
+def _migrated(journal):
+    """Whether entries may have been born after a forward pass began."""
+    return journal is not None and not (
+        journal["direction"] == "reverse" and journal["state"] == "stable")
+
+
+def _provenance(old, generation, ids, mode, migrated):
+    """D214: one rule for uid, gid and mode, bound to one inode generation.
+
+    A record belongs only to the inode generation it was taken from; a
+    recycled inode number never inherits it. An unrecorded inode on a legacy
+    volume is what the next forward changes, so its live state is recorded.
+    Once migrated, an unrecorded inode is new content of the migrated runtime
+    and reverses to the legacy daemon, never to its own migrated ids.
+    D211 keeps the live mode authoritative in both directions.
+    """
+    if old is not None:
+        if "generation" not in old or "original" not in old:
+            raise MigrationRefused("journal lacks inode generation provenance; "
+                                   "recovery required")
+        if old["generation"] == generation:
+            return old["original"]
+    if not migrated:
+        return {"ids": list(ids), "mode": mode}
+    return {"ids": list(LEGACY_IDS), "mode": mode}
+
+
 def _read(root, name, *, private=False):
     flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_NOATIME
     fd = os.open(name, flags, dir_fd=root)
@@ -212,18 +259,12 @@ def _permissions(fd, row, reverse):
     return True
 
 
-def _retain_originals(rows, previous):
+def _retain_originals(rows, journal):
+    previous = journal["rows"] if journal else []
     originals = {tuple(row["key"]): row for row in previous if row["kind"] != "quarantine"}
     for row in rows:
-        old = originals.get(tuple(row["key"]))
-        if old is not None:
-            row["original"] = old.get("original", {
-                "ids": old["original_ids"], "mode": old["mode"]})
-        else:
-            ids = row["original_ids"]
-            # Engine-created entries have no legacy owner; rollback owns them.
-            row["original"] = {"ids": [1001, 1001] if ids[0] == row["machine"] else ids,
-                               "mode": row["mode"]}
+        row["original"] = _provenance(originals.get(tuple(row["key"])), row["generation"],
+                                      row["original_ids"], row["mode"], _migrated(journal))
     return rows
 
 
@@ -247,6 +288,7 @@ def _inventory(root, bindings, work, reverse):
                     mode=stat.S_IMODE(info.st_mode),
                     nlink=info.st_nlink,
                     original_ids=[info.st_uid, info.st_gid],
+                    generation=_generation(parent, name, info),
                 )
             )
             return
@@ -272,6 +314,7 @@ def _inventory(root, bindings, work, reverse):
             mode=stat.S_IMODE(info.st_mode),
             nlink=info.st_nlink,
             original_ids=[info.st_uid, info.st_gid],
+            generation=_generation(parent, name, info),
         )
         rows.append(row)
         if stat.S_ISREG(info.st_mode):
@@ -467,7 +510,7 @@ def migrate(data_root, *, bindings, work, reverse=False, dry_run=False, after_st
                     direction=direction,
                     state="migrating",
                     rows=_retain_originals(_inventory(root, bindings, work, reverse),
-                                           journal["rows"] if journal else []) + escrow,
+                                           journal) + escrow,
                 )
             elif journal["state"] == "stable":
                 fresh = _inventory(root, bindings, work, reverse)
@@ -475,7 +518,7 @@ def migrate(data_root, *, bindings, work, reverse=False, dry_run=False, after_st
                     mode = row["mode"]
                     if not reverse and row["kind"] == "root":
                         mode &= 0o2750
-                    return row["key"], row["nlink"], row["kind"], mode
+                    return row["key"], row.get("generation"), row["nlink"], row["kind"], mode
 
                 expected = {
                     r["path"]: signature(r)
@@ -489,7 +532,7 @@ def migrate(data_root, *, bindings, work, reverse=False, dry_run=False, after_st
                     # never extend an incomplete journal in this way.
                     escrow = [r for r in journal["rows"] if r["kind"] == "quarantine"]
                     journal = {**journal, "state": "migrating",
-                               "rows": _retain_originals(fresh, journal["rows"]) + escrow}
+                               "rows": _retain_originals(fresh, journal) + escrow}
             rows = journal["rows"]
             present = _names(root, bindings)
             required = {r["path"] for r in rows if r["kind"] != "quarantine"}

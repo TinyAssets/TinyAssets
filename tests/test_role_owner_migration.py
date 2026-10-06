@@ -560,3 +560,23 @@ def test_egress_permissions_never_add_mode_bits(volume, reverse, mode):
             os.close(fd)
         assert not stat.S_IMODE(path.stat().st_mode) & ~mode
         assert (path.stat().st_uid, path.stat().st_gid) == (uid, gid)
+
+
+@pytest.mark.parametrize("restart", [False, True])
+def test_d214_entry_born_after_forward_reverses_to_legacy_ids(volume, restart):
+    run(volume)
+    directory = volume / "alice/work"
+    directory.chmod(0o2775)
+    born = directory / "daemon-written"
+    born.write_bytes(b"after forward")
+    os.chown(born, 1001, 300001)
+    born.chmod(0o640)
+    if restart:
+        run(volume)
+    run(volume, reverse=True)
+    assert (born.stat().st_uid, born.stat().st_gid) == (1001, 1001)
+    assert stat.S_IMODE(born.stat().st_mode) == 0o640
+    assert born.read_bytes() == b"after forward"
+    run(volume)
+    run(volume, reverse=True)
+    assert (born.stat().st_uid, born.stat().st_gid) == (1001, 1001)

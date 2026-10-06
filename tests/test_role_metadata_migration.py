@@ -218,3 +218,40 @@ def test_reverse_replacement_inode_uses_legacy_ids_and_current_mode(volume, name
     assert (path.stat().st_uid, path.stat().st_gid) == (1001, 1001)
     assert stat.S_IMODE(path.stat().st_mode) == 0o600
     assert path.read_bytes() == b"new generation"
+
+
+def _replace(path):
+    replacement = path.with_name("replacement")
+    replacement.write_bytes(b"new generation")
+    os.chown(replacement, 1001, role_modes.BROKER_READ_GID)
+    replacement.chmod(0o600)
+    replacement.replace(path)
+
+
+@pytest.mark.parametrize("cycle", ["forward-restart", "reverse-forward", "stale-record"])
+@pytest.mark.parametrize("name", ["alice/.credential-vault.json", ".consumer_liveness/one"])
+def test_d214_replaced_inode_reverses_to_legacy_after_any_cycle(volume, name, cycle):  # noqa: F811
+    import json
+
+    seed(volume)
+    run(volume)
+    path = volume / name
+    _replace(path)
+    if cycle == "forward-restart":
+        run(volume)
+    elif cycle == "reverse-forward":
+        run(volume, reverse=True)
+        run(volume)
+    else:
+        # A recycled inode number must not inherit another generation's record.
+        journal = volume / owner.STATE / "metadata.json"
+        document = json.loads(journal.read_text())
+        row = next(r for r in document["rows"] if r["path"] == name)
+        row["key"] = owner._key(os.stat(path, follow_symlinks=False))
+        row["original"] = {"uid": 1001, "gid": 4242, "mode": 0o600}
+        journal.write_text(json.dumps(document))
+        run(volume)
+    run(volume, reverse=True)
+    assert (path.stat().st_uid, path.stat().st_gid) == (1001, 1001)
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+    assert path.read_bytes() == b"new generation"

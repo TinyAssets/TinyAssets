@@ -1,3 +1,28 @@
+# U2 D214: replacement-inode provenance fixed (Claude takeover of D213)
+
+### D214. Migration provenance is bound to one inode generation
+
+Design: `design.md` D214. Root cause: owner and metadata journals keyed rows by
+`(dev, ino, type)`, and any unrecorded inode recorded its live ids as legacy
+in every state, so replace -> forward restart -> reverse (and replace ->
+reverse -> forward -> reverse) restored the migrated GID 1102. The owner phase
+had the same class: a daemon file born `1001:<machine>` in a setgid work dir
+reversed to the machine GID even without a restart. Fix: one `_provenance`
+rule for uid/gid/mode; rows carry the statx birth time; a record moves only to
+the same inode generation; unrecorded inodes on a migrated volume reverse to
+legacy 1001:1001 with their live mode.
+
+Linux root oracle, owner/metadata/inventory/volume selection: **148 passed,
+zero skips** (140 prior + 8 new D214 cases: vault and liveness under forward
+restart, reverse/forward cycle, recycled-inode stale record; owner born-after-
+forward with and without restart). All 8 failed before the fix. Ruff and mirror
+parity pass. This closes only the D213 provenance finding; stable-generation
+configuration growth, two-pass deletion, old CMD boot and startup wiring remain
+open and activation stays OFF. Concern `2026-10-06-u2-stale-mode-replay.md`
+resolved and deleted.
+
+---
+
 ## Post-review final verification
 
 Merged origin/main `22bc0f728e989813630d54c8378921370fafe7f2` at

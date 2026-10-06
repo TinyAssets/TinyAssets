@@ -89,6 +89,7 @@ def migrate(data_root, *, bindings, work, owner, modes, reverse=False,
             rows = []
             originals = {tuple(r["key"]): r for r in journal["rows"]
                          if not r["cleanup"]} if journal else {}
+            migrated = owner["_migrated"](journal)
 
             def visit(parent, name, path):
                 parts = path.split("/")
@@ -126,16 +127,12 @@ def migrate(data_root, *, bindings, work, owner, modes, reverse=False,
                     raise refused(f"foreign protected metadata identity: {path}")
                 if len(parts) != 1 or name not in bindings:
                     uid, gid, mode, named = target(path, info)
-                    old = originals.get(tuple(owner["_key"](info)))
-                    original = (old.get("original") if old else None)
-                    if old and original is None:
-                        raise refused("metadata journal lacks original permissions; "
-                                      "recovery required")
-                    original = original or dict(uid=info.st_uid, gid=info.st_gid,
-                                                mode=stat.S_IMODE(info.st_mode))
+                    generation = owner["_generation"](parent, name, info)
+                    original = owner["_provenance"](
+                        originals.get(tuple(owner["_key"](info))), generation,
+                        (info.st_uid, info.st_gid), stat.S_IMODE(info.st_mode), migrated)
                     if reverse and parts[0] != ".broker":
-                        uid, gid = ((original["uid"], original["gid"])
-                                    if old else (1001, 1001))
+                        uid, gid = original["ids"]
                         mode = stat.S_IMODE(info.st_mode)
                         named = {}
                     if named:
@@ -149,7 +146,7 @@ def migrate(data_root, *, bindings, work, owner, modes, reverse=False,
                         raise refused(f"metadata would add executable/special file bits: {path}")
                     rows.append(dict(path=path, key=owner["_key"](info), cleanup=False,
                                      uid=uid, gid=gid, mode=mode, named=named,
-                                     original=original))
+                                     original=original, generation=generation))
                 if stat.S_ISDIR(info.st_mode):
                     with owner["_directory"](parent, name) as directory:
                         before = os.fstat(directory)
@@ -178,7 +175,8 @@ def migrate(data_root, *, bindings, work, owner, modes, reverse=False,
                 if not required <= actual.keys() or not actual.keys() <= previous.keys():
                     raise refused("metadata namespace changed since journal")
                 for path, row in actual.items():
-                    if row["key"] != previous[path]["key"]:
+                    if (row["key"], row.get("generation")) != (
+                            previous[path]["key"], previous[path].get("generation")):
                         raise refused(f"metadata inode changed since journal: {path}")
                 rows = journal["rows"]
             report = {"direction": direction, "entries": len(rows),

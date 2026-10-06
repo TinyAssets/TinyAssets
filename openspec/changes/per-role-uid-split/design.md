@@ -2239,3 +2239,24 @@ mask alone does not grant `group::r-x` when an extended ACL already exists.
 The writer never adds parent write permission, changes ownership, or bypasses
 a missing subtree/ACL. These are migration/admission prerequisites, not a
 request for retained privilege.
+
+### D214. Migration provenance is bound to one inode generation
+
+Supersedes the unknown-inode fallbacks of D209-D211 in the owner and metadata
+phases. Root cause of D210 #2 / D213: a journal row was keyed by
+`(dev, ino, type)` only, and an inode with no row took its *live* ids as its
+"original" in every state. A replacement inode born after forward therefore
+recorded its migrated ids (vault/liveness `1001:1102`, a daemon file in a
+setgid work dir `1001:<machine>`) as legacy, and reverse restored them; a
+recycled inode number could also inherit another inode's record.
+
+One rule, `_provenance`, now decides uid, gid and mode together for both
+phases. Each row records the inode's birth time (`statx` btime) as its
+generation. A record transfers only to the same key *and* generation. An
+unrecorded inode takes its live state only while the phase's journal is absent
+or a stable reverse (the next forward is what changes it); otherwise it is new
+content of the migrated runtime and reverses to legacy `1001:1001`. Reverse
+restores the recorded ids; D211 keeps the live mode in both directions. A
+filesystem without btime refuses; a journal row without a generation refuses
+recovery rather than guessing. The owner phase's stable signature and the
+metadata resume check include the generation, so a recycled inode re-inventories.
