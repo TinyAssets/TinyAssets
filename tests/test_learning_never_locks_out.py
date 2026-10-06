@@ -103,8 +103,8 @@ def test_a_secondary_rate_limit_leaves_the_shared_cooldown_untouched(agent, monk
     with pytest.raises(AllProvidersExhaustedError):
         _secondary_call(agent, config)
     assert wire.calls == 1  # asked once, no retry storm
-    assert agent.served.router._quota.cooldown_remaining(_provider(agent)) == 0
-    assert agent.served.router._quota.available(_provider(agent)) is True
+    assert agent.served.router._quota.cooldown_remaining(_provider(agent), owner="owner") == 0
+    assert agent.served.router._quota.available(_provider(agent), owner="owner") is True
 
 
 def test_a_foreground_rate_limit_still_cools_the_source(agent, monkeypatch):
@@ -114,7 +114,7 @@ def test_a_foreground_rate_limit_still_cools_the_source(agent, monkeypatch):
     assert config.secondary_call is False
     with pytest.raises(AllProvidersExhaustedError):
         _secondary_call(agent, config)
-    assert agent.served.router._quota.cooldown_remaining(_provider(agent)) > 0
+    assert agent.served.router._quota.cooldown_remaining(_provider(agent), owner="owner") > 0
 
 
 def test_extract_learning_marks_its_own_call_secondary(monkeypatch, tmp_path):
@@ -467,7 +467,7 @@ def test_a_foreground_auth_failure_still_quarantines_the_source(agent, monkeypat
 
 def test_a_secondary_call_still_respects_a_cooldown_another_call_set(agent, monkeypatch):
     """Reading the gate is restrictive; only writing it could hurt the founder."""
-    agent.served.router._quota.cooldown(_provider(agent), 120)
+    agent.served.router._quota.cooldown(_provider(agent), 120, owner="owner")
     wire = _rate_limit(agent, monkeypatch)
     config = replace(universe_intelligence._sandboxed_config(agent.served.context),
                      secondary_call=True)

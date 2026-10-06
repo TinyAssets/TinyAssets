@@ -35,6 +35,7 @@ from tests.test_pending_requests import (  # noqa: F401 - fixtures and harness
     _ask,
     _login,
     _make_universe,
+    _owner_answer,
     _reset_auth,
     _seed_connection,
 )
@@ -73,7 +74,7 @@ def test_the_owner_takes_a_key_back_from_the_rail(base):
     assert "Delete the key you gave" in ask["grant_sentence"]
     assert "deposit that name again" in ask["grant_sentence"]
 
-    out = _answer("u-1", request_id=ask["request_id"], values={})
+    out = _owner_answer("u-1", request_id=ask["request_id"], values={})
 
     assert out["status"] == "answered"
     assert out["secrets_removed"] == 1
@@ -98,7 +99,7 @@ def test_the_name_is_free_to_deposit_again(base):
 
     ask = _ask("u-1", kind="API", title="take it back", fields=[],
                action={"type": "remove_http", "destination": "github"})
-    _answer("u-1", request_id=ask["request_id"], values={})
+    _owner_answer("u-1", request_id=ask["request_id"], values={})
 
     again = _seed_connection("u-1")
     assert again["status"] == "provisioned"
@@ -111,7 +112,7 @@ def test_removing_something_already_gone_is_not_an_error(base):
 
     ask = _ask("u-1", kind="API", title="remove nothing", fields=[],
                action={"type": "remove_http", "destination": "never-deposited"})
-    out = _answer("u-1", request_id=ask["request_id"], values={})
+    out = _owner_answer("u-1", request_id=ask["request_id"], values={})
 
     assert out["status"] == "answered"
     assert out["secrets_removed"] == 0
@@ -153,7 +154,7 @@ def test_a_stranger_cannot_answer_someone_elses_removal(base):
                action={"type": "remove_http", "destination": "github"})
 
     _login("mallory")
-    out = _answer("u-1", request_id=ask["request_id"], values={})
+    out = _owner_answer("u-1", request_id=ask["request_id"], values={})
 
     assert out.get("error"), "a non-admin answered a removal"
     _login("alice")
@@ -300,7 +301,7 @@ def test_a_standing_yes_cannot_swallow_a_removal(base):
 
     ask = _ask("u-1", kind="API", title="Remove the GitHub key", fields=[],
                action={"type": "remove_http", "destination": "github"})
-    out = _answer("u-1", request_id=ask["request_id"], values={},
+    out = _owner_answer("u-1", request_id=ask["request_id"], values={},
                   dont_ask_again=True)
     assert out["status"] == "answered"
     # Assert the STORED state, not the response shape: the removal branch never
@@ -318,7 +319,7 @@ def test_a_standing_yes_cannot_swallow_a_removal(base):
     )
     assert again.get("request_id"), "no tab, so no way for the owner to say yes"
 
-    _answer("u-1", request_id=again["request_id"], values={})
+    _owner_answer("u-1", request_id=again["request_id"], values={})
     assert _vault_http(udir) == [], "the second removal did not happen"
 
 
@@ -343,7 +344,7 @@ def test_a_standing_yes_cannot_swallow_a_grant_widening_either(base):
     ask = _ask("u-1", kind="API", title="one more endpoint", fields=[],
                action=widen("t.json"))
     assert ask.get("request_id"), ask
-    _answer("u-1", request_id=ask["request_id"], values={}, dont_ask_again=True)
+    _owner_answer("u-1", request_id=ask["request_id"], values={}, dont_ask_again=True)
 
     same = _ask("u-1", kind="API", title="one more endpoint", fields=[],
                 action=widen("t.json"))
@@ -402,7 +403,7 @@ def test_what_executes_is_what_the_owner_was_shown(base):
         conn.execute("UPDATE pending_requests SET action_json = ? WHERE request_id = ?",
                      (swapped, shown["request_id"]))
 
-    out = _answer("u-1", request_id=shown["request_id"], values={})
+    out = _owner_answer("u-1", request_id=shown["request_id"], values={})
 
     assert out.get("error"), "the swapped action executed"
     assert "not what would happen" in out.get("detail", "")

@@ -126,3 +126,44 @@ answerRail(req, "accept", note, buttons).then(() => {
         assert result["sent"] == []
         assert "Source temporarily unavailable" in result["note"]
         assert "request stays open" in result["note"]
+
+
+@pytest.mark.skipif(_NODE is None, reason="node is not installed")
+@pytest.mark.parametrize("mode", ["accept", "deny", "clear"])
+@pytest.mark.parametrize("signed_in", [True, False])
+def test_patch_consent_rail_uses_protected_owner_door(mode, signed_in):
+    from tinyassets.onboarding import render_app_html
+
+    html, _csp = render_app_html()
+    script = _extract() + "\n" + _function_source(html, "answerRail") + r"""
+const sent=[], calls=[], links=[], buttons=[{}];
+const note={appendChild:el=>links.push(el)};
+const document={createElement:()=>({})};
+const req={request_id:'patch',title:'Patch intake',fields:[],action:{type:'grant_patch_intake'}};
+const $=id=>id==='btn-send'?{disabled:false}:null;
+const sendTurn=line=>sent.push(line), refreshRail=async()=>{};
+let railOpen='patch';
+const MCP={answerRequest:async()=>{throw new Error('Bearer route used');}};
+const InlineApprovals={post:async(operation,payload)=>{
+  calls.push({operation,payload});
+  if(!SIGNED_IN){const error=new Error('Owner sign-in required');error.signIn=true;throw error;}
+  return {status:'answered'};
+}};
+answerRail(req, MODE, note, buttons).then(()=>{
+  process.stdout.write(JSON.stringify({calls,sent,links,disabled:buttons[0].disabled}));
+});
+""".replace("SIGNED_IN", json.dumps(signed_in)).replace("MODE", json.dumps(mode))
+    run = subprocess.run([_NODE, "-e", script], capture_output=True, text=True,
+                         encoding="utf-8", timeout=30, check=False)
+    assert run.returncode == 0, run.stderr
+    result = json.loads(run.stdout)
+    assert result["calls"] == [{"operation": "answer", "payload": {
+        "request_id": "patch", **({"values": {}} if mode == "accept" else
+                                {"decision": "declined"} if mode == "deny" else
+                                {"dismiss": True}),
+    }}]
+    assert result["disabled"] is False
+    assert len(result["sent"]) == int(signed_in)
+    assert [link["href"] for link in result["links"]] == (
+        [] if signed_in else ["/app/owner-sign-in"]
+    )

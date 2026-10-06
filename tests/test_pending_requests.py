@@ -20,6 +20,7 @@ import json
 
 import pytest
 
+from tinyassets.api.pending_requests import CONSENT_ACTIONS, NON_CONSENT_ACTIONS
 from tinyassets.auth.middleware import auth_middleware, set_provider
 from tinyassets.auth.provider import AuthProvider, DevAuthProvider, Identity
 
@@ -113,6 +114,12 @@ def _ask(uid, **over):
     return request_from_user(universe_id=uid, payload=json.dumps({**_CRED, **over}))
 
 
+def _owner_answer(uid, **doc):
+    from tests.owner_answer import answer_request
+
+    return answer_request(universe_id=uid, payload=json.dumps(doc))
+
+
 def _answer(uid, **doc):
     from tinyassets.api.pending_requests import answer_request
 
@@ -196,7 +203,7 @@ def test_a_credential_ask_records_no_answer_at_all(base):
         {"name": "secret", "label": "Key", "type": "secret"},
     ])
 
-    _answer("u-1", request_id=asked["request_id"],
+    _owner_answer("u-1", request_id=asked["request_id"],
             values={"secret": "ghp_" + "x" * 36})
 
     answered = _rail("u-1")["recently_answered"][0]
@@ -228,7 +235,7 @@ def test_answering_deposits_under_the_policy_on_the_request(base):
     _login("alice")
     asked = _ask("u-1")
 
-    out = _answer("u-1", request_id=asked["request_id"],
+    out = _owner_answer("u-1", request_id=asked["request_id"],
                   values={"secret": "ghp_" + "x" * 36},
                   host="api.evil.example", path_template="/steal",
                   destination="evil")
@@ -267,19 +274,130 @@ def test_dismissing_writes_nothing(base):
     _login("alice")
     asked = _ask("u-1")
 
-    assert _answer("u-1", request_id=asked["request_id"],
+    assert _owner_answer("u-1", request_id=asked["request_id"],
                    dismiss=True)["status"] == "dismissed"
     assert load_credential_vault(udir) == []
     assert _rail("u-1")["count"] == 0
+
+
+def test_every_validated_action_has_an_explicit_consent_classification():
+    import ast
+    import inspect
+
+    from tinyassets import bound_requests
+    from tinyassets.api import agent_notifications
+    from tinyassets.api import pending_requests as requests
+
+    # Derive from the validator itself, not a second list a new branch can evade.
+    tree = ast.parse(inspect.getsource(requests._validated_action))
+    accepted = set()
+    for node in ast.walk(tree):
+        if (isinstance(node, ast.Compare) and isinstance(node.left, ast.Name)
+                and node.left.id == "kind"):
+            for value in node.comparators:
+                if isinstance(value, ast.Constant):
+                    accepted.add(value.value)
+                elif isinstance(value, ast.Name):
+                    accepted.add(getattr(requests, value.id))
+                else:
+                    pytest.fail("Update action coverage for the new validator dispatch shape")
+    # System-created requests bypass _validated_action. Follow literal action
+    # dictionaries (including a local action/bound variable) at their creators.
+    for module in (requests, agent_notifications, bound_requests):
+        for function in ast.walk(ast.parse(inspect.getsource(module))):
+            if not isinstance(function, ast.FunctionDef):
+                continue
+            for call in ast.walk(function):
+                if not isinstance(call, ast.Call):
+                    continue
+                name = getattr(call.func, "id", getattr(call.func, "attr", ""))
+                if name != "create_request":
+                    continue
+                for keyword in call.keywords:
+                    if keyword.arg != "action":
+                        continue
+                    candidates = [keyword.value]
+                    if isinstance(keyword.value, ast.Name):
+                        candidates = [node.value for node in ast.walk(function)
+                                      if isinstance(node, ast.Assign) and any(
+                                          isinstance(target, ast.Name)
+                                          and target.id == keyword.value.id
+                                          for target in node.targets)]
+                    for value in candidates:
+                        if not isinstance(value, ast.Dict):
+                            continue  # Normal asks already use _validated_action.
+                        for key, kind in zip(value.keys, value.values):
+                            if isinstance(key, ast.Constant) and key.value == "type":
+                                assert isinstance(kind, ast.Constant), "Classify dynamic creator"
+                                accepted.add(kind.value)
+    assert not CONSENT_ACTIONS & NON_CONSENT_ACTIONS
+    assert accepted == CONSENT_ACTIONS | NON_CONSENT_ACTIONS
+
+
+@pytest.mark.parametrize("action_type",
+                         sorted(CONSENT_ACTIONS | NON_CONSENT_ACTIONS | {"future_effect"}))
+@pytest.mark.parametrize("mute", [False, True])
+@pytest.mark.parametrize("status", ["dismissed", "answered"])
+def test_every_ask_kind_can_return_after_clear_only_mute_suppresses(
+    base, action_type, mute, status,
+):
+    from tinyassets.storage.pending_requests import create_request, resolve_request
+
+    udir = _make_universe(base, "u-1", admin="alice")
+    _login("alice")
+    document = dict(kind="Reconnect", title="Reconnect service", body="Needed again",
+                    fields=[], action={"type": action_type}, dedupe_key=action_type)
+    first = create_request(udir, **document)
+    assert resolve_request(udir, first["request_id"], status=status, dont_ask_again=mute,
+                           decision="declined")
+    again = create_request(udir, **document)
+    if mute:
+        assert again["settled"] is True
+        assert again["decision"] == "declined"
+    else:
+        assert again["request_id"] != first["request_id"]
+        assert again["status"] == "pending"
+    assert "Clear or decline" in _rail("u-1")["request_recovery"]
+
+
+@pytest.mark.parametrize("action_type", ["connect_http", "connect"])
+@pytest.mark.parametrize("kind", ["Connect", "Reconnect"])
+def test_connect_and_reconnect_can_be_raised_again_through_the_api(base, action_type, kind):
+    _make_universe(base, "u-1", admin="alice")
+    _login("alice")
+    action = {**_CRED["action"], "type": action_type}
+    if action_type == "connect":
+        action["uses"] = {"call": True}
+    first = _ask("u-1", kind=kind, action=action)
+    assert "request_id" in first, first
+    cleared = _owner_answer("u-1", request_id=first["request_id"], dismiss=True)
+    assert cleared["status"] == "dismissed"
+    second = _ask("u-1", kind=kind, action=action)
+    assert second["request_id"] != first["request_id"]
+    assert any(row["request_id"] == second["request_id"] for row in _rail("u-1")["pending"])
+    assert not _rail("u-1")["muted"]
+
+
+@pytest.mark.parametrize("action_type", ["future_effect", "", None])
+def test_unknown_effectful_request_requires_protected_owner(base, action_type):
+    from tinyassets.storage.pending_requests import create_request, get_request
+
+    udir = _make_universe(base, "u-1", admin="alice")
+    _login("alice")
+    row = create_request(udir, kind="Future", title="Future effect", body="", fields=[],
+                         action={"type": action_type}, dedupe_key="future")
+    result = _answer("u-1", request_id=row["request_id"], dismiss=True)
+    assert result["error"] == "interactive_approval_required"
+    assert get_request(udir, row["request_id"])["status"] == "pending"
 
 
 def test_one_answer_counts_once(base):
     _make_universe(base, "u-1", admin="alice")
     _login("alice")
     asked = _ask("u-1")
-    _answer("u-1", request_id=asked["request_id"], values={"secret": "ghp_" + "x" * 36})
+    _owner_answer("u-1", request_id=asked["request_id"], values={"secret": "ghp_" + "x" * 36})
 
-    again = _answer("u-1", request_id=asked["request_id"],
+    again = _owner_answer("u-1", request_id=asked["request_id"],
                     values={"secret": "ghp_" + "y" * 36})
     assert again["error"] == "already_resolved"
 
@@ -289,7 +407,7 @@ def test_a_failed_deposit_leaves_the_tab_open(base):
     _login("alice")
     asked = _ask("u-1")
 
-    assert "error" in _answer("u-1", request_id=asked["request_id"],
+    assert "error" in _owner_answer("u-1", request_id=asked["request_id"],
                               values={"secret": "   "})
     assert _rail("u-1")["count"] == 1
 
@@ -390,6 +508,9 @@ def test_dispatch_through_the_pinned_handles(base):
                               payload_json=json.dumps(
                                   {"request_id": rid,
                                    "values": {"secret": "ghp_" + "z" * 36}}))
+        assert json.loads(done)["error"] == "interactive_approval_required"
+        done = json.dumps(_owner_answer("u-1", request_id=rid,
+                                  values={"secret": "ghp_" + "z" * 36}))
         assert json.loads(done)["status"] == "answered"
     finally:
         importlib.reload(us)
@@ -434,7 +555,7 @@ def test_a_dismissal_can_also_mute(base):
     _login("alice")
     asked = _ask("u-1")
 
-    out = _answer("u-1", request_id=asked["request_id"], dismiss=True,
+    out = _owner_answer("u-1", request_id=asked["request_id"], dismiss=True,
                   feedback="I will do this myself", dont_ask_again=True)
     assert out["suppressed"] is True
     settled = _ask("u-1")
@@ -448,7 +569,7 @@ def test_muting_is_visible_and_undoable(base):
     _make_universe(base, "u-1", admin="alice")
     _login("alice")
     asked = _ask("u-1")
-    _answer("u-1", request_id=asked["request_id"], dismiss=True, dont_ask_again=True)
+    _owner_answer("u-1", request_id=asked["request_id"], dismiss=True, dont_ask_again=True)
 
     muted = _rail("u-1")["muted"]
     assert len(muted) == 1 and muted[0]["kind"] == "API"
@@ -512,7 +633,7 @@ def test_muting_one_ask_does_not_mute_a_different_one(base):
     _make_universe(base, "u-1", admin="alice")
     _login("alice")
     first = _ask("u-1")
-    _answer("u-1", request_id=first["request_id"], dismiss=True, dont_ask_again=True)
+    _owner_answer("u-1", request_id=first["request_id"], dismiss=True, dont_ask_again=True)
 
     other = _ask("u-1", title="Different key for a different repo",
                  action={**_CRED["action"], "path_template": "/repos/o/other/pulls"})
@@ -567,7 +688,7 @@ def test_one_request_can_cover_the_several_calls_a_real_flow_needs(base):
     assert "/repos/o/r/pulls" in out["grant_sentence"]
     assert "/repos/o/r/git/refs" in out["grant_sentence"]
 
-    done = _answer("u-1", request_id=out["request_id"],
+    done = _owner_answer("u-1", request_id=out["request_id"],
                    values={"secret": "ghp_" + "x" * 36})
     assert done["status"] == "answered"
 
@@ -641,7 +762,7 @@ def test_codex_feedback_cannot_carry_a_credential(base, mode):
         doc["dismiss"] = True
     else:
         doc["values"] = {"secret": "ghp_" + "x" * 36}
-    out = _answer("u-1", **doc)
+    out = _owner_answer("u-1", **doc)
 
     assert out["error"] == "request_invalid"
     assert "credential" in out["detail"]
@@ -689,7 +810,7 @@ def test_codex_a_lifted_mute_is_recorded_because_the_agent_shares_the_principal(
     _make_universe(base, "u-1", admin="alice")
     _login("alice")
     asked = _ask("u-1")
-    _answer("u-1", request_id=asked["request_id"], dismiss=True, dont_ask_again=True)
+    _owner_answer("u-1", request_id=asked["request_id"], dismiss=True, dont_ask_again=True)
     key = _rail("u-1")["muted"][0]["dedupe_key"]
 
     unmute_request(universe_id="u-1", payload=json.dumps({"dedupe_key": key}))
@@ -758,7 +879,7 @@ def test_extending_a_grant_needs_no_secret_and_no_new_field(base):
     assert ask["fields"] == [], "nothing to type - it is a yes/no"
     assert "do not need to paste it again" in ask["grant_sentence"]
 
-    out = _answer("u-1", request_id=ask["request_id"], values={})
+    out = _owner_answer("u-1", request_id=ask["request_id"], values={})
     assert out["status"] == "answered"
     assert out["secret_reused"] is True
 
@@ -788,7 +909,7 @@ def test_extending_never_writes_a_second_vault_record(base):
                        "endpoints": [{"host": "api.github.com",
                                       "path_template": "/repos/o/r/contents/t.json",
                                       "methods": ["PUT"]}]})
-    _answer("u-1", request_id=ask["request_id"], values={})
+    _owner_answer("u-1", request_id=ask["request_id"], values={})
 
     after = [r for r in load_credential_vault(udir) if r["credential_type"] == "http"]
     assert len(after) == len(before) == 1

@@ -26,9 +26,9 @@ RESOURCE = "https://tinyassets.io/mcp"
 def hf_pool(tmp_path, monkeypatch, authenticate_request, wires):
     import json
 
+    from tests.owner_answer import answer_request
     from tinyassets.api.connection_uses import apply_connection_uses
     from tinyassets.api.http_connection import connect_http
-    from tinyassets.api.pending_requests import answer_request
     from tinyassets.connection_oauth.tokens import TokenBundle, encode
     from tinyassets.onboarding.source_connect import _offer_pool_access, sign_in_action
     from tinyassets.providers.api_key_http_provider import ApiKeyHttpProvider
@@ -115,7 +115,7 @@ def test_chat_falls_back_to_hugging_face_after_the_openrouter_daily_cap(hf_pool,
 
 def test_subscription_deposit_needs_consent_before_joining_existing_sources(
         hf_pool, monkeypatch, authenticate_request):
-    from tinyassets.api.pending_requests import answer_request
+    from tests.owner_answer import answer_request
     from tinyassets.credential_vault import load_credential_vault, write_credential_vault
     from tinyassets.onboarding.source_connect import offer_subscription_source
     from tinyassets.provider_assignment import load_provider_assignment

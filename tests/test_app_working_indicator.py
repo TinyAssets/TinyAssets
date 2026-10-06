@@ -28,6 +28,7 @@ import os
 import re
 import shutil
 import subprocess
+from functools import lru_cache
 
 import pytest
 
@@ -107,6 +108,7 @@ _SHIM = r"""
 const InlineConnection={waiting:()=>false,hold:()=>{
   throw new Error('Unexpected connection request in the working-indicator harness');
 }};
+function refreshRail(){}
 const store={};
 const localStorage={ getItem:k=>(k in store?store[k]:null),
   setItem:(k,v)=>{store[k]=String(v);}, removeItem:k=>{delete store[k];} };
@@ -242,15 +244,21 @@ function indicator(){
 _TAIL = "\n})().catch(e=>{ console.error(e&&e.stack||e); process.exit(1); });"
 
 
-def _program(html: str, scenario: dict, body: str) -> str:
+@lru_cache(maxsize=1)
+def _source(html: str) -> str:
+    """Extract unchanged shipped functions once, without caching scenario state."""
     decls = [found.group(0) for found in
              (re.search(pat, html) for pat in _DECLS) if found]
     funcs = [_js_function(html, name) for name in _FUNCS]
     for name in _NEW_FUNCS:
         if re.search(r"function\s+" + name + r"\s*\(", html):
             funcs.append(_js_function(html, name))
+    return "\n".join(decls) + "\n" + "\n".join(funcs)
+
+
+def _program(html: str, scenario: dict, body: str) -> str:
     return (_SHIM.replace("__SCENARIO__", json.dumps(scenario)) +
-            "\n".join(decls) + "\n" + "\n".join(funcs) + "\n(async()=>{\n" + body + _TAIL)
+            _source(html) + "\n(async()=>{\n" + body + _TAIL)
 
 
 def _run(tmp_path, html: str, scenario: dict, body: str) -> dict:
@@ -265,7 +273,8 @@ def _run(tmp_path, html: str, scenario: dict, body: str) -> dict:
 @pytest.fixture(scope="module")
 def html() -> str:
     page, _csp = onboarding.render_app_html()
-    return page
+    yield page
+    _source.cache_clear()
 
 
 # ---------------------------------------------------------------------------

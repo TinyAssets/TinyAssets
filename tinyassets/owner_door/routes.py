@@ -217,8 +217,11 @@ async def handle_ui_asset(request):
 def owner_door_routes() -> list[Any]:
     from starlette.routing import Route
 
+    from tinyassets.owner_door.files import handle_file
+
     return [
         Route("/app/api/read", handle_read, methods=["POST"]),
         Route("/app/api/status", handle_status, methods=["POST"]),
         Route("/app/api/ui-asset", handle_ui_asset, methods=["POST"]),
+        Route("/app/api/file", handle_file, methods=["POST"]),
     ]

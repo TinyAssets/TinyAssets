@@ -6,6 +6,10 @@ against a temp data root (quota shrunk through the real env override, as in
 tests/test_storage_accounting.py); only the volume's statvfs is faked, because a
 test cannot make the real disk fill or grow on cue. The real-jail proofs live in
 tests/test_universe_tools_jail.py and tests/test_provider_universe_jail.py.
+
+Legacy test identities are retained for hygiene. Cases formerly asserting a
+per-launch cap, reservation or recovery grace now assert account totals; ledger
+lease tests still exercise the unchanged reservation API for gated writes.
 """
 
 from __future__ import annotations
@@ -53,12 +57,7 @@ def base(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     # 100 KiB free quota: the real override, in its real unit.
     monkeypatch.setenv("TINYASSETS_FREE_STORAGE_GIB", str(100 * KIB / 1024**3))
     initialize_author_server(root)
-    # Shrunk so the numbers stay in kilobytes; the logic is unchanged.
-    monkeypatch.setattr(jail_disk, "LAUNCH_BYTES_CAP", 50 * KIB)
-    monkeypatch.setattr(jail_disk, "GRACE_BYTES", 4 * KIB)
-    # Existing budget/renewal/grace cases isolate those contracts; the dedicated
-    # admission-headroom suite exercises the production 16 MiB holdback.
-    monkeypatch.setattr(jail_disk, "WRITE_HEADROOM_BYTES", 0)
+    monkeypatch.setattr(jail_disk, "ACCOUNT_CHECK_SECONDS", 0)
     return root
 
 
@@ -115,23 +114,17 @@ def test_a_launch_below_the_volume_floor_is_refused(base, volume):
 
 def test_the_bound_is_the_accounts_fresh_headroom_and_is_reserved(base, volume):
     udir = _universe(base, "u-one")
-    _write(udir, "a.bin", 30 * KIB)
     other = _universe(base, "u-two")
+    _write(udir, "a.bin", 30 * KIB)
     _write(other, "b.bin", 20 * KIB)
-
-    first = jail_disk.open_budget(udir)
-    # 100 KiB quota - 50 KiB on disk (measured at launch, not cached).
-    assert first.bound == 50 * KIB and first.notice == ""
-    assert first.start_bytes == 30 * KIB
-    # The headroom is pending while the first launch runs: a concurrent launch
-    # of the same account cannot spend it again.
-    second = jail_disk.open_budget(other)
-    assert second.bound == jail_disk.GRACE_BYTES and second.notice
+    first, second = jail_disk.open_budget(udir), jail_disk.open_budget(other)
+    assert first.bound == second.bound == 50 * KIB
+    assert first.notice == second.notice == ""
+    assert sa.usage(base, A).reserved_bytes == 0
+    _write(other, "c.bin", 51 * KIB)
+    assert first.breach(force=True) == second.breach(force=True) == jail_disk.STORAGE_LIMIT
     first.settle()
     second.settle()
-    third = jail_disk.open_budget(other)
-    assert third.bound == 50 * KIB
-    third.settle()
 
 
 def test_the_launch_measures_its_universe_fresh(base, volume):
@@ -140,7 +133,7 @@ def test_the_launch_measures_its_universe_fresh(base, volume):
     # A jailed write lands; nothing gated it, so only a fresh walk sees it.
     _write(udir, "jail-wrote.bin", 100 * KIB)
     budget = jail_disk.open_budget(udir)
-    assert budget.bound == jail_disk.GRACE_BYTES
+    assert budget.bound == 0
     assert "out of cloud storage" in budget.notice
     budget.settle()
 
@@ -149,17 +142,75 @@ def test_a_full_account_still_launches_on_the_grace_budget(base, volume):
     udir = _universe(base, "u-one")
     _write(udir, "full.bin", 100 * KIB)
     budget = jail_disk.open_budget(udir)
-    assert budget.bound == jail_disk.GRACE_BYTES
-    assert budget.reservation is None
+    assert budget.bound == 0
+    assert sa.usage(base, A).reserved_bytes == 0
     # Never the owner's numbers: a collaborator may be the caller.
     assert "KiB" not in budget.notice.split("at most")[0]
     budget.settle()
 
 
+def test_large_protected_provider_cache_does_not_warn_or_charge_owner(base, volume):
+    udir = _universe(base, "u-one")
+    for directory in (".credentials/claude/projects", ".credentials/codex/plugins"):
+        path = udir / directory
+        path.mkdir(parents=True)
+        _write(path, "runtime.bin", 112 * KIB)
+    _write(udir, "mine.bin", 36 * KIB)
+    budget = jail_disk.open_budget(udir)
+    try:
+        current = sa.usage(base, A)
+        assert current.measured_bytes == 36 * KIB
+        assert current.quota_bytes == 100 * KIB
+        assert current.reserved_bytes == 0
+        assert budget.notice == ""
+    finally:
+        budget.settle()
+    _write(udir, "mine.bin", 101 * KIB)
+    over = jail_disk.open_budget(udir)
+    try:
+        assert "out of cloud storage" in over.notice
+        assert sa.usage(base, A).measured_bytes == 101 * KIB
+    finally:
+        over.settle()
+
+
+def test_reservations_and_headroom_do_not_claim_user_storage_is_full(base, volume, monkeypatch):
+    udir = _universe(base, "u-one")
+    _write(udir, "mine.bin", 36 * KIB)
+    first, second = jail_disk.open_budget(udir), jail_disk.open_budget(udir)
+    try:
+        assert first.bound == second.bound == 64 * KIB
+        assert not first.notice and not second.notice
+        assert sa.usage(base, A).measured_bytes == 36 * KIB
+        assert sa.usage(base, A).reserved_bytes == 0
+    finally:
+        first.settle()
+        second.settle()
+
+
+@pytest.mark.parametrize("committed", [False, True])
+def test_nonfull_account_notice_does_not_invent_active_calls(base, volume, monkeypatch, committed):
+    udir = _universe(base, "u-one")
+    _write(udir, "mine.bin", 95 * KIB)
+    if committed:
+        sa.commit(sa.reserve(
+            base, account_id=A, scope_id=A, store="ui_library", nbytes=5 * KIB,
+        ))
+    budget = jail_disk.open_budget(udir)
+    try:
+        # Committed ordinary writes retain their accounting until remeasured.
+        assert not budget.notice
+        assert budget.bound == (0 if committed else 5 * KIB)
+        assert sa.usage(base, A).committed_bytes == (5 * KIB if committed else 0)
+    finally:
+        budget.settle()
+
+
 def test_an_unattributed_universe_gets_the_launch_cap(base, volume):
     udir = _universe(base, "u-nobody", owner=None)
     budget = jail_disk.open_budget(udir)
-    assert budget.bound == jail_disk.LAUNCH_BYTES_CAP and budget.notice == ""
+    assert budget.account is None and budget.notice == ""
+    assert budget.bound == volume.free
     budget.settle()
 
 
@@ -242,9 +293,11 @@ def test_growth_masked_by_another_users_deletes_is_caught_by_the_timed_walk(
 
 def test_a_nearly_full_account_gets_no_less_than_the_grace_budget(base, volume):
     udir = _universe(base, "u-one")
-    _write(udir, "almost.bin", 99 * KIB)  # 1 KiB of headroom, below the grace
+    _write(udir, "almost.bin", 99 * KIB)
     budget = jail_disk.open_budget(udir)
-    assert budget.bound == jail_disk.GRACE_BYTES
+    assert budget.bound == KIB
+    _write(udir, "extra.bin", KIB + 1)
+    assert budget.breach(force=True) == jail_disk.STORAGE_LIMIT
     budget.settle()
 
 
@@ -282,23 +335,19 @@ def test_writes_outside_the_charged_store_still_count_against_the_launch(
 
 def test_a_long_launch_keeps_its_reservation_past_the_ledger_ttl(base, volume, monkeypatch):
     udir = _universe(base, "u-one")
-    _write(udir, "half.bin", 50 * KIB)  # the other 50 KiB is this launch's
+    _write(udir, "half.bin", 50 * KIB)
     budget = jail_disk.open_budget(udir)
-    assert budget.bound == 50 * KIB
-    conn = sa._connect(base)
-    try:
+    # Jails no longer reserve future capacity; ordinary writer leases retain
+    # their existing checked-renewal contract independently of jail lifetime.
+    lease = sa.reserve(base, account_id=A, scope_id="u-one", store="universe_files", nbytes=KIB)
+    with sa._txn(base) as conn:
         conn.execute("UPDATE pending SET created_at = created_at - ?", (sa.RESERVED_TTL_S + 1,))
-        conn.commit()
-    finally:
-        conn.close()
-    monkeypatch.setattr(jail_disk, "RENEW_SECONDS", 0.0)
-    assert budget.breach() is None  # renews
-    # A later measurement must not drop it as a crashed writer's...
+    assert sa.renew_checked(lease)
     sa.measure(base, "u-one", "universe_files")
-    # ...so a concurrent launch of the same account still finds the headroom spent.
-    other = jail_disk.open_budget(_universe(base, "u-two"))
-    assert other.bound == jail_disk.GRACE_BYTES
-    other.settle()
+    assert sa.usage(base, A).reserved_bytes == KIB
+    assert budget.breach(force=True) is None
+    assert budget.bound == 49 * KIB
+    sa.release(lease)
     budget.settle()
 
 
@@ -306,47 +355,45 @@ def test_a_long_launch_keeps_its_reservation_past_the_ledger_ttl(base, volume, m
 def test_a_lost_lease_stops_without_reclaiming_reallocated_capacity(
     base, volume, monkeypatch, loss,
 ):
-    udir = _universe(base, "u-one")
-    budget = jail_disk.open_budget(udir)
-    original = budget.reservation
+    _universe(base, "u-one")
+    original = sa.reserve(
+        base, account_id=A, scope_id="u-one", store="universe_files", nbytes=50 * KIB,
+    )
     if loss == "release":
         sa.release(original)
     elif loss == "expiry":
         with sa._txn(base) as conn:
-            conn.execute(
-                "UPDATE pending SET created_at = created_at - ? WHERE id = ?",
-                (sa.RESERVED_TTL_S + 1, original.id),
-            )
-        sa.measure(base, udir.name, "universe_files")
+            conn.execute("UPDATE pending SET created_at = created_at - ? WHERE id = ?",
+                         (sa.RESERVED_TTL_S + 1, original.id))
+        sa.measure(base, "u-one", "universe_files")
     else:
         sa.commit(original)
-    replacement = jail_disk.open_budget(_universe(base, "u-two"))
-    other_owner = jail_disk.open_budget(_universe(base, "u-other", "workos|bob"))
-    before = sa.usage(base, A).used_bytes
-    monkeypatch.setattr(jail_disk, "RENEW_SECONDS", 0.0)
-    assert budget.breach() == jail_disk.STORAGE_LIMIT
-    assert replacement.breach() is None
-    assert other_owner.breach() is None
-    assert sa.usage(base, A).used_bytes == before
     assert not sa.renew_checked(original)
-    assert replacement.reservation.id != original.id
-    # The failure stays latched even if future renewal calls would succeed.
-    monkeypatch.setattr(sa, "renew_checked", lambda reservation: True)
-    assert budget.breach() == jail_disk.STORAGE_LIMIT
-    replacement.settle()
+    replacement = sa.reserve(
+        base, account_id=A, scope_id="u-one", store="universe_files", nbytes=KIB,
+    )
+    before = sa.usage(base, A).used_bytes
+    assert sa.renew_checked(replacement)
+    assert not sa.renew_checked(original)
+    assert sa.usage(base, A).used_bytes == before
+    assert replacement.id != original.id
+    other_owner = jail_disk.open_budget(_universe(base, "u-other", "workos|bob"))
+    assert other_owner.bound == 100 * KIB
+    assert other_owner.breach(force=True) is None
     other_owner.settle()
-    budget.settle()
+    sa.release(replacement)
 
 
 @pytest.mark.parametrize("field,value", [("account_id", "workos|bob"), ("bytes", 1)])
 def test_checked_renewal_rejects_a_mismatched_handle(base, volume, field, value):
     from dataclasses import replace
 
-    budget = jail_disk.open_budget(_universe(base, "u-one"))
-    handle = replace(budget.reservation, **{field: value})
+    _universe(base, "u-one")
+    lease = sa.reserve(base, account_id=A, scope_id="u-one", store="universe_files", nbytes=KIB)
+    handle = replace(lease, **{field: value})
     assert not sa.renew_checked(handle)
-    assert sa.renew_checked(budget.reservation)
-    budget.settle()
+    assert sa.renew_checked(lease)
+    sa.release(lease)
 
 
 def test_checked_renewal_supports_zero_byte_and_unattributed_handles(base, volume):
@@ -367,19 +414,19 @@ def test_a_ledger_error_stops_the_budget_and_does_not_advance_renewal_clock(
 ):
     import sqlite3
 
-    budget = jail_disk.open_budget(_universe(base, "u-one"))
-    previous = budget._last_renew
-    monkeypatch.setattr(jail_disk, "RENEW_SECONDS", 0.0)
+    udir = _universe(base, "u-one")
+    _write(udir, "retained.bin", 10 * KIB)
+    budget = jail_disk.open_budget(udir)
     with monkeypatch.context() as patch:
         def fail_connect(_base):
             raise sqlite3.OperationalError(message)
 
         patch.setattr(sa, "_connect", fail_connect)
-        assert budget.breach() == jail_disk.STORAGE_LIMIT
-        assert budget._last_renew == previous
-        assert sa.renew(budget.reservation) is None
-    assert sa.renew_checked(budget.reservation)
-    assert budget.breach() == jail_disk.STORAGE_LIMIT
+        assert budget.breach(force=True) == jail_disk.STORAGE_LIMIT
+    assert budget.breach(force=True) == jail_disk.STORAGE_LIMIT
+    assert (udir / "retained.bin").read_bytes() == b"x" * (10 * KIB)
+    assert sa.usage(base, A).measured_bytes == 10 * KIB
+    assert sa.usage(base, A).reserved_bytes == 0
     budget.settle()
 
 
@@ -392,31 +439,22 @@ def test_a_settled_budget_cannot_authorize_more_execution(base, volume, owner):
 
 
 def test_a_full_account_preserves_bounded_provider_recovery(base, volume, monkeypatch):
-    """Session setup must survive a poll BEFORE the agent can delete a file.
-
-    Extends the existing exact-grace contract with startup-before-cleanup ordering.
-    The provider's writable runtime is not billed, but the jail still bounds it.
-    """
     udir = _universe(base, "u-one")
     _write(udir, "full.bin", 100 * KIB)
     budget = jail_disk.open_budget(udir)
     try:
-        (udir / ".runtime").mkdir()
-        _write(udir / ".runtime", "session.bin", KIB)
-        monkeypatch.setattr(jail_disk, "WALK_SECONDS", 0.0)
-        assert jail_disk._jail_writable_bytes(udir) == 101 * KIB
-        assert sa.measure(base, "u-one", "universe_files") == 100 * KIB
-        assert budget.breach() is None, "session setup must reach the cleanup step"
-        # Original protected contract assertions, unchanged.
-        assert budget.bound == jail_disk.GRACE_BYTES
-        assert budget.reservation is None
-        # Never the owner's numbers: a collaborator may be the caller.
-        assert "KiB" not in budget.notice.split("at most")[0]
+        assert budget.bound == 0
+        assert sa.usage(base, A).reserved_bytes == 0
+        assert "KiB" not in budget.notice
+        _write(udir, "session.bin", KIB)
+        assert budget.breach(force=True) == jail_disk.STORAGE_LIMIT
+        assert sa.measure(base, "u-one", "universe_files") == 101 * KIB
+        (udir / "session.bin").unlink()
+        assert budget.breach(force=True) is None
         assert (udir / "full.bin").read_bytes() == b"x" * (100 * KIB)
         (udir / "full.bin").unlink()
-        assert budget.breach() is None
+        assert budget.breach(force=True) is None
         assert sa.measure(base, "u-one", "universe_files") == 0
-        # Recovery cannot bypass the shared-volume safety floor.
         volume.free = jail_disk.MIN_FREE_DISK_BYTES - 1
         assert budget.breach() == jail_disk.DISK_LIMIT
     finally:
@@ -425,24 +463,90 @@ def test_a_full_account_preserves_bounded_provider_recovery(base, volume, monkey
 
 def test_a_nearly_full_account_preserves_bounded_provider_recovery(base, volume, monkeypatch):
     udir = _universe(base, "u-one")
-    _write(udir, "almost.bin", 99 * KIB)  # 1 KiB of headroom, below the grace
+    _write(udir, "almost.bin", 99 * KIB)
     budget = jail_disk.open_budget(udir)
     try:
+        assert budget.bound == KIB
+        assert sa.usage(base, A).reserved_bytes == 0
         (udir / ".runtime").mkdir()
         _write(udir / ".runtime", "session.bin", KIB)
-        monkeypatch.setattr(jail_disk, "WALK_SECONDS", 0.0)
-        assert jail_disk._jail_writable_bytes(udir) == 100 * KIB
-        assert sa.measure(base, "u-one", "universe_files") == 99 * KIB
-        assert budget.breach() is None, "session setup must reach the cleanup step"
-        # Original grace-bound assertion, unchanged; also preserve admission.
-        assert budget.bound == jail_disk.GRACE_BYTES
-        assert budget.reservation.bytes == KIB
+        assert budget.breach(force=True) is None
+        assert sa.measure(base, "u-one", "universe_files") == 100 * KIB
+        assert budget.bound == 0
         assert (udir / "almost.bin").read_bytes() == b"x" * (99 * KIB)
         (udir / "almost.bin").unlink()
-        assert budget.breach() is None
-        assert sa.measure(base, "u-one", "universe_files") == 0
-        # Excluding runtime from billing must not make its allocation unbounded.
-        _write(udir / ".runtime", "overflow.bin", 99 * KIB + budget.bound + 1)
-        assert budget.breach() == jail_disk.STORAGE_LIMIT
+        assert budget.breach(force=True) is None
+        assert sa.measure(base, "u-one", "universe_files") == KIB
+        _write(udir / ".runtime", "overflow.bin", 99 * KIB + 1)
+        assert budget.breach(force=True) == jail_disk.STORAGE_LIMIT
     finally:
         budget.settle()
+
+
+def test_ordinary_write_reservations_still_reduce_total_storage(base, volume):
+    udir = _universe(base, "u-one")
+    lease = sa.reserve(
+        base, account_id=A, scope_id="u-one", store="universe_files", nbytes=90 * KIB,
+    )
+    budget = jail_disk.open_budget(udir)
+    try:
+        assert budget.bound == 10 * KIB
+        assert not budget.notice  # held capacity is not a full-data claim
+        _write(udir, "jail.bin", 11 * KIB)
+        assert budget.breach(force=True) == jail_disk.STORAGE_LIMIT
+        assert sa.usage(base, A).reserved_bytes == 90 * KIB
+    finally:
+        sa.release(lease)
+        budget.settle()
+
+
+def test_unavailable_accounting_refuses_admission_without_a_write_allowance(
+    base, volume, monkeypatch,
+):
+    import sqlite3
+
+    udir = _universe(base, "u-one")
+    def unavailable(*_args):
+        raise sqlite3.OperationalError("unavailable")
+
+    monkeypatch.setattr(sa, "measure", unavailable)
+    with pytest.raises(jail_disk.DiskFloorRefused, match="could not be measured"):
+        jail_disk.open_budget(udir)
+
+
+def test_full_account_cleanup_does_not_mint_new_growth_on_next_call(base, volume):
+    udir = _universe(base, "u-one")
+    _write(udir, "full.bin", 110 * KIB)
+    first = jail_disk.open_budget(udir)
+    assert first.bound == 0
+    _write(udir, "full.bin", 105 * KIB)
+    assert first.breach(force=True) is None
+    _write(udir, "extra.bin", 1)
+    assert first.breach(force=True) == jail_disk.STORAGE_LIMIT
+    first.settle()
+    second = jail_disk.open_budget(udir)
+    assert second.bound == 0
+    _write(udir, "extra.bin", 2)
+    assert second.breach(force=True) == jail_disk.STORAGE_LIMIT
+    second.settle()
+
+
+def test_nested_supervisors_coalesce_account_walks(base, volume, monkeypatch):
+    udir = _universe(base, "u-one")
+    first, second = jail_disk.open_budget(udir), jail_disk.open_budget(udir)
+    monkeypatch.setattr(jail_disk, "ACCOUNT_CHECK_SECONDS", 0.5)
+    monkeypatch.setattr(jail_disk, "WALK_SECONDS", 0)
+    measured = []
+    original = sa.measure
+    def measure(*args, **kwargs):
+        measured.append(args[1:])
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(sa, "measure", measure)
+    assert first.breach() is None
+    assert second.breach() is None
+    assert measured == []
+    assert second.breach(force=True) is None
+    assert set(measured) == {("u-one", "universe_files"), ("u-one", "workspaces")}
+    first.settle()
+    second.settle()

@@ -192,6 +192,7 @@ class TestProviderRouterDiagnostics:
         from tinyassets.providers.base import UniverseContext
 
         carrier = MagicMock(spec=ProviderInvocationCarrier)
+        carrier._receipt = MagicMock(principal_id="owner")
         carrier.provider = provider
         carrier.role = role
         carrier.operation = "run_graph"

@@ -107,6 +107,13 @@ def test_the_final_stage_ships_the_agents_own_toolchain():
             in final_stage_text)
 
 
+def test_jail_python_has_a_test_runner_outside_the_daemon_venv():
+    text = DOCKERFILE.read_text(encoding="utf-8")
+    final = text.split("# ---------- Stage 2: final ----------", 1)[1]
+    assert '/usr/local/bin/python -m pip install --no-cache-dir "pytest==8.4.2"' in final
+    assert "/usr/local/bin/python -m pytest --version" in final
+
+
 def test_dockerfile_installs_immutable_github_cli_release_asset():
     """The gh pin must remain available after the apt repository advances."""
     text = DOCKERFILE.read_text(encoding="utf-8")

@@ -108,7 +108,7 @@ def test_free_only_rate_limit_does_not_cool_the_whole_source(agent):
     with pytest.raises(AllProvidersExhaustedError):
         integration.run(agent)
     provider = agent.served.context.model_selection.connection_id
-    assert agent.served.router._quota.cooldown_remaining(provider) == 0
+    assert agent.served.router._quota.cooldown_remaining(provider, owner="owner") == 0
 
 
 def test_exhausted_credit_still_stops_at_the_first_model(agent, monkeypatch):
@@ -119,7 +119,7 @@ def test_exhausted_credit_still_stops_at_the_first_model(agent, monkeypatch):
         integration.run(agent)
     assert len(agent.wires) == 2 and len(agent.tools) == 1
     provider = agent.served.context.model_selection.connection_id
-    assert agent.served.router._quota.cooldown_remaining(provider) > 0
+    assert agent.served.router._quota.cooldown_remaining(provider, owner="owner") > 0
 
 
 def test_sibling_retries_are_bounded_and_every_attempt_is_recorded(agent, monkeypatch):
@@ -348,17 +348,19 @@ def test_cooling_a_source_honours_its_own_retry_after():
 
     router = ProviderRouter.__new__(ProviderRouter)
     router._quota = QuotaTracker()
-    assert router.cool_source("some-source", retry_after_s=45) == 46
-    assert router._quota.cooldown_remaining("some-source") > 0
-    assert router.cool_source("other-source") == COOLDOWN_UNAVAILABLE
-    assert router.cool_source("third", retry_after_s=float("nan")) == COOLDOWN_UNAVAILABLE
+    assert router.cool_source("some-source", retry_after_s=45, owner="owner") == 46
+    assert router._quota.cooldown_remaining("some-source", owner="owner") > 0
+    assert router.cool_source("other-source", owner="owner") == COOLDOWN_UNAVAILABLE
+    assert router.cool_source(
+        "third", retry_after_s=float("nan"), owner="owner",
+    ) == COOLDOWN_UNAVAILABLE
     with pytest.raises(ValueError):
-        router.cool_source("")
+        router.cool_source("", owner="owner")
 
 
 def _cooldown(agent):
     provider = agent.served.context.model_selection.connection_id
-    return agent.served.router._quota.cooldown_remaining(provider)
+    return agent.served.router._quota.cooldown_remaining(provider, owner="owner")
 
 
 def test_the_last_narrowed_attempt_cools_the_source(agent, monkeypatch):

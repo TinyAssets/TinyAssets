@@ -18,6 +18,7 @@ rather than assumed.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 
@@ -53,6 +54,12 @@ def world(env, monkeypatch):
         (base / ("u-" + owner)).mkdir(parents=True, exist_ok=True)
     monkeypatch.delenv(patch_intake.RECEIVER_ID_VAR, raising=False)
     monkeypatch.delenv(patch_intake.LABEL_VAR, raising=False)
+    from tinyassets import onboarding
+
+    monkeypatch.setenv("TINYASSETS_ONBOARDING_APP", "1")
+    monkeypatch.setattr(onboarding, "app_config", lambda: {
+        "resource": "https://tinyassets.io/mcp",
+    })
 
     def auth(owner):
         authenticate(owner, capabilities=_CAPS)
@@ -88,10 +95,35 @@ def _seeded(rail):
 
 
 def _answer(request_id, *, graph="u-sender", **extra):
-    return api.answer_request(
-        universe_id=graph,
-        payload=json.dumps({"request_id": request_id, **extra}),
+    """Exercise the HTTP owner-session door, including its real proof check."""
+    from starlette.requests import Request
+
+    from tinyassets.auth.middleware import current_identity
+    from tinyassets.onboarding import owner_sessions
+    from tinyassets.onboarding.inline_requests import handle_approval
+
+    with owner_sessions.store() as conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO owner_sessions VALUES (?,?,?)",
+            (owner_sessions.hashed("test-owner"),
+             json.dumps({"user_id": current_identity().user_id}), 4102444800),
+        )
+    cookie = extra.pop("owner_cookie", "test-owner")
+    origin = extra.pop("owner_origin", "https://tinyassets.io")
+    body = json.dumps({"universe_id": graph, "request_id": request_id, **extra}).encode()
+
+    async def receive():
+        return {"type": "http.request", "body": body, "more_body": False}
+
+    request = Request(
+        {"type": "http", "method": "POST", "path": "/app/approvals/answer",
+         "path_params": {"operation": "answer"},
+         "headers": [(b"origin", origin.encode()), (b"host", b"tinyassets.io"),
+                     (b"content-type", b"application/json"),
+                     (b"cookie", f"{owner_sessions.COOKIE}={cookie}".encode())]},
+        receive,
     )
+    return json.loads(asyncio.run(handle_approval(request)).body)
 
 
 def _grants(base, graph="u-sender"):
@@ -720,6 +752,72 @@ def test_the_rail_never_claims_a_declined_ask_is_waiting(world, monkeypatch):
     assert "is waiting in their rail" not in view["how"]
     assert "already declined or cleared" in view["how"]
     assert "do NOT raise another request" in view["how"]
+    # The way back it names must exist: a decline is not on the muted list.
+    assert "muted list in their rail" not in view["how"]
+    assert patch_intake.ACTION_TYPE in view["how"]
+    assert view["receiver_id"] in view["how"]
+
+
+@pytest.mark.parametrize(
+    "answer_kwargs",
+    [{"decision": "declined", "values": {}}, {"dismiss": True}],
+    ids=["denied", "cleared"],
+)
+def test_an_owner_who_changed_their_mind_has_a_way_back(
+    world, monkeypatch, answer_kwargs
+):
+    """Live 2026-10-05: the card was cleared, nothing was muted, nothing re-seeded.
+
+    The owner asked their command center to send a report and there was no tab
+    anywhere to say yes on. The ask the rail now describes must actually raise,
+    show up pending, and grant on approval.
+    """
+    base, auth = world
+    auth("receiver")
+    intake = _offered(monkeypatch)
+    auth("sender")
+    row = _seeded(_rail())
+    assert _answer(row["request_id"], **answer_kwargs).get("error") is None
+    assert _seeded(_rail()) is None
+
+    raised = api.request_from_user(
+        universe_id="u-sender",
+        payload=json.dumps({
+            "kind": patch_intake.REQUEST_KIND,
+            "title": "Let your command center report problems to TinyAssets",
+            "body": "You asked me to send reports again.",
+            "fields": [],
+            "action": {"type": patch_intake.ACTION_TYPE,
+                       "receiver_id": intake["receiver_id"], "label": "TinyAssets"},
+        }),
+    )
+    assert raised.get("error") is None, raised
+    rail = _rail()
+    assert _seeded(rail)["request_id"] == raised["request_id"]
+    assert rail["patch_intake"]["request_pending"] is True
+
+    for attempted in ({"values": {}}, {"decision": "declined"}, {"dismiss": True},
+                      {"values": {}, "owner_session": {"user_id": "sender"}}):
+        refused = json.loads(server.write_graph(
+            target="connection", operation="answer_request", graph_id="u-sender",
+            payload_json=json.dumps({"request_id": raised["request_id"], **attempted}),
+        ))
+        assert refused["error"] == "interactive_approval_required", refused
+        assert "protected owner session" in refused["detail"]
+        assert _grants(base) == []
+        assert store.get_request(base / "u-sender", raised["request_id"])["status"] == "pending"
+
+    for cookie, origin in (("", "https://tinyassets.io"),
+                           ("forged", "https://tinyassets.io"),
+                           ("test-owner", "https://evil.example")):
+        refused = _answer(raised["request_id"], values={}, owner_cookie=cookie,
+                          owner_origin=origin)
+        assert refused["error"] == "interactive_approval_required"
+        assert _grants(base) == []
+
+    assert _answer(raised["request_id"], values={}).get("error") is None
+    assert [g["destination"] for g in _grants(base)] == [intake["receiver_id"]]
+    assert _rail()["patch_intake"]["granted"] is True
 
 
 # ---------------------------------------------------------------------------
