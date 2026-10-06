@@ -103,15 +103,24 @@ def check(root, mode, *, now=None, send=notify, acknowledge=False):
         raise ValueError("Unknown check-in mode")
 
     receipt = None
+    suppressed = None
     if updates and not acknowledge:
-        receipt = send(f"Starter {mode} update", "\n".join(updates))
-        if not isinstance(receipt, dict) or receipt.get("error") or not receipt.get("request_id"):
+        body = "\n".join(updates)
+        if len(body) > 8000:
+            source = "goals.json" if mode == "goals" else "monitors.json"
+            body = body[:7800] + f"\n[Summary shortened; full details in starter/{source}.]"
+        receipt = send(f"Starter {mode} update", body)
+        if isinstance(receipt, dict) and receipt.get("settled") is True:
+            suppressed = receipt.get("decision") or "declined"
+        elif (not isinstance(receipt, dict) or receipt.get("error")
+              or not receipt.get("request_id")):
             raise RuntimeError(f"Notification not acknowledged: {receipt}")
     # Atomic acknowledgement; a failed notification never consumes the transition.
     temporary = state_path.with_suffix(".tmp")
     temporary.write_text(json.dumps(state, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     os.replace(temporary, state_path)
-    return {"notified": receipt is not None, "changes": len(updates), "delivery": receipt}
+    return {"notified": receipt is not None and suppressed is None,
+            "suppressed": suppressed, "changes": len(updates), "delivery": receipt}
 
 
 if __name__ == "__main__":

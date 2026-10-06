@@ -31,3 +31,10 @@ production fresh account. Workflows are editable scheduled-agent templates;
 tests execute their deterministic helper, not a connected model creating an
 automation. No production installation, direct ta skill discovery, deployed SHA
 or real-user pass is claimed. See the delivery prerequisite concern and tasks.
+
+After Claude's ADAPT review, the same Linux command passed **41 tests**, no skips,
+in 8.82 seconds. Added all-mode muted-notify regression coverage, bounded digest
+coverage and a due-date UI text assertion. The read-only publisher test now
+forbids filesystem mutations explicitly; it does not prove installer policy.
+Ruff and rebuilt plugin/import probe pass after the fixes. Review and dispositions
+are in review.md and review-response.md. Draft PR: #4520.

@@ -28,10 +28,12 @@ Only update observed_at after a successful fetch. The runner refuses stale
 matches older than an hour; call it immediately after updating an observation.
 
 For a reminder, use the supplied reminder workflow and a reasonable interval
-appropriate to the requested precision (default 60 seconds). It delivers once
+appropriate to the requested precision (default 300 seconds). It delivers once
 when due. State honestly that execution depends on the automation and connected
 compute; do not promise exact-second delivery. Mark completed reminders inactive
-after verifying their receipt. Pause the automation if nothing remains active.
+after verifying their receipt, including an owner's settled decline. Pause the
+automation if nothing remains active; do not keep spending compute on completed
+reminders.
 
 Create the workflow then its automation with the returned branch_def_id; read
 back status and next_due_at. Save their IDs in `starter/installations.json` and

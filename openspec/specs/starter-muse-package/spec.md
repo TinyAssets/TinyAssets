@@ -1,4 +1,9 @@
-## ADDED Requirements
+# Starter Muse package
+
+This describes the editable content publisher and package assets, not production
+provisioning or activation. See the open starter-muse-package delivery tasks.
+
+## Requirements
 
 ### Requirement: Editable Muse starter content
 The starter publisher SHALL expose proactivity settings, goals, feed, ideas, monitor/reminder records, workflow recipes, an app_ui component and on-demand skills without enlarging resident hooks or AGENTS.

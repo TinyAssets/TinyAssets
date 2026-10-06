@@ -188,11 +188,60 @@ def test_ta_notification_uses_real_owner_notify(package, monkeypatch, mode):
     assert row["body"].startswith("Ship a song: done" if mode == "goals" else "Verified change")
 
 
-def test_publisher_does_not_touch_owner_edits_or_deleted_files(package):
+def test_publisher_does_not_touch_owner_edits_or_deleted_files(package, monkeypatch):
+    """Only the read-only publisher contract, NOT D10's account preservation policy."""
     edited = package / "skills/starter-goals/SKILL.md"
     edited.write_text("My goals policy", encoding="utf-8")
     removed = package / "starter/settings.json"
     removed.unlink()
+
+    def forbid_write(*_args, **_kwargs):
+        raise AssertionError("Publishing package content must not mutate the filesystem")
+
+    for method in ("write_text", "write_bytes", "unlink"):
+        monkeypatch.setattr(Path, method, forbid_write)
     starter_agent_files()
     assert edited.read_text(encoding="utf-8") == "My goals policy"
     assert not removed.exists()
+
+
+@pytest.mark.parametrize("mode", ["goals", "monitors", "reminders"])
+def test_muted_notification_is_acknowledged_without_retry(package, runner, mode):
+    if mode == "goals":
+        write(package, "goals.json", {"goals": [goal()]})
+        runner(package, mode)
+        write(package, "goals.json", {"goals": [goal("done")]})
+    else:
+        write(package, "monitors.json", {mode: [{
+            "id": "muted", "active": True, "requested": True, "summary": "Update",
+            "matched": True, "change_id": "v1", "observed_at": NOW.isoformat(),
+            "due_at": NOW.isoformat(),
+        }]})
+    sent = []
+
+    def send(*args):
+        sent.append(args)
+        return {"settled": True, "decision": "declined"}
+
+    result = runner(package, mode, now=NOW, send=send)
+    assert result["suppressed"] == "declined"
+    assert not result["notified"]
+    assert not runner(package, mode, now=NOW, send=send)["notified"]
+    assert len(sent) == 1
+
+
+def test_long_digest_fits_notify_without_truncating_owner_file(package, runner):
+    write(package, "goals.json", {"goals": [goal()]})
+    runner(package, "goals")
+    write(package, "goals.json", {"goals": [goal("done", next_step="a" * 9000)]})
+    original = (package / "starter/goals.json").read_bytes()
+    sent = []
+
+    def send(title, body):
+        sent.append(body)
+        return {"request_id": "bounded"}
+
+    assert runner(package, "goals", send=send)["notified"]
+    assert len(sent[0]) <= 8000
+    assert sent[0].endswith("full details in starter/goals.json.]")
+    assert (package / "starter/goals.json").read_bytes() == original

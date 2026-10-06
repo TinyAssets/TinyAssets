@@ -33,6 +33,9 @@ Cancel them explicitly to stop them.
 
 The helper creates goals-state.json, monitors-state.json and reminders-state.json
 after successful checks. These are editable acknowledgements, not new goals.
+An owner's settled notification decline is acknowledged without retrying; it
+is reported as suppressed rather than delivered. Long notification summaries
+are shortened with a pointer to the full owner file, which remains untouched.
 Deleting a state file resets its history (goals establish a silent baseline;
 requested watches/reminders may notify again). Keep these files when editing
 skills. Notify success means an inbox item exists; inspect its delivery report

@@ -94,10 +94,12 @@ def test_all_views_refresh_prefill_send_and_missing_file(ui_server):
             frame.get_by_role("button", name="Goals", exact=True).click()
             expect(frame.get_by_text("Tell your agent about a goal", exact=False)).to_be_visible()
             page.evaluate("""window.files['starter/goals.json'] = JSON.stringify({goals:[
-                {title:'Finish my song',status:'active',next_step:'Record vocals'}]})""")
+                {title:'Finish my song',status:'active',next_step:'Record vocals',
+                 due:'2026-10-07'}]})""")
             frame.get_by_role("button", name="Refresh").click()
             expect(frame.get_by_role("heading", name="Finish my song")).to_be_visible()
             expect(frame.get_by_text("Record vocals")).to_be_visible()
+            expect(frame.get_by_text("active - Due 2026-10-07")).to_be_visible()
 
             frame.get_by_role("button", name="Files", exact=True).click()
             expect(frame.get_by_role("button", name="starter/")).to_be_visible()
