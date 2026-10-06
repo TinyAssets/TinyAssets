@@ -95,11 +95,12 @@ def test_satellite_failure_rolls_back_delivery_children_and_receipt(delivery_env
     assert list((base / ".account-deletions").glob("*.json"))
 
 
-@pytest.mark.parametrize("failed_maintenance", ["delivery", "admission", "files"])
+@pytest.mark.parametrize("failed_maintenance", ["delivery", "admission", "files", "updates"])
 def test_delivery_tick_exception_does_not_starve_budget_reconciliation(
-    monkeypatch, failed_maintenance,
+    failed_maintenance,
 ):
     import ast
+    import builtins
     import time
     from pathlib import Path
     from types import SimpleNamespace
@@ -108,6 +109,8 @@ def test_delivery_tick_exception_does_not_starve_budget_reconciliation(
     function = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)
                     and n.name == "_served_budget_lease_loop")
     seen, cursors, file_cursors, deliveries, sleeps = [], [], [], [], []
+    updates = []
+    process_sleep = time.sleep
 
     class StopLoop(BaseException):
         pass
@@ -134,8 +137,22 @@ def test_delivery_tick_exception_does_not_starve_budget_reconciliation(
             raise RuntimeError("file store unavailable")
         return f"file-cursor-{len(file_cursors)}"
 
-    monkeypatch.setattr(time, "sleep", sleep)
-    scope = {"reconcile_deliveries": delivery,
+    def update_centers(_):
+        updates.append("updates")
+        if failed_maintenance == "updates":
+            raise RuntimeError("update store unavailable")
+
+    def loop_import(name, globals=None, locals=None, fromlist=(), level=0):
+        # Only the extracted loop gets this clock: live background workers in
+        # the same pytest process must retain the real time module and sleep.
+        if name == "time":
+            return SimpleNamespace(sleep=sleep)
+        if name == "tinyassets.command_center_update_maintenance":
+            return SimpleNamespace(tick=update_centers)
+        return builtins.__import__(name, globals, locals, fromlist, level)
+
+    scope = {"__builtins__": {**vars(builtins), "__import__": loop_import},
+             "reconcile_deliveries": delivery,
              "reconcile_admitted_runs": admitted,
              "reconcile_run_files": files,
              "reconcile_served_budget_leases": lambda _: seen.append("budget") or 0,
@@ -153,6 +170,8 @@ def test_delivery_tick_exception_does_not_starve_budget_reconciliation(
     with pytest.raises(StopLoop):
         scope["make_loop"]()()
     assert sleeps == [300.0] * 3
+    assert time.sleep is process_sleep
+    assert updates == ["updates"] * 3
     assert seen == ["budget"] * 3
     assert deliveries == ["delivery"] * 3
     assert cursors == ["", "cursor-1",
