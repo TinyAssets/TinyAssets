@@ -58,6 +58,9 @@ def write(base_path: Path, *, universe_id: str, actor_id: str, operation: str,
                 raise activities.ActivityRefused(
                     "An activity cannot start another activity yet; finish this one and "
                     "say what should come next.", kind="nested_activity_unavailable")
+            from tinyassets.activity_runner import require_supported_executor
+
+            require_supported_executor(Path(base_path), universe_id)
             record = activities.create(
                 universe_dir, owner_principal=actor_id,
                 title=str(payload.get("title") or ""), brief=str(payload.get("brief") or ""),
@@ -65,7 +68,7 @@ def write(base_path: Path, *, universe_id: str, actor_id: str, operation: str,
             _wake(Path(base_path), universe_id)
             record = activities.get(universe_dir, record["activity_id"]) or record
             return {"activity_id": record["activity_id"], "status": record["status"],
-                    "hint": "It runs in the background; read_graph target=activities shows "
+                    "hint": "Queued for background execution; read_graph target=activities shows "
                             "it, and its status reaches you as it changes."}
         activity_id = str(payload.get("activity_id") or "").strip()
         record = activities.get(universe_dir, activity_id)
