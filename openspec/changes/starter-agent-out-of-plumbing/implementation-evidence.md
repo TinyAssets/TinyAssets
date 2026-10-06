@@ -195,3 +195,20 @@ No second review round was requested. Follow-up Linux verification passed
 loop, ta and ta jail); local focused verification passed 87 tests. Remaining
 tasks 2.x, full resident budgets, natural
 common-task trials, deployment, real-user acceptance and spec sync are undone.
+
+## K2 continuation: D10 API slice
+
+The founder authorized implementing D10 inside K2; the separate-worktree planning
+note is superseded by that instruction. The existing nine-task lifecycle spec is
+the contract. Added immutable manifests and a scoped SQLite journal/receipt API
+in the daemon-owned sidecar, including candidates, notices, conditional file Undo,
+hash-bound adoption, deletion tombstones, and crash recovery. No runtime consumer
+is wired yet. API callers must supply the authenticated canonical center binding
+and hold the turn boundary; this is not a model-callable authority surface.
+
+Initial Linux oracle: 31 passed across manifest and lifecycle tests. Tests cover
+stock/custom/empty/deleted paths, independent hooks, retries, pre/post-write crash
+recovery with concurrent edits, Undo choices across versions, adoption, links,
+schema mismatch, and forged transaction/blob/notice IDs across owners and centers.
+No public MCP handle changed. Remaining D10 integration, whole-payload budgets,
+four-tool activation, Muse capability proofs and final Claude review remain open.

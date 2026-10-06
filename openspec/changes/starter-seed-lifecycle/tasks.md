@@ -1,4 +1,6 @@
-Implementation backlog only; design split from starter-agent-out-of-plumbing. This is the sole D10 seed mechanism. Implementation is unclaimed and will use its own worktree/PR; no product code is changed here.
+Implementation absorbed into K2, `feat/four-tool-starter-cutover`, draft PR #4517,
+at the founder's explicit continuation request. This remains the sole D10 seed
+mechanism. API work is in progress; consumer wiring and live acceptance are pending.
 
 ## 1. Define and install
 
