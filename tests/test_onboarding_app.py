@@ -2482,6 +2482,22 @@ def test_intentional_install_reply_still_sends_its_message(tmp_path):
     assert out["answered"][0]["request_id"] == _REQ["request_id"]
 
 
+@pytest.mark.parametrize("text", ["OK", "yes", "no"])
+def test_notification_acknowledgment_replies_reach_the_shared_answer_door(tmp_path, text):
+    out = _run_app(tmp_path, {
+        "kind": "rail", "mode": "reply", "feedback": text,
+        "request": {**_REQ, "action": {"type": "notify"}},
+    })
+    assert len(out["answered"]) == 1
+    assert out["answered"] == [{
+        "request_id": _REQ["request_id"], "reply": text,
+        "reply_id": out["answered"][0]["reply_id"],
+    }]
+    assert out["answered"][0]["reply_id"]
+    assert out["converseCalls"] == []
+    assert "Sent to the asking agent" in out["note"]
+
+
 def test_feedback_rides_along_and_clear_is_relayed_too(tmp_path):
     out = _run_app(tmp_path, {
         "kind": "rail", "request": _REQ, "dismiss": True,

@@ -10038,7 +10038,7 @@
     const installLogin=installAsk?MCP._loginEpoch:null,installScope=installAsk?queueScope:null;
     const fbEl = $("fb_" + req.request_id), muteEl = $("mute_" + req.request_id);
     const text = fbEl && fbEl.value.trim() ? fbEl.value.trim() : "";
-    if(mode === "reply" && !req.item_id && /^(yes|yep|yeah|ok|okay|sure|approve|approved|no|nope|deny|denied)[.!\s]*$/i.test(text)){
+    if(mode === "reply" && !req.item_id && req.action?.type!=="notify" && /^(yes|yep|yeah|ok|okay|sure|approve|approved|no|nope|deny|denied)[.!\s]*$/i.test(text)){
       note.textContent="To decide this request, use Accept or Deny. Chat keeps it open; nothing was sent.";
       return;
     }

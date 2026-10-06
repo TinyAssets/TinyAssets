@@ -191,9 +191,10 @@ def enqueue(conn, request_id, outcome, *, key="answer"):
     ).fetchone()
     if not row or not json.loads(row[0]):
         return
-    # These requests already carry an atomic protected continuation receipt.
     if key == "answer":
-        if json.loads(row[1]).get("type") == "approve_action":
+        # Protected approvals have their own receipt; install decisions are
+        # deterministic. Explicit owner replies still use the reply event key.
+        if json.loads(row[1]).get("type") in {"approve_action", "install"}:
             return
         columns = {r[1] for r in conn.execute("PRAGMA table_info(pending_requests)")}
         if "context_json" in columns:

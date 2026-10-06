@@ -150,6 +150,22 @@ def test_notification_reply_uses_asking_agent(world):
     assert received["agent"] == agent
 
 
+@pytest.mark.parametrize("decision", ["allowed", "declined"])
+def test_install_decisions_do_not_enqueue_model_work_but_explicit_replies_do(world, decision):
+    home, agent = world
+    with turn_interrupt.interactive_turn(OWNER, home.name, agent_id=agent):
+        row = store.create_request(
+            home, kind="Install", title="Install package", body="", fields=[],
+            action={"type": "install"}, dedupe_key="install-decision", agent=agent,
+        )
+    assert store.resolve_request(home, row["request_id"], status="answered", decision=decision)
+    assert drain(home) == []
+    request_answers.reply(home, row, "Explain this install", "intentional-reply")
+    received, = drain(home)
+    assert received["agent"] == agent
+    assert received["outcome"]["reply"] == "Explain this install"
+
+
 def test_dispatch_targets_converse_conversation(world, monkeypatch):
     home, agent = world
     row = ask(home, agent)
