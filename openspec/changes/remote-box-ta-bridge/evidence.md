@@ -69,8 +69,8 @@ One broader run exposed test fixture import-order contamination (238 passed,
 2 failed); the remote proof now uses the existing dynamic-data-root fixture.
 
 Ruff and whitespace checks passed. Plugin build staged 629 files and passed the
-import probe. Prompt budgets are unchanged. Initial hygiene: 7 added, 0 removed,
-0 tampering; final hygiene pending. Main spec has been synced and both change and
+import probe. Prompt budgets are unchanged. Final hygiene against origin/main: **12 added, 0 removed,
+0 tampering**. Runtime/fix SHA: eb9c9f836ecd5cf9fb61a5be4c6a04827375ebfd. Main spec has been synced and both change and
 spec validate strictly.
 
 ## Remaining delivery scope
@@ -79,4 +79,7 @@ No deployed remote driver exists in this checkout. Deployment, deployed-SHA
 assertion and a real-user app pass remain unperformed; this is a draft plumbing
 PR, not a shipped K2/provider-inventory cutover. The remote driver must support
 interactive_stdin/send_stdin and the documented isolation/runtime contract.
-Final main merge, verification and evidence push pending.
+origin/main 97c17c26ea2a7a25764c02e9e095b87589edc67 was explicitly merged
+before the final push (already contained). The branch is pushed and the PR
+remains draft. All requested local verification and the one Claude review round
+are recorded above.
