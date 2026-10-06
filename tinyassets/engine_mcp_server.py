@@ -2563,8 +2563,8 @@ _WRITE_GRAPH_SYSTEMS_CHAPTER = """\
 _WRITE_GRAPH_BRANCHES_CHAPTER += """
     **Inbound webhooks:** ``target="webhook"`` supports ``operation="create"``
     and ``operation="revoke"``. Create takes ``branch_id`` (one of YOUR OWN
-    branches) and returns a URL any service can POST to (GitHub, Stripe, a form,
-    another workflow); each POST runs that branch in your command center on your own
+    branches) and returns a URL any service, form or workflow can POST to; each POST runs
+    that branch in your command center on your own
     provider, with the body under ``webhook.payload`` and the raw bytes under
     ``webhook.raw_base64``. The URL is shown ONCE: give it to your user right
     away. ``read_graph target="webhooks"`` lists active hooks by token_prefix;
@@ -3115,11 +3115,26 @@ def write_graph(
     write research may do; any other session is refused and uses its own request
     tools instead.
 
-    FILE INPUTS: read ``delivering`` for io_manifest, file_bundle and read_run_file.
+    FILE INPUTS, exact shape (an app attachment is already a six-field
+    reference; full example under FILE INPUTS below). Create with
+    ``"io_manifest": {"inputs": [{"name": "files", "io_type": "file_bundle",
+    "max_count": 4, "max_bytes": 4194304}]}`` - ``inputs`` and ``outputs`` are
+    the ONLY top-level manifest keys; any other key (``file_inputs``,
+    ``file_bundle_inputs``) is refused at create, patch and run, never ignored.
+    Add the matching ``state_schema`` field (``file_bundle`` -> ``{"name":
+    "files", "type": "list"}``; a single ``file`` -> ``"type": "dict"``), and a
+    ``source_code`` node with that field in ``input_keys`` plus
+    ``"tools_allowed": ["read_run_file"]`` that reads by keyword call
+    ``invoke_mcp_action("read_run_file", file_id=ref["file_id"], offset=0,
+    count=524288)`` -> ``{"bytes_base64", "next_offset", "eof"}``, looping until
+    ``eof``. Then ``run_graph inputs_json={"files": [<reference verbatim>]}``.
+    Repair a stored manifest with ``operation=patch`` payload
+    ``[{"op": "set_io_manifest", "io_manifest": {"inputs": [...]}}]``.
 
     Read ``delivering`` for binary custody and linked delivery.
 
-    **Inbound webhooks:** read ``branches`` for create/revoke and the POST contract.
+    **Inbound webhooks:** ``target="webhook"`` supports ``operation="create"``
+    and ``operation="revoke"``. Read ``branches`` for the POST contract.
 
     **Background work (activities):** ``target="activity"`` with
     ``operation="start"`` and ``payload_json`` ``{"title": "...", "brief": "..."}``
@@ -3128,8 +3143,9 @@ def write_graph(
     ``"resume"`` take ``{"activity_id": "..."}``; stop keeps the result so far.
     Read them with ``read_graph target="activities"``.
 
-    **Recurring work:** read ``branches`` for automation create/pause/resume/delete,
-    owner timezone, overlap and event subscriptions.
+    **Recurring work:** ``target="automation"`` supports ``operation="create"``,
+    ``operation="pause"``, ``operation="resume"`` and ``operation="delete"``.
+    Read ``branches`` for owner timezone, overlap and event subscriptions.
 
     - ``operation="create"`` — create a new Branch graph from a complete Branch
       spec in ``payload_json`` (stored PRIVATE to your command center). A prompt node
