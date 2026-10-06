@@ -482,6 +482,20 @@ def test_a_code_node_grant_narrows_its_served_tools(tmp_path, code_node_engine):
     assert MARK not in (tmp_path / "u-a" / "identity.md").read_text(encoding="utf-8")
 
 
+def test_code_node_grant_survives_four_tool_model_projection(
+    tmp_path, code_node_engine, monkeypatch,
+):
+    from tinyassets import served_tools
+    from tinyassets.graph_compiler import CompilerError
+
+    monkeypatch.setattr(served_tools, "SERVED_ENGINE_MCP_TOOLS", served_tools.FOUR_MODEL_TOOLS)
+    invoke = _invoker(["read_brain"])
+    assert "identity" in invoke("read_brain")["data"]["brain"]
+    with pytest.raises(CompilerError, match="not granted the served tool 'write_brain'"):
+        invoke("write_brain", identity=MARK)
+    assert MARK not in (tmp_path / "u-a" / "identity.md").read_text(encoding="utf-8")
+
+
 @pytest.mark.parametrize("context", [
     {"caller_provenance": "public-foreign"},
     {"definition_author": "actor-b"},

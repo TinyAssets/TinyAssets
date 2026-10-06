@@ -2124,9 +2124,9 @@ def _node_served_tool_call(
     """
     import asyncio
 
-    from tinyassets.served_tools import SERVED_ENGINE_MCP_TOOLS
+    from tinyassets.served_tools import BACKEND_ENGINE_CAPABILITIES
 
-    granted = allowed & set(SERVED_ENGINE_MCP_TOOLS)
+    granted = allowed & set(BACKEND_ENGINE_CAPABILITIES)
     if granted and name not in granted:
         raise CompilerError(
             f"Node '{node.node_id}' is not granted the served tool '{name}'; "
@@ -2231,9 +2231,9 @@ def _build_node_mcp_invoker(
             raise CompilerError(
                 f"Node '{node.node_id}' invoke_mcp_action requires action_name."
             )
-        from tinyassets.served_tools import SERVED_ENGINE_MCP_TOOLS
+        from tinyassets.served_tools import BACKEND_ENGINE_CAPABILITIES
 
-        if requested in SERVED_ENGINE_MCP_TOOLS:
+        if requested in BACKEND_ENGINE_CAPABILITIES:
             return _node_served_tool_call(
                 node, requested, kwargs, allowed=allowed,
                 execution_context=execution_context, should_cancel=should_cancel,

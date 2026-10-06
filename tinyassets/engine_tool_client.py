@@ -20,7 +20,7 @@ from tinyassets.engine_mcp_http import (
     read_engine_mcp_route,
     wait_for_engine_mcp_route,
 )
-from tinyassets.served_tools import BACKEND_ENGINE_CAPABILITIES, SERVED_ENGINE_MCP_TOOLS
+from tinyassets.served_tools import BACKEND_ENGINE_CAPABILITIES
 from tinyassets.storage import data_dir
 
 
@@ -197,7 +197,7 @@ async def open_engine_tools(
         not enabled
         or any(not isinstance(name, str) for name in enabled)
         or len(set(enabled)) != len(enabled)
-        or not set(enabled).issubset(SERVED_ENGINE_MCP_TOOLS)
+        or not set(enabled).issubset(BACKEND_ENGINE_CAPABILITIES)
     ):
         raise EngineToolError("engine_tools_invalid_selection")
     # The displayed subset is not the authority signed onto the launch. ta

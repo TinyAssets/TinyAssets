@@ -156,3 +156,42 @@ An isolated local run reproduces the existing description-budget failure:
 32,353 > 30,100. A combined Linux run with ta tests first reported 50 passed;
 that does not supersede the isolated failure. The broader oracle run puts the
 cost file first to expose it. Final verification and review results follow below.
+
+## K2 verification and cross-family disposition
+
+The broader Linux oracle passed **163 tests**, including the cost file first,
+and the engine/node follow-up passed **107 tests**, also including the budget
+test. The local Python 3.14 budget failure is therefore recorded separately
+from Linux Python 3.11 results; the environment discrepancy is unresolved and
+no threshold or test was weakened to reconcile it. The plugin mirror builds
+627 files and its import probe passes. Ruff and diff whitespace checks pass.
+
+Claude review via `peer-agents` completed successfully in 81 seconds against
+831ee194cc: **VERDICT: ADAPT**, by code inspection (no reviewer tests).
+
+- **AGREE F1:** code-node dispatch and grant intersection still depended on
+  the visible registry. They now use the backend registry. A real engine/store
+  regression projects four visible tools, permits the granted brain read and
+  refuses an ungranted brain write before any mutation. Internal transport
+  inventory validation also uses the backend registry; model sessions continue
+  to expose and admit only the caller-selected handles.
+- **AGREE F2:** native node deny lists must retain withheld backend handles;
+  `_granted_config` now uses the backend registry. Claude four-only discovery
+  remains explicitly pending activation, as already recorded above.
+- **AGREE F3:** a module-local projection alone did not test the launchers.
+  Added coordinator and Codex launch tests: four actual displayed handles,
+  complete signed backend grant. The real code-node refusal regression covers
+  the grant-intersection failure from F1.
+- **AGREE F4, resolved:** merged origin/main 22bc0f728e after #4514 landed;
+  kept its evidence plus K2's section through the add/add conflict. Product
+  changes were identical across that merge.
+- **DISAGREE_EVIDENCE** with the review's final assertion that read/write/edit
+  are absent from backend capabilities: all three are literal members of
+  `BACKEND_ENGINE_CAPABILITIES`, alongside bash. The coordinator/Codex and
+  transport tests verify they remain grantable engine handles.
+
+No second review round was requested. Follow-up Linux verification passed
+**244 tests** (grants, transport, real code nodes, engine, coordinator, HTTP
+loop, ta and ta jail); local focused verification passed 87 tests. Remaining
+tasks 2.x, full resident budgets, natural
+common-task trials, deployment, real-user acceptance and spec sync are undone.

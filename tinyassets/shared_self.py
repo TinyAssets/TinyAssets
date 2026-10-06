@@ -172,12 +172,12 @@ def prepare_shared_self_turn(base_path, universe_id, principal_id, prompt, confi
 
 def _granted_config(config, node):
     """Narrow every tool surface to the node's grant (``None`` keeps them all)."""
-    from tinyassets.served_tools import SERVED_ENGINE_MCP_TOOLS, node_tool_grant
+    from tinyassets.served_tools import BACKEND_ENGINE_CAPABILITIES, node_tool_grant
 
     grant = node_tool_grant(node.get("tools_allowed"))
     if grant is None:
         return config
-    withheld = {f"mcp__tinyassets__{t}" for t in SERVED_ENGINE_MCP_TOOLS if t not in grant}
+    withheld = {f"mcp__tinyassets__{t}" for t in BACKEND_ENGINE_CAPABILITIES if t not in grant}
     return replace(
         config,
         engine_tool_grant=grant,
