@@ -12,6 +12,7 @@ import math
 import os
 import stat
 import sys
+import threading
 from dataclasses import asdict, replace
 from pathlib import Path
 
@@ -19,6 +20,82 @@ from tinyassets import universe_tools as tools
 
 INPUT_BOUND = 24 * 1024 * 1024
 OUTPUT_BOUND = 4 * ((tools.MAX_IMAGE_SOURCE_BYTES + 2) // 3) + 65536
+_center_locks = {}
+_center_locks_guard = threading.Lock()
+
+
+def _center_lock(center):
+    # One authenticated daemon owns this launcher. Keep each lock for its
+    # lifetime: eviction could allow overlapping maintenance for the same root.
+    with _center_locks_guard:
+        return _center_locks.setdefault(center, threading.Lock())
+
+
+def _files(client, *, principal, center, identity, fd, agent_id):
+    from tinyassets import storage_accounting
+
+    try:
+        return _files_exchange(client, principal=principal, center=center,
+                               identity=identity, fd=fd, agent_id=agent_id)
+    finally:
+        # Preparation can publish bytes before open_budget succeeds. Keep
+        # those stores dirty even on a failed admission or lost receipt.
+        for store in ('universe_files', 'workspaces'):
+            storage_accounting.touch(center.parent, center.name, store)
+
+
+def _files_exchange(client, *, principal, center, identity, fd, agent_id):
+    info = os.fstat(fd)
+    with client.start_cell(kind='tool-files', principal=principal,
+            command_center=center.name, identity=identity, directory_fd=fd) as cell:
+        cell.stream.settimeout(40)
+        with cell.stream.makefile('rb') as reader:
+            proof = _read(reader, 16384)['cell']
+            inner = identity.uid - 300000
+            if (proof.get('uid') != inner or proof.get('gid') != inner
+                    or proof.get('source') != [info.st_dev, info.st_ino]
+                    or proof.get('fds') != [0, 1, 2] or proof.get('groups') != []
+                    or proof.get('caps') != 'zero' or proof.get('nnp') != 1
+                    or proof.get('profile') != 'cell-deny'):
+                raise RuntimeError('tool maintenance proof is absent')
+            cell.stream.sendall(_frame({'agent_id': agent_id}, 4096))
+            answer = _read(reader, 16384)
+            if set(answer) != {'files'} or cell.wait(5) != 0:
+                raise RuntimeError('tool maintenance did not complete')
+            return answer['files']
+
+
+def prepare(universe_dir, *, agent_id='main'):
+    """Only the owner cell creates selected-path tool workspace directories."""
+    from tinyassets import role_decoder
+    from tinyassets.auth.middleware import current_identity
+    from tinyassets.broker import supervisor
+    from tinyassets.broker.owner_identities import owner_identity
+    from tinyassets.daemon_server import get_founder_home, universe_access_permission
+    from tinyassets.storage import data_dir
+    from tinyassets.workspace_fs import open_dir_nofollow
+
+    client = role_decoder._bounded_client
+    if client is None:
+        raise tools.UniverseToolError('tool preparation requires its bounded owner launcher')
+    supervisor._protect_daemon()
+    root, center = data_dir().resolve(), Path(universe_dir)
+    principal = current_identity().user_id
+    if (center.parent != root or center.resolve() != center
+            or not (get_founder_home(root, principal) == center.name or universe_access_permission(
+                root, universe_id=center.name, actor_id=principal) == 'admin')):
+        raise PermissionError('tool preparation scope is not admitted')
+    identity = owner_identity(root, principal=principal)
+    fd = open_dir_nofollow(center)
+    try:
+        info = os.fstat(fd)
+        if info.st_gid != identity.gid or info.st_uid not in (1001, identity.uid):
+            raise PermissionError('tool center does not match owner identity')
+        with _center_lock(center):
+            return _files(client, principal=principal, center=center, identity=identity,
+                          fd=fd, agent_id=agent_id)
+    finally:
+        os.close(fd)
 
 
 def _frame(value, bound):
@@ -114,7 +191,20 @@ def run(universe_dir, inner, *, agent_id, stdin, limits, wall_seconds, output_by
                 socket_fds.append(descriptor)
                 socket_info = os.fstat(descriptor)
                 socket_sources[key] = [socket_info.st_dev, socket_info.st_ino]
-        with tools._slot(center, on_wait=on_wait, waited=queued):
+        with _center_lock(center), tools._slot(center, on_wait=on_wait, waited=queued):
+            maintenance = dict(principal=principal, center=center, identity=identity,
+                               fd=fd, agent_id=agent_id)
+            maintenance_warnings = set()
+
+            def maintain_files():
+                result = _files(client, **maintenance)
+                if result['truncated']:
+                    maintenance_warnings.add('Tool file recovery reached its bounded walk limit.')
+                if result['skipped']:
+                    maintenance_warnings.add('Brain publication skipped: '
+                                             + ', '.join(result['skipped']) + '.')
+
+            maintain_files()
             try:
                 budget = tools.jail_disk.open_budget(center,
                     min_free_bytes=limits.min_free_disk_bytes,
@@ -142,8 +232,14 @@ def run(universe_dir, inner, *, agent_id, stdin, limits, wall_seconds, output_by
                         cell.stream.sendall(payload)
                         while True:
                             answer = _read(reader, OUTPUT_BOUND)
-                            if answer == {'budget': True}:
-                                cell.stream.sendall(_frame({'breach': budget.breach()}, 1024))
+                            if (set(answer) == {'budget', 'force'} and answer['budget'] is True
+                                    and type(answer['force']) is bool):
+                                if answer['force']:
+                                    # The trusted supervisor has reaped its payload.
+                                    # Restore ACL masks before the final daemon walk.
+                                    maintain_files()
+                                cell.stream.sendall(_frame(
+                                    {'breach': budget.breach(force=answer['force'])}, 1024))
                                 continue
                             if set(answer) != {'result'}:
                                 raise RuntimeError('invalid tool result')
@@ -155,9 +251,14 @@ def run(universe_dir, inner, *, agent_id, stdin, limits, wall_seconds, output_by
                             if cell.wait(5) != 0:
                                 raise RuntimeError('tool cell did not exit successfully')
                             return replace(run, waited=queued[0] if queued else 0.0,
-                                           notice=budget.notice, disk_bound=budget.bound)
+                                           notice=' '.join(filter(None, (
+                                               budget.notice, *sorted(maintenance_warnings)))),
+                                           disk_bound=budget.bound)
             finally:
-                budget.settle()
+                try:
+                    maintain_files()
+                finally:
+                    budget.settle()
     finally:
         for descriptor in socket_fds:
             os.close(descriptor)
@@ -170,8 +271,8 @@ def cell_main(*, egress=False, ta=False):
     limits, stdin = _validate(request)
 
     class Budget:
-        def breach(self):
-            sys.stdout.buffer.write(b'{"budget":true}\n')
+        def breach(self, *, force=False):
+            sys.stdout.buffer.write(_frame({'budget': True, 'force': force}, 1024))
             sys.stdout.buffer.flush()
             answer = _read(sys.stdin.buffer, 1024)
             if (set(answer) != {'breach'}

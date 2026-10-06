@@ -114,7 +114,7 @@ print('offline tool-jail staged acceptance PASS; ZERO FOREIGN_BYTES; '
 '''
 
 
-def main():
+def main(*, timeout=300):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--image', required=True)
     args = parser.parse_args()
@@ -136,7 +136,7 @@ def main():
         command += ['--security-opt', option]
     command += ['--entrypoint', '/opt/venv/bin/python', digest, '-I', '-B', '-']
     print('production image:', digest, flush=True)
-    return subprocess.run(command, input=script, text=True, timeout=300).returncode
+    return subprocess.run(command, input=script, text=True, timeout=timeout).returncode
 
 
 if __name__ == '__main__':

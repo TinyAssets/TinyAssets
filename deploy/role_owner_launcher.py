@@ -307,14 +307,14 @@ class OwnerLauncher:
         socket_count = (sum(request.get(key) is True for key in ('egress', 'ta'))
                         if kind == 'tool-jail' else int(request.get('egress') is True)
                         if kind == 'provider-discovery' else 0)
-        mounted = kind in {'workspace-git', 'preview-write', 'tool-jail',
+        mounted = kind in {'workspace-git', 'preview-write', 'tool-jail', 'tool-files',
                            'provider-discovery'} or (
             kind == 'node-sandbox' and request.get('workspace') is True)
         if (not isinstance(request, dict)
                 or set(request) != fields or request['op'] not in {'SPAWN', 'START'}
                 or kind not in {'image-decoder', 'workspace-git', 'ui-preview', 'preview-write',
                                 'node-sandbox', 'tool-jail', 'ingestion-video',
-                                'provider-discovery'}
+                                'provider-discovery', 'tool-files'}
                 or (kind == 'node-sandbox' and type(request['workspace']) is not bool)
                 or (kind == 'provider-discovery' and (
                     not streaming or type(request['egress']) is not bool))
@@ -350,7 +350,7 @@ class OwnerLauncher:
                     or os.readlink(f'/proc/self/fd/{received[1]}') !=
                     self.data_root + '/' + request['command_center']):
                 raise ValueError('preview output root does not match admitted center')
-        if kind == 'tool-jail':
+        if kind in ('tool-jail', 'tool-files'):
             info = os.fstat(received[1])
             if (not stat.S_ISDIR(info.st_mode) or info.st_gid != inner
                     or info.st_uid not in (inner, self.overflow_uid)
@@ -361,7 +361,7 @@ class OwnerLauncher:
             prefix = (self.data_root + '/.universe-sidecars/'
                       + request['command_center'] + '/')
             for name in ('egress', 'ta'):
-                if not request[name]:
+                if not request.get(name):
                     continue
                 info = os.fstat(received[index])
                 source = os.readlink(f'/proc/self/fd/{received[index]}')
@@ -458,6 +458,9 @@ class OwnerLauncher:
                 elif kind == 'ingestion-video':
                     command = ['/usr/local/libexec/ta-decoder.py', 'enter-video',
                                'video', self.data_root, str(inner)]
+                elif kind == 'tool-files':
+                    command = ['/usr/local/libexec/ta-decoder.py', 'enter-tool-files',
+                               'files', self.data_root, str(inner)]
                 elif kind == 'tool-jail':
                     command = ['/usr/local/libexec/ta-decoder.py', 'enter-tool',
                                ('e' if request['egress'] else '')

@@ -1,3 +1,38 @@
+### D83. Fixed TOOL file preparation and recovery
+
+Before TOOL accounting admission and after the authenticated payload exit, the
+daemon runs a fixed tool-files cell under the admitted owner's UID/GID. Unlike
+the untrusted tool payload, this trusted, bounded operation receives the pinned
+center solely to create the fixed harness directories, restore owner-file mode
+bits and publish absent brain files. No caller path, executable, environment,
+credential, network socket or numeric identity is admitted. cell-deny and a
+35-second mapper deadline apply. The sole authenticated daemon serializes TOOL
+runs per center; forked client use is refused by the existing client PID check.
+Selected provider workspace creation also calls this cell, never daemon mkdir.
+
+All traversal uses no-follow descriptors, checking exact owner UID/GID before
+chmod. Foreign identities, links, special files and multiply-linked regular
+files are never read or remoded. Restoring the group mask restores inherited
+daemon ACL access after chmod; removal of the ACL itself remains a loud refusal
+at accounting, never an unmeasured successful launch. New directories require
+an owner-writable admitted root with the migration's daemon default ACL.
+
+Recovery walks stop and report at their entry/depth/time bounds; accounting
+still refuses inaccessible trees. Unpromotable brains are reported and remain
+editable rather than preventing TOOL cleanup. Existing mode bits are preserved,
+with only required access bits added; unchanged modes are not rewritten.
+Brain publication copies bounded bytes from a verified source descriptor into
+an exclusive root temporary file, fsyncs, then atomically renames without
+replacement. Existing canonical names win. Workspace source bytes are retained
+for recovery; secondary agents never publish identity.md. Before the supervisor's
+forced final accounting check, its already-reaped payload's files are recovered.
+Settlement remains in the daemon and runs even when recovery fails; preparation
+also marks the stores dirty when admission fails. Startup stays OFF.
+
+Founder 2026-10-06 execution order supersedes older delivery lists: TOOL files,
+package cells, authenticated owner-delete admission, then remaining provider
+classes. All cell admission remains provider-neutral.
+
 ### D82. Mechanical metadata-only provider-discovery cell
 
 The first provider class is metadata discovery only, not provider CLI execution

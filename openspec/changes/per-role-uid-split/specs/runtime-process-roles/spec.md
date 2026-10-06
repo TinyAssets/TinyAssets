@@ -4,6 +4,28 @@
 
 ## ADDED Requirements
 
+### Requirement: TOOL files recover under the admitted owner identity
+
+The daemon SHALL prepare fixed TOOL directories before accounting admission and
+recover owner modes and persistent brain publication after payload reaping in a
+fixed, strict owner cell. It SHALL retain queueing and accounting settlement.
+The maintenance cell SHALL accept no caller path, executable or credential and
+SHALL refuse required directory aliases. It SHALL not read or mutate foreign
+inodes, follow links, or remode multiply-linked files. Brain publication SHALL
+be bounded, descriptor-sourced, atomic and no-replace, preserving source bytes.
+
+#### Scenario: Restrictive TOOL modes do not strand later accounting
+- **WHEN** an owner tool makes its own file or directory mode 000
+- **THEN** trusted owner maintenance restores its inherited daemon ACL mask
+- **AND** settlement runs even on a failed maintenance receipt
+- **AND** a foreign alias remains unchanged and unread
+
+#### Scenario: A tool creates a previously absent brain file
+- **WHEN** the admitted main agent writes MEMORY.md in its persistent workspace
+- **THEN** trusted maintenance publishes the exact bytes at the canonical root
+- **AND** an existing canonical name is never replaced
+- **AND** a secondary agent cannot publish the main agent identity.md
+
 
 ### Requirement: Provider metadata discovery uses a dedicated owner cell
 

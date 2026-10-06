@@ -274,7 +274,14 @@ def ensure_agent_workspace(universe_dir: Path) -> Path:
     jail can never create the name first (as a link to another universe)
     for the tool jail to bind as ``/u`` (gpt-6-astra on #4194).
     """
+    from tinyassets.broker.supervisor import broker_selected
+
     path = Path(universe_dir) / AGENT_WORKSPACE_DIR
+    if broker_selected():
+        from tinyassets.role_tools import prepare
+
+        prepare(universe_dir, agent_id='workspace-preparation')
+        return path
     try:
         path.mkdir(mode=0o755)
     except FileExistsError:

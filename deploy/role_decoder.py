@@ -57,10 +57,10 @@ def tool_mounts(uid):
 
 
 def enter(mime, data_root, uid=1003, *, preview=False, preview_write=False, node=False,
-          tool=False, video=False, provider=False):
+          tool=False, video=False, provider=False, tool_files=False):
     identity(uid)
     host = namespaces()
-    mounted = preview_write or tool or provider or (node and mime == 'workspace')
+    mounted = preview_write or tool or provider or tool_files or (node and mime == 'workspace')
     if provider:
         # D82: the daemon-sealed snapshot is daemon-owned; D73 grants the owner
         # read access only. The mapper already matched its exact path.
@@ -128,6 +128,7 @@ def enter(mime, data_root, uid=1003, *, preview=False, preview_write=False, node
     argv.extend(["--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp",
                  "--chdir", "/tmp", "--seccomp", str(descriptor), "--",
                  "/opt/venv/bin/python", "-I", "-B", "/usr/local/libexec/ta-decoder.py",
+                 'inside-tool-files' if tool_files else
                  'inside-provider' if provider else 'inside-video' if video else
                  'inside-tool' if tool else 'inside-node' if node else
                  'inside-preview-write' if preview_write else
@@ -332,6 +333,41 @@ if __name__ == "__main__":
         from tinyassets.role_video_codec import cell_main
 
         raise SystemExit(cell_main())
+    elif (len(sys.argv) == 5 and sys.argv[1] == 'enter-tool-files'
+            and sys.argv[2] == 'files' and 0 < int(sys.argv[4]) < 100000):
+        enter(sys.argv[2], sys.argv[3], int(sys.argv[4]), tool_files=True)
+    elif (len(sys.argv) == 6 and sys.argv[1] == 'inside-tool-files'
+            and sys.argv[2] == 'files' and 0 < int(sys.argv[5]) < 100000):
+        host = json.loads(sys.argv[3])
+        source = host.pop('source')
+        info = os.stat('/workspace', follow_symlinks=False)
+        if [info.st_dev, info.st_ino] != source:
+            raise RuntimeError('tool maintenance source differs from pinned source')
+        proof = prove_cell(host, sys.argv[4], int(sys.argv[5]))
+        proof['source'] = source
+        import resource
+
+        for kind, bound in ((resource.RLIMIT_AS, 256 * 1024 * 1024),
+                            (resource.RLIMIT_CPU, 25), (resource.RLIMIT_NOFILE, 192),
+                            (resource.RLIMIT_FSIZE, 1024 * 1024), (resource.RLIMIT_CORE, 0)):
+            resource.setrlimit(kind, (bound, bound))
+        sys.path.insert(0, '/app')
+        from tinyassets.role_tool_files import maintain
+        from tinyassets.role_tools import _frame, _read
+
+        sys.stdout.buffer.write(_frame({'cell': proof}, 16384))
+        sys.stdout.buffer.flush()
+        request = _read(sys.stdin.buffer, 4096)
+        if (set(request) != {'agent_id'} or type(request['agent_id']) is not str
+                or not request['agent_id'].strip() or len(request['agent_id']) > 512):
+            raise ValueError('invalid tool maintenance request')
+        fd = os.open('/workspace', os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            answer = maintain(fd, agent_id=request['agent_id'])
+        finally:
+            os.close(fd)
+        sys.stdout.buffer.write(_frame({'files': answer}, 16384))
+        sys.stdout.buffer.flush()
     elif (len(sys.argv) == 5 and sys.argv[1] == 'enter-tool'
             and sys.argv[2] in ('-', 'e', 't', 'et') and 0 < int(sys.argv[4]) < 100000):
         enter(sys.argv[2], sys.argv[3], int(sys.argv[4]), tool=True)

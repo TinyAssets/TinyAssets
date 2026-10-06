@@ -1,3 +1,74 @@
+# Current U1 delivery: D83 TOOL preparation, promotion and chmod recovery
+
+Startup OFF; draft PR #4523 remains draft. Founder ordering for this continuation:
+TOOL files, PACKAGE cells, authenticated owner-delete admission, remaining
+provider execution/auth/network classes. Admission remains provider-neutral.
+
+D83 adds the fixed tool-files class: exact admitted center descriptor, owner
+UID/GID, cell-deny, no executable/path/env/socket request, fixed lifetime and
+resource bounds. It creates the seven harness directories and agent workspace,
+restores inherited daemon ACL masks only on exact-owner exclusive regular files
+and directories, and atomically publishes bounded absent brain files from pinned
+source bytes. Foreign identities, hardlinks, symlinks and special files are not
+read or remoded. Sources remain recoverable; canonical names never get replaced;
+secondary agents cannot publish main identity.md. TOOL payloads keep the narrower
+D79 view. Daemon queueing, accounting admission and settlement remain authoritative.
+The final forced accounting poll happens after payload reaping and file recovery.
+
+Selected provider workspace creation now delegates to the same owner-cell helper,
+preventing daemon-owned first-use directories. Existing wrongly-labelled legacy
+roots still require U2 migration; no runtime chown or retained host authority.
+Removed daemon ACL entries are not recreated: unreadable accounting fails loudly.
+Walk limits report truncation; unsafe/oversized brain files report skipped names
+and remain editable. No provider-specific admission branch was added.
+
+Evidence:
+- Root Linux oracle, final merged tree: 87 passed, zero skips. Selection:
+  test_role_tool_files, test_role_tools, test_role_launcher,
+  test_universe_path_io_guard, test_converse_turn_cost, test_provider_jail_policy,
+  test_agent_workspace, test_provider_universe_jail, test_provider_jail_root_masks.
+- Supporting uid1001 oracle: 47 passed, zero skips (role_tool_sockets,
+  owner_launcher_client, jail_disk). Existing relay tests require daemon UID1001;
+  the first over-broad root selection failed two identity checks, not isolation.
+- Production Dockerfile image tinyassets-uid-d83:reviewed, build and privileged
+  chain PASS, sha256:d9c741b029c8aaa2bfe8ed7bcc952daf6acda7104e1e6ae1670e2f71b5a02870.
+  role_tool_files_probe PASS for both owners: read/write/edit/stdin, actual image
+  read, native identity/fd/namespace/network denials, timeout/output bounds,
+  first-use harness preparation, verbatim brain publication, mode000 recovery,
+  daemon reads/accounting, foreign-center refusal and reuse. ZERO FOREIGN_BYTES;
+  daemon capabilities zero; startup_activated=false. No socket proof claimed here.
+- Earlier production image failed at the inherited adapter's missing force=True
+  budget argument after the previous main merge. A stderr-only diagnostic proved
+  the TypeError. Fixed adapter plus regression test; corrected production probes
+  passed twice. Diagnostic images are not acceptance.
+- One full root run caught the existing provider-fill polling race (storage_limit
+  was enforced but the child had printed filled). Unchanged complete selection
+  rerun: all 87 pass. One invocation named a nonexistent test file: no tests ran;
+  this is not a receipt. No assertions, skips or xfails were relaxed.
+- Changed-file Ruff, plugin regeneration/import, strict OpenSpec validation PASS.
+  Static prompt budgets remain unchanged. origin/main merged at 06822d733c.
+
+Cross-family peer-agents Claude review, 176s, exit 0: VERDICT ADAPT. AGREE and
+fixed both correctness findings: unpromotable content no longer locks TOOL out,
+and selected provider workspace creation uses the owner cell. Receipt:
+C:/Users/Jonathan/AppData/Local/Temp/uid-d83-review.md. No cross-user defect found.
+Optional observations: modes now preserve existing bits and unchanged modes are
+not rewritten; serialization is daemon-local and the client rejects forked PID
+use. Per-center waiting remains silent, retained workspace copies are charged,
+and a killed publication can leave an accounted hidden temporary file. These
+are not activation/security acceptance claims. U2 files remain untouched.
+
+Remaining, in the requested order:
+1. PACKAGE cells: immutable exact revision, owner identity, pinned egress,
+   broker-only credential slots and resource caps; K1/user installs depend on it.
+2. Authenticated owner-delete admission for U2 #4510's legacy two-pass deletion.
+3. Remaining provider execution/auth/network discovery and other engine callers.
+4. Dynamic center admission, full writable-path/daemon-reader and denial matrix,
+   aggregate memory/tmpfs capacity, U2 startup/healthchecks/rollback integration,
+   integrated production proofs and spec sync. Activation/deployment stays OFF.
+
+---
+
 # Current U1 delivery: D82 offline provider metadata discovery
 
 Final merged-tree verification: origin/main merged without conflicts at
