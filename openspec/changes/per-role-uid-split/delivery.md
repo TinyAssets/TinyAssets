@@ -1,3 +1,64 @@
+# Current delivery: D68 bounded launcher and actual per-owner image decoder
+
+Started at fedd717970; requested ff-only pull was already current. D68 replaces
+host-wide serving authority in the new staged owner launcher with D62's fixed
+user namespace map. It does not activate startup or admit ui-preview. No full
+2.x task is newly complete.
+
+Production Dockerfile candidate: `sha256:c950733eb7c42e49cee75e1beb35d73f41afc545a5f333908fa774b6baabcf4c`.
+The broker identity store allocated Alice 300001:300001 and Bob 300002:300002.
+Both actual image decoders ran through OwnerLauncher in separate bubblewrap
+cells as inner 1:1 and 2:2, decoded real PNGs, held only stdio descriptors and
+zero capabilities/groups, and used unchanged cell-deny. Host labels in replies
+are the broker binding plus the asserted kernel map, not a second measurement.
+
+Commands/evidence:
+- `python scripts/role_owner_launcher_probe.py --image tinyassets-uid-d68:launcher`:
+  actual Alice/Bob PNG decodes; out-of-range mappings refused; descendant,
+  empty-packet-with-fd, descendant STOP, forged UID, foreign scope and ui-preview
+  requests refused; idle survival and 35-second timeout reaping; descriptor
+  baseline restored. Decoder's actual open attempts test each listed host/
+  foreign path with O_RDONLY and O_WRONLY, plus network/abstract sockets and
+  planted-link/FIFO attempts. No data bind exists for this class.
+- `python scripts/linux_oracle.py -- tests/test_role_launcher.py tests/test_role_decoder.py tests/test_privileged_chain.py -q -rs`:
+  32 passed, zero skips.
+- Pre-review-fix image `sha256:9eb6a5ed405f5c57743d8782d9f159d212e308b7ca459f25b700346bfa16c5df`:
+  `python scripts/linux_oracle.py --production-image tinyassets-uid-d68:launcher --production-stream`
+  passed the foundation/egress/actual broker HTTPS accounting/refresh/restart
+  regression. Existing forward/reverse egress and crash proofs pass; this is
+  still the legacy staged broker harness, not D60 startup acceptance.
+- Same pre-review-fix image: `role_reader_alias_probe.py --image tinyassets-uid-d68:launcher`:
+  114 denied, 19 own reads, zero foreign reads, unchanged foreign data.
+  `role_owner_namespace_probe.py --image tinyassets-uid-d68:launcher`:
+  all three D9 profiles deny retired-inode read/relabel/copy, zero foreign reads.
+- Targeted Ruff and strict OpenSpec validation pass. Full Ruff retains the 55
+  unchanged baseline findings. No tinyassets source changed; no mirror update.
+
+One cross-family code review using peer-agents returned DISAGREE_EVIDENCE.
+AGREE: empty seqpackets bypassed credentials and fd cleanup; now all packets
+reach authentication/cleanup and shutdown needs authenticated STOP. The probe
+sends an empty packet carrying an fd and a STOP from a descendant. Also fixed
+reported pre-setresuid kill race (try mapper identity then final owner identity)
+and ancillary cleanup. DISAGREE_EVIDENCE on "no cell attempts foreign reads":
+deploy/role_decoder.py::decode already attempts O_RDONLY/O_WRONLY on every
+listed denied path, and raises on any successful open. Changed the receipt's
+ambiguous foreign_reads field to explicitly identify those actual open checks.
+Private channel holders can consume each other's replies; the integrated daemon
+must close it in non-daemon descendants and serialize client request/reply pairs.
+That client and full service lifecycle remain pending; no runtime activation.
+
+Release-critical files: **3**: Dockerfile, deploy/role_owner_launcher.py,
+deploy/role_decoder.py. The chain checker also changes (gate/authority review
+included). No history rewrite, PR, deployment, or production data mutation.
+
+Remaining in order: daemon client plus bounded-launcher service integration;
+every other actual engine class through that path (ui-preview the one deferred
+class); full broker reader inventory; full D61 quarantine/owner migration and
+two-pass deletion; restrictive engine-created-file rollback and actual old CMD
+boot; startup/healthcheck only after all prerequisites pass. Existing reader
+concern stays open. The D67 egress-only old-image proof is not full rollback.
+
+---
 # Current delivery: D61 scan, D65 readers, D67 actual old-image egress rollback
 
 Pushed **52fcbfd47e** (legacy inventory/provenance model) and **4e112da74c**

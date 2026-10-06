@@ -4,6 +4,30 @@
 
 ## ADDED Requirements
 
+### Requirement: Bounded launcher authenticates every private-channel packet
+
+Under D62/D68, the launcher SHALL retain only SETUID/SETGID within the fixed
+`0 300000 100000` owner user namespace, with zero bounding, ambient and
+inheritable capabilities. Host 300000 SHALL remain reserved for the launcher.
+The inherited private seqpacket channel SHALL authenticate kernel credentials
+for the exact live daemon PID on every packet, including empty messages and
+shutdown. A startup-pinned pidfd SHALL prevent acceptance after daemon death.
+Numeric identities, executable paths, profiles and environment SHALL NOT be
+request fields. Identities SHALL come from broker-resolved owner admissions.
+
+#### Scenario: A descendant inherits a launcher endpoint
+- **WHEN** a non-daemon descendant sends spawn, empty-with-descriptor, or STOP
+  packets on the inherited pair
+- **THEN** the launcher refuses each packet and closes received descriptors
+- **AND** subsequent authenticated daemon operations still succeed
+
+#### Scenario: A decoder runs under a dedicated identity
+- **WHEN** two admitted owners launch actual image decoders through the bounded launcher
+- **THEN** each decoder runs under its own mapped UID/GID with zero capabilities,
+  no supplementary groups, private namespaces, only declared stdio and cell-deny
+- **AND** actual PNG decoding succeeds while listed foreign/host data paths,
+  host network and abstract sockets remain inaccessible
+
 ### Requirement: Durable dedicated owner UID and GID (founder D60)
 
 D60 SHALL supersede historical shared engine UID/GID statements in this delta.

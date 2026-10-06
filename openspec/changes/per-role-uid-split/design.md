@@ -2000,3 +2000,26 @@ Remove only this newly created synthetic volume. No production volume is mounted
 This proves ledger/proxy compatibility with the old image, not full owner-tree
 rollback, restrictive engine-created files, or old daemon CMD startup. Keep the
 layout unadmitted and retain those remaining acceptance requirements.
+
+### D68. Mechanical bounded-launcher transport and decoder identity
+
+D62's launcher receives an inherited unnamed SOCK_SEQPACKET pair. Each packet
+requires kernel SCM_CREDENTIALS for the exact daemon PID plus the expected
+unmapped daemon UID/GID; a startup-opened pidfd must still be live. This replaces
+SO_PEERCRED only on this private pre-fork transport, where SO_PEERCRED caches the
+creator rather than each sender. A same-UID descendant inheriting the channel
+is refused. No public listener or new privileged component is introduced.
+
+The startup parent installs only D62's fixed maps, then becomes capability-free
+daemon uid 1001. The launcher child retains only namespace SETUID/SETGID, with
+zero bounding/inheritable/ambient sets. Broker-resolved startup admissions bind
+principal and center to a reserved identity; numeric identities, executable
+paths, environment and profiles are not request fields. Dynamic admissions and
+full service lifetime remain integration work, not reasons to restore host caps.
+
+The first class uses the existing actual image decoder and unchanged cell-deny
+profile. It executes with its owner's inner identity, closes descriptors before
+payload import, and binds no owner data. Timeout cleanup temporarily selects the
+same bounded owner effective UID to signal its child, then restores mapper euid;
+no CAP_KILL is retained. The legacy staged launcher remains a historical oracle
+path, not D60 startup acceptance. Startup activation and ui-preview stay off.

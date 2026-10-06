@@ -18,17 +18,17 @@ def namespaces():
     return {key: os.readlink("/proc/self/ns/" + key) for key in ("mnt", "pid", "ipc", "net")}
 
 
-def identity():
+def identity(uid=1003):
     status = fields()
-    if (os.getresuid() != (1003, 1003, 1003) or os.getresgid() != (1003, 1003, 1003)
+    if (os.getresuid() != (uid, uid, uid) or os.getresgid() != (uid, uid, uid)
             or os.getgroups() != [] or int(status["NoNewPrivs"]) != 1
             or any(int(status[key], 16) for key in
                    ("CapInh", "CapPrm", "CapEff", "CapBnd", "CapAmb"))):
         raise RuntimeError("decoder role retirement is absent")
 
 
-def enter(mime, data_root):
-    identity()
+def enter(mime, data_root, uid=1003):
+    identity(uid)
     host = namespaces()
     # Load only the immutable stdlib-only filter definition; no package import
     # or application initialization before the owner boundary exists.
@@ -47,11 +47,11 @@ def enter(mime, data_root):
     argv.extend(["--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp",
                  "--chdir", "/tmp", "--seccomp", str(descriptor), "--",
                  "/opt/venv/bin/python", "-I", "-B", "/usr/local/libexec/ta-decoder.py",
-                 "inside", mime, json.dumps(host, sort_keys=True), data_root])
+                 "inside-owner", mime, json.dumps(host, sort_keys=True), data_root, str(uid)])
     os.execv(argv[0], argv)
 
 
-def decode(mime, host, data_root):
+def decode(mime, host, data_root, uid=1003):
     # bwrap does not promise to close caller mount/seccomp fds. Close them here,
     # before the decoder (or any native image parser) imports or reads bytes.
     for name in os.listdir("/proc/self/fd"):
@@ -65,7 +65,7 @@ def decode(mime, host, data_root):
     # Supplementary host groups are unmapped in the new user namespace. The
     # role identity was asserted before entry; the cell must retain uid/gid.
     status = fields()
-    if (os.getuid() != 1003 or os.getgid() != 1003 or int(status["NoNewPrivs"]) != 1
+    if (os.getuid() != uid or os.getgid() != uid or int(status["NoNewPrivs"]) != 1
             or any(int(status[key], 16) for key in
                    ("CapInh", "CapPrm", "CapEff", "CapBnd", "CapAmb"))):
         raise RuntimeError("decoder cell identity is invalid")
@@ -148,5 +148,10 @@ if __name__ == "__main__":
         enter(sys.argv[2], sys.argv[3])
     elif len(sys.argv) == 5 and sys.argv[1] == "inside":
         raise SystemExit(decode(sys.argv[2], json.loads(sys.argv[3]), sys.argv[4]))
+    elif len(sys.argv) == 5 and sys.argv[1] == "enter-owner" and 0 < int(sys.argv[4]) < 100000:
+        enter(sys.argv[2], sys.argv[3], int(sys.argv[4]))
+    elif len(sys.argv) == 6 and sys.argv[1] == "inside-owner" and 0 < int(sys.argv[5]) < 100000:
+        raise SystemExit(decode(
+            sys.argv[2], json.loads(sys.argv[3]), sys.argv[4], int(sys.argv[5])))
     else:
         raise SystemExit("unsupported decoder bootstrap")
