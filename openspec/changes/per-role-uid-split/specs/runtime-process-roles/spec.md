@@ -4,6 +4,25 @@
 
 ## ADDED Requirements
 
+### Requirement: Installed package execution is immutable and owner-bound
+
+The package class SHALL pin a daemon-sealed exact manifest revision and all
+package file digests, mount that tree read-only under the admitted owner's
+dedicated UID/GID, close source descriptors and deny host networking. It SHALL
+retain CPU, process-tree memory/count, descriptor, file, tmpfs and lifetime
+bounds. Its raw stdio interface SHALL follow a verified cell proof handshake.
+Named credential/egress slots SHALL use only pinned invocation relays to the
+existing owner-scoped daemon effect handlers and credential broker. Package
+bytes SHALL never select a caller identity, kernel identity, profile, host path,
+arbitrary relay or credential environment.
+
+#### Scenario: A package revision cannot consume foreign state or authority
+- **WHEN** Alice starts an approved package revision with a declared connection slot
+- **THEN** the manifest and every file digest match the pinned immutable tree
+- **AND** foreign roots, writable or aliased source files, and foreign relays refuse
+- **AND** undeclared slots and direct host networking refuse without foreign bytes
+- **AND** cancellation reaps the package and descendants before relay revocation completes
+
 ### Requirement: TOOL files recover under the admitted owner identity
 
 The daemon SHALL prepare fixed TOOL directories before accounting admission and

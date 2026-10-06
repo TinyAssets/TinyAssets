@@ -1,3 +1,33 @@
+### D84. Provider-neutral immutable package cells
+
+A package is a sealed daemon-owned tree at the admitted center's fixed
+`.runtime/package-cells/<sha256>` location. The digest pins manifest bytes;
+the manifest pins every regular file, the entry point, interpreter, arguments
+and named connection slots. No unmanifested file, symlink, hardlink, writable
+group/other inode, foreign owner or over-bound tree is admitted. Consumers
+provision approved revisions; the launcher never installs packages as root.
+
+The mapper accepts only revision, principal, center and the presence of an
+exact pinned invocation relay. It selects dedicated owner UID/GID, cell-links,
+read-only package mount, private namespaces, bounded tmpfs, and fixed lifetime.
+No owner workspace, credential snapshot, vault or shared store enters. Python,
+Node and shell are mechanical interpreter choices, never provider branches.
+The mapper outside the cell bounds process count and aggregate process-tree
+RSS, including orphaned descendants beneath its private namespace init. This
+cannot be stopped by the package. The in-cell supervisor retires dumpability
+and supplies a second poll plus CPU/fd/file/core rlimits and Python/shell address
+space bounds. Python imports only its pinned package paths plus the immutable
+interpreter installation. It kills descendants before completion.
+
+Package stdio remains a raw duplex stream after an authenticated proof/start
+handshake, usable by K1. A declared connection slot maps only to an existing
+canonical ta connection capability bound to this principal/center. Its exact
+relay is pinned; requests cannot select another capability, owner, route or
+credential. Existing daemon consent/effect handlers and the broker retain
+credential custody, destination policy and DNS pinning. No general network
+proxy or credential environment is supplied. Context exit revokes/reaps before
+closing the capability relay. Startup remains OFF.
+
 ### D83. Fixed TOOL file preparation and recovery
 
 Before TOOL accounting admission and after the authenticated payload exit, the

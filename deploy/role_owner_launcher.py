@@ -25,6 +25,38 @@ CAPS = (1 << 6) | (1 << 7)
 MAX_CELLS, MAX_OWNER_CELLS = 32, 4
 
 
+def package_usage(pid, proc='/proc'):
+    """Count/RSS of the cell from OUTSIDE its PID namespace and owner identity.
+
+    Orphans stay below the cell's namespace init, so double-fork/setsid cannot
+    leave this tree. Only kernel stat records are read; no command lines/env.
+    """
+    records = {}
+    for name in os.listdir(proc):
+        if not name.isdigit():
+            continue
+        try:
+            raw = Path(proc, name, 'stat').read_text()
+            fields = raw[raw.rfind(')') + 2:].split()
+            records[int(name)] = (int(fields[1]), int(fields[21]))
+        except FileNotFoundError:
+            continue  # A process that exited holds no resident memory.
+    if pid not in records:
+        raise RuntimeError('package root is unmeasurable')
+    children = {}
+    for child, (parent, _) in records.items():
+        children.setdefault(parent, []).append(child)
+    seen, pending, pages = set(), [pid], 0
+    while pending:
+        child = pending.pop()
+        if child in seen:
+            continue
+        seen.add(child)
+        pages += records[child][1]
+        pending.extend(children.get(child, ()))
+    return len(seen), pages * os.sysconf('SC_PAGE_SIZE')
+
+
 def bootstrap_services(data_root, run_root, bindings, launch):
     """Staged PID1 bootstrap; never called by the production entrypoint yet.
 
@@ -248,6 +280,7 @@ class OwnerLauncher:
         self.overflow_uid = int(Path('/proc/sys/kernel/overflowuid').read_text())
         self.overflow_gid = int(Path('/proc/sys/kernel/overflowgid').read_text())
         self.jobs = {}
+        self.package_jobs = set()
 
     def _alive(self):
         return not select.select([self.daemon_pidfd], [], [], 0)[0]
@@ -256,6 +289,7 @@ class OwnerLauncher:
         if not self._alive():
             raise RuntimeError('daemon exited')
         self._service_jobs()
+        self.channel.settimeout(0.05 if self.package_jobs else 1)
         try:
             packet, ancillary, flags, _ = self.channel.recvmsg(
                 4096, socket.CMSG_SPACE(12) + socket.CMSG_SPACE(32), socket.MSG_CMSG_CLOEXEC)
@@ -304,17 +338,23 @@ class OwnerLauncher:
             fields.update(('egress', 'ta'))
         if kind == 'provider-discovery':
             fields.add('egress')
+        if kind == 'package':
+            fields.update(('revision', 'ta'))
         socket_count = (sum(request.get(key) is True for key in ('egress', 'ta'))
-                        if kind == 'tool-jail' else int(request.get('egress') is True)
+                        if kind == 'tool-jail' else int(request.get('ta') is True)
+                        if kind == 'package' else int(request.get('egress') is True)
                         if kind == 'provider-discovery' else 0)
         mounted = kind in {'workspace-git', 'preview-write', 'tool-jail', 'tool-files',
-                           'provider-discovery'} or (
+                           'provider-discovery', 'package'} or (
             kind == 'node-sandbox' and request.get('workspace') is True)
         if (not isinstance(request, dict)
                 or set(request) != fields or request['op'] not in {'SPAWN', 'START'}
                 or kind not in {'image-decoder', 'workspace-git', 'ui-preview', 'preview-write',
                                 'node-sandbox', 'tool-jail', 'ingestion-video',
-                                'provider-discovery', 'tool-files'}
+                                'provider-discovery', 'tool-files', 'package'}
+                or (kind == 'package' and (not streaming or type(request['ta']) is not bool
+                    or type(request['revision']) is not str
+                    or not re.fullmatch('[a-f0-9]{64}', request['revision'])))
                 or (kind == 'node-sandbox' and type(request['workspace']) is not bool)
                 or (kind == 'provider-discovery' and (
                     not streaming or type(request['egress']) is not bool))
@@ -350,12 +390,16 @@ class OwnerLauncher:
                     or os.readlink(f'/proc/self/fd/{received[1]}') !=
                     self.data_root + '/' + request['command_center']):
                 raise ValueError('preview output root does not match admitted center')
-        if kind in ('tool-jail', 'tool-files'):
+        if kind in ('tool-jail', 'tool-files', 'package'):
             info = os.fstat(received[1])
-            if (not stat.S_ISDIR(info.st_mode) or info.st_gid != inner
-                    or info.st_uid not in (inner, self.overflow_uid)
-                    or os.readlink(f'/proc/self/fd/{received[1]}') !=
-                    self.data_root + '/' + request['command_center']):
+            expected = self.data_root + '/' + request['command_center']
+            if kind == 'package':
+                expected += '/.runtime/package-cells/' + request['revision']
+                valid_owner = info.st_uid == self.overflow_uid and not info.st_mode & 0o022
+            else:
+                valid_owner = info.st_gid == inner and info.st_uid in (inner, self.overflow_uid)
+            if (not stat.S_ISDIR(info.st_mode) or not valid_owner
+                    or os.readlink(f'/proc/self/fd/{received[1]}') != expected):
                 raise ValueError('tool root does not match admitted center')
             index = 2
             prefix = (self.data_root + '/.universe-sidecars/'
@@ -422,7 +466,7 @@ class OwnerLauncher:
         if pid == 0:
             try:
                 retained = (3,) if mounted else ()
-                if kind in ('tool-jail', 'provider-discovery') and socket_count:
+                if kind in ('tool-jail', 'provider-discovery', 'package') and socket_count:
                     import fcntl
 
                     # Copy before assigning fixed slots, so a destination
@@ -452,7 +496,11 @@ class OwnerLauncher:
                 self.launch['_assert_caps'](0)
                 os.umask(0o007)
                 os.chdir('/')
-                if kind == 'provider-discovery':
+                if kind == 'package':
+                    command = ['/usr/local/libexec/ta-decoder.py', 'enter-package',
+                               request['revision'] + ('t' if request['ta'] else '-'),
+                               self.data_root, str(inner)]
+                elif kind == 'provider-discovery':
                     command = ['/usr/local/libexec/ta-decoder.py', 'enter-provider',
                                'e' if request['egress'] else '-', self.data_root, str(inner)]
                 elif kind == 'ingestion-video':
@@ -486,11 +534,13 @@ class OwnerLauncher:
                 os._exit(126)
         deadline = time.monotonic() + (155 if kind == 'ingestion-video' else
                                      1810 if kind == 'node-sandbox' else
-                                     660 if kind == 'tool-jail' else
+                                     660 if kind in ('tool-jail', 'package') else
                                      75 if kind == 'ui-preview' else
                                      65 if kind == 'workspace-git' else 35)
         if streaming:
             self.jobs[pid] = (inner, machine, deadline, status_channel)
+            if kind == 'package':
+                self.package_jobs.add(pid)
             try:
                 self.channel.sendall(json.dumps(
                     dict(op='STARTED', uid=machine, gid=machine)).encode())
@@ -540,6 +590,12 @@ class OwnerLauncher:
         for pid, (inner, machine, deadline, channel) in list(self.jobs.items()):
             waited, status = os.waitpid(pid, os.WNOHANG)
             cancel = time.monotonic() >= deadline
+            if not waited and pid in self.package_jobs:
+                try:
+                    count, rss = package_usage(pid)
+                    cancel |= count > 68 or rss > 512 * 1024 * 1024
+                except (OSError, ValueError, IndexError, RuntimeError):
+                    cancel = True  # Never run a package with unmeasurable usage.
             if not waited and select.select([channel], [], [], 0)[0]:
                 # EOF revokes this launch. Any malformed or forged control
                 # also cancels only this cell; it can never select another PID.
@@ -575,4 +631,5 @@ class OwnerLauncher:
                 finally:
                     channel.close()
                     del self.jobs[pid]
+                    self.package_jobs.discard(pid)
         assert_mapper(self.launch)

@@ -57,11 +57,12 @@ def tool_mounts(uid):
 
 
 def enter(mime, data_root, uid=1003, *, preview=False, preview_write=False, node=False,
-          tool=False, video=False, provider=False, tool_files=False):
+          tool=False, video=False, provider=False, tool_files=False, package=False):
     identity(uid)
     host = namespaces()
-    mounted = preview_write or tool or provider or tool_files or (node and mime == 'workspace')
-    if provider:
+    mounted = (preview_write or tool or provider or tool_files or package
+               or (node and mime == 'workspace'))
+    if provider or package:
         # D82: the daemon-sealed snapshot is daemon-owned; D73 grants the owner
         # read access only. The mapper already matched its exact path.
         info = os.fstat(3)
@@ -75,10 +76,10 @@ def enter(mime, data_root, uid=1003, *, preview=False, preview_write=False, node
             raise RuntimeError('preview output source is invalid')
         host['source'] = [info.st_dev, info.st_ino]
         os.set_inheritable(3, True)
-    if tool or provider:
+    if tool or provider or package:
         host['sockets'] = {}
         for key, fd in (('e', 4), ('t', 5)):
-            if key in mime:
+            if key in mime and (not package or key == 't'):
                 info = os.fstat(fd)
                 if not stat.S_ISSOCK(info.st_mode) or info.st_nlink != 1:
                     raise RuntimeError('tool relay is not a socket')
@@ -87,7 +88,9 @@ def enter(mime, data_root, uid=1003, *, preview=False, preview_write=False, node
     # Load only the immutable stdlib-only filter definition; no package import
     # or application initialization before the owner boundary exists.
     filter_factory = runpy.run_path("/app/tinyassets/providers/jail_seccomp.py")["program_fd"]
-    descriptor = filter_factory(profile="cell-nested" if preview or node or tool else "cell-deny")
+    profile = 'cell-links' if package else (
+        'cell-nested' if preview or node or tool else 'cell-deny')
+    descriptor = filter_factory(profile=profile)
     os.set_inheritable(descriptor, True)
     argv = ["/usr/bin/bwrap", "--die-with-parent", "--new-session", "--unshare-all",
             "--cap-drop", "ALL", "--clearenv", "--setenv", "PATH", "/usr/bin:/bin",
@@ -110,7 +113,11 @@ def enter(mime, data_root, uid=1003, *, preview=False, preview_write=False, node
             if not os.path.realpath(path).startswith('/usr/lib/'):
                 raise RuntimeError(('video library alternative escapes /usr/lib', path))
             argv.extend(['--ro-bind', path, path])
-    if provider:
+    if package:
+        argv.extend(['--ro-bind-fd', '3', '/package'])
+        if 't' in mime:
+            argv.extend(['--bind-fd', '5', '/package-broker.sock'])
+    elif provider:
         # Fixed immutable shipped CLI trees only; node itself lives under /usr.
         for path in ('/opt/codex-install', '/opt/claude-code-install'):
             if os.path.isdir(path):
@@ -125,10 +132,13 @@ def enter(mime, data_root, uid=1003, *, preview=False, preview_write=False, node
                 argv.extend(['--bind-fd', str(fd), destination])
     elif mounted:
         argv.extend(['--bind-fd', '3', '/workspace'])
-    argv.extend(["--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp",
+    argv.extend(["--proc", "/proc", "--dev", "/dev"])
+    if package:
+        argv.extend(['--size', str(256 * 1024 * 1024)])
+    argv.extend(["--tmpfs", "/tmp",
                  "--chdir", "/tmp", "--seccomp", str(descriptor), "--",
                  "/opt/venv/bin/python", "-I", "-B", "/usr/local/libexec/ta-decoder.py",
-                 'inside-tool-files' if tool_files else
+                 'inside-package' if package else 'inside-tool-files' if tool_files else
                  'inside-provider' if provider else 'inside-video' if video else
                  'inside-tool' if tool else 'inside-node' if node else
                  'inside-preview-write' if preview_write else
@@ -333,6 +343,34 @@ if __name__ == "__main__":
         from tinyassets.role_video_codec import cell_main
 
         raise SystemExit(cell_main())
+    elif (len(sys.argv) == 5 and sys.argv[1] == 'enter-package'
+            and len(sys.argv[2]) == 65 and sys.argv[2][-1] in '-t'
+            and all(c in '0123456789abcdef' for c in sys.argv[2][:64])
+            and 0 < int(sys.argv[4]) < 100000):
+        enter(sys.argv[2], sys.argv[3], int(sys.argv[4]), package=True)
+    elif (len(sys.argv) == 6 and sys.argv[1] == 'inside-package'
+            and 0 < int(sys.argv[5]) < 100000):
+        host = json.loads(sys.argv[3])
+        source, sockets = host.pop('source'), host.pop('sockets')
+        info = os.stat('/package', follow_symlinks=False)
+        if [info.st_dev, info.st_ino] != source:
+            raise RuntimeError('package source differs from pinned source')
+        if 't' in sockets:
+            info = os.stat('/package-broker.sock', follow_symlinks=False)
+            if [info.st_dev, info.st_ino] != sockets['t']:
+                raise RuntimeError('package broker differs from pinned source')
+        proof = prove_cell(host, sys.argv[4], int(sys.argv[5]), 'cell-links')
+        proof.update(source=source, sockets=sockets, revision=sys.argv[2][:64])
+        sys.path.insert(0, '/app')
+        from tinyassets.role_package_cell import manifest, run
+        from tinyassets.role_provider_cell import read_config
+
+        doc = manifest(sys.argv[2][:64])
+        sys.stdout.buffer.write(json.dumps({'cell': proof}).encode() + b'\n')
+        sys.stdout.buffer.flush()
+        if json.loads(read_config()) != {'start': True}:
+            raise ValueError('package execution was not acknowledged')
+        raise SystemExit(run(doc, broker='t' in sockets))
     elif (len(sys.argv) == 5 and sys.argv[1] == 'enter-tool-files'
             and sys.argv[2] == 'files' and 0 < int(sys.argv[4]) < 100000):
         enter(sys.argv[2], sys.argv[3], int(sys.argv[4]), tool_files=True)

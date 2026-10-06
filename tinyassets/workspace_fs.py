@@ -66,6 +66,82 @@ class UnsafePoolPath(OSError):
     """
 
 
+def read_package_manifest(descriptor, *, owner_uid, max_bytes):
+    """The one fixed daemon-custody leaf; no owner-reader identity override."""
+    root = os.fstat(descriptor)
+    if root.st_uid != owner_uid or root.st_mode & 0o022 or not stat.S_ISDIR(root.st_mode):
+        raise UnsafePoolPath('package directory custody is invalid')
+    fd = os.open('manifest.json', os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+                 dir_fd=descriptor)
+    try:
+        info = os.fstat(fd)
+        if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_uid != owner_uid
+                or info.st_mode & 0o022 or info.st_size > max_bytes):
+            raise UnsafePoolPath('package manifest custody is invalid')
+        data = bytearray()
+        while chunk := os.read(fd, min(65536, max_bytes + 1 - len(data))):
+            data.extend(chunk)
+            if len(data) > max_bytes:
+                raise UnsafePoolPath('package manifest exceeds its bound')
+        return bytes(data)
+    finally:
+        os.close(fd)
+
+
+def verify_package_tree(descriptor, files, *, owner_uid, max_bytes):
+    """Verify a daemon-sealed package through pinned no-follow descriptors.
+
+    Every inode must be owned by the declared custody UID, unwritable by group
+    or others, and regular files must have one link. No unmanifested entry can
+    supply code to an interpreter's import or native-loader search.
+    """
+    import hashlib
+
+    remaining = max_bytes
+    found = set()
+
+    def walk(parent, prefix='', depth=0):
+        nonlocal remaining
+        info = os.fstat(parent)
+        if (depth > 32 or info.st_uid != owner_uid or info.st_mode & 0o022
+                or not stat.S_ISDIR(info.st_mode)):
+            raise UnsafePoolPath('package directory custody is invalid')
+        with os.scandir(parent) as entries:
+            for entry in entries:
+                name = prefix + entry.name
+                fd = os.open(entry.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+                             dir_fd=parent)
+                try:
+                    info = os.fstat(fd)
+                    if info.st_uid != owner_uid or info.st_mode & 0o022:
+                        raise UnsafePoolPath('package inode custody is invalid')
+                    if stat.S_ISDIR(info.st_mode):
+                        if not any(path.startswith(name + '/') for path in files):
+                            raise UnsafePoolPath('unmanifested package directory')
+                        walk(fd, name + '/', depth + 1)
+                    else:
+                        if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1
+                                or (name != 'manifest.json' and name not in files)):
+                            raise UnsafePoolPath('unmanifested or aliased package file')
+                        if name == 'manifest.json':
+                            continue
+                        found.add(name)
+                        digest = hashlib.sha256()
+                        while data := os.read(fd, min(65536, max(1, remaining + 1))):
+                            remaining -= len(data)
+                            if remaining < 0:
+                                raise UnsafePoolPath('package content exceeds its bound')
+                            digest.update(data)
+                        if digest.hexdigest() != files[name]:
+                            raise UnsafePoolPath('package content revision mismatch')
+                finally:
+                    os.close(fd)
+
+    walk(descriptor)
+    if found != set(files):
+        raise UnsafePoolPath('package content is incomplete')
+
+
 def _is_link(path: str) -> bool:
     """A symlink or a Windows junction: something whose target is elsewhere."""
     if os.path.islink(path):

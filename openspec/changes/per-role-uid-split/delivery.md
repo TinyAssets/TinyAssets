@@ -1,3 +1,61 @@
+# Current U1 delivery: D84 PACKAGE cells
+
+Startup OFF; draft #4523. D83 is pushed at 2f07b72490. D84 supplies
+role_packages.start: authenticated owner identity, exact manifest/content revision,
+sealed daemon custody, read-only source, private namespaces, bounded tmpfs and raw
+duplex stdio. Python, Node and shell share provider-neutral admission. Named slots
+retain canonical daemon authority/consent/effect checks and broker-only credentials,
+destination policy and DNS pinning. No ambient credential or direct network access.
+Consumers must provision approved sealed revisions; installer and K1 integration
+remain consumer work, not claimed complete by this execution boundary.
+
+External mapper supervision measures the complete descendant tree every 50ms and
+kills excess RSS/process count, including when the package stops its own supervisor.
+Python/shell also inherit address-space limits; Node gets a heap bound. CPU, files,
+descriptors, process count, wall time and private tmpfs are bounded. RSS polling is
+not a hard cgroup reservation: aggregate host capacity remains activation work.
+
+Evidence:
+- Root Linux oracle: 85 passed, zero skips (role_packages, role_tool_files,
+  role_tools, role_launcher, role_provider_discovery, universe_path_io_guard,
+  converse_turn_cost). Supplemental root filesystem oracle: 52 passed, zero
+  skips; two Windows-only tests deselected there and passed on Windows. The
+  initial combined selection had two platform skips; an over-broad root repeat
+  also failed three tests whose documented venue is daemon UID1001. These are
+  selection diagnostics, not acceptance, and no test was modified or weakened.
+- Production Dockerfile tinyassets-uid-d84:guarded:
+  sha256:80b2817657a76be631ac97e0a926371cb2dd15bb757d779de48b0436be5b26e7.
+  Privileged chain PASS. role_package_probe --stream exit 0: actual Alice/Bob
+  Python (including pinned sibling import), Node and shell raw stdio, immutable
+  package, private identity/fds/namespaces/network, memory pressure, stopped-
+  supervisor Node Buffer attack killed by external mapper, detached descendant
+  cancellation, foreign refusal/reuse, real TLS/bearer through canonical broker
+  slots, credential non-disclosure and metadata destination refusal PASS.
+  ZERO FOREIGN_BYTES; daemon capabilities zero; startup_activated=false.
+- Changed-file Ruff, plugin regeneration/import and strict OpenSpec PASS.
+- Earlier diagnostic fixtures retained inherited group-write ACLs and were
+  correctly refused; fixtures now set sealed read-only ACLs. A hexadecimal 'e'
+  in revision incorrectly selected fd4; package socket selection now admits only
+  the explicit broker slot. An earlier stream run passed package assertions but
+  then failed an unrelated old inference exception-message assertion; the dedicated
+  package command now runs only its own assertions. None are acceptance receipts.
+
+Claude cross-family review: VERDICT ADAPT, exit 0, 181s. AGREE F1 (same-UID
+payload could stop in-cell memory enforcement): fixed with external mapper guard,
+inherited Python/shell AS bound and retired supervisor dumpability, proven with
+the actual attack. AGREE F2 (Python -I sibling imports): fixed pinned import paths,
+proven with helper.py. Receipt C:/Users/Jonathan/AppData/Local/Temp/uid-d84-review.md.
+No U2 files touched. No second review round; startup remains OFF.
+
+Remaining in founder order: authenticated owner-delete admission for U2 #4510;
+remaining provider execution/auth/network discovery and engine callers. Activation
+also still requires dynamic center admission, complete writable-path/daemon-reader
+and denial matrix, aggregate resource capacity, U2 startup/healthcheck/rollback
+integration, integrated production proofs and main spec sync. K1/user installs
+must consume the sealed-revision/slot API; this slice does not install packages.
+
+---
+
 # Current U1 delivery: D83 TOOL preparation, promotion and chmod recovery
 
 Startup OFF; draft PR #4523 remains draft. Founder ordering for this continuation:
@@ -5069,3 +5127,5 @@ are narrowed explicitly. The reviewer confirmed inventory coverage and preservat
 both prior refute rounds. No second review round was dispatched.
 
 D47 hygiene correction: the per-commit gate rejected adding a Windows skip to the already-committed D44 IPC tests (1 tampering finding). Restored those tests without the skip in an additive follow-up; no exception, test-removal approval, or history rewrite. D47's newly introduced evidence tests retain their own Unix prerequisite. All acceptance receipts above are zero-skip Linux runs.
+
+D84 supplemental daemon UID1001 owner_launcher_client oracle: 5 passed, zero skips.
