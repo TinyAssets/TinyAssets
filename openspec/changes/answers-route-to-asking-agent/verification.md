@@ -22,9 +22,27 @@ Claude review of `eec9f02037`, through `peer-agents`, completed successfully in 
 - Initial Windows batches: 183, 181 and 50 tests passed; subsequent review-fix batches also passed.
 - First full Linux oracle: 708 passed, zero skips, two failures. Fixed missing protected-preview detail without changing its contract; browser scroll proof now waits for the same exact position condition before asserting it.
 - Changed-file ruff passed. Plugin mirror build/import and commit parity passed.
-- First hygiene pass: 10 added, 0 removed, 0 tampering findings.
+- Final hygiene after merge: 14 added, 0 removed, 0 tampering findings.
 - Static prompt-budget tests passed without increasing any budget. Duplicated guidance moved to the on-demand handbook.
-- Final Linux rerun and final hygiene results will be recorded before delivery.
+- Expanded Linux run: 917 passed, zero skips, one old exception-propagation assertion failed. Updated that test for the reviewed per-row isolation contract: assert the exact logged error, zero acknowledgments, retained unprocessed row, attempt count and exact retry deadline; preserve every existing backoff and fencing assertion. The focused Windows batch then passed all 57 tests. Final Linux results follow below.
+
+Linux commands use `MSYS_NO_PATHCONV=1 python scripts/linux_oracle.py -- -q <files> --basetemp /tmp/b`.
+The full affected set is: `test_request_answer_routing`, `test_pending_requests`,
+`test_agent_notifications`, `test_request_items_and_delivery`, `test_onboarding_app`,
+`test_app_request_rail_executes`, `test_app_pending_requests_browser`,
+`test_app_native_push`, `test_app_browser_notifications`,
+`test_connection_sheet_continuations`, `test_background_work_agent`,
+`test_work_agent_authority`, `test_work_agent_allowance`, `test_inline_approvals`,
+`test_consent_owner_answers`, `test_owner_stores`, `test_converse_turn_cost`,
+`test_branch_authoring_actions`, `test_owner_steering`, `test_storage_accounting`,
+`test_converse_addressed_agent`, `test_authenticated_external_call_effector`,
+`test_request_card_layout_and_links`, `test_approval_sheet_real_browser`,
+`test_inline_approvals_real_browser`, and `test_mcp_instruction_surfaces`
+(each under `tests/`, with `.py`). This includes the affected heavy files.
+
+Merged `origin/main` at `fb22e770bd74333f54786233ba6046ccfb0b03c2`, including
+request-history/reask UI changes. Rebuilt the mirror and launched a separate
+post-merge Linux batch covering the six overlapping request/browser test files.
 
 ## Scope and limitations
 
