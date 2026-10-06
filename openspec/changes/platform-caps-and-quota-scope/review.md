@@ -1,5 +1,17 @@
 # L2 cross-family review
 
+## CI repair review (2026-10-05)
+
+Claude via peer-agents, read-only repair review, exit 0, **VERDICT: APPROVE**.
+No correctness or floor findings. **AGREE**: fixture owner identities match the
+admitted owners; the coordinator guard still refuses before launch; retry and
+zero-spend assertions remain intact; the other-owner assertion strengthens the
+402/account case. Reviewer ran no tests (Linux oracle ran separately).
+The reviewer noted the unowned bucket is not asserted in this HTTP test, but
+classified that as non-blocking, not a floor finding; no change requested.
+
+## Original implementation review
+
 Claude via `.agents/skills/peer-agents/SKILL.md`, one read-only round, 2026-10-05.
 Draft PR: https://github.com/TinyAssets/TinyAssets/pull/4502.
 Reviewer verdict: **ADAPT**. The reviewer ran the new quota scope file: 4 passed.

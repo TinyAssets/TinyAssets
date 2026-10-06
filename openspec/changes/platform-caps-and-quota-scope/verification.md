@@ -1,5 +1,32 @@
 # L2 verification
 
+## PR #4502 CI repair (2026-10-05)
+
+- Merged origin/main before repair without conflicts; fetched and merged again
+  before the repair push (already up to date).
+- Read full failed-job logs for 112056125901, 112056125935 and 112056125608.
+  They contain nine failures: all seven native-auth parameter cases, the
+  coordinator-guard fixture, and HTTP 402/account capacity scope.
+- These tests encoded the deliberately replaced global quota key: native-auth
+  mocks now require owner-1, the coordinator fake carries its principal receipt,
+  and HTTP capacity reads owner rather than the unowned bucket. All retry,
+  refusal and zero-spend assertions remain; another-owner cooldown must be zero.
+- Linux oracle command: `MSYS_NO_PATHCONV=1 python scripts/linux_oracle.py -- -q
+  tests/test_provider_served_router.py tests/test_agent_workflow_fences.py
+  tests/test_interactive_http_agent.py tests/test_provider_quota_scope.py
+  tests/test_provider_work_authority.py tests/test_provider_retry.py
+  tests/test_converse_turn_cost.py --basetemp /tmp/b`.
+  Result: **193 passed, 1 skipped**. The existing true-Codex integration requires
+  TINYASSETS_REAL_CODEX_TEST_UNIVERSE and TINYASSETS_REAL_CODEX_TEST_SNAPSHOT;
+  neither is configured. This skip is not a pass and no skip was introduced.
+- Ruff passed for all canonical Python/tests changed relative to origin/main.
+  Plugin rebuild and import probe passed with no mirror diff. Static prompt
+  budgets and guidance are unchanged. No production code change was necessary.
+- Claude repair review: **APPROVE**, no correctness/floor findings; see review.md.
+  This supplements the original implementation review below.
+
+## Original implementation verification
+
 All runs used `MSYS_NO_PATHCONV=1 python scripts/linux_oracle.py -- -q <files>
 --basetemp /tmp/b`, with Python 3.11, bubblewrap and uid 1001. No tests were
 skipped, weakened or xfailed.
