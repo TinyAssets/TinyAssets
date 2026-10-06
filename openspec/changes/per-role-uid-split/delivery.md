@@ -154,6 +154,43 @@ D216's refusal sites and D218 live only on U2. To replace them:
    `missing` (task 7).
 8. `role_volume_inventory.reserved`'s changed-principal refusal stays.
 
+## Task 9: restart matrix with real broker IPC and a real mapper
+
+`python scripts/role_admission_restart_probe.py --image tinyassets-uid-adm:t9`:
+each boot is a fresh production-image container on one named volume (a real
+restart: new PID1, broker, mapper pair, bwrap cells). Before the D70 bootstrap,
+as root with writers stopped, the boot runs the DA7 contract as the startup
+coordinator (stand-in for U2's: centers and their single admin grant as the
+inventory, a daemon-written file as the pending-deletion store), then
+bootstraps with the reconciled bindings and generation. All 19 boots PASS:
+
+- signup, a new center and a deletion, then a restart (generation 6, retired
+  center absent and its cell refused);
+- a crash before publish (staging swept, retry admits), between publish and
+  the log append (orphan adopted on the label check), between the append and
+  the bind (bound from the log);
+- first-contact homes failing at the log append, the bind and seeding: retried
+  in place without a restart (erin), and after a restart (hank adopted, frank
+  and gina bound) with no loss alarm;
+- a crash between the deletion's daemon pass and its retire: explained as
+  mid-deletion, the resume writes `retire` with a no-op unbind, and the name is
+  never admitted again;
+- F1 (b): a lost tree goes to `missing` with an alarm and a concern record,
+  every other owner starts, and it is re-checked on the next boot;
+- an unexplained tree and a changed owner refuse before the journal changes,
+  and the volume starts again once healed;
+- deleting the volume's only center, a restart with an empty set, a signup,
+  and a restart.
+
+Before every bootstrap the boot also runs a D59-style matrix as each other
+owner's real host identity (zero capabilities): reads, listings, chmod, chown,
+link, rename and write-open on every path of every other owner's center. Zero
+foreign bytes and zero mutations on every boot (3,900 attempts on the largest).
+
+Not on U1 (U2 lane, needs its reverse/forward migration): reverse after runtime
+admission, and forward after the legacy image created centers. The contract's
+seed path for both is covered by tests/test_admission_restart_contract.py.
+
 # Current U1 delivery: D87 package egress relay and caller-owned lifetime
 
 D86 is pushed at 4aad725f28. D87 closes the two gaps D84 left for K1's

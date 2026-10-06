@@ -257,16 +257,12 @@ _BROKER_LOG = (
     "req=json.loads(sys.argv[2]); "
     "[db.admission('admit',p,c) for p,c in req['append']]; "
     "rows=[r.__dict__ for r in db.admissions_after(req['after'])]; "
-    "sys.stdout.write(json.dumps(rows))"
+    "owners={p:db.owner_machine(p) for p in req['owners']}; "
+    "sys.stdout.write(json.dumps({'rows':rows,'owners':owners}))"
 )
 
 
-def broker_log(data_root, launch, *, after=0, append=(), timeout=60):
-    """Append admit rows, then read the delta, as a fully retired broker child.
-
-    Appends are idempotent (DA1): an identical row is returned, a conflicting
-    one refuses the whole startup. Returns the rows above ``after``.
-    """
+def _broker_child(data_root, launch, request, timeout):
     reader, writer = os.pipe()
     child = os.fork()
     if child == 0:
@@ -275,9 +271,9 @@ def broker_log(data_root, launch, *, after=0, append=(), timeout=60):
             os.dup2(writer, 1)
             launch["close_descriptors"]({0, 1, 2})
             launch["retire_child"]("broker")
-            request = json.dumps({"after": after, "append": [list(p) for p in append]})
             os.execve("/opt/venv/bin/python",
-                      ["python", "-I", "-B", "-c", _BROKER_LOG, str(data_root), request],
+                      ["python", "-I", "-B", "-c", _BROKER_LOG, str(data_root),
+                       json.dumps(request)],
                       {"PATH": "/opt/venv/bin:/usr/bin:/bin", "PYTHONDONTWRITEBYTECODE": "1"})
         except BaseException:
             os._exit(126)
@@ -299,4 +295,22 @@ def broker_log(data_root, launch, *, after=0, append=(), timeout=60):
         _, status = os.waitpid(child, 0)
     if status:
         raise ContractRefused("retired broker admission log access failed")
-    return _rows(json.loads(output), after)
+    return json.loads(output)
+
+
+def broker_log(data_root, launch, *, after=0, append=(), timeout=60):
+    """Append admit rows, then read the delta, as a fully retired broker child.
+
+    Appends are idempotent (DA1): an identical row is returned, a conflicting
+    one refuses the whole startup. Returns the rows above ``after``.
+    """
+    answer = _broker_child(data_root, launch, {"after": after, "owners": [],
+                                               "append": [list(p) for p in append]}, timeout)
+    return _rows(answer["rows"], after)
+
+
+def reservations(data_root, launch, principals, *, timeout=60):
+    """Durable reservations (never allocating) for the orphan-adoption check."""
+    answer = _broker_child(data_root, launch, {"after": 0, "append": [],
+                                               "owners": sorted(set(principals))}, timeout)
+    return answer["owners"]
