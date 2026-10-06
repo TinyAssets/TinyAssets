@@ -48,6 +48,16 @@ def extensions(roots):
                 if len(raw) > 256 * 1024:
                     raise ValueError("manifest too large")
                 spec = json.loads(raw, object_pairs_hook=_unique_keys)
+                # v2 requires revision-bound activation and lifecycle dispatch.
+                # Until those exist, never execute it as a legacy tool package:
+                # ignoring its version would bypass the activation contract.
+                if not isinstance(spec, dict):
+                    raise ValueError("manifest must be an object")
+                version = spec.get("schema_version", 1)
+                if type(version) is not int or version != 1:
+                    raise ValueError("unsupported extension schema_version; activation unavailable")
+                if {"hooks", "commands", "cards"} & spec.keys():
+                    raise ValueError("lifecycle contributions require activated schema_version 2")
                 executable = (package / spec["executable"]).resolve()
                 if not executable.is_relative_to(package.resolve()):
                     raise ValueError("executable leaves package")
