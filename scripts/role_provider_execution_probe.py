@@ -46,7 +46,7 @@ async def execution():
                 stdout,stderr=await proc.communicate()
                 assert proc.returncode!=0 and b'error' in stderr.lower() and not stdout
                 command=['/usr/local/bin/codex','exec','--json','--skip-git-repo-check',
-                    '--dangerously-bypass-approvals-and-sandbox','-C','/tmp/workspace',
+                    '--dangerously-bypass-approvals-and-sandbox','-C','/workspace',
                     '--model','oracle-model',
                     '-c','model_provider="oracle"',
                     '-c','model_providers.oracle.name="oracle"',

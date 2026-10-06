@@ -23,6 +23,8 @@ HOST = "uid-stream.invalid"
 ADDRESS = "93.184.216.2"
 TOKEN = "synthetic-uid-oracle-token-not-a-user-credential"
 BODY = b'{"data":["launcher-broker-stream"]}'
+#: Synthetic per-owner Claude subscription tokens (D88 probe); never user credentials.
+CLAUDE_TOKEN_PREFIX = "sk-ant-oat01-c1-"
 
 
 def fixture():
@@ -43,6 +45,55 @@ def fixture():
 
         def do_POST(self):
             size = int(self.headers.get("Content-Length", "0"))
+            if self.path.split('?')[0] == '/v1/messages':
+                # Anthropic Messages for the D88 Claude probe. Only an owner's
+                # synthetic fixture token, sent by the CLI itself, is accepted.
+                if not 0 < size <= 4 * 1024 * 1024:
+                    self.send_error(400)
+                    return
+                request = json.loads(self.rfile.read(size))
+                if self.headers.get('Authorization') not in {
+                        f'Bearer {CLAUDE_TOKEN_PREFIX}{owner}-fixture'
+                        for owner in ('alice', 'bob')}:
+                    self.send_response(401)
+                    self.send_header('Content-Length', '0')
+                    self.end_headers()
+                    return
+                answer = 'owner cell claude answer'
+                usage = dict(input_tokens=10, output_tokens=5)
+                message = dict(id='msg_c1', type='message', role='assistant',
+                               model=request.get('model') or 'oracle-model',
+                               stop_sequence=None)
+                if not request.get('stream'):
+                    payload = json.dumps(dict(message, stop_reason='end_turn', usage=usage,
+                        content=[dict(type='text', text=answer)])).encode()
+                    self.send_response(200)
+                    self.send_header('Content-Type', 'application/json')
+                    self.send_header('Content-Length', str(len(payload)))
+                    self.end_headers()
+                    self.wfile.write(payload)
+                    return
+                events = [
+                    dict(type='message_start', message=dict(
+                        message, content=[], stop_reason=None,
+                        usage=dict(input_tokens=10, output_tokens=1))),
+                    dict(type='content_block_start', index=0,
+                         content_block=dict(type='text', text='')),
+                    dict(type='content_block_delta', index=0,
+                         delta=dict(type='text_delta', text=answer)),
+                    dict(type='content_block_stop', index=0),
+                    dict(type='message_delta', usage=dict(output_tokens=5),
+                         delta=dict(stop_reason='end_turn', stop_sequence=None)),
+                    dict(type='message_stop'),
+                ]
+                payload = ''.join('event: ' + event['type'] + '\ndata: '
+                                  + json.dumps(event) + '\n\n' for event in events).encode()
+                self.send_response(200)
+                self.send_header('Content-Type', 'text/event-stream')
+                self.send_header('Content-Length', str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+                return
             if self.path == '/responses':
                 if not 0 < size <= 2 * 1024 * 1024:
                     self.send_error(400)
