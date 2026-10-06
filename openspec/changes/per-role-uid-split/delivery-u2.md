@@ -1,3 +1,85 @@
+# U2: admission contract wired (D221); principal-set concern resolved
+
+Merged origin/feat/per-role-uid-split (U1 admission, 3caeaece2f) at 527e4c9d84.
+design.md conflict: kept U2's D218 receipt text and D219/D220. Wiring is at
+f5667a05e6 and the proofs are at f426b92a02. Startup is OFF and nothing was
+deployed.
+
+The eight U1 lane-note steps, with where each lives:
+1. `role_startup._helpers` loads `admission-contract`.
+2. `role_volume_migration.migrate` runs `clear_staging` under the layout lock,
+   before the inventory. Dry runs skip it.
+3. The "full migration authority changed" refusal is replaced. In its place:
+   `_admission_rows` (`broker_log`: the delta above a stable forward journal,
+   else every row), then `_admission_plan` (`reconcile`, with pending
+   deletion intents and the canonical-label adoption check). `ContractRefused`
+   becomes `MigrationRefused`.
+4. After `_allocate`, the coordinator appends the adopt and seed rows, calls
+   `raise_alarms`, and writes `volume.json` with `journal_fields`
+   (`generation`, `missing`). The migrating journal also carries `admits` and
+   `previous`, so a resume re-appends idempotently and can still explain a
+   lagging phase.
+5. The metadata and owner phases accept `phase_explained(recorded, previous,
+   current)` after a completed phase. An empty binding set does no inode work
+   but still records its configuration.
+6. Bindings are every discovered tree. `bootstrap_services(...,
+   generation=report["generation"])` is called through `role_startup.boot`,
+   which is split from `start`.
+7. D218 calls `retire` before `finish` on the normal path and on the tree-gone
+   resume. A `missing` center is retired with no pass. The broker now answers
+   `CENTER_ADMISSION_UNADMITTED`, so a never-admitted tree-less home keeps the
+   legacy traversal.
+8. The changed-principal refusal in `reserved` is unchanged. Tests cover it.
+
+Two discovery gaps turned up while proving this (D221). Each is fixed:
+- A runtime center with a supplied name and no `universe.json` was invisible
+  to D64. It would have been held on `missing` and left unbound.
+- A named DA4 orphan was refused as foreign metadata.
+
+Discovery now also includes every center the log or journal admits, plus any
+root carrying an owner-range group.
+
+Evidence:
+- Root Linux oracle, migration and admission selection (17 files): 366 passed,
+  0 skipped, three runs. `tests/test_role_admission_startup.py` covers:
+  - reverse after runtime admission;
+  - forward after legacy-created centers, including allocation;
+  - a matrix of signup, center creation, deletion, F1 (b) missing with its
+    concern record, retire, and the empty set;
+  - orphans, staging and refusals;
+  - five crash boundaries;
+  - a deleted center's escrow.
+
+  Each restart in these tests runs a foreign-bytes matrix.
+- Production image `tinyassets-u2-adm:w1` (sha256:c966cef5f8e3):
+  - `role_admission_startup_probe.py --old-image
+    ghcr.io/tinyassets/tinyassets-daemon:7e68ef26cb4e` passes. It runs 16 real
+    `ta-role-start.py` boots across two volumes, plus the real reverse mode and
+    the old image, which writes into a runtime-admitted home and signs a user
+    up. Every boot has zero foreign bytes and zero mutations; the largest
+    matrix made 560 attempts.
+  - `role_admission_restart_probe` passes all 19 boots.
+  - `role_center_admission_probe` passes, after a fixture fix: D219 refuses
+    setgid on its temporary socket directory, so the probe now labels it
+    directly.
+  - Also passing: `role_startup_probe`, `role_volume_rollback_probe` (old
+    image CMD), `role_service_bootstrap_probe`, `role_owner_migration_probe`
+    and `role_owner_delete_probe`.
+  - Not re-run: `role_zombie_probe`. Its fixed subnet was held by another
+    session's live probe network, and D220's code is unchanged here.
+- Wider non-root oracle (59 broker/owner/deletion files): 816 passed, 5 failed.
+  The 5 failures are in `test_broker_compute_consumers` and
+  `test_broker_owner_metadata`, and they fail identically on U1's head
+  3caeaece2f. They are inherited from U1, not from this change.
+- Structural guards: 578 passed. Ruff and `git diff --check` are clean.
+
+Not done:
+- The cross-family round. Codex returned a usage-limit error until 2026-10-11,
+  so it is still owed for f5667a05e6 and f426b92a02.
+- After a reverse, the log is not authoritative. A center lost under the old
+  image drops out without an alarm.
+- A deleted center's escrow is retained (new P2 concern).
+
 # U2 continuation: D219 setgid allow-list; D220 PID1 orphan reaper
 
 **D219 (lead decision):** the design-mandated setgid is allowed on the named
