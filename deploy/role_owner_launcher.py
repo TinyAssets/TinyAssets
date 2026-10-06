@@ -57,10 +57,12 @@ def package_usage(pid, proc='/proc'):
     return len(seen), pages * os.sysconf('SC_PAGE_SIZE')
 
 
-def bootstrap_services(data_root, run_root, bindings, launch):
+def bootstrap_services(data_root, run_root, bindings, launch, *, generation):
     """Staged PID1 bootstrap; never called by the production entrypoint yet.
 
     Migration/owner bindings must already be verified with all writers stopped.
+    ``generation`` is the admission-log high-water mark that startup reconciled
+    (DA5); the mapper binds only rows above it at runtime.
     Fork both services in the existing privileged startup window, then turn
     PID1 into the capability-free daemon. No host-privileged process survives.
     A service death exits PID1: the container tears down every descendant.
@@ -68,7 +70,7 @@ def bootstrap_services(data_root, run_root, bindings, launch):
     if os.getpid() != 1:
         raise RuntimeError('service bootstrap requires container PID1')
     try:
-        return _bootstrap_services(data_root, run_root, bindings, launch)
+        return _bootstrap_services(data_root, run_root, bindings, launch, generation)
     except BaseException:
         # Especially before daemon retirement, returning an exception to a
         # caller would let a caught startup failure retain host authority.
@@ -78,7 +80,9 @@ def bootstrap_services(data_root, run_root, bindings, launch):
             os._exit(78)
 
 
-def _bootstrap_services(data_root, run_root, bindings, launch):
+def _bootstrap_services(data_root, run_root, bindings, launch, generation):
+    if type(generation) is not int or generation < 0:
+        raise RuntimeError('invalid bootstrap admission generation')
     if os.getresuid() != (0, 0, 0) or os.getresgid() != (0, 0, 0):
         raise RuntimeError('service bootstrap requires root entry identity')
     launch['_assert_caps'](launch['ENTRY_CAPS'])
@@ -112,28 +116,39 @@ def _bootstrap_services(data_root, run_root, bindings, launch):
             raise RuntimeError('owner root does not match bootstrap binding')
 
     proof_parent, proof_child = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
+    # DA2: the mapper's read-only broker pair exists before the broker fork;
+    # the broker keeps its end across exec and the mapper inherits the other.
+    admission_broker, admission_mapper = socket.socketpair(
+        socket.AF_UNIX, socket.SOCK_SEQPACKET)
     broker_pid = os.fork()
     if broker_pid == 0:
         try:
             proof_parent.close()
+            admission_mapper.close()
             launch['retire_child']('broker')
-            launch['close_descriptors']((proof_child.fileno(),))
+            launch['close_descriptors']((proof_child.fileno(), admission_broker.fileno()))
             proof_child.settimeout(30)
-            digest = proof_child.recv(65).decode('ascii')
+            digest, _, mapper = proof_child.recv(128).decode('ascii').partition(':')
             proof_child.close()
             if len(digest) != 64 or any(c not in '0123456789abcdef' for c in digest):
                 raise RuntimeError('invalid startup proof hash')
+            if not re.fullmatch('[1-9][0-9]{0,9}', mapper):
+                raise RuntimeError('invalid startup mapper pid')
+            os.set_inheritable(admission_broker.fileno(), True)
             argv = ['/opt/venv/bin/python', '-I', '-B', '/app/broker_main.py',
                     '--socket', str(broker_dir / 'broker.sock'),
                     '--state', str(data_root / '.broker' / 'state'),
                     '--data-root', str(data_root), '--owner-uid', '1001',
-                    '--proof-sha256', digest, '--role-split']
+                    '--proof-sha256', digest, '--role-split',
+                    '--mapper-channel', str(admission_broker.fileno()),
+                    '--mapper-pid', mapper]
             os.chdir('/')
             os.execve(argv[0], argv, launch['broker_environment'](data_root))
         except BaseException:
             os.write(2, b'bounded bootstrap broker failed\n')
             os._exit(78)
     proof_child.close()
+    admission_broker.close()
     parent, child = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
     ready_parent, ready_child = socket.socketpair()
     daemon_pidfd = os.pidfd_open(1)
@@ -142,9 +157,12 @@ def _bootstrap_services(data_root, run_root, bindings, launch):
         try:
             parent.close()
             ready_parent.close()
-            launch['close_descriptors']((child.fileno(), ready_child.fileno(), daemon_pidfd))
+            launch['close_descriptors']((child.fileno(), ready_child.fileno(), daemon_pidfd,
+                                         admission_mapper.fileno()))
             enter_namespace(ready_child, launch)
-            server = OwnerLauncher(child, 1, daemon_pidfd, bindings, data_root, launch)
+            server = OwnerLauncher(child, 1, daemon_pidfd, bindings, data_root, launch,
+                                   broker=admission_mapper, broker_pid=broker_pid,
+                                   generation=generation)
             ready_child.sendall(b'S')
             ready_child.close()
             while server.serve_one():
@@ -155,6 +173,7 @@ def _bootstrap_services(data_root, run_root, bindings, launch):
             os._exit(78)
     child.close()
     ready_child.close()
+    admission_mapper.close()
     os.close(daemon_pidfd)
     ready_parent.settimeout(30)
     install_maps(mapper_pid, ready_parent)
@@ -178,7 +197,10 @@ def _bootstrap_services(data_root, run_root, bindings, launch):
 
     _protect_daemon()
     proof = secrets.token_urlsafe(32)
-    proof_parent.sendall(sha256(proof.encode()).hexdigest().encode('ascii'))
+    # DA2: the mapper PID travels with the proof hash; until it arrives the
+    # broker has not exec'd, so it serves nothing on the mapper pair.
+    proof_parent.sendall((sha256(proof.encode()).hexdigest() + ':'
+                          + str(mapper_pid)).encode('ascii'))
     proof_parent.close()
     client = OwnerLauncherClient(parent, mapper_pid)
     supervisor = BrokerSupervisor.from_bootstrap(data_root, broker_pid=broker_pid,
@@ -258,12 +280,26 @@ class OwnerLauncher:
     The pinned pidfd prevents PID reuse; descendants sharing the pair fail.
     """
 
-    def __init__(self, channel, daemon_pid, daemon_pidfd, bindings, data_root, launch):
+    def __init__(self, channel, daemon_pid, daemon_pidfd, bindings, data_root, launch, *,
+                 broker=None, broker_pid=None, generation=0):
         assert_mapper(launch)
         if channel.family != socket.AF_UNIX or channel.type != socket.SOCK_SEQPACKET:
             raise RuntimeError('launcher needs its private seqpacket channel')
         if channel.getsockname() or channel.getpeername():
             raise RuntimeError('launcher channel must be unnamed')
+        if type(generation) is not int or generation < 0:
+            raise RuntimeError('invalid bootstrap admission generation')
+        if broker is not None and (
+                broker.family != socket.AF_UNIX or broker.type != socket.SOCK_SEQPACKET
+                or broker.getsockname() or broker.getpeername()
+                or type(broker_pid) is not int or broker_pid <= 1):
+            raise RuntimeError('invalid admission broker channel')
+        # DA2/DA5: the inherited read-only broker pair, its one peer, and the
+        # log high-water mark startup reconciled. Absent: runtime admission refuses.
+        self.broker, self.broker_pid, self.generation = broker, broker_pid, generation
+        if broker is not None:
+            broker.setsockopt(socket.SOL_SOCKET, socket.SO_PASSCRED, 1)
+            broker.settimeout(5)
         self.channel, self.daemon_pid, self.daemon_pidfd = channel, daemon_pid, daemon_pidfd
         self.bindings = dict(bindings)
         for (principal, center), machine in self.bindings.items():
@@ -285,6 +321,70 @@ class OwnerLauncher:
 
     def _alive(self):
         return not select.select([self.daemon_pidfd], [], [], 0)[0]
+
+    def _broker_read(self, document):
+        """DA2: one read-only broker answer, authenticated as the exact broker PID.
+
+        Any protocol failure poisons the pair: a late reply can never be read
+        as the answer to a later question.
+        """
+        if self.broker is None:
+            raise ValueError('admission broker channel is unavailable')
+        try:
+            self.broker.sendall(json.dumps(document).encode())
+            packet, ancillary, flags, _ = self.broker.recvmsg(
+                4096, socket.CMSG_SPACE(12) + socket.CMSG_SPACE(32), socket.MSG_CMSG_CLOEXEC)
+            credentials, unknown = [], False
+            for level, kind, payload in ancillary:
+                if level == socket.SOL_SOCKET and kind == socket.SCM_CREDENTIALS:
+                    credentials.append(struct.unpack('3i', payload))
+                else:
+                    unknown = True
+                    if level == socket.SOL_SOCKET and kind == socket.SCM_RIGHTS:
+                        fds = array.array('i')
+                        fds.frombytes(payload[:len(payload) - len(payload) % fds.itemsize])
+                        for fd in fds:
+                            os.close(fd)
+            if (unknown or not packet or flags & (socket.MSG_TRUNC | socket.MSG_CTRUNC)
+                    or credentials != [(self.broker_pid, self.overflow_uid, self.overflow_gid)]):
+                raise ValueError('unauthenticated broker answer')
+            answer = json.loads(packet)
+            if not isinstance(answer, dict) or answer.get('op') == 'REFUSED':
+                raise ValueError('broker refused the admission read')
+            return answer
+        except BaseException:
+            self.broker.close()
+            self.broker = None
+            raise
+
+    def _owner_machine(self, principal):
+        answer = self._broker_read({'op': 'OWNER_MACHINE', 'principal': principal})
+        if answer == {'op': 'ABSENT'}:
+            return None
+        machine = answer.get('machine')
+        if (set(answer) != {'op', 'machine'} or answer['op'] != 'OWNER_MACHINE_IS'
+                or type(machine) is not int or not FIRST < machine < FIRST + COUNT):
+            raise ValueError('invalid broker reservation')
+        return machine
+
+    def _center_state(self, center):
+        answer = self._broker_read({'op': 'CENTER_STATE', 'center': center})
+        if (set(answer) != {'op', 'state'} or answer['op'] != 'CENTER_STATE_IS'
+                or answer['state'] not in ('unadmitted', 'admitted', 'retired')):
+            raise ValueError('invalid broker center state')
+        return answer['state']
+
+    def _admission_row(self, generation):
+        answer = self._broker_read({'op': 'ADMISSION_ROW', 'generation': generation})
+        if answer == {'op': 'ABSENT'}:
+            return None
+        if (set(answer) != {'op', 'generation', 'event', 'principal', 'center', 'machine'}
+                or answer['op'] != 'ADMISSION_ROW_IS' or answer['generation'] != generation
+                or answer['event'] not in ('admit', 'retire')
+                or type(answer['machine']) is not int
+                or not FIRST < answer['machine'] < FIRST + COUNT):
+            raise ValueError('invalid broker admission row')
+        return answer
 
     def serve_one(self):
         if not self._alive():

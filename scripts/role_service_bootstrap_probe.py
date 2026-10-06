@@ -150,7 +150,7 @@ if FAIL:
         if role=='daemon': raise RuntimeError('injected pre-retirement failure')
         return retire(role)
     launch['retire_child']=fail_retirement
-supervisor,client=bounded['bootstrap_services'](root,run,bindings,launch)
+supervisor,client=bounded['bootstrap_services'](root,run,bindings,launch,generation=0)
 os.environ['TINYASSETS_DATA_DIR']=str(root)
 os.environ['TINYASSETS_CREDENTIAL_BROKER']='process'
 assert os.getpid()==1 and os.getuid()==1001 and os.getgroups()==[1100,1101,1102]
