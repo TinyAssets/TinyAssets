@@ -40,6 +40,47 @@ def _open(**kwargs):
     )
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("grant", ["read_graph", [], ["bash"], ["read_graph"] * 2,
+                                  ["read_graph", "unknown"], [{}], 42])
+async def test_invalid_backend_grant_never_connects(fake, grant):
+    with pytest.raises(subject.EngineToolError, match="invalid_grant"):
+        async with _open(capability_grant=grant):
+            pytest.fail("invalid backend grant entered")
+    assert fake.lists == fake.calls == []
+
+
+@pytest.mark.asyncio
+async def test_model_inventory_can_be_narrower_than_signed_backend_grant(route, monkeypatch):
+    from urllib.parse import parse_qs, urlsplit
+
+    from tinyassets.served_tools import BACKEND_ENGINE_CAPABILITIES, verified_launch_grant
+
+    root, server = route
+    server.grant_key = "k" * 43
+    routes._write_routes(root, [server])
+    client = _FakeClient()
+    client.pages = [ListToolsResult(tools=[_tool(name) for name in BACKEND_ENGINE_CAPABILITIES])]
+    dialled = []
+
+    def make(route, timeout):
+        dialled.append(route)
+        return client
+
+    monkeypatch.setattr(subject, "_make_client", make)
+    async with subject.open_engine_tools(
+        actor_id="actor-a", graph_id="u-a", enabled_tools=["bash"],
+        capability_grant=BACKEND_ENGINE_CAPABILITIES, session_key="thread:owner", turn="turn",
+    ) as session:
+        assert [tool.name for tool in session.tools] == ["bash"]
+        with pytest.raises(subject.EngineToolError, match="not_allowed"):
+            await session.call("write_graph", {})
+        params = parse_qs(urlsplit(dialled[0].url).query)
+        assert verified_launch_grant(server.grant_key, "thread:owner", "turn",
+                                     params["grant"][0]) == BACKEND_ENGINE_CAPABILITIES
+    assert client.closed
+
+
 class _FakeClient:
     def __init__(self):
         self.pages = [ListToolsResult(tools=[_tool()])]

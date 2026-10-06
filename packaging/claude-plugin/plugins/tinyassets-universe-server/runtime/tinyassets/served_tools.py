@@ -137,7 +137,7 @@ from __future__ import annotations
 #:   connect_http  — deposits a RAW SECRET; stays on the browser deposit form
 #:   a proper per-root-run effect-dispatch cap (all surfaces) — the served build cap on
 #:       effect-node count is the interim structural bound
-SERVED_ENGINE_MCP_TOOLS: tuple[str, ...] = (
+BACKEND_ENGINE_CAPABILITIES: tuple[str, ...] = (
     "read_graph",
     "get_status",
     "run_graph",
@@ -154,6 +154,12 @@ SERVED_ENGINE_MCP_TOOLS: tuple[str, ...] = (
     "bash",
 )
 
+# Model visibility is independent of the signed backend grant. Keep the current
+# surface until the coordinated starter cutover can install guidance in existing
+# centers; shrinking this tuple must never narrow ta's backend authority.
+SERVED_ENGINE_MCP_TOOLS = BACKEND_ENGINE_CAPABILITIES
+FOUR_MODEL_TOOLS = ("read", "write", "edit", "bash")
+
 #: ``tools_allowed`` entries that make a prompt node an agent node rather than
 #: naming a tool. ``universe_self`` is the original spelling (#3836).
 AGENT_NODE_MARKERS = frozenset({"agent", "universe_self"})
@@ -166,23 +172,29 @@ def node_tool_grant(tools_allowed) -> tuple[str, ...] | None:
     than silently narrowing to less than the owner meant.
     """
     named = [t for t in (tools_allowed or []) if t not in AGENT_NODE_MARKERS]
-    unknown = sorted(set(named) - set(SERVED_ENGINE_MCP_TOOLS))
+    unknown = sorted(set(named) - set(BACKEND_ENGINE_CAPABILITIES))
     if unknown:
         raise ValueError(
             f"agent node grants tools that are not served: {unknown}; "
-            f"served tools are {list(SERVED_ENGINE_MCP_TOOLS)}"
+            f"backend capabilities are {list(BACKEND_ENGINE_CAPABILITIES)}"
         )
     if not named:
         return None
-    return tuple(t for t in SERVED_ENGINE_MCP_TOOLS if t in named)
+    return tuple(t for t in BACKEND_ENGINE_CAPABILITIES if t in named)
 
 
 def granted_tools(config) -> tuple[str, ...]:
-    """The served tools one turn may call, in canonical order."""
+    """Backend authority for one turn, independent of model-visible tools."""
     grant = getattr(config, "engine_tool_grant", None)
     if grant is None:
-        return SERVED_ENGINE_MCP_TOOLS
-    return tuple(t for t in SERVED_ENGINE_MCP_TOOLS if t in grant)
+        return BACKEND_ENGINE_CAPABILITIES
+    return tuple(t for t in BACKEND_ENGINE_CAPABILITIES if t in grant)
+
+
+def model_tools(config) -> tuple[str, ...]:
+    """Only model-visible handles that this turn's backend grant permits."""
+    granted = set(granted_tools(config))
+    return tuple(t for t in SERVED_ENGINE_MCP_TOOLS if t in granted)
 
 
 #: The engine server's environment variable holding the key that signs launch grants.
@@ -207,7 +219,7 @@ def launch_grant(key: str, session_key: str, turn: str, tools) -> str:
     """
     if not key:
         return ""
-    names = ",".join(t for t in SERVED_ENGINE_MCP_TOOLS if t in set(tools))
+    names = ",".join(t for t in BACKEND_ENGINE_CAPABILITIES if t in set(tools))
     return f"{names}.{_launch_grant_mac(key, session_key, turn, names)}"
 
 
@@ -225,7 +237,7 @@ def verified_launch_grant(key: str, session_key: str, turn: str,
         mac.encode(), _launch_grant_mac(key, session_key, turn, names).encode(),
     ):
         return None
-    return tuple(t for t in SERVED_ENGINE_MCP_TOOLS if t in set(names.split(",")))
+    return tuple(t for t in BACKEND_ENGINE_CAPABILITIES if t in set(names.split(",")))
 
 
 def connections_granted(tools) -> bool:

@@ -44,7 +44,7 @@ from tinyassets.providers.owned_process import (
     no_window_kwargs,
 )
 from tinyassets.providers.provider_jail import JailMount, UniverseView
-from tinyassets.served_tools import SERVED_ENGINE_MCP_TOOLS, granted_tools
+from tinyassets.served_tools import SERVED_ENGINE_MCP_TOOLS, granted_tools, model_tools
 
 logger = logging.getLogger(__name__)
 
@@ -414,7 +414,7 @@ def _codex_engine_mcp_args(config: ModelConfig, proc_env: dict[str, str]) -> lis
         return args
     proc_env[_ENGINE_MCP_BEARER_ENV] = route.secret
     # An agent node's grant narrows the served set (served_tools.granted_tools).
-    enabled = ",".join(f'"{t}"' for t in granted_tools(config))
+    enabled = ",".join(f'"{t}"' for t in model_tools(config))
     # Dotted key merges the one server into the (otherwise-empty) map.
     # default_tools_approval_mode="approve": codex MCP tools default to `auto`,
     # which requires per-call approval; a non-interactive served `codex exec` has

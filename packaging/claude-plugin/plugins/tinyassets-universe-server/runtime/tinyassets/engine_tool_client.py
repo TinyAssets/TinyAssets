@@ -20,7 +20,7 @@ from tinyassets.engine_mcp_http import (
     read_engine_mcp_route,
     wait_for_engine_mcp_route,
 )
-from tinyassets.served_tools import SERVED_ENGINE_MCP_TOOLS
+from tinyassets.served_tools import BACKEND_ENGINE_CAPABILITIES, SERVED_ENGINE_MCP_TOOLS
 from tinyassets.storage import data_dir
 
 
@@ -184,6 +184,7 @@ async def open_engine_tools(
     actor_id: str,
     graph_id: str,
     enabled_tools: Sequence[str],
+    capability_grant: Sequence[str] | None = None,
     timeout: float = 60.0,
     session_key: str = "",
     turn: str = "",
@@ -199,6 +200,19 @@ async def open_engine_tools(
         or not set(enabled).issubset(SERVED_ENGINE_MCP_TOOLS)
     ):
         raise EngineToolError("engine_tools_invalid_selection")
+    # The displayed subset is not the authority signed onto the launch. ta
+    # needs the latter even when its backend handles are absent from discovery.
+    if capability_grant is not None and (
+        not isinstance(capability_grant, Sequence)
+        or isinstance(capability_grant, (str, bytes))
+    ):
+        raise EngineToolError("engine_tools_invalid_grant")
+    grant = enabled if capability_grant is None else tuple(capability_grant)
+    if (any(not isinstance(name, str) for name in grant)
+            or len(set(grant)) != len(grant)
+            or not set(grant).issubset(BACKEND_ENGINE_CAPABILITIES)
+            or not set(enabled).issubset(grant)):
+        raise EngineToolError("engine_tools_invalid_grant")
     if (
         isinstance(timeout, bool)
         or not isinstance(timeout, (int, float))
@@ -218,7 +232,7 @@ async def open_engine_tools(
         from tinyassets.engine_steering import route_with_session
 
         dialled = replace(route, url=route_with_session(
-            route.url, session_key, turn, grant_key=getattr(route, "grant_key", ""), tools=enabled))
+            route.url, session_key, turn, grant_key=getattr(route, "grant_key", ""), tools=grant))
         client = _make_client(dialled, timeout)
     except Exception:
         raise EngineToolError("engine_tools_unavailable") from None

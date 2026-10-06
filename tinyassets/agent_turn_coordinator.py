@@ -43,7 +43,7 @@ from tinyassets.request_budget import (
     pooled_budget,
     request_budget_scope,
 )
-from tinyassets.served_tools import granted_tools
+from tinyassets.served_tools import granted_tools, model_tools
 from tinyassets.storage.agent_native_records import NativeInput, NativeTerminal
 from tinyassets.storage.agent_turn_boot import BOOT
 from tinyassets.storage.agent_turn_journal import AgentTurnJournal, JournalUnavailable
@@ -391,7 +391,8 @@ class AgentTurnCoordinator:
         actor_id, graph_id = self.adapter.engine_identity(self.context, self.config)
         return open_engine_tools(
             actor_id=actor_id, graph_id=graph_id,
-            enabled_tools=granted_tools(self.config), timeout=timeout,
+            enabled_tools=model_tools(self.config),
+            capability_grant=granted_tools(self.config), timeout=timeout,
             **self.steering(),
         )
 

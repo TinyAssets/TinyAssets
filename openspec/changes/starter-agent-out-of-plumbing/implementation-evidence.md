@@ -96,3 +96,63 @@ attempt had three symlink setup failures (WinError 1314); DISAGREE_EVIDENCE as a
 blocker because all cases passed on the required Linux oracle. No skip or xfail
 was added. N2: AGREE that branch/worktree wording can become stale; retained as
 an implementation-in-progress handoff, not permanent architecture documentation.
+# Lane K2 — four tools plus starter cutover (2026-10-06)
+
+Owner: Codex. Branch: `feat/four-tool-starter-cutover`, worktree `wf-K2`.
+This lane absorbs the content/reader commits from #4514. Do not merge as a
+completed cutover: tasks 2.x remain incomplete.
+
+## Implemented prerequisite
+
+Backend grants now use `BACKEND_ENGINE_CAPABILITIES`, independently of
+`SERVED_ENGINE_MCP_TOOLS`. HTTP transport accepts a separately validated backend
+grant, signs that grant on the private route, and exposes/calls only the selected
+model handles. Its coordinator supplies both values. Codex likewise selects its
+displayed handles through `model_tools` while signing the complete backend grant.
+Existing narrowed node grants and connection reach remain unchanged.
+
+Regression tests reduce model visibility to four handles and verify that signing,
+verification, node grant validation and ta catalog reach retain the backend
+capabilities. They also reject invalid grants and attempts to call an undisplayed
+handle directly through the HTTP model session. The ta test proves routing and
+catalog preservation, not a model's end-to-end common-task competence.
+
+## Activation blocker and decision
+
+`tinyassets/starter_skills.py` and the absorbed source bundle exist, but the D10
+transaction API does not. `openspec/changes/starter-seed-lifecycle/tasks.md`
+still has all nine implementation tasks open. The starter design's Migration
+Plan step 3 and task 2.3 explicitly require this API for stock upgrades,
+custom/deleted preservation, visible notices, Undo and dormant-center recovery.
+Removing resident advice now would strand existing centers that have never
+received the hooks/skills. Recreating those files during prompt assembly would
+violate the requested removal of per-turn seeding and the single-installer design.
+
+Decision: implement the independent grant prerequisite and retain today's
+14-handle renderer until the coordinated cutover can use D10. Do not introduce
+a second installer or silently claim the four-tool cutover is active. No public
+MCP connector implementation or handle was changed. D7 extraction is unchanged.
+Claude discovery/built-in filtering and the optional thin box loop still require
+cutover work; this prerequisite does not claim they are four-tool-only.
+
+## Reproduced measurements
+
+At main `adf29db4e7` plus the absorbed content and grant refactor, the actual
+engine schemas serialized with `agent_chat_codec.tool_definitions` and default
+`json.dumps` measure:
+
+| Selection | Description characters | HTTP serialized schema characters | Estimated schema tokens |
+| --- | ---: | ---: | ---: |
+| Current 14 handles | 32,353 | 38,748 | 9,687 |
+| Four-handle projection (not activated) | 490 | 1,574 | 393.5 |
+
+Estimate is characters / 4, not a model tokenizer or measured billing. This is
+schema-only, not whole resident payload. Owner context and native CLI envelope
+costs remain unmeasured; the audit's 47,203-character system-plus-schema total is
+an external baseline, not a new measurement. No whole-payload 1,000-token pass or
+runtime savings is claimed. Existing prompt ratchets were not changed.
+
+An isolated local run reproduces the existing description-budget failure:
+32,353 > 30,100. A combined Linux run with ta tests first reported 50 passed;
+that does not supersede the isolated failure. The broader oracle run puts the
+cost file first to expose it. Final verification and review results follow below.
