@@ -12,6 +12,25 @@ whose next step is *"the founder logs into Cloudflare."*
 
 ---
 
+## Decide: if one user's command center goes missing, should the restart still bring everyone else up? (2026-10-06)
+
+**Why:** this is F1 in `openspec/changes/owner-dynamic-admission/design.md`.
+After per-user isolation turns on, every restart checks that each command center
+the platform admitted is still on disk. A center that is missing with no deletion
+record can only come from data loss outside the platform, such as a manual
+removal or a partial restore. What should a restart do then?
+
+- **(a)** Refuse to start. Every user stays down until someone records the loss
+  by hand. This is the current behaviour and the default until you answer.
+- **(b)** Recommended: start everyone else. That one center stays unavailable,
+  its requests fail with an error, an alarm fires, and a concern file names the
+  center. If the center is restored later, the next restart picks it up.
+
+Smallest ask: reply **(a)** or **(b)**. Nothing is blocked before activation;
+only the last implementation task waits on this.
+
+---
+
 ## Delete the GitHub OAuth App (2026-10-03)
 
 **Why:** `GITHUB_OAUTH_CLIENT_ID` / `GITHUB_OAUTH_CLIENT_SECRET` are removed from the
