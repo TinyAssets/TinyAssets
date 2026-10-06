@@ -15,7 +15,9 @@ def unread_source():
 HARNESS = """
 const calls=[],paint=[],MCP={_loginEpoch:1};let queueScope='home';
 const token=()=> 'token',authHeaders=()=>({Authorization:'Bearer token'});
-const document={visibilityState:'visible'},cloudState={mode:'open'},innerHeight=700;
+let dialogOpen=false;
+const document={visibilityState:'visible',querySelector:()=>dialogOpen?{}:null};
+const cloudState={mode:'open'},innerHeight=700;
 const visible={serverTurn:{speaker:'universe',id:2},
  getBoundingClientRect:()=>({top:50,bottom:150,height:100})};
 const offscreen={serverTurn:{speaker:'universe',id:4},
@@ -30,12 +32,14 @@ const fetch=async(url,options)=>{calls.push({url,options});responseHook();
 """
 
 
-@pytest.mark.parametrize("hidden,bubble,expected", [(False, False, ["2"]),
-                                                   (True, False, []), (False, True, [])])
-def test_only_visible_messages_are_acknowledged(hidden, bubble, expected):
+@pytest.mark.parametrize("hidden,bubble,modal,expected", [(False, False, False, ["2"]),
+                         (True, False, False, []), (False, True, False, []),
+                         (False, False, True, [])])
+def test_only_visible_messages_are_acknowledged(hidden, bubble, modal, expected):
     out = run_js(HARNESS + unread_source() + f"""
 document.visibilityState={'"hidden"' if hidden else '"visible"'};
 cloudState.mode={'"bubble"' if bubble else '"open"'};
+dialogOpen={'true' if modal else 'false'};
 (async()=>{{await OwnerUnread.refresh();console.log(JSON.stringify(calls));}})();
 """)
     assert len(out) == 1
@@ -87,3 +91,19 @@ const AppUI={enabled:false,
     assert out == [{"name": "write_graph", "args": {
         "target": "connection", "operation": "try_package", "graph_id": "new-owner-home",
         "payload_json": '{"agent_definition_id":"agent_listing"}'}}, {"approval": "install-ask"}]
+
+
+def test_run_click_survives_signin_but_reload_cannot_reinstall():
+    html, _ = render_app_html()
+    capture = html[html.index("  const publicRunId="):html.index("  async function openExternal(")]
+    out = run_js("""
+const storage=new Map(),window={location:new URL('https://tinyassets.io/app?run=agent_one')};
+const sessionStorage={setItem:(k,v)=>storage.set(k,v)};
+const history={state:null,replaceState:(state,title,url)=>{
+ window.location=new URL(url,window.location);}};
+""" + "{\n" + capture + "\n}\n" + """
+const afterClick=storage.get('ta_public_run');storage.delete('ta_public_run');
+""" + "{\n" + capture + "\n}\n" + """
+console.log(JSON.stringify({afterClick,again:storage.has('ta_public_run'),url:window.location.href}));
+""")
+    assert out == {"afterClick": "agent_one", "again": False, "url": "https://tinyassets.io/app"}

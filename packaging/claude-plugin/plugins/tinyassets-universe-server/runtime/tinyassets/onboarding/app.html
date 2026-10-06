@@ -921,8 +921,11 @@
   const pkceStore = NATIVE ? localStorage : sessionStorage;
   // The explicit public-page Run click survives the same-tab sign-in redirect.
   const publicRunId=new URLSearchParams(window.location.search).get('run');
-  if(publicRunId&&/^[A-Za-z0-9_-]{1,160}$/.test(publicRunId))
+  if(publicRunId&&/^[A-Za-z0-9_-]{1,160}$/.test(publicRunId)){
     sessionStorage.setItem('ta_public_run',publicRunId);
+    const next=new URL(window.location.href);next.searchParams.delete('run');
+    history.replaceState(history.state,'',next.pathname+next.search+next.hash);
+  }
   async function openExternal(url){
     const B = NATIVE ? nativePlugin("Browser") : null;
     if(B){ try{ await B.open({url, presentationStyle:"popover"}); return; }catch(_e){} }
@@ -9230,7 +9233,7 @@
       this.busy=true;
       try{
         const messages=[];
-        if(document.visibilityState==='visible'&&cloudState?.mode==='open'){
+        if(document.visibilityState==='visible'&&cloudState?.mode==='open'&&!document.querySelector('dialog[open]')){
           const viewport=$('thread').getBoundingClientRect();
           for(const node of $('thread').children){
             const t=node.serverTurn;if(!t||t.speaker!=='universe'||!t.id)continue;

@@ -31,7 +31,7 @@ def attention(base, root, owner, universe, *, messages=(), asks=(), pending=None
     # and reconnect asks. Store-level callers use the retained request queue.
     rows = list_pending(Path(root)) if pending is None else pending
     available_asks = {row["request_id"] for row in rows
-                      if row["status"] == "pending"}
+                      if row.get("status") != "optional"}
     with closing(sqlite3.connect(Path(base) / DB_FILENAME, timeout=10)) as conn:
         conn.execute(_SCHEMA)
         with conn:

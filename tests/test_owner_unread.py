@@ -77,10 +77,11 @@ def test_receipt_post_requires_same_origin_and_ignores_claimed_owner(tmp_path, m
     assert json.loads(response.body)["messages"] == 0
 
 
-def test_derived_pending_asks_use_the_same_durable_receipts(tmp_path):
+@pytest.mark.parametrize("status", ["pending", "unresolved", "deferred", "approved"])
+def test_derived_pending_asks_use_the_same_durable_receipts(tmp_path, status):
     root = tmp_path / UNIVERSE
     root.mkdir()
-    pending = [{"request_id": "setup", "status": "pending"},
+    pending = [{"request_id": "setup", "status": status},
                {"request_id": "optional", "status": "optional"}]
     assert attention(tmp_path, root, OWNER, UNIVERSE, pending=pending)["asks"] == 1
     assert attention(tmp_path, root, OWNER, UNIVERSE, pending=pending,
