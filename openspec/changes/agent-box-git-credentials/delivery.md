@@ -103,3 +103,9 @@ Task 2.4 is incomplete: docs/concerns/2026-10-05-cc-git-provider-dependency.md
 records the missing isolating provider/registration and owning lane dependency.
 The as-built git spec remains synced; production /cc routing, deployed-SHA and
 real-user app proof cannot be claimed from this caller-contract test.
+
+Final continuation hygiene at 062730b462: against origin/feat/per-role-uid-split,
+314 added, 0 removed, 0 tampering (includes merged-main changes); against
+5591f93097, 3 added, 0 removed, 0 tampering. Latest fetched parent d1f84c63e5
+and main adf29db4e7 are both ancestors. All continuation commits, including
+merges, carry the requested co-author trailer. Draft target stays the parent.
