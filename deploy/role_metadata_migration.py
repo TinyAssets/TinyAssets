@@ -198,6 +198,7 @@ def migrate(data_root, *, bindings, work, owner, modes, reverse=False,
                 progress = {"direction": direction, "state": "migrating"}
                 if (journal is None or journal["state"] != "stable"
                         or journal["direction"] != direction or journal["rows"] != rows
+                        or configuration_changed
                         or layout.get("roles", {}).get("metadata") != {
                             "direction": direction, "state": "stable"}):
                     layout = {**layout, "state": "migrating", "roles": {

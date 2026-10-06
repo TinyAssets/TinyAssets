@@ -131,3 +131,32 @@ def test_interrupted_volume_refuses_changed_work_configuration(volume):
     with pytest.raises(owner.MigrationRefused, match="bindings/classification"):
         run(volume)
     assert metadata(volume) == before
+
+
+def test_metadata_reconciliation_marks_incomplete_and_resumes(volume):
+    setup(volume)
+    run(volume)
+    added = volume / "alice/extra"
+    added.mkdir(mode=0o700)
+    os.chown(added, 300001, 300001)
+
+    def crash(step):
+        if step == "metadata-marker":
+            raise InterruptedError(step)
+
+    with pytest.raises(InterruptedError, match="metadata-marker"):
+        run(volume, after_step=crash)
+    layout = json.loads((volume / ".layout.json").read_text())
+    assert layout["roles"]["metadata"]["state"] == "migrating"
+    changed = volume / "bob/another"
+    changed.mkdir(mode=0o700)
+    os.chown(changed, 300002, 300002)
+    before = metadata(volume)
+    with pytest.raises(owner.MigrationRefused, match="metadata authority/classification"):
+        run(volume)
+    assert metadata(volume) == before
+    changed.rmdir()
+    run(volume)
+    stable = metadata(volume)
+    run(volume)
+    assert metadata(volume) == stable

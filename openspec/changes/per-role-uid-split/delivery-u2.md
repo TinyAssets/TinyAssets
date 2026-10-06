@@ -567,3 +567,21 @@ integration remain undone. The existing draft main PR is #4510; its inherited
 U1 stack means it is not yet a U2-only diff (258 files before this continuation).
 No history rewrite or U1 file edit is used to hide that dependency. Cross-family
 review and final main merge receipts follow below. No deployment or app pass.
+
+## D216 cross-family review and main integration
+
+Claude via `peer-agents`, exit 0, **VERDICT: APPROVE**. Full review read at
+`C:/Users/Jonathan/AppData/Local/Temp/u2-d216-review-result.md`. AGREE with strict
+defaults, unchanged principal/numeric bindings, interrupted-journal refusal and
+unchanged D214/D215 provenance. AGREE with the non-blocking metadata-marker
+observation: include configuration changes in the migrating-layout condition.
+Applied that correction and added a metadata crash/refusal/resume regression;
+coordinator/inventory root oracle now passes **32 tests, zero skips**. No second
+review round or provenance patch. The repeated baseline failure is a handoff,
+not an approval of full migration or startup acceptance.
+
+Merged origin/main `a97c17c26e` at `bd2d42ef46`. Plugin mirror regenerated after
+the merge, import probe passes, and there is no generated diff. Ruff passes on
+changed Python files and main-merge Python files. Merged-stack hygiene before
+this final regression: 281 added, **0 removed / 0 tampering**. Static prompt
+budgets are unchanged. Final post-merge test and image receipts follow below.
