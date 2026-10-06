@@ -28,3 +28,15 @@ dedupe/history assertions, mirror parity and the as-built spec, and independentl
 ran the new Chromium test (1 passed). Non-blocking observations: browser routing
 coverage uses the main agent; the quoted historical title returns to that same
 owner's agent. No requested changes. Final Linux oracle: 234 passed, zero skips.
+
+## Reask round 2 - history consent boundary
+
+Claude peer-agents review completed with exit 0 and **APPROVE** after the
+origin/main merge and browser assertion updates. **AGREE:** no floor or
+correctness findings. History permits only Ask again, sends to the original
+agent, and makes no protected answer/approval call. The existing account fence
+remains covered. The lifecycle proof checks one fresh, deduplicated pending
+card with Accept/Clear controls, still awaiting its normal protected answer.
+The peer did not run tests; Linux oracle execution is recorded in tasks.md.
+The controlled agent/API bridge is not a live agent re-ask proof; deployment
+and the real-user app pass remain post-merge work.

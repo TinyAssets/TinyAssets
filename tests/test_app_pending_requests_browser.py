@@ -70,6 +70,9 @@ def test_cleared_reconnect_returns_on_later_failure_and_history_can_reask(app_ur
             page.locator('#needs-you-open').click()
             page.get_by_role('button', name='Answered history', exact=True).click()
             expect(page.locator('#request-history')).to_contain_text('Reconnect GitHub')
+            history = page.locator('#request-history')
+            assert history.locator('button').all_text_contents() == ['Ask again']
+            assert history.locator('input,textarea,select,a,[role=button]').count() == 0
             page.get_by_role('button', name='Ask again', exact=True).click()
             page.wait_for_function('() => relays.length === 2')
             relay = page.evaluate('relays[1]')
@@ -84,12 +87,18 @@ def test_cleared_reconnect_returns_on_later_failure_and_history_can_reask(app_ur
             }""")
             assert second['request_id'] != first['request_id']
             assert connection_failed()['request_id'] == second['request_id']
+            pending = read_rail()['pending']
+            assert len(pending) == 1
+            assert pending[0]['request_id'] == second['request_id']
+            assert pending[0]['status'] == 'pending'
             page.evaluate('refreshRail()')
             page.locator('#needs-you-open').click()
             returned = page.get_by_role('button', name='Reconnect GitHub', exact=False)
             expect(returned).to_have_count(1)
             page.get_by_role('button', name='Reconnect GitHub', exact=False).click()
             expect(page.get_by_role('button', name='Clear', exact=True)).to_be_visible()
+            expect(page.get_by_role('button', name='Accept', exact=True)).to_be_visible()
+            assert read_rail()['pending'][0]['status'] == 'pending'
             browser.close()
     finally:
         _logout()
