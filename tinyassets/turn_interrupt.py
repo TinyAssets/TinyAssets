@@ -121,10 +121,10 @@ class LiveTurn:
         try:
             return await self.cancel_on_stop(awaitable)
         except asyncio.CancelledError:
-            if not self.requested():
+            if not self._requested.is_set():
                 raise
         except BaseException as exc:
-            if not self.requested():
+            if not self._requested.is_set():
                 raise
             raise TurnInterrupted(self.reason) from exc
         raise TurnInterrupted(self.reason)
@@ -140,8 +140,14 @@ class LiveTurn:
         source. The turn's owner converts it to :class:`TurnInterrupted`.
         """
         task = asyncio.ensure_future(awaitable)
-        if self.requested():
+        try:
+            if self.requested():
+                task.cancel()
+        except BaseException:
             task.cancel()
+            with contextlib.suppress(BaseException):
+                await task
+            raise
         loop = asyncio.get_running_loop()
         waker = asyncio.Event()
         entry = (loop, waker)
@@ -160,6 +166,8 @@ class LiveTurn:
         watcher = asyncio.ensure_future(watch())
         try:
             await asyncio.wait({task, watcher}, return_when=asyncio.FIRST_COMPLETED)
+            if watcher.done():
+                await watcher  # A failed lifecycle read must surface, never fabricate a stop.
             if not task.done():
                 task.cancel()
             return await task

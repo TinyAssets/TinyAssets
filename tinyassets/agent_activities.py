@@ -286,6 +286,22 @@ def _bump(record: dict) -> float:
     return max(time.time(), record["updated_at"] + 1e-6)
 
 
+@contextmanager
+def _agent_creation_admission(universe_dir: Path, owner: str, agent_id: str):
+    if not agent_id or agent_id == "main":
+        yield
+        return
+    from tinyassets.addressed_agents import resolve
+    from tinyassets.provider_assignment import provider_assignment_admission
+
+    # Retirement holds exclusive admission through its activity fence. The
+    # validation and insert must be on the same side of that fence.
+    with provider_assignment_admission().shared(universe_dir):
+        resolve(universe_dir.parent, universe_id=universe_dir.name,
+                owner=owner, agent_id=agent_id)
+        yield
+
+
 def create(universe_dir: Path, *, owner_principal: str, title: str, brief: str,
            origin_kind: str, origin_ref: str = "", agent_id: str = "main",
            approval_id: str = "", continuation_only: bool = False) -> dict:
@@ -301,11 +317,6 @@ def create(universe_dir: Path, *, owner_principal: str, title: str, brief: str,
     if not owner:
         raise ActivityRefused("An activity needs its authenticated owner.",
                               kind="authentication_required")
-    if agent_id and agent_id != "main":
-        from tinyassets.addressed_agents import resolve
-
-        resolve(universe_dir.parent, universe_id=universe_dir.name,
-                owner=owner, agent_id=agent_id)
     if origin_kind not in ORIGINS:
         raise ActivityRefused(f"Unknown origin {origin_kind!r}.")
     title = _one_line(title, MAX_TITLE)
@@ -334,7 +345,8 @@ def create(universe_dir: Path, *, owner_principal: str, title: str, brief: str,
         "start_failures": 0, "revision": 1, "created_at": now, "updated_at": now,
         "finished_at": 0.0,
     }
-    with _txn(universe_dir, create=True) as conn:
+    with (_agent_creation_admission(universe_dir, owner, agent_id),
+          _txn(universe_dir, create=True) as conn):
         if origin_kind == "schedule":
             row = conn.execute(
                 f"SELECT {', '.join(_COLUMNS)} FROM activities "

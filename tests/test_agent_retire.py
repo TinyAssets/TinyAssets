@@ -39,7 +39,10 @@ def test_retire_hides_refuses_address_and_restore_preserves_history_and_files(wo
     note.write_text("original evidence", encoding="utf-8")
     result = change(world)
     assert result["status"] == "retired" and result["binding"]["revision"] == 2
-    assert list_bindings(world["base"], universe_id="u-home") == []
+    from tinyassets.api.custom_agents import custom_agents
+
+    assert custom_agents(action="list_bindings", universe_id="u-home")["bindings"] == []
+    assert list_bindings(world["base"], universe_id="u-home", include_retired=False) == []
     assert addressed_agents.roster(world["base"], universe_id="u-home", owner=OWNER) == [
         {"agent_id": "main", "name": "Your agent"}]
     with pytest.raises(addressed_agents.AgentNotAddressable):
@@ -47,6 +50,7 @@ def test_retire_hides_refuses_address_and_restore_preserves_history_and_files(wo
                                  agent_id=world["weaver"])
     assert "error" in _converse(message="Cannot run", agent_id=world["weaver"])
     assert len(list_bindings(world["base"], universe_id="u-home", include_retired=True)) == 1
+    assert len(list_bindings(world["base"], universe_id="u-home")) == 1
     assert change(world, "restore", 2)["binding"]["retired"] is False
     assert load_recent_readonly(world["udir"], session) == before
     assert note.read_text(encoding="utf-8") == "original evidence"
@@ -84,6 +88,64 @@ def test_stale_revision_cannot_restore_or_retire(world):
                             updated_by=OWNER, expected_revision=1, retired=True)
     assert get_binding(world["base"], universe_id="u-home",
                        binding_id=world["weaver"])["retired"]
+
+
+def test_retired_binding_cannot_change_configuration_or_become_serving(world):
+    from tinyassets.api.custom_agents import custom_agents
+    from tinyassets.custom_agents import (
+        _agent_connect,
+        set_binding_provider_ref_in_transaction,
+        set_binding_serving_in_transaction,
+    )
+
+    change(world)
+    result = custom_agents(action="update_binding", universe_id="u-home",
+                           binding_id=world["weaver"], expected_revision=2,
+                           payload={"schema_version": 1, "name": "Changed"})
+    assert result["error"] == "agent_validation_error"
+    for method, extra in [(set_binding_provider_ref_in_transaction, {"provider_ref": "p"}),
+                          (set_binding_serving_in_transaction, {"enabled": True})]:
+        with _agent_connect(world["base"]) as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            with pytest.raises(PermissionError, match="agent retired"):
+                method(conn, universe_id="u-home", binding_id=world["weaver"],
+                       expected_revision=2, owner_user_id=OWNER, **extra)
+    assert change(world, "restore", 2)["binding"]["configuration"]["name"] == "Evidence Weaver"
+
+
+@pytest.mark.parametrize("kind", ["platform", "legacy_platform", "disconnected_provider"])
+def test_main_binding_is_protected_before_connection_and_after_disconnect(world, kind):
+    from tinyassets.custom_agents import (
+        _agent_connect,
+        create_binding,
+        publish_definition,
+        set_binding_provider_ref_in_transaction,
+    )
+    from tinyassets.onboarding.serving import (
+        _PLATFORM_DEFINITION,
+        PLATFORM_DEFINITION_AUTHOR,
+        RETIRED_PLATFORM_DEFINITION_AUTHOR,
+    )
+
+    author = {"platform": PLATFORM_DEFINITION_AUTHOR,
+              "legacy_platform": RETIRED_PLATFORM_DEFINITION_AUTHOR}.get(kind, OWNER)
+    definition = publish_definition(world["base"], author_id=author, payload=_PLATFORM_DEFINITION)
+    payload = {"schema_version": 1, "name": "Your agent", "role": "writer"}
+    binding = create_binding(world["base"], universe_id="u-home", created_by=OWNER,
+                             definition_id=definition["agent_definition_id"], payload=payload)
+    if kind == "disconnected_provider":
+        with _agent_connect(world["base"]) as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            binding = set_binding_provider_ref_in_transaction(
+                conn, universe_id="u-home", binding_id=binding["agent_binding_id"],
+                expected_revision=1, owner_user_id=OWNER, provider_ref="connected-provider",
+            )
+    assert binding["status"] == "configured"
+    result = change(world, binding_id=binding["agent_binding_id"], revision=binding["revision"])
+    assert result["error"] == "agent_validation_error"
+    assert "main agent" in result["detail"]
+    assert get_binding(world["base"], universe_id="u-home",
+                       binding_id=binding["agent_binding_id"]) == binding
 
 
 def test_account_deletion_includes_retired_bindings(tmp_path):
@@ -181,6 +243,35 @@ def test_restore_cannot_revive_an_old_turn_in_another_process(world, monkeypatch
     assert "reply" in _converse(message="New work", agent_id=world["weaver"])
 
 
+def test_lifecycle_read_failure_preserves_error_and_cleans_up_inference(world, monkeypatch):
+    import sqlite3
+
+    from tinyassets import custom_agents, turn_interrupt
+
+    async def scenario():
+        cleaned = asyncio.Event()
+
+        def unavailable(*args, **kwargs):
+            raise sqlite3.OperationalError("retirement store unavailable")
+
+        async def inference():
+            monkeypatch.setattr(custom_agents, "get_binding", unavailable)
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cleaned.set()
+
+        with turn_interrupt.interactive_turn(
+            OWNER, "u-home", agent_id=world["weaver"], base_path=world["base"],
+        ) as live:
+            with pytest.raises(sqlite3.OperationalError, match="retirement store unavailable"):
+                await asyncio.wait_for(live.run(inference()), 5)
+            assert cleaned.is_set()
+            assert live.reason == "the owner stopped this turn"  # no fabricated retirement
+
+    asyncio.run(scenario())
+
+
 def test_served_tool_and_ta_reach_retirement(world, monkeypatch):
     from tinyassets import engine_mcp_server as engine
     from tinyassets import ta_cli
@@ -230,6 +321,9 @@ def test_scheduled_and_running_agent_activities_stop_and_main_stays(world, monke
     with pytest.raises(RunCancelledError, match="agent retired"):
         running.check()
     assert activities.get(world["udir"], main["activity_id"])["status"] == activities.SCHEDULED
+    with pytest.raises(addressed_agents.AgentNotAddressable):
+        activities.create(world["udir"], owner_principal=OWNER, title="New", brief="Refuse",
+                          origin_kind="ask", agent_id=world["weaver"])
     change(world, "restore", 2)
     with pytest.raises(RunCancelledError, match="agent retired"):
         running.check()

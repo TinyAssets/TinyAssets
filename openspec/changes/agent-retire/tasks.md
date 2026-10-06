@@ -1,11 +1,60 @@
 ## 1. Implementation
 
-- [ ] 1.1 Add durable lifecycle and owner/revision-fenced graph and ta operations.
-- [ ] 1.2 Hide retired agents and stop interactive and automation execution with a reason.
-- [ ] 1.3 Add lifecycle, isolation, history, running-turn and real-browser switcher tests and handbook guidance.
+- [x] 1.1 Add durable lifecycle and owner/revision-fenced graph and ta operations.
+- [x] 1.2 Hide retired agents and stop interactive and automation execution with a reason.
+- [x] 1.3 Add lifecycle, isolation, history, running-turn and real-browser switcher tests and handbook guidance.
 
 ## 2. Verification and delivery
 
-- [ ] 2.1 Run affected Linux tests with zero skips, prompt budgets, ruff, plugin mirror and hygiene.
-- [ ] 2.2 Sync spec, commit verified slices and open draft PR resolving #4521.
-- [ ] 2.3 Complete Claude review, record verdict and decisions, merge origin/main and push final evidence.
+- [x] 2.1 Run affected Linux tests with zero skips, prompt budgets, ruff, plugin mirror and hygiene.
+- [x] 2.2 Sync spec, commit verified slices and open draft PR resolving #4521.
+- [x] 2.3 Complete Claude review, record verdict and decisions, merge origin/main and push final evidence.
+
+## Evidence
+
+Draft PR: https://github.com/TinyAssets/TinyAssets/pull/4528. Proposal/design
+committed first in `358a487508`; initial verified implementation in `6b01c52085`.
+Main spec synced at `openspec/specs/agent-retire/spec.md`.
+
+Final combined Linux oracle: **391 passed, zero skips**, Python 3.11.17,
+bubblewrap 0.12.0, uid 1001. Command prefix:
+`MSYS_NO_PATHCONV=1 python scripts/linux_oracle.py -- -q`; suffix:
+`--basetemp /tmp/b`. Test files:
+
+- `tests/test_agent_retire.py`
+- `tests/test_custom_agents.py`
+- `tests/test_converse_addressed_agent.py`
+- `tests/test_app_addressed_agent.py`
+- `tests/test_agent_activities.py`
+- `tests/test_activity_dispatch.py`
+- `tests/test_activity_http_yield.py`
+- `tests/test_turn_interrupt.py`
+- `tests/test_converse_turn_cost.py`
+- `tests/test_provider_serving_binding.py`
+- `tests/test_engine_mcp_write_graph_patch.py`
+- `tests/test_interactive_http_agent.py`
+- `tests/test_account_deletion.py`
+- `tests/test_ta_capabilities.py`
+- `tests/test_ta_capabilities_jail.py`
+- `tests/test_universe_server_five_handles.py`
+- `tests/test_served_systems_guidance.py`
+- `tests/test_onboarding_serving.py`
+- `tests/test_model_bootstrap.py`
+
+Affected heavy suites additionally passed **146 tests, zero skips**, with the
+same Linux oracle prefix/suffix: `tests/test_mcp_instruction_surfaces.py`,
+`tests/test_universe_server_isolation.py`, `tests/test_scoped_identity_reset.py`.
+Total final verification: **537 passed, zero skips**. Hygiene: zero removed tests
+and zero tampering findings. `origin/main` was merged before the final push
+(already up to date at `a97c17c26ea2a7a25764c02e9e095b87589edc67`).
+
+Ruff passed on all changed canonical Python files and tests. Plugin build and
+import probe passed; whole-tree mirror parity: 625 canonical files matched.
+Static prompt-budget tests were not modified. Chromium runs the shipped
+switcher with real roster reads; Playwright is imported inside the test.
+
+Claude review: **ADAPT**, all four findings accepted and addressed. Details:
+`docs/reviews/2026-10-05-agent-retire.md`. No second review round. The draft has
+no current-head Drain-Review approval receipt; that merge gate remains pending.
+Production deployment, deployed-SHA assertion and live authenticated app-agent
+proof are not claimed by this draft delivery.

@@ -193,7 +193,8 @@ def roster(base_path: str | Path, *, universe_id: str, owner: str) -> list[dict]
     from tinyassets.custom_agents import list_bindings
 
     agents = [{"agent_id": MAIN_AGENT, "name": "Your agent"}]
-    for binding in list_bindings(base_path, universe_id=universe_id, limit=None):
+    for binding in list_bindings(base_path, universe_id=universe_id, limit=None,
+                                 include_retired=False):
         if is_conversable(binding, owner=owner, universe_id=universe_id):
             agents.append({"agent_id": binding["agent_binding_id"],
                            "name": agent_name(binding, None)})

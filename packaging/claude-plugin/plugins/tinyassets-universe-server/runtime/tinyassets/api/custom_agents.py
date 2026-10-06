@@ -263,7 +263,7 @@ def custom_agents(
                 return denial
 
             if normalized == "list_bindings":
-                bindings = list_bindings(base, universe_id=uid, limit=limit)
+                bindings = list_bindings(base, universe_id=uid, limit=limit, include_retired=False)
                 return {
                     "universe_id": uid,
                     "bindings": bindings,

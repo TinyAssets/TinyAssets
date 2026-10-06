@@ -1266,7 +1266,7 @@ def list_bindings(
     *,
     universe_id: str,
     limit: int | None = 30,
-    include_retired: bool = False,
+    include_retired: bool = True,
 ) -> list[dict[str, Any]]:
     """The owner's bindings, newest first, at most ``limit`` of them.
 
@@ -1321,6 +1321,16 @@ def set_binding_retired(
             if row is None or row["created_by"] != actor:
                 raise AgentNotFoundError("agent binding was not found")
             binding = _binding_from_row(row)
+            definition = _read_definition_row(conn, binding["agent_definition_id"])
+            from tinyassets.onboarding.serving import (
+                PLATFORM_DEFINITION_AUTHOR,
+                RETIRED_PLATFORM_DEFINITION_AUTHOR,
+            )
+
+            if (definition["author_id"] in {
+                PLATFORM_DEFINITION_AUTHOR, RETIRED_PLATFORM_DEFINITION_AUTHOR,
+            } or "provider_ref" in binding["configuration"]):
+                raise AgentValidationError("the main agent cannot be retired")
             if not is_conversable({**binding, "retired": False}, owner=actor, universe_id=uid):
                 raise AgentValidationError(
                     "the main agent or a non-agent binding cannot be retired"
@@ -1392,6 +1402,10 @@ def update_binding(
             )
             if current is None:
                 raise AgentNotFoundError(f"agent binding {bid!r} was not found")
+            if current["retired"]:
+                raise AgentValidationError(
+                    "agent retired; restore it before updating configuration"
+                )
             selected_definition = requested_definition or str(
                 current["agent_definition_id"]
             )
@@ -1462,6 +1476,8 @@ def set_binding_provider_ref_in_transaction(
         raise AgentNotFoundError(f"agent binding {binding_id!r} was not found")
     if str(current["created_by"]) != owner_user_id.strip():
         raise PermissionError("only the binding creator may assign its provider")
+    if current["retired"]:
+        raise PermissionError("agent retired; restore it before assigning a provider")
     if int(current["revision"]) != expected_revision:
         raise AgentConflictError(
             f"binding revision conflict: expected {expected_revision}, "
@@ -1519,6 +1535,8 @@ def set_binding_serving_in_transaction(
         raise AgentNotFoundError(f"agent binding {binding_id!r} was not found")
     if str(current["created_by"]) != owner_user_id.strip():
         raise PermissionError("only the binding creator may change serving state")
+    if current["retired"]:
+        raise PermissionError("agent retired; restore it before changing serving state")
     if int(current["revision"]) != expected_revision:
         raise AgentConflictError(
             f"binding revision conflict: expected {expected_revision}, "
