@@ -1,3 +1,65 @@
+# Current U1 delivery: D80 exact tool relay sockets verified
+
+D79 is pushed at 220f612a818d8816c502a29079a588e5a13b0ccc, exact remote SHA
+asserted. Hygiene: 5 tests added, 0 removed, 0 tampering. Continued in the same
+run into public bash/ta/egress rather than stopping at the offline slice.
+
+D80 extends only the fixed tool class with pinned egress/ta socket descriptors.
+Socket ACLs name one dedicated owner; group and other access are removed.
+The sidecar grants that owner traverse only, never listing/write, and the cell
+mounts only exact sockets. Daemon sender/center binding, exact protected socket
+paths, inode proof, fixed fd slots and descriptor closure remain enforced.
+The existing egress address policy and per-invocation ta authority stay intact.
+
+Initial installed image built successfully but socket entry failed before its
+cell proof. A diagnostic preserving only mapper-child stderr (no acceptance
+claim) found: bwrap cannot resolve /proc/self/fd/4: Permission denied. Added
+named-owner traverse-only parent ACL, with exact readback and mode assertions.
+A first broader stderr diagnostic failed the service bootstrap and is not an
+acceptance run. No policy/capability was relaxed to make a probe pass.
+
+Claude peer-agents review returned APPROVE, no floor/correctness finding;
+receipt C:/Users/Jonathan/AppData/Local/Temp/uid-d80-review.md. Its optional
+Windows observation was addressed by validating missing scope before creating
+an AF_UNIX socket; two focused Windows checks pass. No skip was added to an
+existing test. Review predates the measured parent-traverse correction.
+Linux selection: 73 passed, zero skips, both before and after that correction.
+Targeted Ruff and strict OpenSpec pass; plugin import/parity pass.
+
+Corrected production Dockerfile build exit 0, privileged chain PASS:
+sha256:553820e780a81e4824172f3c55971b89e05599c259c59c774cf1620d2928b16f
+(tinyassets-uid-d80:traverse). Reader probe on this image: 132 denied, 22 own,
+zero foreign reads, foreign unchanged. Final commands on this image (exit 0):
+- python scripts/role_tool_socket_probe.py --image tinyassets-uid-d80:traverse:
+  Alice/Bob actual bash, ta CLI callback (correct captured owner), HTTP proxy
+  roundtrip on a Docker-internal synthetic network; metadata address and direct
+  networking denied; foreign-center and revoked socket descriptors refused by
+  application/mapper; post-refusal reuse succeeds; ZERO FOREIGN_BYTES. Covers
+  no-socket, egress-only, ta-only and combined descriptor layouts, plus all D79
+  offline controls including exact 20 MiB image transport. Final log:
+  C:/Users/Jonathan/AppData/Local/Temp/uid-d80-socket-final.log.
+- python scripts/role_node_launcher_probe.py --image tinyassets-uid-d80:traverse:
+  actual compiler/authoring/data/workspace/RPC/cancellation PASS, zero foreign bytes.
+- python scripts/role_preview_launcher_probe.py --image tinyassets-uid-d80:traverse:
+  Alice/Bob sandbox-enabled Chromium and screenshot writes PASS; profile override
+  refused for every other D9 class; zero foreign reads.
+- python scripts/role_reader_alias_probe.py --image tinyassets-uid-d80:traverse:
+  132 denied, 22 own reads, zero foreign reads; foreign unchanged.
+- python scripts/role_owner_namespace_probe.py --image tinyassets-uid-d80:traverse:
+  all three profiles deny foreign read/relabel/copy; out-of-range mapping denied.
+- python scripts/linux_oracle.py -- tests/test_role_tool_sockets.py tests/test_role_tools.py tests/test_role_relays.py tests/test_ta_capabilities.py tests/test_ta_capabilities_jail.py tests/test_owner_launcher_client.py tests/test_role_launcher.py tests/test_universe_path_io_guard.py -q -rs:
+  73 passed, zero skips after the final product corrections.
+
+No new full task checkbox is complete. Tool owner-directory preparation,
+persistent brain-file promotion and chmod/accounting recovery still need proof.
+Remaining actual classes: provider CLI/discovery/auth, engine-MCP thin proxy,
+workspace provision/registry/worker, remote git/local box and ingestion/video;
+then immutable package cells with narrowed broker slots/egress. U2 PR #4509 is
+not merge-ready, and its migration/deletion/old-image/startup work remains U2-owned.
+No final build PR or deployment; no production volume or user data was touched. Release-critical files: the same two deploy class files.
+U2 files, startup, healthcheck, migration and rollback remain untouched/off.
+
+---
 # Current U1 delivery: D79 staged offline tool-jail integration
 
 Started at 7df4be37d7 with the requested ff-only pull, already current. No history

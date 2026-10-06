@@ -176,7 +176,7 @@ class OwnerLauncherClient:
             timeout=DECODE_WALL_SECONDS + 10)
 
     def start_cell(self, *, kind, principal, command_center, identity, extra=None,
-                   directory_fd=None):
+                   directory_fd=None, socket_fds=()):
         """Start an admitted static class with independent data and lifetime pipes.
 
         No numeric identity or executable is sent to the mapper. The cell's
@@ -187,8 +187,10 @@ class OwnerLauncherClient:
                 or not OWNER_ID_FIRST <= identity.uid <= OWNER_ID_LAST):
             raise ValueError('invalid admitted cell identity')
         document = dict(extra or {})
-        if set(document) - {'mime', 'ui_id', 'workspace'}:
+        if set(document) - {'mime', 'ui_id', 'workspace', 'egress', 'ta'}:
             raise ValueError('unsupported cell parameters')
+        if socket_fds and (kind != 'tool-jail' or len(socket_fds) > 2):
+            raise ValueError('unsupported cell sockets')
         document.update(op='START', kind=kind, principal=principal, command_center=command_center)
         data, child = socket.socketpair()
         status, child_status = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
@@ -200,6 +202,7 @@ class OwnerLauncherClient:
                 handles = [child.fileno()]
                 if directory_fd is not None:
                     handles.append(directory_fd)
+                handles.extend(socket_fds)
                 handles.append(child_status.fileno())
                 try:
                     self._channel.sendmsg([json.dumps(document).encode()], [(

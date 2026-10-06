@@ -1,3 +1,25 @@
+### D80. Mechanical exact-socket admission for tool cells
+
+Admit only the existing daemon-owned egress relay and per-bash capability
+socket beneath the admitted center sidecar. Pin socket inodes with O_PATH and
+O_NOFOLLOW; grant only that owner traverse (no listing/write) on its sidecar
+directory because bubblewrap resolves the pinned source through that parent;
+install an exact named-owner UID read/write ACL through the held
+/proc/self/fd path, with no group or other access. Require ACL readback and
+unchanged device/inode, daemon ownership and single link. No parent directory,
+raw credential, daemon control socket or caller-selected path enters a cell.
+The mapper receives fixed egress/ta presence flags and descriptors, checks the
+exact admitted sidecar/name/daemon inode ownership, and maps only those sockets.
+Close descriptors before application code. Retain the existing public-address
+proxy rules and per-invocation capability dispatch/revocation; this adds no
+new action authority. Package scoped slots remain a separate later boundary.
+
+A disposable installed-image ACL probe passed: daemon UID1001 grants socket
+access through the pinned O_PATH descriptor; UID300001 connects, UID300002
+fails, mode remains 0660, with no shared group membership. Actual Alice/Bob launcher/public-bash/ta/HTTP acceptance now passes with
+foreign/revoked sockets denied; see delivery.md for the exact image and commands.
+D79 offline receipt remains valid; preparation/promotion and other classes remain open.
+
 ### D79. Mechanical staged tool-jail admission with daemon accounting
 
 Use the fixed tool-jail class with D9 cell-nested outside the existing strict

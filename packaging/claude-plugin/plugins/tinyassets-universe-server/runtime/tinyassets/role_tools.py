@@ -1,8 +1,8 @@
 """Bounded tool execution with daemon-owned queueing and storage accounting.
 
 The owner cell keeps the existing nested tool jail and its resource supervisor.
-Only a fixed budget poll crosses back to the daemon; it carries no action or
-credential authority. Socket-bearing launches are not admitted by this stage.
+A fixed budget poll carries no action or credential authority. Exact pinned
+relay sockets retain their existing per-center and per-invocation authority.
 """
 from __future__ import annotations
 
@@ -76,10 +76,14 @@ def run(universe_dir, inner, *, agent_id, stdin, limits, wall_seconds, output_by
     client = role_decoder._bounded_client
     if client is None:
         raise tools.UniverseToolError('tool requires its bounded owner launcher')
-    if egress_socket is not None or ta_socket is not None:
-        raise tools.UniverseToolError('tool cell socket forwarding is not yet admitted')
-    supervisor._protect_daemon()
+    from tinyassets.providers.provider_jail import UNIVERSE_SIDECARS_DIR
+
     center = Path(universe_dir)
+    for path in (egress_socket, ta_socket):
+        if path is not None and Path(path).parent != (
+                center.parent / UNIVERSE_SIDECARS_DIR / center.name):
+            raise tools.UniverseToolError('tool cell socket forwarding requires a scoped relay')
+    supervisor._protect_daemon()
     root = data_dir().resolve()
     principal = current_identity().user_id
     if (center.parent != root or center.resolve() != center
@@ -94,12 +98,22 @@ def run(universe_dir, inner, *, agent_id, stdin, limits, wall_seconds, output_by
     payload = _frame(request, INPUT_BOUND)
     identity = owner_identity(root, principal=principal)
     fd = open_dir_nofollow(center)
+    socket_fds = []
+    socket_sources = {}
     queued = []
     try:
         info = os.fstat(fd)
         if (not stat.S_ISDIR(info.st_mode) or info.st_gid != identity.gid
                 or info.st_uid not in (1001, identity.uid)):
             raise PermissionError('tool center does not match owner identity')
+        from tinyassets.role_relays import pin_for_owner
+
+        for key, name, path in (('e', 'egress', egress_socket), ('t', 'ta', ta_socket)):
+            if path is not None:
+                descriptor = pin_for_owner(Path(path), center, identity.uid, kind=name)
+                socket_fds.append(descriptor)
+                socket_info = os.fstat(descriptor)
+                socket_sources[key] = [socket_info.st_dev, socket_info.st_ino]
         with tools._slot(center, on_wait=on_wait, waited=queued):
             try:
                 budget = tools.jail_disk.open_budget(center,
@@ -110,13 +124,16 @@ def run(universe_dir, inner, *, agent_id, stdin, limits, wall_seconds, output_by
                     f'{below}, so the tool jail will not start; nothing ran') from None
             try:
                 with client.start_cell(kind='tool-jail', principal=principal,
-                        command_center=center.name, identity=identity, directory_fd=fd) as cell:
+                        command_center=center.name, identity=identity, directory_fd=fd,
+                        extra={'egress': egress_socket is not None, 'ta': ta_socket is not None},
+                        socket_fds=socket_fds) as cell:
                     cell.stream.settimeout(40)
                     with cell.stream.makefile('rb') as reader:
                         proof = _read(reader, 16384)['cell']
                         inner_uid = identity.uid - 300000
                         if (proof.get('uid') != inner_uid or proof.get('gid') != inner_uid
                                 or proof.get('source') != [info.st_dev, info.st_ino]
+                                or proof.get('sockets') != socket_sources
                                 or proof.get('fds') != [0, 1, 2] or proof.get('groups') != []
                                 or proof.get('caps') != 'zero' or proof.get('nnp') != 1
                                 or proof.get('profile') != 'cell-nested'):
@@ -142,10 +159,12 @@ def run(universe_dir, inner, *, agent_id, stdin, limits, wall_seconds, output_by
             finally:
                 budget.settle()
     finally:
+        for descriptor in socket_fds:
+            os.close(descriptor)
         os.close(fd)
 
 
-def cell_main():
+def cell_main(*, egress=False, ta=False):
     """Trusted supervisor inside the owner cell; no host paths or stores."""
     request = _read(sys.stdin.buffer, INPUT_BOUND)
     limits, stdin = _validate(request)
@@ -180,7 +199,9 @@ def cell_main():
                  *tools._limited(request['inner'], limits, cpu_seconds=cpu)]
         argv = tools.tool_jail_argv(root,
             inner,
-            agent_id=request['agent_id'], seccomp_fd=filter_fd, promote_brain_files=False)
+            agent_id=request['agent_id'], seccomp_fd=filter_fd, promote_brain_files=False,
+            egress_socket=Path('/tool-egress.sock') if egress else None,
+            ta_socket=Path('/tool-ta.sock') if ta else None)
         result = tools._supervise(argv, root, filter_fd, stdin=stdin, limits=limits,
             wall=request['wall'], cap=request['cap'], process_cap=int(limits.processes) + 3,
             budget=Budget())

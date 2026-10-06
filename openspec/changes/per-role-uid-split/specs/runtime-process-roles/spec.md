@@ -4,6 +4,25 @@
 
 ## ADDED Requirements
 
+### Requirement: Tool relay sockets are exact owner-scoped inode capabilities
+
+The tool class SHALL admit only the existing egress relay and per-invocation
+ta socket under its admitted center's protected sidecar. The daemon SHALL pin
+socket inodes without following links and grant only the dedicated owner UID
+socket access and parent traverse, without listing or parent write access.
+The mapper SHALL validate fixed presence flags, descriptor counts, protected
+center paths, socket type, link count and protected service ownership. Cells
+SHALL mount only exact sockets, verify their inode identities, and close all
+source descriptors before application code. Existing destination restrictions,
+callback authority and invocation revocation SHALL remain unchanged.
+
+#### Scenario: Actual bash uses scoped capabilities and public egress
+- **WHEN** Alice and Bob execute bash and ta through their owner cells
+- **THEN** the existing proxy carries permitted HTTP and ta dispatch keeps each invocation's owner context
+- **AND** direct networking and metadata-address proxy requests fail
+- **AND** application and mapper refuse foreign-center sockets and the mapper refuses a revoked invocation's held socket
+- **AND** subsequent ordinary owner tools still work after each refusal
+
 ### Requirement: Staged tool execution retains daemon accounting
 
 The staged offline tool-jail class SHALL use its admitted owner's dedicated

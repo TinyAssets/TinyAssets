@@ -110,7 +110,7 @@ print(json.dumps(dict(uid=os.getuid(),fds=sorted(fds),foreign_bytes=0)))
         else: raise AssertionError('foreign center accepted')
         print(owner+': real tool read/write/edit/stdin, limits and foreign scope PASS',flush=True)
 print('offline tool-jail staged acceptance PASS; ZERO FOREIGN_BYTES; '
-      'sockets not admitted',flush=True)
+      'socket forwarding not exercised here',flush=True)
 '''
 
 

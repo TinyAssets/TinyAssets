@@ -10,6 +10,7 @@ import array
 import ctypes
 import json
 import os
+import re
 import select
 import signal
 import socket
@@ -299,6 +300,10 @@ class OwnerLauncher:
             fields.add('ui_id')
         if kind == 'node-sandbox':
             fields.add('workspace')
+        if kind == 'tool-jail':
+            fields.update(('egress', 'ta'))
+        socket_count = (sum(request.get(key) is True for key in ('egress', 'ta'))
+                        if kind == 'tool-jail' else 0)
         mounted = kind in {'workspace-git', 'preview-write', 'tool-jail'} or (
             kind == 'node-sandbox' and request.get('workspace') is True)
         if (not isinstance(request, dict)
@@ -306,6 +311,8 @@ class OwnerLauncher:
                 or kind not in {'image-decoder', 'workspace-git', 'ui-preview', 'preview-write',
                                 'node-sandbox', 'tool-jail'}
                 or (kind == 'node-sandbox' and type(request['workspace']) is not bool)
+                or (kind == 'tool-jail' and any(
+                    type(request[key]) is not bool for key in ('egress', 'ta')))
                 or (kind == 'image-decoder' and (
                     not isinstance(request['mime'], str)
                     or request['mime'] not in {
@@ -313,7 +320,7 @@ class OwnerLauncher:
                 or not isinstance(request['principal'], str)
                 or not isinstance(request['command_center'], str)
                 or len(received) != (2 if mounted else 1)
-                    + int(streaming)):
+                    + int(streaming) + socket_count):
             raise ValueError('unsupported owner engine')
         if not streaming and self.jobs:
             raise ValueError('blocking spawn cannot suspend active cell supervision')
@@ -343,6 +350,22 @@ class OwnerLauncher:
                     or os.readlink(f'/proc/self/fd/{received[1]}') !=
                     self.data_root + '/' + request['command_center']):
                 raise ValueError('tool root does not match admitted center')
+            index = 2
+            prefix = (self.data_root + '/.universe-sidecars/'
+                      + request['command_center'] + '/')
+            for name in ('egress', 'ta'):
+                if not request[name]:
+                    continue
+                info = os.fstat(received[index])
+                source = os.readlink(f'/proc/self/fd/{received[index]}')
+                pattern = (rf'egress-{self.daemon_pid}\.sock' if name == 'egress'
+                           else r'ta-[a-f0-9]{32}\.sock')
+                if (not stat.S_ISSOCK(info.st_mode) or info.st_nlink != 1
+                        or info.st_uid != self.overflow_uid
+                        or not source.startswith(prefix)
+                        or not re.fullmatch(pattern, source[len(prefix):])):
+                    raise ValueError('tool relay does not match admitted center')
+                index += 1
         if kind == 'workspace-git' or (kind == 'node-sandbox' and mounted):
             info = os.fstat(received[1])
             if not stat.S_ISDIR(info.st_mode) or (info.st_uid, info.st_gid) != (inner, inner):
@@ -370,14 +393,30 @@ class OwnerLauncher:
             raise
         if pid == 0:
             try:
+                retained = (3,) if mounted else ()
+                if kind == 'tool-jail' and socket_count:
+                    import fcntl
+
+                    # Copy before assigning fixed slots, so a destination
+                    # cannot overwrite another received source descriptor.
+                    sources = [fcntl.fcntl(value, fcntl.F_DUPFD_CLOEXEC, 20)
+                               for value in received[:2 + socket_count]]
+                    fd = sources[0]
+                    os.dup2(sources[1], 3)
+                    index = 2
+                    retained = [3]
+                    for name, target in (('egress', 4), ('ta', 5)):
+                        if request[name]:
+                            os.dup2(sources[index], target)
+                            retained.append(target)
+                            index += 1
                 os.dup2(fd, 0)
                 os.dup2(fd, 1)
                 null = os.open('/dev/null', os.O_WRONLY)
                 os.dup2(null, 2)
-                if mounted:
+                if mounted and not (kind == 'tool-jail' and socket_count):
                     os.dup2(received[1], 3)
-                self.launch['close_descriptors'](
-                    (3,) if mounted else ())
+                self.launch['close_descriptors'](retained)
                 os.setgroups([])
                 os.setresgid(inner, inner, inner)
                 os.setresuid(inner, inner, inner)
@@ -387,7 +426,8 @@ class OwnerLauncher:
                 os.chdir('/')
                 if kind == 'tool-jail':
                     command = ['/usr/local/libexec/ta-decoder.py', 'enter-tool',
-                               self.data_root, str(inner)]
+                               ('e' if request['egress'] else '')
+                               + ('t' if request['ta'] else '') or '-', self.data_root, str(inner)]
                 elif kind == 'node-sandbox':
                     command = ['/usr/local/libexec/ta-decoder.py', 'enter-node',
                                'workspace' if mounted else 'data', self.data_root, str(inner)]

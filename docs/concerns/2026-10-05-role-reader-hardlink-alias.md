@@ -7,6 +7,15 @@ summary: 'D65: dedicated-label daemon reader matrix passes with 114 denials and 
 
 ## Founder D61 continuation
 
+D80 continues tool acceptance through actual bash/ta and HTTP proxy traffic,
+including foreign/revoked socket rejection at the daemon and mapper. Image
+`sha256:553820e780a81e4824172f3c55971b89e05599c259c59c774cf1620d2928b16f`
+passes 132 daemon reader denials / 22 own reads / zero foreign, all three
+read/relabel/copy diagnostics, actual node and sandboxed Chromium regressions,
+and Alice/Bob tool descriptor/network/alias checks with zero foreign bytes.
+Tool preparation/promotion and other actual classes remain unfinished; retain
+this concern. No deployment or new production-data access is claimed.
+
 D79 adds staged offline tool execution with actual Alice/Bob read/write/edit,
 image and native descendant operations. Reviewed production Dockerfile image
 `sha256:1650d2cadd7e20ec07fe2d78c9a97b8d394b1c6051208fe341c3d8ed7a9dde8a`

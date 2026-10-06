@@ -1141,7 +1141,7 @@ def bash(
     else:
         from tinyassets.ta_capabilities import JailBridge
 
-        with JailBridge(ta_dispatch) as bridge:
+        with JailBridge(ta_dispatch, universe_dir=universe_dir) as bridge:
             run = RUNNER(universe_dir, inner, agent_id=agent_id, limits=limits,
                          wall_seconds=wall, ta_socket=bridge.path, **egress)
     body = _text(run.output)

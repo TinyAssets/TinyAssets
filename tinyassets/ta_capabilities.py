@@ -9,6 +9,7 @@ import asyncio
 import contextvars
 import json
 import re
+import secrets
 import socket
 import tempfile
 import threading
@@ -135,17 +136,40 @@ class JailBridge:
     headers, a bearer or a route. Closing the bash invocation revokes the socket.
     """
 
-    def __init__(self, dispatch):
+    def __init__(self, dispatch, *, universe_dir=None):
         self.dispatch = dispatch
+        self._universe_dir = universe_dir
         self._context = contextvars.copy_context()
         self._closed = threading.Event()
 
     def __enter__(self):
-        self._directory = tempfile.TemporaryDirectory(prefix="ta-")
-        self.path = Path(self._directory.name) / "cap.sock"
+        from tinyassets.broker.supervisor import broker_selected
+
+        selected = broker_selected()
+        if selected and self._universe_dir is None:
+            raise ValueError('role capability bridge requires a command center')
+        self._role_identity = None
+        self._directory = None
         self._server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        self._server.bind(str(self.path))
-        self.path.chmod(0o600)
+        try:
+            if selected:
+                from tinyassets import role_relays
+                from tinyassets.providers.provider_jail import UNIVERSE_SIDECARS_DIR
+
+                root = Path(self._universe_dir)
+                self.path = (root.parent / UNIVERSE_SIDECARS_DIR / root.name
+                             / ('ta-' + secrets.token_hex(16) + '.sock'))
+                self._role_identity = role_relays.bind(self._server, self.path)
+            else:
+                self._directory = tempfile.TemporaryDirectory(prefix="ta-")
+                self.path = Path(self._directory.name) / "cap.sock"
+                self._server.bind(str(self.path))
+                self.path.chmod(0o600)
+        except BaseException:
+            self._server.close()
+            if self._directory is not None:
+                self._directory.cleanup()
+            raise
         self._server.listen(8)
         self._server.settimeout(0.1)
         self._thread = threading.Thread(target=self._serve, daemon=True)
@@ -184,7 +208,12 @@ class JailBridge:
     def __exit__(self, *_):
         self._closed.set()
         self._server.close()
-        self._directory.cleanup()
+        if self._role_identity is not None:
+            from tinyassets.role_relays import remove
+
+            remove(self.path, self._role_identity)
+        elif self._directory is not None:
+            self._directory.cleanup()
 
 
 async def engine_dispatch(server):

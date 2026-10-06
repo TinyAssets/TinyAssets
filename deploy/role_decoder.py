@@ -67,6 +67,15 @@ def enter(mime, data_root, uid=1003, *, preview=False, preview_write=False, node
             raise RuntimeError('preview output source is invalid')
         host['source'] = [info.st_dev, info.st_ino]
         os.set_inheritable(3, True)
+    if tool:
+        host['sockets'] = {}
+        for key, fd in (('e', 4), ('t', 5)):
+            if key in mime:
+                info = os.fstat(fd)
+                if not stat.S_ISSOCK(info.st_mode) or info.st_nlink != 1:
+                    raise RuntimeError('tool relay is not a socket')
+                host['sockets'][key] = [info.st_dev, info.st_ino]
+                os.set_inheritable(fd, True)
     # Load only the immutable stdlib-only filter definition; no package import
     # or application initialization before the owner boundary exists.
     filter_factory = runpy.run_path("/app/tinyassets/providers/jail_seccomp.py")["program_fd"]
@@ -87,6 +96,9 @@ def enter(mime, data_root, uid=1003, *, preview=False, preview_write=False, node
         argv.extend(['--setenv', 'PLAYWRIGHT_BROWSERS_PATH', '/opt/ms-playwright'])
     if tool:
         argv.extend(tool_mounts(uid))
+        for key, fd, destination in (('e', 4, '/tool-egress.sock'), ('t', 5, '/tool-ta.sock')):
+            if key in mime:
+                argv.extend(['--bind-fd', str(fd), destination])
     elif mounted:
         argv.extend(['--bind-fd', '3', '/workspace'])
     argv.extend(["--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp",
@@ -256,19 +268,27 @@ def decode(mime, host, data_root, uid=1003):
 
 
 if __name__ == "__main__":
-    if len(sys.argv) == 4 and sys.argv[1] == 'enter-tool' and 0 < int(sys.argv[3]) < 100000:
-        enter('', sys.argv[2], int(sys.argv[3]), tool=True)
+    if (len(sys.argv) == 5 and sys.argv[1] == 'enter-tool'
+            and sys.argv[2] in ('-', 'e', 't', 'et') and 0 < int(sys.argv[4]) < 100000):
+        enter(sys.argv[2], sys.argv[3], int(sys.argv[4]), tool=True)
     elif len(sys.argv) == 6 and sys.argv[1] == 'inside-tool' and 0 < int(sys.argv[5]) < 100000:
         host = json.loads(sys.argv[3])
         source = host.pop('source')
+        sockets = host.pop('sockets')
+        for key, target in (('e', '/tool-egress.sock'), ('t', '/tool-ta.sock')):
+            if key in sockets:
+                info = os.stat(target, follow_symlinks=False)
+                if [info.st_dev, info.st_ino] != sockets[key] or not stat.S_ISSOCK(info.st_mode):
+                    raise RuntimeError('tool socket mount differs from pinned source')
         proof = prove_cell(host, sys.argv[4], int(sys.argv[5]), 'cell-nested')
         proof['source'] = source
+        proof['sockets'] = sockets
         sys.stdout.buffer.write(json.dumps({'cell': proof}).encode() + b'\n')
         sys.stdout.buffer.flush()
         sys.path.insert(0, '/app')
         from tinyassets.role_tools import cell_main
 
-        raise SystemExit(cell_main())
+        raise SystemExit(cell_main(egress='e' in sockets, ta='t' in sockets))
     elif (len(sys.argv) == 5 and sys.argv[1] == 'enter-node'
             and sys.argv[2] in {'data', 'workspace'} and 0 < int(sys.argv[4]) < 100000):
         enter(sys.argv[2], sys.argv[3], int(sys.argv[4]), node=True)
