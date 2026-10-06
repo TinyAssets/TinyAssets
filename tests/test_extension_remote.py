@@ -203,10 +203,13 @@ def test_real_effector_remote_wire_and_outside_admission(tmp_path, monkeypatch, 
             responses.append(result)
             return result
 
+    def open_socket(address, timeout, source):
+        return socket.create_connection(  # hermetic-ok: loopback stub only
+            ("127.0.0.1", http.server_port), timeout)
+
     monkeypatch.setattr(oc, "_SsrfHardenedHttpDriver", lambda: SinkDriver(
         resolver=lambda h, p: ["127.0.0.1"], validator=lambda addr: addr,
-        open_socket=lambda address, timeout, source: socket.create_connection(
-            ("127.0.0.1", http.server_port), timeout), ssl_context=_PassThroughTLS()))
+        open_socket=open_socket, ssl_context=_PassThroughTLS()))
     monkeypatch.setenv("TINYASSETS_OUTBOUND_HTTP_CONNECTIONS_ENABLED", "1")
     _install_inprocess_proxy(monkeypatch, db_path=tmp_path / "outbound.db",
         universe_dir=service.root, grant_id="grant-http", provider="http",
