@@ -156,6 +156,42 @@ checks the review confirmed are unchanged.
   forwarder, then the codex command running `app-server` with
   `SERVED_LAUNCH_ARGS`.
 
+**Round-3 continuation: merge of origin/main with the remote-box ta bridge
+(#4525), 2026-10-06.** Every disposition above was rechecked against the
+merged code: each cited fix and test is present. Merge interactions:
+
+- `engine_mcp_server.py` kept both sides: the bridge's private
+  `ta-bridge://request/{payload}` resource and the four-tool `bash`
+  declaration (`output_schema=None`). A remote box's `ta` request goes through
+  `ta_capabilities.engine_dispatch`, which carries the activity stop check, so
+  finding (3)'s boundary 2 covers it too.
+- The thin loop (`ThinLoopChatAdapter`) handed `open_loop_tools` the backend
+  grant as if it were the model's tool list. On this branch that is the 14
+  backend capabilities, so the engine session asked for `read_graph` & co. as
+  listed tools and failed `engine_tools_missing`. It now passes the four
+  model tools for display and the backend grant as `capability_grant`, the
+  split `AgentTurnCoordinator._open_tools` already uses.
+  `test_engine_tools_keep_their_engine_route` keeps its name and claim on
+  the K2 path: the model is offered only the four box tools and the loop's
+  owner reads, and the engine session shows `bash` alone but carries the
+  turn's backend grant. A `ta call read_graph` in the box reaches the
+  engine route verbatim over that session, and its answer is delivered back
+  to the box. Dropping `capability_grant` makes it fail.
+- `test_stop_during_a_tool_call_lets_it_finish_and_starts_nothing_after`:
+  the completed tool is now `bash` running `ta call read_graph`, the model's
+  only path to it since 6a0f104097. Both are asserted.
+- Two clock-driven waits this branch added are classified `CALL_SCOPED` in
+  `tests/control_plane_timer_inventory.py`: `AppServerTurn.read`, which reads
+  one app-server turn, and `WorkAgentAdapter._until_activity_stops`, which
+  polls one native activity call.
+- `scripts/ci_structural_guards.py` found two more classification gaps in
+  this PR. `tinyassets/starter_seeds.py` (6a0f104097) commits its seed store
+  without an owner fence, so it is listed in `FENCE_BEFORE_C2`. The
+  channel-agnostic baseline follows the Codex adapter split: before the split,
+  `codex_provider.py` had 72 `codex` mentions. After it, `codex_provider.py`
+  has 55, `codex_app_server.py` 15 and `codex_launch_contract.py` 1, so 71 in
+  total, one fewer than before.
+
 **Merge interactions with origin/main (4 commits).**
 
 - #4520 added seven starter skills whose index lines are resident. The stock

@@ -83,7 +83,9 @@ tinyassets/providers/call.py:groq:3
 tinyassets/providers/call.py:ollama:3
 tinyassets/providers/claude_provider.py:anthropic:1
 tinyassets/providers/claude_provider.py:claude:28
-tinyassets/providers/codex_provider.py:codex:72
+tinyassets/providers/codex_app_server.py:codex:15
+tinyassets/providers/codex_launch_contract.py:codex:1
+tinyassets/providers/codex_provider.py:codex:55
 tinyassets/providers/codex_provider.py:openai:1
 tinyassets/providers/definition.py:claude:1
 tinyassets/providers/definition.py:codex:1

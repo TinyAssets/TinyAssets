@@ -174,6 +174,11 @@ CLASSIFICATION: dict[str, tuple[str, str]] = {
     "tinyassets/provider_assignment.py::ProviderAssignmentAdmission.shared": (
         CALL_SCOPED, "admission wait",
     ),
+    "tinyassets/providers/codex_app_server.py::AppServerTurn.read": (
+        CALL_SCOPED,
+        "reads ONE codex app-server turn's stdout under its idle/tool/absolute "
+        "budgets; ends with the turn's terminal notification, EOF or timeout",
+    ),
     "tinyassets/providers/owned_process.py::_watch_disk.watch": (
         CALL_SCOPED,
         "host-side disk-budget watch for one jailed provider launch; ends with "
@@ -207,6 +212,11 @@ CLASSIFICATION: dict[str, tuple[str, str]] = {
     "tinyassets/universe_tools.py::_slot": (CALL_SCOPED, "tool slot wait"),
     "tinyassets/universe_tools.py::_watch": (
         CALL_SCOPED, "watches ONE jailed tool call from outside the jail",
+    ),
+    "tinyassets/workflow_agent.py::WorkAgentAdapter._until_activity_stops": (
+        CALL_SCOPED,
+        "polls ONE native activity call's activity status; ends when the call "
+        "returns or is cancelled because the activity stopped",
     ),
     "tinyassets/workspace_family.py::family_fence": (CALL_SCOPED, "fence wait"),
     "tinyassets/workspace_fs.py::_retry_transient_windows": (CALL_SCOPED, "Windows retry"),

@@ -107,7 +107,9 @@ def test_stop_during_a_tool_call_lets_it_finish_and_starts_nothing_after(agent, 
     # Quiescent after a completed tool: closed with everything it did kept.
     assert turn.state == "abandoned"
     assert stopped.value.turn_effects == "some"
-    assert stopped.value.completed_tools == ("read_graph",)
+    # The model's one tool call: bash running `ta call read_graph` (four tools).
+    assert stopped.value.completed_tools == ("bash",)
+    assert "ta call read_graph" in agent.tools[0][1]["command"]
     _not_thinking(agent, turn)
 
 

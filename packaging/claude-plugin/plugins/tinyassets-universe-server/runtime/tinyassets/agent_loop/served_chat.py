@@ -22,7 +22,7 @@ from tinyassets.agent_loop.box_tools import BOX_ROOT, BoxExecutor, BoxTools
 from tinyassets.agent_loop.owner_reads import OWNER_READ_TOOLS
 from tinyassets.agent_loop.tool_session import open_loop_tools
 from tinyassets.interactive_http_agent import ServedChatAgentAdapter
-from tinyassets.served_tools import granted_tools
+from tinyassets.served_tools import granted_tools, model_tools
 
 ENV_SWITCH = "TINYASSETS_AGENT_LOOP"
 THIN = "thin"
@@ -68,7 +68,8 @@ class ThinLoopChatAdapter(ServedChatAgentAdapter):
         turn_id = coordinator.turn.turn_id
         provider, _ = configured_box_provider()
         return open_loop_tools(
-            granted=granted_tools(coordinator.config),
+            granted=model_tools(coordinator.config),
+            capability_grant=granted_tools(coordinator.config),
             loop_reads=OWNER_READ_TOOLS,
             bind_box=None if provider is None else (
                 lambda: bind_turn_box(owner=owner, command_center=universe_dir.name,
