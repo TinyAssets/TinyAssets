@@ -20,6 +20,7 @@ from tinyassets.providers.base import ModelConfig, UniverseContext
 
 def owner_carrier(provider: str, *, role: str = "writer", operation: str = "run_graph"):
     carrier = MagicMock(spec=ProviderInvocationCarrier)
+    carrier._receipt = MagicMock(principal_id="owner")
     carrier.provider = provider
     carrier.role = role
     carrier.operation = operation

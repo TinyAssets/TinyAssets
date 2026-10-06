@@ -273,6 +273,7 @@ def test_router_refuses_a_host_authority_launch_without_cooling_the_provider(no_
         asyncio.run(router.call("writer", "p", "", ModelConfig()))
     assert no_spawn == []
     assert router._quota.available("claude-code"), "a host refusal cooled the provider"
+    assert router._quota._cooldowns == {}
 
 
 def test_powershell_is_on_the_one_host_reach_floor():

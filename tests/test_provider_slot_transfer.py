@@ -126,6 +126,7 @@ def test_router_nested_chain_uses_the_held_slot(monkeypatch, tmp_path, entry):
     monkeypatch.setenv("TINYASSETS_MAX_CONCURRENT_PROVIDER_CALLS", "2")
     pa.reset_for_tests()
     carrier = MagicMock(spec=ProviderInvocationCarrier)
+    carrier._receipt = MagicMock(principal_id="owner")
     for name, value in dict(provider="codex", role="judge", operation="run_graph",
                             max_tokens=10, max_cost_microunits=5, selected_model=None,
                             native_selection=None, settlement_owner=None).items():

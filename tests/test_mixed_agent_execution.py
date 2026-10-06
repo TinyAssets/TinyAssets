@@ -51,7 +51,7 @@ def answer_with_notice(reply, source, original, *, reset=True):
 
 
 def test_native_quota_gate_advances_to_http_without_launch_or_second_whole_turn(agent, monkeypatch):
-    agent.served.router._quota.cooldown("codex", 60)
+    agent.served.router._quota.cooldown("codex", 60, owner="owner")
     assert answer_with_notice(preferences._converse(agent, monkeypatch),
                               "compute:models", "codex") == "finished exact answer"
     assert agent.served.native.calls == 0
@@ -120,7 +120,7 @@ def test_only_execution_bound_native_no_effects_failure_advances(agent, monkeypa
 def test_empty_native_tail_is_not_replaced_with_automatic_candidates(agent, monkeypatch):
     # Stored preferences remain unchanged; capacity recovery is turn-local.
     select(agent, native_ref(), ())
-    agent.served.router._quota.cooldown("codex", 60)
+    agent.served.router._quota.cooldown("codex", 60, owner="owner")
     assert answer_with_notice(preferences._converse(agent, monkeypatch),
                               "compute:models", "codex") == "finished exact answer"
     assert agent.served.native.calls == 0 and len(agent.wires) == 2
