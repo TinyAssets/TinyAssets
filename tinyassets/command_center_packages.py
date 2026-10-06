@@ -603,6 +603,16 @@ def classify(rel: str, data: bytes, *, exclude: list[str],
     reason = text_detection(text)
     if reason:
         return None, reason
+    parts = rel.split("/")
+    if fold(rel) == "settings.yaml" or (
+        len(parts) == 3 and fold(parts[0]) == "agents" and fold(parts[2]) == "settings.yaml"
+    ):
+        from tinyassets.harness_settings import SettingsError, package_settings
+
+        try:
+            data = package_settings(data)
+        except SettingsError as exc:
+            raise PackageError(f"{rel}: invalid harness settings") from exc
     return data, ""
 
 
@@ -951,6 +961,8 @@ def model_need(files: dict[str, bytes]) -> str:
     except (OSError, UnicodeDecodeError):
         return ""
     model = doc.get("model") if isinstance(doc, dict) else None
+    if isinstance(model, dict):
+        model = model.get("id")
     return model.strip()[:120] if isinstance(model, str) else ""
 
 
@@ -1520,6 +1532,19 @@ def check_blob(blob: bytes) -> tuple[dict[str, Any], dict[str, bytes]]:
         if entry.get("size") != len(data) or entry.get("sha256") != hashlib.sha256(
                 data).hexdigest():
             raise PackageError(f"{entry['path']!r} does not match its listed digest")
+    for path, data in files.items():
+        parts = path.split("/")
+        if fold(path) == "settings.yaml" or (
+            len(parts) == 3 and fold(parts[0]) == "agents" and fold(parts[2]) == "settings.yaml"
+        ):
+            from tinyassets.harness_settings import SettingsError, parse_settings
+
+            try:
+                settings = parse_settings(data)
+            except SettingsError as exc:
+                raise PackageError(f"{path}: invalid harness settings") from exc
+            if settings.model is not None and settings.model.connection is not None:
+                raise PackageError(f"{path}: package model needs a recipient-local binding")
     return manifest, files
 
 
