@@ -79,7 +79,7 @@ No deployed remote driver exists in this checkout. Deployment, deployed-SHA
 assertion and a real-user app pass remain unperformed; this is a draft plumbing
 PR, not a shipped K2/provider-inventory cutover. The remote driver must support
 interactive_stdin/send_stdin and the documented isolation/runtime contract.
-origin/main 97c17c26ea2a7a25764c02e9e095b87589edc67 was explicitly merged
+origin/main a97c17c26ea2a7a25764c02e9e095b87589edc67 was explicitly merged
 before the final push (already contained). The branch is pushed and the PR
 remains draft. All requested local verification and the one Claude review round
 are recorded above.
