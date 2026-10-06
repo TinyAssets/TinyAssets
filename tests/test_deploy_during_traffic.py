@@ -22,7 +22,14 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import httpx
-from playwright.sync_api import sync_playwright
+
+
+def sync_playwright():
+    """Playwright imported on use: the slow-tests job has no Playwright, and a
+    module-level import fails collection there (as in the other browser suites)."""
+    from playwright.sync_api import sync_playwright as _sync_playwright
+
+    return _sync_playwright()
 
 ROOT = Path(__file__).resolve().parents[1]
 
