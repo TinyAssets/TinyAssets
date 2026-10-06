@@ -59,12 +59,20 @@ def tool_mounts(uid):
 
 def enter(mime, data_root, uid=1003, *, preview=False, preview_write=False, node=False,
           tool=False, video=False, provider=False, tool_files=False, package=False,
-          owner_delete=False, provider_exec=False):
+          owner_delete=False, provider_exec=False, center_root=False):
     identity(uid)
     host = namespaces()
     mounted = (preview_write or tool or provider or tool_files or package or owner_delete
-               or (node and mime == 'workspace'))
-    if provider or package:
+               or center_root or (node and mime == 'workspace'))
+    if center_root:
+        # DA3: daemon-private staging S; the mapper matched its exact path and
+        # daemon owner. Its ACL, not its group, grants this owner rwx.
+        info = os.fstat(3)
+        if not stat.S_ISDIR(info.st_mode):
+            raise RuntimeError('center-root staging is invalid')
+        host['source'] = [info.st_dev, info.st_ino]
+        os.set_inheritable(3, True)
+    elif provider or package:
         # D82: the daemon-sealed snapshot is daemon-owned; D73 grants the owner
         # read access only. The mapper already matched its exact path.
         info = os.fstat(3)
@@ -148,6 +156,7 @@ def enter(mime, data_root, uid=1003, *, preview=False, preview_write=False, node
                  "--chdir", "/tmp", "--seccomp", str(descriptor), "--",
                  "/opt/venv/bin/python", "-I", "-B", "/usr/local/libexec/ta-decoder.py",
                  'inside-owner-delete' if owner_delete else
+                 'inside-center-root' if center_root else
                  'inside-package' if package else 'inside-tool-files' if tool_files else
                  'inside-provider-exec' if provider_exec else
                  'inside-provider' if provider else 'inside-video' if video else
@@ -314,6 +323,22 @@ def decode(mime, host, data_root, uid=1003):
     return main()
 
 
+def center_root_handoff(staging):
+    """DA3: exactly one setgid directory ``g`` under this owner's identity.
+
+    No caller path, executable, environment, relay or credential. The owner is
+    in its own group, so S_ISGID survives the fchmod.
+    """
+    os.mkdir('g', 0o777, dir_fd=staging)
+    handoff = os.open('g', os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=staging)
+    try:
+        os.fchmod(handoff, 0o2777)
+        made = os.fstat(handoff)
+    finally:
+        os.close(handoff)
+    return [made.st_uid, made.st_gid, stat.S_IMODE(made.st_mode)]
+
+
 if __name__ == "__main__":
     if (len(sys.argv) == 5 and sys.argv[1] in ('enter-provider', 'enter-provider-exec')
             and sys.argv[2] in ('-', 'e') and 0 < int(sys.argv[4]) < 100000):
@@ -435,6 +460,32 @@ if __name__ == "__main__":
             os.close(fd)
             control.close()
         sys.stdout.buffer.write(b'!' + json.dumps(result).encode() + b'\n')
+    elif (len(sys.argv) == 5 and sys.argv[1] == 'enter-center-root'
+            and sys.argv[2] == 'root' and 0 < int(sys.argv[4]) < 100000):
+        enter(sys.argv[2], sys.argv[3], int(sys.argv[4]), center_root=True)
+    elif (len(sys.argv) == 6 and sys.argv[1] == 'inside-center-root'
+            and sys.argv[2] == 'root' and 0 < int(sys.argv[5]) < 100000):
+        host = json.loads(sys.argv[3])
+        source = host.pop('source')
+        info = os.stat('/workspace', follow_symlinks=False)
+        if [info.st_dev, info.st_ino] != source:
+            raise RuntimeError('center-root staging differs from pinned source')
+        proof = prove_cell(host, sys.argv[4], int(sys.argv[5]))
+        proof['source'] = source
+        import resource
+
+        for kind, bound in ((resource.RLIMIT_AS, 128 * 1024 * 1024),
+                            (resource.RLIMIT_CPU, 5), (resource.RLIMIT_NOFILE, 32),
+                            (resource.RLIMIT_FSIZE, 0), (resource.RLIMIT_CORE, 0)):
+            resource.setrlimit(kind, (bound, bound))
+        sys.stdout.buffer.write(json.dumps({'cell': proof}).encode() + b'\n')
+        sys.stdout.buffer.flush()
+        staging = os.open('/workspace', os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            made = center_root_handoff(staging)
+        finally:
+            os.close(staging)
+        sys.stdout.buffer.write(json.dumps({'g': made}).encode() + b'\n')
     elif (len(sys.argv) == 5 and sys.argv[1] == 'enter-tool-files'
             and sys.argv[2] == 'files' and 0 < int(sys.argv[4]) < 100000):
         enter(sys.argv[2], sys.argv[3], int(sys.argv[4]), tool_files=True)

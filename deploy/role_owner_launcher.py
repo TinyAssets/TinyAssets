@@ -450,14 +450,16 @@ class OwnerLauncher:
                         if kind in ('tool-jail', 'package') else int(request.get('egress') is True)
                         if kind in ('provider-discovery', 'provider-exec') else 0)
         mounted = kind in {'workspace-git', 'preview-write', 'tool-jail', 'tool-files',
-                           'provider-discovery', 'provider-exec', 'package', 'owner-delete'} or (
+                           'provider-discovery', 'provider-exec', 'package', 'owner-delete',
+                           'center-root'} or (
             kind == 'node-sandbox' and request.get('workspace') is True)
         if (not isinstance(request, dict)
                 or set(request) != fields or request['op'] not in {'SPAWN', 'START'}
                 or kind not in {'image-decoder', 'workspace-git', 'ui-preview', 'preview-write',
                                 'node-sandbox', 'tool-jail', 'ingestion-video',
                                 'provider-discovery', 'provider-exec', 'tool-files',
-                                'package', 'owner-delete'}
+                                'package', 'owner-delete', 'center-root'}
+                or (kind == 'center-root' and not streaming)
                 or (kind == 'owner-delete' and (not streaming
                     or type(request['delete_token']) is not str
                     or not re.fullmatch('[a-f0-9]{32}', request['delete_token'])))
@@ -481,7 +483,10 @@ class OwnerLauncher:
             raise ValueError('unsupported owner engine')
         if not streaming and self.jobs:
             raise ValueError('blocking spawn cannot suspend active cell supervision')
-        machine = self.bindings[(request['principal'], request['command_center'])]
+        if kind == 'center-root':
+            machine = self._center_root_machine(request, received[1])
+        else:
+            machine = self.bindings[(request['principal'], request['command_center'])]
         self._check_delete_fence(machine, request)
         inner = machine - FIRST
         if streaming:
@@ -635,6 +640,9 @@ class OwnerLauncher:
                 elif kind == 'owner-delete':
                     command = ['/usr/local/libexec/ta-decoder.py', 'enter-owner-delete',
                                'delete', self.data_root, str(inner)]
+                elif kind == 'center-root':
+                    command = ['/usr/local/libexec/ta-decoder.py', 'enter-center-root',
+                               'root', self.data_root, str(inner)]
                 elif kind == 'tool-files':
                     command = ['/usr/local/libexec/ta-decoder.py', 'enter-tool-files',
                                'files', self.data_root, str(inner)]
@@ -707,6 +715,34 @@ class OwnerLauncher:
         self.channel.sendall(json.dumps({'op': 'SPAWN_DONE',
             'returncode': os.waitstatus_to_exitcode(status), 'uid': machine,
             'gid': machine}).encode())
+
+    @staticmethod
+    def _scope(principal, center):
+        """The broker's own principal and center grammar, checked before asking it."""
+        if (not isinstance(principal, str) or not principal.strip()
+                or principal != principal.strip() or len(principal) > 512
+                or not principal.isprintable() or not isinstance(center, str)
+                or not re.fullmatch('[A-Za-z0-9_-]{1,128}', center)):
+            raise ValueError('invalid admission scope')
+
+    def _center_root_machine(self, request, staging):
+        """DA3 step 2: machine from the broker, never the daemon; a fresh name only."""
+        principal, center = request['principal'], request['command_center']
+        self._scope(principal, center)
+        if any(bound == center for _, bound in self.bindings):
+            raise ValueError('center is already bound')
+        machine = self._owner_machine(principal)
+        if machine is None or self._center_state(center) != 'unadmitted':
+            raise ValueError('center root is not admissible')
+        info = os.fstat(staging)
+        source = os.readlink(f'/proc/self/fd/{staging}')
+        prefix = self.data_root + '/.role-admission/'
+        if (not stat.S_ISDIR(info.st_mode) or info.st_uid != self.overflow_uid
+                or info.st_gid != self.overflow_gid or info.st_mode & 0o007
+                or not source.startswith(prefix)
+                or not re.fullmatch('[a-f0-9]{32}', source[len(prefix):])):
+            raise ValueError('center-root staging is not daemon-private')
+        return machine
 
     def _check_delete_fence(self, machine, request):
         fence = self.delete_fences.get(machine)
