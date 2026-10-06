@@ -169,28 +169,55 @@ def destination(home, origin):
                         "this answer is routed to main.")
 
 
+def _owns_unrecorded(home, agent, actor):
+    """Whether ``actor`` is unambiguously the owner of an ask with no recorded asker.
+
+    Only the sole admin, or the creator of the asking binding. Being any admin
+    is not enough: another admin's attempt must never stamp itself as owner.
+    """
+    from tinyassets.custom_agents import _agent_connect
+    from tinyassets.daemon_server import list_universe_acl
+
+    admins = {row.get("actor_id") for row in list_universe_acl(home.parent, universe_id=home.name)
+              if row.get("permission") == "admin"}
+    if not actor or actor not in admins:
+        return False
+    if admins == {actor}:
+        return True
+    if agent == "main":
+        return False
+    with _agent_connect(home.parent) as conn:
+        binding = conn.execute("SELECT created_by,universe_id FROM agent_bindings "
+                               "WHERE agent_binding_id=?", (agent,)).fetchone()
+    return bool(binding) and (binding[0], binding[1]) == (actor, home.name)
+
+
 def check(home, row):
     """Fence before any answer mutation, not just before the subsequent turn."""
     from tinyassets.auth.middleware import current_identity_or_none
+    from tinyassets.storage.pending_requests import _db
 
+    identity = current_identity_or_none()
+    actor = identity.user_id if identity else ""
     origin = row.get("asking_context") or {}
-    if not origin:
+    unrecorded = not origin
+    if unrecorded:
         # Pre-provenance rows retain their recorded agent. Never guess from
         # the currently selected chat or accept a target in the answer.
-        from tinyassets.storage.pending_requests import _db
-
-        origin = capture(home, row.get("agent") or "main")
-        if not origin:
+        agent = row.get("agent") or "main"
+        if not _owns_unrecorded(home, agent, actor):
             raise PermissionError("request_owner_changed")
+        origin = capture(home, agent)
+    if not actor or actor != origin.get("owner"):
+        raise PermissionError("request_owner_changed")
+    destination(home, origin)
+    if unrecorded:
+        # Persist only after the fence passed: a refused caller writes nothing.
         with closing(_db(home)) as conn, conn:
             conn.execute("UPDATE pending_requests SET asking_context_json=? "
                          "WHERE request_id=? AND asking_context_json='{}'",
                          (json.dumps(origin), row["request_id"]))
         row["asking_context"] = origin
-    identity = current_identity_or_none()
-    if not identity or identity.user_id != origin.get("owner"):
-        raise PermissionError("request_owner_changed")
-    destination(home, origin)
 
 
 def enqueue(conn, request_id, outcome, *, key="answer"):

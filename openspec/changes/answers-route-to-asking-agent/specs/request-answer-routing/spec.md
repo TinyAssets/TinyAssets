@@ -26,6 +26,10 @@ Delivery SHALL recheck the recorded owner and target binding; removed or retired
 - **WHEN** a universe has more than one admin
 - **THEN** the recorded owner still answers and replies, and another admin's answer or reply to that owner's asker is refused before any change
 
+#### Scenario: Unrecorded asker
+- **WHEN** a request has no recorded asker, from before provenance or created without an admin identity
+- **THEN** only the sole admin or the creator of the asking binding may answer it and becomes its recorded owner; any other caller is refused and nothing is written
+
 #### Scenario: Caller-supplied target
 - **WHEN** an answer or reply carries its own `agent`, `agent_id`, owner or origin
 - **THEN** those fields are ignored and delivery uses only the stored origin

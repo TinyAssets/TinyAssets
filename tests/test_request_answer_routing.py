@@ -296,6 +296,64 @@ def test_co_admin_cannot_answer_or_reply_to_anothers_asker(world, shape):
     assert drain(home) == []
 
 
+def unrecorded(home, row):
+    """An ask pending from before provenance, or created with no admin identity."""
+    with closing(store._db(home)) as conn, conn:
+        conn.execute("UPDATE pending_requests SET asking_context_json='{}' WHERE request_id=?",
+                     (row["request_id"],))
+
+
+def as_other():
+    return identity_context(Identity(user_id=OTHER, username=OTHER,
+                                     capabilities=["tinyassets.universe.write"]))
+
+
+def test_co_admin_attempt_never_stamps_an_unrecorded_ask(world):
+    """Review 4532 r2 probe 1: one failed co-admin attempt locked the owner out."""
+    home, agent = world
+    row = ask(home, agent)
+    unrecorded(home, row)
+    co_admin(home)
+    with as_other():
+        result = answer_request(universe_id=home.name, payload={
+            "request_id": row["request_id"], "values": {"reply": "steal"}})
+    assert result["error"] == "not_found"
+    assert store.get_request(home, row["request_id"])["asking_context"] == {}
+    assert not answer_request(universe_id=home.name, payload={
+        "request_id": row["request_id"], "values": {"reply": "Still mine"}}).get("error")
+    assert store.get_request(home, row["request_id"])["asking_context"]["owner"] == OWNER
+    received, = drain(home)
+    assert (received["owner"], received["agent"]) == (OWNER, agent)
+
+
+@pytest.mark.parametrize("shape", ["values", "reply"])
+def test_co_admin_cannot_answer_an_unrecorded_main_ask(world, shape):
+    """Review 4532 r2 probe 2: the co-admin's answer was delivered as their own."""
+    home, _ = world
+    row = ask(home)
+    unrecorded(home, row)
+    co_admin(home)
+    payload = ({"values": {"reply": "steal"}} if shape == "values"
+               else {"reply": "steal", "reply_id": "cross-owner"})
+    with as_other():
+        result = answer_request(universe_id=home.name,
+                                payload={"request_id": row["request_id"], **payload})
+    assert result["error"] == "not_found"
+    stored = store.get_request(home, row["request_id"])
+    assert (stored["status"], stored["asking_context"]) == ("pending", {})
+    assert drain(home) == []
+
+
+def test_sole_admin_still_answers_an_unrecorded_ask(world):
+    home, _ = world
+    row = ask(home)
+    unrecorded(home, row)
+    assert not answer_request(universe_id=home.name, payload={
+        "request_id": row["request_id"], "values": {"reply": "Mine"}}).get("error")
+    received, = drain(home)
+    assert (received["owner"], received["agent"]) == (OWNER, "main")
+
+
 @pytest.mark.parametrize("shape", ["values", "reply"])
 def test_caller_supplied_agent_in_an_answer_is_ignored(world, shape):
     home, agent = world
