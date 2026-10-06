@@ -17,12 +17,16 @@ def recovery_source(html: str) -> str:
 
 def sheet_source(html: str) -> str:
     """Load the page's controllers verbatim, failing if a boundary moves."""
+    from tests.test_onboarding_app import _js_function
+
     boundaries = (
         ("  const InlineApprovals = {", "  function renderRail(items, options){"),
         ("  const ConnectShapes={", "  // A declared model list needs"),
     )
     return "\n".join(html[html.index(start):html.index(end, html.index(start))]
-                     for start, end in boundaries)
+                     for start, end in boundaries) + "\n" + "\n".join(
+                         _js_function(html, name)
+                         for name in ("setCloudUnread", "paintCloudBubbleLabel"))
 
 
 def rail_source(html: str) -> str:

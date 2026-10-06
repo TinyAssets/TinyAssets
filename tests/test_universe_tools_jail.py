@@ -811,6 +811,24 @@ def test_a_skill_the_agent_writes_changes_its_next_turn(world, monkeypatch):
     assert refused.startswith("error:") and FOREIGN_MARKER not in refused
 
 
+def test_forget_in_chat_uses_existing_memory_editor(world, monkeypatch):
+    s = _engine(monkeypatch, world)
+    original = "# Memory\n- [m_abcd] Likes tea\n- [m_dcba] Likes walks\n"
+    (world.universe_a / "MEMORY.md").write_text(original)
+
+    def model(prompt, **_kw):
+        assert "forget tea" in prompt.lower()
+        memory = _run(s.read_file(path="MEMORY.md"))
+        assert "Likes tea" in memory
+        result = _run(s.edit_file(path="MEMORY.md", old_text="- [m_abcd] Likes tea\n", new_text=""))
+        assert not result.startswith("error:"), result
+        assert "Likes tea" not in _run(s.read_file(path="MEMORY.md"))
+        return "Removed the tea memory."
+
+    assert _turn(monkeypatch, world, "Forget tea", model) == "Removed the tea memory."
+    assert (world.universe_a / "MEMORY.md").read_text() == "# Memory\n- [m_dcba] Likes walks\n"
+
+
 # ── a background run's file tools start while the daemon holds a database ──
 
 
