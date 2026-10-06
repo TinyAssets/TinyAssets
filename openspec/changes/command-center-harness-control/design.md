@@ -95,6 +95,65 @@ Only agent spawn, agent-to-agent messaging and the task board move into this har
 
 None affecting authority or storage. Exact UI affordances remain with the existing UI lanes; protocol names and v1 field semantics above are the proposed contract.
 
+## Implementation reconciliation (2026-10-05, L5)
+
+Baseline `b945fb3b3a` still has install-only settings. Task 1.1 adds
+`harness_settings.py`: immutable exact-byte/SHA-256 snapshots, strict bounded YAML,
+independent roster-root reads, ordered selections and an adapter to the existing
+`ModelPreferences` schema. Missing files preserve defaults; malformed files do
+not. This parser is not runtime activation or a permission grant.
+
+Concrete v1 loop keys are `compaction.reserve_tokens`,
+`compaction.trigger_tokens`, `retry.attempts` and `retry.backoff_seconds`.
+Token/attempt values are nonnegative integers; backoff is finite and nonnegative.
+Executor-specific support and limits must be checked by task 1.2 before dispatch.
+
+A portable v1 model contains `id` and optional `effort`, with `connection` absent
+until the recipient binds it. Publication removes source connection handles;
+import rejects a package that still supplies one. This makes the approved
+recipient-local binding requirement concrete without rewriting imported bytes,
+adding authority, or inventing a provider. Legacy unversioned model-only files
+remain readable as unresolved logical needs. An explicit run choice takes
+precedence; otherwise unresolved needs raise `LocalModelBindingRequired` for the
+future ingress adapter to present inline. Snapshot history recording belongs to
+the task 1.2 turn integration, not this parser.
+
+Task 1.2 has integration dependencies absent at this baseline:
+
+- `addressed_agents.resolve()` returns a custom binding ID and definition
+  instructions; it carries no authenticated installed-directory/roster slug.
+  `command_center_packages.plan_install()` independently creates that slug.
+  D8/D9 must supply the binding between these records before roster turns can
+  select their settings. A guessed `agents/<binding-id>` path would silently
+  read defaults instead of the installed agent's settings.
+- `starter-agent-out-of-plumbing` task 1.3 owns the editable `starter/hooks.md`
+  loader and is unchecked; current `converse()` still appends resident guidance.
+  The settings toggle cannot disable a loader that has not landed. That lane
+  retains extraction, seeding and main replacement ownership.
+
+Keep task 1.2 and subsequent ordered tasks unchecked until those integrations
+are available and proven. No foreground/background control, executable activation,
+UI parity, live acceptance or completed capability is claimed by task 1.1.
+
+Task 1.1 verification: Linux oracle Python 3.11.16, settings/package/prompt-cost
+tests: **175 passed, zero skips**. Windows settings: **43 passed**; prior
+settings/package run: **163 passed, one existing skip**. Windows settings plus
+prompt-cost: **52 passed, one failure** at the existing tool-description ratchet
+(32,353 versus 30,100); see `docs/concerns/windows-tool-description-budget.md`.
+The Linux ratchet passes, and no prompt budget or existing test was changed.
+Changed-Python Ruff, plugin rebuild/import probe and strict OpenSpec validation
+pass. Task 1.2 onward remains unverified and unimplemented by this slice.
+
+Final parser edge-case verification: oversized YAML integers and invalid YAML
+timestamps also become `SettingsError`. **45 settings tests pass on both Windows
+and the Linux 3.11 oracle, zero skips**; the package and prompt-cost regression
+run above remains applicable. Plugin rebuild/import probe and Ruff pass. Hygiene
+at the first slice commit reports **0 removed / 0 tampering**. Claude's required
+cross-family review returned **APPROVE** with no floor/correctness findings and
+independently confirmed the task 1.2 dependencies; see [review.md](review.md).
+Lead disposition: **AGREE**. Draft PR #4503 remains an incomplete capability;
+there is no deployment, live pass or as-built spec sync claim.
+
 ## Live events and orchestration ownership (2026-10-04)
 
 Extend the same owner-bound bridge with subscribe/unsubscribe and a versioned event envelope: opaque event ID/cursor, kind, owner-bound center/agent/run references, resource revision and sanitized payload. Kinds cover activity, tool-call lifecycle, approvals, task-board changes and process health. A subscription applies the same installation capability ceiling and current authority as ta reads. Approval events carry protected request references/status, never decision tokens; clicking opens the first-party approval sheet or Needs you flow, not custom-UI approval chrome.

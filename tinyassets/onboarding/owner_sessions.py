@@ -89,7 +89,19 @@ def revoke(cookie):
 
 
 def revoke_owner(owner):
-    with store() as conn:
+    from tinyassets.api.helpers import _base_path
+    from tinyassets.connection_oauth.pkce import flows_db
+    from tinyassets.onboarding.inline_model_connect import flows
+
+    # Cancel the authority captured at begin, including cookie-less callbacks.
+    with flows_db(_base_path()) as (conn, _):
+        for table in ("hosted_model_flows", "connection_oauth_flows"):
+            conn.execute(f"DELETE FROM {table} WHERE owner_user_id=?", (owner,))  # noqa: S608
+    with flows() as conn:
+        conn.execute(
+            "UPDATE inline_model_flows SET status='cancelled',sealed=? "
+            "WHERE owner=? AND status IN ('waiting','ready')", (b"", owner),
+        )
         rows = conn.execute("SELECT session_hash,identity_json FROM owner_sessions").fetchall()
         conn.executemany(
             "DELETE FROM owner_sessions WHERE session_hash=?",
