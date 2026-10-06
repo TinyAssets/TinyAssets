@@ -7635,7 +7635,7 @@
             $("soul-owner-sign-in").hidden=res.doc.error!=="interactive_approval_required";
             if(!res.ok){$("soul-status").textContent=res.doc.detail||"Sign in to save your agent.";return;}
             // Update only this editor; preserve drafts in the other files.
-            file.revision=res.doc.documents.find(d=>d.path===file.path).revision;
+            file.revision=res.doc.saved.revision;
             $("soul-status").textContent="Saved "+file.path+".";
             loadMemory(); loadProfile();
           }catch(e){if(ownsMemory(context)) $("soul-status").textContent="The file was not saved. Try again.";}
@@ -7672,8 +7672,8 @@
       const r=await fetch("/app/memory",init);
       const doc=await r.json().catch(()=>({}));
       if(doc.error==='interactive_approval_required'){
-        let link=$('rules-owner-sign-in');
-        if(!link){link=document.createElement('a');link.id='rules-owner-sign-in';
+        let link=$('memory-owner-sign-in');
+        if(!link){link=document.createElement('a');link.id='memory-owner-sign-in';
           link.href='/app/owner-sign-in';link.target='_blank';link.rel='noopener';
           link.textContent='Sign in to save memory';$('memory-status').after(link);}
       }

@@ -109,3 +109,24 @@ def test_full_memory_larger_than_default_json_limit_and_empty_save(app):
     assert memory["text"] == text
     assert call("POST", {**memory, "text": ""})[0] == 200
     assert (root / "u-alice" / "MEMORY.md").read_bytes() == b""
+
+
+def test_save_receipt_cannot_adopt_a_concurrent_agents_revision(app, monkeypatch):
+    root, call = app
+    original_write = harness_history._write
+
+    def agent_writes_after_owner(conn, universe, path, content, who):
+        result = original_write(conn, universe, path, content, who)
+        (universe / path).write_bytes(b"Agent's newer memory")
+        return result
+
+    monkeypatch.setattr(harness_history, "_write", agent_writes_after_owner)
+    status, response = call("POST", {
+        "path": "MEMORY.md", "text": "Owner's draft", "revision": "absent"})
+    assert status == 200
+    assert response["documents"][2]["text"] == "Agent's newer memory"
+    assert response["saved"] == {
+        "path": "MEMORY.md", "revision": harness_history.digest(b"Owner's draft")}
+    monkeypatch.setattr(harness_history, "_write", original_write)
+    assert call("POST", {**response["saved"], "text": "Owner's draft again"})[0] == 409
+    assert (root / "u-alice" / "MEMORY.md").read_bytes() == b"Agent's newer memory"

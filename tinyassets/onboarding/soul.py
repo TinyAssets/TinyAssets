@@ -73,7 +73,11 @@ async def handle_soul(request):
                 if data.get("revision") != history.digest(_read(root, path)):
                     raise history.HistoryConflict("This file changed. Reload before saving again.")
                 history._write(conn, root, path, encoded, "owner")
-            return listing()
+            result = listing()
+            # The editor still holds these bytes, even if an agent changed the
+            # file before listing(). Never pair that draft with a newer digest.
+            result["saved"] = {"path": path, "revision": history.digest(encoded)}
+            return result
 
         return reply(await run_in_threadpool(save))
     except history.HistoryConflict as exc:
