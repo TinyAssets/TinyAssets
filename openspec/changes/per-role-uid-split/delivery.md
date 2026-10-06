@@ -1,5 +1,13 @@
 # Current U1 delivery: D80 exact tool relay sockets verified
 
+D80 is pushed at f65af2de5308c35d0f135d1b50fc96026a08a88f, exact remote SHA
+asserted. Hygiene: 4 tests added, 0 removed, 0 tampering. Final U2 check:
+PR #4509 is OPEN and draft at 064fd8dc40e599b2858cad779f08cd3d726f99ac;
+not merged. Both implementation slices below are committed and pushed without
+rewriting history. Remaining-class source inspection confirms that provisioning
+still launches its existing subprocess and engine-MCP still launches its full
+server; neither is claimed as owner-cell acceptance. No package cell was added.
+
 D79 is pushed at 220f612a818d8816c502a29079a588e5a13b0ccc, exact remote SHA
 asserted. Hygiene: 5 tests added, 0 removed, 0 tampering. Continued in the same
 run into public bash/ta/egress rather than stopping at the offline slice.
