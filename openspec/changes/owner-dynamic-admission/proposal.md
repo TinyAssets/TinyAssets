@@ -1,8 +1,6 @@
 # Dynamic owner admission and the admission-generation contract
 
-**Status: spec only, no code.** One founder decision is open (F1 in
-`design.md`); its default is the current fail-closed behaviour, so nothing
-waits on it except the last implementation task.
+**Status: spec only, no code.** The founder decided F1 on 2026-10-06: (b), start everyone else.
 
 ## Why
 

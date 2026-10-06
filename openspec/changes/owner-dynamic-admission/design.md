@@ -20,9 +20,7 @@ removal or a partial restore. Choose one:
   If the tree is restored, the next restart binds it, because its row and its
   label still match.
 
-Until the founder answers, (a) applies. It is fail-closed, and activation is
-gated anyway, so the open question blocks only task 10. Tracked in
-`docs/host-actions.md`. Everything else below is a lead or mechanical
+**Founder decided 2026-10-06: (b), start everyone else.** Everything else below is a lead or mechanical
 decision inside the agreed per-role-uid-split work: D70 already requires that
 "dynamic identity allocation uses the live broker IPC; dynamic center admission
 remains separate and must not accept caller-selected numeric identities or

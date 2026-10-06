@@ -66,7 +66,7 @@ through `scripts/linux_oracle.py`, and a skip is not a pass.
   - reverse after runtime admission;
   - forward after the legacy image created centers;
   - an unexplained tree, and a changed owner, each refusing.
-- [ ] 10. Implement F1 as the founder answers it (`docs/host-actions.md`).
+- [ ] 10. Implement F1 as decided (b): start everyone else; the missing center stays unbound, loud alarm plus a concern, re-checked each restart.
   Until then the default (a) stands, and task 9 asserts it.
 - [ ] 11. Production-image probe: runtime Alice and Bob admission through the
   application path, then real decoder and tool cells. The probe must show zero
