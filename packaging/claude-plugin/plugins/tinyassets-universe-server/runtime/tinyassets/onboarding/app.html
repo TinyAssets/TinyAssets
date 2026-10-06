@@ -2455,8 +2455,8 @@
     }else if(!turnStartedAt){
       // A turn another window started ends on the server's word; stop painting
       // it now rather than until the next beat.
-      interruptRequested=false; flushAfterInterrupt=false;
       serverTurn=null; renderWorking();
+      flushAfterTurn();
     }
     renderStop();
   }

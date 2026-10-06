@@ -1322,6 +1322,8 @@ def _call_writer(
             "writer chain fully cooled (all providers skipped, nothing ran); "
             "one immediate fresh-process retry (no sleep)",
         )
+        if http_turn is not None:
+            http_turn.turn = None  # the failed zero-round root is terminal
         return _attempt()
 
     finally:
