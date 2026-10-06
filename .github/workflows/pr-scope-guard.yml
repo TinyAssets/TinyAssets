@@ -181,7 +181,7 @@ jobs:
           # can rewrite the thing judging it while keeping the check name green.
           # Workflow files were already covered; without these two entries the
           # same neutering could be done one directory over, undeclared.
-          SENSITIVE_RE='^(\.github/workflows/|\.github/known-failing-tests\.txt$|\.github/heavy-test-files\.txt$|scripts/ci_required_tests\.py$|scripts/drain_review_gate\.py$|deploy/|Dockerfile$|\.dockerignore$)'
+          SENSITIVE_RE='^(\.github/workflows/|\.github/known-failing-tests\.txt$|\.github/heavy-test-files\.txt$|scripts/ci_required_tests\.py$|scripts/ci_structural_guards\.py$|scripts/drain_review_gate\.py$|deploy/|Dockerfile$|\.dockerignore$)'
 
           # Paginated API read. Fail CLOSED on error — a guard that silently
           # sees fewer files than the PR contains is worse than none.

@@ -32,6 +32,8 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
+import pytest
+
 _TESTS = Path(__file__).resolve().parent
 
 # Callables that mutate PROCESS-GLOBAL state on enter and restore it on exit.
@@ -57,14 +59,13 @@ def _thread_target_names(tree: ast.Module) -> set[str]:
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
             continue
-        func_repr = ast.dump(node.func)
-        if "Thread" in func_repr:
-            for kw in node.keywords:
-                if kw.arg == "target":
-                    if isinstance(kw.value, ast.Name):
-                        names.add(kw.value.id)
-                    elif isinstance(kw.value, ast.Attribute):
-                        names.add(kw.value.attr)
+        targets = [kw.value for kw in node.keywords if kw.arg == "target"
+                   and isinstance(kw.value, (ast.Name, ast.Attribute))]
+        # Most calls cannot nominate a thread target. Preserve the existing
+        # matching rule without formatting their function ASTs needlessly.
+        if targets and "Thread" in ast.dump(node.func):
+            names.update(target.id if isinstance(target, ast.Name) else target.attr
+                         for target in targets)
         # executor.submit(fn, ...) / executor.map(fn, ...)
         if isinstance(node.func, ast.Attribute) and node.func.attr in {
             "submit",
@@ -199,3 +200,25 @@ def test_monkeypatch_setattr_in_a_thread_is_flagged(tmp_path: Path) -> None:
         encoding="utf-8",
     )
     assert _offenders(sample), "monkeypatch.setattr in a thread must be flagged"
+
+
+@pytest.mark.parametrize("dispatch", [
+    "threading.Thread(target=worker)",
+    "threading.Thread(target=holder.worker)",
+    "ThreadFactory()(target=worker)",
+    "executor.submit(worker)",
+    "executor.map(worker, ())",
+])
+def test_dispatch_shapes_retain_patch_detection(tmp_path: Path, dispatch: str) -> None:
+    sample = tmp_path / "test_dispatch.py"
+    sample.write_text(
+        "def worker():\n"
+        "    with mock.patch.object(module, 'run'):\n"
+        "        pass\n"
+        "def test_dispatch():\n"
+        f"    {dispatch}\n",
+        encoding="utf-8",
+    )
+    assert _offenders(sample) == [
+        "test_dispatch.py:2 — patch.object() inside thread target 'worker'",
+    ]
