@@ -1,51 +1,82 @@
 # Remote box ta bridge evidence
 
-Draft PR #4525, branch `feat/remote-box-ta-bridge`, owner Codex.
+Draft PR #4525; branch `feat/remote-box-ta-bridge`; owner Codex.
 
-## Implementation and decisions
+## Final implementation
 
-The served thin loop now uses the canonical BoxProvider bind keyword names and
-opens the existing engine bash grant for a fixed ta broker-only program. Remote
-bash remains in the bound box. No credential, host route or model-selected
-authority crosses into it. The reverse channel uses exec output and safe box
-writes; replies and request IDs are scoped to the bound execution.
+Remote bash receives only public worker/client source and command text. A private
+Unix socket serves ta inside the isolated execution. Requests are framed on exec
+output; replies use idempotent, owner/center/epoch/turn-bound execution stdin.
+The extended BoxProvider protocol and local reference host implement this path.
+No reply files or client copies remain in the durable command-center filesystem.
 
-Host SQLite receipts commit intent before dispatch. Same-ID retries return the
-recorded result; an interrupted in-flight receipt returns unknown. Cancellation
-revokes admission before cancelling pending trusted calls. Effects already sent
-are not claimed rolled back. A changed payload with the same ID is refused.
+The existing authenticated engine session sends JSON through a private MCP
+resource, which calls the SAME engine_dispatch/Capabilities used by local ta.
+The signed launch must grant bash. No new model-facing tool, provider branch or
+static prompt is introduced. Extensions resolve and execute in the remote box.
 
-Local capabilities and connection gates remain in `ta_capabilities.py`.
-Extensions resolve and execute in the box. Static prompts and provider branches
-are unchanged. The extra fixed local jail launch per RPC is a deliberate latency
-trade-off for reusing the exact capability enforcement path.
+Host SQLite intent receipts commit before dispatch. A reconnect retains its
+request ID; delivery IDs separately protect stdin retry. Same-request retries
+return the recorded answer or unknown. Changed arguments are refused. New-ID
+command reruns are new intent. Cancellation revokes admission before cancelling
+pending trusted calls. Already-sent effects are not claimed rolled back.
 
-The checkout contains no deployed remote driver. Tests use real BoxProvider
-auth, durable exec/write receipts and subprocesses behind real bwrap namespaces.
-They do not stub exec, stream, filesystem isolation or capability results in the
-engine-parity proof. This is local Linux contract evidence, not deployed proof.
+## Cross-family review
 
-## Verification
+One peer-agents / Claude round, 176 seconds, read-only, no reviewer tests:
+**VERDICT: ADAPT**. Authority binding, credential custody and cancellation held up.
+No blocking lane collision was found. All findings were AGREE:
 
-- Linux oracle initial regression batch: **83 passed, zero skips**.
-- Expanded batch: **101 passed, zero skips**: `test_remote_box_ta.py`,
-  `test_agent_loop_box_tools.py`, `test_agent_loop_tool_session.py`,
-  `test_agent_loop_served_chat.py`, `test_ta_capabilities.py`,
-  `test_ta_capabilities_jail.py`, `test_converse_turn_cost.py`.
-- After adding a credential-bearing host sentinel and output-cap revocation:
-  **50 passed, zero skips** (remote proofs, box tools and served chat).
-- All commands used `MSYS_NO_PATHCONV=1 python scripts/linux_oracle.py -- -q
-  <files> --basetemp /tmp/b`.
-- Real faults injected after committed exec starts, consumed stream frames and
-  committed reply writes: repeated execution produced exactly one effect.
-- Cross-owner, center and turn handles refused; forged authority in real-box
-  messages refused by the actual ta dispatcher. Closed turn requests refused.
-- Real owner engine handler/local jail/ta broker invocation succeeds from the
-  isolated remote process and its catalogue matches local ta.
-- Credential custody scans env, process environments and box files, with a
-  positive host `/proc` control and an inaccessible host credential file.
-- Ruff and whitespace checks passed. Plugin build staged 629 files; import
-  probe passed. Prompt budgets unchanged and passed.
+- TB-1: replaced the bash relay with private MCP resource transport; no shell
+  argument limit, wait-note parser or bash stdout cap lies in RPC transport.
+- TB-2: worker readiness distinguishes `remote_ta_worker_unavailable`; Python 3,
+  bash and isolated ephemeral runtime requirements are explicit in the design.
+- TB-3: replaced durable mailboxes with execution stdin. Replies do not bump file
+  generations; scratch client source is ephemeral and cleaned on normal exit.
+- TB-4: the CLI retains a request ID across socket reconnects; receipts dedupe the
+  same identity, and the spec explicitly distinguishes a new-ID command rerun.
 
-Claude review, final hygiene and final main merge are pending. No deployed-SHA
-assertion or real-user app pass is claimed; this PR remains draft.
+The original review verdict is retained; no post-fix reviewer approval is claimed.
+
+## Linux proof
+
+Run using `MSYS_NO_PATHCONV=1 python scripts/linux_oracle.py -- -q <tests>
+--basetemp /tmp/b`. Real bwrap namespaces, actual box host exec/stream/reply
+implementation and durable receipts are exercised, not scripted box outcomes.
+The owner-capability test uses a real in-process MCP client, real EngineToolSession
+route/authority checks, the shipping resource handler and actual ta dispatcher.
+This does not claim a deployed HTTP remote-driver test.
+
+Coverage includes owner success; forged owner/center/turn payloads; foreign
+handles and reply handles; closed-turn attempts from a real box; cancellation
+mid-call; committed start, stream and reply loss; same-ID reconnects and payload
+reuse rejection; process restart receipts; startup failure; 300 KB request and
+response transport; and env/proc/files credential scans with a real host process
+holding the credential plus a positive host /proc control.
+
+Historical verified slices: 83-pass initial regressions; 101-pass expanded batch;
+50-pass follow-up; 51-pass transport-limit batch. Revised transport proofs:
+**16 passed, zero skips**. Fixture-order follow-up: **98 passed, zero skips**.
+Final affected regression batch: **254 passed, zero skips** in 51.25 seconds.
+This includes the remote proofs, box tools/session/served chat, ta capabilities
+and jail, engine client/server, unchanged turn budgets, local box driver and
+nine explicitly selected BoxProvider execution/auth cases.
+
+An exploratory full box-contract run included the pre-existing unsupported local
+disk-bound test skip. It is not acceptance evidence. Final execution/auth tests
+are selected explicitly; no test is weakened, skipped or xfailed by this change.
+One broader run exposed test fixture import-order contamination (238 passed,
+2 failed); the remote proof now uses the existing dynamic-data-root fixture.
+
+Ruff and whitespace checks passed. Plugin build staged 629 files and passed the
+import probe. Prompt budgets are unchanged. Initial hygiene: 7 added, 0 removed,
+0 tampering; final hygiene pending. Main spec has been synced and both change and
+spec validate strictly.
+
+## Remaining delivery scope
+
+No deployed remote driver exists in this checkout. Deployment, deployed-SHA
+assertion and a real-user app pass remain unperformed; this is a draft plumbing
+PR, not a shipped K2/provider-inventory cutover. The remote driver must support
+interactive_stdin/send_stdin and the documented isolation/runtime contract.
+Final main merge, verification and evidence push pending.

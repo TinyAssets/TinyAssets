@@ -1,42 +1,57 @@
 ## Context
 
-The opt-in thin loop consumes a structural BoxExec API. This checkout has a
-local unisolated reference BoxProvider and no deployed remote driver. Existing
-start/stream/cancel operations bind owner, center, epoch and turn. Local ta uses
-the engine's capability dispatcher and its existing effect gates.
+The opt-in thin loop consumes BoxProvider's bound exec protocol. This checkout
+contains the local reference driver, not a deployed remote driver. K2 needs ta
+before projecting remote agents to four tools.
 
 ## Goals / Non-Goals
 
-Enable ta in remote bash without placing a bearer or connection credential in
-the box. Preserve local capability dispatch and remote extension execution.
-Provider inventory changes, background executors and deployment are separate.
+Enable remote ta with the same capability dispatcher and grants as local ta,
+without placing credentials in the box. Inventory changes, background executors
+and deployment remain separate lanes.
 
 ## Decisions
 
-- A dependency-free worker runs inside the bound box. It supplies ta and a Unix
-  socket, emits reverse requests on the execution output channel, and receives
-  answers through descriptor-safe BoxProvider.write beneath the box root.
-  Requests cannot select a host URL, credential, principal or reply path.
-- Trusted code fixes owner, center and turn. It validates the bound handle and
-  dispatches through a fixed broker-only program on the existing authenticated
-  engine bash route. That program speaks to the existing local ta socket;
-  there is no second capability implementation or new public tool. This costs
-  one local jail launch per RPC but preserves all existing effect checks.
-- A host-side SQLite receipt is reserved before dispatch. A completed request
-  returns its recorded answer; a pending receipt after interruption returns
-  unknown, never reruns. Request IDs are scoped by owner/center/turn/execution.
-  A retry with changed arguments is refused. Cancellation revokes admission
-  before cancelling pending trusted calls; already sent effects remain unknown.
-- The worker's socket and client are temporary. No process credential is used
-  inside the box. The driver MUST isolate each execution's processes and kill
-  descendants on cancellation, as required by the existing box contract.
+- The worker runs inside the bound box. It receives public source and the bash
+  command on stdin, installs ta in ephemeral scratch, and opens an abstract Unix
+  socket. The box runtime requires Python 3, bash, isolated process/network
+  namespaces, ephemeral /tmp and process-tree cancellation. Missing worker
+  support fails explicitly; no alternate executor is selected.
+- Requests travel on framed execution output; replies use the execution's open
+  stdin. BoxProvider gains interactive_stdin and idempotent send_stdin. Replies
+  require the exact owner/center/epoch/turn handle of the running execution.
+  They never mutate the command-center filesystem or its generation.
+- Trusted code fixes owner, center and turn. The existing authenticated engine
+  session transports JSON in a private ta-bridge resource, which calls the SAME
+  engine_dispatch and Capabilities used by local ta. The signed launch must
+  grant bash. No new model-facing tool, provider branch, shell relay, stdout
+  parser or extra prompt is involved.
+- A host SQLite receipt reserves each owner/center/turn/execution/request identity
+  before dispatch. Same-ID retries return a completed receipt or unknown; changed
+  payloads are refused. The client retains an ID across a connection retry.
+  Re-running a command with a new identity is a new intent, not deduplicated.
+- Delivery IDs are distinct from request IDs: a reconnected socket can receive a
+  cached result while a retried send_stdin cannot corrupt the byte stream. After
+  host restart, orphaned execs are unknown, never restarted. Partial stdin writes
+  stay unknown. Cancellation revokes admission before cancelling pending calls.
 
 ## Risks / Trade-offs
 
-- Uncertain external effects cannot be rolled back: retain unknown receipts.
-- A driver without safe write or process isolation cannot satisfy this contract:
-  fail loudly; the unisolated local driver is not security evidence.
-- Durable receipts consume storage; pruning is outside this change because
-  deleting an ambiguous receipt could permit duplicate effects.
-- Remote extensions resolve under the bound box root, not the trusted engine's
-  filesystem. Provider-specific code and static prompt additions are unnecessary.
+- Already-sent effects may complete after cancellation. Unknown receipts prevent
+  redispatch; no rollback is claimed.
+- Receipt pruning needs an explicit turn-retention design. This change retains
+  receipts rather than risk deleting an ambiguous effect record.
+- A deployed remote driver must implement the extended protocol and isolation
+  contract. Linux proofs exercise actual processes and the reference host behind
+  real bwrap namespaces; they are not deployed remote-driver evidence.
+- Engine and box transports retain the existing 1 MiB request / 8 MiB response
+  bounds. Decoded bash output keeps its separate 64 KiB user-output bound.
+- Extensions resolve and execute in the box. Credentials remain entirely on the
+  trusted side of the existing authenticated engine session.
+
+## Review adaptation
+
+Claude's one cross-family round returned ADAPT. TB-1 through TB-4 were AGREE.
+The initial bash relay and durable reply mailboxes were replaced as above;
+worker readiness distinguishes startup failure; reconnect IDs now survive retry.
+The original verdict is retained rather than relabeled as reviewer approval.

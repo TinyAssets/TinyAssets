@@ -8,6 +8,7 @@ import re
 import socket
 import subprocess
 import sys
+import uuid
 from pathlib import Path
 
 SOCKET = "/tmp/ta.sock"
@@ -16,13 +17,23 @@ NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*\Z")
 
 
 def remote(message):
-    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
-        client.settimeout(600)
-        endpoint = os.environ.get("TA_SOCKET", SOCKET)
-        client.connect("\0" + endpoint[1:] if endpoint.startswith("@") else endpoint)
-        client.sendall(json.dumps(message).encode() + b"\n")
-        with client.makefile("rb") as stream:
-            raw = stream.readline(MAX_MESSAGE + 1)
+    endpoint = os.environ.get("TA_SOCKET", SOCKET)
+    bridged = "TA_SOCKET" in os.environ
+    wire = {"request": uuid.uuid4().hex, "message": message} if bridged else message
+    for attempt in range(2 if bridged else 1):
+        try:
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+                client.settimeout(600)
+                client.connect("\0" + endpoint[1:] if endpoint.startswith("@") else endpoint)
+                client.sendall(json.dumps(wire).encode() + b"\n")
+                with client.makefile("rb") as stream:
+                    raw = stream.readline(MAX_MESSAGE + 1)
+            if not raw:
+                raise ConnectionError("ta reply lost")
+            break
+        except OSError:
+            if not bridged or attempt:
+                raise ValueError("ta outcome unknown; do not retry blindly") from None
     if len(raw) > MAX_MESSAGE or not raw.endswith(b"\n"):
         raise ValueError("invalid or oversized daemon response")
     answer = json.loads(raw)

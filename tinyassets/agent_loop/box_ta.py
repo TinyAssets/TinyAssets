@@ -6,10 +6,10 @@ no caller-selected authority. Intent is durable before any capability runs.
 from __future__ import annotations
 
 import asyncio
+import base64
 import hashlib
 import json
 import re
-import shlex
 import sqlite3
 import threading
 from pathlib import Path
@@ -21,31 +21,32 @@ PREFIX = b"\x1eTA1 "
 UNKNOWN = {"error": "ta outcome unknown; do not retry with a new request id"}
 _ID = re.compile(r"[a-f0-9]{32}\Z")
 
-# Fixed code in the existing engine jail, not a model-selected shell command.
-# The broker is the exact same socket used by local ta.
-_BROKER = '''import json,socket,sys
-s=socket.socket(socket.AF_UNIX,socket.SOCK_STREAM)
-s.settimeout(600)
-s.connect('/tmp/ta.sock')
-s.sendall(sys.argv[1].encode()+b'\\n')
-r=s.makefile('rb').readline(8388609)
-assert len(r)<=8388608 and r.endswith(b'\\n')
-print(r.decode(),end='')
-'''
-
-
 async def engine_ta(engine, message):
     """Reuse local ta's grants, connection custody, owner gates and review."""
-    command = "python3 -c " + shlex.quote(_BROKER) + " " + shlex.quote(json.dumps(message))
-    result = await engine.call("bash", {"command": command, "timeout": 600})
-    texts = [block.text for block in result.content if block.type == "text"]
-    if result.isError or not texts:
-        raise EngineToolError("remote_ta_engine_unknown", outcome="unknown")
-    text = texts[0]
-    trailer = "[exit code 0]"
-    if not text.rstrip().endswith(trailer):
-        raise EngineToolError("remote_ta_engine_unknown", outcome="unknown")
-    return json.loads(text.rstrip()[:-len(trailer)].strip())
+    return await engine.call_ta(message)
+
+
+async def engine_resource(server, payload):
+    """Private MCP resource: no shell, argv limits, or model-facing tool schema."""
+    from tinyassets.ta_capabilities import engine_dispatch
+
+    if len(payload) > 4 * ((MAX_REQUEST + 2) // 3):
+        return json.dumps({"error": "ta request too large"})
+    try:
+        raw = base64.b64decode(payload, altchars=b"-_", validate=True)
+        if len(raw) > MAX_REQUEST:
+            raise ValueError
+        message = json.loads(raw)
+    except (ValueError, TypeError):
+        return json.dumps({"error": "invalid ta request"})
+    dispatch = await engine_dispatch(server)
+    if dispatch is None:
+        return json.dumps({"error": "ta authority unavailable"})
+    answer = await asyncio.to_thread(dispatch, message)
+    encoded = json.dumps(answer)
+    if len(encoded.encode()) > MAX_RESPONSE:
+        return json.dumps({"error": "ta response too large; request a smaller page"})
+    return encoded
 
 
 class TurnBridge:
@@ -136,6 +137,6 @@ def worker_argv(command, *, root, execution):
     from tinyassets.ta_capabilities import CLIENT_SOURCE
 
     source = Path(__file__).with_name("box_ta_worker.py").read_text(encoding="utf-8")
-    directory = root + "/.ta-" + hashlib.sha256(execution.encode()).hexdigest()
-    return ["python3", "-c", source, directory, command,
-            CLIENT_SOURCE.read_text(encoding="utf-8")], directory
+    bootstrap = json.dumps({"command": command,
+                            "client": CLIENT_SOURCE.read_text(encoding="utf-8")}).encode() + b"\n"
+    return ["python3", "-c", source], bootstrap

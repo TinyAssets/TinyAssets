@@ -35,7 +35,7 @@ import json
 import logging
 import threading
 from collections.abc import Callable, Iterator, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import PurePosixPath
 from typing import Any, Protocol
 
@@ -88,7 +88,9 @@ class BoxExec(Protocol):
 
     def start_exec(self, h: Any, op_id: str, argv: Sequence[str], *,
                    stdin: Any = None, env: Mapping[str, str] = ..., cwd: str = ...,
-                   limits: Any) -> Any: ...
+                   limits: Any, interactive_stdin: bool = False) -> Any: ...
+
+    def send_stdin(self, h: Any, exec_id: Any, request_id: str, data: bytes) -> None: ...
 
     def stream(self, h: Any, exec_id: Any, *, from_offset: int = 0) -> Iterator[Any]: ...
 
@@ -138,6 +140,15 @@ class BoxExecutor:
 
     def _start(self, op_id: str, argv: Sequence[str], stdin: bytes | None) -> Any:
         kwargs: dict[str, Any] = {"cwd": self._cwd, "limits": self._limits}
+        if self.ta_bridge is not None and op_id in self._ta_executions:
+            from tinyassets.ta_capabilities import MAX_REQUEST
+
+            # Requests travel on stdout too. Keep a bounded transport allowance
+            # separate from the decoded user-output limit enforced by _collect.
+            kwargs["limits"] = replace(self._limits,
+                                       output_bytes=max(self._limits.output_bytes,
+                                                        8 * MAX_REQUEST))
+            kwargs["interactive_stdin"] = True
         if stdin is not None:
             kwargs["stdin"] = stdin
         try:
@@ -177,11 +188,12 @@ class BoxExecutor:
                         offset = _event_offset(event, offset + len(data))
                         if kind == "output":  # BoxProvider offsets name the block START.
                             offset += len(data)
-                        if self.ta_bridge is not None and op_id in self._ta_directories:
+                        if self.ta_bridge is not None and op_id in self._ta_executions:
                             pending.extend(data)
                             try:
-                                data = self._ta_frames(pending, op_id)
-                            except Exception:
+                                data = self._ta_frames(pending, op_id, exec_id)
+                            except Exception as exc:
+                                _LOG.warning("ta box channel failed (%s)", type(exc).__name__)
                                 self.ta_bridge.cancel_execution(op_id)
                                 self.cancel_in_background(exec_id)
                                 raise _unknown() from None
@@ -198,6 +210,9 @@ class BoxExecutor:
                         code = getattr(event, "code", getattr(event, "exit_code", None))
                         if pending:
                             raise _unknown()
+                        if (self.ta_bridge is not None and op_id in self._ta_executions
+                                and op_id not in self._ta_ready):
+                            raise EngineToolError("remote_ta_worker_unavailable")
                         killed = getattr(event, "killed", None)
                         if killed == "unknown_after_restore":
                             raise _unknown()
@@ -222,42 +237,55 @@ class BoxExecutor:
 
     def enable_ta(self, bridge):
         self.ta_bridge = bridge
-        self._ta_directories = {}
+        self._ta_executions = set()
+        self._ta_ready = set()
 
-    def _ta_frames(self, pending, op_id):
+    def _ta_frames(self, pending, op_id, exec_id):
         from tinyassets.agent_loop.box_ta import PREFIX
-        from tinyassets.ta_capabilities import MAX_REQUEST, MAX_RESPONSE
+        from tinyassets.ta_capabilities import MAX_REQUEST
 
         output = bytearray()
         while b"\n" in pending:
             raw, _, rest = pending.partition(b"\n")
             pending[:] = rest
+            if not raw.startswith(PREFIX) and op_id not in self._ta_ready:
+                output.extend(raw + b"\n")
+                continue
             if len(raw) > MAX_REQUEST + 256 or not raw.startswith(PREFIX):
                 raise _unknown()
             frame = json.loads(raw[len(PREFIX):])
+            if frame == {"ready": True}:
+                self._ta_ready.add(op_id)
+                continue
             if set(frame) == {"output"}:
                 output.extend(base64.b64decode(frame["output"], validate=True))
                 continue
-            if set(frame) != {"request", "message"}:
+            if set(frame) != {"request", "message", "delivery"}:
                 raise _unknown()
             request = frame["request"]
             # Validate before constructing a reply path, even for refused calls.
             import re
             if not isinstance(request, str) or not re.fullmatch(r"[a-f0-9]{32}", request):
                 raise _unknown()
+            delivery = frame["delivery"]
+            if not isinstance(delivery, str) or not re.fullmatch(r"[a-f0-9]{32}", delivery):
+                raise _unknown()
             answer = self.ta_bridge.request(self._handle, op_id, request, frame["message"])
             if isinstance(answer, dict) and "extension_roots" in answer:
                 answer = {**answer, "extension_roots": {
                     scope: path.replace("/u/", self._cwd + "/", 1)
                     for scope, path in answer["extension_roots"].items()}}
-            data = json.dumps(answer).encode()
+            data = json.dumps({"request": request, "answer": answer}).encode() + b"\n"
             for attempt in range(2):
                 try:
-                    self._provider.write(self._handle, f"{op_id}/ta/{request}",
-                                         self._ta_directories[op_id] + "/" + request,
-                                         data, max_bytes=MAX_RESPONSE)
+                    self._provider.send_stdin(self._handle, exec_id, delivery, data)
                     break
                 except Exception:
+                    # Replaying an already completed execution only needs its
+                    # recorded output; its closed stdin cannot receive replies.
+                    status = self._provider.exec_status(self._handle, op_id)
+                    if status.state == "exited":
+                        break
                     if attempt:
                         raise
         if len(pending) > MAX_REQUEST + 256:
@@ -583,12 +611,13 @@ class BoxTools:
         # argv, never a command string to the box API: the command is bash's
         # argument, exactly as the tool jail runs it.
         argv = ["/bin/bash", "-c", command]
+        stdin = None
         if self._exec.ta_bridge is not None:
             from tinyassets.agent_loop.box_ta import worker_argv
 
-            argv, directory = worker_argv(command, root=self._root, execution=op_id)
-            self._exec._ta_directories[op_id] = directory
-        outcome = await self._exec.run(op_id, argv, wall_seconds=wall)
+            argv, stdin = worker_argv(command, root=self._root, execution=op_id)
+            self._exec._ta_executions.add(op_id)
+        outcome = await self._exec.run(op_id, argv, stdin=stdin, wall_seconds=wall)
         body = _text(outcome.output)
         if body and not body.endswith("\n"):
             body += "\n"

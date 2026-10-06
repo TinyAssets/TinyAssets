@@ -56,7 +56,8 @@ class FakeBox:
         return SimpleNamespace(cc=cc, account=account, turn=turn, root="/cc",
                                command_center_id=cc, account_id=account, turn_id=turn)
 
-    def start_exec(self, h, op_id, argv, *, stdin=None, env=None, cwd="/cc", limits=None):
+    def start_exec(self, h, op_id, argv, *, stdin=None, env=None, cwd="/cc", limits=None,
+                   interactive_stdin=False):
         with self.lock:
             self.starts.append(op_id)
             first = op_id not in self.execs

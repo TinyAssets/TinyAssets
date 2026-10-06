@@ -1,4 +1,10 @@
-## ADDED Requirements
+# Remote box ta bridge
+
+## Purpose
+
+Turn-bound, credential-free capability RPC over the BoxProvider execution protocol.
+
+## Requirements
 
 ### Requirement: Bound remote capability authority
 Remote ta SHALL use the trusted turn's owner and command center and SHALL refuse
