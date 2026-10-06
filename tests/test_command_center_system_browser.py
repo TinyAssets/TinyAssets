@@ -567,8 +567,9 @@ def test_visual_preview_has_no_owner_bridge_and_copy_requires_visible_consent(
 
 
 @pytest.mark.real_browser
+@pytest.mark.parametrize("package", [False, True])
 def test_public_instruction_template_copies_private_agent_and_opens_its_chat_without_model(
-    home, system_server, browser,
+    home, system_server, browser, package,
 ):
     import sqlite3
 
@@ -601,7 +602,8 @@ def test_public_instruction_template_copies_private_agent_and_opens_its_chat_wit
     save_app_ui(home, owner_user_id=OWNER, universe_id=UNIVERSE,
                 expected_revision=row["revision"], changes={"ui_library": [source_ui]})
     action = _publish_action()
-    del action["package"]
+    if not package:
+        del action["package"]
     action["agent_templates"] = {"village-scout": source_binding["agent_binding_id"]}
     asked = _ask(OWNER, UNIVERSE, action)
     assert "request_id" in asked, asked
@@ -649,6 +651,15 @@ def test_public_instruction_template_copies_private_agent_and_opens_its_chat_wit
             binding = get_binding(home, universe_id=BOB_UNIVERSE, binding_id=target)
             assert binding["created_by"] == BOB and binding["status"] == "configured"
             assert binding["configuration"] == {"schema_version": 1, "name": "Scout"}
+            from tinyassets.addressed_agents import resolve
+            from tinyassets.command_center_packages import pin_for_request
+
+            addressed = resolve(home, universe_id=BOB_UNIVERSE, owner=BOB, agent_id=target)
+            install_result = next(result for op, result in calls if op == "try_package")
+            pin = pin_for_request(home, universe_id=BOB_UNIVERSE,
+                                  request_id=install_result["request_id"])
+            assert addressed.agent_slug == (
+                pin["record"]["action"]["plan"]["placement"]["agent_slug"] if package else None)
             assert (len(list_bindings(home, universe_id=BOB_UNIVERSE, limit=None))
                     == len(recipient_bindings) + 1)
             copied_ui = get_app_ui(
