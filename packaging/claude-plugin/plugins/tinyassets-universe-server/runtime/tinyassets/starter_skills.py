@@ -10,6 +10,7 @@ SHARE_SKILL_PATH = "skills/share-after-publish/SKILL.md"
 CAPABILITIES_SKILL_PATH = "skills/capabilities/SKILL.md"
 
 STARTER_SKILL_NAMES = ("memory", "access", "onboarding", "time", "workspace")
+MUSE_SKILL_NAMES = ("proactivity", "goals", "monitors", "layout", "images", "inbox")
 
 
 def starter_agent_files() -> dict[str, str]:
@@ -19,9 +20,13 @@ def starter_agent_files() -> dict[str, str]:
         "AGENTS.md": package / "starter" / "AGENTS.md",
         "starter/hooks.md": package / "starter" / "hooks.md",
     }
-    for name in STARTER_SKILL_NAMES:
+    for name in (*STARTER_SKILL_NAMES, *MUSE_SKILL_NAMES):
         path = f"skills/starter-{name}/SKILL.md"
         sources[path] = package / path
+    muse = package / "starter" / "muse"
+    for source in sorted(muse.rglob("*")):
+        if source.is_file() and source.suffix in {".md", ".json", ".py"}:
+            sources[f"starter/{source.relative_to(muse).as_posix()}"] = source
     return {path: source.read_text(encoding="utf-8") for path, source in sources.items()}
 
 
