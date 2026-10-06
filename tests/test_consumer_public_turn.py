@@ -153,3 +153,22 @@ def test_a_projected_turn_announces_the_owners_message_once(public, store, monke
                                              request_key=key))
         assert result["consumer_turn"]["projection"] == "committed"
     assert announced == [(HOME, OWNER)]
+
+
+def test_settlement_projects_and_announces_once_before_any_status_read(store, monkeypatch):
+    from tests.test_consumer_run_envelope import reserve
+    from tests.test_conversation_run_admissions import complete
+    from tinyassets.consumer_runtime import settle_admitted_consumer
+
+    announced = []
+    monkeypatch.setattr(
+        "tinyassets.automation_events.emit_owner_message",
+        lambda udir, *, principal_id: announced.append((udir.name, principal_id)),
+    )
+    row = reserve(store, str(uuid.uuid4()), setup(store, reply_key="reply"))
+    complete(store, row["run_id"])
+    for _ in range(2):
+        result = settle_admitted_consumer(store, row["run_id"])
+        assert result["consumer_turn"]["projection"] == "committed"
+        assert result["reply"] == "answer"
+    assert announced == [(HOME, OWNER)]

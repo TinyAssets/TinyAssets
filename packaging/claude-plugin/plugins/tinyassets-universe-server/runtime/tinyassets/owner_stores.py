@@ -15,6 +15,7 @@ from __future__ import annotations
 #: Writers that commit only under :func:`tinyassets.storage.owner_fence.check_fence`,
 #: mapped to their store kind (``tinyassets.owner_lease.STORE_ENUMERATORS``).
 FENCED: dict[str, str] = {
+    "tinyassets/agent_loop/box_ta.py": "remote_ta_receipts",
     "tinyassets/storage/agent_turn_journal.py": "agent_turn_journal",
 }
 

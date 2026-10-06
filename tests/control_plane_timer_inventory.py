@@ -36,7 +36,7 @@ CLASSES = frozenset({CONTROL_PLANE, CALL_SCOPED, DELETE, CLIENT, BOX})
 
 #: ``"<path>::<qualname>"`` -> (class, note). ``[Timer]``/``[call_later]`` mark a
 #: callback-scheduling site; ``#n`` is the n-th clock-driven site in one function.
-SITES: dict[str, tuple[str, str]] = {
+CLASSIFICATION: dict[str, tuple[str, str]] = {
     # -- always-on duties of the execution owner ------------------------------
     "tinyassets/runtime/assigned_queue_consumer.py::AssignedQueueConsumer._run": (
         CONTROL_PLANE,
@@ -262,3 +262,7 @@ SITES: dict[str, tuple[str, str]] = {
 }
 
 __all__ = ["BOX", "CALL_SCOPED", "CLASSES", "CLIENT", "CONTROL_PLANE", "DELETE", "SITES"]
+
+# Generated facts are scaffolded by scripts/generate_guard_inventories.py;
+# only the reviewed classification and rationale are maintained here.
+SITES = CLASSIFICATION

@@ -873,6 +873,7 @@ def test_the_scope_declaration_set_is_what_the_label_rule_reads() -> None:
         ".github/known-failing-tests.txt",
         ".github/heavy-test-files.txt",
         "scripts/ci_required_tests.py",
+        "scripts/ci_structural_guards.py",
         "scripts/drain_review_gate.py",
         "deploy/install-host-uptime-services.sh",
         "Dockerfile",

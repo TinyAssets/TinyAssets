@@ -8,6 +8,8 @@ The interactive runner supplies fresh serving authority and durable progress.
 from __future__ import annotations
 
 import asyncio
+import base64
+import json
 import math
 from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
@@ -176,6 +178,29 @@ class EngineToolSession:
         except Exception:
             self._active = False
             raise EngineToolError("engine_tool_outcome_unknown", outcome="unknown") from None
+
+    async def call_ta(self, message):
+        """Private resource on the SAME authenticated, signed launch session."""
+        from tinyassets.ta_capabilities import MAX_REQUEST, MAX_RESPONSE
+
+        self._check_route()
+        if "bash" not in self._enabled:
+            raise EngineToolError("engine_tool_not_allowed")
+        raw = json.dumps(message).encode()
+        if len(raw) > MAX_REQUEST:
+            raise EngineToolError("remote_ta_request_too_large")
+        payload = base64.urlsafe_b64encode(raw).decode()
+        try:
+            contents = await self._client.read_resource("ta-bridge://request/" + payload)
+            if len(contents) != 1 or len(contents[0].text.encode()) > MAX_RESPONSE:
+                raise ValueError("invalid bridge response")
+            return json.loads(contents[0].text)
+        except asyncio.CancelledError:
+            self._active = False
+            raise
+        except Exception:
+            self._active = False
+            raise EngineToolError("remote_ta_outcome_unknown", outcome="unknown") from None
 
 
 @asynccontextmanager

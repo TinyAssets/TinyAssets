@@ -58,8 +58,6 @@ def _step_by_id(step_id: str) -> dict:
 # (a) YAML parses
 # ---------------------------------------------------------------------------
 
-def test_p0_triage_yml_parses():
-    _load()
 
 
 # ---------------------------------------------------------------------------
@@ -168,11 +166,6 @@ def test_reprobe_uses_canary_url():
     assert "tinyassets.io/mcp" in text
 
 
-def test_reprobe_step_present():
-    steps = _steps(_load())
-    reprobe_steps = [s for s in steps if "probe" in (s.get("name") or "").lower()
-                     and "pre" not in (s.get("name") or "").lower()]
-    assert reprobe_steps, "must have a re-probe step after restart"
 
 
 def test_classifier_step_does_not_inline_multiline_diag_in_bash():

@@ -1,0 +1,178 @@
+{
+  "base": "40061eaca9d8f39674d14c212aac4a64b1a3278a",
+  "removed": {
+    "tests/test_auto_enroll_merge_workflow.py": [
+      "test_workflow_is_parseable_yaml"
+    ],
+    "tests/test_deploy_worker_workflow.py": [
+      "test_deploy_worker_yml_parses"
+    ],
+    "tests/test_dns_canary_workflow.py": [
+      "test_dns_canary_yml_parses",
+      "test_alarm_sink_uses_dns_red_label"
+    ],
+    "tests/test_dr_drill_workflow.py": [
+      "test_dr_drill_yml_parses",
+      "test_provision_step_present",
+      "test_bootstrap_step_present",
+      "test_restore_step_present",
+      "test_probe_step_present",
+      "test_pass_log_describes_port_forward_probe",
+      "test_dr_drill_runbook_mentions_weekly_off_region",
+      "test_dr_drill_runbook_mentions_pass_fail",
+      "test_dr_drill_runbook_mentions_ssh_port_forward_probe",
+      "test_mid_job_cleanup_step_exists"
+    ],
+    "tests/test_p0_triage_workflow.py": [
+      "test_p0_triage_yml_parses",
+      "test_reprobe_step_present"
+    ],
+    "tests/test_pre_commit_invariant_actionlint.py": [
+      "test_hook_source_has_invariant_7_section"
+    ]
+  },
+  "groups": [
+    {
+      "group": "auto-enroll-merge syntax",
+      "removed": [
+        "tests/test_auto_enroll_merge_workflow.py::test_workflow_is_parseable_yaml"
+      ],
+      "target": ".github/workflows/auto-enroll-merge.yml",
+      "survivor": "tests/test_deploy_worker_workflow.py::test_all_workflow_ymls_parse",
+      "operation": "invalid_yaml"
+    },
+    {
+      "group": "deploy-worker syntax",
+      "removed": [
+        "tests/test_deploy_worker_workflow.py::test_deploy_worker_yml_parses"
+      ],
+      "target": ".github/workflows/deploy-worker.yml",
+      "survivor": "tests/test_deploy_worker_workflow.py::test_all_workflow_ymls_parse",
+      "operation": "invalid_yaml"
+    },
+    {
+      "group": "dns-canary syntax",
+      "removed": [
+        "tests/test_dns_canary_workflow.py::test_dns_canary_yml_parses"
+      ],
+      "target": ".github/workflows/dns-canary.yml",
+      "survivor": "tests/test_deploy_worker_workflow.py::test_all_workflow_ymls_parse",
+      "operation": "invalid_yaml"
+    },
+    {
+      "group": "dr-drill syntax",
+      "removed": [
+        "tests/test_dr_drill_workflow.py::test_dr_drill_yml_parses"
+      ],
+      "target": ".github/workflows/dr-drill.yml",
+      "survivor": "tests/test_deploy_worker_workflow.py::test_all_workflow_ymls_parse",
+      "operation": "invalid_yaml"
+    },
+    {
+      "group": "p0-outage-triage syntax",
+      "removed": [
+        "tests/test_p0_triage_workflow.py::test_p0_triage_yml_parses"
+      ],
+      "target": ".github/workflows/p0-outage-triage.yml",
+      "survivor": "tests/test_deploy_worker_workflow.py::test_all_workflow_ymls_parse",
+      "operation": "invalid_yaml"
+    },
+    {
+      "group": "drill provision",
+      "removed": [
+        "tests/test_dr_drill_workflow.py::test_provision_step_present"
+      ],
+      "target": ".github/workflows/dr-drill.yml",
+      "survivor": "tests/test_dr_drill_workflow.py::test_provision_resolves_current_region_compatible_debian_image",
+      "operation": "remove_step",
+      "step": "Provision drill Droplet"
+    },
+    {
+      "group": "drill bootstrap",
+      "removed": [
+        "tests/test_dr_drill_workflow.py::test_bootstrap_step_present"
+      ],
+      "target": ".github/workflows/dr-drill.yml",
+      "survivor": "tests/test_dr_drill_workflow.py::test_bootstrap_step_captures_exit_code_explicitly",
+      "operation": "remove_step",
+      "step": "Bootstrap drill Droplet"
+    },
+    {
+      "group": "drill restore",
+      "removed": [
+        "tests/test_dr_drill_workflow.py::test_restore_step_present"
+      ],
+      "target": ".github/workflows/dr-drill.yml",
+      "survivor": "tests/test_dr_drill_workflow.py::test_restore_uses_exact_transferred_backup_file",
+      "operation": "remove_step",
+      "step": "Restore exact backup on drill Droplet"
+    },
+    {
+      "group": "drill probe",
+      "removed": [
+        "tests/test_dr_drill_workflow.py::test_probe_step_present",
+        "tests/test_dr_drill_workflow.py::test_pass_log_describes_port_forward_probe",
+        "tests/test_dr_drill_workflow.py::test_dr_drill_runbook_mentions_ssh_port_forward_probe"
+      ],
+      "target": ".github/workflows/dr-drill.yml",
+      "survivor": "tests/test_dr_drill_workflow.py::test_restored_state_proof_precedes_compose_and_probe",
+      "operation": "remove_step",
+      "step": "Probe drill Droplet directly"
+    },
+    {
+      "group": "drill cleanup",
+      "removed": [
+        "tests/test_dr_drill_workflow.py::test_mid_job_cleanup_step_exists",
+        "tests/test_dr_drill_workflow.py::test_dr_drill_runbook_mentions_pass_fail"
+      ],
+      "target": ".github/workflows/dr-drill.yml",
+      "survivor": "tests/test_dr_drill_workflow.py::test_unified_destroy_runs_always_and_exposes_bounded_failure",
+      "operation": "remove_step",
+      "step": "Destroy drill Droplet when required"
+    },
+    {
+      "group": "drill weekly schedule",
+      "removed": [
+        "tests/test_dr_drill_workflow.py::test_dr_drill_runbook_mentions_weekly_off_region"
+      ],
+      "target": ".github/workflows/dr-drill.yml",
+      "survivor": "tests/test_dr_drill_workflow.py::test_drill_runs_weekly_and_on_dispatch_only",
+      "operation": "replace",
+      "old": "cron: '17 6 * * 0'",
+      "new": "cron: '17 6 * * *'"
+    },
+    {
+      "group": "triage reprobe name",
+      "removed": [
+        "tests/test_p0_triage_workflow.py::test_reprobe_step_present"
+      ],
+      "target": ".github/workflows/p0-outage-triage.yml",
+      "survivor": "tests/test_p0_triage_workflow.py::test_bounded_repair_failures_continue_to_canonical_reprobe",
+      "operation": "remove_step",
+      "step": "Re-probe canonical URL"
+    },
+    {
+      "group": "DNS label spelling",
+      "removed": [
+        "tests/test_dns_canary_workflow.py::test_alarm_sink_uses_dns_red_label"
+      ],
+      "target": ".github/workflows/dns-canary.yml",
+      "survivor": "tests/test_dns_canary_workflow.py::test_dns_red_label_in_env_block",
+      "operation": "replace",
+      "old": "ALARM_ISSUE_LABEL: dns-red",
+      "new": "ALARM_ISSUE_LABEL: wrong-label"
+    },
+    {
+      "group": "hook comment numbering",
+      "removed": [
+        "tests/test_pre_commit_invariant_actionlint.py::test_hook_source_has_invariant_7_section"
+      ],
+      "target": "scripts/git-hooks/pre-commit",
+      "survivor": "tests/test_pre_commit_invariant_actionlint.py::test_hook_source_invokes_actionlint_invariant",
+      "operation": "replace",
+      "old": "scripts/pre_commit_invariant_actionlint.py",
+      "new": "scripts/disabled_actionlint.py",
+      "occurrences": 4
+    }
+  ]
+}
