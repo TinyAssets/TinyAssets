@@ -31,8 +31,19 @@ Review input: review-k1-r1.md (Claude, ADAPT). All four findings are accepted.
 
 Second slice: Linux oracle remote MCP and ta tests 42 passed, zero skips.
 Main merge check: origin/main a97c17c26e already included. Claude cross-family
-review dispatched via peer-agents; final verdict and broader tests pending.
+review via peer-agents: APPROVE, all four findings AGREE; full review in
+review-k1-final.md. Its stale-note observation was already corrected while
+the review was running. Broader Linux oracle: 232 passed, zero skips. Ruff
+passes all 45 changed canonical Python files; mirror/import probe passes.
+Hygiene: 74 added test functions, 0 removed, 0 tampering. The four new regression
+functions expand to 11 cases. No static prompt budget changes.
 
 First slice: Linux oracle 56 passed, zero skips. Ruff and plugin mirror/import
 probe passed. No existing tests removed, skipped or weakened. New test fixture
 isolation was corrected after the red run (mount context and refusal wording).
+
+Final affected heavy-file run (provider_work_authority, universe_server_isolation,
+branch_runner, plus the final remote fixture): 219 passed, zero skips.
+Final fetch/merge check found origin/main a97c17c26e already included.
+All four requested fixes complete; PR may be marked ready. Deployment, live-user
+acceptance and post-deploy spec sync remain pending, not claimed here.

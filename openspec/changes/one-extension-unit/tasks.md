@@ -124,3 +124,14 @@ updates and unchanged prompt budgets. Final outside-authority regression run:
 11 passed / zero skips, including protected owner grant editing and resolved
 indirect-object confinement. Plugin rebuild/import probe and JavaScript syntax
 check pass. Final PR head and hygiene are recorded in #4519; no deployment claim.
+
+
+## K1 review continuation
+
+All four ADAPT findings accepted and fixed; see review-k1-continuation.md for
+per-finding dispositions and review-k1-final.md for Claude APPROVE. New
+regressions failed before the fixes. Linux oracle: 232 broader tests and 219
+affected heavy/remote tests passed, zero skips; initial slices 56 and 42 passed.
+Ruff (45 changed canonical Python files), plugin mirror/import probe and hygiene
+(74 added / 0 removed / 0 tampering) pass. Origin/main a97c17c26e is included.
+PR #4519 is ready for review; deployment/live acceptance/spec sync are pending.
