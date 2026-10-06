@@ -28,7 +28,8 @@ def test_public_listing_is_escaped_and_picture_is_only_public_output(tmp_path, m
     text = page.body.decode()
     assert "<script>bad" not in text and "&lt;script&gt;bad" in text
     assert f'/app?run={ident}' in text and "Run in your universe" in text
-    assert share_url(ident) + "/preview.png" in text
+    assert f'src="/app/run/{ident}/preview.png"' in text
+    assert share_url(ident) == "https://tinyassets.io/app/run/" + ident
     picture = asyncio.run(handle_public_run(request("/app/run/" + ident + "/preview.png", ident)))
     assert Path(picture.path).read_bytes() == b"public-picture"
     assert page.headers["cache-control"] == "no-store"

@@ -25,6 +25,8 @@ def test_two_devices_share_receipts_without_clearing_later_arrivals(tmp_path):
     root.mkdir()
     first = message(root)
     message(root, "other")
+    record_exchange(root, "agent:extra:principal:other:principal:" + OWNER,
+                    "malformed legacy thread", "not this owner's reply")
     ask = create_request(root, kind="question", title="Pick one", body="Choose", fields=[],
                          action={}, dedupe_key="one")
     assert attention(tmp_path, root, OWNER, UNIVERSE) == {"messages": 1, "asks": 1}
@@ -87,3 +89,26 @@ def test_derived_pending_asks_use_the_same_durable_receipts(tmp_path, status):
     assert attention(tmp_path, root, OWNER, UNIVERSE, pending=pending,
                      asks=["setup"])["asks"] == 0
     assert attention(tmp_path, root, OWNER, UNIVERSE, pending=pending)["asks"] == 0
+
+
+@pytest.mark.parametrize("rebind", [True, False])
+def test_account_deletion_removes_former_home_receipts_and_preserves_other_owner(tmp_path, rebind):
+    from tests.test_account_deletion import HOME_A, HOME_B, A, B, _seed_user
+    from tinyassets.account_deletion import delete_account
+    from tinyassets.storage import DB_FILENAME
+
+    for owner, home in ((A, HOME_A), (B, HOME_B)):
+        root = _seed_user(tmp_path, owner, home)
+        ident = message(root, owner)
+        attention(tmp_path, root, owner, home, messages=[ident])
+    if rebind:
+        _seed_user(tmp_path, A, "u-new-home")
+    else:
+        with closing(sqlite3.connect(tmp_path / DB_FILENAME)) as conn, conn:
+            conn.execute("DELETE FROM founder_home WHERE founder_sub=?", (A,))
+    receipt = delete_account(tmp_path, founder_sub=A, cancel_billing=lambda home: "cancelled",
+                             delete_identity=lambda sub: "deleted")
+    assert receipt["unfinished_phases"] == []
+    with closing(sqlite3.connect(tmp_path / DB_FILENAME)) as conn:
+        owners = conn.execute("SELECT owner_user_id FROM owner_view_receipts").fetchall()
+    assert owners == [(B,)]

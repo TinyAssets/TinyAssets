@@ -76,7 +76,7 @@ async def handle_public_run(request):
                 return Response(status_code=503, headers=headers)
         return FileResponse(picture, media_type="image/png", headers=headers)
     esc = html.escape
-    image = (f'<img src="{esc(share_url(ident))}/preview.png" alt="Preview of '
+    image = (f'<img src="/app/run/{quote(ident, safe="")}/preview.png" alt="Preview of '
              f'{esc(listing["name"])}">' if screen is not None or picture.is_file()
              else '<svg viewBox="0 0 800 280" role="img" aria-label="Workflow listing preview">'
              '<rect width="800" height="280" rx="16" fill="#202d44"/>'

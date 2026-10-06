@@ -15,6 +15,7 @@ _SCHEMA = """CREATE TABLE IF NOT EXISTS owner_view_receipts (
 
 def attention(base, root, owner, universe, *, messages=(), asks=(), pending=None):
     """Read counts and acknowledge only IDs present in this owner's own stores."""
+    from tinyassets.addressed_agents import agent_of_session
     from tinyassets.storage.pending_requests import list_pending
 
     available_messages = set()
@@ -24,9 +25,10 @@ def attention(base, root, owner, universe, *, messages=(), asks=(), pending=None
         suffix = ":" + session
         with closing(sqlite3.connect(transcript.as_uri() + "?mode=ro", uri=True)) as conn:
             available_messages = {str(row[0]) for row in conn.execute(
-                "SELECT id FROM conversation_turns WHERE speaker='universe' AND "
+                "SELECT id, session_id FROM conversation_turns WHERE speaker='universe' AND "
                 "(session_id=? OR (session_id LIKE 'agent:%' AND substr(session_id, -?)=?))",
-                (session, len(suffix), suffix))}
+                (session, len(suffix), suffix))
+                if agent_of_session(row[1], owner) is not None}
     # The app supplies its authoritative projection, including derived setup
     # and reconnect asks. Store-level callers use the retained request queue.
     rows = list_pending(Path(root)) if pending is None else pending

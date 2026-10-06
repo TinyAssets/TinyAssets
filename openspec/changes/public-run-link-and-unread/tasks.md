@@ -7,6 +7,6 @@
 ## 2. Verify and deliver
 
 - [x] 2.1 Affected Linux oracle tests, ruff, plugin mirror and hygiene checks.
-- [ ] 2.2 Draft PR, Claude cross-family review and disposition.
-- [ ] 2.3 Sync specs, merge origin/main, verify and push final SHA.
+- [x] 2.2 Draft PR, Claude cross-family review and disposition.
+- [x] 2.3 Sync specs, merge origin/main, verify and push final SHA.
 - [ ] 2.4 Deployment SHA assertion and real-user app proof after merge.
