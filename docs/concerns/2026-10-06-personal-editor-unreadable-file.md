@@ -1,5 +1,5 @@
 ---
-severity: low
+severity: P3
 title: One unreadable personal file blocks loading all personal editors
 filed: '2026-10-06'
 summary: The bounded personal-file listing fails as a unit when one file exceeds 256 KiB or is not UTF-8, so the owner's other two editors cannot load.
