@@ -82,7 +82,6 @@ def observe(provider: WorkOSAuthProvider, samples: dict) -> tuple[int, dict]:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--issuer", required=True)
-    parser.add_argument("--resource", default="https://tinyassets.io/mcp")
     args = parser.parse_args(argv)
     origin = urlsplit(args.issuer)
     if (origin.scheme != "https" or not origin.hostname or origin.username
@@ -91,7 +90,9 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     try:
         issuer, jwks = derive_endpoints(args.issuer)
-        provider = WorkOSAuthProvider(issuer=issuer, jwks_uri=jwks, audience=args.resource)
+        provider = WorkOSAuthProvider(
+            issuer=issuer, jwks_uri=jwks, audience="https://tinyassets.io/mcp",
+        )
         # Bound input and report only a fixed error category, even on parse errors.
         raw = sys.stdin.read(200001)
         if len(raw) > 200000:

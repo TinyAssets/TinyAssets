@@ -146,6 +146,28 @@ def test_probe_errors_never_print_input(monkeypatch, capsys):
     assert capsys.readouterr().out == '{"status":"evidence_unavailable"}\n'
 
 
+def test_cli_always_binds_canonical_resource(monkeypatch, capsys):
+    observed = {}
+
+    def provider(**kwargs):
+        observed.update(kwargs)
+        return object()
+
+    monkeypatch.setattr(probe, "WorkOSAuthProvider", provider)
+    monkeypatch.setattr("sys.stdin", io.StringIO("{}"))
+    assert probe.main(["--issuer", ISSUER]) == 2
+    assert observed["audience"] == RESOURCE
+    assert capsys.readouterr().out == '{"status": "invalid_evidence"}\n'
+
+
+@pytest.mark.parametrize("resource", ["", "  ", "https://other.example/mcp"])
+def test_cli_cannot_override_canonical_audience(resource, capsys):
+    with pytest.raises(SystemExit) as error:
+        probe.main(["--issuer", ISSUER, "--resource", resource])
+    assert error.value.code == 2
+    assert "unrecognized arguments: --resource" in capsys.readouterr().err
+
+
 @pytest.mark.parametrize("issuer", [
     "http://tenant.example", "https://secret@tenant.example", "https://tenant.example/path",
 ])

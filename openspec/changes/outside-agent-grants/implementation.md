@@ -103,13 +103,33 @@ All boxes remain unchecked. Finish 1.1 evidence before proceeding to 1.2.
 
 ## Slice verification
 
-- Linux oracle (Python 3.11.16, uid 1001, bubblewrap probe passed): **100 passed**
+- Linux oracle (Python 3.11.16, uid 1001, bubblewrap probe passed): **101 passed**
   across `test_outside_client_claims_probe.py`, `test_workos_provider.py`,
-  `test_inline_owner_sessions.py` and `test_converse_turn_cost.py`. One PyJWT
+  `test_inline_owner_sessions.py` and `test_converse_turn_cost.py`; final probe-only
+  rerun after adding the three override regressions: **31 passed**. One PyJWT
   warning is from the intentionally invalid HMAC-signature fixture.
 - Ruff on all changed Python files including the mirror: passed.
 - `packaging/claude-plugin/build_plugin.py`: 612 files staged, `probe-ok`.
 - `openspec validate outside-agent-grants --strict` and diff whitespace: passed.
 - No affected file appears in `.github/heavy-test-files.txt`.
+- Test hygiene: **0 removed / 0 tampering**; no skips or xfails added.
 - Public canary: unavailable (missing canary bearer); no deployed-SHA assertion
   or rendered acceptance is claimed for this draft.
+
+## Cross-family review
+
+Claude via `peer-agents`, read-only run with exit 0, returned **ADAPT** for the
+diagnostic prerequisite only. **AGREE** with the one correctness finding:
+`--resource ""`/whitespace disabled audience validation in the initial probe.
+Removed the override entirely; the CLI now pins `https://tinyassets.io/mcp`.
+Regression coverage checks that empty, whitespace and foreign overrides are
+rejected before evidence is consumed, as well as the provider's canonical
+audience binding. No test was weakened or removed.
+
+**AGREE** with the documented non-blocking limitation: issuer is trusted operator
+configuration, not independently attested by the probe. The tool requires that
+configured issuer and does not claim proof of exchange labels, provider
+guarantees or cutover readiness. Review found no authentication regression,
+credential leak, other false-positive path or misleading task completion.
+No second review/APPROVE verdict is claimed; the recorded verdict is ADAPT with
+its finding addressed. Full implementation acceptance remains outstanding.
