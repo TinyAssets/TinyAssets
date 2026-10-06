@@ -606,3 +606,34 @@ The receipt covers only the installed owner substep, explicitly retaining
 coordinator/old-CMD acceptance. Draft #4510 is updated with all limitations,
 Claude APPROVE for D216, and the inherited-U1 isolation gap. Code and main merge
 are pushed; this final commit only records receipts. Working tree will be clean.
+
+## D217: per-lifetime inode generation (resolves the baseline stale-record failure)
+
+Cause: the generation was statx birth time alone, and birth time is stamped
+from a coarse clock. In the failing stale-record run, the recorded and live
+generations printed identical (`[1791263750, 347499650]`) for different inodes,
+so the injected record transferred and the run hit `KeyError: 'ids'`. A container
+measurement found an identical btime after write-then-rename in 299/300 tries on
+tmpfs and 296/300 on ext4. ext4 also reused the inode number in 299/300 tries. The file handle
+differed every time. D217 (design.md) makes the generation btime plus the
+`name_to_handle_at` handle, which carries the kernel's random `i_generation`.
+Only ext4 and tmpfs are accepted; every other filesystem refuses.
+`docs/concerns/2026-10-05-u2-baseline-oracle-failure.md` is deleted as resolved.
+
+- The new deterministic tests freeze statx birth time for every inode, covering
+  the metadata stale record and the owner resumed reverse. Both fail on the old
+  `_generation` (`(1001, 4242) != (1001, 1001)`; `DID NOT RAISE`) and pass now.
+- Full migration selection (owner, metadata, volume inventory, volume migration),
+  root oracle, five consecutive runs: 161/161/161/161/161 passed, 0 failed,
+  0 skipped.
+- ext4: owner+metadata files with an ext4 named volume mounted at `/dev/shm`:
+  128 passed, 0 skipped.
+- The production image `tinyassets-uid-u2:d217`
+  (`sha256:59724c85f500a472bff5963afb7a4318d3016e1f5de0901e01d2713fd6fad371`)
+  passed its build and the privileged-chain check. It passes
+  `role_owner_migration_probe.py` with production caps (no `CAP_SYS_ADMIN`) and
+  still reports `old_cmd_boot=false`, `startup_active=false`.
+- `name_to_handle_at` sits in the CAP_SYS_ADMIN group of Docker's default seccomp
+  profile. The daemon service runs `seccomp=unconfined` (compose.yml), the same
+  as the probe. Under a default profile, migration refuses loudly rather than
+  misattributing provenance.

@@ -117,34 +117,58 @@ LEGACY_IDS = [1001, 1001]
 
 
 OVERLAYFS = 0x794C7630
+#: D217: filesystems whose file handle carries a per-lifetime ``i_generation``.
+GENERATION_FILESYSTEMS = {0xEF53: "ext4", 0x01021994: "tmpfs"}
 
 
-def _generation(parent, name, info):
-    """Inode birth time: an unlinked inode number is reused, a birth is not.
+class _FileHandle(ctypes.Structure):
+    _fields_ = [("handle_bytes", ctypes.c_uint), ("handle_type", ctypes.c_int),
+                ("f_handle", ctypes.c_ubyte * 128)]
 
-    An empty ``name`` reads the open descriptor ``parent`` itself. D215:
-    overlayfs copy-up re-births an inode under the same number, so a birth
-    there is not a generation; refuse rather than misattribute provenance.
-    """
-    libc = ctypes.CDLL(None, use_errno=True)
-    buffer = ctypes.create_string_buffer(256)
-    if libc.fstatfs(parent, buffer) != 0:
-        code = ctypes.get_errno()
-        raise OSError(code, os.strerror(code), name)
-    if ctypes.c_long.from_buffer(buffer).value == OVERLAYFS:
-        raise MigrationRefused(f"overlayfs cannot bind inode generation: {name}")
-    # AT_SYMLINK_NOFOLLOW (| AT_EMPTY_PATH); mask STATX_INO | STATX_BTIME.
-    flags = 0x100 if name else 0x1100
+
+def _statx(libc, parent, name, flags, buffer):
     if libc.statx(parent, os.fsencode(name), flags, 0x900, buffer) != 0:
         code = ctypes.get_errno()
         raise OSError(code, os.strerror(code), name)
     mask, inode = struct.unpack_from("<I", buffer, 0)[0], struct.unpack_from("<Q", buffer, 0x20)[0]
     if not mask & 0x800:
         raise MigrationRefused(f"filesystem lacks inode birth time: {name}")
-    if inode != info.st_ino:
+    return inode, list(struct.unpack_from("<qI", buffer, 0x50))
+
+
+def _generation(parent, name, info):
+    """Birth time plus file handle: unique for one inode lifetime.
+
+    An empty ``name`` reads the open descriptor ``parent`` itself. D215:
+    overlayfs copy-up re-births an inode under the same number, so a birth
+    there is not a generation; refuse rather than misattribute provenance.
+    D217: birth time is stamped from a coarse clock, so a replacement born in
+    the same tick, often under a recycled number, has the identical btime. The
+    file handle embeds the kernel's random ``i_generation``, which differs.
+    Only filesystems known to encode it are accepted; all others refuse.
+    """
+    libc = ctypes.CDLL(None, use_errno=True)
+    buffer = ctypes.create_string_buffer(256)
+    if libc.fstatfs(parent, buffer) != 0:
+        code = ctypes.get_errno()
+        raise OSError(code, os.strerror(code), name)
+    kind = ctypes.c_long.from_buffer(buffer).value
+    if kind == OVERLAYFS:
+        raise MigrationRefused(f"overlayfs cannot bind inode generation: {name}")
+    if kind not in GENERATION_FILESYSTEMS:
+        raise MigrationRefused(f"filesystem {kind:#x} cannot bind inode generation: {name}")
+    # AT_SYMLINK_NOFOLLOW (| AT_EMPTY_PATH); mask STATX_INO | STATX_BTIME.
+    flags = 0x100 if name else 0x1100
+    inode, born = _statx(libc, parent, name, flags, buffer)
+    handle, mount = _FileHandle(handle_bytes=128), ctypes.c_int()
+    # name_to_handle_at never follows the final symlink without AT_SYMLINK_FOLLOW.
+    if libc.name_to_handle_at(parent, os.fsencode(name), ctypes.byref(handle),
+                              ctypes.byref(mount), flags & 0x1000) != 0:
+        code = ctypes.get_errno()
+        raise MigrationRefused(f"cannot bind inode generation ({os.strerror(code)}): {name}")
+    if (inode, born) != _statx(libc, parent, name, flags, buffer) or inode != info.st_ino:
         raise MigrationRefused(f"entry replaced during scan: {name}")
-    seconds, nanoseconds = struct.unpack_from("<qI", buffer, 0x50)
-    return [seconds, nanoseconds]
+    return born + [handle.handle_type, bytes(handle.f_handle[:handle.handle_bytes]).hex()]
 
 
 def _migrated(journal):

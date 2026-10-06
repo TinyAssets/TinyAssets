@@ -2291,3 +2291,27 @@ entries and retains the existing D214/D215 generation/provenance rules unchanged
 This permits newly created or removed visible entries on restart without
 silently reallocating owners or discarding the journal. New principals remain
 a loud refusal pending a separate admission generation contract.
+
+### D217. Inode generation is birth time plus the kernel file handle
+
+Supersedes D214's birth-time-only generation. Measured in the Linux oracle
+(kernel 6.6): birth time is stamped from a coarse clock, so a write-then-rename
+replacement got the identical btime in 299/300 tries on tmpfs and 296/300 on a
+Docker local volume (ext4). ext4 also handed the replacement the unlinked inode
+number in 299/300 tries. The replacement then matched the recorded `(key,
+generation)` and inherited another inode's provenance, which is the D214 bug.
+It surfaced as the intermittent `KeyError: 'ids'` in the stale-record
+regression, where the recorded and live generations printed identical.
+
+`_generation` now returns `[btime_s, btime_ns, handle_type, handle_hex]`. The
+handle comes from `name_to_handle_at`, which embeds the random `i_generation`
+the kernel assigns at each inode allocation on ext4 and tmpfs. It needs no
+capability, never follows the final symlink and covers files, directories and
+symlinks. A statx before and after the handle must agree. Only filesystems
+known to encode `i_generation` are accepted (ext4, tmpfs); every other
+filesystem, and a handle failure, refuses. The overlayfs refusal (D215) stands.
+`FS_IOC_GETVERSION` was rejected because tmpfs does not implement it and a
+symlink cannot be opened for the ioctl. A `trusted.*` nonce was rejected for
+D215's reason: the startup window does not hold `CAP_SYS_ADMIN`. Journals
+holding the old two-field generation do not match and take the D214
+unrecorded-inode rule. There is no production journal yet (clean cutover).

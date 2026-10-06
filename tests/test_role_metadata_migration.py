@@ -8,7 +8,7 @@ import pytest
 
 from deploy import role_metadata_migration as migration
 from deploy import role_owner_migration as owner
-from tests.test_role_owner_migration import metadata, volume  # noqa: F401
+from tests.test_role_owner_migration import freeze_birth_time, metadata, volume  # noqa: F401
 from tinyassets import role_modes
 
 
@@ -255,3 +255,41 @@ def test_d214_replaced_inode_reverses_to_legacy_after_any_cycle(volume, name, cy
     assert (path.stat().st_uid, path.stat().st_gid) == (1001, 1001)
     assert stat.S_IMODE(path.stat().st_mode) == 0o600
     assert path.read_bytes() == b"new generation"
+
+
+def test_d217_equal_birth_time_replacement_reverses_to_legacy(volume, monkeypatch):  # noqa: F811
+    import json
+
+    freeze_birth_time(monkeypatch)
+    seed(volume)
+    run(volume)
+    path = volume / "alice/.credential-vault.json"
+    _replace(path)
+    # The replacement shares the recorded birth time; only i_generation differs.
+    journal = volume / owner.STATE / "metadata.json"
+    document = json.loads(journal.read_text())
+    row = next(r for r in document["rows"] if r["path"] == "alice/.credential-vault.json")
+    row["key"] = owner._key(os.stat(path, follow_symlinks=False))
+    row["original"] = {"ids": [1001, 4242], "mode": 0o600}
+    journal.write_text(json.dumps(document))
+    run(volume)
+    run(volume, reverse=True)
+    assert (path.stat().st_uid, path.stat().st_gid) == (1001, 1001)
+    assert path.read_bytes() == b"new generation"
+
+
+@pytest.mark.parametrize("kind", ["file", "symlink", "directory"])
+def test_d217_generation_survives_ownership_changes(volume, kind):  # noqa: F811
+    parent = os.open(volume / "alice", os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        name = {"file": ".credential-vault.json", "directory": "work"}.get(kind)
+        if name is None:
+            name = "link"
+            os.symlink("/outside", volume / "alice" / name)
+        info = os.stat(name, dir_fd=parent, follow_symlinks=False)
+        before = owner._generation(parent, name, info)
+        os.chown(name, 300001, 300001, dir_fd=parent, follow_symlinks=False)
+        assert owner._generation(parent, name, info) == before
+        assert len(before) == 4 and before[3]
+    finally:
+        os.close(parent)

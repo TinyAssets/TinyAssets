@@ -1,15 +1,18 @@
 """Real pre-drop Linux migration proofs; run with linux_oracle --as-root."""
 
+import ctypes
 import json
 import os
 import shutil
 import stat
+import struct
 import subprocess
 import tempfile
 from pathlib import Path
 
 import pytest
 
+from deploy import role_owner_migration
 from deploy.role_owner_migration import OVERLAYFS, STATE, MigrationRefused, _key, migrate
 
 
@@ -623,6 +626,30 @@ def test_d214_resumed_reverse_refuses_a_replaced_generation(volume):
     assert (path.stat().st_uid, path.stat().st_gid) == (300001, 300001)
 
 
+def freeze_birth_time(monkeypatch):
+    """D217: every inode is born in the same clock tick, as on a coarse clock."""
+    real = ctypes.CDLL
+
+    class Frozen:
+        def __init__(self, *args, **kwargs):
+            self._libc = real(*args, **kwargs)
+
+        def __getattr__(self, name):
+            return getattr(self._libc, name)
+
+        def statx(self, *args):
+            result = self._libc.statx(*args)
+            struct.pack_into("<qI", args[-1], 0x50, 1_790_000_000, 0)
+            return result
+
+    monkeypatch.setattr(role_owner_migration.ctypes, "CDLL", Frozen)
+
+
+def test_d217_equal_birth_time_replacement_is_a_new_generation(volume, monkeypatch):
+    freeze_birth_time(monkeypatch)
+    test_d214_resumed_reverse_refuses_a_replaced_generation(volume)
+
+
 def test_d214_resumed_journal_without_generation_refuses(volume):
     def crash(point):
         if point == "journal":
@@ -652,3 +679,11 @@ def test_d215_overlayfs_data_root_refuses(tmp_path):
     with pytest.raises(MigrationRefused, match="overlayfs"):
         run(root)
     assert metadata(root) == before
+
+
+def test_d217_filesystem_without_generation_refuses(volume, monkeypatch):
+    monkeypatch.setattr(role_owner_migration, "GENERATION_FILESYSTEMS", {})
+    before = metadata(volume)
+    with pytest.raises(MigrationRefused, match="cannot bind inode generation"):
+        run(volume)
+    assert metadata(volume) == before
