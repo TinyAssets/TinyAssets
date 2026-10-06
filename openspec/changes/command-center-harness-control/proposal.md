@@ -1,3 +1,10 @@
+## Consolidation into K1
+
+Extension activation, hooks, commands and cards are superseded by
+[`one-extension-unit`](../one-extension-unit/proposal.md). Merged parser and
+fail-closed boundary work (#4503/#4508) remain foundations; settings and
+unrelated harness primitives retain their scope here.
+
 ## Why
 
 Audit L11–L13 found packaged settings that runtime ignores, tool-only extensions, and a custom-UI bridge that cannot operate the owner's harness. Founder direction (2026-10-04) makes the owner king of the command center, including the main agent, with cross-user isolation as the only platform invariant.
