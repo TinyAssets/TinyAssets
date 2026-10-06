@@ -752,7 +752,7 @@ def test_shards_run_the_reviewed_runner_with_the_shard_floor() -> None:
 
 
 def test_affected_tests_run_on_the_pr_only_and_never_carry_a_required_name() -> None:
-    """The PR slice is advisory: the merge-group shards stay the gate."""
+    """PR shards report through the required aggregate; queue shards check integration."""
     job = _load()["jobs"]["affected-tests"]
     assert _expr(job.get("if", "")) == "github.event_name == 'pull_request'"
     assert not str(job["name"]).startswith("required-tests")
@@ -887,3 +887,40 @@ def test_a_selective_run_still_refuses_a_skipped_browser_proof() -> None:
     for run in (whole, selective):
         assert "--marker real_browser" in run
         assert "|| true" not in run
+
+
+def test_pr_gate_requires_structural_and_affected_success(tmp_path):
+    import os
+    import subprocess
+
+    job = _load()["jobs"]["required-tests"]
+    assert {"structural-guards", "affected-tests"} <= set(job["needs"])
+    step = next(s for s in job["steps"] if "AFFECTED_RESULT" in s.get("env", {}))
+    assert _expr(step["if"]) == "github.event_name == 'pull_request'"
+    assert step["env"]["AFFECTED_RESULT"] == "${{ needs.affected-tests.result }}"
+    assert step["env"]["STRUCTURAL_RESULT"] == "${{ needs.structural-guards.result }}"
+    for structural, affected, expected in (
+        ("success", "success", 0), ("failure", "success", 1),
+        ("success", "failure", 1), ("success", "cancelled", 1),
+        ("skipped", "success", 1), ("success", "skipped", 1),
+    ):
+        result = subprocess.run(
+            ["bash", "-c", step["run"]], cwd=tmp_path, capture_output=True, text=True,
+            env={**os.environ, "STRUCTURAL_RESULT": structural, "AFFECTED_RESULT": affected},
+        )
+        assert result.returncode == expected, result.stdout + result.stderr
+        if expected:
+            assert "Fix the failures" in result.stdout
+
+
+def test_structural_job_runs_unconditionally_and_slow_collection_has_browser():
+    jobs = _load()["jobs"]
+    structural = jobs["structural-guards"]
+    assert "if" not in structural
+    assert not structural.get("continue-on-error")
+    step = next(s for s in structural["steps"]
+                if "scripts.ci_structural_guards" in s.get("run", ""))
+    assert "if" not in step and not step.get("continue-on-error")
+    slow_run = "\n".join(s.get("run", "") for s in jobs["slow-tests"]["steps"])
+    assert "pip install -e '.[dev,browser]'" in slow_run
+    assert "python -m playwright install --with-deps chromium" in slow_run
