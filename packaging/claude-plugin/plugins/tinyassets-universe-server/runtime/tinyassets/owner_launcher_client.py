@@ -100,21 +100,48 @@ class OwnerLauncherClient:
             MAX_IMAGE_SOURCE_BYTES,
         )
 
-        if (not isinstance(data, bytes) or len(data) > MAX_IMAGE_SOURCE_BYTES
+        return self._data_cell(data, principal=principal, command_center=command_center,
+            identity=identity, kind='image-decoder', extra={'mime': mime}, profile='cell-deny',
+            input_bound=MAX_IMAGE_SOURCE_BYTES, output_bound=MAX_IMAGE_BYTES + 16384,
+            timeout=DECODE_WALL_SECONDS + 10)
+
+    def preview(self, spec, wall_seconds, *, principal, command_center, identity):
+        from tinyassets.ui_preview import MAX_CHILD_OUTPUT
+
+        if type(wall_seconds) not in (int, float) or not 0 < wall_seconds <= 60:
+            raise ValueError('invalid preview deadline')
+        data = json.dumps(dict(spec=spec, wall_seconds=wall_seconds)).encode()
+        return self._data_cell(data, principal=principal, command_center=command_center,
+            identity=identity, kind='ui-preview', extra={}, profile='cell-nested',
+            input_bound=MAX_CHILD_OUTPUT, output_bound=MAX_CHILD_OUTPUT + 16384, timeout=85)
+
+    def _data_cell(self, data, *, principal, command_center, identity, kind, extra,
+                   profile, input_bound, output_bound, timeout, directory_fd=None):
+        if (not isinstance(data, bytes) or len(data) > input_bound
                 or type(identity) is not OwnerIdentity or identity.uid != identity.gid
                 or not OWNER_ID_FIRST <= identity.uid <= OWNER_ID_LAST):
             raise ValueError('invalid admitted decoder input')
-        document = dict(op='SPAWN', kind='image-decoder', principal=principal,
-                        command_center=command_center, mime=mime)
+        document = dict(op='SPAWN', kind=kind, principal=principal,
+                        command_center=command_center, **extra)
+        source = None
+        if directory_fd is not None:
+            info = os.fstat(directory_fd)
+            if (not stat.S_ISDIR(info.st_mode) or info.st_gid != identity.gid
+                    or info.st_uid not in (1001, identity.uid)):
+                raise ValueError('invalid preview output root')
+            source = [info.st_dev, info.st_ino]
         with self._lock:
             self._check()
-            self._channel.settimeout(DECODE_WALL_SECONDS + 10)
+            self._channel.settimeout(timeout)
             try:
                 parent, child = socket.socketpair()
                 with parent, child:
-                    parent.settimeout(DECODE_WALL_SECONDS + 10)
+                    parent.settimeout(timeout)
+                    handles = [child.fileno()]
+                    if directory_fd is not None:
+                        handles.append(directory_fd)
                     self._channel.sendmsg([json.dumps(document).encode()], [(
-                        socket.SOL_SOCKET, socket.SCM_RIGHTS, array.array('i', [child.fileno()]))])
+                        socket.SOL_SOCKET, socket.SCM_RIGHTS, array.array('i', handles))])
                     child.close()
                     output = bytearray()
                     data_failure = False
@@ -123,7 +150,7 @@ class OwnerLauncherClient:
                         parent.shutdown(socket.SHUT_WR)
                         while part := parent.recv(65536):
                             output.extend(part)
-                            if len(output) > MAX_IMAGE_BYTES + 16384:
+                            if len(output) > output_bound:
                                 raise RuntimeError('decoder output exceeds its bound')
                     except (BrokenPipeError, ConnectionResetError):
                         # Refusal closes the received input endpoint without
@@ -146,7 +173,8 @@ class OwnerLauncherClient:
                 if (cell.get('uid') != inner or cell.get('gid') != inner
                         or cell.get('fds') != [0, 1, 2] or cell.get('groups') != []
                         or cell.get('caps') != 'zero' or cell.get('nnp') != 1
-                        or cell.get('profile') != 'cell-deny'):
+                        or cell.get('profile') != profile
+                        or (source is not None and cell.get('source') != source)):
                     raise RuntimeError('dedicated decoder cell proof is absent')
                 return SimpleNamespace(returncode=answer['returncode'], stdout=payload, cell=cell)
             except OwnerLaunchRefused:
@@ -154,6 +182,14 @@ class OwnerLauncherClient:
             except BaseException:
                 self._close()
                 raise
+
+    def write_preview(self, data, ui_id, *, directory_fd, principal, command_center, identity):
+        from tinyassets.ui_preview import MAX_CHILD_OUTPUT
+
+        return self._data_cell(data, principal=principal, command_center=command_center,
+            identity=identity, kind='preview-write', extra={'ui_id': ui_id}, profile='cell-deny',
+            input_bound=MAX_CHILD_OUTPUT, output_bound=16384, timeout=45,
+            directory_fd=directory_fd)
 
     def stop(self):
         with self._lock:

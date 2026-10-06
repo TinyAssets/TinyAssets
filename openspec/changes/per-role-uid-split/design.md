@@ -6,7 +6,8 @@ references to "founder D61" mean the newer reachability/quarantine rule.
 
 **D60 (2026-10-05) supersedes all shared engine-identity statements below.**
 Every owner receives a dedicated UID AND GID. D8's shared identity clause and
-D58 are historical. Startup remains inactive; ui-preview remains unadmitted.
+D58 are historical. Startup remains inactive. Founder D73 below admits only
+ui-preview's cell-nested exception, subject to actual class acceptance.
 
 **founder decision 2026-10-05: fold + build with probes.** D9 folds all seven
 round-3 required changes and supersedes conflicting historical decisions below.
@@ -767,7 +768,8 @@ io_uring, ptrace and host namespace restrictions. Install after namespace setup.
 | workspace-provision | cell-links | venv/npm symlinks; namespace setup precedes filter |
 | workspace-registry | cell-deny | registry channel only |
 | workspace-worker, workspace-git, git_bridge | cell-links | git symlink checkout |
-| ui-preview, image-decoder | cell-deny | no demonstrated nested requirement |
+| ui-preview | cell-nested | founder D73: Chromium keeps its own sandbox inside the owner cell |
+| image-decoder | cell-deny | no demonstrated nested requirement |
 | local box execution | cell-deny | no exception without a measured nested operation |
 | ingestion/video and other owner utilities | cell-deny | default for new kinds |
 
@@ -2129,7 +2131,7 @@ remain disabled results, not exceptions. Selected bridge refusals return rc126
 with a fixed error, preserving the existing structured-result API without any
 host fallback. Production and unit regressions cover this caller shape.
 
-### D73. Mechanical dedicated-owner access to sealed launch snapshots
+### D73 (historical mechanical entry). Dedicated-owner access to sealed launch snapshots
 
 D54's shared work-group snapshot permissions cannot admit D60 identities.
 Keep sealed launch credentials as daemon-owned protected metadata (D65), not
@@ -2161,3 +2163,43 @@ into a data-only module whose interface rejects filenames, paths and streams
 before calling the parser. The actual decoder's transforms and resource limits
 stay unchanged. This closes the four pre-existing extra sites without new
 privilege, startup activation, or a new engine admission.
+
+### D73 (founder, 2026-10-06). Admit sandboxed ui-preview only
+
+This founder decision supersedes D58's preview deferral and amends D9's
+ui-preview row only. Keep Chromium's sandbox enabled inside the dedicated
+owner bubblewrap cell. The existing cell-nested policy is selected by the
+static launcher kind, never by request data. All other D9 class profiles,
+including its already-decided nested outer-cell exceptions, remain unchanged.
+Strict classes must deny nested user namespaces. No additional retained
+privilege or privileged component is introduced. The earlier snapshot entry
+also called D73 remains historical; qualified references disambiguate them.
+
+### D75. Mechanical data-only preview transport
+
+After authenticated current-owner/center admission and broker identity lookup,
+the daemon fetches only that owner's UI asset rows and sends bounded immutable
+JSON/asset bytes over the existing socketpair. The preview cell has no owner
+tree, shared SQLite, vault, broker state or credential mount. Its only writable
+filesystem is private ephemeral scratch; the daemon does not read that scratch.
+The screenshot returns as bounded bytes. A separate fixed preview-write
+operation runs the existing no-follow atomic writer under the same owner UID/GID
+with cell-deny. It accepts only bounded bytes and a validated UI name, pins the
+admitted center descriptor, checks exact kernel path/owner group and mounted
+device/inode, then closes the descriptor before writing. This operation mounts
+only that center; it never executes UI code or decodes the PNG. It preserves
+owner identity on newly created screenshots so D60 readers can consume them.
+The renderer itself never receives that mount. The fixed preview entry mounts the shipped browser
+and font configuration read-only, closes all bootstrap descriptors, and preserves
+the existing process-tree RSS/process-count/deadline supervisor inside the cell.
+The outer launcher imposes a second deadline. A selected broker without the
+bounded client refuses rather than using legacy PID-only confinement.
+Chromium's actual command line is checked for absence of --no-sandbox.
+Startup, migration and rollback remain owned by U2 and inactive here.
+
+For a protected daemon-owned canonical root, U2 must supply the owner-writable
+`previews` subtree and actual owner-group read/traverse on its parent. A chmod
+mask alone does not grant `group::r-x` when an extended ACL already exists.
+The writer never adds parent write permission, changes ownership, or bypasses
+a missing subtree/ACL. These are migration/admission prerequisites, not a
+request for retained privilege.

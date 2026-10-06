@@ -4,6 +4,20 @@
 
 ## ADDED Requirements
 
+### Requirement: Preview keeps Chromium sandboxed inside its owner cell
+
+The ui-preview class SHALL use the fixed cell-nested profile under founder D73;
+other D9 class assignments SHALL remain unchanged. Preview SHALL receive only
+the admitted owner's bounded UI and asset bytes and SHALL have no shared store,
+owner tree, credential or broker state mount. Chromium's sandbox SHALL remain
+enabled. Selected role mode SHALL refuse missing bounded launcher admission.
+
+#### Scenario: Actual preview renders with two isolation layers
+- **WHEN** each dedicated owner launches an actual preview through the launcher
+- **THEN** Chromium renders that owner's assets with no --no-sandbox argument
+- **AND** foreign scope, descriptor, filesystem, IPC and network probes deny
+- **AND** strict-profile classes continue to deny nested user namespaces
+
 ### Requirement: Bounded launcher authenticates every private-channel packet
 
 Under D62/D68, the launcher SHALL retain only SETUID/SETGID within the fixed

@@ -118,7 +118,7 @@ root=Path(tempfile.mkdtemp(prefix='role-d60-readers-'))
 os.chown(root,1001,1001); root.chmod(0o700)
 os.environ['TINYASSETS_DATA_DIR']=str(root)
 paths=('activity.log','workspace/record.txt','wiki/page.md','canon/record.md',
-       'output/record.md','logs/run.log')
+       'output/record.md','logs/run.log','previews/owner-preview.png')
 sentinel=b'BOB-PRIVATE-SYNTHETIC-SENTINEL'
 bob=root/'bob'; bob.mkdir(); os.chown(bob,1001,300002)
 cases=[]; foreign_files=[]

@@ -278,8 +278,20 @@ def _render_spec(spec: dict[str, Any], wall_seconds: float) -> dict[str, Any]:
 
 
 def _run_child(spec: dict[str, Any], wall_seconds: float) -> dict[str, Any]:
+    from tinyassets import role_decoder
+
     with _host_slot():
-        out, err, code, breach = _supervised(json.dumps(spec).encode("utf-8"), wall_seconds)
+        if role_decoder._bounded_client is not None:
+            from tinyassets.role_preview import render
+
+            result = render(spec, wall_seconds)
+            out, err, code, breach = result.stdout, b'', result.returncode, ''
+        else:
+            from tinyassets.broker.supervisor import broker_selected
+
+            if broker_selected():
+                raise PreviewUnavailable('ui_preview_unavailable: bounded launcher is required')
+            out, err, code, breach = _supervised(json.dumps(spec).encode("utf-8"), wall_seconds)
     if breach:
         raise PreviewUnavailable(f"ui_preview_{breach}")
     lines = [line for line in out.decode("utf-8", "replace").splitlines()
@@ -482,6 +494,13 @@ def _kill_tree_windows(pid: int) -> None:  # pragma: no cover - dev hosts only
                 child.kill()
 
 
+def _assert_browser_sandbox(browser):
+    session = browser.new_browser_cdp_session()
+    arguments = session.send('Browser.getBrowserCommandLine')['arguments']
+    if '--no-sandbox' in arguments:
+        raise RuntimeError('preview Chromium sandbox is disabled')
+
+
 def _child(spec: dict[str, Any]) -> dict[str, Any]:
     from urllib.parse import unquote, urlsplit
 
@@ -497,8 +516,12 @@ def _child(spec: dict[str, Any]) -> dict[str, Any]:
         served["/__preview/lib/" + name] = ui_library_set.library_bytes(name)
     missing = []
     for path, sha in spec["hashes"].items():
-        found = read_app_ui_asset(spec["base_path"], owner_user_id=spec["owner_user_id"],
-                                  sha256=sha)
+        if 'asset_bytes' in spec:
+            encoded = spec['asset_bytes'].get(path)
+            found = None if encoded is None else base64.b64decode(encoded, validate=True)
+        else:
+            found = read_app_ui_asset(spec["base_path"], owner_user_id=spec["owner_user_id"],
+                                      sha256=sha)
         if found is None:
             missing.append(path)
         else:
@@ -560,6 +583,7 @@ def _child(spec: dict[str, Any]) -> dict[str, Any]:
         except PlaywrightError as exc:
             return {"unavailable": str(exc).splitlines()[0][:300]}
         try:
+            _assert_browser_sandbox(browser)
             # No service_workers="block": its injected shim throws inside a
             # sandboxed frame and would be reported as the UI's own error.
             context = browser.new_context(
@@ -606,6 +630,7 @@ def _child(spec: dict[str, Any]) -> dict[str, Any]:
         "bridge_calls": calls, "bridge_actions_dropped": int(state.get("dropped") or 0),
         "blocked_requests": blocked,
         "missing_assets": missing, "delivery_error": state.get("error") or "",
+        "chromium_sandbox": True,
         "png_base64": base64.b64encode(png).decode("ascii"),
     }
 
@@ -659,6 +684,15 @@ def write_preview(universe_dir: str | Path, ui_id: str, png: bytes) -> str:
             f"ui_preview_failed: ui_id {ui_id!r} is not lowercase letters, digits and dashes")
     name = f"{ui_id}.png"
     try:
+        from tinyassets import role_decoder
+        from tinyassets.broker.supervisor import broker_selected
+
+        if role_decoder._bounded_client is not None:
+            from tinyassets.role_preview import write
+
+            return write(universe_dir, ui_id, png)
+        if broker_selected():
+            raise PreviewUnavailable('ui_preview_unavailable: bounded launcher is required')
         if fs._POSIX:
             os.close(fs.open_dir_nofollow(universe_dir))
         write_universe_file(universe_dir, f"{PREVIEW_DIR}/{name}", png)
