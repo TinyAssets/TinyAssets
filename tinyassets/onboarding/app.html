@@ -2455,8 +2455,8 @@
     }else if(!turnStartedAt){
       // A turn another window started ends on the server's word; stop painting
       // it now rather than until the next beat.
-      interruptRequested=false; flushAfterInterrupt=false;
       serverTurn=null; renderWorking();
+      flushAfterTurn();
     }
     renderStop();
   }
@@ -9831,10 +9831,8 @@
     let url = null;
     try { url = new URL(String(raw)); } catch (_e) { url = null; }
     const safe = !!url && url.protocol === "https:" && !url.username && !url.password;
-    // Host and path, so an invented path is visible. Bounded, because the text
-    // is the agent's and this sits beside a box the owner is about to type a
-    // secret into.
-    const where = safe ? (url.host + (url.pathname === "/" ? "" : url.pathname)).slice(0, 120)
+    // Show the complete destination; the card's CSS wraps long links.
+    const where = safe ? url.host + (url.pathname === "/" ? "" : url.pathname) + url.search + url.hash
                        : String(raw).slice(0, 120);
     if(!safe){
       const dead = document.createElement("span");
