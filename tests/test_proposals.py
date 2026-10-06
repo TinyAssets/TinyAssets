@@ -7,6 +7,7 @@ import pytest
 from fastmcp import Client
 
 from tests.engine_authority_helpers import mock_engine_admission
+from tests.owner_answer import answer_request as owner_answer
 from tests.test_pending_requests import _login, _logout, _make_universe
 from tinyassets import engine_mcp_server as server
 from tinyassets import engine_steering
@@ -95,10 +96,10 @@ def test_approval_starts_once(owner, monkeypatch):
                         lambda uid, row: calls.append((uid, row["action"])) or {"activity_id": "a"})
     row = propose()
     payload = {"request_id": row["request_id"], "values": {}, "decision": "allowed"}
-    result = api.answer_request(universe_id="u-test", payload=payload)
+    result = owner_answer(universe_id="u-test", payload=payload)
     assert result["activity_id"] == "a"
     assert result["decision"] == "allowed"
-    assert api.answer_request(universe_id="u-test", payload=payload)["error"] == "already_resolved"
+    assert owner_answer(universe_id="u-test", payload=payload)["error"] == "already_resolved"
     assert calls == [("u-test", row["action"])]
 
 
@@ -111,7 +112,7 @@ def test_decline_does_not_start(owner, monkeypatch, decline):
 
     monkeypatch.setattr(api, "_start_approved_proposal", forbidden)
     row = propose()
-    result = api.answer_request(universe_id="u-test", payload={
+    result = owner_answer(universe_id="u-test", payload={
         "request_id": row["request_id"], "values": {}, **decline,
     })
     assert result["status"] in {"answered", "dismissed"}
@@ -124,7 +125,7 @@ def test_unwired_approval_refuses_in_the_open_and_stays_pending(owner):
     once #4221 lands; an unhandled NotImplementedError reached them instead.
     """
     row = propose()
-    result = api.answer_request(universe_id="u-test", payload={
+    result = owner_answer(universe_id="u-test", payload={
         "request_id": row["request_id"], "values": {},
     })
     assert result["error"] == "proposal_start_unavailable"
@@ -132,9 +133,24 @@ def test_unwired_approval_refuses_in_the_open_and_stays_pending(owner):
     assert "#4221" in result["detail"]
     assert get_request(owner, row["request_id"])["status"] == "pending"
     # Still refused on a second Approve, and still never resolved.
-    assert api.answer_request(universe_id="u-test", payload={
+    assert owner_answer(universe_id="u-test", payload={
         "request_id": row["request_id"], "values": {},
     })["error"] == "proposal_start_unavailable"
+    assert get_request(owner, row["request_id"])["status"] == "pending"
+
+
+@pytest.mark.parametrize("decision", [{"decision": "allowed"}, {"decision": "declined"},
+                                      {"dismiss": True}])
+def test_bearer_cannot_decide_a_proposed_activity(owner, monkeypatch, decision):
+    def forbidden(*args):
+        pytest.fail("bearer answer must not start an activity")
+
+    monkeypatch.setattr(api, "_start_approved_proposal", forbidden)
+    row = propose()
+    result = api.answer_request(universe_id="u-test", payload={
+        "request_id": row["request_id"], "values": {}, **decision,
+    })
+    assert result["error"] == "interactive_approval_required"
     assert get_request(owner, row["request_id"])["status"] == "pending"
 
 

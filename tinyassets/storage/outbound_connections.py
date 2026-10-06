@@ -919,6 +919,7 @@ def _run_proxy_worker(
     """Run the trusted dispatcher in a separate spawned process."""
     from tinyassets.exceptions import ProviderAuthorityHeldError
     from tinyassets.request_budget import RequestBudgetExceeded
+    from tinyassets.storage.agent_request_usage import InferenceUsageRequired
 
     _sanitize_child_environment()
     try:
@@ -985,6 +986,8 @@ def _run_proxy_worker(
                 _send_message(channel, {"ok": False, "error_type": "InferenceUsageStopped",
                                         "reason": exc.reason,
                                         "usage_id": exc.request_receipt.get("usage_id")})
+            except InferenceUsageRequired:
+                _send_message(channel, {"ok": False, "error_type": "InferenceUsageRequired"})
             except ProviderAuthorityHeldError:
                 _send_message(channel, {"ok": False, "error_type": "ProviderAuthorityHeldError",
                                         "message": "inference usage authority refused"})
@@ -1063,6 +1066,10 @@ class _ProxyChannel:
             from tinyassets.storage.agent_request_usage import InferenceUsageStopped
 
             raise InferenceUsageStopped(response.get("reason"), response.get("usage_id"))
+        if error_type == "InferenceUsageRequired":
+            from tinyassets.storage.agent_request_usage import InferenceUsageRequired
+
+            raise InferenceUsageRequired()
         if error_type == "ProviderAuthorityHeldError":
             from tinyassets.exceptions import ProviderAuthorityHeldError
 

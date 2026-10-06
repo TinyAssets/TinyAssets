@@ -2555,12 +2555,17 @@ def onboarding_routes() -> list[Any]:
         handle_service_worker,
     )
     from tinyassets.onboarding.owner_sessions import begin as owner_sign_in
+    from tinyassets.onboarding.owner_unread import handle_unread
+    from tinyassets.onboarding.public_run import handle_public_run
     from tinyassets.onboarding.soul import handle_soul
     from tinyassets.onboarding.ui_frame import handle_ui_frame
     from tinyassets.owner_door import owner_door_routes
 
     return [
         Route("/app", _handle_app, methods=["GET", "HEAD"]),
+        Route("/app/run/{listing}", handle_public_run, methods=["GET", "HEAD"]),
+        Route("/app/run/{listing}/preview.png", handle_public_run, methods=["GET", "HEAD"]),
+        Route("/app/unread", handle_unread, methods=["GET", "POST"]),
         Route("/app/owner-sign-in", owner_sign_in, methods=["GET"]),
         Route("/app/approvals/{operation}", handle_approval, methods=["POST"]),
         Route("/app/ui-frame", handle_ui_frame, methods=["GET", "HEAD"]),

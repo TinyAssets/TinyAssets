@@ -1622,6 +1622,24 @@ _WRITE_GRAPH_CONNECTIONS_CHAPTER = """\
     failure this replaces: you are not being careful, you are making them
     answer the same question in three shapes.
 
+    **Inference recovery (including a second-model review).** A direct POST to
+    a model connection can fail with ``InferenceUsageRequired``: "HTTP inference
+    requires a parent usage reference" (older brokers said "inference usage
+    authority refused"). This is missing accounting, not a request to extend
+    the HTTP grant. Do not retry the POST or ask the owner to approve an
+    accounting bypass. Build a ``prompt_template`` node and run it through
+    ``run_graph``; the model router supplies its parent usage reference.
+    Read ``model_options`` and the owner's model preferences, then use the
+    node's ``llm_policy`` to select the approved review model. Read back the
+    saved branch before running it and the run output before claiming a review.
+    If the selected model needs owner access, raise a fieldless pending_request
+    with action ``type: bind_model_access``, the actual ``agent_binding_id``,
+    ``expected_revision``, ``provider`` and complete ``model_access`` from that
+    binding. Preserve the other accepted providers. Wait for the owner's answer.
+    Never request a new key merely to fix
+    missing accounting. An invalid or closed usage reference is a platform
+    failure to report, not permission to mint your own reference.
+
     **If you ALREADY hold a key for that destination, do not ask for it again.**
     Check ``read_graph target="connections"`` first. To widen an existing grant
     the action is ``extend_http`` on the same destination — new endpoints only,
@@ -1729,6 +1747,13 @@ _WRITE_GRAPH_CONNECTIONS_CHAPTER = """\
     Read ``read_graph target="pending_requests"`` to see what is still waiting
     and what they answered. You cannot answer your own ask, and you should not
     try: that is theirs.
+
+    Clear or decline closes one ask, for EVERY kind including connect and
+    reconnect. It does not mean "never ask again". When the need recurs or the
+    user asks again, raise a new ``pending_request`` with ``operation="ask"``
+    and the same action and fields. Only "don't ask again" mutes; respect the
+    rail's muted list until the user lifts that choice. The user can also
+    connect or reconnect from the connection controls at any time.
 
     An ``extend_http`` ask is checked against the key you already hold when
     you RAISE it. One that adds nothing comes back ``already_held`` with the

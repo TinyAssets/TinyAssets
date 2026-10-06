@@ -7,6 +7,8 @@ import logging
 import threading
 from typing import Any
 
+from tinyassets.onboarding.public_run import share_url
+
 logger = logging.getLogger(__name__)
 
 # No unbounded executor queue or thread per publication. The renderer retains
@@ -27,7 +29,8 @@ def completion_for(agent: dict[str, Any], *, universe_id: str = "",
     version = package.get("version", agent["content_fingerprint"])
     update = (isinstance(version, int) and version > 1) or bool(
         (action or {}).get("release", {}).get("parent_release_id"))
-    result = {"listing_id": agent["agent_definition_id"], "share_url": None,
+    result = {"listing_id": agent["agent_definition_id"],
+              "share_url": share_url(agent["agent_definition_id"]),
               "change_kind": "update" if update else "new", "version": version,
               "preview_image_path": None, "preview_status": "no_screen"}
     screen = next((c for c in components.values()
@@ -74,6 +77,7 @@ def receipt_completion(receipt: dict[str, Any], *, universe_id: str,
         if result is None:
             agent = get_definition(_base_path(), receipt["agent_definition_id"])
             result = completion_for(agent, action=action)
+        result["share_url"] = share_url(receipt["agent_definition_id"])
         if result["preview_status"] == "owner_context_required":
             from tinyassets.api.custom_agents import _binding_access
 
@@ -85,7 +89,8 @@ def receipt_completion(receipt: dict[str, Any], *, universe_id: str,
         version = receipt.get("package", {}).get("version")
         update = (isinstance(version, int) and version > 1) or bool(
             action.get("release", {}).get("parent_release_id"))
-        return {"listing_id": receipt["agent_definition_id"], "share_url": None,
+        return {"listing_id": receipt["agent_definition_id"],
+                "share_url": share_url(receipt["agent_definition_id"]),
                 "change_kind": "update" if update else "new", "version": version,
                 "preview_image_path": None, "preview_status": "unavailable"}
 
@@ -107,6 +112,7 @@ def start_receipt_preview(completion: dict[str, Any], *, universe_id: str,
         return
     result = dict(completion)
     udir = _universe_dir(universe_id)
+    base = _base_path()
 
     def finish():
         try:
@@ -137,6 +143,9 @@ def start_receipt_preview(completion: dict[str, Any], *, universe_id: str,
         try:
             try:
                 report = ui_preview.preview_public_component(screen)
+                from tinyassets.onboarding.public_run import save_preview
+
+                save_preview(base, result["listing_id"], report["png"])
                 digest = hashlib.sha256(result["listing_id"].encode()).hexdigest()[:32]
                 name = "publication-" + digest
                 result["preview_image_path"] = ui_preview.write_preview(udir, name, report["png"])
