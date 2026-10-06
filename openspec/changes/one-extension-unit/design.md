@@ -151,3 +151,20 @@ Existing presentation-only recipient update policy is unchanged; no automatic
 executable update policy is introduced. Superseded proposal notices are recorded
 in all four source changes. Their unchecked tasks remain historical pending
 work, not falsely marked implemented; K1 is the delivery owner for folded scope.
+
+## Implementation review dispositions
+
+Claude returned ADAPT, reporting no floor break and three runtime correctness
+issues plus a mirror synchronization observation. AGREE with containment and
+recovery fixes: absent extension authority skips mounting, malformed settings or
+unreadable revisions produce visible catalog diagnostics without hiding lifecycle
+commands, and revoke checks the installed record without requiring readable code.
+The research-specific premise was broader than the existing behavior: ordinary
+bash already refuses research in `universe_tools.bash`; that refusal is retained.
+No new research execution is introduced.
+
+AGREE that mounts must be launch-local. Mount identity now lives in the bridge's
+copied context and propagates with each daemon dispatch, rather than mutable shared
+backend state. Tests cover two independent launch contexts and real jailed calls.
+AGREE on mirror parity; regenerated after the on-demand handbook addition.
+No second review round is claimed. Full review is in review-implementation.md.

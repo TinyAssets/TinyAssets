@@ -198,3 +198,75 @@ def test_owner_erasure_tables_keep_foreign_rows(tmp_path):
         rows = conn.execute("SELECT owner_id FROM extension_revisions WHERE owner_id=?",
                             ("user-1",)).fetchall()
         assert [row[0] for row in rows] == ["user-1"]
+
+
+def test_corrupt_revision_remains_revocable_and_does_not_hide_healthy_package(tmp_path):
+    import asyncio
+
+    from tinyassets import command_center_packages
+    from tinyassets.extension_capabilities import ExtensionCapabilities
+
+    service = backend(tmp_path)
+    adapter = ExtensionCapabilities(service)
+    first = adapter.store.install(files())
+    second = adapter.store.install(files(name="healthy"))
+    for item in (first, second):
+        adapter.store.transition(item["name"], item["revision"], expected_generation=0, active=True)
+    command_center_packages._blob_path(tmp_path, first["revision"]).write_bytes(b"corrupt")
+    assert adapter.materialize(tmp_path / "mount")
+    entries = asyncio.run(service.dispatch({"op": "catalog"}))["extension_capabilities"]
+    assert any(row["name"] == "extension:revoke" for row in entries)
+    assert any(row.get("availability") == "invalid" for row in entries)
+    assert any(row["name"].startswith("extension:healthy:") for row in entries)
+    result = call(service, "extension:revoke", {"name": first["name"],
+                  "revision": first["revision"], "expected_generation": 1})
+    assert result["result"]["state"] == "revoked"
+
+
+def test_malformed_settings_preserve_lifecycle_recovery(tmp_path):
+    import asyncio
+
+    from tinyassets.extension_capabilities import ExtensionCapabilities
+
+    service = backend(tmp_path)
+    adapter = ExtensionCapabilities(service)
+    installed = adapter.store.install(files())
+    adapter.store.transition("sample", installed["revision"], expected_generation=0, active=True)
+    (service.root / "settings.yaml").write_text("schema_version: INVALID", encoding="utf-8")
+    assert adapter.materialize(tmp_path / "mount")
+    assert not list((tmp_path / "mount").iterdir())
+    entries = asyncio.run(service.dispatch({"op": "catalog"}))["extension_capabilities"]
+    assert any(row["name"] == "extension:revoke" for row in entries)
+    assert any(row.get("availability") == "invalid" for row in entries)
+    result = call(service, "extension:revoke", {"name": "sample", "revision": installed["revision"],
+                                               "expected_generation": 1})
+    assert result["result"]["state"] == "revoked"
+
+
+def test_mount_availability_is_private_to_each_launch_context(tmp_path):
+    import contextvars
+
+    from tinyassets.extension_capabilities import ExtensionCapabilities
+
+    service = backend(tmp_path)
+    adapter = ExtensionCapabilities(service)
+    installed = adapter.store.install(files())
+    state = adapter.store.transition("sample", installed["revision"], expected_generation=0,
+                                     active=True)
+    first, second = contextvars.copy_context(), contextvars.copy_context()
+    first.run(adapter.materialize, tmp_path / "first")
+    assert first.run(adapter._mounted, state)
+    adapter.store.transition("sample", installed["revision"], expected_generation=1,
+                             active=False)
+    second.run(adapter.materialize, tmp_path / "second")
+    assert not second.run(adapter._mounted, state)
+    assert first.run(adapter._mounted, state)
+
+
+@pytest.mark.parametrize("context", [{"research": True}, {"delegated_authority": "outside"}])
+def test_no_mount_when_lifecycle_authority_missing(tmp_path, context):
+    from tinyassets.extension_capabilities import ExtensionCapabilities
+
+    adapter = ExtensionCapabilities(backend(tmp_path, **context))
+    assert adapter.materialize(tmp_path / "mount") is False
+    assert not (tmp_path / "mount").exists()

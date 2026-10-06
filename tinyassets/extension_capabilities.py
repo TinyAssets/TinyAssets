@@ -3,10 +3,13 @@ from __future__ import annotations
 
 import base64
 import binascii
+import contextvars
 
 from tinyassets.extension_manifest import KINDS, ExtensionError
 from tinyassets.extension_state import ExtensionStore
 from tinyassets.harness_settings import read_settings
+
+_MOUNTS = contextvars.ContextVar("extension_mounts", default=frozenset())
 
 
 def _schema(properties, required=()):
@@ -83,26 +86,36 @@ class ExtensionCapabilities:
 
     def materialize(self, directory):
         """Trusted private staging, mounted read-only for exactly one bash launch."""
-        self._authority()
-        self.backend.extension_mounts = set()
+        _MOUNTS.set(frozenset())
+        try:
+            self._authority()
+        except ExtensionError:
+            return False  # No extension authority never grants a mount or breaks ordinary bash.
+        mounted = set()
         directory.mkdir()
         for state in self.store.list():
-            if state["state"] != "active" or not self._enabled(state["name"]):
+            if state["state"] != "active":
                 continue
-            revision = self.store.load(state["name"], state["revision"])
-            _, files = revision.content()
+            try:
+                if not self._enabled(state["name"]):
+                    continue
+                revision = self.store.load(state["name"], state["revision"])
+                _, files = revision.content()
+            except (ValueError, LookupError, OSError):
+                continue  # Catalog reports the failure; lifecycle/revoke remain reachable.
             root = directory / state["name"] / state["revision"]
             for path, data in files.items():
                 target = root / path
                 target.parent.mkdir(parents=True, exist_ok=True)
                 target.write_bytes(data)
                 target.chmod(0o555)
-            self.backend.extension_mounts.add(
+            mounted.add(
                 (state["name"], state["revision"], state["generation"]))
+        _MOUNTS.set(frozenset(mounted))
+        return True
 
     def _mounted(self, state):
-        return (state["name"], state["revision"], state["generation"]) in getattr(
-            self.backend, "extension_mounts", set())
+        return (state["name"], state["revision"], state["generation"]) in _MOUNTS.get()
 
     def _enabled(self, name):
         ctx = self.backend.context
@@ -123,9 +136,17 @@ class ExtensionCapabilities:
         self._authority()
         entries = list(LIFECYCLE)
         for state in self.store.list():
-            if state["state"] != "active" or not self._enabled(state["name"]):
+            if state["state"] != "active":
                 continue
-            doc, _ = self.store.load(state["name"], state["revision"]).content()
+            try:
+                if not self._enabled(state["name"]):
+                    continue
+                doc, _ = self.store.load(state["name"], state["revision"]).content()
+            except (ValueError, LookupError, OSError) as exc:
+                entries.append({"name": self._key(state, "diagnostic", "unavailable"),
+                                "description": f"Extension unavailable: {type(exc).__name__}",
+                                "arguments": _schema({}), "availability": "invalid"})
+                continue
             for kind in KINDS:
                 for row in doc.get(kind, []):
                     entries.append({
@@ -171,8 +192,13 @@ class ExtensionCapabilities:
             )
         # Resolve from daemon state, never trust revision/generation claims from the client.
         for state in self.store.list():
-            if state["state"] != "active" or not self._enabled(state["name"]):
+            if state["state"] != "active":
                 continue
+            prefix = f"extension:{state['name']}:{state['revision']}:{state['generation']}:"
+            if not name.startswith(prefix):
+                continue
+            if not self._enabled(state["name"]):
+                raise ExtensionError("extension disabled by settings")
             doc, _ = self.store.load(state["name"], state["revision"]).content()
             for kind in KINDS:
                 for row in doc.get(kind, []):

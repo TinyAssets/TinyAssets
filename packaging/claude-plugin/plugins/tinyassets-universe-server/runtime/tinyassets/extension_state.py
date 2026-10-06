@@ -58,7 +58,7 @@ class ExtensionStore:
             )
         return {"name": revision.name, "revision": revision.digest, "state": "installed"}
 
-    def load(self, name, revision):
+    def _installed(self, name, revision):
         with self._db() as conn:
             row = conn.execute(
                 "SELECT 1 FROM extension_revisions WHERE owner_id=? AND universe_id=? "
@@ -68,6 +68,9 @@ class ExtensionStore:
         # Check bound installation before reading or probing a content-addressed blob.
         if row is None:
             raise ExtensionError("extension revision not installed here")
+
+    def load(self, name, revision):
+        self._installed(name, revision)
         return Revision(name, revision, packages.read_blob(self.base, revision))
 
     def list(self):
@@ -84,7 +87,10 @@ class ExtensionStore:
         return [dict(row) for row in rows]
 
     def transition(self, name, revision, *, expected_generation, active, ceiling=()):
-        self.load(name, revision)
+        if active:
+            self.load(name, revision).content()
+        else:
+            self._installed(name, revision)  # Revoke survives missing/corrupt package bytes.
         if type(expected_generation) is not int or expected_generation < 0:
             raise ExtensionError("expected_generation must be a nonnegative integer")
         if not isinstance(ceiling, (list, tuple)) or any(not isinstance(x, str) for x in ceiling):

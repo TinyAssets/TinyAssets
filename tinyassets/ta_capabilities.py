@@ -87,13 +87,13 @@ class Capabilities:
                     "endpoints": [ep.as_dict() for ep in view.allowed_endpoints],
                     "access_mode": view.access_mode,
                 })
-            from tinyassets.extension_capabilities import ExtensionCapabilities
+            from tinyassets.extension_capabilities import LIFECYCLE, ExtensionCapabilities
 
             try:
                 extension_items = ExtensionCapabilities(self).catalog()
                 extension_error = None
-            except ValueError as exc:
-                extension_items, extension_error = [], str(exc)
+            except (ValueError, LookupError, OSError) as exc:
+                extension_items, extension_error = list(LIFECYCLE), str(exc)
             return {"capabilities": items, "extension_capabilities": extension_items,
                     "extension_error": extension_error, "extension_roots": {
                 "shared": "/u/extensions",
@@ -110,7 +110,7 @@ class Capabilities:
 
             try:
                 return {"result": ExtensionCapabilities(self).call(name, arguments)}
-            except ValueError as exc:
+            except (ValueError, LookupError, OSError) as exc:
                 return {"error": str(exc)}
         if name in self.platform:
             return {"result": await self.call_platform(name, arguments)}
@@ -167,8 +167,8 @@ class JailBridge:
 
             candidate = Path(self._directory.name) / "extensions"
             try:
-                self._context.copy().run(ExtensionCapabilities(backend).materialize, candidate)
-                self.extension_root = candidate
+                if self._context.run(ExtensionCapabilities(backend).materialize, candidate):
+                    self.extension_root = candidate
             except Exception:
                 self._directory.cleanup()
                 raise

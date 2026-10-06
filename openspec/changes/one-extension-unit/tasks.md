@@ -15,7 +15,7 @@
 
 ## 3. Verification and delivery
 
-- [ ] 3.1 Add on-demand guidance, run affected Linux tests/heavy files, Ruff, mirror and hygiene checks.
+- [x] 3.1 Add on-demand guidance, run affected Linux tests/heavy files, Ruff, mirror and hygiene checks.
 - [ ] 3.2 Open draft PR, obtain Claude implementation review, fold findings, merge main and push verified commits.
 - [ ] 3.3 After deployment assert SHA, run real-user app acceptance and sync verified specs.
 
@@ -26,6 +26,12 @@ tests plus extension boundary, ta, prompt costs, universe tools, package sharing
 installed directory and account deletion. New unit tests also pass on Windows
 (31). Changed Python Ruff and plugin mirror/import probe pass. Existing prompt
 budgets and test assertions are retained. No affected test file is heavy-listed.
+
+Claude implementation review: ADAPT, no floor break; findings and dispositions
+are recorded in review-implementation.md and design.md. Recovery/concurrency
+fixes: focused Linux oracle 127 passed, zero skips; Windows unit tests 36 passed.
+Hygiene after the initial implementation commit: 0 removed / 0 tampering.
+Ruff and rebuilt mirror/import probe pass after the review fixes.
 
 2.4 currently supports explicit ta tools/commands/hook entries using read-only
 per-bash snapshots; automatic turn-event hook launches are not wired. 2.5 is
