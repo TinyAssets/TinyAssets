@@ -160,6 +160,24 @@ def _render_links(urls):
     return json.loads(run.stdout)
 
 
+@pytest.mark.parametrize("length", [430, 8192])
+def test_long_request_link_reaches_the_rendered_anchor_in_full(length):
+    from tinyassets.api.pending_requests import _validated_fields
+
+    prefix = "https://example.com/authorize?state="
+    url = prefix + "a" * (length - len(prefix) - len("#finish")) + "#finish"
+    [field] = _validated_fields(
+        [{"name": "key", "label": "Key", "type": "secret", "url": url}],
+        {"type": "connect_http"},
+    )
+    [parts] = _render_links([field["url"]])
+    link = parts[1]
+    assert link["tag"] == "a"
+    assert link["href"] == url
+    assert link["text"] == url.removeprefix("https://")
+    assert "overflow-wrap:anywhere" in _rule(_css(), ".rtab-link")
+
+
 @pytest.mark.skipif(_NODE is None, reason="node is not installed")
 def test_an_agent_field_link_is_labelled_as_the_universes_suggestion():
     [parts] = _render_links(["https://tinyassets.io/settings"])
