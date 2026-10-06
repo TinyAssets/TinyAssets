@@ -18,6 +18,7 @@ from mcp.types import CallToolResult
 from tinyassets import owner_lease
 from tinyassets.providers.agent_chat_codec import AgentReply, ToolRequest
 from tinyassets.storage import agent_turn_records as records
+from tinyassets.storage import agent_turn_runner as runner
 from tinyassets.storage import db_path
 from tinyassets.storage.agent_native_records import NativeInput, NativeTerminal
 from tinyassets.storage.agent_turn_boot import BOOT, BootTurns
@@ -118,6 +119,18 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
         except BaseException:
             conn.execute("ROLLBACK")
             raise
+
+    for column in ("runner_token", "settled_reason"):
+        if column not in {r[1] for r in conn.execute("PRAGMA table_info(agent_turns)")}:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                if column not in {r[1] for r in conn.execute("PRAGMA table_info(agent_turns)")}:
+                    conn.execute(f"ALTER TABLE agent_turns ADD COLUMN {column} "
+                                 "TEXT NOT NULL DEFAULT ''")
+                conn.commit()
+            except BaseException:
+                conn.rollback()
+                raise
 
 
 def _scope(owner: str, universe: str, turn: str) -> tuple[str, str, str]:
@@ -454,14 +467,15 @@ class AgentTurnJournal:
                    if work else {}),
             }
         )
-        with self._transaction(universe) as (conn, lease):
+        with (runner.claim(self._ledger.base_path, scope[2]) as token,
+              self._transaction(universe) as (conn, lease)):
             check_current_home(conn, owner, universe)
             conn.execute(
                 "INSERT INTO agent_turns (owner_user_id, universe_id, turn_id, version, "
                 "generation, state, round_ordinal, input_json, created_at, "
-                "owner_generation, agent_id) "
-                "VALUES (?, ?, ?, 1, 1, 'ready', 0, ?, ?, ?, ?)",
-                (*scope, raw, self._ledger.timestamp(), lease.generation, agent_id),
+                "owner_generation, agent_id, runner_token) "
+                "VALUES (?, ?, ?, 1, 1, 'ready', 0, ?, ?, ?, ?, ?)",
+                (*scope, raw, self._ledger.timestamp(), lease.generation, agent_id, token),
             )
             snapshot = _read(conn, scope)
         # Creating the row IS this boot taking the turn on: both adapters reach a
@@ -508,7 +522,8 @@ class AgentTurnJournal:
         determination. A row is a live owner's only while its
         ``owner_generation`` equals the generation its command center's key is
         held at AND that owner tree is alive (change execution-owner-lease D2),
-        and it was not stopped by a cancelled task in this process (``boot``).
+        and its unique per-task runner claim is held. The local ``boot`` registry
+        adds progress detail but cannot establish cross-process runner liveness.
         Belt and braces behind ``agent_turn_reconcile``, which settles such a row
         at startup; if that failed, this still refuses to report a dead
         container's leftover as thinking (founder, 2026-09-26: a deploy killed a
@@ -538,8 +553,10 @@ class AgentTurnJournal:
                 return None
             columns = {r[1] for r in conn.execute("PRAGMA table_info(agent_turns)")}
             generation = "owner_generation" if "owner_generation" in columns else "0"
+            claim = "runner_token" if "runner_token" in columns else "''"
             rows = conn.execute(
-                f"SELECT turn_id, state, created_at, {generation} AS owner_generation "
+                f"SELECT turn_id, state, created_at, {claim} AS runner_token, "
+                f"{generation} AS owner_generation "
                 "FROM agent_turns WHERE universe_id = ? ORDER BY created_at DESC",
                 (uid,),
             ).fetchall()
@@ -556,6 +573,8 @@ class AgentTurnJournal:
             if not isinstance(started, str) or not started.endswith("Z"):
                 continue
             if not live_owner or row["owner_generation"] != held[0]:
+                continue
+            if not runner.alive(self._ledger.base_path, row["runner_token"]):
                 continue
             if boot.stopped(uid, row["turn_id"]):
                 continue
@@ -662,6 +681,9 @@ class AgentTurnJournal:
                 or current.state != "ready"
             ):
                 return Transition("conflict", current)
+            conn.execute(
+                f"UPDATE agent_turns SET settled_reason = ? WHERE {_SCOPE}",
+                ("runner exited before the next round", *scope))
             return _advance(conn, scope, current, "abandoned")
 
     def finish_inference(
