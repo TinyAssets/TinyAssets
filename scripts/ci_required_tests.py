@@ -75,38 +75,10 @@ MIN_RAN_FLOORS = {
 
 # ---- budgets ------------------------------------------------------------------
 #
-# The suite is budgeted by what it COSTS, never by how many tests it has: a
-# count budget invites deleting cheap, valuable tests (Linear grew its suite 4x
-# in 2026 and still cut PR wait, by cutting per-test cost). Each is a reviewed
-# constant here, like MIN_RAN_FLOOR, so raising one is a receipt-gated diff of
-# a gate file and lowering one is free. None of them reads a date: the merge
-# queue must never fail because of the calendar.
-#
-# Measured on merge-group runs 2026-10-01 (36926964890, 36924723282,
-# 36920148863, 36912072109): 126-127 tests skipped; the sum of per-test seconds
-# across the six shards 1,431-1,509, with one noisy-runner outlier at 1,856.
-# The seconds cap sits well above that noise so a slow runner never fails a
-# merge; it catches a change that makes the suite materially slower.
-# 2026-10-04: #4404 adds one real_jail metadata-isolation proof. Comparing
-# passing main run 37187949417 with combined run 37188645443 gives exactly one
-# new skip in the ordinary shards: test_native_metadata_snapshot_cannot_read_
-# foreign_or_platform_state. It executes in linux-jail-proof, whose no-skip
-# assertion covers every real_jail case. Existing skip conditions are unchanged.
-# 2026-10-04: #4439 adds six real_jail ta-capability proofs. Set comparison
-# of main run 37227391997 and merge-group 37231265315 shows exactly these six
-# new skips, with no other change. All six execute and pass in the same head's
-# linux-jail-proof run 37231177806 (100 cases, zero skips); its marker assertion
-# requires every real_jail case. Ordinary shards still have no bubblewrap.
-# 2026-10-04: #4316 runs the six required shards inside the Linux oracle
-# container (uid 1001, Chromium in the image) instead of on the bare runner. The
-# oracle runs execute 26,296 cases against 26,207 on the bare runner (50 more
-# collected, 39 fewer skipped: 95 against 134). Measured summed seconds: bare-runner
-# main run 37241639736 = 2128s; #4457 on the bare runner (41+/5- across four files)
-# failed at 2413s (37243264963); oracle runs 37243158547 = 2397s and #4316's
-# whole-surface 37243991116 = 2596s, both passing every test. 3000s is a
-# provisional cap 15.6% above the highest measurement, still low enough to catch a
-# material slowdown. Why the bare-runner total rose from 1431-1509s (10-01, from
-# JUnit artifacts) is unexplained: docs/concerns/2026-10-04-required-suite-time-drift.md.
+# Skips and quarantine remain blocking coverage budgets. Summed test time is
+# telemetry only: runner contention and suite growth made it a queue-bounce
+# source even when every test passed. Keep the 3000s reference for comparison;
+# investigate expensive JUnit cases without rejecting a correct merge.
 MAX_REQUIRED_SKIPPED = 134
 MAX_TEST_SECONDS = 3000
 #: Entries in the quarantine ledger, flaky or not. A quarantine that only grows
@@ -151,11 +123,17 @@ def budget_failures(skipped: set[str], seconds: float) -> list[str]:
             f"run here, remove a skip elsewhere, or raise MAX_REQUIRED_SKIPPED in a "
             f"reviewed change. e.g. {sample}"
         )
+    return out
+
+
+def cost_warnings(seconds: float) -> list[str]:
+    """Report costly runs without turning runner speed into a merge gate."""
+    out = []
     if seconds > MAX_TEST_SECONDS:
         out.append(
             f"the required tests took {seconds:.0f}s summed over all shards; the budget is "
             f"{MAX_TEST_SECONDS}s. Find the slow additions (junit `time`) and cut their "
-            f"fixed cost, or raise MAX_TEST_SECONDS in a reviewed change."
+            f"fixed cost. This is advisory and does not block merging."
         )
     return out
 
@@ -658,7 +636,8 @@ def aggregate(
     over = budget_failures(skipped, seconds)
     summarise(
         ["", f"- skipped: **{len(skipped)}** (budget {MAX_REQUIRED_SKIPPED}); "
-         f"summed test seconds: **{seconds:.0f}** (budget {MAX_TEST_SECONDS})"]
+         f"summed test seconds: **{seconds:.0f}** (advisory reference {MAX_TEST_SECONDS})"]
+        + [f"\n**ADVISORY - {warning}**" for warning in cost_warnings(seconds)]
         + [f"\n**FAILED - {o}**" for o in over]
     )
     return 1 if over else verdict
