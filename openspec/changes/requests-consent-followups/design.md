@@ -19,3 +19,11 @@ No schema migration. Ship code and mirror together; rollback restores previous h
 
 ## Open Questions
 None. Draft PR delivery only; deployment and live proof remain after merge.
+
+## Reask lane follow-up
+Main already contains #4504's shared lifecycle and #4477's as-built consent spec.
+The remaining history action uses the existing chat relay, addressed to the
+original asking agent. It asks for a fresh ask if needed; it does not replay an
+old effect, mutate a resolved row, or lift a mute. The same UI handles every
+request kind. Chromium exercises the real request API through a test transport
+bridge; a later agent-observed failure re-raises through the existing ask API.
