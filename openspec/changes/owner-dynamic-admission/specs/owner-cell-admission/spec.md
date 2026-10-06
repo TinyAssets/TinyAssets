@@ -60,7 +60,8 @@ capability-free `center-root` owner cell creates a setgid directory inside a
 daemon-private staging directory. The daemon creates the root inside it,
 removes the inherited default ACL, clears S_ISGID with one chmod, and renames
 the root into place without replacement. No process SHALL gain or retain a
-capability. The daemon SHALL NOT write the root's access ACL. Daemon-created
+capability. Apart from the kernel's mask update during that chmod, the daemon
+SHALL NOT write the root's access ACL. Daemon-created
 entries in the root SHALL keep their explicit owner and group. The cell SHALL
 receive no caller path, executable, environment, relay or credential. Any
 read-back difference from the canonical label SHALL refuse the admission.
@@ -87,16 +88,17 @@ staging remnants are removed, and a published root with no row is adopted only
 if its label matches the durable reservation of the owner its authority
 database names and the center was never admitted. Nothing SHALL be guessed.
 Admission SHALL be idempotent for the same principal and center. On the
-selected path, no code SHALL remove a published root except whole-center
-deletion, which retires it.
+selected path, a create that fails after publish SHALL keep its root and grant
+and resume in place, and no code SHALL remove a published root except
+whole-center deletion of a bound center, which retires it.
 
 #### Scenario: A create fails after its root is published
-- **WHEN** seeding a new center fails after publish, and the platform either
-  retries the same center or abandons it
-- **THEN** the retry completes in place and the already-bound center is a
-  success, while an abandoned center is deleted and retired before any grant
-  is revoked
-- **AND** the next restart neither refuses nor raises a loss alarm
+- **WHEN** a new user's first home fails after publish, at the log append,
+  the bind or seeding, and the user retries
+- **THEN** the root and grant remain, the retry finishes admission and
+  seeding in place under the same home id, and the home becomes usable
+- **AND** a restart between the failure and the retry neither refuses nor
+  raises a loss alarm
 
 #### Scenario: A crash between publish and log append
 - **WHEN** the daemon dies after publishing a labelled root but before the
@@ -137,13 +139,14 @@ journal's principals and missing centers plus the log rows since that
 generation. The inventory SHALL equal it after orphan adoption, except for
 centers with a pending deletion intent. The same reconciliation SHALL apply
 to the volume, metadata and owner phase journals. An empty expected set SHALL
-skip the owner and metadata phases instead of refusing. Startup writes to the
+skip the owner and metadata inode work instead of refusing, while still
+updating their journals' binding configuration. Startup writes to the
 log SHALL go through a retired broker process. A tree
 outside that set, or a changed principal for an existing center, SHALL refuse.
 A center the log admits whose tree is missing, with no `retire` row and no
 pending deletion, SHALL follow founder decision F1, which defaults to refusing
 startup. Under F1's alternative, the center SHALL stay on the missing list
-until it is restored or retired. With no journal or a
+until it is restored or its owner's deletion retires it. With no journal or a
 stable reverse journal, startup SHALL seed `admit` rows for inventoried centers
 that lack one and SHALL never infer a `retire`. Interrupted journals SHALL keep
 exact configuration matching. Reverse migration SHALL return runtime-admitted

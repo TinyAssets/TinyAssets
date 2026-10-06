@@ -191,8 +191,8 @@ never accepts a numeric identity from the daemon (D68 unchanged).
    - the canonical access ACL, from `g`'s default ACL, with umask skipped;
    - a copy of that default ACL.
 
-   The daemon removes the default ACL and runs `fchmod(root, 0750)`. As a
-   non-member it thereby clears S_ISGID. The kernel keeps the named ACL
+   The daemon removes the default ACL and runs `fchmod(root, 0750)`. The
+   requested mode has no S_ISGID, so the bit clears. The kernel keeps the named ACL
    entries and sets the mask to `r-x`. The result is the shape forward
    migration gives a legacy `0755` root: `1001:<machine>`, mode `0750`, the
    canonical access ACL, and no default ACL. The daemon reads back the full
@@ -236,15 +236,17 @@ legacy `mkdir`.
 root except D218 deletion, which retires it (DA6). Admission is idempotent for
 the same principal and center: a repeated create resumes at the first
 unfinished step, and a center that is already bound is a success, not a
-refusal. So a failed create after step 3 does one of two things:
+refusal.
 
-- it completes in place on retry, which is the `first_contact` home retry,
-  reusing the same `founder_home` id; or
-- if the platform abandons the center, it deletes the center through D218,
-  before revoking any grant or root row, so a `retire` row explains it. This
-  is the `api/universe.py` rollback.
-
-Both existing `rmtree` sites change accordingly (task 6).
+A failed create after step 3 is never abandoned. The create reports the
+failure, keeps the root and the grant, and resumes in place on the next attempt
+with the same id. That attempt finishes steps 4-5 first, then reruns seeding.
+This one rule covers both `rmtree` sites, which are one call path:
+`first_contact.ensure_founder_home` reaches the `api/universe.py` rollback
+through `_universe_impl`. Removing a center a user no longer wants is ordinary
+deletion (DA6), which needs a bound center. That is why abandoning mid-admission
+is not offered: D218 cannot run before the bind, and `retire` cannot precede
+`admit`. Task 6 changes both sites.
 
 **Crash recovery.** What a restart finds depends on where the crash stopped
 the sequence. Startup removes `.role-admission/` with writers stopped, before
@@ -296,8 +298,10 @@ in mapper memory, and the log is the durable truth. Concurrency limits
 ### DA6. Deletion retires the binding
 
 `role_owner_tree_deletion` (D218) keeps its order. Once the daemon pass has
-removed the tree, and also on its resume path where the tree is already gone,
-the following happens before `finish` and before the intent is cleared:
+removed the tree, and also on its resume path where the tree is already gone
+(including a center on DA7's `missing` list, which today falls through to the
+legacy traversal), the following happens before `finish` and before the
+intent is cleared:
 
 1. The daemon appends `retire` (DA1). A repeat returns the existing row.
 2. The daemon sends mapper `retire {principal, command_center, generation}`.
@@ -316,8 +320,10 @@ infers one.
 This supersedes D216's last sentence and closes D218's open item.
 
 **Journal fields.** `volume.json` (stable or migrating) records `generation`
-next to `principals`. It also records `missing`, which is non-empty only under
-F1(b).
+next to `principals`. It also records `missing`, a center-to-principal map
+that is non-empty only under F1(b). A center on `missing` is retired like any
+deleted center: DA6's tree-absent route writes its `retire` row, which removes
+it from `missing` at the next restart.
 
 **Expected set.** The coordinator computes the expected center map E. It
 starts from the journal's `principals` plus `missing`, then applies the log
@@ -352,8 +358,9 @@ admitted center have no journal row, so D214 treats them as new runtime
 content.
 
 **Empty volume.** If E is empty after retirements, the owner and metadata
-phases are skipped instead of refusing an empty binding set.
-`volume.json` still advances.
+phases skip their inode work instead of refusing an empty binding set. They
+still rewrite their journals' binding configuration to the empty set before
+`volume.json` advances, so no phase journal lags the volume generation.
 
 **Reverse.** No new rule is needed. A runtime-admitted root has no journal
 row, so it reverses to legacy `1001:1001` with its ACL removed, as D214

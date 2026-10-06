@@ -36,13 +36,13 @@ through `scripts/linux_oracle.py`, and a skip is not a pass.
 - [ ] 6. Daemon: inventory every site that creates or removes a canonical
   center root, including the `api/universe.py` rollback and the
   `api/first_contact.py` retry. Route creation through DA4 when the bounded
-  client is installed and make a direct `mkdir` refuse there. Turn
-  post-publish failure into an in-place retry or a D218 deletion, done
-  before any grant is revoked. Center creation in the app waits for the bind
+  client is installed and make a direct `mkdir` refuse there. On that path,
+  a post-publish failure keeps the root and grant and resumes in place;
+  there is no rollback. Center creation in the app waits for the bind
   and fails loudly. The legacy path must be byte-for-byte unchanged (DA8).
 - [ ] 7. Deletion: append `retire` and send the mapper `retire` in
-  `role_owner_tree_deletion` before `finish`, on both the normal path and
-  the tree-gone resume path (DA6). Add resume tests at each new step.
+  `role_owner_tree_deletion` before `finish`, on the normal path, the
+  tree-gone resume path, and for a center on the `missing` list (DA6). Add resume tests at each new step.
 - [ ] 8. Restart contract (DA7), covering `role_volume_migration`,
   `role_volume_inventory`, `role_metadata_migration` and
   `role_owner_migration`:
@@ -50,7 +50,8 @@ through `scripts/linux_oracle.py`, and a skip is not a pass.
   - store `generation` and `missing` in `volume.json`;
   - reconcile the log delta in all three journals;
   - treat pending deletions as explained;
-  - skip the phases for an empty set;
+  - skip inode work for an empty set while still updating the phase
+    journals;
   - adopt orphan roots and seed rows (when there is no journal or a stable
     reverse journal) through a retired broker child.
 
@@ -59,8 +60,9 @@ through `scripts/linux_oracle.py`, and a skip is not a pass.
   - signup, new center and deletion, each followed by a restart;
   - a crash at each DA4 boundary, and between the deletion's daemon pass
     and its `retire`, each followed by a restart;
-  - a post-publish create failure, both retried and abandoned;
-  - deleting the volume's only center;
+  - a first-contact home failing at the log append, the bind and seeding,
+    then retried, with and without a restart in between;
+  - deleting the volume's only center, then a new signup and a restart;
   - reverse after runtime admission;
   - forward after the legacy image created centers;
   - an unexplained tree, and a changed owner, each refusing.
