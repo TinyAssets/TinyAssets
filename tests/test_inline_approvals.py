@@ -331,7 +331,7 @@ def test_bearer_answer_alias_cannot_execute_bound_action(case, monkeypatch):
         assert result["error"] == "interactive_approval_required"
 
 
-def test_interrupted_and_fenced_wake_attempts_do_not_ack(case, monkeypatch):
+def test_interrupted_and_fenced_wake_attempts_do_not_ack(case, monkeypatch, caplog):
     from tinyassets.request_continuations import recover
 
     home, card, session, _ = case
@@ -343,9 +343,17 @@ def test_interrupted_and_fenced_wake_attempts_do_not_ack(case, monkeypatch):
     def interrupted(*args):
         raise RuntimeError("process interrupted before processed ack")
 
-    with pytest.raises(RuntimeError):
-        recover(home, interrupted)
+    assert recover(home, interrupted) == 0
+    assert "Bound request continuation failed; retained" in caplog.text
+    assert "process interrupted before processed ack" in caplog.text
     with closing(bound.connect(home)) as conn:
+        retained = conn.execute(
+            "SELECT processed_at, attempt_count, next_attempt_at FROM activity_events "
+            "WHERE wake_required=1"
+        ).fetchone()
+        assert retained["processed_at"] is None
+        assert retained["attempt_count"] == 1
+        assert retained["next_attempt_at"] == now + 60
         old = conn.execute(
             "SELECT attempt_ref FROM activity_events WHERE wake_required=1"
         ).fetchone()[0]
