@@ -601,14 +601,15 @@ def _sandbox_cli_args(
     if config.workflow_node:
         config = _confine_workflow_node(config)
     if config.sandbox_workspace:
-        # Load ONLY project-tier settings. A universe dir is bare, so this loads
-        # NOTHING — critically it excludes the USER's global settings, which carry
-        # MCP servers and `bypassPermissions`. Without it, the sandboxed engine
-        # still inherits the user's MCP tools (verified 2026-07-03: it saw
-        # `mcp__codex__codex`), so a founder's universe could call e.g. Codex →
-        # arbitrary code execution, fully bypassing the Bash deny. This strips all
-        # ambient MCP + config from the founder-facing turn.
-        flags += ["--setting-sources", "project"]
+        # Load NO setting source. Excluding the USER tier matters because its
+        # global settings carry MCP servers and `bypassPermissions` (verified
+        # 2026-07-03: the sandboxed engine saw `mcp__codex__codex`, so a
+        # universe could call Codex and bypass the Bash deny). Excluding the
+        # PROJECT tier matters because the run cwd is the universe dir, which
+        # the agent itself writes: with `project`, CLI 2.1.291 sent a planted
+        # CLAUDE.md / .claude/rules/*.md to the model and ran a
+        # .claude/settings.json hook (credential-free capture 2026-10-06).
+        flags += ["--setting-sources", ""]
         # Decide the permission mode; never inherit it (Codex ADAPT 2026-10-03,
         # CLI 2.1.288 review). 2.1.285 starts `claude -p` in AUTO mode when no
         # mode is configured on third-party providers or with telemetry off, so

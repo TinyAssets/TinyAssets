@@ -34,7 +34,7 @@ def test_sandbox_emits_variadic_tool_flags_and_isolated_cwd(tmp_path):
     # user-tier settings (MCP servers + bypassPermissions) are stripped so the
     # universe can't reach ambient MCP tools (e.g. mcp__codex → code exec)
     assert "--setting-sources" in flags
-    assert flags[flags.index("--setting-sources") + 1] == "project"
+    assert flags[flags.index("--setting-sources") + 1] == ""
     # variadic flags: each tool is its OWN argv token (a joined string would be
     # read as one bogus tool name and silently match nothing)
     assert "--allowedTools" in flags
@@ -130,7 +130,7 @@ def test_workflow_node_call_is_pinned_to_its_universe_with_host_tools_denied(tmp
     flags, run_cwd = _sandbox_cli_args(cfg, tmp_path)
 
     assert run_cwd == str(tmp_path)
-    assert flags[flags.index("--setting-sources") + 1] == "project"
+    assert flags[flags.index("--setting-sources") + 1] == ""
     denied = flags[flags.index("--disallowedTools") + 1:]
     assert denied == ["ReportFindings", *HOST_REACH_TOOLS, *ACCOUNT_REACH_TOOLS]
     assert "--allowedTools" not in flags
@@ -332,3 +332,20 @@ def test_the_engine_turn_denies_everything_it_denied_before_the_refactor():
     )
     for tool in moved_out_of_literals:
         assert tool in _ENGINE_DISALLOWED_TOOLS, tool
+
+
+def test_the_universe_the_agent_writes_is_no_setting_source(tmp_path):
+    """The served turn runs in the universe dir, which the agent writes. With
+    ``--setting-sources project`` Claude CLI 2.1.291 sent a ``CLAUDE.md``,
+    ``.claude/CLAUDE.md`` and ``.claude/rules/*.md`` from it to the model and
+    ran a ``.claude/settings.json`` hook (credential-free capture 2026-10-06);
+    no setting source at all loads none of them."""
+    (tmp_path / ".claude").mkdir()
+    (tmp_path / "CLAUDE.md").write_text("planted", encoding="utf-8")
+    (tmp_path / ".claude" / "settings.json").write_text("{}", encoding="utf-8")
+    for config in (ModelConfig(sandbox_workspace=True), ModelConfig(workflow_node=True)):
+        flags, run_cwd = _sandbox_cli_args(config, tmp_path)
+        assert run_cwd == str(tmp_path)
+        sources = [value for flag, value in zip(flags, flags[1:])
+                   if flag == "--setting-sources"]
+        assert sources == [""]
