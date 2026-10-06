@@ -4,6 +4,24 @@
 
 ## ADDED Requirements
 
+### Requirement: Staged tool execution retains daemon accounting
+
+The staged offline tool-jail class SHALL use its admitted owner's dedicated
+UID/GID, a fixed cell-nested outer profile and the existing strict inner tool
+jail. It SHALL pin exclusive owner content descriptors without mounting the
+command-center root, protected metadata or parent sidecar directories. Source
+descriptors SHALL close before application imports and inner descriptors SHALL
+close before executing a tool. Queue slots, storage reservations, budget polls
+and settlement SHALL remain in the daemon. Missing owner scope or launcher,
+unprepared directories and unadmitted relay sockets SHALL refuse.
+
+#### Scenario: Actual offline tools and bounded image transport
+- **WHEN** Alice and Bob use file tools in prepared owner centers
+- **THEN** read, write, edit, image reads and bounded stdin execute inside their owner cells
+- **AND** existing timeout, output and disk-floor behavior remains enforced
+- **AND** foreign aliases, host descriptors and inner nested-userns requests fail
+- **AND** full tool-class acceptance remains pending until relay sockets, preparation and persistent brain-file promotion are verified
+
 ### Requirement: Code-node execution retains its inner jail inside the owner cell
 
 When the broker role split is selected, code-node execution SHALL enter the

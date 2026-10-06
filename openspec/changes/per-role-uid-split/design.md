@@ -1,3 +1,22 @@
+### D79. Mechanical staged tool-jail admission with daemon accounting
+
+Use the fixed tool-jail class with D9 cell-nested outside the existing strict
+inner tool jail. Pin the admitted center and at most 256 immediate entries;
+mount only exact-owner UID/GID regular files (single-link) and directories.
+Never mount the center itself, owner.json, or hidden entries except the existing
+.agent-workspace. Require prepared harness directories; close every source FD
+before importing application code. Daemon queue slots and storage reservation,
+renewal and settlement remain authoritative through a fixed budget-poll channel.
+Retain existing child resource supervision; fixed mapper deadline is 660 seconds (600 seconds plus startup and teardown).
+No numeric identity, profile or executable enters the privileged request.
+
+This is staged offline tool execution, not completed class acceptance. Socket
+forwarding, owner-directory preparation and persistent brain-file promotion must
+be completed before startup. Socket-bearing calls refuse; new brain names remain
+in the persistent agent workspace rather than being promoted into a virtual root.
+Do not claim public bash acceptance (its relay-socket forwarding is not admitted).
+No U2 migration, rollback or startup code is changed. Package cells remain later.
+
 ### D78. Mechanical node-sandbox integration through the bounded owner launcher
 
 The existing code-node executor runs inside a dedicated owner's outer cell,

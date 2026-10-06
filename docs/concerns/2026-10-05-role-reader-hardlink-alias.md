@@ -7,6 +7,15 @@ summary: 'D65: dedicated-label daemon reader matrix passes with 114 denials and 
 
 ## Founder D61 continuation
 
+D79 adds staged offline tool execution with actual Alice/Bob read/write/edit,
+image and native descendant operations. Reviewed production Dockerfile image
+`sha256:1650d2cadd7e20ec07fe2d78c9a97b8d394b1c6051208fe341c3d8ed7a9dde8a`
+passes foreign alias/read/relabel, descriptor and inner-userns denials with zero
+foreign bytes. The common reader matrix remains 132 denied / 22 own / zero
+foreign, with all three profile read/relabel/copy diagnostics denied. Tool
+relay sockets, preparation and brain-file promotion remain unadmitted; this
+does not close the full tool-class or engine-class matrix. Keep this concern.
+
 D78 adds actual code-node compiler/authoring execution, workspace git and venv
 descendants through the dedicated-owner launcher. The image
 `sha256:523e79ad5a95bbbf39e79881e1abaf39bf28c2b4449b21e44b97759d61e77572`

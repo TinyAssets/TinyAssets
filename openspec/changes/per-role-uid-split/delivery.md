@@ -1,3 +1,66 @@
+# Current U1 delivery: D79 staged offline tool-jail integration
+
+Started at 7df4be37d7 with the requested ff-only pull, already current. No history
+rewrite, no U2 code edit, no deployment. U2 PR #4509 remains draft and explicitly
+NOT merge-ready at cfd7967fbd83012a0371fb1ae1fbd043c30b0e9f. Its D213 repeated
+rollback-provenance finding remains a handoff; U1 did not patch or merge it.
+
+D79 implements actual read/write/edit/image operations through dedicated owner
+cells, with the existing strict inner tool jail and daemon-owned queue slots,
+storage reservation/polling/settlement. The cell mounts pinned exact-owner
+content only, closes source descriptors before application imports and closes
+inner descriptors before payload execution. No protected center root is mounted.
+The fixed class deadline is 660 seconds. Limits preserve the existing 20 MiB
+image allowance; transport carries its base64 representation with bounded slack.
+
+This is NOT full tool-class acceptance: relay sockets refuse; prepared harness
+directories are required; new brain-file names remain in .agent-workspace and
+persistent promotion is pending. Public bash/ta/egress are unverified. No full
+2.x task checkbox is newly complete. Startup remains OFF.
+
+Production Dockerfile build exited 0 with privileged chain PASS. Reviewed image:
+sha256:1650d2cadd7e20ec07fe2d78c9a97b8d394b1c6051208fe341c3d8ed7a9dde8a
+(tinyassets-uid-d79:reviewed). A later line-wrap-only source edit has no behavior
+change. Initial build also exited 0; its wrapper then failed decoding a UTF-8
+log as cp1252. The corrected final wrapper reads UTF-8 and exited 0.
+
+Verified commands (exit 0, synthetic data only):
+- python scripts/role_tool_launcher_probe.py --image tinyassets-uid-d79:reviewed:
+  actual Alice/Bob read/write/edit/image decoding, stdin, timeout/output limits,
+  disk-floor refusal, exact 20 MiB output transport, foreign scope/aliases and
+  relabel denied; inner nested-userns denied, descriptors 0/1/2 only, ZERO
+  FOREIGN_BYTES. Existing actual decoder and local git/bridge controls PASS.
+- python scripts/linux_oracle.py -- tests/test_role_tools.py tests/test_universe_tools.py tests/test_universe_tools_jail.py tests/test_universe_path_io_guard.py tests/test_tool_images.py -q -rs:
+  125 passed, zero skips, after review corrections.
+- python scripts/linux_oracle.py -- tests/test_owner_launcher_client.py tests/test_role_launcher.py tests/test_role_decoder.py tests/test_role_git.py tests/test_role_preview.py tests/test_role_node.py tests/test_ta_capabilities_jail.py -q -rs:
+  58 passed, zero skips.
+- Initial source selection: 93 passed, zero skips. Initial image
+  sha256:9f35134ff7fa85c90ddefe1eb4aa41acec1c0552215189bd59b302fddc6a0931
+  passed offline tools; reader alias matrix 132 denied / 22 own / zero foreign;
+  all three profile read/relabel/copy and out-of-range mapping denials PASS.
+- Targeted Ruff, strict OpenSpec, diff checks and plugin import/parity PASS.
+  Full Ruff retains 55 unchanged findings. No existing test weakened or removed.
+
+Cross-family peer-agents review (Claude), exit 0: ADAPT, no floor finding.
+Receipt: C:/Users/Jonathan/AppData/Local/Temp/uid-d79-review.md. AGREE with image
+allowance, refusal type and deadline findings; all corrected and production
+probe rerun. AGREE with chmod/accounting recovery note: an owner can remove the
+daemon ACL by chmod, leading to truthful storage refusal; preparation/recovery
+remains pending and privileges are not widened to bypass it.
+
+Release-critical files in this slice: 2, deploy/role_owner_launcher.py (class
+admission only) and deploy/role_decoder.py (fixed cell bootstrap). No image
+recipe, migration, rollback, startup or healthcheck code changed. U2 migration
+dry-run/deletion/old-image-CMD rollback were not run here. No final build PR.
+
+Remaining U1: complete tool sockets/preparation/promotion; provider CLI,
+discovery/auth, engine-MCP thin proxy, workspace provision/registry/worker,
+remote git/local box, ingestion/video; then exact-revision package cells with
+broker-scoped credential slots and egress. U2 remains responsible for full
+migration/quarantine/two-pass deletion, real old-image rollback and startup.
+The reader concern remains open until the full actual-class/path matrix passes.
+
+---
 # Current U1 delivery: D78 actual code-node engine integration
 
 Implementation pushed: **ff6506c7572c2fd6accf2bbb0c87f8d62bc3145a**; exact

@@ -299,12 +299,12 @@ class OwnerLauncher:
             fields.add('ui_id')
         if kind == 'node-sandbox':
             fields.add('workspace')
-        mounted = kind in {'workspace-git', 'preview-write'} or (
+        mounted = kind in {'workspace-git', 'preview-write', 'tool-jail'} or (
             kind == 'node-sandbox' and request.get('workspace') is True)
         if (not isinstance(request, dict)
                 or set(request) != fields or request['op'] not in {'SPAWN', 'START'}
                 or kind not in {'image-decoder', 'workspace-git', 'ui-preview', 'preview-write',
-                                'node-sandbox'}
+                                'node-sandbox', 'tool-jail'}
                 or (kind == 'node-sandbox' and type(request['workspace']) is not bool)
                 or (kind == 'image-decoder' and (
                     not isinstance(request['mime'], str)
@@ -336,6 +336,13 @@ class OwnerLauncher:
                     or os.readlink(f'/proc/self/fd/{received[1]}') !=
                     self.data_root + '/' + request['command_center']):
                 raise ValueError('preview output root does not match admitted center')
+        if kind == 'tool-jail':
+            info = os.fstat(received[1])
+            if (not stat.S_ISDIR(info.st_mode) or info.st_gid != inner
+                    or info.st_uid not in (inner, self.overflow_uid)
+                    or os.readlink(f'/proc/self/fd/{received[1]}') !=
+                    self.data_root + '/' + request['command_center']):
+                raise ValueError('tool root does not match admitted center')
         if kind == 'workspace-git' or (kind == 'node-sandbox' and mounted):
             info = os.fstat(received[1])
             if not stat.S_ISDIR(info.st_mode) or (info.st_uid, info.st_gid) != (inner, inner):
@@ -378,7 +385,10 @@ class OwnerLauncher:
                 self.launch['_assert_caps'](0)
                 os.umask(0o007)
                 os.chdir('/')
-                if kind == 'node-sandbox':
+                if kind == 'tool-jail':
+                    command = ['/usr/local/libexec/ta-decoder.py', 'enter-tool',
+                               self.data_root, str(inner)]
+                elif kind == 'node-sandbox':
                     command = ['/usr/local/libexec/ta-decoder.py', 'enter-node',
                                'workspace' if mounted else 'data', self.data_root, str(inner)]
                 elif kind == 'workspace-git':
@@ -398,6 +408,7 @@ class OwnerLauncher:
             except BaseException:
                 os._exit(126)
         deadline = time.monotonic() + (1810 if kind == 'node-sandbox' else
+                                     660 if kind == 'tool-jail' else
                                      75 if kind == 'ui-preview' else
                                      65 if kind == 'workspace-git' else 35)
         if streaming:

@@ -27,10 +27,40 @@ def identity(uid=1003):
         raise RuntimeError("decoder role retirement is absent")
 
 
-def enter(mime, data_root, uid=1003, *, preview=False, preview_write=False, node=False):
+def tool_mounts(uid):
+    """Pin only owner content; never mount the command-center root itself."""
+    entries = os.listdir(3)
+    if len(entries) > 256:
+        raise ValueError('tool center has too many immediate entries')
+    required = {'.agent-workspace', 'skills', 'prompts', 'extensions',
+                'workflows', 'bin', 'notes', 'wiki'}
+    if not required <= set(entries):
+        raise ValueError('tool center has not been prepared')
+    mounts = ['--tmpfs', '/center']
+    for name in sorted(entries):
+        if (name.startswith('.') and name != '.agent-workspace') or name == 'owner.json':
+            continue
+        fd = os.open(name, os.O_PATH | os.O_NOFOLLOW, dir_fd=3)
+        info = os.fstat(fd)
+        if stat.S_ISLNK(info.st_mode):
+            os.close(fd)
+            continue
+        if (not (stat.S_ISDIR(info.st_mode) or stat.S_ISREG(info.st_mode))
+                or (info.st_uid, info.st_gid) != (uid, uid)
+                or (stat.S_ISREG(info.st_mode) and info.st_nlink != 1)
+                or (name in required and not stat.S_ISDIR(info.st_mode))):
+            raise ValueError('tool mount is not an exclusive owner content inode')
+        os.set_inheritable(fd, True)
+        mounts.extend(['--bind-fd', str(fd), '/center/' + name])
+    mounts.extend(['--remount-ro', '/center'])
+    return mounts
+
+
+def enter(mime, data_root, uid=1003, *, preview=False, preview_write=False, node=False,
+          tool=False):
     identity(uid)
     host = namespaces()
-    mounted = preview_write or (node and mime == 'workspace')
+    mounted = preview_write or tool or (node and mime == 'workspace')
     if mounted:
         info = os.fstat(3)
         if not stat.S_ISDIR(info.st_mode) or info.st_gid != uid:
@@ -40,7 +70,7 @@ def enter(mime, data_root, uid=1003, *, preview=False, preview_write=False, node
     # Load only the immutable stdlib-only filter definition; no package import
     # or application initialization before the owner boundary exists.
     filter_factory = runpy.run_path("/app/tinyassets/providers/jail_seccomp.py")["program_fd"]
-    descriptor = filter_factory(profile="cell-nested" if preview or node else "cell-deny")
+    descriptor = filter_factory(profile="cell-nested" if preview or node or tool else "cell-deny")
     os.set_inheritable(descriptor, True)
     argv = ["/usr/bin/bwrap", "--die-with-parent", "--new-session", "--unshare-all",
             "--cap-drop", "ALL", "--clearenv", "--setenv", "PATH", "/usr/bin:/bin",
@@ -55,12 +85,15 @@ def enter(mime, data_root, uid=1003, *, preview=False, preview_write=False, node
         for path in ('/opt/ms-playwright', '/etc/fonts'):
             argv.extend(['--ro-bind', path, path])
         argv.extend(['--setenv', 'PLAYWRIGHT_BROWSERS_PATH', '/opt/ms-playwright'])
-    if mounted:
+    if tool:
+        argv.extend(tool_mounts(uid))
+    elif mounted:
         argv.extend(['--bind-fd', '3', '/workspace'])
     argv.extend(["--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp",
                  "--chdir", "/tmp", "--seccomp", str(descriptor), "--",
                  "/opt/venv/bin/python", "-I", "-B", "/usr/local/libexec/ta-decoder.py",
-                 'inside-node' if node else 'inside-preview-write' if preview_write else
+                 'inside-tool' if tool else 'inside-node' if node else
+                 'inside-preview-write' if preview_write else
                  "inside-preview" if preview else "inside-owner", mime,
                  json.dumps(host, sort_keys=True), data_root, str(uid)])
     os.execv(argv[0], argv)
@@ -223,7 +256,20 @@ def decode(mime, host, data_root, uid=1003):
 
 
 if __name__ == "__main__":
-    if (len(sys.argv) == 5 and sys.argv[1] == 'enter-node'
+    if len(sys.argv) == 4 and sys.argv[1] == 'enter-tool' and 0 < int(sys.argv[3]) < 100000:
+        enter('', sys.argv[2], int(sys.argv[3]), tool=True)
+    elif len(sys.argv) == 6 and sys.argv[1] == 'inside-tool' and 0 < int(sys.argv[5]) < 100000:
+        host = json.loads(sys.argv[3])
+        source = host.pop('source')
+        proof = prove_cell(host, sys.argv[4], int(sys.argv[5]), 'cell-nested')
+        proof['source'] = source
+        sys.stdout.buffer.write(json.dumps({'cell': proof}).encode() + b'\n')
+        sys.stdout.buffer.flush()
+        sys.path.insert(0, '/app')
+        from tinyassets.role_tools import cell_main
+
+        raise SystemExit(cell_main())
+    elif (len(sys.argv) == 5 and sys.argv[1] == 'enter-node'
             and sys.argv[2] in {'data', 'workspace'} and 0 < int(sys.argv[4]) < 100000):
         enter(sys.argv[2], sys.argv[3], int(sys.argv[4]), node=True)
     elif (len(sys.argv) == 6 and sys.argv[1] == 'inside-node'
