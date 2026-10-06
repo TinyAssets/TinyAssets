@@ -55,3 +55,34 @@ The finding is resolved: the fix is the first of the two I proposed, applied cor
 2. The full six-shard Linux CI run is still in progress. I am not vouching for it; the only test I ran was the one file above.
 
 VERDICT: APPROVE
+
+
+## Final main merge integration check
+
+Merge resolved cleanly; checking where the runner claim happens relative to K1's `_run_turn` split, then one test file.
+
+I found no correctness or floor integration defects in the merge of main `dd82fd3d4a` into K1 as `442743f2b5`, and no lane collision.
+
+**How the merge went**
+- Git merged everything without conflicts, and none of the hunks in the coordinator, onboarding or storage-accounting files needed hand resolution.
+- The plugin runtime copy of `agent_turn_coordinator.py` is byte-identical to `tinyassets/agent_turn_coordinator.py`.
+
+**Main's run/finally and `_release_turn` changes**
+- `run()` now always runs, even on success: close the turn if it's still `ready`, then `_release_turn()`, then close the budget. Main's runner release (`agent_turn_runner.release`) happens in `_release_turn`, before `BOOT.release`.
+- K1's `_run` → `_run_turn` split sits entirely inside `run()`'s `try`, so every path still reaches release, including a cancellation or a failing hook.
+- The runner claim happens on the journal side (`storage/agent_turn_journal.py`), not in the turn body. K1's split doesn't skip a claim or leave one unmatched.
+- K1's completion hook (`turn_end`) fires inside `_run` after `_run_turn` returns, before main's `finally` closes the turn. If the hook raises, the existing evidence-attach and release path handles it.
+- `_run` still sets the owner first (`self.owner = self._check_scope()`), before `_run_turn` and therefore before the hooks fire.
+
+**Onboarding and storage**
+- Compared with main, K1 only adds the `/app/outside-clients` route and the `.outside-client-authority.sqlite3` accounting entry.
+- Main's `.agent-turn-runners` registration is intact (`storage_accounting.py:577`).
+- I didn't open main's onboarding interrupt (`base_path`) change: K1 doesn't touch those lines and the merge had no conflict there.
+
+**Checks run**
+- `tests/test_orphan_ready_coordinator.py`: 3 passed on the merged tree.
+- `ruff` isn't installed in this shell, so lint was not run. I'm not certifying the six CI shards or supplements; those reruns are still going.
+
+The worktree also has uncommitted changes in `docs/concerns/2026-10-05-served-router-sandbox-suite-failure.md` and `openspec/changes/one-extension-unit/review-k1-merge-queue.md`. I didn't touch them.
+
+VERDICT: APPROVE
