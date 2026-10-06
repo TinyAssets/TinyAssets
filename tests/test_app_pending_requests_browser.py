@@ -54,16 +54,22 @@ def test_cleared_reconnect_returns_on_later_failure_and_history_can_reask(app_ur
                 status=401, content_type='application/json', body='{"error":"token_rejected"}'))
             _enter_chat(page, app_url)
             page.evaluate("""async () => {
-                token=()=> 'test-session'; window.relays=[];
+                token=()=> 'test-session'; window.relays=[]; window.answers=[];
                 Owner.listRequests=()=>readRequests();
-                MCP.answerRequest=payload=>answerRequest(payload);
+                MCP.answerRequest=async payload=>{
+                    const result=await answerRequest(payload);answers.push(payload);return result;
+                };
                 sendTurn=async (...args)=>relays.push(args);
                 await refreshRail();
             }""")
             page.locator('#needs-you-open').click()
             page.get_by_role('button', name='Reconnect GitHub', exact=False).click()
             page.get_by_role('button', name='Clear', exact=True).click()
-            page.wait_for_function('() => relays.length === 1')
+            page.wait_for_function('() => answers.length === 1 && railCache.length === 0')
+            assert page.evaluate('answers[0]') == {
+                'request_id': first['request_id'], 'dismiss': True,
+            }
+            assert page.evaluate('relays') == []
             assert not read_rail()["pending"]
             # Polling alone cannot resurrect a cleared ask.
             page.evaluate('refreshRail()')
@@ -74,8 +80,8 @@ def test_cleared_reconnect_returns_on_later_failure_and_history_can_reask(app_ur
             assert history.locator('button').all_text_contents() == ['Ask again']
             assert history.locator('input,textarea,select,a,[role=button]').count() == 0
             page.get_by_role('button', name='Ask again', exact=True).click()
-            page.wait_for_function('() => relays.length === 2')
-            relay = page.evaluate('relays[1]')
+            page.wait_for_function('() => relays.length === 1')
+            relay = page.evaluate('relays[0]')
             assert first['request_id'] in relay[0]
             assert relay[2]['agentId'] == 'main'
             assert not read_rail()["pending"]  # The tap does not grant or replay anything.
@@ -125,7 +131,8 @@ def test_notification_is_informational_and_opens_source_chat(app_url, browser):
     sheet = page.locator('#request-rail')
     assert sheet.get_by_text('Notification · No answer needed').is_visible()
     assert sheet.get_by_text('Attachment: file_report').is_visible()
-    assert sheet.locator('input:visible,textarea:visible').count() == 0
+    assert sheet.locator('input:visible,textarea:visible').count() == 1
+    assert sheet.get_by_role('textbox', name='Reply to notification').is_visible()
     assert sheet.get_by_role('button', name='Accept', exact=True).count() == 0
     sheet.get_by_role('button', name='Open chat', exact=True).click()
     assert page.evaluate('openedAgents') == ['social-manager']
@@ -183,6 +190,10 @@ def test_pending_requests_at_latest_and_new_arrival_answer(app_url, browser, wid
         assert thread['y'] < last['y'] + last['height']
         assert last['y'] + last['height'] <= thread['y'] + thread['height'] + 1
 
+    page.wait_for_function("""() => {
+        const el=document.getElementById('thread');
+        return Math.abs(el.scrollHeight-el.clientHeight-el.scrollTop)<2;
+    }""")
     at_latest()
     page.evaluate('renderRail(asks)')
     at_latest()
@@ -212,11 +223,12 @@ def test_pending_requests_at_latest_and_new_arrival_answer(app_url, browser, wid
     page.get_by_role('button', name='A new request', exact=False).click()
     page.locator('#fb_new').fill('Go ahead')
     page.get_by_role('button', name='Accept', exact=True).click()
-    page.wait_for_function('answers.length === 1 && relays.length === 1')
+    page.wait_for_function(
+        '() => answers.length === 1 && !document.querySelector("#request-rail").open')
     assert page.evaluate('answers') == [
         {'request_id': 'new', 'feedback': 'Go ahead', 'values': {}}
     ]
-    assert page.evaluate('relays[0][0]') == 'Approved: "A new request" \u2014 Go ahead'
+    assert page.evaluate('relays') == []  # Routing is committed with the answer on the server.
     assert not page.locator('#request-rail').is_visible()
     page.locator('#needs-you-open').click()
     assert page.locator('#needs-you-items button').count() == 2

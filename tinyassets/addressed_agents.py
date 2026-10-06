@@ -41,6 +41,7 @@ class AddressedAgent:
     instructions: tuple[tuple[str, str, str], ...]
     #: Completed recipient package placement; never a binding-id-derived path.
     agent_slug: str | None = None
+    retirement_revision: int = 0
 
 
 def normalize_agent_id(agent_id: object) -> str:
@@ -114,6 +115,7 @@ def is_conversable(binding: dict, *, owner: str, universe_id: str) -> bool:
     configuration = binding.get("configuration")
     return bool(
         binding.get("created_by") == owner
+        and not binding.get("retired", False)
         and binding.get("universe_id") == universe_id
         and binding.get("status") == "configured"
         and isinstance(configuration, dict)
@@ -182,6 +184,7 @@ def resolve(
         name=agent_name(binding, definition),
         instructions=_instructions(definition),
         agent_slug=installed_agent_slug(base_path, binding=binding),
+        retirement_revision=binding["retirement_revision"],
     )
 
 
@@ -190,7 +193,8 @@ def roster(base_path: str | Path, *, universe_id: str, owner: str) -> list[dict]
     from tinyassets.custom_agents import list_bindings
 
     agents = [{"agent_id": MAIN_AGENT, "name": "Your agent"}]
-    for binding in list_bindings(base_path, universe_id=universe_id, limit=None):
+    for binding in list_bindings(base_path, universe_id=universe_id, limit=None,
+                                 include_retired=False):
         if is_conversable(binding, owner=owner, universe_id=universe_id):
             agents.append({"agent_id": binding["agent_binding_id"],
                            "name": agent_name(binding, None)})

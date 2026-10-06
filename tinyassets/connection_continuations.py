@@ -50,15 +50,16 @@ def bind(home, request_id):
                 brief="Continue after the owner connects.",
                 continuation_only=True,
             )
-            conn.execute(
-                "UPDATE activities SET status='waiting_on_you' WHERE activity_id=?",
-                (record["activity_id"],),
-            )
+            # create initializes the continuation under admission. Never rewrite
+            # its status here: retirement may already have fenced that record.
             task = conn.execute(
                 "SELECT activity_id,task_generation,task_expires_at "
-                "FROM activities WHERE activity_id=?",
+                "FROM activities WHERE activity_id=? "
+                "AND status NOT IN ('paused','completed','failed')",
                 (record["activity_id"],),
             ).fetchone()
+            if task is None:
+                raise bound_requests.RequestRefused("The initiating task ended.")
         context = dict(
             owner=owner,
             home=home.name,

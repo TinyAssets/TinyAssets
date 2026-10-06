@@ -1362,15 +1362,10 @@ def request_from_user(
         if reused is not None:
             return {**reused, "grant_sentence": _grant_sentence(reused)}
         request_id = _pin_consent(_uid, action, (kind, title, body), fields)
-    request_agent = "main"
-    if action.get("type") in {"connect", "connect_http"}:
-        from tinyassets.effectors.authenticated_external_call import _initiating_agent
-
-        request_agent = _initiating_agent(udir) or "main"
     row = create_request(
         udir, kind=kind, title=title, body=body, fields=fields,
         action=action, dedupe_key=dedupe, origin=origin, items=items,
-        request_id=request_id, agent=request_agent,
+        request_id=request_id,
     )
     if row is None:
         return {"error": "request_storage_unavailable"}
@@ -1401,10 +1396,9 @@ def request_from_user(
         from tinyassets.connection_continuations import bind
 
         try:
-            row["server_continuation"] = bind(udir, row["request_id"])
+            row["server_continuation"] = bind(udir, row["request_id"]) or row["server_continuation"]
         except Exception:
             logger.warning("Connection ask saved but continuation binding failed", exc_info=True)
-            row["server_continuation"] = False
             row["continuation_status"] = "unavailable"
 
     if created:
@@ -2783,10 +2777,32 @@ def _answer_request(*, universe_id: str = "", payload: Any = None,
     row = get_request(udir, request_id) if request_id else None
     if row is None:
         return {"error": "not_found", "resource": "pending_request"}
-    if row["action"].get("type") == "approve_action":
+    if row["action"].get("type") == "approve_action" and (
+            "reply" not in document or owner_session is None):
+        # Even a reply needs the owner session here: words in the asker's
+        # thread must not stand in for the protected card's decision.
         return {"error": ("preview_required" if owner_session is not None
                           else "interactive_approval_required"),
                 "detail": "Open the protected inline owner card to decide this action."}
+    from tinyassets import request_answers
+
+    try:
+        request_answers.check(udir, row)
+    except PermissionError:
+        return {"error": "not_found", "resource": "pending_request"}
+    if "reply" in document:
+        text = document["reply"]
+        if not isinstance(text, str) or not text.strip() or len(text) > _MAX_ANSWER_CHARS:
+            return _bad("reply must be nonempty text within the answer limit")
+        if looks_like_credential(text):
+            return _bad("Use words rather than credentials in a reply")
+        reply_id = document.get("reply_id")
+        if not isinstance(reply_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", reply_id):
+            return _bad("reply_id must identify this reply for safe retries")
+        item_id = str(document.get("item_id") or "")
+        if item_id and item_id not in {item["item_id"] for item in row.get("items", [])}:
+            return {"error": "not_found", "resource": "request_item"}
+        return request_answers.reply(udir, row, text.strip(), reply_id, item_id=item_id)
     if row["action"].get("type") == "notify":
         return {"error": "not_answerable",
                 "detail": "This notification needs no answer; dismiss it with withdraw."}
