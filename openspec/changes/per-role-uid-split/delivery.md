@@ -1,4 +1,58 @@
-# Current delivery: D73 dedicated-owner sealed snapshot prerequisite
+# Current delivery: D74 raw-I/O guard closed without changing its assertions
+
+D73 pushed at **8c4d724eac**, remote SHA verified; hygiene 3 added tests,
+0 removed, 0 tampering. Continued into the previously failing raw-I/O gate.
+Snapshot directory opens now check every ancestor, failed vault-temp cleanup
+uses the no-follow unlink helper from the filesystem anchor, broker capability
+readback uses the bounded reader at its numeric procfs PID, and image parsing
+has a bytes-only entry that rejects paths/streams before Pillow. The raw-I/O
+guard and its shrink-only inventory are unchanged. Its concern file is resolved
+and deleted; the separate reader-alias concern remains open.
+
+Final production Dockerfile image:
+`sha256:acb6a78042074461f9c4c45862ed697838a84fcd0558c90b4825699503860814`.
+
+Verification (all listed commands exit 0):
+- `python scripts/linux_oracle.py -- tests/test_universe_path_io_guard.py tests/test_tool_images.py tests/test_role_decoder.py tests/test_role_snapshot.py tests/test_credential_vault.py tests/test_broker_process.py tests/test_role_launcher.py -q -rs`:
+  **105 passed, zero skips**.
+- D73's exact seven-file affected caller/heavy Linux selection rerun:
+  **244 passed, zero skips**, including the previously failing raw-I/O guard.
+- `python scripts/role_service_bootstrap_probe.py --image tinyassets-uid-d74:guard --snapshots --git --stream`:
+  dedicated snapshot prerequisite, real Alice/Bob PNG decoders and local git
+  classes, broker HTTPS GET/accounted POST, replay refusal and two OAuth
+  rotations pass. This staged-bootstrap run has one service lifetime.
+- `python scripts/linux_oracle.py --production-image tinyassets-uid-d74:guard --production-stream`:
+  full existing legacy-launcher/foundation/egress substep receipts pass, including
+  D12/D29/D45 dry-run/repeat/crash/reverse boundaries, broker IPC consumers,
+  accounting/refresh and broker restart. This is not D60's full class matrix.
+- `python scripts/role_reader_alias_probe.py --image tinyassets-uid-d74:guard`:
+  **114 denied, 19 own reads, zero foreign reads**, foreign bytes unchanged.
+- `python scripts/role_old_image_rollback_probe.py --image tinyassets-uid-d74:guard --old-image ghcr.io/tinyassets/tinyassets-daemon@sha256:199755799ebadd71f42f239536a1e55c0b85e4d101af83e79726bc316cd774da`:
+  actual previously production-pinned old image retains committed WAL and new
+  broker writes; UID1001 with no work group/caps reads/writes ledger+journals and
+  reads/writes/deletes proxy state after reverse migration. **Egress substep
+  only: owner_tree_rollback=false, old_cmd_boot=false.** Synthetic volume only.
+- Targeted Ruff, plugin regeneration/parity and strict OpenSpec validation pass.
+  The full Ruff baseline remains 55 unchanged findings.
+
+Cross-family peer-agents review: **APPROVE**, no floor/correctness defects.
+Reviewer Windows skip is not acceptance evidence; the Linux suite above has
+zero skips. One attempted parallel HTTPS run failed on the fixture's fixed
+Docker subnet; serialized rerun passed. No product permissions were weakened.
+
+Release-critical files in D74: **0**. Changed runtime: broker/supervisor.py,
+credential_vault.py, tool_images.py, new image_bytes.py and mirrors. No gate,
+Dockerfile, deployment or privileged launcher file changes.
+
+This run completed D73 and D74 prerequisites, **not** a new actual engine class.
+All remaining engine classes, dynamic admissions, the complete path/reader
+matrix, full D61 migration/quarantine and two-pass deletion, restrictive
+owner-tree rollback/old CMD, then startup/healthcheck remain. ui-preview is the
+one founder-deferred class, still unadmitted. No full 2.x checkbox is newly
+complete. Startup inactive; no PR or deployment; finish-all remains incomplete.
+
+---
+# Prior delivery: D73 dedicated-owner sealed snapshot prerequisite
 
 Started at **891476fe23**; requested ff-only pull was already current. D73
 replaces shared work-group access to sealed provider snapshots when the bounded

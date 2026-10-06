@@ -258,9 +258,11 @@ def _shown(data: bytes, mime: str) -> tuple[dict, bytes]:
     """Child side: decode with exactly one decoder, orient, scale, re-encode."""
     from PIL import Image, ImageOps
 
+    from tinyassets.image_bytes import open_image_bytes
+
     formats, allowed = _PILLOW[mime]
     Image.MAX_IMAGE_PIXELS = MAX_SOURCE_PIXELS
-    with Image.open(io.BytesIO(data), formats=formats) as image:
+    with open_image_bytes(data, formats=formats) as image:
         if image.format not in allowed:
             raise ValueError(f"opened as {image.format}, not {mime}")
         source = image.size

@@ -206,3 +206,9 @@ not complete every engine class/path/reader pair, migration/quarantine, or the
 promotion-recovery caveat. Keep the concern open. No main deployment occurred;
 the earlier distinction between preplanted diagnostics and proven production
 plantability still applies.
+
+D74 regression receipt: final candidate
+acb6a78042074461f9c4c45862ed697838a84fcd0558c90b4825699503860814 repeats
+114 denied / 19 own reads / zero foreign reads, with foreign bytes unchanged.
+No new engine-class/path matrix completion or main deployment is claimed.
+This concern remains open.

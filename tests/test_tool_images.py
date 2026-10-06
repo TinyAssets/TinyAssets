@@ -42,6 +42,18 @@ def _shown(result: ToolImage) -> Image.Image:
 # --------------------------------------------------------------------------- #
 
 
+@pytest.mark.parametrize('value', ['/data/bob/private.png', Path('/data/bob/private.png'),
+                                  io.BytesIO(b'not a caller-owned stream')])
+def test_byte_decoder_refuses_paths_and_streams_before_pillow(value, monkeypatch):
+    from tinyassets.image_bytes import open_image_bytes
+
+    def forbidden(*args, **kwargs):
+        pytest.fail('non-byte input reached Pillow')
+    monkeypatch.setattr(Image, 'open', forbidden)
+    with pytest.raises(TypeError, match='encoded bytes'):
+        open_image_bytes(value, formats=['PNG'])
+
+
 def test_a_small_image_is_shown_at_its_size_with_exact_pixels():
     data = _png(64, 32)
     shown = bound_image(data, "art/tile.png")

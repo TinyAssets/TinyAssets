@@ -2124,6 +2124,11 @@ per-owner UID/GID and private networking remain unchanged. This closes local
 bridge git operations, not remote transport or the whole workspace-worker class.
 No startup activation; ui-preview remains unadmitted.
 
+D72 review correction: **AGREE** that out-of-data catalog capability probes must
+remain disabled results, not exceptions. Selected bridge refusals return rc126
+with a fixed error, preserving the existing structured-result API without any
+host fallback. Production and unit regressions cover this caller shape.
+
 ### D73. Mechanical dedicated-owner access to sealed launch snapshots
 
 D54's shared work-group snapshot permissions cannot admit D60 identities.
@@ -2144,7 +2149,15 @@ historical proof. Repreparing parents must preserve dedicated access and never
 restore shared-group access. Unlabelled roots or mismatched broker identities
 refuse. ui-preview and startup remain unadmitted.
 
-D72 review correction: **AGREE** that out-of-data catalog capability probes must
-remain disabled results, not exceptions. Selected bridge refusals return rc126
-with a fixed error, preserving the existing structured-result API without any
-host fallback. Production and unit regressions cover this caller shape.
+### D74. Mechanical closure of the raw-I/O inventory gate
+
+Keep the raw-I/O gate, shrink-only inventory and assertions unchanged. Open
+snapshot directories through the existing component-by-component no-follow
+helper. Clean up failed vault temporary files through the shared unlink helper
+from the filesystem anchor, so every parent is checked rather than resolved.
+Read daemon capability status through the bounded descriptor reader at its
+numeric procfs PID (no `/proc/self` symlink). Factor Pillow's bytes-only entry
+into a data-only module whose interface rejects filenames, paths and streams
+before calling the parser. The actual decoder's transforms and resource limits
+stay unchanged. This closes the four pre-existing extra sites without new
+privilege, startup activation, or a new engine admission.

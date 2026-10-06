@@ -43,7 +43,16 @@ def _protect_daemon() -> None:
     """After exec, before creating a proof, check retirement and deny ptrace."""
     if not hasattr(socket, "SO_PEERCRED") or os.getuid() != 1001:
         raise BrokerUidSplitRequired("credential broker needs the per-role uid split")
-    fields = dict(line.split(":", 1) for line in Path("/proc/self/status").read_text().splitlines())
+    from tinyassets import workspace_fs
+
+    # Numeric self PID avoids /proc/self's symlink; retain the common bounded,
+    # no-follow descriptor reader even for this kernel-owned status document.
+    directory = workspace_fs.open_dir_nofollow(Path('/proc') / str(os.getpid()))
+    try:
+        raw = workspace_fs.read_regular_file_beneath(directory, 'status', max_bytes=65536)
+    finally:
+        os.close(directory)
+    fields = dict(line.split(':', 1) for line in raw.decode().splitlines())
     if (os.getresuid() != (1001, 1001, 1001) or os.getresgid() != (1001, 1001, 1001)
             or os.getgroups() != [1100, 1101, 1102]
             or any(int(fields[key], 16) for key in

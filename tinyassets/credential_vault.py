@@ -662,7 +662,13 @@ def _persist_role_vault(path: Path, data: str) -> None:
             os.fsync(handle.fileno())
         temporary.replace(path)
     except BaseException:
-        temporary.unlink(missing_ok=True)
+        from tinyassets.universe_files import unlink_universe_file
+
+        try:
+            unlink_universe_file(
+                temporary.anchor, temporary.relative_to(temporary.anchor).as_posix())
+        except FileNotFoundError:
+            pass
         raise
     # Publication is the existing vault commit point. Never compensate owner
     # rows after it, even if a subsequent durability flush reports a failure.
@@ -1870,8 +1876,9 @@ def _set_snapshot_directory_mode(path: Path, identity: tuple[int, int]) -> None:
         _chmod_best_effort(path, 0o700)
         return
     from tinyassets.role_modes import SNAPSHOT_DIRECTORY_MODE, WORK_GID
+    from tinyassets.workspace_fs import open_dir_nofollow
 
-    descriptor = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    descriptor = open_dir_nofollow(path)
     try:
         opened = os.fstat(descriptor)
         if (_snapshot_file_identity(opened) != identity or opened.st_uid != os.geteuid()
