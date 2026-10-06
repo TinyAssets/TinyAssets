@@ -11,7 +11,7 @@ import json
 import subprocess
 
 PROGRAM = r"""
-import json,os,runpy,sys,tempfile
+import fcntl,json,os,runpy,sqlite3,sys,tempfile
 from pathlib import Path
 sys.path.insert(0,'/app/scripts')
 from role_image_oracle import child,snapshot,status
@@ -70,6 +70,34 @@ def legacy():
     path=root/'alice/work/engine/private'; assert path.read_bytes()==b'engine-created'
     path.write_bytes(b'restored'); path.unlink(); path.parent.rmdir()
 child(1001,[],legacy)
+egress=runpy.run_path('/usr/local/libexec/ta-egress-migration.py')
+modes=runpy.run_path('/app/tinyassets/role_modes.py')
+combined=seed()
+with sqlite3.connect(combined/'outbound.db') as db:
+    db.execute('CREATE TABLE retained(value TEXT)')
+    db.execute("INSERT INTO retained VALUES ('preserved')")
+os.chown(combined/'outbound.db',1001,1001)
+lock=os.open(combined/'.layout.lock',os.O_RDONLY)
+fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
+def competing_lock():
+    pid=os.fork()
+    if pid==0:
+        os.close(lock)
+        other=os.open(combined/'.layout.lock',os.O_RDONLY)
+        try: fcntl.flock(other,fcntl.LOCK_EX|fcntl.LOCK_NB)
+        except BlockingIOError: os._exit(0)
+        os._exit(1)
+    assert os.waitpid(pid,0)[1]==0
+for reverse in (False,True):
+    steps=[lambda:egress['relocate'](combined,reverse=reverse,layout_lock=lock),
+           lambda:egress['transfer_accounting'](combined,reverse=reverse,layout_lock=lock),
+           lambda:egress['migrate_liveness'](combined,modes=modes,reverse=reverse,layout_lock=lock),
+           lambda:run(combined,reverse=reverse,layout_lock=lock)]
+    for operation in reversed(steps) if reverse else steps:
+        competing_lock(); operation(); competing_lock()
+os.close(lock)
+with sqlite3.connect(combined/'outbound.db') as db:
+    assert db.execute('SELECT value FROM retained').fetchone()==('preserved',)
 for reverse in (False,True):
     steps=['journal','marker','ownership','complete-journal']
     if not reverse: steps.append('quarantine-name')
@@ -85,9 +113,27 @@ for reverse in (False,True):
         assert len(result['quarantined'])==2
         assert run(fixture,reverse=reverse)['changed']==0
         assert (fixture/'.role-owner-migration/quarantine/alice/work/own').read_bytes()==b'alice'
-print(json.dumps(dict(owner_migration=True,dry_run=True,repeat=True,reverse=True,
+# D211 under the exact production capabilities, including a durable restart.
+for reverse in (False,True):
+    fixture=seed()
+    path=fixture/'alice/work/execute'
+    path.chmod(0o644)
+    if reverse: run(fixture)
+    def recorded(step):
+        if step=='journal': raise InterruptedError(step)
+    try: run(fixture,reverse=reverse,after_step=recorded)
+    except InterruptedError: pass
+    else: raise AssertionError('journal boundary missing')
+    path.chmod(0o600)
+    run(fixture,reverse=reverse)
+    assert path.stat().st_mode & 0o7777 == 0o600
+    if not reverse: run(fixture,reverse=True)
+    assert path.stat().st_mode & 0o7777 == 0o600
+    assert path.stat().st_uid==1001
+print(json.dumps(dict(current_chmod_preserved=True,owner_migration=True,dry_run=True,repeat=True,reverse=True,
     crash_boundaries=9,quarantine_names_preserved=True,foreign_access=False,
-    restrictive_owner_files_restored=True,old_cmd_boot=False,startup_active=False)))
+    restrictive_owner_files_restored=True,continuous_layout_lock=True,
+    old_cmd_boot=False,startup_active=False)))
 """
 
 

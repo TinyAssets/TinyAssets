@@ -1,3 +1,77 @@
+## Post-review final verification
+
+Merged origin/main `22bc0f728e989813630d54c8378921370fafe7f2` at
+`0604291e28`, then pushed the source checkpoint. Post-merge Linux oracle ran
+the four migration files plus `tests/test_starter_instructions.py` and
+`tests/test_converse_turn_cost.py`: **160 passed, zero skips**. The installed
+image receipt below predates this unrelated starter-guidance merge. Plugin
+mirror regeneration/import probe passed and produced no diff. Targeted Ruff
+and diff checks pass. The pre-main-merge hygiene result was 344 tests added,
+0 removed, 0 tampering; final merged-stack hygiene is recorded in the PR body.
+No further implementation occurred after D213. Final local edits are the
+already-prepared installed-image probe and this handoff/concern record.
+
+# U2 handoff: D213 repeated rollback-provenance finding
+
+### D213. Stop under AGENTS loop rule 7; do not patch again
+
+D211's permission cap is implemented and committed at `5ea4a3e572`.
+Claude cross-family review via peer-agents completed, exit 0, **ADAPT**; full
+output read at `C:/Users/Jonathan/AppData/Local/Temp/u2-d211-review-result.md`.
+No floor defect was found in owner/metadata/egress mode-cap logic.
+
+**AGREE** with finding 1, a repeat of D210 finding 2: forward migration,
+atomic vault/liveness replacement, forward restart, then reverse records the
+replacement's broker GID1102 as historical ownership. Reverse restores that
+GID instead of legacy 1001. Direct replacement-to-reverse is covered and passes,
+but an intervening forward restart is not. A second forward/reverse cycle after
+the direct fallback can likewise revive the wrongly recorded IDs. The live mode
+remains capped: this is ownership-provenance correctness, not stale chmod replay.
+Do not activate or treat the migration as rollback-ready. Per AGENTS rule 7,
+"the same finding twice: hand off, do not patch." No implementation changes were
+made after the review arrived. The next implementation owner must address the
+whole replacement/restart/direction-cycle contract rather than patch one branch.
+
+**AGREE** with the coordinator restart limitation: new visible immediate entries
+change `work`, and the existing journal's exact configuration guard refuses.
+Stable-generation reconciliation is still unimplemented, not grounds to delete
+the journal or weaken binding checks. **DISAGREE_EVIDENCE** with the claimed U1
+preview ownership collision: precreation starts at 1001 only inside the stopped
+window, then the owner phase assigns the dedicated UID/GID. The full-volume test
+asserts final `previews.st_uid == machine` for both owners, satisfying U1's stated
+handoff. No U1 launcher/class/decoder/ui-preview file was edited.
+
+Verified receipts (synthetic data only):
+- Linux root oracle selection below: **140 passed, zero skips**, after D212.
+- Targeted Ruff and diff checks pass; static prompt guidance is unchanged.
+- Production Dockerfile build exits 0, privileged chain PASS. Image
+  `sha256:a3203def8dc464a7c395ecd679ff20f4bc47e8b78991f048eb3f5e4f0d8fc7db`.
+- `python scripts/role_owner_migration_probe.py --image tinyassets-uid-u2:d211`
+  exits 0 under exactly CHOWN/DAC_OVERRIDE/FOWNER/SETUID/SETGID/SETPCAP/KILL:
+  dry/apply/repeat/reverse, nine crash boundaries, quarantine names/inode/bytes,
+  continuous lock, real foreign-owner denials and current chmod retention in
+  both directions. All child capability sets zero, groups empty, NNP=1.
+  This installed-image proof covers the owner substep, not the full coordinator.
+
+Per requested item:
+1. Offline owner/metadata/egress mode caps and coordinator tests are committed;
+   full migration remains incomplete due to the repeated ownership finding,
+   stable-generation handling, first-allocation and installed full-volume proof.
+2. Two-pass deletion is not implemented; U1 owner-delete class admission remains
+   an integration dependency. No substitute daemon privilege was introduced.
+3. Actual previous-production CMD boot is not implemented/proven. The historical
+   D67 egress subprocess proof does not satisfy this item.
+4. Startup/healthcheck wiring remains unimplemented. Activation remains OFF.
+
+Both requested drafts (#4509 into U1, #4510 into main) remain NOT merge-ready.
+U1 remote merge was already current. Direct coordination failed before sending:
+official Codex proxy connection refused (10061), vendor catalog named-pipe ENOENT.
+No settings were changed and no delivery is claimed. No production volume was
+mounted or changed; no deployment, spec completion, deployed-SHA assertion or
+real-user app pass is claimed. This handoff supersedes the in-progress notes below.
+
+---
+
 ## Current verification
 
 Linux command (root is required to exercise the pre-drop migration identity):
