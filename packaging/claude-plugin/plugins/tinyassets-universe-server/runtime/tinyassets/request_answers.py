@@ -169,10 +169,51 @@ def destination(home, origin):
                         "this answer is routed to main.")
 
 
-def _owns_unrecorded(home, agent, actor):
-    """Whether ``actor`` is unambiguously the owner of an ask with no recorded asker.
+class UnrecordedAskerAmbiguous(PermissionError):
+    """An admin met an ask whose asker was never recorded and has no sole owner.
 
-    Only the sole admin, or the creator of the asking binding. Being any admin
+    Answering would have to guess which owner's agent asked, so it is refused;
+    any admin may still dismiss the card, which enqueues no answer delivery.
+    """
+
+    detail = ("This older request can't be answered safely because it doesn't "
+              "record which agent asked. Dismiss it, or ask your agent again.")
+
+
+def _recorded_owners(home, request_id):
+    """Owners an older ask already names outside ``asking_context``.
+
+    A connection ask's continuation (``context_json``) and an activity waiting
+    on the ask both record the owner the dismiss path wakes, so they are the
+    owner rather than a guess.
+    """
+    from tinyassets import agent_activities
+    from tinyassets.storage.pending_requests import _db
+
+    owners = set()
+    with closing(_db(home)) as conn:
+        if "context_json" in {r[1] for r in conn.execute("PRAGMA table_info(pending_requests)")}:
+            row = conn.execute("SELECT context_json FROM pending_requests WHERE request_id=?",
+                               (request_id,)).fetchone()
+            context = json.loads(row[0] or "{}") if row else {}
+            if context.get("owner") and context.get("home", home.name) == home.name:
+                owners.add(context["owner"])
+    try:
+        with closing(agent_activities._connect(home)) as conn:
+            owners.update(r[0] for r in conn.execute(
+                "SELECT owner_principal FROM activities "
+                "WHERE status=? AND waiting_request_id=?",
+                (agent_activities.WAITING_ON_YOU, request_id)))
+    except agent_activities._NoStore:
+        pass
+    return owners
+
+
+def _unrecorded_owner(home, agent, request_id):
+    """The unambiguous owner of an ask with no recorded asker, else ``None``.
+
+    An admin recorded by the ask's continuation or waiting activity, else the
+    sole admin, else the admin who created the asking binding. Being any admin
     is not enough: another admin's attempt must never stamp itself as owner.
     """
     from tinyassets.custom_agents import _agent_connect
@@ -180,16 +221,19 @@ def _owns_unrecorded(home, agent, actor):
 
     admins = {row.get("actor_id") for row in list_universe_acl(home.parent, universe_id=home.name)
               if row.get("permission") == "admin"}
-    if not actor or actor not in admins:
-        return False
-    if admins == {actor}:
-        return True
+    recorded = _recorded_owners(home, request_id) & admins
+    if recorded:
+        return next(iter(recorded)) if len(recorded) == 1 else None
+    if len(admins) == 1:
+        return next(iter(admins))
     if agent == "main":
-        return False
+        return None
     with _agent_connect(home.parent) as conn:
         binding = conn.execute("SELECT created_by,universe_id FROM agent_bindings "
                                "WHERE agent_binding_id=?", (agent,)).fetchone()
-    return bool(binding) and (binding[0], binding[1]) == (actor, home.name)
+    if binding and binding[1] == home.name and binding[0] in admins:
+        return binding[0]
+    return None
 
 
 def check(home, row):
@@ -205,7 +249,10 @@ def check(home, row):
         # Pre-provenance rows retain their recorded agent. Never guess from
         # the currently selected chat or accept a target in the answer.
         agent = row.get("agent") or "main"
-        if not _owns_unrecorded(home, agent, actor):
+        owner = _unrecorded_owner(home, agent, row["request_id"])
+        if owner is None and _admin(home, actor):
+            raise UnrecordedAskerAmbiguous("request_unrecorded_asker_ambiguous")
+        if not actor or actor != owner:
             raise PermissionError("request_owner_changed")
         origin = capture(home, agent)
     if not actor or actor != origin.get("owner"):
