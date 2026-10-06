@@ -346,3 +346,20 @@ def test_an_interrupted_reconciliation_resumes_exactly(volume, boundary):
                                "principals": {"alice": "alice", "bob": "bob",
                                               "u-01carolhome": "carol"},
                                "missing": {}, "generation": report["generation"]}
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+def test_a_deleted_centers_quarantine_escrow_is_carried(volume, reverse):
+    """A retired center's quarantined cross-tree alias stays in root-private escrow."""
+    setup(volume)
+    os.link(volume / "alice/work/payload", volume / "bob/work/alias")
+    restart(volume)
+    escrow = volume / STATE / "quarantine"
+    names = sorted(str(p.relative_to(escrow)) for p in escrow.rglob("*") if p.is_file())
+    assert names == ["alice/work/payload", "bob/work/alias"]
+    retire(volume, "alice", "alice")
+    report = restart(volume, reverse=reverse) if not reverse else run(volume, reverse=True)
+    assert report["principals"] == {"bob": "bob"}
+    rows = json.loads((volume / STATE / "journal.json").read_text())["rows"]
+    assert sorted(r["path"] for r in rows if r["kind"] == "quarantine") == names
+    assert (escrow / "alice/work/payload").read_bytes() == b"alice"

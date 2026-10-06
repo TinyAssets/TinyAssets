@@ -27,13 +27,20 @@ BOOT = os.environ['BOOT']
 launch = runpy.run_path('/usr/local/libexec/ta-launch.py')
 bounded = runpy.run_path('/usr/local/libexec/ta-owner-launch.py')
 contract = runpy.run_path('/usr/local/libexec/ta-admission-contract.py')
-permissions = runpy.run_path('/usr/local/libexec/ta-egress-migration.py')['_permissions']
 launch['verify_chain']()
 vol = Path('/vol'); data = vol / 'data'; state = vol / 'state'
 PENDING = data / '.pending-deletions.json'  # stand-in for U2's .role-owner-delete
 def directory(path, uid, gid, mode):
+    # Exact fixture labels. The egress migration's _permissions never adds
+    # setgid outside its named platform directories (D219), and this probe's
+    # socket directory lives under a temporary run root.
     fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
-    try: permissions(fd, uid, gid, mode)
+    try:
+        os.fchown(fd, uid, gid); os.setegid(gid)  # no FSETID: join the group (D17)
+        try: os.fchmod(fd, mode)
+        finally: os.setegid(0)
+        info = os.fstat(fd)
+        assert (info.st_uid, info.st_gid, info.st_mode & 0o7777) == (uid, gid, mode), path
     finally: os.close(fd)
 if not data.exists():  # an empty forward volume; identity-map init is lane A
     data.mkdir(); data.chmod(0o755); os.chown(data, 1001, 1001)

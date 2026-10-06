@@ -2561,8 +2561,8 @@ identical. Standalone phase callers remain strict by default. Interrupted
 journals retain exact configuration matching. Reconciliation inventories all
 entries and retains the existing D214/D215 generation/provenance rules unchanged.
 This permits newly created or removed visible entries on restart without
-silently reallocating owners or discarding the journal. New principals remain
-a loud refusal pending a separate admission generation contract.
+silently reallocating owners or discarding the journal. D221 replaces the
+principal-set refusal with the admission contract.
 
 ### D217. Inode generation is birth time plus the kernel file handle
 
@@ -2625,9 +2625,8 @@ startup reverse migration refuses while any intent exists; forward stays
 admitted so the daemon can resume. Pool removal and scoped reset delete
 subtrees, which D85's whole-center cell does not admit; they stay on the
 daemon traversal until a subtree cell exists. A completed deletion shrinks the
-principal set, which D216 still refuses at the next startup migration in
-either direction. That is the open admission-generation contract, not a
-deletion defect, and it blocks activation.
+principal set; D221 accepts it at the next startup because `delete_center`
+writes the center's `retire` row before `finish`.
 
 ### D219. Lead decision: design-mandated setgid on named platform directories
 
@@ -2666,3 +2665,47 @@ Owners wait within milliseconds of exit. Each reap pins the process with a
 pidfd, re-checks its start time, then calls `waitid(P_PIDFD)`, so a reused PID
 is never reaped. With the reaper, the same probe peaks at 61 and settles to 0.
 Test: `tests/test_role_orphan_reaper.py` (a subreaper stands in for PID1).
+
+
+### D221. The admission contract replaces D216's principal-set refusal
+
+U2's coordinator (`role_volume_migration.migrate`) now runs U1's DA7 contract
+(`deploy/role_admission_contract.py`), loaded by `role_startup._helpers`.
+Under the layout lock it sweeps `.role-admission/`, reads the log (only the
+delta above a stable forward journal's `generation`, else every row) through
+a retired broker child, and reconciles before any mutation. A signup, a new
+center, a retired deletion and an adopted DA4 orphan are accepted. An
+unexplained tree, an owner differing from its row, or a retired center with a
+tree still refuses. `role_volume_inventory.reserved`'s changed-principal
+refusal is unchanged. Reverse appends nothing; the next forward seeds.
+
+`volume.json` adds `generation` and `missing`. The migrating journal also
+records the admit rows to append and the previous stable principals. A crash
+after the append resumes with the exact set and re-appends idempotently. A
+completed metadata or owner phase journal recorded for the previous stable
+set is accepted (`phase_explained`) and re-inventoried under the new set. An
+interrupted one stays exact. An empty set does no inode work but still records
+its configuration. `role_startup.boot` passes the reconciled generation to
+`bootstrap_services`. It was split from `start` so the restart probe runs the
+same code.
+
+D64 discovery adds two kinds of center: every center the log or journal
+admits, and any root whose group is in the owner range (only the mapper's
+labelling sets it). Without this, a runtime center with a supplied name and no
+`universe.json` would have been held on `missing` and unbound at the next
+restart, and a named DA4 orphan would have been refused as foreign metadata.
+
+D218 calls `role_owner_delete.retire` before `finish`, on both the normal
+path and the tree-gone resume. A center on `missing` has no tree and no fence,
+so it is retired with no pass. The broker answers
+`CENTER_ADMISSION_UNADMITTED` for a retire the log never admitted. A tree-less
+home that was never admitted keeps the existing traversal.
+
+Retained limits: after a reverse, the log is not authoritative (the old image
+writes no rows), so forward-after-reverse seeds and never alarms. A center the
+old image deleted simply drops out. A deleted center's quarantined cross-tree
+alias stays in root-private escrow; see
+`docs/concerns/2026-10-06-u2-deleted-center-quarantine-escrow-retained.md`.
+Proof: `tests/test_role_admission_startup.py` (root oracle), and
+`scripts/role_admission_startup_probe.py` (real `ta-role-start.py` boot,
+reverse mode and the old production image).

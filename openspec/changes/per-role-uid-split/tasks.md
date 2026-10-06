@@ -26,9 +26,9 @@ Startup refuses at `deploy/role_launcher.py:435`.
       isolation to every engine class; founder D60 replaced the shared engine identity.
 - [ ] 1.3 **Founder/spec: dynamic admission and the admission-generation contract.** Centers and
       users created after startup must be admitted to the mapper and labelled `1001:<owner>` with
-      no capabilities. D216 must accept a grown or shrunk principal set. Until then, the first
-      restart after a signup or a deletion refuses (U2 concern
-      `2026-10-06-u2-principal-set-change-blocks-startup-migration.md`, on U2).
+      no capabilities. D216 must accept a grown or shrunk principal set. Implemented on U1
+      (owner-dynamic-admission, spec #4541) and wired into U2's startup coordinator (D221).
+      Open: the spec landing.
 - [ ] 1.4 New D-record for the startup overlay: PID1 without tini, health retiring to 1001 before
       `ta-op pulse`, and `CAP_SYS_ADMIN` dropped from `MASK 0x2001c1` (`deploy/native/ta_op.c:82`).
       This supersedes 2.7's original `MASK` plan.
@@ -53,7 +53,9 @@ Startup refuses at `deploy/role_launcher.py:435`.
         seccomp profiles D52 (`69ee880edc`), cell lifetimes D76/D77 (`eeeeb0ff49`,
         `d1f84c63e5`).
   - [x] Owner delete pass one D85 (`9657e679b7`).
-  - [ ] Two-pass delete D218 (U2 `c540ae5e20`): root oracle only, no production-image probe.
+  - [x] Two-pass delete D218 (U2 `c540ae5e20`), retiring before finish (D221). Production
+        image: `role_admission_startup_probe.py` deletes through the real mapper, including a
+        crash before retire and a center on `missing`.
   - [ ] Engine-MCP environment-consumer audit.
   - [ ] Pool removal and `scoped_reset` still traverse as the daemon. Needs a subtree
         owner-delete cell (lane B).
@@ -67,7 +69,9 @@ Startup refuses at `deploy/role_launcher.py:435`.
         9 crash boundaries. Production alias scan: 0 cross-owner inodes.
   - [x] Rollback probe `old_cmd_boot=true` with the unchanged old-image CMD (`6e6b74b8fb`), using
         the dev auth fixture.
-  - [ ] D216 refuses a changed principal set: blocks activation (1.3).
+  - [x] A changed principal set is reconciled by the admission contract (D221), not refused:
+        `tests/test_role_admission_startup.py` (root oracle) and
+        `scripts/role_admission_startup_probe.py` (real startup boot, reverse mode, old image).
   - [ ] First-volume identity-map initialization (D61 says only it may create the map; not wired).
   - [ ] Production ext4/ACL check.
   - [ ] Rollback probe under production auth.

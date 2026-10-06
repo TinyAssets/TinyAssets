@@ -40,6 +40,7 @@ launch=load('launch'); launch['verify_chain']()
 owner=load('owner-migration')
 helpers=dict(owner=owner,egress=load('egress-migration'),
     metadata=load('metadata-migration'),inventory=load('volume-inventory'),
+    contract=load('admission-contract'),
     modes=runpy.run_path('/app/tinyassets/role_modes.py'),launch=launch)
 migrate=load('volume-migration')['migrate']
 original=snapshot(root)
