@@ -23,6 +23,10 @@ fails closed. Discovery and sign-in bootstrap may be reachable before
 authentication only when they confer no principal, data or action; operational
 probes use a named service principal.
 
+Clients get parity. Browser-only users get every actionable capability. A
+public chatbot feature launches on both Claude and ChatGPT, and a bug on one
+provider is P1, not "use the other client".
+
 ## Consequences
 
 - As-built: `openspec/specs/identity-auth-and-access-control/` and

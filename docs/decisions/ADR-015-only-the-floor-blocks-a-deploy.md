@@ -25,6 +25,8 @@ The floor, and only the floor, blocks a deploy:
 - the public connector down.
 
 Everything else is tracked in `docs/concerns/` and re-judged after live use.
+Outage triage: unblock the largest broken surface first; every outage is equal
+severity.
 Work goes shape, live MVP, user test, then harden what live use shows matters.
 Hard-to-reverse surfaces (public MCP/API surface, storage shape, authority,
 migrations, money) get a spec before code; the rest is built and then specced

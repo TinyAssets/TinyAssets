@@ -26,13 +26,13 @@ context: |
   - Public-surface changes require post-change canary probes
     (scripts/mcp_public_canary.py) and rendered-chatbot ui-test proof.
   - Multi-provider repo: Claude Code, Codex, Cursor, Cowork, Kimi all work
-    here concurrently; STATUS.md Work table is the claim surface.
+    here concurrently; branches and open PRs are the claim surface.
   - pytest + ruff gate commits; every module has tests.
 
 rules:
   proposal:
     - Always include capability names in kebab-case; check openspec/specs/ for existing capabilities before adding new ones.
-    - One delivery change has one intent expressible in one sentence, one owner, one branch, one PR, and no full-product/vision bulk conversion. Reference PLAN/design/audits and park unrelated findings instead.
+    - One delivery change has one intent expressible in one sentence, one owner, one branch, one PR, and no full-product/vision bulk conversion. Reference ADRs/architecture/audits and park unrelated findings instead.
     - After scaffolding a change and before claim/build, run `python scripts/openspec_flow.py check-change <name> --provider <exact-session-provider>`; every matching claimed row counts, one active delivery change is allowed per exact STATUS identity, global WIP stays visible, and suffix-renaming to evade the limit is a review violation.
   specs:
     - Requirements use SHALL language, with SHALL/MUST in the first line of each requirement body; every requirement has at least one "#### Scenario:" block.

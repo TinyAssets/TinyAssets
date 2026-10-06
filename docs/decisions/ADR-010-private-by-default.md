@@ -21,6 +21,10 @@ the declaring migration, and Branch creation. Exposure is a separate, explicit
 owner action. A visibility level the platform does not enforce on every reader
 is not offered.
 
+Privacy guidance (redaction patterns, threat models, sensitive-category
+handling) is commons content users write and remix; the platform owns only
+enforcement boundaries, with no platform privacy taxonomy or presets.
+
 ## Consequences
 
 - As-built: `openspec/specs/universe-visibility/spec.md`; change

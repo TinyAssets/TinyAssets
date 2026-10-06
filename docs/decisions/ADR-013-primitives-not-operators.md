@@ -30,6 +30,12 @@ primitive ships; the operator does not.
 - A sandboxed code node runs deterministic Python with the node's data and
   every ancestor's response, with no credentials and no network.
 - The `$ta.*` vocabulary is frozen.
+- Test through the app agent as a user would. Never feed it an answer it
+  should work out, and never build or edit a user's workflow yourself; enable
+  the agent instead. A missing basic capability stays listed until fixed.
+- Generator, evaluator and ground truth stay separate channels. Every
+  scaffold (counter, threshold, gate, routing rule) is a falsifiable
+  hypothesis: prove the simpler approach fails before adding one.
 - There is no structural cap on graph size. A big graph is bounded by usage
   (admissions, budget, consent, sandbox limits), never by its shape.
 
