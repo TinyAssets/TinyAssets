@@ -329,6 +329,80 @@ def test_scheduled_and_running_agent_activities_stop_and_main_stays(world, monke
         running.check()
 
 
+@pytest.mark.parametrize("kind", ["connection", "approval"])
+def test_retirement_between_continuation_create_and_bind_never_revives_task(
+    world, monkeypatch, kind,
+):
+    from contextlib import closing
+
+    from tinyassets import agent_activities as activities
+    from tinyassets import (
+        agent_rules,
+        bound_requests,
+        connection_continuations,
+        engine_steering,
+        request_continuations,
+    )
+    from tinyassets.effectors import authenticated_external_call as effector
+    from tinyassets.storage import pending_requests
+
+    home = world["udir"]
+    monkeypatch.setattr(effector, "_initiating_agent", lambda _: world["weaver"])
+    monkeypatch.setattr(engine_steering, "_route_params", lambda: ("conversation", "old-turn"))
+    original = activities.create
+    created = []
+
+    def retire_after_create(*args, **kwargs):
+        record = original(*args, **kwargs)
+        created.append(record["activity_id"])
+        assert change(world)["status"] == "retired"
+        return record
+
+    monkeypatch.setattr(activities, "create", retire_after_create)
+    if kind == "connection":
+        row = pending_requests.create_request(
+            home, kind="Connection", title="Connect", body="", fields=[],
+            action={}, dedupe_key="connection-race", agent=world["weaver"],
+        )
+        def invoke():
+            return connection_continuations.bind(home, row["request_id"])
+    else:
+        agent_rules.set_rule(home, "app.write", "ask_first", agent=world["weaver"])
+        monkeypatch.setattr(bound_requests, "_authority", lambda *args: {
+            "action_class": "app.write", "operation": "POST",
+            "destination": "https://example.test/message", "policy_digest": "test-policy",
+        })
+        def invoke():
+            return bound_requests.capture(home, {
+                "executor": "authenticated_external_call", "arguments": {
+                    "connection_id": "connection", "grant_id": "grant", "verb": "POST",
+                    "request": {"path": "/message", "body": "synthetic"},
+                },
+            })
+    try:
+        invoke()
+    except bound_requests.RequestRefused:
+        assert created, "request was refused before the retirement interleaving"
+    task_id, = created
+    with closing(bound_requests.connect(home)) as conn:
+        task = conn.execute("SELECT * FROM activities WHERE activity_id=?", (task_id,)).fetchone()
+        assert task["status"] == "completed"
+        assert task["outcome"] == "agent retired"
+        assert task["task_generation"] == 2
+        # Even an answer already bound to the old generation cannot restart it.
+        bound_requests._wake(conn, {
+            "request_id": "old-request", "revision": 1, "action": {"envelope": {"subject": {
+                "owner": OWNER, "agent": world["weaver"],
+                "task_id": task_id, "task_generation": 1,
+            }}},
+        }, {"connection": "answered"})
+        conn.commit()
+    assert change(world, "restore", 2)["binding"]["retired"] is False
+    assert request_continuations.recover(
+        home, run=lambda *_: pytest.fail("retired continuation resumed after restore"),
+    ) == 0
+
+
 @pytest.mark.real_browser
 def test_real_browser_switcher_drops_retired_agent_and_restores_it(world):
     from playwright.sync_api import sync_playwright

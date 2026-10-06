@@ -815,6 +815,7 @@ def fence_agent(universe_dir: Path, *, owner: str, agent_id: str) -> list[str]:
             "UPDATE activities SET status=?, outcome='agent retired', "
             "retiring_token=CASE WHEN runner_token!='' THEN runner_token ELSE retiring_token END, "
             "runner_token='', runner_generation=runner_generation+1, revision=revision+1, "
+            "task_generation=task_generation+1, "
             "updated_at=?, finished_at=? WHERE owner_principal=? AND agent_id=? "
             "AND status NOT IN (?, ?)",
             (COMPLETED, now, now, owner, agent_id, COMPLETED, FAILED),
