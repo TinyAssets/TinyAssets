@@ -2023,3 +2023,34 @@ payload import, and binds no owner data. Timeout cleanup temporarily selects the
 same bounded owner effective UID to signal its child, then restores mapper euid;
 no CAP_KILL is retained. The legacy staged launcher remains a historical oracle
 path, not D60 startup acceptance. Startup activation and ui-preview stay off.
+
+### D69. Mechanical daemon client for the inherited owner channel
+
+The bootstrap installs one process-memory OwnerLauncherClient. There is no
+socket-path/environment discovery and no replacement client after failure.
+The image-read admission path resolves its expected UID/GID through the existing
+fenced broker identity IPC before asking this client to decode. A selected
+bounded client never falls back to the staged legacy launcher on refusal. A
+complete authenticated refusal or identity mismatch fails only that request;
+transport/authentication/framing failures close the client. A reset on the data
+endpoint still drains and authenticates the control reply before classification.
+
+The client serializes request/reply exchanges, bounds image input/output, and
+requires kernel reply credentials for the exact launcher PID and host
+300000:300000. A pinned pidfd checks liveness. Both launcher and daemon retain
+unreaped peer process identities through their final exchange; the terminal
+STOPPED packet may be queued just before child exit. Every received descriptor
+is closed even on a malformed reply. FD_CLOEXEC and an after-fork callback close
+the private channel in descendants; the callback resets the inherited lock.
+
+D68's raw protocol probe remains intact. An additional --client mode uses the
+real client with the broker-allocated fixture identities, two real PNG decodes,
+actual kernel reply authentication, fork-channel closure and terminal shutdown.
+This does not claim the real service bootstrap, dynamic admissions, or full
+application admission/identity-IPC path is exercised by that fixture. Those
+remain required before activation and the full class matrix.
+
+D69 fixture ordering: construct the client on the pristine inherited pair,
+before any send. SO_PASSCRED can auto-bind a sending Unix endpoint to an abstract
+name. The strict unnamed-pair bootstrap guard remains; raw protocol probes run
+in their original separate default mode, not before constructing the client.

@@ -28,6 +28,15 @@ request fields. Identities SHALL come from broker-resolved owner admissions.
 - **AND** actual PNG decoding succeeds while listed foreign/host data paths,
   host network and abstract sockets remain inaccessible
 
+#### Scenario: The daemon client preserves request boundaries and authority
+- **WHEN** concurrent admitted owners use the startup-installed client
+- **THEN** requests and replies are serialized, each reply has exact launcher
+  PID and reserved-mapper UID/GID kernel credentials, and returned identity
+  matches the requesting owner's broker-resolved identity
+- **AND** a fork child loses the channel and cannot reuse the client
+- **AND** a complete authenticated refusal fails only that request, while a
+  transport, authentication or framing failure closes the client without fallback
+
 ### Requirement: Durable dedicated owner UID and GID (founder D60)
 
 D60 SHALL supersede historical shared engine UID/GID statements in this delta.

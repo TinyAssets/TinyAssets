@@ -7,6 +7,19 @@ summary: 'D65: dedicated-label daemon reader matrix passes with 114 denials and 
 
 ## Founder D61 continuation
 
+D68/D69 continuation: the dedicated reader probe remains **114 denials, 19 own
+reads, zero foreign reads** on image
+`sha256:9eb6a5ed405f5c57743d8782d9f159d212e308b7ca459f25b700346bfa16c5df`.
+The bounded launcher now runs the actual image decoder under Alice/Bob's
+distinct broker-allocated UID/GID pairs, with zero payload capabilities and
+private namespaces. Final client image
+`sha256:b5b3eb2a7d7450ce18754040be1e285e376fdaeef64ecb349010bcd2d564f36d`
+passes actual PNG decoding, foreign/host path open denial, timeout reaping,
+daemon-client reply authentication, fork closure and refusal recovery. This
+data-free class binds no owner paths; it does not close the cell-writable-path
+matrix for other classes. Broker reader completion, migration/quarantine and
+startup root-binding validation remain pending. Keep this concern open.
+
 The founder's explicit legacy reachability rule supersedes the D63 provenance
 stop below. The revised diagnostic reports **114 ASSIGNED_LEGACY_BYTES, zero
 FOREIGN_BYTES**, across the same three profiles and two relabel/copy variants.

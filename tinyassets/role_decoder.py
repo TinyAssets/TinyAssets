@@ -8,6 +8,18 @@ import socket
 from pathlib import Path
 from types import SimpleNamespace
 
+_bounded_client = None
+
+
+def install_bounded_client(client):
+    """One startup-owned client; no environment lookup or runtime replacement."""
+    from tinyassets.owner_launcher_client import OwnerLauncherClient
+
+    global _bounded_client
+    if type(client) is not OwnerLauncherClient or _bounded_client is not None:
+        raise RuntimeError('bounded decoder client already installed or invalid')
+    _bounded_client = client
+
 
 def decode(data: bytes, mime: str, universe_dir: Path):
     from tinyassets.auth.middleware import current_identity
@@ -29,6 +41,12 @@ def decode(data: bytes, mime: str, universe_dir: Path):
                 root, universe_id=universe.name, actor_id=owner) == "admin")
             or not isinstance(data, bytes) or len(data) > MAX_IMAGE_SOURCE_BYTES):
         raise PermissionError("decoder scope is not admitted")
+    if _bounded_client is not None:
+        from tinyassets.broker.owner_identities import owner_identity
+
+        identity = owner_identity(root, principal=owner)
+        return _bounded_client.decode(data, mime, principal=owner,
+                                      command_center=universe.name, identity=identity)
     document = {"op": "SPAWN", "kind": "image-decoder", "principal": owner,
                 "command_center": universe.name, "mime": mime}
     with socket.socket(socket.AF_UNIX, socket.SOCK_SEQPACKET) as control:

@@ -1,5 +1,68 @@
+# Current delivery: D69 authenticated daemon client and refusal recovery
+
+D68 is pushed at **cfc766bf2d**. This slice adds the startup-installed in-memory
+client and routes role_decoder through it when installed. The client resolves
+expected owner identity via the existing broker IPC in the application path,
+authenticates exact launcher PID/300000:300000 reply credentials, serializes
+requests, closes its channel in fork children, and bounds input/output. Transport
+or authentication failure closes the channel; a complete authenticated refusal
+or mismatched identity fails only that call. No legacy fallback on selected-client
+failure. No startup activation or additional engine-class admission.
+
+Production Dockerfile image:
+`sha256:b5b3eb2a7d7450ce18754040be1e285e376fdaeef64ecb349010bcd2d564f36d`.
+
+```text
+python scripts/role_owner_launcher_probe.py --image tinyassets-uid-d69:client --client
+exit 0; actual_png_owners=2; authenticated_replies=true; fork_channel_closed=true;
+serialized_concurrency=true; refusal_recovery=true; terminal_ack=true;
+startup_activated=false
+```
+
+The final image also passes the unchanged default raw-protocol probe (including
+empty-packet/STOP authentication, fd baseline and 35-second timeout), and
+`python scripts/linux_oracle.py --production-image tinyassets-uid-d69:client --production-stream`
+exits 0 with foundation/egress, real broker HTTPS/accounting/refresh/restart and
+existing egress migration/crash proofs. This remains the legacy staged broker
+harness, not the still-pending D60 service bootstrap or full rollback.
+
+The real client refuses an unadmitted owner/center and a wrong expected identity,
+then completes four real PNG decodes across two concurrent caller threads for
+Alice and Bob. The fork child has no channel and cannot invoke the client.
+This fixture passes identities allocated by the real broker identity store;
+it does NOT exercise the full application admission plus live broker IPC path.
+That service-bootstrap acceptance remains open.
+
+The first client fixture failed `invalid daemon launcher bootstrap`. Diagnostic
+showed Linux SO_PASSCRED auto-binding the already-used peer to an abstract name.
+The client now initializes on its pristine startup pair, before any exchanges.
+The raw adversarial packet suite remains the default probe mode, with all its
+assertions intact. No client validation was weakened.
+
+Linux oracle: initial 34 targeted tests passed with zero skips; after refusal
+handling changes, `python scripts/linux_oracle.py -- tests/test_owner_launcher_client.py tests/test_role_decoder.py -q -rs`
+reported **17 passed, zero skips**. Real credential tests reject same-UID daemon
+impostors and prove received-fd cleanup. Targeted Ruff, mirror regeneration and
+parity, diff checks and strict OpenSpec validation pass. Full Ruff remains the
+55 baseline findings recorded in D68.
+
+One cross-family review of this new client slice via peer-agents returned
+DISAGREE_EVIDENCE: a normal refusal closed the shared client permanently.
+**AGREE**, corrected and proven by production-image refusal recovery followed
+by successful concurrent Alice/Bob decoding. No cross-user leak was found.
+Release-critical files for D69: **0; none**. No full 2.x task newly complete.
+
+Remaining: complete daemon/broker/mapper service bootstrap and dynamic admissions;
+every other actual engine class through the bounded launcher; ui-preview remains
+unadmitted; full broker reader inventory; full owner migration with D61 quarantine
+and two-pass deletion; restrictive owner-file rollback and actual old CMD boot;
+then startup/healthcheck. No PR until those acceptance prerequisites pass, no
+deployment. The reader concern stays open. D68 evidence follows.
+
+---
 # Current delivery: D68 bounded launcher and actual per-owner image decoder
 
+D68 pushed as **cfc766bf2d**. Hygiene: 0 tests removed, 0 tampering.
 Started at fedd717970; requested ff-only pull was already current. D68 replaces
 host-wide serving authority in the new staged owner launcher with D62's fixed
 user namespace map. It does not activate startup or admit ui-preview. No full

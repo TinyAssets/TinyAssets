@@ -81,31 +81,70 @@ def request(document,fd=None):
 def document(owner):
     return dict(op='SPAWN',kind='image-decoder',principal=owner,
                 command_center='decoder-'+owner,mime='image/png')
-# A descendant inherits the private endpoint, but never the daemon's PID.
-stranger=os.fork()
-if stranger==0:
-    try:
-        left,right=socket.socketpair()
-        with left,right:
-            parent.sendmsg([b''],[(socket.SOL_SOCKET,socket.SCM_RIGHTS,
-                                  array.array('i',[right.fileno()]))])
+if not CLIENT:
+    # A descendant inherits the private endpoint, but never the daemon's PID.
+    stranger=os.fork()
+    if stranger==0:
+        try:
+            left,right=socket.socketpair()
+            with left,right:
+                parent.sendmsg([b''],[(socket.SOL_SOCKET,socket.SCM_RIGHTS,
+                                      array.array('i',[right.fileno()]))])
+                assert json.loads(parent.recv(4096))==dict(op='REFUSED')
+            request(dict(op='STOP'))
             assert json.loads(parent.recv(4096))==dict(op='REFUSED')
-        request(dict(op='STOP'))
-        assert json.loads(parent.recv(4096))==dict(op='REFUSED')
-        request(document('alice'))
-        assert json.loads(parent.recv(4096))==dict(op='REFUSED')
-        os._exit(0)
-    except BaseException:
-        traceback.print_exc(); os._exit(1)
-assert os.waitpid(stranger,0)[1]==0
-for bad in (dict(document('alice'),uid=300001),
-            dict(document('alice'),command_center='decoder-bob'),
-            dict(document('alice'),kind='ui-preview')):
-    unused, partner = socket.socketpair()
-    with unused, partner:
-        request(bad,unused.fileno())
-        assert json.loads(parent.recv(4096))==dict(op='REFUSED')
+            request(document('alice'))
+            assert json.loads(parent.recv(4096))==dict(op='REFUSED')
+            os._exit(0)
+        except BaseException:
+            traceback.print_exc(); os._exit(1)
+    assert os.waitpid(stranger,0)[1]==0
+    for bad in (dict(document('alice'),uid=300001),
+                dict(document('alice'),command_center='decoder-bob'),
+                dict(document('alice'),kind='ui-preview')):
+        unused, partner = socket.socketpair()
+        with unused, partner:
+            request(bad,unused.fileno())
+            assert json.loads(parent.recv(4096))==dict(op='REFUSED')
 out=io.BytesIO(); Image.new('RGB',(8,8),'blue').save(out,format='PNG'); data=out.getvalue()
+if CLIENT:
+    from tinyassets.owner_launcher_client import OwnerLauncherClient, OwnerLaunchRefused
+    from tinyassets.broker.owner_identities import OwnerIdentity
+    client=OwnerLauncherClient(parent,mapper)
+    descendant=os.fork()
+    if descendant==0:
+        try:
+            assert parent.fileno()==-1
+            try:
+                client.decode(data,'image/png',principal='alice',command_center='decoder-alice',
+                              identity=OwnerIdentity(300001,300001))
+            except RuntimeError: pass
+            else: raise AssertionError('fork child retained client authority')
+            os._exit(0)
+        except BaseException:
+            traceback.print_exc(); os._exit(1)
+    assert os.waitpid(descendant,0)[1]==0
+    for center, expected in (('decoder-bob',300001),('decoder-alice',300002)):
+        try:
+            client.decode(data,'image/png',principal='alice',command_center=center,
+                          identity=OwnerIdentity(expected,expected))
+        except OwnerLaunchRefused: pass
+        else: raise AssertionError('refused scope or mismatched identity was accepted')
+    def decode_owner(owner):
+        done=client.decode(data,'image/png',principal=owner,command_center='decoder-'+owner,
+                           identity=OwnerIdentity(identities[owner],identities[owner]))
+        assert done.returncode==0 and done.cell['uid']==identities[owner]-300000
+        metadata,_,png=done.stdout.partition(b'\n')
+        assert json.loads(metadata)['width']==8 and Image.open(io.BytesIO(png)).size==(8,8)
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        list(pool.map(decode_owner,('alice','bob','alice','bob')))
+    client.stop(); tcp.close(); abstract.close()
+    assert os.waitpid(mapper,0)[1]==0
+    print(json.dumps(dict(daemon_client=True,actual_png_owners=2,authenticated_replies=True,
+        fork_channel_closed=True,serialized_concurrency=True,refusal_recovery=True,
+        terminal_ack=True,startup_activated=False)),flush=True)
+    raise SystemExit(0)
 for owner in ('alice','bob'):
     input_end, output_end = socket.socketpair()
     with input_end, output_end:
@@ -148,6 +187,7 @@ print(json.dumps(dict(actual_engine_classes=['image-decoder'],
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--image', required=True)
+    parser.add_argument('--client', action='store_true')
     args = parser.parse_args()
     digest = subprocess.run(['docker', 'image', 'inspect', args.image, '--format', '{{.Id}}'],
                             capture_output=True, text=True, check=True).stdout.strip()
@@ -160,7 +200,8 @@ def main():
         command += ['--security-opt', option]
     command += ['--entrypoint', '/opt/venv/bin/python', digest, '-I', '-B', '-']
     print('production image:', digest, flush=True)
-    return subprocess.run(command, input=CONTAINER, text=True, timeout=180).returncode
+    return subprocess.run(command, input='CLIENT='+repr(args.client)+'\n'+CONTAINER,
+                          text=True, timeout=180).returncode
 
 
 if __name__ == '__main__':
