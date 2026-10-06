@@ -32,23 +32,28 @@ Per-role-uid-split (`per-role-uid-split`, branches `feat/per-role-uid-split` and
   `retire` rows), kept under D61's discipline. It is the only record of which
   centers are admitted.
 - **The mapper reads the log, never a daemon number.** The D70 window gives the
-  mapper an inherited, lookup-only channel to the broker. A runtime `admit`
+  mapper an inherited, read-only channel to the broker. A runtime `admit`
   request names a principal, a center and a log generation. The mapper fetches
   that row itself, checks the root's label, and only then adds the binding.
 - **Labelling without capabilities (setgid hand-off).** A fixed
   `center-root` owner cell (the D83 pattern) creates a setgid directory under
   its own identity inside a daemon-private staging directory. The daemon
-  creates the new root inside it, so the root inherits the owner GID, the
-  setgid bit and the canonical access ACL. The daemon then renames the root
-  into place. No process gains or keeps a capability.
+  creates the new root inside it, so the root inherits the owner GID and the
+  canonical access ACL. One chmod by the daemon then clears the inherited
+  setgid bit, leaving exactly the migrated root shape, and the daemon renames
+  the root into place. No process gains or keeps a capability. On the selected
+  path, app code never removes a published root; only deletion does, which
+  retires it.
 - **Deletion retires the binding.** D218's whole-center deletion appends a
   `retire` row and drops the mapper binding before `finish`. A retired center
   name is never admitted again.
 - **Admission-generation contract at restart.** The volume journal records the
   log generation it last reconciled. At restart the coordinator accepts exactly
-  the principal-set change the log explains since that generation, adopts a
-  root that was published before its log row was written, and still refuses
-  any change the log does not explain. This replaces D216's "new principals
+  the principal-set change the log explains since that generation. It also
+  accepts centers that are
+  mid-deletion, adopts a root that was published before its log row was
+  written, and still refuses any change the log does not explain. The same
+  rule covers all three phase journals (volume, metadata, owner). This replaces D216's "new principals
   remain a loud refusal" and closes D218's open item.
 
 ## Capabilities

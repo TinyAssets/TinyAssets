@@ -54,12 +54,14 @@ running cell for that center.
 ### Requirement: New center roots are labelled without retained capabilities
 
 A runtime center root SHALL be created with exactly the canonical migrated root
-label (`1001:<machine>`, mode `02750`, the canonical access ACL, and no default
-ACL). It SHALL be created by a setgid hand-off: a fixed, capability-free
-`center-root` owner cell creates a setgid directory inside a daemon-private
-staging directory, and the daemon creates the root inside it and renames it
-into place without replacement. No process SHALL gain or retain a capability,
-and the daemon SHALL NOT chmod the root or write its access ACL. The cell SHALL
+label: `1001:<machine>`, mode `0750` with no S_ISGID, the canonical access
+ACL, and no default ACL. It SHALL be created by a setgid hand-off: a fixed,
+capability-free `center-root` owner cell creates a setgid directory inside a
+daemon-private staging directory. The daemon creates the root inside it,
+removes the inherited default ACL, clears S_ISGID with one chmod, and renames
+the root into place without replacement. No process SHALL gain or retain a
+capability. The daemon SHALL NOT write the root's access ACL. Daemon-created
+entries in the root SHALL keep their explicit owner and group. The cell SHALL
 receive no caller path, executable, environment, relay or credential. Any
 read-back difference from the canonical label SHALL refuse the admission.
 
@@ -71,7 +73,8 @@ read-back difference from the canonical label SHALL refuse the admission.
 - **AND** another owner's cell cannot read, relabel or copy anything under it
 
 #### Scenario: A kernel that clears the setgid bit stops the class
-- **WHEN** any step of the hand-off loses S_ISGID or yields a different ACL
+- **WHEN** the setgid directory loses S_ISGID before the root is created, or
+  any step yields a different label or ACL
 - **THEN** the admission refuses and no root is published
 
 ### Requirement: Admission is ordered and crash-safe
@@ -82,7 +85,18 @@ the mapper. The center SHALL become usable only after the bind. After a crash
 at any step, a retry or the next startup SHALL finish or discard the admission:
 staging remnants are removed, and a published root with no row is adopted only
 if its label matches the durable reservation of the owner its authority
-database names. Nothing SHALL be guessed.
+database names and the center was never admitted. Nothing SHALL be guessed.
+Admission SHALL be idempotent for the same principal and center. On the
+selected path, no code SHALL remove a published root except whole-center
+deletion, which retires it.
+
+#### Scenario: A create fails after its root is published
+- **WHEN** seeding a new center fails after publish, and the platform either
+  retries the same center or abandons it
+- **THEN** the retry completes in place and the already-bound center is a
+  success, while an abandoned center is deleted and retired before any grant
+  is revoked
+- **AND** the next restart neither refuses nor raises a loss alarm
 
 #### Scenario: A crash between publish and log append
 - **WHEN** the daemon dies after publishing a labelled root but before the
@@ -94,23 +108,42 @@ database names. Nothing SHALL be guessed.
 
 A whole-center owner-tree deletion SHALL append the center's `retire` row and
 drop its mapper binding after the daemon pass removes the tree, and before the
-deletion fence is finished and the intent is cleared. Each step SHALL be
-idempotent on resume.
+deletion fence is finished and the intent is cleared. The same SHALL happen on
+the resume path where the tree is already gone. Each step SHALL be idempotent
+on resume, and a mapper `retire` for an unbound center SHALL succeed once the
+row is verified. A center with a pending deletion intent SHALL count as
+explained at restart, and it SHALL stay bound while its tree exists.
 
 #### Scenario: Account deletion followed by a restart
 - **WHEN** a migrated account is deleted and the container restarts
 - **THEN** the retired center is absent from the startup bindings and startup
   completes without refusing on the smaller principal set
+- **AND** startup also completes when that account held the volume's only
+  center
+
+#### Scenario: A crash between the daemon pass and the retire row
+- **WHEN** the container dies after the deletion's daemon pass removes the
+  tree but before the `retire` row commits
+- **THEN** the next startup treats the center as mid-deletion, not lost, and
+  the daemon's resume appends `retire`, sends a no-op mapper `retire`,
+  finishes and clears the intent
 
 ### Requirement: Restart accepts exactly the principal-set change the log explains
 
-The volume journal SHALL record the admission-log generation it last reconciled.
-On restart with a stable forward journal, the coordinator SHALL compute the
-expected center set from the journal's principals plus the log rows since that
-generation, and the inventory SHALL equal it after orphan adoption. A tree
+The volume journal SHALL record the admission-log generation it last
+reconciled and any centers held as missing. On restart with a stable forward
+journal, the coordinator SHALL compute the expected center set from the
+journal's principals and missing centers plus the log rows since that
+generation. The inventory SHALL equal it after orphan adoption, except for
+centers with a pending deletion intent. The same reconciliation SHALL apply
+to the volume, metadata and owner phase journals. An empty expected set SHALL
+skip the owner and metadata phases instead of refusing. Startup writes to the
+log SHALL go through a retired broker process. A tree
 outside that set, or a changed principal for an existing center, SHALL refuse.
-A center the log admits whose tree is missing with no `retire` row SHALL follow
-founder decision F1, which defaults to refusing startup. With no journal or a
+A center the log admits whose tree is missing, with no `retire` row and no
+pending deletion, SHALL follow founder decision F1, which defaults to refusing
+startup. Under F1's alternative, the center SHALL stay on the missing list
+until it is restored or retired. With no journal or a
 stable reverse journal, startup SHALL seed `admit` rows for inventoried centers
 that lack one and SHALL never infer a `retire`. Interrupted journals SHALL keep
 exact configuration matching. Reverse migration SHALL return runtime-admitted
@@ -119,8 +152,9 @@ roots to the legacy label under the existing unrecorded-inode rule.
 #### Scenario: Signup, new center and deletion between restarts
 - **WHEN** a user signs up, another user adds a center, and a third account is
   deleted between two restarts
-- **THEN** the second startup reconciles all three from the log, binds the two
-  new centers, omits the retired one, and records the new generation
+- **THEN** the second startup reconciles all three from the log in the
+  volume, metadata and owner journals, binds the two new centers, omits the
+  retired one, and records the new generation
 
 #### Scenario: An unexplained tree or owner change refuses
 - **WHEN** a stable forward volume holds a center tree with no `admit` row and
