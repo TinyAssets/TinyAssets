@@ -144,7 +144,7 @@ def custom_agents(
             return {"agents": agents, "count": len(agents)}
 
         if normalized == "get_agent":
-            agent = get_definition(base, definition_id)
+            agent = get_definition(base, definition_id, include_catalogue=True)
             return {"agent": agent} if agent is not None else _not_found("agent_definition")
 
         if normalized == "get_import_stage":
@@ -209,7 +209,10 @@ def custom_agents(
                 stage_id=stage_id,
                 idempotency_key=idempotency_key,
             )
-            return {"status": "published", "agent": agent}
+            from tinyassets.publication_completion import completion_for
+
+            return {"status": "published", "agent": agent,
+                    "completion": completion_for(agent, universe_id=universe_id)}
 
         if normalized in {"publish_agent", "import_agent"}:
             actor = _authenticated_actor()
@@ -233,7 +236,10 @@ def custom_agents(
                     payload=document,
                     idempotency_key=idempotency_key,
                 )
-            return {"status": "published", "agent": agent}
+            from tinyassets.publication_completion import completion_for
+
+            return {"status": "published", "agent": agent,
+                    "completion": completion_for(agent, universe_id=universe_id)}
 
         if normalized in {
             "list_bindings",

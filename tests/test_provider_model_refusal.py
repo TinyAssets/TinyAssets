@@ -135,7 +135,7 @@ def test_a_refused_model_does_not_cool_the_connection(agent):
     with pytest.raises(AllProvidersExhaustedError):
         integration.run(agent)
     provider = agent.served.context.model_selection.connection_id
-    assert agent.served.router._quota.cooldown_remaining(provider) == 0
+    assert agent.served.router._quota.cooldown_remaining(provider, owner="owner") == 0
 
 
 def test_a_refusal_releases_its_reservation_instead_of_charging_it(agent):
@@ -267,7 +267,7 @@ def test_a_source_left_hot_for_a_sibling_is_cooled_when_the_turn_ends_on_refusal
         integration.run(agent)
     assert len(agent.wires) == 3
     provider = agent.served.context.model_selection.connection_id
-    assert agent.served.router._quota.cooldown_remaining(provider) > 0
+    assert agent.served.router._quota.cooldown_remaining(provider, owner="owner") > 0
 
 
 @pytest.mark.parametrize("next_source,cooled", [("source-b", True), ("source-a", False)])

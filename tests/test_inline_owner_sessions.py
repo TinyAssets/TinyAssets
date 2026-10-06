@@ -100,3 +100,39 @@ def test_rules_bearer_write_cannot_bypass_action_approval(setup, monkeypatch):
     with identity_context(Identity(user_id="alice", username="alice")):
         response = asyncio.run(onboarding._handle_rules(req))
     assert response.status_code == 403
+
+
+def test_revoke_owner_cancels_all_connect_flows_only_for_that_owner(setup, tmp_path):
+    from tinyassets.connection_oauth.pkce import flows_db
+    from tinyassets.onboarding.inline_model_connect import flows, take
+
+    with flows_db(tmp_path) as (conn, now):
+        for owner in ("alice", "bob"):
+            conn.execute("INSERT INTO hosted_model_flows VALUES (?,?,?,?,?,?,?,?,?)",
+                         (owner, owner, "home", "preset", "digest", "challenge", "origin",
+                          now, now + 300))
+            conn.execute("INSERT INTO connection_oauth_flows VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                         (owner, owner, "home", "request", "digest", "challenge", "client",
+                          "redirect", now, now + 300, owner))
+    with flows() as conn:
+        conn.execute("INSERT INTO owner_sessions VALUES (?,?,?)",
+                     (sessions.hashed("bob-cookie"), json.dumps({"user_id": "bob"}),
+                      time.time() + 300))
+        for owner in ("alice", "bob"):
+            for state in ("waiting", "ready"):
+                conn.execute("INSERT INTO inline_model_flows VALUES (?,?,?,?,?,?,?)",
+                             (sessions.hashed(owner + state), owner, "home", b"sealed-code", "",
+                              state, time.time() + 300))
+    sessions.revoke_owner("alice")
+    sessions.revoke_owner("alice")  # Repeated logout is safe.
+    assert sessions.lookup("protected") is None
+    assert sessions.lookup("bob-cookie") is not None
+    with flows_db(tmp_path) as (conn, _):
+        for table in ("hosted_model_flows", "connection_oauth_flows"):
+            assert [r[0] for r in conn.execute(f"SELECT owner_user_id FROM {table}")] == ["bob"]
+    with flows() as conn:
+        rows = conn.execute("SELECT owner,status,sealed FROM inline_model_flows").fetchall()
+    assert [(r[1], r[2]) for r in rows if r[0] == "alice"] == [("cancelled", b"")] * 2
+    assert [(r[1], r[2]) for r in rows if r[0] == "bob"] == [
+        ("waiting", b"sealed-code"), ("ready", b"sealed-code")]
+    assert take(owner="alice", home="home", handle="aliceready")["status"] == "cancelled"

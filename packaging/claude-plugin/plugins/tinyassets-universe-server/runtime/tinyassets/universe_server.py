@@ -714,7 +714,9 @@ def read_graph(
             model_options_summary is the same read),
             conversation_turn (your keyed custom conversation's current run/projection),
             or conversation (page your OWN retained conversation: omit field_name
-            for a bounded catalogue of turn ids, or pass field_name=<turn id> --
+            for turn ids and bounded previews; query searches retained text
+            literally, ignoring case, and must be kept when paging next_offset.
+            Pass field_name=<turn id> --
             the id get_status's recent_conversation carries -- for exact chunks
             of one message, continuing from next_offset until it is null).
         graph_id: Optional graph/command center identifier.
@@ -783,7 +785,8 @@ def read_graph(
         if type(output_offset) is not int or output_offset < 0:
             return json.dumps({"error": "output_offset must be a non-negative integer"})
         if normalized == "agent":
-            row = get_definition(_base_path(), agent_definition_id or graph_id)
+            row = get_definition(_base_path(), agent_definition_id or graph_id,
+                                 include_catalogue=True)
             if row is None:
                 return json.dumps({"error": "not_found", "resource": "agent_definition"})
             return json.dumps(project_agent(row, field_name=field_name, offset=output_offset,
@@ -1580,6 +1583,7 @@ def write_graph(
                 action=action,
                 definition_id=agent_definition_id,
                 stage_id=agent_stage_id,
+                universe_id=graph_id,
                 payload=payload_json,
                 idempotency_key=idempotency_key,
             )

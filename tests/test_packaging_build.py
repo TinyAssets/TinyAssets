@@ -88,9 +88,31 @@ def build_bundle_module():
 # ─── build_bundle.py ─────────────────────────────────────────────────
 
 
-def test_build_bundle_stages_tinyassets_package(tmp_path):
-    """Stage step copies tinyassets/ into the bundle and probe passes."""
+@pytest.fixture(scope="module")
+def _bundle_build(tmp_path_factory):
+    """Run both real build probes once and preserve the resulting artifact."""
     result = _run(MCPB_BUILD)
+    assert result.returncode == 0, (
+        f"build_bundle.py failed:\nstdout={result.stdout}\n"
+        f"stderr={result.stderr}"
+    )
+    template = tmp_path_factory.mktemp("bundle") / "stage"
+    shutil.copytree(DIST_STAGE, template)
+    return result, template
+
+
+@pytest.fixture
+def staged_bundle(_bundle_build):
+    """Each consumer gets pristine files, even after another imported the bundle."""
+    result, template = _bundle_build
+    shutil.rmtree(DIST_STAGE)
+    shutil.copytree(template, DIST_STAGE)
+    return result
+
+
+def test_build_bundle_stages_tinyassets_package(tmp_path, staged_bundle):
+    """Stage step copies tinyassets/ into the bundle and probe passes."""
+    result = staged_bundle
     assert result.returncode == 0, (
         f"build_bundle.py failed:\nstdout={result.stdout}\n"
         f"stderr={result.stderr}"
@@ -114,8 +136,8 @@ def test_mcpb_manifest_declares_canonical_catalog():
     assert {tool["name"] for tool in manifest["tools"]} == CANONICAL_MCPB_TOOLS
 
 
-def test_build_bundle_probes_staged_catalog():
-    result = _run(MCPB_BUILD)
+def test_build_bundle_probes_staged_catalog(staged_bundle):
+    result = staged_bundle
 
     assert result.returncode == 0, (
         f"build_bundle.py failed:\nstdout={result.stdout}\n"
@@ -212,9 +234,8 @@ def test_schema_validation_cannot_skip_semantic_catalog_probe(
     assert "--skip-probe cannot be combined" in capsys.readouterr().err
 
 
-def test_build_bundle_excludes_pycache_and_dbs(tmp_path):
+def test_build_bundle_excludes_pycache_and_dbs(tmp_path, staged_bundle):
     """Excludes prevent runtime artifacts from polluting the bundle."""
-    _run(MCPB_BUILD)
     # No pycache directories anywhere under staged tinyassets/.
     pycache_hits = list(DIST_STAGE.rglob("__pycache__"))
     assert not pycache_hits, f"__pycache__ found in staged bundle: {pycache_hits}"
@@ -222,9 +243,8 @@ def test_build_bundle_excludes_pycache_and_dbs(tmp_path):
     assert not db_hits, f"*.db files leaked into staged bundle: {db_hits}"
 
 
-def test_bundle_server_imports_tinyassets_package():
+def test_bundle_server_imports_tinyassets_package(staged_bundle):
     """Direct import probe — same shape build_bundle's --skip-probe bypasses."""
-    _run(MCPB_BUILD)
     probe = subprocess.run(
         [
             sys.executable, "-c",
@@ -415,9 +435,8 @@ def test_plugin_server_imports_tinyassets_package(tmp_path):
 # ─── shape parity ────────────────────────────────────────────────────
 
 
-def test_bundle_and_plugin_tinyassets_trees_match():
+def test_bundle_and_plugin_tinyassets_trees_match(staged_bundle):
     """Both build scripts stage the same set of files from tinyassets/."""
-    _run(MCPB_BUILD)
     plugin_runtime = Path(tempfile.mkdtemp(prefix="tinyassets-plugin-"))
     try:
         assert _build_plugin(plugin_runtime, "--skip-probe").returncode == 0
@@ -477,13 +496,8 @@ def _provider_free_env(data_dir: str) -> dict[str, str]:
     return env
 
 
-def _build_staged_bundle() -> None:
-    """Stage the bundle, failing the test when the build itself fails.
-
-    An ignored return code would let a launch test run against whatever the
-    previous build left in the fixed stage directory.
-    """
-    result = _run(MCPB_BUILD)
+def _build_staged_bundle(result) -> None:
+    """Require a successful real build before probing its restored artifact."""
     assert result.returncode == 0, (
         f"build_bundle.py failed:\nstdout={result.stdout}\n"
         f"stderr={result.stderr}"
@@ -873,7 +887,7 @@ def test_mcpb_manifest_declares_local_stdio_configuration():
         assert claim not in blob, f"MCPB manifest must not claim {claim}"
 
 
-def test_staged_bundle_refuses_unadmitted_startup():
+def test_staged_bundle_refuses_unadmitted_startup(staged_bundle):
     """Cloud-only serving contract, proven on the artifact users install.
 
     No harness, no injection, no mock: the shipped staged launcher is spawned
@@ -888,7 +902,7 @@ def test_staged_bundle_refuses_unadmitted_startup():
     and enumerates. Under the founder's cloud-only rule it does not, and this
     test is the assertion that it must not.
     """
-    _build_staged_bundle()
+    _build_staged_bundle(staged_bundle)
     probe = "\n".join(
         json.dumps(payload)
         for payload in (
@@ -937,7 +951,7 @@ def test_staged_bundle_refuses_unadmitted_startup():
         )
 
 
-def test_staged_bundle_enumerates_seven_under_simulated_admission():
+def test_staged_bundle_enumerates_seven_under_simulated_admission(staged_bundle):
     """Real launcher + real stdio, fixture-only admitted-process evidence.
 
     The catalog half of the packaging proof. The staged `server.py` and the
@@ -951,7 +965,7 @@ def test_staged_bundle_enumerates_seven_under_simulated_admission():
     desktop installation, and **not** evidence that an off-cloud install
     serves — that shape is refused, by the test directly above.
     """
-    _build_staged_bundle()
+    _build_staged_bundle(staged_bundle)
     with tempfile.TemporaryDirectory(prefix="tinyassets-mcpb-stdio-") as data:
         harness = _write_admitted_process_harness(data)
         assert REPO_ROOT not in harness.resolve().parents, (
@@ -1000,9 +1014,9 @@ def test_admitted_process_harness_is_fixture_only():
         )
 
 
-def test_staged_bundle_stdio_launch_fails_closed_without_data_dir():
+def test_staged_bundle_stdio_launch_fails_closed_without_data_dir(staged_bundle):
     """The same fail-closed guard, proven on the artifact users install."""
-    _build_staged_bundle()
+    _build_staged_bundle(staged_bundle)
     env = _provider_free_env("")
     env.pop("TINYASSETS_DATA_DIR")
 
@@ -1022,7 +1036,7 @@ def test_staged_bundle_stdio_launch_fails_closed_without_data_dir():
     assert '"result"' not in proc.stdout, "transport must not have started"
 
 
-def test_bundle_configures_no_auth_provider_selection():
+def test_bundle_configures_no_auth_provider_selection(staged_bundle):
     """Observed local auth posture, stated as what is actually provable.
 
     ``create_provider()`` picks the runtime's auth provider from
@@ -1033,7 +1047,7 @@ def test_bundle_configures_no_auth_provider_selection():
     manifest configures — not by deleting the variable and calling the
     result unauthenticated.
     """
-    _build_staged_bundle()
+    _build_staged_bundle(staged_bundle)
     manifest = json.loads(MCPB_MANIFEST.read_text(encoding="utf-8"))
     assert "UNIVERSE_SERVER_AUTH" not in manifest["server"]["mcp_config"]["env"]
 
@@ -1067,7 +1081,7 @@ def test_bundle_configures_no_auth_provider_selection():
     )
 
 
-def test_staged_bundle_enumerates_without_credentials():
+def test_staged_bundle_enumerates_without_credentials(staged_bundle):
     """An uncredentialed client completes initialize and enumeration.
 
     Same fixture-only simulated admission as the catalog proof above: cloud
@@ -1075,7 +1089,7 @@ def test_staged_bundle_enumerates_without_credentials():
     the second one only. Enumeration is not an authorization check either —
     per-call gating is not proven here, and `LOCAL_ACCEPTANCE.md` says so.
     """
-    _build_staged_bundle()
+    _build_staged_bundle(staged_bundle)
     with tempfile.TemporaryDirectory(prefix="tinyassets-mcpb-anon-") as data:
         harness = _write_admitted_process_harness(data)
         outcome = _stdio_handshake(

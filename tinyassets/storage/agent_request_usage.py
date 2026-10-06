@@ -123,6 +123,19 @@ class InferenceUsageReference:
         return cls(**value)
 
 
+class InferenceUsageRequired(ProviderAuthorityHeldError):
+    """An unaccounted model POST; fixed text is safe across private IPC."""
+
+    def __init__(self):
+        super().__init__(
+            "HTTP inference requires a parent usage reference. Run the review as a "
+            "prompt_template node through run_graph with an owner-approved model; "
+            "direct connection POSTs cannot supply inference accounting. Read "
+            'read_graph target="handbook" query="write_graph.connections" for the '
+            "inference recovery and model-access approval steps."
+        )
+
+
 class InferenceUsageStopped(ProviderAuthorityHeldError):
     """Fixed private IPC stop. The caller reloads its own durable receipt."""
 
@@ -173,7 +186,7 @@ def resolve_inference_usage(base, owner, universe, ledger, resource, grant_id, v
             for row in definitions
         )
         if is_model:
-            raise ProviderAuthorityHeldError("HTTP inference requires a parent usage reference")
+            raise InferenceUsageRequired()
         return None
     ref = InferenceUsageReference.from_document(envelope)
     if ref.operation_id != operation_id:

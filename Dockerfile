@@ -256,6 +256,11 @@ RUN set -e; \
     useradd --system --uid 1002 --gid ta-broker --home /var/lib/ta-broker --shell /usr/sbin/nologin ta-broker; \
     useradd --system --uid 1003 --gid ta-engine --home /nonexistent --shell /usr/sbin/nologin ta-engine
 
+# The jail binds /usr, not the daemon's /opt/venv. Install the basic test
+# runner on its Python so a checkout can run tests without platform imports.
+RUN /usr/local/bin/python -m pip install --no-cache-dir "pytest==8.4.2" && \
+    /usr/local/bin/python -m pytest --version
+
 # Copy the codex install tree from builder and install the flock
 # wrapper as /usr/local/bin/codex. The wrapper takes an exclusive
 # flock on a sentinel in /app/.codex before exec'ing the real codex

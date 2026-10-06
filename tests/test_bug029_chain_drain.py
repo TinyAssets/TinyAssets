@@ -113,6 +113,26 @@ class TestGetStatusCooldownField:
             "per_provider_cooldown_remaining not in get_status schema_version=1 response"
         )
 
+    @pytest.mark.parametrize("own_cooldown", [False, True])
+    def test_status_reads_only_the_callers_cooldown(self, founder_home, monkeypatch, own_cooldown):
+        from tinyassets import graph_compiler
+        from tinyassets.api import permissions
+        from tinyassets.providers.router import ProviderRouter
+        from tinyassets.universe_server import get_status
+
+        router = ProviderRouter()
+        owner = permissions.current_actor_id()
+        router.cool_source("claude-code", owner="another-owner", retry_after_s=600)
+        if own_cooldown:
+            router.cool_source("claude-code", owner=owner, retry_after_s=120)
+        monkeypatch.setattr(graph_compiler, "_get_shared_router", lambda: router)
+        remaining = json.loads(get_status())["per_provider_cooldown_remaining"]
+        if own_cooldown:
+            assert 0 < remaining["claude-code"] <= 121
+        else:
+            assert remaining["claude-code"] == 0
+        assert remaining["codex"] == 0
+
 
 # ---- BUG-029 Part B — failure-taxonomy completeness matrix ---------------
 #

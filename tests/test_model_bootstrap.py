@@ -177,7 +177,7 @@ def test_empty_resume_requires_authorization_not_generic_server_error(rig):
 
 
 def test_owner_approval_uses_existing_enable_path(rig):
-    from tinyassets.api.pending_requests import answer_request
+    from tests.owner_answer import answer_request
     from tinyassets.onboarding.model_setup import model_setup_state
     from tinyassets.provider_assignment import load_provider_assignment
 
@@ -193,8 +193,8 @@ def test_owner_approval_uses_existing_enable_path(rig):
 
 
 def test_partial_activation_resumes_same_request_without_rotating_custody(rig, monkeypatch):
+    from tests.owner_answer import answer_request
     from tinyassets import provider_serving_binding
-    from tinyassets.api.pending_requests import answer_request
     from tinyassets.provider_assignment import load_provider_assignment
 
     result = finish(rig, key="synthetic-key")

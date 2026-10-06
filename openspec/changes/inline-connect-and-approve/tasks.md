@@ -5,11 +5,28 @@ See [delivery.md](delivery.md) for behavior, evidence and the remaining work in
 each original task. Original boxes stay unchecked where their broader contracts
 are not fully implemented or verified; this is not full change acceptance.
 
+Current follow-up lane: `feat/approval-sheet-and-connect-card`, based on
+`origin/main` after #4468. This is commit-and-push delivery, not deployment.
+
 - [x] S1 Deliver the first coherent slice: protected literal HTTP action envelopes,
   owner-session once approval that executes through ordinary enforcement, inline
   thread cards/read-only history, durable bound-answer wakes and server recovery.
 
+- [x] S2 Replace the side/composer request regions with a responsive approval
+  sheet, bubble Needs you inbox and read-only history; add protected task/site/
+  always HTTP grants, shared settings/agent service connect entry with auth-shape
+  switching and labelled accounts, and durable agent connection-answer wakes.
+  This milestone covers the implemented subset described in delivery.md, not
+  completion of the broader numbered tasks below.
+
 ## 1. Bound requests and owner authority
+
+Follow-up `fix/consent-asks-owner-session`: close bearer answers for all ten
+consent kinds using the existing protected owner-session door, including item,
+retry, Clear/Deny and OAuth token-answer paths. Tasks 1.2–1.4 stay unchecked:
+this partial slice does not complete their universal bound-token, classification,
+or payment-scope contracts. Evidence and entry-point inventory live in
+[consent-delivery.md](consent-delivery.md).
 
 - [ ] 1.1 Migrate existing pending-request tables into protected activity storage with one lifecycle authority; extend rules/effect_intents/activity_events rather than duplicate them. Implement the owner-control coordinator's cross-worker lock and durable pause with explicit retryable refusal (no queue/partial success) of ask and other mutations. Verify drain/copy/atomic cutover marker, pre/post-cutover recovery and compatible rollback preserve requests/items/answers/suppressions/unmutes and in-flight receipts.
 - [ ] 1.2 Bind generic actions, pinned payloads, trusted provenance and deadlines; render all approval fields from the protected envelope. Verify forged identities and tampered legacy prose cannot change the preview or executable action.

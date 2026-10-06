@@ -1531,7 +1531,7 @@ def test_the_ask_refuses_full_access(base: Path) -> None:
 def test_answering_the_ask_stores_the_segment(base: Path) -> None:
     """End to end through the owner's own surface: the tab promised the template,
     the owner pasted the link, and only the code went to the vault."""
-    from tinyassets.api.pending_requests import answer_request
+    from tests.owner_answer import answer_request
 
     udir = _make_universe(base, "u-owner", admin="founder")
     _login("founder")

@@ -1763,15 +1763,17 @@ def get_status(
     # Best-effort — a missing router or quota object yields an empty dict.
     per_provider_cooldown_remaining: dict[str, int] = {}
     try:
+        from tinyassets.principals import named_principal
         from tinyassets.providers.router import FALLBACK_CHAINS
         all_provider_names: list[str] = list(
             dict.fromkeys(p for chain in FALLBACK_CHAINS.values() for p in chain)
         )
         from tinyassets.graph_compiler import _get_shared_router
         router = _get_shared_router()
-        if router is not None and hasattr(router, "_quota"):
+        cooldown_owner = named_principal(permissions.current_actor_id())
+        if cooldown_owner and router is not None and hasattr(router, "_quota"):
             per_provider_cooldown_remaining = (
-                router._quota.cooldown_remaining_dict(all_provider_names)
+                router._quota.cooldown_remaining_dict(all_provider_names, owner=cooldown_owner)
             )
     except Exception:  # noqa: BLE001 — best-effort observability
         pass

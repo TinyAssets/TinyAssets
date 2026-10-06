@@ -522,7 +522,7 @@ class ProviderRouter:
 
     def _cool(
         self, cfg: Any, provider_name: str, seconds: int, *, daily_detail: str = "",
-        reason: str = "",
+        reason: str = "", owner: str = "",
     ) -> bool:
         """The ONE place an in-flight attempt writes the shared cooldown map.
 
@@ -542,20 +542,19 @@ class ProviderRouter:
                 "keeps this source", provider_name, seconds,
             )
             return False
-        # One write site (test_every_router_cooldown_write_goes_through_the_guard);
-        # the keyword is passed only when there is a daily detail, so ordinary
-        # cooldowns keep their original call shape.
+        # One write site (test_every_router_cooldown_write_goes_through_the_guard).
+        # The owner comes from admitted authority, never an executor's name.
         extra = {"daily_detail": daily_detail} if daily_detail else {}
-        self._quota.cooldown(provider_name, seconds, **extra)
+        self._quota.cooldown(provider_name, seconds, owner=owner, **extra)
         # Why, kept beside the map: a later call skipped by this cooldown says
         # what it is waiting out. Live 2026-10-01 a run skipped a cooled source
         # and reported only "account scope", which read as a spent allowance.
-        self.__dict__.setdefault("_cool_reasons", {})[provider_name] = reason
+        self.__dict__.setdefault("_cool_reasons", {})[(owner, provider_name)] = reason
         return True
 
-    def cooldown_reason(self, provider_name: str) -> str:
+    def cooldown_reason(self, provider_name: str, *, owner: str = "") -> str:
         """The failure class that put ``provider_name`` in cooldown, or ``""``."""
-        return self.__dict__.get("_cool_reasons", {}).get(provider_name, "")
+        return self.__dict__.get("_cool_reasons", {}).get((owner, provider_name), "")
 
     # ------------------------------------------------------------------
     # Registration helpers
@@ -613,7 +612,9 @@ class ProviderRouter:
             return chain
         return [p for p in chain if p in allowlist]
 
-    def cool_source(self, provider: str, *, retry_after_s=None, reason: str = "") -> int:
+    def cool_source(
+        self, provider: str, *, owner: str, retry_after_s=None, reason: str = "",
+    ) -> int:
         """Put a source in cooldown after the fact. Restrictive only.
 
         Cooling can only ever make this router try a source LESS, so this is
@@ -627,6 +628,8 @@ class ProviderRouter:
         """
         if type(provider) is not str or not provider:
             raise ValueError("cooling a source requires its provider name")
+        if not isinstance(owner, str) or not owner:
+            raise ValueError("cooling a source requires its owner")
         seconds = _retry_after_cooldown_s(retry_after_s)
         # Through the one guarded door (``_cool``), so the secondary-call rule
         # cannot be bypassed by a future caller of this seam. ``None`` for the
@@ -634,7 +637,7 @@ class ProviderRouter:
         # turn coordinator, which only ever follows a founder-facing turn, so it
         # is never secondary -- and saying so beats leaving a second unguarded
         # write of the shared map.
-        self._cool(None, provider, seconds, reason=reason or "capacity refusal")
+        self._cool(None, provider, seconds, owner=owner, reason=reason or "capacity refusal")
         return seconds
 
     def selected_agent_execution_kind(self, selection) -> str:
@@ -896,6 +899,9 @@ class ProviderRouter:
         # Selection is a validated per-attempt fact, never an ordinary caller's
         # ModelConfig preference. Preserve legacy calls by clearing any injected
         # selection when there is no selected-model serving authority.
+        quota_owner = (served_authority.owner_user_id if served_authority is not None
+                       else invocation_carrier._receipt.principal_id
+                       if invocation_carrier is not None else "")
         model_authority = served_authority or invocation_carrier
         cfg = replace(cfg, selected_model=getattr(model_authority, "selected_model", None))
         from tinyassets.providers.native_model_selection import NativeSelection
@@ -1208,16 +1214,17 @@ class ProviderRouter:
                 getattr(provider, "agent_execution_kind", None) != _agent_execution_kind
             ):
                 raise PermissionError("selected agent executor changed before dispatch")
-            if not self._quota.available(provider_name):
+            if not self._quota.available(provider_name, owner=quota_owner):
                 logger.info("Skipping %s (quota/cooldown)", provider_name)
-                cd = self._quota.cooldown_remaining(provider_name)
-                daily = self._quota.daily_detail(provider_name)
+                cd = self._quota.cooldown_remaining(provider_name, owner=quota_owner)
+                daily = self._quota.daily_detail(provider_name, owner=quota_owner)
+                reason = self.cooldown_reason(provider_name, owner=quota_owner)
                 attempts.append(ProviderAttemptDiagnostic(
                     provider=provider_name, status="skipped",
                     skip_class="quota_or_cooldown",
                     detail=daily or (
-                        f"provider cooldown gate (after {self.cooldown_reason(provider_name)})"
-                        if self.cooldown_reason(provider_name) else "provider cooldown gate"
+                        f"provider cooldown gate (after {reason})"
+                        if reason else "provider cooldown gate"
                     ),
                     failure_class="provider_daily_quota" if daily else None,
                     capacity_scope="account" if daily else None,
@@ -1553,7 +1560,8 @@ class ProviderRouter:
                 else:
                     # Preserve legacy host routing. Owned serving failures must
                     # not quarantine another owner's credential on this host.
-                    self._cool(cfg, provider_name, COOLDOWN_OTHER, reason="auth_invalid")
+                    self._cool(cfg, provider_name, COOLDOWN_OTHER,
+                               owner=quota_owner, reason="auth_invalid")
                 proof = getattr(exc, "native_evidence", None)
                 if type(proof) is NativeCompletionEvidence and proof.provider == provider_name:
                     native_proofs[len(attempts)] = proof
@@ -1610,7 +1618,7 @@ class ProviderRouter:
                         (_retry_after_cooldown_s(exc.retry_after) if exc.retry_after is not None
                          else MAX_COOLDOWN_S) if daily else _rate_limit_cooldown_s(exc),
                         daily_detail=redacted_failure_detail(str(exc)) if daily else "",
-                        reason=exc.failure_class,
+                        owner=quota_owner, reason=exc.failure_class,
                     )
                 attempts.append(ProviderAttemptDiagnostic(
                     provider=provider_name, status="failed", skip_class="quota_or_cooldown",
@@ -1655,7 +1663,8 @@ class ProviderRouter:
                 # provider until its own retry-after (+margin), keeping fallback
                 # forbidden for the sole served writer.
                 cd = _rate_limit_cooldown_s(exc)
-                if self._cool(cfg, provider_name, cd, reason=exc.failure_class or ""):
+                if self._cool(cfg, provider_name, cd,
+                              owner=quota_owner, reason=exc.failure_class or ""):
                     logger.warning(
                         "Provider %s rate-limited/overloaded (%s), cooldown %ds",
                         provider_name, exc.failure_class, cd,
@@ -1697,7 +1706,8 @@ class ProviderRouter:
                 # "continue" a cooldown refusal. The turn coordinator bounds its
                 # own retries (``AgentTurnCoordinator._next_after_bad_reply``).
                 if cfg.agent_request is None and self._cool(
-                    cfg, provider_name, COOLDOWN_OTHER, reason="provider_protocol_error",
+                    cfg, provider_name, COOLDOWN_OTHER,
+                    owner=quota_owner, reason="provider_protocol_error",
                 ):
                     logger.warning(
                         "Provider %s protocol error, cooldown %ds",
@@ -1715,7 +1725,7 @@ class ProviderRouter:
                 continue
             except ProviderUnavailableError as exc:
                 if self._cool(cfg, provider_name, COOLDOWN_UNAVAILABLE,
-                              reason="provider_unavailable"):
+                              owner=quota_owner, reason="provider_unavailable"):
                     logger.warning(
                         "Provider %s unavailable, cooldown %ds",
                         provider_name, COOLDOWN_UNAVAILABLE,
@@ -1727,7 +1737,8 @@ class ProviderRouter:
                 ))
                 continue
             except ProviderTimeoutError as exc:
-                if self._cool(cfg, provider_name, COOLDOWN_TIMEOUT, reason="timed_out"):
+                if self._cool(cfg, provider_name, COOLDOWN_TIMEOUT,
+                              owner=quota_owner, reason="timed_out"):
                     logger.warning(
                         "Provider %s timed out, cooldown %ds",
                         provider_name, COOLDOWN_TIMEOUT,
@@ -1739,7 +1750,8 @@ class ProviderRouter:
                 ))
                 continue
             except ProviderError as exc:
-                if self._cool(cfg, provider_name, COOLDOWN_OTHER, reason="provider_error"):
+                if self._cool(cfg, provider_name, COOLDOWN_OTHER,
+                              owner=quota_owner, reason="provider_error"):
                     logger.warning(
                         "Provider %s error, cooldown %ds: %s",
                         provider_name, COOLDOWN_OTHER, exc,
@@ -1760,7 +1772,7 @@ class ProviderRouter:
                 # this outer classifier.
                 raise
             except Exception as exc:
-                self._cool(cfg, provider_name, COOLDOWN_OTHER, reason="unknown")
+                self._cool(cfg, provider_name, COOLDOWN_OTHER, owner=quota_owner, reason="unknown")
                 logger.exception("Unexpected error from %s", provider_name)
                 attempts.append(ProviderAttemptDiagnostic(
                     provider=provider_name, status="failed",

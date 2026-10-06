@@ -22,10 +22,10 @@ import json
 import pytest
 
 from tests.test_pending_requests import (  # noqa: F401 - fixtures
-    _answer,
     _ask,
     _login,
     _make_universe,
+    _owner_answer,
     # The autouse logout. An autouse fixture applies only to the module that
     # DEFINES or imports it, so without this `_login()` left a static
     # "founder" provider bound for the rest of the session -- and later files
@@ -83,7 +83,7 @@ def test_all_four_values_reach_the_deposit(base) -> None:
     _login("founder")
     asked = _four_box_ask("u-1")
 
-    out = _answer("u-1", request_id=asked["request_id"], values=dict(_VALUES))
+    out = _owner_answer("u-1", request_id=asked["request_id"], values=dict(_VALUES))
     assert out.get("status") == "answered", out
 
     from tinyassets.credential_vault import load_credential_vault
@@ -108,7 +108,7 @@ def test_a_missing_box_is_refused_rather_than_deposited_short(base) -> None:
 
     short = dict(_VALUES)
     del short["access_token_secret"]
-    out = _answer("u-2", request_id=asked["request_id"], values=short)
+    out = _owner_answer("u-2", request_id=asked["request_id"], values=short)
 
     assert "missing" in json.dumps(out).lower(), out
     assert "access_token_secret" in json.dumps(out)
@@ -124,7 +124,7 @@ def test_the_refusal_names_the_empty_box(base) -> None:
     _login("founder")
     asked = _four_box_ask("u-3")
 
-    out = _answer(
+    out = _owner_answer(
         "u-3",
         request_id=asked["request_id"],
         values={"api_key": "ck", "api_secret": "cs", "access_token": "at"},
@@ -138,7 +138,7 @@ def test_a_single_box_ask_is_unchanged(base) -> None:
     _login("founder")
     asked = _ask("u-4")  # the shared fixture: one secret field
 
-    out = _answer("u-4", request_id=asked["request_id"],
+    out = _owner_answer("u-4", request_id=asked["request_id"],
                   values={"secret": "ghp_" + "x" * 36})
     assert out.get("status") == "answered", out
 
@@ -156,7 +156,7 @@ def test_no_secret_at_all_is_still_refused(base) -> None:
     _login("founder")
     asked = _four_box_ask("u-5")
 
-    out = _answer("u-5", request_id=asked["request_id"], values={})
+    out = _owner_answer("u-5", request_id=asked["request_id"], values={})
     assert "required" in json.dumps(out).lower() or "missing" in json.dumps(out).lower()
 
 
@@ -167,7 +167,7 @@ def test_the_bundle_keys_are_the_field_names(base) -> None:
     udir = _make_universe(base, "u-6", admin="founder")
     _login("founder")
     asked = _four_box_ask("u-6")
-    _answer("u-6", request_id=asked["request_id"], values=dict(_VALUES))
+    _owner_answer("u-6", request_id=asked["request_id"], values=dict(_VALUES))
 
     from tinyassets.credential_vault import load_credential_vault
 
@@ -192,7 +192,7 @@ def test_one_box_of_four_is_refused_not_deposited_as_the_whole_credential(base) 
     _login("founder")
     asked = _four_box_ask("u-7")
 
-    out = _answer(
+    out = _owner_answer(
         "u-7", request_id=asked["request_id"], values={"api_key": "ck-only"}
     )
 
@@ -254,7 +254,7 @@ def test_a_legacy_request_stored_under_the_old_rules_is_refused(base) -> None:
     )
     request_id = legacy_id if isinstance(legacy_id, str) else legacy_id["request_id"]
 
-    out = _answer(
+    out = _owner_answer(
         "u-legacy",
         request_id=request_id,
         values={"part_a": "alpha-token", "part_b": "beta-token"},

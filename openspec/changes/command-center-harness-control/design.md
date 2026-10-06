@@ -95,6 +95,116 @@ Only agent spawn, agent-to-agent messaging and the task board move into this har
 
 None affecting authority or storage. Exact UI affordances remain with the existing UI lanes; protocol names and v1 field semantics above are the proposed contract.
 
+## Implementation reconciliation (2026-10-05, L5)
+
+Baseline `b945fb3b3a` still has install-only settings. Task 1.1 adds
+`harness_settings.py`: immutable exact-byte/SHA-256 snapshots, strict bounded YAML,
+independent roster-root reads, ordered selections and an adapter to the existing
+`ModelPreferences` schema. Missing files preserve defaults; malformed files do
+not. This parser is not runtime activation or a permission grant.
+
+Concrete v1 loop keys are `compaction.reserve_tokens`,
+`compaction.trigger_tokens`, `retry.attempts` and `retry.backoff_seconds`.
+Token/attempt values are nonnegative integers; backoff is finite and nonnegative.
+Executor-specific support and limits must be checked by task 1.2 before dispatch.
+
+A portable v1 model contains `id` and optional `effort`, with `connection` absent
+until the recipient binds it. Publication removes source connection handles;
+import rejects a package that still supplies one. This makes the approved
+recipient-local binding requirement concrete without rewriting imported bytes,
+adding authority, or inventing a provider. Legacy unversioned model-only files
+remain readable as unresolved logical needs. An explicit run choice takes
+precedence; otherwise unresolved needs raise `LocalModelBindingRequired` for the
+future ingress adapter to present inline. Snapshot history recording belongs to
+the task 1.2 turn integration, not this parser.
+
+Task 1.2 has integration dependencies absent at this baseline:
+
+- `addressed_agents.resolve()` returns a custom binding ID and definition
+  instructions; it carries no authenticated installed-directory/roster slug.
+  `command_center_packages.plan_install()` independently creates that slug.
+  D8/D9 must supply the binding between these records before roster turns can
+  select their settings. A guessed `agents/<binding-id>` path would silently
+  read defaults instead of the installed agent's settings.
+- `starter-agent-out-of-plumbing` task 1.3 owns the editable `starter/hooks.md`
+  loader and is unchecked; current `converse()` still appends resident guidance.
+  The settings toggle cannot disable a loader that has not landed. That lane
+  retains extraction, seeding and main replacement ownership.
+
+Keep task 1.2 and subsequent ordered tasks unchecked until those integrations
+are available and proven. No foreground/background control, executable activation,
+UI parity, live acceptance or completed capability is claimed by task 1.1.
+
+Task 1.1 verification: Linux oracle Python 3.11.16, settings/package/prompt-cost
+tests: **175 passed, zero skips**. Windows settings: **43 passed**; prior
+settings/package run: **163 passed, one existing skip**. Windows settings plus
+prompt-cost: **52 passed, one failure** at the existing tool-description ratchet
+(32,353 versus 30,100); see `docs/concerns/windows-tool-description-budget.md`.
+The Linux ratchet passes, and no prompt budget or existing test was changed.
+Changed-Python Ruff, plugin rebuild/import probe and strict OpenSpec validation
+pass. Task 1.2 onward remains unverified and unimplemented by this slice.
+
+Final parser edge-case verification: oversized YAML integers and invalid YAML
+timestamps also become `SettingsError`. **45 settings tests pass on both Windows
+and the Linux 3.11 oracle, zero skips**; the package and prompt-cost regression
+run above remains applicable. Plugin rebuild/import probe and Ruff pass. Hygiene
+at the first slice commit reports **0 removed / 0 tampering**. Claude's required
+cross-family review returned **APPROVE** with no floor/correctness findings and
+independently confirmed the task 1.2 dependencies; see [review.md](review.md).
+Lead disposition: **AGREE**. Draft PR #4503 remains an incomplete capability;
+there is no deployment, live pass or as-built spec sync claim.
+
+## Continuation reconciliation (2026-10-05, L5b)
+
+Rechecked against `ae7790a388` after slice 1 merged as #4503. Its merge
+completed only 1.1, not runtime task 1.2. The roster/settings and starter-loader
+dependencies documented above remain absent. Do not infer activation from a
+merged parser or mark 1.2 complete.
+
+The first requested continuation item, 2.1, also depends on
+`connect-anything-ladder` task 1.4 for the separate raw-key stdio server sandbox
+and scanned stdout/stderr. That task is unchecked and no such runtime exists.
+The approved design explicitly delegates that sandbox; this lane must consume
+it rather than introduce a competing MCP runtime. The broker scanner alone is
+not evidence of process/user/filesystem isolation.
+
+The existing recipient update policy is `presentation-updates-v1`
+(`command_center_update_policy.py`). Its `presentation_decisions()` refuses
+changed retained components and executable UI/capability changes. It is not an
+authenticated-author/capability-ceiling grant for executable updates. Extending
+that existing mechanism for executable activation remains this lane's 2.1 work;
+the presentation policy must not be silently widened or treated as that grant.
+
+One independently useful 2.1 boundary fix is implemented: `ta_cli.extensions()`
+now refuses unsupported versions before cataloguing any tool. Previously it
+ignored `schema_version`, so a v2 manifest was executable as a legacy tool
+without its promised activation protocol. Missing version and integer version
+1 retain tool-only behavior; booleans, floats and other version types are
+rejected. `hooks`, `commands` and `cards` cannot claim legacy behavior by omitting
+the version or declaring v1. This is a fail-closed compatibility boundary, not
+v2 activation, code pinning or a substitute runtime. Invalid packages remain
+visible on stderr and do not remove unrelated platform capabilities.
+
+Task 2.1 stays unchecked. Tasks 2.2, 2.3 and 3.0-3.6 are not advanced past this
+ordered integration gap. The dependency handoff is recorded in
+`docs/concerns/harness-control-runtime-dependencies.md`; task 3.5 also requires
+deployment and real-user acceptance beyond creation of a draft PR. No new
+public handle, permission grant, prompt guidance or static prompt budget is
+introduced. The parent D7 delegation remains valid and unchanged.
+
+Boundary verification: Linux oracle Python 3.11.16 with real bubblewrap,
+`test_extension_activation_boundary.py`, `test_ta_capabilities.py`,
+`test_ta_capabilities_jail.py` and `test_converse_turn_cost.py`: **65 passed,
+zero skips**. The first oracle attempt stopped during its source copy because
+the plugin rebuild changed the tree; the rerun used stable product files.
+Windows boundary/ta tests: **48 passed**. Windows prompt-cost: **9 passed,
+1 existing failure** (32,353 vs 30,100 tool-description characters), already
+tracked in `docs/concerns/windows-tool-description-budget.md`. No ratchet or
+existing test was weakened. Touched-Python Ruff, plugin rebuild/import probe,
+strict OpenSpec validation, concern metadata and diff checks pass. No affected
+test file is on the heavy-test exclusion list. These results verify this
+boundary patch, not task 3.4's verification of the unimplemented capability.
+
 ## Live events and orchestration ownership (2026-10-04)
 
 Extend the same owner-bound bridge with subscribe/unsubscribe and a versioned event envelope: opaque event ID/cursor, kind, owner-bound center/agent/run references, resource revision and sanitized payload. Kinds cover activity, tool-call lifecycle, approvals, task-board changes and process health. A subscription applies the same installation capability ceiling and current authority as ta reads. Approval events carry protected request references/status, never decision tokens; clicking opens the first-party approval sheet or Needs you flow, not custom-UI approval chrome.
