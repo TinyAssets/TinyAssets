@@ -108,7 +108,10 @@ def posts(result):
 @functools.lru_cache(maxsize=1)
 def page_script():
     html, _ = render_app_html()
-    return re.search(r"<script\b[^>]*>(.*?)</script>", html, re.S).group(1)
+    # Recovery boots independently before the app; compile the controller's
+    # actual script, retaining the duplicate-declaration scope proof below.
+    return next(source for source in re.findall(r"<script\b[^>]*>(.*?)</script>", html, re.S)
+                if "const CFG =" in source)
 
 
 def compile_page_with(tail):

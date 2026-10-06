@@ -1,5 +1,19 @@
 ## ADDED Requirements
 
+### Requirement: Every consent answer requires an interactive owner
+
+Every consent answer SHALL require protected owner-session proof. Consent actions are `publish`, `install`, `connect`, `connect_http`, `extend_http`, `rotate_http`, `remove_http`, `grant_workspace_consent`, `bind_model_access` and `grant_patch_intake`. Bearer/MCP/chatbot/agent callers SHALL receive `interactive_approval_required` directing them to the approval sheet in the app, without resolving or executing the request. Ordinary non-consent answers SHALL retain their existing behavior.
+
+#### Scenario: Alternate answer attempts
+- **WHEN** a bearer submits an item answer, retry, Deny, Clear, forged session, or wider scope to a consent request through an API or write_graph
+- **THEN** the shared executor refuses before any request or authority mutation
+- **AND** an immutable publish/install pin remains consent even if the row claims to be an ordinary question
+
+#### Scenario: Owner recovery and OAuth completion
+- **WHEN** the owner clears or denies a consent request and later raises a replacement
+- **THEN** only protected owner-session answers can resolve that replacement, even after unmute
+- **AND** connection OAuth completion cannot exchange or deposit tokens as a pending answer without protected matching-owner proof
+
 ### Requirement: Approval executes the exact owner-confirmed action
 The request system SHALL bind each ask-first approval to the protected normalized action, expiry and trusted initiating subject in design.md with a server-computed SHA-256 and revision. Approve SHALL execute server-side under current ordinary enforcement with no relayed yes or agent retry. Only owner rules SHALL choose ask_first; defaults SHALL remain editable and cross-user isolation SHALL remain the fixed policy floor.
 

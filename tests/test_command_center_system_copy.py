@@ -6,6 +6,7 @@ import json
 import pytest
 
 from tests.cloud_runtime_fixture import cloud_runtime  # noqa: F401
+from tests.owner_answer import answer_request
 from tests.test_command_center_packages import (
     BOB,
     BOB_UNIVERSE,
@@ -27,7 +28,7 @@ from tests.test_command_center_packages import (
 from tests.test_command_center_packages import (
     home as package_home,
 )
-from tinyassets.api.pending_requests import answer_request, try_package
+from tinyassets.api.pending_requests import try_package
 from tinyassets.api.system_copy_requests import list_systems
 from tinyassets.automations import STATE_PAUSED, AutomationStore
 from tinyassets.command_center_picker import read_packages

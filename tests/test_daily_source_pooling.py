@@ -16,7 +16,7 @@ pytestmark = pytest.mark.usefixtures("cloud_runtime")
 
 @pytest.fixture
 def pool(tmp_path, monkeypatch, authenticate_request, wires):
-    from tinyassets.api.pending_requests import answer_request
+    from tests.owner_answer import answer_request
     from tinyassets.onboarding.source_connect import connect_source
     from tinyassets.providers.api_key_http_provider import ApiKeyHttpProvider
     from tinyassets.providers.free_sources import source_preset
@@ -79,9 +79,9 @@ def _assert_pool(pool):
 
     assert pool.first_wire.sent_models == [parity.LIVE_MODELS[0]]
     assert pool.second_wire.sent_models == [pool.second_wire.models[0]]
-    assert _real_router._quota.cooldown_remaining(pool.first) > 86000
-    assert _real_router._quota.daily_detail(pool.first)
-    assert _real_router._quota.available(pool.second)
+    assert _real_router._quota.cooldown_remaining(pool.first, owner=parity.A_OWNER) > 86000
+    assert _real_router._quota.daily_detail(pool.first, owner=parity.A_OWNER)
+    assert _real_router._quota.available(pool.second, owner=parity.A_OWNER)
     assert pool.foreign.requests == [] and pool.foreign.reads == []
 
 
@@ -120,9 +120,17 @@ def test_chat_daily_quota_skips_sibling_and_uses_next_owned_source(pool, monkeyp
     reserve = auth.reserve_provider_request(principal_id=parity.A_OWNER, session_id="pool",
                                              request_id="pool", tool_name="converse")
     capability = auth.claim_provider_request(reserve, tool_name="converse")
+    responses = []
     try:
-        result = universe_intelligence.converse(parity.A_HOME, "Write a morning focus note.")
-        assert result == "morning focus note"
+        result = universe_intelligence.converse(
+            parity.A_HOME, "Write a morning focus note.", response_observer=responses.append,
+        )
+        assert len(responses) == 1 and responses[0].provider == pool.second
+        assert result == (
+            f"morning focus note\n\nAnswered by {responses[0].provider_display} because "
+            f"{pool.first} is cooling down or out of capacity. "
+            "The original source did not report a reset time."
+        )
     finally:
         auth.revoke_provider_request(capability)
     _assert_pool(pool)

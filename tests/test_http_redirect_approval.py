@@ -5,6 +5,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
+from tests.owner_answer import answer_request
 from tests.test_pending_requests import (  # noqa: F401
     _login,
     _make_universe,
@@ -14,7 +15,7 @@ from tests.test_pending_requests import (
     base as base,
 )
 from tinyassets.api.http_connection import _ids, extend_http
-from tinyassets.api.pending_requests import answer_request, request_from_user
+from tinyassets.api.pending_requests import request_from_user
 from tinyassets.storage.outbound_connections import ConnectionLedger
 from tinyassets.storage.pending_requests import create_request, get_request
 

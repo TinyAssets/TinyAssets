@@ -1,4 +1,4 @@
-"""Admission-time room for ordinary writes, with the existing recovery grace.
+"""Ordinary writes share account storage with active jails; no launch holds it.
 
 Sparse files model retained logical bytes without allocating GiB on the test
 host. These tests do not claim headroom survives subsequent jail growth or
@@ -58,8 +58,8 @@ def test_two_new_launches_leave_room_for_a_real_ui_save(base, retained, same_roo
             changes={"ui_library": library},
         )
         assert saved["ui_library"] == library
-        assert sum(b.reservation.bytes for b in budgets) + retained == 2 * GIB - 16 * MIB
-        assert all(b.bound == b.reservation.bytes for b in budgets)
+        assert sa.usage(base, OWNER).reserved_bytes == 0
+        assert all(b.bound == 2 * GIB - retained for b in budgets)
     finally:
         for budget in budgets:
             budget.settle()
@@ -93,13 +93,13 @@ def test_full_account_keeps_grace_for_startup_and_cleanup(base, monkeypatch):
     root = _universe(base, "u-one", 2 * GIB)
     budget = _launch(root)
     try:
-        assert budget.bound == jd.GRACE_BYTES == 16 * MIB
-        assert budget.reservation is None
+        assert budget.bound == 0
+        assert sa.usage(base, OWNER).reserved_bytes == 0
         (root / "session.bin").write_bytes(b"x" * 4096)
         monkeypatch.setattr(jd, "WALK_SECONDS", 0)
-        assert budget.breach() is None
+        assert budget.breach(force=True) == jd.STORAGE_LIMIT
         (root / "retained.bin").unlink()
-        assert budget.breach() is None
+        assert budget.breach(force=True) is None
     finally:
         budget.settle()
 
@@ -109,8 +109,8 @@ def test_another_owners_reservations_do_not_take_this_owners_headroom(base):
     other = _universe(base, "u-other", owner="workos|bob")
     first, second = _launch(root), _launch(other)
     try:
-        assert first.bound == second.bound == jd.LAUNCH_BYTES_CAP
-        assert first.reservation.account_id != second.reservation.account_id
+        assert first.bound == second.bound == 2 * GIB
+        assert first.account != second.account
     finally:
         first.settle()
         second.settle()

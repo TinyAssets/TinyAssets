@@ -18,6 +18,7 @@ import tempfile
 
 import pytest
 
+from tests.app_sheet_harness import sheet_source
 from tinyassets.onboarding import render_app_html
 
 _NODE = shutil.which("node")
@@ -72,12 +73,16 @@ def _function_source(html: str, name: str) -> str:
 
 
 _RAIL = r"""
-class El{constructor(){this.hidden=true;this.textContent="";}}
-const els={"request-rail":new El(),"rail-error":new El(),"rail-error-text":new El()};
+class El{
+  constructor(){this.hidden=true;this.textContent="";this.children=[];}
+  appendChild(node){this.children.push(node);return node;}
+}
+const document={createElement:()=>new El()};
+const els={"request-rail":new El(),"rail-error":new El(),"rail-error-text":new El(),
+  "request-history":new El()};
 const $=id=>els[id];
 const token=()=>"t";
 const MCP={_loginEpoch:1};
-const InlineApprovals={history:()=>{}};
 let rendered=null;
 function renderRail(items){ rendered=items; els["request-rail"].hidden=false; }
 const Owner={listRequests:async()=>{
@@ -94,7 +99,8 @@ __FUNCTIONS__
 
 def _rail(reply) -> dict:
     html = _html()
-    functions = _function_source(html, "refreshRail") + "\n" + _function_source(html, "railFailed")
+    functions = (sheet_source(html) + "\n" + _function_source(html, "refreshRail")
+                 + "\n" + _function_source(html, "railFailed"))
     program = ("const SCENARIO=" + json.dumps({"reply": reply}) + ";\n"
                + _RAIL.replace("__FUNCTIONS__", functions))
     with tempfile.TemporaryDirectory() as scratch:

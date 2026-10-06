@@ -14,13 +14,16 @@ from tinyassets.conversation_failure import failure_column_sql, project_failure_
 PAGE_SIZE = 20
 
 
-def read_conversation_page(universe_dir, session_id, *, field_name="", offset=0, max_chars=8192):
+def read_conversation_page(universe_dir, session_id, *, field_name="", offset=0,
+                           max_chars=8192, query=""):
     if not session_id:
         raise ValueError("conversation_session_required")
     if type(offset) is not int or offset < 0:
         raise ValueError("conversation_offset_invalid")
     if type(max_chars) is not int or not 1 <= max_chars <= 32768:
         raise ValueError("conversation_chunk_size_invalid")
+    if not isinstance(query, str) or len(query) > 1000:
+        raise ValueError("conversation_query_invalid")
     root = Path(universe_dir).resolve()
     path = root / ".conversation_memory.db"
     if path.resolve() != path:
@@ -29,6 +32,9 @@ def read_conversation_page(universe_dir, session_id, *, field_name="", offset=0,
         return {"available": False, "messages": [], "next_offset": None}
     with closing(sqlite3.connect(path.as_uri() + "?mode=ro", uri=True, timeout=5.0)) as conn:
         conn.row_factory = sqlite3.Row
+        # Unicode case folding and literal matching: %, _ and SQL fragments are
+        # data. This changes no schema and searches only the bound session.
+        conn.create_function("casefold", 1, str.casefold, deterministic=True)
         failure_column = failure_column_sql(conn)
         if field_name:
             if not field_name.isascii() or not field_name.isdecimal() or len(field_name) > 18:
@@ -53,9 +59,16 @@ def read_conversation_page(universe_dir, session_id, *, field_name="", offset=0,
             )
         # Keyset pagination: new arrivals cannot shift or skip the older page.
         where = "session_id = ?" + (" AND id < ?" if offset else "")
-        args = (session_id, offset, PAGE_SIZE + 1) if offset else (session_id, PAGE_SIZE + 1)
+        args = [session_id]
+        if offset:
+            args.append(offset)
+        if query:
+            where += " AND instr(casefold(content), ?) > 0"
+            args.append(query.casefold())
+        args.append(PAGE_SIZE + 1)
         rows = conn.execute(
             "SELECT id, speaker, ts, length(CAST(content AS BLOB)) AS total_bytes, "
+            "substr(content, 1, 240) AS preview, "
             f"{failure_column} AS failure_json "
             f"FROM conversation_turns WHERE {where} ORDER BY id DESC LIMIT ?", args,
         ).fetchall()
@@ -67,7 +80,8 @@ def read_conversation_page(universe_dir, session_id, *, field_name="", offset=0,
             "offset_unit": "before_message_id",
             "read": (
                 "Use field_name=<id> to read a message; "
-                "output_offset then counts Unicode characters."
+                "output_offset then counts Unicode characters. Previews are incomplete. "
+                "Search retained text with query; keep the query when paging next_offset."
             ),
             "retention": (
                 "Only retained messages are available; deleted history cannot be reconstructed."

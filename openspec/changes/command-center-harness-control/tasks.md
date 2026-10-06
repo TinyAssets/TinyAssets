@@ -2,7 +2,7 @@ Implementation backlog for general primitives only. T1-T10 is a capability check
 
 ## 1. Runtime settings
 
-- [ ] 1.1 Implement v1 settings validation, sparse/default and legacy-model behavior with revision snapshots; verify malformed/duplicate/unknown fields fail visibly and package bindings remain local.
+- [x] 1.1 Implement v1 settings validation, sparse/default and legacy-model behavior with revision snapshots; verify malformed/duplicate/unknown fields fail visibly and package bindings remain local.
 - [ ] 1.2 Wire one resolver into foreground/background turns, tool/skill selection, starter hooks and model/loop controls; verify next-turn changes, current revocation and no platform LLM fallback.
 
 ## 2. Extension mechanism

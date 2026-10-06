@@ -328,7 +328,7 @@ def _ask_publish(base: Path, **over):
 
 
 def _answer(request_id: str, *, actor: str = OWNER, **extra):
-    from tinyassets.api.pending_requests import answer_request
+    from tests.owner_answer import answer_request
 
     with _as(actor):
         return answer_request(universe_id=UNIVERSE, payload=json.dumps(

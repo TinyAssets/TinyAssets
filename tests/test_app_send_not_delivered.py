@@ -273,7 +273,7 @@ def test_an_unconfirmed_send_keeps_its_cautious_notice(tmp_path, html):
                      "unavailable", False)
     [note] = [n for n in out["notes"] if n["cls"] == "msg msg--system"]
     assert note["text"].startswith("Delivery could not be confirmed")
-    assert note["buttons"] == ["Send it again", "Check saved conversation", "Dismiss"]
+    assert note["buttons"] == ["Check saved conversation", "Dismiss"]
 
 
 def test_a_sign_out_during_a_send_does_not_claim_the_text_is_in_the_box(tmp_path, html):

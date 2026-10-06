@@ -41,10 +41,10 @@ def test_known_model_stays_pickable_during_refresh(native, monkeypatch, history,
     snapshot = SHORTLIST_CACHE.refresh_now(**where)
     # Even verified history needs this provider's snapshot. Display retention
     # has no upper age limit; execution still requires fresh discovery.
-    aged = replace(snapshot, observed_at=snapshot.observed_at - timedelta(days=365))
-    monkeypatch.setattr("tinyassets.providers.native_discovery.discover_native_models_sync",
-                        lambda **kwargs: aged)
-    SHORTLIST_CACHE.refresh_now(**where)
+    # Age the read clock, not a replacement snapshot: the durable cache correctly
+    # refuses to overwrite a newer observation with an older refresh result.
+    monkeypatch.setattr(SHORTLIST_CACHE, "_now",
+                        lambda: snapshot.observed_at + timedelta(days=365))
     if failed:
         def unavailable(**kwargs):
             raise ProviderError("offline")
@@ -192,6 +192,20 @@ def test_hidden_verified_model_stays_unselectable_with_no_snapshot(native, monke
     SHORTLIST_CACHE.refresh_now(**where)
     assert all(row["reference"]["model_id"] != model_id for row in _display(native)["options"])
     SHORTLIST_CACHE.forget(**where)
+    # Forgetting a process-local entry now reloads the retained source snapshot.
+    # This case explicitly exercises NO snapshot, so remove this fixture's
+    # durable entry too, leaving the verified-model history intact.
+    from tinyassets.providers import shortlist_store
+    from tinyassets.storage.provider_work_authority import SQLiteProviderWorkAuthorityStore
+
+    with SQLiteProviderWorkAuthorityStore(native.base).connection() as conn:
+        conn.execute(
+            "DELETE FROM native_shortlist_cache "
+            "WHERE owner_user_id=? AND universe_id=? AND provider=?",
+            (where["owner"], where["universe_id"], where["provider"]),
+        )
+        conn.commit()
+    assert shortlist_store.load(**where) is None
     monkeypatch.setattr(SHORTLIST_CACHE, "schedule", lambda **kwargs: False)
     rows = {row["reference"]["model_id"]: row for row in _display(native)["options"]}
     assert rows[model_id]["in_candidate_catalog"] is False

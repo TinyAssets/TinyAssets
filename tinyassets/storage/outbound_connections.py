@@ -944,6 +944,7 @@ def _run_proxy_worker(
     """Run the trusted dispatcher in a separate spawned process."""
     from tinyassets.exceptions import ProviderAuthorityHeldError
     from tinyassets.request_budget import RequestBudgetExceeded
+    from tinyassets.storage.agent_request_usage import InferenceUsageRequired
 
     _sanitize_child_environment()
     try:
@@ -1010,6 +1011,8 @@ def _run_proxy_worker(
                 _send_message(channel, {"ok": False, "error_type": "InferenceUsageStopped",
                                         "reason": exc.reason,
                                         "usage_id": exc.request_receipt.get("usage_id")})
+            except InferenceUsageRequired:
+                _send_message(channel, {"ok": False, "error_type": "InferenceUsageRequired"})
             except ProviderAuthorityHeldError:
                 _send_message(channel, {"ok": False, "error_type": "ProviderAuthorityHeldError",
                                         "message": "inference usage authority refused"})
@@ -1088,6 +1091,10 @@ class _ProxyChannel:
             from tinyassets.storage.agent_request_usage import InferenceUsageStopped
 
             raise InferenceUsageStopped(response.get("reason"), response.get("usage_id"))
+        if error_type == "InferenceUsageRequired":
+            from tinyassets.storage.agent_request_usage import InferenceUsageRequired
+
+            raise InferenceUsageRequired()
         if error_type == "ProviderAuthorityHeldError":
             from tinyassets.exceptions import ProviderAuthorityHeldError
 
@@ -5200,6 +5207,27 @@ class ConnectionLedger:
                 connection.execute(
                     "ALTER TABLE outbound_connection_grants "
                     "ADD COLUMN unprompted_action_cap_json TEXT"
+                )
+            # Clear the legacy per-connection "http_requests" cap. Accounts are
+            # limited only by total storage and simultaneous agent runs, so a
+            # fixed request cap on an HTTP channel is a leftover of the old
+            # account model. Other caps (e.g. one_pull_request) are untouched.
+            legacy_http_cap_predicate = (
+                "unprompted_action_cap_json IS NOT NULL "
+                "AND json_valid(unprompted_action_cap_json) "
+                "AND json_extract(unprompted_action_cap_json, '$.name') "
+                "= 'http_requests'"
+            )
+            # Even an empty UPDATE takes a writer lock. Initialized opens must
+            # remain read-only, including while another connection is writing.
+            if connection.execute(
+                "SELECT 1 FROM outbound_connection_grants WHERE "
+                + legacy_http_cap_predicate + " LIMIT 1"
+            ).fetchone():
+                connection.execute(
+                    "UPDATE outbound_connection_grants "
+                    "SET unprompted_action_cap_json = NULL WHERE "
+                    + legacy_http_cap_predicate
                 )
             # Backfill the channel descriptor columns onto pre-descriptor DBs.
             # Legacy rows read back as connection_type='' (routes to the existing

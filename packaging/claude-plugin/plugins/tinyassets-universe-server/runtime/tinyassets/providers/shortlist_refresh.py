@@ -29,6 +29,7 @@ custody REFERENCE for revalidation, never credential bytes.
 from __future__ import annotations
 
 import logging
+import sqlite3
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -162,12 +163,25 @@ class ShortlistCache:
         get only snapshots inside the usable window.
         """
         key = _Key(str(base), owner, universe_id, provider)
+        # Engine MCP processes are replaceable. A completed refresh belongs to
+        # the owner's source, not to the process that happened to enumerate it.
+        from tinyassets.providers import shortlist_store
+
+        try:
+            retained = shortlist_store.load(base=base, owner=owner,
+                                            universe_id=universe_id, provider=provider)
+        except (OSError, ValueError, KeyError, TypeError, sqlite3.Error):
+            retained = None
+            _LOG.warning("stored shortlist unavailable")
         with self._lock:
             entry = self._entries.get(key)
             if entry is None:
                 entry = self._admit(key)
                 if entry is None:
                     return None, "catalogue_refresh_unavailable"
+            if retained is not None and (entry.snapshot is None
+                                        or retained.observed_at > entry.snapshot.observed_at):
+                entry.snapshot = retained
             age = self._snapshot_age(entry)
             usable = age is not None and 0 <= age <= USABLE_AGE
             needs = age is None or age >= REFRESH_AGE
@@ -250,6 +264,13 @@ class ShortlistCache:
             )
             if snapshot is None:
                 reason = "native_enumeration_unsupported"
+            else:
+                from tinyassets.providers import shortlist_store
+
+                try:
+                    shortlist_store.save(snapshot)
+                except (OSError, ValueError, KeyError, TypeError, sqlite3.Error):
+                    _LOG.warning("shortlist persistence unavailable")
         except ProviderError:
             reason = "native_catalogue_unavailable"
         except Exception as exc:  # noqa: BLE001 - a background thread must not die
@@ -315,9 +336,8 @@ class ShortlistCache:
             }
 
 
-#: One cache per process. Discovery is per-process work and a snapshot is only
-#: valid against the custody this process can still read, so there is nothing
-#: to share across processes and no store to keep consistent.
+#: Each process schedules its own work; completed advisory snapshots are shared
+#: through shortlist_store and revalidated against current owner custody.
 SHORTLIST_CACHE = ShortlistCache()
 
 

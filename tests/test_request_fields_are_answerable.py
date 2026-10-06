@@ -252,6 +252,19 @@ def test_an_overlong_link_is_refused() -> None:
         _validated_fields([_field(url="https://" + "a" * 10_000 + ".example")], _CONNECT)
 
 
+@pytest.mark.parametrize("length", [430, 8192])
+def test_long_request_links_are_preserved(length) -> None:
+    prefix = "https://x.com/intent/post?text="
+    url = prefix + "a" * (length - len(prefix))
+    assert _validated_fields([_field(url=url)], _CONNECT)[0]["url"] == url
+
+
+def test_request_link_shape_bound_is_enforced() -> None:
+    prefix = "https://x.com/intent/post?text="
+    with pytest.raises(ValueError):
+        _validated_fields([_field(url=prefix + "a" * (8193 - len(prefix)))], _CONNECT)
+
+
 def test_the_control_station_prompt_teaches_fields_too() -> None:
     """The served docstring is not the only place an agent is instructed.
 

@@ -1454,7 +1454,8 @@ class _ForegroundRunProviderSession:
                     scope=boundary.observed_scope, failure_class=boundary.failure_class,
                 ):
                     continue
-                router.cool_source(connection, retry_after_s=boundary.retry_after_s,
+                router.cool_source(connection, owner=self._principal_id,
+                                   retry_after_s=boundary.retry_after_s,
                                    reason=boundary.failure_class or "")
             except Exception:  # noqa: BLE001 - hygiene, never the failure
                 logger.warning("could not cool a spent work source")

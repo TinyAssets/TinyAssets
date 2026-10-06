@@ -67,6 +67,11 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
                  "client_id TEXT NOT NULL, redirect_uri TEXT NOT NULL, "
                  "created_at REAL NOT NULL, expires_at REAL NOT NULL)")
 
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(connection_oauth_flows)")}
+    if "approved_owner" not in columns:
+        conn.execute("ALTER TABLE connection_oauth_flows "
+                     "ADD COLUMN approved_owner TEXT NOT NULL DEFAULT ''")
+
 
 @contextmanager
 def flows_db(base: Path | str) -> Iterator[tuple[sqlite3.Connection, float]]:

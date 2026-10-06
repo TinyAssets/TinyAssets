@@ -29,10 +29,10 @@ from tests.test_authenticated_external_call_effector import (  # noqa: F401
     _a_reviewer_that_approves,  # autouse: an explicit approving D1d reviewer
 )
 from tests.test_pending_requests import (  # noqa: F401 - fixtures and harness
-    _answer,
     _ask,
     _login,
     _make_universe,
+    _owner_answer,
     _rail,
     _reset_auth,
 )
@@ -414,7 +414,7 @@ def _rotate_through_the_rail(uid, *, secret=REPLACEMENT, destination="acme"):
         action={"type": "rotate_http", "destination": destination},
     )
     assert ask.get("request_id"), ask
-    return ask, _answer(uid, request_id=ask["request_id"],
+    return ask, _owner_answer(uid, request_id=ask["request_id"],
                         values={"token": secret})
 
 
@@ -603,7 +603,7 @@ def test_the_boxes_come_from_the_stored_scheme_not_from_the_ask(base):
         {"name": "password", "type": "secret", "label": "Password"}],
         action={"type": "rotate_http", "destination": "acme"})
     assert ask.get("request_id"), ask
-    answered = _answer("u-1", request_id=ask["request_id"],
+    answered = _owner_answer("u-1", request_id=ask["request_id"],
                        values={"username": "alice", "password": "pw-two"})
     assert answered.get("status") == "answered", answered
     # `username:password`, the encoding the vault string has always used — not
@@ -877,7 +877,7 @@ def test_a_rotation_that_cannot_close_its_card_says_so(base):
     rail_resolve = store.resolve_request
     try:
         store.resolve_request = lambda *a, **k: False
-        out = _answer("u-1", request_id=ask["request_id"],
+        out = _owner_answer("u-1", request_id=ask["request_id"],
                       values={"token": REPLACEMENT})
     finally:
         store.resolve_request = rail_resolve
@@ -932,7 +932,7 @@ def test_a_card_raised_for_one_deposit_cannot_rotate_a_different_one(base):
     remove_http(universe_id="u-1", payload=json.dumps({"destination": "acme"}))
     _deposit("u-1", secret="third-" + "d" * 40)
 
-    stale = _answer("u-1", request_id=ask["request_id"],
+    stale = _owner_answer("u-1", request_id=ask["request_id"],
                     values={"token": REPLACEMENT})
     assert stale.get("error") == "connection_changed", stale
     assert stale.get("request_pending") is True
