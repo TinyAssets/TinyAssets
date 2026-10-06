@@ -100,6 +100,26 @@ def test_disproven_or_unobserved_capacity_stays_unknown(configured, monkeypatch,
     assert plan.catalog.connections[0].models[0].remaining_requests is None
 
 
+def test_cooling_evidence_is_the_owners_observed_cooldown_only(monkeypatch):
+    from types import SimpleNamespace
+
+    from tinyassets.providers.default_model_evidence import cooling_sources
+    from tinyassets.providers.router import ProviderRouter
+
+    small, large = sources()
+    router = ProviderRouter()
+    router._cool(None, "large", 60, owner="owner")
+    monkeypatch.setattr("tinyassets.providers.call.get_provider_router", lambda: router)
+    assert cooling_sources("owner", (small, large)) == ("large",)
+    # Another owner's cooldown is not this owner's evidence.
+    assert cooling_sources("other", (small, large)) == ()
+    # Nothing that observed no calls can report a cooldown.
+    for absent in (None, SimpleNamespace(_providers={})):
+        monkeypatch.setattr("tinyassets.providers.call.get_provider_router",
+                            lambda absent=absent: absent)
+        assert cooling_sources("owner", (small, large)) == ()
+
+
 def test_ranking_has_no_vendor_or_source_kind_branches():
     from tinyassets.providers import default_model_evidence, model_policy
 

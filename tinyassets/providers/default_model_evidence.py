@@ -43,9 +43,13 @@ def with_request_capacity(base, owner, universe, connection):
 def cooling_sources(owner, connections):
     """Current owner-scoped observed cooldowns, without inferring other owners' health."""
     from tinyassets.providers.call import get_provider_router
+    from tinyassets.providers.router import ProviderRouter
 
     router = get_provider_router()
-    if router is None:
+    # Cooldowns are observed only by the router that ran the calls. Anything
+    # else (no router yet, a bare executor registry) has observed none, which
+    # is missing evidence: ordering falls back to the catalogue's own facts.
+    if not isinstance(router, ProviderRouter):
         return ()
     return tuple(c.connection_id for c in connections
-                 if not router._quota.available(c.connection_id, owner=owner))
+                 if router.cooling(c.connection_id, owner=owner))

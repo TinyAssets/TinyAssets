@@ -552,6 +552,10 @@ class ProviderRouter:
         self.__dict__.setdefault("_cool_reasons", {})[(owner, provider_name)] = reason
         return True
 
+    def cooling(self, provider_name: str, *, owner: str) -> bool:
+        """Whether this owner's observed cooldown currently holds ``provider_name``."""
+        return not self._quota.available(provider_name, owner=owner)
+
     def cooldown_reason(self, provider_name: str, *, owner: str = "") -> str:
         """The failure class that put ``provider_name`` in cooldown, or ``""``."""
         return self.__dict__.get("_cool_reasons", {}).get((owner, provider_name), "")
