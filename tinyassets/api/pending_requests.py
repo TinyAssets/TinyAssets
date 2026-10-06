@@ -2791,7 +2791,7 @@ def _answer_request(*, universe_id: str = "", payload: Any = None,
     except request_answers.UnrecordedAskerAmbiguous as exc:
         # No recorded asker and no sole owner: an answer would have to guess
         # whose agent to wake. Any admin may still clear the card; a dismissal
-        # of an unrecorded ask enqueues no delivery.
+        # of an unrecorded ask enqueues no answer delivery.
         if not (document.get("dismiss") is True and "reply" not in document
                 and not str(document.get("item_id") or "").strip()):
             return {"error": "unrecorded_asker_ambiguous", "detail": exc.detail,
