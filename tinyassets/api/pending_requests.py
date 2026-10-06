@@ -133,7 +133,7 @@ _DEPOSIT_TYPES = frozenset({"connect_http", "connect"})
 _SECRET_FIELD_TYPES = _DEPOSIT_TYPES | {"rotate_http"}
 
 #: A plain https link, no userinfo (`https://user:pw@host`), bounded.
-_MAX_URL_CHARS = 300
+_MAX_URL_CHARS = 8192
 _SAFE_URL_RE = re.compile(r"^https://[^\s/@]+(?:/[^\s]*)?$")
 #: A dotted-quad or bracketed-v6 host. See :func:`_unusable_field_url`.
 _IP_HOST_RE = re.compile(r"^\d{1,3}(?:\.\d{1,3}){3}$")
