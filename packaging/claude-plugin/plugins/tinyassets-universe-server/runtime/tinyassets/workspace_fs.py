@@ -66,6 +66,82 @@ class UnsafePoolPath(OSError):
     """
 
 
+def read_package_manifest(descriptor, *, owner_uid, max_bytes):
+    """The one fixed daemon-custody leaf; no owner-reader identity override."""
+    root = os.fstat(descriptor)
+    if root.st_uid != owner_uid or root.st_mode & 0o022 or not stat.S_ISDIR(root.st_mode):
+        raise UnsafePoolPath('package directory custody is invalid')
+    fd = os.open('manifest.json', os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+                 dir_fd=descriptor)
+    try:
+        info = os.fstat(fd)
+        if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_uid != owner_uid
+                or info.st_mode & 0o022 or info.st_size > max_bytes):
+            raise UnsafePoolPath('package manifest custody is invalid')
+        data = bytearray()
+        while chunk := os.read(fd, min(65536, max_bytes + 1 - len(data))):
+            data.extend(chunk)
+            if len(data) > max_bytes:
+                raise UnsafePoolPath('package manifest exceeds its bound')
+        return bytes(data)
+    finally:
+        os.close(fd)
+
+
+def verify_package_tree(descriptor, files, *, owner_uid, max_bytes):
+    """Verify a daemon-sealed package through pinned no-follow descriptors.
+
+    Every inode must be owned by the declared custody UID, unwritable by group
+    or others, and regular files must have one link. No unmanifested entry can
+    supply code to an interpreter's import or native-loader search.
+    """
+    import hashlib
+
+    remaining = max_bytes
+    found = set()
+
+    def walk(parent, prefix='', depth=0):
+        nonlocal remaining
+        info = os.fstat(parent)
+        if (depth > 32 or info.st_uid != owner_uid or info.st_mode & 0o022
+                or not stat.S_ISDIR(info.st_mode)):
+            raise UnsafePoolPath('package directory custody is invalid')
+        with os.scandir(parent) as entries:
+            for entry in entries:
+                name = prefix + entry.name
+                fd = os.open(entry.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+                             dir_fd=parent)
+                try:
+                    info = os.fstat(fd)
+                    if info.st_uid != owner_uid or info.st_mode & 0o022:
+                        raise UnsafePoolPath('package inode custody is invalid')
+                    if stat.S_ISDIR(info.st_mode):
+                        if not any(path.startswith(name + '/') for path in files):
+                            raise UnsafePoolPath('unmanifested package directory')
+                        walk(fd, name + '/', depth + 1)
+                    else:
+                        if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1
+                                or (name != 'manifest.json' and name not in files)):
+                            raise UnsafePoolPath('unmanifested or aliased package file')
+                        if name == 'manifest.json':
+                            continue
+                        found.add(name)
+                        digest = hashlib.sha256()
+                        while data := os.read(fd, min(65536, max(1, remaining + 1))):
+                            remaining -= len(data)
+                            if remaining < 0:
+                                raise UnsafePoolPath('package content exceeds its bound')
+                            digest.update(data)
+                        if digest.hexdigest() != files[name]:
+                            raise UnsafePoolPath('package content revision mismatch')
+                finally:
+                    os.close(fd)
+
+    walk(descriptor)
+    if found != set(files):
+        raise UnsafePoolPath('package content is incomplete')
+
+
 def _is_link(path: str) -> bool:
     """A symlink or a Windows junction: something whose target is elsewhere."""
     if os.path.islink(path):
@@ -514,7 +590,66 @@ def create_lease_dir(parent_fd: int, name: str, *, mode: int = _LEASE_DIR_MODE) 
     return _create_dir_beneath(parent_fd, name, mode=mode)
 
 
-def _open_regular_beneath(dir_fd: int, relpath: str | Path, *, max_bytes: int) -> tuple[int, int]:
+def _reader_guards_selected() -> bool:
+    """Alias refusal and owner-identity walks ride the isolation switch.
+
+    Production holds legitimate same-owner multi-link files (interrupted brain
+    promotion, agent ``ln``, local git clones), and on the shared-uid jail no
+    cross-owner alias can be planted. So with the switch OFF a read behaves as
+    before the per-role uid split; ON, the dedicated-owner guards apply.
+    """
+    from tinyassets.broker.supervisor import broker_selected
+
+    return broker_selected()
+
+
+def _directory_owner_identity(fd: int) -> tuple[int, int] | None:
+    """D60 label on a pinned owner root, assigned in privileged migration.
+
+    A daemon-owned root may carry the reserved owner group so the owner cannot
+    replace protected root entries. Dedicated work directories carry both IDs.
+    Legacy/shared roots confer no dedicated identity. Admission must still
+    bind the requested root to the owner; these labels do not grant API access.
+    """
+    info = os.fstat(fd)
+    uid, gid = info.st_uid, info.st_gid
+    if 300001 <= gid <= 399999 and uid in (1001, gid):
+        return gid, gid
+    if 300000 <= uid <= 399999 or 300000 <= gid <= 399999:
+        raise UnsafePoolPath("invalid dedicated owner directory identity")
+    return None
+
+
+def _read_owner_identity(fd: int) -> tuple[int, int] | None:
+    """Keep owner provenance when the caller pins a nested daemon-owned dir.
+
+    Traverse only directory descriptors, never /proc pathname spellings. A
+    foreign labelled subtree cannot replace the enclosing owner's identity.
+    """
+    current = os.dup(fd)
+    identity = None
+    try:
+        for _ in range(256):
+            found = _directory_owner_identity(current)
+            if found is not None:
+                if identity is not None and identity != found:
+                    raise UnsafePoolPath("read crosses dedicated owner identities")
+                identity = found
+            parent = _open_child_dir(current, "..")
+            same = os.path.samestat(os.fstat(current), os.fstat(parent))
+            os.close(current)
+            current = parent
+            if same:
+                return identity
+        raise UnsafePoolPath("read directory ancestry exceeds the identity bound")
+    finally:
+        os.close(current)
+
+
+def _open_regular_beneath(
+    dir_fd: int, relpath: str | Path, *, max_bytes: int,
+    expected_identity: tuple[int, int] | None = None,
+) -> tuple[int, int]:
     """Open a REGULAR file beneath ``dir_fd``; return ``(fd, size)``.
 
     Every directory component is opened with ``O_NOFOLLOW``, the leaf too, and
@@ -526,11 +661,24 @@ def _open_regular_beneath(dir_fd: int, relpath: str | Path, *, max_bytes: int) -
         raise ValueError(f"max_bytes must be >= 0, got {max_bytes}")
     parts = _split_relpath(relpath)
     current = dir_fd
+    guarded = _reader_guards_selected()
+    identity = _read_owner_identity(dir_fd) if guarded else None
+    if expected_identity is not None:
+        if identity is not None and identity != expected_identity:
+            raise UnsafePoolPath("read root does not match the admitted owner identity")
+        identity = expected_identity
     opened: list[int] = []
     try:
         for part in parts[:-1]:
             current = _open_child_dir(current, part)
             opened.append(current)
+            if not guarded:
+                continue
+            child_identity = _directory_owner_identity(current)
+            if child_identity is not None:
+                if identity is not None and child_identity != identity:
+                    raise UnsafePoolPath("read crosses dedicated owner identities")
+                identity = child_identity
         fd = _open_leaf(current, parts[-1])
     finally:
         for handle in opened:
@@ -542,6 +690,15 @@ def _open_regular_beneath(dir_fd: int, relpath: str | Path, *, max_bytes: int) -
                 f"{str(relpath)!r} is not a regular file (mode {info.st_mode:#o}); "
                 "a workspace read never opens a device, a FIFO or a directory"
             )
+        if guarded and info.st_nlink != 1:
+            raise UnsafePoolPath(
+                f"{str(relpath)!r} has {info.st_nlink} links; "
+                "a workspace read refuses aliased regular files"
+            )
+        if identity is not None and (info.st_uid, info.st_gid) != identity:
+            raise UnsafePoolPath(
+                f"{str(relpath)!r} does not belong to the admitted owner identity"
+            )
         if info.st_size > int(max_bytes):
             raise UnsafePoolPath(
                 f"{str(relpath)!r} is {info.st_size} bytes, over the {max_bytes} bound"
@@ -552,7 +709,10 @@ def _open_regular_beneath(dir_fd: int, relpath: str | Path, *, max_bytes: int) -
     return fd, int(info.st_size)
 
 
-def read_regular_file_beneath(dir_fd: int, relpath: str | Path, *, max_bytes: int) -> bytes:
+def read_regular_file_beneath(
+    dir_fd: int, relpath: str | Path, *, max_bytes: int,
+    expected_identity: tuple[int, int] | None = None,
+) -> bytes:
     """Read a regular file beneath a held directory handle, bounded.
 
     The bound is enforced twice: the size reported by ``fstat`` on the open
@@ -560,7 +720,9 @@ def read_regular_file_beneath(dir_fd: int, relpath: str | Path, *, max_bytes: in
     refuses. A file that GROWS between the stat and the read must not slip
     through on the strength of its earlier size.
     """
-    fd, _size = _open_regular_beneath(dir_fd, relpath, max_bytes=max_bytes)
+    fd, _size = _open_regular_beneath(
+        dir_fd, relpath, max_bytes=max_bytes, expected_identity=expected_identity,
+    )
     try:
         chunks: list[bytes] = []
         remaining = int(max_bytes) + 1
@@ -600,7 +762,8 @@ def _unlink_if_same_inode(dest: str, created: os.stat_result) -> None:
 
 
 def copy_regular_file_beneath(
-    dir_fd: int, relpath: str | Path, dest_path: str | Path, *, max_bytes: int
+    dir_fd: int, relpath: str | Path, dest_path: str | Path, *, max_bytes: int,
+    expected_identity: tuple[int, int] | None = None,
 ) -> int:
     """Stream a regular file from beneath a held handle to ``dest_path``.
 
@@ -611,7 +774,9 @@ def copy_regular_file_beneath(
     left behind would be read later as a whole one - but only after an inode
     compare proves it is still the file this call created.
     """
-    fd, _size = _open_regular_beneath(dir_fd, relpath, max_bytes=max_bytes)
+    fd, _size = _open_regular_beneath(
+        dir_fd, relpath, max_bytes=max_bytes, expected_identity=expected_identity,
+    )
     dest = str(dest_path)
     copied = 0
     try:
