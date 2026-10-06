@@ -300,3 +300,106 @@ Initial counter-evidence is retained in the JSON. Row 5: disabling `renderWorkin
 - Draft PR #4530. Claude cross-family review through `.agents/skills/peer-agents/SKILL.md`: **VERDICT: ADAPT**. The reviewer confirmed failure semantics, identical 55-site authority sets and suitably limited mutation claims. AGREE: sync the canonical auth spec to describe the public default and protected CI modes; done. AGREE: include the census, JSON and replay artifacts; all are staged together in this lane. The build-image observation is addressed by explicitly keeping its authenticated `--url https://tinyassets.io/mcp` read and testing that choice. One review round; no second approval verdict is implied.
 - Future frontend caveat from review: the dark stateless frontend supplies the app header from `TINYASSETS_FRONTEND_BUILD`, not `_load_release_state`. Revalidate the evidence interpretation when that frontend ships. The current live route projects the receipt as inspected above.
 - Canonical spec synced: `openspec/specs/identity-auth-and-access-control/spec.md`. Final fetch/merge of origin/main and final-head hygiene are recorded in the PR body. No branch deployment or product UI change is claimed.
+
+## Batch 1: workflow wording and redundant syntax checks
+
+Founder-directed lean-suite change, based on `40061eaca9` (prep PR #4530).
+**17 definitions deleted, 1,277 kept across the original 75 files; no files deleted.**
+The census is a candidate search, not a deletion target. Most entries execute behavior or protect triggers, auth, secrets, isolation, data, release identity, rollback, required gates, or concurrency. Those stay, including all of `test_drain_review_gate.py` and its `SENSITIVE_RE` coverage, all signing checks, all prompt budgets, and every unchanged behavioral test. No product or workflow file changes belong to this batch.
+
+Deleted groups: five standalone YAML parse checks (the all-workflow parser remains); five generic DR step-name checks (specific executable-step guards remain); the triage reprobe name check (repair ordering and reprobe identity remain); one duplicate DNS label substring check (the parsed environment assertion remains); three DR runbook wording checks and one log-description wording check (weekly scheduling, state-proof ordering and fail-closed cleanup remain); one hook comment-number check (the hook invocation guard remains). Exact removed nodeids and mutations are in `2026-10-06-lean-suite-batch1-removals.json`.
+
+The DR prose checks are intentionally retired as copy requirements. The mutation probes establish continued enforcement of the associated schedule, probe ordering and cleanup, **not** that prose, headings or comments can never drift. No claim is made that an arbitrary change in human-facing copy fails a surviving test. The hook probe changes the referenced invocation; all four occurrences are changed to avoid a comment accidentally satisfying its source guard.
+
+Evidence reuses the phase-2 subprocess/JUnit harness from `2026-10-06-lean-suite-phase2-probe.py`. The batch replay lives alongside it as `2026-10-06-lean-suite-batch1-probe.py`, and runs only in the disposable Linux oracle. Each probe first has a green surviving-test baseline, then corrupts one YAML file, removes one whole executable step without reformatting the YAML, or changes the exact schedule/label/hook wiring. Each expected failure must be a test failure, with no collection error or skip. Files are restored in `finally`. The original phase-2 JSON is unchanged; its frontend probes do not serve as evidence for this batch.
+
+The deployment module was inspected but left byte-for-byte unchanged: it contains quarantined references to retired rollout steps, and existing Ruff findings. A red test cannot provide a green-to-red mutation proof. Those tests, including the legacy rollback/issue wording checks, remain for a separately evidenced retirement lane. This is why the cut is substantially smaller than 1,294 definitions; no security or behavioral assertion is sacrificed for a count.
+
+### Per-file disposition
+
+Counts are definitions, not parametrized cases. Zero means KEEP the entire file.
+
+| File | Deleted | Kept |
+|---|---:|---:|
+| `tests/desktop_install/test_release_workflow.py` | 0 | 18 |
+| `tests/desktop_install/test_two_windows_installers.py` | 0 | 5 |
+| `tests/test_affected_tests.py` | 0 | 23 |
+| `tests/test_android_app_identity.py` | 0 | 15 |
+| `tests/test_android_push_build.py` | 0 | 17 |
+| `tests/test_android_release_pipeline.py` | 0 | 17 |
+| `tests/test_app_chat_cloud_browser.py` | 0 | 10 |
+| `tests/test_app_two_surfaces_browser.py` | 0 | 15 |
+| `tests/test_apply_daemon_env_voice_flags.py` | 0 | 2 |
+| `tests/test_auto_enroll_merge_workflow.py` | 1 | 6 |
+| `tests/test_backup_restore_drill_invariants.py` | 0 | 12 |
+| `tests/test_build_image_workflow.py` | 0 | 16 |
+| `tests/test_canary_scripts_import_smoke.py` | 0 | 18 |
+| `tests/test_ci_concurrency_cancels.py` | 0 | 6 |
+| `tests/test_ci_runner_budget.py` | 0 | 8 |
+| `tests/test_cloud_only_preflight_boundaries.py` | 0 | 13 |
+| `tests/test_cloud_prepush_oracle.py` | 0 | 44 |
+| `tests/test_codex_cli_compat.py` | 0 | 9 |
+| `tests/test_community_loop_typed_observation.py` | 0 | 10 |
+| `tests/test_community_loop_watch.py` | 0 | 7 |
+| `tests/test_community_loop_watch_workflow.py` | 0 | 5 |
+| `tests/test_community_watch_result_boundary.py` | 0 | 3 |
+| `tests/test_custom_ui_forms_browser.py` | 0 | 2 |
+| `tests/test_deploy_digest_stream_drain.py` | 0 | 8 |
+| `tests/test_deploy_drains_in_flight_turns.py` | 0 | 14 |
+| `tests/test_deploy_prod_hmac_path.py` | 0 | 15 |
+| `tests/test_deploy_prod_workflow.py` | 0 | 87 |
+| `tests/test_deploy_worker_workflow.py` | 1 | 22 |
+| `tests/test_deployed_sha_build_paths.py` | 0 | 12 |
+| `tests/test_deployed_sha_post_deploy.py` | 0 | 2 |
+| `tests/test_diagnose_prod_startup_workflow.py` | 0 | 2 |
+| `tests/test_dns_canary_workflow.py` | 2 | 22 |
+| `tests/test_docker_admission_fixture.py` | 0 | 5 |
+| `tests/test_dockerfile_shape.py` | 0 | 36 |
+| `tests/test_dr_drill_workflow.py` | 10 | 57 |
+| `tests/test_drain_review_gate.py` | 0 | 53 |
+| `tests/test_drop_first_exec_gate.py` | 0 | 12 |
+| `tests/test_emergency_dns_flip.py` | 0 | 15 |
+| `tests/test_env_unreadable_marker.py` | 0 | 13 |
+| `tests/test_expected_instance_state_preparation.py` | 0 | 14 |
+| `tests/test_forbidden_pr_paths.py` | 0 | 15 |
+| `tests/test_grant_scope_guidance.py` | 0 | 7 |
+| `tests/test_host_independence_runbook.py` | 0 | 6 |
+| `tests/test_host_uptime_installers.py` | 0 | 53 |
+| `tests/test_linux_jail_proof_workflow.py` | 0 | 32 |
+| `tests/test_live_docs_reference_real_scripts.py` | 0 | 3 |
+| `tests/test_main_red.py` | 0 | 17 |
+| `tests/test_merge_queue_triggers.py` | 0 | 3 |
+| `tests/test_mirror_parity_gate.py` | 0 | 16 |
+| `tests/test_mobile_ios_release.py` | 0 | 18 |
+| `tests/test_native_refresh_jail.py` | 0 | 2 |
+| `tests/test_no_platform_github_push_credential.py` | 0 | 8 |
+| `tests/test_no_platform_llm_credentials.py` | 0 | 10 |
+| `tests/test_oauth_deploy_hardening.py` | 0 | 11 |
+| `tests/test_owner_ui_prefs_browser.py` | 0 | 6 |
+| `tests/test_p0_triage_workflow.py` | 2 | 25 |
+| `tests/test_pre_commit_invariant_actionlint.py` | 1 | 13 |
+| `tests/test_provider_jail_network.py` | 0 | 4 |
+| `tests/test_provider_jail_root_masks.py` | 0 | 3 |
+| `tests/test_provider_universe_jail.py` | 0 | 11 |
+| `tests/test_prune_units.py` | 0 | 16 |
+| `tests/test_public_model_lists.py` | 0 | 19 |
+| `tests/test_queue_attempts.py` | 0 | 10 |
+| `tests/test_queue_freshness.py` | 0 | 21 |
+| `tests/test_real_browser_proof_workflow.py` | 0 | 13 |
+| `tests/test_release_reconcile_workflow.py` | 0 | 32 |
+| `tests/test_rerun_cancelled_required.py` | 0 | 5 |
+| `tests/test_runtime_paths.py` | 0 | 54 |
+| `tests/test_test_hygiene_gate.py` | 0 | 26 |
+| `tests/test_tests_workflow.py` | 0 | 27 |
+| `tests/test_turns_in_flight.py` | 0 | 31 |
+| `tests/test_universe_tools.py` | 0 | 49 |
+| `tests/test_universe_tools_jail.py` | 0 | 25 |
+| `tests/test_uptime_canary_concurrency.py` | 0 | 4 |
+| `tests/test_uptime_canary_workflow.py` | 0 | 12 |
+
+### Batch verification and delivery
+
+- Linux oracle affected files plus replay: **155 passed, zero skips** (Python 3.11.17, bubblewrap 0.12.0, uid 1001). The replay separately ran **10 green baseline cases and 14/14 caught mutation groups**; see `2026-10-06-lean-suite-batch1-mutations.json`. Ruff passes all six changed test files and the replay. The larger 75-file census run and peer review are recorded below when complete.
+- #4530 is still open. The draft targets main as requested, but inherited prep changes must disappear through rebase after that dependency merges. This batch does not authorize merging the prep PR.
+- The requested generic ?hygiene 0 removed / 0 tampering? count conflicts with the explicitly requested removals. Record the actual removal findings and use the existing `Test-Removal: consolidated -- ...` declaration; never change the hygiene gate or pretend the count is zero.
+- No production deployment or real-user product pass is claimed for this draft test-only lane. No canonical product behavior or spec changes are introduced by this batch.
