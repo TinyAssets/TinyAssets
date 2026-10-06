@@ -58,6 +58,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import sqlite3
 from functools import wraps
 from typing import Any
 from urllib.parse import urlsplit
@@ -2983,9 +2984,15 @@ def _answer_request(*, universe_id: str = "", payload: Any = None,
                 PreferenceStoreUnavailable, CurrentHomeChanged) as exc:
             return {"error": "provider_authority_denied", "detail": str(exc),
                     "request_pending": True}
-        except Exception:  # noqa: BLE001 - an interrupted setup must not consume consent
-            logger.warning("Model setup could not be confirmed; request remains pending")
+        except (sqlite3.Error, OSError):
+            # Storage was interrupted mid-setup; the consent stays to retry.
+            logger.warning("Model setup could not be confirmed; request remains pending",
+                           exc_info=True)
             return {"error": "model_setup_unavailable", "request_pending": True}
+        except Exception as exc:  # noqa: BLE001 - a bug, not a setup outage; never mislabel it
+            logger.exception("Model setup failed unexpectedly (%s) for request %s in %s",
+                             type(exc).__name__, request_id, _uid)
+            return {"error": "internal_error", "request_pending": True}
         if not resolve_request(udir, request_id, status="answered", answer=answer,
                                feedback=feedback, dont_ask_again=False, decision="allowed"):
             return {"error": "request_resolution_unconfirmed", "request_pending": True}
