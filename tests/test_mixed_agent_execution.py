@@ -51,11 +51,23 @@ def answer_with_notice(reply, source, original, *, reset=True):
 
 
 def test_native_quota_gate_advances_to_http_without_launch_or_second_whole_turn(agent, monkeypatch):
+    select(agent, native_ref(), (http_ref(agent),))
     agent.served.router._quota.cooldown("codex", 60, owner="owner")
     assert answer_with_notice(preferences._converse(agent, monkeypatch),
                               "compute:models", "codex") == "finished exact answer"
     assert agent.served.native.calls == 0
     assert len(agent.wires) == 2 and len(agent.tools) == 1
+    assert agent.latest().state == "completed"
+    assert len(agent.latest().rounds) == 2
+
+
+def test_automatic_skips_cooling_native_without_fallback_notice(agent, monkeypatch):
+    agent.served.router._quota.cooldown("codex", 60, owner="owner")
+    answer = preferences._converse(agent, monkeypatch, message="Read my graph")
+    assert answer == "finished exact answer"
+    assert agent.served.native.calls == 0
+    assert len(agent.wires) == 2 and len(agent.tools) == 1
+    assert agent.latest().policy_source == "automatic"
     assert agent.latest().state == "completed"
     assert len(agent.latest().rounds) == 2
 
