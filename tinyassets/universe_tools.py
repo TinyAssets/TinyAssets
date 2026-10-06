@@ -342,7 +342,7 @@ def _clear_link_mountpoint(workspace: Path, name: str) -> None:
 
 def _universe_view(
     root: Path, egress_socket: Path | None = None, *, agent_id: str,
-    ta_socket: Path | None = None,
+    ta_socket: Path | None = None, promote_brain_files: bool = True,
 ) -> UniverseView:
     """The tool jail's view of ``root``: the agent's own workspace at ``/u``,
     read-write, with the visible root entries bound on top at their names
@@ -359,7 +359,8 @@ def _universe_view(
         if not os.path.lexists(path):
             path.mkdir(mode=0o755)
     workspace = _workspace(root)
-    _promote_brain_files(root, workspace, agent_id=agent_id)
+    if promote_brain_files:
+        _promote_brain_files(root, workspace, agent_id=agent_id)
     mounts = [JailMount("bind", MOUNT_POINT, workspace)]
     with os.scandir(root) as entries:
         listing = sorted(entries, key=lambda entry: entry.name)
@@ -405,7 +406,7 @@ def _universe_view(
 def tool_jail_argv(
     universe_dir: Path, inner: Sequence[str], *, agent_id: str, seccomp_fd: int | None = None,
     egress_socket: Path | None = None,
-    ta_socket: Path | None = None,
+    ta_socket: Path | None = None, promote_brain_files: bool = True,
 ) -> list[str]:
     """The bubblewrap argv running ``inner`` in ``universe_dir``'s tool jail."""
     if not agent_id.strip():
@@ -417,7 +418,8 @@ def tool_jail_argv(
     if not root.is_dir():
         raise UniverseToolError("the command center folder does not exist")
     bwrap = provider_jail.BWRAP_RESOLVER()
-    view = _universe_view(root, egress_socket, agent_id=agent_id, ta_socket=ta_socket)
+    view = _universe_view(root, egress_socket, agent_id=agent_id, ta_socket=ta_socket,
+                          promote_brain_files=promote_brain_files)
     # The egress socket lives in the daemon-owned sidecar folder, outside the
     # command center, so it has to be declared as the exact path this jail is
     # allowed to bind from there. A directory prefix is not a capability: the
@@ -652,6 +654,14 @@ def run_jailed(
     host being busy. ``on_wait`` is invoked once when that happens, so a caller
     with a user in front of it can surface a waiting state.
     """
+    from tinyassets.broker.supervisor import broker_selected
+
+    if broker_selected():
+        from tinyassets.role_tools import run
+
+        return run(universe_dir, inner, agent_id=agent_id, stdin=stdin, limits=limits,
+                   wall_seconds=wall_seconds, output_bytes=output_bytes, on_wait=on_wait,
+                   egress_socket=egress_socket, ta_socket=ta_socket)
     if not agent_id.strip():
         raise UniverseToolError("agent_id is required")
     wall = float(wall_seconds if wall_seconds is not None else limits.wall_seconds)
@@ -1007,7 +1017,7 @@ def _read_image(
     if run.killed or run.exit_code != 0:
         return (f"error: {note}"
                 f"{_text(run.output).strip() or _trailer(run, limits, limits.wall_seconds)}")
-    shown = bound_image(run.output, target)
+    shown = bound_image(run.output, target, universe_dir=universe_dir)
     if isinstance(shown, ToolImage) and note:
         return replace(shown, text=note + shown.text)
     return shown
@@ -1133,7 +1143,7 @@ def bash(
     else:
         from tinyassets.ta_capabilities import JailBridge
 
-        with JailBridge(ta_dispatch) as bridge:
+        with JailBridge(ta_dispatch, universe_dir=universe_dir) as bridge:
             run = RUNNER(universe_dir, inner, agent_id=agent_id, limits=limits,
                          wall_seconds=wall, ta_socket=bridge.path, **egress)
     body = _text(run.output)
@@ -1304,17 +1314,15 @@ def command_center_summary(universe_dir: Path, owner: str) -> str:
     """Bounded resident names and status for the verified owner's current home."""
     try:
         from tinyassets.api.status import _universe_active_turn
+        from tinyassets.broker.catalog import connections
         from tinyassets.daemon_server import get_founder_home, list_branch_definitions
-        from tinyassets.storage.outbound_connections import ConnectionLedger
 
         if not owner or get_founder_home(universe_dir.parent, owner) != universe_dir.name:
             return ""
         branches = list_branch_definitions(universe_dir.parent, author=owner, viewer=owner)
-        ledger = ConnectionLedger(universe_dir.parent / "outbound.db")
         names = []
-        for grant in ledger.list_grants(owner_user_id=owner, universe_id=universe_dir.name,
-                                        limit=21):
-            connection = ledger.get_connection_view(grant.connection_id)
+        for _grant, connection, _ in connections(universe_dir.parent, principal=owner,
+                                                 command_center=universe_dir.name, limit=21):
             if connection and connection.owner_user_id == owner and connection.revoked_at is None:
                 names.append(connection.destination)
         active = _universe_active_turn(universe_dir)

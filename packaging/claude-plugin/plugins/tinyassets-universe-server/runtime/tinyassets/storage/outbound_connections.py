@@ -400,6 +400,31 @@ class CapDecision:
         }
 
 
+def evaluate_action_cap(cap: ActionCap | None, *, action_value: float,
+                        action_unit: str) -> CapDecision:
+    """Pure cap policy shared by local and broker-authorized snapshots."""
+    if not math.isfinite(action_value):
+        raise ValueError("action_value must be finite")
+    if action_value < 0:
+        raise ValueError("action_value must be non-negative")
+    normalized_unit = _required("action_unit", action_unit)
+    if cap is not None and normalized_unit != cap.unit:
+        raise ValueError(
+            f"action_unit {normalized_unit!r} does not match cap unit {cap.unit!r}"
+        )
+    status = (
+        "held"
+        if cap is not None and action_value > cap.maximum
+        else "automatic"
+    )
+    return CapDecision(
+        status=status,
+        cap=cap,
+        action_value=action_value,
+        action_unit=normalized_unit,
+    )
+
+
 @dataclass(frozen=True)
 class ConnectorArtifact:
     artifact_id: str
@@ -1148,21 +1173,22 @@ def _broker_channel(data_root: Path, *, principal: str, command_center: str, gra
     Selected but not running is a loud refusal, never a silent fall back to the
     worker: a switch that quietly does nothing cannot be proven on.
     """
-    from tinyassets.broker.supervisor import broker_selected, read_owner
+    from tinyassets.broker.supervisor import broker_selected, get_supervisor
 
     if not broker_selected():
         return None
-    owner = read_owner(Path(data_root))
-    if owner is None:
+    supervisor = get_supervisor(Path(data_root))
+    if supervisor is None:
         raise ProxyRequestError("the credential broker is selected but not running")
     from tinyassets.broker.client import BrokerClient
+    from tinyassets.broker.refresh import prepare
 
-    def fence() -> tuple[int, str]:
-        current = read_owner(Path(data_root)) or owner
-        return int(current["generation"]), str(current["token"])
-
-    client = BrokerClient(Path(owner["socket"]), principal=principal,
-                          command_center=command_center, fence=fence)
+    client = BrokerClient(supervisor.socket_path, principal=principal,
+                          command_center=command_center, fence=supervisor.fence,
+                          verify_peer=supervisor.verify_broker,
+                          refresh_factory=lambda grant, connection: prepare(
+                              data_root, principal=principal, command_center=command_center,
+                              grant_id=grant, connection_id=connection))
     return _BrokerChannel(client, grant_id=grant_id, connection_id=connection_id)
 
 
@@ -1295,7 +1321,7 @@ class CredentialBlindBroker:
                  on_connect: Callable[[Any], None] | None = None,
                  checkpoint: Callable[[], None] | None = None,
                  deadline_at: float | None = None, inference_usage=None,
-                 operation_id: str | None = None) -> Any:
+                 operation_id: str | None = None, refresh_request=None) -> Any:
         """One request on the grant. ``stream=True`` returns a :class:`BrokerStream`
         whose body is read as it arrives (I14); every check before the response
         is identical, and the body is scanned byte by byte instead of whole."""
@@ -1331,7 +1357,7 @@ class CredentialBlindBroker:
 
             grant = self._ledger.require_active_grant(grant_id)
             usage = resolve_inference_usage(
-                self._ledger._db_path.parent, grant.owner_user_id, grant.universe_id,
+                self._ledger._data_root, grant.owner_user_id, grant.universe_id,
                 self._ledger, resource, grant_id, verb, request, inference_usage, operation_id,
             )
         if usage is not None:
@@ -1406,8 +1432,9 @@ class CredentialBlindBroker:
                     if deadline_at is not None and time.monotonic() >= deadline_at:
                         raise OutboundDeadlineExceeded("outbound request exceeded its time budget")
                     return self._oauth_bundle(resource, grant_id, verb, credential,
-                                              rejected=rejected)
-            return self._oauth_bundle(resource, grant_id, verb, credential, rejected=rejected)
+                                              rejected=rejected, refresh_request=refresh_request)
+            return self._oauth_bundle(resource, grant_id, verb, credential, rejected=rejected,
+                                      refresh_request=refresh_request)
 
         if oauth:
             from tinyassets.connection_oauth.tokens import decode
@@ -1487,14 +1514,15 @@ class CredentialBlindBroker:
 
     def _oauth_bundle(
         self, resource: ConnectionResource, grant_id: str, verb: str, credential: str,
-        *, rejected: str = "",
+        *, rejected: str = "", refresh_request=None,
     ) -> Any:
         if self._oauth_tokens is None:
             self._record_error(resource, grant_id, verb, "oauth2 tokens unavailable")
             raise ProxyRequestError("outbound request failed: credential unavailable")
         destination = (resource.credential_ref or "")[len(_HTTP_CREDENTIAL_REF_PREFIX):].strip()
         try:
-            return self._oauth_tokens.current(destination, credential, rejected=rejected)
+            return self._oauth_tokens.current(destination, credential, rejected=rejected,
+                **({"refresh_request": refresh_request} if refresh_request is not None else {}))
         except ConnectionAuthorizationError:
             self._record_error(resource, grant_id, verb, "connection authorization failed")
             raise
@@ -4940,12 +4968,13 @@ def _build_credential_broker_dispatch(
     from tinyassets.connection_oauth.tokens import ConnectionTokens
     from tinyassets.storage.agent_request_usage import resolve_inference_usage
 
-    ledger = ConnectionLedger(config["ledger_db_path"])
+    data_root = Path(config.get("data_root", Path(config["ledger_db_path"]).parent))
+    ledger = ConnectionLedger(config["ledger_db_path"], data_root=data_root)
     universe = Path(config["universe_dir"])
 
     def accounting(resource, grant_id, verb, request, envelope, operation_id):
         return resolve_inference_usage(
-            Path(config["ledger_db_path"]).parent, config["owner_user_id"], universe.name,
+            data_root, config["owner_user_id"], universe.name,
             ledger, resource, grant_id, verb, request, envelope, operation_id,
         )
 
@@ -4959,6 +4988,7 @@ def _build_credential_broker_dispatch(
             universe_dir=config["universe_dir"],
             owner_user_id=config["owner_user_id"],
             oauth_service=config.get("oauth_service"),
+            allow_local_refresh=config.get("allow_local_refresh", True),
         ),
     )
     return broker.dispatch
@@ -5158,8 +5188,10 @@ class ConnectionLedger:
         *,
         allow_test_fixtures: bool = False,
         verify_authenticated_principal: AuthenticatedPrincipalVerifier | None = None,
+        data_root: str | Path | None = None,
     ) -> None:
         self._db_path = Path(db_path)
+        self._data_root = Path(data_root) if data_root is not None else self._db_path.parent
         self._allow_test_fixtures = allow_test_fixtures
         self._verify_authenticated_principal = verify_authenticated_principal
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -5283,6 +5315,7 @@ class ConnectionLedger:
         allowed_endpoints: Any = (),
         access_mode: str = ACCESS_EXACT,
         git_host: str = "",
+        _transaction: sqlite3.Connection | None = None,
     ) -> ConnectionView:
         endpoints = _parse_allowed_endpoints(allowed_endpoints)
         declared_git_host = normalize_git_host(git_host)
@@ -5337,7 +5370,8 @@ class ConnectionLedger:
             access_mode=normalized_access,
             git_host=declared_git_host,
         )
-        with self._connect() as connection:
+        with (contextlib.nullcontext(_transaction) if _transaction is not None
+              else self._connect()) as connection:
             connection.execute(
                 """
                 INSERT INTO outbound_connections (
@@ -5368,7 +5402,8 @@ class ConnectionLedger:
         return resource.to_view()
 
     def _upgrade_http_connection_scopes(
-        self, *, connection_id: str, scopes: tuple[str, ...]
+        self, *, connection_id: str, scopes: tuple[str, ...],
+        _transaction: sqlite3.Connection | None = None,
     ) -> None:
         """Bounded, one-directional migration of the legacy ("http",) scope token.
 
@@ -5381,7 +5416,8 @@ class ConnectionLedger:
         real method-scoped set — a row already carrying method scopes is untouched.
         """
         new_scopes = tuple(_required("scope", scope) for scope in scopes)
-        with self._connect() as connection:
+        with (contextlib.nullcontext(_transaction) if _transaction is not None
+              else self._connect()) as connection:
             connection.execute(
                 """
                 UPDATE outbound_connections
@@ -5403,6 +5439,7 @@ class ConnectionLedger:
         expected_incarnation: str | None = None,
         expected_grant_id: str | None = None,
         git_host: str = "",
+        _transaction: sqlite3.Connection | None = None,
     ) -> bool:
         """ADD endpoints to an existing http connection. Never remove or replace.
 
@@ -5473,7 +5510,8 @@ class ConnectionLedger:
                   AND g.revoked_at IS NULL
             )"""
             params.append(expected_grant_id)
-        with self._connect() as connection:
+        with (contextlib.nullcontext(_transaction) if _transaction is not None
+              else self._connect()) as connection:
             cursor = connection.execute(sql, tuple(params))
             return cursor.rowcount > 0
 
@@ -5486,6 +5524,7 @@ class ConnectionLedger:
         expected_endpoints_json: str,
         expected_scopes_json: str,
         expected_incarnation: str | None = None,
+        _transaction: sqlite3.Connection | None = None,
     ) -> bool:
         """Move a connection between ``exact`` and ``full`` under CAS.
 
@@ -5536,7 +5575,8 @@ class ConnectionLedger:
         if expected_incarnation is not None:
             sql += "           AND incarnation = ?\n"
             params.append(expected_incarnation)
-        with self._connect() as connection:
+        with (contextlib.nullcontext(_transaction) if _transaction is not None
+              else self._connect()) as connection:
             cursor = connection.execute(sql, tuple(params))
             return cursor.rowcount > 0
 
@@ -5604,7 +5644,7 @@ class ConnectionLedger:
         }
 
     def _get_connection_resource(
-        self, connection_id: str
+        self, connection_id: str, *, _transaction: sqlite3.Connection | None = None,
     ) -> ConnectionResource | None:
         """Credential-BEARING read for TRUSTED internal use only.
 
@@ -5615,7 +5655,8 @@ class ConnectionLedger:
         the credential reference. Never expose its result to an adapter/graph/CRUD
         surface.
         """
-        with self._connect() as connection:
+        with (contextlib.nullcontext(_transaction) if _transaction is not None
+              else self._connect()) as connection:
             row = connection.execute(
                 "SELECT * FROM outbound_connections WHERE connection_id = ?",
                 (connection_id,),
@@ -5703,7 +5744,7 @@ class ConnectionLedger:
             resource = _resource_from_row(row)
             if resource.revoked_at is not None:
                 raise PermissionError("connection resource is revoked")
-            if kind == "model_discovery":
+            if kind == "model_discovery" or expected_grant is not None:
                 if expected_grant is None:
                     raise PermissionError("discovery requires current grant context")
                 grant_row = connection.execute(
@@ -5783,13 +5824,29 @@ class ConnectionLedger:
         return capability
 
     def get_connection_capability(
-        self, connection_id: str, capability_kind: str
+        self, connection_id: str, capability_kind: str, *,
+        expected_grant: ConnectionGrant | None = None,
     ) -> ConnectionCapability | ModelDiscoveryCapability | None:
         """Return validated non-secret metadata without altering connection views."""
 
         connection_key = _required("connection_id", connection_id)
         kind = _validate_capability_kind(capability_kind)
         with self._connect() as connection:
+            connection.execute("BEGIN")
+            if expected_grant is not None:
+                admitted = connection.execute(
+                    "SELECT 1 FROM outbound_connection_grants g "
+                    "JOIN outbound_connections c ON c.connection_id=g.connection_id "
+                    "WHERE g.grant_id=? AND g.connection_id=? AND g.owner_user_id=? "
+                    "AND c.owner_user_id=? AND g.universe_id=? AND g.granted_at=? "
+                    "AND g.revoked_at IS NULL AND c.revoked_at IS NULL",
+                    (expected_grant.grant_id, connection_key, expected_grant.owner_user_id,
+                     expected_grant.owner_user_id, expected_grant.universe_id,
+                     expected_grant.granted_at),
+                ).fetchone()
+                if (admitted is None or expected_grant.connection_id != connection_key
+                        or expected_grant.revoked_at is not None):
+                    raise PermissionError("capability grant context changed")
             row = connection.execute(
                 "SELECT descriptor_json FROM connection_capabilities "
                 "WHERE connection_id = ? AND capability_kind = ?",
@@ -5812,8 +5869,9 @@ class ConnectionLedger:
         universe_id: str,
         granted_at: float | None = None,
         unprompted_action_cap: ActionCap | None = None,
+        _transaction: sqlite3.Connection | None = None,
     ) -> ConnectionGrant:
-        resource = self._get_connection_resource(connection_id)
+        resource = self._get_connection_resource(connection_id, _transaction=_transaction)
         if resource is None:
             raise LookupError("connection resource does not exist")
         owner = _required("owner_user_id", owner_user_id)
@@ -5828,7 +5886,8 @@ class ConnectionLedger:
             revoked_at=None,
             unprompted_action_cap=unprompted_action_cap,
         )
-        with self._connect() as connection:
+        with (contextlib.nullcontext(_transaction) if _transaction is not None
+              else self._connect()) as connection:
             connection.execute(
                 """
                 INSERT INTO outbound_connection_grants (
@@ -5854,8 +5913,11 @@ class ConnectionLedger:
             )
         return grant
 
-    def get_grant(self, grant_id: str) -> ConnectionGrant | None:
-        with self._connect() as connection:
+    def get_grant(
+        self, grant_id: str, *, _transaction: sqlite3.Connection | None = None,
+    ) -> ConnectionGrant | None:
+        with (contextlib.nullcontext(_transaction) if _transaction is not None
+              else self._connect()) as connection:
             row = connection.execute(
                 "SELECT * FROM outbound_connection_grants WHERE grant_id = ?",
                 (grant_id,),
@@ -6049,7 +6111,7 @@ class ConnectionLedger:
         # The broker serves http connections, the only production type; the
         # legacy untyped test fixture keeps its worker.
         channel = None if resource.connection_type != "http" else _broker_channel(
-            self._db_path.parent, principal=resource.owner_user_id,
+            self._data_root, principal=resource.owner_user_id,
             command_center=grant.universe_id, grant_id=grant.grant_id,
             connection_id=resource.connection_id,
         )
@@ -6106,7 +6168,8 @@ class ConnectionLedger:
             "allow_test_fixtures": self._allow_test_fixtures,
             "allow_http_connections": _outbound_http_enabled(),
             "ledger_db_path": str(self._db_path.resolve()),
-            "universe_dir": str((self._db_path.parent / universe_id).resolve()),
+            "data_root": str(self._data_root.resolve()),
+            "universe_dir": str((self._data_root / universe_id).resolve()),
             "provider": provider,
             "destination": destination,
             "connection_type": (connection_type or "").strip().lower(),
@@ -6127,6 +6190,10 @@ class ConnectionLedger:
         owner_user_id: str,
         connection_type: str = "",
     ) -> ScopedConnectionProxy:
+        from tinyassets.broker.supervisor import broker_selected
+
+        if broker_selected():
+            raise ProxyRequestError("legacy proxy worker is forbidden while the broker is selected")
         factory_reference = "credential_broker_v1"
         factory_config = self.broker_dispatch_config(
             grant_id=grant_id, universe_id=universe_id, provider=provider,
@@ -6301,28 +6368,9 @@ class ConnectionLedger:
         action_unit: str,
     ) -> CapDecision:
         """Evaluate only the unprompted-action axis; tool/spend gates are separate."""
-        if not math.isfinite(action_value):
-            raise ValueError("action_value must be finite")
-        if action_value < 0:
-            raise ValueError("action_value must be non-negative")
-        normalized_unit = _required("action_unit", action_unit)
         grant = self.require_active_grant(grant_id)
-        cap = grant.unprompted_action_cap
-        if cap is not None and normalized_unit != cap.unit:
-            raise ValueError(
-                f"action_unit {normalized_unit!r} does not match cap unit {cap.unit!r}"
-            )
-        status = (
-            "held"
-            if cap is not None and action_value > cap.maximum
-            else "automatic"
-        )
-        return CapDecision(
-            status=status,
-            cap=cap,
-            action_value=action_value,
-            action_unit=normalized_unit,
-        )
+        return evaluate_action_cap(
+            grant.unprompted_action_cap, action_value=action_value, action_unit=action_unit)
 
     def create_connector_artifact(
         self,

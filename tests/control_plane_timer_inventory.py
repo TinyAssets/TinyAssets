@@ -74,11 +74,6 @@ CLASSIFICATION: dict[str, tuple[str, str]] = {
     "tinyassets/universe_seats.py::_refresh_loop": (
         CONTROL_PLANE, "account seat stamp refresh while a seat is held",
     ),
-    "tinyassets/broker/supervisor.py::BrokerSupervisor._supervise": (
-        CONTROL_PLANE,
-        "daemon-owned broker restart duty until stop(); production start_broker "
-        "still refuses activation pending the per-role UID split",
-    ),
     # -- bounded waits inside one call -----------------------------------------
     "tinyassets/ui_preview.py::_supervised": (
         CALL_SCOPED,
@@ -107,6 +102,20 @@ CLASSIFICATION: dict[str, tuple[str, str]] = {
         CALL_SCOPED, "agent lease refresh for one running automation batch",
     ),
     "tinyassets/auto_ship_ledger.py::_file_lock": (CALL_SCOPED, "lock acquisition"),
+    "tinyassets/broker/server.py::_Connection._refresh": (
+        CALL_SCOPED,
+        "one broker stream waits for the daemon's refresh answer only until "
+        "that stream's own deadline; nothing reschedules",
+    ),
+    "tinyassets/role_node.py::run": (
+        CALL_SCOPED, "one node-sandbox cell is supervised until exit or its call deadline",
+    ),
+    "tinyassets/role_package_cell.py::run": (
+        CALL_SCOPED, "one package payload is polled for exit, limits or broker revocation",
+    ),
+    "tinyassets/role_tools.py::run": (
+        CALL_SCOPED, "one TOOL cell is drained and reaped within its requested wall bound",
+    ),
     "tinyassets/activity_runner.py::linked_activity": (
         CALL_SCOPED,
         "one activity run waits up to wait_s for the dispatcher to bind its "
@@ -155,11 +164,6 @@ CLASSIFICATION: dict[str, tuple[str, str]] = {
         CALL_SCOPED,
         "inner credit wait for the same response; condition wait is bounded by "
         "the remaining stream deadline and cancellation wakes it",
-    ),
-    "tinyassets/broker/supervisor.py::BrokerSupervisor._spawn": (
-        CALL_SCOPED,
-        "one broker startup waits for its socket for at most 30 seconds, "
-        "refusing if the child exits or startup times out before fencing",
     ),
     "tinyassets/credential_refresh.py::_hold_vault": (CALL_SCOPED, "lock acquisition"),
     "tinyassets/credential_refresh.py::_refresh_locked": (CALL_SCOPED, "single-flight wait"),

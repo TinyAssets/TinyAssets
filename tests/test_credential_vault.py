@@ -722,3 +722,48 @@ def test_snapshot_directory_and_files_are_owner_only(tmp_path):
         } == {".lock": 0o400, "auth.json": 0o400, "config.toml": 0o400}
     finally:
         cleanup_llm_credential_snapshot(snapshot)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Windows does not enforce POSIX roles")
+def test_role_snapshot_group_is_explicit_and_survives_reprepare(tmp_path, monkeypatch):
+    from tinyassets import credential_vault as vault
+    from tinyassets import role_modes
+
+    universe, custody = _credential_snapshot_fixture(tmp_path)
+    monkeypatch.setenv("TINYASSETS_CREDENTIAL_BROKER", "process")
+    monkeypatch.setattr(role_modes, "WORK_GID", os.getgid())
+    snapshot = vault.snapshot_llm_subscription_credential(universe_dir=universe, custody=custody)
+    try:
+        vault._prepare_snapshot_root(universe)
+        for path in (snapshot.directory, snapshot.directory.parent,
+                     snapshot.directory.parent.parent):
+            assert (path.stat().st_gid, stat.S_IMODE(path.stat().st_mode)) == (os.getgid(), 0o2750)
+        for path in snapshot.directory.iterdir():
+            assert (path.stat().st_gid, stat.S_IMODE(path.stat().st_mode)) == (os.getgid(), 0o440)
+        assert (snapshot.directory / "auth.json").read_bytes()
+    finally:
+        vault.cleanup_llm_credential_snapshot(snapshot)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Windows does not enforce POSIX roles")
+@pytest.mark.parametrize("operation", ["fchown", "fchmod", "fsync"])
+def test_role_snapshot_permission_or_sync_failure_never_returns_credentials(
+    tmp_path, monkeypatch, operation,
+):
+    from tinyassets import credential_vault as vault
+    from tinyassets import role_modes
+
+    universe, custody = _credential_snapshot_fixture(tmp_path)
+    monkeypatch.setenv("TINYASSETS_CREDENTIAL_BROKER", "process")
+    monkeypatch.setattr(role_modes, "WORK_GID", os.getgid())
+    original = getattr(os, operation)
+
+    def fail_file(fd, *args):
+        if stat.S_ISREG(os.fstat(fd).st_mode):
+            raise OSError("snapshot publication fixture failure")
+        return original(fd, *args)
+
+    monkeypatch.setattr(os, operation, fail_file)
+    with pytest.raises(OSError, match="publication fixture"):
+        vault.snapshot_llm_subscription_credential(universe_dir=universe, custody=custody)
+    assert not list((universe / ".runtime/provider-launch-credentials").glob("*/auth.json"))

@@ -33,6 +33,8 @@ def extract_video_description(
     data: bytes,
     *,
     premise: str = "",
+    universe_dir: Path | None = None,
+    describe_frame=None,
 ) -> str:
     """Extract a text description from a video file.
 
@@ -55,6 +57,25 @@ def extract_video_description(
         Text description of the video (one section per keyframe),
         or a placeholder if ffmpeg is unavailable.
     """
+    from tinyassets import role_decoder
+    from tinyassets.broker.supervisor import broker_selected
+
+    if role_decoder._bounded_client is not None or broker_selected():
+        from tinyassets.role_video import frames
+
+        if not callable(describe_frame):
+            raise RuntimeError(
+                'selected video description requires an owner-scoped vision callback')
+        duration, images = frames(data, universe_dir)
+        descriptions = [
+            f'## [{_format_timestamp(index * FRAME_INTERVAL_SECONDS)}] Frame {index + 1}\n\n'
+            + describe_frame(f'{filename}_frame_{index:03d}.png', image, premise=premise)
+            for index, image in enumerate(images)
+        ]
+        return (f'# Visual Reference: {filename}\n\n'
+                f'Video duration: {_format_timestamp(int(duration))} | '
+                f'Frames analyzed: {len(images)}\n\n---\n\n'
+                + '\n\n---\n\n'.join(descriptions))
     ffmpeg_path = _find_ffmpeg()
     if not ffmpeg_path:
         return _placeholder_description(filename, data)
@@ -140,11 +161,12 @@ def _extract_with_ffmpeg(
     from tinyassets.ingestion.image_extractor import (
         extract_image_description,
     )
+    from tinyassets.universe_files import read_universe_file, write_universe_file
 
     with tempfile.TemporaryDirectory(prefix="fa_video_") as tmpdir:
         tmp = Path(tmpdir)
-        video_file = tmp / filename
-        video_file.write_bytes(data)
+        video_file = tmp / 'source'
+        write_universe_file(tmp, 'source', data)
 
         # Get video duration to calculate frame count
         duration = _get_video_duration(ffmpeg_path, str(video_file))
@@ -194,7 +216,7 @@ def _extract_with_ffmpeg(
         for i, frame_file in enumerate(frame_files):
             timestamp = i * FRAME_INTERVAL_SECONDS
             ts_str = _format_timestamp(timestamp)
-            frame_data = frame_file.read_bytes()
+            frame_data = read_universe_file(tmp, frame_file.name)
             frame_name = f"{filename}_frame_{i:03d}.png"
 
             desc = extract_image_description(

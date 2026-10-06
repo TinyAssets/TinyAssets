@@ -60,19 +60,15 @@ def source_display_name(*, base: Path | str, universe_id: str, provider: str) ->
     if not definition_id or not universe_id:
         return ""
     try:
+        from tinyassets.broker.ledger_queries import granted_resource_row
         from tinyassets.providers.definition import get_definition
-        from tinyassets.storage.outbound_connections import ConnectionLedger
 
         definition = get_definition(universe_id, definition_id)
         if definition is None:
             return ""
-        ledger = ConnectionLedger(Path(base) / "outbound.db")
-        grant = ledger.get_grant(definition.ref)
-        if grant is None or grant.universe_id != universe_id:
-            # Never label a source with another universe's connection.
-            return ""
-        connection = ledger.get_connection(grant.connection_id)
-        destination = "" if connection is None else str(connection.destination or "")
+        connection = granted_resource_row(Path(base), principal=definition.owner_user_id,
+                                      command_center=universe_id, grant_id=definition.ref)
+        destination = str(connection.get("destination") or "")
     except Exception:  # noqa: BLE001 - a label is never worth failing a reply over
         logger.debug("source display name unresolved for %s", provider, exc_info=True)
         return ""

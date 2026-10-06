@@ -32,8 +32,15 @@ pre-2026-06-10 script treated that as fatal — every nightly run from
 
 | Tier | Archive | Contents | Consistency | Failure policy |
 |------|---------|----------|-------------|----------------|
-| **Brain** | `tinyassets-brain-<ts>.tar.gz` (MBs) | `wiki/`, `daemon_wikis/`, top-level `*.json` ledgers, top-level `*.db` | Strict — staged to a temp dir; SQLite copied via python3 `sqlite3.backup()` API | Any failure is fatal (exit 2/3) |
+| **Brain** | `tinyassets-brain-<ts>.tar.gz` (MBs) | `wiki/`, `daemon_wikis/`, top-level `*.json` ledgers, top-level `*.db`, relocated `.broker/outbound.db` | Strict — staged to a temp dir; SQLite copied via python3 `sqlite3.backup()` API | Any failure is fatal (exit 2/3) |
 | **Full** | `tinyassets-data-<ts>.tar.gz` (GBs) | whole volume incl. rebuildable per-universe `lancedb/` indexes + universe canon/output | Best-effort — tarred live; tar rc=1 tolerated, rc≥2 fatal | Upload failure fatal (exit 3) |
+
+The brain tier also includes `.broker/outbound.db` after role relocation,
+using the SQLite backup API and retaining its relative path, numeric owner/group
+and private file/directory modes. Legacy root `outbound.db` remains supported.
+New brain archives omit the private staging-root header, so extraction does not
+replace the live volume root's ownership/mode. Full role/ACL restore and old-image
+rollback still require the per-role-uid-split acceptance proofs before activation.
 
 The brain tier is the irreplaceable knowledge state and must always land.
 The full tier may contain torn copies of files that were mid-write; LanceDB

@@ -1,0 +1,29 @@
+# Per-role UID split activation overlay. NOT deployed: no deploy script names
+# this file, so the default stays OFF. Layer it explicitly:
+#   docker compose -f compose.yml -f compose.role-split.yml up -d daemon
+# deploy/role_startup.py also refuses every mode unless TINYASSETS_ROLE_SPLIT=1.
+#
+# The container starts as root with the seven entry capabilities. PID1 runs
+# the forward migration, forks broker and mapper, then retires itself to the
+# capability-free daemon before importing the application (design D2/D60).
+# The base file's cap_drop ALL, no-new-privileges and unconfined profiles stay.
+#
+# Rollback: stop the daemon, run the reverse mode once, then start the old
+# image with the base file only:
+#   docker compose -f compose.yml -f compose.role-split.yml run --rm daemon \
+#     /opt/venv/bin/python -I -B /usr/local/libexec/ta-role-start.py reverse
+services:
+  daemon:
+    user: "0:0"
+    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER, KILL, SETGID, SETUID, SETPCAP]
+    # No tini: bootstrap requires PID1, and ta-entry.sh execs in place.
+    entrypoint: ["/usr/local/libexec/ta-entry.sh"]
+    command: ["/opt/venv/bin/python", "-I", "-B", "/usr/local/libexec/ta-role-start.py", "start"]
+    environment:
+      TINYASSETS_ROLE_SPLIT: "1"
+    healthcheck:
+      # The exec starts as root with the entry capabilities; ta-op's root
+      # branch expects a different set, so retire to 1001 first and run the
+      # unchanged pulse through ta-op's legacy-rootless verification.
+      test: ["CMD", "/opt/venv/bin/python", "-I", "-B",
+             "/usr/local/libexec/ta-role-start.py", "health"]

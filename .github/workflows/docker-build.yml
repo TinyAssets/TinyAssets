@@ -95,6 +95,12 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+      - name: Verify immutable execution and import chain
+        run: |
+          docker run --rm --network none --user 0:0 --cap-drop ALL \
+              --entrypoint /opt/venv/bin/python tinyassets-daemon:ci \
+              -I -S -B /usr/local/libexec/ta-chain.py
+
       - name: Unmodified image refuses unadmitted startup
         run: |
           # No published port, credentials, mounted state or admission fixture.

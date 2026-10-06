@@ -1,3 +1,10 @@
+**founder decision 2026-10-05: fold + build with probes.** D9 folds all seven
+round-3 findings; no fourth design review, normal cross-family build review,
+no deployment. D10 records the lead's technical decision resolving ACL-mask
+access preservation with capability-free two-pass owner deletion and explicit
+startup reverse migration before capability drop. The capability ambiguity is
+resolved; documentation is not implementation acceptance.
+
 ## Why
 
 The credential broker (S6, `broker-streaming-contract`, #4299) authenticates its callers by the
@@ -16,6 +23,13 @@ Measured on prod (2026-10-02, read-only):
 - no process in the container can change uid today.
 
 ## What Changes
+
+- **Mandatory per-owner cells for every engine class.** The lead decision in D8 makes
+  cross-user isolation non-negotiable now: extend the existing bubblewrap jail through
+  the launcher to every owner-scoped child and descendant. Shared `ta-work` access is
+  confined inside that namespace. The provider-only denial option is rejected. D8 lists
+  all covered spawn sites and requires actual-process, per-class production-image oracle
+  denial of other owners' data, owner.json, vault and owner channel token.
 
 - **A uid per role, enforced by the kernel.** Owner/daemon 1001 (unchanged, it owns `/data`);
   broker 1002; engine and provider children 1003. Three service groups carry the cross-uid access
@@ -41,17 +55,16 @@ Measured on prod (2026-10-02, read-only):
   1002-only at `/data/.broker/` 0700. The sockets move to the `/run` tmpfs with group `ta-brk`, and
   the launcher — not the owner — starts, restarts and stops the broker. The owner's
   `(socket, generation, token)` is held in process memory and `owner.json` is deleted.
-- **Volume permissions to match, with one rule: the migration never changes the owner of a path an
-  older image reads.** The vault keeps owner 1001 and gains group `ta-vault` at 0640, so the owner
-  stays its only writer and the broker becomes a read-only consumer; child-writable workspaces and
-  the per-launch credential snapshots get `ta-work` with setgid directories. Only
-  `/data/.broker/**`, which no older image opens, changes owner. The vault's group is set on the
-  temp file before the atomic replace rather than inherited, because its directory is the
-  command-center root and belongs to `ta-work` — an inherited group would hand every replacement
-  vault to the engine children. Every mode comes from one declaration shared by the migration and
-  the runtime sites that re-mode the same paths, so a later provider launch cannot restore
-  single-uid permissions. A startup migration applies this idempotently under the exclusive layout
-  lock, refusing symlinks and hardlinks rather than following them.
+- **Volume permissions follow role authority.** D11 assigns outbound.db and
+  .outbound-proxy to broker uid 1002, group ta-brk, with daemon ledger/accounting/
+  refresh operations mediated by authenticated broker IPC. Forward and reverse
+  migration happen in D10's privileged startup window. This replaces the prior
+  rule forbidding owner changes to any file an older image reads. Vault deposits
+  remain daemon-written and broker-readable only; workspaces retain ta-work.
+  One mode declaration governs startup and runtime creation. The ledger's
+  physical parent is /data/.broker (D12), allowing private SQLite journals
+  without widening D4's daemon-owned /data at 0755. The access inventory names
+  raw SQL, account deletion, backup and refresh dependencies as well as callers.
 - `start_broker` replaces its refusal with the launcher-mediated start when it observes distinct
   uids. It still refuses when it does not.
 
@@ -61,9 +74,16 @@ Measured on prod (2026-10-02, read-only):
   relocated entrypoint), `deploy/docker-entrypoint.sh` (install path only — contents unchanged),
   `deploy/compose.yml` (root entry, `cap_add`, `HOME`), and the deploy validator's capability
   assertions.
-- **Rollback is free, not staged.** Because no path an older image reads changes owner, an older
-  image that runs everything as 1001 still reads and writes every store. There is no reverse
-  migration and no temporary permission widening.
+- **Rollback and deletion must be proven after engine writes.** Access/default ACLs
+  for uid 1001 and child umask 007 are required, but explicit 0700 creation/chmod
+  masks those ACLs. D10 requires engine 1003 to remove engine-owned entries
+  inside the owner's cell through normal launcher spawn, then daemon 1001 to
+  remove daemon-owned entries and empty structure, both without capabilities.
+  Failures report the path loudly. Rollback is explicitly selected at startup in
+  the forward migration's privileged window, before capability drop, with dry-run
+  and idempotent recovery. No retained capability or privileged helper is added.
+  Known owner-work creation modes remain group-preserving as defense in depth.
+
 - **Code:** `tinyassets/role_launcher` ships as a root-owned file, not an importable module;
   `tinyassets/broker/supervisor.py` (refusal → launcher-mediated start; `owner.json`, `stop()` and
   `read_owner` deleted); `tinyassets/broker/process.py` (the generation is minted by the broker, so
@@ -76,7 +96,7 @@ Measured on prod (2026-10-02, read-only):
   1003); `deploy/native/ta_op.c` (`MASK`); and every spawn site that starts an engine or provider
   child goes through the launcher client — `providers/owned_process.py`, `engine_mcp_http.py`,
   `node_sandbox.py`, and the four the first enumeration missed:
-  `providers/native_jsonrpc_discovery.py` (reached from `providers/base.py`, and outside the jail),
+  `providers/native_jsonrpc_discovery.py` (reached from `providers/base.py`, historically outside the jail; now using the metadata view),
   `universe_tools.py`, `workspace_provision_process.py`, `workspace_registry_process.py`.
   New gate: `scripts/check_privileged_chain.py`.
 - **Dependencies:** lands after #4299 (the broker) and #4267 (`platform_secrets`), amending both.

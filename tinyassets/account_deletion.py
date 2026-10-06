@@ -690,11 +690,13 @@ def _root_databases(root: Path) -> list[Path]:
     Per-universe stores go with the universe directory. The shared package
     store is nested outside those directories and must be visited explicitly.
     """
+    from tinyassets.broker.supervisor import broker_selected
     from tinyassets.command_center_packages import database_path
     from tinyassets.storage import DB_FILENAME
 
     stores = [
         p for p in root.glob("*.db") if p.is_file() and p.name != DB_FILENAME
+        and not (broker_selected() and p.name == "outbound.db")
     ]
     if database_path(root).is_file():
         stores.append(database_path(root))
@@ -998,6 +1000,7 @@ def delete_account(
     """
     from tinyassets.daemon_server import _connect, get_founder_home, initialize_author_server
     from tinyassets.principals import named_principal
+    from tinyassets.role_owner_tree_deletion import delete_center
 
     principal = named_principal(founder_sub)
     if not principal:
@@ -1045,9 +1048,34 @@ def delete_account(
         with _connect(root) as conn:
             _delete_root_rows(conn, principal=principal, home=home, counts=counts)
 
-    staged = _phase("home_staging", lambda: _stage_home(root, home)) if home else None
+    # A migrated home holds owner-identity entries the daemon cannot remove:
+    # delete it in place with D10's two passes while its owner binding and
+    # identity still admit pass one. None means a legacy single-UID layout.
+    two_pass = _phase(
+        "owner_tree", lambda: delete_center(root, home, principal=principal)
+    ) if home else None
+    owner_tree_failed = "owner_tree" in failures
+
+    from tinyassets.broker.supervisor import broker_selected
+
+    if broker_selected():
+        def _broker_rows() -> None:
+            from tinyassets.broker.account_erasure import erase_account
+
+            removed = erase_account(root, principal=principal)
+            counts.update({f"outbound:{table}": n for table, n in removed.items()})
+
+        _phase("broker_egress", _broker_rows)
+
+    # After a two-pass deletion only the sidecar remains to stage.
+    staged = _phase(
+        "home_staging", lambda: _stage_home(root, home)
+    ) if home and not owner_tree_failed else None
     staging_failed = "home_staging" in failures
-    if staging_failed:
+    if owner_tree_failed:
+        # Keep the binding: a retry resumes pass one under the same intent.
+        failures.append("root_rows")
+    elif staging_failed:
         # Keep the home binding so a retry can finish the deterministic staging
         # container, even when the home itself has already moved. Billing and
         # the other independent phases still run and failures get a receipt.
@@ -1073,7 +1101,8 @@ def delete_account(
 
         _phase("authoring_blobs", _blobs)
 
-    home_removed = staged is None and not staging_failed
+    home_removed = (staged is None and not staging_failed and not owner_tree_failed
+                    or two_pass is not None)
     staged_path = str(root / _STAGING_DIR / home) if staging_failed else ""
     if staged is not None:
         def _remove() -> None:
@@ -1083,7 +1112,7 @@ def delete_account(
             _rmdir_if_empty(staged.parent)
 
         _phase("home_directory", _remove)
-        if not home_removed:
+        if "home_directory" in failures:
             staged_path = str(staged)
 
     if home:
@@ -1120,7 +1149,9 @@ def delete_account(
         billing = _phase(
             "billing", lambda: (cancel_billing or cancel_stripe_billing)(home)
         ) or "error"
-    identity = _phase(
+    # A failed two-pass deletion resumes only under this principal's own
+    # authenticated identity, so the sign-in identity outlives it.
+    identity = "deferred:owner_tree" if owner_tree_failed else _phase(
         "identity", lambda: (delete_identity or delete_workos_user)(principal)
     ) or "error"
     # An outcome that is neither "done" nor "nothing to do" is UNFINISHED, even
@@ -1144,6 +1175,15 @@ def delete_account(
         "unfinished_phases": sorted(failures),
         "retained": list(RETAINED),
     }
+    if owner_tree_failed:
+        from tinyassets.role_owner_tree_deletion import pending
+
+        # Pass one may already have removed part of the home; say so. None
+        # means the intent store itself could not be read (also unfinished).
+        try:
+            receipt["home_deletion_pending"] = os.name == "posix" and home in pending(root)
+        except (OSError, RuntimeError):
+            receipt["home_deletion_pending"] = None
     if failures:
         receipt["host_receipt_path"] = _write_unfinished_receipt(root, receipt)
     logger.info(

@@ -9,6 +9,40 @@ from pathlib import Path
 from scripts import linux_oracle
 
 
+def test_production_probe_pins_digest_and_exact_entry_authority(monkeypatch):
+    calls = []
+
+    def run(command, **kwargs):
+        calls.append(command)
+        return subprocess.CompletedProcess(command, 0, stdout="sha256:fixture\n")
+
+    monkeypatch.setattr(subprocess, "run", run)
+    args = linux_oracle.build_parser().parse_args(["--production-image", "image:built"])
+    assert linux_oracle.production_oracle(args, Path("/repo")) == 0
+    command = calls[-1]
+    assert "sha256:fixture" in command and "image:built" not in command
+    assert "--network" in command and "none" in command
+    assert "--mount" not in command and "-v" not in command
+    assert [command[i + 1] for i, part in enumerate(command) if part == "--cap-add"] == [
+        "CHOWN", "DAC_OVERRIDE", "FOWNER", "SETUID", "SETGID", "SETPCAP", "KILL",
+    ]
+    assert command[-1] == "/app/scripts/role_image_oracle.py"
+
+
+def test_production_probe_refuses_skip_and_authority_overrides(monkeypatch):
+    import pytest
+
+    def unexpected(*args, **kwargs):
+        raise AssertionError("override must refuse before Docker")
+
+    monkeypatch.setattr(subprocess, "run", unexpected)
+    for extra in (["--no-bwrap"], ["--as-root"], ["--env", "X=Y"],
+                  ["--shell"], ["--", "tests"], ["--out", "/tmp/output"]):
+        args = linux_oracle.build_parser().parse_args(["--production-image", "image", *extra])
+        with pytest.raises(SystemExit, match="refuses"):
+            linux_oracle.production_oracle(args, Path("/repo"))
+
+
 def test_classic_builder_gets_real_dependency_generation():
     root = Path(__file__).resolve().parents[1]
     dockerfile = (root / linux_oracle.DOCKERFILE).read_text(encoding="utf-8")
@@ -32,6 +66,49 @@ def test_classic_builder_gets_real_dependency_generation():
     assert result.stdout.strip()
     assert "test -s /tmp/oracle/requirements.txt" in dockerfile
     assert "python -m pytest --version" in dockerfile
+
+
+def test_stream_oracle_uses_internal_network_and_cleans_up_after_failed_probe(monkeypatch):
+    calls = []
+
+    def run(command, **kwargs):
+        calls.append(command)
+        stdout = ("true\n" if command[1:3] == ["network", "inspect"]
+                  else "created-fixture-id\n")
+        return subprocess.CompletedProcess(command, 17 if command[1] == "run" else 0,
+                                           stdout=stdout)
+
+    monkeypatch.setattr(subprocess, "run", run)
+    command = ["docker", "run", "--rm", "--network", "none", "--cap-drop", "ALL",
+               "--entrypoint", "/opt/venv/bin/python", "sha256:fixture", "probe.py"]
+    assert linux_oracle.production_stream_oracle(command, "sha256:fixture") == 17
+    assert "--internal" in calls[0]
+    fixture = next(c for c in calls if c[1] == "create")
+    probe = next(c for c in calls if c[1] == "run")
+    assert "--cap-add" not in fixture and "--publish" not in fixture
+    assert "--publish" not in probe
+    assert "--add-host" in probe
+    assert all("type=volume" in c[c.index("--mount") + 1] for c in (fixture, probe))
+    assert probe[probe.index("--mount") + 1].endswith(",readonly")
+    assert calls[-3] == ["docker", "rm", "-f", "created-fixture-id"]
+    assert calls[-2][1:3] == ["volume", "rm"]
+    assert calls[-1][1:3] == ["network", "rm"]
+
+
+def test_stream_oracle_refuses_noninternal_network_before_fixture(monkeypatch):
+    import pytest
+
+    calls = []
+
+    def run(command, **kwargs):
+        calls.append(command)
+        return subprocess.CompletedProcess(command, 0, stdout="false\n")
+
+    monkeypatch.setattr(subprocess, "run", run)
+    with pytest.raises(RuntimeError, match="not internal"):
+        linux_oracle.production_stream_oracle([], "sha256:fixture")
+    assert not any(c[1] in ("run", "create") for c in calls)
+    assert calls[-1][1:3] == ["network", "rm"]
 
 
 def test_the_oracle_pins_the_image_s_codex():

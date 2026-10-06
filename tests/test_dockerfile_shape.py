@@ -568,7 +568,7 @@ def test_ta_op_is_built_in_the_builder_stage_and_installed_read_only_outside_app
     """
     text = DOCKERFILE.read_text(encoding="utf-8")
     build = text.index("COPY deploy/native/ta_op.c /tmp/ta_op.c")
-    venv = text.index("RUN python -m venv /opt/venv")
+    venv = text.index("RUN python -m venv --copies /opt/venv")
     assert build < venv, "the wrapper must compile in the builder stage, before the venv"
     assert "gcc -static -O2 -Wall -Wextra -Werror -o /tmp/ta-op /tmp/ta_op.c" in text
     assert "ldd /tmp/ta-op 2>&1 | grep -q 'not a dynamic executable'" in text

@@ -609,6 +609,11 @@ def _persist_credential_vault_file(
         json.dumps({"schema_version": 1, "credentials": records}, indent=2, sort_keys=True)
         + "\n"
     )
+    from tinyassets.broker.supervisor import broker_selected
+
+    if broker_selected():
+        _persist_role_vault(path, data)
+        return
     # Pre-commit: write the temp file. A write/flush failure here is before the
     # commit point and propagates. The temp fsync is durability only — log loudly
     # on failure but do not abort a deposit whose bytes are already written.
@@ -638,6 +643,40 @@ def _persist_credential_vault_file(
             "deposit already took effect",
             type(exc).__name__,
         )
+
+
+def _persist_role_vault(path: Path, data: str) -> None:
+    """Assign the read-only broker group before publishing a replacement inode."""
+    import tempfile
+
+    from tinyassets.role_modes import BROKER_READ_GID, VAULT_FILE_MODE
+
+    fd, name = tempfile.mkstemp(prefix=".vault-", suffix=".tmp", dir=path.parent)
+    temporary = Path(name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            os.fchown(handle.fileno(), -1, BROKER_READ_GID)
+            os.fchmod(handle.fileno(), VAULT_FILE_MODE)
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        temporary.replace(path)
+    except BaseException:
+        from tinyassets.universe_files import unlink_universe_file
+
+        try:
+            unlink_universe_file(
+                temporary.anchor, temporary.relative_to(temporary.anchor).as_posix())
+        except FileNotFoundError:
+            pass
+        raise
+    # Publication is the existing vault commit point. Never compensate owner
+    # rows after it, even if a subsequent durability flush reports a failure.
+    try:
+        _post_commit_durability(path, path.parent)
+    except Exception as exc:  # noqa: BLE001 - committed deposit must not be compensated
+        logger.warning("credential vault durability flush failed after commit (%s); "
+                       "deposit already took effect", type(exc).__name__)
 
 
 def _restore_owner_rows(
@@ -1824,10 +1863,45 @@ def _prepare_snapshot_root(universe: Path) -> tuple[Path, tuple[int, int]]:
         except OSError as exc:
             raise PermissionError("credential snapshot directory cannot be created") from exc
         identity = _plain_snapshot_directory(directory)
-        _chmod_best_effort(directory, 0o700)
+        _set_snapshot_directory_mode(directory, identity)
         if _plain_snapshot_directory(directory) != identity:
             raise PermissionError("credential snapshot directory identity changed")
     return snapshot_root, _plain_snapshot_directory(snapshot_root)
+
+
+def _set_snapshot_directory_mode(path: Path, identity: tuple[int, int]) -> None:
+    from tinyassets.broker.supervisor import broker_selected
+
+    if not broker_selected():
+        _chmod_best_effort(path, 0o700)
+        return
+    from tinyassets.role_modes import SNAPSHOT_DIRECTORY_MODE, WORK_GID
+    from tinyassets.workspace_fs import open_dir_nofollow
+
+    descriptor = open_dir_nofollow(path)
+    try:
+        opened = os.fstat(descriptor)
+        if (_snapshot_file_identity(opened) != identity or opened.st_uid != os.geteuid()
+                or not stat.S_ISDIR(opened.st_mode)):
+            raise PermissionError("credential snapshot directory identity changed")
+        from tinyassets.role_snapshot import owner_uid, seal
+
+        runtime = next((p for p in (path, *path.parents) if p.name == '.runtime'), None)
+        dedicated = owner_uid(runtime.parent) if runtime is not None else None
+        if dedicated is not None:
+            seal(descriptor, dedicated, directory=True,
+                 traverse_only=path.name in {'.runtime', 'provider-launch-credentials'})
+            if _plain_snapshot_directory(path) != identity:
+                raise PermissionError("credential snapshot directory identity changed")
+            return
+        os.fchown(descriptor, -1, WORK_GID)
+        os.fchmod(descriptor, SNAPSHOT_DIRECTORY_MODE)
+        final = os.fstat(descriptor)
+        if (final.st_gid != WORK_GID or stat.S_IMODE(final.st_mode) != SNAPSHOT_DIRECTORY_MODE
+                or _plain_snapshot_directory(path) != identity):
+            raise PermissionError("credential snapshot directory permissions unavailable")
+    finally:
+        os.close(descriptor)
 
 
 def _create_snapshot_directory(
@@ -1847,6 +1921,7 @@ def _create_snapshot_directory(
         identity = _plain_snapshot_directory(directory)
         if _plain_snapshot_directory(snapshot_root) != root_identity:
             raise PermissionError("credential snapshot root identity changed")
+        _set_snapshot_directory_mode(directory, identity)
         return directory, identity
     raise PermissionError("credential snapshot directory name cannot be reserved")
 
@@ -1869,15 +1944,34 @@ def _write_exclusive_snapshot_file(path: Path, contents: bytes) -> None:
             or _snapshot_file_identity(opened) != _snapshot_file_identity(current)
         ):
             raise PermissionError("credential snapshot file identity is unstable")
+        from tinyassets.broker.supervisor import broker_selected
+
+        selected = broker_selected()
+        if selected:
+            from tinyassets.role_modes import SNAPSHOT_FILE_MODE, WORK_GID
+            from tinyassets.role_snapshot import owner_uid, seal
+
+            dedicated = owner_uid(path.parent.parent.parent.parent)
+            if dedicated is not None:
+                seal(descriptor, dedicated, directory=False)
+            else:
+                os.fchown(descriptor, -1, WORK_GID)
+                os.fchmod(descriptor, SNAPSHOT_FILE_MODE)
+                final = os.fstat(descriptor)
+                if final.st_gid != WORK_GID or stat.S_IMODE(final.st_mode) != SNAPSHOT_FILE_MODE:
+                    raise PermissionError("credential snapshot file permissions unavailable")
         remaining = memoryview(contents)
         while remaining:
             written = os.write(descriptor, remaining)
             if written <= 0:
                 raise OSError("credential snapshot file write made no progress")
             remaining = remaining[written:]
+        if selected:
+            os.fsync(descriptor)
     finally:
         os.close(descriptor)
-    _chmod_best_effort(path, 0o400)
+    if not selected:
+        _chmod_best_effort(path, 0o400)
 
 
 def _remove_snapshot_tree(
@@ -2041,6 +2135,15 @@ def snapshot_llm_subscription_credential(
     universe = Path(universe_dir).resolve(strict=True)
     if custody.universe_id != universe.name or custody.service not in ("codex", "claude"):
         raise PermissionError("credential snapshot root is not current")
+    from tinyassets.role_snapshot import owner_uid
+
+    dedicated = owner_uid(universe)
+    if dedicated is not None:
+        from tinyassets.broker.owner_identities import owner_identity
+
+        expected = owner_identity(universe.parent, principal=custody.owner_user_id)
+        if expected.uid != dedicated or expected.gid != dedicated:
+            raise PermissionError('snapshot custody does not match the dedicated owner')
     record = _usable_subscription_record(universe, custody.service)
     material = _subscription_material(universe, custody.service, record)
     material_digest = "sha256:" + hashlib.sha256(material).hexdigest()
@@ -2100,7 +2203,7 @@ def snapshot_llm_subscription_credential(
         # cover the bytes, so comparing references alone would pass a bad copy.
         if copied_record_digest != custody._record_digest:
             raise PermissionError("credential snapshot custody digest disagrees")
-        _chmod_best_effort(directory, 0o700)
+        _set_snapshot_directory_mode(directory, directory_identity)
         return snapshot
     except BaseException:
         cleanup_llm_credential_snapshot(snapshot)

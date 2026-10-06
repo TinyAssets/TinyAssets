@@ -20,7 +20,12 @@ from datetime import datetime, timezone
 
 from tinyassets.exceptions import ProviderError
 from tinyassets.providers.native_catalogue import NativeCatalogue, NativeModel
-from tinyassets.providers.owned_process import FamilyAnchorError, aspawn_owned, kill_owned_tree
+from tinyassets.providers.owned_process import (
+    FamilyAnchorError,
+    OwnerCellProcess,
+    aspawn_owned,
+    kill_owned_tree,
+)
 from tinyassets.providers.provider_jail import metadata_view, provider_launch_scope
 
 
@@ -47,8 +52,25 @@ _REAP_TIMEOUT = 1
 _log = logging.getLogger(__name__)
 
 
+async def _close_cell_process(proc):
+    """Revoke a D82 owner cell; its authenticated receipt is authoritative."""
+    proc.stdin.close()
+    kill_owned_tree(proc)  # Revocation through the lifetime channel only.
+    try:
+        await asyncio.wait_for(proc.wait(), timeout=_REAP_TIMEOUT + 5)
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        raise ProviderError("native model discovery cell receipt unavailable") from None
+    finally:
+        proc._transport.close()
+
+
 async def _close_metadata_process(proc):
     """Release pipes and the owned family, including after launcher exit."""
+    if isinstance(proc, OwnerCellProcess):
+        await _close_cell_process(proc)
+        return
     proc.stdin.close()
     # The live family anchor owns its group identity. Closing its handle is
     # synchronous, including when cancellation interrupts the following await.
@@ -376,14 +398,29 @@ async def read_native_catalogue(
         # Session ownership belongs to the shared family launcher. Adapters
         # cannot replace its view, scope, shell mode or confinement requirement.
         process_options.pop("start_new_session", None)
+        from tinyassets import role_decoder
+        from tinyassets.broker.supervisor import broker_selected
+
         async with asyncio.timeout(timeout):
-            with provider_launch_scope(universe_dir, credential_dir=cwd):
-                proc = await aspawn_owned(
-                    argv, env=env, cwd=cwd, stdin=asyncio.subprocess.PIPE,
-                    stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
-                    limit=_MAX_BYTES, universe_view=view, require_confinement=True,
-                    install_mounts=install_mounts, **process_options,
-                )
+            if role_decoder._bounded_client is not None or broker_selected():
+                # D82: a selected broker runs metadata only in the dedicated
+                # owner's provider-discovery cell; refusal, never fallback.
+                from tinyassets.role_provider_discovery import aspawn_cell
+
+                try:
+                    proc = await aspawn_cell(argv, env=env, view=view,
+                                             universe_dir=universe_dir,
+                                             snapshot_dir=cwd, limit=_MAX_BYTES)
+                except (PermissionError, RuntimeError, KeyError) as exc:
+                    raise ProviderError("native model discovery cell refused") from exc
+            else:
+                with provider_launch_scope(universe_dir, credential_dir=cwd):
+                    proc = await aspawn_owned(
+                        argv, env=env, cwd=cwd, stdin=asyncio.subprocess.PIPE,
+                        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
+                        limit=_MAX_BYTES, universe_view=view, require_confinement=True,
+                        install_mounts=install_mounts, **process_options,
+                    )
             consumed = 0
 
             async def send(message):

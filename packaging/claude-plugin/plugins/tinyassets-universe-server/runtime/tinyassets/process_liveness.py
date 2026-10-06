@@ -47,7 +47,7 @@ def liveness_path(base_path: str | Path, token: str) -> Path | None:
     return Path(base_path) / LIVENESS_DIR / f"{token}.lock"
 
 
-def hold_liveness(base_path: str | Path, token: str) -> Any:
+def hold_liveness(base_path: str | Path, token: str, *, broker_readable=False) -> Any:
     """Take ``token``'s liveness lock. Keep the result for the process life.
 
     Cleanup removes a DEAD token's file, and a fresh registrant's file reads as
@@ -63,7 +63,18 @@ def hold_liveness(base_path: str | Path, token: str) -> Any:
     if path is None:
         raise ValueError(f"liveness token {token!r} is not a plain token")
     for _attempt in range(50):
-        held = acquire_singleton_lock(path)
+        if broker_readable:
+            from tinyassets.singleton_lock import LockAcquisition, _lock_fd
+            from tinyassets.universe_files import open_broker_liveness_lock
+
+            fd = open_broker_liveness_lock(base_path, path.name)
+            if not _lock_fd(fd):
+                os.close(fd)
+                time.sleep(0.02)
+                continue
+            held = LockAcquisition(True, fd, path, None)
+        else:
+            held = acquire_singleton_lock(path)
         if not held.acquired or held.fd is None:
             # Our own fresh token: only cleanup, deciding whether to remove the
             # file, can hold it. It lets go in moments.
@@ -86,6 +97,9 @@ def owner_state(base_path: str | Path, token: str) -> str:
     probe that deleted it after reclaiming ONE thing would leave every other
     thing of that dead owner unprovable (Codex round 2, 2026-09-27).
     """
+    if os.name == "posix":
+        return _readonly_owner_state(base_path, token)
+
     from tinyassets.singleton_lock import _lock_fd, _unlock_fd
 
     path = liveness_path(base_path, token)
@@ -102,6 +116,37 @@ def owner_state(base_path: str | Path, token: str) -> str:
         return DEAD
     finally:
         os.close(fd)
+
+
+def _readonly_owner_state(base_path: str | Path, token: str) -> str:
+    """POSIX flock needs no write access; only contention proves life.
+
+    Pin the proof directory and refuse links/non-files before probing. A FIFO
+    must not block the broker, and an unrelated flock error must not authorize
+    another inference request. A replaced proof is unknown, never dead/alive.
+    """
+    import errno
+    import fcntl
+
+    from tinyassets.universe_files import readonly_lock_file
+
+    path = liveness_path(base_path, token)
+    if path is None:
+        return UNKNOWN
+    try:
+        with readonly_lock_file(base_path, LIVENESS_DIR, path.name) as fd:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError as exc:
+                if exc.errno not in (errno.EAGAIN, errno.EWOULDBLOCK):
+                    return UNKNOWN
+                state = ALIVE
+            else:
+                # Closing the read-only descriptor releases the probe lock.
+                state = DEAD
+            return state
+    except (OSError, ValueError):
+        return UNKNOWN
 
 
 def remove_if_dead(
@@ -189,7 +234,7 @@ if hasattr(os, "register_at_fork"):  # pragma: no branch - POSIX only
     os.register_at_fork(after_in_child=_reset_after_fork)
 
 
-def owner_token(base_path: str | Path) -> str:
+def owner_token(base_path: str | Path, *, broker_readable=False) -> str:
     """This process's owner token, with its liveness lock held under ``base_path``.
 
     Taken before the token is first written anywhere, so no row can name an
@@ -199,10 +244,21 @@ def owner_token(base_path: str | Path) -> str:
     key = str(Path(base_path).resolve())
     with _HELD_LOCK:
         if key not in _HELD:
-            lock = hold_liveness(base_path, _TOKEN)
+            lock = hold_liveness(base_path, _TOKEN, broker_readable=broker_readable)
             if not getattr(lock, "acquired", False):
                 raise RuntimeError(
                     f"could not take the liveness lock for owner token {_TOKEN}"
                 )
             _HELD[key] = lock
+        elif broker_readable:
+            from tinyassets.universe_files import open_broker_liveness_lock
+
+            # Other daemon work may have registered this process before its
+            # first inference. Upgrade that same inode, preserving its lock.
+            fd = open_broker_liveness_lock(base_path, _HELD[key].path.name)
+            try:
+                if not os.path.samestat(os.fstat(fd), os.fstat(_HELD[key].fd)):
+                    raise RuntimeError("daemon liveness proof was replaced")
+            finally:
+                os.close(fd)
     return _TOKEN

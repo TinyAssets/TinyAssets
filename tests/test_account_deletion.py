@@ -1271,3 +1271,56 @@ def test_the_android_shell_cannot_reach_checkout():
     checkout = html.index('billingFetch("/app/billing/checkout"', start)
     assert guard < checkout, "the native guard must precede any checkout call"
     assert "if(!b || !PLAN || NATIVE) return;" in html, "and the button stays hidden"
+
+
+def test_failed_two_pass_owner_tree_keeps_the_binding_and_retry_resumes(
+        two_users, monkeypatch):
+    """A migrated home goes through D10's two passes before any root row goes.
+
+    A failed pass must keep the home binding (pass one's admission needs it)
+    and never fall through to the daemon's single-UID staging of that home.
+    """
+    from tinyassets import role_owner_tree_deletion
+
+    calls = []
+
+    def failing(root, center, *, principal):
+        calls.append((center, principal))
+        raise role_owner_tree_deletion.OwnerTreeDeletionRefused("injected pass failure")
+
+    identities = []
+    with monkeypatch.context() as patch:
+        patch.setattr(role_owner_tree_deletion, "delete_center", failing)
+        receipt = delete_account(two_users, founder_sub=A, cancel_billing=lambda _: "none",
+                                 delete_identity=lambda p: identities.append(p) or "deleted")
+    assert calls == [(HOME_A, A)]
+    assert {"owner_tree", "root_rows", "identity"} <= set(receipt["unfinished_phases"])
+    # Only this principal's own sign-in can resume pass one, so it survives.
+    assert identities == [] and receipt["identity"] == "deferred:owner_tree"
+    assert receipt["home_deletion_pending"] is False  # the stub wrote no intent
+    assert not receipt["home_removed"] and receipt["home_staged_path"] == ""
+    assert (two_users / HOME_A).is_dir() and not (two_users / ".deleting").exists()
+    assert get_founder_home(two_users, A) == HOME_A
+
+    def two_pass(root, center, *, principal):
+        calls.append((center, principal))
+        account_deletion._rmtree(Path(root) / center)  # stands in for both passes
+        return {"center": center, "fence": "released"}
+
+    with monkeypatch.context() as patch:
+        patch.setattr(role_owner_tree_deletion, "delete_center", two_pass)
+        retry = delete_account(two_users, founder_sub=A, cancel_billing=lambda _: "none",
+                               delete_identity=lambda _: "deleted")
+    assert calls[-1] == (HOME_A, A)
+    assert retry["home_removed"] and not retry["unfinished_phases"]
+    assert not (two_users / HOME_A).exists() and not get_founder_home(two_users, A)
+    assert (two_users / HOME_B / "soul.md").exists()
+
+
+def test_legacy_layout_skips_the_two_pass_route(two_users):
+    from tinyassets.role_owner_tree_deletion import INTENT_DIR
+
+    receipt = delete_account(two_users, founder_sub=A, cancel_billing=lambda _: "none",
+                             delete_identity=lambda _: "deleted")
+    assert receipt["home_removed"] and not receipt["unfinished_phases"]
+    assert not (two_users / INTENT_DIR).exists()
