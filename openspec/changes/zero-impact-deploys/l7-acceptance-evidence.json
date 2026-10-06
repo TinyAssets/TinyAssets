@@ -1,0 +1,38 @@
+{
+  "continuity": "RED",
+  "edge_mapping": "fixture 520 on upstream failure",
+  "http": [
+    {
+      "status": 202,
+      "body": "{\"ingress_id\": \"1107e3a1-3647-4068-a00b-ceb402a7dee2\", \"client_send_id\": \"cc2e9e60-89dd-43a8-9bea-f87c333b21e4\"}",
+      "request": "{\"client_send_id\":\"cc2e9e60-89dd-43a8-9bea-f87c333b21e4\",\"message\":\"send during cutover\"}"
+    }
+  ],
+  "turn": {
+    "error": "RemoteProtocolError"
+  },
+  "terminal": false,
+  "effect_count": 1,
+  "draft": "private unsent draft",
+  "source_digests": {
+    "deploy/wait_for_turns.sh": "c881f13aa3f0f5b6d70e7f555947e68ea8d9f313c339cb2cb72b786f677be23a",
+    "deploy/compose.yml": "96e6c1da4e48f3fb37b910f15594acdf1150150c8f296207b87905b58d852ed5",
+    "tinyassets/universe_server.py": "671d1aec6a1797fa3d5996bb4195673789ad860c9c05c0899ab0d60df27a6654",
+    "tests/fixtures/deploy_traffic_process.py": "dfad4337b07095030b6d020474d587711fe36e6d0e152f2ff96043f4cbddebfb"
+  },
+  "acceptance_import": "GREEN",
+  "execution": "transactional fixture sink",
+  "long_turn": "RED",
+  "replay": [
+    {
+      "admission_id": "10651f9ad9c04b9f8aab7cd022641fd3",
+      "effects": 1,
+      "admissions": 1
+    },
+    {
+      "admission_id": "10651f9ad9c04b9f8aab7cd022641fd3",
+      "effects": 1,
+      "admissions": 1
+    }
+  ]
+}

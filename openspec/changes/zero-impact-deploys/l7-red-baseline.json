@@ -1,0 +1,23 @@
+{
+  "continuity": "RED",
+  "edge_mapping": "fixture 520 on upstream failure",
+  "http": [
+    {
+      "status": 520,
+      "body": "ConnectionRefusedError",
+      "request": "{\"client_send_id\":\"cutover-send\",\"message\":\"send during cutover\"}"
+    }
+  ],
+  "turn": {
+    "error": "RemoteProtocolError"
+  },
+  "terminal": false,
+  "effect_count": 1,
+  "draft": "private unsent draft",
+  "source_digests": {
+    "deploy/wait_for_turns.sh": "c881f13aa3f0f5b6d70e7f555947e68ea8d9f313c339cb2cb72b786f677be23a",
+    "deploy/compose.yml": "96e6c1da4e48f3fb37b910f15594acdf1150150c8f296207b87905b58d852ed5",
+    "tinyassets/universe_server.py": "671d1aec6a1797fa3d5996bb4195673789ad860c9c05c0899ab0d60df27a6654",
+    "tests/fixtures/deploy_traffic_process.py": "dfad4337b07095030b6d020474d587711fe36e6d0e152f2ff96043f4cbddebfb"
+  }
+}

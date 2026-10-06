@@ -49,6 +49,17 @@ are a drift detector; the behavioral tests remain necessary authority evidence.
 This registration does not implement account activation or automatic reset
 wakes/resumption of paused activities.
 
+## 2026-10-05 L7 ingress HTTP-body registration
+
+`tinyassets/ingress.py::AppIngressMiddleware.__call__ -> request.stream` and
+its plugin copy each have one call. These read a bounded Starlette HTTP body,
+not a compiled graph stream. The adapter remains inside AuthContextMiddleware;
+acceptance and receipt access hold current principal/home/admin authority, and
+acceptance grants no execution authority. No execution root, scanner rule or
+mutation assertion changes. Registering these exact name collisions keeps the
+real graph-stream boundary detectable, including added calls in either copy.
+The ingress review and traffic proof live in the zero-impact-deploys L7 artifacts.
+
 ## Execution and issuance roots
 
 | Family | Current root / boundary | Authority state and required successor behavior |

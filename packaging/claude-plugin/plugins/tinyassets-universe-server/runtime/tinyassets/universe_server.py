@@ -4625,7 +4625,7 @@ class _MCPDiscoveryMiddleware:
 PLATFORM_NOT_CLOUD_EXIT_CODE = 78
 
 
-def create_streamable_http_app() -> Starlette:
+def create_streamable_http_app(*, ingress=None) -> Starlette:
     """Create the production HTTP app for canonical `/mcp`."""
     canonical_app = mcp.http_app(path="/mcp", transport="streamable-http")
 
@@ -4838,8 +4838,9 @@ def create_streamable_http_app() -> Starlette:
     # Substrate-fix #11 / Family A Phase 1.A: serve discovery HTML to
     # browser-style GETs on /mcp; pass MCP transport requests through unchanged.
     from tinyassets.auth.middleware import AuthContextMiddleware
+    from tinyassets.ingress import AppIngressMiddleware
 
-    app = AuthContextMiddleware(_MCPDiscoveryMiddleware(app))
+    app = AuthContextMiddleware(AppIngressMiddleware(_MCPDiscoveryMiddleware(app), ingress))
     # Origin-ingress backstop (enforcement site D) -- OUTERMOST, so an
     # unadmitted origin refuses before auth, discovery, the MCP transport and
     # every route handler. Cached-only: it reads the non-mutating peek, so no

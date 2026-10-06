@@ -350,6 +350,30 @@ def test_ensure_founder_home_births_complete_seed(data_dir):
     assert (data_dir / uid / "soul.md").is_file()
 
 
+def test_fresh_account_has_no_seeded_personal_or_other_founder_facts(data_dir):
+    from tinyassets import memory_items
+    from tinyassets.api.first_contact import ensure_founder_home
+    from tinyassets.onboarding_note import agent_identity
+
+    _login("existing-owner")
+    existing = ensure_founder_home(data_dir, "existing-owner")
+    assert existing
+    for name in ("soul.md", "identity.md", "founder.md", "MEMORY.md"):
+        (data_dir / existing / name).write_text("- private-founder-sentinel-417\n")
+    _login("fresh-owner")
+    fresh = ensure_founder_home(data_dir, "fresh-owner")
+    assert fresh and fresh != existing
+    root = data_dir / fresh
+    assert memory_items.list_items(root) == []
+    assert not (root / "MEMORY.md").exists() or not (root / "MEMORY.md").read_text().strip()
+    for name in ("soul.md", "identity.md", "founder.md"):
+        text = (root / name).read_text()
+        assert "private-founder-sentinel-417" not in text
+        assert "Jonathan" not in text
+        assert "existing-owner" not in text
+    assert agent_identity(root)[0] == ""
+
+
 def test_auto_birth_is_idempotent(data_dir):
     from tinyassets.api.first_contact import ensure_founder_home
     from tinyassets.daemon_server import get_founder_home
