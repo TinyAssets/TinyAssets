@@ -1,3 +1,24 @@
+### D86. Shared provider execution entry, text-only first
+
+Selected broker execution is dispatched at aspawn_owned, before constructing a
+daemon-UID subprocess. The provider-exec class uses the same exact sealed snapshot
+admission as discovery, dedicated owner identity and strict cell-deny. It adds a
+separate daemon-authenticated stderr socketpair, pinned egress socket and an
+in-cell loopback forwarder; there is no direct network interface. Ordinary host
+paths, engine routes, caller mounts, shell mode and nested-sandbox policy are
+refused in this first execution view, including every non-None cwd. Only snapshot
+paths are relocated; persistent cwd/argv paths cannot silently become throwaway
+state. The payload's default directory is explicitly private /tmp/workspace.
+No provider name decides admission.
+
+The external mapper bounds process-tree RSS/count and lifetime; fixed CPU, fd,
+process, file/core and private tmpfs bounds remain. Raw stdout/stdin and separate
+stderr retain adapter error classification, cancellation and communicate/wait
+semantics. No unconfined fallback is permitted when selected. Engine-MCP,
+persistent workspace/session views and their consumer proofs remain follow-ups;
+existing broker-owned auth refresh remains authoritative and is not moved into
+an untrusted payload. Startup remains OFF.
+
 ### D85. Authenticated owner-delete admission and two-pass fence
 
 The fixed owner-delete class accepts only the admitted principal, center and

@@ -340,7 +340,7 @@ class OwnerLauncher:
             fields.add('workspace')
         if kind == 'tool-jail':
             fields.update(('egress', 'ta'))
-        if kind == 'provider-discovery':
+        if kind in ('provider-discovery', 'provider-exec'):
             fields.add('egress')
         if kind == 'package':
             fields.update(('revision', 'ta'))
@@ -349,15 +349,16 @@ class OwnerLauncher:
         socket_count = (sum(request.get(key) is True for key in ('egress', 'ta'))
                         if kind == 'tool-jail' else int(request.get('ta') is True)
                         if kind == 'package' else int(request.get('egress') is True)
-                        if kind == 'provider-discovery' else 0)
+                        if kind in ('provider-discovery', 'provider-exec') else 0)
         mounted = kind in {'workspace-git', 'preview-write', 'tool-jail', 'tool-files',
-                           'provider-discovery', 'package', 'owner-delete'} or (
+                           'provider-discovery', 'provider-exec', 'package', 'owner-delete'} or (
             kind == 'node-sandbox' and request.get('workspace') is True)
         if (not isinstance(request, dict)
                 or set(request) != fields or request['op'] not in {'SPAWN', 'START'}
                 or kind not in {'image-decoder', 'workspace-git', 'ui-preview', 'preview-write',
                                 'node-sandbox', 'tool-jail', 'ingestion-video',
-                                'provider-discovery', 'tool-files', 'package', 'owner-delete'}
+                                'provider-discovery', 'provider-exec', 'tool-files',
+                                'package', 'owner-delete'}
                 or (kind == 'owner-delete' and (not streaming
                     or type(request['delete_token']) is not str
                     or not re.fullmatch('[a-f0-9]{32}', request['delete_token'])))
@@ -365,7 +366,7 @@ class OwnerLauncher:
                     or type(request['revision']) is not str
                     or not re.fullmatch('[a-f0-9]{64}', request['revision'])))
                 or (kind == 'node-sandbox' and type(request['workspace']) is not bool)
-                or (kind == 'provider-discovery' and (
+                or (kind in ('provider-discovery', 'provider-exec') and (
                     not streaming or type(request['egress']) is not bool))
                 or (kind == 'tool-jail' and any(
                     type(request[key]) is not bool for key in ('egress', 'ta')))
@@ -376,7 +377,7 @@ class OwnerLauncher:
                 or not isinstance(request['principal'], str)
                 or not isinstance(request['command_center'], str)
                 or len(received) != (2 if mounted else 1)
-                    + int(streaming) + socket_count):
+                    + int(streaming) + socket_count + int(kind == 'provider-exec')):
             raise ValueError('unsupported owner engine')
         if not streaming and self.jobs:
             raise ValueError('blocking spawn cannot suspend active cell supervision')
@@ -388,6 +389,8 @@ class OwnerLauncher:
                     job[1] == machine for job in self.jobs.values()) >= MAX_OWNER_CELLS):
                 raise ValueError('owner cell concurrency is exhausted')
             self._daemon_endpoint(received[-1], socket.SOCK_SEQPACKET)
+        if kind == 'provider-exec':
+            self._daemon_endpoint(received[-2], socket.SOCK_STREAM)
         if kind == 'preview-write':
             ui_id = request['ui_id']
             if (not isinstance(ui_id, str) or not 1 <= len(ui_id) <= 64
@@ -427,7 +430,7 @@ class OwnerLauncher:
                         or not re.fullmatch(pattern, source[len(prefix):])):
                     raise ValueError('tool relay does not match admitted center')
                 index += 1
-        if kind == 'provider-discovery':
+        if kind in ('provider-discovery', 'provider-exec'):
             # D82: exactly one daemon-sealed launch snapshot of this admitted
             # center; the caller names no path, identity or executable.
             info = os.fstat(received[1])
@@ -478,8 +481,14 @@ class OwnerLauncher:
             raise
         if pid == 0:
             try:
+                stderr_copy = None
+                if kind == 'provider-exec':
+                    import fcntl
+
+                    stderr_copy = fcntl.fcntl(received[-2], fcntl.F_DUPFD_CLOEXEC, 20)
                 retained = (3,) if mounted else ()
-                if kind in ('tool-jail', 'provider-discovery', 'package') and socket_count:
+                if kind in ('tool-jail', 'provider-discovery', 'provider-exec',
+                             'package') and socket_count:
                     import fcntl
 
                     # Copy before assigning fixed slots, so a destination
@@ -497,8 +506,9 @@ class OwnerLauncher:
                             index += 1
                 os.dup2(fd, 0)
                 os.dup2(fd, 1)
-                null = os.open('/dev/null', os.O_WRONLY)
-                os.dup2(null, 2)
+                error = (os.open('/dev/null', os.O_WRONLY) if stderr_copy is None
+                         else stderr_copy)
+                os.dup2(error, 2)
                 if mounted and not socket_count:
                     os.dup2(received[1], 3)
                 self.launch['close_descriptors'](retained)
@@ -513,8 +523,10 @@ class OwnerLauncher:
                     command = ['/usr/local/libexec/ta-decoder.py', 'enter-package',
                                request['revision'] + ('t' if request['ta'] else '-'),
                                self.data_root, str(inner)]
-                elif kind == 'provider-discovery':
-                    command = ['/usr/local/libexec/ta-decoder.py', 'enter-provider',
+                elif kind in ('provider-discovery', 'provider-exec'):
+                    mode = 'enter-provider-exec' if kind == 'provider-exec' else 'enter-provider'
+                    command = ['/usr/local/libexec/ta-decoder.py',
+                               mode,
                                'e' if request['egress'] else '-', self.data_root, str(inner)]
                 elif kind == 'ingestion-video':
                     command = ['/usr/local/libexec/ta-decoder.py', 'enter-video',
@@ -550,12 +562,12 @@ class OwnerLauncher:
                 os._exit(126)
         deadline = time.monotonic() + (155 if kind == 'ingestion-video' else
                                      1810 if kind == 'node-sandbox' else
-                                     660 if kind in ('tool-jail', 'package') else
+                                     660 if kind in ('tool-jail', 'package', 'provider-exec') else
                                      75 if kind == 'ui-preview' else
                                      65 if kind == 'workspace-git' else 35)
         if streaming:
             self.jobs[pid] = (inner, machine, deadline, status_channel)
-            if kind == 'package':
+            if kind in ('package', 'provider-exec'):
                 self.package_jobs.add(pid)
             try:
                 self.channel.sendall(json.dumps(

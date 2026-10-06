@@ -43,17 +43,17 @@ def cell_config(argv, env, view_env, snapshot, data_root):
     return document + b'\n'
 
 
-def check_proof(cell, identity, source):
+def check_proof(cell, identity, source, *, sockets=None):
     inner = identity.uid - 300000
     if (type(cell) is not dict or cell.get('uid') != inner or cell.get('gid') != inner
             or cell.get('fds') != [0, 1, 2] or cell.get('groups') != []
             or cell.get('caps') != 'zero' or cell.get('nnp') != 1
             or cell.get('profile') != 'cell-deny' or cell.get('nested_userns') is not False
-            or cell.get('source') != source or cell.get('sockets') != {}):
+            or cell.get('source') != source or cell.get('sockets') != (sockets or {})):
         raise RuntimeError('provider discovery cell proof is absent')
 
 
-async def aspawn_cell(argv, *, env, view, universe_dir, snapshot_dir, limit):
+async def aspawn_cell(argv, *, env, view, universe_dir, snapshot_dir, limit, execution=False):
     from tinyassets import role_decoder
     from tinyassets.auth.middleware import current_identity
     from tinyassets.broker.owner_identities import owner_identity
@@ -77,6 +77,8 @@ async def aspawn_cell(argv, *, env, view, universe_dir, snapshot_dir, limit):
         raise PermissionError('provider discovery requires its exact launch snapshot')
     identity = owner_identity(root, principal=principal)
     descriptor = open_dir_nofollow(snapshot)
+    relay_fd = None
+    sockets = {}
     try:
         info = os.fstat(descriptor)
         if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid()
@@ -84,30 +86,61 @@ async def aspawn_cell(argv, *, env, view, universe_dir, snapshot_dir, limit):
             raise PermissionError('provider snapshot is not the sealed daemon inode')
         source = [info.st_dev, info.st_ino]
         config = cell_config(argv, env, view.setenv, snapshot, root)
+        if execution:
+            from tinyassets import role_relays, universe_egress
+
+            relay = universe_egress.ensure_proxy(center)
+            if relay is None:
+                raise PermissionError('provider execution requires pinned egress')
+            relay_fd = role_relays.pin_for_owner(relay, center, identity.uid, kind='egress')
+            relay_info = os.fstat(relay_fd)
+            sockets['e'] = [relay_info.st_dev, relay_info.st_ino]
         # START only waits for the mapper's admission acknowledgement, never
         # payload execution. Keep descriptor ownership synchronous so caller
         # cancellation cannot close a descriptor while a launch thread uses it.
-        cell = client.start_cell(kind='provider-discovery', principal=principal,
-            command_center=center.name, identity=identity, extra={'egress': False},
-            directory_fd=descriptor)
+        cell = client.start_cell(kind='provider-exec' if execution else 'provider-discovery',
+            principal=principal, command_center=center.name, identity=identity,
+            extra={'egress': execution}, directory_fd=descriptor,
+            socket_fds=() if relay_fd is None else (relay_fd,))
     finally:
         os.close(descriptor)
+        if relay_fd is not None:
+            os.close(relay_fd)
+    writer = error_writer = None
+    data_socket = error_socket = None
     try:
         cell.stream.setblocking(False)
-        reader, writer = await asyncio.open_connection(sock=cell.stream, limit=limit)
-        proc = OwnerCellProcess(cell, reader, writer)
+        data_socket = cell.stream.dup() if execution else cell.stream
+        reader, writer = await asyncio.open_connection(sock=data_socket, limit=limit)
+        if execution:
+            from tinyassets.role_provider_execution import ExecutionProcess
+
+            cell.stderr.setblocking(False)
+            error_socket = cell.stderr.dup()
+            error_reader, error_writer = await asyncio.open_connection(sock=error_socket, limit=limit)
+            proc = ExecutionProcess(cell, reader, writer, error_reader, error_writer)
+        else:
+            proc = OwnerCellProcess(cell, reader, writer)
     except BaseException:
+        for opened in (writer, error_writer):
+            if opened is not None:
+                opened.close()
+        for opened in (data_socket, error_socket):
+            if opened is not None:
+                opened.close()
         cell.close()
         raise
     try:
         header = await reader.readline()
         if not header.endswith(b'\n') or len(header) > MAX_PROOF_BYTES:
             raise RuntimeError('provider discovery cell ended before its proof')
-        check_proof(json.loads(header).get('cell'), identity, source)
+        check_proof(json.loads(header).get('cell'), identity, source, sockets=sockets)
         writer.write(config)
         await writer.drain()
     except BaseException:
         writer.close()
+        if error_writer is not None:
+            error_writer.close()
         proc.revoke()
         await proc.wait()
         raise

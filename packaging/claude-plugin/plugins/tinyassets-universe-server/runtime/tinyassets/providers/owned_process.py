@@ -639,7 +639,16 @@ async def aspawn_owned(
     not end. Windows spawns exactly as before and registers the bounded
     tree-walk teardown.
     """
+    from tinyassets import role_decoder
+    from tinyassets.broker.supervisor import broker_selected
     from tinyassets.providers.provider_jail import ProviderConfinementError, confine_launch
+
+    if role_decoder._bounded_client is not None or broker_selected():
+        from tinyassets.providers.provider_jail import _SCOPE
+        from tinyassets.role_provider_execution import spawn
+
+        return await spawn(list(cmd), scope=_SCOPE.get(), shell=shell, view=universe_view,
+                           nested_sandbox=nested_sandbox, options=kwargs)
 
     argv = _shell_argv(cmd) if shell else list(cmd)
     jailed = confine_launch(

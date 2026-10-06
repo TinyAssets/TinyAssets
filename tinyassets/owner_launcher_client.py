@@ -33,8 +33,9 @@ if hasattr(os, 'register_at_fork'):
 class OwnerCell:
     """One mapper-owned process lifetime; caller owns its bidirectional stream."""
 
-    def __init__(self, client, stream, status, identity):
+    def __init__(self, client, stream, status, identity, *, stderr=None):
         self.stream, self._status = stream, status
+        self.stderr = stderr
         self._client, self._identity = client, identity
         self._pid = os.getpid()
         self._result = None
@@ -43,6 +44,8 @@ class OwnerCell:
 
     def _after_fork(self):
         self.stream.close()
+        if self.stderr is not None:
+            self.stderr.close()
         self._status.close()
         self._closed = True
 
@@ -81,6 +84,8 @@ class OwnerCell:
                 self.cancel()
             finally:
                 self.stream.close()
+                if self.stderr is not None:
+                    self.stderr.close()
                 self._status.close()
                 self._closed = True
                 _live_cells.discard(self)
@@ -194,11 +199,13 @@ class OwnerLauncherClient:
         if set(document) - {'mime', 'ui_id', 'workspace', 'egress', 'ta',
                             'revision', 'delete_token'}:
             raise ValueError('unsupported cell parameters')
-        if socket_fds and (kind not in ('tool-jail', 'package') or len(socket_fds) > 2):
+        if socket_fds and (kind not in ('tool-jail', 'package', 'provider-exec')
+                           or len(socket_fds) > 2):
             raise ValueError('unsupported cell sockets')
         document.update(op='START', kind=kind, principal=principal, command_center=command_center)
         data, child = socket.socketpair()
         status, child_status = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
+        stderr, child_stderr = socket.socketpair() if kind == 'provider-exec' else (None, None)
         status.setsockopt(socket.SOL_SOCKET, socket.SO_PASSCRED, 1)
         try:
             with self._lock:
@@ -208,6 +215,8 @@ class OwnerLauncherClient:
                 if directory_fd is not None:
                     handles.append(directory_fd)
                 handles.extend(socket_fds)
+                if child_stderr is not None:
+                    handles.append(child_stderr.fileno())
                 handles.append(child_status.fileno())
                 try:
                     self._channel.sendmsg([json.dumps(document).encode()], [(
@@ -222,7 +231,7 @@ class OwnerLauncherClient:
                         raise RuntimeError('invalid owner launcher start receipt')
                     if reply['uid'] != identity.uid:
                         actual = OwnerIdentity(reply['uid'], reply['gid'])
-                        with OwnerCell(self, data, status, actual) as refused:
+                        with OwnerCell(self, data, status, actual, stderr=stderr) as refused:
                             refused.cancel()  # Reap before returning a reusable refusal.
                         raise OwnerLaunchRefused('owner launcher refused cell identity')
                 except OwnerLaunchRefused:
@@ -230,14 +239,18 @@ class OwnerLauncherClient:
                 except BaseException:
                     self._close()
                     raise
-            return OwnerCell(self, data, status, identity)
+            return OwnerCell(self, data, status, identity, stderr=stderr)
         except BaseException:
             data.close()
             status.close()
+            if stderr is not None:
+                stderr.close()
             raise
         finally:
             child.close()
             child_status.close()
+            if child_stderr is not None:
+                child_stderr.close()
 
     def preview(self, spec, wall_seconds, *, principal, command_center, identity):
         from tinyassets.ui_preview import MAX_CHILD_OUTPUT

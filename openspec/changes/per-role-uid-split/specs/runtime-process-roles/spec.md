@@ -4,6 +4,23 @@
 
 ## ADDED Requirements
 
+### Requirement: Shared provider execution uses an authenticated owner cell
+When broker mode is selected, the shared provider spawn entry SHALL use a bounded
+provider-exec cell or refuse; it SHALL NOT launch a daemon-UID provider fallback.
+The cell SHALL pin its own sealed snapshot and egress relay, isolate namespaces,
+apply external resource supervision and preserve separate stderr and raw stdio.
+Admission SHALL NOT branch on provider identity. Unsupported engine/workspace
+views SHALL refuse until their dedicated integration is proven.
+
+#### Scenario: A text-only provider launches with its admitted snapshot
+- **WHEN** the authenticated principal starts through the shared spawn entry
+- **THEN** the mapper selects its dedicated UID/GID and exact immutable snapshot
+- **AND** only the pinned checked egress relay is reachable from private networking
+
+#### Scenario: Unsupported execution view is requested in broker mode
+- **WHEN** a launch requests an engine route, custom mounts or unadmitted host path
+- **THEN** the shared entry refuses without a daemon subprocess fallback
+
 ### Requirement: Authenticated owner deletion retains a two-pass admission fence
 The launcher SHALL admit only the fixed owner-delete class under the authenticated
 principal's dedicated identity and exact pinned center. It SHALL require owner

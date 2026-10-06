@@ -58,7 +58,7 @@ def tool_mounts(uid):
 
 def enter(mime, data_root, uid=1003, *, preview=False, preview_write=False, node=False,
           tool=False, video=False, provider=False, tool_files=False, package=False,
-          owner_delete=False):
+          owner_delete=False, provider_exec=False):
     identity(uid)
     host = namespaces()
     mounted = (preview_write or tool or provider or tool_files or package or owner_delete
@@ -126,6 +126,7 @@ def enter(mime, data_root, uid=1003, *, preview=False, preview_write=False, node
         argv.extend(['--ro-bind-fd', '3', '/snapshot'])
         if 'e' in mime:
             argv.extend(['--bind-fd', '4', '/provider-egress.sock'])
+            argv.extend(['--ro-bind', '/etc/ssl/certs', '/etc/ssl/certs'])
     elif tool:
         argv.extend(tool_mounts(uid))
         for key, fd, destination in (('e', 4, '/tool-egress.sock'), ('t', 5, '/tool-ta.sock')):
@@ -134,13 +135,14 @@ def enter(mime, data_root, uid=1003, *, preview=False, preview_write=False, node
     elif mounted:
         argv.extend(['--bind-fd', '3', '/workspace'])
     argv.extend(["--proc", "/proc", "--dev", "/dev"])
-    if package:
+    if package or provider_exec:
         argv.extend(['--size', str(256 * 1024 * 1024)])
     argv.extend(["--tmpfs", "/tmp",
                  "--chdir", "/tmp", "--seccomp", str(descriptor), "--",
                  "/opt/venv/bin/python", "-I", "-B", "/usr/local/libexec/ta-decoder.py",
                  'inside-owner-delete' if owner_delete else
                  'inside-package' if package else 'inside-tool-files' if tool_files else
+                 'inside-provider-exec' if provider_exec else
                  'inside-provider' if provider else 'inside-video' if video else
                  'inside-tool' if tool else 'inside-node' if node else
                  'inside-preview-write' if preview_write else
@@ -306,10 +308,11 @@ def decode(mime, host, data_root, uid=1003):
 
 
 if __name__ == "__main__":
-    if (len(sys.argv) == 5 and sys.argv[1] == 'enter-provider'
+    if (len(sys.argv) == 5 and sys.argv[1] in ('enter-provider', 'enter-provider-exec')
             and sys.argv[2] in ('-', 'e') and 0 < int(sys.argv[4]) < 100000):
-        enter(sys.argv[2], sys.argv[3], int(sys.argv[4]), provider=True)
-    elif (len(sys.argv) == 6 and sys.argv[1] == 'inside-provider'
+        enter(sys.argv[2], sys.argv[3], int(sys.argv[4]), provider=True,
+              provider_exec=sys.argv[1] == 'enter-provider-exec')
+    elif (len(sys.argv) == 6 and sys.argv[1] in ('inside-provider', 'inside-provider-exec')
             and sys.argv[2] in ('-', 'e') and 0 < int(sys.argv[5]) < 100000):
         host = json.loads(sys.argv[3])
         source = host.pop('source')
@@ -332,7 +335,8 @@ if __name__ == "__main__":
         sys.path.insert(0, '/app')
         from tinyassets.role_provider_cell import cell_main
 
-        raise SystemExit(cell_main(sys.argv[4]))
+        raise SystemExit(cell_main(sys.argv[4], execution=sys.argv[1] == 'inside-provider-exec',
+                                   egress='e' in sockets))
     elif (len(sys.argv) == 5 and sys.argv[1] == 'enter-video'
             and sys.argv[2] == 'video' and 0 < int(sys.argv[4]) < 100000):
         enter('video', sys.argv[3], int(sys.argv[4]), video=True)

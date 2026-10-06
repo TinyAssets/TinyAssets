@@ -53,13 +53,14 @@ def read_config(fd=0):
             raise ValueError('provider config exceeds its bound')
 
 
-def validate(raw, data_root):
+def validate(raw, data_root, *, execution=False):
     config = json.loads(raw)
     if type(config) is not dict or set(config) != {'argv', 'env'}:
         raise ValueError('invalid provider config')
     argv, env = config['argv'], config['env']
     if (type(argv) is not list or not 1 <= len(argv) <= MAX_ARGS
-            or any(type(item) is not str or not 0 < len(item) <= 4096 or '\0' in item
+            or any(type(item) is not str or not 0 < len(item) <= (
+                MAX_CONFIG_BYTES if execution else 4096) or '\0' in item
                    for item in argv)
             or type(env) is not dict or len(env) > MAX_ENV
             or any(type(key) is not str or not re.fullmatch(r'[A-Z_][A-Z0-9_]{0,127}', key)
@@ -112,14 +113,14 @@ def copy_snapshot(source, destination):
     copy(source, destination, 0)
 
 
-def cell_main(data_root):
+def cell_main(data_root, *, execution=False, egress=False):
     # No RLIMIT_AS: Node/V8 reserves large virtual ranges. The mapper's fixed
     # 35s class deadline is the wall-clock bound.
-    for limit, cap in ((resource.RLIMIT_CORE, 0), (resource.RLIMIT_CPU, 30),
+    for limit, cap in ((resource.RLIMIT_CORE, 0), (resource.RLIMIT_CPU, 600 if execution else 30),
                        (resource.RLIMIT_NOFILE, 256), (resource.RLIMIT_NPROC, 64),
                        (resource.RLIMIT_FSIZE, 64 * 1024 * 1024)):
         resource.setrlimit(limit, (cap, cap))
-    argv, env = validate(read_config(), data_root)
+    argv, env = validate(read_config(), data_root, execution=execution)
     private = '/tmp/provider-auth'
     copy_snapshot(SNAPSHOT, private)
     def relocate(value):
@@ -127,5 +128,13 @@ def cell_main(data_root):
             value == SNAPSHOT or value.startswith(SNAPSHOT + '/')) else value
     argv = [relocate(value) for value in argv]
     env = {key: relocate(value) for key, value in env.items()}
-    os.chdir(private)
+    if execution:
+        os.mkdir('/tmp/workspace', 0o700)
+    os.chdir('/tmp/workspace' if execution else private)
+    if egress:
+        from tinyassets.universe_egress import FORWARDER, PROXY_ENV
+
+        env.update(PROXY_ENV)
+        argv = ['/opt/venv/bin/python', '-I', '-S', '-c', FORWARDER,
+                '3128=/provider-egress.sock', '--', *argv]
     os.execve(argv[0], argv, env)
