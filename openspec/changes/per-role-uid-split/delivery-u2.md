@@ -1,5 +1,54 @@
 # U2 migration lane
 
+## STOP receipt: founder new-privilege rule (2026-10-06)
+
+### D208. Stop on unintended sidecar permission widening
+
+Claude's D206 review completed (exit 0), verdict **ADAPT**. **AGREE**: the new,
+uncommitted metadata phase assigns directory mode 2710 to regular files under
+`.universe-sidecars`, introducing setgid/execute bits; reverse then retains an
+execute bit. Treat this as the founder's new-privilege stop condition, although
+the library is uninstalled, startup remains OFF, and no production data was
+touched. Do not patch or activate while stopped. Concern:
+`docs/concerns/2026-10-06-u2-metadata-sidecar-mode.md`.
+
+**AGREE** with the second correctness finding: changed stable configurations
+(new centers or immediate work entries) currently refuse forever in both owner
+and metadata phases. Restart generation support is incomplete. No journal
+deletion or fail-open workaround is authorized by this handoff.
+
+Verified and pushed slice: `36af744ac0` (inventory, broker main reconciliation,
+protected-consent oracle). Then merged U1 D76/D77 at `af2bb19713` and latest
+origin/main at `6b7a1d8a35`. D202 continuous-lock changes, D206 metadata/owner
+changes and their tests remain uncommitted in this worktree. The full coordinator
+`deploy/role_volume_migration.py` and later classification additions are unfinished
+and untested: no full-migration receipt. Preserve them for inspection, not deploy.
+
+### D207. Classification draft (unfinished)
+
+The draft classifier uses the existing provider hidden-root mask boundary:
+visible immediate work names, except broker `provider_definitions.json`, are
+owner work; hidden canonical-root platform state remains protected. Hidden
+entries beneath a work tree stay work. This draft has not completed validation.
+The coordinator still lacks preview precreation, complete preflight accounting,
+stable-generation handling and installed-image/crash proof. Its dry-run is not
+yet a complete volume acceptance check. Broker allocation code is untested.
+
+Per requested item: (1) verified owner/quarantine and inventory substeps only;
+full migration incomplete. (2) two-pass deletion unimplemented; U1 owner-delete
+class admission also pending. (3) actual old production CMD boot unimplemented.
+(4) startup/healthcheck integration unimplemented; activation stays OFF.
+
+Receipts from this run: Linux 91-pass inherited selection, 85-pass broker HTTP
+selection, 14-pass inventory selection, 54-pass owner/metadata/accounting selection,
+all zero skips; targeted Ruff passes on the tested slice. Plugin mirror rebuilt.
+Production-image oracle passed at the D205 image documented below, before the
+latest base merges and uncommitted D206/coordinator changes. These are bounded
+receipts, not acceptance of the current full worktree. D203-D205 Claude APPROVE;
+D202 Claude APPROVE; D206 Claude ADAPT with the stop above. Drafts #4509 (U1 base)
+and #4510 (main) remain not merge-ready. No deployed-SHA assertion or live app
+pass is claimed.
+
 ## Resume receipt (2026-10-06)
 
 Clean worktree resumed at 33ab2b4696; merged the latest U1 base at
@@ -126,6 +175,27 @@ permanent reservations after forward/reverse owner migration. Claude's D203-D205
 cross-family review: **APPROVE**, no floor/correctness finding. AGREE with its
 wording observation: the single-admin fallback applies to every non-home tree.
 Multiple-admin trees refuse; switching authority models is outside this slice.
+
+### D206. Protected metadata journal and restart generations
+
+Use a separate root-private metadata journal under the same continuously held
+layout lock. Validate all protected/shared entries before mutation, remove only
+the obsolete broker owner-file name and recognized stale relay sockets without
+following them, retain broker-private reservations in both directions, and
+apply D4/D73 vault, liveness, relay and dedicated snapshot permissions. Work
+subtrees remain the owner/quarantine phase's responsibility. Reverse restores
+daemon-only metadata access; sealed snapshots never become engine-writable.
+An interrupted direction must finish before reversal. Dry-run preserves metadata;
+completed repeat avoids chmod, xattr and journal writes. This new library is not
+installed or activated yet; full classification/orchestration remains pending.
+
+Owner restart inventory also notices execute-bit changes on existing files and
+marks a new journal generation migrating even when the prior phase was stable.
+Linux owner/metadata/accounting selection: **54 passed, zero skips**. It covers
+all six metadata crash boundaries in both directions, cleanup sentinels,
+protected-link refusal and real owner/foreign-owner snapshot access. Ruff passes.
+Latest U1 cell lifetime/application adoption and origin/main were merged without
+conflicts after the D203-D205 push. Activation remains OFF.
 
 Branch: `feat/per-role-uid-split-migration`, stacked on
 `feat/per-role-uid-split`; initial parent `b8f9c258bd9a8ae20a0b57614b39c9b9af57e760`.
