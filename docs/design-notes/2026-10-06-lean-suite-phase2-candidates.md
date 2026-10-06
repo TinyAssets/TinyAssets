@@ -410,3 +410,139 @@ Counts are definitions, not parametrized cases. Zero means KEEP the entire file.
 - Draft PR **#4533**. Claude review via `.agents/skills/peer-agents/SKILL.md`: **VERDICT: APPROVE**, exit 0. No floor/correctness findings. AGREE: preserve the #4530 dependency and serialize landing. The reviewer independently confirmed all 75 counts, unchanged surviving ASTs, retained authority/gate tests and the 14 mutation groups. It read the Linux mutation results and did not independently replay them. Minor unused helper/blank-line cleanup is left out of this deletion-only slice; its note-encoding observation is corrected here.
 - `origin/main` at `fb22e770bd` was merged with no conflicts before the final push. Rebase onto the eventual #4530 merge remains conditional on that PR merging; current status and final head are recorded in the PR body.
 - Final hygiene against current main: **exit 1**, 6 added / 17 removed / 17 removal findings / 172 product lines added. The 172 product lines and 6 new tests are inherited from unmerged #4530, not batch-owned edits. Its merge-queue Tests run is still in progress at handoff. Rebase after it merges, then rerun main-relative hygiene; do not weaken that gate or relabel this as product retirement to bypass it.
+
+## Batch 2: app.html text assertions
+
+Founder-directed lean-suite change, based on `3fa149e659`. Test code only. No product file changes.
+
+**9 definitions deleted, 1,216 kept across the 73 files. 27 assert statements trimmed from 14 kept tests; 55 assert lines removed in all.** This is dozens, not the hundreds the census suggested, because the census counts every file mentioning app.html. It does not count only text pins. Most of the group executes code:
+
+- **862 of 1,225** definitions run the page's code. They use the node harness (`_run_app`, `run_js`, `_run`, `_run_rail`), a real Chromium (Playwright), or a server handler. These are the survivors, not candidates.
+- About **65** of the 363 non-executing definitions read app.html as text. The rest pin workflows, Python modules, packaging or other files, which are out of scope for this batch.
+- Most of those 65 are security or compliance pins and stay. That covers CSP and nonce-only script, custom-UI sandbox and bridge revocation, owner-door reads and the post-switch login fence. It also covers the credential no-transmission shape, the secret-clearing DOM, the Play-billing native guards, voice-dark store shells, the in-app privacy link and the agent-link accent rule.
+
+Discovery confirms the keeps. Ten candidate mutations targeted behaviour pinned only by kept text assertions. **Nine broke real behaviour while every executing test stayed green** (`kept_unguarded` in the removals JSON):
+
+- history no longer loads on boot
+- `include_conversation` turned off
+- restored turns unsorted
+- the history-failure notice dropped
+- a secret field rendered as `input`
+- paste-connect sent an empty secret
+- a token refresh nulled the session id instead of bumping its generation
+- the deposit endpoint lost its path
+- `AppUI.turnSettled()` was never called
+
+Deleting those pins would lose behaviour, so they stay until an executing test replaces them; none is cheap. Three first-round proposals also failed their proof and were kept: the `echoed:true` resend pin and two voice-teardown assertions.
+
+### Evidence
+
+`2026-10-06-lean-suite-batch2-removals.json` lists 31 groups. Each group is one app.html mutation, the removed tests or trimmed line ranges, and a survivor. `2026-10-06-lean-suite-batch2-probe.py` replays them in the Linux oracle and reuses the phase-2 subprocess/JUnit harness. It normalises CRLF, because a Windows checkout copies app.html with CRLF.
+
+- `BATCH2_PHASE=pre` runs on the unedited tree. The mutation must fail every removed test, and for a trim the failure must point inside the trimmed lines. A named survivor must fail too. There must be no error and no skip.
+- The default `post` phase runs on the final tree. There, the survivor alone must still fail.
+
+Of the 31 groups, **21 are covered-behaviour groups** (reason a), each with an executing survivor. Survivors include:
+
+- node harness tests: file upload transport, connection controls, stop/queue, live-turn recovery, rail/consent, voice adapter, held-message restore, resend, dont-ask-again
+- real-browser tests: `test_orphan_ready_browser`, `test_approval_sheet_real_browser`, `test_app_pending_requests_browser`, `test_app_send_resume_browser`
+
+**10 groups are retired copy or markup pins** (reason b). They have no survivor by design:
+
+- a source comment
+- absence pins for a removed banner, a full-page connect screen and a header button
+- one literal-count pin
+- a heading, help text and two button labels
+- one static `open` attribute that the renderer re-derives
+
+These are retired as requirements. The probe shows each pin did fail on its mutation. No claim is made that copy drift fails a surviving test.
+
+### Per-file disposition
+
+Counts are definitions, not parametrized cases, at snapshot `3fa149e659`. "Executing" is the classifier count of definitions that run code. Main has since added one definition to these files, so the merged tree keeps 1,217.
+
+| File | Executing | Deleted | Kept | Assert statements trimmed |
+|---|---:|---:|---:|---:|
+| `tests/test_account_deletion.py` | 39 | 0 | 47 | 0 |
+| `tests/test_affected_tests.py` | 0 | 0 | 23 | 0 |
+| `tests/test_agent_box_dev_workflow.py` | 2 | 0 | 7 | 0 |
+| `tests/test_android_app_identity.py` | 3 | 0 | 15 | 0 |
+| `tests/test_app_account_transition.py` | 12 | 0 | 12 | 0 |
+| `tests/test_app_addressed_agent.py` | 11 | 0 | 11 | 1 |
+| `tests/test_app_browser_notifications.py` | 9 | 0 | 10 | 0 |
+| `tests/test_app_chat_cloud.py` | 22 | 0 | 22 | 0 |
+| `tests/test_app_chat_cloud_browser.py` | 10 | 0 | 10 | 0 |
+| `tests/test_app_connect_disclosure.py` | 10 | 1 | 10 | 0 |
+| `tests/test_app_connection_controls.py` | 28 | 1 | 28 | 0 |
+| `tests/test_app_file_upload_ui.py` | 50 | 0 | 52 | 4 |
+| `tests/test_app_full_message_expansion.py` | 12 | 0 | 12 | 0 |
+| `tests/test_app_header_name.py` | 4 | 0 | 5 | 1 |
+| `tests/test_app_hosted_model_connect.py` | 27 | 0 | 27 | 0 |
+| `tests/test_app_live_turn_recovery.py` | 14 | 0 | 14 | 0 |
+| `tests/test_app_memory_panel.py` | 4 | 0 | 4 | 1 |
+| `tests/test_app_model_choice.py` | 7 | 0 | 7 | 0 |
+| `tests/test_app_model_picker.py` | 57 | 0 | 57 | 0 |
+| `tests/test_app_modules.py` | 7 | 0 | 13 | 0 |
+| `tests/test_app_native_push.py` | 20 | 0 | 20 | 0 |
+| `tests/test_app_notify_auto_prompt.py` | 20 | 0 | 21 | 0 |
+| `tests/test_app_owner_sign_in.py` | 7 | 0 | 7 | 0 |
+| `tests/test_app_owner_unread.py` | 5 | 0 | 5 | 0 |
+| `tests/test_app_plan_without_billing.py` | 5 | 0 | 5 | 0 |
+| `tests/test_app_profile.py` | 9 | 0 | 9 | 0 |
+| `tests/test_app_reads_use_owner_door.py` | 3 | 0 | 9 | 0 |
+| `tests/test_app_recovery_browser.py` | 18 | 0 | 18 | 0 |
+| `tests/test_app_request_rail_executes.py` | 3 | 0 | 4 | 5 |
+| `tests/test_app_rules_panel.py` | 6 | 0 | 6 | 0 |
+| `tests/test_app_send_not_delivered.py` | 12 | 0 | 12 | 0 |
+| `tests/test_app_serving_heal_executes.py` | 5 | 0 | 5 | 0 |
+| `tests/test_app_sign_in_again.py` | 12 | 0 | 13 | 1 |
+| `tests/test_app_signout_clears_typed_credentials.py` | 2 | 0 | 2 | 0 |
+| `tests/test_app_spoken_turn_account_fence.py` | 12 | 0 | 12 | 0 |
+| `tests/test_app_stop_turn.py` | 7 | 1 | 8 | 2 |
+| `tests/test_app_stream_liveness.py` | 9 | 0 | 9 | 0 |
+| `tests/test_app_two_surfaces.py` | 12 | 0 | 13 | 0 |
+| `tests/test_app_two_surfaces_browser.py` | 15 | 0 | 15 | 0 |
+| `tests/test_app_ui_by_talking.py` | 7 | 0 | 12 | 0 |
+| `tests/test_app_working_indicator.py` | 27 | 0 | 27 | 2 |
+| `tests/test_billing_boundary.py` | 12 | 0 | 69 | 0 |
+| `tests/test_brand_parity.py` | 0 | 0 | 4 | 0 |
+| `tests/test_chat_renderer_browser.py` | 6 | 0 | 6 | 0 |
+| `tests/test_command_center_copy.py` | 3 | 0 | 8 | 2 |
+| `tests/test_command_center_packages.py` | 10 | 0 | 76 | 0 |
+| `tests/test_command_center_system_browser.py` | 11 | 0 | 11 | 0 |
+| `tests/test_connect_free_ai_real_browser.py` | 2 | 0 | 2 | 0 |
+| `tests/test_connect_free_ai_screen.py` | 8 | 0 | 10 | 0 |
+| `tests/test_connect_is_the_whole_gesture.py` | 1 | 1 | 3 | 0 |
+| `tests/test_connected_model_row_is_optional.py` | 12 | 0 | 12 | 0 |
+| `tests/test_connector_bounded_reads.py` | 12 | 0 | 16 | 0 |
+| `tests/test_consumer_reason_actions.py` | 0 | 0 | 5 | 0 |
+| `tests/test_custom_ui_isolation.py` | 2 | 0 | 9 | 0 |
+| `tests/test_free_source_cards.py` | 4 | 0 | 8 | 0 |
+| `tests/test_frontend_proxy.py` | 6 | 0 | 8 | 0 |
+| `tests/test_generic_oauth_connections.py` | 24 | 0 | 28 | 0 |
+| `tests/test_inline_approvals_real_browser.py` | 8 | 0 | 8 | 0 |
+| `tests/test_learning_never_locks_out.py` | 6 | 0 | 25 | 0 |
+| `tests/test_mobile_launch_background.py` | 0 | 0 | 1 | 0 |
+| `tests/test_notification_is_the_setup.py` | 14 | 1 | 16 | 0 |
+| `tests/test_onboarding_app.py` | 79 | 3 | 102 | 7 |
+| `tests/test_onboarding_mcp_session_recovery.py` | 29 | 0 | 31 | 1 |
+| `tests/test_onboarding_terminal_frames.py` | 1 | 0 | 1 | 0 |
+| `tests/test_owner_steering.py` | 24 | 0 | 42 | 0 |
+| `tests/test_owner_ui_prefs_browser.py` | 6 | 0 | 6 | 0 |
+| `tests/test_request_card_layout_and_links.py` | 13 | 0 | 20 | 0 |
+| `tests/test_request_rail_honest_asks.py` | 0 | 1 | 14 | 0 |
+| `tests/test_shortlist_background_refresh.py` | 0 | 0 | 22 | 0 |
+| `tests/test_soul_memory_real_browser.py` | 3 | 0 | 3 | 0 |
+| `tests/test_status_says_what_is_true.py` | 6 | 0 | 8 | 0 |
+| `tests/test_tool_activity.py` | 12 | 0 | 20 | 0 |
+| `tests/test_universe_path_io_guard.py` | 4 | 0 | 4 | 0 |
+| **Total** | **862** | **9** | **1216** | **27** |
+
+### Batch 2 verification
+
+All runs are in the Linux oracle (Python 3.11.17, bubblewrap 0.12.0, uid 1001). Results are in `2026-10-06-lean-suite-batch2-mutations.json`.
+
+- **Pre-deletion replay:** 31/31 groups proved on the unedited tree. The survivor baseline was 24 cases, all green, with 0 skips.
+- **Post-deletion replay:** 21/21 survivor groups still fail on the final tree. The 10 reason-b groups have no survivor. This was re-run after merging origin/main `7e68ef26cb`, which changed app.html; every mutation string stayed unique.
+- **Final tree:** 110 files passed, covering the 73 census files, all real-browser suites (the `real_browser` marker plus `*browser*` files) and the `ci_structural_guards.py` guard files. The result was **2,426 passed, 1 skipped, 0 failed**. After the merge, the same set plus the replay gave **2,430 passed, 1 skipped, 0 failed**. The skip is `test_agent_box_dev_workflow.py:206`, a declared manual public-network probe (`runs-in=manual ... TA_DEV_PUBLIC_PROBE=1`). It is not an app or browser test, and it was skipped identically on the pre-edit baseline (1,616 passed, 1 skipped).
+- `python scripts/ci_structural_guards.py` passed locally: 574 passed. Ruff is clean on every changed file and on the replay.

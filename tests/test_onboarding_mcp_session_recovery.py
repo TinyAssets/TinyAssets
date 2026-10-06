@@ -848,7 +848,6 @@ def test_a_failed_turn_offers_to_send_again():
     """
     html = _APP_HTML.read_text(encoding="utf-8")
     # The failure path hands back a working button rather than a dead sentence.
-    assert "function offerResend(" in html
     assert "Send it again" in html
     # ...and a resend reuses the bubble already on screen instead of drawing the
     # same message twice, which would read as two sends.

@@ -262,16 +262,6 @@ def test_the_account_page_names_a_guided_connection_by_its_preset():
 # --------------------------------------------------------------------------- #
 
 
-def test_the_page_has_no_full_page_setup_and_no_vendor_cards():
-    html, _ = render_app_html()
-    for gone in ('id="view-connect"', 'id="btn-openai-connect"', 'id="claude-material"',
-                 'id="connect-service"', "showConnect(", "Skip for now",
-                 'operation:"connect_llm"'):
-        assert gone not in html, f"survived: {gone}"
-    assert html.index('id="connect-panel"') > html.index('id="request-rail"'), \
-        "the setup panel is not inside the request rail"
-
-
 _RAIL_HARNESS = r"""
 const els=new Map();
 function mk(id){return {id,textContent:'',hidden:false,value:'',open:false,

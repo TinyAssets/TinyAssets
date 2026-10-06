@@ -104,8 +104,6 @@ def test_without_a_stop_the_queue_still_goes_one_line_at_a_time(tmp_path, html):
 
 
 def test_stop_is_wired_to_the_button_escape_and_every_entry_point(html):  # noqa: F811
-    assert 'id="btn-stop"' in html
-    assert '$("btn-stop").addEventListener("click",()=>interruptTurn());' in html
     assert 'if(e.key!=="Escape"||e.defaultPrevented||e.isComposing) return;' in html
     # The phone layout gives Stop the send button's cell, so it is always a
     # visible tap target there too.
@@ -266,14 +264,3 @@ def test_stop_names_the_agent_whose_conversation_it_was_pressed_in(tmp_path, htm
     assert out["late"] == "main", "the case did not actually switch conversation"
 
 
-def test_stop_is_addressed_for_main_too_rather_than_stopping_everything(html):  # noqa: F811
-    """``main`` is an agent, not a wildcard: the body always names one.
-
-    A page that sent nothing for main would ask the server for stop-all, and
-    the server's stop-all reaches every agent's live turn in the command
-    center -- including background work the owner never asked to end.
-    """
-    source = _js_function(html, "interruptTurn")
-    assert "agent_id:agent" in source.replace(" ", ""), (
-        "the interrupt body must always carry the agent")
-    assert "addressedAgentId" in source, "the agent must come from the page's own accessor"

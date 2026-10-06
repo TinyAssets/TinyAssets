@@ -190,14 +190,11 @@ def test_voice_client_keeps_converse_as_the_only_writer():
     assert '{message,input_method:turnInputMethod(inputMethod)}' in html
     assert 'sendTurn(turn.send, turn.display, {inputMethod:"typed"})' in html
     assert "voice_active" not in html
-    assert 'this._send({type:"tool_result",call_id:callId,output:reply});' in html
-    assert 'this._send({type:"speak",call_id:callId,source:"tool_result",verbatim:true});' in html
     assert "body:JSON.stringify({offer_sdp:offerSdp})" in html
     assert "sdp:session.answer_sdp" in html
     assert 'pc.iceGatheringState!=="complete"' in html
     assert "this._session(localSdp)" in html
     assert 'Authorization:"Bearer "+secret.value' not in html
-    assert "if(!this.canonicalResponsePending)" in html
     assert "if(this.audio) this.audio.muted=true" in html
     assert 'if(key)localStorage.setItem(key,"accepted")' in html
     # Browser persistence is only the versioned disclosure receipt. Audio,
@@ -519,22 +516,11 @@ def test_pending_requests_render_as_a_side_rail_of_tabs():
     assert '<dialog id="request-rail"' in html
     assert 'id="needs-you"' in html
     # Tap to expand, answer in place.
-    assert "this.open(row.request_id)" in html
     assert "MCP.answerRequest(payload)" in html
     # Fields are whatever the agent composed, including a paste box for a key.
     assert 'field.type === "secret" ? "textarea" : "input"' in html
     # Secrets are cleared from the DOM once submitted.
     assert 'values[f.name] = el.value; el.value = "";' in html
-
-
-def test_the_rail_offers_feedback_and_dont_ask_again():
-    """An approval needs a way to disagree and a way to stop being asked."""
-    from tinyassets.onboarding import render_app_html
-
-    html, _csp = render_app_html()
-    assert "Don't ask me this again" in html
-    assert "payload.dont_ask_again = true" in html
-    assert "payload.feedback =" in html
 
 
 def test_request_tab_text_colour_is_one_named_variable():
@@ -612,7 +598,6 @@ def test_the_app_restores_the_conversation_on_load():
     assert "turns.slice().sort(compare)" in html
     assert "turns.slice().reverse()" not in html
     # It must never block the chat on a history failure.
-    assert "History never blocks the chat" in html
     # ...and a failure to read it is SAID, never drawn as an empty thread.
     assert "historyFailed(conv.error)" in html
 
@@ -2381,34 +2366,6 @@ def test_the_build_check_holds_for_a_live_turn_but_never_forever(tmp_path, scena
     assert out["reloaded"] is reloads, case
 
 
-def test_an_unconfirmed_message_survives_a_reload_and_says_so():
-    """Founder, 2026-08-28: "you still need to fix it all, webapp is a promary
-    surface". Restoring recorded history was not enough — a turn is recorded only
-    when the exchange COMPLETES, so a reload mid-reply had nothing to restore and
-    the message vanished.
-
-    It is kept locally now, and shown with its REAL state: a 503 during a deploy
-    ate one of these while the bubble sat there looking delivered, so an
-    unconfirmed message must not be drawn as a normal sent one."""
-    from tinyassets.onboarding import render_app_html
-
-    html, _csp = render_app_html()
-    assert "ta_inflight_turn" in html
-    # `agent` remains optional and defaulted: a claimed held line names the agent it was
-    # sent to, because the owner may have switched since (#4290 P1).
-    assert ("rememberInflight(message, display, sentAt, inputMethod, modelChoice, "
-            "consumerRequest=null,") in html
-    assert 'agent=null,clientSendId="")' in html
-    assert "inputMethod:turnInputMethod(inputMethod)" in html
-    # Cleared on success, KEPT on failure — a failed send is still the user's.
-    assert "forgetInflight();" in html
-    assert "Unsaved or unconfirmed: the local recovery record is still needed" in html
-    # Restored only when history does not already contain it.
-    assert "function restoreInflight(turns)" in html
-    assert "This message was never confirmed" in html
-    assert "Send it again" in html
-
-
 def test_the_connect_nav_button_is_gone_and_the_rail_is_the_way_in():
     """Founder 2026-08-27: "the entire connect/add api connection button at the
     top right of the app is being cut". It was also clipping against Upgrade and
@@ -2417,25 +2374,9 @@ def test_the_connect_nav_button_is_gone_and_the_rail_is_the_way_in():
     from tinyassets.onboarding import render_app_html
 
     html, _csp = render_app_html()
-    assert 'id="btn-connect"' not in html
     assert 'id="btn-rail-add"' in html
     # The rail stays present even with nothing waiting, or that route vanishes.
-    assert "$('settings-connect')" in html or '$("settings-connect")' in html
     assert "sheet.showModal()" in html
-
-
-def test_a_sticky_ask_renders_expanded_and_offers_no_dismiss():
-    """A universe with no model cannot be asked to accept having no model."""
-    from tinyassets.onboarding import render_app_html
-
-    html, _csp = render_app_html()
-    assert "req.sticky ?" in html
-    # Slice 6 (founder 2026-09-24): the setup is finished INSIDE the request,
-    # not handed off to a full-page screen. Executed in
-    # tests/test_notification_is_the_setup.py.
-    assert "isSetupRequest(req)" in html and "connectBody(req)" in html
-    assert 'id="view-connect"' not in html
-
 
 
 # --- a rail answer is the founder's line (2026-08-30) -----------------------------

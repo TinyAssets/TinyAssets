@@ -235,8 +235,3 @@ def test_finishing_setup_forgets_the_tap():
     assert state["remembered"] is False
 
 
-def test_the_markup_still_ships_closed():
-    """Belt and braces: the default must not depend on the renderer running."""
-    html, _ = render_app_html()
-    block = html[html.index('<details id="connect-other"'):]
-    assert block[: block.index(">")].find(" open") == -1
