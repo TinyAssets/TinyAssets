@@ -1,3 +1,59 @@
+# Current delivery: D72 local git_bridge through the bounded launcher
+
+Started from 340318fe4d with the requested ff-only pull (already current).
+All git_bridge subprocess sites now route through D71's authenticated pinned
+workspace-git cell when the bounded client is installed. Selected capability
+probes bypass the process-global cache and recheck owner admission each time.
+Absolute repository pathspecs map into /workspace; message/ref strings stay
+opaque. Missing scope, foreign scope, unsupported gh and transport refusals
+return failure without daemon subprocess fallback. Remote transport remains open.
+
+Production Dockerfile image:
+`sha256:6f79a8c34580e1a894c679e3c51ee573b81fac330cddadc028869e81e730ab66`.
+
+Acceptance (all native probe exits 0):
+- `python scripts/role_service_bootstrap_probe.py --image tinyassets-uid-d72:bridge --git --stream`
+  Actual Alice/Bob bridge detect/diff/stage/unstage/commit passed, including
+  absolute pathspecs and owner-engine writes. Cached success cannot admit a
+  foreign repository. Foreign hardlink/symlink reads refuse; a preplanted FIFO
+  hits the bounded deadline and the next request succeeds. Actual workspace git
+  operations and both PNG decoders also pass with dedicated identities.
+  Broker HTTPS GET, accounted POST, source-bound evidence, replay refusal and
+  two OAuth refresh rotations pass in one service lifetime. Historical stream
+  fixture strings mention restart; this run does not establish a restart.
+- `python scripts/role_reader_alias_probe.py --image tinyassets-uid-d72:bridge`
+  **114 denied, 19 own reads, 0 foreign reads**, foreign bytes unchanged.
+- `python scripts/role_owner_namespace_probe.py --image tinyassets-uid-d72:bridge`
+  All three unchanged D9 profiles deny foreign read/relabel/copy; bounded map
+  refuses out-of-range identity. This synthetic diagnostic is not an additional
+  actual engine-class acceptance claim.
+- `python scripts/linux_oracle.py -- tests/test_git_bridge.py tests/test_role_git.py -q -rs`
+  **24 passed, zero skips**. Targeted Ruff, mirror parity and strict OpenSpec
+  validation pass. Full Ruff retains 55 baseline findings.
+
+Cross-family review via peer-agents: **AGREE** with the correctness finding that
+out-of-scope catalog probes must return git-disabled rather than raising through
+catalog writes. Fixed structured refusal, added the outside-data regression and
+production-image row, then rebuilt and reran. Reviewer found no floor violation.
+No second review. Initial fixture tried to write an owner file from the daemon
+with a read-only ACL and correctly failed; fixture now performs that write in
+the owner's actual git cell. No ACL or guard weakened.
+
+Release-critical files: **0** by the existing deployment/privileged-chain scope;
+product git_bridge and its plugin mirror, probe, tests and records changed.
+D72 is one verified local engine-utility integration, not completion of task 2.5.
+The reader concern remains open and includes this receipt. ui-preview remains
+unadmitted, with no D9 profile change.
+
+Remaining, in priority order: provider CLI/discovery/auth, engine-MCP proxy,
+node-sandbox/tool-jail, workspace provision/registry/worker and remote git,
+local box and ingestion/video classes; dynamic center admissions and the full
+class/path/reader matrix; full D61 quarantine/owner-tree migration and two-pass
+deletion; restrictive owner-file reverse migration and actual old CMD boot;
+startup/healthcheck integration. No full 2.x checkbox newly complete. No startup
+activation, PR or deployment. The requested finish-all outcome is NOT complete.
+
+---
 # Current delivery: D71 local workspace-git through the bounded launcher
 
 D70 pushed at **5b020514d9** (3 tests added, 0 removed, 0 tampering). Continued

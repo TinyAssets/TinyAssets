@@ -83,6 +83,45 @@ class PRResult:
 # ---------------------------------------------------------------------------
 
 
+def _bounded_selected() -> bool:
+    from tinyassets import role_decoder
+
+    return role_decoder._bounded_client is not None
+
+
+def _run(command, *, capture_output, text, check, timeout, cwd):
+    """Keep owner git and its hooks inside the startup-admitted owner cell."""
+    if not _bounded_selected():
+        return subprocess.run(command, capture_output=capture_output, text=text,
+                              check=check, timeout=timeout, cwd=cwd)
+    try:
+        return _run_bounded(command, timeout=timeout, cwd=cwd)
+    except (OSError, ValueError, RuntimeError):
+        # Preserve the bridge's structured refusal contract; never retry as
+        # the daemon. A capability probe outside owner storage means disabled.
+        return subprocess.CompletedProcess(command, 126, '', 'owner git bridge refused')
+
+
+def _run_bounded(command, *, timeout, cwd):
+    from tinyassets.role_git import run
+
+    if command[0] != 'git' or cwd is None:
+        raise RuntimeError('owner git bridge requires an admitted git repository')
+    # Only pathspecs after -- are paths. Commit messages, ref names and options
+    # remain opaque, including strings which happen to contain host paths.
+    args = list(command[1:])
+    if '--' in args:
+        boundary = args.index('--') + 1
+        for index in range(boundary, len(args)):
+            path = Path(args[index])
+            if path.is_absolute():
+                relative = path.relative_to(Path(cwd))
+                if '..' in relative.parts:
+                    raise PermissionError('git pathspec leaves its owner repository')
+                args[index] = '/workspace/' + relative.as_posix()
+    return run(args, cwd=cwd, options=(), timeout_s=timeout)
+
+
 def is_enabled(repo_path: Path | None = None) -> bool:
     """Return True if ``git`` is usable from the current working tree.
 
@@ -95,7 +134,7 @@ def is_enabled(repo_path: Path | None = None) -> bool:
     to re-probe.
     """
     global _ENABLED_CACHE
-    if _ENABLED_CACHE is not None:
+    if not _bounded_selected() and _ENABLED_CACHE is not None:
         return _ENABLED_CACHE
 
     if shutil.which("git") is None:
@@ -105,7 +144,7 @@ def is_enabled(repo_path: Path | None = None) -> bool:
 
     cwd = str(repo_path) if repo_path is not None else None
     try:
-        result = subprocess.run(
+        result = _run(
             ["git", "rev-parse", "--is-inside-work-tree"],
             capture_output=True, text=True, check=False,
             timeout=_TIMEOUT_LOCAL, cwd=cwd,
@@ -147,7 +186,7 @@ def has_uncommitted_changes(path: Path, *, repo_path: Path | None = None) -> boo
         return False
     cwd = str(repo_path) if repo_path is not None else None
     try:
-        result = subprocess.run(
+        result = _run(
             ["git", "diff", "--quiet", "HEAD", "--", str(path)],
             capture_output=True, text=True, check=False,
             timeout=_TIMEOUT_LOCAL, cwd=cwd,
@@ -166,7 +205,7 @@ def stage(path: Path, *, repo_path: Path | None = None) -> bool:
     cwd = str(repo_path) if repo_path is not None else None
     with _LOCK:
         try:
-            result = subprocess.run(
+            result = _run(
                 ["git", "add", "--", str(path)],
                 capture_output=True, text=True, check=False,
                 timeout=_TIMEOUT_LOCAL, cwd=cwd,
@@ -196,7 +235,7 @@ def unstage(paths: list[Path], *, repo_path: Path | None = None) -> bool:
     cwd = str(repo_path) if repo_path is not None else None
     with _LOCK:
         try:
-            result = subprocess.run(
+            result = _run(
                 ["git", "reset", "HEAD", "--", *[str(p) for p in paths]],
                 capture_output=True, text=True, check=False,
                 timeout=_TIMEOUT_LOCAL, cwd=cwd,
@@ -211,7 +250,7 @@ def unstage(paths: list[Path], *, repo_path: Path | None = None) -> bool:
         if "ambiguous argument 'head'" in combined or "unknown revision" in combined:
             with _LOCK:
                 try:
-                    rm_result = subprocess.run(
+                    rm_result = _run(
                         ["git", "rm", "--cached", "--", *[str(p) for p in paths]],
                         capture_output=True, text=True, check=False,
                         timeout=_TIMEOUT_LOCAL, cwd=cwd,
@@ -256,7 +295,7 @@ def commit(
     with _LOCK:
         if paths:
             for p in paths:
-                rc_add = subprocess.run(
+                rc_add = _run(
                     ["git", "add", "--", str(p)],
                     capture_output=True, text=True, check=False,
                     timeout=_TIMEOUT_LOCAL, cwd=cwd,
@@ -267,7 +306,7 @@ def commit(
                         error=f"git add failed for {p}: {rc_add.stderr.strip()}",
                     )
         try:
-            result = subprocess.run(
+            result = _run(
                 ["git", "commit", f"--author={author}", "-m", message],
                 capture_output=True, text=True, check=False,
                 timeout=_TIMEOUT_LOCAL, cwd=cwd,
@@ -285,7 +324,7 @@ def commit(
                 error=f"git commit failed (rc={result.returncode}): "
                       f"{result.stderr.strip() or result.stdout.strip()}",
             )
-        sha_result = subprocess.run(
+        sha_result = _run(
             ["git", "rev-parse", "HEAD"],
             capture_output=True, text=True, check=False,
             timeout=_TIMEOUT_LOCAL, cwd=cwd,
@@ -310,7 +349,7 @@ def pull(
         if branch:
             cmd.append(branch)
         try:
-            result = subprocess.run(
+            result = _run(
                 cmd,
                 capture_output=True, text=True, check=False,
                 timeout=_TIMEOUT_PULL, cwd=cwd,
@@ -324,7 +363,7 @@ def pull(
             if conflicts:
                 # Abort the half-applied merge so the next write doesn't
                 # land on a broken tree. v2 will add resolve_conflict.
-                subprocess.run(
+                _run(
                     ["git", "merge", "--abort"],
                     capture_output=True, text=True, check=False,
                     timeout=_TIMEOUT_LOCAL, cwd=cwd,
@@ -357,7 +396,7 @@ def push(
     cwd = str(repo_path) if repo_path is not None else None
     with _LOCK:
         try:
-            result = subprocess.run(
+            result = _run(
                 ["git", "push", remote, branch],
                 capture_output=True, text=True, check=False,
                 timeout=_TIMEOUT_PUSH, cwd=cwd,
@@ -397,7 +436,7 @@ def open_pr(
     if branch:
         cmd.extend(["--head", branch])
     try:
-        result = subprocess.run(
+        result = _run(
             cmd,
             capture_output=True, text=True, check=False,
             timeout=_TIMEOUT_PUSH, cwd=cwd,
@@ -421,7 +460,7 @@ def open_pr(
 
 def _head_sha(cwd: str | None) -> str:
     try:
-        result = subprocess.run(
+        result = _run(
             ["git", "rev-parse", "HEAD"],
             capture_output=True, text=True, check=False,
             timeout=_TIMEOUT_LOCAL, cwd=cwd,
@@ -433,7 +472,7 @@ def _head_sha(cwd: str | None) -> str:
 
 def _count_commits(cwd: str | None, before: str, after: str) -> int:
     try:
-        result = subprocess.run(
+        result = _run(
             ["git", "rev-list", "--count", f"{before}..{after}"],
             capture_output=True, text=True, check=False,
             timeout=_TIMEOUT_LOCAL, cwd=cwd,
@@ -451,7 +490,7 @@ def _count_commits(cwd: str | None, before: str, after: str) -> int:
 def _unmerged_paths(cwd: str | None) -> list[str]:
     """Files with merge conflict markers, per ``git diff --name-only --diff-filter=U``."""
     try:
-        result = subprocess.run(
+        result = _run(
             ["git", "diff", "--name-only", "--diff-filter=U"],
             capture_output=True, text=True, check=False,
             timeout=_TIMEOUT_LOCAL, cwd=cwd,

@@ -2110,3 +2110,21 @@ the mounted device/inode before user code, then require the same source identity
 in the authenticated completion consumed by the daemon. No path re-resolution
 is accepted as proof of a pin. The class has a 1 GiB address-space, 60-second CPU
 and zero-core limit in addition to its wall clock and bounded request/response.
+
+
+### D72. Mechanical git_bridge routing through the pinned owner git cell
+
+All git_bridge subprocess sites use D71's authenticated workspace-git entry
+when the bounded startup client is installed. Repository capability probes bypass
+the historical process-global cache in that mode and recheck application owner
+admission on every call. Absolute pathspecs beneath the admitted repository map
+to /workspace; other arguments remain opaque. Missing repository scope and gh
+refuse without a daemon subprocess fallback. D9 cell-links, descriptor pinning,
+per-owner UID/GID and private networking remain unchanged. This closes local
+bridge git operations, not remote transport or the whole workspace-worker class.
+No startup activation; ui-preview remains unadmitted.
+
+D72 review correction: **AGREE** that out-of-data catalog capability probes must
+remain disabled results, not exceptions. Selected bridge refusals return rc126
+with a fixed error, preserving the existing structured-result API without any
+host fallback. Production and unit regressions cover this caller shape.

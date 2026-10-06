@@ -192,3 +192,17 @@ plant these cross-owner aliases; no current-production exploit is claimed.
 Keep this concern and the existing promotion-recovery caveat until full matrix
 acceptance. The initial D54 snapshot PermissionError on the rebuilt image also
 needs qualification: isolated and complete reruns passed, cause not established.
+
+
+D72 follow-up: D60 descriptor enforcement is now present (D65-D71); the older
+"not implemented" statements above are historical. Final D72 production image
+6f79a8c34580e1a894c679e3c51ee573b81fac330cddadc028869e81e730ab66 passes the
+reader alias probe: 114 denied, 19 own reads, ZERO FOREIGN_BYTES, foreign data
+unchanged. The namespace diagnostic denies read/relabel/copy under all three
+D9 profiles. Actual Alice/Bob git_bridge local operations now run through the
+bounded owner launcher; foreign aliases and cross-owner capability-cache reuse
+refuse, and a planted FIFO times out with subsequent request recovery. This does
+not complete every engine class/path/reader pair, migration/quarantine, or the
+promotion-recovery caveat. Keep the concern open. No main deployment occurred;
+the earlier distinction between preplanted diagnostics and proven production
+plantability still applies.

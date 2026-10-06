@@ -59,6 +59,8 @@ if GIT:
     os.link(foreign,root/'decoder-alice/workspace/foreign-hardlink')
     os.symlink(str(foreign),
                root/'decoder-alice/workspace/foreign-symlink')
+    os.mkfifo(root/'decoder-alice/workspace/preplanted-fifo')
+    os.chown(root/'decoder-alice/workspace/preplanted-fifo',300001,300001)
     outside=root/'not-admitted'; outside.mkdir(); os.chown(outside,300001,300001)
     outside.chmod(0o700)
     subprocess.run(['setfacl','-m','u:1001:rwx',str(outside)],check=True)
@@ -164,6 +166,42 @@ if GIT:
             result=read_universe_file(root/'decoder-alice','workspace/'+alias)
         except (OSError,ValueError): pass
         else: raise AssertionError('daemon reader admitted a git foreign alias')
+    from tinyassets import git_bridge
+    assert not git_bridge.is_enabled(root.parent)
+    for owner in identities:
+        work=root/('decoder-'+owner)/'workspace'
+        with identity_context(Identity(owner,owner)):
+            assert git('config','user.name','Oracle').returncode==0
+            assert git('config','user.email','oracle@example.invalid').returncode==0
+            assert git_bridge.is_enabled(work)
+            changed=run_git(['bridge-write'],cwd=work,home_dir=git_home,path='/usr/bin:/bin',
+                options=('-c',f'alias.bridge-write=!printf {owner}-bridge-change > own.txt'),
+                timeout_s=10)
+            assert changed.returncode==0,changed
+            assert git_bridge.has_uncommitted_changes(work/'own.txt',repo_path=work)
+            assert git_bridge.stage(work/'own.txt',repo_path=work)
+            assert git_bridge.unstage([work/'own.txt'],repo_path=work)
+            receipt=git_bridge.commit('bridge owner commit',
+                                     author='Oracle <oracle@example.invalid>',
+                                     paths=[work/'own.txt'],repo_path=work)
+            assert receipt.ok and len(receipt.sha)==40,receipt
+            assert not git_bridge.has_uncommitted_changes(work/'own.txt',repo_path=work)
+            foreign_owner='bob' if owner=='alice' else 'alice'
+            # A cached successful probe must not admit the other owner's tree.
+            assert not git_bridge.is_enabled(root/('decoder-'+foreign_owner)/'workspace')
+            if owner=='alice':
+                for alias in ('foreign-hardlink','foreign-symlink'):
+                    value=git_bridge._run(['git','hash-object','--',str(work/alias)],
+                        capture_output=True,text=True,check=False,timeout=10,cwd=str(work))
+                    assert value.returncode!=0 and 'bob-foreign-sentinel' not in value.stdout
+    with identity_context(Identity('alice','alice')):
+        refused=git_bridge._run(['git','hash-object','preplanted-fifo'],
+            capture_output=True,text=True,check=False,timeout=0.1,
+            cwd=str(root/'decoder-alice/workspace'))
+        assert refused.returncode==126 and not refused.stdout
+        assert git_bridge.is_enabled(root/'decoder-alice/workspace')
+    print('git-bridge: actual local detect/diff/stage/unstage/commit for Alice/Bob; '
+          'cross-owner cache reuse and foreign aliases denied',flush=True)
     print('workspace-git: actual run_git init/add/commit/show/checkout for Alice/Bob; '
           'foreign aliases denied; cell-links and descriptor checks passed',flush=True)
 if os.environ.get('TA_ORACLE_HTTPS')=='1':
