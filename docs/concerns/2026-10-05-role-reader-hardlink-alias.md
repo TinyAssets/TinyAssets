@@ -7,6 +7,13 @@ summary: 'D65: dedicated-label daemon reader matrix passes with 114 denials and 
 
 ## Founder D61 continuation
 
+D76 recheck on production Dockerfile image
+`sha256:93f86ca0e5ef9ac4894ad0cb3bf57497336cb6d4a6675874bc4eb879b43b7c36`:
+**132 denials, 22 own reads, zero foreign reads**, including preview outputs;
+all three namespace profiles deny read/relabel/copy. Independent Alice/Bob
+decoder lifetimes preserve the dedicated identity boundary. This adds no new
+actual engine class; retain this concern until the full matrix passes.
+
 D68/D69 continuation: the dedicated reader probe remains **114 denials, 19 own
 reads, zero foreign reads** on image
 `sha256:9eb6a5ed405f5c57743d8782d9f159d212e308b7ca459f25b700346bfa16c5df`.

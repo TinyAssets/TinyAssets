@@ -13,9 +13,78 @@ import socket
 import stat
 import struct
 import threading
+import weakref
 from types import SimpleNamespace
 
 from tinyassets.broker.owner_identities import OWNER_ID_FIRST, OWNER_ID_LAST, OwnerIdentity
+
+_live_cells = weakref.WeakSet()
+
+
+def _close_cells_after_fork():
+    for cell in list(_live_cells):
+        cell._after_fork()
+
+
+if hasattr(os, 'register_at_fork'):
+    os.register_at_fork(after_in_child=_close_cells_after_fork)
+
+
+class OwnerCell:
+    """One mapper-owned process lifetime; caller owns its bidirectional stream."""
+
+    def __init__(self, client, stream, status, identity):
+        self.stream, self._status = stream, status
+        self._client, self._identity = client, identity
+        self._pid = os.getpid()
+        self._result = None
+        self._closed = False
+        _live_cells.add(self)
+
+    def _after_fork(self):
+        self.stream.close()
+        self._status.close()
+        self._closed = True
+
+    def wait(self, timeout=5):
+        if os.getpid() != self._pid or self._closed:
+            raise RuntimeError('owner cell handle is unavailable')
+        if self._result is not None:
+            return self._result
+        self._status.settimeout(timeout)
+        answer = self._client._reply(channel=self._status)
+        if (set(answer) != {'op', 'returncode', 'uid', 'gid'}
+                or answer['op'] != 'SPAWN_DONE' or type(answer['returncode']) is not int
+                or (answer['uid'], answer['gid']) != (self._identity.uid, self._identity.gid)):
+            raise RuntimeError('invalid owner cell completion')
+        self._result = answer['returncode']
+        return self._result
+
+    def cancel(self):
+        if os.getpid() != self._pid or self._closed:
+            raise RuntimeError('owner cell handle is unavailable')
+        if self._result is None:
+            try:
+                self._status.sendall(b'CANCEL')
+            except (BrokenPipeError, ConnectionResetError):
+                pass  # A completed receipt can be queued before mapper close.
+        return self.wait()
+
+    def close(self):
+        if not self._closed:
+            try:
+                self.cancel()
+            finally:
+                self.stream.close()
+                self._status.close()
+                self._closed = True
+                _live_cells.discard(self)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_):
+        self.close()
 
 
 class OwnerLaunchRefused(RuntimeError):
@@ -53,12 +122,12 @@ class OwnerLauncherClient:
                 or select.select([self._pidfd], [], [], 0)[0]):
             raise RuntimeError('owner launcher is unavailable')
 
-    def _reply(self, *, terminal=False):
+    def _reply(self, *, terminal=False, channel=None):
         # Terminal ack can be queued immediately before child exit. The daemon
         # must retain (not reap) its launcher child until stop returns.
         if not terminal:
             self._check()
-        payload, ancillary, flags, _ = self._channel.recvmsg(
+        payload, ancillary, flags, _ = (self._channel if channel is None else channel).recvmsg(
             4096, socket.CMSG_SPACE(12) + socket.CMSG_SPACE(32), socket.MSG_CMSG_CLOEXEC)
         credentials, received, unknown = [], [], False
         try:
@@ -104,6 +173,54 @@ class OwnerLauncherClient:
             identity=identity, kind='image-decoder', extra={'mime': mime}, profile='cell-deny',
             input_bound=MAX_IMAGE_SOURCE_BYTES, output_bound=MAX_IMAGE_BYTES + 16384,
             timeout=DECODE_WALL_SECONDS + 10)
+
+    def start_cell(self, *, kind, principal, command_center, identity, extra=None,
+                   directory_fd=None):
+        """Start an admitted static class with independent data and lifetime pipes.
+
+        No numeric identity or executable is sent to the mapper. The cell's
+        status socket is a revocation handle: closing it kills only that cell.
+        The existing per-kind mapper deadline still bounds its lifetime.
+        """
+        if (type(identity) is not OwnerIdentity or identity.uid != identity.gid
+                or not OWNER_ID_FIRST <= identity.uid <= OWNER_ID_LAST):
+            raise ValueError('invalid admitted cell identity')
+        document = dict(extra or {})
+        if set(document) - {'mime', 'ui_id'}:
+            raise ValueError('unsupported cell parameters')
+        document.update(op='START', kind=kind, principal=principal, command_center=command_center)
+        data, child = socket.socketpair()
+        status, child_status = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
+        status.setsockopt(socket.SOL_SOCKET, socket.SO_PASSCRED, 1)
+        try:
+            with self._lock:
+                self._check()
+                self._channel.settimeout(5)
+                handles = [child.fileno()]
+                if directory_fd is not None:
+                    handles.append(directory_fd)
+                handles.append(child_status.fileno())
+                try:
+                    self._channel.sendmsg([json.dumps(document).encode()], [(
+                        socket.SOL_SOCKET, socket.SCM_RIGHTS, array.array('i', handles))])
+                    reply = self._reply()
+                    if reply == {'op': 'REFUSED'}:
+                        raise OwnerLaunchRefused('owner launcher refused cell scope')
+                    if reply != dict(op='STARTED', uid=identity.uid, gid=identity.gid):
+                        raise RuntimeError('owner launcher start identity mismatch')
+                except OwnerLaunchRefused:
+                    raise
+                except BaseException:
+                    self._close()
+                    raise
+            return OwnerCell(self, data, status, identity)
+        except BaseException:
+            data.close()
+            status.close()
+            raise
+        finally:
+            child.close()
+            child_status.close()
 
     def preview(self, spec, wall_seconds, *, principal, command_center, identity):
         from tinyassets.ui_preview import MAX_CHILD_OUTPUT
