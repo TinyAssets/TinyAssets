@@ -16,6 +16,7 @@ import time
 from contextlib import closing
 
 from tinyassets import agent_sessions, bound_requests, turn_interrupt
+from tinyassets.approval_scopes import task_is_current
 from tinyassets.owner_control import ControlUnavailable, control
 from tinyassets.singleton_lock import _lock_fd, _unlock_fd
 
@@ -96,14 +97,9 @@ def _recover(home, run):
             continue
         try:
             with control(home), closing(bound_requests.connect(home)) as conn:
-                task = conn.execute(
-                    "SELECT * FROM activities WHERE activity_id=?", (wake["activity_id"],)
-                ).fetchone()
-                if (
-                    not task
-                    or task["task_generation"] != payload["task_generation"]
-                    or task["task_expires_at"] <= time.time()
-                    or task["status"] in ("paused", "completed", "failed")
+                if not task_is_current(
+                    conn, wake["activity_id"], payload["owner"], payload["agent"],
+                    payload["task_generation"],
                 ):
                     continue  # Retained, visibly held. Stop is never a processed ack.
                 attempt = secrets.token_hex(16)
@@ -127,6 +123,11 @@ def _recover(home, run):
                 continue  # Retained for its scheduled retry; failure is not completion.
             with control(home), closing(bound_requests.connect(home)) as conn:
                 conn.execute("BEGIN IMMEDIATE")
+                if not task_is_current(
+                    conn, wake["activity_id"], payload["owner"], payload["agent"],
+                    payload["task_generation"],
+                ):
+                    continue  # Retirement after computation is still not an ack.
                 processed = conn.execute(
                     "UPDATE activity_events SET result_json=?,processed_at=? "
                     "WHERE dedupe_key=? AND attempt_ref=? AND processed_at IS NULL",
@@ -169,7 +170,9 @@ def _run(home, payload):
     )
     from tinyassets.approval_scopes import continuation_task
 
-    task_token = continuation_task.set((str(home.resolve()), payload.get('task_id')))
+    task_token = continuation_task.set(
+        (str(home.resolve()), payload["task_id"], payload["task_generation"])
+    )
     try:
         with identity_context(identity):
             result = converse(

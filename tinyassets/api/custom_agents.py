@@ -248,6 +248,7 @@ def custom_agents(
             "update_binding",
             "bind_serving_provider",
             "set_serving",
+            "retire_binding", "restore_binding",
         }:
             uid = _binding_universe(universe_id)
             write = normalized in {
@@ -255,13 +256,14 @@ def custom_agents(
                 "update_binding",
                 "bind_serving_provider",
                 "set_serving",
+                "retire_binding", "restore_binding",
             }
             denial = _binding_access(uid, write=write)
             if denial is not None:
                 return denial
 
             if normalized == "list_bindings":
-                bindings = list_bindings(base, universe_id=uid, limit=limit)
+                bindings = list_bindings(base, universe_id=uid, limit=limit, include_retired=False)
                 return {
                     "universe_id": uid,
                     "bindings": bindings,
@@ -281,6 +283,16 @@ def custom_agents(
                     "error": "authentication_required",
                     "resource": "agent_binding",
                 }
+            if normalized in {"retire_binding", "restore_binding"}:
+                from tinyassets.custom_agents import set_binding_retired
+
+                binding = set_binding_retired(
+                    base, universe_id=uid, binding_id=binding_id,
+                    expected_revision=expected_revision, updated_by=actor,
+                    retired=normalized == "retire_binding",
+                )
+                return {"status": "retired" if binding["retired"] else "configured",
+                        "binding": binding}
             document = _payload(payload)
             if normalized in {"bind_serving_provider", "set_serving"}:
                 from tinyassets.api.helpers import _universe_dir

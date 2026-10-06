@@ -355,7 +355,15 @@ def _call_sync(provider, operation):
 def test_an_unplanned_native_served_call_is_cancelled_by_the_stop():
     provider, state = _slow_provider("native_agent", 30.0)
     with interactive_turn("owner", "u-1") as live:
-        threading.Timer(0.3, live.request).start()
+        original_complete = provider.complete
+
+        async def stop_after_entry(*args, **kwargs):
+            # Stop only after the provider reaches its cancellable await;
+            # slow admission must not turn this into a before-launch test.
+            asyncio.get_running_loop().call_soon(live.request)
+            return await original_complete(*args, **kwargs)
+
+        provider.complete = stop_after_entry
         started = time.monotonic()
         with pytest.raises(TurnInterrupted):
             _call_sync(provider, "converse")

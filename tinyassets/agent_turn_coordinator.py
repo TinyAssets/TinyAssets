@@ -453,7 +453,8 @@ class AgentTurnCoordinator:
             ordinal=len(self.turn.rounds), call_ordinal=call_ordinal,
             request=tool.request, failure="not_sent",
         ))
-        raise TurnInterrupted("the owner stopped this turn before a tool call")
+        raise TurnInterrupted(self.interrupt.reason if self.interrupt else
+                              "the owner stopped this turn before a tool call")
 
     async def run(self):
         owner = self._check_scope()

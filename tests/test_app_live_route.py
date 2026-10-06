@@ -18,13 +18,24 @@ from tinyassets.auth import middleware
 
 @pytest.fixture
 def live(monkeypatch, tmp_path):
+    from tinyassets.custom_agents import create_binding, publish_definition
     from tinyassets.daemon_server import initialize_author_server
 
     initialize_author_server(tmp_path)
     universe = tmp_path / "u-alpha"
     universe.mkdir()
+    definition = publish_definition(tmp_path, author_id="owner-secret", payload={
+        "schema_version": 1, "name": "Mapper", "components": {
+            "identity": {"kind": "soul", "config": {"instructions": "Map projects."}},
+        },
+    })
+    agent_id = create_binding(
+        tmp_path, universe_id=universe.name,
+        definition_id=definition["agent_definition_id"], created_by="owner-secret",
+        payload={"schema_version": 1, "name": "Mapper"},
+    )["agent_binding_id"]
     record = acts.create(universe, owner_principal="owner-secret", title="map",
-                         brief="private instructions", origin_kind="ask", agent_id="agent-1")
+                         brief="private instructions", origin_kind="ask", agent_id=agent_id)
     activity_id = record["activity_id"]
     generation = acts.claim(universe, activity_id, replaceable=lambda r: False)
     acts.bind_run(universe, activity_id, generation, "private-run-token")
@@ -46,7 +57,7 @@ def live(monkeypatch, tmp_path):
 
     monkeypatch.setattr(permissions, "universe_access_allows", access)
     monkeypatch.setattr(onboarding, "_read_home", home)
-    return SimpleNamespace(activity_id=activity_id, caller=caller)
+    return SimpleNamespace(activity_id=activity_id, agent_id=agent_id, caller=caller)
 
 
 def _post(body):
@@ -71,7 +82,7 @@ def test_owner_gets_projects_activities_and_agent_states(live, body):
     activity = result["activities"][0]
     assert activity["activity_id"] == live.activity_id
     assert activity["title"] == "map" and activity["status"] == acts.IN_PROGRESS
-    assert result["agent_states"] == {"agent-1": "working"}
+    assert result["agent_states"] == {live.agent_id: "working"}
 
 
 def test_caller_without_write_access_gets_no_data(live, monkeypatch):
