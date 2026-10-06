@@ -20,6 +20,7 @@ from __future__ import annotations
 import argparse
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 
@@ -66,6 +67,44 @@ def current_branch() -> str:
     return proc.stdout.strip() if proc.returncode == 0 else "?"
 
 
+def heal(remote: str, main_name: str) -> list[str]:
+    """Put the PRIMARY checkout on current ``main``; return what was done.
+
+    A stale primary checkout loads a stale AGENTS.md into every session, so
+    drift here is drift everywhere. Nothing is discarded: a non-main branch or
+    uncommitted tracked edits are first committed to a local
+    ``backup/primary-autosave-*`` branch (never pushed), then the checkout
+    switches to ``main`` and fast-forwards. Untracked files ride along
+    untouched. Any refusal leaves the tree as it was and reports why.
+    """
+    done: list[str] = []
+    branch = current_branch()
+    dirty = _run(["git", "status", "--porcelain", "--untracked-files=no"]).stdout.strip()
+    if branch != main_name or dirty:
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+        backup = f"backup/primary-autosave-{stamp}"
+        if _run(["git", "switch", "-c", backup]).returncode != 0:
+            return [f"could not create {backup}; left as is"]
+        if dirty:
+            _run(["git", "add", "-u"])
+            commit = _run(["git", "commit", "-q", "-m",
+                           f"autosave: primary checkout edits before syncing to {main_name}"])
+            if commit.returncode != 0:
+                return [f"could not commit edits to {backup}: "
+                        f"{(commit.stderr or commit.stdout).strip()[:200]}; left on {backup}"]
+        done.append(f"saved '{branch}'{' + uncommitted edits' if dirty else ''} as {backup}")
+        switch = _run(["git", "switch", main_name])
+        if switch.returncode != 0:
+            return done + [f"could not switch to {main_name}: "
+                           f"{(switch.stderr or '').strip()[:200]}; left on {backup}"]
+    merged = _run(["git", "merge", "--ff-only", f"{remote}/{main_name}"])
+    if merged.returncode != 0:
+        return done + [f"could not fast-forward {main_name}: "
+                       f"{(merged.stderr or '').strip()[:200]}"]
+    done.append(f"{main_name} fast-forwarded to {remote}/{main_name}")
+    return done
+
+
 def main(argv: list[str]) -> int:
     _force_utf8_stdio()
     parser = argparse.ArgumentParser(
@@ -79,10 +118,23 @@ def main(argv: list[str]) -> int:
         action="store_true",
         help="exit 1 if primary checkout is off-main or behind",
     )
+    parser.add_argument(
+        "--heal",
+        action="store_true",
+        help="in the PRIMARY checkout, save any branch/edits to a local backup branch "
+        "and fast-forward main (never in a linked worktree)",
+    )
     args = parser.parse_args(argv)
 
     if not args.no_fetch:
         _run(["git", "fetch", "--prune", args.remote])
+
+    if args.heal and is_primary_checkout():
+        steps = heal(args.remote, args.base_ref.split("/", 1)[-1])
+        if steps:
+            print("Sync gate — healed the primary checkout:")
+            for step in steps:
+                print("  • " + step)
 
     branch = current_branch()
     behind = behind_count(args.base_ref)
