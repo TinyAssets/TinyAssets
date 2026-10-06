@@ -67,6 +67,11 @@ def session_of(config) -> str:
 def turn_of() -> str:
     """The live id of the served interactive turn this launch runs under, or ""."""
     from tinyassets import turn_interrupt
+    from tinyassets.request_answers import _launch
+
+    launch = _launch.get()
+    if launch:
+        return launch["turn"]
 
     live = turn_interrupt.current()
     return str(getattr(live, "live_id", "") or "")

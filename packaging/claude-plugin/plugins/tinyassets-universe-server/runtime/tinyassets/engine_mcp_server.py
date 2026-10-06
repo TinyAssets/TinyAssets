@@ -2560,6 +2560,38 @@ _WRITE_GRAPH_SYSTEMS_CHAPTER = """\
 
 """
 
+_WRITE_GRAPH_BRANCHES_CHAPTER += """
+    **Inbound webhooks:** ``target="webhook"`` supports ``operation="create"``
+    and ``operation="revoke"``. Create takes ``branch_id`` (one of YOUR OWN
+    branches) and returns a URL any service can POST to (GitHub, Stripe, a form,
+    another workflow); each POST runs that branch in your command center on your own
+    provider, with the body under ``webhook.payload`` and the raw bytes under
+    ``webhook.raw_base64``. The URL is shown ONCE: give it to your user right
+    away. ``read_graph target="webhooks"`` lists active hooks by token_prefix;
+    revoke takes ``payload_json`` ``{"token_prefix": "..."}``. Triggered runs
+    appear in ``read_graph target="runs"`` with run_name ``webhook``.
+
+    **Recurring work:** ``target="automation"`` supports ``operation="create"``,
+    ``operation="pause"``, ``operation="resume"`` and ``operation="delete"``.
+    Create takes ``payload_json`` with name, branch_def_id, optional inputs, and
+    exactly one of interval_seconds, not_before/delay_seconds (one wake) or
+    cron_expr. A cron_expr runs in the owner's timezone and is never stated
+    without it (``branches``).
+    Runs never overlap per branch:
+    a short interval_seconds reruns as each run ends; runs count to usage
+    limits. overlap ``skip``/``cancel_previous`` drops a due cadence run (a
+    one-shot wake waits) or stops the running one. Or event_type ``run_completed`` (event_filter
+    ``{"branch_def_id"}``), ``pending_request_answered`` or ``owner_message``
+    wakes it with ``inputs.event``.
+    None cancels an already-running job. Read back the trigger and its last run
+    before claiming work has stopped.
+
+    Requests and notifications raised from an agent or its workflow remember the
+    asking agent and run. Owner replies return to that agent through the shared
+    request path, independent of which chat the owner has selected. Do not relay
+    an answer by hand. Removed or retired askers fall back to main with a note.
+"""
+
 #: Chapter name -> text, in the order the resident index names them.
 _WRITE_GRAPH_CHAPTERS: dict[str, str] = {
     "capabilities": capabilities_skill(),
@@ -3083,33 +3115,11 @@ def write_graph(
     write research may do; any other session is refused and uses its own request
     tools instead.
 
-    FILE INPUTS, exact shape (an app attachment is already a six-field
-    reference; full example under FILE INPUTS below). Create with
-    ``"io_manifest": {"inputs": [{"name": "files", "io_type": "file_bundle",
-    "max_count": 4, "max_bytes": 4194304}]}`` - ``inputs`` and ``outputs`` are
-    the ONLY top-level manifest keys; any other key (``file_inputs``,
-    ``file_bundle_inputs``) is refused at create, patch and run, never ignored.
-    Add the matching ``state_schema`` field (``file_bundle`` -> ``{"name":
-    "files", "type": "list"}``; a single ``file`` -> ``"type": "dict"``), and a
-    ``source_code`` node with that field in ``input_keys`` plus
-    ``"tools_allowed": ["read_run_file"]`` that reads by keyword call
-    ``invoke_mcp_action("read_run_file", file_id=ref["file_id"], offset=0,
-    count=524288)`` -> ``{"bytes_base64", "next_offset", "eof"}``, looping until
-    ``eof``. Then ``run_graph inputs_json={"files": [<reference verbatim>]}``.
-    Repair a stored manifest with ``operation=patch`` payload
-    ``[{"op": "set_io_manifest", "io_manifest": {"inputs": [...]}}]``.
+    FILE INPUTS: read ``delivering`` for io_manifest, file_bundle and read_run_file.
 
     Read ``delivering`` for binary custody and linked delivery.
 
-    **Inbound webhooks:** ``target="webhook"`` supports ``operation="create"``
-    and ``operation="revoke"``. Create takes ``branch_id`` (one of YOUR OWN
-    branches) and returns a URL any service can POST to (GitHub, Stripe, a form,
-    another workflow); each POST runs that branch in your command center on your own
-    provider, with the body under ``webhook.payload`` and the raw bytes under
-    ``webhook.raw_base64``. The URL is shown ONCE: give it to your user right
-    away. ``read_graph target="webhooks"`` lists active hooks by token_prefix;
-    revoke takes ``payload_json`` ``{"token_prefix": "..."}``. Triggered runs
-    appear in ``read_graph target="runs"`` with run_name ``webhook``.
+    **Inbound webhooks:** read ``branches`` for create/revoke and the POST contract.
 
     **Background work (activities):** ``target="activity"`` with
     ``operation="start"`` and ``payload_json`` ``{"title": "...", "brief": "..."}``
@@ -3118,20 +3128,8 @@ def write_graph(
     ``"resume"`` take ``{"activity_id": "..."}``; stop keeps the result so far.
     Read them with ``read_graph target="activities"``.
 
-    **Recurring work:** ``target="automation"`` supports ``operation="create"``,
-    ``operation="pause"``, ``operation="resume"`` and ``operation="delete"``.
-    Create takes ``payload_json`` with name, branch_def_id, optional inputs, and
-    exactly one of interval_seconds, not_before/delay_seconds (one wake) or
-    cron_expr. A cron_expr runs in the owner's timezone and is never stated
-    without it (``branches``).
-    Runs never overlap per branch:
-    a short interval_seconds reruns as each run ends; runs count to usage
-    limits. overlap ``skip``/``cancel_previous`` drops a due cadence run (a
-    one-shot wake waits) or stops the running one. Or event_type ``run_completed`` (event_filter
-    ``{"branch_def_id"}``), ``pending_request_answered`` or ``owner_message``
-    wakes it with ``inputs.event``.
-    None cancels an already-running job. Read back the trigger and its last run
-    before claiming work has stopped.
+    **Recurring work:** read ``branches`` for automation create/pause/resume/delete,
+    owner timezone, overlap and event subscriptions.
 
     - ``operation="create"`` — create a new Branch graph from a complete Branch
       spec in ``payload_json`` (stored PRIVATE to your command center). A prompt node

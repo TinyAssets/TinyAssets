@@ -402,7 +402,7 @@ class AgentTurnCoordinator:
         """The session and live turn the owner's mid-turn messages are bound to."""
         return {
             "session_key": session_of(self.config),
-            "turn": getattr(self.interrupt, "live_id", "") or turn_of(),
+            "turn": turn_of() or getattr(self.interrupt, "live_id", ""),
         }
 
     def _interrupted(self):

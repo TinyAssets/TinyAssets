@@ -113,6 +113,24 @@ CREATE TABLE IF NOT EXISTS request_unmutes (
 );
 CREATE INDEX IF NOT EXISTS idx_pending_requests_status
     ON pending_requests(status, created_at);
+CREATE TABLE IF NOT EXISTS request_answer_deliveries (
+    request_id TEXT NOT NULL,
+    event_key TEXT NOT NULL,
+    origin_json TEXT NOT NULL,
+    outcome_json TEXT NOT NULL,
+    next_attempt_at REAL NOT NULL DEFAULT 0,
+    delivered_at REAL,
+    PRIMARY KEY (request_id, event_key)
+);
+CREATE TABLE IF NOT EXISTS request_asking_launches (
+    turn_id TEXT PRIMARY KEY,
+    session_key TEXT NOT NULL,
+    origin_json TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS request_workflow_agents (
+    workflow_id TEXT PRIMARY KEY,
+    origin_json TEXT NOT NULL
+);
 """
 
 #: There is NO ceiling on how many requests may be pending. ``MAX_PENDING = 50``
@@ -155,6 +173,7 @@ _ADDED_COLUMNS: tuple[tuple[str, str, str], ...] = (
     # Which agent asked (harness §4.18): answers route back to it, and its
     # dedupe and "don't ask again" are its own. ``main`` is only the seed.
     ("pending_requests", "agent", "TEXT NOT NULL DEFAULT 'main'"),
+    ("pending_requests", "asking_context_json", "TEXT NOT NULL DEFAULT '{}'"),
 )
 
 
@@ -302,7 +321,7 @@ def create_request(
     origin: str = ORIGIN_AGENT,
     items: list[dict[str, Any]] | None = None,
     request_id: str | None = None,
-    agent: str = "main",
+    agent: str | None = None,
 ) -> dict[str, Any] | None:
     """Record one pending request. Returns the row, or None on storage failure.
 
@@ -327,7 +346,11 @@ def create_request(
     """
     if origin not in ORIGINS:
         raise ValueError(f"unknown request origin {origin!r}")
-    agent = (agent or "main").strip() or "main"
+    from tinyassets.effectors.authenticated_external_call import _initiating_agent
+    from tinyassets.request_answers import capture
+
+    agent = (agent or _initiating_agent(universe_dir) or "main").strip() or "main"
+    asking_context = capture(universe_dir, agent)
     dedupe_key = scoped_dedupe_key(dedupe_key, agent)
     try:
         with _db(universe_dir) as conn:
@@ -386,8 +409,8 @@ def create_request(
             conn.execute(
                 "INSERT INTO pending_requests (request_id, kind, title, body, "
                 "fields_json, action_json, items_json, dedupe_key, status, "
-                "answer_json, created_at, resolved_at, origin, agent) "
-                "VALUES (?,?,?,?,?,?,?,?,'pending',NULL,?,NULL,?,?)",
+                "answer_json, created_at, resolved_at, origin, agent, asking_context_json) "
+                "VALUES (?,?,?,?,?,?,?,?,'pending',NULL,?,NULL,?,?,?)",
                 (
                     row_id,
                     kind,
@@ -400,6 +423,7 @@ def create_request(
                     time.time(),
                     origin,
                     agent,
+                    json.dumps(asking_context),
                 ),
             )
         fresh = get_request(universe_dir, row_id)
@@ -486,6 +510,8 @@ def _project(row: Any, answers: dict[str, dict[str, Any]] | None = None) -> dict
         "dedupe_key": row[11],
         "origin": row[12] or ORIGIN_AGENT,
         "agent": (row[14] if len(row) > 14 else None) or "main",
+        "asking_context": json.loads(row[15]) if len(row) > 15 else {},
+        "server_continuation": bool(len(row) > 15 and json.loads(row[15])),
         "items": items,
         "item_answers": _item_state(items, answers or {}, str(row[6])),
         "informational": informational,
@@ -496,7 +522,7 @@ def _project(row: Any, answers: dict[str, dict[str, Any]] | None = None) -> dict
 _SELECT = (
     "SELECT request_id, kind, title, body, fields_json, action_json, status, "
     "answer_json, created_at, resolved_at, feedback, dedupe_key, origin, "
-    "items_json, agent FROM pending_requests"
+    "items_json, agent, asking_context_json FROM pending_requests"
 )
 
 
@@ -516,7 +542,7 @@ def _projected(conn: sqlite3.Connection, rows: list[Any]) -> list[dict[str, Any]
                 context = conn.execute(
                     'SELECT context_json FROM pending_requests WHERE request_id=?',
                     (projected['request_id'],)).fetchone()
-                projected['server_continuation'] = bool(context and json.loads(context[0]))
+                projected['server_continuation'] |= bool(context and json.loads(context[0]))
         if projected['action'].get('type') == 'approve_action':
             from tinyassets.bound_requests import RequestRefused, card
             original_factory = conn.row_factory
@@ -689,6 +715,10 @@ def resolve_request(
             from tinyassets.connection_continuations import answered
 
             answered(conn, request_id, decision or status)
+            from tinyassets.request_answers import enqueue
+
+            enqueue(conn, request_id, {"status": status, "decision": decision,
+                                      "answer": merged, "feedback": feedback})
             row = conn.execute(
                 "SELECT kind, title, dedupe_key FROM pending_requests "
                 "WHERE request_id = ?",
@@ -825,6 +855,11 @@ def resolve_item(
                 )
                 closed = True
             kind = str(row[2] or "")
+            from tinyassets.request_answers import enqueue
+
+            enqueue(conn, request_id, {"item_id": item_id, "status": status,
+                                      "answer": answer, "feedback": feedback},
+                    key="item:" + item_id)
     except Exception as exc:  # noqa: BLE001 - report the reason, never break the turn
         logger.warning("pending_requests: resolve_item failed", exc_info=True)
         return {"error": "request_storage_unavailable", "detail": str(exc)}

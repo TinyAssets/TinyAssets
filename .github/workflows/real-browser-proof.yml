@@ -58,6 +58,8 @@ on:
       - "tinyassets/onboarding/ui_frame.py"
       - "tinyassets/ui_preview.py"
       - "tinyassets/onboarding/app.html"
+      - "tests/test_request_answer_routing.py"
+      - "tinyassets/request_answers.py"
       - "tinyassets/onboarding/__init__.py"
       - "tinyassets/onboarding/app_modules.py"
       - "tinyassets/onboarding/app_recovery.js"

@@ -2740,7 +2740,11 @@ def save_branch_definition(
             _BRANCH_DEFINITION_INSERT_SQL.replace("INSERT INTO", "INSERT OR REPLACE INTO", 1),
             values,
         )
-    return get_branch_definition(base_path, branch_def_id=branch_def_id)
+    saved = get_branch_definition(base_path, branch_def_id=branch_def_id)
+    from tinyassets.request_answers import remember_workflow
+
+    remember_workflow(base_path, saved)
+    return saved
 
 
 def create_branch_definition_once(
@@ -2768,7 +2772,12 @@ def create_branch_definition_once(
         ).fetchone()
     if row is None:  # pragma: no cover - insert/select share one transaction
         raise RuntimeError("branch definition insert was not observable")
-    return _branch_def_from_row(row), cursor.rowcount == 1
+    saved = _branch_def_from_row(row)
+    if cursor.rowcount == 1:
+        from tinyassets.request_answers import remember_workflow
+
+        remember_workflow(base_path, saved)
+    return saved, cursor.rowcount == 1
 
 
 def get_branch_definition(

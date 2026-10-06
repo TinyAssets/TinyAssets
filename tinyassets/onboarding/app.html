@@ -8423,10 +8423,7 @@
         }
         appendMessage("system","Connected. "+(result.receipt||""));
         await refreshRail();
-        // The owner's own line, as for any answered request: the command center
-        // hears that its ask was completed.
-        if(!result.server_continuation)sendTurn("Signed in to answer \""+frameTitle({title:cb.title})+"\"",undefined,
-          {relay:true,keepComposer:true,inputMethod:"app_action"});
+        // The shared answer transaction wakes the asking agent, on every device.
       }catch(err){
         appendMessage("system","The sign-in did not finish: "+((err&&err.message)||"unknown error")+". The request is still waiting; open it and sign in again.");
         refreshRail();
@@ -9838,6 +9835,8 @@
 
   function railBody(req){
     const box = document.createElement("div"); box.className = "rtab-body";
+    const asker=document.createElement("p");
+    asker.textContent="From: "+(req.agent_name||req.agent||"Your agent");box.appendChild(asker);
     if(req.action?.type==='notify'){
       const label=document.createElement('p');label.textContent='Notification · No answer needed';box.appendChild(label);
       const body=document.createElement('p');body.textContent=req.body||'';box.appendChild(body);
@@ -9860,6 +9859,11 @@
         if(result?.error)throw new Error(result.detail||result.error);
         renderRail(railCache.filter(row=>row.request_id!==req.request_id));
       }catch(e){status.textContent=e.message;dismiss.disabled=false;}};box.appendChild(dismiss);
+      const feedback=document.createElement('textarea');feedback.id='fb_'+req.request_id;
+      feedback.setAttribute('aria-label','Reply to notification');box.appendChild(feedback);
+      status.id='note_'+req.request_id;
+      const reply=document.createElement('button');reply.type='button';reply.className='btn';
+      reply.textContent='Reply';reply.onclick=()=>answerRail(req,'reply',status,[reply]);box.appendChild(reply);
       return box;
     }
     (req.items||[]).forEach(item=>{
@@ -9874,7 +9878,8 @@
       heading.appendChild(name);
       const status=document.createElement("span"); status.id="status_" + id;
       status.className="rtab-item-status"; name.appendChild(status); entry.appendChild(heading);
-      entry.appendChild(railBody({...item, request_id:id, parent_request_id:req.request_id}));
+      entry.appendChild(railBody({...item, agent:req.agent, server_continuation:true,
+        request_id:id, parent_request_id:req.request_id}));
       box.appendChild(entry);
     });
     if(req.items && req.items.length){
@@ -10012,10 +10017,16 @@
     }
     if(mode === "reply" && !req.item_id){
       if(!text){ note.textContent = "Type something to send."; return; }
-      if(fbEl) fbEl.value = "";
-      note.textContent = "Sent. The ask stays open until you accept, deny or clear it.";
-      sendTurn(replyLine(req, text), undefined,
-        {relay:true, keepComposer:true, inputMethod:"typed"});
+      buttons.forEach(b=>{b.disabled=true;});
+      try{
+        if(!req.replyDraft||req.replyDraft.text!==text)
+          req.replyDraft={text,id:crypto.randomUUID()};
+        const r=await MCP.answerRequest({request_id:req.request_id,reply:text,reply_id:req.replyDraft.id});
+        if(r&&r.error)throw new Error(r.detail||r.error);
+        if(fbEl)fbEl.value="";delete req.replyDraft;
+        note.textContent="Sent to the asking agent. The ask stays open.";
+      }catch(err){note.textContent="Couldn't send: "+err.message;}
+      finally{buttons.forEach(b=>{b.disabled=false;});}
       return;
     }
     const payload = { request_id: req.parent_request_id || req.request_id };
@@ -10048,9 +10059,10 @@
           note.textContent = "Setup is not confirmed: " + (r.detail || r.error)
             + ". This request stays open. You can retry it after checking the problem.";
         } else if(mode === "accept" && actionAsk && !installAsk){
-          note.textContent = "This ask can't be granted as written. Your agent has been told why.";
-          sendTurn(refusedGrantLine(req, r.detail || r.error), undefined,
-            {relay:true, keepComposer:true, inputMethod:"app_action"});
+          const relay=await MCP.answerRequest({request_id:payload.request_id,
+            reply:refusedGrantLine(req,r.detail||r.error),reply_id:crypto.randomUUID()});
+          note.textContent=relay&&relay.error?"This ask can't be granted: "+(r.detail||r.error)
+            :"This ask can't be granted as written. The asking agent has been told why.";
         } else {
           note.textContent = "Couldn't do that: " + (r.detail || r.error);
         }
@@ -10058,12 +10070,7 @@
       else {
         itemAnswered=!!req.item_id;
         if(r && r.suppressed === false) delete payload.dont_ask_again;
-        // The answer is the founder's own line in the thread. Live 2026-08-29:
-        // after each approval the command center sat idle until the founder typed
-        // "approved - go ahead", twice. The click IS that line; say it where
-        // the command center listens, through the same send path as any message.
-        // While a turn is in flight the line waits in sendTurn's queue and
-        // goes out when the turn ends - never dropped, never overlapping.
+        // The answer transaction queues the asking agent's next turn.
         const busy = $("btn-send").disabled;
         note.textContent = (r.receipt || (mode === "clear" ? "Cleared." : mode === "deny" ? "Denied." : "Sent."))
           + (busy ? " Your agent will see it when its current turn ends." : "");
@@ -10073,9 +10080,6 @@
           note.textContent=r.receipt||(mode==="accept"?"Copied. No message was sent.":"Closed. No message was sent.");
           if(mode==="accept"&&r.installed&&typeof AppUI!=="undefined"&&AppUI.fence(installEpoch,installHome))
             await AppUI.installedCopy(r);
-        }else if(!req.server_continuation){
-          sendTurn(answerLine(req, mode, payload), undefined,
-            {relay:true, keepComposer:true, inputMethod:"app_action"});
         }
       }
     }catch(err){

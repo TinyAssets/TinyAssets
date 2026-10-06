@@ -32,7 +32,8 @@ def test_notification_is_informational_and_opens_source_chat(app_url, browser):
     sheet = page.locator('#request-rail')
     assert sheet.get_by_text('Notification · No answer needed').is_visible()
     assert sheet.get_by_text('Attachment: file_report').is_visible()
-    assert sheet.locator('input:visible,textarea:visible').count() == 0
+    assert sheet.locator('input:visible,textarea:visible').count() == 1
+    assert sheet.get_by_role('textbox', name='Reply to notification').is_visible()
     assert sheet.get_by_role('button', name='Accept', exact=True).count() == 0
     sheet.get_by_role('button', name='Open chat', exact=True).click()
     assert page.evaluate('openedAgents') == ['social-manager']
@@ -119,11 +120,12 @@ def test_pending_requests_at_latest_and_new_arrival_answer(app_url, browser, wid
     page.get_by_role('button', name='A new request', exact=False).click()
     page.locator('#fb_new').fill('Go ahead')
     page.get_by_role('button', name='Accept', exact=True).click()
-    page.wait_for_function('answers.length === 1 && relays.length === 1')
+    page.wait_for_function(
+        '() => answers.length === 1 && !document.querySelector("#request-rail").open')
     assert page.evaluate('answers') == [
         {'request_id': 'new', 'feedback': 'Go ahead', 'values': {}}
     ]
-    assert page.evaluate('relays[0][0]') == 'Approved: "A new request" \u2014 Go ahead'
+    assert page.evaluate('relays') == []  # Routing is committed with the answer on the server.
     assert not page.locator('#request-rail').is_visible()
     page.locator('#needs-you-open').click()
     assert page.locator('#needs-you-items button').count() == 2
