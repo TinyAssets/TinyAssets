@@ -1,5 +1,10 @@
 # Current U1 delivery: D78 actual code-node engine integration
 
+Implementation pushed: **ff6506c7572c2fd6accf2bbb0c87f8d62bc3145a**; exact
+remote branch SHA asserted with `git ls-remote`. Hygiene against d1f84c63e5:
+**5 tests added, 0 removed, 0 tampering findings**, exit 0. The implementation
+worktree was clean after push. No history rewrite; the MCP stack is preserved.
+
 Started at d1f84c63e5 with the requested ff-only pull, already current. U1 only:
 fixed node-sandbox admission, its existing D9 nested jail, graph and authoring
 callers, and acceptance probes. U2 migration/rollback/startup files are untouched.
