@@ -93,6 +93,7 @@ def main() -> int:
         "/usr/local/libexec/ta-metadata-migration.py",
         "/usr/local/libexec/ta-volume-inventory.py",
         "/usr/local/libexec/ta-volume-migration.py",
+        "/usr/local/libexec/ta-role-start.py",
         "/usr/local/libexec/ta-launch.py",
         "/usr/local/libexec/ta-owner-launch.py",
         "/usr/local/libexec/ta-decoder.py",

@@ -160,3 +160,21 @@ def test_metadata_reconciliation_marks_incomplete_and_resumes(volume):
     stable = metadata(volume)
     run(volume)
     assert metadata(volume) == stable
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+def test_new_owner_center_after_forward_fails_closed(volume, reverse):
+    """Open admission-generation contract (concern 2026-10-06): a signup
+    after a stable forward refuses the next startup migration unchanged."""
+    setup(volume)
+    run(volume)
+    (volume / "carol").mkdir(mode=0o755)
+    (volume / "carol/universe.json").write_text("{}")
+    for path in (volume / "carol", volume / "carol/universe.json"):
+        os.chown(path, 1001, 1001)
+    with sqlite3.connect(volume / ".tinyassets.db") as db:
+        db.execute("INSERT INTO founder_home VALUES ('carol','carol')")
+    before = metadata(volume)
+    with pytest.raises((owner.MigrationRefused, inventory.InventoryRefused)):
+        run(volume, reverse=reverse, dry_run=True)
+    assert metadata(volume) == before
