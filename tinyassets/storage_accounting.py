@@ -574,6 +574,7 @@ ROOT_ENTRIES: dict[str, str] = {
     ),
     "scratch": "platform: shared scratch pool, never charged (storage-permanent-vs-scratch)",
     ".workspace-staging": "platform: transient checkout staging, swept by liveness",
+    ".agent-turn-runners": "platform: per-turn runner liveness claims, settled with the turn",
     ".consumer_liveness": "platform: process liveness locks",
     ".owner_leases.db": "platform: execution-owner leases and fences (owner_lease)",
     ".owner_tree": "platform: execution-owner tree member locks (owner_lease)",
