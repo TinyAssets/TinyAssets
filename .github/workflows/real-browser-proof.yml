@@ -83,6 +83,7 @@ on:
       - "tests/test_ui_preview.py"
       - "tests/test_publication_completion.py"
       - "tests/test_connect_free_ai_real_browser.py"
+      - "tests/test_agent_retire.py"
       - "tests/test_soul_memory_real_browser.py"
   workflow_dispatch:
 
