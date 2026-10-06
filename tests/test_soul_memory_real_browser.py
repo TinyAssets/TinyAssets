@@ -3,7 +3,6 @@ import json
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
-from playwright.sync_api import sync_playwright
 
 from tests.test_app_soul import app  # noqa: F401 -- shared owner handler fixture
 from tests.test_onboarding_app import _js_function
@@ -34,6 +33,10 @@ def editor(app):  # noqa: F811 -- imported pytest fixture
       loadSoul();loadMemory();
     '''
     document = f"<!doctype html><html><body>{markup}<script>{script}</script></body></html>"
+    # Imported here like the other real_browser suites: the slow-tests job has no
+    # Playwright, and a module-level import fails collection there.
+    from playwright.sync_api import sync_playwright
+
     with ThreadPoolExecutor(max_workers=1) as server, sync_playwright() as runtime:
         browser = runtime.chromium.launch()
         page = browser.new_page(viewport={"width": 390, "height": 844})
