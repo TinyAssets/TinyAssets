@@ -364,8 +364,8 @@
       background:var(--surface);color:var(--ink);font-size:1.5rem;cursor:pointer;touch-action:none;
       box-shadow:0 8px 24px rgba(0,0,0,.45);z-index:6;padding:0}
     .chat-cloud-bubble:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
-    .chat-cloud-badge{position:absolute;top:2px;right:2px;min-width:14px;height:14px;border-radius:7px;
-      background:var(--accent);border:2px solid var(--surface)}
+    .chat-cloud-badge{position:absolute;top:2px;right:2px;min-width:18px;height:18px;padding:0 3px;box-sizing:border-box;border-radius:9px;
+      background:var(--accent);border:2px solid var(--surface);font-size:11px;line-height:14px;text-align:center}
     .chat-cloud-bubble.is-thinking{animation:cloud-pulse 1.4s ease-in-out infinite}
     @keyframes cloud-pulse{0%,100%{box-shadow:0 0 0 0 rgba(120,140,255,.55)}50%{box-shadow:0 0 0 8px rgba(120,140,255,0)}}
     @media (prefers-reduced-motion:reduce){.chat-cloud-bubble.is-thinking{animation:none;outline:2px dashed var(--accent)}}
@@ -919,6 +919,13 @@
   // PKCE state lives in localStorage on native (survives the WebView being
   // backgrounded behind the tab) and sessionStorage on the web.
   const pkceStore = NATIVE ? localStorage : sessionStorage;
+  // The explicit public-page Run click survives the same-tab sign-in redirect.
+  const publicRunId=new URLSearchParams(window.location.search).get('run');
+  if(publicRunId&&/^[A-Za-z0-9_-]{1,160}$/.test(publicRunId)){
+    sessionStorage.setItem('ta_public_run',publicRunId);
+    const next=new URL(window.location.href);next.searchParams.delete('run');
+    history.replaceState(history.state,'',next.pathname+next.search+next.hash);
+  }
   async function openExternal(url){
     const B = NATIVE ? nativePlugin("Browser") : null;
     if(B){ try{ await B.open({url, presentationStyle:"popover"}); return; }catch(_e){} }
@@ -5810,7 +5817,7 @@
     }
     if(strand && typeof focusCommandCenter === "function") focusCommandCenter();
     $("btn-cloud-shrink").setAttribute("aria-expanded", String(s.mode==="open"));
-    if(s.mode==="open") setCloudUnread(false);
+    if(s.mode==="open" && typeof OwnerUnread!=="undefined") OwnerUnread.refresh();
   }
   function saveChatCloud(){
     if(!cloudState || !cloudStoreKey) return;
@@ -5929,7 +5936,7 @@
     return cloudClamp(s, cloudStageSize());
   }
   function setCloudUnread(on){
-    const badge=$("chat-cloud-badge"); if(badge) badge.hidden=!on;
+    const badge=$("chat-cloud-badge"); if(badge){badge.hidden=!on;badge.textContent=on?String(on):'';}
     paintCloudBubbleLabel();
   }
   function paintCloudBubbleLabel(){
@@ -5937,7 +5944,7 @@
     if(!bubble) return;
     const parts=["Open the chat with your agent"];
     if(bubble.classList.contains("is-thinking")) parts.push("your agent is working");
-    if(badge && !badge.hidden) parts.push("new message");
+    if(badge && !badge.hidden) parts.push(badge.textContent+" unread agent messages");
     bubble.setAttribute("aria-label", parts.join(", "));
   }
   // One pointer gesture (mouse, pen or touch): drag the window, drag its resize
@@ -6014,7 +6021,7 @@
       new MutationObserver(records=>{
         if(!cloudState || cloudState.mode!=="bubble") return;
         for(const r of records) for(const node of r.addedNodes){
-          if(node.classList && node.classList.contains("msg--universe")){ setCloudUnread(true); return; }
+          if(node.classList && node.classList.contains("msg--universe")){ OwnerUnread.refresh(); return; }
         }
       }).observe($("thread"),{childList:true});
     }
@@ -6068,6 +6075,7 @@
     // Powered or not, this is the command center's own chat. The owner and home were
     // taken above, from the same verified `me`.
     showView("chat"); startHeartbeat(); warmSession();
+    if(typeof AppUI!=="undefined"&&me?.universe_id)AppUI.resumePublicRun(me.universe_id);
     if(typeof refreshChatCloud === "function") refreshChatCloud();
     // Build 3's App Review Notes and submitted product surface are voice-dark.
     // The hosted web app may expose Voice, but a Capacitor shell must not make it
@@ -9200,6 +9208,59 @@
   // End protected inline approval cards.
 
   // Request IDs remain the single queue. Presentation never answers a request.
+  const OwnerUnread={
+    busy:false, scope:'', seen:new Set(), viewedAsks:new Set(),
+    syncScope(){
+      const scope=MCP._loginEpoch+':'+queueScope;
+      if(this.scope!==scope){this.scope=scope;this.seen.clear();this.viewedAsks.clear();this.paint({messages:0,asks:0});}
+    },
+    paint(data){
+      setCloudUnread(data.messages);
+      for(const id of ['needs-you-open','bubble-needs-you']){
+        const button=$(id);if(button)button.textContent='Needs you'+(data.asks?' ('+data.asks+')':'');
+      }
+    },
+    viewed(ids){
+      if(document.visibilityState!=='visible')return;
+      this.syncScope();
+      ids.forEach(id=>this.viewedAsks.add(id));this.refresh();
+    },
+    async refresh(){
+      if(typeof token!=='function'||!token()||typeof queueScope!=='string'||!queueScope||this.busy)return;
+      const epoch=MCP._loginEpoch,home=queueScope;
+      this.syncScope();
+      const current=()=>epoch===MCP._loginEpoch&&home===queueScope;
+      this.busy=true;
+      try{
+        const messages=[];
+        if(document.visibilityState==='visible'&&cloudState?.mode==='open'&&!document.querySelector('dialog[open]')){
+          const viewport=$('thread').getBoundingClientRect();
+          for(const node of $('thread').children){
+            const t=node.serverTurn;if(!t||t.speaker!=='universe'||!t.id)continue;
+            const rect=node.getBoundingClientRect(),id=String(t.id);
+            if(rect.height>0&&rect.bottom>Math.max(viewport.top,0)&&rect.top<Math.min(viewport.bottom,innerHeight)&&!this.seen.has('m:'+id))messages.push(id);
+          }
+        }
+        const asks=Array.from(this.viewedAsks).filter(id=>!this.seen.has('a:'+id)).slice(0,500);
+        const batch=messages.slice(0,500),writing=batch.length||asks.length;
+        const headers=authHeaders();if(writing)headers['Content-Type']='application/json';
+        const response=await fetch('/app/unread'+(writing?'':'?universe='+encodeURIComponent(home)),{
+          method:writing?'POST':'GET',headers,
+          ...(writing?{body:JSON.stringify({universe:home,messages:batch,asks})}:{})});
+        if(!current())return;
+        if(!response.ok)throw Error('Unread counts unavailable');
+        const data=await response.json();if(!current())return;
+        if(!Number.isInteger(data.messages)||!Number.isInteger(data.asks))throw Error('Invalid unread counts');
+        batch.forEach(id=>this.seen.add('m:'+id));asks.forEach(id=>{this.seen.add('a:'+id);this.viewedAsks.delete(id);});
+        this.paint(data);
+        $('chat-cloud-badge').title='';
+      }catch(error){if(current()){
+        setCloudUnread('?');$('chat-cloud-badge').title='Unread counts unavailable; retrying.';
+        for(const id of ['needs-you-open','bubble-needs-you'])if($(id))$(id).textContent='Needs you (?)';
+      }}
+      finally{this.busy=false;}
+    }
+  };
   const RequestSheets = {
     seen:new Set(), selected:null,
     open(id){
@@ -9219,6 +9280,8 @@
       $('request-history')?.setAttribute('hidden','');
       $('rail-add-panel').hidden=true; $('btn-rail-add').hidden=true;
       if(!sheet.open)sheet.showModal();
+      const folded=isSetupRequest(req)?foldedModelAccess(railCache):null;
+      OwnerUnread.viewed(folded?[id,folded.request_id]:[id]);
       if(typeof railDeepItem!=='undefined' && railDeepItem &&
          (typeof railLink==='undefined'||!railLink)){
         const item=$('item_'+id+'::'+railDeepItem);
@@ -9236,6 +9299,7 @@
       });
       if(!host.children.length)host.textContent='Nothing needs you right now.';
       if(!sheet.open)sheet.showModal();
+      OwnerUnread.viewed(railCache.filter(row=>row!==folded&&!isOptionalRequest(row)).map(row=>row.request_id));
     },
     history(){
       railOpen=null;this.selected=null;
@@ -9247,6 +9311,7 @@
     },
     reset(){
       this.seen.clear();this.selected=null;
+      OwnerUnread.viewedAsks.clear();OwnerUnread.seen.clear();OwnerUnread.paint({messages:0,asks:0});
       for(const id of ['request-rail','needs-you']){const node=$(id);if(node?.open)node.close();}
       if($('needs-you-items'))$('needs-you-items').textContent='';
     },
@@ -9288,9 +9353,7 @@
         }
       }
       const pending=visible.filter(row=>!isOptionalRequest(row));
-      for(const id of ['needs-you-open','bubble-needs-you']){
-        const button=$(id);if(button)button.textContent='Needs you'+(pending.length?' ('+pending.length+')':'');
-      }
+      OwnerUnread.refresh();
       const arriving=pending.filter(row=>!this.seen.has(row.request_id));
       if(!railOpen&&!$('request-rail').open)$('rail-head').textContent='Request history';
       pending.forEach(row=>this.seen.add(row.request_id));
@@ -9881,6 +9944,7 @@
     const installAsk=!!(req.action&&req.action.type==="install");
     const installEpoch=typeof AppUI!=="undefined"?AppUI.epoch:0;
     const installHome=typeof AppUI!=="undefined"?AppUI.home:"";
+    const installLogin=installAsk?MCP._loginEpoch:null,installScope=installAsk?queueScope:null;
     const fbEl = $("fb_" + req.request_id), muteEl = $("mute_" + req.request_id);
     const text = fbEl && fbEl.value.trim() ? fbEl.value.trim() : "";
     if(mode === "reply" && !req.item_id && /^(yes|yep|yeah|ok|okay|sure|approve|approved|no|nope|deny|denied)[.!\s]*$/i.test(text)){
@@ -9916,7 +9980,7 @@
       const r = req.action && req.action.type === "grant_patch_intake"
         ? await InlineApprovals.post("answer", payload)
         : await MCP.answerRequest(payload);
-      if(installAsk&&typeof AppUI!=="undefined"&&!AppUI.fence(installEpoch,installHome))return;
+      if(installAsk&&(installLogin!==MCP._loginEpoch||installScope!==queueScope))return;
       if(r && r.error){
         const actionAsk = req.action && req.action.type && req.action.type !== "answer";
         if(mode === "accept" && r.request_pending === true){
@@ -9973,12 +10037,12 @@
   // whatever loaded before, so a half-typed answer is not wiped). The 15-second
   // poll retries on its own; the button retries now.
   async function openInstallRequest(requestId){
-    const epoch=AppUI.epoch,home=AppUI.home;
+    const epoch=MCP._loginEpoch,home=queueScope;
     railOpen=requestId;
     setChatCloudMode("open");
     $("request-rail").classList.add("rail--open");
     await refreshRail();
-    if(!AppUI.fence(epoch,home))return;
+    if(epoch!==MCP._loginEpoch||home!==queueScope)return;
     paintRailChip();
     const entry=railNodes.get(requestId);
     if(entry&&entry.node){
@@ -10340,6 +10404,8 @@
   // the foreground (Android throttles timers while backgrounded, so the token can
   // lapse while the user is away — renew on resume before the next message).
   function startSessionKeepAlive(){
+    setInterval(()=>OwnerUnread.refresh(),5000);
+    $('thread').addEventListener('scroll',()=>OwnerUnread.refresh(),{passive:true});
     setInterval(()=>{ if(token()) ensureFreshToken().catch(()=>{}); }, 60*1000);
     // The agent may raise an ask at any point, including while the user is idle.
     setInterval(()=>{ refreshRail(); }, 15*1000);

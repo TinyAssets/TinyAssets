@@ -27,6 +27,23 @@ pytestmark = pytest.mark.usefixtures("cloud_runtime")
 _REAL_RENDER = ui_preview._render_spec
 
 
+def test_shared_immutable_release_can_be_installed_outside_discovery_shortlist(home, monkeypatch):  # noqa: F811
+    from tinyassets import command_center_picker
+    from tinyassets.api.pending_requests import try_package
+
+    ask = _ask(OWNER, UNIVERSE, _publish_action())
+    done = wait_for_preview(home, _answer(OWNER, UNIVERSE, ask["request_id"]))
+    monkeypatch.setattr(command_center_picker, "working_packages", lambda: [])
+    monkeypatch.setattr(command_center_picker, "working_systems", lambda: [])
+    with _as(BOB):
+        request = try_package(universe_id=BOB_UNIVERSE,
+                              payload={"agent_definition_id": done["agent_definition_id"]})
+        assert "request_id" in request, request
+        pending = list_requests(universe_id=BOB_UNIVERSE)["pending"]
+        assert any(row["request_id"] == request["request_id"] and
+                   row["action"]["type"] == "install" for row in pending)
+
+
 @pytest.fixture(autouse=True)
 def renderer(tmp_path, monkeypatch):
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
@@ -68,7 +85,7 @@ def test_real_publish_and_update_reach_owner_answer(home, renderer):  # noqa: F8
         assert done.get("published"), done
         receipt = done["completion"]
         assert receipt["listing_id"] == done["agent_definition_id"]
-        assert receipt["share_url"] is None  # No listing-specific public URL exists.
+        assert receipt["share_url"] == "https://tinyassets.io/app/run/" + receipt["listing_id"]
         assert receipt["change_kind"] == ("new" if version == 1 else "update")
         assert receipt["version"] == version
         assert receipt["preview_status"] == "ready"
