@@ -12,6 +12,19 @@ _launch = ContextVar("request_asking_launch", default=None)
 _LOG = logging.getLogger(__name__)
 
 
+def _admin(home, actor):
+    """An explicit admin row for this actor; co-admins never make routing ambiguous.
+
+    Answer routing is keyed on the recorded asker's owner, not on the universe
+    having exactly one admin (that is notification fan-out's rule).
+    """
+    from tinyassets.daemon_server import list_universe_acl
+
+    return bool(actor) and any(
+        row.get("actor_id") == actor and row.get("permission") == "admin"
+        for row in list_universe_acl(home.parent, universe_id=home.name))
+
+
 def remember_workflow(base, branch):
     """Remember which agent authored this workflow, never a field in its JSON."""
     from pathlib import Path
@@ -68,13 +81,12 @@ def workflow_launch(home, *, owner, session_key, run_id, workflow_id):
 
     from tinyassets import agent_activities, turn_interrupt
     from tinyassets.effectors.authenticated_external_call import _initiating_agent
-    from tinyassets.owner_notifications import _owner_of
     from tinyassets.storage.pending_requests import _db
 
-    if _owner_of(home.parent, home.name) != owner:
-        # Routing is narrower than workflow execution authority. An ambiguous
-        # notification owner holds answers; it cannot revoke an admitted run.
-        _LOG.warning("Workflow answer provenance unavailable: owner is ambiguous")
+    if not _admin(home, owner):
+        # Routing is narrower than workflow execution authority. A principal
+        # that is not an admin here records no asker; the run still proceeds.
+        _LOG.warning("Workflow answer provenance unavailable: principal is not an admin")
         yield None
         return
     agent = _initiating_agent(home)
@@ -115,11 +127,10 @@ def capture(home, agent):
     from tinyassets.addressed_agents import AgentNotAddressable, resolve
     from tinyassets.auth.middleware import current_identity_or_none
     from tinyassets.engine_steering import _route_params
-    from tinyassets.owner_notifications import _owner_of
 
     identity = current_identity_or_none()
-    owner = _owner_of(home.parent, home.name)
-    if not identity or identity.user_id != owner:
+    owner = identity.user_id if identity else ""
+    if not _admin(home, owner):
         return {}  # Internal/platform creation without an owner conversation.
     try:
         addressed = resolve(home.parent, universe_id=home.name, owner=owner, agent_id=agent)
@@ -140,10 +151,9 @@ def capture(home, agent):
 def destination(home, origin):
     from tinyassets.addressed_agents import AgentNotAddressable, resolve
     from tinyassets.custom_agents import _agent_connect
-    from tinyassets.owner_notifications import _owner_of
 
     owner = origin.get("owner")
-    if not owner or origin.get("home") != home.name or _owner_of(home.parent, home.name) != owner:
+    if origin.get("home") != home.name or not _admin(home, owner):
         raise PermissionError("request_owner_changed")
     agent = origin.get("agent") or "main"
     try:

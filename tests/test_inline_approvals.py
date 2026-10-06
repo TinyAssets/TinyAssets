@@ -203,6 +203,42 @@ def test_edit_invalidates_token_and_denial_records_one_wake(case):
         )
 
 
+@pytest.mark.parametrize("choice", ["approve", "deny"])
+def test_protected_decision_wakes_once_and_never_as_a_generic_answer(case, monkeypatch, choice):
+    from tinyassets.daemon_server import grant_universe_access
+    from tinyassets.effectors import authenticated_external_call as effector
+    from tinyassets.request_continuations import recover
+
+    home, _card, session, raw = case
+
+    class Proxy:
+        def request(self, verb, request):
+            return {"status": 200, "body": "sent", "headers": {}}
+
+    monkeypatch.setattr(effector, "_open_connection_proxy", lambda **kw: Proxy())
+    # With the owner an admin, provenance is recorded, so the generic queue's
+    # skip -- not a missing origin -- is what keeps this at one wake.
+    grant_universe_access(home.parent, universe_id=home.name, actor_id="user-1",
+                          permission="admin", granted_by="user-1")
+    raw["arguments"]["request"]["body"] = "owned body\n"
+    identity = Identity(user_id="user-1", username="owner",
+                        capabilities=["tinyassets.universe.write"])
+    with identity_context(identity), turn_interrupt.interactive_turn("user-1", home.name):
+        card = bound.capture(home, raw)
+    assert pending_requests.get_request(home, card["request_id"])["asking_context"]["owner"] == (
+        "user-1")
+    preview = bound.preview(home, card["request_id"], session)
+    bound.decide(home, decision(preview, choice), session)
+    with closing(bound.connect(home)) as conn:
+        assert conn.execute(
+            "SELECT COUNT(*) FROM activity_events WHERE wake_required=1").fetchone()[0] == 1
+        assert conn.execute("SELECT COUNT(*) FROM request_answer_deliveries").fetchone()[0] == 0
+    woken = []
+    assert recover(home, lambda _h, outcome: woken.append(outcome) or {"reply": "ok"}) == 1
+    assert recover(home, lambda *_: pytest.fail("second wake")) == 0
+    assert len(woken) == 1
+
+
 def test_secrets_and_forged_provenance_are_rejected(case):
     _, _, _, raw = case
     with pytest.raises(bound.RequestRefused):

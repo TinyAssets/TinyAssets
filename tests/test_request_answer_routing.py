@@ -240,16 +240,184 @@ def test_workflow_provenance_preserves_live_steering_turn(world):
         assert conn.execute("SELECT count(*) FROM request_asking_launches").fetchone()[0] == 2
 
 
-def test_ambiguous_notification_owner_does_not_revoke_workflow_execution(world):
-    from tinyassets.daemon_server import grant_universe_access
-
+def test_non_admin_principal_records_no_asker_but_keeps_running(world):
     home, _ = world
-    grant_universe_access(home.parent, universe_id=home.name, actor_id=OTHER,
-                          permission="admin", granted_by=OWNER)
-    with request_answers.workflow_launch(home, owner=OWNER, session_key="node:agent",
+    with request_answers.workflow_launch(home, owner=OTHER, session_key="node:agent",
                                          run_id="run", workflow_id="workflow") as origin:
         assert origin is None
+    with identity_context(Identity(user_id=OTHER, username=OTHER, capabilities=[])):
         assert request_answers.capture(home, "main") == {}
+
+
+def co_admin(home):
+    from tinyassets.daemon_server import grant_universe_access
+
+    grant_universe_access(home.parent, universe_id=home.name, actor_id=OTHER,
+                          permission="admin", granted_by=OWNER)
+
+
+def test_co_admin_does_not_block_the_recorded_owner(world):
+    """Review 4532 r1: a second admin made every answer `not_found`."""
+    home, agent = world
+    before = ask(home, agent, title="Asked before the grant")
+    co_admin(home)
+    after = ask(home, agent, title="Asked after the grant")
+    assert after["asking_context"]["owner"] == OWNER
+    with request_answers.workflow_launch(home, owner=OWNER, session_key="node:agent",
+                                         run_id="run", workflow_id="workflow") as origin:
+        assert origin["owner"] == OWNER
+    for row in (before, after):
+        assert not answer_request(universe_id=home.name, payload={
+            "request_id": row["request_id"], "values": {"reply": "Still mine"}}).get("error")
+    assert answer_request(universe_id=home.name, payload={
+        "request_id": before["request_id"], "reply": "And a reply", "reply_id": "co-admin",
+    })["status"] == "reply_queued"
+    received = drain(home)
+    assert [r["agent"] for r in received] == [agent] * 3
+    assert {r["owner"] for r in received} == {OWNER}
+
+
+@pytest.mark.parametrize("shape", ["values", "reply"])
+def test_co_admin_cannot_answer_or_reply_to_anothers_asker(world, shape):
+    """Passes the admin gate, so this exercises the recorded-owner fence itself."""
+    home, agent = world
+    row = ask(home, agent)
+    co_admin(home)
+    payload = ({"values": {"reply": "steal"}} if shape == "values"
+               else {"reply": "steal", "reply_id": "cross-owner"})
+    with identity_context(Identity(user_id=OTHER, username=OTHER,
+                                   capabilities=["tinyassets.universe.write"])):
+        result = answer_request(universe_id=home.name,
+                                payload={"request_id": row["request_id"], **payload})
+    assert result["error"] == "not_found"
+    assert store.get_request(home, row["request_id"])["status"] == "pending"
+    with closing(store._db(home)) as conn:
+        assert conn.execute("SELECT count(*) FROM request_answer_deliveries").fetchone()[0] == 0
+    assert drain(home) == []
+
+
+@pytest.mark.parametrize("shape", ["values", "reply"])
+def test_caller_supplied_agent_in_an_answer_is_ignored(world, shape):
+    home, agent = world
+    row = ask(home, agent)
+    forged = {"agent": "main", "agent_id": "main", "owner": OTHER,
+              "asking_context": {"owner": OTHER, "agent": "main", "home": "other-home"}}
+    payload = ({"values": {"reply": "Route me"}} if shape == "values"
+               else {"reply": "Route me", "reply_id": "forged"})
+    result = answer_request(universe_id=home.name,
+                            payload={"request_id": row["request_id"], **payload, **forged})
+    assert not result.get("error"), result
+    received, = drain(home)
+    assert received["agent"] == agent and received["owner"] == OWNER
+    assert received["home"] == home.name
+
+
+def test_answers_cross_the_real_app_route_table(world, monkeypatch):
+    """`/app/approvals/answer` as mounted, with the real cookie and origin checks."""
+    from starlette.applications import Starlette
+    from starlette.testclient import TestClient
+
+    from tests.owner_answer import session_cookie
+    from tinyassets import onboarding
+    from tinyassets.auth.middleware import current_identity
+
+    home, agent = world
+    question = ask(home, agent)
+    with turn_interrupt.interactive_turn(OWNER, home.name, agent_id=agent):
+        approval = store.create_request(
+            home, kind="Approve", title="Send the post", body="", fields=[],
+            action={"type": "approve_action"}, dedupe_key="approve-route", agent=agent)
+    assert approval["asking_context"]["agent"] == agent
+    monkeypatch.setenv("TINYASSETS_ONBOARDING_APP", "1")
+    monkeypatch.setattr(onboarding, "app_config",
+                        lambda: {"resource": "https://tinyassets.io/mcp"})
+    identity = current_identity()
+    cookie = session_cookie()
+    inner = Starlette(routes=onboarding.onboarding_routes())
+
+    async def authenticated(scope, receive, send):
+        # Stands in for the bearer middleware; the subject under test is the door.
+        with identity_context(identity):
+            await inner(scope, receive, send)
+
+    client = TestClient(authenticated, base_url="https://tinyassets.io")
+
+    def post(body, *, with_cookie=True):
+        headers = {"origin": "https://tinyassets.io"}
+        if with_cookie:
+            headers["cookie"] = cookie
+        return client.post("/app/approvals/answer", headers=headers,
+                           json={"universe_id": home.name, **body})
+
+    answered = post({"request_id": question["request_id"], "values": {"reply": "Via HTTP"}})
+    assert answered.status_code == 200, answered.text
+    assert answered.json()["status"] == "answered"
+    replied = post({"request_id": question["request_id"], "reply": "And more",
+                    "reply_id": "http-reply"})
+    assert replied.json()["status"] == "reply_queued"
+    approve_reply = {"request_id": approval["request_id"], "reply": "Yes, send it",
+                     "reply_id": "approve-reply"}
+    # A reply cannot satisfy a protected approval without the owner session.
+    refused = post(approve_reply, with_cookie=False)
+    assert (refused.status_code, refused.json()["error"]) == (
+        403, "interactive_approval_required")
+    decided = post({"request_id": approval["request_id"], "decision": "allowed"})
+    assert (decided.status_code, decided.json()["error"]) == (409, "preview_required")
+    assert store.get_request(home, approval["request_id"])["status"] == "pending"
+    assert post(approve_reply).json()["status"] == "reply_queued"
+    assert store.get_request(home, approval["request_id"])["status"] == "pending"
+    received = drain(home)
+    assert [(r["request_id"], r["agent"]) for r in received] == [
+        (question["request_id"], agent), (question["request_id"], agent),
+        (approval["request_id"], agent)]
+
+
+def test_bearer_reply_cannot_reach_a_protected_approval(world):
+    from tinyassets.api.pending_requests import answer_request as bearer_answer
+
+    home, agent = world
+    with turn_interrupt.interactive_turn(OWNER, home.name, agent_id=agent):
+        approval = store.create_request(
+            home, kind="Approve", title="Send the post", body="", fields=[],
+            action={"type": "approve_action"}, dedupe_key="approve-bearer", agent=agent)
+    result = bearer_answer(universe_id=home.name, payload={
+        "request_id": approval["request_id"], "reply": "Approved", "reply_id": "bearer"})
+    assert result["error"] == "interactive_approval_required"
+    assert drain(home) == []
+
+
+def test_resolving_a_protected_approval_enqueues_no_generic_answer(world):
+    """`bound_requests` owns that wake; any `resolve_request` path must not add a second."""
+    home, agent = world
+    with turn_interrupt.interactive_turn(OWNER, home.name, agent_id=agent):
+        approval = store.create_request(
+            home, kind="Approve", title="Send the post", body="", fields=[],
+            action={"type": "approve_action"}, dedupe_key="approve-resolve", agent=agent)
+    assert approval["asking_context"]
+    assert store.resolve_request(home, approval["request_id"], status="dismissed")
+    with closing(store._db(home)) as conn:
+        assert conn.execute("SELECT count(*) FROM request_answer_deliveries").fetchone()[0] == 0
+
+
+@pytest.mark.parametrize("result", [{"interrupted": True}, {"status": "failed"},
+                                    {"error": "provider_unavailable"}])
+def test_delivery_is_enqueued_once_and_delivered_at_least_once(world, result):
+    """converse has no idempotency key: an unacknowledged turn is sent again."""
+    home, agent = world
+    row = ask(home, agent)
+    payload = {"request_id": row["request_id"], "values": {"reply": "Once"}}
+    assert answer_request(universe_id=home.name, payload=payload)["status"] == "answered"
+    assert answer_request(universe_id=home.name, payload=payload)["error"] == "already_resolved"
+    with closing(store._db(home)) as conn:
+        assert conn.execute("SELECT count(*) FROM request_answer_deliveries").fetchone()[0] == 1
+    sent = []
+    assert request_continuations.recover(
+        home, run=lambda _h, p: sent.append(p) or result) == 0
+    with closing(store._db(home)) as conn, conn:
+        conn.execute("UPDATE request_answer_deliveries SET next_attempt_at=0")
+    sent += drain(home)
+    assert [p["request_id"] for p in sent] == [row["request_id"]] * 2
+    assert request_continuations.recover(home, run=lambda *_: pytest.fail("resent")) == 0
 
 
 def test_delivery_failure_backs_off_and_does_not_starve_other_answers(world, monkeypatch):

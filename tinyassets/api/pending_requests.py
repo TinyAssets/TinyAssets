@@ -2777,8 +2777,12 @@ def _answer_request(*, universe_id: str = "", payload: Any = None,
     row = get_request(udir, request_id) if request_id else None
     if row is None:
         return {"error": "not_found", "resource": "pending_request"}
-    if row["action"].get("type") == "approve_action" and "reply" not in document:
-        return {"error": ("preview_required" if owner_session else "interactive_approval_required"),
+    if row["action"].get("type") == "approve_action" and (
+            "reply" not in document or owner_session is None):
+        # Even a reply needs the owner session here: words in the asker's
+        # thread must not stand in for the protected card's decision.
+        return {"error": ("preview_required" if owner_session is not None
+                          else "interactive_approval_required"),
                 "detail": "Open the protected inline owner card to decide this action."}
     from tinyassets import request_answers
 
