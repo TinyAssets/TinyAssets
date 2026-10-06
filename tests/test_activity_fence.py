@@ -223,3 +223,32 @@ def test_a_running_command_is_killed_once_its_activity_stops(monkeypatch):
     run = universe_tools.ToolRun(exit_code=-9, output=b"", killed=killed, elapsed=0.4)
     assert "activity stopped running" in universe_tools._trailer(
         run, universe_tools.DEFAULT_LIMITS, 30.0)
+
+
+def test_the_command_that_yields_never_gets_past_its_ta_call():
+    """The yielding ``ta`` request is answered only after the jail is dead, so
+    no later line of that command runs; other requests pass straight through."""
+    import threading
+    import time
+
+    from tinyassets.universe_tools import _halting
+
+    state = {"stopped": False}
+
+    def dispatch(message):
+        if message.get("name") == "write_graph":
+            state["stopped"] = True          # the owner request this call raised
+        return {"result": message.get("name")}
+
+    ended = threading.Event()
+    halting = _halting(dispatch, lambda: STOPPED if state["stopped"] else None, ended)
+    assert halting({"name": "read_graph"}) == {"result": "read_graph"}
+    answers = []
+    worker = threading.Thread(target=lambda: answers.append(halting({"name": "write_graph"})))
+    worker.start()
+    time.sleep(0.3)
+    assert answers == [], "the yielding call was answered while the jail still ran"
+    ended.set()
+    worker.join(timeout=5)
+    assert answers == [{"error": STOPPED}]
+    assert _halting(dispatch, None, ended) is dispatch

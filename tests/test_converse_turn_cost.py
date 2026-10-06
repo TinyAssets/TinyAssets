@@ -94,7 +94,12 @@ MAX_SERVED_TOOL_DESCRIPTION_CHARS = 500
 # Native rows measure the platform-supplied payload using real MCP schemas, not
 # opaque CLI-added system instructions or native tools. Those release blockers
 # are recorded in docs/concerns/2026-10-06-k2-native-and-box-inventories.md.
-MAX_STOCK_RESIDENT_CHARS = 4_000
+# 2026-10-06: 4,000 -> 4,600. #4520 (Muse package) added seven starter skills
+# whose index lines are resident: system 2,972 chars, totals 4,546 (http) /
+# 4,482 (claude) / 4,414 (codex), about +137 tokens per round-trip by the
+# chars/4 estimate. The skills are the shipped stock; trimming their
+# descriptions is that package's call.
+MAX_STOCK_RESIDENT_CHARS = 4_600
 
 
 @pytest.mark.parametrize("adapter", ["http", "claude", "codex"])

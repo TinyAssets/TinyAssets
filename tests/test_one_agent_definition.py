@@ -76,12 +76,32 @@ def _http(protocol, definition):
 
 
 def _http_capabilities():
-    # The HTTP loop's tools are the engine session's (agent_turn_coordinator
-    # ._open_tools -> open_engine_tools), so every call crosses the route.
+    # The HTTP loop's tool session is the engine route's: open the coordinator's
+    # own tool session and see what it dials.
+    from types import SimpleNamespace
+
     from tinyassets import agent_turn_coordinator
 
-    source = Path(agent_turn_coordinator.__file__).read_text(encoding="utf-8")
-    route = "return open_engine_tools(" in source
+    opened = []
+
+    def open_engine_tools(**kwargs):
+        opened.append(kwargs)
+        return SimpleNamespace()
+
+    coordinator = SimpleNamespace(
+        adapter=SimpleNamespace(engine_identity=lambda context, config: ("owner", "center")),
+        context=None, interrupt=None,
+        config=ModelConfig(engine_mcp_enabled=True, engine_mcp_actor_id="owner",
+                           engine_mcp_graph_id="center"))
+    coordinator.steering = lambda: agent_turn_coordinator.AgentTurnCoordinator.steering(
+        coordinator)
+    original = agent_turn_coordinator.open_engine_tools
+    agent_turn_coordinator.open_engine_tools = open_engine_tools
+    try:
+        agent_turn_coordinator.AgentTurnCoordinator._open_tools(coordinator, 1.0)
+    finally:
+        agent_turn_coordinator.open_engine_tools = original
+    route = [(o["actor_id"], o["graph_id"]) for o in opened] == [("owner", "center")]
     return _capabilities(route_tools=route, kind="engine_inference")
 
 
@@ -91,7 +111,7 @@ def _capabilities(*, route_tools: bool, kind: str) -> frozenset[str]:
         # Steering and the activity fence are engine-route middleware, so any
         # executor whose tools all cross the route has them.
         found |= {"engine_route_tools", "owner_steering"}
-    if route_tools and _activity_launches(kind):
+    if route_tools and _activity_launches(kind) and _activity_stops(kind):
         found.add("activities")
     return frozenset(found)
 
@@ -111,6 +131,50 @@ def _activity_launches(kind: str) -> bool:
         except Exception:  # noqa: BLE001 - a refusal is the answer
             return False
         return router.launches == [("writer", kind)]
+
+
+def _activity_stops(kind: str) -> bool:
+    """Whether a yield stops this kind's agent: a native call is cancelled
+    mid-flight; an HTTP turn starts no further round."""
+    import tempfile
+
+    from tests.test_activity_http_yield import _LaunchRecorder, _live_activity_adapter
+    from tinyassets import agent_activities
+    from tinyassets.activity_runner import ActivityYielded
+
+    class Endless:
+        launches = []
+
+        async def call(self, *args, **kwargs):
+            await asyncio.Event().wait()
+
+    async def yielded_during(adapter, config, context, router):
+        task = asyncio.ensure_future(adapter.infer(
+            router=router, prompt="p", system="", config=config, context=context,
+            observer=None, kind=kind))
+        await asyncio.sleep(0.3)
+        binding = adapter.activity_binding
+        agent_activities.wait_on(binding.universe_dir, binding.activity_id, "req-1", "asked")
+        await asyncio.wait_for(task, timeout=5)
+
+    with tempfile.TemporaryDirectory() as scratch:
+        adapter, config, context, _ = _live_activity_adapter(Path(scratch), name="u-guard")
+        try:
+            if kind == "native_agent":
+                asyncio.run(yielded_during(adapter, config, context, Endless()))
+            else:
+                binding = adapter.activity_binding
+                agent_activities.wait_on(binding.universe_dir, binding.activity_id,
+                                         "req-1", "asked")
+                router = _LaunchRecorder()
+                asyncio.run(adapter.infer(router=router, prompt="p", system="",
+                                          config=config, context=context, observer=None,
+                                          kind=kind))
+        except ActivityYielded:
+            return True
+        except Exception:  # noqa: BLE001 - anything else is not a clean stop
+            return False
+        return False
 
 
 def _claude(definition, tmp_path, monkeypatch):
@@ -140,18 +204,36 @@ def _claude(definition, tmp_path, monkeypatch):
     servers = json.loads(Path(argv[argv.index("--mcp-config") + 1]).read_text())["mcpServers"]
     route_only = list(servers) == ["tinyassets"] and servers["tinyassets"]["url"].startswith(
         route.url + "?")
-    # The route lists the tools its signed launch grant names (ModelInventory),
-    # which are the definition's: one registration, one schema.
+    # What Claude is shown is what the route lists for Claude's own URL: ask
+    # the route, through its middleware, with that URL's query.
     query = parse_qs(urlsplit(servers["tinyassets"]["url"]).query)
-    from tinyassets.served_tools import granted_tools, model_tools, verified_launch_grant
+    from tinyassets.served_tools import granted_tools, verified_launch_grant
 
     signed = verified_launch_grant("k", "", "", query["grant"][0])
-    tools = definition.tools if (native_tools_off and route_only
-                                 and signed == granted_tools(config)
-                                 and set(model_tools(config)) == set(FOUR_MODEL_TOOLS)) else ()
+    listed = _listed_for(servers["tinyassets"]["url"], monkeypatch)
+    tools = tuple(AgentTool(t.name, t.description or "", dict(t.inputSchema or {}))
+                  for t in listed) if (native_tools_off and route_only
+                                       and signed == granted_tools(config)) else ()
     system = argv[argv.index("--system-prompt") + 1]
     return tools, system, _capabilities(route_tools=native_tools_off and route_only,
                                         kind="native_agent")
+
+
+def _listed_for(url, monkeypatch):
+    """The tools the engine route lists to a client that dialled ``url``."""
+    from types import SimpleNamespace
+
+    from fastmcp.server import dependencies
+
+    from tinyassets.engine_mcp_server import mcp
+
+    params = {key: values[0] for key, values in parse_qs(urlsplit(url).query).items()}
+    with monkeypatch.context() as patch:
+        patch.setattr(dependencies, "get_http_request",
+                      lambda: SimpleNamespace(query_params=params, scope={}))
+        listed = asyncio.run(mcp.list_tools())
+    return [Tool(name=t.name, description=t.description, inputSchema=t.parameters)
+            for t in listed]
 
 
 def _codex(definition, tmp_path, monkeypatch):
@@ -243,11 +325,27 @@ def _assert_refused_for_agent_turns(kind):
     """A kind without an agent executor never runs an agent turn with less."""
     family, _, name = kind.partition(":")
     if family == "http":
+        # No codec -> executor_tools False (declared_models / discovery) ->
+        # model policy excludes the model from any turn that needs tools.
+        from tinyassets.providers.model_policy import (
+            ConnectionModels,
+            Interaction,
+            Model,
+            ModelPolicy,
+            _ineligibility,
+        )
         from tinyassets.providers.protocol_encoders import agent_codec_for
 
-        # No codec -> executor_tools False -> model_policy excludes it from any
-        # turn that needs tools ("executor_unsupported").
         assert agent_codec_for(name) is None
+        model = Model("m", tools=True, modalities=frozenset({"text"}))
+        connection = ConnectionModels(
+            "c", "scope", "http", "fresh", owner_filtered=True,
+            executor_tools=agent_codec_for(name) is not None, models=(model,))
+        interaction = Interaction(needs_tools=True, modalities=frozenset({"text"}),
+                                  charge_components=frozenset())
+        policy = ModelPolicy(generation=1, mode="automatic", fallbacks=())
+        assert _ineligibility(connection, model, policy, interaction, explicit=False) == (
+            "executor_unsupported", "")
         return
     from tinyassets.exceptions import ProviderAuthorityHeldError
     from tinyassets.providers.model_policy import ModelRef
@@ -266,3 +364,59 @@ def test_the_definition_is_the_route_s_four_tools():
     assert [t.name for t in definition.tools] == list(FOUR_MODEL_TOOLS)
     assert all(t.input_schema.get("type") == "object" for t in definition.tools)
     assert definition.capabilities == AGENT_CAPABILITIES
+
+
+@pytest.mark.parametrize("budgeted", [False, True])
+def test_the_turn_gives_every_executor_the_same_instructions(tmp_path, monkeypatch, budgeted):
+    """The coordinator, not a renderer, decides the instructions a round
+    carries. HTTP and native rounds of the same turn get the same text,
+    the request-budget line included (it was HTTP-only until 2026-10-06)."""
+    import contextlib
+    from types import SimpleNamespace
+
+    from tests.test_turn_interrupt import _NativeAdapter
+    from tinyassets.agent_turn_coordinator import AgentTurnCoordinator
+    from tinyassets.daemon_server import grant_universe_ownership, set_founder_home
+
+    class Seen(Exception):
+        pass
+
+    route_tools = tuple(_route_tools())
+
+    def rendered(kind):
+        base = tmp_path / kind
+        (base / "u-guard").mkdir(parents=True)
+        set_founder_home(base, founder_sub="owner", universe_id="u-guard",
+                         platform_generated=True)
+        grant_universe_ownership(base, universe_id="u-guard", owner_id="owner")
+        seen = {}
+
+        class Adapter(_NativeAdapter):
+            async def infer(self, *, router, prompt, system, config, context, observer, kind):
+                seen["system"] = system
+                raise Seen()
+
+        coordinator = AgentTurnCoordinator(
+            adapter=Adapter(),
+            router=SimpleNamespace(selected_agent_execution_kind=lambda selection: kind),
+            prompt="Reply OK.", system=INSTRUCTIONS,
+            universe_context=SimpleNamespace(
+                universe_dir=base / "u-guard", agent_model_plan=None,
+                model_selection=SimpleNamespace(connection_id="source", model_id="")),
+            config=ModelConfig(absolute_cap_s=60.0),
+        )
+
+        @contextlib.asynccontextmanager
+        async def no_tools(timeout):
+            yield SimpleNamespace(tools=route_tools)
+
+        coordinator._open_tools = no_tools
+        line = SimpleNamespace(prompt_line=lambda: "You have 3 requests left today.")
+        coordinator._daily_budget = lambda: line if budgeted else None
+        with pytest.raises(Seen):
+            asyncio.run(coordinator.run())
+        return seen["system"]
+
+    http, native = rendered("engine_inference"), rendered("native_agent")
+    assert http == native
+    assert ("You have 3 requests left today." in native) is budgeted

@@ -17,6 +17,11 @@ from tinyassets.providers.model_policy import ModelRef
 from tinyassets.storage.agent_native_records import NativeInput
 from tinyassets.storage.agent_turn_records import RoundInput, dump
 
+#: How often a native activity call re-reads its activity, and how long a
+#: cancelled call may take to end its process family.
+_ACTIVITY_POLL_S = 0.25
+_CANCEL_GRACE_S = 30.0
+
 
 class WorkAgentEffectHeld(ProviderAuthorityHeldError):
     """A new node attempt could replay recorded effects or unknown execution."""
@@ -143,7 +148,8 @@ class WorkAgentAdapter:
         # Any executor may run an activity. A native CLI runs its tool loop
         # inside ONE provider call, but every tool it can see executes on the
         # engine route, whose ``ActivityFence`` refuses each call once the
-        # activity yields, pauses or stops (tinyassets/activity_fence.py).
+        # activity yields, pauses or stops (tinyassets/activity_fence.py), and
+        # the call itself is cancelled then (``_until_activity_stops``).
         changing = context.model_selection != self.selection
         if changing:
             if self._staged_next is None or self.initial_pending:
@@ -180,12 +186,46 @@ class WorkAgentAdapter:
         if provider != self.selection.connection_id:
             raise ProviderAuthorityHeldError("workflow agent source changed")
         self.check(context, config)
-        return await router.call(
+        call = router.call(
             "writer", prompt, system, replace(config, credential_snapshot_dir=snapshot_dir),
             operation=self.carrier.operation,
             universe_context=replace(context, provider_invocation=self.carrier),
             _agent_observer=observer, _agent_execution_kind=kind,
         )
+        if kind != "native_agent" or self.activity_binding is None:
+            return await call
+        return await self._until_activity_stops(call)
+
+    async def _until_activity_stops(self, call):
+        """Run a native call for an activity only while the activity runs.
+
+        A native agent's whole tool loop is ONE provider call. Once the
+        activity yields, pauses or stops, the engine route refuses every
+        further tool (``activity_fence``) and this cancels the call: the
+        provider ends its process family and the router settles its seat,
+        exactly where an HTTP turn would not start another round. A call that
+        finished in the same instant keeps its answer.
+        """
+        task = asyncio.ensure_future(call)
+        stopped: BaseException | None = None
+        try:
+            while not task.done():
+                await asyncio.wait({task}, timeout=_ACTIVITY_POLL_S)
+                if task.done():
+                    break
+                try:
+                    await asyncio.to_thread(self.activity_binding.check)
+                except (ActivityYielded, PermissionError) as exc:
+                    stopped = exc
+                    task.cancel()
+                    await asyncio.wait({task})
+        finally:
+            if not task.done():
+                task.cancel()
+                await asyncio.wait({task}, timeout=_CANCEL_GRACE_S)
+        if stopped is not None and (task.cancelled() or task.exception() is not None):
+            raise stopped
+        return task.result()
 
     def round_input(self, authority, reservation, config, *, owner, context,
                     prompt, system, native_input, kind):

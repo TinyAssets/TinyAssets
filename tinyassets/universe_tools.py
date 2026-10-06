@@ -1150,13 +1150,39 @@ def bash(
     else:
         from tinyassets.ta_capabilities import JailBridge
 
-        with JailBridge(ta_dispatch) as bridge:
-            run = RUNNER(universe_dir, inner, agent_id=agent_id, limits=limits,
-                         wall_seconds=wall, ta_socket=bridge.path, **egress)
+        ended = threading.Event()
+        with JailBridge(_halting(ta_dispatch, stop, ended)) as bridge:
+            try:
+                run = RUNNER(universe_dir, inner, agent_id=agent_id, limits=limits,
+                             wall_seconds=wall, ta_socket=bridge.path, **egress)
+            finally:
+                ended.set()
     body = _text(run.output)
     if body and not body.endswith("\n"):
         body += "\n"
     return _waited_note(run) + body + _trailer(run, limits, wall)
+
+
+def _halting(ta_dispatch, stop: Callable[[], str | None] | None, ended: threading.Event):
+    """``ta_dispatch``, except a request that stops the activity is never answered.
+
+    The command is blocked in that ``ta`` call until it gets an answer, so
+    withholding it until the supervisor's ``stop`` poll has killed the jail
+    (``ended``) means nothing after an activity's own yield in the same command
+    runs. Without ``stop`` (not an activity) it is ``ta_dispatch`` unchanged.
+    """
+    if stop is None:
+        return ta_dispatch
+
+    def dispatch(message):
+        answer = ta_dispatch(message)
+        reason = stop()
+        if reason is None:
+            return answer
+        ended.wait(MAX_BASH_SECONDS + _KILL_GRACE_SECONDS)
+        return {"error": reason}
+
+    return dispatch
 
 
 # ── the skill index (progressive disclosure) ────────────────────────────────

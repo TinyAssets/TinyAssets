@@ -544,6 +544,10 @@ class AgentTurnCoordinator:
                     if self.interrupt is not None:
                         self.interrupt.check()
                     budget = self._daily_budget()
+                    # One definition: every executor gets the same instructions,
+                    # the budget line included (tests/test_one_agent_definition.py).
+                    instructions = self.system + (
+                        "\n\n" + budget.prompt_line() if budget is not None else "")
                     self.execution_kind = self.router.selected_agent_execution_kind(
                         self.context.model_selection,
                     )
@@ -568,12 +572,10 @@ class AgentTurnCoordinator:
                                 tool_choice="none" if self._text_only else "auto",
                             ),
                         )
-                        prompt, system, observer = self.prompt, self.system, self._begin
-                        if budget is not None:
-                            system += "\n\n" + budget.prompt_line()
+                        prompt, system, observer = self.prompt, instructions, self._begin
                     else:
                         self.native_input = render_native_input(
-                            self.prompt, self.system, self._history(),
+                            self.prompt, instructions, self._history(),
                         )
                         prompt, system = self.native_input
                         config = replace(

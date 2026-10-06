@@ -306,3 +306,60 @@ def test_a_non_activity_run_still_launches_native(tmp_path, mid_turn):
     ))
     assert response.text == "launched"
     assert router.launches == [("writer", "native_agent")]
+
+
+@pytest.mark.parametrize("stop", ["yield", "pause", "stop"])
+def test_a_native_activity_call_ends_when_its_activity_stops(tmp_path, stop):
+    """A native agent's tool loop is one provider call: once the activity
+    yields, pauses or stops, that call is cancelled -- its process family
+    ended and its seat released by the provider and router -- where an HTTP
+    turn would not start another round."""
+    adapter, config, context, _ = _live_activity_adapter(tmp_path, name=f"u-native-{stop}")
+    binding = adapter.activity_binding
+    cancelled = []
+
+    class NativeRouter:
+        async def call(self, role, prompt, system, config, **kwargs):
+            assert kwargs["_agent_execution_kind"] == "native_agent"
+            try:
+                await asyncio.Event().wait()      # a tool loop that does not end itself
+            except asyncio.CancelledError:
+                cancelled.append(role)
+                raise
+
+    async def go():
+        task = asyncio.ensure_future(adapter.infer(
+            router=NativeRouter(), prompt="p", system="", config=config, context=context,
+            observer=None, kind="native_agent",
+        ))
+        await asyncio.sleep(0.3)
+        assert not task.done(), "a running activity keeps its native call"
+        if stop == "yield":
+            agent_activities.wait_on(binding.universe_dir, binding.activity_id, "req-1", "asked")
+        else:
+            agent_activities.transition(
+                binding.universe_dir, binding.activity_id,
+                agent_activities.PAUSED if stop == "pause" else agent_activities.COMPLETED,
+                generation=binding.generation)
+        await asyncio.wait_for(task, timeout=5)      # bounded: cancelled, not waited out
+
+    expected = activity_runner.ActivityYielded if stop == "yield" else PermissionError
+    with pytest.raises(expected):
+        asyncio.run(go())
+    assert cancelled == ["writer"]
+
+
+def test_a_native_call_that_finished_as_its_activity_stopped_keeps_its_answer(tmp_path):
+    adapter, config, context, _ = _live_activity_adapter(tmp_path, name="u-native-same")
+    binding = adapter.activity_binding
+
+    class AnswersThenYields:
+        async def call(self, role, prompt, system, config, **kwargs):
+            agent_activities.wait_on(binding.universe_dir, binding.activity_id, "req-1", "asked")
+            return SimpleNamespace(text="final words", provider="owned-http")
+
+    response = asyncio.run(adapter.infer(
+        router=AnswersThenYields(), prompt="p", system="", config=config, context=context,
+        observer=None, kind="native_agent",
+    ))
+    assert response.text == "final words"

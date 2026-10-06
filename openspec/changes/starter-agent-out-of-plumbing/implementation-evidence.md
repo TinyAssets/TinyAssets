@@ -1,5 +1,176 @@
 # L14 preparation evidence
 
+## K2 round 3: answers to the cross-family review of 1834f866b8 (2026-10-06)
+
+Codex reviewed 1834f866b8 and returned BLOCK. It agreed the Codex tool
+reduction works: exactly `bash, edit, read, write` on 0.160.0. Each finding is
+answered below. Commits c80ceb85dd, then the merge of origin/main 341115ee5a,
+then the round-3 commit.
+
+**(1) The guard does not fully guarantee the founder rule. AGREE, fixed where
+code can prove it; the rest is narrowed with evidence.**
+
+- HTTP-only budget line: fixed. `AgentTurnCoordinator._run` builds one
+  `instructions` string, the budget line included, and passes it to both
+  execution kinds. The guard
+  `test_the_turn_gives_every_executor_the_same_instructions` drives the real
+  coordinator for both kinds, with and without a budget. With the fix
+  reverted it fails on the budgeted case.
+- Claude tools are now observed, not substituted. The guard asks the engine
+  route, through its middleware, for the tools it lists to Claude's own MCP
+  URL (signed grant, `model_inventory=four`). It compares those schemas with
+  the definition.
+- Capabilities are now behavioural, not inferred from source text. The HTTP
+  tool session is the one `AgentTurnCoordinator._open_tools` dials.
+  `activities` now means two things for each kind: a launch happens, and a
+  yield stops the agent. A native call is cancelled mid-flight; an HTTP turn
+  starts no further round.
+- Unsupported HTTP protocols are now checked against the real refusal:
+  `model_policy._ineligibility` returns `executor_unsupported` for a
+  connection with no agent codec. Ollama is checked against the router's
+  refusal (no agent execution kind).
+- DISAGREE_EVIDENCE on "every provider invocation": the non-served
+  `codex exec` path (`CodexProvider.complete` without `sandbox_workspace`) is
+  a workflow prompt node using Codex as a text model, not an agent turn. The
+  founder rule covers agents. `test_only_the_json_path_streams_and_the_legacy_path_is_verbatim`
+  pins that split.
+- Still open, founder call: claude-code 2.1.290 prepends its identity line and
+  environment block under subscription OAuth, and has no switch for it. See
+  the K2 concern.
+
+**(2) App-server lifecycle. AGREE, all fixed.**
+
+- Credential-bearing RPC errors: `AppServerTurn.run` scrubs the server's error
+  text with `_redacted_stderr_excerpt` before clipping. The router's cooldown
+  log line now logs `redacted_failure_detail(str(exc))` for every provider.
+  Tests: `test_a_refused_request_is_reported_without_its_secrets` (initialize,
+  thread/start, turn/start) and `test_a_provider_error_is_logged_without_its_secrets`.
+- Handshake cancellation leak: every `call()` cancels and awaits its request
+  task on any exit, and `request()` drops its pending future. Test:
+  `test_a_callers_cancellation_propagates_through_the_reap`, which cancels
+  before `initialize` is answered. Removing the cleanup makes it fail.
+- Stale resumed instructions: `thread/resume` carries
+  `baseInstructions` = the current definition's instructions
+  (`codex_app_server.thread_resume_params`). Request capture on real
+  codex-cli 0.160.0 (loopback endpoint, temporary home, no credential):
+  a resume with `baseInstructions: B` sent B and not the start's A. A resume
+  without the field sent A again, so the override is not persisted and must
+  be sent on every resume. Tools persisted across the resume (`read`). The
+  user input no longer carries an instructions-changed preamble, and
+  `agent_sessions.resume_input` is deleted. Tests:
+  `test_next_turn_resumes_and_sends_only_what_is_new` and
+  `test_changed_instructions_replace_the_resumed_threads_own`.
+- Swallowed tool-task exceptions: helper tasks report failures through
+  `_settle`. A tool failure outside `EngineToolError` answers Codex with a
+  failed call, then fails the turn as
+  `ProviderError("codex tool call failed unexpectedly: <type>")`, with the
+  exception as its cause. Test: `test_an_unexpected_tool_failure_fails_the_turn_with_its_cause`.
+
+**(3) Stop/yield for every capability. AGREE, fixed.** Six boundaries, each
+tested:
+
+1. The engine route serializes an activity's top-level calls
+   (`ActivityFence`). A call queued behind the one that yields is admitted
+   only after the yield, and is refused. A nested `ta` platform call
+   re-enters the route without queueing behind its own parent, and still
+   meets the fence. Tests in `tests/test_activity_fence.py`.
+2. `Capabilities.dispatch` checks the activity on every `ta` request,
+   connection calls and the catalog included
+   (`test_every_ta_request_is_refused_once_the_activity_stops`).
+3. When a `ta` request stops the activity (the agent's own ask), the bridge
+   withholds the answer until the jail is dead (`universe_tools._halting`).
+   The command is blocked in that call, so no later line of it runs
+   (`test_the_command_that_yields_never_gets_past_its_ta_call`).
+4. The jail supervisor polls the activity and kills a running command once
+   it stops (`killed == "activity_stopped"`). This also covers background
+   jobs. Tests: `test_a_running_command_is_killed_once_its_activity_stops`, and
+   the engine wiring in `test_an_activity_bash_is_handed_the_stop_its_activity_polls`.
+5. Codex dynamic tool calls run one at a time
+   (`test_tool_calls_run_one_at_a_time_in_the_order_asked`).
+6. A native call made for an activity is cancelled once the activity yields,
+   pauses or stops (`WorkAgentAdapter._until_activity_stops`). The provider
+   ends its process family and the router settles the seat, at the point
+   where an HTTP turn would start no further round. Tests:
+   `test_a_native_activity_call_ends_when_its_activity_stops` (yield, pause,
+   stop) and `test_an_activity_yield_kills_a_native_cli_turn_and_releases_it`.
+   The latter runs the real Claude adapter against a real process tree: the
+   tree is gone, the turn is `held_native_unknown`, and the claim is
+   released. It is Linux-only and runs in the oracle.
+
+With these in place, the native-only admission refusal #4524 added
+(`activity_runner.require_supported_executor`) is lifted, as its concern
+note anticipated. `test_native_only_start_refuses_before_creating_activity`
+is retired, and `test_native_only_start_queues_the_activity` replaces it.
+#4524's incident record is folded into the K2 concern. The
+`agent-turn-runner-liveness` requirement ("refuse unsupported activity
+starts" when the executor "cannot safely yield") still holds. No registered
+agent executor fails it any more, and a kind with no agent execution
+(Ollama) is refused by the router before any agent turn.
+
+**(4) Lost watchdog guarantees. AGREE, all restored.**
+`tests/test_codex_stream_watchdog.py` is back, with all 29 test names ported
+to the app-server path. Each has at least its old assertion count. The
+ported tests cover:
+
+- startup stall (`launch` phase);
+- progressing-but-capped;
+- long tool and wedged tool (tool wait, then cap);
+- malformed output that does not reset the clock;
+- a 70 KB event, from a real child process;
+- EOF from a live child: it is ended and no task leaks;
+- completion closing an open tool;
+- a failed terminal closing an open tool;
+- a recoverable `error` notification;
+- structural-only completion;
+- the config knobs (unbounded served cap, overrides, nonsense fallback,
+  library cap).
+
+The phase telemetry (`phase`/`tool_phase`) is restored on every timeout. The
+real-vocabulary test now replays a real codex-cli 0.160.0 app-server turn
+(`tests/fixtures/codex_app_server_0160_turn.jsonl`, 15 messages including a
+numeric-id `item/tool/call`). It was recorded against a loopback Responses
+endpoint that asked for one `read` and then replied, with no credential.
+Other removed codex tests are back under their names on the new path:
+compat terminal-reason precedence, stderr fallback, last `error` kept,
+scrub-before-clip, nonzero-exit confinement, recorded-stream attribution,
+rollout-claim attribution, the engine route bearer/owner checks through the
+real `_served_engine_tools` + `open_engine_tools`, and the four engine-MCP-args
+guarantees. A failed turn with no reason now keeps the last `error`
+notification.
+
+**(5) Credential-error handling. AGREE**, fixed as in (2). The ownership
+checks the review confirmed are unchanged.
+
+**Oracle failures from the lead's run (411 passed / 5 failed).**
+
+- `test_http_activity_yield_*` (4): regressed by 6a0f104097, not by the
+  app-server change. Bisected: 274adfc1ba passes, 6a0f104097 fails. Only
+  the four tools are model-visible since then, and the fixture rewrote the
+  model's call to the hidden `write_graph` handle. It now asks through
+  `bash` → `ta call write_graph`, the path the model uses.
+- `test_served_turn_spawns_fake_codex_through_full_os_sandbox_command`: the
+  sandbox does wrap the new launch. The test now asserts the whole chain:
+  bubblewrap with the full-deny seccomp profile (`nested_sandbox=False`,
+  recorded at `jail_seccomp.program_fd`), then `prlimit` with every
+  `PROVIDER_LIMITS` flag (`--nproc` ≤ 512), then the `-I -S` egress
+  forwarder, then the codex command running `app-server` with
+  `SERVED_LAUNCH_ARGS`.
+
+**Merge interactions with origin/main (4 commits).**
+
+- #4520 added seven starter skills whose index lines are resident. The stock
+  payload rose to 4,546 / 4,482 / 4,414 chars (http/claude/codex). The
+  ratchet moved 4,000 → 4,600 with the cost stated in the test.
+- `test_a_request_larger_in_bytes_than_the_window_fits_by_its_tokens`
+  regressed by this branch's four-tool payload: the request is now 1,186
+  bytes, so the answer reserve dominated the window. The answer reserve is
+  now 64 tokens in both runs; the byte-vs-token claim is unchanged.
+- `test_exactly_four_tools_are_served_to_the_universe_agent_on_every_adapter`
+  imported the removed `_ENGINE_MCP_ENABLED_TOOLS`. It now checks codex's
+  `model_tools`.
+- `test_turn_interrupt`'s native coordinator now grants the owner binding
+  that `prepare_starter` (6a0f104097) requires.
+
 ## K2 round 2: one definition across providers (2026-10-06)
 
 Lead decision applied: provider-specific translation is allowed, capability

@@ -457,7 +457,12 @@ def test_a_request_larger_in_bytes_than_the_window_fits_by_its_tokens(agent, mon
 
     Production first rounds measured 3.86-4.07 bytes per reported token; a
     window smaller than the request's byte count still holds it and the answer.
+    The four-tool request is ~1.2 KB, so the answer's reserve is kept small in
+    both runs: the window under test is the request's, not the reply's.
     """
+    from dataclasses import replace
+
+    agent.config = replace(agent.config, max_tokens=64)
     selected = agent.served.context.model_selection.model_id
     assert integration.run(agent) == "finished exact answer"
     size = max(len(json.dumps(wire[1]["body"]).encode("utf-8")) for wire in agent.wires)
