@@ -739,10 +739,13 @@ class LocalBoxProvider:
             killed = killed or "supervisor_error"
         finally:
             if interactive_stdin and proc.stdin is not None:
-                try:
-                    proc.stdin.close()
-                except OSError:
-                    pass  # A killed child must still settle its host receipt.
+                # send_stdin retains the fd across select/write. Keep it alive
+                # until that writer releases it, before another exec can reuse it.
+                with running.input_lock:
+                    try:
+                        proc.stdin.close()
+                    except OSError:
+                        pass  # A killed child must still settle its host receipt.
             with self._lock(cc):
                 generation = self._state.bump_generation(cc)  # the command may have changed files
                 self._state.finish(cc, op_id, {"exec_id": exec_id, "exit_code": code,
@@ -776,6 +779,8 @@ class LocalBoxProvider:
                 if previous != (digest, True):
                     raise BoxError("exec reply reused or outcome unknown")
                 return
+            if running.proc.stdin is None or running.proc.stdin.closed:
+                raise BoxError("exec input unavailable")
             running.replies[request_id] = (digest, False)
             fd = running.proc.stdin.fileno()
             os.set_blocking(fd, False)
