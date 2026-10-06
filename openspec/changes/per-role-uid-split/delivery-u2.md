@@ -1,5 +1,56 @@
 # U2 migration lane
 
+## Resume receipt (2026-10-06)
+
+Clean worktree resumed at 33ab2b4696; merged the latest U1 base at
+3577dc43c9. The local Docker Linux API is available again. The previously cached
+`tinyassets-uid-u2:migration` image predates the committed ACL/setgid fix and
+fails the repeat/no-op assertion; it is not accepted evidence.
+
+Fresh production Dockerfile build `tinyassets-uid-u2:resume` passed (exit 0),
+including the unchanged privileged-chain gate. Image:
+`sha256:8287c58f42a9199847caa32460581cfc976c1730d67c825bf239c9bf751570c5`.
+`python scripts/role_owner_migration_probe.py --image tinyassets-uid-u2:resume`
+passed with the exact seven startup capabilities, no network or host volume:
+dry-run, apply, repeat, reverse, nine journal crash boundaries, both quarantine
+names/inode/bytes preserved, foreign and quarantine access denied, restrictive
+engine-created files restored. Real owner/daemon children report no groups,
+all five capability sets zero and NNP=1. `old_cmd_boot=false`, startup OFF.
+
+The six-file Linux selection from the initial receipt was rerun with the exact
+same command: **91 passed, zero skips** after merging U1. Targeted Ruff and diff
+checks pass. Claude cross-family review returned **ADAPT**, with no floor
+finding. **AGREE** with the quarantine-repeat unit coverage gap: added a full
+metadata-stability assertion and separated probe assertions with a precise
+snapshot diff. The strengthened Linux file passes **25 tests, zero skips**;
+the production-image probe rerun passes. **DISAGREE_EVIDENCE** with the stale
+red-receipt premise: inspecting the old image proves it lacks the committed
+egid-around-access-ACL fix and special-mode readback. The fresh installed image
+passes under the exact seven-capability set, without CAP_FSETID. No product
+guard changed to obtain the passing result. The full reviewer output was read;
+no second review was dispatched.
+
+Coordination recovery remains unavailable: official Codex proxy returns 10061;
+vendor app discovery returns named-pipe ENOENT before dispatch. No message was
+delivered and no session owner/settings were changed. U1's delivery handoff is
+read: full migration must classify/precreate `previews` with dedicated ownership
+while preserving daemon-owned canonical roots. No U1-owned file was edited.
+
+Full orchestration/protected metadata, two-pass deletion, actual old CMD boot,
+and startup/healthcheck integration remain unimplemented. This receipt closes
+only the installed-image proof missing from the initial substep.
+
+### D201. Repeat evidence and migration mode semantics
+
+No-op evidence includes the durable journal and directory metadata, not only
+the count of ownership/name changes. The production probe reports both the
+change count and exact differing snapshot entries on failure. Full metadata
+stability is also asserted in the cross-tree quarantine unit fixture.
+Forward work permissions intentionally provide owner read/write and retained
+execute, and reverse provides daemon read/write/traverse: rollback restores the
+old runtime's usable ownership, not the original read-only bits. This implements
+D4/D10 and never changes bytes. Full protected-metadata migration remains separate.
+
 Branch: `feat/per-role-uid-split-migration`, stacked on
 `feat/per-role-uid-split`; initial parent `b8f9c258bd9a8ae20a0b57614b39c9b9af57e760`.
 Activation remains OFF. U1 owns all engine-class launch admission, decoder and

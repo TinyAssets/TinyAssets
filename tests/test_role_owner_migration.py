@@ -137,7 +137,9 @@ def test_quarantine_keeps_every_name_inode_and_bytes_and_never_assigns_to_owner(
         assert stored.stat().st_ino == original.st_ino
         assert stored.stat().st_uid == 1001
         assert stored.read_bytes() == b"alice"
+    stable = metadata(volume)
     assert run(volume)["changed"] == 0
+    assert metadata(volume) == stable
     run(volume, reverse=True)
     assert (quarantine / "alice/work/payload").read_bytes() == b"alice"
     assert not source.exists()

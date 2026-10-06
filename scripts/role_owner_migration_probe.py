@@ -44,7 +44,13 @@ def denied(path):
     raise AssertionError('unexpected access: '+str(path))
 root=seed()
 before=snapshot(root); run(root,dry_run=True); assert snapshot(root)==before
-run(root); before=snapshot(root); assert run(root)['changed']==0; assert snapshot(root)==before
+run(root)
+before=snapshot(root)
+repeat=run(root)
+assert repeat['changed']==0, repeat
+after=snapshot(root)
+assert after==before, {name:(before.get(name),after.get(name))
+    for name in before.keys()|after.keys() if before.get(name)!=after.get(name)}
 q=root/'.role-owner-migration/quarantine'
 assert (q/'alice/work/own').stat().st_ino==(q/'bob/work/alias').stat().st_ino
 assert (q/'alice/work/own').read_bytes()==b'alice'
