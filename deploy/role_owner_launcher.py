@@ -342,6 +342,8 @@ class OwnerLauncher:
             fields.update(('egress', 'ta'))
         if kind in ('provider-discovery', 'provider-exec'):
             fields.add('egress')
+        if kind == 'provider-exec':
+            fields.add('workspace')
         if kind == 'package':
             fields.update(('revision', 'ta', 'egress'))
         if kind == 'owner-delete':
@@ -349,6 +351,8 @@ class OwnerLauncher:
         socket_count = (sum(request.get(key) is True for key in ('egress', 'ta'))
                         if kind in ('tool-jail', 'package') else int(request.get('egress') is True)
                         if kind in ('provider-discovery', 'provider-exec') else 0)
+        # D88: provider-exec may add the owner's persistent provider workspace.
+        owner_workspace = kind == 'provider-exec' and request.get('workspace') is True
         mounted = kind in {'workspace-git', 'preview-write', 'tool-jail', 'tool-files',
                            'provider-discovery', 'provider-exec', 'package', 'owner-delete'} or (
             kind == 'node-sandbox' and request.get('workspace') is True)
@@ -368,6 +372,7 @@ class OwnerLauncher:
                 or (kind == 'node-sandbox' and type(request['workspace']) is not bool)
                 or (kind in ('provider-discovery', 'provider-exec') and (
                     not streaming or type(request['egress']) is not bool))
+                or (kind == 'provider-exec' and type(request['workspace']) is not bool)
                 or (kind == 'tool-jail' and any(
                     type(request[key]) is not bool for key in ('egress', 'ta')))
                 or (kind == 'image-decoder' and (
@@ -377,7 +382,8 @@ class OwnerLauncher:
                 or not isinstance(request['principal'], str)
                 or not isinstance(request['command_center'], str)
                 or len(received) != (2 if mounted else 1)
-                    + int(streaming) + socket_count + int(kind == 'provider-exec')):
+                    + int(streaming) + socket_count + int(kind == 'provider-exec')
+                    + int(owner_workspace)):
             raise ValueError('unsupported owner engine')
         if not streaming and self.jobs:
             raise ValueError('blocking spawn cannot suspend active cell supervision')
@@ -451,6 +457,14 @@ class OwnerLauncher:
                         or info.st_uid != self.overflow_uid
                         or source != prefix + f'egress-{self.daemon_pid}.sock'):
                     raise ValueError('provider egress does not match admitted center')
+            if owner_workspace:
+                # Exactly this owner's own fixed provider workspace (D88).
+                workspace = received[2 + socket_count]
+                info = os.fstat(workspace)
+                if (not stat.S_ISDIR(info.st_mode) or (info.st_uid, info.st_gid) != (inner, inner)
+                        or os.readlink(f'/proc/self/fd/{workspace}') != self.data_root + '/'
+                        + request['command_center'] + '/.provider-workspace'):
+                    raise ValueError('provider workspace does not match admitted owner')
         if kind == 'workspace-git' or (kind == 'node-sandbox' and mounted):
             info = os.fstat(received[1])
             if not stat.S_ISDIR(info.st_mode) or (info.st_uid, info.st_gid) != (inner, inner):
@@ -488,13 +502,13 @@ class OwnerLauncher:
                     stderr_copy = fcntl.fcntl(received[-2], fcntl.F_DUPFD_CLOEXEC, 20)
                 retained = (3,) if mounted else ()
                 if kind in ('tool-jail', 'provider-discovery', 'provider-exec',
-                             'package') and socket_count:
+                             'package') and (socket_count or owner_workspace):
                     import fcntl
 
                     # Copy before assigning fixed slots, so a destination
                     # cannot overwrite another received source descriptor.
                     sources = [fcntl.fcntl(value, fcntl.F_DUPFD_CLOEXEC, 20)
-                               for value in received[:2 + socket_count]]
+                               for value in received[:2 + socket_count + int(owner_workspace)]]
                     fd = sources[0]
                     os.dup2(sources[1], 3)
                     index = 2
@@ -504,12 +518,15 @@ class OwnerLauncher:
                             os.dup2(sources[index], target)
                             retained.append(target)
                             index += 1
+                    if owner_workspace:
+                        os.dup2(sources[index], 6)
+                        retained.append(6)
                 os.dup2(fd, 0)
                 os.dup2(fd, 1)
                 error = (os.open('/dev/null', os.O_WRONLY) if stderr_copy is None
                          else stderr_copy)
                 os.dup2(error, 2)
-                if mounted and not socket_count:
+                if mounted and not (socket_count or owner_workspace):
                     os.dup2(received[1], 3)
                 self.launch['close_descriptors'](retained)
                 os.setgroups([])
@@ -526,9 +543,10 @@ class OwnerLauncher:
                                self.data_root, str(inner)]
                 elif kind in ('provider-discovery', 'provider-exec'):
                     mode = 'enter-provider-exec' if kind == 'provider-exec' else 'enter-provider'
-                    command = ['/usr/local/libexec/ta-decoder.py',
-                               mode,
-                               'e' if request['egress'] else '-', self.data_root, str(inner)]
+                    command = ['/usr/local/libexec/ta-decoder.py', mode,
+                               ('e' if request['egress'] else '')
+                               + ('w' if owner_workspace else '') or '-',
+                               self.data_root, str(inner)]
                 elif kind == 'ingestion-video':
                     command = ['/usr/local/libexec/ta-decoder.py', 'enter-video',
                                'video', self.data_root, str(inner)]
