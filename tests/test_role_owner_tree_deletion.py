@@ -9,6 +9,7 @@ and the production-image ``role_owner_delete_probe``.
 # ruff: noqa: F811 -- shared Linux root fixture
 import json
 import os
+import shutil
 import traceback
 from types import SimpleNamespace
 
@@ -16,8 +17,15 @@ import pytest
 
 from deploy import role_volume_migration as migration
 from deploy.role_owner_migration import MigrationRefused
-from tests.test_role_owner_migration import metadata, volume  # noqa: F401
-from tests.test_role_volume_migration import run, setup
+from tests.test_role_owner_migration import volume  # noqa: F401
+from tests.test_role_volume_migration import (  # noqa: F401
+    admissions,
+    broker,
+    metadata,
+    oracle_interpreter,
+    run,
+    setup,
+)
 from tinyassets import role_owner_delete, role_owner_delete_cell
 from tinyassets import role_owner_tree_deletion as deletion
 from tinyassets.owner_launcher_client import OwnerLaunchRefused
@@ -54,7 +62,7 @@ class Launcher:
     """Owner cell transport; the fence is an exact-token map like the mapper's."""
 
     def __init__(self):
-        self.fence, self.begun, self.finished = None, [], []
+        self.fence, self.begun, self.finished, self.retired = None, [], [], []
         self.fail_finish = 0
 
     def begin(self, center, *, token):
@@ -75,6 +83,31 @@ class Launcher:
 
         as_user(machine, owner_pass)
         return {"pass": "owner"}
+
+    def retire(self, center, *, token):
+        """DA6 on the real log: one retire row as the broker, then the unbind."""
+        from tinyassets.broker.owner_identities import CenterUnadmitted
+
+        if os.path.lexists(center):
+            raise RuntimeError("retire runs only after the daemon pass removed the tree")
+        if self.fence not in (None, token):
+            raise OwnerLaunchRefused("retire does not match the deletion fence")
+
+        from tinyassets.auth.middleware import current_identity
+
+        principal = current_identity().user_id  # as role_owner_delete._scope
+
+        def append(db):
+            try:
+                return db.admission("retire", principal, center.name).generation
+            except CenterUnadmitted:
+                return None
+
+        generation = broker(center.parent, append)
+        if generation is None:
+            raise CenterUnadmitted("the admission log never admitted this center")
+        self.retired.append((center.name, generation, self.fence))
+        return generation
 
     def finish(self, center, *, token):
         if self.fail_finish:
@@ -97,6 +130,7 @@ def launcher(monkeypatch):
     value = Launcher()
     monkeypatch.setattr(role_owner_delete, "begin", value.begin)
     monkeypatch.setattr(role_owner_delete, "finish", value.finish)
+    monkeypatch.setattr(role_owner_delete, "retire", value.retire)
     monkeypatch.setattr(role_owner_delete, "abort", value.finish)
     monkeypatch.setattr(middleware, "current_identity",
                         lambda: SimpleNamespace(user_id="alice"))
@@ -153,6 +187,9 @@ def test_two_pass_removes_migrated_center_capability_free(volume, launcher):
     assert receipt["fence"] == "released"
     assert not (volume / "alice").exists()
     assert launcher.begun == launcher.finished and len(launcher.begun) == 1
+    # DA6: retired under the held fence, before finish released it.
+    assert launcher.retired == [("alice", receipt["retired"], launcher.begun[0])]
+    assert admissions(volume)[-1] == (receipt["retired"], "retire", "alice", "alice", 300001)
     assert deletion.pending(volume) == []
     assert bob_view(volume) == bob
     assert (volume / "bob/work/payload").read_bytes() == b"bob"
@@ -178,6 +215,9 @@ def test_interrupted_deletion_resumes_with_its_token(volume, launcher, crash):
     assert not (volume / "alice").exists()
     assert deletion.pending(volume) == []
     assert bob_view(volume) == bob
+    # One retire row, ever: the tree-gone resume repeats it idempotently.
+    assert [row[1:4] for row in admissions(volume)].count(("retire", "alice", "alice")) == 1
+    assert {generation for _, generation, _ in launcher.retired} == {receipt["retired"]}
 
 
 def test_reverse_refuses_while_partial_deletion_pending(volume, launcher):
@@ -288,11 +328,55 @@ def test_intent_store_name_is_one_fact():
 
 
 @pytest.mark.parametrize("reverse", [False, True])
-def test_completed_deletion_fails_closed_at_next_migration(volume, launcher, reverse):
-    """D218: a shrunken principal set is D216's open admission contract."""
+def test_completed_deletion_is_explained_at_the_next_migration(volume, launcher, reverse):
+    """DA7 closes D216's refusal: the retire row explains the smaller set."""
     migrated(volume)
-    deletion.delete_center(volume, "alice", principal="alice")
-    before = metadata(volume)
-    with pytest.raises(MigrationRefused, match="authority changed"):
-        run(volume, reverse=reverse, dry_run=True)
-    assert metadata(volume) == before
+    bob = bob_view(volume)
+    receipt = deletion.delete_center(volume, "alice", principal="alice")
+    daemon_owned_intents(volume)
+    report = run(volume, reverse=reverse)
+    assert report["principals"] == {"bob": "bob"} and report["missing"] == {}
+    assert report["generation"] == receipt["retired"]
+    journal = json.loads((volume / migration_state() / "volume.json").read_text())
+    assert journal == {"direction": "reverse" if reverse else "forward", "state": "stable",
+                       "principals": {"bob": "bob"}, "missing": {},
+                       "generation": receipt["retired"]}
+    if not reverse:
+        assert bob_view(volume) == bob  # the remaining owner's inodes are untouched
+    stable = metadata(volume)
+    run(volume, reverse=reverse)
+    assert metadata(volume) == stable
+
+
+def test_a_missing_center_is_retired_without_a_pass(volume, launcher):
+    """F1 (b): an admitted center on ``missing`` (tree lost, no deletion) is retired."""
+    migrated(volume)
+    shutil.rmtree(volume / "alice")
+    report = run(volume)
+    assert report["missing"] == {"alice": "alice"} and report["principals"] == {"bob": "bob"}
+    receipt = deletion.delete_center(volume, "alice", principal="alice")
+    assert receipt["missing"] and receipt["fence"] == "absent"
+    assert launcher.begun == [] and launcher.finished == []
+    assert launcher.retired == [("alice", receipt["retired"], None)]
+    assert deletion.pending(volume) == []
+    report = run(volume)
+    assert report["missing"] == {} and report["generation"] == receipt["retired"]
+
+
+def test_a_never_admitted_treeless_center_keeps_the_existing_traversal(volume, launcher):
+    migrated(volume)
+    assert deletion.delete_center(volume, "carol", principal="alice") is None
+    assert launcher.retired == [] and deletion.pending(volume) == []
+
+
+def daemon_owned_intents(volume):
+    """The oracle drives deletion as root; production's intent store is UID1001's."""
+    store = volume / deletion.INTENT_DIR
+    for path in (store, *store.iterdir()):
+        os.chown(path, 1001, 1001)
+
+
+def migration_state():
+    from deploy.role_owner_migration import STATE
+
+    return STATE

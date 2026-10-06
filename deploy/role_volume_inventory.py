@@ -9,17 +9,27 @@ from __future__ import annotations
 import os
 import stat
 
+OWNER_GIDS = (300001, 399999)  # D62 reserved owner identities
+
 
 class InventoryRefused(RuntimeError):
     """A complete, unambiguous owner-to-tree assignment is unavailable."""
 
 
-def discover(root, owner):
-    """D64: every u-* name and every legacy universe.json tree participates."""
+def discover(root, owner, admitted=()):
+    """D64: every u-* name and every legacy universe.json tree participates.
+
+    So does every center the admission log admits (DA7): a runtime-created
+    center may carry a supplied name and no ``universe.json``. A DA4 orphan
+    (published, never logged) is found by its owner-range group, which only the
+    mapper's labelling sets; the coordinator then checks its whole label.
+    """
     found = []
     for name in sorted(os.listdir(root)):
         info = os.stat(name, dir_fd=root, follow_symlinks=False)
-        if name.startswith("u-"):
+        labelled = (stat.S_ISDIR(info.st_mode) and not name.startswith(".")
+                    and OWNER_GIDS[0] <= info.st_gid <= OWNER_GIDS[1])
+        if name.startswith("u-") or name in admitted or labelled:
             if not stat.S_ISDIR(info.st_mode):
                 raise InventoryRefused(f"owner root is not a plain directory: {name}")
             found.append(name)
@@ -93,6 +103,8 @@ def classify(root, centers, owner):
 def reserved(root, center_principals, owner, egress):
     """Read existing broker reservations without initializing or allocating.
 
+    Returns the center bindings, the unallocated principals and the whole
+    permanent map (a retired center's owner keeps its reservation).
     Unallocated principals are returned explicitly. The privileged caller must
     allocate them using the retired broker identity before mutating owner trees.
     An existing invalid map is never treated as an empty allocation database.
@@ -142,13 +154,14 @@ def reserved(root, center_principals, owner, egress):
     bindings = {center: mapping[principal] for center, principal in center_principals.items()
                 if principal in mapping}
     missing = sorted(set(center_principals.values()) - mapping.keys())
-    return bindings, missing
+    return bindings, missing, mapping
 
 
-def inventory(data_root, *, owner, egress):
+def inventory(data_root, *, owner, egress, admitted=()):
     """Caller must hold the common layout lock and have stopped all writers."""
     with owner["_root"](data_root) as root:
-        centers = discover(root, owner)
+        centers = discover(root, owner, admitted)
         authority = principals(root, centers, egress)
-        bindings, unallocated = reserved(root, authority, owner, egress)
-        return {"principals": authority, "bindings": bindings, "unallocated": unallocated}
+        bindings, unallocated, reservations = reserved(root, authority, owner, egress)
+        return {"principals": authority, "bindings": bindings, "unallocated": unallocated,
+                "reservations": reservations}

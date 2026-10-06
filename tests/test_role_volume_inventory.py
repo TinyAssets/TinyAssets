@@ -34,7 +34,8 @@ def test_complete_discovery_and_no_atime_or_database_mutation(volume):
         os.utime(path, ns=(1, 1))
     before = metadata(volume)
     assert read(volume) == {"principals": {"alice": "alice", "bob": "bob"},
-                            "bindings": {}, "unallocated": ["alice", "bob"]}
+                            "bindings": {}, "unallocated": ["alice", "bob"],
+                            "reservations": {}}
     assert metadata(volume) == before
     assert not (volume / ".broker").exists()
 

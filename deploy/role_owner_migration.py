@@ -481,7 +481,7 @@ def _move(root, state, row):
 
 
 def migrate(data_root, *, bindings, work, reverse=False, dry_run=False, after_step=None,
-            layout_lock=None, reconcile_work=False):
+            layout_lock=None, reconcile_work=False, previous_bindings=None, explained=None):
     """Migrate all supplied owner trees under one durable inventory.
 
     ``bindings`` maps canonical center names to already-reserved broker IDs.
@@ -492,8 +492,10 @@ def migrate(data_root, *, bindings, work, reverse=False, dry_run=False, after_st
     """
     if os.geteuid() != 0:
         raise MigrationRefused("owner migration requires the pre-drop startup window")
-    if set(work) != set(bindings) or not bindings:
-        raise MigrationRefused("complete nonempty owner classification required")
+    # An empty set (every center deleted, or none yet) has no inode work but
+    # still records its configuration before the volume journal advances.
+    if set(work) != set(bindings):
+        raise MigrationRefused("complete owner classification required")
     for center, machine in bindings.items():
         if (
             len(_parts(center)) != 1
@@ -545,9 +547,13 @@ def migrate(data_root, *, bindings, work, reverse=False, dry_run=False, after_st
                     if _stat(state, "journal.json") is not None:
                         journal = _read(state, "journal.json", private=True)
             configuration_changed = journal and journal["configuration"] != configuration
+            # DA7: a completed journal may lag one reconciled admission
+            # generation; ``explained`` is the contract's phase_explained.
             if configuration_changed and not (
                 reconcile_work and journal["state"] == "stable"
-                and journal["configuration"]["bindings"] == bindings
+                and (journal["configuration"]["bindings"] == bindings
+                     or explained is not None and explained(
+                         journal["configuration"]["bindings"], previous_bindings, bindings))
             ):
                 raise MigrationRefused("owner bindings/classification differ from durable journal")
             if journal and journal["direction"] != direction and journal["state"] != "stable":

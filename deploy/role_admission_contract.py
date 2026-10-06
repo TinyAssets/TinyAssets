@@ -250,8 +250,11 @@ def raise_alarms(state, alarms, *, now=None):
     return written
 
 
+# The image's interpreter and application; a root oracle outside it substitutes
+# its own (the child still retires to the broker before exec).
+PYTHON, APP = "/opt/venv/bin/python", "/app"
 _BROKER_LOG = (
-    "import sys,json; from pathlib import Path; sys.path.insert(0,'/app'); "
+    "import sys,json; from pathlib import Path; sys.path.insert(0,sys.argv[3]); "
     "from tinyassets.broker.owner_identities import OwnerIdentities; "
     "db=OwnerIdentities(Path(sys.argv[1])/'.broker/state/owner-identities.db'); "
     "req=json.loads(sys.argv[2]); "
@@ -271,9 +274,9 @@ def _broker_child(data_root, launch, request, timeout):
             os.dup2(writer, 1)
             launch["close_descriptors"]({0, 1, 2})
             launch["retire_child"]("broker")
-            os.execve("/opt/venv/bin/python",
+            os.execve(PYTHON,
                       ["python", "-I", "-B", "-c", _BROKER_LOG, str(data_root),
-                       json.dumps(request)],
+                       json.dumps(request), APP],
                       {"PATH": "/opt/venv/bin:/usr/bin:/bin", "PYTHONDONTWRITEBYTECODE": "1"})
         except BaseException:
             os._exit(126)

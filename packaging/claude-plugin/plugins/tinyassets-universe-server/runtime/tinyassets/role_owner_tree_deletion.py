@@ -12,7 +12,9 @@ other layout state refuses: neither route is safe on a half-migrated volume.
 
 The intent and token persist before pass one, so a crash or failure resumes
 with the same token. The startup reverse migration refuses while any intent
-exists (``deploy/role_volume_migration.py``).
+exists (``deploy/role_volume_migration.py``). Before ``finish`` the center is
+retired in the admission log (DA6), which is what lets the next startup accept
+the smaller principal set.
 """
 
 from __future__ import annotations
@@ -278,10 +280,12 @@ def delete_center(root: str | Path, center: str, *, principal: str) -> dict[str,
             info = os.stat(center, dir_fd=root_fd, follow_symlinks=False)
         except FileNotFoundError:
             info = None
-        if intent is None and (info is None or not _layout_split(root_fd)):
+        if intent is None and not _layout_split(root_fd):
             return None
         if current_identity().user_id != principal:
             raise OwnerTreeDeletionRefused("deletion principal is not the admitted identity")
+        if intent is None and info is None:
+            return _retire_missing(root, center)
         if intent is None:
             from tinyassets.broker.owner_identities import owner_identity
 
@@ -302,6 +306,9 @@ def delete_center(root: str | Path, center: str, *, principal: str) -> dict[str,
         # reinstalls the fence a launcher restart dropped, so finish matches.
         receipt["owner_pass"] = role_owner_delete.begin(root / center, token=token)
         receipt["daemon_pass"] = daemon_pass(root, center, machine=machine)
+    # DA6: retire before finish, on the normal path and the tree-gone resume;
+    # the fence outlives the binding until finish releases it.
+    receipt["retired"] = role_owner_delete.retire(root / center, token=token)
     try:
         role_owner_delete.finish(root / center, token=token)
         receipt["fence"] = "released"
@@ -318,6 +325,25 @@ def delete_center(root: str | Path, center: str, *, principal: str) -> dict[str,
     finally:
         os.close(root_fd)
     return receipt
+
+
+def _retire_missing(root: Path, center: str) -> dict[str, Any] | None:
+    """F1 (b): an admitted center held on ``missing`` lost its tree with no deletion.
+
+    No pass can run and no fence exists, so only its ``retire`` row remains;
+    the mapper verifies it as an unbound no-op. A tree-less center the log never
+    admitted has nothing to retire, and the caller's existing traversal applies.
+    """
+    from tinyassets import role_owner_delete
+    from tinyassets.broker.owner_identities import CenterUnadmitted
+
+    try:
+        generation = role_owner_delete.retire(root / center, token=secrets.token_hex(16))
+    except CenterUnadmitted:
+        return None
+    logger.warning("owner deletion %s: retired a missing center", center)
+    return {"center": center, "resumed": True, "missing": True, "retired": generation,
+            "fence": "absent"}
 
 
 def abort_center(root: str | Path, center: str, *, principal: str) -> dict[str, Any]:

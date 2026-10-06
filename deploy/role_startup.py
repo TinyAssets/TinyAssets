@@ -51,7 +51,8 @@ def _load(name):
 def _helpers(launch):
     return dict(owner=_load("owner-migration"), egress=_load("egress-migration"),
                 metadata=_load("metadata-migration"), inventory=_load("volume-inventory"),
-                modes=runpy.run_path(_trusted(MODES)), launch=launch)
+                contract=_load("admission-contract"), modes=runpy.run_path(_trusted(MODES)),
+                launch=launch)
 
 
 def _entry(launch):
@@ -69,14 +70,17 @@ def reverse(launch):
     return 0
 
 
-def bindings(launch, helpers):
-    """Startup admissions {(principal, center): machine} from the stable inventory."""
-    facts = helpers["inventory"]["inventory"](
-        DATA_ROOT, owner=helpers["owner"], egress=helpers["egress"])
-    if facts["unallocated"]:
+def bindings(report):
+    """Startup admissions {(principal, center): machine} from the migrated inventory.
+
+    Every discovered tree binds: a center the admission log explains and one
+    pending deletion (D218 resumes pass one on it). A center held on
+    ``missing`` has no tree, so it stays unbound (F1 b).
+    """
+    if report["unallocated"]:
         raise RuntimeError("forward migration left unallocated owners")
-    return {(facts["principals"][center], center): machine
-            for center, machine in facts["bindings"].items()}
+    return {(report["principals"][center], center): machine
+            for center, machine in report["bindings"].items()}
 
 
 def _run_root():
@@ -108,16 +112,28 @@ def _run_root():
         os.close(fd)
 
 
-def start(launch):
+def boot(launch):
+    """Forward migration and D60's bootstrap; returns in PID1 as the daemon.
+
+    Returns the migration report, the bindings and the bootstrap's services.
+    Split from ``start`` only so the restart probe drives this exact path.
+    """
     if os.getpid() != 1:
         raise RuntimeError("role startup must be container PID1")
     _entry(launch)
     helpers = _helpers(launch)
-    _load("volume-migration")["migrate"](DATA_ROOT, **helpers)
-    admitted = bindings(launch, helpers)
+    report = _load("volume-migration")["migrate"](DATA_ROOT, **helpers)
+    admitted = bindings(report)
     _run_root()
     # Returns in PID1 as the capability-free daemon, or exits the container 78.
-    _load("owner-launch")["bootstrap_services"](DATA_ROOT, RUN_ROOT, admitted, launch)
+    # The mapper binds only admission rows above the reconciled generation (DA5).
+    services = _load("owner-launch")["bootstrap_services"](
+        DATA_ROOT, RUN_ROOT, admitted, launch, generation=report["generation"])
+    return report, admitted, services
+
+
+def start(launch):
+    boot(launch)
     os.environ["TINYASSETS_DATA_DIR"] = str(DATA_ROOT)
     os.environ["TINYASSETS_CREDENTIAL_BROKER"] = "process"
     from tinyassets.sqlite_floor import require_sqlite_floor

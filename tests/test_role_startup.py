@@ -30,16 +30,14 @@ def test_unknown_modes_refuse_before_the_switch(monkeypatch, argv):
     assert role_startup.main(argv, {role_startup.SWITCH: "1"}) == role_startup.REFUSE
 
 
-def test_bindings_are_principal_center_pairs_from_inventory():
-    facts = {"principals": {"u-1": "alice", "u-2": "bob"},
-             "bindings": {"u-1": 300001, "u-2": 300002}, "unallocated": []}
-    helpers = {"inventory": {"inventory": lambda root, owner, egress: facts},
-               "owner": None, "egress": None}
-    assert role_startup.bindings({}, helpers) == {("alice", "u-1"): 300001,
-                                                  ("bob", "u-2"): 300002}
-    facts["unallocated"] = ["carol"]
+def test_bindings_are_principal_center_pairs_from_the_migrated_inventory():
+    report = {"principals": {"u-1": "alice", "u-2": "bob"},
+              "bindings": {"u-1": 300001, "u-2": 300002}, "unallocated": []}
+    assert role_startup.bindings(report) == {("alice", "u-1"): 300001,
+                                             ("bob", "u-2"): 300002}
+    report["unallocated"] = ["carol"]
     with pytest.raises(RuntimeError, match="unallocated"):
-        role_startup.bindings({}, helpers)
+        role_startup.bindings(report)
 
 
 def test_default_image_and_compose_never_select_the_split():

@@ -3,22 +3,97 @@
 import json
 import os
 import sqlite3
+import sys
+from pathlib import Path
 
 import pytest
 
+from deploy import role_admission_contract as contract
 from deploy import role_egress_migration as egress
 from deploy import role_metadata_migration as protected
 from deploy import role_owner_migration as owner
 from deploy import role_volume_inventory as inventory
 from deploy import role_volume_migration as migration
-from tests.test_role_owner_migration import metadata, volume  # noqa: F401
+from tests.test_role_owner_migration import metadata as inode_metadata
+from tests.test_role_owner_migration import volume  # noqa: F401
 from tests.test_role_volume_inventory import reserve, seed
 from tinyassets import role_modes
+
+REPO = Path(__file__).resolve().parents[1]
+
+
+def _retire_child(role):
+    """The production launch's broker retirement: 1002, broker group, no caps."""
+    assert role == "broker"
+    os.setgroups([1101])
+    os.setresgid(1002, 1002, 1002)
+    os.setresuid(1002, 1002, 1002)
+
+
+# The real contract and a real retired broker child; only the interpreter and
+# application path differ from the image (role_admission_restart_probe.py runs
+# the image's own).
+LAUNCH = {"retire_child": _retire_child, "close_descriptors": lambda keep=(): None}
+
+
+@pytest.fixture(autouse=True)
+def oracle_interpreter(monkeypatch):
+    monkeypatch.setattr(contract, "PYTHON", sys.executable)
+    monkeypatch.setattr(contract, "APP", str(REPO))
+
+
+def broker(root, call):
+    """Run ``call(OwnerIdentities)`` as the retired broker; returns its JSON value."""
+    read, write = os.pipe()
+    child = os.fork()
+    if child == 0:
+        code = 0
+        try:
+            os.close(read)
+            _retire_child("broker")
+            from tinyassets.broker.owner_identities import OwnerIdentities
+
+            value = call(OwnerIdentities(root / ".broker/state/owner-identities.db"))
+            os.write(write, json.dumps(value).encode())
+        except BaseException as exc:  # noqa: BLE001 - reported to the parent
+            os.write(write, json.dumps({"error": type(exc).__name__,
+                                        "message": str(exc)}).encode())
+            code = 1
+        os._exit(code)
+    os.close(write)
+    with os.fdopen(read, "rb") as handle:
+        value = json.loads(handle.read() or b"null")
+    _, status = os.waitpid(child, 0)
+    if os.waitstatus_to_exitcode(status) != 0:
+        raise RuntimeError(value)
+    return value
+
+
+def metadata(root):
+    """Every inode's identity, mode and times, except one read the contract makes.
+
+    The retired broker child reads its own log with SQLite, which cannot avoid
+    an atime update on the identity database. Root never reads it (DA7).
+    """
+    result = inode_metadata(root)
+    for path, value in result.items():
+        if "/.broker/state/owner-identities.db" in path:
+            result[path] = value[:4] + value[5:]
+    return result
+
+
+def admissions(root):
+    """The whole admission log as (generation, event, principal, center, machine)."""
+    return [tuple(row) for row in broker(root, lambda db: [
+        [r.generation, r.event, r.principal, r.center, r.machine]
+        for r in db.admissions_after(0)])]
 
 
 def setup(root):
     seed(root)
     reserve(root, [("alice", 300001), ("bob", 300002)])
+    # A real map always carries the DA1 log (OwnerIdentities creates both).
+    broker(root, lambda db: None)
     os.chown(root / ".broker", 1002, 1101)
     (root / ".broker").chmod(0o2700)
     for center in ("alice", "bob"):
@@ -33,7 +108,8 @@ def setup(root):
 def run(root, **kwargs):
     return migration.migrate(root, owner=vars(owner), egress=vars(egress),
                              metadata=vars(protected), inventory=vars(inventory),
-                             modes=vars(role_modes), launch={}, **kwargs)
+                             modes=vars(role_modes), launch=LAUNCH, contract=vars(contract),
+                             **kwargs)
 
 
 def test_full_dry_apply_repeat_reverse(volume):
@@ -163,9 +239,10 @@ def test_metadata_reconciliation_marks_incomplete_and_resumes(volume):
 
 
 @pytest.mark.parametrize("reverse", [False, True])
-def test_new_owner_center_after_forward_fails_closed(volume, reverse):
-    """Open admission-generation contract (concern 2026-10-06): a signup
-    after a stable forward refuses the next startup migration unchanged."""
+def test_unlogged_center_after_forward_fails_closed(volume, reverse):
+    """DA7: a tree no admission row explains and no canonical label adopts
+    (here the old image's 1001:1001 signup) refuses the startup unchanged.
+    Explained changes: tests/test_role_admission_startup.py."""
     setup(volume)
     run(volume)
     (volume / "carol").mkdir(mode=0o755)
@@ -175,6 +252,6 @@ def test_new_owner_center_after_forward_fails_closed(volume, reverse):
     with sqlite3.connect(volume / ".tinyassets.db") as db:
         db.execute("INSERT INTO founder_home VALUES ('carol','carol')")
     before = metadata(volume)
-    with pytest.raises((owner.MigrationRefused, inventory.InventoryRefused)):
+    with pytest.raises(owner.MigrationRefused, match="unexplained center tree: carol"):
         run(volume, reverse=reverse, dry_run=True)
     assert metadata(volume) == before

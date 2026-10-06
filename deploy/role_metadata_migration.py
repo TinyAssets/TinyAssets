@@ -13,7 +13,8 @@ import stat
 
 
 def migrate(data_root, *, bindings, work, owner, modes, reverse=False,
-            dry_run=False, layout_lock=None, after_step=None, reconcile_work=False):
+            dry_run=False, layout_lock=None, after_step=None, reconcile_work=False,
+            previous_bindings=None, explained=None):
     if os.geteuid() != 0:
         raise owner["MigrationRefused"]("metadata migration requires the pre-drop window")
     refused = owner["MigrationRefused"]
@@ -83,9 +84,13 @@ def migrate(data_root, *, bindings, work, owner, modes, reverse=False,
                     if owner["_stat"](state, "metadata.json") is not None:
                         journal = owner["_read"](state, "metadata.json", private=True)
             configuration_changed = journal and journal["configuration"] != configuration
+            # DA7: a completed journal may lag one reconciled admission
+            # generation; ``explained`` is the contract's phase_explained.
             if configuration_changed and not (
                 reconcile_work and journal["state"] == "stable"
-                and journal["configuration"]["bindings"] == bindings
+                and (journal["configuration"]["bindings"] == bindings
+                     or explained is not None and explained(
+                         journal["configuration"]["bindings"], previous_bindings, bindings))
             ):
                 raise refused("metadata authority/classification changed")
             if journal and journal["direction"] != direction and journal["state"] != "stable":
