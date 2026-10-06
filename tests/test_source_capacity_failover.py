@@ -19,8 +19,10 @@ def plan():
                         source_kind="subscription", provider_scope="secondary-account",
                         default_model_id="strongest")
     free = connection("free", models=[
-        model("weaker", score=Scores("comparable-v1", "fresh", 1)),
-        model("stronger", score=Scores("comparable-v1", "fresh", 99)),
+        replace(model("weaker", score=Scores("comparable-v1", "fresh", 1)),
+                remaining_requests=50),
+        replace(model("stronger", score=Scores("comparable-v1", "fresh", 99)),
+                remaining_requests=50),
     ])
     return AgentModelPlan(
         Catalog("owner", "universe", (primary, free, secondary)),
@@ -49,7 +51,7 @@ def test_capacity_recovery_keeps_subscriptions_ahead_of_explicit_http_tail():
     ))
     failed = (Exhaustion("account", ModelRef("primary", "chosen")),)
     assert refs(selected.capacity_order("owner", "universe", failed))[0] == ModelRef(
-        "secondary", "strongest",
+        "free", "stronger",
     )
 
 

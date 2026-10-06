@@ -75,6 +75,8 @@ class Model:
     #: none for Haiku. Per-model rather than per-source for that reason: the
     #: same source's models disagree, and 4.6 lacks a level 5.x has.
     effort_levels: tuple[str, ...] = ()
+    # Remaining daily requests, observed or declared; None means no known cap.
+    remaining_requests: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -382,23 +384,9 @@ def order_models(
     if explicit:
         refs = ([] if primary is None else [primary]) + list(policy.fallbacks)
     else:
-        # A subscription/local connection controls its own advertised default.
-        # Other models remain visible in the catalogue for explicit selection.
-        refs = []
-        for connection in catalog.connections:
-            if connection.source_kind == "http":
-                refs.extend(
-                    ModelRef(connection.connection_id, m.model_id) for m in connection.models
-                )
-            elif connection.default_model_id is None:
-                rejected.append(
-                    Ineligible(
-                        ModelRef(connection.connection_id, ""),
-                        "default_unavailable",
-                    )
-                )
-            else:
-                refs.append(ModelRef(connection.connection_id, connection.default_model_id))
+        # Every admitted model competes, independent of access method.
+        refs = [ModelRef(c.connection_id, m.model_id)
+                for c in catalog.connections for m in c.models]
 
     exhausted_models: set[tuple[tuple[str, str, str], str]] = set()
     model_failures: list[tuple[ConnectionModels, str]] = []
@@ -473,11 +461,12 @@ def order_models(
 
     if not explicit:
 
-        def ranking(candidate: Candidate) -> tuple[int, int, int, int, int]:
+        def ranking(candidate: Candidate) -> tuple:
             connection, model = entries[candidate.ref]
             stable = int(candidate.ref != policy.stable_preference)
-            if connection.source_kind in ("subscription", "local"):
-                return (0, 0, 0, 0, stable)
+            # A known finite allowance is a constraint, not a quality score.
+            # Unknown is no known constraint, never an invented unlimited grant.
+            capacity = (model.remaining_requests is not None, -(model.remaining_requests or 0))
             scores = model.scores
             if (
                 scores is not None
@@ -489,13 +478,13 @@ def order_models(
                 # General score only breaks equal agentic scores. Unknown is not
                 # zero (which could itself be a real benchmark score).
                 return (
-                    1,
+                    *capacity, 0,
                     -scores.agentic,
                     int(scores.general is None),
                     -(scores.general or 0),
                     stable,
                 )
-            return (2, 0, 0, 0, 0)  # Unranked: preserve discovery's stable order.
+            return (*capacity, 1, 0, 0, 0, 0)  # Unranked: stable discovery order.
 
         eligible.sort(key=ranking)
     return AdvisoryOrder(policy.generation, tuple(eligible), tuple(rejected))

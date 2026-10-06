@@ -51,6 +51,11 @@ def configured(rig, reader, monkeypatch, request):
     access = {rig.definition.id: ModelAccess("discovered")}
     native = None
     if getattr(request, "param", None) == "mixed":
+        from tinyassets.providers import free_sources
+
+        monkeypatch.setattr(free_sources, "daily_cap_for_host", lambda host: {
+            "requests_per_day": 50, "reset_timezone": "UTC", "name": "Limited source",
+        })
         from tinyassets.credential_vault import write_credential_vault
 
         write_credential_vault(
