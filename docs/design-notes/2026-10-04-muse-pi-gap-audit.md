@@ -20,6 +20,11 @@ Sources: [S1](https://betanews.com/article/meta-muse-ai-agent-launch/), [S2](htt
 Labels used below: **FACT** means Meta's own pages or several outlets agree. **REPORTED** means one secondary source. **INFERENCE** is my own reading.
 
 ### Connections
+- **Founder correction (2026-10-05):** Muse has no LinkedIn, X, TikTok,
+  YouTube or Reddit directory connector. Socials connect through a remote MCP;
+  MCP attach is the parity-critical piece, with the browser a secondary fallback.
+  This supersedes any contrary inference in this audit; see the corrected
+  [connection research](2026-10-04-muse-connection-methods.md#2026-10-05-correction-social-connections-and-founder-direction).
 - **FACT: you connect by saying it in chat** ("Connect my Gmail") or through Settings > Connectors. [S5](https://www.meta.com/help/artificial-intelligence/1687253048996149/), [S6](https://saascrmreview.com/how-to-use-meta-muse/)
 - **FACT: prebuilt connectors** cover Google Workspace, Outlook, Spotify, OpenTable, Plaid and Stripe Link, among others. Notion, GitHub and Instacart were added after launch.
 - **FACT: scope is chosen per connector**, for example read-only versus read+send. Connectors that share information proactively are flagged before you connect.
