@@ -31,7 +31,7 @@ MOBILE = Path(__file__).resolve().parents[1]
 RES = MOBILE / "android" / "app" / "src" / "main" / "res"
 MANIFEST = MOBILE / "android" / "app" / "src" / "main" / "AndroidManifest.xml"
 SRC = MOBILE / "resources" / "android"
-BACKGROUND = "#14140F"  # matches capacitor.config.json android.backgroundColor
+BACKGROUND = "#14140F"  # launcher icon ground; independent of the app/splash background
 # The manifest attributes that decide which resources the launcher actually shows.
 MANIFEST_ICON_REFS = (
     ("android:icon", "@mipmap/ic_launcher"),

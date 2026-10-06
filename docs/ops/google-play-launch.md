@@ -109,23 +109,13 @@ Code `5` / `1.0.4` carried the `/app` URL move (`server.url` is compiled into th
 shell, so installed `1.0.3` WebViews opened a path that no longer served) plus the
 first push-notification native change. It is live on the closed **Alpha** track.
 
-### The closed-test update ladder (2026-10-02 → 2026-10-15)
+The closed test requires 12 testers opted in continuously for 14 days. The
+recorded day 1 is 2026-10-02, so production access can be applied for from
+**2026-10-15**, provided the continuous opt-in requirement is met. There is no
+pre-scheduled update ladder: real native fixes ship together when ready. The
+1.0.6 build includes both offline recovery and launch-colour continuity.
 
-The 12-tester / 14-day closed test is a wall-clock window, and the tester-recruiting
-service's instructions require **2–3 app updates released during it**. The window's
-day 1 is 2026-10-02 (Play: "12 testers have currently been opted in for 1 day"), so
-production access can be applied for from **2026-10-15**. Each update is a real,
-small native improvement — the hosted web app ships instantly and needs no bundle,
-so a bundle exists only when the native shell changes.
-
-| Code | Name | Target date | Native change | State |
-|---|---|---|---|---|
-| 6 | `1.0.5` | 2026-10-04 (day 3) | the back gesture gets a policy: walk WebView history, then one confirmation before leaving, and leave without tearing down the signed-in WebView | checked in |
-| 7 | `1.0.6` | 2026-10-09 (day 8) | the bundled offline page becomes reachable — `server.errorPath` plus a Try again that returns to the live app | checked in |
-| 8 | `1.0.7` | 2026-10-13 (day 12) | launch colour: the shell's window and splash background match what the app actually renders, so opening it has no colour flash | planned |
-
-Two candidates were dropped after reading the shipped dependency rather than
-assuming, and they are recorded here so nobody re-proposes them:
+Existing native behaviour to check before proposing another shell change:
 
 - **Keyboard and safe-area insets are already handled natively.** Capacitor 8
   registers `com.getcapacitor.plugin.SystemBars` from `Bridge` unconditionally.
@@ -145,7 +135,7 @@ The release gate checks the source and generated Capacitor config and requires
 the packaged page to match. Phone-width browser tests exercise retry navigation;
 the airplane-mode device check below remains required before promotion.
 
-Nothing in a window update may touch sign-in, `server.url`, or push. Bump the code
+This 1.0.6 change preserves sign-in, `server.url`, and push. Bump the code
 and the name together, one update per bundle; a code Play has seen is refused even
 on a test track — and Play consumes a code on **upload**, not on rollout, so a
 bundle that is accepted and never published still burns its number.
@@ -160,8 +150,7 @@ for. So one device check belongs to each bundle before the founder promotes it:
 | Code | Device check |
 |---|---|
 | 6 (`1.0.5`) | On the opening screen, press back: a toast appears and the app stays. Press back again inside ~2.5 s: the app leaves. Reopen from the launcher: the conversation is still there, not reloaded. Navigate into a second view first and back returns to the previous one instead. |
-| 7 (`1.0.6`) | Turn on airplane mode and cold-start: the TinyAssets offline page appears, not the WebView's error page, and Try again recovers once the network is back. |
-| 8 (`1.0.7`) | Cold-start and watch the first half second: no colour flash between splash and app. |
+| 7 (`1.0.6`) | Cold-start: no colour flash between splash and app. Turn on airplane mode and cold-start: the TinyAssets offline page appears, not the WebView's error page, and Try again recovers once the network is back. |
 
 **Build route: `Android release AAB` (`workflow_dispatch` on `main`), not the
 container.** The container recipe in `mobile/container/` builds without

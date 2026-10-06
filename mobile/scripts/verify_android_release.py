@@ -373,7 +373,7 @@ def verify_generated_java(mobile: Path, release: AndroidRelease) -> None:
     # that the policy runs -- a disabled branch would still carry every token
     # below. So the decision itself is pinned exactly: changing what the app does
     # on back has to come here and say so. The behaviour is proved on a device
-    # (docs/ops/google-play-launch.md, the ladder's device check), not here.
+    # (docs/ops/google-play-launch.md, the release device check), not here.
     back_policy = (
         "installBackPolicy();",
         "new OnBackPressedCallback(true)",
