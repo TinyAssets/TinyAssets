@@ -33,13 +33,14 @@
     loads the live app from https://tinyassets.io/app (see capacitor.config.json
     -> server.url), which is the same origin as the /mcp API + the AuthKit sign-in,
     so the OAuth round-trip stays inside the WebView. server.errorPath shows this
-    page when loading fails. A normal same-window link retries the live app;
-    reloading here would only reload the bundled page. No native plugin is needed.
+    page when loading fails. Retry replaces this history entry so Back cannot
+    return to this fallback. No native plugin is needed.
   -->
   <div class="wrap">
     <div class="mark">TinyAssets</div>
     <div class="sub">Can&rsquo;t connect to your command center. Check your connection and try again.</div>
-    <a class="retry" href="https://tinyassets.io/app">Try again</a>
+    <a class="retry" href="https://tinyassets.io/app"
+       onclick="location.replace(this.href); return false">Try again</a>
   </div>
 </body>
 </html>

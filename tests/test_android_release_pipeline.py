@@ -409,32 +409,37 @@ def test_offline_page_is_reachable_in_the_packaged_shell(tmp_path: Path) -> None
         verify.verify_offline_page(mobile, generated=True)
 
 
+@pytest.mark.real_browser
 @pytest.mark.parametrize("online", [False, True])
 def test_offline_try_again_returns_to_live_app_in_same_phone_view(online: bool) -> None:
     from playwright.sync_api import sync_playwright
 
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch()
-        context = browser.new_context(viewport={"width": 360, "height": 640})
-        page = context.new_page()
-        page.goto((MOBILE / "www/index.html").as_uri())
-        context.set_offline(not online)
-        # A failed load can happen even when navigator.onLine says true.
-        retry = page.get_by_role("link", name="Try again", exact=True)
-        assert retry.is_visible()
-        box = retry.bounding_box()
-        assert box and box["height"] >= 48
-        assert 0 <= box["x"] < box["x"] + box["width"] <= 360
-        assert 0 <= box["y"] < box["y"] + box["height"] <= 640
-        assert page.evaluate("document.documentElement.scrollWidth") == 360
-        context.set_offline(False)
-        # Intercept the destination, proving navigation without a production write.
-        page.route("https://tinyassets.io/app", lambda route: route.fulfill(body="Recovered"))
-        retry.click()
-        page.wait_for_url("https://tinyassets.io/app")
-        assert page.locator("body").inner_text() == "Recovered"
-        assert len(context.pages) == 1
-        browser.close()
+        try:
+            context = browser.new_context(viewport={"width": 360, "height": 640})
+            page = context.new_page()
+            page.goto((MOBILE / "www/index.html").as_uri())
+            context.set_offline(not online)
+            # A failed load can happen even when navigator.onLine says true.
+            retry = page.get_by_role("link", name="Try again", exact=True)
+            assert retry.is_visible()
+            box = retry.bounding_box()
+            assert box and box["height"] >= 48
+            assert 0 <= box["x"] < box["x"] + box["width"] <= 360
+            assert 0 <= box["y"] < box["y"] + box["height"] <= 640
+            assert page.evaluate("document.documentElement.scrollWidth") == 360
+            context.set_offline(False)
+            # Intercept the destination, proving navigation without a production write.
+            page.route("https://tinyassets.io/app", lambda route: route.fulfill(body="Recovered"))
+            history_length = page.evaluate("history.length")
+            retry.click()
+            page.wait_for_url("https://tinyassets.io/app")
+            assert page.locator("body").inner_text() == "Recovered"
+            assert len(context.pages) == 1
+            assert page.evaluate("history.length") == history_length
+        finally:
+            browser.close()
 
 
 def test_release_runbook_version_matches_android_release_json() -> None:

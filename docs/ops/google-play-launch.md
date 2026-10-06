@@ -138,7 +138,8 @@ assuming, and they are recorded here so nobody re-proposes them:
 
 `mobile/www/index.html` is now the bundled connection-error page for 1.0.6:
 `server.errorPath` points to `index.html`, and its always-visible **Try again** link
-navigates to `https://tinyassets.io/app` in the same WebView. It also handles
+replaces the fallback history entry with `https://tinyassets.io/app` in the same
+WebView, so Back does not return to the error page after recovery. It also handles
 failed loads when the device reports it is online, without waiting on a spinner.
 The release gate checks the source and generated Capacitor config and requires
 the packaged page to match. Phone-width browser tests exercise retry navigation;
