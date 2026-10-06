@@ -31,7 +31,9 @@ def with_request_capacity(base, owner, universe, connection):
         return connection
     budget = request_budget(base, owner, connection.connection_id, free[0],
                             preset=preset, zero_priced_models=free)
-    remaining = max(0, budget.cap - budget.used) if budget else preset["requests_per_day"]
+    # None can mean successful use disproved every declared cap. It cannot be
+    # interpreted as a fresh allowance; unavailable usage is unknown too.
+    remaining = max(0, budget.cap - budget.used) if budget else None
     return replace(connection, models=tuple(
         replace(m, remaining_requests=remaining) if m.model_id in free else m
         for m in connection.models

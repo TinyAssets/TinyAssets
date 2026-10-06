@@ -60,9 +60,9 @@ def test_health_demotes_only_automatic(field):
 
 
 def test_declared_and_observed_capacity_reach_the_real_prepared_plan(configured, monkeypatch):
+    from tinyassets import request_budget
     from tinyassets.providers import free_sources
     from tinyassets.providers.served_model_plan import prepare_owned_model_plan
-    from tinyassets.request_budget import RequestBudget
 
     monkeypatch.setattr(free_sources, "daily_cap_for_host", lambda host: {
         "requests_per_day": 50, "reset_timezone": "UTC", "name": "Small allowance",
@@ -73,11 +73,31 @@ def test_declared_and_observed_capacity_reach_the_real_prepared_plan(configured,
             owner="owner", agent=configured.binding,
         ).plan
 
-    plan = prepared()
-    assert plan.catalog.connections[0].models[0].remaining_requests == 50
-    monkeypatch.setattr("tinyassets.request_budget.request_budget", lambda *a, **kw:
-                        RequestBudget(100, 1000, "Observed upgrade", "UTC"))
+    monkeypatch.setattr(request_budget, "requests_today", lambda *a, **kw: (0, 0))
+    assert prepared().catalog.connections[0].models[0].remaining_requests == 50
+    monkeypatch.setattr(free_sources, "daily_cap_for_host", lambda host: {
+        "requests_per_day": 50, "credit_requests_per_day": 1000,
+        "reset_timezone": "UTC", "name": "Observed upgrade",
+    })
+    monkeypatch.setattr(request_budget, "requests_today", lambda *a, **kw: (100, 100))
     assert prepared().catalog.connections[0].models[0].remaining_requests == 900
+
+
+@pytest.mark.parametrize("counts", [(60, 60), None])
+def test_disproven_or_unobserved_capacity_stays_unknown(configured, monkeypatch, counts):
+    from tinyassets import request_budget
+    from tinyassets.providers import free_sources
+    from tinyassets.providers.served_model_plan import prepare_owned_model_plan
+
+    monkeypatch.setattr(free_sources, "daily_cap_for_host", lambda host: {
+        "requests_per_day": 50, "reset_timezone": "UTC", "name": "Small allowance",
+    })
+    monkeypatch.setattr(request_budget, "requests_today", lambda *a, **kw: counts)
+    plan = prepare_owned_model_plan(
+        base=configured.rig.base, universe=configured.rig.base / "u-models",
+        owner="owner", agent=configured.binding,
+    ).plan
+    assert plan.catalog.connections[0].models[0].remaining_requests is None
 
 
 def test_ranking_has_no_vendor_or_source_kind_branches():

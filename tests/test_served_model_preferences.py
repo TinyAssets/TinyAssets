@@ -181,6 +181,9 @@ def test_engine_disabled_allows_plain_chat_but_refuses_full_agent_task(agent, mo
 
 @pytest.mark.parametrize("configured", ["mixed"], indirect=True)
 def test_mixed_automatic_prefers_owned_native_default(agent, monkeypatch):
+    # Known unused HTTP allowance supplies the capacity comparison. Missing
+    # usage evidence is unknown, and does not assert native-source priority.
+    monkeypatch.setattr("tinyassets.request_budget.requests_today", lambda *a, **kw: (0, 0))
     assert _converse(agent, monkeypatch) == "codex:hello"
     assert agent.served.native.calls == 1 and agent.wires == []
 
@@ -196,6 +199,7 @@ def test_auth_failure_affects_only_new_auto_turn_not_failed_native_replay(
     from tinyassets.providers.agent_capacity_boundary import NativeCompletionEvidence
     from tinyassets.providers.served_model_plan import prepare_owned_model_plan
 
+    monkeypatch.setattr("tinyassets.request_budget.requests_today", lambda *a, **kw: (0, 0))
     now = [0]
     monkeypatch.setattr(
         source_health, "SOURCE_HEALTH", source_health.SourceHealth(clock=lambda: now[0]),
