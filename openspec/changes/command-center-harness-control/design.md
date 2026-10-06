@@ -154,6 +154,57 @@ independently confirmed the task 1.2 dependencies; see [review.md](review.md).
 Lead disposition: **AGREE**. Draft PR #4503 remains an incomplete capability;
 there is no deployment, live pass or as-built spec sync claim.
 
+## Continuation reconciliation (2026-10-05, L5b)
+
+Rechecked against `ae7790a388` after slice 1 merged as #4503. Its merge
+completed only 1.1, not runtime task 1.2. The roster/settings and starter-loader
+dependencies documented above remain absent. Do not infer activation from a
+merged parser or mark 1.2 complete.
+
+The first requested continuation item, 2.1, also depends on
+`connect-anything-ladder` task 1.4 for the separate raw-key stdio server sandbox
+and scanned stdout/stderr. That task is unchecked and no such runtime exists.
+The approved design explicitly delegates that sandbox; this lane must consume
+it rather than introduce a competing MCP runtime. The broker scanner alone is
+not evidence of process/user/filesystem isolation.
+
+The existing recipient update policy is `presentation-updates-v1`
+(`command_center_update_policy.py`). Its `presentation_decisions()` refuses
+changed retained components and executable UI/capability changes. It is not an
+authenticated-author/capability-ceiling grant for executable updates. Extending
+that existing mechanism for executable activation remains this lane's 2.1 work;
+the presentation policy must not be silently widened or treated as that grant.
+
+One independently useful 2.1 boundary fix is implemented: `ta_cli.extensions()`
+now refuses unsupported versions before cataloguing any tool. Previously it
+ignored `schema_version`, so a v2 manifest was executable as a legacy tool
+without its promised activation protocol. Missing version and integer version
+1 retain tool-only behavior; booleans, floats and other version types are
+rejected. `hooks`, `commands` and `cards` cannot claim legacy behavior by omitting
+the version or declaring v1. This is a fail-closed compatibility boundary, not
+v2 activation, code pinning or a substitute runtime. Invalid packages remain
+visible on stderr and do not remove unrelated platform capabilities.
+
+Task 2.1 stays unchecked. Tasks 2.2, 2.3 and 3.0-3.6 are not advanced past this
+ordered integration gap. The dependency handoff is recorded in
+`docs/concerns/harness-control-runtime-dependencies.md`; task 3.5 also requires
+deployment and real-user acceptance beyond creation of a draft PR. No new
+public handle, permission grant, prompt guidance or static prompt budget is
+introduced. The parent D7 delegation remains valid and unchanged.
+
+Boundary verification: Linux oracle Python 3.11.16 with real bubblewrap,
+`test_extension_activation_boundary.py`, `test_ta_capabilities.py`,
+`test_ta_capabilities_jail.py` and `test_converse_turn_cost.py`: **65 passed,
+zero skips**. The first oracle attempt stopped during its source copy because
+the plugin rebuild changed the tree; the rerun used stable product files.
+Windows boundary/ta tests: **48 passed**. Windows prompt-cost: **9 passed,
+1 existing failure** (32,353 vs 30,100 tool-description characters), already
+tracked in `docs/concerns/windows-tool-description-budget.md`. No ratchet or
+existing test was weakened. Touched-Python Ruff, plugin rebuild/import probe,
+strict OpenSpec validation, concern metadata and diff checks pass. No affected
+test file is on the heavy-test exclusion list. These results verify this
+boundary patch, not task 3.4's verification of the unimplemented capability.
+
 ## Live events and orchestration ownership (2026-10-04)
 
 Extend the same owner-bound bridge with subscribe/unsubscribe and a versioned event envelope: opaque event ID/cursor, kind, owner-bound center/agent/run references, resource revision and sanitized payload. Kinds cover activity, tool-call lifecycle, approvals, task-board changes and process health. A subscription applies the same installation capability ceiling and current authority as ta reads. Approval events carry protected request references/status, never decision tokens; clicking opens the first-party approval sheet or Needs you flow, not custom-UI approval chrome.
