@@ -153,8 +153,9 @@ async def test_silence_after_a_tool_result_is_the_next_generation_step(served): 
 async def test_the_launch_edge_is_still_guarded_by_the_init_budget(served):  # noqa: F811
     """Before the CLI answers anything nothing is generating: a server that
     never speaks is ended on ``init_s``."""
-    info, server = await _stop(served, finished(), ProviderIdleTimeoutError,
-                               launch_delay=5.0, init_timeout_s=0.3)
+    with pytest.raises(ProviderIdleTimeoutError) as info:
+        await _play(served, finished(), launch_delay=5.0, init_timeout_s=0.3)
+    server = served[2]["server"]
     assert server.killed is True
     assert info.value.attempt_telemetry["phase"] == "launch"
     assert info.value.attempt_telemetry["tool_phase"] is None
@@ -252,8 +253,9 @@ async def test_progressing_past_the_absolute_cap_is_an_interactive_deadline(
     Progress every 0.1s keeps the 0.25s turn wait from ever firing."""
     _waits(monkeypatch, turn=0.25)
     progress = (0.1, {"method": "item/started", "params": {"item": {"type": "agentMessage"}}})
-    info, server = await _stop(served, [_STARTED] + [progress] * 40, InteractiveDeadlineError,
-                               absolute_cap_s=0.45)
+    with pytest.raises(InteractiveDeadlineError) as info:
+        await _play(served, [_STARTED] + [progress] * 40, absolute_cap_s=0.45)
+    server = served[2]["server"]
     assert info.value.failure_class == "interactive_deadline"
     assert isinstance(info.value, ProviderTimeoutError), (
         "must stay a ProviderTimeoutError subclass for legacy except clauses"
