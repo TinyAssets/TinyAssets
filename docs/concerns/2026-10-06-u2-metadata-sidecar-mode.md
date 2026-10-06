@@ -26,3 +26,11 @@ untested; do not activate or deploy any of this work.
 Handoff: inspect the worktree at `wf-uid2` and D208 in
 `openspec/changes/per-role-uid-split/delivery-u2.md`. The review receipt is
 `C:/Users/Jonathan/AppData/Local/Temp/u2-metadata-review-result.md` (exit 0).
+
+
+2026-10-06 lead-authorized resume: D209 fixes regular sidecar modes in the
+preserved worktree, with Linux mode/WAL/SHM tests passing and Claude confirming
+no newly added regular-file execute/setuid/setgid. This concern stays open
+because the implementation is uncommitted and stable configuration growth is
+still incomplete. D210 records a newly discovered permission-replay stop;
+see 2026-10-06-u2-stale-mode-replay.md. Activation remains OFF.

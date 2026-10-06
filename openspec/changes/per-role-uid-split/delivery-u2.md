@@ -1,4 +1,110 @@
+# U2 STOP: stale permission replay after owner chmod (D210)
+
+### D210. Founder new-privilege stop on restart permission widening
+
+The requested D209 implementation fixes directory bits on regular files and
+journals exact original permissions. Its bounded Linux selection passes **77
+tests, zero skips** (owner migration, metadata migration, volume inventory),
+and targeted Ruff passes. Claude's required cross-family review completed with
+exit 0, **ADAPT**. Full result read:
+`C:/Users/Jonathan/AppData/Local/Temp/u2-d209-review-result.md`.
+
+**AGREE** with finding 1: the completed owner-journal signature compares only
+executable/non-executable status. After a legitimate engine chmod from 0644 to
+0600, restart reuses the saved 0644 mode and `_permissions` reapplies it. The
+same defect can restore directory group/other access after a restrictive chmod.
+Although Claude classified this as correctness rather than floor, granting
+permissions that the owner removed is the founder's explicit **new-privilege**
+stop condition. Stop before patching or activating. This is source-review
+evidence, not a reproduced cross-user read or production incident. New concern:
+`docs/concerns/2026-10-06-u2-stale-mode-replay.md`.
+
+**AGREE** with finding 2: atomic replacement of a vault/liveness inode loses
+its journaled original; reverse then captures the forward broker-readable
+ownership/mode as original and keeps it. Reverse needs the specified legacy
+fallback for new protected entries. No fix was attempted after this stop.
+Claude confirmed regular owner/sidecar files gain no execute/setgid/setuid,
+originals survive known-inode direction changes, and U1 files are untouched.
+D209 preserves pre-existing special bits on regular files as required by the
+lead's exact-mode decision; it never introduces an absent special bit.
+
+Current source changes remain **uncommitted and uninstalled** in wf-uid2 for
+handoff, including the reviewed mode fix, inherited D202/D206 changes, classifier,
+and unfinished coordinator. No code is newly certified for merge. A new draft
+`tests/test_role_volume_migration.py` and coordinator accounting preflight/preview
+precreation edits were prepared while review ran; they were **not executed or
+reviewed**. Do not treat them as a full-volume receipt. No owner-delete admission,
+old production CMD boot, or startup/healthcheck wiring was implemented. Activation
+remains OFF; no production data was mounted, changed or deployed.
+
+Per item: (1) D209 bounded mode tests pass but restart correctness now stopped;
+full migration still incomplete. (2) Two-pass deletion remains unimplemented.
+(3) Actual previous-production CMD boot remains unimplemented. (4) Startup and
+healthcheck integration remains unimplemented, switch OFF. No task checkbox,
+spec acceptance, deployed-SHA assertion or real-user app pass is claimed.
+
+U1 remote merge was already up to date. Session coordination was unavailable:
+official Codex proxy refused connection (10061), and vendor catalog returned
+named-pipe ENOENT before dispatch. No message delivered or settings changed.
+Both existing drafts (#4509 into U1, #4510 into main) must remain not merge-ready.
+Only this stop/handoff documentation is committed; all source work is preserved.
+
+Merged origin/main at adf29db4e790825eca212709c98f19d6b4125d4e without
+conflicts, preserving all unfinished files. Plugin mirror rebuilt after that
+merge; import probe passes and it creates no additional diff. The 77-pass
+receipt predates this main merge and excludes the unexecuted coordinator draft.
+Final committed-stack hygiene against origin/feat/per-role-uid-split passes:
+325 added, 0 removed, 0 tampering (includes inherited main changes; excludes
+the uncommitted source). Both base branches are ancestors of this checkpoint.
+
+# U2 resume: lead mode decision implemented, verification in progress
+
+### D209. Exact legacy owner-work and sidecar modes across rollback
+
+The lead's 2026-10-06 decision supersedes D201's permission-widening rollback
+semantics and releases D208's implementation stop. Regular owner-work files
+(including SQLite -wal/-shm) retain their exact permission bits forward; only
+UID/GID changes. Work directories retain their mode plus directory-only setgid;
+the daemon access ACL is constrained by that original group mask. Restrictive
+modes are handled by D10 deletion/reverse, not by adding execute or write bits.
+Canonical daemon-owned roots retain D65's protected sibling traversal policy.
+Protected vault/snapshot metadata retains its separately specified D4 policy;
+no regular metadata file may acquire setuid/setgid/execute bits forward.
+Sidecar regular files preserve their exact mode instead of receiving the
+sidecar directory mode.
+
+Journal original UID/GID/mode before mutation and carry it by inode across
+restart generations and direction changes. Reverse restores those exact values,
+removing forward-added directory setgid. New engine-created entries have no
+legacy owner; reverse assigns them to daemon 1001 while retaining their mode.
+Broker-private permanent identity reservations remain private in both directions.
+An old metadata journal without original permissions refuses recovery rather
+than inventing an original mode. The uninstalled D206 draft never served data.
+
+Linux owner/metadata selection: 62 passed, zero skips, including exact file,
+directory and WAL/SHM modes and original ownership in both directions, existing
+crash boundaries, quarantine and real owner/foreign-owner denials. A subsequent
+ACL helper cleanup and review remain to be verified. Activation stays OFF.
+U1 merge reports already up to date. Both coordination routes remain unavailable
+(proxy connection refused; vendor catalog named pipe missing); no send claimed.
+
 # U2 migration lane
+
+## Resume inspection: existing founder stop remains in effect
+
+Resumed at `827d84c8797def5a6962124c4cc0732e4ac62e99`. Fetched origin;
+`git merge origin/feat/per-role-uid-split` reports `Already up to date`.
+The resume prompt describes a Docker interruption, but the latest committed
+handoff is D208's new-privilege stop. Inspection confirms that `target()` still
+assigns `SIDECAR_DIRECTORY_MODE` to regular sidecar files. The repeated founder
+stop rule therefore stops this run before implementation or execution of that
+migration. Existing uncommitted implementation and tests are preserved.
+
+Draft PRs #4509 (U1 base) and #4510 (main) remain open. No new verified slice,
+commit, push, deployment, or acceptance test is claimed by this inspection.
+`git diff --check` passes. Prior test receipts below remain historical and do
+not certify the unfinished worktree. Items 1-4 retain D208's incomplete status;
+activation remains OFF. This receipt is a local handoff update only.
 
 ## STOP receipt: founder new-privilege rule (2026-10-06)
 
