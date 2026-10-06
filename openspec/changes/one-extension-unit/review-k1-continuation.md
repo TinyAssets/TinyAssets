@@ -18,8 +18,20 @@ Review input: review-k1-r1.md (Claude, ADAPT). All four findings are accepted.
    New connections no longer break mounted tools/commands/hooks. The three
    regressions failed before the fix. Pre-U1 ordinary code still uses its launch
    socket; no narrower package process boundary is claimed (design.md).
-4. AGREE: real-effector wire/identity regression in progress; completion evidence
-   will be recorded in the next verified slice.
+4. AGREE: four real-effector/broker/vault cases prove exact JSON-RPC bytes,
+   MCP session/protocol/Accept headers, JSON and SSE success, actual stalled SSE
+   partial bodies, unknown outcome without replay, and outside effect leases.
+   They exposed missing launch identity inside ta's async dispatch. Dispatch now
+   binds the captured identity across awaited coroutines and worker threads.
+   All four failed before this fix. The sink uses the git fixture's synthetic
+   HTTPS loopback/TLS seam and the effector fixture's in-process broker seam;
+   the real driver uses a shortened idle window to produce stalled responses.
+   This proves adapter handling of broker-stalled bodies, not a new production
+   idle-stream policy for non-inference HTTP connections.
+
+Second slice: Linux oracle remote MCP and ta tests 42 passed, zero skips.
+Main merge check: origin/main a97c17c26e already included. Claude cross-family
+review dispatched via peer-agents; final verdict and broader tests pending.
 
 First slice: Linux oracle 56 passed, zero skips. Ruff and plugin mirror/import
 probe passed. No existing tests removed, skipped or weakened. New test fixture

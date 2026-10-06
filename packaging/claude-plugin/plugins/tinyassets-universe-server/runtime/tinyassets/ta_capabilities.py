@@ -71,6 +71,16 @@ class Capabilities:
         return found
 
     async def dispatch(self, message):
+        from tinyassets.auth.middleware import identity_context
+
+        # Socket/event-loop dispatch may run without the originating HTTP
+        # context. Keep the signed launch identity through awaited effects too.
+        if self.outside_identity is not None:
+            with identity_context(self.outside_identity):
+                return await self._dispatch(message)
+        return await self._dispatch(message)
+
+    async def _dispatch(self, message):
         from tinyassets.outside_authority import check_identity
 
         identity = self.outside_identity

@@ -118,3 +118,129 @@ def test_ask_first_never_captures_an_orphaned_protocol_frame(tmp_path, monkeypat
     assert result["error_kind"] == "rule_ask_first"
     assert "standing rule" in result["hint"]
     assert "request_id" not in result and not result.get("delivered")
+
+
+@pytest.mark.parametrize("reply_kind", ["json", "sse", "stalled", "stalled_empty"])
+def test_real_effector_remote_wire_and_outside_admission(tmp_path, monkeypatch, reply_kind):
+    import socket
+    import threading
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    from tests.test_authenticated_external_call_effector import _install_inprocess_proxy
+    from tests.test_outbound_ssrf_driver import _PassThroughTLS
+    from tinyassets.auth.middleware import current_identity_or_none
+    from tinyassets.auth.provider import Identity
+    from tinyassets.outside_authority import OutsideClientAuthority
+    from tinyassets.storage import outbound_connections as oc
+
+    service, extensions, args = setup(tmp_path)
+    name = activate(service, extensions, args)
+    store = OutsideClientAuthority(tmp_path)
+    monkeypatch.setattr("tinyassets.outside_authority.current_store", lambda: store)
+    source = {"client": "outside", "family": "session", "authenticated_at": 100}
+    store.observe("user-1", source)
+    store.set_enabled(True)
+    store.change("user-1", "outside", expected_generation=0, family="session", scopes=[
+        {"universe": service.root.name, "agent": "main", "capability": capability}
+        for capability in (name, "connection:conn-http:POST")])
+    identity = Identity("user-1", "user-1", metadata={
+        "outside_origin": store.admit("user-1", source)})
+    service.outside_identity = identity
+    seen, responses, identities = [], [], []
+    release = threading.Event()
+
+    class Handler(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def log_message(self, *_args):
+            pass
+
+        def do_POST(self):  # noqa: N802
+            raw = self.rfile.read(int(self.headers["Content-Length"]))
+            request = json.loads(raw)
+            seen.append((dict(self.headers), raw, self.path))
+            method = request["method"]
+            result = {
+                "initialize": {"protocolVersion": "2025-06-18", "capabilities": {"tools": {}}},
+                "tools/list": {"tools": [{"name": "hello", "inputSchema": {"type": "object"}}]},
+                "tools/call": {"content": [{"type": "text", "text": "done"}]},
+            }.get(method)
+            payload = b"" if result is None else json.dumps({
+                "jsonrpc": "2.0", "id": request["id"], "result": result}).encode()
+            streaming = reply_kind != "json" and method == "tools/call"
+            if streaming:
+                payload = b"data: " + payload + b"\n\n"
+                if reply_kind == "stalled_empty":
+                    payload = b": heartbeat\n\n"
+            self.send_response(202 if result is None else 200)
+            self.send_header("Content-Type",
+                             "text/event-stream" if streaming else "application/json")
+            self.send_header("MCP-Session-Id", "private-session")
+            stalled = streaming and reply_kind.startswith("stalled")
+            if not stalled:
+                self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+            self.wfile.flush()
+            if stalled:
+                release.wait(5)
+                self.close_connection = True
+
+    http = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=http.serve_forever, daemon=True)
+    thread.start()
+    driver = oc._SsrfHardenedHttpDriver
+
+    class SinkDriver(driver):
+        def __call__(self, **kwargs):
+            # Git fixture's loopback/TLS seam; also shorten only the transport's
+            # idle window to produce a real stalled partial response promptly.
+            identities.append(current_identity_or_none())
+            with store.db() as conn:
+                assert conn.execute("SELECT count(*) FROM outside_effects WHERE "
+                                    "client='outside' AND state='in_flight'").fetchone()[0] == 1
+            result = super().__call__(**{**kwargs, "reply_stream": (0.1, 5)})
+            responses.append(result)
+            return result
+
+    monkeypatch.setattr(oc, "_SsrfHardenedHttpDriver", lambda: SinkDriver(
+        resolver=lambda h, p: ["127.0.0.1"], validator=lambda addr: addr,
+        open_socket=lambda address, timeout, source: socket.create_connection(
+            ("127.0.0.1", http.server_port), timeout), ssl_context=_PassThroughTLS()))
+    monkeypatch.setenv("TINYASSETS_OUTBOUND_HTTP_CONNECTIONS_ENABLED", "1")
+    _install_inprocess_proxy(monkeypatch, db_path=tmp_path / "outbound.db",
+        universe_dir=service.root, grant_id="grant-http", provider="http",
+        destination="api.example.com", runtime_root=tmp_path / "runtime")
+    try:
+        # No ambient request identity: ta must bind its captured launch identity
+        # throughout the coroutine and asyncio.to_thread effector invocation.
+        catalog = call(service, name, {"action": "discover"})["result"]
+        assert "tools" in catalog, catalog
+        arguments = {"literal": {"$ta.ref": "must remain JSON-RPC text"}, "unicode": "caf\u00e9"}
+        result = call(service, name, {"action": "call", "tool": "hello", "arguments": arguments,
+                                    "catalog_hash": catalog["catalog_hash"]})["result"]
+        if reply_kind == "stalled_empty":
+            assert result["error"] == "mcp_outcome_unknown"
+        else:
+            assert result["content"] == [{"type": "text", "text": "done"}]
+        assert len(seen) == 7  # two handshakes/catalogs, exactly one tool effect; no replay
+        assert all(value is identity for value in identities)
+        headers, raw, path = seen[-1]
+        assert path == "/v1/messages"
+        assert headers["Mcp-Session-Id"] == "private-session"
+        assert headers["Mcp-Protocol-Version"] == "2025-06-18"
+        assert headers["Accept"] == "application/json, text/event-stream"
+        assert headers["Authorization"] == "Bearer real-vault-http-token"
+        assert raw == json.dumps({"jsonrpc": "2.0", "method": "tools/call",
+            "params": {"name": "hello", "arguments": arguments}, "id": 4},
+            separators=(",", ":")).encode()
+        assert bool(responses[-1].get("stalled")) == reply_kind.startswith("stalled")
+        assert "private-session" not in json.dumps(result)
+        with store.db() as conn:
+            assert conn.execute("SELECT count(*) FROM outside_effects WHERE "
+                                "client='outside' AND state='finished'").fetchone()[0] == 7
+    finally:
+        release.set()
+        http.shutdown()
+        http.server_close()
+        thread.join(2)
