@@ -54,16 +54,22 @@ def test_cleared_reconnect_returns_on_later_failure_and_history_can_reask(app_ur
                 status=401, content_type='application/json', body='{"error":"token_rejected"}'))
             _enter_chat(page, app_url)
             page.evaluate("""async () => {
-                token=()=> 'test-session'; window.relays=[];
+                token=()=> 'test-session'; window.relays=[]; window.answers=[];
                 Owner.listRequests=()=>readRequests();
-                MCP.answerRequest=payload=>answerRequest(payload);
+                MCP.answerRequest=async payload=>{
+                    const result=await answerRequest(payload);answers.push(payload);return result;
+                };
                 sendTurn=async (...args)=>relays.push(args);
                 await refreshRail();
             }""")
             page.locator('#needs-you-open').click()
             page.get_by_role('button', name='Reconnect GitHub', exact=False).click()
             page.get_by_role('button', name='Clear', exact=True).click()
-            page.wait_for_function('() => relays.length === 1')
+            page.wait_for_function('() => answers.length === 1 && railCache.length === 0')
+            assert page.evaluate('answers[0]') == {
+                'request_id': first['request_id'], 'dismiss': True,
+            }
+            assert page.evaluate('relays') == []
             assert not read_rail()["pending"]
             # Polling alone cannot resurrect a cleared ask.
             page.evaluate('refreshRail()')
@@ -74,8 +80,8 @@ def test_cleared_reconnect_returns_on_later_failure_and_history_can_reask(app_ur
             assert history.locator('button').all_text_contents() == ['Ask again']
             assert history.locator('input,textarea,select,a,[role=button]').count() == 0
             page.get_by_role('button', name='Ask again', exact=True).click()
-            page.wait_for_function('() => relays.length === 2')
-            relay = page.evaluate('relays[1]')
+            page.wait_for_function('() => relays.length === 1')
+            relay = page.evaluate('relays[0]')
             assert first['request_id'] in relay[0]
             assert relay[2]['agentId'] == 'main'
             assert not read_rail()["pending"]  # The tap does not grant or replay anything.
