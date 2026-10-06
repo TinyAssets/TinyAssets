@@ -72,3 +72,27 @@ stays unchecked because publishing the source and reader does not complete them.
 cutover. 3.1 and 3.2 await real per-adapter costs and the paired model matrix.
 3.3 and 3.4 remain unchecked as requested; no spec sync, archive or live
 acceptance was performed. D7 learning paths remain unchanged.
+
+## Verification of the prepared slice
+
+Linux oracle (MSYS_NO_PATHCONV=1):
+`python scripts/linux_oracle.py -- -q tests/test_starter_instructions.py tests/test_converse_turn_cost.py tests/test_universe_file_reads_are_bounded.py --basetemp /tmp/b`
+passed **36 tests** on Python 3.11.17 / bubblewrap 0.12.0, uid 1001.
+Ruff passed on the three changed Python files. The plugin mirror build staged
+621 files and its import probe passed. Test hygiene against origin/main reports
+**5 added test functions, 0 removed, 0 tampering**. No affected heavy file is
+listed for this unactivated reader/content surface. Existing prompt ratchets
+are unchanged; no resident savings claimed.
+
+Merged origin/main b61e68934c (#4508) before the final push. Its harness dependency
+handoff agrees that the selected agent's installed roster directory must be
+authenticated; do not derive a root from an untrusted agent/binding name.
+
+Cross-family review: Claude via peer-agents, 2026-10-05, completed successfully
+in 98 seconds with **VERDICT: APPROVE** and no floor/correctness blockers.
+AGREE: safe reads, owner preservation, no accidental installation, explicit
+dependency boundaries and mirrored/package content. N1: Claude's Windows test
+attempt had three symlink setup failures (WinError 1314); DISAGREE_EVIDENCE as a
+blocker because all cases passed on the required Linux oracle. No skip or xfail
+was added. N2: AGREE that branch/worktree wording can become stale; retained as
+an implementation-in-progress handoff, not permanent architecture documentation.
