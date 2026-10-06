@@ -1,3 +1,68 @@
+# Current U1 delivery: D81 data-only video ingestion
+
+Continuation starts at 6f33b092f2. Draft PR #4523 is open; startup stays OFF,
+no deploy, no ready-for-review promotion. This is one additional actual engine
+class, not completion of requested item (1); items (2) and (3) remain ordered
+behind the engine inventory. No full task checkbox is newly complete.
+
+D81 routes extract_text/extract_video_description video calls through the fixed
+ingestion-video cell with explicit admitted center and owner-scoped description
+callback. ffprobe/ffmpeg receive only verbatim bounded bytes at a fixed scratch
+filename. No owner data, credential, shared store or relay mount; strict
+cell-deny, dedicated owner UID/GID, private namespaces, capability/fd retirement,
+CPU/address-space/file-size/process/fd limits and fixed lifetime. Selected
+failures cannot fall back to daemon subprocess or the legacy platform vision
+endpoint. The daemon consumes bounded frame bytes, never cell scratch paths.
+
+Repeated metadata extraction failure reached the AGENTS handoff threshold.
+Claude implementation handoff fixed the exact missing Debian BLAS/LAPACK
+alternatives with two video-only read-only binds resolving under /usr/lib.
+Receipt: C:/Users/Jonathan/AppData/Local/Temp/uid-d81-handoff-result.md.
+The diagnostic containers were not acceptance evidence. No filter/capability
+relaxation or generic /etc mount was used. The handoff's correctness review found
+no defects; a separate final cross-family review remains due before final push.
+
+Verified production Dockerfile image tinyassets-uid-d81:video2:
+sha256:0791f5eef97ee0930511732213897e8af1e0014ba03cdd2156cc9575503e17a1.
+Privileged chain PASS; scripts/role_video_launcher_probe.py exit 0: Alice/Bob
+actual ffprobe/ffmpeg and public extraction callback, foreign scope and playlist
+refusal, post-refusal reuse, ZERO FOREIGN_BYTES, startup_activated false.
+Root Linux oracle (--as-root, --basetemp /tmp/b): tests/test_role_video.py,
+tests/test_ingestion.py, tests/test_role_launcher.py,
+tests/test_universe_path_io_guard.py: 104 passed, zero skips.
+The existing tests/test_owner_launcher_client.py explicitly assert uid1001;
+separate unprivileged Linux oracle: 5 passed, zero skips. The initial combined
+root selection failed those identity assertions, not product isolation; no test
+was weakened or skipped. An earlier oracle source copy was invalidated by
+concurrent plugin regeneration and is not a test receipt.
+On the same image, reader alias probe: 132 denied, 22 own reads, zero foreign
+reads and foreign unchanged; all three namespace profiles deny read/relabel/copy
+and out-of-range mappings. Changed-file Ruff and sequential plugin
+regeneration/import probe PASS.
+The raw-I/O allowance shrank by one after factoring the bytes-only PDF adapter;
+legacy video scratch reads/writes use the existing no-follow helpers.
+
+Exactly remaining for activation, in execution order:
+1. U1 actual provider CLI/discovery/auth, engine-MCP thin proxy with canonical
+   daemon handlers, workspace provision/registry/worker, remote git/local box,
+   and remaining ingestion-format/caller coverage; complete actual class/site,
+   writable-path/daemon-reader, scope-reuse and denial matrix.
+2. Tool owner-directory preparation, persistent brain-file promotion and
+   chmod/storage-accounting recovery, retaining daemon custody and settlement.
+3. Immutable exact-revision package cells for stdio MCP and user-installed
+   packages, owner UID/GID, narrowed broker credential slots, exact pinned
+   egress, foreign-access denial and resource caps; K1 consumers depend on this.
+4. Dynamic center admission and remaining broker-reader integration, then U2's
+   complete D61 provenance/quarantine/migration, two-pass deletion after chmod,
+   actual old-image rollback, service lifetime/startup and healthcheck proofs.
+5. Full integrated production-image acceptance, final cross-family floor review,
+   spec sync, and separately authorized activation/deployment with SHA assertion
+   and one real-user app pass. Deployment is not authorized by this request.
+
+Release-critical files in D81: Dockerfile, deploy/role_owner_launcher.py,
+deploy/role_decoder.py (3). U2 implementation files remain untouched.
+
+---
 # Current U1 delivery: D80 exact tool relay sockets verified
 
 D80 is pushed at f65af2de5308c35d0f135d1b50fc96026a08a88f, exact remote SHA

@@ -237,7 +237,6 @@ PINNED: dict[str, list[str]] = {
         "try_acquire_idle_cycle_slot: os.replace()",
     ],
     "tinyassets/ingestion/extractors.py": [
-        "_extract_pdf: .open()",
         "synthesize_source: .read_text()",
     ],
     "tinyassets/knowledge/raptor.py": [

@@ -1,3 +1,19 @@
+### D81. Mechanical data-only video extraction cell
+
+Route selected video ingestion through a fixed ingestion-video class with the
+admitted principal/center and broker-resolved dedicated UID/GID. The cell has
+no owner filesystem, credentials, relay or shared-store mount. Input is bounded
+verbatim video bytes, written only to a fixed private scratch filename. The
+installed ffprobe/ffmpeg binaries run under cell-deny, private namespaces and
+fixed CPU, address-space, file-size, process, descriptor and wall-clock limits.
+Only bounded duration/frame bytes return; source filenames cannot become paths
+or command options. Selected failures propagate, with no daemon subprocess or
+placeholder fallback. Vision stays in the caller via an explicitly supplied
+owner-scoped callback; no platform model is contacted by this cell.
+
+This slice covers video parser subprocesses, not all ingestion formats or other
+remaining engine classes. Startup stays off. No migration/rollback code changes.
+
 ### D80. Mechanical exact-socket admission for tool cells
 
 Admit only the existing daemon-owned egress relay and per-bash capability

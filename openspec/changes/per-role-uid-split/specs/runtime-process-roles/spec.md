@@ -4,6 +4,27 @@
 
 ## ADDED Requirements
 
+
+### Requirement: Video parser subprocesses use data-only owner cells
+
+Selected video ingestion SHALL admit the current principal and command center
+through the bounded launcher and broker identity. The fixed ingestion-video
+entry SHALL run installed ffprobe/ffmpeg with cell-deny, dedicated owner UID/GID,
+private scratch/namespaces, zero capabilities and closed bootstrap descriptors.
+Input SHALL be bounded verbatim bytes at a fixed scratch filename, with fixed
+process/resource/deadline limits; no owner filesystem, credential or network
+mount SHALL enter this class. Only bounded duration/frame bytes SHALL return.
+The caller SHALL supply an explicit owner-scoped frame-description callback.
+Selected failures SHALL propagate without a daemon subprocess or platform-model
+fallback. Missing scope or launcher SHALL refuse.
+
+#### Scenario: Actual video parsing preserves the owner boundary
+- **WHEN** Alice and Bob extract video frames and descriptions in selected mode
+- **THEN** actual installed ffprobe/ffmpeg run inside their dedicated strict cells
+- **AND** foreign-center admission and foreign-path playlists fail with zero foreign bytes
+- **AND** a caller filename cannot choose a scratch path or executable option
+- **AND** ordinary extraction succeeds after a refused request
+
 ### Requirement: Tool relay sockets are exact owner-scoped inode capabilities
 
 The tool class SHALL admit only the existing egress relay and per-invocation

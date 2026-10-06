@@ -57,7 +57,7 @@ def tool_mounts(uid):
 
 
 def enter(mime, data_root, uid=1003, *, preview=False, preview_write=False, node=False,
-          tool=False):
+          tool=False, video=False):
     identity(uid)
     host = namespaces()
     mounted = preview_write or tool or (node and mime == 'workspace')
@@ -94,6 +94,14 @@ def enter(mime, data_root, uid=1003, *, preview=False, preview_write=False, node
         for path in ('/opt/ms-playwright', '/etc/fonts'):
             argv.extend(['--ro-bind', path, path])
         argv.extend(['--setenv', 'PLAYWRIGHT_BROWSERS_PATH', '/opt/ms-playwright'])
+    if video:
+        # Debian links ffmpeg's BLAS/LAPACK through /etc/alternatives; bind only
+        # those two image entries, and only when they resolve inside /usr/lib.
+        for name in ('libblas.so.3', 'liblapack.so.3'):
+            path = f'/etc/alternatives/{name}-{os.uname().machine}-linux-gnu'
+            if not os.path.realpath(path).startswith('/usr/lib/'):
+                raise RuntimeError(('video library alternative escapes /usr/lib', path))
+            argv.extend(['--ro-bind', path, path])
     if tool:
         argv.extend(tool_mounts(uid))
         for key, fd, destination in (('e', 4, '/tool-egress.sock'), ('t', 5, '/tool-ta.sock')):
@@ -104,7 +112,7 @@ def enter(mime, data_root, uid=1003, *, preview=False, preview_write=False, node
     argv.extend(["--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp",
                  "--chdir", "/tmp", "--seccomp", str(descriptor), "--",
                  "/opt/venv/bin/python", "-I", "-B", "/usr/local/libexec/ta-decoder.py",
-                 'inside-tool' if tool else 'inside-node' if node else
+                 'inside-video' if video else 'inside-tool' if tool else 'inside-node' if node else
                  'inside-preview-write' if preview_write else
                  "inside-preview" if preview else "inside-owner", mime,
                  json.dumps(host, sort_keys=True), data_root, str(uid)])
@@ -268,7 +276,19 @@ def decode(mime, host, data_root, uid=1003):
 
 
 if __name__ == "__main__":
-    if (len(sys.argv) == 5 and sys.argv[1] == 'enter-tool'
+    if (len(sys.argv) == 5 and sys.argv[1] == 'enter-video'
+            and sys.argv[2] == 'video' and 0 < int(sys.argv[4]) < 100000):
+        enter('video', sys.argv[3], int(sys.argv[4]), video=True)
+    elif (len(sys.argv) == 6 and sys.argv[1] == 'inside-video'
+            and sys.argv[2] == 'video' and 0 < int(sys.argv[5]) < 100000):
+        proof = prove_cell(json.loads(sys.argv[3]), sys.argv[4], int(sys.argv[5]))
+        sys.stdout.buffer.write(json.dumps({'cell': proof}).encode() + b'\n')
+        sys.stdout.buffer.flush()
+        sys.path.insert(0, '/app')
+        from tinyassets.role_video_codec import cell_main
+
+        raise SystemExit(cell_main())
+    elif (len(sys.argv) == 5 and sys.argv[1] == 'enter-tool'
             and sys.argv[2] in ('-', 'e', 't', 'et') and 0 < int(sys.argv[4]) < 100000):
         enter(sys.argv[2], sys.argv[3], int(sys.argv[4]), tool=True)
     elif len(sys.argv) == 6 and sys.argv[1] == 'inside-tool' and 0 < int(sys.argv[5]) < 100000:

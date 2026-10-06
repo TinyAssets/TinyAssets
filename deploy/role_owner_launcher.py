@@ -309,7 +309,7 @@ class OwnerLauncher:
         if (not isinstance(request, dict)
                 or set(request) != fields or request['op'] not in {'SPAWN', 'START'}
                 or kind not in {'image-decoder', 'workspace-git', 'ui-preview', 'preview-write',
-                                'node-sandbox', 'tool-jail'}
+                                'node-sandbox', 'tool-jail', 'ingestion-video'}
                 or (kind == 'node-sandbox' and type(request['workspace']) is not bool)
                 or (kind == 'tool-jail' and any(
                     type(request[key]) is not bool for key in ('egress', 'ta')))
@@ -424,7 +424,10 @@ class OwnerLauncher:
                 self.launch['_assert_caps'](0)
                 os.umask(0o007)
                 os.chdir('/')
-                if kind == 'tool-jail':
+                if kind == 'ingestion-video':
+                    command = ['/usr/local/libexec/ta-decoder.py', 'enter-video',
+                               'video', self.data_root, str(inner)]
+                elif kind == 'tool-jail':
                     command = ['/usr/local/libexec/ta-decoder.py', 'enter-tool',
                                ('e' if request['egress'] else '')
                                + ('t' if request['ta'] else '') or '-', self.data_root, str(inner)]
@@ -447,7 +450,8 @@ class OwnerLauncher:
                      'PYTHONDONTWRITEBYTECODE': '1'})
             except BaseException:
                 os._exit(126)
-        deadline = time.monotonic() + (1810 if kind == 'node-sandbox' else
+        deadline = time.monotonic() + (155 if kind == 'ingestion-video' else
+                                     1810 if kind == 'node-sandbox' else
                                      660 if kind == 'tool-jail' else
                                      75 if kind == 'ui-preview' else
                                      65 if kind == 'workspace-git' else 35)

@@ -221,6 +221,7 @@ RUN set -e; \
         git \
         gnupg \
         libgomp1 \
+        ffmpeg \
         ripgrep \
         tini \
         util-linux; \
