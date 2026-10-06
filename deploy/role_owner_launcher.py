@@ -264,8 +264,8 @@ def reap_orphans(protected, seen, *, grace=REAP_GRACE, proc='/proc', now=time.mo
             if raw[raw.rfind(')') + 2:].split()[19] == key[1]:
                 os.waitid(os.P_PIDFD, pidfd, os.WEXITED | os.WNOHANG)
                 reaped.append(key[0])
-        except (OSError, ChildProcessError):
-            pass  # reaped (or gone) between the scan and here
+        except (ChildProcessError, FileNotFoundError, ProcessLookupError):
+            pass  # reaped (or gone) between the scan and here; anything else is loud
         finally:
             os.close(pidfd)
     return reaped

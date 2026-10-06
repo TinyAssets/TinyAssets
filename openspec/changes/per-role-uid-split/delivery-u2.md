@@ -31,6 +31,12 @@ exclusion or the grace fails it. Side observation, unexplained: a provider-exec
 turn that printed nothing for 150 s was SIGKILLed (-9), while the same turn
 printing once a second ran to completion.
 
+Review: one fresh-context Claude round (Codex at its usage limit until
+2026-10-11), **APPROVE**, no floor findings. AGREE F1: the reap now swallows
+only ECHILD/ENOENT/ESRCH; any other error (e.g. EINVAL from `waitid(P_PIDFD)`
+before Linux 5.4) reaches the thread's stderr log. Reaper and launcher tests
+pass after the fix.
+
 # U2 continuation: U1 D85 merged; two-pass deletion (D218); switched startup OFF
 
 D214/D215/D217 unchanged. The "U1 admits no owner-delete cell" statement below
