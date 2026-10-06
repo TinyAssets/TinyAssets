@@ -144,6 +144,7 @@ def test_empty_native_tail_is_not_replaced_with_automatic_candidates(agent, monk
 
 
 def test_installed_executor_kind_is_required_not_guessed_from_provider_name(agent, monkeypatch):
+    select(agent, native_ref(), ())
     monkeypatch.setattr(agent.served.native, "agent_execution_kind", None)
     with pytest.raises(ProviderAuthorityHeldError, match="no installed agent executor"):
         preferences._converse(agent, monkeypatch)
