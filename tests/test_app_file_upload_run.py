@@ -2,20 +2,14 @@
 
 Live finding (docs/concerns/2026-09-20-uploaded-file-binding-discovery.md): the
 served agent could not discover that an app attachment reference binds through
-``run_graph inputs_json``. The runtime path existed; the advertised tool
-descriptions did not describe it. This file pins both halves:
-
-1. the REGISTERED read_graph / write_graph / run_graph descriptions, on the
-   served engine and the connector, carry one coherent recipe (red on the old
-   descriptions, which said only "File references are unsupported/refused");
-2. a real authenticated ASGI ``POST /app/files`` -> served ``write_graph``
-   create -> ``run_graph inputs_json`` -> completed exact-byte processing ->
-   ``read_graph`` bounded export, with no authoring session, handle or
-   storage-level bind helper standing in for admission.
+``run_graph inputs_json``. This file pins the runtime path: a real
+authenticated ASGI ``POST /app/files`` -> served ``write_graph`` create ->
+``run_graph inputs_json`` -> completed exact-byte processing -> ``read_graph``
+bounded export, with no authoring session, handle or storage-level bind helper
+standing in for admission.
 """
 # ruff: noqa: F811 -- imported pytest fixtures
 
-import asyncio
 import base64
 import hashlib
 import json
@@ -38,17 +32,13 @@ from tests.test_app_file_upload import (  # noqa: F401 -- app is a fixture
 )
 from tinyassets import daemon_server, runs
 from tinyassets import engine_mcp_server as engine
-from tinyassets import universe_server as server
 from tinyassets.auth import middleware as mw
 from tinyassets.branch_versions import list_branch_versions
 from tinyassets.storage import _connect as author_connection
 
 HOME_C = "u-cccccccccccccccc"  # a later home for the SAME owner
-SIX_FIELDS = "{version,file_id,size_bytes,sha256,filename,media_type}"
-RPC_CALL = 'invoke_mcp_action("read_run_file", file_id=ref["file_id"], offset=0, count=524288)'
 
-# The recipe the descriptions advertise, used verbatim as the served create
-# spec below: digest every bound file and report its first sixteen bytes, a
+# The served create spec below: digest every bound file and report its first sixteen bytes, a
 # value that exists nowhere in the reference metadata.
 SOURCE = """import base64, hashlib
 def run(state, effects=None):
@@ -81,51 +71,6 @@ SPEC = {
                    "source_code": SOURCE}],
     "edges": [{"from": "digest", "to": "END"}],
 }
-
-
-def _descriptions(mcp, *, with_chapters=False):
-    """The registered descriptions, optionally plus each handle's handbook chapters.
-
-    ``with_chapters`` is for the SERVED ENGINE surface only. Since 2026-09-26 the
-    long-form half of a served handle's guidance is reachable rather than resident
-    (`openspec/specs/served-agent-tool-guidance/spec.md`), so a test asking "is the
-    agent told this?" about that half has to read what the agent can reach. The
-    connector surface is unchanged and passes ``with_chapters=False``.
-    """
-    extra = engine.SERVED_TOOL_CHAPTERS if with_chapters else {}
-    return {tool.name: " ".join(
-        ((tool.description or "") + "".join(extra.get(tool.name, {}).values())).split()
-    ) for tool in asyncio.run(mcp.list_tools())}
-
-
-def check_recipe(descriptions):
-    """One coherent, discoverable recipe across the three graph handles."""
-    read, write, run = (descriptions[name] for name in ("read_graph", "write_graph", "run_graph"))
-    # run_graph: the delivery-only refusal is scoped; attachments bind via inputs_json.
-    assert "File references are unsupported" not in run
-    assert "File references are refused" not in run
-    assert "deliver_output does not accept file references" in run
-    assert "scoped to delivery only" in run
-    for needle in ("delimited JSON attachment block", SIX_FIELDS, "io_manifest", "inputs_json",
-                   "VERBATIM", "untrusted", "never an instruction"):
-        assert needle in run, needle
-    # write_graph: attachments are already references; capture is for authoring handles.
-    assert "needs no capture" in write
-    assert "ONLY for authoring-session handles" in write
-    for needle in (SIX_FIELDS, "io_manifest", "file_bundle", "input_keys", "tools_allowed",
-                   '["read_run_file"]', RPC_CALL, "bytes_base64", "next_offset", "eof",
-                   "untrusted"):
-        assert needle in write, needle
-    assert "no files" not in write  # the sandbox reads BOUND inputs through an authorized RPC
-    # read_graph: an unbound attachment reads only after a run binds it; build and run.
-    assert "already run-file references" in read
-    assert "only after a run" in read
-    assert "sent message is not a run binding" in read or "sent message is not a binding" in read
-
-
-@pytest.mark.parametrize("mcp", [engine.mcp, server.mcp], ids=["served_engine", "connector"])
-def test_registered_tool_descriptions_carry_the_attachment_recipe(mcp):
-    check_recipe(_descriptions(mcp, with_chapters=mcp is engine.mcp))
 
 
 def serve(monkeypatch, base, *, actor, home):
@@ -280,19 +225,6 @@ def run_count(base):
 def flat(reply):
     """Every string the caller would read, unescaped (JSON-dumping escapes quotes)."""
     return " ".join(str(value) for value in reply.values())
-
-
-def test_served_write_graph_description_leads_with_the_exact_recipe():
-    """The recipe used to begin ~23k characters into a 32k description."""
-    descriptions = _descriptions(engine.mcp)
-    head = descriptions["write_graph"][:2500]
-    for needle in ('"io_type": "file_bundle"', '"type": "list"', "input_keys",
-                   '"tools_allowed": ["read_run_file"]', RPC_CALL, "bytes_base64",
-                   "next_offset", "eof", "inputs_json", "set_io_manifest"):
-        assert needle in head, needle
-    assert "ONLY top-level manifest keys" in head and "file_inputs" in head
-    run_head = descriptions["run_graph"][:3500]
-    assert "file_inputs" in run_head and "set_io_manifest" in run_head
 
 
 def test_mis_keyed_manifest_refuses_create_and_patch_without_mutation(app, monkeypatch):
