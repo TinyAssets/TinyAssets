@@ -1,5 +1,20 @@
 ## ADDED Requirements
 
+### Requirement: Installed agent directories derive from authenticated copy evidence
+An addressed recipient agent SHALL expose its installed package `agent_slug`
+only from a completed platform-owned installation for the same owner and command
+center, whose template and progress identify that binding and public definition.
+It SHALL NOT derive a directory from a binding ID, name, or editable configuration.
+
+#### Scenario: Package placement is renamed to avoid a collision
+- **WHEN** an owner installs a package beside an existing directory
+- **THEN** resolving its copied agent returns the pinned collision-free placement
+- **AND** another owner or command center cannot resolve that binding
+
+#### Scenario: No completed file package supplies a directory
+- **WHEN** the agent is uninstalled, copied from a screen-only publication, or its install is incomplete
+- **THEN** no installed agent slug is returned and no directory is guessed
+
 ### Requirement: Shared instruction templates create independent recipient agents
 Owner-confirmed command-center publication SHALL export only explicitly selected owner-owned conversable instruction templates as fingerprinted immutable public definition references, and owner-confirmed installation SHALL create fresh private configured bindings without publisher operational settings or authority.
 
