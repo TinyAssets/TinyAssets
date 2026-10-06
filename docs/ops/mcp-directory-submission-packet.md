@@ -199,7 +199,7 @@ approval before transmitting contact details, and final Submit confirmation.
 
 Ready artifact:
 
-- `chatgpt-app-submission.json`
+- `docs/ops/chatgpt-app-submission.json`
 
 Submit:
 
@@ -207,7 +207,7 @@ Submit:
 - Subtitle: Build durable workflows
 - Category: Productivity
 - MCP server URL: `https://tinyassets.io/mcp-directory`
-- Test cases: import from `chatgpt-app-submission.json`
+- Test cases: import from `docs/ops/chatgpt-app-submission.json`
 
 Acceptance proof:
 
@@ -224,7 +224,7 @@ Blockers:
 - 2026-05-02 after host login, the authenticated dashboard reached
   `https://platform.openai.com/apps-manage`, created a `TinyAssets` app draft,
   and opened the app submission form. The visible form asks for
-  `chatgpt-app-submission.json`, logo assets, app metadata, developer/support
+  `docs/ops/chatgpt-app-submission.json`, logo assets, app metadata, developer/support
   fields, website/privacy/TOS URLs, demo recording URL, commerce confirmation,
   and later review submission. Browser work stopped before uploading files,
   entering developer/support metadata, or pressing any final review submit.

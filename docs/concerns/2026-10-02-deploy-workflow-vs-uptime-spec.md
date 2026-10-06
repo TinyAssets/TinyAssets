@@ -45,7 +45,9 @@ RETARGET, 13 RETIRED**. W is deploy-prod.yml and D is deploy_fail_safe.sh.
 Since then, #4260 restores the request-idempotency and agent-interchange HMAC
 rows, and the 3 scrub, 2 host-owned-destination and rollback-identity rows. The
 unsafe-fence rows follow `2026-08-27-unsafe-fence-recovery-path-deleted.md`
-(KEEP). The RETIRED and RETARGET rows are handled by test-hygiene's plan-B PRs.
+(KEEP). The 13 RETIRED rows' tests were deleted 2026-10-06, and 4 SPEC rows
+(Access gate x2, candidate diagnostics, manual image source) pass on main and
+left the table; the RETARGET rows are handled by test-hygiene's plan-B PRs.
 
 | test | verdict (RETIRED/SPEC/RETARGET) | evidence (file:line) | one-line reason |
 |---|---|---|---|
@@ -57,19 +59,13 @@ unsafe-fence rows follow `2026-08-27-unsafe-fence-recovery-path-deleted.md`
 | `test_capture_previous_transports_bounded_prior_receipt_read_only` | SPEC | `U:279`, `U:293`; `W:162` | Bounded prior-receipt capture remains specified but is absent from current capture. |
 | `test_capture_previous_does_not_emit_untrusted_image_labels_as_outputs` | RETARGET | `W:162`, `W:172`, `W:178` | Target **Capture current image (for public-canary rollback)**; it emits no raw revision labels. |
 | `test_canary_step_only_probes_canonical` | RETARGET | `W:365`, `W:371` | Target **Public MCP canary (--assert-handles)** explicitly; substring matching currently selects the capture step. |
-| `test_access_gate_step_present` | SPEC | `docs/ops/dns-tunnel-single-entry-cutover.md:12`; `W:365` | Direct-origin Access protection remains required; a successful canonical probe does not verify it. |
-| `test_access_gate_blocks_on_200` | SPEC | `docs/ops/dns-tunnel-single-entry-cutover.md:14`; `tests/test_deploy_prod_workflow.py:418` | Preserve the missing check that rejects an exposed direct origin; no replacement or retirement decision was found. |
 | `test_rollback_step_present` | RETARGET | `W:335`, `W:386`; `D:1446` | Target **Run fail-safe deploy on the droplet** and **Roll back if the public canary is red**. |
-| `test_failed_candidate_diagnostics_are_preserved_before_rollback` | SPEC | `openspec/changes/archive/2026-08-01-repair-recovery-deploy-handoff/tasks.md:15`; `D:1446` | Identity-bound, sanitized startup evidence was required; current rollback does not preserve that evidence first. |
 | `test_rollback_runs_always_and_eligibility_keys_to_image_marker` | SPEC | `U:334`, `U:337`; `W:387` | Internal rollback does not replace the specified always-running, marker-aware terminal handling. |
 | `test_disk_preflight_runs_before_deploy_image_pull` | SPEC | `W:446`; `D:1293`; `tests/test_deploy_prod_workflow.py:763` | Conservative: post-canary retention and pull-before-swap do not establish a pre-pull disk-capacity guard. |
-| `test_disk_preflight_prunes_disposable_state_and_fails_before_restart` | RETIRED | `U:819`; `W:446` | Its broad system/builder prune and journal-vacuum policy is superseded by narrowly bounded image retention. |
 | `test_deploy_scrubs_stdio_only_workflow_universe_from_cloud_env` | SPEC | `tinyassets/storage/__init__.py:279`; `W:488` | `TINYASSETS_WIKI_PATH` remains a live override; current credential cleanup does not remove this cloud misconfiguration. |
-| `test_deploy_scrubs_legacy_workflow_env_from_cloud_env` | RETIRED | `W:488`; `deploy/backup.sh:44`, `deploy/backup.sh:235` | `WORKFLOW_*` names have no live consumers found, while `BACKUP_GH_REPO` now configures active backup shipping. |
 | `test_deploy_scrubs_and_fails_closed_on_shared_request_hmac_duplicate` | SPEC | `docs/concerns/2026-10-01-deploy-dropped-request-idempotency-hmac.md:34` | The daemon-only key’s shared-env leak guard is explicitly included in RESTORE. |
 | `test_deploy_preserves_host_owned_backup_destination` | RETARGET | `W:488`; `deploy/retire_platform_llm_logins.sh:73`; `U:939` | Target **Retire platform LLM logins from the host**, including its helper; current cleanup preserves `BACKUP_DEST`. |
 | `test_deploy_preserves_host_owned_log_destination` | RETARGET | `W:488`; `deploy/retire_platform_llm_logins.sh:73`; `deploy/ship-logs.sh:62` | Target **Retire platform LLM logins from the host**, including its helper; `LOG_DEST` remains required and untouched. |
-| `test_deploy_retires_legacy_workflow_service_before_restart` | RETIRED | `W:3`; `D:373` | This is the old Workflow/fleet migration cleanup; current convergence deliberately manages daemon, tunnel, and logs. |
 | `test_production_marker_is_immediately_before_first_scrub_host_write` | SPEC | `U:323`, `U:334`; `W:210` | Preserve the first-host-mutation marker requirement, reanchored to today’s first mutation rather than the deleted scrub. |
 | `test_image_marker_is_immediately_before_first_tinyassets_image_write` | SPEC | `U:325`; `D:1417` | Image mutation moved inside the script, but the specified observable marker was dropped. |
 | `test_rollback_and_terminal_receipt_are_ordered_under_always` | SPEC | `U:337`, `U:360`; `W:408` | Success-only publication omits the required post-rollback terminal record on failure. |
@@ -79,8 +75,6 @@ unsafe-fence rows follow `2026-08-27-unsafe-fence-recovery-path-deleted.md`
 | `test_rollback_identity_failure_preserves_the_passed_canary_tuple` | SPEC | `U:356`, `U:511` | Canary success and failed identity proof remain distinct observations; current rollback lacks this classification. |
 | `test_terminal_receipt_invokes_pure_helper_and_preserves_atomic_writer` | SPEC | `U:360`; `W:419`, `W:426` | Both the pure classifier and atomic sibling-file replacement remain required; direct installation supplies neither contract. |
 | `test_terminal_receipt_never_mutates_the_deployed_image_after_publication` | RETARGET | `W:386`, `W:407`, `W:426` | Target **Publish release-state receipt** by name; rollback precedes it and its publication code performs no image mutation. |
-| `test_terminal_receipt_summary_python_is_executable` | RETIRED | `W:518` | The embedded Python summary command is gone; the current **Summary** step uses shell output. |
-| `test_terminal_receipt_does_not_assign_manual_image_source_from_github_sha` | SPEC | `U:312`; `W:117`; `docs/concerns/2026-08-26-deployed-sha-proves-receipt-only.md:42` | Manual source revision still comes from tag/HEAD resolution rather than digest-bound image provenance. |
 | `test_terminal_writer_outputs_are_visible_before_fallible_work` | SPEC | `U:367`; `W:407` | The current writer emits no safe terminal-publication defaults or bounded classification outputs. |
 | `test_terminal_canary_output_preserves_the_raw_applicable_canary` | SPEC | `U:375`; `W:420` | Required forward-versus-rollback canary observations were replaced by a success-only hardcoded receipt. |
 | `test_forward_green_terminal_identity_failure_stays_red_after_publication` | SPEC | `U:395`, `U:549`; `W:429` | Receipt readback does not establish the required terminal identity agreement or reject its absence. |
@@ -90,20 +84,11 @@ unsafe-fence rows follow `2026-08-27-unsafe-fence-recovery-path-deleted.md`
 | `test_deploy_requires_and_installs_agent_interchange_hmac_secret` | SPEC | `deploy/DEPLOY.md:134`, `deploy/DEPLOY.md:141`; `W:145` | Yes: deleting the repository secret must block deployment, and daemon-only installation/rotation remains documented. |
 | `test_deploy_requires_and_installs_daemon_request_idempotency_hmac_secret` | SPEC | `docs/concerns/2026-10-01-deploy-dropped-request-idempotency-hmac.md:27` | Explicit RESTORE covers validation, daemon-only installation, mismatch refusal, and controlled rotation. |
 | `test_unsafe_recovery_validates_both_hmac_prerequisites_before_mutation` | SPEC | `deploy/DEPLOY.md:119`, `deploy/DEPLOY.md:141`; `tests/test_deploy_prod_workflow.py:1705` | The recovery path you require keeping must retain both HMAC prerequisites before mutation. |
-| `test_stop_writer_preflight_runs_before_image_mutation` | RETIRED | `W:3`; `D:4` | Normal deployment deliberately no longer runs the transitional fleet-quiescing preflight. |
 | `test_disk_preflight_precedes_every_remote_image_pull` | SPEC | `D:1293`; `W:446`; `tests/test_deploy_prod_workflow.py:1787` | Conservative: no replacement pre-pull capacity check exists; post-deploy retention does not prove equivalent protection. |
-| `test_stop_writer_workflow_invokes_transitional_helper_subcommands` | RETIRED | `W:3`; `docs/audits/2026-08-20-deploy-fence-rewrite.md:27` | Normal deployment’s prepare/prove/quiesce/restore helper choreography was deliberately replaced. |
 | `test_stop_writer_deploy_proves_exact_safe_image_and_drains_old_ids` | SPEC | `U:312`; `W:112`, `W:128` | Fleet draining is retired, but this mixed test also protects digest-bound revision/ancestry proof, which remains missing. |
 | `test_stop_writer_blocks_unsafe_rollback_image` | SPEC | `W:72`, `W:128`, `W:389`; `D:1479` | The security floor remains declared, but current rollback uses the captured previous image without proving its ancestry. |
-| `test_stop_writer_compares_post_deploy_and_post_canary_snapshots` | RETIRED | `W:3`; `D:346` | Transitional fleet/receipt snapshots are gone; current acceptance checks the daemon image, health, and sidecars. |
-| `test_stop_writer_restores_timers_only_for_safe_fleet_and_uploads_evidence` | RETIRED | `D:76`, `D:186`; `W:3` | Normal deploy serializes restart actors with the host lock instead of masking/restoring a fleet and uploading fence evidence. |
 | `test_terminal_never_reports_deployed_without_exact_cleanup_restoration` | SPEC | `U:1010`, `U:1030`; `W:420` | Conservative: current spec still requires separate cleanup truth and running-state proof; wholesale deletion would erase that contract. |
-| `test_cleanup_derives_cutover_only_from_current_run_generation` | RETIRED | `D:70`; `D:1457`; `W:3` | The old fence-generation cleanup is absent; bundle restoration is explicitly limited to what this deployment installed. |
 | `test_recovery_canary_waits_for_the_daemon_instead_of_probing_instantly` | SPEC | `tests/test_deploy_prod_workflow.py:1987`; `docs/concerns/2026-08-27-unsafe-fence-recovery-path-deleted.md:15` | KEEP recovery’s startup wait; ordinary deploy’s health loop does not restore the missing recovery job. |
-| `test_active_universe_repoint_is_explicit_input_only_and_validated` | RETIRED | `W:3`; `openspec/specs/universe-lifecycle-and-soul/spec.md:293` | Deploy-time selection of the shared worker fleet’s universe is obsolete; authenticated selection is request-scoped. |
-| `test_level2_quiesced_restore_is_gated_and_ordered_before_legacy_cleanup` | RETIRED | `D:4`, `D:1293`; `docs/audits/2026-08-20-deploy-fence-rewrite.md:33` | Normal deployment no longer quiesces production before candidate admission, eliminating this automatic precommit recovery state. |
-| `test_level2_quiesced_restore_keeps_rollback_and_receipt_tuple_valid` | RETIRED | `W:3`; `docs/audits/2026-08-20-deploy-fence-rewrite.md:20` | This tests tuple plumbing specifically for the removed Level-2 quiesce reversal, not general terminal receipts. |
-| `test_level2_quiesced_restore_is_bounded_and_isolated_to_current_run` | RETIRED | `D:4`, `D:249` | The removed automatic `restore-quiesced` operation needs no timeout/run-generation wiring in the new normal deploy. |
 
 ## Resolve by
 

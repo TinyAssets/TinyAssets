@@ -10,7 +10,7 @@ import re
 import subprocess
 import sys
 import tarfile
-from collections import Counter, defaultdict
+from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
@@ -25,7 +25,6 @@ QUEUED_STATUSES = ("pending", "dev-ready")
 HOST_STATUSES = ("host-action", "host-decision", "host-review", "monitoring")
 TASK_CEILING = 12
 CEILING_REVIEW_DATE = "2026-08-11"
-BROAD_COLLISION_ATOMS = {"REFLECTION.md"}
 
 
 def _task_counts_text(text: str) -> tuple[int, int]:
@@ -220,20 +219,6 @@ def _git_flow(repo: Path, since: str | None) -> dict[str, Any] | None:
         "archived_changes": len(archived),
         "net_active_arrival": len(admitted) - len(archived),
     }
-
-
-def _collision_atoms(rows: list[dict[str, str]]) -> list[dict[str, Any]]:
-    counts: Counter[str] = Counter()
-    for row in rows:
-        for atom in re.split(r"[,;]", row["files"]):
-            normalized = atom.strip().strip("`")
-            if normalized in BROAD_COLLISION_ATOMS:
-                counts[normalized] += 1
-    return [
-        {"path": path, "claim_rows": count}
-        for path, count in sorted(counts.items())
-        if count > 1
-    ]
 
 
 def _git_ref_snapshot(
@@ -442,14 +427,6 @@ def build_report(
         "provider_wip": {
             provider: sorted(names) for provider, names in sorted(provider_wip.items())
         },
-        # A board-less repo has no claim rows, so this would emit [] -- which
-        # reads as "no collisions found" when it means "no data source". Say
-        # unavailable instead; `rows` is non-empty only when a STATUS-style board
-        # actually exists (it was retired 2026-08-25).
-        "collision_atoms": _collision_atoms(rows) if rows else None,
-        "collision_atoms_unavailable": (
-            None if rows else "no claim board; ownership is branch-derived"
-        ),
         "recommendations": [
             change["name"] for change in completed_first + claimed_next + queued_last
         ],
@@ -550,14 +527,6 @@ def render_text(report: dict[str, Any]) -> str:
             f"- {change['name']} | {change['classification']} | "
             f"{change['completed_tasks']}/{change['total_tasks']}{owner}{oversized}"
         )
-    lines.extend(["", "Broad collision atoms:"])
-    if report["collision_atoms"]:
-        lines.extend(
-            f"- {atom['path']}: {atom['claim_rows']} claim rows"
-            for atom in report["collision_atoms"]
-        )
-    else:
-        lines.append("- none")
     if report["git_flow"]:
         lines.extend(["", "Git flow:", f"- {json.dumps(report['git_flow'], sort_keys=True)}"])
     lines.extend(["", "Warnings:"])

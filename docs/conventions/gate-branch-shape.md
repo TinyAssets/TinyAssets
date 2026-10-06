@@ -289,6 +289,6 @@ That test is generic; it does not need per-gate authoring. It catches the class 
 - `tinyassets/branches.py` (conditional_edges spec, ~L100-150 of dataclass) — the consumer contract this convention serves.
 - `tinyassets/graph_compiler.py:2026-2033` — LangGraph `add_conditional_edges` integration.
 - `domains/fantasy_daemon/phases/commit.py:1148` — `EditorialVerdict` packet (existing domain shape; pre-convention).
-- `docs/design-notes/2026-04-26-mark-change-loop-status-mapping.md` — Task #15 mapping; this convention is R2 of that doc.
+- `docs/design-notes/2026-04-26-mark-change-loop-status-mapping.md` (deleted 2026-10-06; in git history) — Task #15 mapping; this convention is R2 of that doc.
 - `docs/design-notes/2026-04-25-surgical-rollback-proposal.md` (Task #57) — design that adds `rollback` verdict's downstream meaning.
 - BUG-019/021/022 (closed by `c1d8b8b`) — the class of conditional-edge failures that motivate the testing-skill extension in §7.
