@@ -1,5 +1,93 @@
 # L14 preparation evidence
 
+## Revised K2 continuation: shared-contract handoff
+
+Founder direction 2026-10-06: provider adapters translate ONE agent definition;
+separate HTTP/Claude/Codex inventories are not the product contract. The audit
+found the following divergence, left explicit instead of declaring parity:
+
+- `agent_turn_coordinator.py` sends engine inference a tool schema per round but
+  hands native executors an entire turn through `render_native_input`.
+- Claude disables native tools but adds native instructions. Codex still adds
+  native tools and instructions. Its production launch enables cached web search.
+- `definition.PROTOCOLS` includes four HTTP names: `chat_messages` and its alias
+  `openai_chat` have an agent codec; `content_blocks` and `anthropic_messages`
+  return no agent codec. `_CLI_PROVIDER_CLASSES` registers two native classes.
+- `OllamaProvider.complete` uses `/api/generate` with no tools and its base
+  `agent_execution_kind` is unset. It is a host-process executor, not currently
+  an owner-authorized agent adapter. No distinct command adapter class is
+  registered by `call._build_fallback_router` or `provider_for_definition`.
+- `agent_loop.tool_session` independently defines box tools plus history/activity
+  reads and backend handles. It has no authenticated remote ta transport.
+
+Removed production branches: **none**. No claim of requirement (1) or (2)
+completion. A central tuple alone would hide these execution differences.
+Background-job parity remains required; wf-orphan owns execution fixes.
+
+Retained and corrected the uncommitted `scripts/native_cli_payload.py` probe.
+One metric function counts compact Unicode JSON chars, UTF-8 wire bytes, all
+declared tools (including additional native namespaces), and resident chars/4.
+The latter is an estimate, never actual model tokens. All rows below use the
+same synthetic supplied instructions (`Synthetic stock prompt.`) and user input
+(`Reply OK.`), not the production stock persona. Static production prompt budgets
+in `test_converse_turn_cost.py` are unchanged.
+
+| Executor / protocol | Resident chars | Chars/4 estimate | Evidence |
+|---|---:|---:|---|
+| chat_messages | 1,501 | 375.25 | Real installed encoder, synthetic fixture |
+| openai_chat | 1,501 | 375.25 | Same encoder alias |
+| content_blocks | unavailable | unavailable | No installed agent codec |
+| anthropic_messages | unavailable | unavailable | No installed agent codec |
+| claude-code | 2,773 | 693.25 | Local CLI capture; four MCP names; native instruction additions |
+| codex | 49,713 | 12,428.25 | Local CLI capture; 11 native handles; missing MCP definitions, incomplete |
+| ollama-local | unmeasured | unmeasured | Text-only adapter; not represented as a working agent |
+| command adapters | not registered | not registered | No separate executable adapter found |
+
+Different HTTP/Claude JSON envelopes contribute syntax bytes; Claude and Codex
+also inject instructions and Codex injects tools. The Codex probe's stdio route
+is not the production HTTP route, so missing MCP tools are a probe limitation,
+not evidence that production lacks those tools. It exits nonzero. Both native
+captures explicitly mark production parity unproved. No live model ran.
+
+Reproduce on the development host (use an empty external output directory):
+
+```powershell
+python scripts/native_cli_payload.py registered-http --out "$env:TEMP/k2-http.json"
+python scripts/native_cli_payload.py claude-code --out "$env:TEMP/k2-claude.json"
+python scripts/native_cli_payload.py codex --executable "$env:APPDATA/npm/node_modules/@openai/codex/node_modules/@openai/codex-win32-x64/vendor/x86_64-pc-windows-msvc/bin/codex.exe" --out "$env:TEMP/k2-codex.json"
+```
+
+The first command exits nonzero for unsupported registered dialects; the final
+command exits nonzero for missing/extra tools or overflow. These are diagnostic
+commands, NOT the requested paired live task-success/round/token harness.
+Live paired trials and that harness remain undone.
+
+Required Claude review via `peer-agents`: **ADAPT**, 103 seconds, read-only,
+4 reviewer unit tests passed. Earlier fixes remain; F4/F5 remain blockers.
+AGREE probe finding 1: exact tool-set equality plus budget is now required for
+the capture check, and production parity is always explicitly unproved.
+AGREE probe finding 2: added required MCP startup, enabled-tool selection and
+approval-mode settings; prominently retained the stdio-vs-production caveat.
+AGREE ancillary findings: exclude token-count endpoints, report every inference
+request's metrics, and regenerated the Claude capture. No second review round.
+
+The reviewer identified shared-executor overlap with wf-orphan and stopped as
+required by the brief. AGENTS loop rule 7 requires handoff for repeated findings;
+the production blockers were handed off rather than vendor-patched. The lead
+must reconcile the shared contract with wf-orphan before further runtime edits.
+
+Verification for this diagnostic slice: Linux oracle **19 passed, zero skips**
+(6 probe tests plus 13 unchanged turn-cost tests), Ruff passed. The normal mirror
+build hit a Windows rename lock without changing tracked files. Supported
+`--runtime-root` staging outside the repository passed its import probe (630
+files), and all 628 non-cache files compared byte-identical to the tracked mirror.
+An oracle snapshot attempt collided with the mirror staging; its tar failure
+was not a test pass. The sequential rerun produced the 19-pass result above.
+`origin/main` a97c17c26e is merged; PR #4517 remains draft. No deployed-SHA,
+real-user acceptance, spec-sync or shipped claim.
+
+Final hygiene against merged `origin/main`: **46 added / 0 removed / 0 tampering**.
+
 ## Scope decision
 
 Prepare the editable bundle and generic ordered reader without activating the

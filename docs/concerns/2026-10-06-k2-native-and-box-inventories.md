@@ -1,8 +1,8 @@
 ---
 severity: P1
-title: K2 native and remote-box model inventories prevent complete cutover
+title: K2 requires one shared agent contract across all executors
 filed: '2026-10-06'
-summary: Four engine handles and compact platform text do not prove four actual tools or the entire native CLI payload; remote thin-loop ta transport is missing.
+summary: Founder rejected separate provider inventories; native execution and remote ta need a shared contract coordinated with wf-orphan before parity can be asserted.
 ---
 
 K2 draft PR #4517 must not be merged/deployed as a completed four-tool cutover.
@@ -35,3 +35,33 @@ uncooperative native writer. This blocks the all-adapter activation claim.
 Remaining acceptance: real native inventories/envelopes, remote-box bridge,
 paired model-family memory trials, deployed SHA, and a real owner app pass.
 Public tinyassets.io/mcp handles are outside this lane and unchanged.
+
+## Revised direction and mandatory handoff
+
+Founder direction 2026-10-06 supersedes the separate-inventory framing above:
+one agent definition supplies tools, instructions and capabilities to every
+adapter and to the main agent and other agents alike. Per-provider inventories
+are diagnostic evidence of divergence, never acceptable product definitions.
+
+The native and remote-bridge findings have recurred. Under AGENTS.md loop rule 7,
+the continuation handed them to Claude through `peer-agents`, rather than
+patching individual production providers. The 103-second read-only review
+returned ADAPT, confirmed the prior fixes and both outstanding blockers, and
+identified overlap with wf-orphan's executor work. Reconcile the shared executor
+contract with that lane before K2 changes it; do not disable native inference or
+substitute a provider to manufacture parity.
+
+The local diagnostic `scripts/native_cli_payload.py` captures credential-free
+requests to a loopback sink (nothing forwarded upstream), or enumerates all
+registered HTTP dialect encoders. It is not the production native launch:
+its MCP server uses stdio instead of the production authenticated HTTP route.
+Codex's missing MCP definitions in this probe therefore do NOT establish missing
+production MCP tools. Extra native tools in the captured request do establish
+that this local launch is not a four-tool agent. Tool supersets, missing MCP
+tools and stock-budget overflows return a nonzero status. Every native row
+explicitly says `production_parity_proven: false`.
+
+No all-provider parity guard or remote-box cross-owner proof was completed by
+this continuation. Existing ta jail isolation tests are not a remote-box proof.
+No paired live trials or executable live-trial harness was completed. These
+requirements remain open, and #4517 must remain draft.
