@@ -52,6 +52,27 @@ probes on the same image: role_service_bootstrap_probe (and --service-death,
 --broker-death, --bootstrap-failure on t3), role_owner_delete_probe (ZERO
 FOREIGN_BYTES), role_owner_launcher_probe --client.
 
+## Task 6: center-root creation and removal sites (inventory)
+
+"Selected" = `role_decoder._bounded_client` installed (DA8); legacy is unchanged.
+
+| Site | Kind | Selected path |
+|---|---|---|
+| `api/universe.py` `_universe_impl` create (mkdir) | create | `admit_center` (DA4); an existing *incomplete* root resumes in place under the same id; a complete or foreign id still refuses (ownership grant) |
+| `api/universe.py` `_universe_impl` rollback `rmtree` + grant revoke | remove | never removes a published root; keeps the grant when the root exists; revokes only if nothing was published |
+| `api/first_contact.py` `ensure_founder_home` incomplete-home `rmtree` | remove | skipped; `_universe_impl` resumes (same call path as the rollback) |
+| `api/universe.py` write sites (requests, config, notes, premise, pause) `udir.mkdir(parents=True, exist_ok=True)` | create | `ensure_center_dir`: a missing root refuses |
+| `universe_files._parent_dir_fd` implicit parent creation at depth 0 under the data root | create | refuses a missing non-dot top-level directory (`write_data_path` into a missing center) |
+| `account_deletion` home staging + `_rmtree` | remove | U2: D218 `role_owner_tree_deletion` (task 7 retire hook) |
+| `reset.py` host reset `rmtree` of every center | remove | host-run dev reset, not an app path; unchanged |
+| `scoped_reset` subtree `rmtree` | remove | lane B non-goal (subtree deletion cell) |
+
+Tests: tests/test_admission_center_creation.py (selected route, failure at
+log append / bind / seeding keeps root and grant then resumes with the same
+id, complete or foreign id never resumed, no write site or implicit parent can
+mkdir a root, legacy unchanged); existing test_first_contact,
+test_a_universe_needs_an_owner, test_api, link-free and IO-guard suites pass.
+
 # Current U1 delivery: D87 package egress relay and caller-owned lifetime
 
 D86 is pushed at 4aad725f28. D87 closes the two gaps D84 left for K1's

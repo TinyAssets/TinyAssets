@@ -249,6 +249,19 @@ def bounded_client():
     return role_decoder._bounded_client
 
 
+def ensure_center_dir(udir) -> None:
+    """A write site's ``udir.mkdir(parents=True, exist_ok=True)``.
+
+    Legacy (no client): exactly that mkdir. With the bounded client installed a
+    missing root refuses loudly: only admit_center creates one (DA4).
+    """
+    if bounded_client() is None:
+        udir.mkdir(parents=True, exist_ok=True)
+        return
+    if not udir.is_dir():
+        raise AdmissionRefused(f'command center {udir.name!r} has no admitted root')
+
+
 def admit_center(data_root, *, principal, center):
     """DA4: reserve, label, publish, append ``admit``, bind; returns the generation.
 

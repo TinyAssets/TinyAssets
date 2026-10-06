@@ -135,7 +135,11 @@ def ensure_founder_home(base: Path, founder: str) -> str:
     with _HOME_MATERIALIZE_LOCK:
         if home_is_complete(base, winner):
             return winner
-        if universe_dir.exists():
+        from tinyassets.role_center_admission import bounded_client
+
+        # DA4: with the bounded client installed an incomplete home keeps its
+        # root and grant; _universe_impl resumes admission and seeding in place.
+        if universe_dir.exists() and bounded_client() is None:
             try:
                 shutil.rmtree(universe_dir)
             except OSError:
