@@ -1730,6 +1730,13 @@ _WRITE_GRAPH_CONNECTIONS_CHAPTER = """\
     and what they answered. You cannot answer your own ask, and you should not
     try: that is theirs.
 
+    Clear or decline closes one ask, for EVERY kind including connect and
+    reconnect. It does not mean "never ask again". When the need recurs or the
+    user asks again, raise a new ``pending_request`` with ``operation="ask"``
+    and the same action and fields. Only "don't ask again" mutes; respect the
+    rail's muted list until the user lifts that choice. The user can also
+    connect or reconnect from the connection controls at any time.
+
     An ``extend_http`` ask is checked against the key you already hold when
     you RAISE it. One that adds nothing comes back ``already_held`` with the
     grant you have: act on it, do not ask again. One the answer would refuse
