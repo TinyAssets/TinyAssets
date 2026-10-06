@@ -183,7 +183,13 @@ class WorkOSAuthProvider(AuthProvider):
 
     # --- Resource Server: the methods that matter -------------------------
 
-    def resolve_token(self, token: str) -> Identity | None:
+    def verified_claims(self, token: str) -> dict[str, Any] | None:
+        """Validate a resource bearer before inspecting any client/session claims.
+
+        For server-side attribution and the outside-client evidence probe only.
+        The returned claims are sensitive: never serialize them into a receipt.
+        This does not establish client grants or a reconnect generation.
+        """
         if not token or not token.strip():
             return None
         try:
@@ -218,6 +224,14 @@ class WorkOSAuthProvider(AuthProvider):
         if not sub:
             _log_token_rejection("invalid_subject")
             return None
+
+        return claims
+
+    def resolve_token(self, token: str) -> Identity | None:
+        claims = self.verified_claims(token)
+        if claims is None:
+            return None
+        sub = named_principal(claims.get("sub"))
 
         email = str(claims.get("email", "")).strip()
         username = email or sub

@@ -1,4 +1,4 @@
-Docs-only round 2; all boxes describe future implementation and acceptance. No code, deployment or live-proof completion is claimed. Tasks are split by independently verifiable surface; each section stays at or below the owner's requested 12 tasks.
+Implementation lane L6 (`feat/outside-agent-grants`): see [implementation evidence](implementation.md). Task 1.1 is partial; no box, deployment or live-proof completion is claimed. Preserve the approved order and the owner's 4/9/5 task sections.
 
 ## 1. Identity and authority foundation
 
