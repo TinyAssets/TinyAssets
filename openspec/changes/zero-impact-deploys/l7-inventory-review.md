@@ -1,0 +1,9 @@
+I reviewed only the gate inventory correction: the working diff, `tinyassets/ingress.py`, and the two existing name-collision entries the new ones copy. Nothing was edited and no sub-agents or tests were run. I found no lane collision.
+
+1. **The diff is what you described.** It adds two `CallSite` entries for `AppIngressMiddleware.__call__` → `request.stream`: one for the main copy and one for the plugin copy. Each has the default count of 1, so a second call in either file would still fail the gate. It also adds one audit paragraph. No matcher, scanner, test or product code changed.
+2. **The plugin copy is byte-identical to `tinyassets/ingress.py`**, and each file contains exactly one `request.stream()` call, at line 123.
+3. **The body read is bounded.** The stream is read into a buffer, and if the next chunk would push it past `journal.max_payload_bytes`, the request is rejected with 413 before that chunk is added (`tinyassets/ingress.py:124`). The stream is only read for POST to `/mcp` with an `accept-v1` or `receipt-v1` header, and only when ingress is turned on; when it's off the request gets 503 without the body being read.
+4. **It does not bypass execution authority.** `acceptance.handle` only checks the request shape: exactly one `tools/call` to `converse`, an allow-listed set of arguments, a canonical UUIDv4, and typed messages to the main agent only. It then uses `current_actor_id()` to build a `Scope` and calls `journal.accept` or `journal.receipt`. There are no `execute`, `dispatch`, `run_branch` or `submit` calls in the module. Permission and home-change errors return 403. Requests with no ingress header go straight to the wrapped app.
+5. **It follows existing precedent.** The new entries match the `Frontend.__call__` and `onboarding` `request.stream` collisions already in the inventory, and the comment and audit text describe the code accurately.
+
+VERDICT: APPROVE

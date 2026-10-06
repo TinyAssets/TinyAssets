@@ -162,3 +162,22 @@ reviews approved their bounded slices; production configuration is unchanged.
 Command (PowerShell sets MSYS_NO_PATHCONV=1 first):
 
     python scripts/linux_oracle.py --out <external-temp>/l7-ingress-final --env DEPLOY_TRAFFIC_EVIDENCE=/out -- -q tests/test_ingress_http.py tests/test_ingress_journal.py tests/test_deploy_during_traffic.py tests/test_owner_stores.py tests/test_conversation_run_admissions.py tests/test_converse_turn_cost.py tests/test_universe_server_isolation.py tests/test_mcp_discovery_html.py tests/test_onboarding_auth_boundary.py tests/test_cloud_admission_serving_startup.py --basetemp /tmp/b
+
+## CI follow-up: exact HTTP-stream inventory
+
+GitHub Tests run 37402901697 passed five affected shards; shard 6 reported only
+an unregistered request.stream call in AppIngressMiddleware.__call__, in source
+and plugin (2309 passed / 1 failed). The traffic job passed. This is the existing
+name collision between bounded Starlette HTTP-body reads and graph streams.
+Registered both exact callsites with occurrence count one and updated the
+background-authority audit. No scanner/matcher rule, product code or test changed.
+Extra calls still fail the gate. Claude reviewed this gate correction separately:
+APPROVE (l7-inventory-review.md); AGREE with its classification and exact-count
+reasoning. Earlier product review remains applicable.
+
+Linux oracle: **56 passed / 0 skipped** across test_background_authority_inventory
+(including its mutation guards), test_ingress_http, test_deploy_during_traffic,
+test_owner_stores and test_converse_turn_cost. Changed-script ruff PASS. No
+runtime/mirror content changed after its verified build. The earlier 190-test
+merged-main proof still covers the unchanged product slice. Fetched and merged
+origin/main before this correction's push: already up to date.
