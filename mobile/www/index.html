@@ -6,27 +6,25 @@
   <title>TinyAssets</title>
   <style>
     :root { color-scheme: dark; }
+    * { box-sizing: border-box; }
     html, body {
       margin: 0; height: 100%;
       background: #0b0b0f; color: #e8e8ee;
       font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
     }
     .wrap {
-      height: 100%; display: flex; flex-direction: column;
+      min-height: 100%; display: flex; flex-direction: column;
       align-items: center; justify-content: center; gap: 1.1rem; padding: 2rem;
       text-align: center;
     }
     .mark { font-size: 1.6rem; font-weight: 700; letter-spacing: 0.01em; }
     .sub { color: #9a9aa6; font-size: 0.95rem; max-width: 22rem; line-height: 1.5; }
-    .spin {
-      width: 34px; height: 34px; border-radius: 50%;
-      border: 3px solid #2a2a35; border-top-color: #2d6cdf;
-      animation: r 0.9s linear infinite;
+    .retry {
+      display: inline-flex; align-items: center; justify-content: center;
+      min-height: 48px; padding: 0.75rem 1.5rem; border-radius: 0.75rem;
+      background: #2d6cdf; color: #fff; font-weight: 600; text-decoration: none;
     }
-    @keyframes r { to { transform: rotate(360deg); } }
-    .offline { display: none; color: #b3261e; }
-    body.is-offline .spin { display: none; }
-    body.is-offline .offline { display: block; }
+    .retry:focus-visible { outline: 3px solid #fff; outline-offset: 4px; }
   </style>
 </head>
 <body>
@@ -34,18 +32,14 @@
     This bundled page is a native-shell fallback. In normal operation Capacitor
     loads the live app from https://tinyassets.io/app (see capacitor.config.json
     -> server.url), which is the same origin as the /mcp API + the AuthKit sign-in,
-    so the OAuth round-trip stays inside the WebView. This page shows only briefly
-    while that loads, or if the device is offline.
+    so the OAuth round-trip stays inside the WebView. server.errorPath shows this
+    page when loading fails. A normal same-window link retries the live app;
+    reloading here would only reload the bundled page. No native plugin is needed.
   -->
   <div class="wrap">
-    <div class="spin" aria-hidden="true"></div>
     <div class="mark">TinyAssets</div>
-    <div class="sub">Connecting to your command center&hellip;</div>
-    <div class="sub offline">You appear to be offline. Reconnect and reopen the app.</div>
+    <div class="sub">Can&rsquo;t connect to your command center. Check your connection and try again.</div>
+    <a class="retry" href="https://tinyassets.io/app">Try again</a>
   </div>
-  <script>
-    if (!navigator.onLine) document.body.classList.add('is-offline');
-    window.addEventListener('offline', function () { document.body.classList.add('is-offline'); });
-  </script>
 </body>
 </html>

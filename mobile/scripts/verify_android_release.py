@@ -255,6 +255,23 @@ def verify_manifest(path: Path, release: AndroidRelease, *, merged: bool) -> Non
             )
 
 
+def verify_offline_page(mobile: Path, *, generated: bool = False) -> None:
+    """Check both the source fallback and the assets Capacitor actually packages."""
+    root = mobile / "android/app/src/main/assets" if generated else mobile
+    capacitor = json.loads((root / "capacitor.config.json").read_text(encoding="utf-8"))
+    server = capacitor.get("server", {})
+    if server.get("url") != "https://tinyassets.io/app":
+        raise ValueError("offline retry requires the live server.url https://tinyassets.io/app")
+    if server.get("errorPath") != "index.html":
+        raise ValueError("Capacitor server.errorPath must reach the bundled index.html")
+    web = root / "public" if generated else mobile / capacitor["webDir"]
+    page = web / "index.html"
+    if not page.is_file():
+        raise ValueError("bundled offline page is missing")
+    if generated and _sha256(page) != _sha256(mobile / "www/index.html"):
+        raise ValueError("generated offline page differs from committed source")
+
+
 def verify_sources(mobile: Path, release: AndroidRelease) -> None:
     capacitor = json.loads((mobile / "capacitor.config.json").read_text(encoding="utf-8"))
     if capacitor.get("appId") != release.app_id:
@@ -304,9 +321,7 @@ def verify_sources(mobile: Path, release: AndroidRelease) -> None:
     missing = [item for item in startup_safeguards if item not in service]
     if missing:
         raise ValueError(f"LocalCallbackService is missing startup safeguards: {missing}")
-    notify = (mobile / "native/android/TinyAssetsMessagingService.java").read_text(
-        encoding="utf-8"
-    )
+    notify = (mobile / "native/android/TinyAssetsMessagingService.java").read_text(encoding="utf-8")
     notify_safeguards = (
         "extends FirebaseMessagingService",
         "SecureRandom",
@@ -495,6 +510,7 @@ def find_merged_manifest(mobile: Path) -> Path:
 def verify(mobile: Path, *, merged: bool = False, source_only: bool = False) -> AndroidRelease:
     release = load_release(mobile)
     verify_sources(mobile, release)
+    verify_offline_page(mobile)
     if source_only:
         verify_committed_artwork(mobile)
     else:
@@ -506,6 +522,7 @@ def verify(mobile: Path, *, merged: bool = False, source_only: bool = False) -> 
         )
         return release
     verify_gradle(mobile, release)
+    verify_offline_page(mobile, generated=True)
     verify_generated_java(mobile, release)
     verify_manifest(mobile / "android/app/src/main/AndroidManifest.xml", release, merged=False)
     verify_generated_artwork(mobile)

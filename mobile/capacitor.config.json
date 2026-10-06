@@ -4,6 +4,7 @@
   "webDir": "www",
   "server": {
     "url": "https://tinyassets.io/app",
+    "errorPath": "index.html",
     "allowNavigation": [
       "tinyassets.io"
     ],

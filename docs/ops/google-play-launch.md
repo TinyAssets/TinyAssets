@@ -101,8 +101,8 @@ repeats annually.
 ## 1b. Version and release gates — generated defaults are not a release strategy
 
 `mobile/android-release.json` is the checked-in Android release source of truth. It
-records the next candidate: package `io.tinyassets.app`, version code `6`, version
-name `1.0.5`, min SDK 24, target/compile SDK 36. Play has already consumed codes `3`
+records the next candidate: package `io.tinyassets.app`, version code `7`, version
+name `1.0.6`, min SDK 24, target/compile SDK 36. Play has already consumed codes `3`
 (`1.0.2`), `4` (`1.0.3`) and `5` (`1.0.4`).
 
 Code `5` / `1.0.4` carried the `/app` URL move (`server.url` is compiled into the
@@ -121,7 +121,7 @@ so a bundle exists only when the native shell changes.
 | Code | Name | Target date | Native change | State |
 |---|---|---|---|---|
 | 6 | `1.0.5` | 2026-10-04 (day 3) | the back gesture gets a policy: walk WebView history, then one confirmation before leaving, and leave without tearing down the signed-in WebView | checked in |
-| 7 | `1.0.6` | 2026-10-09 (day 8) | the bundled offline page becomes reachable — `server.errorPath` plus a Try again that returns to the live app | planned |
+| 7 | `1.0.6` | 2026-10-09 (day 8) | the bundled offline page becomes reachable — `server.errorPath` plus a Try again that returns to the live app | checked in |
 | 8 | `1.0.7` | 2026-10-13 (day 12) | launch colour: the shell's window and splash background match what the app actually renders, so opening it has no colour flash | planned |
 
 Two candidates were dropped after reading the shipped dependency rather than
@@ -136,10 +136,13 @@ assuming, and they are recorded here so nobody re-proposes them:
 - **Notification tap already opens the right request.** `MainActivity.notificationTarget`
   has resolved `/app?request=<id>[&item=<id>]`, cold start included, since 1.0.4.
 
-`mobile/www/index.html` is the reason 1.0.6 exists: it is a finished offline and
-loading page that **nothing can currently display**, because Capacitor only falls
-back to the bundled `webDir` when `server.errorPath` is set, and it is not. An
-offline tester gets the WebView's own error page with the raw URL on it instead.
+`mobile/www/index.html` is now the bundled connection-error page for 1.0.6:
+`server.errorPath` points to `index.html`, and its always-visible **Try again** link
+navigates to `https://tinyassets.io/app` in the same WebView. It also handles
+failed loads when the device reports it is online, without waiting on a spinner.
+The release gate checks the source and generated Capacitor config and requires
+the packaged page to match. Phone-width browser tests exercise retry navigation;
+the airplane-mode device check below remains required before promotion.
 
 Nothing in a window update may touch sign-in, `server.url`, or push. Bump the code
 and the name together, one update per bundle; a code Play has seen is refused even
