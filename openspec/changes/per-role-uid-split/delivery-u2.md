@@ -1,3 +1,22 @@
+# U2 continuation: D219 setgid allow-list; PID1 zombie measurement
+
+**D219 (lead decision):** the design-mandated setgid is allowed on the named
+platform directories (`.broker`, `.broker/.outbound-proxy`, the run-root broker
+socket directory) through an explicit allow-list in
+`role_egress_migration._permissions`. It is never allowed on owner trees or
+files, and D211 still never widens read, write or execute. The launcher oracle
+fixture passes the role path for its socket directory. Resolves concern
+`2026-10-06-u2-broker-dir-setgid-lost-under-d211.md`.
+
+- Root oracle (`linux_oracle.py --as-root`): owner + volume migration egress,
+  D219 and full-volume selection, 29 passed. The new D219 test fails when the
+  allow-list line is removed.
+- Image `tinyassets-uid-u2:d219`
+  `sha256:f3d8971dc391d33e1b0b7ffbb01cb9755f17a731f4034d614232c2bba4089db9`:
+  `linux_oracle.py --production-image` exits 0 (`role_image_oracle.py` end to
+  end, including the launcher oracle). `role_startup_probe.py` PASS;
+  `role_owner_migration_probe.py` PASS (9 crash boundaries).
+
 # U2 continuation: U1 D85 merged; two-pass deletion (D218); switched startup OFF
 
 D214/D215/D217 unchanged. The "U1 admits no owner-delete cell" statement below

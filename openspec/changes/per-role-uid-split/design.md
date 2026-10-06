@@ -2628,3 +2628,20 @@ daemon traversal until a subtree cell exists. A completed deletion shrinks the
 principal set, which D216 still refuses at the next startup migration in
 either direction. That is the open admission-generation contract, not a
 deletion defect, and it blocks activation.
+
+### D219. Lead decision: design-mandated setgid on named platform directories
+
+Setgid on a platform-owned directory is not widening. It grants no read, write
+or execute to anyone; it only makes later entries inherit the directory's group,
+which D2 requires on the broker socket and broker directories. The egress
+migration's `_permissions` keeps an explicit allow-list,
+`SETGID_PLATFORM_DIRS`: `.broker`, `.broker/.outbound-proxy` and the run-root
+socket directory `/run/tinyassets-roles/broker`. Only for a directory on that
+list, owned by the broker (1002), may `S_ISGID` be added to the live mode.
+Everything else, including nested broker directories, owner trees and every
+regular file, stays under D211: never widen read, write or execute, and never
+add setgid. The startup run-root setter (`role_startup._run_root`) already sets
+the socket directory's exact `1002:1101 2750` on a fresh tmpfs. Root oracle:
+`test_d219_setgid_only_on_named_platform_directories` (setgid applied on
+`.broker` and the proxy directory; refused on an owner-tree directory and a
+regular file). The production `role_image_oracle.py` passes end to end.

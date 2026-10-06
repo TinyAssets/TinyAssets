@@ -25,6 +25,11 @@ PROXY = ".outbound-proxy"
 SIDECARS = (LEDGER + "-wal", LEDGER + "-shm", LEDGER + "-journal")
 PRIVATE_DIR_MODE = 0o2700
 PRIVATE_FILE_MODE = 0o600
+# D219: D2 mandates setgid on these platform directories. It grants no access;
+# it only makes later broker entries inherit 1101. Never on owner trees/files.
+# Data-volume paths are relative; the run-root socket directory is absolute.
+BROKER_SOCKET_DIR = "/run/tinyassets-roles/broker"
+SETGID_PLATFORM_DIRS = frozenset({BROKER_DIR, BROKER_DIR + "/" + PROXY, BROKER_SOCKET_DIR})
 
 
 def migrate_liveness(data_root, *, modes, reverse=False, dry_run=False, after_step=None,
@@ -142,8 +147,12 @@ def _regular(parent, name):
     return info
 
 
-def _tree(parent, name, *, uid=None, gid=None):
-    """Validate before mutation; then fsync and re-mode using pinned descriptors."""
+def _tree(parent, name, *, uid=None, gid=None, path=None):
+    """Validate before mutation; then fsync and re-mode using pinned descriptors.
+
+    ``path`` is the entry's data-root path once relocated (D219's allow-list).
+    """
+    path = name if path is None else path
     info = _stat(parent, name)
     if info is None:
         return
@@ -152,9 +161,10 @@ def _tree(parent, name, *, uid=None, gid=None):
             if os.fstat(fd).st_dev != os.fstat(parent).st_dev:
                 raise MigrationRefused(f"cross-filesystem broker tree: {name}")
             for child in sorted(os.listdir(fd)):
-                _tree(fd, child, uid=uid, gid=gid)
+                _tree(fd, child, uid=uid, gid=gid, path=path + "/" + child)
             if uid is not None:
-                _permissions(fd, uid, gid, PRIVATE_DIR_MODE if uid == 1002 else 0o700)
+                _permissions(fd, uid, gid, PRIVATE_DIR_MODE if uid == 1002 else 0o700,
+                             path=path)
                 os.fsync(fd)
     else:
         _regular(parent, name)
@@ -170,10 +180,13 @@ def _tree(parent, name, *, uid=None, gid=None):
             os.close(fd)
 
 
-def _permissions(fd, uid, gid, mode):
+def _permissions(fd, uid, gid, mode, *, path=None):
     info = os.fstat(fd)
     # D211: fixed role policies may narrow, never restore removed mode bits.
-    mode &= stat.S_IMODE(info.st_mode)
+    live = stat.S_IMODE(info.st_mode)
+    if path in SETGID_PLATFORM_DIRS and stat.S_ISDIR(info.st_mode) and uid == 1002:
+        live |= stat.S_ISGID  # D219: group inheritance, not read/write/execute
+    mode &= live
     if (info.st_uid, info.st_gid) != (uid, gid):
         os.fchown(fd, uid, gid)
     if stat.S_IMODE(os.fstat(fd).st_mode) != mode:
@@ -339,7 +352,7 @@ def relocate(data_root: Path, *, reverse=False, dry_run=False, after_step=None,
             os.mkdir(BROKER_DIR, 0o700, dir_fd=root)
             os.fsync(root)
             broker = stack.enter_context(_directory(BROKER_DIR, parent=root))
-        _permissions(broker, 1002, 1101, PRIVATE_DIR_MODE)
+        _permissions(broker, 1002, 1101, PRIVATE_DIR_MODE, path=BROKER_DIR)
         os.fsync(broker)
         source, destination = (broker, root) if reverse else (root, broker)
         if not progress["checkpointed"]:
@@ -350,13 +363,15 @@ def relocate(data_root: Path, *, reverse=False, dry_run=False, after_step=None,
                 after_step("checkpoint")
         uid, gid = (1001, 1001) if reverse else (1002, 1101)
         for name in names:
+            # Paths name where the entry lives once relocated (D219).
+            path = name if reverse else BROKER_DIR + "/" + name
             if _stat(source, name) is not None:
-                _tree(source, name, uid=uid, gid=gid)
+                _tree(source, name, uid=uid, gid=gid, path=path)
                 _rename(source, destination, name)
                 if after_step:
                     after_step(name)
             elif _stat(destination, name) is not None:
-                _tree(destination, name, uid=uid, gid=gid)
+                _tree(destination, name, uid=uid, gid=gid, path=path)
         _mark(root, document, {**progress, "state": "stable"})
         return plan
 

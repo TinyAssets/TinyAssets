@@ -577,6 +577,32 @@ def test_egress_permissions_never_add_mode_bits(volume, reverse, mode):
         assert (path.stat().st_uid, path.stat().st_gid) == (uid, gid)
 
 
+def test_d219_setgid_only_on_named_platform_directories(volume):
+    from deploy.role_egress_migration import BROKER_SOCKET_DIR, _permissions, relocate
+    from deploy.role_startup import RUN_ROOT
+
+    assert BROKER_SOCKET_DIR == str(RUN_ROOT / "broker")
+    (volume / ".outbound-proxy/grant").mkdir(parents=True, mode=0o700)
+    relocate(volume)
+    for name in (".broker", ".broker/.outbound-proxy"):
+        info = (volume / name).stat()
+        assert (info.st_uid, info.st_gid, stat.S_IMODE(info.st_mode)) == (1002, 1101, 0o2700)
+    # Nested broker directories are not named: D211 still only narrows them.
+    assert stat.S_IMODE((volume / ".broker/.outbound-proxy/grant").stat().st_mode) == 0o700
+    owner_tree = volume / "alice/work"
+    owner_tree.chmod(0o700)
+    regular = volume / "platform-file"
+    regular.write_bytes(b"retained")
+    regular.chmod(0o600)
+    for path, name in ((owner_tree, "alice/work"), (regular, ".broker")):
+        fd = os.open(path, os.O_RDONLY)
+        try:
+            _permissions(fd, 1002, 1101, 0o2700, path=name)
+        finally:
+            os.close(fd)
+        assert not path.stat().st_mode & stat.S_ISGID
+
+
 @pytest.mark.parametrize("restart", [False, True])
 def test_d214_entry_born_after_forward_reverses_to_legacy_ids(volume, restart):
     run(volume)

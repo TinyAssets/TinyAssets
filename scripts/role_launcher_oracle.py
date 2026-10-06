@@ -1081,12 +1081,13 @@ def _accounting_runtime(root, provider):
 
 def main():
     launcher = runpy.run_path("/usr/local/libexec/ta-launch.py")
-    permissions = runpy.run_path("/usr/local/libexec/ta-egress-migration.py")["_permissions"]
+    egress = runpy.run_path("/usr/local/libexec/ta-egress-migration.py")
+    permissions = egress["_permissions"]
 
-    def directory_permissions(path, uid, gid, mode):
+    def directory_permissions(path, uid, gid, mode, role_path=None):
         fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
         try:
-            permissions(fd, uid, gid, mode)
+            permissions(fd, uid, gid, mode, path=role_path)
         finally:
             os.close(fd)
     root = Path(tempfile.mkdtemp(prefix="uid-launcher-data-"))
@@ -1095,7 +1096,7 @@ def main():
     for child in (".broker", ".broker/state", ".broker/.outbound-proxy"):
         directory = root / child
         directory.mkdir(mode=0o2700)
-        directory_permissions(directory, 1002, 1101, 0o2700)
+        directory_permissions(directory, 1002, 1101, 0o2700, child)
     _seed_ledger(root)
     if os.environ.get("TA_ORACLE_HTTPS") == "1":
         stream = runpy.run_path("/app/scripts/role_stream_oracle.py")
@@ -1105,7 +1106,7 @@ def main():
     run.chmod(0o755)
     ipc = run / "broker"
     ipc.mkdir()
-    directory_permissions(ipc, 1002, 1101, 0o2750)
+    directory_permissions(ipc, 1002, 1101, 0o2750, egress["BROKER_SOCKET_DIR"])
     # Ledger fixture connections use SQLite's transaction context, which does
     # not close the handle. Collect those cyclic setup handles before forking;
     # their later collection must not change the launcher's fd-leak baseline.
