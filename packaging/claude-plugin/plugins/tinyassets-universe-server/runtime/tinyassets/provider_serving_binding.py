@@ -1052,6 +1052,8 @@ def set_serving(
         current = get_binding(base_path, universe_id=uid, binding_id=binding_id)
         if current is None:
             raise LookupError("agent binding was not found")
+        if current.get("retired"):
+            raise PermissionError("agent retired; restore it before changing serving state")
         if (expected_binding_updated_at is not None
                 and current["updated_at"] != expected_binding_updated_at):
             raise PermissionError("agent serving intent changed")

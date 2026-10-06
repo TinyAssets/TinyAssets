@@ -1596,6 +1596,8 @@ def write_graph(
             "update": "update_binding",
             "bind_serving_provider": "bind_serving_provider",
             "set_serving": "set_serving",
+            "retire": "retire_binding",
+            "restore": "restore_binding",
         }.get(binding_operation)
         if action is None:
             return json.dumps(
@@ -1608,6 +1610,7 @@ def write_graph(
                         "update",
                         "bind_serving_provider",
                         "set_serving",
+                        "retire", "restore",
                     ],
                 }
             )
@@ -2869,7 +2872,8 @@ def _interrupted_turn_payload(uid, universe_dir, session, message, exc, *, owner
     record = turn_failure(
         "interrupted" if owner_stopped else "unknown", stage=stage, effects=effects,
         provider_detail=(
-            "Completed before the turn ended: " + ", ".join(completed) if completed else ""
+            str(exc) + (". Completed before the turn ended: " + ", ".join(completed)
+                        if completed else "")
         ),
         ref=ref if isinstance(ref, str) and ref else uuid.uuid4().hex[:16],
     )
@@ -2886,6 +2890,7 @@ def _interrupted_turn_payload(uid, universe_dir, session, message, exc, *, owner
     logger.info("converse: turn %s ended in %s (owner_stopped=%s)", record.ref, uid, owner_stopped)
     return {
         "error": notice,
+        "reason": str(exc),
         "interrupted": owner_stopped,
         "universe_id": uid,
         "turn_failure": normalize_turn_failure(record),
@@ -3213,7 +3218,11 @@ def converse(
         # addressed-agent-control-provenance, lands in #4343 and is not in this
         # checkout, so a reference to it would point at nothing -- Codex refute
         # of this PR, finding D.)
-        with interactive_turn(current_actor_id(), uid, agent_id=addressed_id) as live_turn:
+        with interactive_turn(current_actor_id(), uid, agent_id=addressed_id,
+                              base_path=memory_universe_dir.parent,
+                              retirement_revision=(addressed.retirement_revision
+                                                   if addressed else 0)) as live_turn:
+            live_turn.check()
             live_id = live_turn.live_id
             _open_steering(memory_universe_dir, memory_session, uid, live_id,
                            current_actor_id(), typed, client_send_id)
@@ -3230,6 +3239,7 @@ def converse(
                 addressed_agent=addressed,
                 **({} if model_choice is None else {"model_choice": model_choice}),
             )
+            live_turn.check()
     except TurnInterrupted as exc:
         # An exception name alone is not proof the owner pressed Stop.
         # Disconnect/cancellation must never fabricate an owner decision.

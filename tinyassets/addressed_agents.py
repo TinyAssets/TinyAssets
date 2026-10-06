@@ -41,6 +41,7 @@ class AddressedAgent:
     instructions: tuple[tuple[str, str, str], ...]
     #: Completed recipient package placement; never a binding-id-derived path.
     agent_slug: str | None = None
+    retirement_revision: int = 0
 
 
 def normalize_agent_id(agent_id: object) -> str:
@@ -114,6 +115,7 @@ def is_conversable(binding: dict, *, owner: str, universe_id: str) -> bool:
     configuration = binding.get("configuration")
     return bool(
         binding.get("created_by") == owner
+        and not binding.get("retired", False)
         and binding.get("universe_id") == universe_id
         and binding.get("status") == "configured"
         and isinstance(configuration, dict)
@@ -182,6 +184,7 @@ def resolve(
         name=agent_name(binding, definition),
         instructions=_instructions(definition),
         agent_slug=installed_agent_slug(base_path, binding=binding),
+        retirement_revision=binding["retirement_revision"],
     )
 
 

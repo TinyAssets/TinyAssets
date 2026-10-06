@@ -8,7 +8,7 @@ Provide reversible retirement through existing tools with owner isolation and cl
 
 ## Decisions
 
-- Add a durable `retired` boolean column, default false, rather than delete bindings or rebuild the status CHECK. Preserve status/configuration and all linked data; account deletion continues to enumerate all bindings.
+- Add a durable `retired` boolean column, default false, and the last retirement revision, rather than delete bindings or rebuild the status CHECK. Preserve status/configuration and all linked data; account deletion continues to enumerate all bindings. A turn captures the retirement revision at resolution so even a quick retire/restore in another process stops the older turn.
 - Add `retire`/`restore` graph operations with binding ID and positive expected revision. Check creator ownership and existing universe access, serialize with binding admission, and use atomic revision comparison. Refuse main, serving bindings and non-agent roles.
 - Filter ordinary binding lists and addressability; direct binding reads retain retirement state and revision for restore. Internal all-binding enumeration explicitly includes retired records.
 - Interrupt running work for the exact owner/command-center/agent with reason `agent retired`; recheck durable lifecycle at execution boundaries to cover admission races and background execution. Restore enables new work without restarting cancelled work.
