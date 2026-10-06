@@ -317,3 +317,10 @@ ratchets plus affected heavy provider authority/retry, server isolation and
 cycle suites). Ruff passes all changed canonical Python files; plugin rebuild
 copies 630 files and its import probe passes; whitespace check passes. Staged
 hygiene against origin/main reports **39 added / 0 removed / 0 tampering**.
+
+Merged origin/main a97c17c26e (including #4518 and #4515) before final push.
+Post-merge Linux oracle: **96 passed**, covering copied-agent templates/system
+browser, delivery/account deletion, common ta tasks and stock payload budgets.
+The rebuilt mirror is unchanged and passes its import probe; final hygiene still
+reports 39 added / 0 removed / 0 tampering. Both starter OpenSpec change gates
+return ALLOWED. No deployed/live-acceptance claim or spec archive was made.
