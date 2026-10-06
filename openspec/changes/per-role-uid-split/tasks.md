@@ -79,9 +79,14 @@ Startup refuses at `deploy/role_launcher.py:435`.
         `f65af2de53`, `2f07b72490`), video D81 (`d3f99e9134`), provider discovery D82
         (`1a095dfc40`), packages D84/D87 (`35df4b4ecd`, `c8c5042654`), owner delete D85
         (`9657e679b7`), provider exec text-only D86 (`4aad725f28`).
-  - [ ] No shipped provider adapter reaches provider exec: Codex `universe_view` and Claude `cwd`
-        both refuse (lane C1).
-  - [ ] Session persistence; engine-MCP thin proxy (C2); network metadata egress (C4); workspace
+  - [ ] Shipped adapters through provider exec, D88 (lane C1, branch `iso/c1-provider-exec`):
+        Codex exec and Claude adapter turns, K2-shaped app-server start/resume with the
+        session persisted in the owner's `.provider-workspace`, piped Claude token, in-cell
+        credential scan and cross-owner refusals pass on the production image
+        (`scripts/role_provider_adapter_probe.py --stream`). Open: K2's served app-server
+        launch must pass its CellView and carry its model catalog in the snapshot; the served
+        Codex exec path (nested sandbox) still refuses.
+  - [ ] Engine-MCP thin proxy (C2); network metadata egress (C4); workspace
         provision/registry/worker, remote git, local box (C3); other ingestion formats; the K1
         package consumer (C4).
   - [ ] Full reader matrix. Concern `2026-10-05-role-reader-hardlink-alias.md` stays open.

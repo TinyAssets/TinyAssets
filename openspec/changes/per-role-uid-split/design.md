@@ -5,39 +5,48 @@ follow-ups". Every adapter passes one provider-neutral CellView beside its legac
 jail view. The jail ignores it; a selected broker requires it before admitting a
 caller view or cwd, and never translates mounts. Its fields are adapter data,
 never names the cell branches on: persistent workspace or private scratch; an
-environment variable that names the private snapshot copy; one home-relative
-path persisted in a named session store; at most four snapshot files delivered
-on inherited pipes. The launch's own center (cwd or exact argv item) is
-presented as /workspace only when persistent. Any other cwd, host path, nested
-sandbox, shell or engine route still refuses.
+environment variable that names the private snapshot copy; at most four
+snapshot files delivered on inherited pipes. The launch's own center (cwd or
+exact argv item) is presented as /workspace only when persistent. Any other cwd,
+host path, nested sandbox, shell or engine route still refuses.
 
 The persistent view is the owner's own `.provider-workspace`, created only by
 the owner's tool-files cell (D83), never by the daemon, and invisible to tool
 jails and every legacy view. The daemon pins it by descriptor. The mapper
 requires the exact owner UID/GID and `<center>/.provider-workspace` at fixed fd 6.
 The trusted entry, already the owner identity, makes `work` and `sessions` with
-no-follow descriptors. It binds them at /workspace and /session; the inside stage
-re-checks both device/inode pairs. Scratch is a bounded private tmpfs at
-/workspace. The proof carries the workspace identity, and the daemon refuses a
-mismatch. Sessions are linked from the private home into /session/<store>; a
-snapshot entry already at that path refuses. Selected native_store names the
-owner store and never creates it, so a missing store means a fresh session.
+no-follow descriptors. It binds `work` at /workspace and `sessions` at the
+private home's `sessions` (/tmp/provider-auth/sessions). cell-deny admits no
+link, so a bind replaces one. The inside stage re-checks both device/inode
+pairs. The proof carries the workspace identity, and the daemon refuses a
+mismatch. A snapshot entry named `sessions` refuses. Scratch is a bounded
+private tmpfs at /workspace. Selected native_store names the one owner store
+and never creates it, so a missing store means a fresh session.
 
 Credentials: only the owner's sealed snapshot enters. It is read-only at
 /snapshot and copied to private tmpfs, as in D82/D86. No credential value is
 admitted in argv or the environment; non-path values are dropped. A raw Claude
 subscription token travels as the snapshot's auth.json on a pipe named by
-CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR (CLI 2.1.291 reads it and unsets the
-variable). It is not in the private copy. The workspace and session store never
-receive snapshot bytes. Egress is unchanged: the pinned relay and in-cell
-forwarder. Empty argv items are admitted after argv[0] (`--tools ""`).
+`<token variable>_FILE_DESCRIPTOR`. The image's CLI 2.1.288 authenticates from it.
+The token is not in the private copy. The workspace and session store never receive
+snapshot bytes. Egress is unchanged: the pinned relay and in-cell forwarder.
+Empty argv items are admitted after argv[0] (`--tools ""`).
+
+Three D86 shapes the shipped CLIs could not live under, found by the
+production-image probe. RLIMIT_NPROC counts threads of the owner UID across its
+cells. A shipped Codex runs about two per CPU (38-40 at 20 CPUs) and Claude
+about 19, so 64 caused intermittent EAGAIN and hung turns. Execution now uses
+512; discovery keeps 64. The mapper's process-count and RSS guards are
+unchanged. Closing an execution process's stdin is a half-close: stdin and
+stdout share one stream, and both adapters close stdin after the prompt.
+Revoking an already-reaped cell is a no-op; the receipt is the proof.
 
 Integration points left to K2 (#4517), not copied: the app-server launch passes
-CellView(persistent=not chat, home="CODEX_HOME", session=("sessions", name)).
-Its reduced model catalog must travel inside the sealed snapshot (or as inline
-config), because no `/codex-home` jail path exists in a cell. The served Codex
-exec path keeps nested_sandbox and still refuses. Claude engine-MCP config is a
-host path and refuses until C2. Startup remains OFF.
+CellView(persistent=not chat, home=<its jail home variable>). Its reduced model
+catalog must travel inside the sealed snapshot (or as inline config), because
+no `/codex-home` jail path exists in a cell. The served Codex exec path keeps
+nested_sandbox and still refuses. Claude engine-MCP config is a host path and
+refuses until C2. Startup remains OFF.
 
 ### D87. Package egress relay opt-in and caller-owned lifetime
 
