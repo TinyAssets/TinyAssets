@@ -58,7 +58,7 @@ def _run_outcome(base_path: Path, run_id: str) -> tuple[str, str]:
         except ValueError:
             output = {}
     result = output.get("result") if isinstance(output, dict) else ""
-    return str(record.get("status") or ""), str(result or "")
+    return str(record.get("status") or ""), str(result or record.get("error") or "")
 
 
 def _settle_ended(base_path: Path, universe_id: str, record: dict) -> bool:
@@ -74,7 +74,8 @@ def _settle_ended(base_path: Path, universe_id: str, record: dict) -> bool:
             return True
         if status in {"failed", "cancelled"}:
             activities.transition(universe_dir, record["activity_id"], activities.FAILED,
-                                  generation=generation, outcome=f"failed:run_{status}")
+                                  generation=generation, outcome=f"failed:run_{status}",
+                                  result_summary=result or f"The activity run {status}.")
             return True
     except activities.ActivityRefused as exc:
         if exc.kind not in {"superseded", "invalid_transition"}:
@@ -114,7 +115,8 @@ def _start(base_path: Path, universe_id: str, activity_id: str) -> bool:
             return False
         try:
             activities.transition(universe_dir, activity_id, activities.FAILED,
-                                  generation=generation, outcome=f"failed:{exc.kind}")
+                                  generation=generation, outcome=f"failed:{exc.kind}",
+                                  result_summary=str(exc))
         except activities.ActivityRefused:
             pass
         return False
@@ -135,6 +137,7 @@ def dispatch_universe(base_path: str | Path, universe_id: str, *,
         return
     try:
         _dispatch_universe(Path(base_path), universe_id, budget)
+        _publish_failures(Path(base_path) / universe_id)
     finally:
         lock.release()
 
@@ -196,3 +199,24 @@ def tick_in_background(base_path: str | Path) -> bool:
 
     threading.Thread(target=run, name="activity-dispatch", daemon=True).start()
     return True
+
+
+def _publish_failures(universe_dir: Path) -> None:
+    """Retry durable failure delivery every tick; ext_id prevents duplicate chat rows."""
+    from tinyassets.addressed_agents import memory_session
+    from tinyassets.conversation_store import record_turn
+
+    cursor = None
+    while True:
+        page = activities.list_page(universe_dir, status=activities.FAILED, cursor=cursor)
+        for record in page["activities"]:
+            record_turn(
+                universe_dir, memory_session(record["owner_principal"], record["agent_id"]),
+                "platform",
+                f"Background activity {record['title']!r} failed. "
+                + (record["result_summary"] or record["outcome"]),
+                ext_id=f"activity-failed:{record['activity_id']}",
+            )
+        cursor = page.get("next_cursor")
+        if not cursor:
+            return

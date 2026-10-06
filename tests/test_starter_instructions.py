@@ -8,12 +8,12 @@ from tinyassets.universe_tools import skill_index
 
 def test_published_bundle_uses_existing_skill_index(tmp_path):
     files = starter_agent_files()
-    assert len(files) == 7
+    assert len(files) == 22
     for name, body in files.items():
         path = tmp_path / name
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(body, encoding="utf-8")
-    assert len(skill_index(tmp_path)) == 5
+    assert len(skill_index(tmp_path)) == 11
     assert len(files["starter/hooks.md"]) + len(files["AGENTS.md"]) < 1600
     assert "persist it" in files["starter/hooks.md"]
     assert "persist it" not in files["AGENTS.md"]

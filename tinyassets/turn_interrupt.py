@@ -33,15 +33,9 @@ How a turn honours it, and why each boundary is where it is:
   would buy no time and would lose the recorded reply and its real cost. The
   reply is recorded; any tools it asked for are not run.
 
-In memory, deliberately, like the boot registry beside the journal
-(``storage/agent_turn_boot``): exactly ONE process runs interactive turns, which
-``tests/test_orphaned_turn_reconcile.py`` pins, and the turn, the request that
-started it and every interrupt of it all live and die with that process. A row
-outliving the only process that could honour it would be a second, stale
-authority for the same fact.
-
-Only the served ``converse`` path registers. An automation, an agent node or a
-wake has no live record, so an interrupt cannot reach one.
+Live interruption signals remain in memory. With a data root supplied, Stop also
+settles durable orphan rows for this exact owner, universe and addressed agent.
+The per-turn OS runner claim keeps another process's live work out of recovery.
 """
 
 from __future__ import annotations
@@ -247,7 +241,8 @@ def bound(live: LiveTurn | None):
 
 
 def request_interrupt(actor_id: str, universe_id: str, *, agent_id: str | None = None,
-                      reason: str = "the owner stopped this turn") -> int:
+                      reason: str = "the owner stopped this turn",
+                      base_path=None) -> int:
     """Stop the live turns THIS caller is running in THIS universe: the
     addressed agent's when ``agent_id`` is given, every agent's (stop-all)
     when it is ``None``.
@@ -261,7 +256,13 @@ def request_interrupt(actor_id: str, universe_id: str, *, agent_id: str | None =
                    if agent_id is None or live.agent_id == agent_id]
     for live in targets:
         live.request(reason)
-    return len(targets)
+    recovered = []
+    if base_path is not None:
+        from tinyassets.agent_turn_reconcile import reconcile_orphaned_turns
+
+        recovered = reconcile_orphaned_turns(
+            base_path, owner_id=key[0], universe_id=key[1], agent_id=agent_id)
+    return len(targets) + sum(bool(row.get("settled")) for row in recovered)
 
 
 def live_count(actor_id: str, universe_id: str) -> int:
