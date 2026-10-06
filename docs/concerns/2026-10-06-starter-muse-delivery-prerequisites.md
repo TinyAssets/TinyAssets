@@ -1,5 +1,5 @@
 ---
-severity: medium
+severity: P2
 title: Muse starter content has no provisioning or ta skill-discovery consumer yet
 filed: '2026-10-06'
 summary: K3 can publish and test the editable package, but existing main does not install starter_agent_files or expose indexed skills through ta.
