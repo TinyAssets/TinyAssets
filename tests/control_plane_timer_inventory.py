@@ -191,6 +191,9 @@ CLASSIFICATION: dict[str, tuple[str, str]] = {
     "tinyassets/runs.py::poll_child_run_status": (CALL_SCOPED, "caller waits on a child run"),
     "tinyassets/scoped_reset.py::acquire_maintenance_barrier": (CALL_SCOPED, "barrier wait"),
     "tinyassets/soul_edit.py::_soul_lock": (CALL_SCOPED, "lock acquisition"),
+    "tinyassets/singleton_lock.py::_lock_fd_within": (
+        CALL_SCOPED, "owner-control lock acquisition, bounded by the caller's wait",
+    ),
     "tinyassets/storage/conversation_custody.py::_checkpoint_truncate": (
         CALL_SCOPED, "WAL checkpoint retry",
     ),

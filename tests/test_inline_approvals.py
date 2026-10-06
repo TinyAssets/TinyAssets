@@ -530,9 +530,10 @@ def test_stop_interrupts_live_turn_even_when_approval_store_is_busy(case, monkey
     from tests.test_turn_interrupt import _Request
     from tinyassets import onboarding
     from tinyassets.auth import middleware
-    from tinyassets.owner_control import control
+    from tinyassets.owner_control import WAIT_ENV, control
 
     home, _, _, _ = case
+    monkeypatch.setenv(WAIT_ENV, "0.2")
     monkeypatch.setattr(onboarding, "onboarding_enabled", lambda: True)
     monkeypatch.setattr(onboarding, "_app_identity_required", lambda: None)
     monkeypatch.setattr(

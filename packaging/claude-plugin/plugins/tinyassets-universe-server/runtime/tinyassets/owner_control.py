@@ -2,7 +2,10 @@
 
 The OS lock is never stolen on a timer. A dead worker loses its descriptor;
 another worker can then recover under the same lock. Nested synchronous calls
-reuse the lock on their thread, never across async tasks.
+reuse the lock on their thread, never across async tasks. A second caller waits
+up to ``TINYASSETS_OWNER_CONTROL_WAIT_S`` seconds (default 5) for the holder,
+so two overlapping actions for one owner queue instead of refusing; holders
+must therefore keep slow I/O (effectors, model turns) outside the lock.
 """
 
 from __future__ import annotations
@@ -14,10 +17,12 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from tinyassets import agent_sessions
-from tinyassets.singleton_lock import _lock_fd, _unlock_fd
+from tinyassets.singleton_lock import _lock_fd_within, _unlock_fd
 from tinyassets.universe_files import open_lock_file
 
 _held = threading.local()
+WAIT_ENV = "TINYASSETS_OWNER_CONTROL_WAIT_S"
+DEFAULT_WAIT_S = 5.0
 
 
 class ControlUnavailable(RuntimeError):
@@ -37,7 +42,7 @@ def control(universe_dir: Path):
         return
     relpath = f"{agent_sessions.RECORDS_DIR}/{root.name}/owner-control.lock"
     fd = open_lock_file(root.parent, relpath, mode=0o600)
-    if not _lock_fd(fd):
+    if not _lock_fd_within(fd, float(os.environ.get(WAIT_ENV) or DEFAULT_WAIT_S)):
         os.close(fd)
         raise ControlUnavailable("Owner controls are busy; retry the operation.")
     _held.locks = {**held, key: fd}
