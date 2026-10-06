@@ -41,7 +41,7 @@ def branch_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, authenticate_req
 
 
 def _call(us, action: str, **kwargs):
-    return json.loads(us.extensions(action=action, **kwargs))
+    return json.loads(us._extensions_impl(action=action, **kwargs))
 
 
 def _minimal_branch_spec(**overrides):

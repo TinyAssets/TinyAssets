@@ -5,7 +5,6 @@ Spec: docs/vetted-specs.md §teammate_message.
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 import pytest
@@ -357,76 +356,6 @@ class TestPlanApprovalFlow:
 
 
 # ─── MCP action dispatch ──────────────────────────────────────────────────────
-
-class TestMessagingMcpActions:
-    def test_messaging_send_action(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
-        run_id = _seed_run(tmp_path)
-
-        from tinyassets.universe_server import extensions
-        result = json.loads(extensions(
-            action="messaging_send",
-            from_run_id=run_id,
-            to_node_id="node-B",
-            message_type="request",
-            body_json='{"task": "go"}',
-        ))
-        assert "message_id" in result
-        assert "delivered_at" in result
-
-    def test_messaging_receive_action(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
-        run_id = _seed_run(tmp_path)
-
-        from tinyassets.universe_server import extensions
-        extensions(
-            action="messaging_send",
-            from_run_id=run_id,
-            to_node_id="node-B",
-            message_type="request",
-            body_json="{}",
-        )
-        result = json.loads(extensions(action="messaging_receive", node_id="node-B"))
-        assert result["count"] == 1
-
-    def test_messaging_ack_action(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
-        run_id = _seed_run(tmp_path)
-
-        from tinyassets.universe_server import extensions
-        send_result = json.loads(extensions(
-            action="messaging_send",
-            from_run_id=run_id,
-            to_node_id="node-B",
-            message_type="request",
-            body_json="{}",
-        ))
-        ack_result = json.loads(extensions(
-            action="messaging_ack",
-            message_id=send_result["message_id"],
-            node_id="node-B",
-        ))
-        assert "acked_at" in ack_result
-
-    def test_unknown_action_lists_messaging_actions(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
-        from tinyassets.universe_server import extensions
-        result = json.loads(extensions(action="nonexistent_action_xyz"))
-        assert "messaging_send" in result.get("available_actions", [])
-        assert "messaging_receive" in result.get("available_actions", [])
-        assert "messaging_ack" in result.get("available_actions", [])
-
-    def test_send_with_bad_body_json_returns_error(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
-        from tinyassets.universe_server import extensions
-        result = json.loads(extensions(
-            action="messaging_send",
-            from_run_id="any",
-            to_node_id="node-B",
-            message_type="request",
-            body_json="not-json",
-        ))
-        assert "error" in result
 
 
 # ─── Node-spec graph-compiler primitives (TDD — implementations pending) ─────

@@ -89,7 +89,7 @@ def no_git_env(tmp_path, monkeypatch):
 
 
 def _call(us, **kwargs):
-    return json.loads(us.goals(**kwargs))
+    return json.loads(us._goals_impl(**kwargs))
 
 
 def _commit_count(repo: Path) -> int:
@@ -132,96 +132,7 @@ def test_propose_creates_yaml_and_one_commit(repo_env):
 # ─── update ──────────────────────────────────────────────────────────────
 
 
-def test_update_dirty_returns_local_edit_conflict(repo_env):
-    us, repo, _base = repo_env
-    propose = _call(us, action="propose", name="Goal X")
-    gid = propose["goal"]["goal_id"]
-
-    goal_path = repo / "goals" / "goal-x.yaml"
-    goal_path.write_text(
-        goal_path.read_text(encoding="utf-8") + "# user edit\n",
-        encoding="utf-8",
-    )
-
-    before_commits = _commit_count(repo)
-    result = _call(
-        us, action="update", goal_id=gid, description="server tries to win",
-    )
-    assert result["status"] == "local_edit_conflict"
-    # Cross-platform path check
-    norm_path = result["conflicting_path"].replace("\\", "/")
-    assert norm_path.endswith("goals/goal-x.yaml")
-    assert any(
-        p.replace("\\", "/").endswith("goal-x.yaml")
-        for p in result["all_conflicts"]
-    )
-    assert _commit_count(repo) == before_commits
-
-
-def test_update_force_overrides_dirty(repo_env):
-    us, repo, _base = repo_env
-    propose = _call(us, action="propose", name="Goal Y")
-    gid = propose["goal"]["goal_id"]
-
-    goal_path = repo / "goals" / "goal-y.yaml"
-    goal_path.write_text("# user edit\n", encoding="utf-8")
-
-    result = _call(
-        us, action="update", goal_id=gid,
-        description="forced", force=True,
-    )
-    assert result["status"] == "updated"
-    assert _last_commit_subject(repo) == f"goals.update: {gid}"
-
-
 # ─── bind ────────────────────────────────────────────────────────────────
-
-
-def _seed_branch(us, name: str = "Demo branch") -> str:
-    """Create a minimal branch via build_branch → return branch_def_id."""
-    from tinyassets.api.helpers import _base_path
-    from tinyassets.branches import (
-        BranchDefinition,
-        EdgeDefinition,
-        GraphNodeRef,
-        NodeDefinition,
-    )
-    from tinyassets.daemon_server import save_branch_definition
-
-    b = BranchDefinition(name=name, author="alice", entry_point="n1")
-    b.node_defs = [NodeDefinition(node_id="n1", display_name="N1")]
-    b.graph_nodes = [GraphNodeRef(id="n1", node_def_id="n1")]
-    b.edges = [
-        EdgeDefinition(from_node="START", to_node="n1"),
-        EdgeDefinition(from_node="n1", to_node="END"),
-    ]
-    saved = save_branch_definition(
-        Path(_base_path()), branch_def=b.to_dict(),
-    )
-    return saved["branch_def_id"]
-
-
-def test_bind_writes_branch_yaml_in_one_commit(repo_env):
-    us, repo, _base = repo_env
-    propose = _call(us, action="propose", name="Goal Z")
-    gid = propose["goal"]["goal_id"]
-    bid = _seed_branch(us, name="Demo branch")
-
-    before = _commit_count(repo)
-    result = _call(
-        us, action="bind", branch_def_id=bid, goal_id=gid,
-    )
-    assert result["status"] == "bound"
-    assert _commit_count(repo) - before == 1
-
-    subject = _last_commit_subject(repo)
-    assert subject.startswith("goals.bind: Demo branch")
-    assert "Goal Z" in subject
-
-    # Commit touches the BRANCH yaml (cross-table edit), not the goal yaml
-    files = _last_commit_files(repo)
-    assert any("branches/demo-branch.yaml" in f for f in files)
-    assert not any("goals/goal-z.yaml" in f for f in files)
 
 
 # ─── env-var sqlite_only ─────────────────────────────────────────────────

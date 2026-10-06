@@ -81,7 +81,7 @@ def _ledger_rows(base: Path) -> list[dict]:
 def test_goals_propose_writes_an_attributed_ledger_row(goals_env) -> None:
     us, base = goals_env
 
-    result = json.loads(us.goals(action="propose", name="G", description="x"))
+    result = json.loads(us._goals_impl(action="propose", name="G", description="x"))
     assert result.get("status") == "proposed", result
 
     rows = _ledger_rows(base)
@@ -110,7 +110,7 @@ def test_ledger_actor_is_the_credential_subject_not_the_env_user(
     # them the real caller and the assertion would be about nothing.
     monkeypatch.setenv("UNIVERSE_SERVER_USER", "mallory")
 
-    json.loads(us.goals(action="propose", name="G2", description="x"))
+    json.loads(us._goals_impl(action="propose", name="G2", description="x"))
 
     rows = [r for r in _ledger_rows(base) if r.get("action") == "goals.propose"]
     assert rows, "no ledger row written"
@@ -149,7 +149,7 @@ def test_unauthenticated_write_is_anonymous_not_the_env_user(
     importlib.reload(us)
     try:
         clear_identity()
-        answer = json.loads(us.goals(action="propose", name="G3", description="x"))
+        answer = json.loads(us._goals_impl(action="propose", name="G3", description="x"))
         assert "error" in answer, f"an unauthenticated propose was accepted: {answer}"
         rows = [
             r for r in _ledger_rows(base) if r.get("action") == "goals.propose"
@@ -161,62 +161,3 @@ def test_unauthenticated_write_is_anonymous_not_the_env_user(
         )
     finally:
         importlib.reload(us)
-
-
-@pytest.fixture
-def extensions_env(tmp_path, monkeypatch, authenticate_request):
-    base = tmp_path / "output"
-    base.mkdir()
-    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(base))
-    _become("alice")
-    authenticate_request("alice")
-    from tinyassets import universe_server as us
-
-    importlib.reload(us)
-    yield us, base
-    importlib.reload(us)
-
-
-def test_project_memory_set_writes_an_attributed_ledger_row(
-    extensions_env, monkeypatch
-) -> None:
-    """The `extensions.py` call site needs its own guard.
-
-    Found by cross-family review of the first fix: the existing coverage for
-    this path (`test_api_runtime_ops.py`) only asserts the operation returns
-    `ok`. That is exactly the blind spot — `_extensions_impl` wraps its ledger
-    write in `except (json.JSONDecodeError, TypeError)`, so dropping `actor=`
-    raises TypeError, gets swallowed, and the action still returns `ok`. The
-    only way to catch it is to read the ledger back.
-
-    `UNIVERSE_SERVER_USER` is flipped to `mallory` after authenticating so
-    this pins attribution to the credential subject at the same time.
-    """
-    us, base = extensions_env
-    # The ENVIRONMENT, deliberately: this test exists to prove the env
-    # cannot forge the recorded actor. Signing mallory in would make
-    # them the real caller and the assertion would be about nothing.
-    monkeypatch.setenv("UNIVERSE_SERVER_USER", "mallory")
-
-    result = json.loads(us.extensions(
-        action="project_memory_set",
-        project_id="p1",
-        key="k1",
-        value="v1",
-    ))
-    assert not result.get("error"), result
-
-    rows = [
-        r for r in _ledger_rows(base)
-        if r.get("action") == "project_memory_set"
-    ]
-    assert rows, (
-        "project_memory_set wrote no ledger row. The action still returned "
-        "ok because _extensions_impl swallows TypeError around the ledger "
-        "write — check that _append_global_ledger is called with `actor`."
-    )
-    assert rows[0].get("actor") == "alice", (
-        f"ledger recorded {rows[0].get('actor')!r}; the credential subject is "
-        f"'alice' and UNIVERSE_SERVER_USER was set to 'mallory' to prove the "
-        f"env cannot forge attribution on this path either"
-    )

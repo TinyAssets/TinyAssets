@@ -34,7 +34,7 @@ def ext_env(
 
 
 def _call(us, tool: str, action: str, **kwargs):
-    fn = getattr(us, tool)
+    fn = getattr(us, f"_{tool}_impl")
     return json.loads(fn(action=action, **kwargs))
 
 

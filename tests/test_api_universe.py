@@ -208,9 +208,9 @@ def test_pattern_a2_wrapper_delegates_to_api_universe() -> None:
     """
     from tinyassets import universe_server as us
 
-    assert callable(us.universe)
+    assert callable(us._universe_impl)
     # Read-only action — no side effects.
-    result = us.universe(action="list")
+    result = us._universe_impl(action="list")
     direct = univ_mod._universe_impl(action="list")
     assert result == direct, "Pattern A2 wrapper drift: us.universe != _universe_impl"
 

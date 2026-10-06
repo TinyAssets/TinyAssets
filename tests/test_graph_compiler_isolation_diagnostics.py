@@ -489,13 +489,13 @@ def test_build_branch_default_value_preserved_through_get_branch(
             ],
         }
 
-        built = _json.loads(us.extensions(
+        built = _json.loads(us._extensions_impl(
             action="build_branch", spec_json=_json.dumps(spec),
         ))
         assert built["status"] == "built", built
         bid = built["branch_def_id"]
 
-        got = _json.loads(us.extensions(
+        got = _json.loads(us._extensions_impl(
             action="get_branch", branch_def_id=bid,
         ))
         lab_field = next(
@@ -554,13 +554,13 @@ def test_build_branch_state_schema_default_seeded_to_strict_prompt(
                  "default_value": "PROBE"},
             ],
         }
-        built = _json.loads(us.extensions(
+        built = _json.loads(us._extensions_impl(
             action="build_branch", spec_json=_json.dumps(spec),
         ))
         assert built["status"] == "built", built
         bid = built["branch_def_id"]
 
-        got = _json.loads(us.extensions(
+        got = _json.loads(us._extensions_impl(
             action="get_branch", branch_def_id=bid,
         ))
 

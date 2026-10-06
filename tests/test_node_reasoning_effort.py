@@ -160,23 +160,25 @@ def _basic_spec(name="Effort branch"):
 
 def test_update_node_sets_and_validates_reasoning_effort(server_env):
     us = server_env
-    built = json.loads(us.extensions(action="build_branch", spec_json=json.dumps(_basic_spec())))
+    built = json.loads(us._extensions_impl(
+        action="build_branch", spec_json=json.dumps(_basic_spec()),
+    ))
     bid = built["branch_def_id"]
 
     # Valid: set the node to low effort.
     low_op = [{"op": "update_node", "node_id": "ready", "reasoning_effort": "low"}]
-    ok = json.loads(us.extensions(
+    ok = json.loads(us._extensions_impl(
         action="patch_branch", branch_def_id=bid,
         changes_json=json.dumps(low_op),
     ))
     assert ok.get("status") != "rejected", ok
-    got = json.loads(us.extensions(action="get_branch", branch_def_id=bid))
+    got = json.loads(us._extensions_impl(action="get_branch", branch_def_id=bid))
     ready = next(n for n in got["node_defs"] if n["node_id"] == "ready")
     assert ready["reasoning_effort"] == "low"
 
     # Invalid: rejected with a clear error.
     bad_op = [{"op": "update_node", "node_id": "ready", "reasoning_effort": "turbo"}]
-    bad = json.loads(us.extensions(
+    bad = json.loads(us._extensions_impl(
         action="patch_branch", branch_def_id=bid,
         changes_json=json.dumps(bad_op),
     ))

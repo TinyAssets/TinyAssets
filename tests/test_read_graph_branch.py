@@ -15,16 +15,6 @@ import json
 
 import pytest
 
-CANONICAL_HANDLES = {
-    "read_graph",
-    "write_graph",
-    "run_graph",
-    "read_page",
-    "write_page",
-    "converse",
-    "get_status",
-}
-
 _BASIC_SPEC = {
     "name": "Inspectable branch",
     "entry_point": "ready",
@@ -78,7 +68,9 @@ def test_read_graph_branch_in_allowed_targets(server_env):
 def test_read_graph_branch_returns_node_configs(server_env):
     """The whole point: reading a branch surfaces editable node configs."""
     us = server_env
-    built = json.loads(us.extensions(action="build_branch", spec_json=json.dumps(_BASIC_SPEC)))
+    built = json.loads(us._extensions_impl(
+        action="build_branch", spec_json=json.dumps(_BASIC_SPEC),
+    ))
     bid = built["branch_def_id"]
 
     branch = json.loads(us.read_graph(target="branch", branch_id=bid))
@@ -93,7 +85,9 @@ def test_read_graph_branch_returns_node_configs(server_env):
 def test_read_graph_branch_falls_back_to_graph_id(server_env):
     """branch_id omitted -> graph_id is used (lenient, matches target=run)."""
     us = server_env
-    built = json.loads(us.extensions(action="build_branch", spec_json=json.dumps(_BASIC_SPEC)))
+    built = json.loads(us._extensions_impl(
+        action="build_branch", spec_json=json.dumps(_BASIC_SPEC),
+    ))
     bid = built["branch_def_id"]
     branch = json.loads(us.read_graph(target="branch", graph_id=bid))
     assert branch.get("branch_def_id") == bid
@@ -108,7 +102,9 @@ def test_read_graph_branch_falls_back_to_graph_id(server_env):
 def test_public_branch_is_commons_readable_cross_user(server_env, monkeypatch):
     """A PUBLIC branch is readable by a different user (commons / remix model)."""
     us = server_env
-    built = json.loads(us.extensions(action="build_branch", spec_json=json.dumps(_BASIC_SPEC)))
+    built = json.loads(us._extensions_impl(
+        action="build_branch", spec_json=json.dumps(_BASIC_SPEC),
+    ))
     bid = built["branch_def_id"]
 
     monkeypatch.setenv("UNIVERSE_SERVER_USER", "stranger")
@@ -122,7 +118,9 @@ def test_private_branch_hidden_from_non_author(server_env, monkeypatch, authenti
     """A PRIVATE branch is author-gated: the author reads it, a stranger gets
     the same not-found envelope (existence is not leaked)."""
     us = server_env
-    built = json.loads(us.extensions(action="build_branch", spec_json=json.dumps(_BASIC_SPEC)))
+    built = json.loads(us._extensions_impl(
+        action="build_branch", spec_json=json.dumps(_BASIC_SPEC),
+    ))
     bid = built["branch_def_id"]
     # Make it private via the patch_branch primitive (set_visibility op).
     patched = json.loads(us.write_graph(

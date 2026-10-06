@@ -40,7 +40,7 @@ def ext_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 
 
 def _call(us, tool: str, action: str, **kwargs):
-    fn = getattr(us, tool)
+    fn = getattr(us, f"_{tool}_impl")
     return json.loads(fn(action=action, **kwargs))
 
 

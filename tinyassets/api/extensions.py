@@ -23,17 +23,11 @@ Public surface (back-compat re-exported via ``tinyassets.universe_server``):
       _ensure_standalone_branch(base): SQLite/JSON migration probe
       _load_nodes() / _save_nodes(nodes) : SQLite-backed registry I/O
 
-    Pattern A2 body for the ``extensions()`` MCP tool:
+    Action dispatch the canonical routers call in-process:
       _extensions_impl(action, **kwargs) : dispatch-shim into 12 Step-4-8 tables
 
     Standalone-node action handlers:
       _ext_register / _ext_list / _ext_inspect / _ext_manage
-
-Cross-module note: the ``@mcp.tool() def extensions(...)`` decorator + 80+ arg
-signature + ~140-line chatbot-facing docstring stays in
-``tinyassets/universe_server.py`` (Pattern A2) so FastMCP introspection sees the
-surface unchanged. The wrapper there delegates to ``_extensions_impl()`` from
-this module.
 
 Engine-helpers symbols (`_current_actor`, `_append_global_ledger`) lazy-import
 from ``tinyassets.api.engine_helpers`` (post-Step-10 path) and
@@ -234,10 +228,8 @@ ALLOWED_DEPENDENCIES = {
 
 
 # ───────────────────────────────────────────────────────────────────────────
-# Pattern A2 body for the ``extensions()`` MCP tool. The decorator + 80+ arg
-# signature + ~140-line chatbot-facing docstring stays in
-# ``tinyassets/universe_server.py`` wrapping a delegation to this function. Same
-# shape as Step 9's ``universe()`` and Step 7's ``goals()`` / ``gates()``.
+# Action dispatch. Not an MCP tool: the canonical handles in
+# ``tinyassets/universe_server.py`` call it with the actions they route.
 # ───────────────────────────────────────────────────────────────────────────
 
 
@@ -471,10 +463,7 @@ def _extensions_impl(
     output_offset: int = 0,
     output_max_chars: int = 8192,
 ) -> str:
-    """Pattern A2 body — see ``tinyassets.universe_server.extensions`` for the
-    chatbot-facing docstring. Behavior is identical; the decorator wrapper
-    forwards every argument unchanged.
-    """
+    """Dispatch one extensions action; the canonical routers call this in-process."""
     if action == "get_action_scope_status":
         from tinyassets.auth.provider import action_scope_audit
 
