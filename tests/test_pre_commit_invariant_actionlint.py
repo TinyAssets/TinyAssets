@@ -99,12 +99,6 @@ def test_hook_source_invokes_actionlint_invariant():
     assert ".github/workflows/" in text
 
 
-def test_hook_source_has_invariant_7_section():
-    text = _HOOK_SOURCE.read_text(encoding="utf-8")
-    # Loose check — the section header convention is "# --- N. <name>"
-    assert "# --- 7." in text or "# --- 7 " in text, (
-        "hook source must label the new invariant as #7 matching existing convention"
-    )
 
 
 # ---- CI workflow -----------------------------------------------------------

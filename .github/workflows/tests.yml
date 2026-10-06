@@ -137,6 +137,22 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  structural-guards:
+    name: structural-guards
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - name: Install guard dependencies
+        run: pip install -e '.[dev,browser]'
+      - name: Run every structural guard with repair instructions
+        run: python -m scripts.ci_structural_guards
+
   # The required surface runs as SHARDS in parallel, then ONE aggregate job
   # (`required-tests`, below) decides the gate over the union. Measured before
   # the split: ~21,900 tests serially, 19-22 min on an idle runner (runs
@@ -265,11 +281,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # This host only plans the shard; dependencies live in the oracle image.
+      # Enabling pip caching here fails cleanup on a cold host with no pip cache.
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-          cache: pip
-          cache-dependency-path: pyproject.toml
 
       - uses: actions/download-artifact@v4
         with:
@@ -408,9 +424,8 @@ jobs:
   # plus path mentions, the whole suite when unsure (scripts/affected_tests.py)
   # -- on the PR, before anyone stamps it.
   #
-  # NOT required and NOT a substitute: the merge-group shards above stay the
-  # authoritative gate over the whole suite. A miss here only defers a failure
-  # to the queue, which is where every failure surfaced before this job.
+  # Required through the required-tests aggregate: a failed, skipped or cancelled
+  # PR shard blocks admission. The queue still checks the combined commit.
   affected-tests:
     name: affected-tests ${{ matrix.shard }}/6
     if: github.event_name == 'pull_request'
@@ -506,7 +521,7 @@ jobs:
     # with the `gh api` protection update in
     # docs/decisions/ADR-003-required-test-aggregator.md.
     name: required-tests
-    needs: [select, required-tests-shard]
+    needs: [select, required-tests-shard, affected-tests, structural-guards]
     # `always()` is the ONE condition this job may carry, and it is required,
     # not optional. Without it a failed or cancelled shard makes GitHub SKIP
     # this job, and a skipped required check is accepted by branch protection
@@ -524,11 +539,26 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: On a pull request the gate runs in the merge queue
-        if: github.event_name == 'pull_request'
+      - name: Require structural guards on every event
+        env:
+          STRUCTURAL_RESULT: ${{ needs.structural-guards.result }}
         run: |
-          echo "required-tests runs once, on the merge-group commit, when this PR"
-          echo "enters the merge queue. A red result there removes it from the queue."
+          if [ "$STRUCTURAL_RESULT" != success ]; then
+            echo "::error::Fix structural-guards using its repair instructions, then rerun Tests; it must finish successfully."
+            exit 1
+          fi
+
+      - name: Require PR structural guards and affected tests
+        if: github.event_name == 'pull_request'
+        env:
+          STRUCTURAL_RESULT: ${{ needs.structural-guards.result }}
+          AFFECTED_RESULT: ${{ needs.affected-tests.result }}
+        run: |
+          if [ "$STRUCTURAL_RESULT" != success ] || [ "$AFFECTED_RESULT" != success ]; then
+            echo "::error::PR checks did not pass (structural=$STRUCTURAL_RESULT, affected=$AFFECTED_RESULT). Fix the failures in structural-guards or affected-tests, then rerun Tests; cancelled or skipped jobs must execute successfully."
+            exit 1
+          fi
+          echo "PR guards and affected tests passed; the queue will check the combined commit."
 
       - name: Download shard results
         if: github.event_name != 'pull_request'
@@ -703,7 +733,8 @@ jobs:
       - name: Install
         run: |
           python -m pip install --upgrade pip
-          pip install -e '.[dev]'
+          pip install -e '.[dev,browser]'
+          python -m playwright install --with-deps chromium
       - name: Run slow/stress/race tests
         env:
           TINYASSETS_DATA_DIR: ${{ runner.temp }}/ta-data-slow

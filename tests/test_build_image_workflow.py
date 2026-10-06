@@ -169,6 +169,7 @@ def test_decision_reads_the_served_sha_from_the_protected_receipt():
     served = _step("decide", "Read the sha production serves")
     assert served["if"] == "github.event_name == 'push'"
     assert "python scripts/deployed_sha.py --json" in served["run"]
+    assert "--url https://tinyassets.io/mcp" in served["run"]
     assert "TINYASSETS_WIKI_CANARY_TOKEN" in served["env"]
     checkout = _load()["jobs"]["decide"]["steps"][0]
     assert checkout["with"]["fetch-depth"] == 0

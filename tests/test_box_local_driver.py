@@ -9,8 +9,11 @@ from __future__ import annotations
 
 import os
 import sys
+import threading
 import time
+from contextlib import nullcontext
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -38,6 +41,118 @@ def _local(tmp_path: Path, **kw):
 
     return LocalBoxProvider(boxes_root=tmp_path / "boxes", state_dir=tmp_path / "state",
                             owner_of=OWNERS.get, allow_unisolated=True, **kw)
+
+
+def test_supervisor_cannot_recycle_stdin_during_an_inflight_reply(tmp_path, monkeypatch):
+    from tinyassets.boxes import BoxHandle, local
+
+    old_read, old_write = os.pipe()
+    other_read, other_write = os.pipe()
+    stream = os.fdopen(old_write, "wb")
+    begin_close, close_attempted = threading.Event(), threading.Event()
+    supervisor_errors = []
+    supervisor = None
+
+    class LifetimeLock:
+        def __init__(self):
+            self.lock = threading.Lock()
+
+        def __enter__(self):
+            if threading.current_thread() is supervisor:
+                close_attempted.set()
+            self.lock.acquire()
+
+        def __exit__(self, *_):
+            self.lock.release()
+
+    class RecycledStdin:
+        def __getattr__(self, name):
+            return getattr(stream, name)
+
+        def close(self):
+            stream.close()
+            os.dup2(other_write, old_write)  # Another execution obtains the freed fd.
+            close_attempted.set()
+
+    def poll():
+        assert running.input_ready.wait(2)
+        assert begin_close.wait(2)
+        return 0
+
+    handle = BoxHandle("center-a", "owner-a", 1, "turn-a")
+    proc = SimpleNamespace(stdin=RecycledStdin(), poll=poll, wait=lambda: 0, pid=0)
+    running = local._Running("center-a", proc, handle)
+    running.input_lock = LifetimeLock()
+    host = SimpleNamespace(
+        _lock=lambda _: nullcontext(), _auth_locked=lambda _: None,
+        _running_guard=threading.Lock(), _running={"exec-a": running},
+        _state=SimpleNamespace(bump_generation=lambda _: 1, finish=lambda *a: None,
+                               release=lambda _: None),
+    )
+    output = tmp_path / "output"
+    output.write_bytes(b"")
+    real_select = local.select.select
+
+    def after_ready(read, write, error, timeout):
+        result = real_select(read, write, error, timeout)
+        begin_close.set()
+        assert close_attempted.wait(2)
+        return result
+
+    def supervise():
+        try:
+            local.LocalBoxProvider._supervise(
+                host, "center-a", "op-a", "exec-a", running, b"", ExecLimits(), output, True,
+            )
+        except BaseException as exc:
+            supervisor_errors.append(exc)
+
+    monkeypatch.setattr(local.select, "select", after_ready)
+    monkeypatch.setattr(local, "_kill_group", lambda _: None)
+    supervisor = threading.Thread(target=supervise)
+    try:
+        supervisor.start()
+        payload = b"owner-a synthetic private response\n"
+        local.LocalBoxProvider.send_stdin(host, handle, "exec-a", "a" * 32, payload)
+        supervisor.join(3)
+        assert not supervisor.is_alive() and not supervisor_errors
+        os.set_blocking(other_read, False)
+        try:
+            foreign = os.read(other_read, 4096)
+        except BlockingIOError:
+            foreign = b""
+        assert foreign == b"", "reply bytes reached a recycled descriptor for another execution"
+        assert os.read(old_read, 4096) == payload
+        assert running.replies["a" * 32][1] is True
+        assert running.done.is_set()
+    finally:
+        begin_close.set()
+        close_attempted.set()
+        supervisor.join(3)
+        if not stream.closed:
+            stream.close()
+        for fd in (old_read, old_write, other_read, other_write):
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+
+
+def test_reply_captured_before_supervisor_close_fails_as_unavailable(tmp_path):
+    from tinyassets.boxes import BoxHandle, local
+
+    handle = BoxHandle("center-a", "owner-a", 1, "turn-a")
+    stream = (tmp_path / "stdin").open("wb")
+    running = local._Running("center-a", SimpleNamespace(stdin=stream), handle)
+    running.input_ready.set()
+    stream.close()
+    host = SimpleNamespace(
+        _lock=lambda _: nullcontext(), _auth_locked=lambda _: None,
+        _running_guard=threading.Lock(), _running={"exec-a": running},
+    )
+    with pytest.raises(BoxError, match="exec input unavailable"):
+        local.LocalBoxProvider.send_stdin(host, handle, "exec-a", "a" * 32, b"reply")
+    assert running.replies == {}
 
 
 def test_a_published_create_is_never_reported_as_failed(tmp_path, monkeypatch):
