@@ -34,11 +34,22 @@ browser consent refuses the fixture's ordinary identity before its incarnation
 check. Recorded separately; no gate or assertion weakened. Static prompt budgets
 pass unchanged on Linux.
 
+```
+python scripts/linux_oracle.py -- -q tests/test_scoped_identity_reset.py tests/test_universe_server_isolation.py tests/test_mcp_instruction_surfaces.py --basetemp /tmp/b
+```
+
+**146 passed, zero skips.** These heavy-file checks cover scoped identity,
+universe isolation and MCP instruction surfaces.
+
 Ruff passes for all lane Python files. Plugin mirror rebuild and import probe
 pass. OpenSpec strict validation passes. Cross-family Claude verdict **ADAPT**;
 all findings addressed, with disposition in review.md. A mirror rebuild raced
 one oracle source copy (tar refused a changing directory); that run is not
 counted as verification and was rerun after the mirror stabilized.
+
+Full PR hygiene against `origin/feat/per-role-uid-split`: **262 added, 0 removed,
+0 tampering** (includes merged-main work). Comparison from the pre-implementation
+commit: **12 added, 0 removed, 0 tampering**. No new skip/xfail was introduced.
 
 The original Docker-blocked concern is resolved. This is synthetic Linux proof
 through the served `/u` jail, not a production `/cc` rollout. Task 2.4 remains
