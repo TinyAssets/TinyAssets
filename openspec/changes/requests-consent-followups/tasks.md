@@ -24,10 +24,19 @@ owner proof are deliberately pending: this lane delivers a draft PR only.
 - [x] 3.1 Reconcile merged #4504 recovery and #4500 consent spec sync; add one
   history revisit action for all kinds and all-action dedupe/context assertions.
 - [x] 3.2 Add Chromium clear, history revisit, later failure and returning-card proof.
-- [ ] 3.3 Linux oracle, ruff, mirror, hygiene, Claude review and draft PR push.
+- [x] 3.3 Linux oracle, ruff, mirror, hygiene, Claude review and draft PR push.
 
 The two requested concern paths are already absent from main. The consent spec
 already names #4477's protected owner answers and Clear/Deny recovery. This lane
 preserves it and records generic recovery in the as-built request-consent-recovery
-spec. Linux initial test run: 233 passed; new browser wait rejected by CSP, fixed
-to a function expression and passed locally. Full Linux rerun in progress.
+spec. Draft PR #4527, implementation ed17394362. Final Linux oracle: 234 passed,
+zero skips across pending requests, Chromium request UI, owner consent and
+converse prompt budgets. Ruff, mirror/import probe and diff checks pass; hygiene
+1 added, 0 removed, 0 tampering. Claude APPROVE, no floor/correctness findings;
+reviewer independently passed the new browser test. origin/main merged before
+final push (already current). Production deploy and real-user proof remain 2.3.
+
+Optional Windows adjacent run: 227 passed, tool-description budget 32353 exceeds
+30100 on the local environment; Linux passes the unchanged budget. No threshold
+or always-sent prompt changed. The browser proof uses a controlled 401 response
+and agent-to-API bridge, not a live external service or an LLM call.

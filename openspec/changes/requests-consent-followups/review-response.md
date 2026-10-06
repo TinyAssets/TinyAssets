@@ -18,3 +18,13 @@ No second review round: this response implements the review's smallest correctio
 
 Clarification: revoke_owner is called for account deletion. Logout's single-cookie
 revoke is unchanged; this lane makes no claim that logout cancels connection flows.
+
+## Reask history follow-up — draft PR #4527
+
+Claude reviewed ed17394362 through peer-agents and returned **APPROVE** (exit 0).
+**AGREE:** no floor or correctness findings. The reviewer checked history status
+selection, original-agent routing, protected consent and mute preservation,
+dedupe/history assertions, mirror parity and the as-built spec, and independently
+ran the new Chromium test (1 passed). Non-blocking observations: browser routing
+coverage uses the main agent; the quoted historical title returns to that same
+owner's agent. No requested changes. Final Linux oracle: 234 passed, zero skips.
