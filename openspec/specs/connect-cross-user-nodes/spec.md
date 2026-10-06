@@ -1,6 +1,12 @@
-# connect-cross-user-nodes (delta)
+# Connect cross-user nodes
 
-## ADDED Requirements
+## Purpose
+
+Record the as-built patch-intake consent contract, including #4477 owner-session
+answers and owner-requested recovery after Clear or Deny. Deployment and live
+proof remain tracked in the active seed-patch-intake-consent change.
+
+## Requirements
 
 ### Requirement: The platform offers one configured patch intake, and only by consent
 

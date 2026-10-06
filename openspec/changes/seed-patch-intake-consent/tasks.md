@@ -16,4 +16,5 @@
 - [ ] 2.6 Live: the free account's rail shows the ask; approving it lets its universe file a real patch request that arrives at the intake.
 
 ## 3. Land
-- [ ] 3.1 Sync the delta into `openspec/specs/connect-cross-user-nodes/` and archive.
+- [x] 3.1 Sync the as-built delta into `openspec/specs/connect-cross-user-nodes/` (2026-10-05, #4477).
+- [ ] 3.2 Archive only after deployment and live proof (2.4?2.6); keep this change active.

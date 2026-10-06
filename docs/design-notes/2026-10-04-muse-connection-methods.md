@@ -14,6 +14,27 @@ Researched 2026-10-04 (web search + fetch, sources inline). Evidence labels:
 
 I could not fetch The Verge, Wired, Ars or CNN (blocked or HTTP 451). Claims attributed to them come through secondary summaries and are labelled that way.
 
+## 2026-10-05 correction: social connections and founder direction
+
+Re-research supersedes any inference below that directory membership means social
+publishing. Muse has **no directory connector for LinkedIn, X, TikTok, YouTube or
+Reddit**. Its Facebook, Instagram and Threads connectors **read** those Meta
+surfaces; they are not a social publishing integration. [3P]
+[Postiz](https://postiz.com/blog/meta-muse-ai-connectors-schedule-social-media-posts),
+[PostFast](https://postfa.st/blog/meta-muse-connectors-list).
+
+Social publishing reaches Muse through a custom MCP connector (paste its MCP
+link in chat, then approve the sign-in link) or a connector the agent writes
+itself. Directory entries, announced partnerships and community recipes must
+not be conflated. The cited vendors describe their own integrations; their
+aggregator offerings are evidence for the generic flow, not a TinyAssets dependency.
+
+**Founder direction:** copy the generic ladder: directory as data, then a custom
+MCP link with OAuth sign-in, then agent-written connectors, then browser fallback.
+No per-platform app registration and no third-party aggregators. The owner?s
+agent builds its social workflow from those primitives; the platform does not
+ship a separate integration for each social network.
+
 ## 0. Timeline
 
 | Date | Event | Source |
@@ -130,7 +151,7 @@ Source: https://research.meta.ai/blog/security-and-safety-for-ai-agents-our-appr
 - Help center: users "request Muse create custom connectors, which involves retrieving API credentials stored in a 'Secure Credentials Store'… Meta doesn't review custom connectors."
 
 **Flow as documented by integrators** [3P, consistent across several]:
-1. **No settings form.** You ask in chat. SealGate's paste-in prompt: "Create a Custom Connector for a new remote MCP server, then connect to it: Name: sealgate, Transport: remote streamable HTTP, URL: https://mcp.sealgate.ai/mcp, Auth: OAuth". https://sealgate.ai/docs/connect-clients/muse
+1. **Paste an MCP link in chat, then approve its sign-in link.** You ask in chat. SealGate's paste-in prompt: "Create a Custom Connector for a new remote MCP server, then connect to it: Name: sealgate, Transport: remote streamable HTTP, URL: https://mcp.sealgate.ai/mcp, Auth: OAuth". https://sealgate.ai/docs/connect-clients/muse
 2. **Muse builds the client.** It writes an MCP client (or an API client from the docs you point it at) on its VM and tests it. https://www.blotato.com/meta-muse
 3. **Auth.**
    - OAuth: Muse presents a sign-in link, you authenticate, and the token is bound to you.
