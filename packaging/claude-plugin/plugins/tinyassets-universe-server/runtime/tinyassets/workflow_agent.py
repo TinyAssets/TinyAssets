@@ -140,19 +140,10 @@ class WorkAgentAdapter:
         )
 
     async def infer(self, *, router, prompt, system, config, context, observer, kind):
-        if self.activity_binding is not None and kind == "native_agent":
-            # Fail closed rather than promise a boundary that does not exist: a
-            # native CLI runs its own tool loop inside ONE provider call, so the
-            # coordinator's between-step ``check`` cannot stop it after the
-            # activity yields -- only the hint text in ``_yield_activity`` asks
-            # it to. Engine inference IS fenced (``check`` before every round
-            # and every tool), so an activity run needs that executor until a
-            # cross-provider pre-tool fence exists. Refused HERE, before any
-            # launch, and because ``infer`` runs every round this also refuses a
-            # mid-turn switch onto a native candidate.
-            raise ProviderAuthorityHeldError(
-                "activity runs need an engine-inference executor until native yield is fenced",
-            )
+        # Any executor may run an activity. A native CLI runs its tool loop
+        # inside ONE provider call, but every tool it can see executes on the
+        # engine route, whose ``ActivityFence`` refuses each call once the
+        # activity yields, pauses or stops (tinyassets/activity_fence.py).
         changing = context.model_selection != self.selection
         if changing:
             if self._staged_next is None or self.initial_pending:

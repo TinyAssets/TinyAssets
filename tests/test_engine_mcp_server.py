@@ -768,103 +768,10 @@ def test_sandbox_cli_args_includes_strict_when_installed(monkeypatch, tmp_path):
     assert "--strict-mcp-config" in flags
 
 
-# ── codex_provider._codex_engine_mcp_args: the codex CLI wiring ──────────────
-
-_UNTRUSTED = ["-c", 'projects."/workspace".trust_level="untrusted"']
-
-
-def test_codex_engine_mcp_args_off_adds_only_untrusted_workspace(tmp_path):
-    """Engine MCP off: no server, but /workspace is still forced untrusted so no
-    project .codex/config.toml (or its mcp_servers) loads (Codex #3)."""
-    from tinyassets.providers.base import ModelConfig
-    from tinyassets.providers.codex_provider import _codex_engine_mcp_args
-
-    env: dict = {}
-    cfg = ModelConfig(engine_mcp_enabled=False)
-    assert _codex_engine_mcp_args(cfg, env) == _UNTRUSTED
-    assert "TINYASSETS_ENGINE_MCP_BEARER" not in env
-
-
-def test_codex_engine_mcp_args_fail_closed_without_route(tmp_path, monkeypatch):
-    """Engine MCP requested but no running HTTP server -> no server, no bearer."""
-    from tinyassets.providers.base import ModelConfig
-    from tinyassets.providers.codex_provider import _codex_engine_mcp_args
-
-    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
-    monkeypatch.setenv("TINYASSETS_ENGINE_MCP_TOOLS", "1")
-    from tests.engine_authority_helpers import seed_engine_authority
-    seed_engine_authority(tmp_path, actor="sub", graph="u-9")
-
-    env = {"TINYASSETS_DATA_DIR": str(tmp_path)}  # no routes file present
-    cfg = ModelConfig(
-        engine_mcp_enabled=True, engine_mcp_actor_id="sub", engine_mcp_graph_id="u-9"
-    )
-    assert _codex_engine_mcp_args(cfg, env) == _UNTRUSTED
-    assert "TINYASSETS_ENGINE_MCP_BEARER" not in env
-
-
-def test_codex_engine_mcp_args_wires_trusted_http_server(tmp_path, monkeypatch):
-    from tinyassets.providers.base import ModelConfig
-    from tinyassets.providers.codex_provider import (
-        _ENGINE_MCP_ENABLED_TOOLS,
-        _codex_engine_mcp_args,
-    )
-
-    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
-    monkeypatch.setenv("TINYASSETS_ENGINE_MCP_TOOLS", "1")
-    from tests.engine_authority_helpers import seed_engine_authority
-    seed_engine_authority(tmp_path, actor="sub", graph="u-9")
-    secret = "s" * 43
-    (tmp_path / ".engine_mcp_http_routes.json").write_text(
-        json.dumps({"u-9": {"version": 1, "actor_id": "sub", "port": 8790,
-                            "url": "http://127.0.0.1:8790/mcp", "secret": secret}}),
-        encoding="utf-8",
-    )
-    env = {"TINYASSETS_DATA_DIR": str(tmp_path)}
-    cfg = ModelConfig(
-        engine_mcp_enabled=True, engine_mcp_actor_id="sub", engine_mcp_graph_id="u-9"
-    )
-    args = _codex_engine_mcp_args(cfg, env)
-    # /workspace untrusted comes first, then the one trusted server.
-    assert args[:2] == _UNTRUSTED
-    assert args[2] == "-c"
-    server = args[3]
-    assert server.startswith("mcp_servers.tinyassets={")  # dotted merge
-    assert 'url="http://127.0.0.1:8790/mcp"' in server
-    assert 'bearer_token_env_var="TINYASSETS_ENGINE_MCP_BEARER"' in server
-    assert "required=true" in server
-    # auto-approve the one trusted server so a non-interactive codex exec turn
-    # actually executes its MCP tools instead of "user cancelled".
-    assert 'default_tools_approval_mode="approve"' in server
-    # restricted to exactly the declared tools; publish is NOT among them
-    for _t in _ENGINE_MCP_ENABLED_TOOLS:
-        assert f'"{_t}"' in server
-    assert "publish_shape" not in server
-    # secret goes in the subprocess env (read via bearer_token_env_var), NOT argv
-    assert env["TINYASSETS_ENGINE_MCP_BEARER"] == secret
-    assert secret not in server
-
-
-def test_codex_engine_mcp_args_fail_closed_missing_secret(tmp_path, monkeypatch):
-    from tinyassets.providers.base import ModelConfig
-    from tinyassets.providers.codex_provider import _codex_engine_mcp_args
-
-    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
-    monkeypatch.setenv("TINYASSETS_ENGINE_MCP_TOOLS", "1")
-    from tests.engine_authority_helpers import seed_engine_authority
-    seed_engine_authority(tmp_path, actor="sub", graph="u-9")
-
-    (tmp_path / ".engine_mcp_http_routes.json").write_text(
-        json.dumps({"u-9": {"version": 1, "actor_id": "sub", "port": 8790,
-                            "url": "http://127.0.0.1:8790/mcp", "secret": ""}}),
-        encoding="utf-8",
-    )
-    env = {"TINYASSETS_DATA_DIR": str(tmp_path)}
-    cfg = ModelConfig(
-        engine_mcp_enabled=True, engine_mcp_actor_id="sub", engine_mcp_graph_id="u-9"
-    )
-    assert _codex_engine_mcp_args(cfg, env) == _UNTRUSTED
-    assert "TINYASSETS_ENGINE_MCP_BEARER" not in env
+# Codex no longer wires an MCP server: its served turn declares the granted
+# tools as app-server dynamicTools and dials this route from the platform
+# process (tests/test_codex_app_server.py; route resolution in
+# tests/test_engine_mcp_routes.py).
 
 
 # ── connect_compute (slice 4): served compute-provider registration ──────────
@@ -1058,11 +965,11 @@ def test_connect_compute_is_exposed_in_both_provider_allowlists():
     """The server handler is dark unless the provider enabled-tools allowlists list
     it (live 2026-08-23: served agent got tool_search "Found 0 tools" because it was
     missing). Guard both served paths so it cannot silently drop out again."""
-    from tinyassets.providers.codex_provider import _ENGINE_MCP_ENABLED_TOOLS
-    from tinyassets.served_tools import BACKEND_ENGINE_CAPABILITIES
+    from tinyassets.providers.base import ModelConfig
+    from tinyassets.served_tools import BACKEND_ENGINE_CAPABILITIES, model_tools
     from tinyassets.universe_intelligence import _ENGINE_MCP_ALLOWED, _ENGINE_MCP_TOOLS
     assert "connect_compute" in BACKEND_ENGINE_CAPABILITIES
-    assert "bash" in _ENGINE_MCP_ENABLED_TOOLS  # Codex reaches it through ta.
+    assert "bash" in model_tools(ModelConfig())  # Codex reaches it through ta.
     assert "bash" in _ENGINE_MCP_TOOLS  # Claude reaches it through ta.
     assert "mcp__tinyassets__bash" in _ENGINE_MCP_ALLOWED
     # And the server actually registers a handler by that name (exposure is real).
@@ -1225,17 +1132,16 @@ def test_served_allowlists_do_not_drift():
     (founder rule: all surfaces do the same things). run_graph drifting onto the
     claude list ONLY (caught 2026-08-23) meant a codex-served founder could not run
     automations at all; this guard prevents that class of silent divergence."""
-    from tinyassets.providers.codex_provider import (
-        _ENGINE_MCP_ENABLED_TOOLS as codex_tools,
-    )
+    from tinyassets import served_tools
+    from tinyassets.providers import codex_provider
     from tinyassets.served_tools import SERVED_ENGINE_MCP_TOOLS
     from tinyassets.universe_intelligence import _ENGINE_MCP_TOOLS as claude_tools
 
-    # Structural guarantee: both surfaces reference the SAME canonical tuple, so
-    # they cannot drift by construction (not merely "equal today").
-    assert codex_tools is SERVED_ENGINE_MCP_TOOLS
+    # Structural guarantee: both surfaces select from the SAME canonical tuple,
+    # so they cannot drift by construction (not merely "equal today"). Codex
+    # declares exactly model_tools(config) as its app-server dynamicTools.
+    assert codex_provider.model_tools is served_tools.model_tools
     assert claude_tools is SERVED_ENGINE_MCP_TOOLS
-    assert codex_tools is claude_tools
     # run_graph is the capability that lets a universe RUN automations from the app.
     from tinyassets.served_tools import BACKEND_ENGINE_CAPABILITIES
     assert SERVED_ENGINE_MCP_TOOLS == ("read", "write", "edit", "bash")

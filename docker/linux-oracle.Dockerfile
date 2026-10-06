@@ -42,7 +42,7 @@ RUN apt-get update -qq \
 # the jail's behaviour is the thing under proof, so a different codex here
 # would prove it for a version we do not ship.
 # tests/test_linux_oracle.py::test_the_oracle_pins_the_image_s_codex asserts it.
-ARG CODEX_CLI_VERSION=0.153.4
+ARG CODEX_CLI_VERSION=0.160.0
 RUN mkdir -p /opt/codex-install \
     && npm install --prefix /opt/codex-install "@openai/codex@${CODEX_CLI_VERSION}" \
     && /opt/codex-install/node_modules/.bin/codex --version \

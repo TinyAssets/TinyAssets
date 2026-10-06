@@ -129,7 +129,7 @@ def _engine_route(cfg: ModelConfig) -> tuple[str, str] | None:
     """The engine MCP route this call's provider jail may reach, if any.
 
     The same three fields every adapter checks before wiring the engine server
-    (``claude_provider._engine_mcp_flags``, ``codex_provider._codex_engine_mcp_args``);
+    (``claude_provider._engine_mcp_flags``, ``codex_provider._served_engine_tools``);
     the route itself is re-read, owner-checked, by the jail's relay.
     """
     actor_id = (cfg.engine_mcp_actor_id or "").strip()
@@ -1487,9 +1487,8 @@ class ProviderRouter:
                 # ProviderResponse by design -- "every existing construction site
                 # and non-streaming provider stays a valid terminal
                 # ProviderResponse" (providers/base.py) -- and codex_provider only
-                # populates it when machine accounting is on
-                # (`machine_accounting = bool(config.sandbox_workspace)`,
-                # codex_provider.py:350). A plain prompt-template node has no
+                # populates it on a served agent turn (`config.sandbox_workspace`,
+                # the app-server path). A plain prompt-template node has no
                 # sandbox workspace, so a perfectly successful call arrived here
                 # with all three fields None and the settlement destroyed it:
                 # every prompt-template run in the founder's universe failed with

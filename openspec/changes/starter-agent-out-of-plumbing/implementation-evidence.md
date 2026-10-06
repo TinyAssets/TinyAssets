@@ -1,5 +1,83 @@
 # L14 preparation evidence
 
+## K2 round 2: one definition across providers (2026-10-06)
+
+Lead decision applied: provider-specific translation is allowed, capability
+differences are not. `tinyassets/agent_definition.py` is the one definition
+(the engine route's granted tools with their schemas, the turn's instructions,
+`AGENT_CAPABILITIES`). `tests/test_one_agent_definition.py` renders it through
+every registered kind's real launch code: `cli:codex`, `cli:claude-code`,
+`http:chat_messages`, `http:openai_chat`, `http:content_blocks`,
+`http:anthropic_messages`, `local:ollama`. Kinds with no agent executor must be
+refused for agent turns. On this branch's round-1 head (79fd2246f3) it fails
+for `cli:codex` (no app-server launch exists) and `cli:claude-code`
+(capabilities lack `activities`); on `origin/main` it cannot collect
+(`FOUR_MODEL_TOOLS` is absent). It passes after: 9 passed.
+
+### Codex: option B plus the catalog route
+
+Captured with loopback sinks, codex-cli 0.160.0 (`$APPDATA/npm/codex.cmd`):
+
+| Launch | Model-visible tools | Resident chars |
+|---|---|---|
+| app-server, `dynamicTools` = four, no MCP, no reduction | `exec`, `wait`, `request_user_input`(+`_async`), `clock.sleep`, 6 `collaboration.*` | 25,547 |
+| + every documented switch | `exec`, `wait`, `request_user_input_async`, 6 `collaboration.*` | 16,563 |
+| + `environments: []` | unchanged | 16,321 |
+| + reduced `model_catalog_json` (the production launch) | `read`, `write`, `edit`, `bash` | 1,571 |
+
+No MCP server means no resource tools, so option A (adding resource list/read to
+every provider) was not needed. Codex still pins code mode per model, so the
+catalog route is required alongside option B. `thread/resume` restores the same
+four tools (captured in two processes sharing one home).
+
+Signed-in persistence check: temporary `CODEX_HOME` holding the user config
+with its `mcp_servers` tables stripped, plus the reduced catalog. Auth was
+hard-linked from the existing login (no token bytes copied or printed; hashes
+compared only). The live ChatGPT turn listed exactly
+`functions.read, functions.write, functions.edit, functions.bash`. `model/list`
+returned the catalog (sentinel description) before and after the turn. The
+catalog file, real `auth.json` and real `models_cache.json` were unchanged, and
+the temporary home was deleted. A first run that kept the user's own
+`mcp_servers` showed `node_repl`, `openaiDeveloperDocs` and the three resource
+tools: a served launch must never load a user config, so the jail binds no
+`config.toml` into its `CODEX_HOME`.
+
+Production: `codex_provider._complete_served` launches `codex app-server` with
+`codex_launch_contract.SERVED_LAUNCH_ARGS` and the reduced catalog bound
+read-only at `/codex-home/model-catalog.json`. It declares the definition's
+tools and forwards each `item/tool/call` through `open_engine_tools`, the same
+owner-pinned route, session, live turn and signed grant the HTTP loop uses.
+Other server requests (approvals, user input) are declined. The image pin
+moves 0.153.4 -> 0.160.0 (daemon and oracle). The build gate
+`scripts/codex_cli_smoke.py` now runs this exact launch against the pinned CLI
+and fails unless the model sees exactly the declared tools. It passed locally
+on 0.160.0 (CLI default `gpt-6.1-sol`).
+
+### Provider branches removed
+
+1. Codex served `codex exec` with native tools (`exec`/`apply_patch` code mode,
+   collaboration, `request_user_input`, clock) and `web_search="cached"`.
+2. Codex's MCP wiring (`_codex_engine_mcp_args`, the engine bearer in the jail
+   env, `enabled_tools`); the route is dialled from the platform process.
+3. The exec JSONL reader and its helpers (`_stream_codex_exec`,
+   `_codex_turn_completed`, `_configured_rollout_model`, the machine branch of
+   `_structured_failure_excerpt`). The configured model now comes from the
+   thread's own `model`.
+4. Codex served nested sandbox (`--sandbox workspace-write`,
+   `nested_sandbox=True` permissive seccomp). Codex runs nothing, so it gets the
+   jail's full deny profile.
+5. Codex concatenating instructions into the user input; they are the thread's
+   `baseInstructions`, in the instruction slot every other provider uses.
+6. `WorkAgentAdapter.infer`'s `native_agent` activity refusal. The fence is the
+   engine route's `ActivityFence` for every provider.
+
+Not removed (see `docs/concerns/2026-10-06-k2-native-and-box-inventories.md`):
+Claude CLI's identity line and environment block under OAuth (no switch on
+2.1.290: `--bare` and `CLAUDE_CODE_SIMPLE=1` refuse OAuth). The coordinator's
+HTTP-only budget line (`agent_turn_coordinator.py`, held by #4524, open).
+`render_native_input` stays: it renders history into one native input, which
+is translation.
+
 ## Revised K2 continuation: shared-contract handoff
 
 Founder direction 2026-10-06: provider adapters translate ONE agent definition;
@@ -377,7 +455,8 @@ read-only owner snapshots without seed locks, bound mutation waits to five secon
 DISAGREE_EVIDENCE only with F3's uncaught-PermissionError subclaim: PermissionError
 is an OSError subclass already handled by the existing handler. AGREE F4/F5 remain
 open: native Codex inventory and the remote box ta bridge block release. These are
-recorded in docs/concerns/2026-10-06-k2-native-and-box-inventories.md.
+recorded in docs/concerns/2026-10-06-k2-native-and-box-inventories.md (F4
+resolved in K2 round 2 above).
 
 The repeated node fixture failure was handed to Claude for bounded diagnosis and
 fixture repair under AGENTS rule 7, not another review round. The fixture now signs

@@ -174,7 +174,6 @@ SITES: dict[str, tuple[str, str]] = {
     "tinyassets/provider_assignment.py::ProviderAssignmentAdmission.shared": (
         CALL_SCOPED, "admission wait",
     ),
-    "tinyassets/providers/codex_provider.py::_stream_codex_exec": (CALL_SCOPED, "stream poll"),
     "tinyassets/providers/owned_process.py::_watch_disk.watch": (
         CALL_SCOPED,
         "host-side disk-budget watch for one jailed provider launch; ends with "
@@ -186,6 +185,7 @@ SITES: dict[str, tuple[str, str]] = {
     "tinyassets/runs.py::poll_child_run_status": (CALL_SCOPED, "caller waits on a child run"),
     "tinyassets/scoped_reset.py::acquire_maintenance_barrier": (CALL_SCOPED, "barrier wait"),
     "tinyassets/soul_edit.py::_soul_lock": (CALL_SCOPED, "lock acquisition"),
+    "tinyassets/starter_seeds.py::open_seed_boundary": (CALL_SCOPED, "lock acquisition"),
     "tinyassets/storage/conversation_custody.py::_checkpoint_truncate": (
         CALL_SCOPED, "WAL checkpoint retry",
     ),

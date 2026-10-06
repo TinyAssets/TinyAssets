@@ -153,22 +153,40 @@ def test_the_engine_route_names_the_launchs_session_and_turn():
     assert engine_steering.session_of(SimpleNamespace()) == ""
 
 
-def test_a_codex_launch_routes_its_engine_calls_with_its_session_and_turn(monkeypatch):
-    from tinyassets import turn_interrupt
+def _codex_dialled(monkeypatch, config):
+    """What the codex served turn asks the engine route for (open_engine_tools)."""
+    import asyncio
+    import contextlib
+
     from tinyassets.providers import codex_provider
 
-    fake = SimpleNamespace(url="http://127.0.0.1:8790/mcp", secret="s3cret")
-    monkeypatch.setattr("tinyassets.engine_mcp_http.read_engine_mcp_route",
-                        lambda **_kw: fake)
-    monkeypatch.setattr(codex_provider, "granted_tools", lambda _c: ["read"])
+    opened = []
+
+    @contextlib.asynccontextmanager
+    async def record(**kwargs):
+        opened.append(kwargs)
+        yield None
+
+    monkeypatch.setattr("tinyassets.engine_tool_client.open_engine_tools", record)
+
+    async def dial():
+        async with contextlib.AsyncExitStack() as stack:
+            await codex_provider._served_engine_tools(stack, config, timeout=5)
+
+    asyncio.run(dial())
+    return opened[0] if opened else None
+
+
+def test_a_codex_launch_routes_its_engine_calls_with_its_session_and_turn(monkeypatch):
+    from tinyassets import turn_interrupt
+
     config = SimpleNamespace(engine_mcp_enabled=True, engine_mcp_actor_id="owner-1",
-                             engine_mcp_graph_id="u-alpha",
+                             engine_mcp_graph_id="u-alpha", engine_tool_grant=None,
                              agent_session=SimpleNamespace(key=THREAD))
     with turn_interrupt.interactive_turn("owner-1", "u-alpha") as live:
-        args = codex_provider._codex_engine_mcp_args(config, {})
-    server = next(a for a in args if a.startswith("mcp_servers.tinyassets="))
-    assert (f'url="http://127.0.0.1:8790/mcp?session=thread%3Aprincipal%3Aowner-1'
-            f'&turn={live.live_id}"') in server
+        dialled = _codex_dialled(monkeypatch, config)
+    assert dialled["session_key"] == THREAD
+    assert dialled["turn"] == live.live_id
 
 
 def test_claude_launches_of_different_sessions_never_share_a_config(tmp_path, monkeypatch):

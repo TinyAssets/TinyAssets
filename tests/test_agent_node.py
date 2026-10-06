@@ -380,27 +380,18 @@ def test_the_compiler_names_only_agent_nodes_and_gives_them_the_turn_backstop(
 
 
 def test_codex_native_turn_enables_only_the_grant(tmp_path, monkeypatch):
-    from tests.engine_authority_helpers import seed_engine_authority
+    from tests.test_owner_steering import _codex_dialled
     from tinyassets.providers.base import ModelConfig
-    from tinyassets.providers.codex_provider import _codex_engine_mcp_args
 
-    monkeypatch.setenv("TINYASSETS_ENGINE_MCP_TOOLS", "1")
-    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
-    seed_engine_authority(tmp_path)
-    (tmp_path / ".engine_mcp_http_routes.json").write_text(json.dumps({"u-a": {
-        "version": 1, "actor_id": "actor-a", "url": "http://127.0.0.1:8790/mcp",
-        "port": 8790, "secret": "s" * 43,
-    }}), encoding="utf-8")
     config = ModelConfig(engine_mcp_enabled=True, engine_mcp_actor_id="actor-a",
                          engine_mcp_graph_id="u-a")
 
     def enabled(cfg):
-        (server,) = [a for a in _codex_engine_mcp_args(cfg, {}) if "mcp_servers." in a]
-        return server.split("enabled_tools=[", 1)[1].split("]", 1)[0]
+        return tuple(_codex_dialled(monkeypatch, cfg)["enabled_tools"])
 
-    assert enabled(config) == ",".join(f'"{t}"' for t in SERVED_ENGINE_MCP_TOOLS)
+    assert enabled(config) == SERVED_ENGINE_MCP_TOOLS
     narrowed = replace(config, engine_tool_grant=("read_brain", "write_graph"))
-    assert enabled(narrowed) == '"bash"'
+    assert enabled(narrowed) == ("bash",)
 
 
 def test_claude_native_turn_denies_what_the_grant_withholds():

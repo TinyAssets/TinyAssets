@@ -74,23 +74,14 @@ def test_coordinator_passes_four_handles_and_full_backend_grant(monkeypatch):
 
 
 def test_codex_displays_four_handles_but_signs_full_backend_grant(monkeypatch):
-    import re
-    from urllib.parse import parse_qs, urlsplit
-
-    from tinyassets import engine_mcp_http
+    from tests.test_owner_steering import _codex_dialled
     from tinyassets.providers.base import ModelConfig
-    from tinyassets.providers.codex_provider import _codex_engine_mcp_args
 
     monkeypatch.setattr(subject, "SERVED_ENGINE_MCP_TOOLS", subject.FOUR_MODEL_TOOLS)
-    route = SimpleNamespace(url="http://127.0.0.1:8790/mcp", secret="secret", grant_key="key")
-    monkeypatch.setattr(engine_mcp_http, "read_engine_mcp_route", lambda **_: route)
     config = ModelConfig(engine_mcp_enabled=True, engine_mcp_actor_id="owner",
                          engine_mcp_graph_id="center")
-    args = _codex_engine_mcp_args(config, {})
-    server = args[-1]
-    assert 'enabled_tools=["read","write","edit","bash"]' in server
-    url = re.search(r'url="([^"]+)"', server).group(1)
-    grant = parse_qs(urlsplit(url).query)["grant"][0]
-    assert subject.verified_launch_grant("key", "", "", grant) == (
-        subject.BACKEND_ENGINE_CAPABILITIES
-    )
+    dialled = _codex_dialled(monkeypatch, config)
+    # The same route call the HTTP loop makes: four displayed handles, the full
+    # backend grant signed onto the route by open_engine_tools.
+    assert tuple(dialled["enabled_tools"]) == subject.FOUR_MODEL_TOOLS
+    assert tuple(dialled["capability_grant"]) == subject.BACKEND_ENGINE_CAPABILITIES

@@ -43,13 +43,14 @@ def _write(root, entry):
 
 def _cli_uses_http(kind, tmp_path, *, root=None):
     if kind == "codex":
-        from tinyassets.providers.codex_provider import _codex_engine_mcp_args
+        # Codex dials the route from the platform process, through the same
+        # owner-checked resolution as the HTTP agent loop (open_engine_tools).
+        from tinyassets import storage
+        from tinyassets.engine_mcp_http import read_engine_mcp_route
 
-        env = {} if root is None else {"TINYASSETS_DATA_DIR": str(root)}
-        args = _codex_engine_mcp_args(_config(), env)
-        return "TINYASSETS_ENGINE_MCP_BEARER" in env or any(
-            "mcp_servers.tinyassets" in arg for arg in args
-        )
+        return read_engine_mcp_route(
+            actor_id="actor-a", graph_id="u-a", root=storage.data_dir(),
+        ) is not None
     from tinyassets.providers.claude_provider import _engine_mcp_flags
 
     _engine_mcp_flags(_config(), tmp_path)
@@ -202,18 +203,6 @@ def test_replacement_record_cannot_be_used_by_previous_owner(tmp_path):
         conn.execute("UPDATE agent_bindings SET created_by = 'actor-b'")
         conn.execute("UPDATE universe_acl SET actor_id = 'actor-b'")
     assert _read(actor_id="actor-b").secret == second.secret != first.secret
-
-
-def test_codex_drops_stale_bearer_and_ignores_child_env_root(tmp_path):
-    from tinyassets.providers.codex_provider import _codex_engine_mcp_args
-
-    _write(tmp_path, _entry())
-    env = {"TINYASSETS_DATA_DIR": str(tmp_path / "not-the-canonical-root")}
-    assert len(_codex_engine_mcp_args(_config(), env)) > 2
-    assert env["TINYASSETS_ENGINE_MCP_BEARER"] == "s" * 43
-    _write(tmp_path, _entry(actor_id="actor-b"))
-    assert len(_codex_engine_mcp_args(_config(), env)) == 2
-    assert "TINYASSETS_ENGINE_MCP_BEARER" not in env
 
 
 def test_conflicting_serving_owners_are_not_picked_by_order(tmp_path, monkeypatch):

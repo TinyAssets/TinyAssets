@@ -857,17 +857,34 @@ def test_served_turn_spawns_fake_codex_through_full_os_sandbox_command(
         """#!/usr/bin/env python3
 import json
 import os
+import sys
 from pathlib import Path
 
+if sys.argv[1:3] == ["debug", "models"]:
+    print(json.dumps({"models": [{"slug": "fake-model", "tool_mode": "code_mode_only"}]}))
+    sys.exit(0)
+assert sys.argv[1] == "app-server", sys.argv
 auth = json.loads((Path(os.environ["CODEX_HOME"]) / "auth.json").read_text())
-print(json.dumps({
-    "type": "item.completed",
-    "item": {
-        "type": "agent_message",
-        "text": auth["tokens"]["access_token"],
-    },
-}))
-print(json.dumps({"type": "turn.completed", "usage": {"input_tokens": 3, "output_tokens": 2}}))
+
+
+def send(message):
+    print(json.dumps(message), flush=True)
+
+
+for line in sys.stdin:
+    message = json.loads(line)
+    method, ident = message.get("method"), message.get("id")
+    if method == "initialize":
+        send({"id": ident, "result": {}})
+    elif method == "thread/start":
+        send({"id": ident, "result": {"thread": {"id": "thr-1"}}})
+    elif method == "turn/start":
+        send({"id": ident, "result": {"turn": {"id": "t1"}}})
+        send({"method": "item/completed", "params": {"item": {
+            "type": "agentMessage", "text": auth["tokens"]["access_token"]}}})
+        send({"method": "thread/tokenUsage/updated", "params": {"tokenUsage": {"last": {
+            "inputTokens": 3, "outputTokens": 2, "reasoningOutputTokens": 0}}}})
+        send({"method": "turn/completed", "params": {"turn": {"id": "t1", "status": "completed"}}})
 """,
         encoding="utf-8",
     )
@@ -933,26 +950,25 @@ os.execvpe(command[0], command, env)
     assert response.output_tokens == 2
     captured = json.loads(bwrap_log.read_text(encoding="utf-8"))
     inner = captured[captured.index("--") + 1 :]
-    assert ("--sandbox", "workspace-write") in zip(inner, inner[1:])
-    assert "--full-auto" not in inner
-    assert "--json" in inner
-    assert "--ignore-user-config" in inner
-    assert "--ignore-rules" in inner
-    assert ("--disable", "shell_tool") in zip(inner, inner[1:])
-    assert "unified_exec" in inner
+    # The served turn is the app server with every native tool off and the
+    # reduced catalog bound into its private home (codex_app_server).
+    from tinyassets.providers.codex_app_server import SERVED_LAUNCH_ARGS
+
+    assert inner[1:1 + len(SERVED_LAUNCH_ARGS)] == list(SERVED_LAUNCH_ARGS)
+    assert inner[-2:] == ["-c", 'model_catalog_json="/codex-home/model-catalog.json"']
+    for absent in ("exec", "--json", "--sandbox", "--full-auto"):
+        assert absent not in inner
     # The `apps` feature must be OFF: otherwise the subscription account's
     # installed ChatGPT connectors (including TinyAssets' own /mcp) reach the
     # served model as `codex_apps` tools and it relays the turn back through
     # them, returning "This app connection requires reauthentication..." instead
     # of answering (confused-deputy loop, live-diagnosed 2026-08-22).
-    assert ("--disable", "apps") in list(zip(inner, inner[1:]))
-    assert ("--disable", "plugins") in zip(inner, inner[1:])
-    assert ("--disable", "remote_plugin") in zip(inner, inner[1:])
-    # Engine MCP off (this config) -> no MCP server, but /workspace is forced
-    # untrusted so no project .codex/config.toml (or its mcp_servers) loads, and
-    # the turn is WebFetch-only. (When engine MCP is on + a route exists,
-    # _codex_engine_mcp_args wires the one trusted tinyassets server — see
-    # test_engine_mcp_server.)
+    for name in ("shell_tool", "unified_exec", "apps", "plugins", "remote_plugin"):
+        assert ("--disable", name) in zip(inner, inner[1:])
+    # No MCP server is ever configured (the engine route is dialled from the
+    # platform process), and /workspace stays untrusted so no project
+    # .codex/config.toml loads.
+    assert not any("mcp_servers" in arg for arg in inner)
     assert (
         "-c",
         'projects."/workspace".trust_level="untrusted"',

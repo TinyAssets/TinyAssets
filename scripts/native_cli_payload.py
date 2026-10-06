@@ -23,9 +23,14 @@ EXPECTED_MCP_TOOLS = frozenset("mcp__tinyassets__" + name
                                for name in ("read", "write", "edit", "bash"))
 
 
-def exposure_check(metrics: dict) -> dict:
+#: Codex sees the definition's tools under their own names (app-server
+#: dynamicTools in its own namespace); Claude under its MCP server prefix.
+EXPECTED_DYNAMIC_TOOLS = frozenset(("read", "write", "edit", "bash"))
+
+
+def exposure_check(metrics: dict, expected: frozenset = EXPECTED_MCP_TOOLS) -> dict:
     names = set(metrics["tool_names"])
-    missing, extra = EXPECTED_MCP_TOOLS - names, names - EXPECTED_MCP_TOOLS
+    missing, extra = expected - names, names - expected
     return {
         "missing_mcp_definitions": sorted(missing),
         "extra_tools": sorted(extra),
@@ -139,44 +144,25 @@ def http_payloads(system: str) -> list[dict]:
     return rows
 
 
-#: The most-reduced codex-cli 0.160.0 launch found (2026-10-05). Instructions
-#: are replaced wholesale and every feature tool is off, but the bundled
-#: catalog pins GPT-5.6+/GPT-6 to `tool_mode = "code_mode_only"` (apply_patch
-#: nested in `exec`) and v2 collaboration tools; no flag removes those, so
-#: this launch substitutes the bundled catalog with those fields cleared
-#: (`model_catalog_json`). Three MCP resource tools remain unconditionally
-#: whenever any MCP server is configured (codex-rs/core/src/tools/
-#: spec_plan.rs `add_mcp_resource_tools`, rust-v0.160.0).
-CODEX_REDUCED_ARGS = (
-    "--disable", "multi_agent", "--disable", "sleep_tool", "--disable", "goals",
-    "--disable", "image_generation", "--disable", "view_image",
-    "--disable", "skill_search",
-    "-c", 'web_search="disabled"',
-    "-c", "tools.experimental_request_user_input={enabled=false}",
-    "-c", "include_permissions_instructions=false",
-    "-c", "include_environment_context=false",
-    "-c", "include_apps_instructions=false",
-    "-c", "include_collaboration_mode_instructions=false",
-    "-c", "skills.include_instructions=false",
-)
+def capture_codex(executable: str, *, system: str = "Synthetic stock prompt.") -> dict:
+    """The production served launch (codex_launch_contract) with the real four
+    definitions as dynamicTools, captured by the image build's own driver."""
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    from scripts.codex_cli_smoke import run_smoke
 
-
-def reduced_codex_catalog(executable: str, out: Path) -> Path:
-    """The bundled catalog with model-pinned tool modes cleared."""
-    dumped = subprocess.run([executable, "debug", "models", "--bundled"], capture_output=True,
-                            check=True, text=True, encoding="utf-8")
-    catalog = json.loads(dumped.stdout)
-    for model in catalog["models"]:
-        model.pop("tool_mode", None)
-        model.update(multi_agent_version=None, apply_patch_tool_type=None,
-                     experimental_supported_tools=[], supports_search_tool=False)
-    out.write_text(json.dumps(catalog), encoding="utf-8")
-    return out
+    tools = [{"type": "function", "name": d["name"], "description": d["description"],
+              "inputSchema": d["inputSchema"]} for d in inventory_definitions()]
+    result = run_smoke([executable], tools=tools, instructions=system)
+    metrics = payload_metrics(result["body"])
+    return {"provider": "codex", "live_model_trial": False,
+            "scope": "local CLI probe of the production app-server launch",
+            **exposure_check(metrics, EXPECTED_DYNAMIC_TOOLS),
+            "supplied_system": system, "requests": 1, "metrics": metrics,
+            "body": result["body"]}
 
 
 def capture(provider: str, executable: str, *, timeout: float = 45,
-            system: str = "Synthetic stock prompt.", reduced: bool = False,
-            model: str = "gpt-6-astra") -> dict:
+            system: str = "Synthetic stock prompt.") -> dict:
     bodies = []
 
     class Sink(BaseHTTPRequestHandler):
@@ -218,42 +204,15 @@ def capture(provider: str, executable: str, *, timeout: float = 45,
                    "args": [str(Path(__file__).resolve()), "--inventory-server", str(schemas)]}
             config = root / "mcp.json"
             config.write_text(json.dumps({"mcpServers": {"tinyassets": mcp}}), encoding="utf-8")
-            def reduce_args(root):
-                catalog = reduced_codex_catalog(executable, root / "catalog.json")
-                instructions = root / "instructions.md"
-                instructions.write_text(system, encoding="utf-8")
-                return (*CODEX_REDUCED_ARGS,
-                        "-c", "model_catalog_json=" + json.dumps(str(catalog)),
-                        "-c", "model_instructions_file=" + json.dumps(str(instructions)))
-
-            if provider == "codex":
-                argv = [executable, "exec", "--ignore-user-config", "--ignore-rules",
-                        "--skip-git-repo-check", "--ephemeral", "--json",
-                        "--disable", "shell_tool", "--disable", "unified_exec",
-                        "--disable", "apps", "--disable", "plugins",
-                        "--disable", "remote_plugin",
-                        "-c", "mcp_servers.tinyassets.command=" + json.dumps(mcp["command"]),
-                        "-c", "mcp_servers.tinyassets.args=" + json.dumps(mcp["args"]),
-                        "-c", "mcp_servers.tinyassets.required=true",
-                        "-c", 'mcp_servers.tinyassets.default_tools_approval_mode="approve"',
-                        "-c", 'mcp_servers.tinyassets.enabled_tools=["read","write","edit","bash"]',
-                        *(reduce_args(root) if reduced else ("-c", 'web_search="cached"')),
-                        "-c", 'model_provider="probe"',
-                        "-c", 'model_providers.probe.name="probe"',
-                        "-c", f'model_providers.probe.base_url="{url}/v1"',
-                        "-c", 'model_providers.probe.wire_api="responses"',
-                        "-c", "developer_instructions=" + json.dumps(system),
-                        "-m", model, "Reply OK."]
-            else:
-                env.update(ANTHROPIC_BASE_URL=url, ANTHROPIC_API_KEY="synthetic-probe-key",
-                           CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC="1")
-                argv = [executable, "-p", "--model", "fable", "--tools", "",
-                        "--system-prompt", system,
-                        "--setting-sources", "project", "--permission-mode", "default",
-                        "--strict-mcp-config", "--mcp-config", str(config),
-                        "--allowedTools", "mcp__tinyassets__read", "mcp__tinyassets__write",
-                        "mcp__tinyassets__edit", "mcp__tinyassets__bash",
-                        "--no-session-persistence", "Reply OK."]
+            env.update(ANTHROPIC_BASE_URL=url, ANTHROPIC_API_KEY="synthetic-probe-key",
+                       CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC="1")
+            argv = [executable, "-p", "--model", "fable", "--tools", "",
+                    "--system-prompt", system,
+                    "--setting-sources", "project", "--permission-mode", "default",
+                    "--strict-mcp-config", "--mcp-config", str(config),
+                    "--allowedTools", "mcp__tinyassets__read", "mcp__tinyassets__write",
+                    "mcp__tinyassets__edit", "mcp__tinyassets__bash",
+                    "--no-session-persistence", "Reply OK."]
             completed = subprocess.run(argv, cwd=root, env=env, capture_output=True,
                                        input="", timeout=timeout, text=True,
                                        encoding="utf-8", errors="replace")
@@ -264,7 +223,6 @@ def capture(provider: str, executable: str, *, timeout: float = 45,
             metrics = payload_metrics(bodies[0])
             return {"provider": provider, "live_model_trial": False,
                     "scope": "local CLI probe with stdio MCP, not the production HTTP launch",
-                    "codex_reduced_launch": reduced,
                     **exposure_check(metrics),
                     "supplied_system": system,
                     "diagnostic_stderr": completed.stderr[-3000:],
@@ -284,9 +242,6 @@ def main():
     parser.add_argument("--executable")
     parser.add_argument("--system-file", type=Path)
     parser.add_argument("--out", type=Path, required=True)
-    parser.add_argument("--codex-reduced", action="store_true",
-                        help="capture the most-reduced codex launch (CODEX_REDUCED_ARGS)")
-    parser.add_argument("--model", default="gpt-6-astra", help="codex model slug")
     args = parser.parse_args()
     system = (args.system_file.read_text(encoding="utf-8") if args.system_file
               else "Synthetic stock prompt.")
@@ -300,8 +255,8 @@ def main():
         "claude" if args.provider == "claude-code" else "codex")
     if not executable:
         parser.error("CLI executable unavailable")
-    result = capture(args.provider, executable, system=system,
-                     reduced=args.codex_reduced, model=args.model)
+    result = (capture_codex(executable, system=system) if args.provider == "codex"
+              else capture(args.provider, executable, system=system))
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
     print(json.dumps(result["metrics"], ensure_ascii=False))

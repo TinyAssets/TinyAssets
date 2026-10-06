@@ -41,6 +41,7 @@ import os
 from fastmcp import FastMCP
 from fastmcp.server.middleware import Middleware
 
+from tinyassets.activity_fence import ActivityFence
 from tinyassets.command_center_names import CommandCenterNames
 from tinyassets.engine_conversation_attention import ConversationAttention
 from tinyassets.engine_read_views import compact_model_options, universe_status_view
@@ -468,6 +469,9 @@ class ResearchReadOnly(Middleware):
 
 # First added is OUTERMOST: new tools default to refused in research.
 mcp.add_middleware(ResearchReadOnly())
+# An activity that yielded, paused or stopped runs no further tool, on any
+# provider: every model-visible tool crosses this route (activity_fence).
+mcp.add_middleware(ActivityFence(lambda: _universe_dir_for_fence()))
 mcp.add_middleware(ModelInventory())
 # Attention acknowledges only the final bounded
 # result, then the ceiling wraps the refusal flag.
@@ -2943,6 +2947,12 @@ def _yield_activity(asked: dict) -> dict:
                          "with a one-line note of where you stopped; it resumes when they "
                          "answer.")}
     return asked
+
+
+def _universe_dir_for_fence():
+    from tinyassets.storage import data_dir
+
+    return data_dir() / _GRAPH_ID
 
 
 def _calling_session() -> str:
