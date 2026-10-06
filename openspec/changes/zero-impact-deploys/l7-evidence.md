@@ -101,3 +101,8 @@ Verdict **ADAPT**. Dispositions:
   unchecked; no production adapter/ingress rollout is authorized by these
   component results. Reviewer found no lane collision. No approval verdict is
   claimed after corrections; this remains a draft with outstanding full proof.
+
+## CI repair, 2026-10-05
+
+Merged origin/main before work. Classified ingress_journal.py in FENCE_BEFORE_C2: it writes acceptance and reply state without owner-generation fencing; handover remains disabled and the existing gate remains intact. Plugin mirror regenerated. Linux oracle: 34 passed / 0 skipped (owner_stores, ingress_journal, deploy_during_traffic, converse_turn_cost); changed-file ruff PASS. No production configuration changes.
+
