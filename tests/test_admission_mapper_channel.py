@@ -41,7 +41,8 @@ def make_channel(broker_end, identities):
 def pair(monkeypatch, identities):
     """The test process plays the mapper; its own uid stands in for host 300000."""
     if os.getuid() != os.getgid():
-        pytest.skip("credential stand-in needs uid == gid")
+        pytest.skip("owner=uid-admission runs-in=linux_oracle.py, default and --as-root: "
+            "credential stand-in needs uid == gid")
     monkeypatch.setattr(mapper_channel, "MAPPER_HOST_ID", os.getuid())
     broker_end, mapper_end = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
     channel = make_channel(broker_end, identities)
@@ -116,7 +117,8 @@ def test_non_mapper_sender_refuses_even_holding_the_endpoint(pair):
 
 def test_missing_map_refuses(monkeypatch):
     if os.getuid() != os.getgid():
-        pytest.skip("credential stand-in needs uid == gid")
+        pytest.skip("owner=uid-admission runs-in=linux_oracle.py, default and --as-root: "
+            "credential stand-in needs uid == gid")
     monkeypatch.setattr(mapper_channel, "MAPPER_HOST_ID", os.getuid())
     broker_end, mapper_end = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
     channel = make_channel(broker_end, None)

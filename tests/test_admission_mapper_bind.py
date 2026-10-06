@@ -46,7 +46,8 @@ def root(tmp_path, name="alice-home", mode=0o750, gid=GID):
     if os.geteuid() == 0:
         os.chown(path, -1, gid)
     elif gid != os.getgid():
-        pytest.skip("changing a root's group needs the root oracle")
+        pytest.skip("owner=uid-admission runs-in=linux_oracle.py --as-root: "
+            "changing a root's group")
     path.chmod(mode)
     return os.open(path, os.O_PATH | os.O_DIRECTORY)
 
@@ -58,7 +59,8 @@ RETIRE = dict(op="RETIRE", principal="alice", command_center="alice-home", gener
 @pytest.fixture(autouse=True)
 def group_stand_in():
     if os.geteuid() != 0 and os.getgid() != GID:
-        pytest.skip("the inner-group stand-in needs gid 1001 or the root oracle")
+        pytest.skip("owner=uid-admission runs-in=linux_oracle.py (uid 1001) and --as-root: "
+            "inner-group stand-in")
 
 
 def test_admit_binds_from_the_row_and_is_idempotent(tmp_path):
@@ -111,7 +113,8 @@ def test_admit_refusals_leave_the_table_unchanged(tmp_path, case):
     value = mapper(tmp_path, bindings=bindings, generation=generation, rows=rows, states=states)
     before = dict(value.bindings)
     if case == "wrong-group" and os.geteuid() != 0:
-        pytest.skip("changing a root's group needs the root oracle")
+        pytest.skip("owner=uid-admission runs-in=linux_oracle.py --as-root: "
+            "changing a root's group")
     fd = root(tmp_path, name, mode, gid)
     other = None
     try:

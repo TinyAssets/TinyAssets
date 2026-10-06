@@ -20,7 +20,8 @@ ROOT = Path(__file__).resolve().parents[1]
 MACHINE = 300001
 pytestmark = pytest.mark.skipif(os.name != "posix", reason="POSIX ownership and ACLs")
 needs_root = pytest.mark.skipif(os.name != "posix" or os.geteuid() != 0,
-                                reason="root oracle: real daemon and owner identities")
+                                reason="owner=uid-admission runs-in=linux_oracle.py --as-root: "
+                                    "real daemon and owner identities")
 
 
 def caps():
