@@ -1,3 +1,53 @@
+# Current U1 delivery: D82 offline provider metadata discovery
+
+D81 is pushed at d3f99e9134d1743c39f9b6cd22a756b2788d7de9. D82 adds the
+actual native metadata API to the dedicated provider-discovery owner cell.
+Installed Codex app-server model/list returns 11 models for both Alice and Bob.
+The source credential snapshot is pinned, daemon-owned and read-only; a bounded
+regular-file copy supplies disposable private SQLite/auth state. Ambient tokens
+and loader variables are filtered. No scratch is promoted. The cell has strict
+cell-deny, fixed CPU/process/fd/file bounds and a 35-second mapper lifetime.
+START retains descriptor ownership; one receipt reader survives cancellation;
+EOF revokes without the late queued-CANCEL/reset race. Provider inference,
+auth refresh, network metadata and other engines are NOT completed by D82.
+
+Production Dockerfile image tinyassets-uid-d82:private-state:
+sha256:bd099fb59b9d6f409fd8140bdb4c080002b4c351c728b844b7a2cdc3ae8a1521.
+role_provider_discovery_probe: actual installed API for both owners, foreign
+center/snapshot refusal, cancellation and repeated discovery PASS; ZERO
+FOREIGN_BYTES. Video application probe PASS, ZERO FOREIGN_BYTES. Independent
+D76 lifetime probe PASS: simultaneous owner streams, repeated receipts, EOF
+reaping, deadlines, concurrency limit and foreign START refusal, zero foreign
+reads. All report daemon capabilities zero and startup_activated false.
+The first metadata image failed because Codex needs writable SQLite state and
+late CANCEL could reset the receipt socket; diagnostic runs are not acceptance.
+
+Root Linux oracle: 74 passed, zero skips (role_provider_discovery,
+universe_path_io_guard, role_video, role_tools, role_launcher, converse_turn_cost).
+Additional uid1001 oracle: 99 passed, zero skips (owner_launcher_client,
+native_model_discovery, native_discovery_integration,
+provider_real_adapter_deadline_reap). One pre-existing legacy transport teardown
+warning remains in the malformed-readiness test. Ruff, plugin regeneration and
+OpenSpec audit pass; no static prompt budget changed. Independent Claude
+floor/correctness review is running; record its verdict before final push.
+
+Exactly remaining for activation, in execution order:
+1. Provider CLI execution, auth/refresh and network metadata; engine-MCP thin
+   proxy with canonical daemon handlers; workspace provision/registry/worker;
+   remote git/local box; remaining ingestion/caller coverage. Complete actual
+   class/site, writable-path/daemon-reader, scope-reuse and denial matrix.
+2. Tool owner-directory preparation, persistent brain-file promotion and
+   chmod/storage-accounting recovery, retaining daemon custody and settlement.
+3. Immutable exact-revision package cells for stdio MCP/user-installed packages,
+   owner UID/GID, narrow credential slots, pinned egress, foreign-access denial
+   and resource caps; K1 depends on this.
+4. Dynamic center admission and remaining broker readers, plus U2 D61 quarantine,
+   migration, two-pass deletion, old-image rollback, startup and health checks.
+5. Integrated production proof for every class/caller, final floor review and
+   spec sync. Startup stays OFF; no deploy or ready/final PR is authorized.
+
+---
+
 # Current U1 delivery: D81 data-only video ingestion
 
 Continuation starts at 6f33b092f2. Draft PR #4523 is open; startup stays OFF,

@@ -767,6 +767,38 @@ def _windows_tree_kill_argv(pid: int) -> list[str]:
     return ["taskkill", "/F", "/T", "/PID", str(pid)]
 
 
+class OwnerCellProcess:
+    """Stdio shim over a mapper-owned owner cell (D82); it has no local PID.
+
+    Teardown is revocation through the authenticated lifetime channel, and the
+    mapper's identity-checked receipt is the only completion fact.
+    """
+
+    pid = None
+
+    def __init__(self, cell, reader, writer):
+        self.cell, self.stdout, self.stdin = cell, reader, writer
+        self._transport = writer.transport
+        self.returncode = None
+        self._waiter = None
+
+    def revoke(self) -> None:
+        self.cell.revoke()
+
+    async def wait(self, timeout=5):
+        if self._waiter is None:
+            def reap():
+                # One thread owns every receipt read and the final close, even
+                # if the caller is cancelled while awaiting it.
+                try:
+                    return self.cell.wait(timeout)
+                finally:
+                    self.cell.close()
+            self._waiter = asyncio.create_task(asyncio.to_thread(reap))
+        self.returncode = await asyncio.shield(self._waiter)
+        return self.returncode
+
+
 def kill_owned_tree(proc) -> None:
     """Synchronously end ``proc`` and, where owned, everything it started.
 
@@ -777,6 +809,9 @@ def kill_owned_tree(proc) -> None:
     live child. An unregistered process, or a POSIX one that never got an
     anchor, is killed individually and never triggers group signalling.
     """
+    if isinstance(proc, OwnerCellProcess):
+        proc.revoke()  # Never a signal: the shim has no PID of its own.
+        return
     family = _take_family(proc)
     if family is None:
         _kill_direct(proc)
@@ -811,6 +846,9 @@ async def akill_owned_tree(proc) -> None:
     await -- which also makes it usable from a cancellation path that cannot
     rely on reaching another suspension point.
     """
+    if isinstance(proc, OwnerCellProcess):
+        proc.revoke()  # Never a signal: the shim has no PID of its own.
+        return
     family = _take_family(proc)
     if family is None:
         _kill_direct(proc)

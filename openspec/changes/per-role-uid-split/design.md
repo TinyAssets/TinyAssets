@@ -1,3 +1,49 @@
+### D82. Mechanical metadata-only provider-discovery cell
+
+The first provider class is metadata discovery only, not provider CLI execution
+or auth refresh. With the broker selected, `read_native_catalogue` admits the
+current principal/center (founder home or admin), looks up the dedicated
+identity as role_video/role_tools do, and pins the exact launch snapshot with
+`open_dir_nofollow`; it must be a daemon-owned directory whose kernel path is
+`<center>/.runtime/provider-launch-credentials/<name>`. START sends static
+`provider-discovery`, principal, center and an `egress` boolean, plus stream,
+snapshot, optional egress socket and lifetime descriptors. The mapper's exact
+descriptor count, snapshot path/owner match and D80 egress match all precede
+fork. No path, UID, profile, argv or env enters the privileged request.
+
+The entry mounts the snapshot with `--ro-bind-fd` at `/snapshot` (D73 ACLs give
+the owner read only), `/opt/codex-install` and `/opt/claude-code-install`
+read-only, and nothing else beyond the strict base. prove_cell closes every
+descriptor, checks namespaces and denies nested user namespaces before one
+bounded config line is read byte-wise from the stream. That config's argv must
+resolve inside a shipped install tree; env keys/values are bounded, host data
+paths are rejected, the snapshot is pre-rewritten to `/snapshot`, and
+HOME/TMP/PATH are fixed. The CLI then execs with the stream as raw stdin/stdout
+and stderr null. Limits: CPU 30s, NOFILE 256, NPROC 64, FSIZE 64 MiB, no core,
+no RLIMIT_AS (Node/V8), and the existing fixed 35s mapper class deadline.
+
+The daemon wraps the stream with `asyncio.open_connection(sock=...)` in an
+`OwnerCellProcess` shim, so the existing protocol loop and its byte/page/model
+bounds and timeout run unchanged. `kill_owned_tree` revokes the shim through
+its lifetime channel and never signals a PID. Close requires the
+identity-checked receipt; a missing receipt fails the catalogue. A selected
+broker without client/scope refuses; there is no daemon fallback. The daemon
+currently sends `egress=False`; network-requiring metadata remains a
+gap until the egress relay is admitted for this caller. Provider execution,
+auth/refresh and other provider CLI paths remain pending.
+
+D82 measured integration corrections: installed Codex model discovery requires
+SQLite state beside its auth file. Keep the source snapshot read-only; after
+confinement copy only a bounded regular, single-link, no-symlink tree (128 entries,
+8 MiB, depth 8) into owner-private ephemeral scratch. Rewrite exact snapshot
+paths to that scratch. Nothing there is consumed by daemon filesystem readers
+or promoted back to custody. This offline slice cannot spend a refresh token.
+Only display settings and in-cell auth/scratch paths survive the environment
+allowlist; ambient tokens and loader settings do not. START admission remains a
+short synchronous descriptor-owned exchange, then streams are async. One receipt
+reader owns cleanup even if its awaiting caller is cancelled. Write-side EOF
+revokes the lifetime without the late unread-CANCEL/queued-receipt reset race.
+
 ### D81. Mechanical data-only video extraction cell
 
 Route selected video ingestion through a fixed ingestion-video class with the

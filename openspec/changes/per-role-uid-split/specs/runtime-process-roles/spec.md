@@ -5,6 +5,38 @@
 ## ADDED Requirements
 
 
+### Requirement: Provider metadata discovery uses a dedicated owner cell
+
+Selected native model discovery SHALL run only in the fixed provider-discovery
+class with cell-deny, the admitted principal/center and broker-resolved
+dedicated UID/GID. The only owner input SHALL be the exact sealed daemon-owned
+launch snapshot, pinned by descriptor under the admitted center's
+`.runtime/provider-launch-credentials/<name>` and mounted read-only at a fixed
+cell path. Only the shipped CLI install trees and an exact admitted egress
+socket MAY additionally enter. The privileged request SHALL carry only static
+kind, principal, center and booleans plus descriptors; argv/env SHALL arrive
+as one bounded config line after confinement and descriptor closure, naming a
+shipped executable with no host data path. Existing metadata byte/page/model
+bounds and timeout SHALL hold. Teardown SHALL revoke through the lifetime
+channel, never a local PID signal, and the authenticated receipt SHALL be
+required. A selected broker without scope or bounded client SHALL refuse with
+no daemon subprocess fallback.
+
+The immutable snapshot SHALL be copied only after confinement to disposable
+owner-private scratch, bounded to 128 entries, 8 MiB and depth 8, rejecting
+symlinks, non-regular files and multiple links. No scratch state SHALL be
+promoted to daemon custody. Environment forwarding SHALL admit only bounded
+display settings and in-cell paths, excluding ambient tokens and loader
+settings. One receipt reader SHALL own cleanup across cancellation; revocation
+SHALL use write-side EOF without a queued cancellation packet.
+
+#### Scenario: Metadata discovery cannot reach foreign or host state
+- **WHEN** Alice's daemon lists models from her sealed launch snapshot
+- **THEN** the CLI runs in her dedicated strict cell with only that snapshot read-only
+- **AND** a foreign-center, center-root, nested or non-daemon snapshot is refused by the mapper
+- **AND** a foreign, other-daemon or non-socket egress descriptor is refused
+- **AND** an inherited descriptor, nested user namespace or missing receipt fails the catalogue
+
 ### Requirement: Video parser subprocesses use data-only owner cells
 
 Selected video ingestion SHALL admit the current principal and command center

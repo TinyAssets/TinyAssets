@@ -62,14 +62,18 @@ class OwnerCell:
         return self._result
 
     def cancel(self):
+        self.revoke()
+        return self.wait()
+
+    def revoke(self):
+        """Write-side EOF revokes without racing queued completion with unread data."""
         if os.getpid() != self._pid or self._closed:
             raise RuntimeError('owner cell handle is unavailable')
         if self._result is None:
             try:
-                self._status.sendall(b'CANCEL')
+                self._status.shutdown(socket.SHUT_WR)
             except (BrokenPipeError, ConnectionResetError):
-                pass  # A completed receipt can be queued before mapper close.
-        return self.wait()
+                pass  # The authenticated receipt still proves reaping.
 
     def close(self):
         if not self._closed:

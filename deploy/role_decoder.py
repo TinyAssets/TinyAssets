@@ -57,17 +57,25 @@ def tool_mounts(uid):
 
 
 def enter(mime, data_root, uid=1003, *, preview=False, preview_write=False, node=False,
-          tool=False, video=False):
+          tool=False, video=False, provider=False):
     identity(uid)
     host = namespaces()
-    mounted = preview_write or tool or (node and mime == 'workspace')
-    if mounted:
+    mounted = preview_write or tool or provider or (node and mime == 'workspace')
+    if provider:
+        # D82: the daemon-sealed snapshot is daemon-owned; D73 grants the owner
+        # read access only. The mapper already matched its exact path.
+        info = os.fstat(3)
+        if not stat.S_ISDIR(info.st_mode):
+            raise RuntimeError('provider snapshot source is invalid')
+        host['source'] = [info.st_dev, info.st_ino]
+        os.set_inheritable(3, True)
+    elif mounted:
         info = os.fstat(3)
         if not stat.S_ISDIR(info.st_mode) or info.st_gid != uid:
             raise RuntimeError('preview output source is invalid')
         host['source'] = [info.st_dev, info.st_ino]
         os.set_inheritable(3, True)
-    if tool:
+    if tool or provider:
         host['sockets'] = {}
         for key, fd in (('e', 4), ('t', 5)):
             if key in mime:
@@ -102,7 +110,15 @@ def enter(mime, data_root, uid=1003, *, preview=False, preview_write=False, node
             if not os.path.realpath(path).startswith('/usr/lib/'):
                 raise RuntimeError(('video library alternative escapes /usr/lib', path))
             argv.extend(['--ro-bind', path, path])
-    if tool:
+    if provider:
+        # Fixed immutable shipped CLI trees only; node itself lives under /usr.
+        for path in ('/opt/codex-install', '/opt/claude-code-install'):
+            if os.path.isdir(path):
+                argv.extend(['--ro-bind', path, path])
+        argv.extend(['--ro-bind-fd', '3', '/snapshot'])
+        if 'e' in mime:
+            argv.extend(['--bind-fd', '4', '/provider-egress.sock'])
+    elif tool:
         argv.extend(tool_mounts(uid))
         for key, fd, destination in (('e', 4, '/tool-egress.sock'), ('t', 5, '/tool-ta.sock')):
             if key in mime:
@@ -112,7 +128,8 @@ def enter(mime, data_root, uid=1003, *, preview=False, preview_write=False, node
     argv.extend(["--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp",
                  "--chdir", "/tmp", "--seccomp", str(descriptor), "--",
                  "/opt/venv/bin/python", "-I", "-B", "/usr/local/libexec/ta-decoder.py",
-                 'inside-video' if video else 'inside-tool' if tool else 'inside-node' if node else
+                 'inside-provider' if provider else 'inside-video' if video else
+                 'inside-tool' if tool else 'inside-node' if node else
                  'inside-preview-write' if preview_write else
                  "inside-preview" if preview else "inside-owner", mime,
                  json.dumps(host, sort_keys=True), data_root, str(uid)])
@@ -276,7 +293,34 @@ def decode(mime, host, data_root, uid=1003):
 
 
 if __name__ == "__main__":
-    if (len(sys.argv) == 5 and sys.argv[1] == 'enter-video'
+    if (len(sys.argv) == 5 and sys.argv[1] == 'enter-provider'
+            and sys.argv[2] in ('-', 'e') and 0 < int(sys.argv[4]) < 100000):
+        enter(sys.argv[2], sys.argv[3], int(sys.argv[4]), provider=True)
+    elif (len(sys.argv) == 6 and sys.argv[1] == 'inside-provider'
+            and sys.argv[2] in ('-', 'e') and 0 < int(sys.argv[5]) < 100000):
+        host = json.loads(sys.argv[3])
+        source = host.pop('source')
+        sockets = host.pop('sockets')
+        mounted = os.stat('/snapshot', follow_symlinks=False)
+        if [mounted.st_dev, mounted.st_ino] != source or not stat.S_ISDIR(mounted.st_mode):
+            raise RuntimeError('provider snapshot mount differs from pinned source')
+        if set(sockets) != ({'e'} if sys.argv[2] == 'e' else set()):
+            raise RuntimeError('provider egress differs from its admitted flag')
+        if sockets:
+            info = os.stat('/provider-egress.sock', follow_symlinks=False)
+            if [info.st_dev, info.st_ino] != sockets['e'] or not stat.S_ISSOCK(info.st_mode):
+                raise RuntimeError('provider egress mount differs from pinned source')
+        # prove_cell closes every mount/seccomp descriptor before config is read.
+        proof = prove_cell(host, sys.argv[4], int(sys.argv[5]))
+        proof['source'] = source
+        proof['sockets'] = sockets
+        sys.stdout.buffer.write(json.dumps({'cell': proof}).encode() + b'\n')
+        sys.stdout.buffer.flush()
+        sys.path.insert(0, '/app')
+        from tinyassets.role_provider_cell import cell_main
+
+        raise SystemExit(cell_main(sys.argv[4]))
+    elif (len(sys.argv) == 5 and sys.argv[1] == 'enter-video'
             and sys.argv[2] == 'video' and 0 < int(sys.argv[4]) < 100000):
         enter('video', sys.argv[3], int(sys.argv[4]), video=True)
     elif (len(sys.argv) == 6 and sys.argv[1] == 'inside-video'
