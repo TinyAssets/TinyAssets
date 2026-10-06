@@ -37,6 +37,7 @@ if seed==0:
 writer.close(); identities=json.loads(reader.recv(4096)); reader.close()
 assert os.waitpid(seed,0)[1]==0
 bindings={}
+snapshot_children=[]
 for owner,uid in identities.items():
     center=root/('decoder-'+owner); center.mkdir()
     os.chown(center,uid,uid); center.chmod(0o700)
@@ -52,6 +53,78 @@ for owner,uid in identities.items():
         subprocess.run(['setfacl','-m','u:1001:rwx,d:u:1001:rwx',
                         str(center),str(work)],check=True)
         subprocess.run(['setfacl','-m','u:1001:r',str(own)],check=True)
+if SNAPSHOTS:
+    proof_dir=Path(tempfile.mkdtemp(prefix='snapshot-proof-')); proof_dir.chmod(0o777)
+    for owner,uid in identities.items():
+        center=root/('snapshot-'+owner); center.mkdir()
+        os.chown(center,1001,uid); center.chmod(0o711)
+        bindings[(owner,center.name)]=uid
+        runtime=center/'.runtime'; runtime.mkdir()
+        os.chown(runtime,1001,1100); runtime.chmod(0o2750)
+        foreign_uid=300002 if owner=='alice' else 300001
+        subprocess.run(['setfacl','-m',f'u:{foreign_uid}:rx,d:u:{foreign_uid}:rx',
+                        str(runtime)],check=True)
+        pid=os.fork()
+        if pid==0:
+            try:
+                launch['_retire_identity'](uid,())
+                launch['close_descriptors']()
+                import fcntl, time
+                manifest=proof_dir/'manifest.json'
+                deadline=time.monotonic()+60
+                while not manifest.exists():
+                    assert time.monotonic()<deadline,'snapshot publication timed out'
+                    time.sleep(0.05)
+                paths=json.loads(manifest.read_text())
+                own=Path(paths[owner]); foreign=Path(paths['bob' if owner=='alice' else 'alice'])
+                expected=json.dumps({'token':owner+'-fixture'}).encode()
+                assert (own/'auth.json').read_bytes()==expected
+                with (own/'.lock').open('rb') as handle:
+                    fcntl.flock(handle,fcntl.LOCK_EX|fcntl.LOCK_NB)
+                for path in (own/'auth.json',own/'config.toml',own/'.lock',own/'new-file'):
+                    try: descriptor=os.open(path,os.O_WRONLY|os.O_CREAT,0o600)
+                    except PermissionError: pass
+                    else:
+                        os.close(descriptor); raise AssertionError('engine wrote sealed snapshot')
+                for path in (foreign/'auth.json',root/('snapshot-'+owner)/'.credential-vault.json'):
+                    try: path.read_bytes()
+                    except PermissionError: pass
+                    else: raise AssertionError('engine read foreign/protected credentials')
+                try: list(own.parent.iterdir())
+                except PermissionError: pass
+                else: raise AssertionError('engine listed sibling snapshots')
+                version=subprocess.run(['/usr/local/bin/codex','--version'],cwd=own,
+                    env={'PATH':'/usr/local/bin:/usr/bin:/bin','HOME':'/tmp','CODEX_HOME':str(own)},
+                    capture_output=True,timeout=15)
+                assert version.returncode==0,version.stderr.decode()
+                (proof_dir/owner).write_text('PASS')
+                (proof_dir/owner).chmod(0o644)
+                os._exit(0)
+            except BaseException:
+                import traceback
+                traceback.print_exc(); os._exit(1)
+        snapshot_children.append(pid)
+    for name,uid,groups in (('legacy',1003,(1100,)),('broker-reader',1002,(1102,))):
+        pid=os.fork()
+        if pid==0:
+            try:
+                launch['_retire_identity'](uid,groups); launch['close_descriptors']()
+                import time
+                deadline=time.monotonic()+60
+                while not (proof_dir/'manifest.json').exists():
+                    assert time.monotonic()<deadline
+                    time.sleep(0.05)
+                paths=json.loads((proof_dir/'manifest.json').read_text())
+                for path in paths.values():
+                    try: (Path(path)/'auth.json').read_bytes()
+                    except PermissionError: pass
+                    else: raise AssertionError('legacy/broker role read sealed owner credentials')
+                (proof_dir/name).write_text('PASS'); (proof_dir/name).chmod(0o644)
+                os._exit(0)
+            except BaseException:
+                import traceback
+                traceback.print_exc(); os._exit(1)
+        snapshot_children.append(pid)
 if GIT:
     foreign=root/'decoder-bob/workspace/foreign.txt'; foreign.write_text('bob-foreign-sentinel')
     os.chown(foreign,300002,300002); foreign.chmod(0o600)
@@ -100,6 +173,44 @@ else: raise AssertionError('lookup allocated an identity')
 allocated=owner_identity(root,principal='dynamic-owner',allocate=True)
 assert allocated.uid==allocated.gid==300003
 assert owner_identity(root,principal='dynamic-owner')==allocated
+if SNAPSHOTS:
+    import base64, sqlite3
+    from tinyassets import credential_vault as vault
+    from tinyassets.storage import db_path
+    paths={}; snapshots=[]
+    for owner in identities:
+        center=root/('snapshot-'+owner)
+        material=json.dumps({'token':owner+'-fixture'}).encode()
+        vault.write_credential_vault(center,[{'credential_type':'llm_subscription',
+            'service':'codex','auth_json_b64':base64.b64encode(material).decode()}],
+            owner_user_id=owner,universe_id=center.name)
+        with sqlite3.connect(db_path(root)) as db:
+            db.execute('BEGIN IMMEDIATE')
+            custody=vault.adopt_llm_subscription_custody(db,universe_dir=center,
+                owner_user_id=owner,universe_id=center.name,service='codex')
+        made=vault.snapshot_llm_subscription_credential(universe_dir=center,custody=custody)
+        vault._prepare_snapshot_root(center)  # repeat cannot restore shared access
+        paths[owner]=str(made.directory); snapshots.append(made)
+    # Refuse another principal before any snapshot is created.
+    import dataclasses
+    wrong=dataclasses.replace(custody,owner_user_id='alice')
+    try: vault.snapshot_llm_subscription_credential(universe_dir=center,custody=wrong)
+    except PermissionError: pass
+    else: raise AssertionError('foreign snapshot custody admitted')
+    (proof_dir/'manifest.tmp').write_text(json.dumps(paths))
+    (proof_dir/'manifest.tmp').chmod(0o644)
+    (proof_dir/'manifest.tmp').replace(proof_dir/'manifest.json')
+    for pid in snapshot_children:
+        assert os.waitpid(pid,0)[1]==0,'dedicated snapshot permissions failed'
+    assert all((proof_dir/owner).read_text()=='PASS'
+               for owner in (*identities,'legacy','broker-reader'))
+    for made in snapshots:
+        vault.cleanup_llm_credential_snapshot(made)
+        assert not made.directory.exists()
+    print('snapshot prerequisite: Alice/Bob dedicated UID/GID read own sealed bytes; '
+          'CLI lock/version works; foreign/vault/write/list/shared-group/broker denied; '
+          'inherited foreign ACL removed; daemon cleanup works; '
+          'not provider-class launcher acceptance',flush=True)
 out=io.BytesIO(); Image.new('RGB',(8,8),'blue').save(out,format='PNG')
 for owner in identities:
     with identity_context(Identity(owner,owner)):
@@ -233,6 +344,7 @@ def main():
     parser.add_argument('--bootstrap-failure', action='store_true')
     parser.add_argument('--stream', action='store_true')
     parser.add_argument('--git', action='store_true')
+    parser.add_argument('--snapshots', action='store_true')
     args = parser.parse_args()
     if sum((args.stream, args.service_death, args.broker_death, args.bootstrap_failure)) > 1:
         parser.error('run stream and failure modes independently')
@@ -248,7 +360,8 @@ def main():
     command += ['--entrypoint', '/opt/venv/bin/python', digest, '-I', '-B', '-']
     print('production image:', digest, flush=True)
     death = 'broker' if args.broker_death else 'mapper' if args.service_death else ''
-    script = f'DEATH={death!r}\nFAIL={args.bootstrap_failure!r}\nGIT={args.git!r}\n' + CONTAINER
+    script = (f'DEATH={death!r}\nFAIL={args.bootstrap_failure!r}\nGIT={args.git!r}\n'
+              f'SNAPSHOTS={args.snapshots!r}\n' + CONTAINER)
     if args.stream:
         from linux_oracle import production_stream_oracle
 

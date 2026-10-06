@@ -1,4 +1,67 @@
-# Current delivery: D72 local git_bridge through the bounded launcher
+# Current delivery: D73 dedicated-owner sealed snapshot prerequisite
+
+Started at **891476fe23**; requested ff-only pull was already current. D73
+replaces shared work-group access to sealed provider snapshots when the bounded
+client is installed. Broker-resolved custody must match the protected migrated
+center label. Descriptor ACLs give the dedicated owner read/traverse only;
+parents deny listing, shared groups and other users have no access, and inherited
+foreign/default ACLs are removed. Daemon ownership, writes and cleanup remain.
+
+Production Dockerfile image:
+`sha256:ba4bb30d59ae54fede1f70c0c2b7fa8f791832c9f8faa0b88a41f31a099dc0fa`.
+
+Verified commands (exit 0):
+- `python scripts/role_service_bootstrap_probe.py --image tinyassets-uid-d73:snapshots --snapshots --git`
+  Real daemon snapshot creation/custody checks through live broker identity IPC;
+  Alice/Bob dedicated identities read only their own snapshot, installed CLI
+  lock/version succeeds, foreign/vault/write/list/shared-group/broker access
+  denies, seeded foreign/default ACLs disappear, repeat preparation and daemon
+  cleanup succeed. These snapshot reader children are pre-retired fixture
+  processes, **not additional launcher engine-class acceptance**.
+- Same command with `--stream`: git_bridge/workspace-git, both actual decoders,
+  HTTPS GET and accounted POST, replay refusal, source-bound evidence and two
+  OAuth refresh rotations pass. One service lifetime; historical fixture output
+  mentioning restart is not a restart claim for this run.
+- `python scripts/role_reader_alias_probe.py --image tinyassets-uid-d73:snapshots`:
+  **114 denied, 19 own reads, zero foreign reads**, foreign bytes unchanged.
+- `python scripts/linux_oracle.py -- tests/test_role_snapshot.py tests/test_credential_vault.py -q -rs`:
+  **37 passed, zero skips**.
+- Targeted Ruff, mirror parity and strict OpenSpec validation pass. Full Ruff
+  retains the same **55 baseline findings** in unchanged files.
+- Affected caller/heavy suite (`test_background_served_provider`,
+  `test_custody_carries_across_rotation`, `test_native_model_discovery`,
+  `test_run_provider_session`, `test_subscription_credential_refresh`,
+  `test_universe_path_io_guard`, `test_provider_work_authority`, all under
+  `python scripts/linux_oracle.py -- ... -q -rs`): **243 passed, 1 failed,
+  zero skips**. The failure is the existing raw-I/O inventory guard: supervisor
+  `_protect_daemon: .read_text()`, vault `_persist_role_vault: .unlink()` and
+  `_set_snapshot_directory_mode: os.open()`, decoder `_shown: .open()`.
+  Running the same AST inventory against `git show 891476fe23:<file>` reproduces
+  every extra entry. D73 adds none. The gate is not weakened or counted as passed;
+  it still needs closure before the build PR.
+
+Cross-family peer-agents review: **APPROVE**, no floor/correctness finding.
+Review notes that replacing `.runtime` ACLs removes legacy work-group traversal;
+the remaining runtime consumer/class matrix must verify dedicated access before
+activation. No retained authority or profile change. The first new probe failed
+because its public synthetic manifest inherited umask 007; the fixture now
+publishes that path-only manifest atomically at 0644. No product guard changed.
+
+Release-critical files for this slice: **0** (no deployment/privileged-chain/gate
+file edit). Runtime files: credential_vault.py, new role_snapshot.py and mirrors;
+probe, regression tests, design and credential-vault delta updated.
+
+Remaining in requested order: every other actual engine class through the
+launcher (provider CLI/discovery/auth, engine-MCP, node/tool, provision/registry/
+worker, remote git, box, ingestion/video), dynamic admissions and complete
+class/path/reader matrix; full D61 quarantine/migration plus two-pass deletion;
+restrictive owner-tree reverse migration and actual old CMD boot; startup and
+healthcheck integration. **ui-preview is the one founder-deferred class** and
+remains unadmitted. No full task checkbox newly complete, no startup activation,
+no PR, no deployment. Finish-all remains incomplete.
+
+---
+# Prior delivery: D72 local git_bridge through the bounded launcher
 
 D72 implementation pushed at **93c6dd98b2**; remote SHA verified. Hygiene:
 3 tests added, 0 removed, 0 tampering findings.

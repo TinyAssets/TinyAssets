@@ -2124,6 +2124,26 @@ per-owner UID/GID and private networking remain unchanged. This closes local
 bridge git operations, not remote transport or the whole workspace-worker class.
 No startup activation; ui-preview remains unadmitted.
 
+### D73. Mechanical dedicated-owner access to sealed launch snapshots
+
+D54's shared work-group snapshot permissions cannot admit D60 identities.
+Keep sealed launch credentials as daemon-owned protected metadata (D65), not
+engine-owned work files. On a migrated daemon-owned canonical center, match
+its reserved group label to the custody principal's broker-resolved UID/GID
+before copying credentials. Set a minimal POSIX access ACL through the open
+descriptor: only that dedicated owner receives read/traverse; group and other
+receive no access. Runtime/snapshot parents grant traverse only, not listing;
+the exact snapshot grants read/list but no write. Remove inherited default
+ACLs. Preserve daemon-only modification and cleanup and the read-only lock
+descriptor used by the installed CLI wrapper. No chown capability, owner group
+membership, broader cell view, or new privileged component is introduced.
+
+This is a provider-launch prerequisite, not provider/discovery/auth engine-class
+acceptance. The bounded client selects it; legacy staged D54 remains a separate
+historical proof. Repreparing parents must preserve dedicated access and never
+restore shared-group access. Unlabelled roots or mismatched broker identities
+refuse. ui-preview and startup remain unadmitted.
+
 D72 review correction: **AGREE** that out-of-data catalog capability probes must
 remain disabled results, not exceptions. Selected bridge refusals return rc126
 with a fixed error, preserving the existing structured-result API without any

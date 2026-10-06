@@ -9,6 +9,21 @@ The vault file and any materialized credential artifacts (for example a Codex `a
 
 As-built limitation: there is no encryption at rest, no cipher, and no key management; base64 fields such as `token_b64` / `secret_b64` are an encoding convention, not encryption, and best-effort `chmod` is inert on operating systems that do not honor POSIX modes. A layered cipher/store design exists only as an approved future design and is not present in the code on `main`.
 
+Under D60's bounded owner launcher, the following replaces the shared work-group
+snapshot rule above: publication SHALL match the custody principal's broker
+UID/GID to the protected migrated center label before reading material. Sealed
+snapshots remain daemon-owned protected metadata. Descriptor-based POSIX ACLs
+grant only that dedicated owner read/traverse, with no group/other access, write
+access, or inherited default ACL. Parents grant traverse without listing. Missing
+identity, unsupported ACLs, and unmigrated centers refuse without shared-group fallback.
+
+#### Scenario: Repreparation cannot restore another owner's snapshot access
+- **WHEN** snapshot parents contain legacy shared-group or foreign named/default
+  ACL entries and the daemon prepares and reprepares a dedicated owner's snapshot
+- **THEN** only that owner can read its exact snapshot and lock its read-only lock
+- **AND** another owner, the legacy work-group engine, and broker cannot read it
+- **AND** owner writes and sibling listing fail while daemon cleanup succeeds
+
 #### Scenario: Secret is stored in cleartext under a restricted file mode
 
 - **WHEN** a credential with a plaintext or base64-encoded secret is written to the vault

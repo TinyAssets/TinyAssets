@@ -1877,6 +1877,16 @@ def _set_snapshot_directory_mode(path: Path, identity: tuple[int, int]) -> None:
         if (_snapshot_file_identity(opened) != identity or opened.st_uid != os.geteuid()
                 or not stat.S_ISDIR(opened.st_mode)):
             raise PermissionError("credential snapshot directory identity changed")
+        from tinyassets.role_snapshot import owner_uid, seal
+
+        runtime = next((p for p in (path, *path.parents) if p.name == '.runtime'), None)
+        dedicated = owner_uid(runtime.parent) if runtime is not None else None
+        if dedicated is not None:
+            seal(descriptor, dedicated, directory=True,
+                 traverse_only=path.name in {'.runtime', 'provider-launch-credentials'})
+            if _plain_snapshot_directory(path) != identity:
+                raise PermissionError("credential snapshot directory identity changed")
+            return
         os.fchown(descriptor, -1, WORK_GID)
         os.fchmod(descriptor, SNAPSHOT_DIRECTORY_MODE)
         final = os.fstat(descriptor)
@@ -1932,12 +1942,17 @@ def _write_exclusive_snapshot_file(path: Path, contents: bytes) -> None:
         selected = broker_selected()
         if selected:
             from tinyassets.role_modes import SNAPSHOT_FILE_MODE, WORK_GID
+            from tinyassets.role_snapshot import owner_uid, seal
 
-            os.fchown(descriptor, -1, WORK_GID)
-            os.fchmod(descriptor, SNAPSHOT_FILE_MODE)
-            final = os.fstat(descriptor)
-            if final.st_gid != WORK_GID or stat.S_IMODE(final.st_mode) != SNAPSHOT_FILE_MODE:
-                raise PermissionError("credential snapshot file permissions unavailable")
+            dedicated = owner_uid(path.parent.parent.parent.parent)
+            if dedicated is not None:
+                seal(descriptor, dedicated, directory=False)
+            else:
+                os.fchown(descriptor, -1, WORK_GID)
+                os.fchmod(descriptor, SNAPSHOT_FILE_MODE)
+                final = os.fstat(descriptor)
+                if final.st_gid != WORK_GID or stat.S_IMODE(final.st_mode) != SNAPSHOT_FILE_MODE:
+                    raise PermissionError("credential snapshot file permissions unavailable")
         remaining = memoryview(contents)
         while remaining:
             written = os.write(descriptor, remaining)
@@ -2113,6 +2128,15 @@ def snapshot_llm_subscription_credential(
     universe = Path(universe_dir).resolve(strict=True)
     if custody.universe_id != universe.name or custody.service not in ("codex", "claude"):
         raise PermissionError("credential snapshot root is not current")
+    from tinyassets.role_snapshot import owner_uid
+
+    dedicated = owner_uid(universe)
+    if dedicated is not None:
+        from tinyassets.broker.owner_identities import owner_identity
+
+        expected = owner_identity(universe.parent, principal=custody.owner_user_id)
+        if expected.uid != dedicated or expected.gid != dedicated:
+            raise PermissionError('snapshot custody does not match the dedicated owner')
     record = _usable_subscription_record(universe, custody.service)
     material = _subscription_material(universe, custody.service, record)
     material_digest = "sha256:" + hashlib.sha256(material).hexdigest()
