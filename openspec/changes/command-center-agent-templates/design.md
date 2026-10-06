@@ -14,5 +14,16 @@ Recipient binding IDs derive from owner, universe, install pin and stable compon
 
 Every template and declared dependency is checked before materialisation. Existing public-version readability checks precede snapshot loading. Nested `invoke_branch_spec` dependencies are unsupported in this slice and refuse rather than retaining a source branch reference. All automations stay paused. No-provider installation is deterministic.
 
+The authenticated addressed agent exposes an optional `agent_slug` from the
+completed install's platform-owned consent pin. Resolution joins the exact
+recipient binding and definition to the pin's template key and recorded progress,
+then uses `plan_install`'s pinned placement. All instruction templates in one
+package share that package's root harness directory. File inventory subagents
+are not guessed from template names or binding IDs. Main, uninstalled agents,
+screen-only copies, incomplete installs and ownerless legacy pins have no installed
+directory. This is directory provenance only, not executable-hook authorization;
+the harness must retain its separate activation and safe file-read checks.
+
 ## Risks / Trade-offs
+
 Instruction text changes agent behavior and therefore always requires recipient consent. A public definition with additional unsupported contracts cannot be installed by this instruction-template path; no claim is made that its omitted runtime would work. This change does not recover unpublished Village villagers. Frontend support for `agent_refs` is coordinated with the integration owner before delivery. Independent floor review and browser integration proof remain required.

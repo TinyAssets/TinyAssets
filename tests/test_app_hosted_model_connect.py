@@ -12,6 +12,7 @@ import subprocess
 
 import pytest
 
+from tests.app_sheet_harness import recovery_source
 from tests.test_onboarding_app import _js_function
 from tinyassets.onboarding import render_app_html
 
@@ -38,6 +39,12 @@ let queueScope='',queueOwner='',uploadsRestored=false;const Uploads=null;
 let exchangeResult=null,answerResult={status:'answered'},answerThrows=null;
 let signedInNow=false,workosCalls=0,chatCount=0,refreshes=0,engineConnected=null;
 const window={location:{pathname:'/app',search:'',assign:url=>navigations.push(url)}};
+window.addEventListener=()=>{};
+const document={getElementById:$,addEventListener(){}};
+// The harness owns the clock; browser proofs exercise scheduled recovery.
+const timers=[];
+const setInterval=fn=>{timers.push(fn);return timers.length;};
+const setTimeout=fn=>{timers.push(fn);return timers.length;};
 const history={replaceState:(a,b,url)=>{window.location.pathname=url;window.location.search='';}};
 const token=()=>auth,authHeaders=()=>({Authorization:auth});
 let ensureFreshToken=async()=>{};
@@ -77,14 +84,15 @@ __SOURCE__
    grant:$('hosted-model-grant').textContent,engineConnected}));
 })().catch(e=>{console.error(e);process.exitCode=1;});
 """
-    source = (controller + _js_function(html, "setQueueScope")
+    source = (recovery_source(html) + "\nconst AppRecovery=window.AppRecovery;\n"
+              + controller + _js_function(html, "setQueueScope")
               + _js_function(html, "setQueueOwner")
               + _js_function(html, "enterSignedIn") + _js_function(html, "boot"))
     node = shutil.which("node")
     assert node, "Node is required to execute browser tests"
-    result = subprocess.run([node, "-e", program.replace("__SOURCE__", source)
+    result = subprocess.run([node, "-"], input=program.replace("__SOURCE__", source)
                              .replace("__PRESET__", json.dumps(PRESET))
-                             .replace("__STEPS__", steps)],
+                             .replace("__STEPS__", steps),
                             capture_output=True, text=True, encoding="utf-8", timeout=20)
     assert result.returncode == 0, result.stderr
     return json.loads(result.stdout)
@@ -405,6 +413,7 @@ def test_finishing_keeps_custom_ui_current_owner_hooks():
 const assert=require('node:assert/strict'),layoutCalls=[];
 globalThis.AppUI={init(){layoutCalls.push(['init']);},
  reset(){layoutCalls.push(['reset']);},
+ resumePublicRun(home){layoutCalls.push(['resumePublicRun',home]);},
  enable(home,principal){layoutCalls.push(['enable',home,principal]);}};
 answerResult=()=>{me={setup:'connected',universe_id:'u-owner',principal_id:'owner'};
  return {status:'answered'};};
@@ -412,6 +421,7 @@ await boot();
 assert(layoutCalls.some(call=>call[0]==='init'));
 assert(layoutCalls.some(call=>call[0]==='reset'));
 assert.deepEqual(layoutCalls.filter(call=>call[0]==='enable'),[['enable','u-owner','owner']]);
+assert.deepEqual(layoutCalls.filter(call=>call[0]==='resumePublicRun'),[['resumePublicRun','u-owner']]);
 """)
     assert len(result["answers"]) == 1
     assert result["setup"] == "connected"

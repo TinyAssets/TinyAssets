@@ -45,18 +45,21 @@ def test_phone_conversation(app_url, browser, tmp_path):
     send = _box(page, '#btn-send')
     assert 0 <= send['x'] and send['x'] + send['width'] <= 390
     assert 0 <= send['y'] and send['y'] + send['height'] <= 844
-    assert _box(page, '#request-rail')['height'] <= 44
+    assert page.locator('#request-rail').is_hidden()
+    assert _box(page, '#needs-you-open')['height'] <= 44
     assert page.locator('#request-history').is_hidden()
     assert page.locator('#request-history p').count() == 3
-    assert page.locator('#pending-requests > #rail-items').count() == 1
-    assert page.locator('#thread #btn-rail-add').is_visible()
+    assert page.locator('#request-rail > #rail-items').count() == 1
+    assert page.locator('#needs-you-open').is_visible()
     assert page.locator('#chat-cloud-resize').is_hidden()
     stage, cloud = _box(page, '#chat-stage'), _box(page, '#chat-cloud')
     assert cloud == pytest.approx(stage, abs=1)
-    page.locator('#rail-head').tap()
+    page.locator('#needs-you-open').tap()
+    assert page.locator('#needs-you-connect').is_visible()
+    page.locator('#needs-you-history').tap()
     assert page.locator('#request-history').is_visible()
     assert page.locator('#request-history button').count() == 0
-    page.locator('#rail-head').tap()
+    page.locator('#request-sheet-close').tap()
     # New history arrives without changing the folded chip into a pending queue.
     page.evaluate("""() => InlineApprovals.history([
         {title:'Another answered request', status:'skipped'}])""")
@@ -96,13 +99,15 @@ def test_phone_conversation(app_url, browser, tmp_path):
     page.wait_for_function(
         "() => document.getElementById('rail-head').textContent === 'Request history'"
     )
-    assert page.locator('#request-rail').is_visible()
-    page.locator('#rail-head').tap()
-    assert page.locator('#rail-head').get_attribute('aria-expanded') == 'true'
+    assert page.locator('#request-rail').is_hidden()
+    page.locator('#needs-you-open').tap()
+    page.locator('#needs-you-history').tap()
+    assert page.locator('#request-rail').evaluate('node => node.open') is True
     assert page.locator('#request-history').evaluate(
         "node => getComputedStyle(node).display") != 'none'
     assert page.locator('#request-history p').count() == 0
-    assert page.locator('#thread #btn-rail-add').is_visible()
+    page.locator('#request-sheet-close').tap()
+    assert page.locator('#needs-you-open').is_visible()
     context.close()
 
 

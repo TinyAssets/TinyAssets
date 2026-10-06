@@ -225,11 +225,16 @@ def render_app_html(build: str | None = None) -> tuple[str, str]:
     """
     import json
 
+    from tinyassets.onboarding.app_modules import chat_renderer_source, module_url, recovery_source
+
     nonce = secrets.token_urlsafe(16)
     cfg = app_config() if build is None else app_config(build=build)
     blob = json.dumps(cfg).replace("<", "\\u003c").replace("\u2028", "").replace("\u2029", "")
     html = (
         _HTML_PATH.read_text("utf-8")
+        .replace("__TA_APP_RECOVERY__", recovery_source())
+        .replace("__TA_CHAT_RENDER__", chat_renderer_source())
+        .replace("__TA_MERMAID_URL__", module_url("mermaid_vendor.js"))
         .replace("__TA_APP_UI__", _HTML_PATH.with_name("app_ui.js").read_text("utf-8"))
         .replace(_NONCE_PLACEHOLDER, nonce)
         .replace(_CONFIG_PLACEHOLDER, blob)
@@ -1279,6 +1284,12 @@ async def _handle_memory(request: Any) -> Any:
         if not _same_origin_json(request, str(app_config().get("resource") or "")):
             return JSONResponse({"error": "cross_origin_rejected"}, status_code=403,
                                 headers=_NO_STORE)
+        from tinyassets.onboarding.owner_sessions import require
+        try:
+            require(request, owner=current_identity().user_id)
+        except PermissionError:
+            return JSONResponse({"error": "interactive_approval_required"},
+                                status_code=403, headers=_NO_STORE)
         data = await _read_small_json(request)
         if data is None:
             raise ValueError("invalid JSON")
@@ -2544,11 +2555,17 @@ def onboarding_routes() -> list[Any]:
         handle_service_worker,
     )
     from tinyassets.onboarding.owner_sessions import begin as owner_sign_in
+    from tinyassets.onboarding.owner_unread import handle_unread
+    from tinyassets.onboarding.public_run import handle_public_run
+    from tinyassets.onboarding.soul import handle_soul
     from tinyassets.onboarding.ui_frame import handle_ui_frame
     from tinyassets.owner_door import owner_door_routes
 
     return [
         Route("/app", _handle_app, methods=["GET", "HEAD"]),
+        Route("/app/run/{listing}", handle_public_run, methods=["GET", "HEAD"]),
+        Route("/app/run/{listing}/preview.png", handle_public_run, methods=["GET", "HEAD"]),
+        Route("/app/unread", handle_unread, methods=["GET", "POST"]),
         Route("/app/owner-sign-in", owner_sign_in, methods=["GET"]),
         Route("/app/approvals/{operation}", handle_approval, methods=["POST"]),
         Route("/app/ui-frame", handle_ui_frame, methods=["GET", "HEAD"]),
@@ -2578,6 +2595,7 @@ def onboarding_routes() -> list[Any]:
         Route("/app/ui-prefs", _handle_ui_prefs, methods=["GET", "POST"]),
         Route("/app/rules", _handle_rules, methods=["GET", "POST"]),
         Route("/app/memory", _handle_memory, methods=["GET", "POST"]),
+        Route("/app/soul", handle_soul, methods=["GET", "POST"]),
         Route("/app/profile", _handle_profile, methods=["GET"]),
         Route("/app/turn/interrupt", _handle_turn_interrupt, methods=["POST"]),
         Route("/app/live", _handle_live, methods=["POST"]),

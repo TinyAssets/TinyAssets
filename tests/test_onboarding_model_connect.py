@@ -21,13 +21,13 @@ def ingress(monkeypatch):
     monkeypatch.setattr(onboarding, "_read_home", lambda identity, **kw: "u-owner")
 
 
-def post(operation, data, *, origin="https://tinyassets.io"):
+def post(operation, data, *, origin="https://tinyassets.io", cookie=""):
     async def run():
         async with httpx.AsyncClient(transport=httpx.ASGITransport(
             app=Starlette(routes=onboarding.onboarding_routes())), base_url="https://tinyassets.io",
         ) as client:
             return await client.post("/app/model-connect/" + operation,
-                                     json=data, headers={"Origin": origin})
+                                     json=data, headers={"Origin": origin, "Cookie": cookie})
     return asyncio.run(run())
 
 

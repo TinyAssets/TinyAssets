@@ -151,8 +151,10 @@ class TestQuotaTracker:
 
     def test_cooldown_expires(self):
         qt = QuotaTracker()
+        qt.cooldown("claude-code", 3600)
+        assert qt.available("claude-code") is False
         # Set a cooldown that already expired.
-        qt._cooldowns["claude-code"] = time.monotonic() - 1
+        qt._cooldowns[("", "claude-code")] = time.monotonic() - 1
         assert qt.available("claude-code") is True
 
 
@@ -170,6 +172,7 @@ class TestProviderRouterCall:
         max_cost_microunits: int = 1,
     ):
         carrier = MagicMock(spec=ProviderInvocationCarrier)
+        carrier._receipt = MagicMock(principal_id="owner")
         carrier.provider = provider
         carrier.role = role
         carrier.operation = operation
@@ -410,7 +413,7 @@ class TestProviderRouterCall:
 
         with pytest.raises(AllProvidersExhaustedError):
             await self._bound_call(router, self._carrier(max_tokens=10))
-        assert quota.available("codex") is False
+        assert quota.available("codex", owner="owner") is False
         assert providers["claude-code"].call_count == 0
 
     @pytest.mark.asyncio
@@ -1005,6 +1008,7 @@ class TestCarrierSettlementWithUnknownUsage:
     @staticmethod
     def _settling_carrier():
         carrier = MagicMock(spec=ProviderInvocationCarrier)
+        carrier._receipt = MagicMock(principal_id="owner")
         carrier.provider = "codex"
         carrier.role = "writer"
         carrier.operation = "run_graph"

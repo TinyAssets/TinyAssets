@@ -1,0 +1,41 @@
+name: Deploy during traffic
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, ready_for_review]
+  merge_group:
+    types: [checks_requested]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-traffic-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  deploy-during-traffic:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Allow user namespaces inside the oracle
+        run: |
+          printf '%s\n' 'abi <abi/4.0>,' 'include <tunables/global>' \
+            'profile ta-deploy-userns flags=(unconfined) {' '  userns,' '}' \
+            > "$RUNNER_TEMP/ta-deploy-userns"
+          sudo apparmor_parser -r "$RUNNER_TEMP/ta-deploy-userns"
+      - name: Run traffic component oracle (RED control must reproduce)
+        run: |
+          python scripts/linux_oracle.py --out traffic-out \
+            --apparmor ta-deploy-userns --env DEPLOY_TRAFFIC_EVIDENCE=/out \
+            -- -q tests/test_deploy_during_traffic.py tests/test_ingress_journal.py \
+            --basetemp /tmp/b \
+            --junitxml=/out/junit.xml
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: deploy-traffic-evidence
+          path: traffic-out
+          if-no-files-found: error

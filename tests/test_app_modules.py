@@ -69,8 +69,41 @@ def test_only_allowlisted_basenames_are_served(live, name):
 
 
 def test_another_hash_is_refused(live):
-    """A stale page never imports newer code under its old URL."""
-    assert _get("f" * 16, "main.js").status_code == 404
+    """New bytes are refused under the old key: follow a non-cacheable redirect."""
+    response = _get("f" * 16, "main.js")
+    assert response.status_code == 307
+    assert response.headers["location"] == app_modules.module_url("main.js")
+    assert response.headers["cache-control"] == "no-store"
+    assert not response.body
+
+
+@pytest.mark.parametrize("build", ["../bad", "invalid", "f" * 65, "F" * 16])
+def test_invalid_stale_keys_do_not_redirect(live, build):
+    response = _get(build, "main.js")
+    assert response.status_code == 404
+    assert "location" not in response.headers
+
+
+def test_old_url_resolves_after_module_content_changes(live, tmp_path, monkeypatch):
+    modules = tmp_path / "modules"
+    modules.mkdir()
+    (modules / "main.js").write_text("export const generation=2;", encoding="utf-8")
+    monkeypatch.setattr(app_modules, "MODULE_DIR", modules)
+    app_modules.build_segment.cache_clear()
+    try:
+        current = app_modules.build_segment()
+        assert current != live
+        old = _get(live, "main.js")
+        assert old.status_code == 307
+        assert old.headers["location"] == f"/app/m/{current}/main.js"
+        assert old.headers["cache-control"] == "no-store"
+        fresh = _get(current, "main.js")
+        assert fresh.status_code == 200
+        assert bytes(fresh.body) == b"export const generation=2;"
+        assert "immutable" in fresh.headers["cache-control"]
+        assert _get(live, "missing.js").status_code == 404
+    finally:
+        app_modules.build_segment.cache_clear()
 
 
 def test_a_symlink_in_the_module_dir_is_never_served(tmp_path, monkeypatch):

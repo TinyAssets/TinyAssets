@@ -89,12 +89,26 @@ html,body{margin:0;padding:0;height:100%;font:15px/1.5 system-ui,sans-serif;colo
   var pending = Object.create(null);
   var nextId = 1;
   var started = false;
+  var bootComplete = false;
+  var bootFault = false;
 
   function fault(text) {
+    bootFault = true;
     var node = document.getElementById("ta-ui-fault");
     node.textContent = String(text);
     node.hidden = false;
+    parentWindow.postMessage({ta_ui: PROTOCOL, type: "boot_failed"}, "*");
   }
+  function bootError() {
+    if (started && !bootComplete) { fault("This UI failed while starting."); }
+  }
+  function bootSucceeded() {
+    if (bootFault) { return; }
+    bootComplete = true;
+    parentWindow.postMessage({ta_ui: PROTOCOL, type: "boot_complete"}, "*");
+  }
+  window.addEventListener("error", bootError, true);
+  window.addEventListener("unhandledrejection", bootError);
 
   // The bundle's only capability. Every call is a request to the parent, which
   // decides whether the action exists at all; this side never assumes one does.
@@ -198,8 +212,12 @@ html,body{margin:0;padding:0;height:100%;font:15px/1.5 system-ui,sans-serif;colo
       if (bundle.script) {
         var script = document.createElement("script");
         if (bundle.script_type === "module") { script.type = "module"; }
+        script.addEventListener("load", bootSucceeded);
         script.textContent = String(bundle.script);
         document.body.appendChild(script);
+        if (bundle.script_type !== "module") { bootSucceeded(); }
+      } else {
+        bootSucceeded();
       }
     }).catch(function (err) {
       fault("This UI failed while starting: " + ((err && err.message) || "unknown error"));

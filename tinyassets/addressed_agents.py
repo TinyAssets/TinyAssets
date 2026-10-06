@@ -39,6 +39,8 @@ class AddressedAgent:
     name: str
     #: ``(component_key, kind, instructions)`` from the bound definition, in key order.
     instructions: tuple[tuple[str, str, str], ...]
+    #: Completed recipient package placement; never a binding-id-derived path.
+    agent_slug: str | None = None
 
 
 def normalize_agent_id(agent_id: object) -> str:
@@ -173,10 +175,13 @@ def resolve(
     if not is_conversable(binding, owner=owner, universe_id=universe_id):
         raise refused
     definition = get_definition(base_path, binding["agent_definition_id"]) or {}
+    from tinyassets.command_center_agent_templates import installed_agent_slug
+
     return AddressedAgent(
         agent_id=wanted,
         name=agent_name(binding, definition),
         instructions=_instructions(definition),
+        agent_slug=installed_agent_slug(base_path, binding=binding),
     )
 
 

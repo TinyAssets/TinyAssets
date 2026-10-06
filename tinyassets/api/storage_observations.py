@@ -35,6 +35,11 @@ def _base() -> dict:
                        "allocated_disk_blocks", "billing_attribution"],
         "hard_link_attribution": "first_category_in_declared_order",
         "category_order": list(_CATEGORIES),
+        "accounting_note": (
+            "Observed footprint includes platform provider runtime and scratch; "
+            "it is not account usage or evidence that the account quota is full. "
+            "Provider runtime includes protected credential materialization/cache."
+        ),
     }
 
 
@@ -190,10 +195,10 @@ def _measure(root: Path, uid: str, identity: tuple[int, int], readonly) -> dict:
                 try:
                     walker.child(universe_fd, pool.WORKSPACES_DIR, "permanent_workspaces",
                                  missing_is_absent=True)
-                    walker.child(universe_fd, ".runtime", "provider_runtime",
+                    walker.child(universe_fd, ".credentials", "provider_runtime",
                                  missing_is_absent=True)
                     walker.walk(universe_fd, "other_universe_files",
-                                exclude=(pool.WORKSPACES_DIR, ".runtime"))
+                                exclude=(pool.WORKSPACES_DIR, ".credentials"))
                     _scratch(walker, root_fd, root, uid, readonly)
                 except _BoundReached:
                     pass

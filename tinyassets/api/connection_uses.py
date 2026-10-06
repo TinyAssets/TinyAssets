@@ -236,7 +236,8 @@ def select_model_if_unpowered(
     Deterministic: the owner's universe is unpowered, and they just confirmed
     this exact model list on the request, so this connection becomes the
     serving source with explicit access to those models and no spending
-    (free-only caps). A powered universe is left exactly as it is.
+    (free-only caps). A powered universe accepts the additional source while
+    retaining its serving root and every existing member's limits.
     """
     from tinyassets.api.helpers import _universe_dir
     from tinyassets.api.pending_requests import _serving_llm_bound
@@ -244,6 +245,9 @@ def select_model_if_unpowered(
     from tinyassets.provider_assignment_manifest import ModelAccess
 
     if _serving_llm_bound(base, uid, actor):
+        _accept_additional_model_source(
+            base=base, uid=uid, actor=actor, definition_id=definition_id, model=model,
+        )
         return {"status": "unchanged", "reason": "already_powered"}
     access = ModelAccess(
         "explicit", tuple(entry["id"] for entry in model["models"]), None,
@@ -252,6 +256,84 @@ def select_model_if_unpowered(
         base_path=base, universe_dir=_universe_dir(uid), owner_user_id=actor,
         universe_id=uid, service=definition_id, model_access={definition_id: access},
     )
+
+
+def _accept_additional_model_source(*, base, uid, actor, definition_id, model):
+    """Complete the owner's model-use confirmation without replacing their root."""
+    from tinyassets.custom_agents import serving_binding_candidates
+    from tinyassets.exceptions import ProviderError
+    from tinyassets.onboarding.serving import _gesture_lock, _require_current_admin
+    from tinyassets.provider_assignment import load_provider_assignment
+    from tinyassets.provider_assignment_manifest import ModelAccess
+    from tinyassets.provider_serving_binding import bind_serving_provider, set_serving
+    from tinyassets.shared_self import require_founder_home
+
+    with _gesture_lock(uid):
+        require_founder_home(base, uid, actor)
+        _require_current_admin(base, universe_id=uid, owner=actor)
+        assignment = load_provider_assignment(base, universe_id=uid)
+        if (assignment is None or assignment.owner_user_id != actor
+                or not assignment.manifest_digest):
+            raise PermissionError("confirm model access for the existing legacy source first")
+        bindings = serving_binding_candidates(base, universe_id=uid, owner_user_id=actor)
+        if len(bindings) != 1:
+            raise PermissionError("one owned serving agent required to accept model source")
+        binding = bindings[0]
+        access = {m.provider.removeprefix("api_key_http:"): m.access
+                  for m in assignment.candidates}
+        if definition_id in access:
+            return  # Reconnecting never broadens the owner's existing limits.
+        access[definition_id] = ModelAccess(
+            "explicit", tuple(entry["id"] for entry in model["models"]), None,
+        )
+        bound = bind_serving_provider(
+            base_path=base, universe_dir=base / uid, owner_user_id=actor, universe_id=uid,
+            agent_binding_id=binding["agent_binding_id"], expected_revision=binding["revision"],
+            expected_binding_updated_at=binding["updated_at"],
+            provider=assignment.provider.removeprefix("api_key_http:"), model_access=access,
+            expected_assignment_digest=assignment.assignment_digest, require_current_home=True,
+        )["agent_binding"]
+        if binding["status"] == "serving" and bound["status"] != "serving":
+            published = load_provider_assignment(base, universe_id=uid)
+            try:
+                set_serving(
+                    base_path=base, universe_dir=base / uid, owner_user_id=actor, universe_id=uid,
+                    agent_binding_id=bound["agent_binding_id"], expected_revision=bound["revision"],
+                    expected_binding_updated_at=bound["updated_at"],
+                    enabled=True, expected_assignment_digest=published.assignment_digest,
+                    require_current_home=True,
+                )
+            except (PermissionError, ValueError, LookupError, ProviderError, OSError):
+                # Both fences must still match: recovery cannot overwrite an
+                # intervening owner edit, revocation or another connection.
+                try:
+                    restored = bind_serving_provider(
+                        base_path=base, universe_dir=base / uid, owner_user_id=actor,
+                        universe_id=uid, agent_binding_id=bound["agent_binding_id"],
+                        expected_revision=bound["revision"],
+                        expected_binding_updated_at=bound["updated_at"],
+                        provider=assignment.provider.removeprefix("api_key_http:"),
+                        model_access={m.provider.removeprefix("api_key_http:"): m.access
+                                      for m in assignment.candidates},
+                        expected_assignment_digest=published.assignment_digest,
+                        require_current_home=True,
+                    )["agent_binding"]
+                    prior = load_provider_assignment(base, universe_id=uid)
+                    set_serving(
+                        base_path=base, universe_dir=base / uid, owner_user_id=actor,
+                        universe_id=uid, agent_binding_id=restored["agent_binding_id"],
+                        expected_revision=restored["revision"], enabled=True,
+                        expected_binding_updated_at=restored["updated_at"],
+                        expected_assignment_digest=prior.assignment_digest,
+                        require_current_home=True,
+                    )
+                except (PermissionError, ValueError, LookupError, ProviderError, OSError):
+                    raise PermissionError(
+                        "Model source acceptance and serving recovery failed; review model setup"
+                    ) from None
+                raise PermissionError(
+                    "Model source acceptance failed; previous serving model setup restored"
+                ) from None
 
 
 def configure_connection(*, universe_id: str = "", payload: Any = None) -> dict[str, Any]:

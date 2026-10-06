@@ -13,10 +13,10 @@ loaded yet.
   serves (``build_segment``), not the deployment receipt: during a deploy the
   new image runs before the receipt moves, and a receipt-keyed URL would have
   cached the new bytes forever under the old key (Codex on #4281). A request
-  for another hash is a 404, never newer code under an older page's URL, so the
-  response is cacheable forever (``immutable``). S1 must make a failed module
-  load reload the page, because code that never started cannot run the
-  existing build check.
+  for another valid content hash redirects without caching to the current URL.
+  New bytes are never cached under an older page's URL. Current responses stay
+  cacheable forever (``immutable``); the independent shell recovery listener
+  handles module load failure and replaces shells from an earlier build.
 * **Public.** Like ``/app`` and ``/app/sw.js`` the modules load before any
   bearer exists. They are static, carry no secret and no identity; the auth
   middleware exempts exactly this path shape (``is_module_path``).
@@ -65,6 +65,16 @@ def module_url(name: str) -> str:
     return f"/app/m/{build_segment()}/{name}"
 
 
+def chat_renderer_source() -> str:
+    """Trusted packaged script, also loadable by a frontend without owner storage."""
+    return (MODULE_DIR.parent / "chat_render.js").read_text(encoding="utf-8")
+
+
+def recovery_source() -> str:
+    """Trusted packaged recovery script; loading it never consults owner storage."""
+    return (MODULE_DIR.parent / "app_recovery.js").read_text(encoding="utf-8")
+
+
 def is_module_path(path: str) -> bool:
     """The exact public path shape, for the auth middleware's carve-out."""
     return _PATH_RE.fullmatch(path) is not None
@@ -91,15 +101,20 @@ def script_source(resource: str) -> str:
 
 async def handle_app_module(request: Any) -> Any:
     """``GET``/``HEAD /app/m/{build}/{name}``: one allowlisted module, or 404."""
-    from starlette.responses import PlainTextResponse, Response
+    from starlette.responses import PlainTextResponse, RedirectResponse, Response
 
     from tinyassets.onboarding import onboarding_enabled
 
     build = request.path_params.get("build", "")
     name = request.path_params.get("name", "")
     current = build_segment()
-    if not onboarding_enabled() or build != current or name not in module_names():
+    if not onboarding_enabled() or name not in module_names():
         return PlainTextResponse("Not Found", status_code=404)
+    if build != current:
+        if not re.fullmatch(r"[0-9a-f]{16}", build):
+            return PlainTextResponse("Not Found", status_code=404)
+        return RedirectResponse(module_url(name), status_code=307,
+                                headers={"Cache-Control": "no-store"})
     body = (MODULE_DIR / name).read_bytes()
     headers = {
         "X-Content-Type-Options": "nosniff",

@@ -11,6 +11,40 @@ browser = _browser
 pytestmark = pytest.mark.real_browser
 
 
+def test_notification_is_informational_and_opens_source_chat(app_url, browser):
+    page = browser.new_page(viewport={"width": 390, "height": 844})
+    _enter_chat(page, app_url)
+    page.evaluate("""() => {
+        window.openedAgents=[]; window.dismissals=[]; window.scrolledItems=[];
+        HTMLElement.prototype.scrollIntoView=function(){
+            if(this.dataset.itemId)scrolledItems.push(this.dataset.itemId);
+        };
+        drawHistoryTurns([{speaker:'universe',text:'Report details',ts:10,
+            consumer_turn_id:'turn_report'}]);
+        addressAgent=async agent=>openedAgents.push(agent.agent_id);
+        MCP.callTool=async (name,args)=>{dismissals.push(args);return {status:'withdrawn'};};
+        renderRail([{request_id:'notice',title:'Report ready',body:'All tests passed',
+            agent:'social-manager',informational:true,requires_answer:false,
+            action:{type:'notify',attachment_ref:'file_report',item_id:'turn_report'},fields:[],items:[]}]);
+    }""")
+    page.locator('#needs-you-open').click()
+    page.get_by_role('button', name='Report ready', exact=False).click()
+    sheet = page.locator('#request-rail')
+    assert sheet.get_by_text('Notification · No answer needed').is_visible()
+    assert sheet.get_by_text('Attachment: file_report').is_visible()
+    assert sheet.locator('input:visible,textarea:visible').count() == 0
+    assert sheet.get_by_role('button', name='Accept', exact=True).count() == 0
+    sheet.get_by_role('button', name='Open chat', exact=True).click()
+    assert page.evaluate('openedAgents') == ['social-manager']
+    assert page.evaluate('scrolledItems') == ['turn_report']
+    page.locator('#needs-you-open').click()
+    page.get_by_role('button', name='Report ready', exact=False).click()
+    sheet.get_by_role('button', name='Dismiss', exact=True).click()
+    page.wait_for_function('dismissals.length === 1 && railCache.length === 0')
+    assert page.evaluate('dismissals[0].operation') == 'withdraw_request'
+    page.close()
+
+
 @pytest.mark.parametrize("width", [390, 1280])
 @pytest.mark.parametrize("expanded", [False, True])
 def test_pending_requests_at_latest_and_new_arrival_answer(app_url, browser, width, expanded):
@@ -39,9 +73,8 @@ def test_pending_requests_at_latest_and_new_arrival_answer(app_url, browser, wid
         assert box is not None
         assert 0 <= box["x"] and box["x"] + box["width"] <= width
         assert 0 <= box["y"] and box["y"] + box["height"] <= 844
-        composer = page.locator('#composer').bounding_box()
-        assert box["y"] + box["height"] <= composer["y"] + 1
-        pending = page.locator('#pending-requests').bounding_box()
+        assert page.locator('#needs-you').evaluate('el => el.matches(":modal")')
+        pending = page.locator('#needs-you-items').bounding_box()
         assert pending['y'] <= box['y'] + 1
         assert box['y'] + box['height'] <= pending['y'] + pending['height'] + 1
 
@@ -60,33 +93,43 @@ def test_pending_requests_at_latest_and_new_arrival_answer(app_url, browser, wid
     at_latest()
     page.evaluate('renderRail(asks)')
     at_latest()
-    in_view('#rail-items .rtab:nth-child(1) .rtab-btn')
-    in_view('#rail-items .rtab:nth-child(2) .rtab-btn')
+    assert page.locator('#pending-requests').count() == 0
+    assert not page.locator('#request-rail').is_visible()
+    page.locator('#needs-you-open').click()
+    in_view('#needs-you-items button:nth-child(1)')
+    in_view('#needs-you-items button:nth-child(2)')
     if width == 390:
-        assert page.locator('#rail-items .rtab-btn').first.bounding_box()['height'] < 40
+        assert page.locator('#needs-you-items button').first.bounding_box()['width'] < 390
     if expanded:
-        page.get_by_role('button', name='API Reconnect LinkedIn').click()
+        page.get_by_role('button', name='Reconnect LinkedIn', exact=False).click()
+        assert page.locator('#request-rail').evaluate('el => el.matches(":modal")')
         page.locator('#fb_reconnect').fill('Unsent note')
+        page.locator('#request-sheet-close').click()
     at_latest()
     page.evaluate("""() => {
         asks.push({request_id:'new',kind:'API',title:'A new request',fields:[]});
         renderRail(asks);
     }""")
-    in_view('#rail-items .rtab:nth-child(3) .rtab-btn')
+    if not page.locator('#needs-you').is_visible():
+        page.locator('#needs-you-open').click()
+    in_view('#needs-you-items button:nth-child(3)')
     at_latest()
     if expanded:
         assert page.locator('#fb_reconnect').input_value() == 'Unsent note'
-    page.get_by_role('button', name='API A new request').click()
+    page.get_by_role('button', name='A new request', exact=False).click()
     page.locator('#fb_new').fill('Go ahead')
     page.get_by_role('button', name='Accept', exact=True).click()
     page.wait_for_function('answers.length === 1 && relays.length === 1')
     assert page.evaluate('answers') == [
         {'request_id': 'new', 'feedback': 'Go ahead', 'values': {}}
     ]
-    assert page.evaluate('relays[0][0]') == 'Approved: "A new request" — Go ahead'
-    assert page.locator('#rail-items .rtab').count() == 2
-    in_view('#rail-items .rtab:nth-child(1) .rtab-btn')
-    in_view('#rail-items .rtab:nth-child(2) .rtab-btn')
+    assert page.evaluate('relays[0][0]') == 'Approved: "A new request" \u2014 Go ahead'
+    assert not page.locator('#request-rail').is_visible()
+    page.locator('#needs-you-open').click()
+    assert page.locator('#needs-you-items button').count() == 2
+    in_view('#needs-you-items button:nth-child(1)')
+    in_view('#needs-you-items button:nth-child(2)')
+    page.locator('#needs-you-close').click()
     # A poll must also leave someone reading older messages where they were.
     old_scroll = page.locator('#thread').evaluate('el => (el.scrollTop = 200)')
     page.evaluate("""() => {

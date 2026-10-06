@@ -1,0 +1,41 @@
+{
+  "ingress_520_case": "GREEN",
+  "acceptance": {
+    "status": 202,
+    "body": {
+      "protocol": "accept-v1",
+      "ingress_id": "f2a76cd2-52fe-44fd-953d-d5a5bd67dd5b",
+      "client_send_id": "cc2e9e60-89dd-43a8-9bea-f87c333b21e4",
+      "state": "pending",
+      "runtime_id": null
+    }
+  },
+  "receipt_after_frontend_crash": {
+    "protocol": "receipt-v1",
+    "ingress_id": "f2a76cd2-52fe-44fd-953d-d5a5bd67dd5b",
+    "client_send_id": "cc2e9e60-89dd-43a8-9bea-f87c333b21e4",
+    "state": "pending",
+    "runtime_id": null
+  },
+  "replay": [
+    {
+      "admission_id": "a036d1b2ecbc4ca38ccd88be5bf5788c",
+      "effects": 1,
+      "admissions": 1
+    },
+    {
+      "admission_id": "a036d1b2ecbc4ca38ccd88be5bf5788c",
+      "effects": 1,
+      "admissions": 1
+    }
+  ],
+  "path": "production create_streamable_http_app /mcp",
+  "execution": "transactional fixture sink",
+  "long_turn": "RED",
+  "cloud_and_token_issuer": "isolated fixture observations",
+  "source_digests": {
+    "tinyassets/ingress.py": "42ecdb351209f130e3ef7edef7e37e9dcc2d3cf922004b09c0604685d1ea141d",
+    "tinyassets/universe_server.py": "65c6a3a904a820ff02f170d0ee79dfa4c613ea59a324908cd1c6464350c9ef7a",
+    "tests/fixtures/deploy_ingress_process.py": "ce450640b6fd9c1f557d5eba672465c0a513704c09d56dad98443e1788b2dba8"
+  }
+}

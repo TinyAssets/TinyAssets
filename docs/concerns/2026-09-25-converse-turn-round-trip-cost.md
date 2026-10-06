@@ -167,3 +167,21 @@ that guard the elision is a data-loss path wearing an optimisation's clothes; wi
 the 72% is worth re-measuring. Branch `perf/read-brain-is-cheap-when-already-inlined`
 is kept, and its tests already pin the digest comparison, the net-win rule and the
 "a pointer is never reachable as a body" property.
+
+
+### Windows validation handoff, 2026-10-04
+
+PR #4469 CI repair validation reproduces the description ratchet on the untouched
+72873ee582 baseline as well as the repaired tree: 32985 characters versus the
+30100 limit (write_graph: 13547). Both test_onboarding_note's resident-budget
+case and test_converse_turn_cost's direct budget case fail. Full modules in an
+external detached baseline checkout: 20 passed, 2 failed, 2 skipped, Windows
+Python 3.14. Linux oracle Python 3.11 passes the onboarding-note case in its
+complete CI shard. No ratchet, tool description, skip or quarantine was changed.
+This is handed back to the existing tool-budget investigation, not patched as
+part of the sheet CI repair. Evidence is in the local wf-sheet-ci directory's
+windows-description-baseline.xml and windows-description-recheck.xml reports.
+The unchanged baseline also reproduces
+`test_served_tool_guidance::test_moved_chapters_are_gone_from_the_per_round_description`:
+write_graph is 13547 characters against its 12000 bound (full module: 18 passed,
+1 failed). Its Linux counterpart passes. All three assertions remain intact.

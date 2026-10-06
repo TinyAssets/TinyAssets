@@ -59,7 +59,7 @@ Resource limits (per call, per command center)
 Measured on the production container 2026-09-24 (kernel 6.1, uid 1001, no
 capabilities, cgroup2 mounted READ-ONLY, so no per-universe cgroup can be
 created): ``prlimit`` runs inside the jail, after the user namespace exists,
-and sets ``RLIMIT_AS``, ``RLIMIT_NPROC``, ``RLIMIT_CPU``, ``RLIMIT_FSIZE``,
+and sets ``RLIMIT_AS``, ``RLIMIT_NPROC``, ``RLIMIT_CPU``,
 ``RLIMIT_NOFILE`` and ``RLIMIT_CORE``. On kernels >= 5.14 ``RLIMIT_NPROC`` is
 charged per user namespace, so it bounds THIS jail's processes, not the
 daemon user's (measured: with 9 daemon processes and ``--nproc=12`` the jail
@@ -222,10 +222,6 @@ class ToolLimits:
     processes: int = 64
     #: ``RLIMIT_CPU`` per process; the wall clock bounds the whole call.
     cpu_seconds: int = 120
-    #: ``RLIMIT_FSIZE``: the largest file one write may produce. Kept modest
-    #: because the daemon reads some universe files (the persona grounding)
-    #: whole, in a process every universe shares.
-    file_bytes: int = 32 * _MiB
     #: ``RLIMIT_NOFILE``.
     open_files: int = 256
     #: Wall clock for one call (``bash`` may ask for up to MAX_BASH_SECONDS).
@@ -255,7 +251,6 @@ class ToolLimits:
             # soft < hard: SIGXCPU names the limit; SIGKILL one second later
             # if the process ignores it.
             f"--cpu={max(1, cpu)}:{max(1, cpu) + 1}",
-            f"--fsize={int(self.file_bytes)}",
             f"--nofile={int(self.open_files)}",
             "--core=0",
         ]
@@ -279,9 +274,9 @@ class ToolRun:
     #: wait the caller cannot see is indistinguishable from a hang.
     waited: float = 0.0
     #: Said before the tool's answer: the owner is out of storage (the call
-    #: still ran, on a small grace budget -- see `jail_disk`).
+    #: still runs so it can delete files -- see `jail_disk`).
     notice: str = ""
-    #: Bytes this call could add to the universe before ``storage_limit``.
+    #: Latest observed headroom in the owner's total storage.
     disk_bound: int = 0
 
 
@@ -850,6 +845,10 @@ def _supervise(
             feeder.join(timeout=_KILL_GRACE_SECONDS)
     if killed is None and out.over.is_set():
         killed = "output_limit"
+    if killed is None:
+        final_breach = budget.breach(force=True)
+        if final_breach:
+            killed = final_breach.replace("_limit", "_exceeded")
     elapsed = time.monotonic() - started
     data = out.data
     if not data.startswith(_LIMITS_MARK):
@@ -951,10 +950,13 @@ def _trailer(run: ToolRun, limits: ToolLimits, wall: float) -> str:
         return f"[killed: more than {limits.processes} processes]"
     if run.killed == "disk_limit":
         return "[killed: the shared disk was nearly full]"
+    if run.killed == "storage_exceeded":
+        return "[finished: the owner's total cloud storage quota was exceeded; writes landed]"
+    if run.killed == "disk_exceeded":
+        return "[finished: the shared disk is nearly full; writes landed]"
     if run.killed == "storage_limit":
         return (
-            f"[killed: this call added more than {run.disk_bound} bytes to the command center, "
-            "all the owner's cloud storage had room for]"
+            "[killed: the owner's total cloud storage quota was exceeded]"
         )
     if run.exit_code == 128 + _SIGXCPU:
         return "[killed: cpu time limit]"
@@ -1222,25 +1224,23 @@ def skill_index(universe_dir: Path) -> list[tuple[str, str]]:
 
 _HARNESS_HEAD = (
     "# My folder and my four tools\n"
-    "My folder is /u: `read` reads files/lines, `write` creates/replaces files, "
-    "`edit` replaces one exact passage, and `bash` runs a "
-    "shell with public internet via HTTP(S)_PROXY (pip, npm, git, urllib) and "
-    "bounded memory, processes and time; long-running work is workflows and automations in this "
-    "command center, never a service hosted elsewhere -- handbook chapter "
-    "write_graph.systems; relative paths are under /u, nothing outside is reachable. "
-    "/u is my own workspace: I create, change and delete anything in it, "
-    "including folders; platform files like "
-    "soul.md and config.yaml are read-only.\n"
+    "/u is my workspace: `read` reads files/lines, `write` creates/replaces files, "
+    "`edit` replaces an exact passage, `bash` runs a shell with public internet via "
+    "HTTP(S)_PROXY (pip, npm, git, urllib) and bounded memory, processes and time. "
+    "Long-running work is workflows and automations in this command center, never "
+    "a service hosted elsewhere (write_graph.systems). Relative paths: /u. I can "
+    "create, change and delete files/folders; platform soul.md and config.yaml are read-only.\n"
     "In bash, `ta search <words>` discovers capabilities, `ta describe <name>` "
     "lists args; `ta <name> --json '<args>'` calls them.\n"
-    "Skills are `skills/<name>/SKILL.md` with frontmatter `name:` and a one-line "
-    "`description:`; I read and follow matching skills, and write that file "
-    "to change them next turn.\n"
+    "Earlier turns and missing files: handbook write_graph.systems.\n"
+    "Skills: `skills/<name>/SKILL.md`, frontmatter `name:` and one-line `description:`. "
+    "I follow matching skills; editing them changes the next turn.\n"
     "I call independent reads or checks together in one reply, not one per reply.\n"
-    "I install an app UI as one component with `write_graph target=\"app_ui\" "
+    "Downloads: a fenced file block {\"path\":\"exports/a.csv\"} (a /u file, max 8 MiB) "
+    "gives the owner a private Download chip.\n"
+    "App UI: one component via `write_graph target=\"app_ui\" "
     "operation=\"add_ui\"` and `payload_json={\"component\": {...}}` (handbook "
-    "write_graph.interfaces), in one call rather than staging "
-    "pieces in /u files and reading them back.\n"
+    "write_graph.interfaces), rather than staging pieces in /u files and reading them back.\n"
     "## My skills\n"
 )
 
@@ -1258,17 +1258,29 @@ def _folder_section(universe_dir: Path) -> str:
         remaining -= len(entries)
         return entries
 
-    def visit(directory: str, depth: int, entries: list) -> None:
+    def visit(directory: str, depth: int, entries: list, *, prefix: str = "") -> None:
         for name, info in entries:
             if stat.S_ISLNK(info.st_mode) or getattr(info, "st_reparse_tag", 0):
                 continue
-            path = f"{directory}/{name}"
+            path = f"{directory}/{name}" if directory else name
+            if prefix and not directory and not name.startswith("."):
+                # The tool jail overlays visible root entries on the workspace.
+                # lstat reads metadata only and never follows a planted link.
+                try:
+                    overlay = (universe_dir / name).lstat()
+                except FileNotFoundError:
+                    pass
+                else:
+                    if (not getattr(overlay, "st_reparse_tag", 0)
+                            and (stat.S_ISDIR(overlay.st_mode)
+                                 or stat.S_ISREG(overlay.st_mode))):
+                        continue
             # Escape unusual names so a filename cannot inject extra prompt lines.
             shown = path.encode("unicode_escape").decode("ascii")
             if stat.S_ISDIR(info.st_mode):
                 lines.append(f"- {shown}/")
                 if depth < 2 and remaining:
-                    visit(path, depth + 1, read(path))
+                    visit(path, depth + 1, read(prefix + path), prefix=prefix)
             elif stat.S_ISREG(info.st_mode):
                 lines.append(f"- {shown} ({info.st_size / 1024:.1f} KB)")
 
@@ -1281,6 +1293,12 @@ def _folder_section(universe_dir: Path) -> str:
             except FileNotFoundError:
                 continue  # Optional top-level folders need not exist yet.
             visit(directory, 1, entries)
+        if remaining:
+            try:
+                entries = read(WORKSPACE_DIR)
+            except FileNotFoundError:
+                entries = []
+            visit("", 0, entries, prefix=WORKSPACE_DIR + "/")
     except (OSError, NotImplementedError, RecursionError, ValueError):
         return ""
     lines.sort()

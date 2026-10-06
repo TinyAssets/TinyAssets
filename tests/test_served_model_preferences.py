@@ -211,7 +211,7 @@ def test_auth_failure_affects_only_new_auto_turn_not_failed_native_replay(
     assert raised.value.failure_class == "auth_invalid"
     assert native.calls == 1 and agent.wires == [] and agent.tools == []
     assert agent.latest().state == "held_native_unknown"
-    assert agent.served.router._quota.available("codex")
+    assert agent.served.router._quota.available("codex", owner="owner")
 
     def prepare(current=None):
         return prepare_owned_model_plan(

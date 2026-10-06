@@ -467,6 +467,7 @@ def _item_state(
 
 
 def _project(row: Any, answers: dict[str, dict[str, Any]] | None = None) -> dict[str, Any]:
+    informational = json.loads(row[5] or "{}").get("type") == "notify"
     items = json.loads(row[13] or "[]") if len(row) > 13 else []
     if not isinstance(items, list):
         items = []
@@ -487,6 +488,8 @@ def _project(row: Any, answers: dict[str, dict[str, Any]] | None = None) -> dict
         "agent": (row[14] if len(row) > 14 else None) or "main",
         "items": items,
         "item_answers": _item_state(items, answers or {}, str(row[6])),
+        "informational": informational,
+        "requires_answer": not informational,
     }
 
 
@@ -507,6 +510,13 @@ def _projected(conn: sqlite3.Connection, rows: list[Any]) -> list[dict[str, Any]
     for row in rows:
         has_items = bool(row[13] and row[13] not in ("[]", "null"))
         projected = _project(row, _item_answers(conn, str(row[0])) if has_items else None)
+        if projected['action'].get('type') in {'connect', 'connect_http'}:
+            columns = {r[1] for r in conn.execute('PRAGMA table_info(pending_requests)')}
+            if 'context_json' in columns:
+                context = conn.execute(
+                    'SELECT context_json FROM pending_requests WHERE request_id=?',
+                    (projected['request_id'],)).fetchone()
+                projected['server_continuation'] = bool(context and json.loads(context[0]))
         if projected['action'].get('type') == 'approve_action':
             from tinyassets.bound_requests import RequestRefused, card
             original_factory = conn.row_factory
@@ -676,6 +686,9 @@ def resolve_request(
             )
             if cur.rowcount <= 0:
                 return False
+            from tinyassets.connection_continuations import answered
+
+            answered(conn, request_id, decision or status)
             row = conn.execute(
                 "SELECT kind, title, dedupe_key FROM pending_requests "
                 "WHERE request_id = ?",
@@ -880,6 +893,37 @@ def withdraw_request(
         return {"error": "already_resolved", "status": row["status"]}
     return {"error": "not_withdrawable", "origin": row["origin"],
             "detail": "this ask was raised by the platform, not by you"}
+
+
+def update_publication_preview(universe_dir: Path, request_id: str, *,
+                               completion: dict[str, Any]) -> bool:
+    """Enrich exactly the resolved publish receipt, then wake its existing readers.
+
+    A single SQLite transaction serializes this metadata-only update. Do not
+    reacquire the approval's owner-control lock on the background thread.
+    """
+    with _db(universe_dir) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute(
+            "SELECT answer_json, kind, action_json FROM pending_requests "
+            "WHERE request_id=? AND status='answered'", (request_id,),
+        ).fetchone()
+        if row is None or json.loads(row[2]).get("type") != "publish":
+            return False
+        answer = json.loads(row[0] or "{}")
+        previous = answer.get("completion", {})
+        if (previous.get("listing_id") != completion["listing_id"]
+                or previous.get("preview_status") != "pending"):
+            return False
+        answer["completion"] = completion
+        conn.execute("UPDATE pending_requests SET answer_json=?, resolved_at=? WHERE request_id=?",
+                     (json.dumps(answer), time.time(), request_id))
+    from tinyassets.automation_events import emit_pending_request_answered
+
+    emit_pending_request_answered(universe_dir, request_id=request_id,
+                                  kind=str(row[1]), status="answered")
+    _requeue_waiting_activity(universe_dir, request_id)
+    return True
 
 
 def list_resolved(universe_dir: Path, limit: int = 20) -> list[dict[str, Any]]:

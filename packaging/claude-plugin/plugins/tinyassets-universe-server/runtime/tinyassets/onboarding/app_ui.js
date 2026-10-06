@@ -291,6 +291,27 @@
       this.paint();
       this.load();
     },
+    async resumePublicRun(home,retryId){
+      const id=retryId||sessionStorage.getItem('ta_public_run');
+      if(!id||!home)return;
+      sessionStorage.removeItem('ta_public_run');
+      const epoch=MCP._loginEpoch,current=()=>epoch===MCP._loginEpoch&&home===queueScope;
+      try{
+        const request=await MCP.callTool('write_graph',{target:'connection',operation:'try_package',
+          graph_id:home,payload_json:JSON.stringify({agent_definition_id:id})});
+        if(!current())return;
+        if(!request||request.error||!request.request_id)
+          throw Error(request?.detail||request?.error||'The install could not be requested.');
+        await openInstallRequest(request.request_id);
+      }catch(error){
+        if(!current())return;
+        const panel=$('ui-install-receipt');panel.hidden=false;panel.replaceChildren();
+        this.line(panel,error.message||'The install approval could not be opened.');
+        panel.appendChild(this.button('Retry Run in your universe',()=>{
+          if(current())this.resumePublicRun(home,id);
+        },false));
+      }
+    },
     // One read of the viewer's own row. The server keys it by the signed-in
     // caller, so there is nothing here to name and no owner to check.
     async fetchRow(){
@@ -432,7 +453,7 @@
       frame.setAttribute("sandbox",this.SANDBOX);
       frame.setAttribute("referrerpolicy","no-referrer");
       frame.setAttribute("src",this.FRAME_SRC);
-      this.frame=frame; this.active=entry; this.ready=false;
+      this.frame=frame; this.active=entry; this.ready=false; this.bootFault=false; this.bootComplete=false;
       this.frameGen++; this.pending=0; this.sending=false; this.emitting=false; this.trying=false;
       this.defaultMounted=false;   // mountDefault sets it again after this call
       this.listener=event=>this.receive(event);
@@ -483,6 +504,12 @@
       if(!this.frame||event.source!==this.frame.contentWindow) return;
       const message=event.data;
       if(!message||typeof message!=="object"||message.ta_ui!==this.PROTOCOL) return;
+      if(message.type==="boot_complete"){this.bootComplete=true;return;}
+      if(message.type==="boot_failed"){
+        this.bootFault=true;
+        if(typeof AppRecovery!=="undefined")AppRecovery.fail(new Error("Command center failed to start"));
+        return;
+      }
       if(message.type==="ready"){ this.deliver(); return; }
       // The reserved key, handed back by a frame that would otherwise swallow
       // it. The frame can only ask for THIS: focus moves to the composer, and
@@ -524,6 +551,8 @@
         if(gen!==this.frameGen||!this.fence(epoch,home)) return;
         if(err&&err.authRequired){ sessionExpired(); return; }
         this.status(entry.name+" could not load its files ("+(err&&err.message||"unknown error")+").");
+        this.bootFault=true;
+        if(typeof AppRecovery!=="undefined")AppRecovery.fail(err);
         this.paint();
         return;
       }

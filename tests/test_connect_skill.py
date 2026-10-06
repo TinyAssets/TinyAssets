@@ -59,7 +59,8 @@ def test_ta_search_connect_discovers_the_skill_and_request_tool(monkeypatch, tmp
 def test_scripted_unknown_api_service_requests_secure_entry_not_chat(
     tmp_path, monkeypatch, authenticate_request, engine,
 ):
-    from tinyassets.api.pending_requests import answer_request, list_requests
+    from tests.owner_answer import answer_request
+    from tinyassets.api.pending_requests import list_requests
     from tinyassets.connection_oauth import directory, discovery
     from tinyassets.storage.pending_requests import get_request
     from tinyassets.ta_capabilities import Capabilities, ExecutionContext

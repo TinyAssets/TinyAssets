@@ -21,10 +21,10 @@ import json
 import pytest
 
 from tests.test_pending_requests import (  # noqa: F401 - fixtures and harness
-    _answer,
     _ask,
     _login,
     _make_universe,
+    _owner_answer,
     _reset_auth,
 )
 
@@ -67,7 +67,7 @@ def _deposit_through_the_rail(udir_uid: str):
         },
     )
     assert ask.get("request_id"), ask
-    return ask, _answer(udir_uid, request_id=ask["request_id"], values=dict(_VALUES))
+    return ask, _owner_answer(udir_uid, request_id=ask["request_id"], values=dict(_VALUES))
 
 
 def test_four_boxes_reach_the_signer_intact(base):

@@ -91,6 +91,11 @@ def system_server(home):
                                        agent_id=query.get("agent", ["main"])[0],
                                        viewport=query.get("viewport", [""])[0])
                 self.reply({"prefs": prefs})
+            elif path == "/app/unread":
+                from tinyassets.storage.owner_unread import attention
+
+                assert self.headers.get("Authorization") == "Bearer synthetic-bob"
+                self.reply(attention(home, home / BOB_UNIVERSE, BOB, BOB_UNIVERSE))
             else:
                 self.reply({"error": "not_found"}, status=404)
 
@@ -100,7 +105,7 @@ def system_server(home):
                 self.reply({"error": "authentication_required"}, status=401)
                 return
             if (self.path in {"/app/api/read", "/app/api/status", "/app/turn/pending",
-                              "/app/ui-prefs"}
+                              "/app/ui-prefs", "/app/unread"}
                     and not self.headers.get("Authorization")):
                 # Background reads can finish during the real signed-out reload.
                 self.reply({"error": "authentication_required"}, status=401)
@@ -110,6 +115,14 @@ def system_server(home):
                 args = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
                 # Thread-local actor binding for EVERY RPC, never a process-wide actor.
                 with _as(BOB):
+                    if self.path == "/app/unread":
+                        from tinyassets.storage.owner_unread import attention
+
+                        assert args["universe"] == BOB_UNIVERSE
+                        self.reply(attention(home, home / BOB_UNIVERSE, BOB, BOB_UNIVERSE,
+                                             messages=args.get("messages", []),
+                                             asks=args.get("asks", [])))
+                        return
                     if self.path == "/app/api/read":
                         assert args.get("graph_id", BOB_UNIVERSE) == BOB_UNIVERSE
                         args.setdefault("graph_id", BOB_UNIVERSE)
@@ -142,6 +155,11 @@ def system_server(home):
                                    key=args.get("key", ""), value=args.get("value"))
                         result = {"saved": True}
                         operation = "save:ui_prefs"
+                    elif self.path == "/app/approvals/answer":
+                        from tests.owner_answer import answer_request as owner_answer
+
+                        result = owner_answer(universe_id=BOB_UNIVERSE, payload=args)
+                        operation = "answer_request"
                     elif self.path == "/fixture/mcp":
                         assert args["name"] == "write_graph"
                         args = args["args"]
@@ -311,6 +329,8 @@ def test_loopback_transport_reaches_real_owner_handlers_and_runs_private_copy(ho
     done = _rpc(origin, "/fixture/mcp", {"name": "write_graph", "args": {
         "target": "connection", "operation": "answer_request",
         "payload_json": json.dumps({"request_id": ask["request_id"], "values": {}})}})
+    assert done["error"] == "interactive_approval_required"
+    done = _rpc(origin, "/app/approvals/answer", {"request_id": ask["request_id"], "values": {}})
     assert done.get("installed"), done
     _assert_copy_and_run(home, definition_id, source, alice_ui, alice_automations, before)
     row = _rpc(origin, "/app/api/read", {"target": "app_ui"})["app_ui"]
@@ -560,8 +580,9 @@ def test_visual_preview_has_no_owner_bridge_and_copy_requires_visible_consent(
 
 
 @pytest.mark.real_browser
+@pytest.mark.parametrize("package", [False, True])
 def test_public_instruction_template_copies_private_agent_and_opens_its_chat_without_model(
-    home, system_server, browser,
+    home, system_server, browser, package,
 ):
     import sqlite3
 
@@ -594,7 +615,8 @@ def test_public_instruction_template_copies_private_agent_and_opens_its_chat_wit
     save_app_ui(home, owner_user_id=OWNER, universe_id=UNIVERSE,
                 expected_revision=row["revision"], changes={"ui_library": [source_ui]})
     action = _publish_action()
-    del action["package"]
+    if not package:
+        del action["package"]
     action["agent_templates"] = {"village-scout": source_binding["agent_binding_id"]}
     asked = _ask(OWNER, UNIVERSE, action)
     assert "request_id" in asked, asked
@@ -642,6 +664,15 @@ def test_public_instruction_template_copies_private_agent_and_opens_its_chat_wit
             binding = get_binding(home, universe_id=BOB_UNIVERSE, binding_id=target)
             assert binding["created_by"] == BOB and binding["status"] == "configured"
             assert binding["configuration"] == {"schema_version": 1, "name": "Scout"}
+            from tinyassets.addressed_agents import resolve
+            from tinyassets.command_center_packages import pin_for_request
+
+            addressed = resolve(home, universe_id=BOB_UNIVERSE, owner=BOB, agent_id=target)
+            install_result = next(result for op, result in calls if op == "try_package")
+            pin = pin_for_request(home, universe_id=BOB_UNIVERSE,
+                                  request_id=install_result["request_id"])
+            assert addressed.agent_slug == (
+                pin["record"]["action"]["plan"]["placement"]["agent_slug"] if package else None)
             assert (len(list_bindings(home, universe_id=BOB_UNIVERSE, limit=None))
                     == len(recipient_bindings) + 1)
             copied_ui = get_app_ui(
