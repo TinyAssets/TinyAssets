@@ -50,11 +50,11 @@ Per-role-uid-split (`per-role-uid-split`, branches `feat/per-role-uid-split` and
 - **Admission-generation contract at restart.** The volume journal records the
   log generation it last reconciled. At restart the coordinator accepts exactly
   the principal-set change the log explains since that generation. It also
-  accepts centers that are
-  mid-deletion, adopts a root that was published before its log row was
-  written, and still refuses any change the log does not explain. The same
-  rule covers all three phase journals (volume, metadata, owner). This replaces D216's "new principals
-  remain a loud refusal" and closes D218's open item.
+  accepts centers that are mid-deletion and adopts a root that was published
+  before its log row was written. It still refuses any change the log does not
+  explain. The same rule covers all three phase journals (volume, metadata,
+  owner). This replaces D216's "new principals remain a loud refusal" and
+  closes D218's open item.
 
 ## Capabilities
 
