@@ -459,7 +459,7 @@ These are retired as requirements. The probe shows each pin did fail on its muta
 
 ### Per-file disposition
 
-Counts are definitions, not parametrized cases. "Executing" is the classifier count of definitions that run code.
+Counts are definitions, not parametrized cases, at snapshot `3fa149e659`. "Executing" is the classifier count of definitions that run code. Main has since added one definition to these files, so the merged tree keeps 1,217.
 
 | File | Executing | Deleted | Kept | Assert statements trimmed |
 |---|---:|---:|---:|---:|
@@ -543,6 +543,6 @@ Counts are definitions, not parametrized cases. "Executing" is the classifier co
 All runs are in the Linux oracle (Python 3.11.17, bubblewrap 0.12.0, uid 1001). Results are in `2026-10-06-lean-suite-batch2-mutations.json`.
 
 - **Pre-deletion replay:** 31/31 groups proved on the unedited tree. The survivor baseline was 24 cases, all green, with 0 skips.
-- **Post-deletion replay:** 21/21 survivor groups still fail on the final tree. The 10 reason-b groups have no survivor.
-- **Final tree:** 110 files passed, covering the 73 census files, all real-browser suites (the `real_browser` marker plus `*browser*` files) and the `ci_structural_guards.py` guard files. The result was **2,426 passed, 1 skipped, 0 failed**. The skip is `test_agent_box_dev_workflow.py:206`, a declared manual public-network probe (`runs-in=manual ... TA_DEV_PUBLIC_PROBE=1`). It is not an app or browser test, and it was skipped identically on the pre-edit baseline (1,616 passed, 1 skipped).
+- **Post-deletion replay:** 21/21 survivor groups still fail on the final tree. The 10 reason-b groups have no survivor. This was re-run after merging origin/main `7e68ef26cb`, which changed app.html; every mutation string stayed unique.
+- **Final tree:** 110 files passed, covering the 73 census files, all real-browser suites (the `real_browser` marker plus `*browser*` files) and the `ci_structural_guards.py` guard files. The result was **2,426 passed, 1 skipped, 0 failed**. After the merge, the same set plus the replay gave **2,430 passed, 1 skipped, 0 failed**. The skip is `test_agent_box_dev_workflow.py:206`, a declared manual public-network probe (`runs-in=manual ... TA_DEV_PUBLIC_PROBE=1`). It is not an app or browser test, and it was skipped identically on the pre-edit baseline (1,616 passed, 1 skipped).
 - `python scripts/ci_structural_guards.py` passed locally: 574 passed. Ruff is clean on every changed file and on the replay.
