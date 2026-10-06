@@ -30,9 +30,18 @@ SERVED_LAUNCH_ARGS: tuple[str, ...] = (
     "-c", "include_apps_instructions=false",
     "-c", "include_collaboration_mode_instructions=false",
     "-c", "skills.include_instructions=false",
+    # No AGENTS.md from the working directory or its parents reaches the
+    # model; ``baseInstructions`` is the whole of what it is told.
+    "-c", "project_doc_max_bytes=0",
     # No project `.codex/config.toml` may load from the served workspace.
     "-c", 'projects."/workspace".trust_level="untrusted"',
 )
+
+#: The only files of a credential snapshot a served CODEX_HOME receives, by
+#: name. Codex sends an ``AGENTS.md`` (or ``AGENTS.override.md``) found in
+#: CODEX_HOME to the model on top of ``baseInstructions``, and no 0.160.0
+#: setting turns that off; a ``config.toml`` could add MCP servers or tools.
+SERVED_HOME_FILES: tuple[str, ...] = ("auth.json",)
 
 #: Catalog fields that pin native tools to a model: code mode (``apply_patch``
 #: inside ``exec``), collaboration, search. Cleared, never invented.

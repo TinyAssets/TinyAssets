@@ -33,6 +33,7 @@ from tinyassets.providers.base import (
     get_sandbox_status,
     subprocess_env_for_provider,
 )
+from tinyassets.providers.codex_launch_contract import SERVED_HOME_FILES
 from tinyassets.providers.owned_process import (
     aspawn_owned,
     disk_stop_note,
@@ -213,16 +214,15 @@ def _native_session_exists(store: Path, thread_id: str) -> bool:
 
 
 def _codex_home_file_mounts(codex_home: Path) -> list[JailMount]:
-    """A read-only bind for each regular credential file of the sealed snapshot.
-
-    Never a ``config.toml``: ``codex app-server`` has no ``--ignore-user-config``,
-    and a config could add MCP servers or tools the definition does not have.
-    """
+    """A read-only bind for each credential file of the sealed snapshot, by name
+    (``codex_launch_contract.SERVED_HOME_FILES``): never its ``config.toml``,
+    never an ``AGENTS.md``, never anything else."""
     mounts: list[JailMount] = []
-    for entry in sorted(codex_home.iterdir()):
-        if entry.is_symlink() or not entry.is_file() or entry.name == "config.toml":
+    for name in SERVED_HOME_FILES:
+        entry = codex_home / name
+        if entry.is_symlink() or not entry.is_file():
             continue
-        mounts.append(JailMount("ro-bind", f"{_JAIL_HOME}/{entry.name}", entry))
+        mounts.append(JailMount("ro-bind", f"{_JAIL_HOME}/{name}", entry))
     if not mounts:
         raise ProviderError("codex served sandbox found no credential files to mount")
     return mounts

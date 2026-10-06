@@ -31,14 +31,18 @@ from tinyassets.served_tools import FOUR_MODEL_TOOLS
 
 INSTRUCTIONS = "You are the owner's agent. Work in /u."
 
+#: The identity every renderer's launch is configured with.
+_OWNER, _CENTER = "owner", "u-guard"
 
-def _route_tools() -> list[Tool]:
-    """The engine route's own registrations of the model-visible tools."""
+
+def _route_tools(names=FOUR_MODEL_TOOLS) -> list[Tool]:
+    """The engine route's own registrations of ``names`` (default: the
+    model-visible tools)."""
     from tinyassets.engine_mcp_server import mcp
 
     registered = asyncio.run(mcp.list_tools(run_middleware=False))
     return [Tool(name=t.name, description=t.description, inputSchema=t.parameters)
-            for t in registered if t.name in FOUR_MODEL_TOOLS]
+            for t in registered if t.name in names]
 
 
 @pytest.fixture(scope="module")
@@ -57,61 +61,117 @@ def _registered_kinds() -> list[str]:
     return kinds
 
 
+def _served_config(**extra) -> ModelConfig:
+    return ModelConfig(engine_mcp_enabled=True, engine_mcp_actor_id=_OWNER,
+                       engine_mcp_graph_id=_CENTER, **extra)
+
+
+# --- the engine route, as each adapter asks it for tools -------------------------
+
+def _recording_engine_tools(opened: list):
+    """``open_engine_tools`` as the route answers it: the session lists exactly
+    the tools the caller asked for, out of every backend capability the route
+    registers. An adapter that asked for its grant instead of ``model_tools``
+    would show the model the grant. Every request is recorded."""
+    import contextlib
+    from types import SimpleNamespace
+
+    from tinyassets.served_tools import BACKEND_ENGINE_CAPABILITIES
+
+    available = _route_tools(BACKEND_ENGINE_CAPABILITIES)
+
+    @contextlib.asynccontextmanager
+    async def open_engine_tools(*, enabled_tools, **kwargs):
+        opened.append({"enabled_tools": tuple(enabled_tools), **kwargs})
+        yield SimpleNamespace(tools=[t for t in available if t.name in set(enabled_tools)])
+
+    return open_engine_tools
+
+
+def _asked_the_route_for_model_tools(opened, config) -> bool:
+    """One request, the owner's route, exactly ``model_tools`` -- not the grant."""
+    from tinyassets.served_tools import model_tools
+
+    return [(o["actor_id"], o["graph_id"], o["enabled_tools"]) for o in opened] == [
+        (_OWNER, _CENTER, model_tools(config))]
+
+
+def _coordinator_round(kind, base, monkeypatch, *, budgeted=False):
+    """Run the real coordinator to the round it hands its ``kind`` executor;
+    return that round's system text and config, and every tool request made."""
+    from types import SimpleNamespace
+
+    from tests.test_turn_interrupt import _NativeAdapter
+    from tinyassets import agent_turn_coordinator
+    from tinyassets.agent_turn_coordinator import AgentTurnCoordinator
+    from tinyassets.daemon_server import grant_universe_ownership, set_founder_home
+    from tinyassets.interactive_http_agent import ServedChatAgentAdapter
+
+    class Seen(Exception):
+        pass
+
+    (base / _CENTER).mkdir(parents=True)
+    set_founder_home(base, founder_sub=_OWNER, universe_id=_CENTER, platform_generated=True)
+    grant_universe_ownership(base, universe_id=_CENTER, owner_id=_OWNER)
+    seen, opened = {}, []
+
+    class Adapter(_NativeAdapter):
+        # The HTTP adapters' own identity seam; the coordinator does the rest.
+        engine_identity = ServedChatAgentAdapter.engine_identity
+
+        async def infer(self, *, router, prompt, system, config, context, observer, kind):
+            seen.update(system=system, config=config)
+            raise Seen()
+
+    monkeypatch.setattr(agent_turn_coordinator, "open_engine_tools",
+                        _recording_engine_tools(opened))
+    coordinator = AgentTurnCoordinator(
+        adapter=Adapter(),
+        router=SimpleNamespace(selected_agent_execution_kind=lambda selection: kind),
+        prompt="Reply OK.", system=INSTRUCTIONS,
+        universe_context=SimpleNamespace(
+            universe_dir=base / _CENTER, agent_model_plan=None,
+            model_selection=SimpleNamespace(connection_id="source", model_id="")),
+        config=_served_config(absolute_cap_s=60.0),
+    )
+    line = SimpleNamespace(prompt_line=lambda: "You have 3 requests left today.")
+    coordinator._daily_budget = lambda: line if budgeted else None
+    with pytest.raises(Seen):
+        asyncio.run(coordinator.run())
+    return seen["system"], seen["config"], opened
+
+
 # --- per-kind renderers: the adapter's real launch -> what the model sees ------
 
-def _http(protocol, definition):
-    from tinyassets.providers.agent_chat_codec import tool_definitions
+def _http(protocol, definition, tmp_path, monkeypatch):
+    """The coordinator opens the route's tools with the HTTP adapters' own
+    request, and the protocol codec encodes the round's ``agent_request``:
+    what goes on the wire."""
     from tinyassets.providers.protocol_encoders import agent_codec_for
 
     codec = agent_codec_for(protocol)
     if codec is None:
         return None
-    _, body = codec.encode(prompt="Reply OK.", system=definition.instructions,
-                           source_ref="guard", model="guard",
-                           tools=tool_definitions(tuple(_route_tools())))
+    system, config, opened = _coordinator_round("engine_inference", tmp_path, monkeypatch)
+    request = config.agent_request
+    _, body = codec.encode(prompt="Reply OK.", system=system, source_ref="guard",
+                           model="guard", tools=request.tools(), history=request.history,
+                           tool_choice=request.tool_choice)
     tools = tuple(AgentTool(t["function"]["name"], t["function"]["description"],
                             t["function"]["parameters"]) for t in body["tools"])
     (system,) = [m["content"] for m in body["messages"] if m["role"] == "system"]
-    return tools, system, _http_capabilities()
+    route = _asked_the_route_for_model_tools(opened, config)
+    return (tools if route else ()), system, _capabilities(
+        route_tools=route, kind="engine_inference")
 
 
-def _http_capabilities():
-    # The HTTP loop's tool session is the engine route's: open the coordinator's
-    # own tool session and see what it dials.
-    from types import SimpleNamespace
-
-    from tinyassets import agent_turn_coordinator
-
-    opened = []
-
-    def open_engine_tools(**kwargs):
-        opened.append(kwargs)
-        return SimpleNamespace()
-
-    coordinator = SimpleNamespace(
-        adapter=SimpleNamespace(engine_identity=lambda context, config: ("owner", "center")),
-        context=None, interrupt=None,
-        config=ModelConfig(engine_mcp_enabled=True, engine_mcp_actor_id="owner",
-                           engine_mcp_graph_id="center"))
-    coordinator.steering = lambda: agent_turn_coordinator.AgentTurnCoordinator.steering(
-        coordinator)
-    original = agent_turn_coordinator.open_engine_tools
-    agent_turn_coordinator.open_engine_tools = open_engine_tools
-    try:
-        agent_turn_coordinator.AgentTurnCoordinator._open_tools(coordinator, 1.0)
-    finally:
-        agent_turn_coordinator.open_engine_tools = original
-    route = [(o["actor_id"], o["graph_id"]) for o in opened] == [("owner", "center")]
-    return _capabilities(route_tools=route, kind="engine_inference")
-
-
-def _capabilities(*, route_tools: bool, kind: str) -> frozenset[str]:
+def _capabilities(*, route_tools: bool, kind: str, provider_call=None) -> frozenset[str]:
     found = set()
     if route_tools:
         # Steering and the activity fence are engine-route middleware, so any
         # executor whose tools all cross the route has them.
         found |= {"engine_route_tools", "owner_steering"}
-    if route_tools and _activity_launches(kind) and _activity_stops(kind):
+    if route_tools and _activity_launches(kind) and _activity_stops(kind, provider_call):
         found.add("activities")
     return frozenset(found)
 
@@ -133,24 +193,34 @@ def _activity_launches(kind: str) -> bool:
         return router.launches == [("writer", kind)]
 
 
-def _activity_stops(kind: str) -> bool:
-    """Whether a yield stops this kind's agent: a native call is cancelled
-    mid-flight; an HTTP turn starts no further round."""
+def _activity_stops(kind: str, provider_call=None) -> bool:
+    """Whether a yield stops this provider's agent.
+
+    Native: ``provider_call()`` starts THIS provider's real ``complete`` on a
+    launch that never finishes, returning the call and a probe of its process.
+    The yield must end the call with ``ActivityYielded`` and the provider must
+    have killed its process; a provider that shields itself from cancellation
+    or leaves its process running fails. HTTP: a yielded turn starts no round.
+    """
     import tempfile
 
     from tests.test_activity_http_yield import _LaunchRecorder, _live_activity_adapter
     from tinyassets import agent_activities
     from tinyassets.activity_runner import ActivityYielded
 
-    class Endless:
-        launches = []
+    killed = []
 
+    class Router:
         async def call(self, *args, **kwargs):
-            await asyncio.Event().wait()
+            call, process_killed = provider_call()
+            try:
+                return await call
+            finally:
+                killed.append(process_killed())
 
-    async def yielded_during(adapter, config, context, router):
+    async def yielded_during(adapter, config, context):
         task = asyncio.ensure_future(adapter.infer(
-            router=router, prompt="p", system="", config=config, context=context,
+            router=Router(), prompt="p", system="", config=config, context=context,
             observer=None, kind=kind))
         await asyncio.sleep(0.3)
         binding = adapter.activity_binding
@@ -161,7 +231,9 @@ def _activity_stops(kind: str) -> bool:
         adapter, config, context, _ = _live_activity_adapter(Path(scratch), name="u-guard")
         try:
             if kind == "native_agent":
-                asyncio.run(yielded_during(adapter, config, context, Endless()))
+                if provider_call is None:
+                    return False
+                asyncio.run(yielded_during(adapter, config, context))
             else:
                 binding = adapter.activity_binding
                 agent_activities.wait_on(binding.universe_dir, binding.activity_id,
@@ -171,7 +243,7 @@ def _activity_stops(kind: str) -> bool:
                                           config=config, context=context, observer=None,
                                           kind=kind))
         except ActivityYielded:
-            return True
+            return kind != "native_agent" or killed == [True]
         except Exception:  # noqa: BLE001 - anything else is not a clean stop
             return False
         return False
@@ -181,6 +253,7 @@ def _claude(definition, tmp_path, monkeypatch):
     from types import SimpleNamespace
 
     from tests.support.owned_spawn import install_fake_owned_spawn
+    from tests.test_provider_stream_and_classify import INIT, FakeStreamProcess, _line, _result
     from tinyassets.providers import claude_provider
 
     class Captured(Exception):
@@ -193,8 +266,7 @@ def _claude(definition, tmp_path, monkeypatch):
     monkeypatch.setattr(claude_provider, "subprocess_env_for_provider", lambda *a, **k: {})
     launch = install_fake_owned_spawn(monkeypatch, claude_provider.__name__,
                                       side_effect=Captured)
-    config = ModelConfig(sandbox_workspace=True, engine_mcp_enabled=True,
-                         engine_mcp_actor_id="owner", engine_mcp_graph_id="center")
+    config = _served_config(sandbox_workspace=True)
     with pytest.raises(Captured):
         asyncio.run(claude_provider.ClaudeProvider().complete(
             "Reply OK.", definition.instructions, config, universe_dir=tmp_path))
@@ -214,9 +286,25 @@ def _claude(definition, tmp_path, monkeypatch):
     tools = tuple(AgentTool(t.name, t.description or "", dict(t.inputSchema or {}))
                   for t in listed) if (native_tools_off and route_only
                                        and signed == granted_tools(config)) else ()
-    system = argv[argv.index("--system-prompt") + 1]
+    # The CLI adds every setting source's CLAUDE.md files to the system prompt;
+    # with none, ``--system-prompt`` is the whole of it.
+    system = argv[argv.index("--system-prompt") + 1] if ("--setting-sources", "") in pairs and (
+        argv.count("--setting-sources") == 1) else "<--system-prompt plus project CLAUDE.md>"
+
+    def hanging_call():
+        held = {}
+
+        def spawn(argv, **kwargs):
+            held["proc"] = FakeStreamProcess([_line(INIT), (3600.0, _line(_result("never")))])
+            return held["proc"]
+
+        install_fake_owned_spawn(monkeypatch, claude_provider.__name__, side_effect=spawn)
+        call = claude_provider.ClaudeProvider().complete(
+            "Reply OK.", definition.instructions, config, universe_dir=tmp_path)
+        return call, lambda: "proc" in held and held["proc"].killed
+
     return tools, system, _capabilities(route_tools=native_tools_off and route_only,
-                                        kind="native_agent")
+                                        kind="native_agent", provider_call=hanging_call)
 
 
 def _listed_for(url, monkeypatch):
@@ -237,22 +325,15 @@ def _listed_for(url, monkeypatch):
 
 
 def _codex(definition, tmp_path, monkeypatch):
-    from tests.support.fake_codex_app_server import FakeAppServer
+    from tests.support.fake_codex_app_server import FakeAppServer, Turn
     from tests.support.owned_spawn import install_fake_owned_spawn
     from tinyassets.providers import codex_app_server, codex_provider
 
-    class Tools:
-        tools = _route_tools()
-
-    import contextlib
-
-    @contextlib.asynccontextmanager
-    async def open_engine_tools(**_):
-        yield Tools()
-
+    opened = []
     auth = tmp_path / ".runtime" / "auth"
     auth.mkdir(parents=True)
-    monkeypatch.setattr("tinyassets.engine_tool_client.open_engine_tools", open_engine_tools)
+    monkeypatch.setattr("tinyassets.engine_tool_client.open_engine_tools",
+                        _recording_engine_tools(opened))
     monkeypatch.setattr(codex_provider, "_resolve_codex_cmd", lambda: (["codex"], False))
     monkeypatch.setattr(codex_provider, "get_sandbox_status", lambda: {"bwrap_available": True})
     monkeypatch.setattr(codex_provider, "subprocess_env_for_provider",
@@ -265,8 +346,7 @@ def _codex(definition, tmp_path, monkeypatch):
     launch = install_fake_owned_spawn(
         monkeypatch, codex_provider.__name__,
         side_effect=lambda argv, **kw: held.setdefault("server", FakeAppServer()))
-    config = ModelConfig(sandbox_workspace=True, engine_mcp_enabled=True,
-                         engine_mcp_actor_id="owner", engine_mcp_graph_id="center")
+    config = _served_config(sandbox_workspace=True)
     asyncio.run(codex_provider.CodexProvider().complete(
         "Reply OK.", definition.instructions, config, universe_dir=tmp_path))
     argv = list(launch.call_args.args)
@@ -277,17 +357,27 @@ def _codex(definition, tmp_path, monkeypatch):
         and not any("mcp_servers" in arg for arg in argv)
         and all("tool_mode" not in m and m["multi_agent_version"] is None
                 for m in catalog["models"]))
+    route = native_tools_off and _asked_the_route_for_model_tools(opened, config)
     (start,) = held["server"].requests("thread/start")
     tools = tuple(AgentTool(t["name"], t["description"], t["inputSchema"])
-                  for t in start["params"]["dynamicTools"]) if native_tools_off else ()
+                  for t in start["params"]["dynamicTools"]) if route else ()
+
+    def hanging_call():
+        server = FakeAppServer(Turn(hang=True))
+        install_fake_owned_spawn(monkeypatch, codex_provider.__name__,
+                                 side_effect=lambda argv, **kw: server)
+        call = codex_provider.CodexProvider().complete(
+            "Reply OK.", definition.instructions, config, universe_dir=tmp_path)
+        return call, lambda: server.killed
+
     return tools, start["params"]["baseInstructions"], _capabilities(
-        route_tools=native_tools_off, kind="native_agent")
+        route_tools=route, kind="native_agent", provider_call=hanging_call)
 
 
 def _render(kind, definition, tmp_path, monkeypatch):
     family, _, name = kind.partition(":")
     if family == "http":
-        return _http(name, definition)
+        return _http(name, definition, tmp_path, monkeypatch)
     if kind == "cli:claude-code":
         return _claude(definition, tmp_path, monkeypatch)
     if kind == "cli:codex":
@@ -371,52 +461,54 @@ def test_the_turn_gives_every_executor_the_same_instructions(tmp_path, monkeypat
     """The coordinator, not a renderer, decides the instructions a round
     carries. HTTP and native rounds of the same turn get the same text,
     the request-budget line included (it was HTTP-only until 2026-10-06)."""
-    import contextlib
-    from types import SimpleNamespace
-
-    from tests.test_turn_interrupt import _NativeAdapter
-    from tinyassets.agent_turn_coordinator import AgentTurnCoordinator
-    from tinyassets.daemon_server import grant_universe_ownership, set_founder_home
-
-    class Seen(Exception):
-        pass
-
-    route_tools = tuple(_route_tools())
-
-    def rendered(kind):
-        base = tmp_path / kind
-        (base / "u-guard").mkdir(parents=True)
-        set_founder_home(base, founder_sub="owner", universe_id="u-guard",
-                         platform_generated=True)
-        grant_universe_ownership(base, universe_id="u-guard", owner_id="owner")
-        seen = {}
-
-        class Adapter(_NativeAdapter):
-            async def infer(self, *, router, prompt, system, config, context, observer, kind):
-                seen["system"] = system
-                raise Seen()
-
-        coordinator = AgentTurnCoordinator(
-            adapter=Adapter(),
-            router=SimpleNamespace(selected_agent_execution_kind=lambda selection: kind),
-            prompt="Reply OK.", system=INSTRUCTIONS,
-            universe_context=SimpleNamespace(
-                universe_dir=base / "u-guard", agent_model_plan=None,
-                model_selection=SimpleNamespace(connection_id="source", model_id="")),
-            config=ModelConfig(absolute_cap_s=60.0),
-        )
-
-        @contextlib.asynccontextmanager
-        async def no_tools(timeout):
-            yield SimpleNamespace(tools=route_tools)
-
-        coordinator._open_tools = no_tools
-        line = SimpleNamespace(prompt_line=lambda: "You have 3 requests left today.")
-        coordinator._daily_budget = lambda: line if budgeted else None
-        with pytest.raises(Seen):
-            asyncio.run(coordinator.run())
-        return seen["system"]
-
-    http, native = rendered("engine_inference"), rendered("native_agent")
+    http, _, _ = _coordinator_round("engine_inference", tmp_path / "http", monkeypatch,
+                                    budgeted=budgeted)
+    native, _, _ = _coordinator_round("native_agent", tmp_path / "native", monkeypatch,
+                                      budgeted=budgeted)
     assert http == native
     assert ("You have 3 requests left today." in native) is budgeted
+
+
+# --- the guard fails the defects it exists for -----------------------------------
+
+@pytest.mark.parametrize("kind", ["http:openai_chat", "cli:codex"])
+def test_the_guard_fails_an_adapter_that_asks_for_its_grant(
+    kind, definition, tmp_path, monkeypatch,
+):
+    """An adapter that requested the backend capabilities instead of
+    ``model_tools`` shows the model the grant; the guard must see it."""
+    from tinyassets import agent_turn_coordinator
+    from tinyassets.providers import codex_provider
+    from tinyassets.served_tools import granted_tools
+
+    module = codex_provider if kind == "cli:codex" else agent_turn_coordinator
+    monkeypatch.setattr(module, "model_tools", granted_tools)
+    tools, _, capabilities = _render(kind, definition, tmp_path, monkeypatch)
+    assert sorted(t.key() for t in tools) != list(definition.tool_keys())
+    assert capabilities != AGENT_CAPABILITIES
+
+
+@pytest.mark.parametrize("kind", ["cli:claude-code", "cli:codex"])
+def test_the_guard_fails_a_provider_that_shields_itself_from_cancellation(
+    kind, definition, tmp_path, monkeypatch,
+):
+    """Activities are a per-provider capability: a provider whose call
+    survives the yield's cancellation (and so keeps its process) has none."""
+    from tinyassets.providers.base import ProviderResponse
+    from tinyassets.providers.claude_provider import ClaudeProvider
+    from tinyassets.providers.codex_provider import CodexProvider
+
+    cls = CodexProvider if kind == "cli:codex" else ClaudeProvider
+    real = cls.complete
+
+    async def shielded(self, *args, **kwargs):
+        task = asyncio.ensure_future(real(self, *args, **kwargs))
+        try:
+            return await asyncio.shield(task)
+        except asyncio.CancelledError:  # the provider swallows the stop
+            return ProviderResponse(text="kept running", provider=self.name, model="m",
+                                    family="f", latency_ms=0.0)
+
+    monkeypatch.setattr(cls, "complete", shielded)
+    _, _, capabilities = _render(kind, definition, tmp_path, monkeypatch)
+    assert "activities" not in capabilities

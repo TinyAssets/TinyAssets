@@ -619,14 +619,15 @@ def _sandbox_cli_args(
             # No native tools or deferred ToolSearch handle in a served turn.
             # MCP discovery is projected by the bound private engine route.
             flags += ["--tools", ""]
-        # Load ONLY project-tier settings. A universe dir is bare, so this loads
-        # NOTHING — critically it excludes the USER's global settings, which carry
-        # MCP servers and `bypassPermissions`. Without it, the sandboxed engine
-        # still inherits the user's MCP tools (verified 2026-07-03: it saw
-        # `mcp__codex__codex`), so a founder's universe could call e.g. Codex →
-        # arbitrary code execution, fully bypassing the Bash deny. This strips all
-        # ambient MCP + config from the founder-facing turn.
-        flags += ["--setting-sources", "project"]
+        # Load NO setting source. The user tier carries MCP servers and
+        # `bypassPermissions` (verified 2026-07-03: a sandboxed turn saw
+        # `mcp__codex__codex`, i.e. code execution past the Bash deny). The
+        # project tier is the universe dir, which the agent itself writes: with
+        # `project`, CLI 2.1.291 sent its `CLAUDE.md`, `.claude/CLAUDE.md` and
+        # `.claude/rules/*.md` to the model on top of `--system-prompt`, and ran
+        # a `.claude/settings.json` SessionStart hook (credential-free capture,
+        # 2026-10-06). The one agent definition is the whole of what it is told.
+        flags += ["--setting-sources", ""]
         # Decide the permission mode; never inherit it (Codex ADAPT 2026-10-03,
         # CLI 2.1.288 review). 2.1.285 starts `claude -p` in AUTO mode when no
         # mode is configured on third-party providers or with telemetry off, so

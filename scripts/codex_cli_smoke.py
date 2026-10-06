@@ -6,8 +6,10 @@ every native tool off and the reduced model catalog), declares four fixture
 tools as ``thread/start.dynamicTools``, and inspects the first model request
 the CLI sends to a fake Responses endpoint, which then refuses auth. The
 model must see exactly those four tools: no ``exec``/``apply_patch``, no
-collaboration, no MCP resource tools, no shell. No real provider request,
-user home, credential or MCP server is used.
+collaboration, no MCP resource tools, no shell. ``AGENTS.md`` files are planted
+in the working directory and in the credential snapshot CODEX_HOME is built
+from; the request must carry the given ``baseInstructions`` and none of them.
+No real provider request, user home, credential or MCP server is used.
 """
 from __future__ import annotations
 
@@ -24,6 +26,10 @@ from pathlib import Path
 
 #: The tools the smoke declares; the model must see these and nothing else.
 FIXTURE_TOOLS = ("read", "write", "edit", "bash")
+
+#: Planted in an ``AGENTS.md`` in the working directory and in CODEX_HOME;
+#: Codex must send neither to the model.
+PLANTED_DOC = "PLANTED-AGENTS-DOC: never sent to the model."
 
 
 def _contract():
@@ -126,7 +132,20 @@ def run_smoke(command: list[str], *, tools: list[dict] | None = None,
                 env = {key: value for key, value in os.environ.items()
                        if key.upper() in {"PATH", "SYSTEMROOT", "WINDIR", "COMSPEC",
                                           "PATHEXT", "TEMP", "TMP"}}
-                env.update(CODEX_HOME=scratch, HOME=scratch, USERPROFILE=scratch)
+                # CODEX_HOME is built as the adapter builds it: only the
+                # contract's named files of a credential snapshot, which here
+                # also holds AGENTS files. The working directory has its own.
+                snapshot, home, workspace = (Path(scratch) / name for name in (
+                    "snapshot", "codex-home", "workspace"))
+                for directory in (snapshot, home, workspace):
+                    directory.mkdir()
+                for planted in (snapshot / "AGENTS.md", snapshot / "AGENTS.override.md",
+                                workspace / "AGENTS.md", Path(scratch) / "AGENTS.md"):
+                    planted.write_text(PLANTED_DOC, encoding="utf-8")
+                for name in contract.SERVED_HOME_FILES:
+                    if (snapshot / name).is_file():
+                        (home / name).write_bytes((snapshot / name).read_bytes())
+                env.update(CODEX_HOME=str(home), HOME=scratch, USERPROFILE=scratch)
                 bundled = subprocess.run(
                     [*command, "debug", "models", "--bundled"], env=env, cwd=scratch,
                     capture_output=True, text=True, encoding="utf-8", timeout=30, check=True,
@@ -142,15 +161,15 @@ def run_smoke(command: list[str], *, tools: list[dict] | None = None,
                     "-c", 'model_providers.cli_smoke={'
                     f'name="CLI smoke",base_url="{origin}/v1",wire_api="responses"}}',
                 ]
-                outcome = _drive(argv, env, scratch, requests, declared, instructions)
+                outcome = _drive(argv, env, str(workspace), requests, declared, instructions)
         finally:
             server.shutdown()
             worker.join(timeout=5)
     return outcome
 
 
-def _drive(argv, env, scratch, requests, declared, instructions) -> dict:
-    proc = subprocess.Popen(argv, env=env, cwd=scratch, stdin=subprocess.PIPE,
+def _drive(argv, env, cwd, requests, declared, instructions) -> dict:
+    proc = subprocess.Popen(argv, env=env, cwd=cwd, stdin=subprocess.PIPE,
                             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                             text=True, encoding="utf-8")
     lines: list[dict] = []
@@ -190,7 +209,7 @@ def _drive(argv, env, scratch, requests, declared, instructions) -> dict:
         reply(1, deadline)
         send(None, "initialized", {})
         send(2, "thread/start", {
-            "dynamicTools": declared, "baseInstructions": instructions, "cwd": scratch,
+            "dynamicTools": declared, "baseInstructions": instructions, "cwd": cwd,
             "ephemeral": True, "approvalPolicy": "never", "sandbox": "danger-full-access"})
         thread = reply(2, deadline)["thread"]
         send(3, "turn/start", {"threadId": thread["id"],
@@ -215,9 +234,35 @@ def _drive(argv, env, scratch, requests, declared, instructions) -> dict:
     if sorted(names) != expected or not isinstance(model, str) or not model:
         raise RuntimeError(f"Codex served launch exposed {sorted(names)} on model {model!r}; "
                            f"the model may see exactly {expected}")
+    told = only_base_instructions(first, instructions)
+    if told:
+        raise RuntimeError(f"Codex served launch told the model more than baseInstructions: "
+                           f"{told}")
     return {"model": model, "tools": names, "thread_model": thread.get("model"),
             "body": first}
 
+
+def only_base_instructions(request: dict, instructions: str,
+                           prompt: str = "Reply OK.") -> str:
+    """'' when ``request`` tells the model exactly ``instructions`` and the
+    user's ``prompt``, else what it added: a planted ``AGENTS.md`` anywhere,
+    any other instruction text (``instructions`` or a developer/system
+    message), or any other user message."""
+    if PLANTED_DOC in json.dumps(request):
+        return "a planted AGENTS.md"
+    told = [request["instructions"]] if request.get("instructions") else []
+    said = []
+    for item in request.get("input", []):
+        if not isinstance(item, dict) or item.get("type") != "message":
+            continue
+        texts = [part.get("text") for part in item.get("content", [])
+                 if isinstance(part, dict)]
+        (told if item.get("role") in ("developer", "system") else said).extend(texts)
+    if told != [instructions]:
+        return f"instructions {[str(t)[:120] for t in told]!r}"
+    if said != [prompt]:
+        return f"user messages {[str(t)[:120] for t in said]!r}"
+    return ""
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)

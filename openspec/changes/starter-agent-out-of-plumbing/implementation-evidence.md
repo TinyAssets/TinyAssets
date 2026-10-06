@@ -1,5 +1,64 @@
 # L14 preparation evidence
 
+## K2 round 4: answers to review round 2 of 007e13e99b (ADAPT, 2026-10-06)
+
+**(a) The guard sees what each adapter requests.** `open_engine_tools` is
+replaced by one recording stand-in whose session lists exactly the tools asked
+for, drawn from all 14 backend capabilities the route registers. HTTP is
+rendered by the real `AgentTurnCoordinator` up to its executor: `_open_tools`
+makes the request, and the codec encodes that round's own `agent_request`.
+Codex is rendered by its real launch. Both renderers also require one request
+for the owner's route with exactly `model_tools(config)`. The new test
+`test_the_guard_fails_an_adapter_that_asks_for_its_grant` points
+`model_tools` at `granted_tools` in the coordinator and in `codex_provider`.
+Against the previous guard it fails for `http:openai_chat` and `cli:codex`;
+it passes now.
+
+**(b) Activities are checked per provider.** The native probe now runs that
+provider's real `complete` on a launch that never finishes: Claude on a
+stalled stream-json process, Codex on an app-server whose turn hangs. It then
+yields the activity. The probe passes only if the call ends with
+`ActivityYielded` and the provider killed its own process.
+`test_the_guard_fails_a_provider_that_shields_itself_from_cancellation` wraps
+each provider's `complete` in `asyncio.shield`. Against the previous guard it
+fails for both providers; it passes now.
+
+**N1: Codex AGENTS.md injection is closed and the real CLI shows it.**
+- `SERVED_LAUNCH_ARGS` adds `-c project_doc_max_bytes=0`.
+- `_codex_home_file_mounts` binds only the files named in
+  `codex_launch_contract.SERVED_HOME_FILES`, which is `auth.json`. No
+  0.160.0 setting suppresses a CODEX_HOME `AGENTS.md`. Tried and failed:
+  `instructions=""`, `user_instructions=""`, `include_user_instructions=false`
+  and `features.agents_md=false`; `--disable agents_md` is rejected outright.
+  So the home is built by name.
+- `scripts/codex_cli_smoke.py` builds CODEX_HOME the same way, from a snapshot
+  that also holds an `AGENTS.md` and an `AGENTS.override.md`. It plants an
+  `AGENTS.md` in the working directory too. It requires the request's
+  instruction text (the `instructions` field plus any developer or system
+  messages) to equal `baseInstructions` exactly, and the user messages to be
+  exactly the prompt.
+
+Real codex-cli 0.160.0, credential-free loopback capture: PASS. Two negative
+controls fail with "a planted AGENTS.md": dropping `project_doc_max_bytes=0`,
+and adding `AGENTS.md` to `SERVED_HOME_FILES`.
+
+**Lower concern: confirmed and closed.** Claude CLI 2.1.291 ran as
+`claude_provider` launches it, with cwd at the universe root and
+`--setting-sources project`, in a credential-free capture. It sent the
+universe's `CLAUDE.md`, `.claude/CLAUDE.md` and `.claude/rules/*.md` to the
+model, and it ran a `.claude/settings.json` `SessionStart` hook.
+`CLAUDE.local.md` was not loaded. With `--setting-sources ""`, none of the
+docs is sent and the hook does not run.
+
+Production now passes `--setting-sources ""`, which is strictly narrower:
+user-tier settings stay excluded as before. The tests:
+- `test_the_universe_the_agent_writes_is_no_setting_source`;
+- the guard's Claude renderer, which counts the project docs as added
+  instructions.
+
+Both fail with the old flag. `scripts/native_cli_payload.py` mirrors the new
+flag.
+
 ## K2 round 3: answers to the cross-family review of 1834f866b8 (2026-10-06)
 
 Codex reviewed 1834f866b8 and returned BLOCK. It agreed the Codex tool

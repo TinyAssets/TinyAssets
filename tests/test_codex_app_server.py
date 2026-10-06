@@ -409,3 +409,31 @@ def test_a_resumed_thread_gets_the_current_instructions_as_its_own():
     definition = agent_definition(_engine_tools(), "new standing instructions")
     assert app.thread_resume_params(definition, "thr-9") == {
         "threadId": "thr-9", "baseInstructions": "new standing instructions"}
+
+
+def test_no_project_doc_reaches_the_model():
+    """codex-cli 0.160.0 sends an ``AGENTS.md`` from the working directory as an
+    extra message on top of ``baseInstructions`` unless the size cap is zero
+    (real-CLI capture, ``scripts/codex_cli_smoke.py``)."""
+    assert ("-c", "project_doc_max_bytes=0") in zip(
+        app.SERVED_LAUNCH_ARGS, app.SERVED_LAUNCH_ARGS[1:])
+
+
+def test_the_served_home_receives_only_the_credential(tmp_path):
+    """Nothing but the credential enters CODEX_HOME: a ``config.toml`` could add
+    tools, and an ``AGENTS.md`` there is sent to the model."""
+    from tinyassets.providers.codex_provider import _codex_home_file_mounts
+
+    for name in ("auth.json", "config.toml", ".lock", "AGENTS.md", "AGENTS.override.md",
+                 "instructions.md"):
+        (tmp_path / name).write_text("x", encoding="utf-8")
+    assert [(m.dest, m.source) for m in _codex_home_file_mounts(tmp_path)] == [
+        ("/codex-home/auth.json", tmp_path / "auth.json")]
+
+
+def test_a_home_without_its_credential_refuses_the_launch(tmp_path):
+    from tinyassets.providers.codex_provider import _codex_home_file_mounts
+
+    (tmp_path / "AGENTS.md").write_text("x", encoding="utf-8")
+    with pytest.raises(ProviderError):
+        _codex_home_file_mounts(tmp_path)

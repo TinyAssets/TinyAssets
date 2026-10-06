@@ -208,7 +208,7 @@ def capture(provider: str, executable: str, *, timeout: float = 45,
                        CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC="1")
             argv = [executable, "-p", "--model", "fable", "--tools", "",
                     "--system-prompt", system,
-                    "--setting-sources", "project", "--permission-mode", "default",
+                    "--setting-sources", "", "--permission-mode", "default",
                     "--strict-mcp-config", "--mcp-config", str(config),
                     "--allowedTools", "mcp__tinyassets__read", "mcp__tinyassets__write",
                     "mcp__tinyassets__edit", "mcp__tinyassets__bash",
