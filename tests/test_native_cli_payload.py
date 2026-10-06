@@ -24,11 +24,13 @@ def test_native_additional_tools_are_included():
             {"type": "namespace", "name": "functions", "tools": [
                 {"name": "apply_patch", "parameters": {"type": "object"}},
             ]},
+            {"type": "namespace", "name": "mcp__tinyassets", "tools": [{"name": "bash"}]},
         ]},
         {"role": "developer", "content": "native additions"},
     ]}
     measured = payload_metrics(body)
-    assert measured["tool_names"] == ["mcp__tinyassets__read", "functions.apply_patch"]
+    assert measured["tool_names"] == [
+        "mcp__tinyassets__read", "apply_patch", "mcp__tinyassets__bash"]
     assert measured["instruction_chars"] == len(json.dumps("native additions"))
     assert measured["resident_chars"] == (
         measured["instruction_chars"] + measured["tool_schema_chars"])

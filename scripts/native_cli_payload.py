@@ -53,12 +53,15 @@ def payload_metrics(body: dict) -> dict:
     tool_chars = len(compact(tools))
     total = len(text) + tool_chars
     def names(items, prefix=""):
+        # Codex groups MCP tools in a namespace named mcp__<server> whose members
+        # are called as mcp__<server>__<tool>; its own tools sit in `functions`.
         found = []
         for item in items:
             function = item.get("function", item)
             name = prefix + function.get("name", item.get("type", "unknown"))
             if item.get("type") == "namespace":
-                found.extend(names(item["tools"], name + "."))
+                found.extend(names(item["tools"], "" if name == "functions"
+                                   else name + ("__" if name.startswith("mcp__") else ".")))
             else:
                 found.append(name)
         return found
@@ -136,8 +139,44 @@ def http_payloads(system: str) -> list[dict]:
     return rows
 
 
+#: The most-reduced codex-cli 0.160.0 launch found (2026-10-05). Instructions
+#: are replaced wholesale and every feature tool is off, but the bundled
+#: catalog pins GPT-5.6+/GPT-6 to `tool_mode = "code_mode_only"` (apply_patch
+#: nested in `exec`) and v2 collaboration tools; no flag removes those, so
+#: this launch substitutes the bundled catalog with those fields cleared
+#: (`model_catalog_json`). Three MCP resource tools remain unconditionally
+#: whenever any MCP server is configured (codex-rs/core/src/tools/
+#: spec_plan.rs `add_mcp_resource_tools`, rust-v0.160.0).
+CODEX_REDUCED_ARGS = (
+    "--disable", "multi_agent", "--disable", "sleep_tool", "--disable", "goals",
+    "--disable", "image_generation", "--disable", "view_image",
+    "--disable", "skill_search",
+    "-c", 'web_search="disabled"',
+    "-c", "tools.experimental_request_user_input={enabled=false}",
+    "-c", "include_permissions_instructions=false",
+    "-c", "include_environment_context=false",
+    "-c", "include_apps_instructions=false",
+    "-c", "include_collaboration_mode_instructions=false",
+    "-c", "skills.include_instructions=false",
+)
+
+
+def reduced_codex_catalog(executable: str, out: Path) -> Path:
+    """The bundled catalog with model-pinned tool modes cleared."""
+    dumped = subprocess.run([executable, "debug", "models", "--bundled"], capture_output=True,
+                            check=True, text=True, encoding="utf-8")
+    catalog = json.loads(dumped.stdout)
+    for model in catalog["models"]:
+        model.pop("tool_mode", None)
+        model.update(multi_agent_version=None, apply_patch_tool_type=None,
+                     experimental_supported_tools=[], supports_search_tool=False)
+    out.write_text(json.dumps(catalog), encoding="utf-8")
+    return out
+
+
 def capture(provider: str, executable: str, *, timeout: float = 45,
-            system: str = "Synthetic stock prompt.") -> dict:
+            system: str = "Synthetic stock prompt.", reduced: bool = False,
+            model: str = "gpt-6-astra") -> dict:
     bodies = []
 
     class Sink(BaseHTTPRequestHandler):
@@ -179,6 +218,14 @@ def capture(provider: str, executable: str, *, timeout: float = 45,
                    "args": [str(Path(__file__).resolve()), "--inventory-server", str(schemas)]}
             config = root / "mcp.json"
             config.write_text(json.dumps({"mcpServers": {"tinyassets": mcp}}), encoding="utf-8")
+            def reduce_args(root):
+                catalog = reduced_codex_catalog(executable, root / "catalog.json")
+                instructions = root / "instructions.md"
+                instructions.write_text(system, encoding="utf-8")
+                return (*CODEX_REDUCED_ARGS,
+                        "-c", "model_catalog_json=" + json.dumps(str(catalog)),
+                        "-c", "model_instructions_file=" + json.dumps(str(instructions)))
+
             if provider == "codex":
                 argv = [executable, "exec", "--ignore-user-config", "--ignore-rules",
                         "--skip-git-repo-check", "--ephemeral", "--json",
@@ -190,13 +237,13 @@ def capture(provider: str, executable: str, *, timeout: float = 45,
                         "-c", "mcp_servers.tinyassets.required=true",
                         "-c", 'mcp_servers.tinyassets.default_tools_approval_mode="approve"',
                         "-c", 'mcp_servers.tinyassets.enabled_tools=["read","write","edit","bash"]',
-                        "-c", 'web_search="cached"',
+                        *(reduce_args(root) if reduced else ("-c", 'web_search="cached"')),
                         "-c", 'model_provider="probe"',
                         "-c", 'model_providers.probe.name="probe"',
                         "-c", f'model_providers.probe.base_url="{url}/v1"',
                         "-c", 'model_providers.probe.wire_api="responses"',
                         "-c", "developer_instructions=" + json.dumps(system),
-                        "-m", "gpt-6-astra", "Reply OK."]
+                        "-m", model, "Reply OK."]
             else:
                 env.update(ANTHROPIC_BASE_URL=url, ANTHROPIC_API_KEY="synthetic-probe-key",
                            CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC="1")
@@ -217,6 +264,7 @@ def capture(provider: str, executable: str, *, timeout: float = 45,
             metrics = payload_metrics(bodies[0])
             return {"provider": provider, "live_model_trial": False,
                     "scope": "local CLI probe with stdio MCP, not the production HTTP launch",
+                    "codex_reduced_launch": reduced,
                     **exposure_check(metrics),
                     "supplied_system": system,
                     "diagnostic_stderr": completed.stderr[-3000:],
@@ -236,6 +284,9 @@ def main():
     parser.add_argument("--executable")
     parser.add_argument("--system-file", type=Path)
     parser.add_argument("--out", type=Path, required=True)
+    parser.add_argument("--codex-reduced", action="store_true",
+                        help="capture the most-reduced codex launch (CODEX_REDUCED_ARGS)")
+    parser.add_argument("--model", default="gpt-6-astra", help="codex model slug")
     args = parser.parse_args()
     system = (args.system_file.read_text(encoding="utf-8") if args.system_file
               else "Synthetic stock prompt.")
@@ -249,7 +300,8 @@ def main():
         "claude" if args.provider == "claude-code" else "codex")
     if not executable:
         parser.error("CLI executable unavailable")
-    result = capture(args.provider, executable, system=system)
+    result = capture(args.provider, executable, system=system,
+                     reduced=args.codex_reduced, model=args.model)
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
     print(json.dumps(result["metrics"], ensure_ascii=False))
