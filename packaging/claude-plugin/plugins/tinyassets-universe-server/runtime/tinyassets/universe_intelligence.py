@@ -1323,7 +1323,11 @@ def _call_writer(
             "one immediate fresh-process retry (no sleep)",
         )
         if http_turn is not None:
-            http_turn.turn = None  # the failed zero-round root is terminal
+            # Its own request budget and root closed on exit. Caller-owned
+            # budgets remain in config and are shared with the fresh coordinator.
+            http_turn = make_interactive_agent_turn(
+                prompt=turn_input, system=system, universe_context=universe_context, config=config,
+            )
         return _attempt()
 
     finally:

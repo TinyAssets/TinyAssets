@@ -480,7 +480,10 @@ class AgentTurnCoordinator:
             try:
                 # A retry starts a fresh root; no returned task owns a ready row.
                 if self.turn is not None and self.turn.state == "ready":
-                    self.close_quiescent()
+                    try:
+                        self.close_quiescent()
+                    except Exception:  # noqa: BLE001 - preserve the original failure
+                        _LOG.exception("could not close settled agent turn progress")
             finally:
                 self._release_turn()
                 if self._owns_request_budget:
