@@ -56,3 +56,19 @@ agents were retired. Deployment SHA assertion and a live authenticated app-agent
 pass remain for the eventual merge/deploy. Ordinary branch automations do not
 carry agent-binding identity; scheduled activities that do carry an `agent_id`
 are fenced and cancelled along with that agent's running turns.
+# Round 3 fixture review (2026-10-06)
+
+Peer: Claude via `scripts/peer_agent.py claude`, read-only, 181 seconds.
+**VERDICT: APPROVE**. **AGREE**: no floor/correctness findings.
+
+Confirmed the app-live fixture's published definition and binding match the
+activity's base, universe and owner; the dynamic-ID assertion retains its
+meaning and all other assertions remain. No production checks changed.
+
+An independent AST sweep found four direct activity-create calls with explicit
+agent IDs: two retirement tests with real bindings and the two repaired live
+fixtures. Reviewed indirect `bound_requests.capture` and
+`connection_continuations.bind` paths, the non-main activity runner fence, and
+turn retirement checks. Remaining placeholder IDs are mocks, storage keys or
+negative/refusal paths. The peer ran only the external-call effector file
+(53 passed); the lead's Linux oracle supplies delivery verification.

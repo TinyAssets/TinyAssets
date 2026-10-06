@@ -99,3 +99,73 @@ and fail-loud behavior if no multi-case browser file exists.
 
 Merged `origin/main` at `dd82fd3d4a` before verification; fetched again after
 verification and it had not moved. Draft PR #4528 remains the delivery boundary.
+
+## Round 3 fixture audit (2026-10-06)
+
+Merged `origin/main` at `fb22e770bd74333f54786233ba6046ccfb0b03c2`.
+`tests/test_app_live_route.py` now publishes and binds Mapper to `owner-secret`
+in `u-alpha`, and asserts the live state using the returned binding ID. This
+repairs all four setup errors without changing production addressing, access,
+privacy or state assertions. PR #4528 was returned to draft as requested.
+
+Whole-tree searches covered `agent-1`, `agent-a`, `agent_binding_1`, all
+`agent_id` assignments, activity-store imports/calls and resolver imports.
+Traced direct activity creation, the API and bound-request wrappers, and
+retirement-aware turn paths. No other stale positive-path fixture remained:
+activity callers use main or real bindings; custody/capability IDs are storage
+keys; the background-provider `agent-a` is a serving-resolver stub; browser and
+handler doubles bypass addressing by design. Negative tests retain nonexistent
+IDs to prove refusal. The prior `test_live_view.py` repair remains intact.
+
+`scripts/ci_structural_guards.py` is absent from merged main. Run the existing
+structural guard suites directly on the Linux oracle instead of adding a runner.
+Keep all static prompt budgets and admission checks unchanged. Retain the
+existing PR for this same lane; do not create a duplicate PR.
+
+Round 3 verification: **1,429 passed, zero skips**, Linux Python 3.11.17,
+bubblewrap 0.12.0, uid 1001. Three invocations, each using
+`MSYS_NO_PATHCONV=1 python scripts/linux_oracle.py -- -q <files> --basetemp /tmp/b`.
+All filenames below are under `tests/`:
+
+- Affected fixtures and callers: **532 passed** in 156.71s:
+  `test_app_live_route.py`, `test_live_view.py`, `test_agent_activities.py`,
+  `test_activity_dispatch.py`, `test_activity_http_yield.py`,
+  `test_activities_api.py`, `test_account_deletion.py`, `test_agent_retire.py`,
+  `test_converse_addressed_agent.py`, `test_app_addressed_agent.py`,
+  `test_custom_agents.py`, `test_command_center_agent_templates.py`,
+  `test_inline_approvals.py`, `test_inline_request_storage.py`,
+  `test_turn_interrupt.py`, `test_orphan_ready_turn.py`,
+  `test_orphan_ready_coordinator.py`, `test_orphan_ready_browser.py`,
+  `test_orphaned_turn_reconcile.py`, `test_interrupted_run_surface.py`,
+  `test_background_served_provider.py`, `test_provider_serving_binding.py`,
+  `test_universe_server_five_handles.py`, `test_conversation_custody.py`,
+  `test_provider_request_capability.py`, `test_converse_turn_cost.py`.
+- Structural guards: **476 passed** in 84.80s:
+  `test_rulebook_ratchet.py`, `test_context_budget_regression.py`,
+  `test_context_guardrails.py`, `test_control_plane_inventory.py`,
+  `test_background_authority_inventory.py`, `test_command_center_inventory.py`,
+  `test_engine_secret_inventory.py`, `test_manifest_connection_inventory.py`,
+  `test_universe_ownership_inventory.py`, `test_real_browser_import_guard.py`,
+  `test_source_guard_syntax.py`, `test_universe_path_io_guard.py`,
+  `test_workspace_family_execution_guard.py`, `test_test_inventory.py`,
+  `test_test_hygiene_gate.py`, `test_vocabulary_hygiene.py`,
+  `test_channel_agnostic_ratchet.py`, `test_linux_jail_proof_workflow.py`,
+  `test_ci_runner_budget.py`.
+- Additional addressing and affected heavy suites: **421 passed** in 145.13s:
+  `test_authenticated_external_call_effector.py`, `test_interactive_http_agent.py`,
+  `test_owner_steering.py`, `test_agent_rules.py`,
+  `test_engine_mcp_write_graph_patch.py`, `test_ta_capabilities.py`,
+  `test_ta_capabilities_jail.py`, `test_served_systems_guidance.py`,
+  `test_onboarding_serving.py`, `test_model_bootstrap.py`,
+  `test_mcp_instruction_surfaces.py`, `test_universe_server_isolation.py`,
+  `test_scoped_identity_reset.py`.
+
+Ruff passed on every changed canonical Python/test file. Plugin rebuild staged
+643 files and passed its import probe, with no generated diff. Context budgets
+and diff whitespace passed. No tests weakened, skipped or xfailed.
+
+Claude round 3: **APPROVE**, no floor/correctness findings; **AGREE** with the
+independent fixture audit. See `review.md`. Fetched main again before final
+push; it remained `fb22e770bd74333f54786233ba6046ccfb0b03c2` and merge reported
+already up to date. Deployment and live authenticated app-agent proof remain
+after merge, outside this requested draft-PR delivery.
