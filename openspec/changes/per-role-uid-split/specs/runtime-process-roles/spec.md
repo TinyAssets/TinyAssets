@@ -21,6 +21,10 @@ views SHALL refuse until their dedicated integration is proven.
 - **WHEN** a launch requests an engine route, custom mounts or unadmitted host path
 - **THEN** the shared entry refuses without a daemon subprocess fallback
 
+#### Scenario: A provider turn outlives every fixed class deadline
+- **WHEN** an admitted provider-exec cell is still running
+- **THEN** only daemon revocation, daemon death or a resource guard ends it, never a wall clock
+
 ### Requirement: Authenticated owner deletion retains a two-pass admission fence
 The launcher SHALL admit only the fixed owner-delete class under the authenticated
 principal's dedicated identity and exact pinned center. It SHALL require owner

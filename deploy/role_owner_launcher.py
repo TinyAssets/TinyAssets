@@ -560,11 +560,14 @@ class OwnerLauncher:
                      'PYTHONDONTWRITEBYTECODE': '1'})
             except BaseException:
                 os._exit(126)
-        deadline = time.monotonic() + (155 if kind == 'ingestion-video' else
-                                     1810 if kind == 'node-sandbox' else
-                                     660 if kind in ('tool-jail', 'package', 'provider-exec') else
-                                     75 if kind == 'ui-preview' else
-                                     65 if kind == 'workspace-git' else 35)
+        # A provider turn runs until it finishes: its lifetime is the daemon's
+        # revocation (EOF), daemon death or the RSS/process guard, never a clock.
+        deadline = float('inf') if kind == 'provider-exec' else time.monotonic() + (
+            155 if kind == 'ingestion-video' else
+            1810 if kind == 'node-sandbox' else
+            660 if kind in ('tool-jail', 'package') else
+            75 if kind == 'ui-preview' else
+            65 if kind == 'workspace-git' else 35)
         if streaming:
             self.jobs[pid] = (inner, machine, deadline, status_channel)
             if kind in ('package', 'provider-exec'):

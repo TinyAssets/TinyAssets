@@ -24,7 +24,8 @@ class ExecutionProcess(OwnerCellProcess):
         for writer in writers:
             writer.close()
 
-    async def wait(self, timeout=670):
+    async def wait(self, timeout=None):
+        # No wall-clock ceiling: the cell lives until it exits or is revoked.
         # Async readers hold dup endpoints: reaping may close OwnerCell's own
         # handles without discarding bytes still queued for the readers.
         result = await super().wait(timeout)

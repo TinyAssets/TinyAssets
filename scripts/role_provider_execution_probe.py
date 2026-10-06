@@ -4,6 +4,29 @@ from role_provider_discovery_probe import SETUP
 
 PROBE = r'''
 import asyncio
+DENIAL = r"""
+import json,os,socket,sys
+from pathlib import Path
+fields=dict(line.split(':',1) for line in Path('/proc/self/status').read_text().splitlines())
+opened=[]
+for path in json.loads(bytes.fromhex(sys.argv[1]))+['/proc/1/root/data','/run/tinyassets']:
+    try:
+        if os.path.isdir(path): os.listdir(path)
+        else: Path(path).read_bytes()
+        opened.append(path)
+    except OSError: pass
+try:
+    socket.create_connection(('93.184.216.2',443),timeout=3).close(); direct='connected'
+except OSError: direct='refused'
+fds=[]
+for name in os.listdir('/proc/self/fd'):
+    try: os.fstat(int(name))
+    except OSError: continue
+    fds.append(int(name))
+print(json.dumps(dict(uid=os.getuid(),fds=sorted(fds),caps=int(fields['CapEff'],16),
+    nnp=int(fields['NoNewPrivs']),opened=opened,direct_network=direct,
+    egress_socket=os.path.exists('/provider-egress.sock'))))
+"""
 from tinyassets.providers.owned_process import aspawn_owned, akill_owned_tree
 from tinyassets.providers.provider_jail import provider_launch_scope, ProviderConfinementError
 async def execution():
@@ -43,6 +66,22 @@ async def execution():
                 await akill_owned_tree(proc)
                 assert await proc.wait() is not None
             other='bob' if owner=='alice' else 'alice'
+            # Arbitrary in-cell code (what a provider's own tool calls run):
+            # foreign/host reads and direct network must fail inside the cell.
+            targets=[str(p) for p in (root/('decoder-'+other),
+                root/('decoder-'+other)/'.runtime/provider-launch-credentials/fixture/own-sentinel',
+                root/'.broker/outbound.db',root/'.broker/state/owner-identities.db',root)]
+            with provider_launch_scope(center,credential_dir=snapshot):
+                proc=await aspawn_owned(['/usr/local/bin/python3.11','-I','-S','-c',DENIAL,
+                    json.dumps(targets).encode().hex()],**options)
+                stdout,stderr=await proc.communicate()
+            assert proc.returncode==0,(proc.returncode,stdout,stderr)
+            report=json.loads(stdout)
+            assert report['uid'] not in (0,1001) and report['fds']==[0,1,2],report
+            assert report['caps']==0 and report['nnp']==1 and report['egress_socket'],report
+            assert report['opened']==[] and report['direct_network']=='refused',report
+            assert (other+'-only').encode() not in stdout+stderr
+            print(owner+': in-cell denial '+json.dumps(report,sort_keys=True),flush=True)
             with provider_launch_scope(root/('decoder-'+other),credential_dir=snapshot):
                 try: await aspawn_owned(['/usr/local/bin/codex','--version'],**options)
                 except (PermissionError,ProviderConfinementError): pass

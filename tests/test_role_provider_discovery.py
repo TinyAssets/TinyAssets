@@ -79,14 +79,34 @@ def test_cell_reads_exactly_one_config_line_and_leaves_cli_bytes(monkeypatch):
 ])
 def test_cell_refuses_foreign_executable_paths_and_shape(monkeypatch, config):
     monkeypatch.setattr(role_provider_cell.os.path, 'realpath', lambda value: value)
-    monkeypatch.setattr(role_provider_cell.os.path, 'isfile', lambda value: True)
+    monkeypatch.setattr(role_provider_cell.os, 'stat',
+                        lambda value: SimpleNamespace(st_mode=0o100755, st_uid=65534))
     with pytest.raises(ValueError):
         role_provider_cell.validate(json.dumps(config), '/data')
 
 
+@pytest.mark.parametrize('path, mode, uid, admitted', [
+    ('/opt/any-cli-install/node_modules/.bin/cli', 0o100755, 65534, True),
+    ('/usr/local/bin/cli-wrapper', 0o100755, 65533, True),
+    ('/usr/local/bin/cli-wrapper', 0o100775, 65534, False),
+    ('/usr/local/bin/cli-wrapper', 0o100755, os.getuid(), False),
+    ('/usr/local/bin/sub/cli', 0o100755, 0, False),
+    ('/opt/venv/bin/python', 0o100755, 0, False),
+    ('/opt/-install/cli', 0o100755, 0, False),
+    ('/opt/any-cli-install/dir', 0o040755, 0, False),
+])
+def test_executable_admission_is_install_layout_not_provider_name(
+        monkeypatch, path, mode, uid, admitted):
+    monkeypatch.setattr(role_provider_cell.os.path, 'realpath', lambda value: value)
+    monkeypatch.setattr(role_provider_cell.os, 'stat',
+                        lambda value: SimpleNamespace(st_mode=mode, st_uid=uid))
+    assert role_provider_cell.shipped_executable(path) is admitted
+
+
 def test_cell_fixes_disposable_environment(monkeypatch):
     monkeypatch.setattr(role_provider_cell.os.path, 'realpath', lambda value: value)
-    monkeypatch.setattr(role_provider_cell.os.path, 'isfile', lambda value: True)
+    monkeypatch.setattr(role_provider_cell.os, 'stat',
+                        lambda value: SimpleNamespace(st_mode=0o100755, st_uid=65534))
     argv, env = role_provider_cell.validate(json.dumps(
         {'argv': ['/opt/claude-code-install/node_modules/.bin/claude'],
          'env': {'HOME': '/elsewhere', 'PATH': '/evil', 'CODEX_HOME': '/snapshot'}}), '/data')

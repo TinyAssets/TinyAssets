@@ -78,7 +78,7 @@ def test_execution_communicate_preserves_stdout_stderr_and_authenticated_reap():
         closed = False
         revoked = False
         def wait(self, timeout):
-            assert timeout == 670
+            assert timeout is None
             return 17
         def close(self):
             self.closed = True

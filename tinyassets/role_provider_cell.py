@@ -15,7 +15,10 @@ import stat
 MAX_CONFIG_BYTES = 64 * 1024
 MAX_ARGS = 32
 MAX_ENV = 128
-INSTALL_TREES = ('/opt/codex-install/', '/opt/claude-code-install/')
+# Shipped CLI install trees and their root-owned image wrappers; no provider
+# is named here, the image layout alone decides what a cell may exec.
+INSTALL_TREE = re.compile(r'/opt/[a-z0-9][a-z0-9.-]*-install/.+')
+WRAPPER_DIR = '/usr/local/bin/'
 SNAPSHOT = '/snapshot'
 FIXED_ENV = {'PATH': '/usr/bin:/bin', 'HOME': '/tmp', 'USERPROFILE': '/tmp',
              'TMPDIR': '/tmp', 'TMP': '/tmp', 'TEMP': '/tmp', 'LANG': 'C.UTF-8'}
@@ -53,6 +56,24 @@ def read_config(fd=0):
             raise ValueError('provider config exceeds its bound')
 
 
+def shipped_executable(path):
+    """An image file in a shipped install location the payload cannot have written.
+
+    Inside the cell's user namespace image root appears as the overflow UID, so
+    ownership is checked as "not the payload identity", never "is UID 0".
+    """
+    executable = os.path.realpath(path)
+    if not (INSTALL_TREE.fullmatch(executable)
+            or os.path.dirname(executable) + '/' == WRAPPER_DIR):
+        return False
+    try:
+        info = os.stat(executable)
+    except OSError:
+        return False
+    return (stat.S_ISREG(info.st_mode) and info.st_uid != os.getuid()
+            and not info.st_mode & 0o022)
+
+
 def validate(raw, data_root, *, execution=False):
     config = json.loads(raw)
     if type(config) is not dict or set(config) != {'argv', 'env'}:
@@ -70,10 +91,7 @@ def validate(raw, data_root, *, execution=False):
     # No host data path survives into the cell; the snapshot is pre-rewritten.
     if any(data_root in item for item in (*argv, *env.values())):
         raise ValueError('provider config names a host data path')
-    executable = os.path.realpath(argv[0])
-    if (not (any(executable.startswith(tree) for tree in INSTALL_TREES)
-             or executable == '/usr/local/bin/codex')
-            or not os.path.isfile(executable)):
+    if not shipped_executable(argv[0]):
         raise ValueError('provider executable is outside the shipped install trees')
     return argv, {**safe_environment(env), **FIXED_ENV}
 
@@ -114,8 +132,9 @@ def copy_snapshot(source, destination):
 
 
 def cell_main(data_root, *, execution=False, egress=False):
-    # No RLIMIT_AS: Node/V8 reserves large virtual ranges. The mapper's fixed
-    # 35s class deadline is the wall-clock bound.
+    # No RLIMIT_AS: Node/V8 reserves large virtual ranges. Discovery has the
+    # mapper's fixed 35s deadline; execution has no wall clock, only CPU time
+    # plus the mapper's external RSS/process-count guard.
     for limit, cap in ((resource.RLIMIT_CORE, 0), (resource.RLIMIT_CPU, 600 if execution else 30),
                        (resource.RLIMIT_NOFILE, 256), (resource.RLIMIT_NPROC, 64),
                        (resource.RLIMIT_FSIZE, 64 * 1024 * 1024)):

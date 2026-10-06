@@ -1,6 +1,7 @@
 """Static data-free image cell bootstrap. Runs only after uid/capability retirement."""
 from __future__ import annotations
 
+import glob
 import json
 import os
 import runpy
@@ -120,8 +121,8 @@ def enter(mime, data_root, uid=1003, *, preview=False, preview_write=False, node
             argv.extend(['--bind-fd', '5', '/package-broker.sock'])
     elif provider:
         # Fixed immutable shipped CLI trees only; node itself lives under /usr.
-        for path in ('/opt/codex-install', '/opt/claude-code-install'):
-            if os.path.isdir(path):
+        for path in sorted(glob.glob('/opt/*-install')):
+            if os.path.isdir(path) and not os.path.islink(path):
                 argv.extend(['--ro-bind', path, path])
         argv.extend(['--ro-bind-fd', '3', '/snapshot'])
         if 'e' in mime:

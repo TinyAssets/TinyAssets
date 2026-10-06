@@ -11,8 +11,13 @@ paths are relocated; persistent cwd/argv paths cannot silently become throwaway
 state. The payload's default directory is explicitly private /tmp/workspace.
 No provider name decides admission.
 
-The external mapper bounds process-tree RSS/count and lifetime; fixed CPU, fd,
-process, file/core and private tmpfs bounds remain. Raw stdout/stdin and separate
+The external mapper bounds process-tree RSS/count. Lifetime has no wall clock:
+a provider turn runs until it exits, the daemon revokes it (EOF) or the daemon
+dies; idle detection stays with the adapter. Fixed CPU-time, fd, process,
+file/core and private tmpfs bounds remain. Executable admission is the image
+layout, never a provider name: a regular file under /opt/<name>-install/ or a
+direct /usr/local/bin entry, not owned by the payload identity and not
+group/other-writable. Raw stdout/stdin and separate
 stderr retain adapter error classification, cancellation and communicate/wait
 semantics. No unconfined fallback is permitted when selected. Engine-MCP,
 persistent workspace/session views and their consumer proofs remain follow-ups;

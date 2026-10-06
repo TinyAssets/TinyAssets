@@ -1,3 +1,79 @@
+# Current U1 delivery: D86 provider-exec owner cells (text-only first view)
+
+D85 is pushed at 10282e4a5e. b94259d502 was an unreviewed, unverified lane
+snapshot; it claimed nothing and proved nothing. This entry is what verification
+found and what is true now. Startup OFF; draft #4523.
+
+What exists: in broker mode the shared aspawn_owned entry dispatches to a
+dedicated provider-exec owner cell or refuses; it never builds a daemon-UID
+subprocess. Admission reuses D82's exact sealed snapshot, adds the pinned
+universe egress relay (in-cell loopback forwarder, no network interface) and a
+separate daemon-authenticated stderr socketpair; raw stdin/stdout, communicate
+and wait semantics and revocation-based cancellation are kept. Admission has no
+provider branch. Shell mode, engine routes, caller views/mounts, nested sandbox,
+any cwd and host data paths in argv refuse.
+
+Not true yet, stated plainly: no shipped adapter reaches this class. The Codex
+adapter passes a universe_view and the Claude adapter passes a cwd, so in broker
+mode both refuse (fail closed, no fallback). Only a direct aspawn_owned call
+with no view/cwd executes. Session persistence, persistent workspace views,
+engine-MCP, auth refresh and adapter integration remain. Startup stays OFF.
+
+Fixed during verification (the snapshot had these defects):
+- Wall clock: the snapshot gave provider-exec a fixed 660s mapper deadline and
+  a 670s receipt wait, which would kill a long productive turn (founder rule: a
+  turn runs until finished). Lifetime is now daemon revocation, daemon death or
+  the RSS/process guard; wait has no timeout. Not proven by an actual >660s run.
+- Provider-named admission: the cell admitted '/usr/local/bin/codex' and named
+  install trees, failing the channel-agnostic ratchet. Admission is now the
+  image layout: a regular file under /opt/<name>-install/ or directly in
+  /usr/local/bin, not owned by the payload identity, not group/other-writable;
+  the decoder binds every /opt/*-install tree. The first production run of this
+  check required UID 0 and failed, because the cell's user namespace shows image
+  root as overflow; that run is a diagnostic, not acceptance.
+- Unbacked label: the snapshot probe printed ZERO FOREIGN_BYTES with no in-cell
+  read attempt. It now runs arbitrary code in each owner's cell.
+- Merging main put scripts/ci_structural_guards.py on every PR. Six guards
+  failed on branch-only U1 code: three broker SQLite writers, owner-identities.db
+  storage, four call-scoped loops, two BOM-prefixed tests, and the provider names
+  above. All are classified or fixed; no baseline was raised.
+
+Evidence:
+- Production Dockerfile tinyassets-uid-d86:verify,
+  sha256:f026208dd0301825ac11e88d76b9bb26457bba6f1c64a332dc795b71c2949fda,
+  privileged chain PASS. role_provider_execution_probe --stream exit 0 for Alice
+  and Bob: installed CLI --version; a bad flag gives stderr-only output; an
+  actual Codex exec reaches the HTTPS Responses fixture through the pinned relay
+  and returns the fixture answer; a sentinel env var never enters; the sealed
+  snapshot is unchanged; app-server cancellation is reaped; foreign center,
+  engine route and persistent cwd refuse. In-cell code in each owner's cell:
+  uid 1/2, fds [0,1,2], CapEff 0, NoNewPrivs 1; the other owner's center and
+  sentinel, the broker ledger, owner-identities.db, the data root,
+  /proc/1/root/data and /run/tinyassets all unreadable; a direct TCP connect to
+  the fixture is refused. The other owner's sentinel bytes never appear.
+  startup_activated=false, daemon capabilities zero.
+- Regression: role_provider_discovery_probe on the same image exit 0 (11 models
+  each owner, foreign refusal, cancellation and reuse).
+- Root Linux oracle: 130 passed, zero skips (role_provider_execution,
+  role_provider_discovery, role_launcher, role_packages, role_owner_delete,
+  role_tool_files, role_tools, universe_path_io_guard, converse_turn_cost,
+  owner_stores, control_plane_inventory, storage_registry_complete).
+- UID1001 oracle: 57 passed, zero skips (owner_launcher_client,
+  native_model_discovery, native_discovery_integration).
+- ci_structural_guards.py: 576 passed. Plugin regeneration/import probe, mirror
+  parity and strict OpenSpec PASS. Changed-file Ruff clean; the one E501 left
+  in storage_accounting.py arrived from main (#4525).
+- Not exercised: the provider-exec RSS/process guard under memory pressure,
+  and a run longer than the old 660s deadline.
+
+Slices (1) TOOL preparation/promotion/accounting recovery, (2) PACKAGE cells and
+(3) authenticated owner-delete admission were already delivered as D83
+(2f07b72490), D84 (35df4b4ecd) and D85 (9657e679b7). Gaps D84 left for K1
+stdio: no pinned general egress relay, and a fixed 600/660s package lifetime
+that ends a persistent stdio server. D87 takes both.
+
+---
+
 # Current U1 delivery: D85 authenticated owner-delete admission
 
 D84 is pushed at 3344d96b5931966c9455a97b95115acf7fecc601 (package commit
