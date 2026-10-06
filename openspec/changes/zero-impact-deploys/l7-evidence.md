@@ -27,3 +27,44 @@ It is not yet the complete release gate: task 1.1 remains unchecked pending
 real Compose old/new image digests, full app and multi-surface traffic,
 ownership/resource evidence, and enforcement before production rollout.
 The existing production deploy workflow and ingress are unchanged.
+
+## Second slice: dormant acceptance and replay
+
+`tinyassets/storage/ingress_journal.py` provisions an explicit independent v1
+SQLite journal. Normal opens require that schema; no runtime-layout migration
+or public route is added. A trusted adapter must supply an authenticated
+principal/target/thread/operation scope, a current-authority context held
+through access/import, and existing admission policy checks. The client key
+is `client_send_id`, with the existing 1–128 ASCII key contract. Server ingress
+IDs are receipt identities, not new client keys.
+
+Acceptance commits exact payload bytes and scoped identity before returning.
+Retries return that identity; changed bytes conflict. Reply sequences commit
+before publication, support cursor reads and reject changed/gapped events.
+Terminal payload expiry keeps identity tombstones and never deletes pending
+work. Runtime import mapping and reservation share the existing admission
+transaction; loss of either acknowledgement does not create a second run.
+
+The same Linux traffic exercise now has a candidate variant. A send made while
+the old listener is closed receives 202. A fresh process reopens the journal
+and imports using real `conversation_run_admissions`; two replay attempts
+produce one admission and one deterministic fixture effect. Its terminal reply
+is durable. The old long turn STILL cuts off: overall continuity stays RED.
+`l7-acceptance-evidence.json` records this distinction.
+
+Verification: Linux oracle **71 passed, zero skipped** across
+`test_ingress_journal.py`, `test_deploy_during_traffic.py`,
+`test_conversation_run_admissions.py`, and `test_converse_turn_cost.py`.
+Changed Python ruff checks pass; plugin mirror rebuilt and import probe passes.
+
+Task 2.1 remains unchecked: public authenticated adapters, principal deletion
+and custody policy, quotas, production receipt/status integration, the S8b pump,
+and complete runtime ingress wiring are not implemented. The journal and test
+fixtures grant no execution authority and do not enable a second owner. No
+agent guidance or always-sent prompt content changed. As-built specs are not
+synced because no rollout or real-user deployed proof is claimed.
+
+Data-loss/cross-user mutation cases: reject pre-commit failure; roll back both
+admission and mapping; replay after lost post-commit ack; preserve exact bytes;
+deny changed payload/key scope; deny revoked access; preserve terminal
+tombstones. Each is exercised by the focused journal tests.

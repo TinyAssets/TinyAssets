@@ -67,7 +67,7 @@ class Origin:
         self.log.close()
 
 
-def edge(origin_port, traces):
+def edge(origin_port, traces, acceptance=None):
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *args):
             pass
@@ -83,6 +83,17 @@ def edge(origin_port, traces):
 
         def do_POST(self):
             body = self.rfile.read(int(self.headers.get("Content-Length", "0")))
+            if acceptance is not None:
+                from tests.fixtures.deploy_traffic_acceptance import SCOPE
+
+                accepted = acceptance.accept(SCOPE, json.loads(body)["client_send_id"], body)
+                output = json.dumps({"ingress_id": accepted.ingress_id,
+                                     "client_send_id": accepted.client_send_id}).encode()
+                traces.append({"status": 202, "body": output.decode(), "request": body.decode()})
+                self.send_response(202)
+                self.end_headers()
+                self.wfile.write(output)
+                return
             conn = http.client.HTTPConnection("127.0.0.1", origin_port, timeout=2)
             try:
                 conn.request("POST", "/mcp", body, {"Content-Type": "application/json"})
@@ -105,10 +116,17 @@ def edge(origin_port, traces):
     return server, thread
 
 
-def exercise_red(root):
+def exercise_red(root, *, durable=False):
+    acceptance = None
+    if durable:
+        from tests.fixtures.deploy_traffic_acceptance import journal
+        from tinyassets.storage.ingress_journal import initialize
+
+        initialize(root / "ingress")
+        acceptance = journal(root)
     origin = Origin(root)
     traces = []
-    proxy, thread = edge(origin.port, traces)
+    proxy, thread = edge(origin.port, traces, acceptance)
     try:
         with httpx.Client(base_url=f"http://127.0.0.1:{origin.port}", timeout=20,
                           headers={"Accept": "application/json, text/event-stream"}) as client:
@@ -145,14 +163,15 @@ def exercise_red(root):
                     eventually(closed)
                     status = page.evaluate("""async () => {
                         const r = await fetch('/send', {method:'POST', body:JSON.stringify({
-                            client_send_id:'cutover-send', message:'send during cutover'})});
+                            client_send_id:'cc2e9e60-89dd-43a8-9bea-f87c333b21e4',
+                            message:'send during cutover'})});
                         document.querySelector('#status').textContent = r.status;
                         return r.status;
                     }""")
                     turn = future.result(timeout=15)
                     page.screenshot(path=str(root / "browser.png"))
                     draft = page.locator("#draft").input_value()
-                    assert status == 520
+                    assert status == (202 if durable else 520)
                     assert "TURN_FINISHED" not in turn.get("body", "")
                     assert not (root / "completed").exists()
                     assert (root / "effect-long-send").read_text() == "exact input"
@@ -187,3 +206,34 @@ def test_wait_recreate_red_control(tmp_path):
         import shutil
 
         shutil.copytree(tmp_path, Path(output) / "red", dirs_exist_ok=True)
+
+
+def test_durable_cutover_send_replays_after_process_replacement(tmp_path):
+    from tests.fixtures.deploy_traffic_acceptance import SCOPE, SEND_ID, journal
+
+    assert sys.platform == "linux", "run with scripts/linux_oracle.py; no skipped evidence"
+    evidence = exercise_red(tmp_path, durable=True)
+    assert evidence["http"][0]["status"] == 202
+    # Reopen the independent journal and replay in a new Linux process. The
+    # original serving process is dead; RAM cannot supply this acknowledgement.
+    accepted = journal(tmp_path).receipt(SCOPE, SEND_ID)
+    assert accepted.state == "pending"
+    assert accepted.payload == evidence["http"][0]["request"].encode()
+    command = [sys.executable, "tests/fixtures/deploy_traffic_acceptance.py", str(tmp_path)]
+    results = [subprocess.run(command, cwd=ROOT, capture_output=True, text=True, timeout=60,
+                              env={**os.environ, "PYTHONPATH": str(ROOT)}, check=True)
+               for _ in range(2)]
+    receipts = [json.loads(r.stdout) for r in results]
+    assert receipts[0] == receipts[1]
+    assert receipts[0]["admissions"] == 1
+    assert receipts[0]["effects"] == 1
+    assert journal(tmp_path).events(SCOPE, SEND_ID) == [
+        {"sequence": 1, "payload": b"CUTOVER_SEND_FINISHED", "terminal": 1}]
+    assert journal(tmp_path).receipt(SCOPE, SEND_ID).state == "terminal"
+    evidence.update({"cutover_send": "GREEN", "long_turn": "RED", "replay": receipts})
+    (tmp_path / "evidence.json").write_text(json.dumps(evidence, indent=2))
+    output = os.environ.get("DEPLOY_TRAFFIC_EVIDENCE")
+    if output:
+        import shutil
+
+        shutil.copytree(tmp_path, Path(output) / "acceptance", dirs_exist_ok=True)
