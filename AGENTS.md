@@ -16,7 +16,7 @@ The founder owns this section. To re-steer, replace a line; never add one beside
 8. 24/7 uptime with zero hosts online: every surface works with no host machine on.
 
 No longer the direction: "a global goals engine", Goal ladders, and fantasy as the default domain.
-Where `PLAN.md` or any older doc disagrees with this section, this section wins.
+Where any older doc disagrees with this section, this section wins.
 <!-- direction:end -->
 
 Architecture and operating principles: `PLAN.md`. Here: the loop, and facts a
