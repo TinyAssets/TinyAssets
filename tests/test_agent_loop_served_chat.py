@@ -4,6 +4,7 @@ a scripted box and synthetic model wires (``test_interactive_http_agent``'s rig)
 
 from __future__ import annotations
 
+import base64
 import json
 
 import pytest
@@ -22,7 +23,9 @@ run = base.run
 @pytest.fixture
 def agent(base_agent, monkeypatch):
     monkeypatch.setenv(served_chat.ENV_SWITCH, served_chat.THIN)
-    box = FakeBox(lambda argv, stdin: (b"box says hi", 0))
+    box = FakeBox(lambda argv, stdin: (
+        b'\x1eTA1 ' + json.dumps({"output": base64.b64encode(b"box says hi").decode()})
+        .encode() + b'\n', 0))
     monkeypatch.setattr(served_chat, "_box_provider", box)
     monkeypatch.setattr(served_chat, "_box_limits", "limits")
     base_agent.box = box
@@ -45,7 +48,10 @@ def test_box_tool_runs_in_the_bound_box_by_journal_op_id(agent):
     # Bound ONCE at turn start, to this owner and command center and turn.
     assert agent.box.binds == [(agent.served.context.universe_dir.name, "owner", turn.turn_id)]
     assert agent.box.starts == [f"{turn.turn_id}:1:1"]
-    assert agent.box.execs[f"{turn.turn_id}:1:1"].argv == ["/bin/bash", "-c", "echo hi"]
+    argv = agent.box.execs[f"{turn.turn_id}:1:1"].argv
+    assert argv[:2] == ["python3", "-c"]
+    assert argv[4] == "echo hi"
+    assert "TA_SOCKET" in argv[2]
     # Never forwarded to the engine route.
     assert agent.tools == []
     assert _last_tool_text(agent) == "box says hi\n[exit code 0]"

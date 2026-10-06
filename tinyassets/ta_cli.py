@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import socket
 import subprocess
@@ -17,7 +18,8 @@ NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*\Z")
 def remote(message):
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
         client.settimeout(600)
-        client.connect(SOCKET)
+        endpoint = os.environ.get("TA_SOCKET", SOCKET)
+        client.connect("\0" + endpoint[1:] if endpoint.startswith("@") else endpoint)
         client.sendall(json.dumps(message).encode() + b"\n")
         with client.makefile("rb") as stream:
             raw = stream.readline(MAX_MESSAGE + 1)

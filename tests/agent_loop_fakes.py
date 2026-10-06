@@ -49,9 +49,12 @@ class FakeBox:
         self.lock = threading.Lock()
 
     # ── D2 surface ──────────────────────────────────────────────────────────
-    def bind(self, cc, *, account, turn):
+    def bind(self, cc, *, account=None, turn=None, account_id=None, turn_id=None):
+        account = account_id if account_id is not None else account
+        turn = turn_id if turn_id is not None else turn
         self.binds.append((cc, account, turn))
-        return SimpleNamespace(cc=cc, account=account, turn=turn, root="/cc")
+        return SimpleNamespace(cc=cc, account=account, turn=turn, root="/cc",
+                               command_center_id=cc, account_id=account, turn_id=turn)
 
     def start_exec(self, h, op_id, argv, *, stdin=None, env=None, cwd="/cc", limits=None):
         with self.lock:
