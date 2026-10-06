@@ -1,3 +1,39 @@
+### D77. Mechanical adoption of independent lifetimes by existing engine APIs
+
+Decoder, preview renderer/writer and workspace-git clients now use START and
+their own authenticated lifetime receipts. Their input/output bounds, cell
+proof predicates, directory-descriptor identity checks and fixed class profiles
+remain enforced. Cancellation or a failed data exchange revokes/reaps that
+cell instead of holding or poisoning the shared control exchange. STOP with
+active cells raises a refusal while preserving the client for cancellation.
+Legacy SPAWN is retained only as a protocol compatibility path. This adoption
+does not count as admission of a new engine class or a package launch API.
+
+### D76. Mechanical independent cell streams and mapper-owned lifetimes
+
+Remaining provider, tool-RPC, worker and package integrations require live
+bidirectional I/O. The original synchronous SPAWN exchange holds the sole
+daemon control lock until exit, preventing that integration. START admits the
+same fixed class/owner/center schema and receives one additional unnamed,
+daemon-created seqpacket pair. The mapper acknowledges start on the authenticated
+control channel and returns the final UID/GID/exit receipt on that launch's
+separate lifetime channel. No executable, environment, identity number, PID or
+profile becomes caller-selectable. Existing SPAWN remains for compatibility,
+but refuses while independent cells run so it cannot suspend their supervision.
+
+The mapper polls/reaps all START children, retains the existing fixed per-class
+deadlines and bounded UID mapping, and kills the selected child on lifetime
+channel data or EOF. Possession of that private endpoint is revocation authority
+only; it cannot select a different cell or add authority. STOP refuses while
+jobs remain. A fixed ceiling of 32 concurrent cells and four per dedicated
+identity bounds mapper process/descriptor retention; excess START refuses before
+fork, without replacing the caller's existing admission/accounting checks.
+Lifetime endpoints are prepared before fork, and failed acknowledgements kill
+and reap the newly registered child. Fork descendants close handles alongside the parent
+client. An authenticated final receipt proves reaping; a timeout is not success.
+This is transport groundwork, not acceptance of another actual engine class,
+package revision/slot enforcement, dynamic owner admission or startup activation.
+
 ## Founder amendment status
 
 **Founder D61 (legacy provenance, 2026-10-05) supersedes D63's stop.**

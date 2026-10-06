@@ -1,4 +1,124 @@
-# Current U1 delivery: founder D73 preview renderer and owner screenshot writer
+# Current U1 delivery: D77 application adoption of independent cells
+
+D76 is pushed at **eeeeb0ff49dedf2a9b5b8b487e4b8fd65c7b08cb**, remote SHA
+asserted. Hygiene: **2 tests added, 0 removed, 0 tampering**. Continued into
+D77 in the same run rather than leaving START as unused transport scaffolding.
+
+Decoder, preview renderer/writer and workspace-git now use independent START
+lifetimes. Input/output limits and all descriptor/cell proof predicates remain.
+Active STOP refuses without poisoning the client. A mismatched broker/mapper
+identity is cancelled and reaped before a reusable refusal; no payload is sent.
+These are existing engine classes, **not completion of a remaining new class**.
+
+Final production Dockerfile image (build exit 0, chain PASS):
+`sha256:2c4f5a5327b43ee093137cf193f30a214aab9097f9ce083743c2079e375dc88b`
+(`tinyassets-uid-d77:final`). All following commands exited 0:
+- `python scripts/linux_oracle.py -- tests/test_owner_launcher_client.py tests/test_role_launcher.py tests/test_role_decoder.py tests/test_role_git.py tests/test_role_preview.py tests/test_ui_preview.py tests/test_universe_path_io_guard.py -q -rs`:
+  **87 passed, zero skips** on the final source.
+- `python scripts/role_cell_lifetime_probe.py --image tinyassets-uid-d77:final`:
+  D76 lifetime matrix plus actual application Bob decode while Alice blocks PASS.
+- `python scripts/role_owner_launcher_probe.py --image tinyassets-uid-d77:final --client`:
+  authenticated receipts, wrong owner and mismatched identity refusal recovery,
+  fork closure, concurrent Alice/Bob decodes, terminal acknowledgement PASS.
+  The first run found an outdated zero-retained-FD assumption in this probe:
+  START now retains exactly one registered status socket per live job. The
+  assertion now counts those precise sockets after every request and requires
+  the original FD baseline and zero jobs after STOP; no unregistered FD is allowed.
+- `python scripts/role_preview_launcher_probe.py --image tinyassets-uid-d77:final`:
+  real Alice/Bob sandboxed Chromium and owner screenshot writes, aliases,
+  application round trip and existing local git/bridge operations PASS.
+- `python scripts/role_service_bootstrap_probe.py --image tinyassets-uid-d77:final --snapshots --git --stream`:
+  sealed snapshots, real decoders/git, broker HTTPS GET/POST, accounting/replay
+  refusal and two OAuth rotations PASS.
+- `python scripts/role_reader_alias_probe.py --image tinyassets-uid-d77:final`:
+  **132 denied, 22 own reads, zero foreign reads**, foreign bytes unchanged.
+- Targeted Ruff, mirror regeneration/parity, strict OpenSpec and diff checks PASS.
+  Full Ruff's unchanged baseline is 55 findings (D76 receipt below).
+
+D77 cross-family peer-agents review (Claude): **APPROVE**, no floor/correctness
+findings. Receipt: `C:/Users/Jonathan/AppData/Local/Temp/uid-d77-review.md`.
+Release-critical files in D77: **0**; only the daemon client/mirror and probes
+changed. D76's one critical file remains `deploy/role_owner_launcher.py`.
+
+U2 advanced to **0080f20a3706daab2c700795e378ab909b6e346d**. PR #4509 now has
+91-pass Linux evidence, installed-image migration-substep evidence and a resolved
+review, but explicitly remains draft/not merge-ready because full migration,
+deletion, old CMD boot and startup/healthcheck are unfinished. It is not merged.
+U1 did not edit or run U2's migration/deletion/rollback implementation here.
+
+No full task checkbox is newly complete. All remaining actual engine classes,
+their complete path/reader matrices and then exact-revision package cells with
+broker-scoped credential slots/egress still require implementation. The full
+request is **unfinished**. Startup remains inactive; no final build PR or deploy.
+
+---
+# Prior U1 delivery: D76 independent bounded cell lifetimes
+
+Started from b714cfc571 with the requested ff-only pull (already current).
+Docker Linux is available again. U2 PR #4509 remains draft at
+34a85c9e356297f8e2ee237f4e3602c569cd7c4e with review/installed-image evidence
+pending; it was not merged. No U2 migration, rollback or startup file changed.
+
+D76 provides independent bidirectional I/O and mapper-supervised per-cell
+lifetime channels using the same fixed class admissions and dedicated owner
+identities. This is necessary groundwork for the remaining interactive provider,
+tool-RPC, worker and stdio-package integrations; it is **not another accepted
+engine class**. The original application APIs still use legacy SPAWN. START
+has fixed global/per-owner concurrency ceilings, inherited-handle closure,
+deadline/revocation kill and reaping, and authenticated completion receipts.
+
+Final production Dockerfile image (build exit 0, privileged chain PASS):
+`sha256:93f86ca0e5ef9ac4894ad0cb3bf57497336cb6d4a6675874bc4eb879b43b7c36`
+(`tinyassets-uid-d76:reviewed`). Synthetic container state only.
+
+Verified commands, all exit 0:
+- `python scripts/role_cell_lifetime_probe.py --image tinyassets-uid-d76:reviewed`:
+  Bob's real PNG decode completes while Alice waits for input; exact dedicated
+  identity and FDs 0/1/2; foreign START and active STOP refuse; cancellation and
+  fixed deadline return reaped -9; fork descendants lose both handles; EOF-only
+  revocation succeeds while data stays open; subsequent legacy decode proves
+  jobs drained; four Alice cells refuse a fifth while Bob remains launchable.
+- `python scripts/linux_oracle.py -- tests/test_owner_launcher_client.py tests/test_role_launcher.py tests/test_role_decoder.py tests/test_role_git.py tests/test_role_preview.py -q -rs`:
+  **47 passed, zero skips**, including independent completion impersonation and
+  both concurrency bounds before descriptor use/fork.
+- `python scripts/role_preview_launcher_probe.py --image tinyassets-uid-d76:reviewed`:
+  Alice/Bob sandboxed Chromium, owner screenshot writers, aliases and actual
+  application round trip PASS; existing local git/bridge proof also passes.
+- `python scripts/role_service_bootstrap_probe.py --image tinyassets-uid-d76:reviewed --snapshots --git --stream`:
+  actual sealed snapshots, decoder/git, broker HTTPS GET/POST accounting,
+  replay refusal and two OAuth rotations PASS.
+- `python scripts/role_reader_alias_probe.py --image tinyassets-uid-d76:reviewed`:
+  **132 denied, 22 own reads, zero foreign reads**, foreign bytes unchanged.
+- `python scripts/role_owner_namespace_probe.py --image tinyassets-uid-d76:reviewed`:
+  all three profiles deny foreign read/relabel/copy; out-of-range mapping denied.
+- Targeted Ruff, plugin regeneration/parity, strict OpenSpec and diff checks PASS.
+  Full Ruff retains **55 unchanged findings**.
+
+Cross-family review via peer-agents (Claude): ADAPT, no cross-user defect.
+**AGREE** on all correctness/evidence findings: prepare lifetime endpoints before
+fork; kill/reap on failed start acknowledgement; bound concurrent retention;
+prove EOF with data still open. All corrected in this slice. The EOF probe's
+successful legacy decode is a direct assertion that the mapper's job set is
+empty (legacy SPAWN refuses otherwise), without stopping the staged service.
+Review receipt: `C:/Users/Jonathan/AppData/Local/Temp/uid-d76-review.md`.
+
+Release-critical files: **1**, `deploy/role_owner_launcher.py` (dispatch and
+supervision only). Runtime client and its mirror also changed. No full task
+checkbox newly complete. Migration dry-run/deletion/old-CMD rollback: not run
+in U1; U2 owns them. Startup remains OFF, no build PR and no deployment.
+
+Remaining: adopt independent lifetimes in actual provider/discovery/auth,
+engine-MCP proxy, node/tool, provision/registry/worker, remote git/local box and
+ingestion/video integrations, with the complete reader/path matrices. Then
+immutable exact-revision package cells with broker-scoped slots and egress
+(PR #4511 boundary). The referenced harness-control concern is absent from this
+checkout; #4511 records the missing revision/slot dispatch contract. General
+ffmpeg/ffprobe is absent from the image; Playwright's bundled ffmpeg is codec
+limited and is not evidence for the existing ingestion implementation. That
+dependency needs coordination with U2's image lane, not a silent replacement.
+
+---
+# Prior U1 delivery: founder D73 preview renderer and owner screenshot writer
 
 Implementation pushed at **91c244c079**, exact remote SHA verified.
 Hygiene against b8f9c258bd: **4 tests added, 0 removed, 0 tampering**.

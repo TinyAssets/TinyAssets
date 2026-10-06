@@ -4,6 +4,27 @@
 
 ## ADDED Requirements
 
+### Requirement: Independent bounded owner-cell lifetimes
+
+The bounded launcher SHALL support independent bidirectional data streams and
+per-launch lifetime channels for admitted static engine classes. Each START
+SHALL authenticate the daemon and bind its principal and center to the existing
+broker identity mapping. The mapper SHALL retain process supervision, fixed
+class deadlines and reaping. Lifetime-channel data or EOF SHALL revoke only
+that launch. No caller-selected executable, numeric identity, profile or PID
+SHALL be accepted. Fork descendants SHALL close inherited client handles.
+
+#### Scenario: One blocked owner cannot hold the control channel until exit
+- **WHEN** Alice's admitted decoder waits for input and Bob starts his admitted decoder
+- **THEN** Bob's real decode completes under Bob's dedicated UID/GID before Alice exits
+- **AND** Alice's cancellation produces an authenticated receipt only after reaping
+- **AND** legacy blocking spawn and STOP refuse while independent cells remain active
+
+#### Scenario: Losing a lifetime handle revokes the child
+- **WHEN** a caller closes its lifetime channel or its fixed class deadline expires
+- **THEN** the mapper kills and reaps that cell without additional privileges
+- **AND** no cell can choose a foreign owner scope or forge a completion as daemon UID
+
 ### Requirement: Preview keeps Chromium sandboxed inside its owner cell
 
 The ui-preview class SHALL use the fixed cell-nested profile under founder D73;
