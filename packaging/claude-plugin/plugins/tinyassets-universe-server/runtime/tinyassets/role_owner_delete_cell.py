@@ -17,6 +17,19 @@ def remove_owned(root, *, classify_daemon, overflow_uid=None):
     deadline = time.monotonic() + 20
     visited = removed = retained = 0
 
+    def detach(parent, name, directory):
+        nonlocal removed, retained
+        try:
+            (os.rmdir if directory else os.unlink)(name, dir_fd=parent)
+            removed += 1
+        except PermissionError:
+            # A daemon-owned parent the owner cannot write (the migrated
+            # center root is 1001:<owner> 2750): the daemon pass unlinks this
+            # exact owner name. An owner-owned parent refusing is a failure.
+            if os.fstat(parent).st_uid == uid:
+                raise
+            retained += 1
+
     def walk(parent, name, relative, depth):
         nonlocal visited, removed, retained
         visited += 1
@@ -34,7 +47,15 @@ def remove_owned(root, *, classify_daemon, overflow_uid=None):
             if stat.S_ISDIR(info.st_mode):
                 if owned:
                     os.chmod(f'/proc/self/fd/{fd}', stat.S_IMODE(info.st_mode) | 0o770)
-                child = os.open(f'/proc/self/fd/{fd}', os.O_RDONLY | os.O_DIRECTORY)
+                try:
+                    child = os.open(f'/proc/self/fd/{fd}', os.O_RDONLY | os.O_DIRECTORY)
+                except PermissionError:
+                    if owned:
+                        raise
+                    # A daemon directory the owner may only search (.runtime)
+                    # holds nothing it wrote; the daemon pass verifies it all.
+                    retained += 1
+                    return
                 try:
                     with os.scandir(child) as entries:
                         for entry in entries:
@@ -43,14 +64,12 @@ def remove_owned(root, *, classify_daemon, overflow_uid=None):
                 finally:
                     os.close(child)
                 if owned and empty:
-                    os.rmdir(name, dir_fd=parent)
-                    removed += 1
+                    detach(parent, name, True)
                 else:
                     retained += 1  # daemon pass removes its entries/empty structure
             elif owned:
                 # Unlinking a hardlink or symlink never chmods or reads its target.
-                os.unlink(name, dir_fd=parent)
-                removed += 1
+                detach(parent, name, False)
             else:
                 retained += 1
         except OSError as exc:

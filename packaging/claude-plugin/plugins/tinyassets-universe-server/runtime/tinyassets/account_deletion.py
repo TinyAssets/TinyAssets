@@ -1000,6 +1000,7 @@ def delete_account(
     """
     from tinyassets.daemon_server import _connect, get_founder_home, initialize_author_server
     from tinyassets.principals import named_principal
+    from tinyassets.role_owner_tree_deletion import delete_center
 
     principal = named_principal(founder_sub)
     if not principal:
@@ -1047,6 +1048,14 @@ def delete_account(
         with _connect(root) as conn:
             _delete_root_rows(conn, principal=principal, home=home, counts=counts)
 
+    # A migrated home holds owner-identity entries the daemon cannot remove:
+    # delete it in place with D10's two passes while its owner binding and
+    # identity still admit pass one. None means a legacy single-UID layout.
+    two_pass = _phase(
+        "owner_tree", lambda: delete_center(root, home, principal=principal)
+    ) if home else None
+    owner_tree_failed = "owner_tree" in failures
+
     from tinyassets.broker.supervisor import broker_selected
 
     if broker_selected():
@@ -1058,9 +1067,15 @@ def delete_account(
 
         _phase("broker_egress", _broker_rows)
 
-    staged = _phase("home_staging", lambda: _stage_home(root, home)) if home else None
+    # After a two-pass deletion only the sidecar remains to stage.
+    staged = _phase(
+        "home_staging", lambda: _stage_home(root, home)
+    ) if home and not owner_tree_failed else None
     staging_failed = "home_staging" in failures
-    if staging_failed:
+    if owner_tree_failed:
+        # Keep the binding: a retry resumes pass one under the same intent.
+        failures.append("root_rows")
+    elif staging_failed:
         # Keep the home binding so a retry can finish the deterministic staging
         # container, even when the home itself has already moved. Billing and
         # the other independent phases still run and failures get a receipt.
@@ -1086,7 +1101,8 @@ def delete_account(
 
         _phase("authoring_blobs", _blobs)
 
-    home_removed = staged is None and not staging_failed
+    home_removed = (staged is None and not staging_failed and not owner_tree_failed
+                    or two_pass is not None)
     staged_path = str(root / _STAGING_DIR / home) if staging_failed else ""
     if staged is not None:
         def _remove() -> None:
@@ -1096,7 +1112,7 @@ def delete_account(
             _rmdir_if_empty(staged.parent)
 
         _phase("home_directory", _remove)
-        if not home_removed:
+        if "home_directory" in failures:
             staged_path = str(staged)
 
     if home:

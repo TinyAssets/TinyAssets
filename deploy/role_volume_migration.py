@@ -10,6 +10,7 @@ import fcntl
 import json
 import os
 import signal
+import stat
 import time
 
 
@@ -86,6 +87,20 @@ def _accounting_preflight(root, owner, egress, reverse):
             raise owner["MigrationRefused"]("conflicting accounting destinations")
         return {"daemon": daemon_facts, "broker": broker_facts, "reverse": reverse}
 
+DELETION_INTENTS = ".role-owner-delete"  # tinyassets.role_owner_tree_deletion.INTENT_DIR
+
+
+def _deletion_pending(root, owner):
+    """Any durable two-pass deletion intent; dot names are unreplaced temporaries."""
+    info = owner["_stat"](root, DELETION_INTENTS)
+    if info is None:
+        return False
+    if not stat.S_ISDIR(info.st_mode):
+        raise owner["MigrationRefused"]("deletion intent store is not a directory")
+    with owner["_directory"](root, DELETION_INTENTS) as intents:
+        return any(not name.startswith(".") for name in os.listdir(intents))
+
+
 def migrate(data_root, *, owner, egress, metadata, inventory, modes, launch,
             reverse=False, dry_run=False, after_step=None):
     refused = owner["MigrationRefused"]
@@ -101,6 +116,10 @@ def migrate(data_root, *, owner, egress, metadata, inventory, modes, launch,
         lock = egress["_lock_descriptor"](root, None)
         try:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            if reverse and _deletion_pending(root, owner):
+                # A partly deleted owner tree must not reach the old image;
+                # forward stays allowed so the daemon can resume the deletion.
+                raise refused("finish pending owner deletion before reversing")
             facts = inventory["inventory"](data_root, owner=owner, egress=egress)
             work = inventory["classify"](root, facts["principals"], owner)
             journal = None

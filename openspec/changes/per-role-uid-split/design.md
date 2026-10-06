@@ -2587,3 +2587,41 @@ symlink cannot be opened for the ioctl. A `trusted.*` nonce was rejected for
 D215's reason: the startup window does not hold `CAP_SYS_ADMIN`. Journals
 holding the old two-field generation do not match and take the D214
 unrecorded-inode rule. There is no production journal yet (clean cutover).
+
+### D218. Two-pass deletion consumes D85 only after a verified forward migration
+
+`tinyassets/role_owner_tree_deletion.py` drives D10 for a whole migrated center.
+It takes the two-pass route only when `.layout.json` records a stable forward
+migration (owners and metadata) and the center root is `1001:<owner>` for the
+principal's broker identity. A volume never migrated, or stably reversed, keeps
+the existing single-UID traversal; any other layout state refuses. Before pass
+one the daemon writes a private intent `{center, principal, token, machine}`
+under `/data/.role-owner-delete/`. Every resume reruns pass one with that token
+(an exact retry, which also reinstalls a fence a launcher restart dropped),
+then the daemon pass, then `finish`, then clears the intent. When the center is
+already gone, only `finish` remains; a refusal there means the fence went with
+the launcher and is recorded. `abort_center` is the explicit D85 recovery.
+
+Measured on a forward-migrated volume, pass one as the owner UID cannot unlink
+the names in the center root (`1001:<owner>` 2750, owner `r-x` by design) and
+cannot list a daemon directory it may only search (`.runtime`, named `--x`).
+U1's cell failed loudly on both every time, so no retry could finish. The cell
+now keeps an owner name whose unlink is denied only when the parent is not
+owner-owned, and keeps an unreadable daemon directory untraversed. Owner-owned
+parents still fail loudly. The daemon pass removes UID1001 entries; empty
+directories owned by UID1001 or this center's owner; and an owner
+non-directory only beneath a UID1001 parent. Anything else, including a
+foreign UID, an owner entry inside owner work, or another filesystem, refuses
+with its path. Unlinking a name in a parent the daemon owns needs no capability
+and never reads or changes the owner inode.
+
+Account deletion runs this before broker erasure and root rows, while the
+binding and identity still admit pass one. A failure keeps the binding, skips
+staging that home and reports `owner_tree` and `root_rows` unfinished. The
+startup reverse migration refuses while any intent exists; forward stays
+admitted so the daemon can resume. Pool removal and scoped reset delete
+subtrees, which D85's whole-center cell does not admit; they stay on the
+daemon traversal until a subtree cell exists. A completed deletion shrinks the
+principal set, which D216 still refuses at the next startup migration in
+either direction. That is the open admission-generation contract, not a
+deletion defect, and it blocks activation.
