@@ -58,6 +58,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import sqlite3
 from functools import wraps
 from typing import Any
 from urllib.parse import urlsplit
@@ -1374,15 +1375,10 @@ def request_from_user(
         if reused is not None:
             return {**reused, "grant_sentence": _grant_sentence(reused)}
         request_id = _pin_consent(_uid, action, (kind, title, body), fields)
-    request_agent = "main"
-    if action.get("type") in {"connect", "connect_http"}:
-        from tinyassets.effectors.authenticated_external_call import _initiating_agent
-
-        request_agent = _initiating_agent(udir) or "main"
     row = create_request(
         udir, kind=kind, title=title, body=body, fields=fields,
         action=action, dedupe_key=dedupe, origin=origin, items=items,
-        request_id=request_id, agent=request_agent,
+        request_id=request_id,
     )
     if row is None:
         return {"error": "request_storage_unavailable"}
@@ -1413,10 +1409,9 @@ def request_from_user(
         from tinyassets.connection_continuations import bind
 
         try:
-            row["server_continuation"] = bind(udir, row["request_id"])
+            row["server_continuation"] = bind(udir, row["request_id"]) or row["server_continuation"]
         except Exception:
             logger.warning("Connection ask saved but continuation binding failed", exc_info=True)
-            row["server_continuation"] = False
             row["continuation_status"] = "unavailable"
 
     if created:
@@ -2811,10 +2806,40 @@ def _answer_request(*, universe_id: str = "", payload: Any = None,
     row = get_request(udir, request_id) if request_id else None
     if row is None:
         return {"error": "not_found", "resource": "pending_request"}
-    if row["action"].get("type") == "approve_action":
+    if row["action"].get("type") == "approve_action" and (
+            "reply" not in document or owner_session is None):
+        # Even a reply needs the owner session here: words in the asker's
+        # thread must not stand in for the protected card's decision.
         return {"error": ("preview_required" if owner_session is not None
                           else "interactive_approval_required"),
                 "detail": "Open the protected inline owner card to decide this action."}
+    from tinyassets import request_answers
+
+    try:
+        request_answers.check(udir, row)
+    except request_answers.UnrecordedAskerAmbiguous as exc:
+        # No recorded asker and no sole owner: an answer would have to guess
+        # whose agent to wake. Any admin may still clear the card; a dismissal
+        # of an unrecorded ask enqueues no answer delivery.
+        if not (document.get("dismiss") is True and "reply" not in document
+                and not str(document.get("item_id") or "").strip()):
+            return {"error": "unrecorded_asker_ambiguous", "detail": exc.detail,
+                    "request_pending": row["status"] == "pending"}
+    except PermissionError:
+        return {"error": "not_found", "resource": "pending_request"}
+    if "reply" in document:
+        text = document["reply"]
+        if not isinstance(text, str) or not text.strip() or len(text) > _MAX_ANSWER_CHARS:
+            return _bad("reply must be nonempty text within the answer limit")
+        if looks_like_credential(text):
+            return _bad("Use words rather than credentials in a reply")
+        reply_id = document.get("reply_id")
+        if not isinstance(reply_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", reply_id):
+            return _bad("reply_id must identify this reply for safe retries")
+        item_id = str(document.get("item_id") or "")
+        if item_id and item_id not in {item["item_id"] for item in row.get("items", [])}:
+            return {"error": "not_found", "resource": "request_item"}
+        return request_answers.reply(udir, row, text.strip(), reply_id, item_id=item_id)
     if row["action"].get("type") == "notify":
         return {"error": "not_answerable",
                 "detail": "This notification needs no answer; dismiss it with withdraw."}
@@ -2995,9 +3020,15 @@ def _answer_request(*, universe_id: str = "", payload: Any = None,
                 PreferenceStoreUnavailable, CurrentHomeChanged) as exc:
             return {"error": "provider_authority_denied", "detail": str(exc),
                     "request_pending": True}
-        except Exception:  # noqa: BLE001 - an interrupted setup must not consume consent
-            logger.warning("Model setup could not be confirmed; request remains pending")
+        except (sqlite3.Error, OSError):
+            # Storage was interrupted mid-setup; the consent stays to retry.
+            logger.warning("Model setup could not be confirmed; request remains pending",
+                           exc_info=True)
             return {"error": "model_setup_unavailable", "request_pending": True}
+        except Exception as exc:  # noqa: BLE001 - a bug, not a setup outage; never mislabel it
+            logger.exception("Model setup failed unexpectedly (%s) for request %s in %s",
+                             type(exc).__name__, request_id, _uid)
+            return {"error": "internal_error", "request_pending": True}
         if not resolve_request(udir, request_id, status="answered", answer=answer,
                                feedback=feedback, dont_ask_again=False, decision="allowed"):
             return {"error": "request_resolution_unconfirmed", "request_pending": True}

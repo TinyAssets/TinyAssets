@@ -280,11 +280,14 @@ def test_request_chat_keeps_history_open_and_nudges_decisions(recovery_page, tex
 
     page = recovery_page
     page.evaluate("""() => {
-        wire.answers=[];wire.chat=[];
+        wire.answers=[];wire.replies=[];wire.chat=[];
         const req={request_id:'publish-1',title:'Publish the page',fields:[],status:'pending',
             action:{type:'publish'}};
         window.testRequest=req;
-        MCP.answerRequest=async payload=>{wire.answers.push(payload);return {status:'answered'};};
+        MCP.answerRequest=async payload=>{
+            if(payload.reply){wire.replies.push(payload);return {status:'reply_queued'};}
+            wire.answers.push(payload);return {status:'answered'};
+        };
         sendTurn=async line=>{wire.chat.push(line);};
         refreshRail=async()=>{};
         document.getElementById('thread').appendChild(railBody(req));
@@ -298,12 +301,19 @@ def test_request_chat_keeps_history_open_and_nudges_decisions(recovery_page, tex
     if text != 'Please explain the changes first':
         expect(page.locator('#note_publish-1')).to_contain_text('use Accept or Deny')
         assert page.evaluate('wire.chat') == []
+        assert page.evaluate('wire.replies') == []
         expect(page.locator('#fb_publish-1')).to_have_value(text)
         page.get_by_role('button', name='Accept', exact=True).click()
         assert len(page.evaluate('wire.answers')) == 1
         assert page.evaluate('wire.answers[0].decision || "accept"') == 'accept'
     else:
-        assert page.evaluate('wire.chat') == ['About "Publish the page": ' + text]
+        assert page.evaluate('wire.chat') == []
+        replies = page.evaluate('wire.replies')
+        assert len(replies) == 1
+        assert replies[0]["request_id"] == "publish-1"
+        assert replies[0]["reply"] == text
+        assert replies[0]["reply_id"]
+        assert set(replies[0]) == {"request_id", "reply", "reply_id"}
         expect(page.locator('#note_publish-1')).to_contain_text('ask stays open')
 
 

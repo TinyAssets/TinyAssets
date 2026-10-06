@@ -310,6 +310,9 @@ class _Connection:
         if op == "OWNER_IDENTITY":
             answer = await asyncio.to_thread(self._owner_identity, doc)
             await self.send_async(rf.control(rf.CONNECTION, answer))
+        elif op == "CENTER_ADMISSION":
+            answer = await asyncio.to_thread(self._center_admission, doc)
+            await self.send_async(rf.control(rf.CONNECTION, answer))
         elif op == "LEDGER_QUERY":
             answer = await asyncio.to_thread(self._ledger_query, doc)
             await self.send_async(rf.control(rf.CONNECTION, answer))
@@ -372,6 +375,24 @@ class _Connection:
                 return {"op": "OWNER_IDENTITY_IS", "uid": identity.uid, "gid": identity.gid}
         except Exception:  # noqa: BLE001 - no identity, path or persisted state on refusal
             return {"op": "OWNER_IDENTITY_REFUSED"}
+
+    def _center_admission(self, doc: dict[str, Any]) -> dict[str, Any]:
+        """DA1: append-only admit/retire; machine always from the reservation."""
+        try:
+            if set(doc) != {"op", "event", "principal", "center", "generation", "token"}:
+                raise ValueError("unsupported admission fields")
+            if (not isinstance(doc["event"], str) or type(doc["generation"]) is not int
+                    or not isinstance(doc["token"], str)):
+                raise ValueError("invalid admission request")
+            with self._server._fence.send(doc["generation"], doc["token"]):
+                if self._server._owner_identities is None:
+                    raise RuntimeError("owner identities are not initialized")
+                row = self._server._owner_identities.admission(
+                    doc["event"], doc["principal"], doc["center"])
+                return {"op": "CENTER_ADMISSION_IS", "generation": row.generation,
+                        "machine": row.machine}
+        except Exception:  # noqa: BLE001 - nothing appended or persisted on refusal
+            return {"op": "CENTER_ADMISSION_REFUSED"}
 
     def _erase_account(self, doc: dict[str, Any]) -> dict[str, Any]:
         from tinyassets.broker.account_erasure import local_erase, validate

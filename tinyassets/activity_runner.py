@@ -59,6 +59,9 @@ class ActivityRunBinding:
     run_id: str
 
     def check(self) -> None:
+        record = activities.get(self.universe_dir, self.activity_id)
+        if record is not None:
+            _check_agent(self.universe_dir, record)
         if activities.holds(self.universe_dir, self.activity_id, self.generation,
                             run_id=self.run_id):
             return
@@ -163,6 +166,19 @@ def owner_unavailable(base_path: Path, universe_id: str, owner_principal: str) -
     return _runtime_authority_reason(base_path, _Owner(universe_id, owner_principal))
 
 
+def _check_agent(universe_dir: Path, record: dict) -> None:
+    if record.get("agent_id", "main") == "main":
+        return
+    from tinyassets.custom_agents import get_binding
+    from tinyassets.runs import RunCancelledError
+
+    binding = get_binding(universe_dir.parent, universe_id=universe_dir.name,
+                          binding_id=record["agent_id"])
+    if (binding is None or binding["created_by"] != record["owner_principal"]
+            or binding.get("retired") or record.get("outcome") == "agent retired"):
+        raise RunCancelledError("agent retired")
+
+
 def require_supported_executor(base_path: Path, universe_id: str) -> None:
     """Refuse a known unsupported subscription before promising background work."""
     from tinyassets.provider_assignment import load_provider_assignment
@@ -191,9 +207,13 @@ def start(base_path: Path, universe_id: str, record: dict, generation: int) -> s
     """
     from tinyassets.api.permissions import owner_run_identity
     from tinyassets.automations import _authority_guard, _bind_automation_provider_call
-    from tinyassets.runs import RUN_STATUS_FAILED, execute_branch_async
+    from tinyassets.runs import RUN_STATUS_FAILED, RunCancelledError, execute_branch_async
 
     base_path = Path(base_path)
+    try:
+        _check_agent(base_path / universe_id, record)
+    except RunCancelledError as exc:
+        raise activities.ActivityRefused("agent retired", kind="agent_retired") from exc
     owner = record["owner_principal"]
     require_supported_executor(base_path, universe_id)
     branch = ensure_branch(base_path, universe_id, owner)

@@ -286,6 +286,22 @@ def _bump(record: dict) -> float:
     return max(time.time(), record["updated_at"] + 1e-6)
 
 
+@contextmanager
+def _agent_creation_admission(universe_dir: Path, owner: str, agent_id: str):
+    if not agent_id or agent_id == "main":
+        yield
+        return
+    from tinyassets.addressed_agents import resolve
+    from tinyassets.provider_assignment import provider_assignment_admission
+
+    # Retirement holds exclusive admission through its activity fence. The
+    # validation and insert must be on the same side of that fence.
+    with provider_assignment_admission().shared(universe_dir):
+        resolve(universe_dir.parent, universe_id=universe_dir.name,
+                owner=owner, agent_id=agent_id)
+        yield
+
+
 def create(universe_dir: Path, *, owner_principal: str, title: str, brief: str,
            origin_kind: str, origin_ref: str = "", agent_id: str = "main",
            approval_id: str = "", continuation_only: bool = False) -> dict:
@@ -329,7 +345,8 @@ def create(universe_dir: Path, *, owner_principal: str, title: str, brief: str,
         "start_failures": 0, "revision": 1, "created_at": now, "updated_at": now,
         "finished_at": 0.0,
     }
-    with _txn(universe_dir, create=True) as conn:
+    with (_agent_creation_admission(universe_dir, owner, agent_id),
+          _txn(universe_dir, create=True) as conn):
         if origin_kind == "schedule":
             row = conn.execute(
                 f"SELECT {', '.join(_COLUMNS)} FROM activities "
@@ -778,6 +795,34 @@ def events_page(universe_dir: Path, activity_id: str, *, after: int = 0,
     events = [dict(zip(("seq", "ts", "kind", "line"), r, strict=True)) for r in rows[:limit]]
     return {"events": events,
             "next_after": events[-1]["seq"] if len(rows) > limit else None}
+
+
+@_when_absent(list)
+def fence_agent(universe_dir: Path, *, owner: str, agent_id: str) -> list[str]:
+    """Stop only this owner's retired agent, retaining its activity evidence."""
+    now = time.time()
+    with _txn(universe_dir) as conn:
+        cursor = conn.execute(
+            "SELECT * FROM activities "
+            "WHERE owner_principal=? AND agent_id=? AND status NOT IN (?, ?)",
+            (owner, agent_id, COMPLETED, FAILED),
+        )
+        columns = [column[0] for column in cursor.description]
+        records = [dict(zip(columns, row)) for row in cursor.fetchall()]
+        runs = [row[key] for row in records for key in ("runner_token", "retiring_token")
+                if row[key]]
+        conn.execute(
+            "UPDATE activities SET status=?, outcome='agent retired', "
+            "retiring_token=CASE WHEN runner_token!='' THEN runner_token ELSE retiring_token END, "
+            "runner_token='', runner_generation=runner_generation+1, revision=revision+1, "
+            "task_generation=task_generation+1, "
+            "updated_at=?, finished_at=? WHERE owner_principal=? AND agent_id=? "
+            "AND status NOT IN (?, ?)",
+            (COMPLETED, now, now, owner, agent_id, COMPLETED, FAILED),
+        )
+        for row in records:
+            _event(conn, dict(row), "stopped", "agent retired")
+    return runs
 
 
 @_when_absent(list)

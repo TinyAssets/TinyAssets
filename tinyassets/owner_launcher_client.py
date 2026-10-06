@@ -330,6 +330,43 @@ class OwnerLauncherClient:
                 self._close()
                 raise
 
+    def _admission(self, document, handles, receipt):
+        with self._lock:
+            self._check()
+            self._channel.settimeout(10)
+            try:
+                ancillary = [(socket.SOL_SOCKET, socket.SCM_RIGHTS,
+                              array.array('i', handles))] if handles else []
+                self._channel.sendmsg([json.dumps(document).encode()], ancillary)
+                answer = self._reply()
+                if answer == {'op': 'REFUSED'}:
+                    raise OwnerLaunchRefused('owner launcher refused the admission')
+                if answer != {'op': receipt}:
+                    raise RuntimeError('invalid owner admission receipt')
+            except OwnerLaunchRefused:
+                raise
+            except BaseException:
+                self._close()
+                raise
+
+    def admit(self, *, principal, command_center, generation, root_fd):
+        """DA4 step 5: the mapper fetches the log row itself; no number is sent.
+
+        ``root_fd`` is an O_PATH descriptor of the published root the caller
+        has just checked is host uid 1001 with the canonical label.
+        """
+        if type(generation) is not int or generation < 1:
+            raise ValueError('invalid admission generation')
+        self._admission(dict(op='ADMIT', principal=principal, command_center=command_center,
+                             generation=generation), [root_fd], 'ADMITTED')
+
+    def retire(self, *, principal, command_center, generation):
+        """DA6: drop the binding under its deletion fence; unbound is a verified no-op."""
+        if type(generation) is not int or generation < 1:
+            raise ValueError('invalid admission generation')
+        self._admission(dict(op='RETIRE', principal=principal, command_center=command_center,
+                             generation=generation), [], 'RETIRED')
+
     def stop(self):
         with self._lock:
             self._check()

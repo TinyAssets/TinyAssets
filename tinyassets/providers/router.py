@@ -2090,7 +2090,7 @@ class ProviderRouter:
                     except asyncio.CancelledError:
                         # Only the owner's Stop cancels from inside this loop.
                         if live_turn is not None and live_turn.requested():
-                            raise TurnInterrupted("the owner stopped this turn") from None
+                            raise TurnInterrupted(live_turn.reason) from None
                         raise
             except asyncio.TimeoutError:
                 # wait_for already cancelled the coroutine (subprocess killed).

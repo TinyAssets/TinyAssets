@@ -1,3 +1,10 @@
+**Founder D60 (2026-10-05) supersedes the shared engine identity below.** Every
+owner gets a dedicated machine UID AND GID, allocated permanently by the broker
+from 300001..399999 (D61/D62) and mapped into that owner's cells by a bounded
+user-namespace mapper. Engine and provider children run as their owner's pair,
+never as a shared 1003; uid 1003 survives in the image only as a vestige. Status
+and the landing slices live in `tasks.md`.
+
 **founder decision 2026-10-05: fold + build with probes.** D9 folds all seven
 round-3 findings; no fourth design review, normal cross-family build review,
 no deployment. D10 records the lead's technical decision resolving ACL-mask
@@ -31,19 +38,29 @@ Measured on prod (2026-10-02, read-only):
   all covered spawn sites and requires actual-process, per-class production-image oracle
   denial of other owners' data, owner.json, vault and owner channel token.
 
-- **A uid per role, enforced by the kernel.** Owner/daemon 1001 (unchanged, it owns `/data`);
-  broker 1002; engine and provider children 1003. Three service groups carry the cross-uid access
+- **A uid per role and per owner, enforced by the kernel.** Owner/daemon 1001 (unchanged, it
+  owns `/data`); broker 1002; each owner's engine and provider children run as that owner's
+  dedicated UID/GID (D60), reserved in a broker-private, append-only `owner-identities.db`
+  (D61) and mapped as `0 300000 100000`, with host 300000 kept for the mapper itself (D62).
+  Daemon, inspect and broker readers require both labels to match the requesting owner on the
+  open descriptor, plus no-follow and single-link checks (D65). Three service groups carry the cross-uid access
   the split needs: `ta-work` (1100) for workspaces, `ta-brk` (1101) for the broker socket,
   `ta-vault` (1102) for vault reads. The box-host and per-box ranges are reserved for S4/S5 and
   agreed with `openshell-spike`.
-- **A tiny root launcher, not a privileged daemon.** The container starts as root with a
+- **A staged root bootstrap, not a privileged daemon (D60/D62/D68-D70).** In the privileged
+  startup window PID1 runs the migration, forks the broker and the bounded mapper, then retires
+  itself to the capability-free daemon (1001). The mapper keeps only `SETUID`/`SETGID` inside its
+  owner user namespace; out-of-range identities fail in the kernel, and the daemon reaches it over
+  an inherited, `SCM_CREDENTIALS`-authenticated channel. Either service dying ends the container;
+  no role restarts with host privilege. The original single-request launcher text follows as
+  history. The container starts as root with a
   phase-scoped capability set: the one-time ownership migration needs `CHOWN`, `FOWNER` and
   `DAC_OVERRIDE` because it re-modes paths euid 0 does not own; the launcher needs `SETUID`,
   `SETGID`, `SETPCAP` and `KILL`, and **drops the migration's three before it serves**.
   `deploy/native/ta_op.c` asserts set equality on root entry and the container healthcheck runs
   through it, so its `MASK` changes in the same commit. The launcher starts the broker and the
   daemon as their own uids, then serves exactly one request from the daemon's own pid: "spawn this
-  allowlisted child as 1003". The daemon keeps no capability, so it cannot become the broker's uid
+  allowlisted child in its owner's cell" (originally "as 1003"; D60 replaces that). The daemon keeps no capability, so it cannot become the broker's uid
   and read the vault.
 - **No owner-writable path on a privileged chain.** The entrypoint moves out of `/app` (where the
   image chowns it to 1001) to a root-owned path; the launcher runs `python -I -S` from a root-owned
@@ -99,6 +116,11 @@ Measured on prod (2026-10-02, read-only):
   `providers/native_jsonrpc_discovery.py` (reached from `providers/base.py`, historically outside the jail; now using the metadata view),
   `universe_tools.py`, `workspace_provision_process.py`, `workspace_registry_process.py`.
   New gate: `scripts/check_privileged_chain.py`.
+- **Owner identities and cells (D60-D87):** `tinyassets/broker/owner_identities.py`,
+  `deploy/role_owner_launcher.py` (the mapper), `deploy/role_decoder.py`, and per-class cell
+  modules for decoder, workspace git, git_bridge, preview, node, tools, video, provider
+  discovery, packages, owner delete and provider exec. The volume migration, two-pass delete
+  and startup switch are the U2 lane.
 - **Dependencies:** lands after #4299 (the broker) and #4267 (`platform_secrets`), amending both.
 - **Specs:** new capability `runtime-process-roles`. `credential-vault` gains the vault's
   broker-readable group and the owner-only writer rule.

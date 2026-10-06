@@ -1,3 +1,196 @@
+# Owner dynamic admission (spec #4541, `owner-dynamic-admission`, F1 = (b))
+
+Lane D implementation on U1. Startup OFF; no deploy. Spec references are DA1-DA8
+in that change's design.md.
+
+## Task 1: DA3 kernel facts (PASS)
+
+`python scripts/role_admission_kernel_probe.py --image <production image>`
+runs daemon 1001 and owner 300001 as real processes with zero capability sets
+(CapInh/Prm/Eff/Amb read back 0 in every step) on a Docker ext4 named volume
+and on tmpfs (kernel 6.6.87.2-microsoft-standard-WSL2):
+
+| Fact | ext4 | tmpfs |
+|---|---|---|
+| 1. daemon `mkdirat(g, root, 0750)` under owner-owned 02777 `g` is `1001:300001` mode 02750 | PASS | PASS |
+| 2. inherited access ACL equals the canonical root ACL byte for byte; default ACL copied | PASS | PASS |
+| 3. daemon removes the default ACL, `fchmod(0750)` leaves 0750, no S_ISGID, ACL unchanged | PASS | PASS |
+| 4. `renameat2(RENAME_NOREPLACE)` publishes (same inode), refuses an existing name (EEXIST), `g` and S removed, `previews` is 1001:1001 0700 | PASS | PASS |
+
+The cell's `g` is `300001:300001` 02777 and inherits S's canonical default ACL.
+Staging S reads back `1001:1001` 0770 (the group class is the ACL mask; `group::---`).
+
+## Tasks 2-5: log, mapper channel, center-root cell, runtime bind
+
+- DA1 `center_admissions` (append-only by trigger, `UNIQUE(center, event)`),
+  OWNER-channel `CENTER_ADMISSION`; tests/test_center_admissions.py.
+- DA2 mapper pair: created before the broker fork, mapper PID sent with the
+  proof hash, per-packet SCM_CREDENTIALS (pidfd-pinned) as host 300000; any
+  other op/field/descriptor/sender refuses and closes. The mapper authenticates
+  answers as the broker PID and poisons the pair on failure.
+- DA3 `center-root` class and `tinyassets/role_center_admission.py`.
+  Measured change: `.role-admission` is 1001:1001 **0711**, not 0700.
+  bubblewrap resolves the cell's `--bind-fd` source by path, so the owner
+  needs search on the parent; S stays ACL-private (daemon and that owner)
+  behind a 128-bit name. With 0700 the real cell failed: `bwrap: Can't find
+  source path /proc/self/fd/3: Permission denied`.
+- DA4/DA5 mapper `ADMIT`/`RETIRE`, `bootstrap_services(..., generation=)`.
+  Found by the probe and fixed: a retry for an already-bound center returned
+  ADMITTED before checking the attached root's inode; the root check now runs
+  first on every admit.
+
+Evidence (production Dockerfile `tinyassets-uid-adm:t5`):
+`python scripts/role_center_admission_probe.py --image tinyassets-uid-adm:t5`
+(real PID1 bootstrap, broker, mapper pair, bwrap center-root and decoder cells):
+alice-second (300001, gen 3) and carol-home (new signup, 300003, gen 4) carry
+the canonical label, run decoder cells as inner 1/3 with zero caps; bound and
+unreserved center-root refused; absent row, other principal, stale generation,
+other root inode and a cell for an unbound logged center refused, then a valid
+bind still served; broker refuses a conflicting admit; foreign application
+scope refused; daemon cannot open the broker log; PID1 caps zero. Unchanged
+probes on the same image: role_service_bootstrap_probe (and --service-death,
+--broker-death, --bootstrap-failure on t3), role_owner_delete_probe (ZERO
+FOREIGN_BYTES), role_owner_launcher_probe --client.
+
+## Task 6: center-root creation and removal sites (inventory)
+
+"Selected" = `role_decoder._bounded_client` installed (DA8); legacy is unchanged.
+
+| Site | Kind | Selected path |
+|---|---|---|
+| `api/universe.py` `_universe_impl` create (mkdir) | create | `admit_center` (DA4); an existing *incomplete* root resumes in place under the same id; a complete or foreign id still refuses (ownership grant) |
+| `api/universe.py` `_universe_impl` rollback `rmtree` + grant revoke | remove | never removes a published root; keeps the grant when the root exists; revokes only if nothing was published |
+| `api/first_contact.py` `ensure_founder_home` incomplete-home `rmtree` | remove | skipped; `_universe_impl` resumes (same call path as the rollback) |
+| `api/universe.py` write sites (requests, config, notes, premise, pause) `udir.mkdir(parents=True, exist_ok=True)` | create | `ensure_center_dir`: a missing root refuses |
+| `universe_files._parent_dir_fd` implicit parent creation at depth 0 under the data root | create | refuses a missing non-dot top-level directory (`write_data_path` into a missing center) |
+| `account_deletion` home staging + `_rmtree` | remove | U2: D218 `role_owner_tree_deletion` (task 7 retire hook) |
+| `reset.py` host reset `rmtree` of every center | remove | host-run dev reset, not an app path; unchanged |
+| `scoped_reset` subtree `rmtree` | remove | lane B non-goal (subtree deletion cell) |
+
+Tests: tests/test_admission_center_creation.py (selected route, failure at
+log append / bind / seeding keeps root and grant then resumes with the same
+id, complete or foreign id never resumed, no write site or implicit parent can
+mkdir a root, legacy unchanged); existing test_first_contact,
+test_a_universe_needs_an_owner, test_api, link-free and IO-guard suites pass.
+
+## Task 7: deletion retires the binding (DA6)
+
+`role_owner_delete.retire(universe_dir, token=)` runs after the daemon pass
+removed the tree and before `finish`: broker `retire` row (an existing row is
+returned), then mapper `RETIRE` (bound: exact fence, no running cell; unbound:
+verified no-op). The fence outlives the binding until `finish`, which now finds
+it by its exact tuple. tests/test_admission_deletion_retire.py wires the real
+broker log to the real mapper handlers: normal path, a crash after the row and
+after the unbind each resume to one retire row, an unbound (post-restart or
+missing-list) retire, and a non-quiescent bound retire. **U2 lane:** D218's
+`role_owner_tree_deletion.delete_center` (U2 only) must call
+`role_owner_delete.retire` before `finish` on the normal path, on the
+tree-gone resume, and for a center on `volume.json` `missing` (today that one
+falls through to the legacy traversal).
+
+Probe `tinyassets-uid-adm:t7` adds: a new user's first home through
+`ensure_founder_home` -> `_universe_impl` -> `admit_center` (canonical label,
+decoder cell inner 4, zero caps), and carol-home deleted through real IPC
+(pass one, daemon removal, retire twice, finish), after which a cell refuses
+and the name is never re-admitted. U1's pass-one cell predates U2's D218 change
+that retains daemon directories the owner may only search, so the probe's
+daemon removes its own empty `previews` first.
+
+## Tasks 8 and 10: restart contract (DA7) and F1 (b)
+
+`deploy/role_admission_contract.py` (stdlib only, installed root-owned 0555 at
+`/usr/local/libexec/ta-admission-contract.py`, in the chain checker's list):
+`clear_staging` (sweep `.role-admission/` before the inventory), `reconcile`
+(the DA7 plan, refusing before any mutation), `journal_fields`,
+`phase_explained`, `raise_alarms` (F1 b) and `broker_log` (append admit rows
+and read the delta through a fully retired broker child; root never opens the
+database). F1 = (b) as decided: an admitted center whose tree is missing, with
+no retire row and no deletion intent, goes to `missing`, stays unbound, prints
+`ROLE ADMISSION ALARM: ...` on stderr and writes a concern record
+`<state>/admission-concerns/<date>-missing-center-<center>.md` (docs/concerns
+shape, 0600, root-private) at every restart until it is restored (bound
+again) or retired (dropped). Everyone else starts. No option for (a) remains.
+
+tests/test_admission_restart_contract.py (root oracle, 16): signup + new center
++ deletion between restarts; deleting the only center then a signup; an
+unexplained tree, a changed owner, a log row naming another owner and a
+retired center with a tree refuse; orphan adoption only when the label check
+passes; pending deletion explained with and without its tree; F1 (b) missing,
+re-checked, restored, retired; first volume and forward-after-reverse seed and
+never retire; interrupted journals keep exact matching; malformed deltas
+refuse; phase lag; the deploy and daemon canonical ACL encodings are equal;
+the staging sweep and the alarm record on a real filesystem. Probe t8 adds the
+staging sweep and seeding through a retired broker child, an idempotent
+re-seed, a refused conflicting seed and a delta read.
+
+### Note for the U2 lane (feat/per-role-uid-split-migration; not edited here)
+
+D216's refusal sites and D218 live only on U2. To replace them:
+
+1. `role_startup._helpers`: load `admission-contract`.
+2. `role_volume_migration.migrate`, under the layout lock and before
+   `inventory(...)`: `contract["clear_staging"](root)`.
+3. Replace `if journal and journal["principals"] != facts["principals"]: refuse`
+   with: `rows = contract["broker_log"](data_root, launch, after=journal
+   generation if stable forward else 0)`; `plan = contract["reconcile"](
+   journal=journal, discovered=facts["principals"], rows=rows,
+   pending=<names in .role-owner-delete>, adoptable=<label == canonical_label(
+   reservation) via read_label, and the broker append refuses a retired or
+   foreign name>)`. `ContractRefused` is a `MigrationRefused` for the caller.
+4. After `_allocate`: `appended = contract["broker_log"](data_root, launch,
+   after=plan["generation"], append=plan["adopt"] + plan["seed"])`;
+   `contract["raise_alarms"](state, plan["alarms"])`; write `volume.json` with
+   `contract["journal_fields"](plan, appended)` (adds `generation`, `missing`).
+5. `role_metadata_migration.migrate` and `role_owner_migration.migrate`: after a
+   completed phase, accept `contract["phase_explained"](recorded,
+   previous_volume_bindings, bindings)` instead of exact equality; an empty
+   binding set skips inode work but still rewrites the phase journal's
+   configuration before `volume.json` advances.
+6. `role_startup.bindings`: bindings are every discovered center (in E or
+   pending deletion); pass `generation=journal_fields["generation"]` to
+   `bootstrap_services(..., generation=)` (now a required keyword on U1).
+7. `role_owner_tree_deletion.delete_center`: call `role_owner_delete.retire`
+   before `finish` on the normal path, the tree-gone resume, and for a center on
+   `missing` (task 7).
+8. `role_volume_inventory.reserved`'s changed-principal refusal stays.
+
+## Task 9: restart matrix with real broker IPC and a real mapper
+
+`python scripts/role_admission_restart_probe.py --image tinyassets-uid-adm:t9`:
+each boot is a fresh production-image container on one named volume (a real
+restart: new PID1, broker, mapper pair, bwrap cells). Before the D70 bootstrap,
+as root with writers stopped, the boot runs the DA7 contract as the startup
+coordinator (stand-in for U2's: centers and their single admin grant as the
+inventory, a daemon-written file as the pending-deletion store), then
+bootstraps with the reconciled bindings and generation. All 19 boots PASS:
+
+- signup, a new center and a deletion, then a restart (generation 6, retired
+  center absent and its cell refused);
+- a crash before publish (staging swept, retry admits), between publish and
+  the log append (orphan adopted on the label check), between the append and
+  the bind (bound from the log);
+- first-contact homes failing at the log append, the bind and seeding: retried
+  in place without a restart (erin), and after a restart (hank adopted, frank
+  and gina bound) with no loss alarm;
+- a crash between the deletion's daemon pass and its retire: explained as
+  mid-deletion, the resume writes `retire` with a no-op unbind, and the name is
+  never admitted again;
+- F1 (b): a lost tree goes to `missing` with an alarm and a concern record,
+  every other owner starts, and it is re-checked on the next boot;
+- an unexplained tree and a changed owner refuse before the journal changes,
+  and the volume starts again once healed;
+- deleting the volume's only center, a restart with an empty set, a signup,
+  and a restart.
+
+Before every bootstrap the boot also runs a D59-style matrix as each other
+owner's real host identity (zero capabilities): reads, listings, chmod, chown,
+link, rename and write-open on every path of every other owner's center. Zero
+foreign bytes and zero mutations on every boot (3,900 attempts on the largest).
+
+Not on U1 (U2 lane, needs its reverse/forward migration): reverse after runtime
+admission, and forward after the legacy image created centers. The contract's
+seed path for both is covered by tests/test_admission_restart_contract.py.
+
 # Current U1 delivery: D87 package egress relay and caller-owned lifetime
 
 D86 is pushed at 4aad725f28. D87 closes the two gaps D84 left for K1's

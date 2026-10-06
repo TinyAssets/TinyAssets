@@ -334,6 +334,14 @@ PINNED: dict[str, list[str]] = {
         "_write: os.replace()",
         "list_commons_definitions: .read_text()",
     ],
+    # owner-dynamic-admission DA3: every call is descriptor-relative with
+    # O_NOFOLLOW; the setgid hand-off cannot go through the path helpers.
+    "tinyassets/role_center_admission.py": [
+        "_open_dir: os.open()",
+        "_remove_tree: os.unlink()",
+        "admit_center: os.open()",
+        "admit_center: os.open()",
+    ],
     "tinyassets/reset.py": [
         "reset: .unlink()",
         "reset: shutil.rmtree()",

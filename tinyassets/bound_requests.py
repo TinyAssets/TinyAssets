@@ -308,14 +308,15 @@ def capture(home, raw):
                 agent_id=agent,
                 continuation_only=True,
             )
-            expiry = time.time() + 86400
-            conn.execute(
-                "UPDATE activities SET continuation_only=1,task_expires_at=?,"
-                "status='waiting_on_you' WHERE activity_id=?",
-                (expiry, task_record["activity_id"]),
-            )
-            conn.commit()
-            task = (task_record["activity_id"], 1, expiry)
+            # The admitted create already initialized these fields. A later
+            # update would revive a task fenced by concurrent retirement.
+            task = conn.execute(
+                "SELECT activity_id,task_generation,task_expires_at FROM activities "
+                "WHERE activity_id=? AND status NOT IN ('paused','completed','failed')",
+                (task_record["activity_id"],),
+            ).fetchone()
+            if task is None:
+                raise RequestRefused("The initiating task ended; start new work.")
         envelope = {
             "version": 1,
             **action,

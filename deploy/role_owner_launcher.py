@@ -57,10 +57,12 @@ def package_usage(pid, proc='/proc'):
     return len(seen), pages * os.sysconf('SC_PAGE_SIZE')
 
 
-def bootstrap_services(data_root, run_root, bindings, launch):
+def bootstrap_services(data_root, run_root, bindings, launch, *, generation):
     """Staged PID1 bootstrap; never called by the production entrypoint yet.
 
     Migration/owner bindings must already be verified with all writers stopped.
+    ``generation`` is the admission-log high-water mark that startup reconciled
+    (DA5); the mapper binds only rows above it at runtime.
     Fork both services in the existing privileged startup window, then turn
     PID1 into the capability-free daemon. No host-privileged process survives.
     A service death exits PID1: the container tears down every descendant.
@@ -68,7 +70,7 @@ def bootstrap_services(data_root, run_root, bindings, launch):
     if os.getpid() != 1:
         raise RuntimeError('service bootstrap requires container PID1')
     try:
-        return _bootstrap_services(data_root, run_root, bindings, launch)
+        return _bootstrap_services(data_root, run_root, bindings, launch, generation)
     except BaseException:
         # Especially before daemon retirement, returning an exception to a
         # caller would let a caught startup failure retain host authority.
@@ -78,7 +80,9 @@ def bootstrap_services(data_root, run_root, bindings, launch):
             os._exit(78)
 
 
-def _bootstrap_services(data_root, run_root, bindings, launch):
+def _bootstrap_services(data_root, run_root, bindings, launch, generation):
+    if type(generation) is not int or generation < 0:
+        raise RuntimeError('invalid bootstrap admission generation')
     if os.getresuid() != (0, 0, 0) or os.getresgid() != (0, 0, 0):
         raise RuntimeError('service bootstrap requires root entry identity')
     launch['_assert_caps'](launch['ENTRY_CAPS'])
@@ -112,28 +116,39 @@ def _bootstrap_services(data_root, run_root, bindings, launch):
             raise RuntimeError('owner root does not match bootstrap binding')
 
     proof_parent, proof_child = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
+    # DA2: the mapper's read-only broker pair exists before the broker fork;
+    # the broker keeps its end across exec and the mapper inherits the other.
+    admission_broker, admission_mapper = socket.socketpair(
+        socket.AF_UNIX, socket.SOCK_SEQPACKET)
     broker_pid = os.fork()
     if broker_pid == 0:
         try:
             proof_parent.close()
+            admission_mapper.close()
             launch['retire_child']('broker')
-            launch['close_descriptors']((proof_child.fileno(),))
+            launch['close_descriptors']((proof_child.fileno(), admission_broker.fileno()))
             proof_child.settimeout(30)
-            digest = proof_child.recv(65).decode('ascii')
+            digest, _, mapper = proof_child.recv(128).decode('ascii').partition(':')
             proof_child.close()
             if len(digest) != 64 or any(c not in '0123456789abcdef' for c in digest):
                 raise RuntimeError('invalid startup proof hash')
+            if not re.fullmatch('[1-9][0-9]{0,9}', mapper):
+                raise RuntimeError('invalid startup mapper pid')
+            os.set_inheritable(admission_broker.fileno(), True)
             argv = ['/opt/venv/bin/python', '-I', '-B', '/app/broker_main.py',
                     '--socket', str(broker_dir / 'broker.sock'),
                     '--state', str(data_root / '.broker' / 'state'),
                     '--data-root', str(data_root), '--owner-uid', '1001',
-                    '--proof-sha256', digest, '--role-split']
+                    '--proof-sha256', digest, '--role-split',
+                    '--mapper-channel', str(admission_broker.fileno()),
+                    '--mapper-pid', mapper]
             os.chdir('/')
             os.execve(argv[0], argv, launch['broker_environment'](data_root))
         except BaseException:
             os.write(2, b'bounded bootstrap broker failed\n')
             os._exit(78)
     proof_child.close()
+    admission_broker.close()
     parent, child = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
     ready_parent, ready_child = socket.socketpair()
     daemon_pidfd = os.pidfd_open(1)
@@ -142,9 +157,12 @@ def _bootstrap_services(data_root, run_root, bindings, launch):
         try:
             parent.close()
             ready_parent.close()
-            launch['close_descriptors']((child.fileno(), ready_child.fileno(), daemon_pidfd))
+            launch['close_descriptors']((child.fileno(), ready_child.fileno(), daemon_pidfd,
+                                         admission_mapper.fileno()))
             enter_namespace(ready_child, launch)
-            server = OwnerLauncher(child, 1, daemon_pidfd, bindings, data_root, launch)
+            server = OwnerLauncher(child, 1, daemon_pidfd, bindings, data_root, launch,
+                                   broker=admission_mapper, broker_pid=broker_pid,
+                                   generation=generation)
             ready_child.sendall(b'S')
             ready_child.close()
             while server.serve_one():
@@ -155,6 +173,7 @@ def _bootstrap_services(data_root, run_root, bindings, launch):
             os._exit(78)
     child.close()
     ready_child.close()
+    admission_mapper.close()
     os.close(daemon_pidfd)
     ready_parent.settimeout(30)
     install_maps(mapper_pid, ready_parent)
@@ -178,7 +197,10 @@ def _bootstrap_services(data_root, run_root, bindings, launch):
 
     _protect_daemon()
     proof = secrets.token_urlsafe(32)
-    proof_parent.sendall(sha256(proof.encode()).hexdigest().encode('ascii'))
+    # DA2: the mapper PID travels with the proof hash; until it arrives the
+    # broker has not exec'd, so it serves nothing on the mapper pair.
+    proof_parent.sendall((sha256(proof.encode()).hexdigest() + ':'
+                          + str(mapper_pid)).encode('ascii'))
     proof_parent.close()
     client = OwnerLauncherClient(parent, mapper_pid)
     supervisor = BrokerSupervisor.from_bootstrap(data_root, broker_pid=broker_pid,
@@ -316,12 +338,26 @@ class OwnerLauncher:
     The pinned pidfd prevents PID reuse; descendants sharing the pair fail.
     """
 
-    def __init__(self, channel, daemon_pid, daemon_pidfd, bindings, data_root, launch):
+    def __init__(self, channel, daemon_pid, daemon_pidfd, bindings, data_root, launch, *,
+                 broker=None, broker_pid=None, generation=0):
         assert_mapper(launch)
         if channel.family != socket.AF_UNIX or channel.type != socket.SOCK_SEQPACKET:
             raise RuntimeError('launcher needs its private seqpacket channel')
         if channel.getsockname() or channel.getpeername():
             raise RuntimeError('launcher channel must be unnamed')
+        if type(generation) is not int or generation < 0:
+            raise RuntimeError('invalid bootstrap admission generation')
+        if broker is not None and (
+                broker.family != socket.AF_UNIX or broker.type != socket.SOCK_SEQPACKET
+                or broker.getsockname() or broker.getpeername()
+                or type(broker_pid) is not int or broker_pid <= 1):
+            raise RuntimeError('invalid admission broker channel')
+        # DA2/DA5: the inherited read-only broker pair, its one peer, and the
+        # log high-water mark startup reconciled. Absent: runtime admission refuses.
+        self.broker, self.broker_pid, self.generation = broker, broker_pid, generation
+        if broker is not None:
+            broker.setsockopt(socket.SOL_SOCKET, socket.SO_PASSCRED, 1)
+            broker.settimeout(5)
         self.channel, self.daemon_pid, self.daemon_pidfd = channel, daemon_pid, daemon_pidfd
         self.bindings = dict(bindings)
         for (principal, center), machine in self.bindings.items():
@@ -343,6 +379,70 @@ class OwnerLauncher:
 
     def _alive(self):
         return not select.select([self.daemon_pidfd], [], [], 0)[0]
+
+    def _broker_read(self, document):
+        """DA2: one read-only broker answer, authenticated as the exact broker PID.
+
+        Any protocol failure poisons the pair: a late reply can never be read
+        as the answer to a later question.
+        """
+        if self.broker is None:
+            raise ValueError('admission broker channel is unavailable')
+        try:
+            self.broker.sendall(json.dumps(document).encode())
+            packet, ancillary, flags, _ = self.broker.recvmsg(
+                4096, socket.CMSG_SPACE(12) + socket.CMSG_SPACE(32), socket.MSG_CMSG_CLOEXEC)
+            credentials, unknown = [], False
+            for level, kind, payload in ancillary:
+                if level == socket.SOL_SOCKET and kind == socket.SCM_CREDENTIALS:
+                    credentials.append(struct.unpack('3i', payload))
+                else:
+                    unknown = True
+                    if level == socket.SOL_SOCKET and kind == socket.SCM_RIGHTS:
+                        fds = array.array('i')
+                        fds.frombytes(payload[:len(payload) - len(payload) % fds.itemsize])
+                        for fd in fds:
+                            os.close(fd)
+            if (unknown or not packet or flags & (socket.MSG_TRUNC | socket.MSG_CTRUNC)
+                    or credentials != [(self.broker_pid, self.overflow_uid, self.overflow_gid)]):
+                raise ValueError('unauthenticated broker answer')
+            answer = json.loads(packet)
+            if not isinstance(answer, dict) or answer.get('op') == 'REFUSED':
+                raise ValueError('broker refused the admission read')
+            return answer
+        except BaseException:
+            self.broker.close()
+            self.broker = None
+            raise
+
+    def _owner_machine(self, principal):
+        answer = self._broker_read({'op': 'OWNER_MACHINE', 'principal': principal})
+        if answer == {'op': 'ABSENT'}:
+            return None
+        machine = answer.get('machine')
+        if (set(answer) != {'op', 'machine'} or answer['op'] != 'OWNER_MACHINE_IS'
+                or type(machine) is not int or not FIRST < machine < FIRST + COUNT):
+            raise ValueError('invalid broker reservation')
+        return machine
+
+    def _center_state(self, center):
+        answer = self._broker_read({'op': 'CENTER_STATE', 'center': center})
+        if (set(answer) != {'op', 'state'} or answer['op'] != 'CENTER_STATE_IS'
+                or answer['state'] not in ('unadmitted', 'admitted', 'retired')):
+            raise ValueError('invalid broker center state')
+        return answer['state']
+
+    def _admission_row(self, generation):
+        answer = self._broker_read({'op': 'ADMISSION_ROW', 'generation': generation})
+        if answer == {'op': 'ABSENT'}:
+            return None
+        if (set(answer) != {'op', 'generation', 'event', 'principal', 'center', 'machine'}
+                or answer['op'] != 'ADMISSION_ROW_IS' or answer['generation'] != generation
+                or answer['event'] not in ('admit', 'retire')
+                or type(answer['machine']) is not int
+                or not FIRST < answer['machine'] < FIRST + COUNT):
+            raise ValueError('invalid broker admission row')
+        return answer
 
     def serve_one(self):
         if not self._alive():
@@ -387,6 +487,9 @@ class OwnerLauncher:
         if isinstance(request, dict) and request.get('op') == 'DELETE_DONE':
             self._finish_delete(request, received)
             return
+        if isinstance(request, dict) and request.get('op') in ('ADMIT', 'RETIRE'):
+            (self._admit if request['op'] == 'ADMIT' else self._retire)(request, received)
+            return
         kind = request.get('kind') if isinstance(request, dict) else None
         streaming = isinstance(request, dict) and request.get('op') == 'START'
         fields = {'op', 'kind', 'principal', 'command_center'}
@@ -408,14 +511,16 @@ class OwnerLauncher:
                         if kind in ('tool-jail', 'package') else int(request.get('egress') is True)
                         if kind in ('provider-discovery', 'provider-exec') else 0)
         mounted = kind in {'workspace-git', 'preview-write', 'tool-jail', 'tool-files',
-                           'provider-discovery', 'provider-exec', 'package', 'owner-delete'} or (
+                           'provider-discovery', 'provider-exec', 'package', 'owner-delete',
+                           'center-root'} or (
             kind == 'node-sandbox' and request.get('workspace') is True)
         if (not isinstance(request, dict)
                 or set(request) != fields or request['op'] not in {'SPAWN', 'START'}
                 or kind not in {'image-decoder', 'workspace-git', 'ui-preview', 'preview-write',
                                 'node-sandbox', 'tool-jail', 'ingestion-video',
                                 'provider-discovery', 'provider-exec', 'tool-files',
-                                'package', 'owner-delete'}
+                                'package', 'owner-delete', 'center-root'}
+                or (kind == 'center-root' and not streaming)
                 or (kind == 'owner-delete' and (not streaming
                     or type(request['delete_token']) is not str
                     or not re.fullmatch('[a-f0-9]{32}', request['delete_token'])))
@@ -439,7 +544,10 @@ class OwnerLauncher:
             raise ValueError('unsupported owner engine')
         if not streaming and self.jobs:
             raise ValueError('blocking spawn cannot suspend active cell supervision')
-        machine = self.bindings[(request['principal'], request['command_center'])]
+        if kind == 'center-root':
+            machine = self._center_root_machine(request, received[1])
+        else:
+            machine = self.bindings[(request['principal'], request['command_center'])]
         self._check_delete_fence(machine, request)
         inner = machine - FIRST
         if streaming:
@@ -593,6 +701,9 @@ class OwnerLauncher:
                 elif kind == 'owner-delete':
                     command = ['/usr/local/libexec/ta-decoder.py', 'enter-owner-delete',
                                'delete', self.data_root, str(inner)]
+                elif kind == 'center-root':
+                    command = ['/usr/local/libexec/ta-decoder.py', 'enter-center-root',
+                               'root', self.data_root, str(inner)]
                 elif kind == 'tool-files':
                     command = ['/usr/local/libexec/ta-decoder.py', 'enter-tool-files',
                                'files', self.data_root, str(inner)]
@@ -666,6 +777,34 @@ class OwnerLauncher:
             'returncode': os.waitstatus_to_exitcode(status), 'uid': machine,
             'gid': machine}).encode())
 
+    @staticmethod
+    def _scope(principal, center):
+        """The broker's own principal and center grammar, checked before asking it."""
+        if (not isinstance(principal, str) or not principal.strip()
+                or principal != principal.strip() or len(principal) > 512
+                or not principal.isprintable() or not isinstance(center, str)
+                or not re.fullmatch('[A-Za-z0-9_-]{1,128}', center)):
+            raise ValueError('invalid admission scope')
+
+    def _center_root_machine(self, request, staging):
+        """DA3 step 2: machine from the broker, never the daemon; a fresh name only."""
+        principal, center = request['principal'], request['command_center']
+        self._scope(principal, center)
+        if any(bound == center for _, bound in self.bindings):
+            raise ValueError('center is already bound')
+        machine = self._owner_machine(principal)
+        if machine is None or self._center_state(center) != 'unadmitted':
+            raise ValueError('center root is not admissible')
+        info = os.fstat(staging)
+        source = os.readlink(f'/proc/self/fd/{staging}')
+        prefix = self.data_root + '/.role-admission/'
+        if (not stat.S_ISDIR(info.st_mode) or info.st_uid != self.overflow_uid
+                or info.st_gid != self.overflow_gid or info.st_mode & 0o007
+                or not source.startswith(prefix)
+                or not re.fullmatch('[a-f0-9]{32}', source[len(prefix):])):
+            raise ValueError('center-root staging is not daemon-private')
+        return machine
+
     def _check_delete_fence(self, machine, request):
         fence = self.delete_fences.get(machine)
         if request['kind'] == 'owner-delete':
@@ -676,13 +815,72 @@ class OwnerLauncher:
         elif fence is not None:
             raise ValueError('owner deletion fence is active')
 
+    def _admission_request(self, request, received, event, descriptors):
+        """DA4/DA6: verify the daemon's {principal, center, generation} against the log."""
+        if (set(request) != {'op', 'principal', 'command_center', 'generation'}
+                or len(received) != descriptors or type(request['generation']) is not int
+                or request['generation'] < 1):
+            raise ValueError('unsupported admission request')
+        principal, center = request['principal'], request['command_center']
+        self._scope(principal, center)
+        row = self._admission_row(request['generation'])
+        if (row is None or row['event'] != event or row['principal'] != principal
+                or row['center'] != center):
+            raise ValueError('admission row does not match the request')
+        return principal, center, row['machine']
+
+    def _admit(self, request, received):
+        """DA4 step 5: bind a published, labelled, logged center; idempotent."""
+        principal, center, machine = self._admission_request(request, received, 'admit', 1)
+        # The daemon asserted host uid 1001 on this descriptor (D85 trust);
+        # the mapper sees 1001 only as overflow and checks the rest itself,
+        # on a retry of a bound center too.
+        attached = os.fstat(received[0])
+        fd = os.open(self.data_root + '/' + center,
+                     os.O_PATH | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+        try:
+            info = os.fstat(fd)
+        finally:
+            os.close(fd)
+        if ((info.st_dev, info.st_ino) != (attached.st_dev, attached.st_ino)
+                or not stat.S_ISDIR(info.st_mode) or info.st_uid != self.overflow_uid
+                or info.st_gid != machine - FIRST or stat.S_IMODE(info.st_mode) != 0o750):
+            raise ValueError('center root does not carry the admitted label')
+        if self.bindings.get((principal, center)) == machine:
+            self.channel.sendall(b'{"op":"ADMITTED"}')
+            return
+        if (request['generation'] <= self.generation
+                or any(bound == center for _, bound in self.bindings)
+                or any(owner != principal and value == machine
+                       for (owner, _), value in self.bindings.items())
+                or self._center_state(center) != 'admitted'):
+            raise ValueError('center is not admissible at this generation')
+        self.bindings[(principal, center)] = machine
+        self.channel.sendall(b'{"op":"ADMITTED"}')
+
+    def _retire(self, request, received):
+        """DA6: drop a binding only under its deletion fence with no running cell."""
+        principal, center, machine = self._admission_request(request, received, 'retire', 0)
+        bound = self.bindings.get((principal, center))
+        if bound is not None:
+            fence = self.delete_fences.get(bound)
+            if (bound != machine or fence is None or fence[:2] != (principal, center)
+                    or any(job[1] == bound for job in self.jobs.values())):
+                raise ValueError('retire requires a quiescent deletion fence')
+            del self.bindings[(principal, center)]
+        self.channel.sendall(b'{"op":"RETIRED"}')
+
     def _finish_delete(self, request, received):
         if (received or set(request) != {'op', 'principal', 'command_center', 'delete_token'}
                 or any(type(request[key]) is not str for key in
                        ('principal', 'command_center', 'delete_token'))):
             raise ValueError('invalid deletion finish')
-        machine = self.bindings[(request['principal'], request['command_center'])]
         expected = (request['principal'], request['command_center'], request['delete_token'])
+        # DA6 retires the binding before finish; the fence alone names the owner.
+        machine = self.bindings.get(expected[:2]) or next(
+            (key for key, fence in self.delete_fences.items() if fence == expected), None)
+        if machine is None:
+            raise ValueError('deletion finish does not match quiescent fence')
         if (self.delete_fences.get(machine) != expected
                 or any(job[1] == machine for job in self.jobs.values())):
             raise ValueError('deletion finish does not match quiescent fence')

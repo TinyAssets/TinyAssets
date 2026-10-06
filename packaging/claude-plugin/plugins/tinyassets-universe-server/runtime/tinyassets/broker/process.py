@@ -10,7 +10,9 @@ Configuration is the command line, never the environment a caller could set:
 * ``--state``: the broker's own state (op records, the fence);
 * ``--data-root``: where the connection ledger and the vaults live;
 * ``--owner-uid``: the uid served as the owner channel (the daemon's);
-* ``--proof-sha256``: the hash of the owner lease proof for the acquired generation.
+* ``--proof-sha256``: the hash of the owner lease proof for the acquired generation;
+* ``--mapper-channel``/``--mapper-pid``: DA2's inherited read-only mapper pair
+  and its one authenticated peer (bounded bootstrap only).
 
 The lease: until the owner lease (S8a) holds a hashed proof per acquisition,
 the daemon mints a proof at start and hands its hash to the launcher.
@@ -116,6 +118,13 @@ async def serve(args: argparse.Namespace) -> None:
 
     identity_path = state / "owner-identities.db"
     identities = OwnerIdentities(identity_path) if role_split and identity_path.exists() else None
+    if getattr(args, "mapper_channel", None) is not None:
+        # DA2: only the bounded bootstrap passes this inherited descriptor.
+        from tinyassets.broker import mapper_channel
+
+        if not role_split or args.mapper_pid is None:
+            raise RuntimeError("mapper channel requires the role-split bootstrap")
+        mapper_channel.start(args.mapper_channel, args.mapper_pid, identities)
     server = BrokerServer(
         ledger_for=dispatchers.ledger_for, dispatch_for=dispatchers.dispatch_for,
         ops=OpStore(state / "ops.db"),
@@ -149,6 +158,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--proof-sha256", required=True)
     parser.add_argument("--role-split", action="store_true")
     parser.add_argument("--allow-test-fixtures", action="store_true")
+    parser.add_argument("--mapper-channel", type=int)
+    parser.add_argument("--mapper-pid", type=int)
     args = parser.parse_args(argv)
     asyncio.run(serve(args))
     return 0

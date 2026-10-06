@@ -103,8 +103,33 @@ def begin(universe_dir, *, token):
         os.close(fd)
 
 
+def retire(universe_dir, *, token):
+    """DA6: retire the center after the daemon pass removed its tree, before finish().
+
+    Runs on the normal path, on the tree-gone resume path and for a center on
+    the restart contract's ``missing`` list. Each step is idempotent: the broker
+    returns an existing ``retire`` row, and the mapper drops a bound center only
+    under this fence with no running cell, or verifies the row as a no-op for an
+    unbound one. Startup never infers a retire; only this call writes it.
+    """
+    from tinyassets.broker.owner_identities import center_admission
+    from tinyassets.storage import data_dir
+
+    client, principal, center, _ = _scope(universe_dir, token, finishing=True)
+    if os.path.lexists(center):
+        raise RuntimeError('retire runs only after the daemon pass removed the tree')
+    generation, _ = center_admission(data_dir().resolve(), event='retire',
+                                     principal=principal, center=center.name)
+    client.retire(principal=principal, command_center=center.name, generation=generation)
+    return generation
+
+
 def finish(universe_dir, *, token):
-    """Explicitly release only after caller has verified daemon pass completion."""
+    """Explicitly release only after caller has verified daemon pass completion.
+
+    With dynamic admission, call retire() first (DA6): the fence stays until
+    the retire row and the mapper unbind are done.
+    """
     client, principal, center, _ = _scope(universe_dir, token, finishing=True)
     client.finish_delete(principal=principal, command_center=center.name, token=token)
 
