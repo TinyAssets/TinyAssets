@@ -403,6 +403,107 @@ def test_retirement_between_continuation_create_and_bind_never_revives_task(
     ) == 0
 
 
+@pytest.mark.parametrize("boundary", ["before_turn", "during_inference", "before_ack"])
+def test_retirement_restore_cannot_resume_or_ack_an_old_request_wake(
+    world, monkeypatch, boundary,
+):
+    from contextlib import closing
+
+    from tinyassets import agent_activities as activities
+    from tinyassets import bound_requests, request_continuations, turn_interrupt
+    from tinyassets import universe_intelligence as intelligence
+
+    home = world["udir"]
+    task = activities.create(
+        home, owner_principal=OWNER, title="Continue", brief="Original task",
+        origin_kind="ask", agent_id=world["weaver"], continuation_only=True,
+    )
+    with closing(bound_requests.connect(home)) as conn:
+        bound_requests._wake(conn, {
+            "request_id": "old-request", "revision": 1, "action": {"envelope": {"subject": {
+                "owner": OWNER, "agent": world["weaver"],
+                "task_id": task["activity_id"], "task_generation": 1,
+            }}},
+        }, {"connection": "answered"})
+        conn.commit()
+
+    # Retirement may run in a separate process without this worker's registry.
+    monkeypatch.setattr(turn_interrupt, "request_interrupt", lambda *a, **kw: 0)
+
+    def retire_restore():
+        assert change(world)["status"] == "retired"
+        assert change(world, "restore", 2)["binding"]["retired"] is False
+
+    provider = world["provider"]
+
+    def inference(*args, **kwargs):
+        result = provider(*args, **kwargs)
+        if boundary == "during_inference" and len(provider.writer_calls()) == 1:
+            retire_restore()
+        return result
+
+    monkeypatch.setattr(intelligence, "call_provider", inference)
+    results = []
+
+    def run(home, payload):
+        if boundary == "before_turn":
+            retire_restore()
+        result = request_continuations._run(home, payload)
+        results.append(result)
+        if boundary == "before_ack":
+            retire_restore()
+        return result
+
+    assert request_continuations.recover(home, run=run) == 0
+    assert len(provider.writer_calls()) == (0 if boundary == "before_turn" else 1)
+    if boundary != "before_ack":
+        assert results[0]["interrupted"] is True
+    with closing(bound_requests.connect(home)) as conn:
+        wake = conn.execute(
+            "SELECT processed_at FROM activity_events WHERE wake_required=1",
+        ).fetchone()
+        assert wake["processed_at"] is None
+        current = conn.execute("SELECT * FROM activities WHERE activity_id=?",
+                               (task["activity_id"],)).fetchone()
+        assert current["task_generation"] == 2
+        assert current["status"] == "completed"
+        assert current["outcome"] == "agent retired"
+    assert "reply" in _converse(message="New work", agent_id=world["weaver"])
+
+
+def test_continuation_generation_fences_live_boundaries_and_task_inheritance(world):
+    from contextlib import closing
+
+    from tinyassets import agent_activities as activities
+    from tinyassets import approval_scopes, bound_requests, turn_interrupt
+
+    home = world["udir"]
+    task = activities.create(
+        home, owner_principal=OWNER, title="Continue", brief="Original task",
+        origin_kind="ask", agent_id=world["weaver"], continuation_only=True,
+    )
+    task_id = task["activity_id"]
+    token = approval_scopes.continuation_task.set((str(home.resolve()), task_id, 1))
+    try:
+        with turn_interrupt.interactive_turn(
+            OWNER, home.name, agent_id=world["weaver"], base_path=world["base"],
+        ) as live:
+            live.check()
+            assert approval_scopes.task_for(home, OWNER, world["weaver"]) == task_id
+            # Keep the binding active and the task runnable: generation alone
+            # must fence an already admitted continuation at its next boundary.
+            with closing(bound_requests.connect(home)) as conn:
+                conn.execute("UPDATE activities SET task_generation=2 WHERE activity_id=?",
+                             (task_id,))
+                conn.commit()
+            with pytest.raises(turn_interrupt.TurnInterrupted, match="continuation task changed"):
+                approval_scopes.task_for(home, OWNER, world["weaver"])
+            with pytest.raises(turn_interrupt.TurnInterrupted, match="continuation task changed"):
+                live.check()
+    finally:
+        approval_scopes.continuation_task.reset(token)
+
+
 @pytest.mark.real_browser
 def test_real_browser_switcher_drops_retired_agent_and_restores_it(world):
     from playwright.sync_api import sync_playwright

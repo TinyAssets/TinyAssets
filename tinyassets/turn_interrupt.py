@@ -46,6 +46,7 @@ import contextvars
 import threading
 import uuid
 from contextlib import contextmanager
+from pathlib import Path
 
 
 class TurnInterrupted(Exception):
@@ -86,6 +87,21 @@ class LiveTurn:
                     or binding["created_by"] != self.actor_id
                     or binding["retirement_revision"] != self.retirement_revision):
                 self.request("agent retired")
+        if not self._requested.is_set() and self.approval_task and len(self.approval_task) == 3:
+            from tinyassets import bound_requests
+            from tinyassets.approval_scopes import task_is_current
+
+            task_home, task_id, generation = self.approval_task
+            home = Path(task_home)
+            # This immutable wake fence survives admission, worker threads, and
+            # every later provider/tool boundary, including retire then restore.
+            if (self.base_path is None
+                    or home != (Path(self.base_path) / self.universe_id).resolve()):
+                self.request("continuation task changed")
+            else:
+                with contextlib.closing(bound_requests.connect(home)) as conn:
+                    if not task_is_current(conn, task_id, self.actor_id, self.agent_id, generation):
+                        self.request("continuation task changed")
         return self._requested.is_set()
 
     def request(self, reason: str = "the owner stopped this turn") -> None:
