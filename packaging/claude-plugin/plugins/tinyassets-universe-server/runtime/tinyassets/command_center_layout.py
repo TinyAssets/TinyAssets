@@ -36,6 +36,8 @@ USER_NAMES = frozenset({
     # `.agent-workspace` is the agent's own (provider_jail.py AGENT_WORKSPACE_DIR;
     # storage_accounting calls it user bytes, harness W2)
     "workspace", "workspaces", ".agent-workspace",
+    # the owner's provider-exec workspace and native sessions (D88)
+    ".provider-workspace",
     "canon", "output", "artifacts", "PROGRAM.md", "progress.md",
     "design-proposals", "feature-requests", "patch-requests",
     # fiction-domain brain data the agent maintains

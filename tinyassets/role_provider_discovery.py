@@ -20,7 +20,7 @@ MAX_PROOF_BYTES = 65536
 CELL_SNAPSHOT = '/snapshot'
 
 
-def cell_config(argv, env, view_env, snapshot, data_root):
+def cell_config(argv, env, view_env, snapshot, data_root, cell_view=None):
     """Immutable argv/env with the snapshot rewritten to its fixed cell path."""
     host = str(snapshot)
 
@@ -35,16 +35,22 @@ def cell_config(argv, env, view_env, snapshot, data_root):
         # Unreachable in-cell host paths are dropped, never translated.
         if str(data_root) not in value:
             out_env[key] = value
-    document = json.dumps({'argv': [rewrite(item) for item in argv],
-                          'env': safe_environment(out_env)},
-                          separators=(',', ':')).encode()
+    config = {'argv': [rewrite(item) for item in argv], 'env': safe_environment(out_env)}
+    if cell_view is not None:
+        config['view'] = cell_view
+    document = json.dumps(config, separators=(',', ':')).encode()
     if len(document) >= 64 * 1024:
         raise ValueError('provider config exceeds its bound')
     return document + b'\n'
 
 
-def check_proof(cell, identity, source, *, sockets=None):
+def check_proof(cell, identity, source, *, sockets=None, workspace=False):
+    """``workspace``: False for discovery, else the pinned workspace identity or None."""
     inner = identity.uid - 300000
+    if workspace is not False:
+        cell = dict(cell) if type(cell) is dict else cell
+        if type(cell) is not dict or cell.pop('workspace', False) != workspace:
+            raise RuntimeError('provider execution workspace proof is absent')
     if (type(cell) is not dict or cell.get('uid') != inner or cell.get('gid') != inner
             or cell.get('fds') != [0, 1, 2] or cell.get('groups') != []
             or cell.get('caps') != 'zero' or cell.get('nnp') != 1
@@ -53,7 +59,30 @@ def check_proof(cell, identity, source, *, sockets=None):
         raise RuntimeError('provider discovery cell proof is absent')
 
 
-async def aspawn_cell(argv, *, env, view, universe_dir, snapshot_dir, limit, execution=False):
+def _open_provider_workspace(center, identity):
+    """Pin the owner's own provider workspace; only the owner cell creates it."""
+    from tinyassets import role_tools
+    from tinyassets.providers.provider_jail import PROVIDER_WORKSPACE_DIR
+    from tinyassets.workspace_fs import open_dir_nofollow
+
+    path = center / PROVIDER_WORKSPACE_DIR
+    if not os.path.lexists(path):
+        role_tools.prepare(center, agent_id='workspace-preparation')
+    descriptor = open_dir_nofollow(path)
+    try:
+        info = os.fstat(descriptor)
+        if (not stat.S_ISDIR(info.st_mode)
+                or (info.st_uid, info.st_gid) != (identity.uid, identity.gid)
+                or os.readlink(f'/proc/self/fd/{descriptor}') != str(path)):
+            raise PermissionError("provider workspace is not the owner's own directory")
+    except BaseException:
+        os.close(descriptor)
+        raise
+    return descriptor
+
+
+async def aspawn_cell(argv, *, env, view, universe_dir, snapshot_dir, limit, execution=False,
+                      cell_view=None):
     from tinyassets import role_decoder
     from tinyassets.auth.middleware import current_identity
     from tinyassets.broker.owner_identities import owner_identity
@@ -76,7 +105,14 @@ async def aspawn_cell(argv, *, env, view, universe_dir, snapshot_dir, limit, exe
     if snapshot != expected:
         raise PermissionError('provider discovery requires its exact launch snapshot')
     identity = owner_identity(root, principal=principal)
-    descriptor = open_dir_nofollow(snapshot)
+    persistent = bool(execution and cell_view and cell_view['persistent'])
+    workspace_fd = _open_provider_workspace(center, identity) if persistent else None
+    try:
+        descriptor = open_dir_nofollow(snapshot)
+    except BaseException:
+        if workspace_fd is not None:
+            os.close(workspace_fd)
+        raise
     relay_fd = None
     sockets = {}
     try:
@@ -85,7 +121,12 @@ async def aspawn_cell(argv, *, env, view, universe_dir, snapshot_dir, limit, exe
                 or os.readlink(f'/proc/self/fd/{descriptor}') != str(snapshot)):
             raise PermissionError('provider snapshot is not the sealed daemon inode')
         source = [info.st_dev, info.st_ino]
-        config = cell_config(argv, env, view.setenv, snapshot, root)
+        config = cell_config(argv, env, view.setenv, snapshot, root,
+                             cell_view if execution else None)
+        workspace = None
+        if workspace_fd is not None:
+            info = os.fstat(workspace_fd)
+            workspace = [info.st_dev, info.st_ino]
         if execution:
             from tinyassets import role_relays, universe_egress
 
@@ -98,14 +139,18 @@ async def aspawn_cell(argv, *, env, view, universe_dir, snapshot_dir, limit, exe
         # START only waits for the mapper's admission acknowledgement, never
         # payload execution. Keep descriptor ownership synchronous so caller
         # cancellation cannot close a descriptor while a launch thread uses it.
+        extra = {'egress': execution}
+        if execution:
+            extra['workspace'] = persistent
         cell = client.start_cell(kind='provider-exec' if execution else 'provider-discovery',
             principal=principal, command_center=center.name, identity=identity,
-            extra={'egress': execution}, directory_fd=descriptor,
-            socket_fds=() if relay_fd is None else (relay_fd,))
+            extra=extra, directory_fd=descriptor,
+            socket_fds=() if relay_fd is None else (relay_fd,), workspace_fd=workspace_fd)
     finally:
         os.close(descriptor)
-        if relay_fd is not None:
-            os.close(relay_fd)
+        for opened in (relay_fd, workspace_fd):
+            if opened is not None:
+                os.close(opened)
     writer = error_writer = None
     data_socket = error_socket = None
     try:
@@ -117,7 +162,8 @@ async def aspawn_cell(argv, *, env, view, universe_dir, snapshot_dir, limit, exe
 
             cell.stderr.setblocking(False)
             error_socket = cell.stderr.dup()
-            error_reader, error_writer = await asyncio.open_connection(sock=error_socket, limit=limit)
+            error_reader, error_writer = await asyncio.open_connection(
+                sock=error_socket, limit=limit)
             proc = ExecutionProcess(cell, reader, writer, error_reader, error_writer)
         else:
             proc = OwnerCellProcess(cell, reader, writer)
@@ -134,7 +180,8 @@ async def aspawn_cell(argv, *, env, view, universe_dir, snapshot_dir, limit, exe
         header = await reader.readline()
         if not header.endswith(b'\n') or len(header) > MAX_PROOF_BYTES:
             raise RuntimeError('provider discovery cell ended before its proof')
-        check_proof(json.loads(header).get('cell'), identity, source, sockets=sockets)
+        check_proof(json.loads(header).get('cell'), identity, source, sockets=sockets,
+                    workspace=workspace if execution else False)
         writer.write(config)
         await writer.drain()
     except BaseException:

@@ -81,6 +81,32 @@ def enter(mime, data_root, uid=1003, *, preview=False, preview_write=False, node
     # A package names its sockets after the 64-hex revision, which may itself
     # contain 'e'; only the suffix selects descriptors.
     selector = mime[64:] if package else mime
+    views = []
+    if provider_exec:
+        # D88: the scratch or persistent owner workspace and its session store.
+        # Only the trusted entry, already the owner identity, creates the two
+        # fixed children of the pinned workspace, never following a link.
+        host['workspace'] = None
+        if 'w' in selector:
+            info = os.fstat(6)
+            if not stat.S_ISDIR(info.st_mode) or (info.st_uid, info.st_gid) != (uid, uid):
+                raise RuntimeError('provider workspace source is invalid')
+            host['workspace'] = [info.st_dev, info.st_ino]
+            host['views'] = {}
+            for name, target in (('work', '/workspace'), ('sessions', '/session')):
+                try:
+                    os.mkdir(name, 0o770, dir_fd=6)
+                except FileExistsError:
+                    pass
+                child = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=6)
+                info = os.fstat(child)
+                if (info.st_uid, info.st_gid) != (uid, uid):
+                    raise RuntimeError('provider workspace child is not owner-owned')
+                os.set_inheritable(child, True)
+                host['views'][target] = [info.st_dev, info.st_ino]
+                views.extend(['--bind-fd', str(child), target])
+        else:
+            views.extend(['--size', str(256 * 1024 * 1024), '--tmpfs', '/workspace'])
     if tool or provider or package:
         host['sockets'] = {}
         for key, fd in (('e', 4), ('t', 5)):
@@ -134,6 +160,7 @@ def enter(mime, data_root, uid=1003, *, preview=False, preview_write=False, node
         if 'e' in mime:
             argv.extend(['--bind-fd', '4', '/provider-egress.sock'])
             argv.extend(['--ro-bind', '/etc/ssl/certs', '/etc/ssl/certs'])
+        argv.extend(views)
     elif tool:
         argv.extend(tool_mounts(uid))
         for key, fd, destination in (('e', 4, '/tool-egress.sock'), ('t', 5, '/tool-ta.sock')):
@@ -316,18 +343,31 @@ def decode(mime, host, data_root, uid=1003):
 
 if __name__ == "__main__":
     if (len(sys.argv) == 5 and sys.argv[1] in ('enter-provider', 'enter-provider-exec')
-            and sys.argv[2] in ('-', 'e') and 0 < int(sys.argv[4]) < 100000):
+            and sys.argv[2] in (('-', 'e', 'w', 'ew') if sys.argv[1] == 'enter-provider-exec'
+                                else ('-', 'e')) and 0 < int(sys.argv[4]) < 100000):
         enter(sys.argv[2], sys.argv[3], int(sys.argv[4]), provider=True,
               provider_exec=sys.argv[1] == 'enter-provider-exec')
     elif (len(sys.argv) == 6 and sys.argv[1] in ('inside-provider', 'inside-provider-exec')
-            and sys.argv[2] in ('-', 'e') and 0 < int(sys.argv[5]) < 100000):
+            and sys.argv[2] in (('-', 'e', 'w', 'ew') if sys.argv[1] == 'inside-provider-exec'
+                                else ('-', 'e')) and 0 < int(sys.argv[5]) < 100000):
         host = json.loads(sys.argv[3])
         source = host.pop('source')
         sockets = host.pop('sockets')
+        workspace = host.pop('workspace', False)
+        views = host.pop('views', {})
+        if sys.argv[1] == 'inside-provider-exec':
+            if (workspace is None) != ('w' not in sys.argv[2]):
+                raise RuntimeError('provider workspace differs from its admitted flag')
+            for target in ('/workspace', '/session') if workspace else ():
+                info = os.stat(target, follow_symlinks=False)
+                if [info.st_dev, info.st_ino] != views[target] or not stat.S_ISDIR(info.st_mode):
+                    raise RuntimeError('provider workspace mount differs from pinned source')
+        elif workspace is not False or views:
+            raise RuntimeError('provider discovery has no workspace')
         mounted = os.stat('/snapshot', follow_symlinks=False)
         if [mounted.st_dev, mounted.st_ino] != source or not stat.S_ISDIR(mounted.st_mode):
             raise RuntimeError('provider snapshot mount differs from pinned source')
-        if set(sockets) != ({'e'} if sys.argv[2] == 'e' else set()):
+        if set(sockets) != ({'e'} if 'e' in sys.argv[2] else set()):
             raise RuntimeError('provider egress differs from its admitted flag')
         if sockets:
             info = os.stat('/provider-egress.sock', follow_symlinks=False)
@@ -337,6 +377,8 @@ if __name__ == "__main__":
         proof = prove_cell(host, sys.argv[4], int(sys.argv[5]))
         proof['source'] = source
         proof['sockets'] = sockets
+        if sys.argv[1] == 'inside-provider-exec':
+            proof['workspace'] = workspace
         sys.stdout.buffer.write(json.dumps({'cell': proof}).encode() + b'\n')
         sys.stdout.buffer.flush()
         sys.path.insert(0, '/app')

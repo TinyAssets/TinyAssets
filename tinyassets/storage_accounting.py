@@ -656,6 +656,8 @@ UNIVERSE_ENTRIES: frozenset[str] = frozenset({
     ".manifest.json",  # canon/.manifest.json, inside the universe walk
     # The agent's own workspace (harness W2): user bytes, counted by the walk.
     ".agent-workspace",
+    # The owner's provider-exec workspace and native sessions (D88): user bytes.
+    ".provider-workspace",
 })
 
 #: Names the code creates that are NOT under the data root at all (a git repo,

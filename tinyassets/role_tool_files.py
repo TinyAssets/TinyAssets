@@ -12,6 +12,7 @@ import stat
 import time
 import uuid
 
+from tinyassets.providers.provider_jail import PROVIDER_WORKSPACE_DIR
 from tinyassets.universe_tools import AGENT_BRAIN_FILES, AGENT_HARNESS_DIRS
 
 
@@ -66,6 +67,14 @@ def maintain(root, *, agent_id):
         if not stat.S_ISDIR(info.st_mode) or (info.st_uid, info.st_gid) != (uid, uid):
             raise PermissionError('tool directory is not owned by the admitted owner')
         repair(root, name)
+    # D88: only the root; the provider-exec entry makes and checks its children.
+    try:
+        os.mkdir(PROVIDER_WORKSPACE_DIR, 0o770, dir_fd=root)
+    except FileExistsError:
+        pass
+    info = os.stat(PROVIDER_WORKSPACE_DIR, dir_fd=root, follow_symlinks=False)
+    if not stat.S_ISDIR(info.st_mode) or (info.st_uid, info.st_gid) != (uid, uid):
+        raise PermissionError('provider workspace is not owned by the admitted owner')
     for name in AGENT_BRAIN_FILES:
         try:
             repair(root, name)

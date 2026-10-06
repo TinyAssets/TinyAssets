@@ -608,6 +608,7 @@ async def aspawn_owned(
     install_mounts=None,
     require_confinement: bool = False,
     nested_sandbox=False,
+    cell_view=None,
     **kwargs,
 ):
     """Spawn ``cmd`` as an owned family and return the ``asyncio`` process.
@@ -633,6 +634,10 @@ async def aspawn_owned(
     ``require_confinement`` refuses even an unbound call instead of using the
     non-provider fallback. Metadata transport sets this alongside its view.
 
+    ``cell_view`` (:class:`~tinyassets.role_provider_execution.CellView`) is the
+    same launch described for its owner's provider-exec cell. Only a selected
+    broker reads it, and there it replaces ``universe_view``; the jail ignores it.
+
     POSIX goes through the wrapper/anchor handshake and **fails closed**: on
     any anchor failure the half-spawned family is torn down and
     :class:`FamilyAnchorError` is raised rather than a CLI this adapter could
@@ -648,7 +653,7 @@ async def aspawn_owned(
         from tinyassets.role_provider_execution import spawn
 
         return await spawn(list(cmd), scope=_SCOPE.get(), shell=shell, view=universe_view,
-                           nested_sandbox=nested_sandbox, options=kwargs)
+                           nested_sandbox=nested_sandbox, options=kwargs, cell_view=cell_view)
 
     argv = _shell_argv(cmd) if shell else list(cmd)
     jailed = confine_launch(

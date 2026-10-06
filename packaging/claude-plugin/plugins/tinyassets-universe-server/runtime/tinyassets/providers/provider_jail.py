@@ -265,6 +265,12 @@ def _covered(path: str, roots: Iterable[str]) -> bool:
 #: ``/u`` (harness W2). Hidden, so every provider launch masks it.
 AGENT_WORKSPACE_DIR = ".agent-workspace"
 
+#: The owner's persistent provider workspace and native session store under a
+#: selected broker (D88): owner-owned, created only by the owner's tool-files
+#: cell, pinned by descriptor into its provider-exec cells. Tool jails never
+#: mount it, and no legacy jail view names it.
+PROVIDER_WORKSPACE_DIR = ".provider-workspace"
+
 
 def ensure_agent_workspace(universe_dir: Path) -> Path:
     """The universe's agent workspace, created if absent, never a link.

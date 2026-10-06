@@ -44,6 +44,7 @@ from tinyassets.providers.owned_process import (
     no_window_kwargs,
 )
 from tinyassets.providers.provider_jail import JailMount, UniverseView
+from tinyassets.role_provider_execution import CellView
 from tinyassets.served_tools import SERVED_ENGINE_MCP_TOOLS, granted_tools
 
 logger = logging.getLogger(__name__)
@@ -996,6 +997,7 @@ class CodexProvider(BaseProvider):
             cmd.append("--ephemeral")
 
         universe_view: UniverseView | None = None
+        cell_view: CellView | None = None
         if config.sandbox_workspace:
             launch_cmd = [*cmd, "-C", "/workspace"]
             if resume_record is not None:
@@ -1055,6 +1057,14 @@ class CodexProvider(BaseProvider):
                 chdir="/workspace",
                 setenv=(("CODEX_HOME", _JAIL_HOME), ("HOME", "/tmp")),
             )
+            # The same launch in its owner's provider-exec cell (D88): the
+            # snapshot copy is CODEX_HOME there and `sessions` persists in the
+            # owner's own store. A chat turn keeps scratch.
+            cell_view = CellView(
+                persistent=not sandbox_chat,
+                home=next(name for name, value in universe_view.setenv if value == _JAIL_HOME),
+                session=None if session_store is None else ("sessions", self.name),
+            )
             proc_env["CODEX_HOME"] = _JAIL_HOME
             proc_env["HOME"] = "/tmp"
         else:
@@ -1062,6 +1072,9 @@ class CodexProvider(BaseProvider):
             # nothing else); only a host call keeps the source checkout.
             workdir = str(universe_dir) if universe_dir is not None else _codex_workdir()
             launch_cmd = [*cmd, "-C", workdir]
+            # In an owner cell (D88) that universe is the owner's persistent
+            # workspace; CODEX_HOME already names the sealed snapshot.
+            cell_view = CellView(persistent=universe_dir is not None)
         # Spawn as an owned FAMILY: on POSIX a live anchor holds the group id
         # so teardown reaches what the CLI starts without ever naming a group
         # integer that could have been recycled. Fails closed if it cannot.
@@ -1079,6 +1092,7 @@ class CodexProvider(BaseProvider):
                 limit=_STDOUT_READER_LIMIT,
                 env=proc_env,
                 universe_view=universe_view,
+                cell_view=cell_view,
                 install_mounts=lambda: self.native_install_mounts(base_cmd),
                 # A served turn keeps codex's own --sandbox workspace-write: its
                 # native apply_patch runs through a filesystem sandbox helper

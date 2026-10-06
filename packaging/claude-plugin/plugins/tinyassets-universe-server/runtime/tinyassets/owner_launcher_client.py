@@ -185,7 +185,7 @@ class OwnerLauncherClient:
             timeout=DECODE_WALL_SECONDS + 10)
 
     def start_cell(self, *, kind, principal, command_center, identity, extra=None,
-                   directory_fd=None, socket_fds=()):
+                   directory_fd=None, socket_fds=(), workspace_fd=None):
         """Start an admitted static class with independent data and lifetime pipes.
 
         No numeric identity or executable is sent to the mapper. The cell's
@@ -202,6 +202,10 @@ class OwnerLauncherClient:
         if socket_fds and (kind not in ('tool-jail', 'package', 'provider-exec')
                            or len(socket_fds) > 2):
             raise ValueError('unsupported cell sockets')
+        # D88: only provider-exec takes a second, persistent owner directory.
+        if (workspace_fd is not None) != (kind == 'provider-exec'
+                                          and document.get('workspace') is True):
+            raise ValueError('unsupported cell workspace')
         document.update(op='START', kind=kind, principal=principal, command_center=command_center)
         data, child = socket.socketpair()
         status, child_status = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
@@ -215,6 +219,8 @@ class OwnerLauncherClient:
                 if directory_fd is not None:
                     handles.append(directory_fd)
                 handles.extend(socket_fds)
+                if workspace_fd is not None:
+                    handles.append(workspace_fd)
                 if child_stderr is not None:
                     handles.append(child_stderr.fileno())
                 handles.append(child_status.fileno())

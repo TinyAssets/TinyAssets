@@ -685,6 +685,24 @@ _METADATA_ARGUMENTS = (
 )
 
 
+def _cell_view(proc_env: dict[str, str], run_cwd: str | None):
+    """This launch inside its owner's provider-exec cell (D88); the jail ignores it.
+
+    The confined turn's universe cwd is the owner's persistent workspace there.
+    A raw subscription token (``subprocess_env_for_provider`` reads it from the
+    sealed snapshot's ``auth.json``) reaches the CLI on an inherited pipe it
+    reads once -- the CLI's ``<token variable>_FILE_DESCRIPTOR`` -- never in the
+    cell's environment or a copied file.
+    """
+    from tinyassets.role_provider_execution import CellView
+
+    return CellView(
+        persistent=run_cwd is not None,
+        secret_fds=tuple((name + "_FILE_DESCRIPTOR", "auth.json")
+                         for name in sorted(proc_env) if name.endswith("_OAUTH_TOKEN")),
+    )
+
+
 def _effort_args(effort: str | None) -> list[str]:
     """Map a generic ModelConfig.reasoning_effort to Claude Code's own flag.
 
@@ -800,6 +818,7 @@ class ClaudeProvider(BaseProvider):
             env=proc_env,
             cwd=run_cwd,
             limit=_STDOUT_READER_LIMIT,
+            cell_view=_cell_view(proc_env, run_cwd),
         )
         return await self._read_stream(proc, prompt, config)
 
@@ -1300,6 +1319,7 @@ class ClaudeProvider(BaseProvider):
             stderr=asyncio.subprocess.PIPE,
             env=proc_env,
             cwd=run_cwd,
+            cell_view=_cell_view(proc_env, run_cwd),
         )
 
         # EVERY exit -- success, classified raise, cancellation -- ends the
