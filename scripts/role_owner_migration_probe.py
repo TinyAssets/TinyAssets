@@ -19,7 +19,7 @@ module=runpy.run_path('/usr/local/libexec/ta-owner-migration.py')
 migrate=module['migrate']
 assert int(status()['CapEff'],16)==sum(1<<cap for cap in (0,1,3,5,6,7,8))
 def seed():
-    root=Path(tempfile.mkdtemp(prefix='u2-owner-')); root.chmod(0o755)
+    root=Path(tempfile.mkdtemp(prefix='u2-owner-',dir='/dev/shm')); root.chmod(0o755)
     (root/'.layout.lock').touch()
     (root/'.layout.json').write_text(json.dumps({'layout':2,'state':'stable',
         'moves':{'consents_outside_command_centers':'done'}}))

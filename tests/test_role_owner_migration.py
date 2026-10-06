@@ -2,19 +2,31 @@
 
 import json
 import os
+import shutil
 import stat
+import subprocess
+import tempfile
+from pathlib import Path
 
 import pytest
 
-from deploy.role_owner_migration import MigrationRefused, migrate
+from deploy.role_owner_migration import OVERLAYFS, STATE, MigrationRefused, _key, migrate
 
 
 @pytest.fixture
-def volume(tmp_path):
+def volume():
     assert os.name == "posix" and os.geteuid() == 0, "requires Linux pre-drop oracle"
-    tmp_path.parent.chmod(0o755)
-    tmp_path.chmod(0o755)
-    root = tmp_path / "data"
+    # D215: the oracle's basetemp is overlayfs, which the migration refuses;
+    # production /data is a local volume, so prove on a non-overlay filesystem.
+    parent = Path(tempfile.mkdtemp(dir="/dev/shm"))
+    try:
+        parent.chmod(0o755)
+        yield build(parent / "data")
+    finally:
+        shutil.rmtree(parent)
+
+
+def build(root):
     root.mkdir()
     (root / ".layout.lock").touch()
     (root / ".layout.json").write_text(
@@ -580,3 +592,63 @@ def test_d214_entry_born_after_forward_reverses_to_legacy_ids(volume, restart):
     run(volume)
     run(volume, reverse=True)
     assert (born.stat().st_uid, born.stat().st_gid) == (1001, 1001)
+
+
+def test_d214_resumed_reverse_refuses_a_replaced_generation(volume):
+    path = volume / "alice/work/payload"
+    os.chown(path, 1001, 1100)
+    run(volume)
+
+    def crash(point):
+        if point == "journal":
+            raise InterruptedError(point)
+
+    with pytest.raises(InterruptedError):
+        run(volume, reverse=True, after_step=crash)
+    replacement = path.with_name("payload.new")
+    replacement.write_bytes(b"replacement")
+    os.chown(replacement, 300001, 300001)
+    replacement.chmod(0o600)
+    replacement.replace(path)
+    # A recycled inode number must not inherit the interrupted journal's row.
+    journal = volume / STATE / "journal.json"
+    document = json.loads(journal.read_text())
+    row = next(r for r in document["rows"] if r["path"] == "alice/work/payload")
+    row["key"] = _key(os.stat(path, follow_symlinks=False))
+    journal.write_text(json.dumps(document))
+    before = metadata(volume)
+    with pytest.raises(MigrationRefused, match="inventory changed: alice/work/payload"):
+        run(volume, reverse=True)
+    assert metadata(volume) == before
+    assert (path.stat().st_uid, path.stat().st_gid) == (300001, 300001)
+
+
+def test_d214_resumed_journal_without_generation_refuses(volume):
+    def crash(point):
+        if point == "journal":
+            raise InterruptedError(point)
+
+    with pytest.raises(InterruptedError):
+        run(volume, after_step=crash)
+    journal = volume / STATE / "journal.json"
+    document = json.loads(journal.read_text())
+    del document["rows"][0]["generation"]
+    journal.write_text(json.dumps(document))
+    before = metadata(volume)
+    with pytest.raises(MigrationRefused, match="lacks inode generation"):
+        run(volume)
+    assert metadata(volume) == before
+
+
+def test_d215_overlayfs_data_root_refuses(tmp_path):
+    assert os.geteuid() == 0, "requires Linux pre-drop oracle"
+    tmp_path.parent.chmod(0o755)
+    tmp_path.chmod(0o755)
+    root = build(tmp_path / "data")
+    kind = subprocess.run(["stat", "-f", "-c", "%t", root], capture_output=True,
+                          text=True, check=True).stdout.strip()
+    assert int(kind, 16) == OVERLAYFS, "the oracle's basetemp is its overlay rootfs"
+    before = metadata(root)
+    with pytest.raises(MigrationRefused, match="overlayfs"):
+        run(root)
+    assert metadata(root) == before

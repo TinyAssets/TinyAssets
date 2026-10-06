@@ -21,6 +21,23 @@ configuration growth, two-pass deletion, old CMD boot and startup wiring remain
 open and activation stays OFF. Concern `2026-10-06-u2-stale-mode-replay.md`
 resolved and deleted.
 
+
+### D214 round 2 and D215 (Codex BLOCK on ab3553a08d)
+
+Codex reproduced a stale replay on an interrupted reverse: an incomplete
+same-direction owner journal skips inventory and checked key, nlink and ids
+but not generation, so a replaced `1001:1100` file with a reused key was
+restored to `1001:1100`. Resume validation and the pre-chown descriptor check
+now compare the live statx generation (fd form uses `AT_EMPTY_PATH`), and a row
+without one refuses. `_generation` refuses overlayfs (D215: copy-up re-births
+the inode under the same number, measured). The production `/data` is an ext4
+named volume with stable birth time.
+
+Linux root oracle, owner/metadata/inventory/volume: **151 passed, zero skips**.
+The three new cases are replaced-generation resume, generation-less resume and
+overlayfs refusal. All three failed on the parent implementation. The root
+fixture moved to `/dev/shm`, and the production-image probe seeds there too.
+
 ---
 
 ## Post-review final verification

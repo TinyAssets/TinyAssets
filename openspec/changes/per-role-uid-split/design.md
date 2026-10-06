@@ -2260,3 +2260,22 @@ restores the recorded ids; D211 keeps the live mode in both directions. A
 filesystem without btime refuses; a journal row without a generation refuses
 recovery rather than guessing. The owner phase's stable signature and the
 metadata resume check include the generation, so a recycled inode re-inventories.
+An interrupted owner journal resumes without re-inventory, so its validation
+and the pre-chown descriptor check compare the live generation as well as key,
+link count and ids; a changed or absent generation refuses (D214 round 2).
+
+### D215. Inode generation is refused on overlayfs
+
+Measured in the Linux oracle (kernel 6.6): overlayfs copy-up of a lower-layer
+file on its first chown or chmod gives it a new birth time but keeps `st_ino`.
+Upper-born files and a Docker local named volume (ext4) keep their birth time
+across chown and container restart. Birth time is therefore a generation on
+the production data path (`tinyassets-data`, a local-driver named volume
+mounted at `/data`, never the container rootfs). It is not one on overlayfs,
+where a recorded file would read as new content after its own forward chown and
+reverse to `1001:1001`. `_generation` checks the filesystem of every scanned
+or resumed inode and refuses overlayfs, so all owner and metadata entry points fail
+closed. An xattr nonce was rejected: `trusted.*` needs `CAP_SYS_ADMIN`, which
+the startup window does not hold, and the engine can copy or strip `user.*`,
+which also cannot be set on symlinks. Root migration tests use `/dev/shm`
+(tmpfs, which has birth time) because the oracle's basetemp is its overlay rootfs.

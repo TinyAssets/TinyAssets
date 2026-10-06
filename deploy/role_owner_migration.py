@@ -92,6 +92,16 @@ def _stat(root, path):
         return None
 
 
+def _identity(root, path):
+    """Stat and inode generation of one name, or None when it is absent."""
+    try:
+        with _parent(root, path) as (parent, name):
+            info = os.stat(name, dir_fd=parent, follow_symlinks=False)
+            return info, _generation(parent, name, info)
+    except FileNotFoundError:
+        return None
+
+
 def _escrow(root, row):
     try:
         return _stat(root, STATE + "/quarantine/" + row["path"])
@@ -106,12 +116,26 @@ def _key(info):
 LEGACY_IDS = [1001, 1001]
 
 
+OVERLAYFS = 0x794C7630
+
+
 def _generation(parent, name, info):
-    """Inode birth time: an unlinked inode number is reused, a birth is not."""
+    """Inode birth time: an unlinked inode number is reused, a birth is not.
+
+    An empty ``name`` reads the open descriptor ``parent`` itself. D215:
+    overlayfs copy-up re-births an inode under the same number, so a birth
+    there is not a generation; refuse rather than misattribute provenance.
+    """
     libc = ctypes.CDLL(None, use_errno=True)
     buffer = ctypes.create_string_buffer(256)
-    # AT_SYMLINK_NOFOLLOW; mask STATX_INO | STATX_BTIME.
-    if libc.statx(parent, os.fsencode(name), 0x100, 0x900, buffer) != 0:
+    if libc.fstatfs(parent, buffer) != 0:
+        code = ctypes.get_errno()
+        raise OSError(code, os.strerror(code), name)
+    if ctypes.c_long.from_buffer(buffer).value == OVERLAYFS:
+        raise MigrationRefused(f"overlayfs cannot bind inode generation: {name}")
+    # AT_SYMLINK_NOFOLLOW (| AT_EMPTY_PATH); mask STATX_INO | STATX_BTIME.
+    flags = 0x100 if name else 0x1100
+    if libc.statx(parent, os.fsencode(name), flags, 0x900, buffer) != 0:
         code = ctypes.get_errno()
         raise OSError(code, os.strerror(code), name)
     mask, inode = struct.unpack_from("<I", buffer, 0)[0], struct.unpack_from("<Q", buffer, 0x20)[0]
@@ -540,14 +564,22 @@ def migrate(data_root, *, bindings, work, reverse=False, dry_run=False, after_st
             if not required <= present or not present <= required | optional:
                 raise MigrationRefused("owner namespace changed since durable inventory")
             # Validate every recorded source/destination before the first mutation.
+            # A resumed journal skipped inventory: bind each row to its live
+            # generation too, so a recycled inode number never inherits it.
             for row in rows:
-                info = _stat(root, row["path"])
+                if "generation" not in row:
+                    raise MigrationRefused("journal lacks inode generation provenance; "
+                                           "recovery required")
+                live = _identity(root, row["path"])
                 if row["kind"] == "quarantine":
-                    moved = _escrow(root, row)
+                    moved = _identity(root, STATE + "/quarantine/" + row["path"])
                     if moved is not None:
-                        info = moved
-                if info is None or _key(info) != row["key"] or info.st_nlink != row["nlink"]:
+                        live = moved
+                if (live is None or _key(live[0]) != row["key"]
+                        or live[0].st_nlink != row["nlink"]
+                        or live[1] != row["generation"]):
                     raise MigrationRefused(f"inventory changed: {row['path']}")
+                info = live[0]
                 allowed_ids = [row["original_ids"]]
                 if row["kind"] in {"work", "root"}:
                     allowed_ids.append(
@@ -604,7 +636,9 @@ def migrate(data_root, *, bindings, work, reverse=False, dry_run=False, after_st
                             dir_fd=parent,
                         )
                         try:
-                            if _key(os.fstat(fd)) != row["key"]:
+                            opened = os.fstat(fd)
+                            if (_key(opened) != row["key"]
+                                    or _generation(fd, "", opened) != row["generation"]):
                                 raise MigrationRefused(f"entry changed before chown: {row['path']}")
                             report["changed"] += _permissions(fd, row, reverse)
                         finally:
