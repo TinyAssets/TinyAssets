@@ -377,6 +377,23 @@ def _install(home: Path, definition_id: str) -> dict:
     return _ask(BOB, BOB_UNIVERSE, {"type": "install", "agent_definition_id": definition_id})
 
 
+def test_install_plan_digest_binds_safety_findings(home, monkeypatch):
+    from tinyassets.api.package_requests import _plan, validate_action
+
+    published = _published(home)
+    action = validate_action({"type": "install",
+                              "agent_definition_id": published["done"]["agent_definition_id"]})
+    with _as(BOB):
+        before = _plan(BOB_UNIVERSE, action)
+        findings = [{"kind": "new safety finding", "count": 1, "shown": ["AGENTS.md"]}]
+        monkeypatch.setattr(ccp, "install_review_groups", lambda scan: findings)
+        after = _plan(BOB_UNIVERSE, action)
+    assert before["safety"] != after["safety"] == findings
+    assert before["digest"] != after["digest"]
+    assert {k: v for k, v in before.items() if k not in {"digest", "safety"}} == {
+        k: v for k, v in after.items() if k not in {"digest", "safety"}}
+
+
 def _bobs_branches(home: Path) -> list[dict]:
     from tinyassets.daemon_server import list_branch_definitions
 

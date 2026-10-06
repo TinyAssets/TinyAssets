@@ -76,7 +76,19 @@ logger = logging.getLogger(__name__)
 CONSENT_ACTIONS = frozenset({
     "publish", "install", "connect", "connect_http", "extend_http", "rotate_http",
     "remove_http", "grant_workspace_consent", "bind_model_access", PATCH_INTAKE_ACTION,
+    "start_activity", "approve_action",
 })
+# System-created approve_action and notify use dedicated branches before the
+# general gate; classify them too so creation paths cannot escape the inventory.
+NON_CONSENT_ACTIONS = frozenset({"answer", "notify"})
+REQUEST_RECOVERY_DETAIL = (
+    "Clear or decline closes this ask; it is not a mute, for any ask kind. "
+    "When the need recurs or the user asks again, raise a new pending_request "
+    "with operation=ask and the same action and fields. Only don't ask again "
+    "mutes: respect the muted list until the user lifts that choice. "
+    "Connect and reconnect can also be started from the connection controls. "
+    "Do not promise never to ask again after a plain clear."
+)
 CONSENT_REQUIRED_DETAIL = (
     "Open the approval sheet in the app to answer this request in the protected owner session. "
     "Bearer, chatbot, MCP and CLI answers are not consent."
@@ -2261,6 +2273,7 @@ def list_requests(*, universe_id: str = "") -> dict[str, Any]:
         "universe_id": uid,
         "pending": [{**r, "grant_sentence": _grant_sentence(r)} for r in rows],
         "count": len(rows),
+        "request_recovery": REQUEST_RECOVERY_DETAIL,
         **({"patch_intake": intake} if intake is not None else {}),
         "recently_answered": [
             {k: v for k, v in r.items() if k != "action"}
@@ -2781,7 +2794,7 @@ def _answer_request(*, universe_id: str = "", payload: Any = None,
     # question must not let a bearer reach its pinned executable action.
     pinned = _consent_pin(_uid, request_id)
     action_type = (pinned["record"]["action"] if pinned else row["action"]).get("type")
-    if action_type in CONSENT_ACTIONS and owner_session is None:
+    if action_type not in NON_CONSENT_ACTIONS and owner_session is None:
         return {"error": "interactive_approval_required",
                 "detail": CONSENT_REQUIRED_DETAIL,
                 "request_pending": row["status"] == "pending"}
