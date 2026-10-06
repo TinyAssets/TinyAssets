@@ -13,6 +13,8 @@ from dataclasses import dataclass, field
 from types import SimpleNamespace
 from typing import Any, Callable
 
+from tinyassets.boxes.provider import ExecEvent
+
 
 @dataclass
 class Exec:
@@ -25,11 +27,11 @@ class Exec:
 
 
 def out(data: bytes, offset: int) -> Any:
-    return SimpleNamespace(kind="stdout", data=data, offset=offset)
+    return ExecEvent(kind="output", data=data, offset=offset)
 
 
 def exit_event(code: int) -> Any:
-    return SimpleNamespace(kind="exit", code=code)
+    return ExecEvent(kind="exit", exit_code=code)
 
 
 class FakeBox:
@@ -49,9 +51,9 @@ class FakeBox:
         self.lock = threading.Lock()
 
     # ── D2 surface ──────────────────────────────────────────────────────────
-    def bind(self, cc, *, account, turn):
-        self.binds.append((cc, account, turn))
-        return SimpleNamespace(cc=cc, account=account, turn=turn, root="/cc")
+    def bind(self, cc, *, account_id, turn_id):
+        self.binds.append((cc, account_id, turn_id))
+        return SimpleNamespace(cc=cc, account=account_id, turn=turn_id, root="/cc")
 
     def start_exec(self, h, op_id, argv, *, stdin=None, env=None, cwd="/cc", limits=None):
         with self.lock:

@@ -28,7 +28,7 @@ from tinyassets.engine_tool_client import EngineToolError
 
 
 def tools(box: FakeBox, root: str = "/cc") -> BoxTools:
-    handle = box.bind("cc-1", account="owner", turn="t1")
+    handle = box.bind("cc-1", account_id="owner", turn_id="t1")
     return BoxTools(BoxExecutor(box, handle, limits="limits", cwd=root), root=root)
 
 

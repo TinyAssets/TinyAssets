@@ -70,3 +70,36 @@ the first two files passed again: 121 passed, zero skips. Commands use
 MSYS_NO_PATHCONV=1 python scripts/linux_oracle.py -- -q <the named tests under
 tests/, with .py suffix> --basetemp /tmp/b. Ruff passed for the fixture and
 merged launcher client.
+
+## Continuation: `/cc` contract integration
+
+The thin loop now consumes the canonical BoxProvider contract: account_id and
+turn_id binding; output, exit_code and killed events; shared refusal exception.
+Unknown-after-restore or missing exit codes hold the turn, never return a
+completed tool result. The new real-driver test proves output, nonzero exit,
+same-op-id no-replay and foreign-owner refusal. LocalBoxProvider is explicitly
+test-only; no production registration or switch change was added.
+
+Linux oracle, **255 passed, zero skips**:
+
+```text
+MSYS_NO_PATHCONV=1 python scripts/linux_oracle.py -- -q tests/test_agent_loop_box_contract.py tests/test_agent_loop_box_tools.py tests/test_agent_loop_tool_session.py tests/test_agent_loop_served_chat.py tests/test_agent_git_credentials.py tests/test_role_git.py tests/test_git_bridge.py tests/test_converse_turn_cost.py tests/test_scoped_identity_reset.py tests/test_universe_server_isolation.py tests/test_mcp_instruction_surfaces.py --basetemp /tmp/b
+```
+
+After the review's unknown-result correction, **50 passed, zero skips**:
+
+```text
+MSYS_NO_PATHCONV=1 python scripts/linux_oracle.py -- -q tests/test_agent_loop_box_contract.py tests/test_agent_loop_box_tools.py tests/test_agent_loop_tool_session.py tests/test_agent_loop_served_chat.py --basetemp /tmp/b
+```
+
+The first new test run failed because its provider.read call used a relative
+path; corrected to /cc/count without weakening the assertion. Passing receipts
+above include the corrected test. Ruff passes on all continuation Python files,
+plugin mirror/import probe passes, strict change and main-spec validation pass.
+No static prompt was changed. Claude returned ADAPT; review.md records the
+addressed unknown-outcome finding and declined Windows skip recommendation.
+
+Task 2.4 is incomplete: docs/concerns/2026-10-05-cc-git-provider-dependency.md
+records the missing isolating provider/registration and owning lane dependency.
+The as-built git spec remains synced; production /cc routing, deployed-SHA and
+real-user app proof cannot be claimed from this caller-contract test.

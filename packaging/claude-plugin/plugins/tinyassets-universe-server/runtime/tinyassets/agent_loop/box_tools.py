@@ -7,7 +7,7 @@ and the same text answers. What changes is where they run: each call is one
 (target architecture D2), never a process the loop starts itself.
 
 Binding. The session is constructed with a handle the caller bound ONCE at
-turn start (``BoxProvider.bind(cc, account=..., turn=...)``). No call looks a
+turn start (``BoxProvider.bind(cc, account_id=..., turn_id=...)``). No call looks a
 box up by name, so a loop bug cannot route one owner's tool call into another
 owner's box; the box host refuses a handle minted for another command center
 or turn as well (D2 "Authentication of every operation").
@@ -37,6 +37,7 @@ from dataclasses import dataclass
 from pathlib import PurePosixPath
 from typing import Any, Protocol
 
+from tinyassets.boxes.provider import BoxOperationRefused
 from tinyassets.engine_tool_client import EngineToolError
 
 _LOG = logging.getLogger(__name__)
@@ -68,16 +69,6 @@ _BOX_CALL_SLOTS = threading.BoundedSemaphore(MAX_BOX_CALLS)
 #: is reported unknown (the turn holds) rather than spawning another thread.
 MAX_BOX_CANCELS = 128
 _BOX_CANCEL_SLOTS = threading.BoundedSemaphore(MAX_BOX_CANCELS)
-
-
-class BoxOperationRefused(RuntimeError):
-    """The box host refused an operation BEFORE it existed.
-
-    The one exception a driver may raise to say "nothing ran": a stale
-    placement epoch, a handle for another command center, an account that does
-    not own it. Anything else a driver raises is a transport failure, whose
-    outcome is unknown until the box host says otherwise.
-    """
 
 
 class BoxExec(Protocol):
@@ -168,7 +159,7 @@ class BoxExecutor:
             try:
                 for event in self._provider.stream(self._handle, exec_id, from_offset=offset):
                     kind = _event_kind(event)
-                    if kind in ("stdout", "stderr"):
+                    if kind == "output":
                         data = bytes(getattr(event, "data", b"") or b"")
                         offset = _event_offset(event, offset + len(data))
                         if capped:
@@ -179,9 +170,13 @@ class BoxExecutor:
                             capped = True
                             self._provider.cancel(self._handle, exec_id)
                     elif kind == "exit":
-                        code = getattr(event, "code", None)
-                        return ExecOutcome(bytes(output), code if type(code) is int else None,
-                                           "output_limit" if capped else None)
+                        code = getattr(event, "exit_code", None)
+                        killed = getattr(event, "killed", None)
+                        if type(code) is not int or killed == "unknown_after_restore":
+                            raise _unknown()
+                        return ExecOutcome(bytes(output), code,
+                                           "output_limit" if capped else
+                                           killed)
                 # A stream that ends without an exit event is a lost reply.
                 raise ConnectionError("box stream ended without an exit event")
             except Exception:

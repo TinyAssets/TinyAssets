@@ -27,3 +27,8 @@ owner-answer transport: 121 post-main-merge tests pass with zero skips, and the
 resolved concern is removed. Cross-family review:
 ADAPT, findings addressed (review.md). See delivery.md for exact commands.
 Task 2.4 remains open: no production deployment or real-user app pass is claimed.
+Continuation reconciled the `/cc` caller with the canonical provider contract
+and proved it with the real development driver in Linux. 255 affected/heavy
+tests pass, then 50 thin-loop tests after the review correction, all zero-skip.
+Production integration awaits the isolating provider; see
+docs/concerns/2026-10-05-cc-git-provider-dependency.md and delivery.md.

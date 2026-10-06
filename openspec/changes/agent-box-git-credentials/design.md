@@ -150,3 +150,20 @@ Review correction: authenticated git setup failures install no routes and emit
 a fixed warning, while local bash continues. Credit callbacks execute outside
 the upload condition lock. A policy snapshot is rechecked even while upload
 credit is stalled; generation and current-grant checks cover both directions.
+
+## Continuation: canonical `/cc` execution contract
+
+The continuation authorizes production `/cc` integration behind the existing
+per-role switch. The thin-loop caller now uses BoxProvider's account_id/turn_id
+binding, output events, exit_code and killed receipts, and shared refusal type.
+This is required before a real isolating provider can be connected; the old fake
+used a divergent protocol and concealed the mismatch. The local driver is used
+only in a synthetic contract test, with explicit allow_unisolated=True.
+
+Production registration remains blocked on box-provider-foundation tasks 2.1-2.2:
+there is no gvisor.py/boxd implementation. No production caller registers a
+provider. The parent owner launcher admits image-decoder, workspace-git,
+ui-preview and preview-write only, not arbitrary box execution. Extending those
+authority boundaries is owned by the provider/role lanes; this lane preserves
+D72 git_bridge and does not enable LocalBoxProvider as a fallback. Task 2.4
+cannot claim deployment or an app pass until those dependencies are available.

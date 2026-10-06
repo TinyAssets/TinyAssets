@@ -54,7 +54,7 @@ def bind_turn_box(*, owner: str, command_center: str, turn_id: str) -> tuple[Box
     provider, limits = configured_box_provider()
     if provider is None:
         raise LookupError("no box provider is configured")
-    handle = provider.bind(command_center, account=owner, turn=turn_id)
+    handle = provider.bind(command_center, account_id=owner, turn_id=turn_id)
     root = getattr(handle, "root", None) or BOX_ROOT
     return BoxTools(BoxExecutor(provider, handle, limits=limits, cwd=root), root=root), root
 
