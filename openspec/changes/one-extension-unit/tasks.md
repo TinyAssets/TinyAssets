@@ -116,3 +116,11 @@ protected owner sessions, affected heavy authoring/visibility/cycle tests, remot
 MCP, credential-blind git and authenticated effects). Ruff passes all 47 changed
 Python files; strict OpenSpec validation and rebuilt plugin/import probe pass.
 The protected owner grant endpoint regression additionally passes locally.
+
+
+Merged origin/main a97c17c26e without conflicts (merge c8d0a84296). Post-merge
+Linux oracle: 91 passed / zero skips, including main's package/deletion regression
+updates and unchanged prompt budgets. Final outside-authority regression run:
+11 passed / zero skips, including protected owner grant editing and resolved
+indirect-object confinement. Plugin rebuild/import probe and JavaScript syntax
+check pass. Final PR head and hygiene are recorded in #4519; no deployment claim.

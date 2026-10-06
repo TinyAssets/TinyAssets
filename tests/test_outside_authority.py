@@ -265,3 +265,26 @@ def test_grants_require_protected_owner_session(tmp_path, monkeypatch):
     assert asyncio.run(handle(request())).status_code == 200
     assert asyncio.run(handle(request())).status_code == 403  # stale generation
     assert store.inspect("other-owner")["clients"] == []
+
+
+def test_resolved_indirect_object_cannot_escape_admitted_universe(tmp_path, monkeypatch):
+    from tinyassets.api import helpers, permissions
+    from tinyassets.auth.middleware import identity_context
+    from tinyassets.auth.provider import Identity
+    from tinyassets.outside_authority import check_mcp_request
+
+    monkeypatch.setattr(helpers, "_base_path", lambda: tmp_path)
+    monkeypatch.setattr(permissions, "_universe_is_owned", lambda *args: True)
+    monkeypatch.setattr(permissions, "universe_public_read_allowed", lambda *args: True)
+    store = OutsideClientAuthority(tmp_path)
+    source = {"client": "a", "family": "s", "authenticated_at": 100}
+    store.observe("owner", source)
+    store.set_enabled(True)
+    store.change("owner", "a", expected_generation=0, family="s", scopes=[
+        {"universe": "home", "agent": "main", "capability": "read_graph"}])
+    identity = Identity("owner", "owner", metadata={"outside_origin": store.admit("owner", source)})
+    with identity_context(identity):
+        check_mcp_request(identity, {"method": "tools/call", "params": {
+            "name": "read_graph", "arguments": {"graph_id": "home", "run_id": "indirect"}}})
+        assert permissions.universe_access_allows("home")
+        assert not permissions.universe_access_allows("other")
