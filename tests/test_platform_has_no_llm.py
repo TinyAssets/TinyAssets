@@ -71,6 +71,7 @@ def _calls(spies: dict[str, _SpyProvider]) -> dict[str, int]:
 
 def _carrier(provider: str, *, role: str = "writer", operation: str = "run_graph"):
     carrier = MagicMock(spec=ProviderInvocationCarrier)
+    carrier._receipt = MagicMock(principal_id="owner")
     carrier.provider = provider
     carrier.role = role
     carrier.operation = operation

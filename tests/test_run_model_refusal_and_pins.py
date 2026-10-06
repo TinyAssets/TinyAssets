@@ -122,7 +122,7 @@ def test_an_agentic_harness_403_steps_to_the_next_model_in_the_same_run(
     assert wires[A_OWNER].sent_models == list(LIVE_MODELS), wires[A_OWNER].sent_models
     assert record["output"]["note"] == "morning focus note"
     # The source stayed eligible: a refusal names one model.
-    assert call_module.get_provider_router()._quota.cooldown_remaining(provider) == 0
+    assert call_module.get_provider_router()._quota.cooldown_remaining(provider, owner=A_OWNER) == 0
 
 
 def test_the_refused_model_is_not_called_on_the_next_run(
@@ -205,7 +205,7 @@ def test_a_daily_cap_429_still_cools_the_whole_source(
     assert "provider_daily_quota" in record["error"], record["error"]
     # Account-wide: the sibling is not asked, and the source is cooled.
     assert wires[A_OWNER].sent_models == [LIVE_MODELS[0]], wires[A_OWNER].sent_models
-    assert call_module.get_provider_router()._quota.cooldown_remaining(provider) > 0
+    assert call_module.get_provider_router()._quota.cooldown_remaining(provider, owner=A_OWNER) > 0
 
 
 def test_a_cooled_source_says_it_is_cooling_down_not_spent(
@@ -217,7 +217,7 @@ def test_a_cooled_source_says_it_is_cooling_down_not_spent(
     authenticate_request(A_OWNER)
     provider = _seed(tmp_path, monkeypatch, wires)
     router = call_module.get_provider_router()
-    router._cool(None, provider, 120, reason="provider_protocol_error")
+    router._cool(None, provider, 120, reason="provider_protocol_error", owner=A_OWNER)
 
     record = _run(tmp_path, monkeypatch, _branch(owner=A_OWNER), A_HOME)
 
