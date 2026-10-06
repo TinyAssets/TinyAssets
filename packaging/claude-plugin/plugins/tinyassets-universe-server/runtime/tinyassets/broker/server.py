@@ -136,6 +136,8 @@ class _Stream:
     #: This stream reached a network write (a guarded send began).
     wrote: bool = False
     upstream: Any = None
+    upload: Any = None
+    authority: Any = None
     wake: threading.Condition = field(default_factory=threading.Condition)
     refresh_sequence: int = 0
     refresh_result: bool | None = None
@@ -273,7 +275,12 @@ class _Connection:
 
     async def handle(self, frame: rf.Frame) -> None:
         if frame.kind == rf.DATA:
-            return  # request bodies are inline in v1; stray data is ignored
+            with self._server._streams_lock:
+                stream = self._server._streams.get((self._key, frame.stream))
+            if stream is None or stream.upload is None:
+                raise rf.FrameError("unexpected request data")
+            stream.upload.put(frame.payload)
+            return
         doc = frame.control()
         op = doc["op"]
         if frame.stream == rf.CONNECTION:
@@ -285,6 +292,8 @@ class _Connection:
             if stream is not None:
                 raise rf.FrameError("stream id reused while open")
             await self._open(frame.stream, doc)
+        elif op == "UPLOAD_END" and stream is not None and stream.upload is not None:
+            stream.upload.finish()
         elif op == "CREDIT" and stream is not None:
             amount = doc.get("n")
             if type(amount) is int and amount > 0:
@@ -660,6 +669,14 @@ class _Connection:
             stream = _Stream(stream_id, generation, token, namespace, op_id,
                              deadline=time.monotonic() + _stream_budget(request),
                              credit=credit)
+            if verb.startswith(("git_read:", "git_write:")):
+                stream.authority = lambda: ledger.authorize_exact(
+                    universe_id=command_center, grant_id=grant_id, connection_id=connection_id)
+            if verb.startswith(("git_read:", "git_write:")) and request.get("upload") is True:
+                from tinyassets.broker.git_upload import Upload
+
+                stream.upload = Upload(lambda: self._checkpoint(stream), lambda: self.send(
+                    rf.control(stream.id, {"op": "UPLOAD_CREDIT"}), stream))
             with self._server._streams_lock:
                 self._server._streams[(self._key, stream_id)] = stream
             try:
@@ -685,6 +702,10 @@ class _Connection:
     def _checkpoint(self, stream: _Stream) -> None:
         if stream.cancelled:
             raise _Cancelled
+        if stream.authority is not None:
+            stream.authority()
+        if stream.upstream is not None and hasattr(stream.upstream, "check_authority"):
+            stream.upstream.check_authority()
         if time.monotonic() >= stream.deadline:
             raise _Expired
         if not self._server._fence.admits(stream.generation, stream.token):
@@ -739,6 +760,8 @@ class _Connection:
             stream.marked = True
             self.send(rf.control(stream.id, {"op": "ADMITTED", "op_id": stream.op_id}),
                       stream)
+            if stream.upload is not None:
+                self.send(rf.control(stream.id, {"op": "UPLOAD_CREDIT"}), stream)
             upstream = dispatch(
                 grant_id, verb, request, stream=True,
                 idle_s=(min(idle_s, DEFAULT_IDLE_S)
@@ -747,6 +770,7 @@ class _Connection:
                 on_connect=lambda sock: self._connected(stream, sock),
                 checkpoint=lambda: self._checkpoint(stream),
                 deadline_at=stream.deadline,
+                **({"body": stream.upload} if stream.upload is not None else {}),
                 **({"refresh_request": lambda destination, rejected: self._refresh(
                     stream, destination, rejected)} if refresh_enabled else {}),
                 **({"inference_usage": inference_usage, "operation_id": stream.op_id}
@@ -807,6 +831,7 @@ class _Connection:
         while True:
             with stream.wake:
                 while True:
+                    self._checkpoint(stream)
                     if stream.cancelled:
                         raise _Cancelled
                     if (buffered and stream.credit > 0) or (finished and not buffered) \
@@ -815,7 +840,7 @@ class _Connection:
                     remaining = stream.deadline - time.monotonic()
                     if remaining <= 0:
                         raise _Expired
-                    stream.wake.wait(remaining)
+                    stream.wake.wait(min(0.1, remaining))
                 credit = stream.credit
             if buffered and credit > 0:
                 piece = bytes(buffered[:credit])

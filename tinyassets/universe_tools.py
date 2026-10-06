@@ -1119,23 +1119,26 @@ def bash(
     wall = float(timeout) if timeout and float(timeout) > 0 else limits.wall_seconds
     wall = min(max(wall, 1.0), MAX_BASH_SECONDS)
     shell = _system_binary("bash")
-    inner, egress = [shell, "-c", command], {}
+    from tinyassets.git_egress import for_bash
+
     socket_path = _egress_socket(universe_dir)
-    python = shutil.which("python3", path="/usr/bin:/bin")
-    if socket_path is not None and python:
-        from tinyassets import universe_egress
+    with for_bash(universe_dir, agent_id) as git_prefix:
+        inner, egress = [shell, "-c", git_prefix + command], {}
+        python = shutil.which("python3", path="/usr/bin:/bin")
+        if socket_path is not None and python:
+            from tinyassets import universe_egress
 
-        inner = universe_egress.forwarder_argv(python, inner)
-        egress = {"egress_socket": socket_path}
-    if ta_dispatch is None:
-        run = RUNNER(universe_dir, inner, agent_id=agent_id, limits=limits,
-                     wall_seconds=wall, **egress)
-    else:
-        from tinyassets.ta_capabilities import JailBridge
-
-        with JailBridge(ta_dispatch) as bridge:
+            inner = universe_egress.forwarder_argv(python, inner)
+            egress = {"egress_socket": socket_path}
+        if ta_dispatch is None:
             run = RUNNER(universe_dir, inner, agent_id=agent_id, limits=limits,
-                         wall_seconds=wall, ta_socket=bridge.path, **egress)
+                         wall_seconds=wall, **egress)
+        else:
+            from tinyassets.ta_capabilities import JailBridge
+
+            with JailBridge(ta_dispatch) as bridge:
+                run = RUNNER(universe_dir, inner, agent_id=agent_id, limits=limits,
+                             wall_seconds=wall, ta_socket=bridge.path, **egress)
     body = _text(run.output)
     if body and not body.endswith("\n"):
         body += "\n"

@@ -43,3 +43,11 @@ ledger paths and access: reconcile with that lane before implementation.
 Owner: Codex. Branch: `fix/agent-box-dev-workflow`. One draft PR. Acceptance for
 this delivery is reproducible diagnosis, the pytest image fix, and a reviewable
 credential proposal; successful credentialed box git remains future work.
+
+## L11 implementation authorization
+
+The 2026-10-05 lane instruction supersedes the original proposal-only limit.
+Owner: Codex; branch: feat/agent-box-git-credentials; draft target:
+feat/per-role-uid-split (the specific lane target overrides common PR boilerplate).
+Implementation and synthetic proof are authorized; real private repositories are
+not capability probes. See design.md's L11 contract and the pending task evidence.

@@ -108,3 +108,33 @@ proposal-only status, not authorization to ship a partial credential route.
   AGREE: no floor/correctness findings; no assertion or isolation relaxation.
 - No deployment or real-user app pass claimed. The remaining credential tasks
   and production `/cc` integration are intentionally open.
+
+## L11 implementation contract (2026-10-05)
+
+The owner explicitly authorized implementation, superseding the proposal-only
+restriction above. Delivery branch: feat/agent-box-git-credentials, draft into
+feat/per-role-uid-split. The served /u bash jail is the integration surface;
+/cc provider deployment remains separate and is not claimed by this draft.
+
+Reuse OPEN and its owner principal, command center, exact grant, connection,
+generation, operation ID and response credit. Git verbs are exact repository
+scopes. A git request carries the declared host, exact smart-HTTP target, method,
+agent launch identity and connection incarnation. POST uploads use raw DATA,
+one 64 KiB UPLOAD_CREDIT at a time, ending with UPLOAD_END. Response DATA stays
+binary and uses the existing secret scanner and credit. No whole-pack buffering
+or temporary pack files in the broker. The current connection/grant snapshot is
+checked on every network operation and response read, including credit waits.
+
+Trusted bash launch creates random, invocation-lifetime URL rewrites on its
+existing command-center egress socket. Route material is useless on another
+center's proxy. No broker socket, fence token, vault or credential helper enters
+the box. Grants come from the authenticated owner's broker catalog; ambiguous
+repository grants fail closed. D72's per-owner git_bridge remains the local git
+execution path and is not converted into a credential helper.
+
+HTTPS uses the existing public-IP pin and peer check with normal certificate
+verification. Only bearer/basic/oauth2 typed HTTP deposits with explicit git
+scopes qualify. No API scope implies git authority. Non-200 responses, including
+redirects, fail closed. No push is automatically retried after transport failure;
+remote refs must be checked before retry. Only synthetic repositories are used
+for the capability proof.
