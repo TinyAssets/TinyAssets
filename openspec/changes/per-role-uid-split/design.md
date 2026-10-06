@@ -2645,3 +2645,24 @@ the socket directory's exact `1002:1101 2750` on a fresh tmpfs. Root oracle:
 `test_d219_setgid_only_on_named_platform_directories` (setgid applied on
 `.broker` and the proxy directory; refused on an owner-tree directory and a
 regular file). The production `role_image_oracle.py` passes end to end.
+
+### D220. PID1 reaps adopted orphans after a grace, never held or owned children
+
+Under the overlay PID1 is the daemon (D60), so the kernel reparents every
+orphan to it. Measured with `scripts/role_zombie_probe.py` (real broker and
+mapper, PID1 retired): 900 forks in engine cells, half of them double-fork or
+setsid orphans, added no zombie, because the cell's namespace init reaps them.
+But every provider turn left one `bwrap` zombie under PID1 (2, 3, 4, 5 over
+three turns), and each daemon-direct `sh -c 'sleep &'` left one more (60 for
+60). Without a reaper they grow without bound.
+
+`role_owner_launcher.reap_orphans` runs in a PID1 thread started next to the
+held-role watch, every 10 seconds. It is not `waitpid(-1)`: that would reap
+the broker and mapper, which PID1 holds unreaped by design, and it would race
+`subprocess`/asyncio waiters, which CPython turns into a silent returncode 0.
+The thread reaps only a zombie child of PID1 that is outside
+`{broker, mapper}` and has been seen with the same start time for 60 seconds.
+Owners wait within milliseconds of exit. Each reap pins the process with a
+pidfd, re-checks its start time, then calls `waitid(P_PIDFD)`, so a reused PID
+is never reaped. With the reaper, the same probe peaks at 61 and settles to 0.
+Test: `tests/test_role_orphan_reaper.py` (a subreaper stands in for PID1).

@@ -30,6 +30,4 @@ without reopening D214/D215/D217 provenance. Do not turn the split ON until it
 lands with root-oracle rows for add, remove, add-then-reverse and
 remove-then-reverse.
 
-A second, smaller ON-path item in the same lane: under the overlay PID1 is the
-daemon itself (D60 requires PID1; tini is gone), so orphaned grandchildren are
-not reaped. Measure the zombie count during a long engine run before activation.
+(The PID1 zombie item formerly here is resolved by D220.)

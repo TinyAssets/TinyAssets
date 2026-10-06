@@ -1,4 +1,4 @@
-# U2 continuation: D219 setgid allow-list; PID1 zombie measurement
+# U2 continuation: D219 setgid allow-list; D220 PID1 orphan reaper
 
 **D219 (lead decision):** the design-mandated setgid is allowed on the named
 platform directories (`.broker`, `.broker/.outbound-proxy`, the run-root broker
@@ -16,6 +16,20 @@ fixture passes the role path for its socket directory. Resolves concern
   `linux_oracle.py --production-image` exits 0 (`role_image_oracle.py` end to
   end, including the launcher oracle). `role_startup_probe.py` PASS;
   `role_owner_migration_probe.py` PASS (9 crash boundaries).
+
+**PID1 zombies (D220).** Measured with `scripts/role_zombie_probe.py` on
+`sha256:f3d8971d…` (no reaper): a 150 s engine turn with 750 forks (500 orphans,
+half setsid) added 0 zombies, since cell namespace inits reap. Each provider
+turn leaked exactly one `bwrap` zombie under PID1 (2→3→4→5 over three turns).
+60 daemon-direct orphans added 60 (63 in total, unbounded). With the reaper
+(`sha256:eab339c5…`), 3×60 s turns (900 forks) plus 60 direct orphans peak at
+61 and settle to 0 within grace + interval. On that image:
+`linux_oracle.py --production-image` exits 0; `role_startup_probe.py` PASS;
+`role_service_bootstrap_probe.py` default, `--service-death` and
+`--broker-death` PASS (exit 78 kept). Reaper test passes; removing the held-PID
+exclusion or the grace fails it. Side observation, unexplained: a provider-exec
+turn that printed nothing for 150 s was SIGKILLed (-9), while the same turn
+printing once a second ran to completion.
 
 # U2 continuation: U1 D85 merged; two-pass deletion (D218); switched startup OFF
 

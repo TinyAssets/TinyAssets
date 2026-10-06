@@ -195,6 +195,18 @@ def _bootstrap_services(data_root, run_root, bindings, launch):
             os._exit(78)
 
     threading.Thread(target=watch, name='role-lifetime', daemon=True).start()
+    protected = {broker_pid, mapper_pid}
+
+    def reap():
+        seen = {}
+        while True:
+            time.sleep(REAP_INTERVAL)
+            try:
+                reap_orphans(protected, seen)
+            except Exception as exc:  # never die silently; zombies would grow again
+                os.write(2, f'orphan reaper failed: {exc!r}\n'.encode())
+
+    threading.Thread(target=reap, name='orphan-reaper', daemon=True).start()
     deadline = time.monotonic() + 30
     while True:
         supervisor._same_process()
@@ -211,6 +223,52 @@ def _bootstrap_services(data_root, run_root, bindings, launch):
     supervisor.start()
     install_bounded_client(client)
     return supervisor, client
+
+
+REAP_INTERVAL, REAP_GRACE = 10, 60
+
+
+def reap_orphans(protected, seen, *, grace=REAP_GRACE, proc='/proc', now=time.monotonic):
+    """Reap adopted orphans of this PID1; never a status the daemon waits on.
+
+    PID1 is the daemon (D60), so the kernel reparents every orphan here; each
+    provider turn leaves one ``bwrap``. ``waitpid(-1)`` would also reap the
+    held broker/mapper and race subprocess/asyncio waiters, which CPython turns
+    into a silent returncode 0. Owners wait within milliseconds of exit, so only
+    a child seen as a zombie for ``grace`` seconds (same start time) is unowned.
+    """
+    me, current, reaped = os.getpid(), {}, []
+    for name in os.listdir(proc):
+        if not name.isdigit() or int(name) in protected:
+            continue
+        try:
+            raw = Path(proc, name, 'stat').read_text()
+        except OSError:
+            continue
+        fields = raw[raw.rfind(')') + 2:].split()
+        if fields[0] == 'Z' and int(fields[1]) == me:
+            key = (int(name), fields[19])
+            current[key] = seen.get(key, now())
+    seen.clear()
+    for key, first in current.items():
+        if now() - first < grace:
+            seen[key] = first
+            continue
+        # The pidfd pins the identity the start time then confirms: no reuse.
+        try:
+            pidfd = os.pidfd_open(key[0])
+        except ProcessLookupError:
+            continue  # its owner reaped it first
+        try:
+            raw = Path(proc, str(key[0]), 'stat').read_text()
+            if raw[raw.rfind(')') + 2:].split()[19] == key[1]:
+                os.waitid(os.P_PIDFD, pidfd, os.WEXITED | os.WNOHANG)
+                reaped.append(key[0])
+        except (OSError, ChildProcessError):
+            pass  # reaped (or gone) between the scan and here
+        finally:
+            os.close(pidfd)
+    return reaped
 
 
 def enter_namespace(channel, launch):
