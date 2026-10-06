@@ -28,12 +28,14 @@ cancellation propagates.
 from __future__ import annotations
 
 import asyncio
+import base64
 import contextlib
 import hashlib
+import json
 import logging
 import threading
 from collections.abc import Callable, Iterator, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import PurePosixPath
 from typing import Any, Protocol
 
@@ -86,7 +88,9 @@ class BoxExec(Protocol):
 
     def start_exec(self, h: Any, op_id: str, argv: Sequence[str], *,
                    stdin: Any = None, env: Mapping[str, str] = ..., cwd: str = ...,
-                   limits: Any) -> Any: ...
+                   limits: Any, interactive_stdin: bool = False) -> Any: ...
+
+    def send_stdin(self, h: Any, exec_id: Any, request_id: str, data: bytes) -> None: ...
 
     def stream(self, h: Any, exec_id: Any, *, from_offset: int = 0) -> Iterator[Any]: ...
 
@@ -128,6 +132,7 @@ class BoxExecutor:
         self._handle = handle
         self._limits = limits
         self._cwd = cwd
+        self.ta_bridge = None
 
     @property
     def handle(self) -> Any:
@@ -135,6 +140,15 @@ class BoxExecutor:
 
     def _start(self, op_id: str, argv: Sequence[str], stdin: bytes | None) -> Any:
         kwargs: dict[str, Any] = {"cwd": self._cwd, "limits": self._limits}
+        if self.ta_bridge is not None and op_id in self._ta_executions:
+            from tinyassets.ta_capabilities import MAX_REQUEST
+
+            # Requests travel on stdout too. Keep a bounded transport allowance
+            # separate from the decoded user-output limit enforced by _collect.
+            kwargs["limits"] = replace(self._limits,
+                                       output_bytes=max(self._limits.output_bytes,
+                                                        8 * MAX_REQUEST))
+            kwargs["interactive_stdin"] = True
         if stdin is not None:
             kwargs["stdin"] = stdin
         try:
@@ -164,26 +178,50 @@ class BoxExecutor:
         offset = 0
         resumed = False
         capped = False
+        pending = bytearray()
         while True:
             try:
                 for event in self._provider.stream(self._handle, exec_id, from_offset=offset):
                     kind = _event_kind(event)
-                    if kind in ("stdout", "stderr"):
+                    if kind in ("stdout", "stderr", "output"):
                         data = bytes(getattr(event, "data", b"") or b"")
                         offset = _event_offset(event, offset + len(data))
+                        if kind == "output":  # BoxProvider offsets name the block START.
+                            offset += len(data)
+                        if self.ta_bridge is not None and op_id in self._ta_executions:
+                            pending.extend(data)
+                            try:
+                                data = self._ta_frames(pending, op_id, exec_id)
+                            except Exception as exc:
+                                _LOG.warning("ta box channel failed (%s)", type(exc).__name__)
+                                self.ta_bridge.cancel_execution(op_id)
+                                self.cancel_in_background(exec_id)
+                                raise _unknown() from None
                         if capped:
                             continue
                         room = cap - len(output)
                         output += data[:max(room, 0)]
                         if len(data) > room:
                             capped = True
+                            if self.ta_bridge is not None:
+                                self.ta_bridge.cancel_execution(op_id)
                             self._provider.cancel(self._handle, exec_id)
                     elif kind == "exit":
-                        code = getattr(event, "code", None)
+                        code = getattr(event, "code", getattr(event, "exit_code", None))
+                        if pending:
+                            raise _unknown()
+                        if (self.ta_bridge is not None and op_id in self._ta_executions
+                                and op_id not in self._ta_ready):
+                            raise EngineToolError("remote_ta_worker_unavailable")
+                        killed = getattr(event, "killed", None)
+                        if killed == "unknown_after_restore":
+                            raise _unknown()
                         return ExecOutcome(bytes(output), code if type(code) is int else None,
-                                           "output_limit" if capped else None)
+                                           "output_limit" if capped else killed)
                 # A stream that ends without an exit event is a lost reply.
                 raise ConnectionError("box stream ended without an exit event")
+            except EngineToolError:
+                raise
             except Exception:
                 if resumed:
                     break
@@ -196,6 +234,63 @@ class BoxExecutor:
             pass
         _LOG.warning("box execution outcome unresolved (status %r)", getattr(status, "state", None))
         raise _unknown()
+
+    def enable_ta(self, bridge):
+        self.ta_bridge = bridge
+        self._ta_executions = set()
+        self._ta_ready = set()
+
+    def _ta_frames(self, pending, op_id, exec_id):
+        from tinyassets.agent_loop.box_ta import PREFIX
+        from tinyassets.ta_capabilities import MAX_REQUEST
+
+        output = bytearray()
+        while b"\n" in pending:
+            raw, _, rest = pending.partition(b"\n")
+            pending[:] = rest
+            if not raw.startswith(PREFIX) and op_id not in self._ta_ready:
+                output.extend(raw + b"\n")
+                continue
+            if len(raw) > MAX_REQUEST + 256 or not raw.startswith(PREFIX):
+                raise _unknown()
+            frame = json.loads(raw[len(PREFIX):])
+            if frame == {"ready": True}:
+                self._ta_ready.add(op_id)
+                continue
+            if set(frame) == {"output"}:
+                output.extend(base64.b64decode(frame["output"], validate=True))
+                continue
+            if set(frame) != {"request", "message", "delivery"}:
+                raise _unknown()
+            request = frame["request"]
+            # Validate before constructing a reply path, even for refused calls.
+            import re
+            if not isinstance(request, str) or not re.fullmatch(r"[a-f0-9]{32}", request):
+                raise _unknown()
+            delivery = frame["delivery"]
+            if not isinstance(delivery, str) or not re.fullmatch(r"[a-f0-9]{32}", delivery):
+                raise _unknown()
+            answer = self.ta_bridge.request(self._handle, op_id, request, frame["message"])
+            if isinstance(answer, dict) and "extension_roots" in answer:
+                answer = {**answer, "extension_roots": {
+                    scope: path.replace("/u/", self._cwd + "/", 1)
+                    for scope, path in answer["extension_roots"].items()}}
+            data = json.dumps({"request": request, "answer": answer}).encode() + b"\n"
+            for attempt in range(2):
+                try:
+                    self._provider.send_stdin(self._handle, exec_id, delivery, data)
+                    break
+                except Exception:
+                    # Replaying an already completed execution only needs its
+                    # recorded output; its closed stdin cannot receive replies.
+                    status = self._provider.exec_status(self._handle, op_id)
+                    if status.state == "exited":
+                        break
+                    if attempt:
+                        raise
+        if len(pending) > MAX_REQUEST + 256:
+            raise _unknown()
+        return bytes(output)
 
     async def run(self, op_id: str, argv: Sequence[str], *, stdin: bytes | None = None,
                   wall_seconds: float, output_bytes: int = OUTPUT_BYTES) -> ExecOutcome:
@@ -216,6 +311,8 @@ class BoxExecutor:
             # The box may accept the command after the turn was cancelled.
             # Exactly one side cancels it: this one if the reply is in, else
             # the launching thread when the reply arrives, however late.
+            if self.ta_bridge is not None:
+                self.ta_bridge.cancel_execution(op_id)
             launch.abandon()
             raise
         try:
@@ -228,6 +325,8 @@ class BoxExecutor:
         try:
             return await _wait(collector, timeout=wall_seconds)
         except TimeoutError:
+            if self.ta_bridge is not None:
+                self.ta_bridge.cancel_execution(op_id)
             if not await self._cancel(exec_id):
                 raise _unknown() from None
             try:
@@ -236,6 +335,8 @@ class BoxExecutor:
                 raise _unknown() from None
             return ExecOutcome(outcome.output, outcome.exit_code, "timeout")
         except asyncio.CancelledError:
+            if self.ta_bridge is not None:
+                self.ta_bridge.cancel_execution(op_id)
             await self._cancel(exec_id)
             raise
 
@@ -509,9 +610,14 @@ class BoxTools:
         wall = min(max(wall, 1.0), MAX_BASH_SECONDS)
         # argv, never a command string to the box API: the command is bash's
         # argument, exactly as the tool jail runs it.
-        outcome = await self._exec.run(
-            op_id, ["/bin/bash", "-c", command], wall_seconds=wall,
-        )
+        argv = ["/bin/bash", "-c", command]
+        stdin = None
+        if self._exec.ta_bridge is not None:
+            from tinyassets.agent_loop.box_ta import worker_argv
+
+            argv, stdin = worker_argv(command, root=self._root, execution=op_id)
+            self._exec._ta_executions.add(op_id)
+        outcome = await self._exec.run(op_id, argv, stdin=stdin, wall_seconds=wall)
         body = _text(outcome.output)
         if body and not body.endswith("\n"):
             body += "\n"
