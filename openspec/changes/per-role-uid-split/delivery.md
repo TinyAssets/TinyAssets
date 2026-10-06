@@ -1,4 +1,71 @@
-# Current delivery: D74 raw-I/O guard closed without changing its assertions
+# Current U1 delivery: founder D73 preview renderer and owner screenshot writer
+
+Started at b8f9c258bd with the requested ff-only pull (already current).
+U1 owns engine integration only; U2 owns migration/quarantine/deletion,
+old-image rollback and startup/healthcheck. No U2 PR was available at the
+initial check. Startup remains inactive; no deploy or PR is authorized until
+all prior acceptance is complete.
+
+Founder D73 now amends only ui-preview's D9 row to cell-nested. The old
+snapshot entry also numbered D73 is explicitly qualified as historical.
+D75 records data-only preview transport and a separate fixed cell-deny
+preview-write operation, needed to preserve D60 identity on screenshots.
+The daemon sends admitted UI/asset bytes without mounting owner stores in
+Chromium's cell; the writer pins the exact admitted center descriptor and
+atomically writes as its dedicated owner, without executing UI code.
+
+Final production Dockerfile image:
+`sha256:03e2eaa47e23a76ba6ada1993b9ad94da1e7d9939bd78ccf655bf2c577abb44b`.
+Native Docker build return code independently captured by Python: **0**.
+Intermediate PowerShell stderr redirection produced misleading exit records;
+Docker also reported a missing cache snapshot during disk-usage inspection.
+Final image RootFS equals the already-probed `:cells` image below.
+
+Verified commands (all exit 0; synthetic volumes only):
+- `python scripts/role_preview_launcher_probe.py --image tinyassets-uid-d73-preview:final`:
+  actual Alice/Bob Chromium renders with sandbox enabled, admitted assets,
+  private namespaces, dedicated UID/GID, zero caps/groups and FDs 0/1/2 only.
+  Actual application render/write/readback passes; screenshot files have exact
+  dedicated UID/GID and nlink1. Preplanted symlinks/hardlinks/FIFOs are replaced
+  without changing Bob's bytes. Both owner-owned and protected daemon-owned
+  canonical roots pass. Renderer nested namespace positive, image/git/writer
+  strict namespace negatives, and profile-override refusals for every other D9
+  kind pass. Unimplemented-kind refusal is not actual-class acceptance.
+- `python scripts/linux_oracle.py -- tests/test_role_preview.py tests/test_role_decoder.py tests/test_role_launcher.py tests/test_role_git.py tests/test_ui_preview.py tests/test_universe_path_io_guard.py -q -rs`:
+  **82 passed, zero skips**.
+- `python scripts/role_reader_alias_probe.py --image tinyassets-uid-d73-preview:cells`:
+  **132 denied, 22 own reads, zero foreign reads**, including preview output.
+- `python scripts/role_owner_namespace_probe.py --image tinyassets-uid-d73-preview:cells`:
+  all three profile relabel/copy diagnostics retain zero foreign reads;
+  out-of-range owner mapping denied. Not extra actual-class evidence.
+- `python scripts/role_service_bootstrap_probe.py --image tinyassets-uid-d73-preview:final --snapshots --git --stream`:
+  snapshots, actual decoder/git classes, broker HTTPS GET/accounted POST,
+  replay refusal and two OAuth rotations pass in one service lifetime.
+- `python scripts/linux_oracle.py --production-image tinyassets-uid-d73-preview:final`:
+  existing foundation/egress/legacy-launcher receipts pass. Not full D60 migration.
+- Targeted Ruff, plugin generation/parity, strict OpenSpec and diff checks pass.
+  Full Ruff retains **55 unchanged baseline findings**.
+
+The intermediate image exposed the old daemon writer's UID1001 screenshot
+rejection; the owner writer fixes this without weakening D60. The protected-root
+fixture initially retained `group::---` behind an ACL mask; explicit owner-group
+read/traverse plus the precreated owner-writable preview subtree proves D65.
+U2 must supply those actual ACL/subtree prerequisites; no product permission
+was widened to make the probe pass.
+
+Renderer cross-family review via peer-agents: APPROVE, no floor/correctness
+finding. The later screenshot-writer slice received its own bounded review:
+APPROVE, no floor/correctness finding. The reader concern remains open until
+the complete class/path/reader matrix passes.
+Release-critical files in this U1 slice: deploy/role_owner_launcher.py
+(engine dispatch only) and deploy/role_decoder.py. No bootstrap, migration,
+rollback, Dockerfile, deployment or healthcheck change.
+
+All other remaining actual classes and the full class/path/reader matrix
+remain open. No full 2.x task checkbox is newly complete.
+
+---
+# Prior delivery: D74 raw-I/O guard closed without changing its assertions
 
 D73 pushed at **8c4d724eac**, remote SHA verified; hygiene 3 added tests,
 0 removed, 0 tampering. Continued into the previously failing raw-I/O gate.
