@@ -13,6 +13,7 @@ class Upload:
         self._pending = b""
         self._finished = False
         self._available = True
+        self.check_authority = lambda: None
 
     def put(self, data):
         with self._wake:
@@ -30,15 +31,22 @@ class Upload:
             self._wake.notify_all()
 
     def read(self, size=8192):
+        replenish = False
         with self._wake:
             while not self._pending and not self._finished:
                 self._check()
+                self.check_authority()
                 self._wake.wait(0.1)
             self._check()
+            self.check_authority()
             if not self._pending:
                 return b""
             piece, self._pending = self._pending[:size], self._pending[size:]
             if not self._pending:
                 self._available = True
-                self._credit()
-            return piece
+                replenish = True
+        # The callback waits for the event loop. Never hold a lock its DATA
+        # handler needs while waiting for that loop to drain our credit frame.
+        if replenish:
+            self._credit()
+        return piece

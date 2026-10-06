@@ -42,7 +42,8 @@ def exchange(client, *, grant_id, connection_id, verb, request, upload, head, da
                         raise rf.FrameError("unexpected upload credit")
                     chunk = upload.read(rf.MAX_DATA_FRAME)
                     if chunk:
-                        sock.sendall(rf.data(1, chunk))
+                        for encoded in rf.data(1, chunk):
+                            sock.sendall(encoded)
                     else:
                         ended_upload = True
                         sock.sendall(rf.control(1, {"op": "UPLOAD_END"}))
@@ -59,6 +60,8 @@ def exchange(client, *, grant_id, connection_id, verb, request, upload, head, da
                     return
                 elif doc["op"] != "ADMITTED":
                     raise rf.FrameError("unexpected git frame")
+        except PermissionError:
+            raise
         except (OSError, rf.FrameError):
             raise AmbiguousProxyOutcome(
                 "git transport interrupted; inspect remote refs before retrying a push") from None

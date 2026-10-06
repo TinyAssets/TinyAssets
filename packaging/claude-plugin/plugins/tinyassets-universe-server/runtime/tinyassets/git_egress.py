@@ -212,17 +212,28 @@ def for_bash(universe_dir, agent):
     if not broker_selected():
         yield ""
         return
-    root = universe_dir.resolve()
-    principal = current_identity().user_id
-    if not (get_founder_home(root.parent, principal) == root.name or universe_access_permission(
-            root.parent, universe_id=root.name, actor_id=principal) == "admin"):
-        raise PermissionError("git owner scope is not admitted")
-    supervisor = get_supervisor(root.parent)
-    if supervisor is None:
-        raise RuntimeError("git broker unavailable")
-    client = BrokerClient(supervisor.socket_path, principal=principal, command_center=root.name,
-                          fence=supervisor.fence, verify_peer=supervisor.verify_broker)
-    proxy = universe_egress._PROXIES[str(root)]
-    with routes(proxy, client, connections(root.parent, principal=principal,
-                                          command_center=root.name), agent) as prefix:
+    # A missing/ambiguous git grant disables authenticated git, not local bash.
+    # Only setup failures are handled here; exceptions from the command itself
+    # propagate normally. No ambient identity or credential fallback is used.
+    with contextlib.ExitStack() as stack:
+        try:
+            root = universe_dir.resolve()
+            principal = current_identity().user_id
+            if not (get_founder_home(root.parent, principal) == root.name
+                    or universe_access_permission(root.parent, universe_id=root.name,
+                                                  actor_id=principal) == "admin"):
+                raise PermissionError("git owner scope is not admitted")
+            supervisor = get_supervisor(root.parent)
+            if supervisor is None:
+                raise RuntimeError("git broker unavailable")
+            client = BrokerClient(supervisor.socket_path, principal=principal,
+                                  command_center=root.name, fence=supervisor.fence,
+                                  verify_peer=supervisor.verify_broker)
+            proxy = universe_egress._PROXIES[str(root)]
+            prefix = stack.enter_context(routes(proxy, client, connections(
+                root.parent, principal=principal, command_center=root.name), agent))
+        except (OSError, RuntimeError, LookupError, ValueError):
+            prefix = ("printf '%s\\n' 'Authenticated git unavailable: owner, broker, "
+                      "egress or unique repository grant not admitted.' >&2; "
+                      "export GIT_TERMINAL_PROMPT=0; ")
         yield prefix

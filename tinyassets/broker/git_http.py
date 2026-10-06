@@ -75,6 +75,8 @@ def dispatch(broker, grant_id, verb, request, *, body=None, guard=None,
             checkpoint()
         authority()
 
+    if body is not None:
+        body.check_authority = authority
     check()
     oc._validate_connection_credential_scheme(resource.connection_type, resource.credential_ref)
     credential = broker._resolve_credential(resource.credential_ref, resource.connection_type)

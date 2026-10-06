@@ -48,7 +48,7 @@ def synthetic(tmp_path, monkeypatch):
     subprocess.run(["git", "init", "--bare", "-b", "main", str(remote)], check=True,
                    capture_output=True)
     subprocess.run(["git", "-C", str(remote), "config", "http.receivepack", "true"], check=True)
-    state = {"seen": [], "response": None}
+    state = {"seen": [], "response": None, "connected": threading.Event()}
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *_args):
@@ -58,10 +58,14 @@ def synthetic(tmp_path, monkeypatch):
             auth = self.headers.get("Authorization") == "Bearer " + secret
             state["seen"].append((self.path, auth))
             assert auth
+            state["connected"].set()
             body = bytearray()
             if self.headers.get("Transfer-Encoding") == "chunked":
                 while True:
-                    n = int(self.rfile.readline().strip(), 16)
+                    line = self.rfile.readline().strip()
+                    if not line:
+                        return  # an interrupted upload deliberately closes the socket
+                    n = int(line, 16)
                     if not n:
                         assert self.rfile.read(2) == b"\r\n"
                         break
@@ -146,9 +150,18 @@ def synthetic(tmp_path, monkeypatch):
     try:
         yield SimpleNamespace(**locals())
     finally:
-        listener.close()
+        async def close_listener():
+            listener.close()
+            await listener.wait_closed()
+            pending = [task for task in asyncio.all_tasks() if task is not asyncio.current_task()]
+            for task in pending:
+                task.cancel()
+            await asyncio.gather(*pending, return_exceptions=True)
+
+        asyncio.run_coroutine_threadsafe(close_listener(), loop).result(5)
         loop.call_soon_threadsafe(loop.stop)
         thread.join(5)
+        loop.close()
         http.shutdown()
         http.server_close()
 
@@ -165,21 +178,31 @@ python3 -c "import os; open('binary', 'wb').write(os.urandom(2000000))"
 git add binary
 git commit -qm first
 git push origin HEAD:main
+git clone https://git.test/owner/repo.git /u/second
+cmp binary /u/second/binary
+git -C /u/second config user.name Synthetic
+git -C /u/second config user.email synthetic@example.test
+echo second > /u/second/next
+git -C /u/second add next
+git -C /u/second commit -qm second
+git -C /u/second push origin HEAD:main
 git fetch origin
+test "$(git show origin/main:next)" = second
 git fsck --full
 env
+python3 -c "import pathlib; print(pathlib.Path('/proc/self/cmdline').read_bytes())"
 git config --list --show-origin
 find /u -type f -print
 """
         result = universe_tools.bash(s.workspace, command, agent_id="developer", timeout=120)
         assert "[exit code 0]" in result, result
         assert s.secret not in result
-    expected = (s.workspace / "workspace" / "checkout" / "binary").read_bytes()
+    expected = (s.workspace / universe_tools.WORKSPACE_DIR / "checkout" / "binary").read_bytes()
     landed = subprocess.run(["git", "-C", str(s.remote), "show", "main:binary"],
                              capture_output=True, check=True).stdout
     assert landed == expected
     assert s.state["seen"] and all(auth for _, auth in s.state["seen"])
-    for path in (s.workspace / "workspace").rglob("*"):
+    for path in (s.workspace / universe_tools.WORKSPACE_DIR).rglob("*"):
         if path.is_file():
             assert s.secret.encode() not in path.read_bytes()
 
@@ -215,3 +238,134 @@ def test_git_refusals(synthetic, failure):
     assert s.secret.encode() not in returned.getvalue()
     if failure not in {"redirect", "echo"}:
         assert not s.state["seen"]
+
+
+@pytest.mark.parametrize("phase", ["upload", "download"])
+@pytest.mark.parametrize("change", ["revoke", "scope", "generation"])
+def test_authority_change_stops_credit_starved_stream(synthetic, phase, change):
+    from tinyassets import rpc_frames as rf
+    from tinyassets.broker.ops import new_op_id
+
+    s = synthetic
+    upload = phase == "upload"
+    s.state["response"] = 200, b"x" * 200000
+    request = {"host": "git.test", "method": "POST" if upload else "GET",
+               "target": "/owner/repo.git/git-upload-pack" if upload else
+                   "/owner/repo.git/info/refs?service=git-upload-pack",
+               "agent": "developer", "incarnation": s.incarnation, "upload": upload}
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+        sock.settimeout(5)
+        sock.connect(str(s.path))
+        sock.sendall(rf.control(1, {"op": "OPEN", "op_id": new_op_id(),
+            "generation": s.generation[0], "token": s.generation[1],
+            "principal": "alice", "command_center": "center", "grant_id": "grant",
+            "connection_id": "git", "verb": "git_read:owner/repo", "request": request,
+            "credit": 0}))
+        assert rf.read_frame_blocking(sock).control()["op"] == "ADMITTED"
+        expected = "UPLOAD_CREDIT" if upload else "HEAD"
+        assert rf.read_frame_blocking(sock).control()["op"] == expected
+        assert s.state["connected"].wait(5)
+        if change == "generation":
+            s.fence.barrier(2, "replacement", cancel_older=s.server._cancel_older)
+        else:
+            with s.book._connect() as conn:
+                if change == "revoke":
+                    conn.execute("UPDATE outbound_connection_grants SET revoked_at=1")
+                else:
+                    conn.execute("UPDATE outbound_connections SET scopes_json='[]'")
+        end = rf.read_frame_blocking(sock).control()
+        assert end["op"] == "END"
+        assert end["outcome"] != "completed"
+        assert end["side_effect_state"] == "unknown"
+        assert s.secret not in str(end)
+
+
+def test_route_cannot_move_to_another_proxy_or_outlive_launch(synthetic):
+    s = synthetic
+    with git_egress.routes(s.proxy, s.client, [s.record], "developer"):
+        route_id = next(key[1] for key in git_egress._routes if key[0] == id(s.proxy))
+        raw = (f"GET http://ta-git.invalid/{route_id}/owner/repo.git/info/refs"
+               "?service=git-upload-pack HTTP/1.1\r\nHost: ta-git.invalid\r\n\r\n").encode()
+        left, right = socket.socketpair()
+        with left, right:
+            assert git_egress.serve(object(), left, raw)
+            assert right.recv(1024).startswith(b"HTTP/1.1 403")
+    left, right = socket.socketpair()
+    with left, right:
+        assert git_egress.serve(s.proxy, left, raw)
+        assert right.recv(1024).startswith(b"HTTP/1.1 403")
+    assert not s.state["seen"]
+
+
+def test_bash_selects_current_owner_catalog_without_manual_rewrite(synthetic, monkeypatch):
+    from tinyassets import daemon_server
+    from tinyassets.auth import middleware
+    from tinyassets.broker import supervisor
+
+    s = synthetic
+    monkeypatch.setattr(supervisor, "broker_selected", lambda: True)
+    monkeypatch.setattr(supervisor, "get_supervisor", lambda _: SimpleNamespace(
+        socket_path=s.path, fence=lambda: s.generation, verify_broker=None))
+    monkeypatch.setattr(middleware, "current_identity", lambda: SimpleNamespace(user_id="alice"))
+    monkeypatch.setattr(daemon_server, "get_founder_home", lambda *_: "center")
+    result = universe_tools.bash(s.workspace,
+        "git clone https://git.test/owner/repo.git automatic", agent_id="developer", timeout=30)
+    assert "[exit code 0]" in result, result
+    assert s.state["seen"] and all(auth for _, auth in s.state["seen"])
+    assert s.secret not in result
+    assert not any(key[0] == id(s.proxy) for key in git_egress._routes)
+
+
+@pytest.mark.parametrize("failure", ["identity", "owner", "broker", "proxy", "ambiguous"])
+def test_unavailable_git_does_not_disable_local_bash(synthetic, monkeypatch, failure):
+    from tinyassets import daemon_server
+    from tinyassets.auth import middleware
+    from tinyassets.broker import supervisor
+
+    s = synthetic
+    monkeypatch.setattr(supervisor, "broker_selected", lambda: True)
+    monkeypatch.setattr(supervisor, "get_supervisor", lambda _: None if failure == "broker" else
+        SimpleNamespace(socket_path=s.path, fence=lambda: s.generation, verify_broker=None))
+
+    def identity():
+        if failure == "identity":
+            raise PermissionError("no bound identity")
+        return SimpleNamespace(user_id="alice")
+
+    monkeypatch.setattr(middleware, "current_identity", identity)
+    monkeypatch.setattr(daemon_server, "get_founder_home", lambda *_:
+                        "other" if failure == "owner" else "center")
+    monkeypatch.setattr(daemon_server, "universe_access_permission", lambda *_, **__: None)
+    monkeypatch.setattr(universe_tools, "_egress_socket", lambda _: None)
+    if failure == "proxy":
+        monkeypatch.delitem(universe_egress._PROXIES, str(s.workspace))
+    if failure == "ambiguous":
+        s.book.grant_connection(grant_id="duplicate", connection_id="git", owner_user_id="alice",
+                                universe_id="center")
+    result = universe_tools.bash(s.workspace, "echo local-command-ran", agent_id="developer")
+    assert "[exit code 0]" in result, result
+    assert "local-command-ran" in result
+    assert "Authenticated git unavailable" in result
+    assert not s.state["seen"]
+    assert not any(key[0] == id(s.proxy) for key in git_egress._routes)
+
+
+def test_upload_credit_callback_does_not_hold_event_loop_lock():
+    from tinyassets.broker.git_upload import Upload
+
+    handled = threading.Event()
+
+    def credit():
+        def next_frame():
+            upload.put(b"next")
+            handled.set()
+
+        thread = threading.Thread(target=next_frame, daemon=True)
+        thread.start()
+        assert handled.wait(2), "credit callback holds the DATA handler's lock"
+        thread.join(2)
+
+    upload = Upload(lambda: None, credit)
+    upload.put(b"first")
+    assert upload.read() == b"first"
+    assert handled.is_set()

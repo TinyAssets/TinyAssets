@@ -138,3 +138,15 @@ scopes qualify. No API scope implies git authority. Non-200 responses, including
 redirects, fail closed. No push is automatically retried after transport failure;
 remote refs must be checked before retry. Only synthetic repositories are used
 for the capability proof.
+
+## L11 verified implementation update
+
+Tasks 2.2 and 2.3 are verified in the Linux oracle; see delivery.md and review.md.
+The earlier proposal-only and Docker-blocked paragraphs are historical, superseded
+by the explicit L11 authorization and this receipt. Main specification is synced
+at openspec/specs/agent-box-git-credentials/spec.md. Deployment remains pending.
+
+Review correction: authenticated git setup failures install no routes and emit
+a fixed warning, while local bash continues. Credit callbacks execute outside
+the upload condition lock. A policy snapshot is rechecked even while upload
+credit is stalled; generation and current-grant checks cover both directions.

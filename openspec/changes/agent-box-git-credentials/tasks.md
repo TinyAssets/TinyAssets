@@ -11,16 +11,18 @@
 
 - [x] 2.1 Reconcile UID-split broker interfaces and specify binary streaming IPC
   with exact owner/agent/grant/host/repository/method bindings.
-- [ ] 2.2 Implement the route and surrogate lifecycle with current-grant checks,
+- [x] 2.2 Implement the route and surrogate lifecycle with current-grant checks,
   revocation, pinned HTTPS, bounded secret scanning and unknown-push handling.
-- [ ] 2.3 Prove synthetic authenticated clone/fetch/push, wrong-owner/host/repo,
+- [x] 2.3 Prove synthetic authenticated clone/fetch/push, wrong-owner/host/repo,
   revoked grants, redirects, token non-exposure and binary pack integrity.
 - [ ] 2.4 Integrate with an isolating `/cc` provider, pass a real-user flow,
   assert deployment SHA and sync the as-built spec before claiming completion.
 
 ## L11 handoff
 
-Implementation is an unverified draft: authority and transport code plus a
-synthetic IPC/jail proof have been written. Linux execution is blocked by the
-Docker engine; see docs/concerns/2026-10-05-l11-git-credentials-linux-proof-blocked.md.
-Tasks 2.2-2.4 remain unchecked until their evidence exists.
+Docker recovered. The synthetic IPC/jail proof and affected Linux suites pass:
+322 tests, zero skips. The earlier broader run passed 224 tests and failed one
+parent disconnect consent-context test, recorded in
+docs/concerns/2026-10-05-broker-disconnect-consent-test.md. Cross-family review:
+ADAPT, findings addressed (review.md). See delivery.md for exact commands.
+Task 2.4 remains open: no production deployment or real-user app pass is claimed.
