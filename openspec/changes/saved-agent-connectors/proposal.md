@@ -1,3 +1,9 @@
+## Consolidation into K1
+
+This change's saved-connector authoring and lifecycle (#4511) are superseded by
+[`one-extension-unit`](../one-extension-unit/proposal.md). Connection ledger and
+credential custody remain backends; do not build a separate connector registry.
+
 ## Why
 
 Save, test and revoke reusable connectors authored by the owner's agent.

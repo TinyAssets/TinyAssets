@@ -346,6 +346,10 @@ class EgressProxy:
         upstream = None
         try:
             head = _read_head(conn)
+            from tinyassets.git_egress import serve
+
+            if serve(self, conn, head):
+                return
             host, port, first = _destination(head)
             upstream = _open(_checked_addresses(host, port), port)
             if first is None:

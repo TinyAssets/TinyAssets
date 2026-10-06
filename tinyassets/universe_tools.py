@@ -343,6 +343,7 @@ def _clear_link_mountpoint(workspace: Path, name: str) -> None:
 def _universe_view(
     root: Path, egress_socket: Path | None = None, *, agent_id: str,
     ta_socket: Path | None = None,
+    extension_root: Path | None = None,
 ) -> UniverseView:
     """The tool jail's view of ``root``: the agent's own workspace at ``/u``,
     read-write, with the visible root entries bound on top at their names
@@ -394,6 +395,8 @@ def _universe_view(
                        JailMount("ro-bind", JAIL_CLIENT, CLIENT_SOURCE)))
         setenv = tuple((key, "/ta/bin:" + value if key == "PATH" else value)
                        for key, value in setenv)
+    if extension_root is not None:
+        mounts.append(JailMount("ro-bind", "/ta/extensions", extension_root))
     return UniverseView(
         universe_dir=root,
         mounts=tuple(mounts),
@@ -406,6 +409,7 @@ def tool_jail_argv(
     universe_dir: Path, inner: Sequence[str], *, agent_id: str, seccomp_fd: int | None = None,
     egress_socket: Path | None = None,
     ta_socket: Path | None = None,
+    extension_root: Path | None = None,
 ) -> list[str]:
     """The bubblewrap argv running ``inner`` in ``universe_dir``'s tool jail."""
     if not agent_id.strip():
@@ -417,7 +421,8 @@ def tool_jail_argv(
     if not root.is_dir():
         raise UniverseToolError("the command center folder does not exist")
     bwrap = provider_jail.BWRAP_RESOLVER()
-    view = _universe_view(root, egress_socket, agent_id=agent_id, ta_socket=ta_socket)
+    view = _universe_view(root, egress_socket, agent_id=agent_id, ta_socket=ta_socket,
+                          extension_root=extension_root)
     # The egress socket lives in the daemon-owned sidecar folder, outside the
     # command center, so it has to be declared as the exact path this jail is
     # allowed to bind from there. A directory prefix is not a capability: the
@@ -432,6 +437,8 @@ def tool_jail_argv(
         from tinyassets.ta_capabilities import CLIENT_SOURCE
 
         platform_sources |= frozenset({ta_socket.resolve(), CLIENT_SOURCE.resolve()})
+    if extension_root is not None:
+        platform_sources |= frozenset({extension_root.resolve()})
     return jail_argv(
         list(inner), view, bwrap_path=bwrap, clearenv=True,
         seccomp_fd=seccomp_fd, platform_sources=platform_sources,
@@ -645,6 +652,7 @@ def run_jailed(
     on_wait: Callable[[float], None] | None = None,
     egress_socket: Path | None = None,
     ta_socket: Path | None = None,
+    extension_root: Path | None = None,
 ) -> ToolRun:
     """Run ``inner`` in the command center's tool jail under ``limits``.
 
@@ -675,6 +683,8 @@ def run_jailed(
         egress = {} if egress_socket is None else {"egress_socket": egress_socket}
         if ta_socket is not None:
             egress["ta_socket"] = ta_socket
+        if extension_root is not None:
+            egress["extension_root"] = extension_root
         argv = TOOL_JAIL_ARGV(root, limited, agent_id=agent_id, seccomp_fd=filter_fd, **egress)
         with _slot(root, on_wait=on_wait, waited=queued):
             try:
@@ -1131,9 +1141,18 @@ def bash(
         run = RUNNER(universe_dir, inner, agent_id=agent_id, limits=limits,
                      wall_seconds=wall, **egress)
     else:
+        from tinyassets.extension_git import for_launch
         from tinyassets.ta_capabilities import JailBridge
 
-        with JailBridge(ta_dispatch) as bridge:
+        with JailBridge(ta_dispatch) as bridge, for_launch(
+            getattr(ta_dispatch, "extension_backend", None)
+        ) as git_prefix:
+            if bridge.extension_root is not None:
+                egress["extension_root"] = bridge.extension_root
+            if git_prefix:
+                inner = [shell, "-c", git_prefix + command]
+                if socket_path is not None and python:
+                    inner = universe_egress.forwarder_argv(python, inner)
             run = RUNNER(universe_dir, inner, agent_id=agent_id, limits=limits,
                          wall_seconds=wall, ta_socket=bridge.path, **egress)
     body = _text(run.output)

@@ -1,3 +1,9 @@
+> Consolidated into [one-extension-unit](../one-extension-unit/proposal.md), draft
+> PR #4519. K1 owns the client authority implementation and #4501 claims probe.
+> Its exact-capability scopes and explicit owner consent supersede this proposal's
+> unimplemented default/level model. Only live AuthKit evidence remains founder-owned.
+> Close #4501 after the folded code reaches main, not while K1 is a draft.
+
 ## Why
 
 An owner should be able to authorize an outside agent to message chosen TinyAssets agents and see/control their command center without handing every OAuth client the owner's entire authority. The [preserved research](../../../docs/design-notes/2026-10-05-outside-agents-both-ways.md) (C1-C4, G1-G4/G6) identifies missing client attribution, delegation and revocation on the existing public MCP surface.

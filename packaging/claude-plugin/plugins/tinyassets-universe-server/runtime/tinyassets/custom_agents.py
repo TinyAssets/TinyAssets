@@ -1834,7 +1834,9 @@ def get_app_ui(
             "SELECT * FROM universe_app_ui WHERE owner_user_id = ? AND universe_id = ?",
             (owner, uid),
         ).fetchone()
-    return _app_ui_document(row, uid)
+    from tinyassets.extension_ui import fence
+
+    return fence(Path(base_path), owner, uid, _app_ui_document(row, uid))
 
 
 def save_app_ui(
