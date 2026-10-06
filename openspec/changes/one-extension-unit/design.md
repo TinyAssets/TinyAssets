@@ -191,3 +191,12 @@ outside-client scoped authority with durable revocation/kill switch. Outside
 clients must not gain lifecycle-owner authority by authoring extension code.
 Live AuthKit identity evidence remains founder-owned; stdio/package-cell
 admission is the only runtime item deferred to U1.
+
+
+Git fold-in ports #4513 binary smart HTTP and scanning onto today's broker.
+Only active extension connection slots declaring exact git_read:owner/repo or
+git_write:owner/repo scopes create ephemeral egress rewrite routes. Routes never
+carry credentials, are proxy/launch bound, recheck current extension authority,
+and expire on launch exit. The broker independently verifies host, exact repo,
+verb, grant and incarnation; it injects credentials and refuses redirects.
+No per-owner git_bridge or U1 filesystem/process changes are included.

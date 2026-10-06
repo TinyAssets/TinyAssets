@@ -92,11 +92,14 @@ def parse_manifest(raw: bytes) -> dict:
                             {"name", "description", "asset"})
                     packages.check_path(row["asset"])
                 elif kind == "connections":
+                    from tinyassets.storage.workspace_authority import parse_git_scope
+
                     _object(row, {"name", "description", "verbs"},
                             {"name", "description", "verbs"})
                     verbs = row["verbs"]
                     if (not isinstance(verbs, list) or not verbs
-                            or any(not isinstance(v, str) or not re.fullmatch(r"[A-Z]+", v)
+                            or any(not isinstance(v, str) or not (
+                                re.fullmatch(r"[A-Z]+", v) or parse_git_scope(v))
                                    for v in verbs) or len(set(verbs)) != len(verbs)):
                         raise ExtensionError("connection verbs must be unique uppercase names")
                 else:

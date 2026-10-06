@@ -66,3 +66,11 @@ authenticated effector, account deletion and static prompt costs). Changed-file
 Ruff and plugin mirror/import probe pass. Claude continuation review running;
 verdict will be recorded before final push. Git/outside authority, automatic
 hooks and UI projection remain in progress. No deployment or live proof claim.
+
+
+Git continuation: #4513 credential-blind smart HTTP is ported to today's
+broker/egress with extension-local grant pins. Linux oracle 174 passed / zero
+skips, including real jail clone/fetch/binary push and negative transport tests;
+one existing broker teardown warning reported, no test skip or weakening.
+Claude git review APPROVE; nonblocking pump-scope recommendation incorporated.
+Per-owner git_bridge stays with U1; this remote git path does not wait for it.

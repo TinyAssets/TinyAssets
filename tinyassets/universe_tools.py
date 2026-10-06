@@ -1141,11 +1141,18 @@ def bash(
         run = RUNNER(universe_dir, inner, agent_id=agent_id, limits=limits,
                      wall_seconds=wall, **egress)
     else:
+        from tinyassets.extension_git import for_launch
         from tinyassets.ta_capabilities import JailBridge
 
-        with JailBridge(ta_dispatch) as bridge:
+        with JailBridge(ta_dispatch) as bridge, for_launch(
+            getattr(ta_dispatch, "extension_backend", None)
+        ) as git_prefix:
             if bridge.extension_root is not None:
                 egress["extension_root"] = bridge.extension_root
+            if git_prefix:
+                inner = [shell, "-c", git_prefix + command]
+                if socket_path is not None and python:
+                    inner = universe_egress.forwarder_argv(python, inner)
             run = RUNNER(universe_dir, inner, agent_id=agent_id, limits=limits,
                          wall_seconds=wall, ta_socket=bridge.path, **egress)
     body = _text(run.output)
