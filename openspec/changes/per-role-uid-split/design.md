@@ -2511,3 +2511,117 @@ mask alone does not grant `group::r-x` when an extended ACL already exists.
 The writer never adds parent write permission, changes ownership, or bypasses
 a missing subtree/ACL. These are migration/admission prerequisites, not a
 request for retained privilege.
+
+### D214. Migration provenance is bound to one inode generation
+
+Supersedes the unknown-inode fallbacks of D209-D211 in the owner and metadata
+phases. Root cause of D210 #2 / D213: a journal row was keyed by
+`(dev, ino, type)` only, and an inode with no row took its *live* ids as its
+"original" in every state. A replacement inode born after forward therefore
+recorded its migrated ids (vault/liveness `1001:1102`, a daemon file in a
+setgid work dir `1001:<machine>`) as legacy, and reverse restored them; a
+recycled inode number could also inherit another inode's record.
+
+One rule, `_provenance`, now decides uid, gid and mode together for both
+phases. Each row records the inode's birth time (`statx` btime) as its
+generation. A record transfers only to the same key *and* generation. An
+unrecorded inode takes its live state only while the phase's journal is absent
+or a stable reverse (the next forward is what changes it); otherwise it is new
+content of the migrated runtime and reverses to legacy `1001:1001`. Reverse
+restores the recorded ids; D211 keeps the live mode in both directions. A
+filesystem without btime refuses; a journal row without a generation refuses
+recovery rather than guessing. The owner phase's stable signature and the
+metadata resume check include the generation, so a recycled inode re-inventories.
+An interrupted owner journal resumes without re-inventory, so its validation
+and the pre-chown descriptor check compare the live generation as well as key,
+link count and ids; a changed or absent generation refuses (D214 round 2).
+
+### D215. Inode generation is refused on overlayfs
+
+Measured in the Linux oracle (kernel 6.6): overlayfs copy-up of a lower-layer
+file on its first chown or chmod gives it a new birth time but keeps `st_ino`.
+Upper-born files and a Docker local named volume (ext4) keep their birth time
+across chown and container restart. Birth time is therefore a generation on
+the production data path (`tinyassets-data`, a local-driver named volume
+mounted at `/data`, never the container rootfs). It is not one on overlayfs,
+where a recorded file would read as new content after its own forward chown and
+reverse to `1001:1001`. `_generation` checks the filesystem of every scanned
+or resumed inode and refuses overlayfs, so all owner and metadata entry points fail
+closed. An xattr nonce was rejected: `trusted.*` needs `CAP_SYS_ADMIN`, which
+the startup window does not hold, and the engine can copy or strip `user.*`,
+which also cannot be set on symlinks. Root migration tests use `/dev/shm`
+(tmpfs, which has birth time) because the oracle's basetemp is its overlay rootfs.
+
+### D216. Reconcile work names only after a completed phase
+
+The complete coordinator derives work names from its fixed on-disk classifier
+under the exclusive layout lock. It may reconcile a completed phase's changed
+work-name set only while the durable principal and numeric bindings remain
+identical. Standalone phase callers remain strict by default. Interrupted
+journals retain exact configuration matching. Reconciliation inventories all
+entries and retains the existing D214/D215 generation/provenance rules unchanged.
+This permits newly created or removed visible entries on restart without
+silently reallocating owners or discarding the journal. New principals remain
+a loud refusal pending a separate admission generation contract.
+
+### D217. Inode generation is birth time plus the kernel file handle
+
+Supersedes D214's birth-time-only generation. Measured in the Linux oracle
+(kernel 6.6): birth time is stamped from a coarse clock, so a write-then-rename
+replacement got the identical btime in 299/300 tries on tmpfs and 296/300 on a
+Docker local volume (ext4). ext4 also handed the replacement the unlinked inode
+number in 299/300 tries. The replacement then matched the recorded `(key,
+generation)` and inherited another inode's provenance, which is the D214 bug.
+It surfaced as the intermittent `KeyError: 'ids'` in the stale-record
+regression, where the recorded and live generations printed identical.
+
+`_generation` now returns `[btime_s, btime_ns, handle_type, handle_hex]`. The
+handle comes from `name_to_handle_at`, which embeds the random `i_generation`
+the kernel assigns at each inode allocation on ext4 and tmpfs. It needs no
+capability, never follows the final symlink and covers files, directories and
+symlinks. A statx before and after the handle must agree. Only filesystems
+known to encode `i_generation` are accepted (ext4, tmpfs); every other
+filesystem, and a handle failure, refuses. The overlayfs refusal (D215) stands.
+`FS_IOC_GETVERSION` was rejected because tmpfs does not implement it and a
+symlink cannot be opened for the ioctl. A `trusted.*` nonce was rejected for
+D215's reason: the startup window does not hold `CAP_SYS_ADMIN`. Journals
+holding the old two-field generation do not match and take the D214
+unrecorded-inode rule. There is no production journal yet (clean cutover).
+
+### D218. Two-pass deletion consumes D85 only after a verified forward migration
+
+`tinyassets/role_owner_tree_deletion.py` drives D10 for a whole migrated center.
+It takes the two-pass route only when `.layout.json` records a stable forward
+migration (owners and metadata) and the center root is `1001:<owner>` for the
+principal's broker identity. A volume never migrated, or stably reversed, keeps
+the existing single-UID traversal; any other layout state refuses. Before pass
+one the daemon writes a private intent `{center, principal, token, machine}`
+under `/data/.role-owner-delete/`. Every resume reruns pass one with that token
+(an exact retry, which also reinstalls a fence a launcher restart dropped),
+then the daemon pass, then `finish`, then clears the intent. When the center is
+already gone, only `finish` remains; a refusal there means the fence went with
+the launcher and is recorded. `abort_center` is the explicit D85 recovery.
+
+Measured on a forward-migrated volume, pass one as the owner UID cannot unlink
+the names in the center root (`1001:<owner>` 2750, owner `r-x` by design) and
+cannot list a daemon directory it may only search (`.runtime`, named `--x`).
+U1's cell failed loudly on both every time, so no retry could finish. The cell
+now keeps an owner name whose unlink is denied only when the parent is not
+owner-owned, and keeps an unreadable daemon directory untraversed. Owner-owned
+parents still fail loudly. The daemon pass removes UID1001 entries; empty
+directories owned by UID1001 or this center's owner; and an owner
+non-directory only beneath a UID1001 parent. Anything else, including a
+foreign UID, an owner entry inside owner work, or another filesystem, refuses
+with its path. Unlinking a name in a parent the daemon owns needs no capability
+and never reads or changes the owner inode.
+
+Account deletion runs this before broker erasure and root rows, while the
+binding and identity still admit pass one. A failure keeps the binding, skips
+staging that home and reports `owner_tree` and `root_rows` unfinished. The
+startup reverse migration refuses while any intent exists; forward stays
+admitted so the daemon can resume. Pool removal and scoped reset delete
+subtrees, which D85's whole-center cell does not admit; they stay on the
+daemon traversal until a subtree cell exists. A completed deletion shrinks the
+principal set, which D216 still refuses at the next startup migration in
+either direction. That is the open admission-generation contract, not a
+deletion defect, and it blocks activation.

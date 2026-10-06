@@ -256,7 +256,8 @@ def test_a_list_read_has_no_default_page(door):
 
 def _normalized(document):
     text = json.dumps(document, sort_keys=True)
-    return json.loads(text.replace(HOME_A, "HOME").replace(HOME_B, "HOME"))
+    return json.loads(text.replace(HOME_A, "HOME").replace(HOME_B, "HOME")
+                      .replace(A, "OWNER").replace(B, "OWNER"))
 
 
 def test_free_and_subscription_accounts_read_the_same_data_identically(door):
@@ -276,8 +277,10 @@ def test_free_and_subscription_accounts_read_the_same_data_identically(door):
                  {"target": "model_options"}):
         free = client.post(READ, headers=_headers(A), json=body).json()
         paid = client.post(READ, headers=_headers(B), json=body).json()
-        for doc in (free, paid):
+        for doc, owner in ((free, A), (paid, B)):
             for row in doc.get("pending", ()):
+                if row.get("asking_context"):
+                    assert row["asking_context"]["owner"] == owner
                 row.pop("request_id", None)
                 row.pop("created_at", None)
         assert _normalized(free) == _normalized(paid), body

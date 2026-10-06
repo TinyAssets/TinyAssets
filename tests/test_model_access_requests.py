@@ -195,6 +195,33 @@ def test_repeated_failed_publication_then_partial_reconnect_is_recoverable(rig, 
     assert len(attempts) == 3
 
 
+def test_an_unexpected_crash_is_a_logged_internal_error_not_a_setup_outage(
+        rig, monkeypatch, caplog):
+    import sqlite3
+
+    from tinyassets.api import model_access_requests
+
+    row = ask(rig)
+
+    def crash(uid, action):
+        raise TypeError("unsupported operand")
+
+    monkeypatch.setattr(model_access_requests, "execute_action", crash)
+    with caplog.at_level("ERROR", logger="tinyassets.api.pending_requests"):
+        result = answer(row)
+    assert result == {"error": "internal_error", "request_pending": True}
+    assert any("TypeError" in r.getMessage() and row["request_id"] in r.getMessage()
+               and r.exc_info for r in caplog.records)
+    assert get_request(rig[1], row["request_id"])["status"] == "pending"
+
+    def locked(uid, action):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(model_access_requests, "execute_action", locked)
+    assert answer(row) == {"error": "model_setup_unavailable", "request_pending": True}
+    assert get_request(rig[1], row["request_id"])["status"] == "pending"
+
+
 def test_another_binding_cannot_replace_the_assignment_under_an_old_ask(rig):
     from tinyassets.custom_agents import create_binding
     from tinyassets.provider_serving_binding import bind_serving_provider

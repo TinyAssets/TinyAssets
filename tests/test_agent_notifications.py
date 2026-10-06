@@ -92,6 +92,24 @@ def test_notification_reports_no_device_delivery(tmp_path, monkeypatch):
     assert row["delivery"].get("sent", 0) == 0
 
 
+@pytest.mark.parametrize("kind", ["Review", "TODO", "Approval", "Custom kind"])
+def test_answerable_request_kinds_capture_the_actual_asking_agent(notification_home, kind):
+    from tests.test_converse_addressed_agent import _agent
+    from tinyassets.api.pending_requests import request_from_user
+    from tinyassets.turn_interrupt import interactive_turn
+
+    home, _ = notification_home
+    agent = _agent(home.parent, home.name, "actor-a", "Social Media Manager")
+    with identity_context(Identity(user_id="actor-a", username="a", capabilities=[])), \
+            interactive_turn("actor-a", home.name, agent_id=agent):
+        row = request_from_user(universe_id=home.name, payload={
+            "kind": kind, "title": "Review my draft", "action": {"type": "answer"},
+            "fields": [{"name": "reply", "type": "text", "label": "Reply"}],
+        })
+    assert row["agent"] == agent
+    assert list_pending(home)[0]["agent"] == agent
+
+
 def test_capability_handbook_and_seed_are_editable(tmp_path):
     from tinyassets import engine_mcp_server as engine
     from tinyassets.starter_skills import CAPABILITIES_SKILL_PATH, capabilities_skill
