@@ -100,7 +100,10 @@ def test_the_marker_is_registered_and_carried_by_the_form_proofs():
 def test_every_marked_file_retriggers_the_proof():
     paths = set(_triggers(_load())["pull_request"]["paths"])
     for path in sorted({n.split("::")[0] for n in _marked()}):
-        assert path in paths, f"{path} carries real_browser but does not retrigger the proof"
+        assert path in paths, (
+            f"{path} carries real_browser but does not retrigger the proof; "
+            "run python scripts/generate_guard_inventories.py --write"
+        )
 
 
 def test_the_browser_is_installed_from_the_pinned_extra():

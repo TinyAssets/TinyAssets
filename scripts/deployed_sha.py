@@ -7,25 +7,19 @@ never fire. Five PRs landed on 2026-07-21 and none reached production. No
 commit touched the broken surface, so only an out-of-band probe can catch this
 class — the same shape as the 2026-04-19 tunnel outage.
 
-This reads the sha production is *serving* from the live public ``/mcp/pulse``
-receipt (``git_sha``, written to the host volume by
-``deploy-prod.yml`` at deploy time) and compares it to git.
+By default this reads ``release_state.git_sha`` from the existing public
+``HEAD /app`` response's ``X-TinyAssets-Build`` header (no credentials, no
+response body). The app projects that header from the deploy receipt and sends
+``Cache-Control: no-store``. Missing or malformed full SHAs fail closed.
 
-    # what is production serving, and how far behind origin/main is it?
-    python scripts/deployed_sha.py
-
-    # the gate: fail unless production contains this commit
-    # TINYASSETS_WIKI_CANARY_TOKEN is the constrained canary-principal bearer.
-    # No anonymous fallback exists; an absent credential exits 2 before I/O.
     python scripts/deployed_sha.py --assert-contains HEAD
-    python scripts/deployed_sha.py --assert-contains 8cbf9769
-
     python scripts/deployed_sha.py --json
 
-``deploy-prod.yml`` runs the same assertion after publishing each successful
-release receipt, in the GitHub Actions environment that already holds the
-canary credential. Local callers must export ``TINYASSETS_WIKI_CANARY_TOKEN``
-before invoking the command.
+An explicit ``--url https://tinyassets.io/mcp`` retains the authenticated pulse
+receipt and its image-tag cross-check. It requires
+``TINYASSETS_WIKI_CANARY_TOKEN``; use that mode with ``--report-provenance`` for
+the canary-only diagnostic. Public-header mode reports provenance as unknown
+and image_tag as null: no corroborating tag is exposed by this public surface.
 
 **Known limit — it proves the RECEIPT, not the running binary.**
 ``release_state`` is a JSON file the deploy job writes to the host volume;
@@ -37,13 +31,13 @@ this reviewing the 2026-08-25 harness reset; closing it needs the public surface
 to expose a runtime-derived revision, which is a product change, not a harness
 one. Tracked at ``docs/concerns/2026-08-26-deployed-sha-proves-receipt-only.md``.
 
-What this DOES check, so the gap is as small as it can be here: ``git_sha`` and
+In authenticated pulse mode: ``git_sha`` and
 ``image_tag`` must agree, and a receipt missing either is exit 2 rather than a
 pass. That catches a partial or tampered receipt; it cannot catch a coherent
 receipt describing a build that is no longer running.
 
-``--report-provenance`` adds a record-only diagnostic line from the SAME pulse
-response: the cached cloud-provenance verdict the responding process resolved at
+``--report-provenance`` adds a record-only diagnostic line from the SAME receipt
+response when available: the cached cloud-provenance verdict the responding process resolved at
 its own startup (openspec change ``cloud-only-runtime-admission``). It makes no
 second request, prints only allowlisted typed fields, and reports anything
 missing or malformed as ``unknown``. It does NOT change this gate's exit codes,
@@ -84,7 +78,7 @@ if str(REPO_ROOT / "scripts") not in sys.path:
 import runtime_paths  # noqa: E402
 from _canary_common import require_canary_bearer  # noqa: E402
 
-DEFAULT_URL = "https://tinyassets.io/mcp"
+DEFAULT_URL = "https://tinyassets.io/app"
 #: Cloudflare answers the stdlib's default ``Python-urllib/3.x`` agent with a
 #: managed-challenge 403 (measured against the live surface 2026-09-02), which
 #: this gate would report as "cannot determine" forever. Every other probe in
@@ -95,6 +89,27 @@ DEFAULT_TIMEOUT = 30.0
 
 class DeployedShaError(Exception):
     """Could not determine what production is serving."""
+
+
+class PublicReleaseState(dict):
+    """SHA-only receipt read from the public app's no-store build header."""
+
+
+def public_release_state(url: str, timeout: float) -> PublicReleaseState:
+    """Read only the existing public release SHA, without credentials or a body."""
+    request = urllib.request.Request(
+        url, method="HEAD", headers={"User-Agent": PULSE_USER_AGENT},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            if response.status != 200:
+                raise DeployedShaError(f"non-200 status {response.status} from {url}")
+            sha = response.headers.get("X-TinyAssets-Build", "").strip()
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        raise DeployedShaError(f"probe failed against {url}: {exc}") from exc
+    if not re.fullmatch(r"[0-9a-fA-F]{40}", sha):
+        raise DeployedShaError("public release header missing or not a full git SHA")
+    return PublicReleaseState(git_sha=sha.lower())
 
 
 # What counts as "changes what production runs" is scripts/runtime_paths.py --
@@ -119,7 +134,9 @@ def _git(*args: str) -> str:
 
 
 def live_release_state(url: str, timeout: float) -> dict[str, Any]:
-    """Read the release receipt as the canary service principal."""
+    """Read the public app header; explicit MCP URLs retain canary diagnostics."""
+    if url.rstrip("/").endswith("/app"):
+        return public_release_state(url, timeout)
     pulse_url = f"{url.rstrip('/')}/pulse"
     bearer = require_canary_bearer("deployed-sha")
     request = urllib.request.Request(
@@ -274,7 +291,7 @@ def report(
             "refusing to interpret a malformed receipt"
         )
     image_tag = (raw_tag or "").strip()
-    if not image_tag:
+    if not image_tag and not isinstance(release_state, PublicReleaseState):
         raise DeployedShaError(
             "release_state carries git_sha but no image_tag - cannot corroborate "
             "the receipt, so the deploy state is unknown"
@@ -284,13 +301,13 @@ def report(
     # `release-<sha>`, `v<sha>`, and bare `<sha>` all work. Case-insensitive.
     reference = image_tag.rsplit(":", 1)[-1].strip()
     hex_runs = re.findall(r"[0-9a-fA-F]{7,40}", reference)
-    if not hex_runs:
+    if not hex_runs and not isinstance(release_state, PublicReleaseState):
         raise DeployedShaError(
             f"release_state.image_tag {image_tag!r} carries no sha-shaped reference - "
             "cannot corroborate git_sha"
         )
-    tag_sha = max(hex_runs, key=len).lower()
-    if not deployed.lower().startswith(tag_sha):
+    tag_sha = max(hex_runs, key=len).lower() if hex_runs else None
+    if tag_sha and not deployed.lower().startswith(tag_sha):
         raise DeployedShaError(
             f"release_state is inconsistent: git_sha {deployed[:12]} does not match "
             f"image_tag {image_tag!r} - refusing to report a deploy state from a "
@@ -304,6 +321,10 @@ def report(
         "image_digest": (release_state.get("image_digest") or "").strip() or None,
         "deployed_at": (release_state.get("deployed_at") or "").strip() or None,
         "proves": "receipt",  # not the running binary; see module docstring
+        "receipt_source": (
+            "public_app_header" if isinstance(release_state, PublicReleaseState)
+            else "authenticated_pulse"
+        ),
     }
     if include_provenance:
         # Purely additive diagnostic, from the response already in hand. It is
@@ -356,7 +377,7 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument(
         "--url", default=DEFAULT_URL,
-        help=f"public MCP surface (default {DEFAULT_URL})",
+        help=f"public app URL, or authenticated MCP URL (default {DEFAULT_URL})",
     )
     ap.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT)
     ap.add_argument(

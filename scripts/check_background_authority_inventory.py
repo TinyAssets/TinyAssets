@@ -52,25 +52,16 @@ SENSITIVE_EXECUTION_CALLS = frozenset(
     }
 )
 
-# Populated from the reviewed current-main scan.  Any addition/removal is a
-# review event: update the audit and this exact set together.
-EXPECTED_SENSITIVE_CALL_SITES: tuple[CallSite, ...] = (
+# Required reviewed CLASSIFICATION of canonical execution callsites.
+# New boundaries must be reviewed; mirror paths are generated below.
+CLASSIFICATION: tuple[CallSite, ...] = (
     # K1 remote MCP transport uses the governed connection effector stream, not
     # a graph executor. Exact launch/connection authority is rechecked per reply.
     CallSite("tinyassets/mcp_remote.py", "RemoteMcp._exchange", "self.stream"),
-    CallSite(
-        "packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/tinyassets/mcp_remote.py",
-        "RemoteMcp._exchange", "self.stream",
-    ),
     # D2 Activities launches through the existing owner-bound run entrypoint.
     # Keep canonical and shipped copies exact; the activities root below records
     # the owner/provider checks, generation fence, and agent start barrier.
     CallSite("tinyassets/activity_runner.py", "start", "execute_branch_async"),
-    CallSite(
-        "packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/tinyassets/activity_runner.py",
-        "start",
-        "execute_branch_async",
-    ),
     # Reviewed 2026-08-26 while restoring this checker (PR #2561 deleted it as a
     # "dead script" -- it was not dead, it is the CI closure assertion for
     # `harden-background-branch-execution-authority`). All six were ALREADY
@@ -105,40 +96,15 @@ EXPECTED_SENSITIVE_CALL_SITES: tuple[CallSite, ...] = (
     # run's cause principal and that automation's owner (Codex 2026-10-01).
     # Tokenless legacy rows are judged by start time, not proven owner death.
     CallSite("tinyassets/api/runs.py", "recover_dead_owner_runs_now", "recover_in_flight_runs"),
-    CallSite(
-        "packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/tinyassets/api/runs.py",
-        "recover_dead_owner_runs_now",
-        "recover_in_flight_runs",
-    ),
     # Name collisions, like `_read_bounded_body` above: the billing webhook reads
     # its HTTP body through `request.stream()` to bound it (Codex 2026-08-28),
     # and hosted key exchange reads an httpx response with `client.stream()`.
     # Neither touches a compiled graph stream or grants execution authority.
     CallSite("tinyassets/onboarding/__init__.py", "_handle_billing_webhook", "request.stream"),
-    CallSite(
-        "packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/tinyassets/onboarding/__init__.py",
-        "_handle_billing_webhook",
-        "request.stream",
-    ),
     CallSite("tinyassets/onboarding/hosted_model_auth.py", "exchange_key", "client.stream"),
-    CallSite(
-        "packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/tinyassets/onboarding/hosted_model_auth.py",
-        "exchange_key",
-        "client.stream",
-    ),
     CallSite("tinyassets/onboarding/__init__.py", "_read_bounded_body", "request.stream"),
     CallSite(
-        "packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/tinyassets/onboarding/__init__.py",
-        "_read_bounded_body",
-        "request.stream",
-    ),
-    CallSite(
         "tinyassets/universe_server.py",
-        "create_streamable_http_app._hooks_endpoint",
-        "request.stream",
-    ),
-    CallSite(
-        "packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/tinyassets/universe_server.py",
         "create_streamable_http_app._hooks_endpoint",
         "request.stream",
     ),
@@ -147,19 +113,9 @@ EXPECTED_SENSITIVE_CALL_SITES: tuple[CallSite, ...] = (
     # Starlette `request.stream()`. It grants no execution authority; the
     # owner authenticates the forwarded request exactly as it would directly.
     CallSite("tinyassets/frontend.py", "Frontend.__call__", "request.stream"),
-    CallSite(
-        "packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/tinyassets/frontend.py",
-        "Frontend.__call__",
-        "request.stream",
-    ),
     # L7 durable ingress: bounded Starlette HTTP-body reads, not graph streams.
     # Acceptance grants no execution authority; register both shipped copies.
     CallSite("tinyassets/ingress.py", "AppIngressMiddleware.__call__", "request.stream"),
-    CallSite(
-        "packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/tinyassets/ingress.py",
-        "AppIngressMiddleware.__call__",
-        "request.stream",
-    ),
     CallSite(
         "fantasy_daemon/__main__.py",
         "DaemonController._try_execute_soul_loop",
@@ -196,41 +152,8 @@ EXPECTED_SENSITIVE_CALL_SITES: tuple[CallSite, ...] = (
     # handle bound to the turn's own owner and command center, and runs no
     # branch. Registered for both the canonical module and its plugin mirror.
     CallSite("tinyassets/agent_loop/box_tools.py", "BoxExecutor._collect", "self.stream"),
-    CallSite(
-        "packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/"
-        "tinyassets/agent_loop/box_tools.py",
-        "BoxExecutor._collect",
-        "self.stream",
-    ),
-    CallSite(
-        "packaging/claude-plugin/plugins/tinyassets-universe-server/"
-        "runtime/tinyassets/api/market.py",
-        "_action_goal_run_canonical",
-        "_action_run_branch_version",
-    ),
-    CallSite(
-        "packaging/claude-plugin/plugins/tinyassets-universe-server/"
-        "runtime/tinyassets/api/quality_leaderboard.py",
-        "build_quality_leaderboard",
-        "dispatch_selector",
-    ),
-    CallSite(
-        "packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/tinyassets/api/runs.py",
-        "_action_resume_run",
-        "resume_run",
-    ),
-    CallSite(
-        "packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/tinyassets/api/runs.py",
-        "_action_run_branch",
-        "execute_branch_async",
-    ),
     # Reviewed 2026-08-25 (run-provider-authority): server-owned trigger
     # enqueue enters the same governed foreground admission as the MCP action.
-    CallSite(
-        "packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/tinyassets/api/runs.py",
-        "enqueue_universe_branch_run",
-        "execute_branch_async",
-    ),
     # Reviewed 2026-08-29 (user-owned-automations 3.2). A due automation is a
     # background execution root, and it is registered here as one. It grants no
     # authority of its own: the provider call it hands in is the SAME foreground
@@ -244,69 +167,6 @@ EXPECTED_SENSITIVE_CALL_SITES: tuple[CallSite, ...] = (
         "tinyassets/automations.py",
         "_execute",
         "execute_branch_async",
-    ),
-    CallSite(
-        "packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/tinyassets/automations.py",
-        "_execute",
-        "execute_branch_async",
-    ),
-    CallSite(
-        "packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/tinyassets/api/runs.py",
-        "_action_run_branch_version",
-        "execute_branch_version_async",
-    ),
-    CallSite(
-        "packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/tinyassets/api/runs.py",
-        "_ensure_runs_recovery",
-        "recover_in_flight_runs",
-    ),
-    CallSite(
-        "packaging/claude-plugin/plugins/tinyassets-universe-server/"
-        "runtime/tinyassets/api/universe.py",
-        "_action_submit_request",
-        "append_task",
-    ),
-    CallSite(
-        "packaging/claude-plugin/plugins/tinyassets-universe-server/"
-        "runtime/tinyassets/dispatcher.py",
-        "run_branch_task_producers_into_queue",
-        "append_task",
-    ),
-    CallSite(
-        "packaging/claude-plugin/plugins/tinyassets-universe-server/"
-        "runtime/tinyassets/graph_compiler.py",
-        "_build_invoke_branch_node._node_fn",
-        "execute_branch",
-    ),
-    CallSite(
-        "packaging/claude-plugin/plugins/tinyassets-universe-server/"
-        "runtime/tinyassets/graph_compiler.py",
-        "_build_invoke_branch_node._node_fn",
-        "execute_branch_async",
-    ),
-    CallSite(
-        "packaging/claude-plugin/plugins/tinyassets-universe-server/"
-        "runtime/tinyassets/graph_compiler.py",
-        "_build_invoke_branch_version_node._node_fn",
-        "execute_branch_version_async",
-        count=2,
-    ),
-    CallSite(
-        "packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/tinyassets/runs.py",
-        "execute_branch_async",
-        "_execute_branch_core",
-    ),
-    CallSite(
-        "packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/tinyassets/runs.py",
-        "execute_branch_version_async",
-        "_execute_branch_core",
-    ),
-    CallSite(
-        "packaging/claude-plugin/plugins/tinyassets-universe-server/"
-        "runtime/tinyassets/scheduler.py",
-        "Scheduler._dispatch_event",
-        "_run_fn",
-        count=2,
     ),
     # `stream` is also Starlette's request-body API. These reviewed sites only
     # enforce bounded request bodies and grant no Branch execution authority.
@@ -378,6 +238,18 @@ EXPECTED_SENSITIVE_CALL_SITES: tuple[CallSite, ...] = (
         "_run_fn",
         count=2,
     ),
+)
+
+
+# Review the canonical authority boundary exactly once. The plugin builder
+# copies tinyassets verbatim; its expected boundaries follow the same mapping.
+# Scan BOTH trees below, so a missing/extra/changed mirror call still fails.
+EXPECTED_SENSITIVE_CALL_SITES: tuple[CallSite, ...] = CLASSIFICATION + tuple(
+    CallSite(
+        "packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/" + site.path,
+        site.function, site.callee, site.count,
+    )
+    for site in CLASSIFICATION if site.path.startswith("tinyassets/")
 )
 
 
