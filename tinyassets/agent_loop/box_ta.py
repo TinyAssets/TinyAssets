@@ -12,9 +12,12 @@ import json
 import re
 import sqlite3
 import threading
+from contextlib import contextmanager
 from pathlib import Path
 
+from tinyassets import owner_lease
 from tinyassets.engine_tool_client import EngineToolError
+from tinyassets.storage.owner_fence import check_fence
 from tinyassets.ta_capabilities import MAX_REQUEST, MAX_RESPONSE
 
 PREFIX = b"\x1eTA1 "
@@ -72,10 +75,25 @@ class TurnBridge:
         self._executions = {}
         self._cancelled = set()
         database.parent.mkdir(parents=True, exist_ok=True)
-        with sqlite3.connect(database) as db:
+        # Create the file before acquisition advances its cataloged fence.
+        sqlite3.connect(database).close()
+        owner_lease.register_store(database.parent, database, "remote_ta_receipts")
+        self._lease = owner_lease.acquire(database.parent, owner_lease.key_for(center))
+        with self._transaction() as db:
             db.execute("CREATE TABLE IF NOT EXISTS ta_receipts ("
                        "scope TEXT, execution TEXT, request TEXT, digest TEXT NOT NULL,"
                        "answer TEXT, PRIMARY KEY(scope, execution, request))")
+
+    @contextmanager
+    def _transaction(self):
+        db = sqlite3.connect(self.database)
+        try:
+            with db:
+                db.execute("BEGIN IMMEDIATE")
+                check_fence(db, self._lease)
+                yield db
+        finally:
+            db.close()
 
     def close(self):
         with self._lock:
@@ -101,8 +119,7 @@ class TurnBridge:
         with self._lock:
             if not self._active or handle != self.handle or execution in self._cancelled:
                 return {"error": "ta turn expired or binding refused"}
-            with sqlite3.connect(self.database) as db:
-                db.execute("BEGIN IMMEDIATE")
+            with self._transaction() as db:
                 row = db.execute("SELECT digest, answer FROM ta_receipts WHERE "
                                  "scope=? AND execution=? AND request=?", key).fetchone()
                 if row:
@@ -119,7 +136,7 @@ class TurnBridge:
             if len(encoded.encode()) > MAX_RESPONSE:
                 answer = {"error": "ta response too large; request a smaller page"}
                 encoded = json.dumps(answer)
-            with sqlite3.connect(self.database) as db:
+            with self._transaction() as db:
                 db.execute("UPDATE ta_receipts SET answer=? WHERE "
                            "scope=? AND execution=? AND request=?", (encoded, *key))
             return answer

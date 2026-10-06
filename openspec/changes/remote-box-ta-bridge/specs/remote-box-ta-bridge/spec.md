@@ -27,6 +27,16 @@ SHALL retain its request identity. A command rerun with a new identity is new in
 - **WHEN** a request identity repeats after an interrupted reply or cancelled call
 - **THEN** no duplicate effect is dispatched and uncertain outcomes remain unknown
 
+### Requirement: Receipt owner generation
+Receipt schema creation, intent insertion and answer persistence SHALL check the
+bridge's captured execution-owner generation within the write transaction. A stale
+bridge SHALL NOT acquire a newer generation to finish its writes. Restore SHALL
+discover the receipt store independently of its catalog.
+
+#### Scenario: Owner changes during a capability dispatch
+- **WHEN** a successor advances the owner fence before the old dispatch completes
+- **THEN** the old bridge cannot persist its answer and the reserved receipt stays unknown
+
 ### Requirement: Bounded protocol and explicit startup failure
 The bridge SHALL transport existing ta request and response bounds independently
 of shell argument limits and decoded bash output limits. Missing Python worker

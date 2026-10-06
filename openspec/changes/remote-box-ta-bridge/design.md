@@ -51,6 +51,13 @@ and deployment remain separate lanes.
 
 ## Review adaptation
 
+Round 2: receipt writes retain the command center's execution-owner lease captured
+when the bridge opens. Both intent insertion and answer persistence check that
+generation inside their own BEGIN IMMEDIATE transaction; a live bridge never
+reacquires a successor generation. The shared receipt store is cataloged and has
+an independent restore enumerator. Schema creation is additive and fenced too.
+An answer completing after handover stays unknown rather than writing stale state.
+
 Claude's one cross-family round returned ADAPT. TB-1 through TB-4 were AGREE.
 The initial bash relay and durable reply mailboxes were replaced as above;
 worker readiness distinguishes startup failure; reconnect IDs now survive retry.
