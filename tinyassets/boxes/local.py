@@ -39,6 +39,7 @@ import hashlib
 import os
 import re
 import secrets
+import select
 import signal
 import stat
 import subprocess
@@ -167,8 +168,12 @@ class _FdChunks:
 class _Running:
     cc: str
     proc: subprocess.Popen
+    handle: BoxHandle
     cancel: threading.Event = field(default_factory=threading.Event)
     done: threading.Event = field(default_factory=threading.Event)
+    input_ready: threading.Event = field(default_factory=threading.Event)
+    input_lock: threading.Lock = field(default_factory=threading.Lock)
+    replies: dict = field(default_factory=dict)
 
 
 class LocalBoxProvider:
@@ -610,7 +615,8 @@ class LocalBoxProvider:
 
     def start_exec(self, handle: BoxHandle, op_id: str, argv: Sequence[str], *,
                    stdin: bytes = b"", env: Mapping[str, str] | None = None,
-                   cwd: str = BOX_ROOT, limits: ExecLimits = ExecLimits()) -> str:
+                   cwd: str = BOX_ROOT, limits: ExecLimits = ExecLimits(),
+                   interactive_stdin: bool = False) -> str:
         if not argv or not all(isinstance(a, str) and "\0" not in a for a in argv):
             raise ValueError("argv must be a non-empty list of strings without NULs")
         extra = {str(k): str(v) for k, v in (env or {}).items()}
@@ -621,7 +627,8 @@ class LocalBoxProvider:
         rel_cwd = box_relpath(cwd)
         payload = {"argv": list(argv), "stdin": hashlib.sha256(stdin).hexdigest(),
                    "env": extra, "cwd": rel_cwd,
-                   "limits": [limits.wall_seconds, limits.output_bytes]}
+                   "limits": [limits.wall_seconds, limits.output_bytes],
+                   "interactive_stdin": interactive_stdin}
         with self._lock(handle.command_center_id):
             cc = self._auth_locked(handle)
             exec_id = self._exec_id(cc, op_id)
@@ -664,14 +671,15 @@ class LocalBoxProvider:
                 self._state.update(cc, op_id, {
                     "exec_id": exec_id, "output_bytes": limits.output_bytes,
                     "pgid": proc.pid, "start_time": process_start_time(proc.pid)})
-                running = _Running(cc, proc)
+                running = _Running(cc, proc, handle)
                 with self._running_guard:
                     self._running[exec_id] = running
                 self._state.hold(cc)  # a running exec may change files at any moment
                 held = True
                 threading.Thread(
                     target=self._supervise,
-                    args=(cc, op_id, exec_id, running, stdin, limits, out_path),
+                    args=(cc, op_id, exec_id, running, stdin, limits, out_path,
+                          interactive_stdin),
                     daemon=True, name=f"box-exec-{exec_id[:8]}",
                 ).start()
             except BaseException as exc:
@@ -689,13 +697,25 @@ class LocalBoxProvider:
         return exec_id
 
     def _supervise(self, cc: str, op_id: str, exec_id: str, running: _Running,
-                   stdin: bytes, limits: ExecLimits, out_path: Path) -> None:
+                   stdin: bytes, limits: ExecLimits, out_path: Path,
+                   interactive_stdin: bool = False) -> None:
         proc = running.proc
         started = time.monotonic()
         killed: str | None = None
         code: int | None = None
         try:
-            threading.Thread(target=_feed, args=(proc, stdin), daemon=True).start()
+            def feed():
+                try:
+                    if interactive_stdin:
+                        proc.stdin.write(stdin)
+                        proc.stdin.flush()
+                    else:
+                        _feed(proc, stdin)
+                except OSError:
+                    pass
+                finally:
+                    running.input_ready.set()
+            threading.Thread(target=feed, daemon=True).start()
             while proc.poll() is None:
                 if running.cancel.is_set():
                     killed = "cancelled"
@@ -718,6 +738,14 @@ class LocalBoxProvider:
             code = proc.wait()
             killed = killed or "supervisor_error"
         finally:
+            if interactive_stdin and proc.stdin is not None:
+                # send_stdin retains the fd across select/write. Keep it alive
+                # until that writer releases it, before another exec can reuse it.
+                with running.input_lock:
+                    try:
+                        proc.stdin.close()
+                    except OSError:
+                        pass  # A killed child must still settle its host receipt.
             with self._lock(cc):
                 generation = self._state.bump_generation(cc)  # the command may have changed files
                 self._state.finish(cc, op_id, {"exec_id": exec_id, "exit_code": code,
@@ -727,6 +755,46 @@ class LocalBoxProvider:
                 with self._running_guard:
                     self._running.pop(exec_id, None)
             running.done.set()
+
+    def send_stdin(self, handle: BoxHandle, exec_id: str, request_id: str, data: bytes) -> None:
+        """Idempotent reply on a bound running exec; never a workspace mutation.
+
+        A host restart kills these processes and reports UNKNOWN_AFTER_RESTORE;
+        partially delivered replies are never sent again onto a corrupted stream.
+        """
+        if not re.fullmatch(r"[a-f0-9]{32}", request_id) or len(data) > 8 * 1024 * 1024 + 256:
+            raise BoxError("invalid exec reply")
+        with self._lock(handle.command_center_id):
+            self._auth_locked(handle)
+            with self._running_guard:
+                running = self._running.get(exec_id)
+            if running is None or running.handle != handle:
+                raise BoxAuthError("exec reply binding refused")
+        if not running.input_ready.wait(5):
+            raise BoxError("exec input unavailable")
+        digest = hashlib.sha256(data).hexdigest()
+        with running.input_lock:
+            previous = running.replies.get(request_id)
+            if previous is not None:
+                if previous != (digest, True):
+                    raise BoxError("exec reply reused or outcome unknown")
+                return
+            if running.proc.stdin is None or running.proc.stdin.closed:
+                raise BoxError("exec input unavailable")
+            running.replies[request_id] = (digest, False)
+            fd = running.proc.stdin.fileno()
+            os.set_blocking(fd, False)
+            deadline = time.monotonic() + 5
+            remaining = memoryview(data)
+            while remaining:
+                wait = deadline - time.monotonic()
+                if wait <= 0 or not select.select([], [fd], [], wait)[1]:
+                    raise BoxError("exec reply delivery unknown")
+                try:
+                    remaining = remaining[os.write(fd, remaining[:4096]):]
+                except BlockingIOError:
+                    continue
+            running.replies[request_id] = (digest, True)
 
     def stream(self, handle: BoxHandle, exec_id: str, *,
                from_offset: int = 0, timeout: float | None = None) -> Iterator[ExecEvent]:

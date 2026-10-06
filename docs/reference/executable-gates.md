@@ -1,23 +1,25 @@
 # Executable gates
 
-Not in this table = judgement, not a gate.
+TinyAssets/TinyAssets has a live merge queue; `strict` is off. PR structural
+and affected tests are required through `required-tests`. The queue checks the
+combined commit, with conservative selection or ALL; main/schedules cover ALL.
+Summed seconds are advisory, not a merge gate. There is no five-minute promise.
 
-| Gate | Script | Runs |
-|---|---|---|
-| Rulebook byte ratchet | `scripts/check_context_budget.py` + `tests/test_rulebook_ratchet.py` | CI |
-| Rule-file drift | `scripts/check_cross_provider_drift.py` | hook, CI |
-| Skills valid + mirrored | `scripts/validate_skills.py`, `check_mirror_parity.py` | hook, CI |
-| No mojibake | `scripts/invariants/mojibake.py` | hook, CI |
-| Behavioural tests | `scripts/ci_required_tests.py`, `known-failing-tests.txt` (one-way) | required |
-| Diff scope | `.github/workflows/pr-scope-guard.yml` | required |
-| Review receipt (head or diff key), every PR | `scripts/drain_review_gate.py` | required |
-| Public MCP handles | `scripts/mcp_public_canary.py --assert-handles` | deploy, DNS/tunnel edits |
-| Merged is not deployed | `scripts/deployed_sha.py --assert-contains <sha>`: 0 shipped, 1 not, **2 cannot tell** (never collapse 2 into 0) | deploy, never required |
+| Gate | Entry point |
+|---|---|
+| Structural + repair instructions | `python -m scripts.ci_structural_guards` |
+| Affected / queue tests | `affected_tests.py` / `ci_required_tests.py` (scripts/) |
+| Rulebook, drift, skills, mirror, encoding | `scripts/invariants_run.py --pre-commit` |
+| Scope + review receipt | `.github/workflows/pr-scope-guard.yml` |
+| Public MCP handles | `scripts/mcp_public_canary.py --assert-handles` |
+| Deployment | `scripts/deployed_sha.py --assert-contains <sha>`; 2 = unknown |
 
-Receipt (PR body, so a head change voids it):
+Receipt in PR body:
 
 ```
 Drain-Review-Verdict: APPROVE
 Drain-Review-Head: <40-char sha>
 Drain-Review-Artifact: docs/... | https://github.com/...
 ```
+
+Retired `quality-gates.md` stays deleted; this index replaces it.

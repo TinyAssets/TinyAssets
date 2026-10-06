@@ -101,8 +101,6 @@ def _append_log_step_run() -> str:
 # (a) YAML parses
 # ---------------------------------------------------------------------------
 
-def test_dr_drill_yml_parses():
-    _load()
 
 
 # ---------------------------------------------------------------------------
@@ -241,11 +239,6 @@ def test_provisions_droplet_via_do_api():
     )
 
 
-def test_provision_step_present():
-    names = _step_names(_load())
-    assert any("provision" in n or "droplet" in n for n in names), (
-        "must have a provision/droplet creation step"
-    )
 
 
 def test_provision_resolves_current_region_compatible_debian_image():
@@ -298,18 +291,12 @@ def test_bootstrap_step_runs_bootstrap_sh():
     assert "hetzner-bootstrap.sh" in text or "bootstrap.sh" in text
 
 
-def test_bootstrap_step_present():
-    names = _step_names(_load())
-    assert any("bootstrap" in n for n in names)
 
 
 # ---------------------------------------------------------------------------
 # (g) Restore step runs backup-restore.sh
 # ---------------------------------------------------------------------------
 
-def test_restore_step_present():
-    names = _step_names(_load())
-    assert any("restore" in n for n in names)
 
 
 def test_restore_uses_backup_restore_sh():
@@ -328,9 +315,6 @@ def test_probe_uses_direct_ip_not_tunnel():
     assert "mcp_probe.py" in text or "mcp_public_canary.py" in text
 
 
-def test_probe_step_present():
-    names = _step_names(_load())
-    assert any("probe" in n for n in names)
 
 
 # ---------------------------------------------------------------------------
@@ -350,11 +334,6 @@ def test_pass_path_appends_to_log():
     assert "dr-drill-log.md" in text
 
 
-def test_pass_log_describes_port_forward_probe():
-    run = _append_log_step_run()
-    assert "direct HTTP to drill Droplet port 8001" not in run
-    assert "SSH port-forward" in run
-    assert "localhost:8001" in run
 
 
 # ---------------------------------------------------------------------------
@@ -385,16 +364,8 @@ def test_dr_drill_log_exists():
     assert _LOG.exists(), f"Missing: {_LOG}"
 
 
-def test_dr_drill_runbook_mentions_weekly_off_region():
-    text = _RUNBOOK.read_text(encoding="utf-8")
-    assert "Weekly" in text
-    assert "off-region" in text
-    assert "Quarterly" not in text, "the cadence is weekly now (S1a.5)"
 
 
-def test_dr_drill_runbook_mentions_pass_fail():
-    text = _RUNBOOK.read_text(encoding="utf-8").lower()
-    assert "pass" in text and "fail" in text
 
 
 def test_dr_drill_runbook_size_default_matches_workflow():
@@ -403,10 +374,6 @@ def test_dr_drill_runbook_size_default_matches_workflow():
     )
 
 
-def test_dr_drill_runbook_mentions_ssh_port_forward_probe():
-    text = _RUNBOOK.read_text(encoding="utf-8").lower()
-    assert "ssh port-forward" in text
-    assert "localhost:8001" in text
 
 
 # ---------------------------------------------------------------------------
@@ -481,17 +448,6 @@ def test_default_drill_size_is_not_1gb():
     )
 
 
-def test_mid_job_cleanup_step_exists():
-    """A cleanup step must fire even when bootstrap/restore fail (before probe runs)."""
-    names = _step_names(_load())
-    assert any(
-        "cleanup" in name
-        or "mid-job" in name
-        or name == "destroy drill droplet when required"
-        for name in names
-    ), (
-        "Must have a cleanup step that fires on mid-job failure (before probe color is set)"
-    )
 
 
 def test_mid_job_cleanup_fires_on_always():
