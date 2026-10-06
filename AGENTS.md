@@ -13,6 +13,7 @@ The founder owns this section. To re-steer, replace a line; never add one beside
 5. Foundational patches are brought FORWARD, so pre-migration band-aids never delay positive architectural moves. Weigh the totality of pending work, so each module is always pursuing or maintaining its best architecture, and refactor and reorder the remaining work to get there. (Today that foundation is per-owner isolation, landed in small slices.)
 6. Ship live fast and verify live. LESS process: delete stale docs, tests and notes rather than adding more.
 7. Long-term goal: in both the Google Play and Apple App Store, with growing downloads and positive reviews.
+8. 24/7 uptime with zero hosts online: every surface works with no host machine on.
 
 No longer the direction: "a global goals engine", Goal ladders, and fantasy as the default domain.
 Where `PLAN.md` or any older doc disagrees with this section, this section wins.
@@ -43,7 +44,8 @@ Write durable state before replying.
 4. Review only floor-class changes and gate files: one cross-family round
    (`peer-agents`), floor and correctness findings only, `AGREE`/`DISAGREE_EVIDENCE`.
 5. No lane cap: fold colliding or superseded lanes into one; serialize merges.
-6. Done = sha asserted deployed, one real-user app pass, spec synced.
+6. Done = sha asserted deployed, one naive-user pass through the app agent, spec
+   synced. A pasted chat is a bug report.
 7. Same error three times, or the same finding twice: hand off, do not patch.
 8. A new rule deletes an old one; a rule a script can enforce gets no line.
 
