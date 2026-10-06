@@ -1,3 +1,23 @@
+### D87. Package egress relay opt-in and caller-owned lifetime
+
+A package manifest may set "egress": true. The flag is part of the hashed
+manifest bytes, so it is the owner's exact-revision opt-in; a different flag is
+a different revision. start() must name the same value or refuses. An opted-in
+cell receives the admitted center's checked egress relay, pinned by descriptor
+exactly like tool-jail and provider-exec, behind the in-cell loopback forwarder
+with the fixed proxy environment and image CA certificates. There is still no
+network interface; destination policy stays in the relay; no credential travels
+this route. Credentials remain broker slots only. The relay and slot sockets
+keep fixed descriptor slots; flags travel after the 64-hex revision and the
+decoder reads only that suffix, because a revision may itself contain "e".
+
+Package lifetime no longer has a wall clock (supersedes D84's fixed lifetime):
+a persistent stdio server runs until it exits, the consumer revokes the cell,
+the daemon dies or the RSS/process-count/CPU-time guards end it. The consumer's
+stream has no timeout of its own. Aggregate cell capacity (MAX_OWNER_CELLS 4,
+MAX_CELLS 32) and the per-process 300s CPU bound are unchanged; a long-lived busy
+server can exhaust that CPU bound, which is a resource limit, not a clock.
+
 ### D86. Shared provider execution entry, text-only first
 
 Selected broker execution is dispatched at aspawn_owned, before constructing a

@@ -473,7 +473,7 @@ def _disconnect_consumer(root):
             {"host": "models.example.com", "path_template": "/extra", "methods": ["GET"]})
         result = connect_http(universe_id="disconnect", payload=deposit)
         assert result["status"] == "provisioned" and len(result["allowed_endpoints"]) == 2
-        from tinyassets.api.pending_requests import answer_request
+        from tinyassets.api.pending_requests import _answer_request
 
         consent = request_from_user(universe_id="disconnect", payload={
             "kind": "Approval", "title": "Checkout", "body": "Fixture checkout", "fields": [],
@@ -481,8 +481,10 @@ def _disconnect_consumer(root):
                        "connection_id": result["connection_id"], "repo": "owner/repo",
                        "consents": ["workspace_checkout", "workspace_push"]}})
         assert consent.get("status") == "pending", consent
-        granted = answer_request(universe_id="disconnect", payload={
-            "request_id": consent["request_id"], "values": {}})
+        # The protected owner route; bearer answers are never consent.
+        granted = _answer_request(universe_id="disconnect", payload={
+            "request_id": consent["request_id"], "values": {}},
+            owner_session={"test": "disconnect"})
         assert granted.get("status") == "answered", granted
         assert "models.example.com/owner/repo" in granted["destinations"][0]
         print("D38 actual workspace consent capture/answer via launcher broker: owner metadata "

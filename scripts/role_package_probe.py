@@ -76,6 +76,31 @@ assert refused.get('result',{}).get('delivered') is not True,refused
 print(json.dumps(dict(broker_only=True,pinned_egress=True,foreign_bytes=0)),flush=True)
 '''
 
+EGRESS = r'''
+import json,os,socket,ssl,urllib.error,urllib.request
+assert os.path.exists('/package-egress.sock')
+assert os.environ.get('HTTPS_PROXY','').startswith('http://127.0.0.1:')
+try:
+    urllib.request.urlopen('https://uid-stream.invalid/catalogue',timeout=20); status=200
+except urllib.error.HTTPError as error: status=error.code
+assert status==403,status  # Real TLS to the fixture; no credential travels this route.
+try:
+    urllib.request.urlopen('https://169.254.169.254/latest',timeout=20)
+except (urllib.error.URLError,OSError) as error: metadata='refused'
+else: metadata='reached'
+assert metadata=='refused'
+with socket.socket() as connection:
+    connection.settimeout(1)
+    assert connection.connect_ex(('93.184.216.2',443))!=0
+print(json.dumps(dict(relay_tls=status,metadata=metadata,direct='refused')),flush=True)
+'''
+
+NO_EGRESS = r'''
+import json,os
+print(json.dumps(dict(socket=os.path.exists('/package-egress.sock'),
+    proxy=any(k.lower().endswith('_proxy') for k in os.environ))),flush=True)
+'''
+
 SETUP = r'''
 import hashlib
 packages={}
@@ -102,15 +127,19 @@ for owner,uid in identities.items():
     }
     if os.environ.get('TA_ORACLE_HTTPS')=='1':
         definitions['broker']=('python','main.py',BROKER)
+        definitions['egress']=('python','main.py',EGRESS)
+        definitions['no-egress']=('python','main.py',NO_EGRESS)
     packages[owner]={}
     for name,(runtime,entry,source) in definitions.items():
         data=source.encode()
         contents={entry:data}
         if name=='python': contents['helper.py']=b'VALUE=17\n'
-        raw=json.dumps(dict(runtime=runtime,entry=entry,args=[],
-                            slots=['read'] if name=='broker' else [],
-                            files={path:hashlib.sha256(value).hexdigest()
-                                   for path,value in contents.items()})).encode()
+        doc=dict(runtime=runtime,entry=entry,args=[],
+                 slots=['read'] if name=='broker' else [],
+                 files={path:hashlib.sha256(value).hexdigest()
+                        for path,value in contents.items()})
+        if name=='egress': doc['egress']=True
+        raw=json.dumps(doc).encode()
         revision=hashlib.sha256(raw).hexdigest()
         package=center/'.runtime/package-cells'/revision
         package.mkdir(); os.chown(package,1001,1001); package.chmod(0o700)
@@ -205,6 +234,22 @@ for owner in identities:
                 assert cell.wait(10)==0
             print(owner+': real broker TLS/bearer through declared slot PASS; ZERO FOREIGN_BYTES',
                   flush=True)
+            with role_packages.start(center,packages[owner]['egress'],egress=True) as cell:
+                with cell.stream.makefile('rb') as reader:
+                    answer=json.loads(reader.readline())
+                assert answer==dict(relay_tls=403,metadata='refused',direct='refused'),answer
+                assert cell.wait(30)==0
+            with role_packages.start(center,packages[owner]['no-egress']) as cell:
+                with cell.stream.makefile('rb') as reader:
+                    assert json.loads(reader.readline())==dict(socket=False,proxy=False)
+                assert cell.wait(10)==0
+            for name,flag in (('egress',False),('no-egress',True)):
+                try:
+                    with role_packages.start(center,packages[owner][name],egress=flag):
+                        raise AssertionError('package egress differs from its pinned manifest')
+                except PermissionError: pass
+            print(owner+': manifest-pinned egress relay TLS, metadata/direct refusal and '
+                  'opt-in mismatch refusal PASS',flush=True)
 print('package cell acceptance PASS; ZERO FOREIGN_BYTES; startup OFF',flush=True)
 '''
 
@@ -221,6 +266,7 @@ def main():
     assert CONTAINER.count(setup_marker) == CONTAINER.count(probe_marker) == 1
     script = ("DEATH=''\nFAIL=False\nGIT=False\nSNAPSHOTS=False\n"
               + f'PYTHON={PYTHON!r}\nNODE={NODE!r}\nBROKER={BROKER!r}\n'
+              + f'EGRESS={EGRESS!r}\nNO_EGRESS={NO_EGRESS!r}\n'
               + CONTAINER.replace(setup_marker, SETUP + '\n' + setup_marker)
                          .replace(probe_marker, PROBE))
     command = ['docker', 'run', '--rm', '-i', '--network', 'none', '--user', '0:0',

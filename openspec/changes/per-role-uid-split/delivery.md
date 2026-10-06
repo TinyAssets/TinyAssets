@@ -1,3 +1,74 @@
+# Current U1 delivery: D87 package egress relay and caller-owned lifetime
+
+D86 is pushed at 4aad725f28. D87 closes the two gaps D84 left for K1's
+persistent stdio MCP. Startup OFF; draft #4523; no deploy.
+
+What exists: a package manifest may set "egress": true. The flag is inside the
+hashed manifest, so it is the owner's exact-revision opt-in; start() must name
+the same value or refuses before any cell starts, and the in-cell runner checks
+it again. An opted-in cell gets the admitted center's checked egress relay,
+pinned by descriptor at fixed fd 4 (ta broker stays fd 5), behind the in-cell
+loopback forwarder with the fixed proxy env and image CA certificates. There is
+no network interface and no credential on this route. Flags travel after the
+64-hex revision and the decoder reads only that suffix, because a revision can
+itself contain "e"; the inside stage refuses a socket set that differs from
+the admitted flags. Package lifetime has no wall clock: the 600s in-cell
+deadline, the 660s mapper deadline and the consumer's 610s stream timeout are
+gone. A cell ends by exit, consumer revocation, daemon death, or the RSS,
+process-count and 300s CPU-time guards (a resource limit, not a clock).
+
+Fixed during verification (main-merge drift, not D87 code, broke the oracle on
+the D86 image too):
+- tinyassets/broker/http_connect.py still imported _HTTP_ACTION_CAP, which
+  main removed in #4476. Every broker HTTP deposit was refused in broker mode.
+  The import and cap argument are removed, matching main's uncapped grants.
+- Main now requires the protected owner session for consent answers. The
+  branch's disconnect test and launcher oracle answered through the bearer
+  door; both now use the owner-session executor, as main's tests do. No
+  assertion was weakened.
+
+Evidence (production Dockerfile tinyassets-uid-d87:final,
+sha256:85a428a82d9749b2c4f8fd7597b6b29c8b8c26dd82e3de2e407ba7b3a2082ec6):
+- Production root image oracle exit 0, zero skips, privileged chain PASS.
+- role_package_probe --stream exit 0 for Alice and Bob: python/node/shell
+  stdio, memory cap, descendant cancellation, foreign refusal, broker slot TLS;
+  an opted-in revision reaches the fixture over real TLS (403) through the
+  pinned relay while 169.254.169.254 and a direct TCP connect fail; a
+  non-opted revision has no relay socket and no proxy env; both mismatched
+  start() flags refuse. ZERO FOREIGN_BYTES; startup_activated=false.
+- role_long_lifetime_probe --kind package exit 0: a package cell ran 700s, past
+  the former 660s deadline, and exited 0.
+- role_long_lifetime_probe --kind provider exit 0: a provider-exec cell ran
+  700s and exited 0. This closes D86's "not proven by an actual >660s run".
+  Both long probes ran sequentially (shared fixture subnet).
+- Root Linux oracle: 212 passed, zero skips (role_provider_execution,
+  role_provider_discovery, role_launcher, role_packages, role_owner_delete,
+  role_tool_files, role_tools, universe_path_io_guard, converse_turn_cost,
+  owner_stores, control_plane_inventory, storage_registry_complete,
+  broker_http_connect, broker_disconnect, broker_http_policy,
+  http_connection_provisioning). UID1001 oracle: 72 passed, zero skips
+  (role_decoder, owner_launcher_client, native_model_discovery,
+  native_discovery_integration).
+- ci_structural_guards.py 576 passed; mirror parity 678 files; strict OpenSpec
+  valid; changed-file Ruff clean.
+- Not exercised: the RSS/process guard under real memory pressure in a long
+  run, and a busy server reaching the 300s CPU bound.
+
+Slice (3), authenticated owner-delete admission, is D85 (9657e679b7), already
+on #4523. U2 #4510's "U1 admits no owner-delete cell" predates it: #4510 stops
+at d1f84c63e5. U2 needs a rebase onto #4523 to consume role_owner_delete
+begin/finish/abort, not new U1 code. Rechecked on the D87 image (the
+launcher changed): role_owner_delete_probe exit 0 for Alice and Bob (owner
+pass, daemon pass, quiescence/cancel/retry/stale fence, foreign mutation
+denial, reuse). ZERO FOREIGN_BYTES; startup OFF.
+
+Remaining: K1 integration (persistent stdio MCP consumer of start(egress=)),
+U2 rebase and two-pass consumer wiring, provider adapters reaching
+provider-exec, startup/healthchecks, dynamic center admission, aggregate
+capacity proofs, integrated production proofs, main spec sync.
+
+---
+
 # Current U1 delivery: D86 provider-exec owner cells (text-only first view)
 
 D85 is pushed at 10282e4a5e. b94259d502 was an unreviewed, unverified lane

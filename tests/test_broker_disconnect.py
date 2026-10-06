@@ -177,7 +177,7 @@ def test_wrong_fence_refuses_before_mutation(removal):
 
 
 def test_pending_remove_captures_broker_incarnation_and_rejects_replacement(removal):
-    from tinyassets.api.pending_requests import answer_request, request_from_user
+    from tinyassets.api.pending_requests import _answer_request, request_from_user
     from tinyassets.auth.middleware import identity_context
     from tinyassets.auth.provider import Identity
 
@@ -189,8 +189,9 @@ def test_pending_remove_captures_broker_incarnation_and_rejects_replacement(remo
         with removal.ledger._connect() as db:
             db.execute("UPDATE outbound_connections SET incarnation='replacement' "
                        "WHERE connection_id=?", (removal.connection,))
-        answer = answer_request(universe_id="cc-alice", payload={
-            "request_id": asked["request_id"], "values": {}})
+        # The protected owner route; bearer answers are never consent.
+        answer = _answer_request(universe_id="cc-alice", payload={
+            "request_id": asked["request_id"], "values": {}}, owner_session={"test": "alice"})
         assert answer.get("error") == "connection_changed", answer
     assert removal.ledger.get_connection(removal.connection) is not None
     assert not (removal.root / "outbound.db").exists()

@@ -1,4 +1,8 @@
-"""Provider-neutral package admission and raw stdio, with broker-only connections."""
+"""Provider-neutral package admission and raw stdio, with broker-only credentials.
+
+A revision whose manifest opts in also reaches the center's checked egress
+relay, pinned by descriptor; it carries no credential of its own.
+"""
 from __future__ import annotations
 
 import asyncio
@@ -49,14 +53,16 @@ def _proof(channel):
 
 
 @contextlib.contextmanager
-def start(universe_dir, revision, *, slots=None, capabilities=None):
+def start(universe_dir, revision, *, slots=None, capabilities=None, egress=False):
     """Yield an authenticated OwnerCell with raw duplex stdio for this revision.
 
     The consumer supplies an already-provisioned daemon-sealed tree and its
     canonical Capabilities instance. No install, secret deposit or unconfined
-    executable fallback occurs at this execution boundary.
+    executable fallback occurs at this execution boundary. ``egress`` must equal
+    the pinned manifest's opt-in. Lifetime is the caller's: the cell runs until
+    it exits, the consumer revokes it or a resource guard ends it.
     """
-    from tinyassets import role_decoder, role_relays, workspace_fs
+    from tinyassets import role_decoder, role_relays, universe_egress, workspace_fs
     from tinyassets.auth.middleware import current_identity
     from tinyassets.broker import supervisor
     from tinyassets.broker.owner_identities import owner_identity
@@ -94,7 +100,19 @@ def start(universe_dir, revision, *, slots=None, capabilities=None):
                 or any(type(value) is not str or not value.startswith('connection:')
                        for value in slots.values())):
             raise PermissionError('package slots do not match the pinned manifest')
+        if type(egress) is not bool or egress is not doc['egress']:
+            raise PermissionError('package egress does not match the pinned manifest')
         socket_fds, socket_sources = [], {}
+        if egress:
+            # Fixed slot order: egress before ta, as the mapper assigns them.
+            relay = universe_egress.ensure_proxy(center)
+            if relay is None:
+                raise PermissionError('package egress requires the pinned relay')
+            fd = role_relays.pin_for_owner(relay, center, identity.uid, kind='egress')
+            lifetime.callback(os.close, fd)
+            socket_fds.append(fd)
+            si = os.fstat(fd)
+            socket_sources['e'] = [si.st_dev, si.st_ino]
         if slots:
             if (type(capabilities) is not Capabilities or capabilities.root != center
                     or capabilities.context.owner != principal
@@ -109,7 +127,8 @@ def start(universe_dir, revision, *, slots=None, capabilities=None):
             socket_sources['t'] = [si.st_dev, si.st_ino]
         cell = lifetime.enter_context(client.start_cell(kind='package', principal=principal,
             command_center=center.name, identity=identity, directory_fd=descriptor,
-            socket_fds=socket_fds, extra={'revision': revision, 'ta': bool(slots)}))
+            socket_fds=socket_fds,
+            extra={'revision': revision, 'ta': bool(slots), 'egress': egress}))
         cell.stream.settimeout(35)
         proof = _proof(cell.stream)
         inner = identity.uid - 300000
@@ -121,5 +140,5 @@ def start(universe_dir, revision, *, slots=None, capabilities=None):
                 or proof.get('profile') != 'cell-links'):
             raise RuntimeError('package cell proof is absent')
         cell.stream.sendall(b'{"start":true}\n')
-        cell.stream.settimeout(610)
+        cell.stream.settimeout(None)
         yield cell

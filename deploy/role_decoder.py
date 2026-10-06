@@ -78,10 +78,13 @@ def enter(mime, data_root, uid=1003, *, preview=False, preview_write=False, node
             raise RuntimeError('preview output source is invalid')
         host['source'] = [info.st_dev, info.st_ino]
         os.set_inheritable(3, True)
+    # A package names its sockets after the 64-hex revision, which may itself
+    # contain 'e'; only the suffix selects descriptors.
+    selector = mime[64:] if package else mime
     if tool or provider or package:
         host['sockets'] = {}
         for key, fd in (('e', 4), ('t', 5)):
-            if key in mime and (not package or key == 't'):
+            if key in selector:
                 info = os.fstat(fd)
                 if not stat.S_ISSOCK(info.st_mode) or info.st_nlink != 1:
                     raise RuntimeError('tool relay is not a socket')
@@ -117,7 +120,10 @@ def enter(mime, data_root, uid=1003, *, preview=False, preview_write=False, node
             argv.extend(['--ro-bind', path, path])
     if package:
         argv.extend(['--ro-bind-fd', '3', '/package'])
-        if 't' in mime:
+        if 'e' in selector:
+            argv.extend(['--bind-fd', '4', '/package-egress.sock'])
+            argv.extend(['--ro-bind', '/etc/ssl/certs', '/etc/ssl/certs'])
+        if 't' in selector:
             argv.extend(['--bind-fd', '5', '/package-broker.sock'])
     elif provider:
         # Fixed immutable shipped CLI trees only; node itself lives under /usr.
@@ -351,7 +357,8 @@ if __name__ == "__main__":
 
         raise SystemExit(cell_main())
     elif (len(sys.argv) == 5 and sys.argv[1] == 'enter-package'
-            and len(sys.argv[2]) == 65 and sys.argv[2][-1] in '-t'
+            and sys.argv[2][64:] in ('-', 'e', 't', 'et')
+            and len(sys.argv[2]) >= 65
             and all(c in '0123456789abcdef' for c in sys.argv[2][:64])
             and 0 < int(sys.argv[4]) < 100000):
         enter(sys.argv[2], sys.argv[3], int(sys.argv[4]), package=True)
@@ -362,10 +369,13 @@ if __name__ == "__main__":
         info = os.stat('/package', follow_symlinks=False)
         if [info.st_dev, info.st_ino] != source:
             raise RuntimeError('package source differs from pinned source')
-        if 't' in sockets:
-            info = os.stat('/package-broker.sock', follow_symlinks=False)
-            if [info.st_dev, info.st_ino] != sockets['t']:
-                raise RuntimeError('package broker differs from pinned source')
+        if set(sockets) != set(sys.argv[2][64:].strip('-')):
+            raise RuntimeError('package sockets differ from their admitted flags')
+        for key, path in (('e', '/package-egress.sock'), ('t', '/package-broker.sock')):
+            if key in sockets:
+                info = os.stat(path, follow_symlinks=False)
+                if [info.st_dev, info.st_ino] != sockets[key] or not stat.S_ISSOCK(info.st_mode):
+                    raise RuntimeError('package relay differs from pinned source')
         proof = prove_cell(host, sys.argv[4], int(sys.argv[5]), 'cell-links')
         proof.update(source=source, sockets=sockets, revision=sys.argv[2][:64])
         sys.path.insert(0, '/app')
@@ -377,7 +387,7 @@ if __name__ == "__main__":
         sys.stdout.buffer.flush()
         if json.loads(read_config()) != {'start': True}:
             raise ValueError('package execution was not acknowledged')
-        raise SystemExit(run(doc, broker='t' in sockets))
+        raise SystemExit(run(doc, broker='t' in sockets, egress='e' in sockets))
     elif (len(sys.argv) == 5 and sys.argv[1] == 'enter-owner-delete'
             and sys.argv[2] == 'delete' and 0 < int(sys.argv[4]) < 100000):
         enter(sys.argv[2], sys.argv[3], int(sys.argv[4]), owner_delete=True)

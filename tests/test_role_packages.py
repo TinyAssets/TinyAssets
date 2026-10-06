@@ -29,10 +29,18 @@ def test_manifest_exact_revision_and_entry():
     {'entry': '../main.py'}, {'runtime': 'vendor-name'}, {'args': ['bad\0arg']},
     {'slots': ['x', 'x']}, {'files': {'../escape': '0' * 64}},
     {'files': {'manifest.json': '0' * 64}}, {'files': {'main.py': 'not-a-digest'}},
+    {'egress': 'yes'}, {'egress': 1},
 ])
 def test_manifest_rejects_unpinned_or_unsafe_configuration(change):
     with pytest.raises(ValueError):
         parse(*manifest(**change))
+
+
+def test_manifest_egress_is_an_optional_exact_revision_opt_in():
+    assert parse(*manifest())['egress'] is False
+    assert parse(*manifest(egress=True))['egress'] is True
+    # The opt-in is part of the hashed bytes: a different flag is a different revision.
+    assert manifest(egress=True)[1] != manifest(egress=False)[1]
 
 
 def test_sealed_tree_rejects_changed_unlisted_linked_or_foreign_content(tmp_path):
@@ -103,11 +111,14 @@ def test_package_mapper_rejects_caller_policy_or_bad_revision():
                               / 'deploy/role_owner_launcher.py'))
     mapper = object.__new__(scope['OwnerLauncher'])
     request = dict(op='START', kind='package', principal='alice', command_center='alice',
-                   revision='0' * 64, ta=False)
+                   revision='0' * 64, ta=False, egress=False)
     for changes in ({'uid': 300002}, {'profile': 'cell-nested'}, {'revision': '../other'},
-                    {'egress': True}, {'op': 'SPAWN'}, {'argv': ['/bin/sh']}):
+                    {'egress': 'yes'}, {'egress': True}, {'op': 'SPAWN'},
+                    {'argv': ['/bin/sh']}):
         with pytest.raises(ValueError, match='unsupported'):
             mapper._decoder(request | changes, [])
+    with pytest.raises(ValueError, match='unsupported'):
+        mapper._decoder({key: value for key, value in request.items() if key != 'egress'}, [])
 
 
 def test_selected_package_refuses_without_launcher(monkeypatch, tmp_path):

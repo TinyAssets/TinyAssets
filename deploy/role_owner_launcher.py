@@ -343,12 +343,11 @@ class OwnerLauncher:
         if kind in ('provider-discovery', 'provider-exec'):
             fields.add('egress')
         if kind == 'package':
-            fields.update(('revision', 'ta'))
+            fields.update(('revision', 'ta', 'egress'))
         if kind == 'owner-delete':
             fields.add('delete_token')
         socket_count = (sum(request.get(key) is True for key in ('egress', 'ta'))
-                        if kind == 'tool-jail' else int(request.get('ta') is True)
-                        if kind == 'package' else int(request.get('egress') is True)
+                        if kind in ('tool-jail', 'package') else int(request.get('egress') is True)
                         if kind in ('provider-discovery', 'provider-exec') else 0)
         mounted = kind in {'workspace-git', 'preview-write', 'tool-jail', 'tool-files',
                            'provider-discovery', 'provider-exec', 'package', 'owner-delete'} or (
@@ -363,6 +362,7 @@ class OwnerLauncher:
                     or type(request['delete_token']) is not str
                     or not re.fullmatch('[a-f0-9]{32}', request['delete_token'])))
                 or (kind == 'package' and (not streaming or type(request['ta']) is not bool
+                    or type(request['egress']) is not bool
                     or type(request['revision']) is not str
                     or not re.fullmatch('[a-f0-9]{64}', request['revision'])))
                 or (kind == 'node-sandbox' and type(request['workspace']) is not bool)
@@ -521,7 +521,8 @@ class OwnerLauncher:
                 os.chdir('/')
                 if kind == 'package':
                     command = ['/usr/local/libexec/ta-decoder.py', 'enter-package',
-                               request['revision'] + ('t' if request['ta'] else '-'),
+                               request['revision'] + (('e' if request['egress'] else '')
+                                                      + ('t' if request['ta'] else '') or '-'),
                                self.data_root, str(inner)]
                 elif kind in ('provider-discovery', 'provider-exec'):
                     mode = 'enter-provider-exec' if kind == 'provider-exec' else 'enter-provider'
@@ -560,12 +561,13 @@ class OwnerLauncher:
                      'PYTHONDONTWRITEBYTECODE': '1'})
             except BaseException:
                 os._exit(126)
-        # A provider turn runs until it finishes: its lifetime is the daemon's
-        # revocation (EOF), daemon death or the RSS/process guard, never a clock.
-        deadline = float('inf') if kind == 'provider-exec' else time.monotonic() + (
+        # A provider turn or package server runs until it finishes: lifetime is
+        # the daemon's revocation (EOF), daemon death or the RSS/process guard,
+        # never a clock.
+        deadline = float('inf') if kind in ('provider-exec', 'package') else time.monotonic() + (
             155 if kind == 'ingestion-video' else
             1810 if kind == 'node-sandbox' else
-            660 if kind in ('tool-jail', 'package') else
+            660 if kind == 'tool-jail' else
             75 if kind == 'ui-preview' else
             65 if kind == 'workspace-git' else 35)
         if streaming:

@@ -24,11 +24,13 @@ def manifest(revision):
         os.close(fd)
 
 
-def run(doc, *, broker):
+def run(doc, *, broker, egress=False):
     from tinyassets.node_sandbox import read_process_tree
 
     if bool(doc['slots']) != broker:
         raise ValueError('package broker slots do not match admission')
+    if doc['egress'] is not egress:
+        raise ValueError('package egress does not match admission')
     if ctypes.CDLL(None, use_errno=True).prctl(4, 0, 0, 0, 0) != 0:
         raise RuntimeError('package supervisor dumpability could not be retired')
     for kind, value in ((resource.RLIMIT_CPU, 300), (resource.RLIMIT_NPROC, 64),
@@ -47,20 +49,27 @@ def run(doc, *, broker):
     env = {'PATH': '/usr/bin:/bin', 'HOME': '/tmp', 'TMPDIR': '/tmp', 'LANG': 'C.UTF-8'}
     if broker:
         env['TINYASSETS_PACKAGE_BROKER'] = '/package-broker.sock'
+    if egress:
+        from tinyassets.universe_egress import FORWARDER, PROXY_ENV
+
+        # The checked relay is the only route out; no network interface exists.
+        env.update(PROXY_ENV)
+        argv = ['/opt/venv/bin/python', '-I', '-S', '-c', FORWARDER,
+                '3128=/package-egress.sock', '--', *argv]
     child = subprocess.Popen(argv, stdin=0, stdout=1, stderr=2, cwd='/package',
                              env=env, close_fds=True, start_new_session=True)
     # Only the payload now owns stdin/stdout. Its consumer sees EOF promptly;
     # the independent mapper channel carries authenticated completion/reaping.
     os.close(0)
     os.close(1)
-    deadline = time.monotonic() + 600
+    # No wall clock: a stdio server lives until it exits, the consumer revokes
+    # the cell or a resource guard below ends it.
     try:
         while child.poll() is None:
             # The whole private PID namespace includes detached/orphaned
             # descendants; tracking just the original leader would miss them.
             count, rss = read_process_tree(1)
-            if (count < 0 or rss < 0 or count > 64 or rss > 512 * 1024 * 1024
-                    or time.monotonic() >= deadline):
+            if count < 0 or rss < 0 or count > 64 or rss > 512 * 1024 * 1024:
                 os.killpg(child.pid, signal.SIGKILL)
                 child.wait(timeout=5)
                 return 137

@@ -52,12 +52,21 @@ or incomplete traversal. U2 SHALL own daemon-pass integration and restart intent
 The package class SHALL pin a daemon-sealed exact manifest revision and all
 package file digests, mount that tree read-only under the admitted owner's
 dedicated UID/GID, close source descriptors and deny host networking. It SHALL
-retain CPU, process-tree memory/count, descriptor, file, tmpfs and lifetime
-bounds. Its raw stdio interface SHALL follow a verified cell proof handshake.
+retain CPU, process-tree memory/count, descriptor, file and tmpfs bounds; its
+lifetime SHALL end only by exit, consumer revocation, daemon death or those
+guards, never a wall clock. A revision whose hashed manifest opts in SHALL reach
+only the admitted center's pinned checked egress relay, with no network
+interface. Its raw stdio interface SHALL follow a verified cell proof handshake.
 Named credential/egress slots SHALL use only pinned invocation relays to the
 existing owner-scoped daemon effect handlers and credential broker. Package
 bytes SHALL never select a caller identity, kernel identity, profile, host path,
 arbitrary relay or credential environment.
+
+#### Scenario: A package's egress follows its pinned opt-in
+- **WHEN** a consumer starts a revision with an egress flag that differs from its manifest
+- **THEN** admission refuses before any cell starts
+- **AND** an opted-in revision reaches public TLS only through the pinned relay, while
+  metadata destinations and direct connections fail
 
 #### Scenario: A package revision cannot consume foreign state or authority
 - **WHEN** Alice starts an approved package revision with a declared connection slot

@@ -25,7 +25,10 @@ def parse(raw, revision):
             or hashlib.sha256(raw).hexdigest() != revision):
         raise ValueError('package revision mismatch')
     doc = json.loads(raw)
-    if (type(doc) is not dict or set(doc) != {'runtime', 'entry', 'args', 'files', 'slots'}
+    # 'egress' is the owner's exact-revision opt-in to the checked egress relay.
+    if (type(doc) is not dict
+            or set(doc) - {'egress'} != {'runtime', 'entry', 'args', 'files', 'slots'}
+            or type(doc.setdefault('egress', False)) is not bool
             or doc['runtime'] not in RUNTIMES or type(doc['files']) is not dict
             or not 1 <= len(doc['files']) <= MAX_FILES
             or type(doc['args']) is not list or len(doc['args']) > 32
