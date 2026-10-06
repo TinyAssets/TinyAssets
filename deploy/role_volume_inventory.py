@@ -38,7 +38,7 @@ def _table(db, name):
 
 
 def principals(root, centers, egress):
-    """Use explicit home bindings; a legacy tree needs exactly one admin.
+    """Use explicit home bindings; a non-home tree needs exactly one admin.
 
     Neither a basename, display name, host_path nor an engine-authored manifest
     confers authority. Missing and competing ownership records fail closed.
@@ -70,6 +70,23 @@ def principals(root, centers, egress):
                     or len(principal) > 512):
                 raise InventoryRefused(f"invalid owner principal: {center}")
             result[center] = principal
+    return result
+
+
+def classify(root, centers, owner):
+    """Match the canonical center's existing provider-view boundary.
+
+    Hidden root entries are platform metadata, as in hidden_root_masks; hidden
+    entries *inside* visible work trees remain work, including venvs and Git.
+    Provider definitions are broker control-plane metadata despite their visible
+    basename. This classifies names only; both migration phases validate inodes.
+    """
+    result = {}
+    for center in centers:
+        with owner["_directory"](root, center) as directory:
+            result[center] = sorted(name for name in os.listdir(directory)
+                                    if not name.startswith(".")
+                                    and name != "provider_definitions.json")
     return result
 
 

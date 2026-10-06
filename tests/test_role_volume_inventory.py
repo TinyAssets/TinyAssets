@@ -39,6 +39,19 @@ def test_complete_discovery_and_no_atime_or_database_mutation(volume):
     assert not (volume / ".broker").exists()
 
 
+def test_work_classification_preserves_hidden_platform_control_plane(volume):
+    from deploy.role_volume_inventory import classify
+
+    (volume / "alice/.runs.db").write_bytes(b"platform")
+    (volume / "alice/provider_definitions.json").write_bytes(b"broker metadata")
+    (volume / "alice/previews").mkdir()
+    before = metadata(volume)
+    with role_owner_migration._root(volume) as root:
+        assert classify(root, ["alice", "bob"], vars(role_owner_migration)) == {
+            "alice": ["previews", "work"], "bob": ["work"]}
+    assert metadata(volume) == before
+
+
 def test_incomplete_serial_tree_cannot_be_omitted(volume):
     seed(volume)
     (volume / "u-unregistered").mkdir()

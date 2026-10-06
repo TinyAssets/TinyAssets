@@ -1,3 +1,53 @@
+## Current verification
+
+Linux command (root is required to exercise the pre-drop migration identity):
+`MSYS_NO_PATHCONV=1 python scripts/linux_oracle.py --as-root -- -q tests/test_role_owner_migration.py tests/test_role_metadata_migration.py tests/test_role_volume_inventory.py tests/test_role_volume_migration.py --basetemp /tmp/b`
+
+**140 passed, zero skips**, after D212. Targeted Ruff and diff checks pass.
+This includes full dry-run/apply/repeat/reverse and six coordinator crash
+boundaries in each direction, owner quarantine and mode preservation. It does
+not yet prove first-time broker allocation, dynamic inventory generations,
+production-image full migration or old CMD boot. Claude review is running.
+The current production Dockerfile image is building for the installed owner
+substep. No production execution or activation is authorized or performed.
+
+### D212. Egress relocation exclusively owns its inode provenance
+
+The first full coordinator oracle found that the metadata phase recorded
+post-forward UID1002 for the relocated ledger, then reapplied it after reverse
+relocation restored UID1001. Exclude the exact D12 ledger/sidecars/proxy sets in
+both physical locations from metadata traversal; the egress substep validates
+and owns them. No competing metadata journal may relabel these inodes.
+The initial full selection had 133 passes and seven reverse-coordinator failures;
+this is an implementation correctness failure, not production acceptance.
+
+# U2 D211 resume (verification in progress)
+
+### D211. Lead decision: current permissions outrank migration history
+
+The lead resolves D210: migration never widens a current permission. Ownership
+provenance remains durable, but a recorded mode cannot undo a later chmod.
+Forward owner-work migration preserves the descriptor's current mode; reverse
+restores original UID/GID while retaining the current pre-reverse mode. New
+engine entries reverse to daemon 1001. Canonical root and metadata policies may
+narrow current modes, never add bits. This supersedes D209's directory-setgid
+addition and old-mode replay. No regular file gains read/write/execute/setid.
+
+The same cap applies in metadata and egress setters, including resumed rows and
+WAL/SHM. Missing original metadata after atomic replacement reverses to legacy
+1001:1001 while retaining current mode. Consequently an existing 0600 vault
+stays 0600: this migration does not silently grant its broker read permission.
+Full activation must account for this constraint; activation remains OFF.
+
+First Linux root oracle: 113 passed, zero skips (owner, metadata, inventory),
+including 36 chmod-after-record/restart cases. Broader run including egress
+mode tests, replacement-inode regression and coordinator is in progress.
+No current full-volume, deletion, old CMD boot or startup acceptance claimed.
+U1 remote merge reports already current. Official Codex session proxy remains
+unavailable (10061); no coordination send claimed. U1-owned files untouched.
+
+---
+
 # U2 STOP: stale permission replay after owner chmod (D210)
 
 ### D210. Founder new-privilege stop on restart permission widening

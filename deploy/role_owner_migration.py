@@ -132,16 +132,17 @@ def _write(root, name, document, *, uid=0):
     os.fsync(root)
 
 
-def _acl(owner, named, group=0):
+def _acl(owner, named, group=0, *, mask=None, other=0):
     entries = [(1, owner, 0xFFFFFFFF)]
     entries += [(2, rights, uid) for uid, rights in sorted(named.items())]
     entries += [(4, group, 0xFFFFFFFF)]
     if named:
-        mask = group
-        for rights in named.values():
-            mask |= rights
+        if mask is None:
+            mask = group
+            for rights in named.values():
+                mask |= rights
         entries += [(16, mask, 0xFFFFFFFF)]
-    entries += [(32, 0, 0xFFFFFFFF)]
+    entries += [(32, other, 0xFFFFFFFF)]
     return struct.pack("<I", 2) + b"".join(struct.pack("<HHI", *e) for e in entries)
 
 
@@ -156,66 +157,74 @@ def _xattr(fd, name):
 
 def _permissions(fd, row, reverse):
     directory = row["key"][2] == stat.S_IFDIR
-    executable = bool(row["mode"] & 0o111)
-    uid = 1001 if reverse or row["kind"] == "root" else row["machine"]
-    gid = 1001 if reverse else row["machine"]
-    rights = 7 if directory or executable else 6
-    named = {} if reverse else {1001: rights}
-    if row["kind"] == "root" and not reverse:
-        # Protected roots retain daemon modification; engines only traverse.
-        named = {row["machine"]: 5, 1002: 1}
-    access = _acl(rights, named)
-    default = _acl(7, {1001: 7}) if directory and row["kind"] != "root" and not reverse else None
-    mode = (0o700 if directory or executable else 0o600) if reverse else None
-    info = os.fstat(fd)
-    changed = False
-    if (info.st_uid, info.st_gid) != (uid, gid):
-        os.fchown(fd, uid, gid)
-        changed = True
-    # Neither setuid nor sticky bits are inherited from legacy payloads.
-    # SETGID is already in the approved pre-drop set (D17).
-    special = stat.S_ISGID if directory and not reverse else 0
-    current = os.fstat(fd).st_mode
-    if current & 0o7000 != special:
-        previous = os.getegid()
-        try:
-            os.setegid(gid)
-            os.fchmod(fd, (stat.S_IMODE(current) & 0o777) | special)
-        finally:
-            os.setegid(previous)
-        changed = True
-    if default != _xattr(fd, DEFAULT):
-        if default is None:
-            os.removexattr(fd, DEFAULT)
-        else:
-            os.setxattr(fd, DEFAULT, default)
-        changed = True
+    original = row.get("original", {"ids": row["original_ids"], "mode": row["mode"]})
+    uid = 1001 if row["kind"] == "root" else row["machine"]
+    gid = row["machine"]
+    before = os.fstat(fd)
+    # D211: a journal is ownership provenance, never authority to undo chmod.
+    # Read the live descriptor even when resuming an incomplete journal.
+    mode = stat.S_IMODE(before.st_mode)
+    access = _xattr(fd, ACCESS)
+    default = _xattr(fd, DEFAULT)
     if reverse:
-        if _xattr(fd, ACCESS) is not None:
-            os.removexattr(fd, ACCESS)
-            changed = True
+        uid, gid = original["ids"]
+        access = default = None
+    elif directory:
+        if row["kind"] == "root":
+            # Canonical roots protect sibling metadata; D65 is unchanged.
+            mode &= 0o2750
+            access = _acl((mode >> 6) & 7, {row["machine"]: 5, 1002: 1},
+                          mask=(mode >> 3) & 7)
+            default = None
+        else:
+            # Preserve the original mask, even when it masks daemon access.
+            # D10's owner deletion and pre-drop reverse handle restrictive modes.
+            access = _acl((mode >> 6) & 7, {1001: 7}, (mode >> 3) & 7,
+                          mask=(mode >> 3) & 7, other=mode & 7)
+            default = _acl(7, {1001: 7})
+    expected = (uid, gid, mode, access, default)
+    actual = (before.st_uid, before.st_gid, stat.S_IMODE(before.st_mode),
+              _xattr(fd, ACCESS), _xattr(fd, DEFAULT))
+    if actual == expected:
+        return False
+    if (before.st_uid, before.st_gid) != (uid, gid):
+        os.fchown(fd, uid, gid)
+    previous = os.getegid()
+    try:
+        os.setegid(gid)
+        for attribute, value in ((DEFAULT, default), (ACCESS, access)):
+            if _xattr(fd, attribute) != value:
+                if value is None:
+                    os.removexattr(fd, attribute)
+                else:
+                    os.setxattr(fd, attribute, value)
+        # chown can clear special bits; restore only the live pre-chown mode.
         if stat.S_IMODE(os.fstat(fd).st_mode) != mode:
             os.fchmod(fd, mode)
-            changed = True
-    elif _xattr(fd, ACCESS) != access:
-        # Setting an access ACL can clear setgid just like chmod (D17).
-        previous = os.getegid()
-        try:
-            os.setegid(gid)
-            os.setxattr(fd, ACCESS, access)
-        finally:
-            os.setegid(previous)
-        changed = True
-    if changed:
-        os.fsync(fd)
+    finally:
+        os.setegid(previous)
     final = os.fstat(fd)
-    if (final.st_uid, final.st_gid) != (uid, gid):
-        raise MigrationRefused(f"ownership readback: {row['path']}")
-    if final.st_mode & 0o7000 != special:
-        raise MigrationRefused(f"special-mode readback: {row['path']}")
-    if not reverse and _xattr(fd, ACCESS) != access:
-        raise MigrationRefused(f"ACL readback: {row['path']}")
-    return changed
+    actual = (final.st_uid, final.st_gid, stat.S_IMODE(final.st_mode),
+              _xattr(fd, ACCESS), _xattr(fd, DEFAULT))
+    if actual != expected:
+        raise MigrationRefused(f"permission readback: {row['path']}")
+    os.fsync(fd)
+    return True
+
+
+def _retain_originals(rows, previous):
+    originals = {tuple(row["key"]): row for row in previous if row["kind"] != "quarantine"}
+    for row in rows:
+        old = originals.get(tuple(row["key"]))
+        if old is not None:
+            row["original"] = old.get("original", {
+                "ids": old["original_ids"], "mode": old["mode"]})
+        else:
+            ids = row["original_ids"]
+            # Engine-created entries have no legacy owner; rollback owns them.
+            row["original"] = {"ids": [1001, 1001] if ids[0] == row["machine"] else ids,
+                               "mode": row["mode"]}
+    return rows
 
 
 def _inventory(root, bindings, work, reverse):
@@ -380,7 +389,8 @@ def _move(root, state, row):
         return True
 
 
-def migrate(data_root, *, bindings, work, reverse=False, dry_run=False, after_step=None):
+def migrate(data_root, *, bindings, work, reverse=False, dry_run=False, after_step=None,
+            layout_lock=None):
     """Migrate all supplied owner trees under one durable inventory.
 
     ``bindings`` maps canonical center names to already-reserved broker IDs.
@@ -416,10 +426,14 @@ def migrate(data_root, *, bindings, work, reverse=False, dry_run=False, after_st
             after_step(step)
 
     with _root(data_root) as root:
-        lock = os.open(".layout.lock", os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=root)
+        lock = (os.dup(layout_lock) if layout_lock is not None else
+                os.open(".layout.lock", os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+                        dir_fd=root))
         try:
             info = os.fstat(lock)
-            if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+            expected = _stat(root, ".layout.lock")
+            if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1
+                    or expected is None or not os.path.samestat(info, expected)):
                 raise MigrationRefused("invalid layout lock")
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             layout = _read(root, ".layout.json")
@@ -452,22 +466,30 @@ def migrate(data_root, *, bindings, work, reverse=False, dry_run=False, after_st
                     configuration=configuration,
                     direction=direction,
                     state="migrating",
-                    rows=_inventory(root, bindings, work, reverse) + escrow,
+                    rows=_retain_originals(_inventory(root, bindings, work, reverse),
+                                           journal["rows"] if journal else []) + escrow,
                 )
             elif journal["state"] == "stable":
                 fresh = _inventory(root, bindings, work, reverse)
+                def signature(row):
+                    mode = row["mode"]
+                    if not reverse and row["kind"] == "root":
+                        mode &= 0o2750
+                    return row["key"], row["nlink"], row["kind"], mode
+
                 expected = {
-                    r["path"]: (r["key"], r["nlink"], r["kind"])
+                    r["path"]: signature(r)
                     for r in journal["rows"]
                     if r["kind"] != "quarantine"
                 }
-                actual = {r["path"]: (r["key"], r["nlink"], r["kind"]) for r in fresh}
+                actual = {r["path"]: signature(r) for r in fresh}
                 if actual != expected:
                     # A completed migration may have served real owner writes.
                     # Re-scan ALL names before admitting its next generation;
                     # never extend an incomplete journal in this way.
                     escrow = [r for r in journal["rows"] if r["kind"] == "quarantine"]
-                    journal = {**journal, "state": "migrating", "rows": fresh + escrow}
+                    journal = {**journal, "state": "migrating",
+                               "rows": _retain_originals(fresh, journal["rows"]) + escrow}
             rows = journal["rows"]
             present = _names(root, bindings)
             required = {r["path"] for r in rows if r["kind"] != "quarantine"}
@@ -487,8 +509,10 @@ def migrate(data_root, *, bindings, work, reverse=False, dry_run=False, after_st
                 if row["kind"] in {"work", "root"}:
                     allowed_ids.append(
                         [
-                            1001 if reverse or row["kind"] == "root" else row["machine"],
-                            1001 if reverse else row["machine"],
+                            row.get("original", {"ids": [1001, 1001]})["ids"][0]
+                            if reverse else 1001 if row["kind"] == "root" else row["machine"],
+                            row.get("original", {"ids": [1001, 1001]})["ids"][1]
+                            if reverse else row["machine"],
                         ]
                     )
                 if [info.st_uid, info.st_gid] not in allowed_ids:
@@ -507,7 +531,7 @@ def migrate(data_root, *, bindings, work, reverse=False, dry_run=False, after_st
                     _write(state, "journal.json", journal)
                     checkpoint("journal")
                 progress = {"state": "migrating", "direction": direction}
-                if layout.get("roles", {}).get("owners") != {
+                if journal["state"] != "stable" or layout.get("roles", {}).get("owners") != {
                     "state": "stable",
                     "direction": direction,
                 }:

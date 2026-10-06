@@ -27,7 +27,8 @@ PRIVATE_DIR_MODE = 0o2700
 PRIVATE_FILE_MODE = 0o600
 
 
-def migrate_liveness(data_root, *, modes, reverse=False, dry_run=False, after_step=None):
+def migrate_liveness(data_root, *, modes, reverse=False, dry_run=False, after_step=None,
+                     layout_lock=None):
     """Offline proof-mode substep. ``modes`` is the chain-verified role_modes declaration.
 
     The full startup caller has stopped every role before taking this lock.
@@ -45,7 +46,7 @@ def migrate_liveness(data_root, *, modes, reverse=False, dry_run=False, after_st
         root = stack.enter_context(_directory(data_root))
         if _regular(root, ".layout.lock") is None:
             raise MigrationRefused("liveness migration requires the layout lock")
-        lock = os.open(".layout.lock", os.O_RDONLY | os.O_NOFOLLOW, dir_fd=root)
+        lock = _lock_descriptor(root, layout_lock)
         stack.callback(os.close, lock)
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         document = _read_marker(root)
@@ -76,6 +77,8 @@ def migrate_liveness(data_root, *, modes, reverse=False, dry_run=False, after_st
                 raise MigrationRefused("liveness proof changed")
             entries.append((child, fd, opened, file_mode))
         entries.append((name, parent, os.fstat(parent), directory_mode))
+        entries = [(child, fd, info, mode & stat.S_IMODE(info.st_mode))
+                   for child, fd, info, mode in entries]
         changes = [(child, fd, mode) for child, fd, info, mode in entries
                    if (info.st_uid, info.st_gid, stat.S_IMODE(info.st_mode)) != (uid, gid, mode)]
         plan = [f"{direction}: liveness {child} -> {uid}:{gid} {mode:04o}"
@@ -104,11 +107,25 @@ class MigrationRefused(RuntimeError):
 
 @contextmanager
 def _directory(name, *, parent=None):
-    fd = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent)
+    fd = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_NOATIME,
+                 dir_fd=parent)
     try:
         yield fd
     finally:
         os.close(fd)
+
+
+def _lock_descriptor(root, inherited):
+    """Share the orchestrator's open description so its lock has no substep gaps."""
+    expected = _regular(root, ".layout.lock")
+    if expected is None:
+        raise MigrationRefused("missing layout lock")
+    fd = (os.dup(inherited) if inherited is not None else
+          os.open(".layout.lock", os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=root))
+    if not os.path.samestat(expected, os.fstat(fd)):
+        os.close(fd)
+        raise MigrationRefused("inherited layout lock does not match the volume")
+    return fd
 
 
 def _stat(parent, name):
@@ -155,6 +172,8 @@ def _tree(parent, name, *, uid=None, gid=None):
 
 def _permissions(fd, uid, gid, mode):
     info = os.fstat(fd)
+    # D211: fixed role policies may narrow, never restore removed mode bits.
+    mode &= stat.S_IMODE(info.st_mode)
     if (info.st_uid, info.st_gid) != (uid, gid):
         os.fchown(fd, uid, gid)
     if stat.S_IMODE(os.fstat(fd).st_mode) != mode:
@@ -190,7 +209,7 @@ def _rename(source, destination, name):
 def _read_marker(root):
     if _regular(root, ".layout.json") is None:
         raise MigrationRefused("missing .layout.json; initialize the data layout first")
-    fd = os.open(".layout.json", os.O_RDONLY | os.O_NOFOLLOW, dir_fd=root)
+    fd = os.open(".layout.json", os.O_RDONLY | os.O_NOFOLLOW | os.O_NOATIME, dir_fd=root)
     with os.fdopen(fd, encoding="utf-8") as handle:
         document = json.load(handle)
     if not isinstance(document, dict) or document.get("layout") not in (1, 2):
@@ -248,7 +267,8 @@ def _checkpoint(parent):
     os.fsync(parent)
 
 
-def relocate(data_root: Path, *, reverse=False, dry_run=False, after_step=None):
+def relocate(data_root: Path, *, reverse=False, dry_run=False, after_step=None,
+             layout_lock=None):
     """Return a plan or complete the egress substep; no service is started.
 
     after_step is an in-process fault-injection seam, not a CLI/RPC operation.
@@ -262,7 +282,7 @@ def relocate(data_root: Path, *, reverse=False, dry_run=False, after_step=None):
         root = stack.enter_context(_directory(data_root))
         if _regular(root, ".layout.lock") is None:
             raise MigrationRefused("missing .layout.lock; initialize the data layout first")
-        lock = os.open(".layout.lock", os.O_RDONLY | os.O_NOFOLLOW, dir_fd=root)
+        lock = _lock_descriptor(root, layout_lock)
         stack.callback(os.close, lock)
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         document = _read_marker(root)
@@ -440,7 +460,8 @@ def _database_snapshot(parent, name):
             conn.close()
 
 
-def transfer_accounting(data_root: Path, *, reverse=False, dry_run=False, after_step=None):
+def transfer_accounting(data_root: Path, *, reverse=False, dry_run=False, after_step=None,
+                        layout_lock=None):
     """Offline copy/verify/drop, reversible and resumable; never admits a service."""
     import fcntl
 
@@ -449,7 +470,7 @@ def transfer_accounting(data_root: Path, *, reverse=False, dry_run=False, after_
         root = stack.enter_context(_directory(data_root))
         if _regular(root, ".layout.lock") is None:
             raise MigrationRefused("accounting transfer requires the layout lock")
-        lock = os.open(".layout.lock", os.O_RDONLY | os.O_NOFOLLOW, dir_fd=root)
+        lock = _lock_descriptor(root, layout_lock)
         stack.callback(os.close, lock)
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         document = _read_marker(root)

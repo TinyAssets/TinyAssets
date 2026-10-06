@@ -362,3 +362,201 @@ def test_new_own_file_can_reuse_a_quarantined_name_without_releasing_escrow(volu
     assert target.read_bytes() == b"new legitimate content"
     assert (volume / ".role-owner-migration/quarantine/alice/work/payload").read_bytes() == b"alice"
     assert run(volume)["changed"] == 0
+
+
+def test_restart_preserves_owner_execute_changes_and_marks_new_generation(volume):
+    run(volume)
+    path = volume / "alice/work/payload"
+    path.chmod(0o700)
+    marker = volume / ".layout.json"
+    layout = json.loads(marker.read_text())
+    layout["state"] = "stable"
+    layout["roles"]["state"] = "stable"
+    marker.write_text(json.dumps(layout))
+
+    def fail(step):
+        if step == "marker":
+            raise RuntimeError("new-generation marker")
+
+    with pytest.raises(RuntimeError, match="new-generation marker"):
+        run(volume, after_step=fail)
+    assert json.loads(marker.read_text())["state"] == "migrating"
+    run(volume)
+    assert path.stat().st_mode & stat.S_IXUSR
+    path.chmod(0o600)
+    run(volume)
+    assert not path.stat().st_mode & 0o111
+
+
+def test_all_substeps_share_one_continuously_held_layout_lock(volume):
+    import fcntl
+    import sqlite3
+
+    from deploy.role_egress_migration import migrate_liveness, relocate, transfer_accounting
+    from tinyassets import role_modes
+
+    with sqlite3.connect(volume / "outbound.db") as db:
+        db.execute("CREATE TABLE retained(value TEXT)")
+        db.execute("INSERT INTO retained VALUES ('bytes retained')")
+    os.chown(volume / "outbound.db", 1001, 1001)
+    lock = os.open(volume / ".layout.lock", os.O_RDONLY)
+    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+    def competitor():
+        pid = os.fork()
+        if pid == 0:
+            os.close(lock)
+            own = os.open(volume / ".layout.lock", os.O_RDONLY)
+            try:
+                fcntl.flock(own, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                os._exit(0)
+            os._exit(1)
+        assert os.waitpid(pid, 0)[1] == 0
+
+    try:
+        for reverse in (False, True):
+            calls = [
+                lambda: relocate(volume, reverse=reverse, layout_lock=lock),
+                lambda: transfer_accounting(volume, reverse=reverse, layout_lock=lock),
+                lambda: migrate_liveness(volume, modes=vars(role_modes), reverse=reverse,
+                                          layout_lock=lock),
+                lambda: run(volume, reverse=reverse, layout_lock=lock),
+            ]
+            for operation in reversed(calls) if reverse else calls:
+                competitor()
+                operation()
+                competitor()
+    finally:
+        os.close(lock)
+    with sqlite3.connect(volume / "outbound.db") as db:
+        assert db.execute("SELECT value FROM retained").fetchone() == ("bytes retained",)
+
+
+def test_egress_dry_run_preserves_directory_and_marker_atimes(volume):
+    from deploy.role_egress_migration import relocate
+
+    proxy = volume / ".outbound-proxy"
+    proxy.mkdir()
+    (proxy / "retained").write_bytes(b"proxy")
+    for path in (volume, proxy, volume / ".layout.json"):
+        os.utime(path, ns=(1, 1))
+    before = metadata(volume)
+    relocate(volume, dry_run=True)
+    assert metadata(volume) == before
+
+
+def test_substeps_refuse_another_volumes_lock(volume, tmp_path):
+    from deploy import role_egress_migration as egress
+    from tinyassets import role_modes
+
+    foreign = tmp_path / "other-lock"
+    foreign.touch()
+    fd = os.open(foreign, os.O_RDONLY)
+    before = metadata(volume)
+    try:
+        with pytest.raises(MigrationRefused, match="layout lock"):
+            run(volume, layout_lock=fd)
+        for operation in (
+            lambda: egress.relocate(volume, layout_lock=fd),
+            lambda: egress.transfer_accounting(volume, layout_lock=fd),
+            lambda: egress.migrate_liveness(volume, modes=vars(role_modes), layout_lock=fd),
+        ):
+            with pytest.raises(egress.MigrationRefused, match="layout lock"):
+                operation()
+    finally:
+        os.close(fd)
+    assert metadata(volume) == before
+
+
+@pytest.mark.parametrize("mode", [0o000, 0o400, 0o600, 0o640, 0o644, 0o700, 0o751, 0o755])
+def test_exact_work_modes_and_original_ids_survive_both_directions(volume, mode):
+    paths = [volume / "alice/work" / name for name in
+             ("ordinary", "database-wal", "database-shm", "directory")]
+    for path in paths:
+        if path.name == "directory":
+            path.mkdir()
+        else:
+            path.write_bytes(b"unchanged")
+        os.chown(path, 1001, 1100)
+        path.chmod(mode)
+    run(volume)
+    for path in paths:
+        expected = mode  # D211 forbids adding directory bits too.
+        assert stat.S_IMODE(path.stat().st_mode) == expected
+        assert (path.stat().st_uid, path.stat().st_gid) == (300001, 300001)
+        if path.name != "directory":
+            assert not (path.stat().st_mode & 0o6111) & ~mode
+    assert run(volume)["changed"] == 0
+    run(volume, reverse=True)
+    for path in paths:
+        assert stat.S_IMODE(path.stat().st_mode) == mode
+        assert (path.stat().st_uid, path.stat().st_gid) == (1001, 1100)
+        if path.name != "directory":
+            assert path.read_bytes() == b"unchanged"
+    assert run(volume, reverse=True)["changed"] == 0
+
+
+def test_reverse_restores_original_mode_after_restart_generation(volume):
+    path = volume / "alice/work/payload"
+    path.chmod(0o640)
+    directory = volume / "alice/work"
+    original_directory = stat.S_IMODE(directory.stat().st_mode)
+    run(volume)
+    path.chmod(0o700)
+    run(volume)
+    run(volume, reverse=True)
+    assert stat.S_IMODE(path.stat().st_mode) == 0o700
+    assert stat.S_IMODE(directory.stat().st_mode) == original_directory
+
+
+@pytest.mark.parametrize("boundary", ["journal", "marker", "ownership", "complete-journal", None])
+@pytest.mark.parametrize("name", ["payload", "database-wal", "database-shm", "directory"])
+def test_d211_chmod_after_record_survives_resume_and_reverse(volume, boundary, name):
+    path = volume / "alice/work" / name
+    if name == "directory":
+        path.mkdir()
+    elif not path.exists():
+        path.write_bytes(b"retained")
+    os.chown(path, 1001, 1001)
+    path.chmod(0o755 if name == "directory" else 0o644)
+
+    def crash(step):
+        if step == boundary:
+            raise InterruptedError(step)
+
+    if boundary:
+        with pytest.raises(InterruptedError):
+            run(volume, after_step=crash)
+    else:
+        run(volume)
+    path.chmod(0o600)
+    run(volume)
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+    assert (path.stat().st_uid, path.stat().st_gid) == (300001, 300001)
+    run(volume, reverse=True)
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+    assert (path.stat().st_uid, path.stat().st_gid) == (1001, 1001)
+    assert run(volume, reverse=True)["changed"] == 0
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+@pytest.mark.parametrize("mode", [0o000, 0o400, 0o600, 0o640, 0o755, 0o2700])
+def test_egress_permissions_never_add_mode_bits(volume, reverse, mode):
+    from deploy.role_egress_migration import _permissions
+
+    for name in ("database", "database-wal", "database-shm", "directory"):
+        path = volume / "alice/work" / name
+        if name == "directory":
+            path.mkdir()
+        else:
+            path.write_bytes(b"retained")
+        path.chmod(mode)
+        fd = os.open(path, os.O_RDONLY)
+        try:
+            uid, gid = (1001, 1001) if reverse else (1002, 1101)
+            _permissions(fd, uid, gid, 0o2700 if name == "directory" else 0o600)
+        finally:
+            os.close(fd)
+        assert not stat.S_IMODE(path.stat().st_mode) & ~mode
+        assert (path.stat().st_uid, path.stat().st_gid) == (uid, gid)
