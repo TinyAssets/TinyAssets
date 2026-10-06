@@ -48,8 +48,11 @@ the adapter's job, as long as what the model sees comes out identical.
    downloads-are-untrusted paragraph). `--bare` / `CLAUDE_CODE_SIMPLE=1` drop the
    environment block but refuse OAuth (captured: no request is sent), and
    `--exclude-dynamic-system-prompt-sections` is ignored with `--system-prompt`.
-   No tool or capability differs; the instruction text does. Founder call:
-   accept as vendor framing, or ask Anthropic for a switch.
+   No tool or capability differs; the instruction text does. **Decided
+   2026-10-06 (lead, applying the founder's rule that bans capability
+   differences, not adapter translation): accepted as vendor framing.** The
+   guard asserts identical tools, schemas and capabilities; it does not
+   require byte-identical provider framing.
 2. **Remote box ta bridge** (`agent_loop/served_chat.py`): separate lane #4525.
 3. **Release proof:** paired live trials across providers, deployed SHA, a real
    owner app pass.

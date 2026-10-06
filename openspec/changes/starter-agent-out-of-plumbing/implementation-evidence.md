@@ -34,7 +34,7 @@ code can prove it; the rest is narrowed with evidence.**
   a workflow prompt node using Codex as a text model, not an agent turn. The
   founder rule covers agents. `test_only_the_json_path_streams_and_the_legacy_path_is_verbatim`
   pins that split.
-- Still open, founder call: claude-code 2.1.290 prepends its identity line and
+- Decided (lead, 2026-10-06; accepted as vendor framing, no capability difference): claude-code 2.1.290 prepends its identity line and
   environment block under subscription OAuth, and has no switch for it. See
   the K2 concern.
 
