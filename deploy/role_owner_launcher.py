@@ -10,6 +10,7 @@ import array
 import ctypes
 import json
 import os
+import re
 import select
 import signal
 import socket
@@ -22,6 +23,38 @@ FIRST, COUNT = 300000, 100000
 MAPPING = f"0 {FIRST} {COUNT}\n"
 CAPS = (1 << 6) | (1 << 7)
 MAX_CELLS, MAX_OWNER_CELLS = 32, 4
+
+
+def package_usage(pid, proc='/proc'):
+    """Count/RSS of the cell from OUTSIDE its PID namespace and owner identity.
+
+    Orphans stay below the cell's namespace init, so double-fork/setsid cannot
+    leave this tree. Only kernel stat records are read; no command lines/env.
+    """
+    records = {}
+    for name in os.listdir(proc):
+        if not name.isdigit():
+            continue
+        try:
+            raw = Path(proc, name, 'stat').read_text()
+            fields = raw[raw.rfind(')') + 2:].split()
+            records[int(name)] = (int(fields[1]), int(fields[21]))
+        except FileNotFoundError:
+            continue  # A process that exited holds no resident memory.
+    if pid not in records:
+        raise RuntimeError('package root is unmeasurable')
+    children = {}
+    for child, (parent, _) in records.items():
+        children.setdefault(parent, []).append(child)
+    seen, pending, pages = set(), [pid], 0
+    while pending:
+        child = pending.pop()
+        if child in seen:
+            continue
+        seen.add(child)
+        pages += records[child][1]
+        pending.extend(children.get(child, ()))
+    return len(seen), pages * os.sysconf('SC_PAGE_SIZE')
 
 
 def bootstrap_services(data_root, run_root, bindings, launch):
@@ -247,6 +280,8 @@ class OwnerLauncher:
         self.overflow_uid = int(Path('/proc/sys/kernel/overflowuid').read_text())
         self.overflow_gid = int(Path('/proc/sys/kernel/overflowgid').read_text())
         self.jobs = {}
+        self.package_jobs = set()
+        self.delete_fences = {}
 
     def _alive(self):
         return not select.select([self.daemon_pidfd], [], [], 0)[0]
@@ -255,6 +290,7 @@ class OwnerLauncher:
         if not self._alive():
             raise RuntimeError('daemon exited')
         self._service_jobs()
+        self.channel.settimeout(0.05 if self.package_jobs else 1)
         try:
             packet, ancillary, flags, _ = self.channel.recvmsg(
                 4096, socket.CMSG_SPACE(12) + socket.CMSG_SPACE(32), socket.MSG_CMSG_CLOEXEC)
@@ -290,6 +326,9 @@ class OwnerLauncher:
         return True
 
     def _decoder(self, request, received):
+        if isinstance(request, dict) and request.get('op') == 'DELETE_DONE':
+            self._finish_delete(request, received)
+            return
         kind = request.get('kind') if isinstance(request, dict) else None
         streaming = isinstance(request, dict) and request.get('op') == 'START'
         fields = {'op', 'kind', 'principal', 'command_center'}
@@ -297,27 +336,61 @@ class OwnerLauncher:
             fields.add('mime')
         if kind == 'preview-write':
             fields.add('ui_id')
+        if kind == 'node-sandbox':
+            fields.add('workspace')
+        if kind == 'tool-jail':
+            fields.update(('egress', 'ta'))
+        if kind in ('provider-discovery', 'provider-exec'):
+            fields.add('egress')
+        if kind == 'package':
+            fields.update(('revision', 'ta', 'egress'))
+        if kind == 'owner-delete':
+            fields.add('delete_token')
+        socket_count = (sum(request.get(key) is True for key in ('egress', 'ta'))
+                        if kind in ('tool-jail', 'package') else int(request.get('egress') is True)
+                        if kind in ('provider-discovery', 'provider-exec') else 0)
+        mounted = kind in {'workspace-git', 'preview-write', 'tool-jail', 'tool-files',
+                           'provider-discovery', 'provider-exec', 'package', 'owner-delete'} or (
+            kind == 'node-sandbox' and request.get('workspace') is True)
         if (not isinstance(request, dict)
                 or set(request) != fields or request['op'] not in {'SPAWN', 'START'}
-                or kind not in {'image-decoder', 'workspace-git', 'ui-preview', 'preview-write'}
+                or kind not in {'image-decoder', 'workspace-git', 'ui-preview', 'preview-write',
+                                'node-sandbox', 'tool-jail', 'ingestion-video',
+                                'provider-discovery', 'provider-exec', 'tool-files',
+                                'package', 'owner-delete'}
+                or (kind == 'owner-delete' and (not streaming
+                    or type(request['delete_token']) is not str
+                    or not re.fullmatch('[a-f0-9]{32}', request['delete_token'])))
+                or (kind == 'package' and (not streaming or type(request['ta']) is not bool
+                    or type(request['egress']) is not bool
+                    or type(request['revision']) is not str
+                    or not re.fullmatch('[a-f0-9]{64}', request['revision'])))
+                or (kind == 'node-sandbox' and type(request['workspace']) is not bool)
+                or (kind in ('provider-discovery', 'provider-exec') and (
+                    not streaming or type(request['egress']) is not bool))
+                or (kind == 'tool-jail' and any(
+                    type(request[key]) is not bool for key in ('egress', 'ta')))
                 or (kind == 'image-decoder' and (
                     not isinstance(request['mime'], str)
                     or request['mime'] not in {
                         'image/png', 'image/jpeg', 'image/webp', 'image/gif'}))
                 or not isinstance(request['principal'], str)
                 or not isinstance(request['command_center'], str)
-                or len(received) != (2 if kind in {'workspace-git', 'preview-write'} else 1)
-                    + int(streaming)):
+                or len(received) != (2 if mounted else 1)
+                    + int(streaming) + socket_count + int(kind == 'provider-exec')):
             raise ValueError('unsupported owner engine')
         if not streaming and self.jobs:
             raise ValueError('blocking spawn cannot suspend active cell supervision')
         machine = self.bindings[(request['principal'], request['command_center'])]
+        self._check_delete_fence(machine, request)
         inner = machine - FIRST
         if streaming:
             if (len(self.jobs) >= MAX_CELLS or sum(
                     job[1] == machine for job in self.jobs.values()) >= MAX_OWNER_CELLS):
                 raise ValueError('owner cell concurrency is exhausted')
             self._daemon_endpoint(received[-1], socket.SOCK_SEQPACKET)
+        if kind == 'provider-exec':
+            self._daemon_endpoint(received[-2], socket.SOCK_STREAM)
         if kind == 'preview-write':
             ui_id = request['ui_id']
             if (not isinstance(ui_id, str) or not 1 <= len(ui_id) <= 64
@@ -330,7 +403,55 @@ class OwnerLauncher:
                     or os.readlink(f'/proc/self/fd/{received[1]}') !=
                     self.data_root + '/' + request['command_center']):
                 raise ValueError('preview output root does not match admitted center')
-        if kind == 'workspace-git':
+        if kind in ('tool-jail', 'tool-files', 'package', 'owner-delete'):
+            info = os.fstat(received[1])
+            expected = self.data_root + '/' + request['command_center']
+            if kind == 'package':
+                expected += '/.runtime/package-cells/' + request['revision']
+                valid_owner = info.st_uid == self.overflow_uid and not info.st_mode & 0o022
+            else:
+                valid_owner = info.st_gid == inner and info.st_uid in (inner, self.overflow_uid)
+            if (not stat.S_ISDIR(info.st_mode) or not valid_owner
+                    or os.readlink(f'/proc/self/fd/{received[1]}') != expected):
+                raise ValueError('tool root does not match admitted center')
+            index = 2
+            prefix = (self.data_root + '/.universe-sidecars/'
+                      + request['command_center'] + '/')
+            for name in ('egress', 'ta'):
+                if not request.get(name):
+                    continue
+                info = os.fstat(received[index])
+                source = os.readlink(f'/proc/self/fd/{received[index]}')
+                pattern = (rf'egress-{self.daemon_pid}\.sock' if name == 'egress'
+                           else r'ta-[a-f0-9]{32}\.sock')
+                if (not stat.S_ISSOCK(info.st_mode) or info.st_nlink != 1
+                        or info.st_uid != self.overflow_uid
+                        or not source.startswith(prefix)
+                        or not re.fullmatch(pattern, source[len(prefix):])):
+                    raise ValueError('tool relay does not match admitted center')
+                index += 1
+        if kind in ('provider-discovery', 'provider-exec'):
+            # D82: exactly one daemon-sealed launch snapshot of this admitted
+            # center; the caller names no path, identity or executable.
+            info = os.fstat(received[1])
+            source = os.readlink(f'/proc/self/fd/{received[1]}')
+            prefix = (self.data_root + '/' + request['command_center']
+                      + '/.runtime/provider-launch-credentials/')
+            if (not stat.S_ISDIR(info.st_mode) or info.st_uid != self.overflow_uid
+                    or not source.startswith(prefix)
+                    or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]{0,127}',
+                                        source[len(prefix):])):
+                raise ValueError('provider snapshot does not match admitted center')
+            if request['egress']:
+                info = os.fstat(received[2])
+                source = os.readlink(f'/proc/self/fd/{received[2]}')
+                prefix = (self.data_root + '/.universe-sidecars/'
+                          + request['command_center'] + '/')
+                if (not stat.S_ISSOCK(info.st_mode) or info.st_nlink != 1
+                        or info.st_uid != self.overflow_uid
+                        or source != prefix + f'egress-{self.daemon_pid}.sock'):
+                    raise ValueError('provider egress does not match admitted center')
+        if kind == 'workspace-git' or (kind == 'node-sandbox' and mounted):
             info = os.fstat(received[1])
             if not stat.S_ISDIR(info.st_mode) or (info.st_uid, info.st_gid) != (inner, inner):
                 raise ValueError('git directory is not owned by the admitted owner')
@@ -350,6 +471,9 @@ class OwnerLauncher:
                 status_channel.close()
                 raise
         try:
+            if kind == 'owner-delete':
+                self.delete_fences[machine] = (request['principal'],
+                    request['command_center'], request['delete_token'])
             pid = os.fork()
         except BaseException:
             if status_channel is not None:
@@ -357,14 +481,37 @@ class OwnerLauncher:
             raise
         if pid == 0:
             try:
+                stderr_copy = None
+                if kind == 'provider-exec':
+                    import fcntl
+
+                    stderr_copy = fcntl.fcntl(received[-2], fcntl.F_DUPFD_CLOEXEC, 20)
+                retained = (3,) if mounted else ()
+                if kind in ('tool-jail', 'provider-discovery', 'provider-exec',
+                             'package') and socket_count:
+                    import fcntl
+
+                    # Copy before assigning fixed slots, so a destination
+                    # cannot overwrite another received source descriptor.
+                    sources = [fcntl.fcntl(value, fcntl.F_DUPFD_CLOEXEC, 20)
+                               for value in received[:2 + socket_count]]
+                    fd = sources[0]
+                    os.dup2(sources[1], 3)
+                    index = 2
+                    retained = [3]
+                    for name, target in (('egress', 4), ('ta', 5)):
+                        if request.get(name):
+                            os.dup2(sources[index], target)
+                            retained.append(target)
+                            index += 1
                 os.dup2(fd, 0)
                 os.dup2(fd, 1)
-                null = os.open('/dev/null', os.O_WRONLY)
-                os.dup2(null, 2)
-                if kind in {'workspace-git', 'preview-write'}:
+                error = (os.open('/dev/null', os.O_WRONLY) if stderr_copy is None
+                         else stderr_copy)
+                os.dup2(error, 2)
+                if mounted and not socket_count:
                     os.dup2(received[1], 3)
-                self.launch['close_descriptors'](
-                    (3,) if kind in {'workspace-git', 'preview-write'} else ())
+                self.launch['close_descriptors'](retained)
                 os.setgroups([])
                 os.setresgid(inner, inner, inner)
                 os.setresuid(inner, inner, inner)
@@ -372,7 +519,33 @@ class OwnerLauncher:
                 self.launch['_assert_caps'](0)
                 os.umask(0o007)
                 os.chdir('/')
-                if kind == 'workspace-git':
+                if kind == 'package':
+                    command = ['/usr/local/libexec/ta-decoder.py', 'enter-package',
+                               request['revision'] + (('e' if request['egress'] else '')
+                                                      + ('t' if request['ta'] else '') or '-'),
+                               self.data_root, str(inner)]
+                elif kind in ('provider-discovery', 'provider-exec'):
+                    mode = 'enter-provider-exec' if kind == 'provider-exec' else 'enter-provider'
+                    command = ['/usr/local/libexec/ta-decoder.py',
+                               mode,
+                               'e' if request['egress'] else '-', self.data_root, str(inner)]
+                elif kind == 'ingestion-video':
+                    command = ['/usr/local/libexec/ta-decoder.py', 'enter-video',
+                               'video', self.data_root, str(inner)]
+                elif kind == 'owner-delete':
+                    command = ['/usr/local/libexec/ta-decoder.py', 'enter-owner-delete',
+                               'delete', self.data_root, str(inner)]
+                elif kind == 'tool-files':
+                    command = ['/usr/local/libexec/ta-decoder.py', 'enter-tool-files',
+                               'files', self.data_root, str(inner)]
+                elif kind == 'tool-jail':
+                    command = ['/usr/local/libexec/ta-decoder.py', 'enter-tool',
+                               ('e' if request['egress'] else '')
+                               + ('t' if request['ta'] else '') or '-', self.data_root, str(inner)]
+                elif kind == 'node-sandbox':
+                    command = ['/usr/local/libexec/ta-decoder.py', 'enter-node',
+                               'workspace' if mounted else 'data', self.data_root, str(inner)]
+                elif kind == 'workspace-git':
                     command = ['/usr/local/libexec/ta-git.py', 'enter', str(inner), self.data_root]
                 elif kind == 'ui-preview':
                     command = ['/usr/local/libexec/ta-decoder.py', 'enter-preview',
@@ -388,10 +561,19 @@ class OwnerLauncher:
                      'PYTHONDONTWRITEBYTECODE': '1'})
             except BaseException:
                 os._exit(126)
-        deadline = time.monotonic() + (75 if kind == 'ui-preview' else
-                                     65 if kind == 'workspace-git' else 35)
+        # A provider turn or package server runs until it finishes: lifetime is
+        # the daemon's revocation (EOF), daemon death or the RSS/process guard,
+        # never a clock.
+        deadline = float('inf') if kind in ('provider-exec', 'package') else time.monotonic() + (
+            155 if kind == 'ingestion-video' else
+            1810 if kind == 'node-sandbox' else
+            660 if kind == 'tool-jail' else
+            75 if kind == 'ui-preview' else
+            65 if kind == 'workspace-git' else 35)
         if streaming:
             self.jobs[pid] = (inner, machine, deadline, status_channel)
+            if kind in ('package', 'provider-exec'):
+                self.package_jobs.add(pid)
             try:
                 self.channel.sendall(json.dumps(
                     dict(op='STARTED', uid=machine, gid=machine)).encode())
@@ -426,6 +608,29 @@ class OwnerLauncher:
             'returncode': os.waitstatus_to_exitcode(status), 'uid': machine,
             'gid': machine}).encode())
 
+    def _check_delete_fence(self, machine, request):
+        fence = self.delete_fences.get(machine)
+        if request['kind'] == 'owner-delete':
+            expected = (request['principal'], request['command_center'], request['delete_token'])
+            if ((fence is not None and fence != expected)
+                    or any(job[1] == machine for job in self.jobs.values())):
+                raise ValueError('owner deletion is not quiescent or token differs')
+        elif fence is not None:
+            raise ValueError('owner deletion fence is active')
+
+    def _finish_delete(self, request, received):
+        if (received or set(request) != {'op', 'principal', 'command_center', 'delete_token'}
+                or any(type(request[key]) is not str for key in
+                       ('principal', 'command_center', 'delete_token'))):
+            raise ValueError('invalid deletion finish')
+        machine = self.bindings[(request['principal'], request['command_center'])]
+        expected = (request['principal'], request['command_center'], request['delete_token'])
+        if (self.delete_fences.get(machine) != expected
+                or any(job[1] == machine for job in self.jobs.values())):
+            raise ValueError('deletion finish does not match quiescent fence')
+        del self.delete_fences[machine]
+        self.channel.sendall(b'{"op":"DELETE_FINISHED"}')
+
     def _daemon_endpoint(self, fd, kind):
         if not stat.S_ISSOCK(os.fstat(fd).st_mode):
             raise ValueError('owner cell needs daemon socketpair')
@@ -441,6 +646,12 @@ class OwnerLauncher:
         for pid, (inner, machine, deadline, channel) in list(self.jobs.items()):
             waited, status = os.waitpid(pid, os.WNOHANG)
             cancel = time.monotonic() >= deadline
+            if not waited and pid in self.package_jobs:
+                try:
+                    count, rss = package_usage(pid)
+                    cancel |= count > 68 or rss > 512 * 1024 * 1024
+                except (OSError, ValueError, IndexError, RuntimeError):
+                    cancel = True  # Never run a package with unmeasurable usage.
             if not waited and select.select([channel], [], [], 0)[0]:
                 # EOF revokes this launch. Any malformed or forged control
                 # also cancels only this cell; it can never select another PID.
@@ -476,4 +687,5 @@ class OwnerLauncher:
                 finally:
                     channel.close()
                     del self.jobs[pid]
+                    self.package_jobs.discard(pid)
         assert_mapper(self.launch)

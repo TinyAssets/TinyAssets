@@ -1,4 +1,4 @@
-﻿"""D25 serving custody reads use the caller's admitted owner over broker IPC."""
+"""D25 serving custody reads use the caller's admitted owner over broker IPC."""
 from types import SimpleNamespace
 
 import pytest

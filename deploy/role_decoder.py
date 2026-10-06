@@ -1,6 +1,7 @@
 """Static data-free image cell bootstrap. Runs only after uid/capability retirement."""
 from __future__ import annotations
 
+import glob
 import json
 import os
 import runpy
@@ -27,19 +28,74 @@ def identity(uid=1003):
         raise RuntimeError("decoder role retirement is absent")
 
 
-def enter(mime, data_root, uid=1003, *, preview=False, preview_write=False):
+def tool_mounts(uid):
+    """Pin only owner content; never mount the command-center root itself."""
+    entries = os.listdir(3)
+    if len(entries) > 256:
+        raise ValueError('tool center has too many immediate entries')
+    required = {'.agent-workspace', 'skills', 'prompts', 'extensions',
+                'workflows', 'bin', 'notes', 'wiki'}
+    if not required <= set(entries):
+        raise ValueError('tool center has not been prepared')
+    mounts = ['--tmpfs', '/center']
+    for name in sorted(entries):
+        if (name.startswith('.') and name != '.agent-workspace') or name == 'owner.json':
+            continue
+        fd = os.open(name, os.O_PATH | os.O_NOFOLLOW, dir_fd=3)
+        info = os.fstat(fd)
+        if stat.S_ISLNK(info.st_mode):
+            os.close(fd)
+            continue
+        if (not (stat.S_ISDIR(info.st_mode) or stat.S_ISREG(info.st_mode))
+                or (info.st_uid, info.st_gid) != (uid, uid)
+                or (stat.S_ISREG(info.st_mode) and info.st_nlink != 1)
+                or (name in required and not stat.S_ISDIR(info.st_mode))):
+            raise ValueError('tool mount is not an exclusive owner content inode')
+        os.set_inheritable(fd, True)
+        mounts.extend(['--bind-fd', str(fd), '/center/' + name])
+    mounts.extend(['--remount-ro', '/center'])
+    return mounts
+
+
+def enter(mime, data_root, uid=1003, *, preview=False, preview_write=False, node=False,
+          tool=False, video=False, provider=False, tool_files=False, package=False,
+          owner_delete=False, provider_exec=False):
     identity(uid)
     host = namespaces()
-    if preview_write:
+    mounted = (preview_write or tool or provider or tool_files or package or owner_delete
+               or (node and mime == 'workspace'))
+    if provider or package:
+        # D82: the daemon-sealed snapshot is daemon-owned; D73 grants the owner
+        # read access only. The mapper already matched its exact path.
+        info = os.fstat(3)
+        if not stat.S_ISDIR(info.st_mode):
+            raise RuntimeError('provider snapshot source is invalid')
+        host['source'] = [info.st_dev, info.st_ino]
+        os.set_inheritable(3, True)
+    elif mounted:
         info = os.fstat(3)
         if not stat.S_ISDIR(info.st_mode) or info.st_gid != uid:
             raise RuntimeError('preview output source is invalid')
         host['source'] = [info.st_dev, info.st_ino]
         os.set_inheritable(3, True)
+    # A package names its sockets after the 64-hex revision, which may itself
+    # contain 'e'; only the suffix selects descriptors.
+    selector = mime[64:] if package else mime
+    if tool or provider or package:
+        host['sockets'] = {}
+        for key, fd in (('e', 4), ('t', 5)):
+            if key in selector:
+                info = os.fstat(fd)
+                if not stat.S_ISSOCK(info.st_mode) or info.st_nlink != 1:
+                    raise RuntimeError('tool relay is not a socket')
+                host['sockets'][key] = [info.st_dev, info.st_ino]
+                os.set_inheritable(fd, True)
     # Load only the immutable stdlib-only filter definition; no package import
     # or application initialization before the owner boundary exists.
     filter_factory = runpy.run_path("/app/tinyassets/providers/jail_seccomp.py")["program_fd"]
-    descriptor = filter_factory(profile="cell-nested" if preview else "cell-deny")
+    profile = 'cell-links' if package else (
+        'cell-nested' if preview or node or tool else 'cell-deny')
+    descriptor = filter_factory(profile=profile)
     os.set_inheritable(descriptor, True)
     argv = ["/usr/bin/bwrap", "--die-with-parent", "--new-session", "--unshare-all",
             "--cap-drop", "ALL", "--clearenv", "--setenv", "PATH", "/usr/bin:/bin",
@@ -54,11 +110,48 @@ def enter(mime, data_root, uid=1003, *, preview=False, preview_write=False):
         for path in ('/opt/ms-playwright', '/etc/fonts'):
             argv.extend(['--ro-bind', path, path])
         argv.extend(['--setenv', 'PLAYWRIGHT_BROWSERS_PATH', '/opt/ms-playwright'])
-    if preview_write:
+    if video:
+        # Debian links ffmpeg's BLAS/LAPACK through /etc/alternatives; bind only
+        # those two image entries, and only when they resolve inside /usr/lib.
+        for name in ('libblas.so.3', 'liblapack.so.3'):
+            path = f'/etc/alternatives/{name}-{os.uname().machine}-linux-gnu'
+            if not os.path.realpath(path).startswith('/usr/lib/'):
+                raise RuntimeError(('video library alternative escapes /usr/lib', path))
+            argv.extend(['--ro-bind', path, path])
+    if package:
+        argv.extend(['--ro-bind-fd', '3', '/package'])
+        if 'e' in selector:
+            argv.extend(['--bind-fd', '4', '/package-egress.sock'])
+            argv.extend(['--ro-bind', '/etc/ssl/certs', '/etc/ssl/certs'])
+        if 't' in selector:
+            argv.extend(['--bind-fd', '5', '/package-broker.sock'])
+    elif provider:
+        # Fixed immutable shipped CLI trees only; node itself lives under /usr.
+        for path in sorted(glob.glob('/opt/*-install')):
+            if os.path.isdir(path) and not os.path.islink(path):
+                argv.extend(['--ro-bind', path, path])
+        argv.extend(['--ro-bind-fd', '3', '/snapshot'])
+        if 'e' in mime:
+            argv.extend(['--bind-fd', '4', '/provider-egress.sock'])
+            argv.extend(['--ro-bind', '/etc/ssl/certs', '/etc/ssl/certs'])
+    elif tool:
+        argv.extend(tool_mounts(uid))
+        for key, fd, destination in (('e', 4, '/tool-egress.sock'), ('t', 5, '/tool-ta.sock')):
+            if key in mime:
+                argv.extend(['--bind-fd', str(fd), destination])
+    elif mounted:
         argv.extend(['--bind-fd', '3', '/workspace'])
-    argv.extend(["--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp",
+    argv.extend(["--proc", "/proc", "--dev", "/dev"])
+    if package or provider_exec:
+        argv.extend(['--size', str(256 * 1024 * 1024)])
+    argv.extend(["--tmpfs", "/tmp",
                  "--chdir", "/tmp", "--seccomp", str(descriptor), "--",
                  "/opt/venv/bin/python", "-I", "-B", "/usr/local/libexec/ta-decoder.py",
+                 'inside-owner-delete' if owner_delete else
+                 'inside-package' if package else 'inside-tool-files' if tool_files else
+                 'inside-provider-exec' if provider_exec else
+                 'inside-provider' if provider else 'inside-video' if video else
+                 'inside-tool' if tool else 'inside-node' if node else
                  'inside-preview-write' if preview_write else
                  "inside-preview" if preview else "inside-owner", mime,
                  json.dumps(host, sort_keys=True), data_root, str(uid)])
@@ -222,7 +315,202 @@ def decode(mime, host, data_root, uid=1003):
 
 
 if __name__ == "__main__":
-    if (len(sys.argv) == 5 and sys.argv[1] == 'enter-preview-write'
+    if (len(sys.argv) == 5 and sys.argv[1] in ('enter-provider', 'enter-provider-exec')
+            and sys.argv[2] in ('-', 'e') and 0 < int(sys.argv[4]) < 100000):
+        enter(sys.argv[2], sys.argv[3], int(sys.argv[4]), provider=True,
+              provider_exec=sys.argv[1] == 'enter-provider-exec')
+    elif (len(sys.argv) == 6 and sys.argv[1] in ('inside-provider', 'inside-provider-exec')
+            and sys.argv[2] in ('-', 'e') and 0 < int(sys.argv[5]) < 100000):
+        host = json.loads(sys.argv[3])
+        source = host.pop('source')
+        sockets = host.pop('sockets')
+        mounted = os.stat('/snapshot', follow_symlinks=False)
+        if [mounted.st_dev, mounted.st_ino] != source or not stat.S_ISDIR(mounted.st_mode):
+            raise RuntimeError('provider snapshot mount differs from pinned source')
+        if set(sockets) != ({'e'} if sys.argv[2] == 'e' else set()):
+            raise RuntimeError('provider egress differs from its admitted flag')
+        if sockets:
+            info = os.stat('/provider-egress.sock', follow_symlinks=False)
+            if [info.st_dev, info.st_ino] != sockets['e'] or not stat.S_ISSOCK(info.st_mode):
+                raise RuntimeError('provider egress mount differs from pinned source')
+        # prove_cell closes every mount/seccomp descriptor before config is read.
+        proof = prove_cell(host, sys.argv[4], int(sys.argv[5]))
+        proof['source'] = source
+        proof['sockets'] = sockets
+        sys.stdout.buffer.write(json.dumps({'cell': proof}).encode() + b'\n')
+        sys.stdout.buffer.flush()
+        sys.path.insert(0, '/app')
+        from tinyassets.role_provider_cell import cell_main
+
+        raise SystemExit(cell_main(sys.argv[4], execution=sys.argv[1] == 'inside-provider-exec',
+                                   egress='e' in sockets))
+    elif (len(sys.argv) == 5 and sys.argv[1] == 'enter-video'
+            and sys.argv[2] == 'video' and 0 < int(sys.argv[4]) < 100000):
+        enter('video', sys.argv[3], int(sys.argv[4]), video=True)
+    elif (len(sys.argv) == 6 and sys.argv[1] == 'inside-video'
+            and sys.argv[2] == 'video' and 0 < int(sys.argv[5]) < 100000):
+        proof = prove_cell(json.loads(sys.argv[3]), sys.argv[4], int(sys.argv[5]))
+        sys.stdout.buffer.write(json.dumps({'cell': proof}).encode() + b'\n')
+        sys.stdout.buffer.flush()
+        sys.path.insert(0, '/app')
+        from tinyassets.role_video_codec import cell_main
+
+        raise SystemExit(cell_main())
+    elif (len(sys.argv) == 5 and sys.argv[1] == 'enter-package'
+            and sys.argv[2][64:] in ('-', 'e', 't', 'et')
+            and len(sys.argv[2]) >= 65
+            and all(c in '0123456789abcdef' for c in sys.argv[2][:64])
+            and 0 < int(sys.argv[4]) < 100000):
+        enter(sys.argv[2], sys.argv[3], int(sys.argv[4]), package=True)
+    elif (len(sys.argv) == 6 and sys.argv[1] == 'inside-package'
+            and 0 < int(sys.argv[5]) < 100000):
+        host = json.loads(sys.argv[3])
+        source, sockets = host.pop('source'), host.pop('sockets')
+        info = os.stat('/package', follow_symlinks=False)
+        if [info.st_dev, info.st_ino] != source:
+            raise RuntimeError('package source differs from pinned source')
+        if set(sockets) != set(sys.argv[2][64:].strip('-')):
+            raise RuntimeError('package sockets differ from their admitted flags')
+        for key, path in (('e', '/package-egress.sock'), ('t', '/package-broker.sock')):
+            if key in sockets:
+                info = os.stat(path, follow_symlinks=False)
+                if [info.st_dev, info.st_ino] != sockets[key] or not stat.S_ISSOCK(info.st_mode):
+                    raise RuntimeError('package relay differs from pinned source')
+        proof = prove_cell(host, sys.argv[4], int(sys.argv[5]), 'cell-links')
+        proof.update(source=source, sockets=sockets, revision=sys.argv[2][:64])
+        sys.path.insert(0, '/app')
+        from tinyassets.role_package_cell import manifest, run
+        from tinyassets.role_provider_cell import read_config
+
+        doc = manifest(sys.argv[2][:64])
+        sys.stdout.buffer.write(json.dumps({'cell': proof}).encode() + b'\n')
+        sys.stdout.buffer.flush()
+        if json.loads(read_config()) != {'start': True}:
+            raise ValueError('package execution was not acknowledged')
+        raise SystemExit(run(doc, broker='t' in sockets, egress='e' in sockets))
+    elif (len(sys.argv) == 5 and sys.argv[1] == 'enter-owner-delete'
+            and sys.argv[2] == 'delete' and 0 < int(sys.argv[4]) < 100000):
+        enter(sys.argv[2], sys.argv[3], int(sys.argv[4]), owner_delete=True)
+    elif (len(sys.argv) == 6 and sys.argv[1] == 'inside-owner-delete'
+            and sys.argv[2] == 'delete' and 0 < int(sys.argv[5]) < 100000):
+        host = json.loads(sys.argv[3])
+        source = host.pop('source')
+        info = os.stat('/workspace', follow_symlinks=False)
+        if [info.st_dev, info.st_ino] != source:
+            raise RuntimeError('owner deletion source differs from pinned source')
+        proof = prove_cell(host, sys.argv[4], int(sys.argv[5]))
+        proof['source'] = source
+        import resource
+
+        for kind, bound in ((resource.RLIMIT_AS, 256 * 1024 * 1024),
+                            (resource.RLIMIT_CPU, 25), (resource.RLIMIT_NOFILE, 192),
+                            (resource.RLIMIT_FSIZE, 0), (resource.RLIMIT_CORE, 0)):
+            resource.setrlimit(kind, (bound, bound))
+        sys.path.insert(0, '/app')
+        from tinyassets.role_owner_delete_cell import remove_owned
+        from tinyassets.role_provider_cell import read_config
+
+        sys.stdout.buffer.write(json.dumps({'cell': proof}).encode() + b'\n')
+        sys.stdout.buffer.flush()
+        if json.loads(read_config()) != {}:
+            raise ValueError('invalid fixed owner deletion request')
+        fd = os.open('/workspace', os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        import array
+
+        control = socket.socket(fileno=os.dup(0))
+        def classify_daemon(descriptor):
+            control.sendmsg([b'?'], [(socket.SOL_SOCKET, socket.SCM_RIGHTS,
+                                     array.array('i', [descriptor]))])
+            response = control.recv(1)
+            if response not in (b'0', b'1'):
+                raise RuntimeError('owner deletion classifier ended early')
+            return response == b'1'
+        try:
+            result = remove_owned(fd, classify_daemon=classify_daemon)
+        except (OSError, RuntimeError) as exc:
+            sys.stdout.buffer.write(b'!' + json.dumps(
+                {'error': str(exc)[:2048]}).encode() + b'\n')
+            raise SystemExit(1) from exc
+        finally:
+            os.close(fd)
+            control.close()
+        sys.stdout.buffer.write(b'!' + json.dumps(result).encode() + b'\n')
+    elif (len(sys.argv) == 5 and sys.argv[1] == 'enter-tool-files'
+            and sys.argv[2] == 'files' and 0 < int(sys.argv[4]) < 100000):
+        enter(sys.argv[2], sys.argv[3], int(sys.argv[4]), tool_files=True)
+    elif (len(sys.argv) == 6 and sys.argv[1] == 'inside-tool-files'
+            and sys.argv[2] == 'files' and 0 < int(sys.argv[5]) < 100000):
+        host = json.loads(sys.argv[3])
+        source = host.pop('source')
+        info = os.stat('/workspace', follow_symlinks=False)
+        if [info.st_dev, info.st_ino] != source:
+            raise RuntimeError('tool maintenance source differs from pinned source')
+        proof = prove_cell(host, sys.argv[4], int(sys.argv[5]))
+        proof['source'] = source
+        import resource
+
+        for kind, bound in ((resource.RLIMIT_AS, 256 * 1024 * 1024),
+                            (resource.RLIMIT_CPU, 25), (resource.RLIMIT_NOFILE, 192),
+                            (resource.RLIMIT_FSIZE, 1024 * 1024), (resource.RLIMIT_CORE, 0)):
+            resource.setrlimit(kind, (bound, bound))
+        sys.path.insert(0, '/app')
+        from tinyassets.role_tool_files import maintain
+        from tinyassets.role_tools import _frame, _read
+
+        sys.stdout.buffer.write(_frame({'cell': proof}, 16384))
+        sys.stdout.buffer.flush()
+        request = _read(sys.stdin.buffer, 4096)
+        if (set(request) != {'agent_id'} or type(request['agent_id']) is not str
+                or not request['agent_id'].strip() or len(request['agent_id']) > 512):
+            raise ValueError('invalid tool maintenance request')
+        fd = os.open('/workspace', os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            answer = maintain(fd, agent_id=request['agent_id'])
+        finally:
+            os.close(fd)
+        sys.stdout.buffer.write(_frame({'files': answer}, 16384))
+        sys.stdout.buffer.flush()
+    elif (len(sys.argv) == 5 and sys.argv[1] == 'enter-tool'
+            and sys.argv[2] in ('-', 'e', 't', 'et') and 0 < int(sys.argv[4]) < 100000):
+        enter(sys.argv[2], sys.argv[3], int(sys.argv[4]), tool=True)
+    elif len(sys.argv) == 6 and sys.argv[1] == 'inside-tool' and 0 < int(sys.argv[5]) < 100000:
+        host = json.loads(sys.argv[3])
+        source = host.pop('source')
+        sockets = host.pop('sockets')
+        for key, target in (('e', '/tool-egress.sock'), ('t', '/tool-ta.sock')):
+            if key in sockets:
+                info = os.stat(target, follow_symlinks=False)
+                if [info.st_dev, info.st_ino] != sockets[key] or not stat.S_ISSOCK(info.st_mode):
+                    raise RuntimeError('tool socket mount differs from pinned source')
+        proof = prove_cell(host, sys.argv[4], int(sys.argv[5]), 'cell-nested')
+        proof['source'] = source
+        proof['sockets'] = sockets
+        sys.stdout.buffer.write(json.dumps({'cell': proof}).encode() + b'\n')
+        sys.stdout.buffer.flush()
+        sys.path.insert(0, '/app')
+        from tinyassets.role_tools import cell_main
+
+        raise SystemExit(cell_main(egress='e' in sockets, ta='t' in sockets))
+    elif (len(sys.argv) == 5 and sys.argv[1] == 'enter-node'
+            and sys.argv[2] in {'data', 'workspace'} and 0 < int(sys.argv[4]) < 100000):
+        enter(sys.argv[2], sys.argv[3], int(sys.argv[4]), node=True)
+    elif (len(sys.argv) == 6 and sys.argv[1] == 'inside-node'
+            and sys.argv[2] in {'data', 'workspace'} and 0 < int(sys.argv[5]) < 100000):
+        host = json.loads(sys.argv[3])
+        source = host.pop('source', None)
+        if source is not None:
+            mounted = os.stat('/workspace', follow_symlinks=False)
+            if [mounted.st_dev, mounted.st_ino] != source:
+                raise RuntimeError('node mount differs from pinned source')
+        proof = prove_cell(host, sys.argv[4], int(sys.argv[5]), 'cell-nested')
+        proof['source'] = source
+        sys.stdout.buffer.write(json.dumps({'cell': proof}).encode() + b'\n')
+        sys.stdout.buffer.flush()
+        sys.path.insert(0, '/app')
+        from tinyassets.role_node import cell_main
+
+        raise SystemExit(cell_main(sys.argv[2] == 'workspace'))
+    elif (len(sys.argv) == 5 and sys.argv[1] == 'enter-preview-write'
             and 0 < int(sys.argv[4]) < 100000):
         enter(sys.argv[2], sys.argv[3], int(sys.argv[4]), preview_write=True)
     elif (len(sys.argv) == 6 and sys.argv[1] == 'inside-preview-write'

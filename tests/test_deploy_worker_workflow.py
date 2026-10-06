@@ -52,8 +52,6 @@ def _load_wrangler_text() -> str:
 # ---------------------------------------------------------------------------
 
 
-def test_deploy_worker_yml_parses():
-    _load_workflow()  # raises if invalid YAML
 
 
 def test_all_workflow_ymls_parse():

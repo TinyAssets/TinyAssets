@@ -4,6 +4,206 @@
 
 ## ADDED Requirements
 
+### Requirement: Shared provider execution uses an authenticated owner cell
+When broker mode is selected, the shared provider spawn entry SHALL use a bounded
+provider-exec cell or refuse; it SHALL NOT launch a daemon-UID provider fallback.
+The cell SHALL pin its own sealed snapshot and egress relay, isolate namespaces,
+apply external resource supervision and preserve separate stderr and raw stdio.
+Admission SHALL NOT branch on provider identity. Unsupported engine/workspace
+views SHALL refuse until their dedicated integration is proven.
+
+#### Scenario: A text-only provider launches with its admitted snapshot
+- **WHEN** the authenticated principal starts through the shared spawn entry
+- **THEN** the mapper selects its dedicated UID/GID and exact immutable snapshot
+- **AND** only the pinned checked egress relay is reachable from private networking
+
+#### Scenario: Unsupported execution view is requested in broker mode
+- **WHEN** a launch requests an engine route, custom mounts or unadmitted host path
+- **THEN** the shared entry refuses without a daemon subprocess fallback
+
+#### Scenario: A provider turn outlives every fixed class deadline
+- **WHEN** an admitted provider-exec cell is still running
+- **THEN** only daemon revocation, daemon death or a resource guard ends it, never a wall clock
+
+### Requirement: Authenticated owner deletion retains a two-pass admission fence
+The launcher SHALL admit only the fixed owner-delete class under the authenticated
+principal's dedicated identity and exact pinned center. It SHALL require owner
+quiescence, reject caller paths/identities/programs, and retain an owner-wide
+admission fence until the daemon explicitly finishes the exact deletion token.
+An explicit abort MAY release a quiescent failed deletion only as reported partial
+deletion, never automatic rollback or success. The daemon SHALL classify exact
+non-owner descriptors by host UID; in-cell overflow SHALL NOT prove daemon custody.
+The cell SHALL unlink only exact-owner entries without following links or reading
+file contents, preserve daemon entries for pass two, and fail loudly on unsafe
+or incomplete traversal. U2 SHALL own daemon-pass integration and restart intent.
+
+#### Scenario: Pass one ends before daemon cleanup
+- **WHEN** the owner-delete cell completes, fails or is cancelled
+- **THEN** new owner cells remain refused until authenticated matching-token finish
+- **AND** a retry can use only that same center and token after cell reaping
+
+#### Scenario: Foreign entry or symlink is encountered
+- **WHEN** deletion encounters another mapped owner's entry or a symlink
+- **THEN** foreign contents are never read or changed and the foreign entry fails loudly
+- **AND** an exact-owner symlink is unlinked without traversing its target
+
+### Requirement: Installed package execution is immutable and owner-bound
+
+The package class SHALL pin a daemon-sealed exact manifest revision and all
+package file digests, mount that tree read-only under the admitted owner's
+dedicated UID/GID, close source descriptors and deny host networking. It SHALL
+retain CPU, process-tree memory/count, descriptor, file and tmpfs bounds; its
+lifetime SHALL end only by exit, consumer revocation, daemon death or those
+guards, never a wall clock. A revision whose hashed manifest opts in SHALL reach
+only the admitted center's pinned checked egress relay, with no network
+interface. Its raw stdio interface SHALL follow a verified cell proof handshake.
+Named credential/egress slots SHALL use only pinned invocation relays to the
+existing owner-scoped daemon effect handlers and credential broker. Package
+bytes SHALL never select a caller identity, kernel identity, profile, host path,
+arbitrary relay or credential environment.
+
+#### Scenario: A package's egress follows its pinned opt-in
+- **WHEN** a consumer starts a revision with an egress flag that differs from its manifest
+- **THEN** admission refuses before any cell starts
+- **AND** an opted-in revision reaches public TLS only through the pinned relay, while
+  metadata destinations and direct connections fail
+
+#### Scenario: A package revision cannot consume foreign state or authority
+- **WHEN** Alice starts an approved package revision with a declared connection slot
+- **THEN** the manifest and every file digest match the pinned immutable tree
+- **AND** foreign roots, writable or aliased source files, and foreign relays refuse
+- **AND** undeclared slots and direct host networking refuse without foreign bytes
+- **AND** cancellation reaps the package and descendants before relay revocation completes
+
+### Requirement: TOOL files recover under the admitted owner identity
+
+The daemon SHALL prepare fixed TOOL directories before accounting admission and
+recover owner modes and persistent brain publication after payload reaping in a
+fixed, strict owner cell. It SHALL retain queueing and accounting settlement.
+The maintenance cell SHALL accept no caller path, executable or credential and
+SHALL refuse required directory aliases. It SHALL not read or mutate foreign
+inodes, follow links, or remode multiply-linked files. Brain publication SHALL
+be bounded, descriptor-sourced, atomic and no-replace, preserving source bytes.
+
+#### Scenario: Restrictive TOOL modes do not strand later accounting
+- **WHEN** an owner tool makes its own file or directory mode 000
+- **THEN** trusted owner maintenance restores its inherited daemon ACL mask
+- **AND** settlement runs even on a failed maintenance receipt
+- **AND** a foreign alias remains unchanged and unread
+
+#### Scenario: A tool creates a previously absent brain file
+- **WHEN** the admitted main agent writes MEMORY.md in its persistent workspace
+- **THEN** trusted maintenance publishes the exact bytes at the canonical root
+- **AND** an existing canonical name is never replaced
+- **AND** a secondary agent cannot publish the main agent identity.md
+
+
+### Requirement: Provider metadata discovery uses a dedicated owner cell
+
+Selected native model discovery SHALL run only in the fixed provider-discovery
+class with cell-deny, the admitted principal/center and broker-resolved
+dedicated UID/GID. The only owner input SHALL be the exact sealed daemon-owned
+launch snapshot, pinned by descriptor under the admitted center's
+`.runtime/provider-launch-credentials/<name>` and mounted read-only at a fixed
+cell path. Only the shipped CLI install trees and an exact admitted egress
+socket MAY additionally enter. The privileged request SHALL carry only static
+kind, principal, center and booleans plus descriptors; argv/env SHALL arrive
+as one bounded config line after confinement and descriptor closure, naming a
+shipped executable with no host data path. Existing metadata byte/page/model
+bounds and timeout SHALL hold. Teardown SHALL revoke through the lifetime
+channel, never a local PID signal, and the authenticated receipt SHALL be
+required. A selected broker without scope or bounded client SHALL refuse with
+no daemon subprocess fallback.
+
+The immutable snapshot SHALL be copied only after confinement to disposable
+owner-private scratch, bounded to 128 entries, 8 MiB and depth 8, rejecting
+symlinks, non-regular files and multiple links. No scratch state SHALL be
+promoted to daemon custody. Environment forwarding SHALL admit only bounded
+display settings and in-cell paths, excluding ambient tokens and loader
+settings. One receipt reader SHALL own cleanup across cancellation; revocation
+SHALL use write-side EOF without a queued cancellation packet.
+
+#### Scenario: Metadata discovery cannot reach foreign or host state
+- **WHEN** Alice's daemon lists models from her sealed launch snapshot
+- **THEN** the CLI runs in her dedicated strict cell with only that snapshot read-only
+- **AND** a foreign-center, center-root, nested or non-daemon snapshot is refused by the mapper
+- **AND** a foreign, other-daemon or non-socket egress descriptor is refused
+- **AND** an inherited descriptor, nested user namespace or missing receipt fails the catalogue
+
+### Requirement: Video parser subprocesses use data-only owner cells
+
+Selected video ingestion SHALL admit the current principal and command center
+through the bounded launcher and broker identity. The fixed ingestion-video
+entry SHALL run installed ffprobe/ffmpeg with cell-deny, dedicated owner UID/GID,
+private scratch/namespaces, zero capabilities and closed bootstrap descriptors.
+Input SHALL be bounded verbatim bytes at a fixed scratch filename, with fixed
+process/resource/deadline limits; no owner filesystem, credential or network
+mount SHALL enter this class. Only bounded duration/frame bytes SHALL return.
+The caller SHALL supply an explicit owner-scoped frame-description callback.
+Selected failures SHALL propagate without a daemon subprocess or platform-model
+fallback. Missing scope or launcher SHALL refuse.
+
+#### Scenario: Actual video parsing preserves the owner boundary
+- **WHEN** Alice and Bob extract video frames and descriptions in selected mode
+- **THEN** actual installed ffprobe/ffmpeg run inside their dedicated strict cells
+- **AND** foreign-center admission and foreign-path playlists fail with zero foreign bytes
+- **AND** a caller filename cannot choose a scratch path or executable option
+- **AND** ordinary extraction succeeds after a refused request
+
+### Requirement: Tool relay sockets are exact owner-scoped inode capabilities
+
+The tool class SHALL admit only the existing egress relay and per-invocation
+ta socket under its admitted center's protected sidecar. The daemon SHALL pin
+socket inodes without following links and grant only the dedicated owner UID
+socket access and parent traverse, without listing or parent write access.
+The mapper SHALL validate fixed presence flags, descriptor counts, protected
+center paths, socket type, link count and protected service ownership. Cells
+SHALL mount only exact sockets, verify their inode identities, and close all
+source descriptors before application code. Existing destination restrictions,
+callback authority and invocation revocation SHALL remain unchanged.
+
+#### Scenario: Actual bash uses scoped capabilities and public egress
+- **WHEN** Alice and Bob execute bash and ta through their owner cells
+- **THEN** the existing proxy carries permitted HTTP and ta dispatch keeps each invocation's owner context
+- **AND** direct networking and metadata-address proxy requests fail
+- **AND** application and mapper refuse foreign-center sockets and the mapper refuses a revoked invocation's held socket
+- **AND** subsequent ordinary owner tools still work after each refusal
+
+### Requirement: Staged tool execution retains daemon accounting
+
+The staged offline tool-jail class SHALL use its admitted owner's dedicated
+UID/GID, a fixed cell-nested outer profile and the existing strict inner tool
+jail. It SHALL pin exclusive owner content descriptors without mounting the
+command-center root, protected metadata or parent sidecar directories. Source
+descriptors SHALL close before application imports and inner descriptors SHALL
+close before executing a tool. Queue slots, storage reservations, budget polls
+and settlement SHALL remain in the daemon. Missing owner scope or launcher,
+unprepared directories and unadmitted relay sockets SHALL refuse.
+
+#### Scenario: Actual offline tools and bounded image transport
+- **WHEN** Alice and Bob use file tools in prepared owner centers
+- **THEN** read, write, edit, image reads and bounded stdin execute inside their owner cells
+- **AND** existing timeout, output and disk-floor behavior remains enforced
+- **AND** foreign aliases, host descriptors and inner nested-userns requests fail
+- **AND** full tool-class acceptance remains pending until relay sockets, preparation and persistent brain-file promotion are verified
+
+### Requirement: Code-node execution retains its inner jail inside the owner cell
+
+When the broker role split is selected, code-node execution SHALL enter the
+bounded owner launcher with the admitted command center and broker-resolved
+dedicated UID/GID. The fixed node-sandbox class SHALL retain D9's cell-nested
+profile and the existing inner sandbox. Its optional workspace SHALL be a pinned
+directory with exact owner UID/GID beneath that center; source descriptors SHALL
+close before application code. Missing scope or launcher SHALL refuse without
+daemon subprocess fallback. Callback actions SHALL retain the daemon's existing
+per-run authorization, without exposing broker credentials to either jail.
+
+#### Scenario: Actual owner node execution and cancellation
+- **WHEN** Alice and Bob execute code nodes with data, scoped action callbacks and their own workspaces
+- **THEN** actual nested execution and workspace git/venv operations succeed under their dedicated identities
+- **AND** foreign workspaces, planted aliases and inherited host descriptors are denied
+- **AND** cancellation reaps the cell even while a daemon callback is blocked, and a subsequent node still succeeds
+
 ### Requirement: Independent bounded owner-cell lifetimes
 
 The bounded launcher SHALL support independent bidirectional data streams and

@@ -2561,11 +2561,15 @@ def _build_source_code_node(
                     node.node_id,
                     allowed_roots=_workspace_bind_roots(base_path),
                 )
-                workspace_launcher = WORKSPACE_LAUNCHER_FACTORY(sandbox_mount)
+                from tinyassets.broker.supervisor import broker_selected
+
+                if not broker_selected():
+                    workspace_launcher = WORKSPACE_LAUNCHER_FACTORY(sandbox_mount)
             result = NodeSandbox(
                 timeout=timeout_s,
                 launcher=workspace_launcher,
                 should_cancel=should_cancel,
+                universe_dir=base_path,
             ).run_sync(
                 node_id=node.node_id,
                 source_code=src,

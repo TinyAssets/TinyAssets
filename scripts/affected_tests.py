@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """Select the test files a change can affect, for the PR-time test run.
 
-The authoritative gate is the full sharded suite on the merge-group commit
+The authoritative integration gate is the conservative selection on the merge-group commit
 (`required-tests` in .github/workflows/tests.yml). Until this existed, a PR
 met the Linux suite for the first time AFTER it was stamped and queued, so
 every failure surfaced as a queue drop. This picks the subset worth running on
-the pull request itself; it is advisory, and the queue still runs everything.
+the pull request itself; required-tests now requires these PR shards to pass.
+The queue selects conservatively, and main/scheduled runs cover the full surface.
 
 A test file is selected when ANY of these holds:
 

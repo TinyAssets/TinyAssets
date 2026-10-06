@@ -357,6 +357,12 @@ def test_every_ask_kind_can_return_after_clear_only_mute_suppresses(
     else:
         assert again["request_id"] != first["request_id"]
         assert again["status"] == "pending"
+        repeated = create_request(udir, **document)
+        assert repeated["request_id"] == again["request_id"]
+        assert repeated["created"] is False
+    history = _rail("u-1")["recently_answered"]
+    assert any(row["request_id"] == first["request_id"] and row["status"] == status
+               for row in history)
     assert "Clear or decline" in _rail("u-1")["request_recovery"]
 
 

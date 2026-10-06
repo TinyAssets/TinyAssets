@@ -120,11 +120,23 @@ def test_missing_owner_proof_still_throws_sign_in_error(page, operation):
 
 
 def test_history_is_read_only(page):
-    page.evaluate("window.historyRows([{title:'Sent message',status:'answered'}])")
+    page.evaluate("""() => {
+      window.relays=[];window.sendTurn=(...args)=>relays.push(args);
+      document.getElementById('request-rail').close=()=>{};
+      window.historyRows([{...window.card,title:'Sent message',status:'answered'}]);
+    }""")
     page.evaluate("document.getElementById('request-history').hidden=false")
     rail = page.locator("#request-rail")
     assert "Request history" in rail.inner_text()
-    assert rail.locator("button,input,textarea").count() == 0
+    assert rail.locator("button").all_text_contents() == ["Ask again"]
+    assert rail.locator("input,textarea,select,a,[role=button]").count() == 0
+    calls = page.evaluate("window.calls")
+    rail.get_by_role("button", name="Ask again", exact=True).click()
+    assert page.evaluate("window.calls") == calls  # No protected answer or grant.
+    assert page.evaluate("relays.length") == 1
+    assert "request_id=req-1" in page.evaluate("relays[0][0]")
+    assert page.evaluate("relays[0][2].agentId") == "researcher"
+    assert rail.get_by_role("button", name="Ask again", exact=True).is_disabled()
 
 
 @pytest.mark.parametrize("operation", ["answer", "preview", "decide"])

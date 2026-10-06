@@ -135,6 +135,8 @@ on:
       # the served turn that indexes its skills, and their real-jail proof.
       - "tests/test_universe_tools_jail.py"
       - "tests/test_ta_capabilities_jail.py"
+      - "tests/test_remote_box_ta.py"
+      - "tinyassets/agent_loop/box_ta.py"
       - "tests/test_ta_capabilities.py"
       # Workspace provisioning and registry proxy jail proofs (real_jail-marked
       # 2026-10-01; before that no CI job ran them).

@@ -15,6 +15,7 @@ from __future__ import annotations
 #: Writers that commit only under :func:`tinyassets.storage.owner_fence.check_fence`,
 #: mapped to their store kind (``tinyassets.owner_lease.STORE_ENUMERATORS``).
 FENCED: dict[str, str] = {
+    "tinyassets/agent_loop/box_ta.py": "remote_ta_receipts",
     "tinyassets/storage/agent_turn_journal.py": "agent_turn_journal",
 }
 
@@ -45,7 +46,10 @@ FENCE_BEFORE_C2: frozenset[str] = frozenset({
     "tinyassets/bound_requests.py",
     "tinyassets/boxes/state.py",
     "tinyassets/branch_versions.py",
+    "tinyassets/broker/account_erasure.py",
+    "tinyassets/broker/disconnect.py",
     "tinyassets/broker/ops.py",
+    "tinyassets/broker/owner_identities.py",
     "tinyassets/catalog/backend.py",
     "tinyassets/checkpointing/sqlite_saver.py",
     "tinyassets/command_center_agent_templates.py",

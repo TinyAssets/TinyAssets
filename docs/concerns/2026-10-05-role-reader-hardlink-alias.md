@@ -7,6 +7,40 @@ summary: 'D65: dedicated-label daemon reader matrix passes with 114 denials and 
 
 ## Founder D61 continuation
 
+D80 continues tool acceptance through actual bash/ta and HTTP proxy traffic,
+including foreign/revoked socket rejection at the daemon and mapper. Image
+`sha256:553820e780a81e4824172f3c55971b89e05599c259c59c774cf1620d2928b16f`
+passes 132 daemon reader denials / 22 own reads / zero foreign, all three
+read/relabel/copy diagnostics, actual node and sandboxed Chromium regressions,
+and Alice/Bob tool descriptor/network/alias checks with zero foreign bytes.
+Tool preparation/promotion and other actual classes remain unfinished; retain
+this concern. No deployment or new production-data access is claimed.
+
+D79 adds staged offline tool execution with actual Alice/Bob read/write/edit,
+image and native descendant operations. Reviewed production Dockerfile image
+`sha256:1650d2cadd7e20ec07fe2d78c9a97b8d394b1c6051208fe341c3d8ed7a9dde8a`
+passes foreign alias/read/relabel, descriptor and inner-userns denials with zero
+foreign bytes. The common reader matrix remains 132 denied / 22 own / zero
+foreign, with all three profile read/relabel/copy diagnostics denied. Tool
+relay sockets, preparation and brain-file promotion remain unadmitted; this
+does not close the full tool-class or engine-class matrix. Keep this concern.
+
+D78 adds actual code-node compiler/authoring execution, workspace git and venv
+descendants through the dedicated-owner launcher. The image
+`sha256:523e79ad5a95bbbf39e79881e1abaf39bf28c2b4449b21e44b97759d61e77572`
+passes Alice/Bob native descendant foreign-alias/read/relabel/host-fd checks with
+zero foreign bytes, alongside **132 daemon denials, 22 own reads, zero foreign
+reads** and all three profile read/relabel/copy diagnostics. This final image
+includes raw-I/O guard cleanup; commands and receipts live in delivery.md.
+Retain this concern: other actual engine classes and U2 migration are unfinished.
+
+Main rechecked at `22bc0f728e989813630d54c8378921370fafe7f2`: its common
+`workspace_fs._open_regular_beneath` still has no nlink or dedicated UID/GID
+descriptor predicate. Thus a preplanted reachable foreign hardlink remains
+relevant to common daemon readers in the single-UID design. This is a source
+assessment, not evidence that a production cell can plant that link; no new
+live-production file access or exploit is claimed.
+
 D76 recheck on production Dockerfile image
 `sha256:93f86ca0e5ef9ac4894ad0cb3bf57497336cb6d4a6675874bc4eb879b43b7c36`:
 **132 denials, 22 own reads, zero foreign reads**, including preview outputs;

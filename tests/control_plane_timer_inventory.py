@@ -36,7 +36,7 @@ CLASSES = frozenset({CONTROL_PLANE, CALL_SCOPED, DELETE, CLIENT, BOX})
 
 #: ``"<path>::<qualname>"`` -> (class, note). ``[Timer]``/``[call_later]`` mark a
 #: callback-scheduling site; ``#n`` is the n-th clock-driven site in one function.
-SITES: dict[str, tuple[str, str]] = {
+CLASSIFICATION: dict[str, tuple[str, str]] = {
     # -- always-on duties of the execution owner ------------------------------
     "tinyassets/runtime/assigned_queue_consumer.py::AssignedQueueConsumer._run": (
         CONTROL_PLANE,
@@ -97,6 +97,20 @@ SITES: dict[str, tuple[str, str]] = {
         CALL_SCOPED, "agent lease refresh for one running automation batch",
     ),
     "tinyassets/auto_ship_ledger.py::_file_lock": (CALL_SCOPED, "lock acquisition"),
+    "tinyassets/broker/server.py::_Connection._refresh": (
+        CALL_SCOPED,
+        "one broker stream waits for the daemon's refresh answer only until "
+        "that stream's own deadline; nothing reschedules",
+    ),
+    "tinyassets/role_node.py::run": (
+        CALL_SCOPED, "one node-sandbox cell is supervised until exit or its call deadline",
+    ),
+    "tinyassets/role_package_cell.py::run": (
+        CALL_SCOPED, "one package payload is polled for exit, limits or broker revocation",
+    ),
+    "tinyassets/role_tools.py::run": (
+        CALL_SCOPED, "one TOOL cell is drained and reaped within its requested wall bound",
+    ),
     "tinyassets/activity_runner.py::linked_activity": (
         CALL_SCOPED,
         "one activity run waits up to wait_s for the dispatcher to bind its "
@@ -252,3 +266,7 @@ SITES: dict[str, tuple[str, str]] = {
 }
 
 __all__ = ["BOX", "CALL_SCOPED", "CLASSES", "CLIENT", "CONTROL_PLANE", "DELETE", "SITES"]
+
+# Generated facts are scaffolded by scripts/generate_guard_inventories.py;
+# only the reviewed classification and rationale are maintained here.
+SITES = CLASSIFICATION

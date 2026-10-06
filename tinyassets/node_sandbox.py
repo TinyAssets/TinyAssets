@@ -167,7 +167,7 @@ WORKSPACE_RSS_INTERVAL_SECONDS = 0.5
 JAIL_EXIT_GRACE_SECONDS = 5.0
 
 #: Read-only system binds, when they exist on the host.
-_SYSTEM_ROBINDS = ("/usr", "/bin", "/lib", "/lib64")
+_SYSTEM_ROBINDS = ("/usr", "/bin", "/lib", "/lib64", "/etc/ld.so.cache")
 
 #: PATH used only to resolve ``bwrap`` itself, never inherited from the host
 #: and never visible inside the jail (``--clearenv`` sets the child's own).
@@ -2127,10 +2127,12 @@ class PlainSubprocessLauncher:
 
     def cleanup(self) -> None:
         """Remove the delivered script; the parent calls this when the run ends."""
+        from tinyassets.universe_files import unlink_data_path
+
         path = getattr(self, "_script_path", "")
         if path:
             try:
-                os.unlink(path)
+                unlink_data_path(path)
             except OSError:
                 pass
             self._script_path = ""
@@ -2232,6 +2234,8 @@ def read_process_tree(pid: int) -> tuple[int, int]:
     workspace RSS watchdog and the universe tool jail
     (:mod:`tinyassets.universe_tools`), so there is one tree walk.
     """
+    from tinyassets.universe_files import read_data_path
+
     if not os.path.isdir("/proc"):
         return -1, -1
     page = 4096
@@ -2246,8 +2250,7 @@ def read_process_tree(pid: int) -> tuple[int, int]:
         return -1, -1
     for name in entries:
         try:
-            with open(f"/proc/{name}/stat", "rb") as handle:
-                raw = handle.read()
+            raw = read_data_path(f"/proc/{name}/stat") or b""
         except OSError:
             continue
         # The comm field is parenthesised and may hold spaces; everything
@@ -2273,8 +2276,7 @@ def read_process_tree(pid: int) -> tuple[int, int]:
             continue
         seen.add(current)
         try:
-            with open(f"/proc/{current}/statm", "rb") as handle:
-                parts = handle.read().split()
+            parts = (read_data_path(f"/proc/{current}/statm") or b"").split()
             if len(parts) >= 2:
                 total += int(parts[1]) * page
         except (OSError, ValueError):
@@ -2488,6 +2490,7 @@ class NodeSandbox:
         max_output_bytes: int = MAX_OUTPUT_BYTES,
         launcher: Launcher | None = None,
         should_cancel: Callable[[], bool] | None = None,
+        universe_dir: str | os.PathLike | None = None,
     ) -> None:
         self.default_timeout = timeout
         self.max_output_bytes = max_output_bytes
@@ -2507,6 +2510,7 @@ class NodeSandbox:
         #: cancellation is what bounds a workflow the owner did not write, so
         #: it has to reach the child.
         self.should_cancel = should_cancel
+        self.universe_dir = universe_dir
 
     def validate_source(self, source_code: str) -> list[str]:
         """Pre-validate source code before execution.
@@ -2598,6 +2602,15 @@ class NodeSandbox:
         """
         timeout = timeout or self.default_timeout
         start_time = time.monotonic()
+        from tinyassets.broker.supervisor import broker_selected
+
+        if broker_selected():
+            from tinyassets.role_node import run
+
+            return run(self, node_id=node_id, source_code=source_code,
+                       input_state=input_state, input_keys=input_keys, output_keys=output_keys,
+                       timeout=timeout, effects=effects, dependencies=dependencies,
+                       invoke=invoke, workspace=workspace)
 
         # Pre-validation
         errors = self.validate_source(source_code)
@@ -2823,7 +2836,12 @@ class NodeSandbox:
                 pass
         finally:
             _launcher_cleanup(launcher)
-            shutil.rmtree(work_dir, ignore_errors=True)
+            from tinyassets.workspace_fs import RealPoolFilesystem
+
+            try:
+                RealPoolFilesystem().remove_tree_no_follow(work_dir)
+            except OSError:
+                pass  # Preserve best-effort cleanup of this private scratch directory.
 
         duration = time.monotonic() - start_time
         stdout_text = out_drain.data.decode("utf-8", errors="replace")

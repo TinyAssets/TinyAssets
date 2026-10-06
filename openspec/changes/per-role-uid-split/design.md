@@ -1,3 +1,275 @@
+### D87. Package egress relay opt-in and caller-owned lifetime
+
+A package manifest may set "egress": true. The flag is part of the hashed
+manifest bytes, so it is the owner's exact-revision opt-in; a different flag is
+a different revision. start() must name the same value or refuses. An opted-in
+cell receives the admitted center's checked egress relay, pinned by descriptor
+exactly like tool-jail and provider-exec, behind the in-cell loopback forwarder
+with the fixed proxy environment and image CA certificates. There is still no
+network interface; destination policy stays in the relay; no credential travels
+this route. Credentials remain broker slots only. The relay and slot sockets
+keep fixed descriptor slots; flags travel after the 64-hex revision and the
+decoder reads only that suffix, because a revision may itself contain "e".
+
+Package lifetime no longer has a wall clock (supersedes D84's fixed lifetime):
+a persistent stdio server runs until it exits, the consumer revokes the cell,
+the daemon dies or the RSS/process-count/CPU-time guards end it. The consumer's
+stream has no timeout of its own. Aggregate cell capacity (MAX_OWNER_CELLS 4,
+MAX_CELLS 32) and the per-process 300s CPU bound are unchanged; a long-lived busy
+server can exhaust that CPU bound, which is a resource limit, not a clock.
+
+### D86. Shared provider execution entry, text-only first
+
+Selected broker execution is dispatched at aspawn_owned, before constructing a
+daemon-UID subprocess. The provider-exec class uses the same exact sealed snapshot
+admission as discovery, dedicated owner identity and strict cell-deny. It adds a
+separate daemon-authenticated stderr socketpair, pinned egress socket and an
+in-cell loopback forwarder; there is no direct network interface. Ordinary host
+paths, engine routes, caller mounts, shell mode and nested-sandbox policy are
+refused in this first execution view, including every non-None cwd. Only snapshot
+paths are relocated; persistent cwd/argv paths cannot silently become throwaway
+state. The payload's default directory is explicitly private /tmp/workspace.
+No provider name decides admission.
+
+The external mapper bounds process-tree RSS/count. Lifetime has no wall clock:
+a provider turn runs until it exits, the daemon revokes it (EOF) or the daemon
+dies; idle detection stays with the adapter. Fixed CPU-time, fd, process,
+file/core and private tmpfs bounds remain. Executable admission is the image
+layout, never a provider name: a regular file under /opt/<name>-install/ or a
+direct /usr/local/bin entry, not owned by the payload identity and not
+group/other-writable. Raw stdout/stdin and separate
+stderr retain adapter error classification, cancellation and communicate/wait
+semantics. No unconfined fallback is permitted when selected. Engine-MCP,
+persistent workspace/session views and their consumer proofs remain follow-ups;
+existing broker-owned auth refresh remains authoritative and is not moved into
+an untrusted payload. Startup remains OFF.
+
+### D85. Authenticated owner-delete admission and two-pass fence
+
+The fixed owner-delete class accepts only the admitted principal, center and
+opaque deletion token. It mounts that exact center, exposes no relay, executable
+or caller path, and runs capability-free under its dedicated owner UID/GID with
+cell-deny and fixed resource bounds. It unlinks only exact-owner entries using
+no-follow descriptors; regular file contents are never read. Restrictive owner
+directories are restored through pinned descriptors. Daemon-owned directories
+may be traversed but are never chmodded or removed; their entries remain for
+U2's daemon pass. Other mapped owners are refused with a bounded relative path.
+Unmapped legacy entries remain for migration/daemon verification, never claimed
+deleted by this pass. Partial failures are loud and resumable, not rollback.
+
+Nested user namespaces collapse all non-owner UIDs to overflow. For each such
+inode the trusted cell passes its exact O_PATH descriptor to the daemon, which
+returns only whether the kernel host UID is 1001. No contents, paths or descriptor
+go back to the cell. This distinguishes daemon custody from foreign identity
+before traversal or mutation; overflow itself is never custody evidence.
+
+The mapper refuses deletion while that owner has any running cell. Successful
+admission installs an owner-wide fence, retained across pass-one completion,
+failure and cancellation. Only an exact matching token may retry or explicitly
+finish the fence through the authenticated daemon channel; a stale finish cannot
+release a later deletion. Normal cells remain denied between both passes. U2
+must serialize daemon writes and persist its deletion intent/token across daemon
+restart, perform its verified daemon pass, then release. Explicit abort can also
+release a quiescent failed deletion after U2 cancels pending cleanup and records
+partial loss; it is never rollback or deletion success. This is the recovery for
+inaccessible daemon directories or over-depth trees that cannot make progress by
+retry. No automatic finally release, runtime root authority, startup activation
+or U2 consumer edit. An admin grant alone cannot select a different owner's UID:
+the mapper still requires the principal's admitted binding and exact root identity.
+
+### D84. Provider-neutral immutable package cells
+
+A package is a sealed daemon-owned tree at the admitted center's fixed
+`.runtime/package-cells/<sha256>` location. The digest pins manifest bytes;
+the manifest pins every regular file, the entry point, interpreter, arguments
+and named connection slots. No unmanifested file, symlink, hardlink, writable
+group/other inode, foreign owner or over-bound tree is admitted. Consumers
+provision approved revisions; the launcher never installs packages as root.
+
+The mapper accepts only revision, principal, center and the presence of an
+exact pinned invocation relay. It selects dedicated owner UID/GID, cell-links,
+read-only package mount, private namespaces, bounded tmpfs, and fixed lifetime.
+No owner workspace, credential snapshot, vault or shared store enters. Python,
+Node and shell are mechanical interpreter choices, never provider branches.
+The mapper outside the cell bounds process count and aggregate process-tree
+RSS, including orphaned descendants beneath its private namespace init. This
+cannot be stopped by the package. The in-cell supervisor retires dumpability
+and supplies a second poll plus CPU/fd/file/core rlimits and Python/shell address
+space bounds. Python imports only its pinned package paths plus the immutable
+interpreter installation. It kills descendants before completion.
+
+Package stdio remains a raw duplex stream after an authenticated proof/start
+handshake, usable by K1. A declared connection slot maps only to an existing
+canonical ta connection capability bound to this principal/center. Its exact
+relay is pinned; requests cannot select another capability, owner, route or
+credential. Existing daemon consent/effect handlers and the broker retain
+credential custody, destination policy and DNS pinning. No general network
+proxy or credential environment is supplied. Context exit revokes/reaps before
+closing the capability relay. Startup remains OFF.
+
+### D83. Fixed TOOL file preparation and recovery
+
+Before TOOL accounting admission and after the authenticated payload exit, the
+daemon runs a fixed tool-files cell under the admitted owner's UID/GID. Unlike
+the untrusted tool payload, this trusted, bounded operation receives the pinned
+center solely to create the fixed harness directories, restore owner-file mode
+bits and publish absent brain files. No caller path, executable, environment,
+credential, network socket or numeric identity is admitted. cell-deny and a
+35-second mapper deadline apply. The sole authenticated daemon serializes TOOL
+runs per center; forked client use is refused by the existing client PID check.
+Selected provider workspace creation also calls this cell, never daemon mkdir.
+
+All traversal uses no-follow descriptors, checking exact owner UID/GID before
+chmod. Foreign identities, links, special files and multiply-linked regular
+files are never read or remoded. Restoring the group mask restores inherited
+daemon ACL access after chmod; removal of the ACL itself remains a loud refusal
+at accounting, never an unmeasured successful launch. New directories require
+an owner-writable admitted root with the migration's daemon default ACL.
+
+Recovery walks stop and report at their entry/depth/time bounds; accounting
+still refuses inaccessible trees. Unpromotable brains are reported and remain
+editable rather than preventing TOOL cleanup. Existing mode bits are preserved,
+with only required access bits added; unchanged modes are not rewritten.
+Brain publication copies bounded bytes from a verified source descriptor into
+an exclusive root temporary file, fsyncs, then atomically renames without
+replacement. Existing canonical names win. Workspace source bytes are retained
+for recovery; secondary agents never publish identity.md. Before the supervisor's
+forced final accounting check, its already-reaped payload's files are recovered.
+Settlement remains in the daemon and runs even when recovery fails; preparation
+also marks the stores dirty when admission fails. Startup stays OFF.
+
+Founder 2026-10-06 execution order supersedes older delivery lists: TOOL files,
+package cells, authenticated owner-delete admission, then remaining provider
+classes. All cell admission remains provider-neutral.
+
+### D82. Mechanical metadata-only provider-discovery cell
+
+The first provider class is metadata discovery only, not provider CLI execution
+or auth refresh. With the broker selected, `read_native_catalogue` admits the
+current principal/center (founder home or admin), looks up the dedicated
+identity as role_video/role_tools do, and pins the exact launch snapshot with
+`open_dir_nofollow`; it must be a daemon-owned directory whose kernel path is
+`<center>/.runtime/provider-launch-credentials/<name>`. START sends static
+`provider-discovery`, principal, center and an `egress` boolean, plus stream,
+snapshot, optional egress socket and lifetime descriptors. The mapper's exact
+descriptor count, snapshot path/owner match and D80 egress match all precede
+fork. No path, UID, profile, argv or env enters the privileged request.
+
+The entry mounts the snapshot with `--ro-bind-fd` at `/snapshot` (D73 ACLs give
+the owner read only), `/opt/codex-install` and `/opt/claude-code-install`
+read-only, and nothing else beyond the strict base. prove_cell closes every
+descriptor, checks namespaces and denies nested user namespaces before one
+bounded config line is read byte-wise from the stream. That config's argv must
+resolve inside a shipped install tree; env keys/values are bounded, host data
+paths are rejected, the snapshot is pre-rewritten to `/snapshot`, and
+HOME/TMP/PATH are fixed. The CLI then execs with the stream as raw stdin/stdout
+and stderr null. Limits: CPU 30s, NOFILE 256, NPROC 64, FSIZE 64 MiB, no core,
+no RLIMIT_AS (Node/V8), and the existing fixed 35s mapper class deadline.
+
+The daemon wraps the stream with `asyncio.open_connection(sock=...)` in an
+`OwnerCellProcess` shim, so the existing protocol loop and its byte/page/model
+bounds and timeout run unchanged. `kill_owned_tree` revokes the shim through
+its lifetime channel and never signals a PID. Close requires the
+identity-checked receipt; a missing receipt fails the catalogue. A selected
+broker without client/scope refuses; there is no daemon fallback. The daemon
+currently sends `egress=False`; network-requiring metadata remains a
+gap until the egress relay is admitted for this caller. Provider execution,
+auth/refresh and other provider CLI paths remain pending.
+
+D82 measured integration corrections: installed Codex model discovery requires
+SQLite state beside its auth file. Keep the source snapshot read-only; after
+confinement copy only a bounded regular, single-link, no-symlink tree (128 entries,
+8 MiB, depth 8) into owner-private ephemeral scratch. Rewrite exact snapshot
+paths to that scratch. Nothing there is consumed by daemon filesystem readers
+or promoted back to custody. This offline slice cannot spend a refresh token.
+Only display settings and in-cell auth/scratch paths survive the environment
+allowlist; ambient tokens and loader settings do not. START admission remains a
+short synchronous descriptor-owned exchange, then streams are async. One receipt
+reader owns cleanup even if its awaiting caller is cancelled. Write-side EOF
+revokes the lifetime without the late unread-CANCEL/queued-receipt reset race.
+
+### D81. Mechanical data-only video extraction cell
+
+Route selected video ingestion through a fixed ingestion-video class with the
+admitted principal/center and broker-resolved dedicated UID/GID. The cell has
+no owner filesystem, credentials, relay or shared-store mount. Input is bounded
+verbatim video bytes, written only to a fixed private scratch filename. The
+installed ffprobe/ffmpeg binaries run under cell-deny, private namespaces and
+fixed CPU, address-space, file-size, process, descriptor and wall-clock limits.
+Only bounded duration/frame bytes return; source filenames cannot become paths
+or command options. Selected failures propagate, with no daemon subprocess or
+placeholder fallback. Vision stays in the caller via an explicitly supplied
+owner-scoped callback; no platform model is contacted by this cell.
+
+This slice covers video parser subprocesses, not all ingestion formats or other
+remaining engine classes. Startup stays off. No migration/rollback code changes.
+
+### D80. Mechanical exact-socket admission for tool cells
+
+Admit only the existing daemon-owned egress relay and per-bash capability
+socket beneath the admitted center sidecar. Pin socket inodes with O_PATH and
+O_NOFOLLOW; grant only that owner traverse (no listing/write) on its sidecar
+directory because bubblewrap resolves the pinned source through that parent;
+install an exact named-owner UID read/write ACL through the held
+/proc/self/fd path, with no group or other access. Require ACL readback and
+unchanged device/inode, daemon ownership and single link. No parent directory,
+raw credential, daemon control socket or caller-selected path enters a cell.
+The mapper receives fixed egress/ta presence flags and descriptors, checks the
+exact admitted sidecar/name/daemon inode ownership, and maps only those sockets.
+Close descriptors before application code. Retain the existing public-address
+proxy rules and per-invocation capability dispatch/revocation; this adds no
+new action authority. Package scoped slots remain a separate later boundary.
+
+A disposable installed-image ACL probe passed: daemon UID1001 grants socket
+access through the pinned O_PATH descriptor; UID300001 connects, UID300002
+fails, mode remains 0660, with no shared group membership. Actual Alice/Bob launcher/public-bash/ta/HTTP acceptance now passes with
+foreign/revoked sockets denied; see delivery.md for the exact image and commands.
+D79 offline receipt remains valid; preparation/promotion and other classes remain open.
+
+### D79. Mechanical staged tool-jail admission with daemon accounting
+
+Use the fixed tool-jail class with D9 cell-nested outside the existing strict
+inner tool jail. Pin the admitted center and at most 256 immediate entries;
+mount only exact-owner UID/GID regular files (single-link) and directories.
+Never mount the center itself, owner.json, or hidden entries except the existing
+.agent-workspace. Require prepared harness directories; close every source FD
+before importing application code. Daemon queue slots and storage reservation,
+renewal and settlement remain authoritative through a fixed budget-poll channel.
+Retain existing child resource supervision; fixed mapper deadline is 660 seconds (600 seconds plus startup and teardown).
+No numeric identity, profile or executable enters the privileged request.
+
+This is staged offline tool execution, not completed class acceptance. Socket
+forwarding, owner-directory preparation and persistent brain-file promotion must
+be completed before startup. Socket-bearing calls refuse; new brain names remain
+in the persistent agent workspace rather than being promoted into a virtual root.
+Do not claim public bash acceptance (its relay-socket forwarding is not admitted).
+No U2 migration, rollback or startup code is changed. Package cells remain later.
+
+### D78. Mechanical node-sandbox integration through the bounded owner launcher
+
+The existing code-node executor runs inside a dedicated owner's outer cell,
+using D9's already-assigned cell-nested profile and its existing inner jail.
+The mapper accepts a fixed node-sandbox kind and boolean workspace selector,
+never executable/environment/profile fields. An optional pinned directory must
+have the exact owner UID/GID and remain beneath the admitted center. Mount
+source descriptors close before application imports; only the mounted directory
+is reopened for the inner jail. No owner store or credential is mounted.
+
+The graph compiler supplies its admitted command-center path. Selected-broker
+calls without that scope or bounded client refuse, with no daemon subprocess
+fallback. Data-only nodes require the same admission. Existing source/input,
+output, memory, timeout and workspace checks remain in the inner executor.
+The mapper's fixed node lifetime is 1810 seconds (the existing 1800-second
+workspace maximum plus transport/teardown). The daemon relays bounded RPC frames
+to the existing per-run callback; this adds no action authority or broker token.
+Callback execution does not block cell cancellation. All result dataclass fields,
+including cancellation/workspace-timeout, survive transport. Startup stays OFF.
+This does not admit provider/tool/registry/worker/package cells by implication.
+Adding explicit owner scope subjects the existing node module to the raw-I/O
+guard. Keep the guard unchanged: route fixed kernel-stat reads and private
+temporary-file cleanup through the existing filesystem helpers, and reopen the
+in-cell workspace with open_dir_nofollow. No raw-I/O baseline growth is allowed.
+
 ### D77. Mechanical adoption of independent lifetimes by existing engine APIs
 
 Decoder, preview renderer/writer and workspace-git clients now use START and

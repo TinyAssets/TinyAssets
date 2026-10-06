@@ -1,4 +1,709 @@
-# Current U1 delivery: D77 application adoption of independent cells
+# Current U1 delivery: D87 package egress relay and caller-owned lifetime
+
+D86 is pushed at 4aad725f28. D87 closes the two gaps D84 left for K1's
+persistent stdio MCP. Startup OFF; draft #4523; no deploy.
+
+What exists: a package manifest may set "egress": true. The flag is inside the
+hashed manifest, so it is the owner's exact-revision opt-in; start() must name
+the same value or refuses before any cell starts, and the in-cell runner checks
+it again. An opted-in cell gets the admitted center's checked egress relay,
+pinned by descriptor at fixed fd 4 (ta broker stays fd 5), behind the in-cell
+loopback forwarder with the fixed proxy env and image CA certificates. There is
+no network interface and no credential on this route. Flags travel after the
+64-hex revision and the decoder reads only that suffix, because a revision can
+itself contain "e"; the inside stage refuses a socket set that differs from
+the admitted flags. Package lifetime has no wall clock: the 600s in-cell
+deadline, the 660s mapper deadline and the consumer's 610s stream timeout are
+gone. A cell ends by exit, consumer revocation, daemon death, or the RSS,
+process-count and 300s CPU-time guards (a resource limit, not a clock).
+
+Fixed during verification (main-merge drift, not D87 code, broke the oracle on
+the D86 image too):
+- tinyassets/broker/http_connect.py still imported _HTTP_ACTION_CAP, which
+  main removed in #4476. Every broker HTTP deposit was refused in broker mode.
+  The import and cap argument are removed, matching main's uncapped grants.
+- Main now requires the protected owner session for consent answers. The
+  branch's disconnect test and launcher oracle answered through the bearer
+  door; both now use the owner-session executor, as main's tests do. No
+  assertion was weakened.
+
+Evidence (production Dockerfile tinyassets-uid-d87:final,
+sha256:85a428a82d9749b2c4f8fd7597b6b29c8b8c26dd82e3de2e407ba7b3a2082ec6):
+- Production root image oracle exit 0, zero skips, privileged chain PASS.
+- role_package_probe --stream exit 0 for Alice and Bob: python/node/shell
+  stdio, memory cap, descendant cancellation, foreign refusal, broker slot TLS;
+  an opted-in revision reaches the fixture over real TLS (403) through the
+  pinned relay while 169.254.169.254 and a direct TCP connect fail; a
+  non-opted revision has no relay socket and no proxy env; both mismatched
+  start() flags refuse. ZERO FOREIGN_BYTES; startup_activated=false.
+- role_long_lifetime_probe --kind package exit 0: a package cell ran 700s, past
+  the former 660s deadline, and exited 0.
+- role_long_lifetime_probe --kind provider exit 0: a provider-exec cell ran
+  700s and exited 0. This closes D86's "not proven by an actual >660s run".
+  Both long probes ran sequentially (shared fixture subnet).
+- Root Linux oracle: 212 passed, zero skips (role_provider_execution,
+  role_provider_discovery, role_launcher, role_packages, role_owner_delete,
+  role_tool_files, role_tools, universe_path_io_guard, converse_turn_cost,
+  owner_stores, control_plane_inventory, storage_registry_complete,
+  broker_http_connect, broker_disconnect, broker_http_policy,
+  http_connection_provisioning). UID1001 oracle: 72 passed, zero skips
+  (role_decoder, owner_launcher_client, native_model_discovery,
+  native_discovery_integration).
+- ci_structural_guards.py 576 passed; mirror parity 678 files; strict OpenSpec
+  valid; changed-file Ruff clean.
+- Not exercised: the RSS/process guard under real memory pressure in a long
+  run, and a busy server reaching the 300s CPU bound.
+
+Slice (3), authenticated owner-delete admission, is D85 (9657e679b7), already
+on #4523. U2 #4510's "U1 admits no owner-delete cell" predates it: #4510 stops
+at d1f84c63e5. U2 needs a rebase onto #4523 to consume role_owner_delete
+begin/finish/abort, not new U1 code. Rechecked on the D87 image (the
+launcher changed): role_owner_delete_probe exit 0 for Alice and Bob (owner
+pass, daemon pass, quiescence/cancel/retry/stale fence, foreign mutation
+denial, reuse). ZERO FOREIGN_BYTES; startup OFF.
+
+Remaining: K1 integration (persistent stdio MCP consumer of start(egress=)),
+U2 rebase and two-pass consumer wiring, provider adapters reaching
+provider-exec, startup/healthchecks, dynamic center admission, aggregate
+capacity proofs, integrated production proofs, main spec sync.
+
+---
+
+# Current U1 delivery: D86 provider-exec owner cells (text-only first view)
+
+D85 is pushed at 10282e4a5e. b94259d502 was an unreviewed, unverified lane
+snapshot; it claimed nothing and proved nothing. This entry is what verification
+found and what is true now. Startup OFF; draft #4523.
+
+What exists: in broker mode the shared aspawn_owned entry dispatches to a
+dedicated provider-exec owner cell or refuses; it never builds a daemon-UID
+subprocess. Admission reuses D82's exact sealed snapshot, adds the pinned
+universe egress relay (in-cell loopback forwarder, no network interface) and a
+separate daemon-authenticated stderr socketpair; raw stdin/stdout, communicate
+and wait semantics and revocation-based cancellation are kept. Admission has no
+provider branch. Shell mode, engine routes, caller views/mounts, nested sandbox,
+any cwd and host data paths in argv refuse.
+
+Not true yet, stated plainly: no shipped adapter reaches this class. The Codex
+adapter passes a universe_view and the Claude adapter passes a cwd, so in broker
+mode both refuse (fail closed, no fallback). Only a direct aspawn_owned call
+with no view/cwd executes. Session persistence, persistent workspace views,
+engine-MCP, auth refresh and adapter integration remain. Startup stays OFF.
+
+Fixed during verification (the snapshot had these defects):
+- Wall clock: the snapshot gave provider-exec a fixed 660s mapper deadline and
+  a 670s receipt wait, which would kill a long productive turn (founder rule: a
+  turn runs until finished). Lifetime is now daemon revocation, daemon death or
+  the RSS/process guard; wait has no timeout. Not proven by an actual >660s run.
+- Provider-named admission: the cell admitted '/usr/local/bin/codex' and named
+  install trees, failing the channel-agnostic ratchet. Admission is now the
+  image layout: a regular file under /opt/<name>-install/ or directly in
+  /usr/local/bin, not owned by the payload identity, not group/other-writable;
+  the decoder binds every /opt/*-install tree. The first production run of this
+  check required UID 0 and failed, because the cell's user namespace shows image
+  root as overflow; that run is a diagnostic, not acceptance.
+- Unbacked label: the snapshot probe printed ZERO FOREIGN_BYTES with no in-cell
+  read attempt. It now runs arbitrary code in each owner's cell.
+- Merging main put scripts/ci_structural_guards.py on every PR. Six guards
+  failed on branch-only U1 code: three broker SQLite writers, owner-identities.db
+  storage, four call-scoped loops, two BOM-prefixed tests, and the provider names
+  above. All are classified or fixed; no baseline was raised.
+
+Evidence:
+- Production Dockerfile tinyassets-uid-d86:verify,
+  sha256:f026208dd0301825ac11e88d76b9bb26457bba6f1c64a332dc795b71c2949fda,
+  privileged chain PASS. role_provider_execution_probe --stream exit 0 for Alice
+  and Bob: installed CLI --version; a bad flag gives stderr-only output; an
+  actual Codex exec reaches the HTTPS Responses fixture through the pinned relay
+  and returns the fixture answer; a sentinel env var never enters; the sealed
+  snapshot is unchanged; app-server cancellation is reaped; foreign center,
+  engine route and persistent cwd refuse. In-cell code in each owner's cell:
+  uid 1/2, fds [0,1,2], CapEff 0, NoNewPrivs 1; the other owner's center and
+  sentinel, the broker ledger, owner-identities.db, the data root,
+  /proc/1/root/data and /run/tinyassets all unreadable; a direct TCP connect to
+  the fixture is refused. The other owner's sentinel bytes never appear.
+  startup_activated=false, daemon capabilities zero.
+- Regression: role_provider_discovery_probe on the same image exit 0 (11 models
+  each owner, foreign refusal, cancellation and reuse).
+- Root Linux oracle: 130 passed, zero skips (role_provider_execution,
+  role_provider_discovery, role_launcher, role_packages, role_owner_delete,
+  role_tool_files, role_tools, universe_path_io_guard, converse_turn_cost,
+  owner_stores, control_plane_inventory, storage_registry_complete).
+- UID1001 oracle: 57 passed, zero skips (owner_launcher_client,
+  native_model_discovery, native_discovery_integration).
+- ci_structural_guards.py: 576 passed. Plugin regeneration/import probe, mirror
+  parity and strict OpenSpec PASS. Changed-file Ruff clean; the one E501 left
+  in storage_accounting.py arrived from main (#4525).
+- Not exercised: the provider-exec RSS/process guard under memory pressure,
+  and a run longer than the old 660s deadline.
+
+Slices (1) TOOL preparation/promotion/accounting recovery, (2) PACKAGE cells and
+(3) authenticated owner-delete admission were already delivered as D83
+(2f07b72490), D84 (35df4b4ecd) and D85 (9657e679b7). Gaps D84 left for K1
+stdio: no pinned general egress relay, and a fixed 600/660s package lifetime
+that ends a persistent stdio server. D87 takes both.
+
+---
+
+# Current U1 delivery: D85 authenticated owner-delete admission
+
+D84 is pushed at 3344d96b5931966c9455a97b95115acf7fecc601 (package commit
+35df4b4ecd, main merge included). Startup OFF; draft #4523.
+
+D85 adds fixed owner-delete admission and role_owner_delete.begin/finish/abort.
+The mapper authenticates the live daemon, binds principal/center to dedicated
+owner identity and exact center descriptor, requires owner-wide quiescence and
+retains an owner-wide token fence until explicit completion or abort. No path,
+UID, executable, socket or policy can be selected by the request. Retry requires
+the same center/token; other owners continue. Cancellation/EOF/failure do not
+automatically release the fence. Explicit abort reports partial deletion, never
+rollback or success, and lets U2 recover over-depth/inaccessible trees without
+permanently disabling the owner. Finish survives removal of center metadata and
+broker identity records; the mapper binding and live token remain authoritative.
+
+The fixed strict owner cell removes exact-owner entries with no-follow pinned
+descriptors and never reads file contents. It restores only owner directory
+modes and preserves daemon entries/structure for U2 pass two. Nested userns
+collapses every non-owner identity to overflow, so the trusted cell sends exact
+O_PATH descriptors to the daemon for a host-UID1001 custody boolean; no contents,
+paths or descriptor go back. Foreign entries fail loudly before traversal or
+mutation. CPU, AS, fd, file and wall ceilings bound maintenance. Partial failures
+name bounded relative paths. U2 must serialize daemon writes, persist deletion
+intent/token across restart, verify its daemon pass, and explicitly finish; U1
+does not wire account/reset/pool consumers or startup. An admin grant alone
+cannot substitute another owner's mapper binding/UID.
+
+Claude peer-agents review, 163s exit 0: VERDICT ADAPT. AGREE F1 namespace overflow:
+the first actual probe confirmed the issue; fixed exact-descriptor host custody
+classification, retaining the original foreign-failure assertion. AGREE F2
+non-progressing bounded/inaccessible trees: explicit, quiescent abort recovery,
+never automatic successful cleanup. F3 fails-safe admin mismatch is documented:
+only an admitted principal/root identity pair can delete. Receipt
+C:/Users/Jonathan/AppData/Local/Temp/uid-d85-review.md. No second review round.
+
+Final root Linux oracle: 83 passed, zero skips (role_owner_delete, role_packages,
+role_provider_discovery, role_launcher, universe_path_io_guard, converse_turn_cost).
+Supporting UID1001 owner_launcher_client oracle: 5 passed, zero skips. Ruff,
+plugin regeneration/import and strict OpenSpec PASS; no test weakened.
+Final production Dockerfile tinyassets-uid-d85:reviewed, chain PASS:
+sha256:1f7d8de7b6d47c5af61bfae9836bf26e0f18e8b081435b3b286a8d2096fcb93d.
+role_owner_delete_probe exit 0 passed Alice/Bob owner+daemon passes,
+deep-tree abort recovery, active-owner refusal, cancellation fence, same-token
+retry, stale-token refusal, foreign hardlink/symlink protection, other-owner
+concurrency and post-finish app reuse. ZERO FOREIGN_BYTES; startup_activated=false.
+One harness-only failure was a sentinel variable collision with the reused base
+probe; renamed the fixture variable, no assertion changed. The first root run
+caught mixed cell/daemon raw-I/O guard scope; split the helper into its trusted
+cell module without weakening the guard. No U2 migration files changed.
+
+Remaining: provider execution/auth/network discovery and other engine callers;
+U2 two-pass consumer integration; dynamic center admission, full denial/reader
+matrix, aggregate capacity, startup/healthchecks/rollback integration, integrated
+production proofs and main spec sync. No full build checkbox is newly complete.
+
+---
+
+# Current U1 delivery: D84 PACKAGE cells
+
+Startup OFF; draft #4523. D83 is pushed at 2f07b72490. D84 supplies
+role_packages.start: authenticated owner identity, exact manifest/content revision,
+sealed daemon custody, read-only source, private namespaces, bounded tmpfs and raw
+duplex stdio. Python, Node and shell share provider-neutral admission. Named slots
+retain canonical daemon authority/consent/effect checks and broker-only credentials,
+destination policy and DNS pinning. No ambient credential or direct network access.
+Consumers must provision approved sealed revisions; installer and K1 integration
+remain consumer work, not claimed complete by this execution boundary.
+
+External mapper supervision measures the complete descendant tree every 50ms and
+kills excess RSS/process count, including when the package stops its own supervisor.
+Python/shell also inherit address-space limits; Node gets a heap bound. CPU, files,
+descriptors, process count, wall time and private tmpfs are bounded. RSS polling is
+not a hard cgroup reservation: aggregate host capacity remains activation work.
+
+Evidence:
+- Root Linux oracle: 85 passed, zero skips (role_packages, role_tool_files,
+  role_tools, role_launcher, role_provider_discovery, universe_path_io_guard,
+  converse_turn_cost). Supplemental root filesystem oracle: 52 passed, zero
+  skips; two Windows-only tests deselected there and passed on Windows. The
+  initial combined selection had two platform skips; an over-broad root repeat
+  also failed three tests whose documented venue is daemon UID1001. These are
+  selection diagnostics, not acceptance, and no test was modified or weakened.
+- Production Dockerfile tinyassets-uid-d84:guarded:
+  sha256:80b2817657a76be631ac97e0a926371cb2dd15bb757d779de48b0436be5b26e7.
+  Privileged chain PASS. role_package_probe --stream exit 0: actual Alice/Bob
+  Python (including pinned sibling import), Node and shell raw stdio, immutable
+  package, private identity/fds/namespaces/network, memory pressure, stopped-
+  supervisor Node Buffer attack killed by external mapper, detached descendant
+  cancellation, foreign refusal/reuse, real TLS/bearer through canonical broker
+  slots, credential non-disclosure and metadata destination refusal PASS.
+  ZERO FOREIGN_BYTES; daemon capabilities zero; startup_activated=false.
+- Changed-file Ruff, plugin regeneration/import and strict OpenSpec PASS.
+- Earlier diagnostic fixtures retained inherited group-write ACLs and were
+  correctly refused; fixtures now set sealed read-only ACLs. A hexadecimal 'e'
+  in revision incorrectly selected fd4; package socket selection now admits only
+  the explicit broker slot. An earlier stream run passed package assertions but
+  then failed an unrelated old inference exception-message assertion; the dedicated
+  package command now runs only its own assertions. None are acceptance receipts.
+
+Claude cross-family review: VERDICT ADAPT, exit 0, 181s. AGREE F1 (same-UID
+payload could stop in-cell memory enforcement): fixed with external mapper guard,
+inherited Python/shell AS bound and retired supervisor dumpability, proven with
+the actual attack. AGREE F2 (Python -I sibling imports): fixed pinned import paths,
+proven with helper.py. Receipt C:/Users/Jonathan/AppData/Local/Temp/uid-d84-review.md.
+No U2 files touched. No second review round; startup remains OFF.
+
+Remaining in founder order: authenticated owner-delete admission for U2 #4510;
+remaining provider execution/auth/network discovery and engine callers. Activation
+also still requires dynamic center admission, complete writable-path/daemon-reader
+and denial matrix, aggregate resource capacity, U2 startup/healthcheck/rollback
+integration, integrated production proofs and main spec sync. K1/user installs
+must consume the sealed-revision/slot API; this slice does not install packages.
+
+---
+
+# Current U1 delivery: D83 TOOL preparation, promotion and chmod recovery
+
+Startup OFF; draft PR #4523 remains draft. Founder ordering for this continuation:
+TOOL files, PACKAGE cells, authenticated owner-delete admission, remaining
+provider execution/auth/network classes. Admission remains provider-neutral.
+
+D83 adds the fixed tool-files class: exact admitted center descriptor, owner
+UID/GID, cell-deny, no executable/path/env/socket request, fixed lifetime and
+resource bounds. It creates the seven harness directories and agent workspace,
+restores inherited daemon ACL masks only on exact-owner exclusive regular files
+and directories, and atomically publishes bounded absent brain files from pinned
+source bytes. Foreign identities, hardlinks, symlinks and special files are not
+read or remoded. Sources remain recoverable; canonical names never get replaced;
+secondary agents cannot publish main identity.md. TOOL payloads keep the narrower
+D79 view. Daemon queueing, accounting admission and settlement remain authoritative.
+The final forced accounting poll happens after payload reaping and file recovery.
+
+Selected provider workspace creation now delegates to the same owner-cell helper,
+preventing daemon-owned first-use directories. Existing wrongly-labelled legacy
+roots still require U2 migration; no runtime chown or retained host authority.
+Removed daemon ACL entries are not recreated: unreadable accounting fails loudly.
+Walk limits report truncation; unsafe/oversized brain files report skipped names
+and remain editable. No provider-specific admission branch was added.
+
+Evidence:
+- Root Linux oracle, final merged tree: 87 passed, zero skips. Selection:
+  test_role_tool_files, test_role_tools, test_role_launcher,
+  test_universe_path_io_guard, test_converse_turn_cost, test_provider_jail_policy,
+  test_agent_workspace, test_provider_universe_jail, test_provider_jail_root_masks.
+- Supporting uid1001 oracle: 47 passed, zero skips (role_tool_sockets,
+  owner_launcher_client, jail_disk). Existing relay tests require daemon UID1001;
+  the first over-broad root selection failed two identity checks, not isolation.
+- Production Dockerfile image tinyassets-uid-d83:reviewed, build and privileged
+  chain PASS, sha256:d9c741b029c8aaa2bfe8ed7bcc952daf6acda7104e1e6ae1670e2f71b5a02870.
+  role_tool_files_probe PASS for both owners: read/write/edit/stdin, actual image
+  read, native identity/fd/namespace/network denials, timeout/output bounds,
+  first-use harness preparation, verbatim brain publication, mode000 recovery,
+  daemon reads/accounting, foreign-center refusal and reuse. ZERO FOREIGN_BYTES;
+  daemon capabilities zero; startup_activated=false. No socket proof claimed here.
+- Earlier production image failed at the inherited adapter's missing force=True
+  budget argument after the previous main merge. A stderr-only diagnostic proved
+  the TypeError. Fixed adapter plus regression test; corrected production probes
+  passed twice. Diagnostic images are not acceptance.
+- One full root run caught the existing provider-fill polling race (storage_limit
+  was enforced but the child had printed filled). Unchanged complete selection
+  rerun: all 87 pass. One invocation named a nonexistent test file: no tests ran;
+  this is not a receipt. No assertions, skips or xfails were relaxed.
+- Changed-file Ruff, plugin regeneration/import, strict OpenSpec validation PASS.
+  Static prompt budgets remain unchanged. origin/main merged at 06822d733c.
+
+Cross-family peer-agents Claude review, 176s, exit 0: VERDICT ADAPT. AGREE and
+fixed both correctness findings: unpromotable content no longer locks TOOL out,
+and selected provider workspace creation uses the owner cell. Receipt:
+C:/Users/Jonathan/AppData/Local/Temp/uid-d83-review.md. No cross-user defect found.
+Optional observations: modes now preserve existing bits and unchanged modes are
+not rewritten; serialization is daemon-local and the client rejects forked PID
+use. Per-center waiting remains silent, retained workspace copies are charged,
+and a killed publication can leave an accounted hidden temporary file. These
+are not activation/security acceptance claims. U2 files remain untouched.
+
+Remaining, in the requested order:
+1. PACKAGE cells: immutable exact revision, owner identity, pinned egress,
+   broker-only credential slots and resource caps; K1/user installs depend on it.
+2. Authenticated owner-delete admission for U2 #4510's legacy two-pass deletion.
+3. Remaining provider execution/auth/network discovery and other engine callers.
+4. Dynamic center admission, full writable-path/daemon-reader and denial matrix,
+   aggregate memory/tmpfs capacity, U2 startup/healthchecks/rollback integration,
+   integrated production proofs and spec sync. Activation/deployment stays OFF.
+
+---
+
+# Current U1 delivery: D82 offline provider metadata discovery
+
+Final merged-tree verification: origin/main merged without conflicts at
+2add14ea70. Sequential plugin regeneration/import probe and changed-file Ruff
+PASS. Root oracle 189 passed, zero skips; additional uid1001 identity/provider/
+disk-accounting oracle 181 passed, zero skips (one legacy teardown warning).
+Whole branch versus origin/main hygiene: 266 added, zero removed, zero tampering.
+Rebuilt production image tinyassets-uid-d82:merged:
+sha256:c477b1f408085c0ba5a3a3cd07e7f5980b48c630fdc8fe54352bbb94696f636a.
+Actual metadata and video probes PASS with ZERO FOREIGN_BYTES on this image.
+D76 independent lifetime probe also PASS with zero foreign reads, including
+EOF revocation, reaping, reuse, concurrency and fixed deadline enforcement.
+Two probe invocations preceded completion of image export and had no image to
+inspect; they were rerun after build exit 0 and are not acceptance evidence.
+
+D81 is pushed at d3f99e9134d1743c39f9b6cd22a756b2788d7de9. D82 adds the
+actual native metadata API to the dedicated provider-discovery owner cell.
+Installed Codex app-server model/list returns 11 models for both Alice and Bob.
+The source credential snapshot is pinned, daemon-owned and read-only; a bounded
+regular-file copy supplies disposable private SQLite/auth state. Ambient tokens
+and loader variables are filtered. No scratch is promoted. The cell has strict
+cell-deny, fixed CPU/process/fd/file bounds and a 35-second mapper lifetime.
+START retains descriptor ownership; one receipt reader survives cancellation;
+EOF revokes without the late queued-CANCEL/reset race. Provider inference,
+auth refresh, network metadata and other engines are NOT completed by D82.
+
+Production Dockerfile image tinyassets-uid-d82:private-state:
+sha256:bd099fb59b9d6f409fd8140bdb4c080002b4c351c728b844b7a2cdc3ae8a1521.
+role_provider_discovery_probe: actual installed API for both owners, foreign
+center/snapshot refusal, cancellation and repeated discovery PASS; ZERO
+FOREIGN_BYTES. Video application probe PASS, ZERO FOREIGN_BYTES. Independent
+D76 lifetime probe PASS: simultaneous owner streams, repeated receipts, EOF
+reaping, deadlines, concurrency limit and foreign START refusal, zero foreign
+reads. All report daemon capabilities zero and startup_activated false.
+The first metadata image failed because Codex needs writable SQLite state and
+late CANCEL could reset the receipt socket; diagnostic runs are not acceptance.
+
+Root Linux oracle: 74 passed, zero skips (role_provider_discovery,
+universe_path_io_guard, role_video, role_tools, role_launcher, converse_turn_cost).
+Additional uid1001 oracle: 99 passed, zero skips (owner_launcher_client,
+native_model_discovery, native_discovery_integration,
+provider_real_adapter_deadline_reap). One pre-existing legacy transport teardown
+warning remains in the malformed-readiness test. Ruff, plugin regeneration and
+OpenSpec audit pass; no static prompt budget changed. D82 hygiene: 15 tests
+added, zero removed, zero tampering. D82 pushed at 1a095dfc40.
+Independent Claude floor/correctness review (peer-agents, read-only, 183s):
+VERDICT: APPROVE, no floor/correctness findings. AGREE. Receipt:
+C:/Users/Jonathan/AppData/Local/Temp/uid-d82-review.md. Reviewed D81/D82 owner
+isolation, sealed snapshot/config boundary, resource bounds and receipt lifetime.
+Non-blocking observations retained: synchronous admission can block the event
+loop for its bounded exchange; validate absolute CLI argv and proof-object shape
+more explicitly; V8 cannot use the current address-space cap, and aggregate
+memory/tmpfs accounting still needs the general capacity gate.
+
+Exactly remaining for activation, in execution order:
+1. Provider CLI execution, auth/refresh and network metadata; engine-MCP thin
+   proxy with canonical daemon handlers; workspace provision/registry/worker;
+   remote git/local box; remaining ingestion/caller coverage. Complete actual
+   class/site, writable-path/daemon-reader, scope-reuse and denial matrix.
+2. Tool owner-directory preparation, persistent brain-file promotion and
+   chmod/storage-accounting recovery, retaining daemon custody and settlement.
+3. Immutable exact-revision package cells for stdio MCP/user-installed packages,
+   owner UID/GID, narrow credential slots, pinned egress, foreign-access denial
+   and resource caps; K1 depends on this.
+4. Dynamic center admission and remaining broker readers, plus U2 D61 quarantine,
+   migration, two-pass deletion, old-image rollback, startup and health checks.
+5. Aggregate cell memory/tmpfs capacity enforcement, integrated production proof
+   for every class/caller, review of the remaining floor changes and
+   spec sync. Startup stays OFF; no deploy or ready/final PR is authorized.
+
+---
+
+# Current U1 delivery: D81 data-only video ingestion
+
+Continuation starts at 6f33b092f2. Draft PR #4523 is open; startup stays OFF,
+no deploy, no ready-for-review promotion. This is one additional actual engine
+class, not completion of requested item (1); items (2) and (3) remain ordered
+behind the engine inventory. No full task checkbox is newly complete.
+
+D81 routes extract_text/extract_video_description video calls through the fixed
+ingestion-video cell with explicit admitted center and owner-scoped description
+callback. ffprobe/ffmpeg receive only verbatim bounded bytes at a fixed scratch
+filename. No owner data, credential, shared store or relay mount; strict
+cell-deny, dedicated owner UID/GID, private namespaces, capability/fd retirement,
+CPU/address-space/file-size/process/fd limits and fixed lifetime. Selected
+failures cannot fall back to daemon subprocess or the legacy platform vision
+endpoint. The daemon consumes bounded frame bytes, never cell scratch paths.
+
+Repeated metadata extraction failure reached the AGENTS handoff threshold.
+Claude implementation handoff fixed the exact missing Debian BLAS/LAPACK
+alternatives with two video-only read-only binds resolving under /usr/lib.
+Receipt: C:/Users/Jonathan/AppData/Local/Temp/uid-d81-handoff-result.md.
+The diagnostic containers were not acceptance evidence. No filter/capability
+relaxation or generic /etc mount was used. The handoff's correctness review found
+no defects; a separate final cross-family review remains due before final push.
+
+Verified production Dockerfile image tinyassets-uid-d81:video2:
+sha256:0791f5eef97ee0930511732213897e8af1e0014ba03cdd2156cc9575503e17a1.
+Privileged chain PASS; scripts/role_video_launcher_probe.py exit 0: Alice/Bob
+actual ffprobe/ffmpeg and public extraction callback, foreign scope and playlist
+refusal, post-refusal reuse, ZERO FOREIGN_BYTES, startup_activated false.
+Root Linux oracle (--as-root, --basetemp /tmp/b): tests/test_role_video.py,
+tests/test_ingestion.py, tests/test_role_launcher.py,
+tests/test_universe_path_io_guard.py: 104 passed, zero skips.
+The existing tests/test_owner_launcher_client.py explicitly assert uid1001;
+separate unprivileged Linux oracle: 5 passed, zero skips. The initial combined
+root selection failed those identity assertions, not product isolation; no test
+was weakened or skipped. An earlier oracle source copy was invalidated by
+concurrent plugin regeneration and is not a test receipt.
+On the same image, reader alias probe: 132 denied, 22 own reads, zero foreign
+reads and foreign unchanged; all three namespace profiles deny read/relabel/copy
+and out-of-range mappings. Changed-file Ruff and sequential plugin
+regeneration/import probe PASS.
+The raw-I/O allowance shrank by one after factoring the bytes-only PDF adapter;
+legacy video scratch reads/writes use the existing no-follow helpers.
+
+Exactly remaining for activation, in execution order:
+1. U1 actual provider CLI/discovery/auth, engine-MCP thin proxy with canonical
+   daemon handlers, workspace provision/registry/worker, remote git/local box,
+   and remaining ingestion-format/caller coverage; complete actual class/site,
+   writable-path/daemon-reader, scope-reuse and denial matrix.
+2. Tool owner-directory preparation, persistent brain-file promotion and
+   chmod/storage-accounting recovery, retaining daemon custody and settlement.
+3. Immutable exact-revision package cells for stdio MCP and user-installed
+   packages, owner UID/GID, narrowed broker credential slots, exact pinned
+   egress, foreign-access denial and resource caps; K1 consumers depend on this.
+4. Dynamic center admission and remaining broker-reader integration, then U2's
+   complete D61 provenance/quarantine/migration, two-pass deletion after chmod,
+   actual old-image rollback, service lifetime/startup and healthcheck proofs.
+5. Full integrated production-image acceptance, final cross-family floor review,
+   spec sync, and separately authorized activation/deployment with SHA assertion
+   and one real-user app pass. Deployment is not authorized by this request.
+
+Release-critical files in D81: Dockerfile, deploy/role_owner_launcher.py,
+deploy/role_decoder.py (3). U2 implementation files remain untouched.
+
+---
+# Current U1 delivery: D80 exact tool relay sockets verified
+
+D80 is pushed at f65af2de5308c35d0f135d1b50fc96026a08a88f, exact remote SHA
+asserted. Hygiene: 4 tests added, 0 removed, 0 tampering. Final U2 check:
+PR #4509 is OPEN and draft at 064fd8dc40e599b2858cad779f08cd3d726f99ac;
+not merged. Both implementation slices below are committed and pushed without
+rewriting history. Remaining-class source inspection confirms that provisioning
+still launches its existing subprocess and engine-MCP still launches its full
+server; neither is claimed as owner-cell acceptance. No package cell was added.
+
+D79 is pushed at 220f612a818d8816c502a29079a588e5a13b0ccc, exact remote SHA
+asserted. Hygiene: 5 tests added, 0 removed, 0 tampering. Continued in the same
+run into public bash/ta/egress rather than stopping at the offline slice.
+
+D80 extends only the fixed tool class with pinned egress/ta socket descriptors.
+Socket ACLs name one dedicated owner; group and other access are removed.
+The sidecar grants that owner traverse only, never listing/write, and the cell
+mounts only exact sockets. Daemon sender/center binding, exact protected socket
+paths, inode proof, fixed fd slots and descriptor closure remain enforced.
+The existing egress address policy and per-invocation ta authority stay intact.
+
+Initial installed image built successfully but socket entry failed before its
+cell proof. A diagnostic preserving only mapper-child stderr (no acceptance
+claim) found: bwrap cannot resolve /proc/self/fd/4: Permission denied. Added
+named-owner traverse-only parent ACL, with exact readback and mode assertions.
+A first broader stderr diagnostic failed the service bootstrap and is not an
+acceptance run. No policy/capability was relaxed to make a probe pass.
+
+Claude peer-agents review returned APPROVE, no floor/correctness finding;
+receipt C:/Users/Jonathan/AppData/Local/Temp/uid-d80-review.md. Its optional
+Windows observation was addressed by validating missing scope before creating
+an AF_UNIX socket; two focused Windows checks pass. No skip was added to an
+existing test. Review predates the measured parent-traverse correction.
+Linux selection: 73 passed, zero skips, both before and after that correction.
+Targeted Ruff and strict OpenSpec pass; plugin import/parity pass.
+
+Corrected production Dockerfile build exit 0, privileged chain PASS:
+sha256:553820e780a81e4824172f3c55971b89e05599c259c59c774cf1620d2928b16f
+(tinyassets-uid-d80:traverse). Reader probe on this image: 132 denied, 22 own,
+zero foreign reads, foreign unchanged. Final commands on this image (exit 0):
+- python scripts/role_tool_socket_probe.py --image tinyassets-uid-d80:traverse:
+  Alice/Bob actual bash, ta CLI callback (correct captured owner), HTTP proxy
+  roundtrip on a Docker-internal synthetic network; metadata address and direct
+  networking denied; foreign-center and revoked socket descriptors refused by
+  application/mapper; post-refusal reuse succeeds; ZERO FOREIGN_BYTES. Covers
+  no-socket, egress-only, ta-only and combined descriptor layouts, plus all D79
+  offline controls including exact 20 MiB image transport. Final log:
+  C:/Users/Jonathan/AppData/Local/Temp/uid-d80-socket-final.log.
+- python scripts/role_node_launcher_probe.py --image tinyassets-uid-d80:traverse:
+  actual compiler/authoring/data/workspace/RPC/cancellation PASS, zero foreign bytes.
+- python scripts/role_preview_launcher_probe.py --image tinyassets-uid-d80:traverse:
+  Alice/Bob sandbox-enabled Chromium and screenshot writes PASS; profile override
+  refused for every other D9 class; zero foreign reads.
+- python scripts/role_reader_alias_probe.py --image tinyassets-uid-d80:traverse:
+  132 denied, 22 own reads, zero foreign reads; foreign unchanged.
+- python scripts/role_owner_namespace_probe.py --image tinyassets-uid-d80:traverse:
+  all three profiles deny foreign read/relabel/copy; out-of-range mapping denied.
+- python scripts/linux_oracle.py -- tests/test_role_tool_sockets.py tests/test_role_tools.py tests/test_role_relays.py tests/test_ta_capabilities.py tests/test_ta_capabilities_jail.py tests/test_owner_launcher_client.py tests/test_role_launcher.py tests/test_universe_path_io_guard.py -q -rs:
+  73 passed, zero skips after the final product corrections.
+
+No new full task checkbox is complete. Tool owner-directory preparation,
+persistent brain-file promotion and chmod/accounting recovery still need proof.
+Remaining actual classes: provider CLI/discovery/auth, engine-MCP thin proxy,
+workspace provision/registry/worker, remote git/local box and ingestion/video;
+then immutable package cells with narrowed broker slots/egress. U2 PR #4509 is
+not merge-ready, and its migration/deletion/old-image/startup work remains U2-owned.
+No final build PR or deployment; no production volume or user data was touched. Release-critical files: the same two deploy class files.
+U2 files, startup, healthcheck, migration and rollback remain untouched/off.
+
+---
+# Current U1 delivery: D79 staged offline tool-jail integration
+
+Started at 7df4be37d7 with the requested ff-only pull, already current. No history
+rewrite, no U2 code edit, no deployment. U2 PR #4509 remains draft and explicitly
+NOT merge-ready at cfd7967fbd83012a0371fb1ae1fbd043c30b0e9f. Its D213 repeated
+rollback-provenance finding remains a handoff; U1 did not patch or merge it.
+
+D79 implements actual read/write/edit/image operations through dedicated owner
+cells, with the existing strict inner tool jail and daemon-owned queue slots,
+storage reservation/polling/settlement. The cell mounts pinned exact-owner
+content only, closes source descriptors before application imports and closes
+inner descriptors before payload execution. No protected center root is mounted.
+The fixed class deadline is 660 seconds. Limits preserve the existing 20 MiB
+image allowance; transport carries its base64 representation with bounded slack.
+
+This is NOT full tool-class acceptance: relay sockets refuse; prepared harness
+directories are required; new brain-file names remain in .agent-workspace and
+persistent promotion is pending. Public bash/ta/egress are unverified. No full
+2.x task checkbox is newly complete. Startup remains OFF.
+
+Production Dockerfile build exited 0 with privileged chain PASS. Reviewed image:
+sha256:1650d2cadd7e20ec07fe2d78c9a97b8d394b1c6051208fe341c3d8ed7a9dde8a
+(tinyassets-uid-d79:reviewed). A later line-wrap-only source edit has no behavior
+change. Initial build also exited 0; its wrapper then failed decoding a UTF-8
+log as cp1252. The corrected final wrapper reads UTF-8 and exited 0.
+
+Verified commands (exit 0, synthetic data only):
+- python scripts/role_tool_launcher_probe.py --image tinyassets-uid-d79:reviewed:
+  actual Alice/Bob read/write/edit/image decoding, stdin, timeout/output limits,
+  disk-floor refusal, exact 20 MiB output transport, foreign scope/aliases and
+  relabel denied; inner nested-userns denied, descriptors 0/1/2 only, ZERO
+  FOREIGN_BYTES. Existing actual decoder and local git/bridge controls PASS.
+- python scripts/linux_oracle.py -- tests/test_role_tools.py tests/test_universe_tools.py tests/test_universe_tools_jail.py tests/test_universe_path_io_guard.py tests/test_tool_images.py -q -rs:
+  125 passed, zero skips, after review corrections.
+- python scripts/linux_oracle.py -- tests/test_owner_launcher_client.py tests/test_role_launcher.py tests/test_role_decoder.py tests/test_role_git.py tests/test_role_preview.py tests/test_role_node.py tests/test_ta_capabilities_jail.py -q -rs:
+  58 passed, zero skips.
+- Initial source selection: 93 passed, zero skips. Initial image
+  sha256:9f35134ff7fa85c90ddefe1eb4aa41acec1c0552215189bd59b302fddc6a0931
+  passed offline tools; reader alias matrix 132 denied / 22 own / zero foreign;
+  all three profile read/relabel/copy and out-of-range mapping denials PASS.
+- Targeted Ruff, strict OpenSpec, diff checks and plugin import/parity PASS.
+  Full Ruff retains 55 unchanged findings. No existing test weakened or removed.
+
+Cross-family peer-agents review (Claude), exit 0: ADAPT, no floor finding.
+Receipt: C:/Users/Jonathan/AppData/Local/Temp/uid-d79-review.md. AGREE with image
+allowance, refusal type and deadline findings; all corrected and production
+probe rerun. AGREE with chmod/accounting recovery note: an owner can remove the
+daemon ACL by chmod, leading to truthful storage refusal; preparation/recovery
+remains pending and privileges are not widened to bypass it.
+
+Release-critical files in this slice: 2, deploy/role_owner_launcher.py (class
+admission only) and deploy/role_decoder.py (fixed cell bootstrap). No image
+recipe, migration, rollback, startup or healthcheck code changed. U2 migration
+dry-run/deletion/old-image-CMD rollback were not run here. No final build PR.
+
+Remaining U1: complete tool sockets/preparation/promotion; provider CLI,
+discovery/auth, engine-MCP thin proxy, workspace provision/registry/worker,
+remote git/local box, ingestion/video; then exact-revision package cells with
+broker-scoped credential slots and egress. U2 remains responsible for full
+migration/quarantine/two-pass deletion, real old-image rollback and startup.
+The reader concern remains open until the full actual-class/path matrix passes.
+
+---
+# Current U1 delivery: D78 actual code-node engine integration
+
+Implementation pushed: **ff6506c7572c2fd6accf2bbb0c87f8d62bc3145a**; exact
+remote branch SHA asserted with `git ls-remote`. Hygiene against d1f84c63e5:
+**5 tests added, 0 removed, 0 tampering findings**, exit 0. The implementation
+worktree was clean after push. No history rewrite; the MCP stack is preserved.
+
+Started at d1f84c63e5 with the requested ff-only pull, already current. U1 only:
+fixed node-sandbox admission, its existing D9 nested jail, graph and authoring
+callers, and acceptance probes. U2 migration/rollback/startup files are untouched.
+PR #4509 is draft at 827d84c8797def5a6962124c4cc0732e4ac62e99 and explicitly
+not merge-ready; it was not merged. Package cells remain after actual classes.
+
+D78 records the mechanics in design.md. This is actual node execution rather
+than a transport-only slice: dedicated owner outer cell, optional exact-owner
+pinned workspace, existing nested node jail/resource checks, bounded data/RPC
+transport, and cancellation/reaping independent of blocked daemon callbacks.
+Graph compilation passes the center and skips daemon bwrap probes when selected.
+Authoring supplies its session owner's protected home binding; absent admission
+still refuses. No token or raw credential enters the cell. Other classes are
+not implicitly admitted, and no full task checkbox is newly complete.
+
+Initial production probe exposed the inner jail's missing read-only
+`/etc/ld.so.cache`: the copied production Python could not locate libpython.
+Added that public system file to the existing system read-only set. A corrected
+probe fixture also uses a unique post-git marker. Neither failure was acceptance.
+The subsequent image `sha256:7c2411a135a52a9cc07c3078d71a5fe8b34914b117b3549b1f53435737cc75a9`
+passed actual Alice/Bob node data, git, venv/native descendant, RPC, blocked-RPC
+cancellation and post-cancel reuse; zero foreign bytes. That image predates
+the review corrections and is not final evidence.
+
+Cross-family peer-agents review (Claude, exit 0): ADAPT, no floor breach found.
+Receipt: `C:/Users/Jonathan/AppData/Local/Temp/uid-d78-review.md`.
+- **AGREE** compiler factory finding: skip the daemon probe and cover the real
+  compiler workspace entry, not only direct NodeSandbox calls.
+- **AGREE** transport robustness: check proof before sending data; nonblocking
+  deadline/cancellation-aware writes; UTF-8 encoding and a structured failed
+  SandboxResult on transport result overflow. Authoring scope is now carried.
+- **DISAGREE_EVIDENCE** request to remove cumulative output protection:
+  `node_sandbox._BoundedDrain.run` explicitly counts RPC bytes before its
+  `on_line` callback discards them. The existing inner ceiling is 8 MiB; the
+  proposed 700 x 100 KB workload already fails there. Keep both guards.
+
+Linux source receipts so far (all exit 0, zero skips): 141 initial node/launcher
+tests; 178 workspace plus affected heavy tests; 309 expanded node/workspace/
+graph-diagnostic/heavy tests; then 358 tests including new compiler coverage
+and authoring tests after review corrections. Full Ruff remains
+55 unchanged findings; targeted Ruff and strict OpenSpec pass. Alias probe on
+the intermediate image: 132 denied, 22 own reads, zero foreign reads.
+
+Final production Dockerfile image, build exit 0 and privileged chain PASS:
+`sha256:523e79ad5a95bbbf39e79881e1abaf39bf28c2b4449b21e44b97759d61e77572`
+(`tinyassets-uid-d78:guarded`). Final commands, each exit 0:
+- `python scripts/role_node_launcher_probe.py --image tinyassets-uid-d78:guarded`:
+  Alice/Bob actual compiler workspace nodes AND authoring draft node execution,
+  data-only nodes, git, venv/native descendants, scoped RPC, cancellation while
+  callback blocks, post-cancel reuse. Dedicated identities, zero caps, NNP,
+  descriptors 0/1/2, host-parent traversal/foreign aliases/relabel/network denied;
+  **ZERO FOREIGN_BYTES**. Synthetic state only.
+- `python scripts/role_preview_launcher_probe.py --image tinyassets-uid-d78:guarded`:
+  actual sandbox-enabled Chromium, screenshot writes, existing git/bridge pass.
+- `python scripts/role_reader_alias_probe.py --image tinyassets-uid-d78:guarded`:
+  **132 denied, 22 own reads, zero foreign reads**, foreign bytes unchanged.
+- `python scripts/role_owner_namespace_probe.py --image tinyassets-uid-d78:guarded`:
+  all three profiles deny foreign read/relabel/copy and out-of-range mapping.
+- `python scripts/role_service_bootstrap_probe.py --image tinyassets-uid-d78:guarded --snapshots --git --stream`:
+  sealed snapshots, decoder/git, broker HTTPS GET/POST, accounting/replay refusal
+  and two OAuth rotations PASS.
+- `python scripts/linux_oracle.py -- tests/test_universe_path_io_guard.py tests/test_role_node.py tests/test_node_sandbox.py tests/test_node_sandbox_workspace.py tests/test_authoring_sandbox.py tests/test_authoring_sessions.py tests/test_node_enqueue_concurrency.py tests/test_nodes_real.py -q -rs`:
+  **362 passed, zero skips** after review and guard fixes.
+- `python scripts/linux_oracle.py -- tests/test_universe_tools.py tests/test_universe_tools_jail.py -q -rs`:
+  **85 passed, zero skips**, covering shared process-tree monitoring.
+- `python scripts/linux_oracle.py -- tests/test_owner_launcher_client.py tests/test_role_launcher.py tests/test_role_decoder.py tests/test_role_git.py tests/test_role_preview.py -q -rs`:
+  **47 passed, zero skips** on final source.
+- Plugin regenerated with import probe; all 618 canonical files mirror-match.
+  Targeted Ruff, strict OpenSpec and diff checks PASS.
+
+The raw-I/O guard run found four existing node-module operations newly
+in scope because of the owner path, and the new in-cell workspace open. Routed
+them through existing filesystem helpers without changing any guard/test pin:
+fixed `/proc` reads through read_data_path; temporary script unlink through
+unlink_data_path; scratch cleanup through RealPoolFilesystem; cell mount reopen
+through open_dir_nofollow. The final guarded image above includes those changes;
+all five production probes were rerun on it and passed. No test pin was edited.
+
+Release-critical files in this slice: **2**, `deploy/role_owner_launcher.py`
+(engine dispatch only), `deploy/role_decoder.py` (unprivileged fixed node entry).
+No Dockerfile, migration, rollback, startup or healthcheck edit. Migration
+dry-run/two-pass deletion/actual old-image rollback are U2 work, not run here.
+Startup stays OFF. No final build PR or deployment.
+
+Remaining U1: actual provider CLI/discovery/auth, engine-MCP proxy, tool-jail,
+workspace provision/registry/worker, remote git and local-box, ingestion/video,
+then immutable package revision cells with scoped broker credential slots and
+egress (PR #4511). The complete all-class matrix is still unfinished; the reader
+concern stays open. U2 still owns full migration/quarantine/two-pass deletion,
+old-image CMD rollback and startup/healthcheck. General ffmpeg/ffprobe remains
+absent from the image; coordinate image dependencies with U2. No activation or
+final build PR until the complete acceptance set is verified.
+
+---
+# Prior U1 delivery: D77 application adoption of independent cells
 
 D76 is pushed at **eeeeb0ff49dedf2a9b5b8b487e4b8fd65c7b08cb**, remote SHA
 asserted. Hygiene: **2 tests added, 0 removed, 0 tampering**. Continued into
@@ -4627,3 +5332,5 @@ are narrowed explicitly. The reviewer confirmed inventory coverage and preservat
 both prior refute rounds. No second review round was dispatched.
 
 D47 hygiene correction: the per-commit gate rejected adding a Windows skip to the already-committed D44 IPC tests (1 tampering finding). Restored those tests without the skip in an additive follow-up; no exception, test-removal approval, or history rewrite. D47's newly introduced evidence tests retain their own Unix prerequisite. All acceptance receipts above are zero-skip Linux runs.
+
+D84 supplemental daemon UID1001 owner_launcher_client oracle: 5 passed, zero skips.

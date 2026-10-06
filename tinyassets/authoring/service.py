@@ -765,9 +765,19 @@ def _execute_draft_nodes(
             })
             break
 
-        sandbox_runtime = NodeSandbox(
-            timeout=remaining_wall, max_output_bytes=policy.max_output_bytes
-        )
+        from tinyassets.broker.supervisor import broker_selected
+
+        owner_scope = None
+        if broker_selected():
+            from tinyassets.daemon_server import get_founder_home
+            from tinyassets.storage import data_dir
+
+            root = data_dir().resolve()
+            home = get_founder_home(root, session.owner_id)
+            if home:
+                owner_scope = root / home
+        sandbox_runtime = NodeSandbox(timeout=remaining_wall,
+            max_output_bytes=policy.max_output_bytes, universe_dir=owner_scope)
         started = time.monotonic()
         try:
             outcome = asyncio.run(

@@ -43,6 +43,47 @@ def fixture():
 
         def do_POST(self):
             size = int(self.headers.get("Content-Length", "0"))
+            if self.path == '/responses':
+                if not 0 < size <= 2 * 1024 * 1024:
+                    self.send_error(400)
+                    return
+                request = json.loads(self.rfile.read(size))
+                if request.get('model') != 'oracle-model':
+                    self.send_error(403)
+                    return
+                answer = 'owner cell fixture answer'
+                part = dict(type='output_text', text=answer, annotations=[], logprobs=[])
+                item = dict(id='msg_oracle', type='message', role='assistant',
+                            status='completed', content=[part])
+                response = dict(id='resp_oracle', object='response', created_at=1,
+                    status='completed', error=None, incomplete_details=None, output=[item],
+                    usage=dict(input_tokens=10, output_tokens=5, total_tokens=15,
+                               input_tokens_details=dict(cached_tokens=0),
+                               output_tokens_details=dict(reasoning_tokens=0)))
+                events = [
+                    dict(type='response.created', response={**response, 'status': 'in_progress',
+                                                           'output': []}),
+                    dict(type='response.output_item.added', output_index=0,
+                         item={**item, 'status': 'in_progress', 'content': []}),
+                    dict(type='response.content_part.added', output_index=0, content_index=0,
+                         item_id='msg_oracle', part={**part, 'text': ''}),
+                    dict(type='response.output_text.delta', output_index=0, content_index=0,
+                         item_id='msg_oracle', delta=answer),
+                    dict(type='response.output_text.done', output_index=0, content_index=0,
+                         item_id='msg_oracle', text=answer),
+                    dict(type='response.content_part.done', output_index=0, content_index=0,
+                         item_id='msg_oracle', part=part),
+                    dict(type='response.output_item.done', output_index=0, item=item),
+                    dict(type='response.completed', response=response),
+                ]
+                payload = ''.join('event: ' + event['type'] + '\ndata: '
+                                  + json.dumps(event) + '\n\n' for event in events).encode()
+                self.send_response(200)
+                self.send_header('Content-Type', 'text/event-stream')
+                self.send_header('Content-Length', str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+                return
             if not 0 < size < 4096:
                 self.send_error(400)
                 return

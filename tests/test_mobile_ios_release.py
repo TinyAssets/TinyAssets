@@ -9,6 +9,7 @@ import shutil
 from pathlib import Path
 
 import yaml
+from PIL import Image
 
 REPO = Path(__file__).resolve().parents[1]
 MOBILE = REPO / "mobile"
@@ -68,6 +69,8 @@ def test_ios_asset_installer_replaces_every_catalog_image(tmp_path: Path) -> Non
         assert (icon_catalog / name).read_bytes() == icon.read_bytes()
     for name in installer.SPLASH_FILES:
         assert (splash_catalog / name).read_bytes() == splash.read_bytes()
+        with Image.open(splash_catalog / name) as image:
+            assert image.getpixel((0, 0)) == (15, 16, 32)
 
 
 def test_ios_asset_installer_fails_on_capacitor_catalog_drift(tmp_path: Path) -> None:

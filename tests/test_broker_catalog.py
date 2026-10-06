@@ -1,4 +1,4 @@
-﻿"""Scoped pages remain redacted and complete across the page boundary."""
+"""Scoped pages remain redacted and complete across the page boundary."""
 import pytest
 
 from tests.test_broker_capabilities import ledger  # noqa: F401
