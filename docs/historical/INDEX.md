@@ -73,4 +73,3 @@ Top-level map for the repo and the Obsidian graph.
 - [templates/design-note.md](templates/design-note.md)
 - [templates/exec-plan.md](templates/exec-plan.md)
 - [templates/spec.md](templates/spec.md)
-- [templates/plan-section-check.md](templates/plan-section-check.md)

@@ -1,13 +1,11 @@
-"""Smoke: load-bearing docs survived the clone.
+"""Smoke: the base files are the ones AGENTS.md names, and retired ones stay gone.
 
-AGENTS.md and PLAN.md are the two living files (AGENTS.md §Two Living Files).
-If either disappears from main, every orient-first AI agent starts with
-incomplete context — a silent onboarding failure.
+AGENTS.md is the always-loaded map. If it disappears from main, every
+orient-first agent starts with no context: a silent onboarding failure.
 
-STATUS.md was the third until 2026-08-25. Its absence is now asserted, not
-tolerated: re-adding it would quietly restore the always-loaded coordination
-blob the reset removed, and a smoke test is exactly where that should be
-caught. Live state has typed homes instead — see AGENTS.md §Two Living Files.
+STATUS.md (retired 2026-08-25) and PLAN.md (retired 2026-10-06, ADR-005) are
+asserted absent, not tolerated: re-adding either would quietly restore a large
+second source of truth beside the typed homes AGENTS.md lists.
 """
 
 from __future__ import annotations
@@ -22,15 +20,23 @@ def test_agents_md_exists():
     assert (_REPO_ROOT / "AGENTS.md").is_file(), "AGENTS.md missing from repo root"
 
 
-def test_plan_md_exists():
-    assert (_REPO_ROOT / "PLAN.md").is_file(), "PLAN.md missing from repo root"
+def test_architecture_map_exists():
+    assert (_REPO_ROOT / "docs" / "architecture.md").is_file(), "docs/architecture.md missing"
+
+
+def test_plan_md_stays_retired():
+    assert not (_REPO_ROOT / "PLAN.md").exists(), (
+        "PLAN.md is back. It was retired 2026-10-06 (ADR-005): direction lives in "
+        "README.md § Direction, the map in docs/architecture.md, decisions in "
+        "docs/decisions/, behaviour in openspec/specs/."
+    )
 
 
 def test_status_md_stays_retired():
     assert not (_REPO_ROOT / "STATUS.md").exists(), (
         "STATUS.md is back. It was retired 2026-08-25 (5.2x over its own declared "
         "ceiling, 46% of 90 days of commits). Live state belongs in the typed homes "
-        "listed in AGENTS.md §Two Living Files, not in one always-loaded file."
+        "listed in AGENTS.md § Live state, not in one always-loaded file."
     )
 
 

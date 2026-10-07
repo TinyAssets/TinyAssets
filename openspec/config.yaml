@@ -14,8 +14,9 @@ context: |
   As-built capability truth lives in openspec/specs/ (baseline change
   `spec-out-existing-platform`, 2026-07-19); check there before drafting
   requirements. Conventions that constrain every change:
-  - AGENTS.md owns process truth, PLAN.md owns design truth, STATUS.md owns
-    live-state truth. openspec/specs/ owns per-capability behavioral
+  - AGENTS.md owns process truth, README.md § Direction owns direction,
+    docs/decisions/ (ADRs) own why, docs/architecture.md is the map, and live
+    state has the typed homes AGENTS.md lists. openspec/specs/ owns per-capability behavioral
     requirements (as-built).
   - Hard rules (AGENTS.md): SqliteSaver only; LanceDB singleton; no API SDKs
     for the primary writer (claude -p / codex exec subprocesses);

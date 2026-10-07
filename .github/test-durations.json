@@ -10,7 +10,7 @@
 "tests/load/test_agent_interchange_load.py": 1.8,
 "tests/smoke/test_domains_fantasy_daemon_registered.py": 0.0,
 "tests/smoke/test_mcp_tools_list_non_empty.py": 0.0,
-"tests/smoke/test_plan_md_exists.py": 0.0,
+"tests/smoke/test_base_files.py": 0.0,
 "tests/smoke/test_selfhost_parity.py": 0.0,
 "tests/smoke/test_sqlite_saver_importable.py": 0.0,
 "tests/smoke/test_tier3_smoke_script.py": 2.3,

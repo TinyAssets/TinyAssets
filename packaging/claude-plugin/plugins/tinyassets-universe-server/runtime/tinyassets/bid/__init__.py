@@ -5,14 +5,14 @@ Bid surface consists of:
 - ``execution_log``: per-universe daemon-local activity log (mutable).
 - ``settlements``: cross-host immutable settlement ledger (write-once).
 
-First canonical Module Layout commitment per `PLAN.md` §Module Layout.
+First canonical subpackage of the layout in `docs/architecture.md`.
 Promoted end-state 2026-04-19 from the four flat top-level modules
 (``tinyassets/node_bid.py`` + ``tinyassets/bid_execution_log.py`` +
 ``tinyassets/bid_ledger.py`` deprecation shim + ``tinyassets/settlements.py``)
 into this single package.
 
-Per the host's foundation-end-state rule (``PLAN.md``
-§Cross-Cutting Principles): no compat shims at the old top-level paths.
+Per the host's foundation-end-state rule (README § Direction: foundational
+patches are brought forward): no compat shims at the old top-level paths.
 Any remaining external callers must migrate to ``tinyassets.bid.*``.
 """
 

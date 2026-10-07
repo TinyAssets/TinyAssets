@@ -3,7 +3,7 @@
 
 Stores run metadata and per-step events in ``<base>/.runs.db`` so Phase 4
 can judge, diff, and iterate on run output. Runs are synchronous in v1
-per PLAN.md discussion (see task #39 for the async follow-up) — a single
+by design (see task #39 for the async follow-up) — a single
 ``start_run`` call compiles, invokes, and persists the final state before
 returning. That makes reasoning about cancel/thread-isolation trivial:
 one run per tool call, no background tasks to babysit.

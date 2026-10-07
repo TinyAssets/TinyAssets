@@ -3,9 +3,9 @@
 Read [AGENTS.md](AGENTS.md) first. Live state lives in typed homes it
 names -- `openspec/changes/` (queue), `docs/concerns/` (findings),
 `docs/host-actions.md` (founder-only). `STATUS.md` was retired 2026-08-25.
-Load [PLAN.md](PLAN.md) by the scope rules in AGENTS.md: full for planning,
-design, or architecture; scoped sections for small module work; skip for
-routine non-architectural changes.
+For design work read `README.md` § Direction, then
+[docs/architecture.md](docs/architecture.md) and the relevant ADR in
+[docs/decisions/](docs/decisions/INDEX.md).
 
 Use `python scripts/docview.py` for large Markdown, text, and JSON artifacts.
 

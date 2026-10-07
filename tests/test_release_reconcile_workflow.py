@@ -90,7 +90,7 @@ on:
 
 _GH_DECISION_HARNESS = r"""
 # Windows Python writes CRLF; the runner's python3 does not. Without the tr a
-# path read as `PLAN.md\r` silently matches nothing (and `tinyassets/**\r`
+# path read as `pyproject.toml\r` silently matches nothing (and `tinyassets/**\r`
 # still matches, by accident), so a Windows run would prove the wrong thing.
 # pipefail (set by the step) keeps python's exit status.
 python3() { "${PYTHON_BIN}" "$@" | tr -d '\r'; }
@@ -772,9 +772,13 @@ def test_exact_converge_main_advance_during_discovery_defers(
 #
 # build-image.yml cancels itself for a head that is runtime-equivalent to
 # production (scripts/runtime_paths.py), so such a head is never deployed. If
-# this backstop kept judging drift by the coarse path filter alone, every
-# PLAN.md-only merge would read as drift and be rebuilt and redeployed on the
-# next tick -- the very recreate the skip exists to avoid.
+# this backstop kept judging drift by the coarse path filter alone, every merge
+# the filter hits but the classifier clears would read as drift and be rebuilt
+# and redeployed on the next tick -- the very recreate the skip exists to avoid.
+#
+# `scripts/**` is the coarse pattern here: the fixture ships
+# scripts/unrelated_tool.py, which no Dockerfile COPY, host manifest entry or
+# deploy-chain workflow names, so it is a path hit that changes no runtime input.
 
 
 def _runtime_release_repo(tmp_path: Path, *, classifier: str | None = None):
@@ -784,7 +788,7 @@ def _runtime_release_repo(tmp_path: Path, *, classifier: str | None = None):
 on:
   push:
     paths:
-      - 'PLAN.md'
+      - 'scripts/**'
       - 'tinyassets/**'
 """
     script = (
@@ -801,14 +805,14 @@ on:
     )
 
 
-def test_unserved_plan_merge_after_a_deployed_runtime_merge_is_in_sync(
+def test_a_coarse_path_hit_that_changes_no_runtime_input_is_in_sync(
     tmp_path: Path,
 ) -> None:
-    from tests.runtime_repo_fixture import plan
-
+    """The newest commit the path filter hits changes no runtime input, so the
+    refinement walks back to the deployed runtime commit: no drift."""
     repo, _ = _runtime_release_repo(tmp_path)
     runtime = repo.commit("code", {"tinyassets/app.py": "VERSION = 2\n"})
-    repo.commit("plan", {"PLAN.md": plan(unserved="a new principle")})
+    repo.commit("tool", {"scripts/unrelated_tool.py": "TOOL = 2\n"})
 
     result = _run_decision(repo.root, deployed_shas=runtime)
 
@@ -816,17 +820,17 @@ def test_unserved_plan_merge_after_a_deployed_runtime_merge_is_in_sync(
     assert runtime[:8] in result["detail"]
 
 
-def test_served_plan_merge_is_still_drift(tmp_path: Path) -> None:
-    from tests.runtime_repo_fixture import plan
-
+def test_a_later_runtime_merge_is_still_drift(tmp_path: Path) -> None:
+    """The refinement must not swallow a genuine runtime commit that landed
+    after the deployed one."""
     repo, _ = _runtime_release_repo(tmp_path)
     runtime = repo.commit("code", {"tinyassets/app.py": "VERSION = 2\n"})
-    served_plan = repo.commit("plan", {"PLAN.md": plan(daemon="changed")})
+    later = repo.commit("more code", {"tinyassets/app.py": "VERSION = 3\n"})
 
     result = _run_decision(repo.root, deployed_shas=runtime)
 
     assert result["action"] == "dispatch"
-    assert served_plan[:8] in result["detail"]
+    assert later[:8] in result["detail"]
 
 
 def test_docs_merge_after_an_undeployed_runtime_merge_is_drift(
@@ -845,13 +849,11 @@ def test_docs_merge_after_an_undeployed_runtime_merge_is_drift(
 def test_a_failing_classifier_keeps_the_coarse_commit_and_dispatches(
     tmp_path: Path,
 ) -> None:
-    from tests.runtime_repo_fixture import plan
-
     repo, _ = _runtime_release_repo(
         tmp_path, classifier="import sys\nsys.exit(3)\n"
     )
     runtime = repo.commit("code", {"tinyassets/app.py": "VERSION = 2\n"})
-    coarse = repo.commit("plan", {"PLAN.md": plan(unserved="x")})
+    coarse = repo.commit("tool", {"scripts/unrelated_tool.py": "TOOL = 2\n"})
 
     result = _run_decision(repo.root, deployed_shas=runtime)
 

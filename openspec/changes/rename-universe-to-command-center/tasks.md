@@ -44,7 +44,7 @@ later.
 
 ## C2. Living docs
 
-- [ ] 2.1 PLAN.md (glossary line, in place), README, skills, `docs/reference`,
+- [ ] 2.1 `docs/architecture.md` (Names, in place), README, skills, `docs/reference`,
       `openspec/specs`, and the two capability dir renames, updating every
       reference. Dated records are untouched.
 

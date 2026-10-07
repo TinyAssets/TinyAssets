@@ -1,11 +1,11 @@
 ---
 severity: P1
-title: The DR drill PLAN calls weekly is dispatch-only and last ran 2026-07-24
+title: The DR drill is dispatch-only and last ran 2026-07-24
 filed: '2026-10-02'
 summary: dr-drill.yml has no schedule trigger and defaults to restoring the primary's own local tarball, so the one host-independent recovery path has gone unexercised for over two months
 ---
 
-# The DR drill PLAN calls weekly is dispatch-only and last ran 2026-07-24
+# The DR drill is dispatch-only and last ran 2026-07-24
 
 **Filed:** 2026-10-02
 **Verified:** 2026-10-02 against `origin/main` `5eb909de` and `gh run list`.
@@ -21,7 +21,7 @@ From the staged-architecture review (2026-10-02):
 
 ## Evidence
 
-- `PLAN.md:872` (§ Module: Uptime & Alarms): "*DR validated end-to-end.* Weekly drill
+- The retired `PLAN.md:872` (§ Module: Uptime & Alarms, at `922e36d504`): "*DR validated end-to-end.* Weekly drill
   provisions a fresh VM, bootstraps, restores `/etc/tinyassets/env` + data
   volume from offsite, starts daemon, asserts canary-green within SLA."
 - `.github/workflows/dr-drill.yml:20-21` has an `on:` block with

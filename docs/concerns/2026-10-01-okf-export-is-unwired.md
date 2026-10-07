@@ -20,7 +20,7 @@ engine tools, scripts, deploy and packaging and found no caller either.
   universe's `wiki/pages/` (as-built: `openspec/specs/knowledge-retrieval-and-memory/spec.md`, the two OKF export
   requirements).
 - No user surface calls it. The dark-code sweep (#4213) found it test-only. It was kept because of PLAN Rule 4
-  ("custody must stay exportable"): deleting it would drop the principle silently.
+  ("custody must stay exportable", now ADR-018): deleting it would drop the principle silently.
 - `docs/reviews/2026-09-24-capability-gap-audit.md` C4 ("export your own data and workflows") is the user-facing
   form of the same gap.
 
@@ -28,4 +28,4 @@ engine tools, scripts, deploy and packaging and found no caller either.
 
 Wire an export a user can trigger through the user surface (for example, a `read_graph`/`read_page` export that
 returns or stores the bundle), prove it live, and delete this file. If the founder decides export is rebuilt
-differently, delete the module and update PLAN's Brain status line in the same change.
+differently, delete the module and update ADR-017's Consequences in the same change.

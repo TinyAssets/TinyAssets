@@ -60,7 +60,7 @@ def test_runtime_containers_forward_logs_without_docker_socket():
     services = data["services"]
     # Derived, not listed: the four `worker*` services were deleted 2026-08-29
     # with the host-run fleet (nothing runs outside a user's universe --
-    # PLAN.md), and deriving means a NEW long-running container inherits the
+    # ADR-009), and deriving means a NEW long-running container inherits the
     # forwarding requirement instead of silently escaping this test.
     forwarding_services = [
         name for name, service in services.items()

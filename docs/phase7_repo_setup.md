@@ -28,7 +28,7 @@ providers / machines.
 
 ## Prerequisites
 
-- Python 3.11+ (PLAN.md hard rule #7).
+- Python 3.11+ (AGENTS.md fact 7).
 - `uv` or `pip`. The MCPB bundle uses `uv` in production.
 - `gh` (GitHub CLI) if you want to open PRs from the checkout. Not
   installed on every developer host — `winget install GitHub.cli` on
@@ -82,7 +82,7 @@ Do not commit `output/` or `*.db` files; `.gitignore` excludes them.
 
 - **"LF will be replaced by CRLF" warnings:** run `git config --global
   core.autocrlf input`. `.gitattributes` alone isn't enough on Windows.
-- **SQLite lock errors:** one writer per DB (PLAN.md hard rule #1).
+- **SQLite lock errors:** one writer per DB.
   Don't run two TinyAssets MCP server processes against the same `output/` dir.
 - **Empty `branches/` / `goals/` / `nodes/`:** expected on a fresh
   repo today; the catalog fills up as contributors land branches.

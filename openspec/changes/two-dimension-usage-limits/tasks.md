@@ -66,7 +66,7 @@ review, not a task in a seats change. Tracked as `universe-storage-quota`.
       round via `peer-agents` (read-only, from the PR worktree) on seat leaks,
       starvation, cross-user seat theft and storage accounting evasion. Max 3
       rounds.
-- [ ] 3.2 Update PLAN.md's usage-limit design section quoting the directive;
+- [ ] 3.2 Record the usage-limit decision as an ADR quoting the directive;
       deploy and `python scripts/deployed_sha.py --assert-contains <sha>`.
 - [ ] 3.3 Sync deltas into `openspec/specs/`, archive this change, and archive
       `usage-limits-replace-caps` and `consolidate-platform-resource-policy`,

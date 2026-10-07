@@ -88,7 +88,7 @@ SIGNALS: tuple[tuple[str, re.Pattern[str]], ...] = (
     (
         "coordination",
         re.compile(
-            r"\b(worktree|PLAN\.md|PR|pull request|branch|Depends|"
+            r"\b(worktree|ADR-\d+|PR|pull request|branch|Depends|"
             r"claim|review gate|fold-back|active lane|parked draft|orphaned|"
             r"abandoned|swept|live-safe|live deploy|dirty checkout)\b",
             re.IGNORECASE,

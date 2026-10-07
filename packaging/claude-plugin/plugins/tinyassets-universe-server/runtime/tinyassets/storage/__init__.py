@@ -1,7 +1,7 @@
 """Bounded-context storage layers for the multiplayer engine.
 
 Second canonical Module Layout subpackage (after ``tinyassets/bid/``) per
-PLAN.md §Module Layout. Replaces the 3,575-LOC ``tinyassets/daemon_server.py``
+``docs/architecture.md``. Replaces the 3,575-LOC ``tinyassets/daemon_server.py``
 god-module with per-context submodules:
 
 - ``accounts`` — user accounts + auth + sessions + capabilities
@@ -23,8 +23,8 @@ R7 ship sequence (see
   imports the helpers back from here rather than duplicating them.
 - Commits 2-6: per-bounded-context split.
 
-Per the foundation-end-state rule (``PLAN.md`` §Cross-Cutting
-Principles): each commit is itself end-state-shaped —
+Per the foundation-end-state rule (README § Direction: foundational
+patches are brought forward): each commit is itself end-state-shaped —
 the helpers move to their final path in commit 1, not to a temporary
 intermediate file.
 """

@@ -244,7 +244,7 @@ def test_api_note_tags_and_metadata_round_trip(client, universe_dir):
 # Neither HTTP route ever existed on main — `git log -S "/work-targets"` and
 # `git log -S "/review-state"` return zero add-commits, and a 50+ route audit
 # of tinyassets/api.py + tinyassets/universe_server.py confirms. By design,
-# work-targets access is MCP-side (PLAN.md "API And MCP Interface"). The
+# work-targets access is MCP-side. The
 # review_state test was additionally malformed (nested-def, mixed indent —
 # pytest could not collect it). Same orphan-test pattern as commit d8a4757
 # (test_integration.py process-evaluation cleanup). Resurrection would

@@ -902,7 +902,7 @@ def _resolve_field_type(type_name: str) -> Any:
 def _build_state_typeddict(schema: list[dict[str, Any]]) -> type:
     """Synthesize a TypedDict class from the branch's state_schema.
 
-    Honors PLAN.md hard rule #5: fields declared with ``reducer="append"`` use
+    Honors AGENTS.md fact 5: fields declared with ``reducer="append"`` use
     ``Annotated[list, operator.add]``; ``reducer="merge"`` uses a shallow
     dict merger after compile-time single-writer enforcement; anything else
     overwrites.

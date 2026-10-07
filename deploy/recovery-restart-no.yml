@@ -7,7 +7,7 @@
 # read-back before restoring systemd activators.
 #
 # The four `worker*` entries were removed 2026-08-29 with the host-run fleet
-# (nothing runs outside a user's universe -- PLAN.md). An override MUST NOT name
+# (nothing runs outside a user's universe -- ADR-009). An override MUST NOT name
 # a service absent from compose.yml: `-f compose.yml -f this` would then declare
 # an imageless service and fail the whole project. Keep this set == compose.yml.
 services:

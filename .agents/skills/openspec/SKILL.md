@@ -57,7 +57,7 @@ each file exists before moving on.
 
 A delivery change has one intent expressible in one sentence, one owner, one
 branch, one PR, explicit acceptance/verification, and at most 12 total task
-checkboxes. Reference full-product vision in PLAN/design/audits; never
+checkboxes. Reference full-product vision in ADRs/design notes/audits; never
 bulk-convert it into active changes. Park incidental findings outside the
 active queue. After scaffolding the change and before claiming or building it,
 run `python scripts/openspec_flow.py check-change <name> --provider

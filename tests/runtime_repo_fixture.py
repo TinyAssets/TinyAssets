@@ -2,8 +2,7 @@
 
 Shared by the runtime-classifier, deployed_sha and release-reconcile tests so
 all three judge the same kinds of history: a Dockerfile with context and stage
-copies, a host-uptime manifest, a daemon module that serves PLAN.md excerpts,
-and docs next to them.
+copies, a host-uptime manifest, scripts the deploy runs, and docs next to them.
 """
 
 from __future__ import annotations
@@ -11,20 +10,16 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
-SERVED_LIMIT = 200
-
 DOCKERFILE = """\
 FROM python:3.11-slim AS builder
 COPY scripts/codex_cli_smoke.py /tmp/codex_cli_smoke.py
 WORKDIR /build
 COPY pyproject.toml ./
-COPY PLAN.md ./
 COPY tinyassets/ ./tinyassets/
 RUN echo building && \\
     echo done
 FROM python:3.11-slim
 COPY --from=builder /build/tinyassets /app/tinyassets
-COPY --from=builder /build/PLAN.md /app/PLAN.md
 COPY --chown=1001:1001 scripts/_canary_common.py /app/scripts/_canary_common.py
 COPY ["data/world_rules.lp", "/app/data/world_rules.lp"]
 """
@@ -36,42 +31,6 @@ RUNTIME_FILES=(
     scripts/watchdog.py
 )
 """
-
-UNIVERSE = f"""\
-_CHANGE_LOOP_PLAN_HEADINGS = (
-    "Scoping Rules",
-    "Module: Daemon Platform",
-)
-
-
-def _shorten(value, max_chars):
-    text = "" if value is None else str(value)
-    if len(text) <= max_chars:
-        return text
-    return text[: max(0, max_chars - 15)].rstrip() + "\\n...[truncated]"
-
-
-def _change_loop_plan_context():
-    sections = {{}}
-    for heading in _CHANGE_LOOP_PLAN_HEADINGS:
-        sections[heading] = _shorten(heading, {SERVED_LIMIT})
-    return sections
-"""
-
-SCOPING_BODY = "Served opening paragraph. " * 20  # well past SERVED_LIMIT
-
-
-def plan(*, scoping_tail: str = "tail", unserved: str = "unserved", daemon: str = "daemon") -> str:
-    return (
-        "# Plan\n\n"
-        "## Scoping Rules\n\n"
-        f"{SCOPING_BODY}\n\n{scoping_tail}\n\n"
-        "## Unserved Module\n\n"
-        f"{unserved}\n\n"
-        "## Module: Daemon Platform\n\n"
-        f"{daemon}\n"
-    )
-
 
 WORKFLOWS: dict[str, str] = {
     ".github/workflows/build-image.yml": (
@@ -112,10 +71,8 @@ BASE_FILES: dict[str, str] = {
     "Dockerfile": DOCKERFILE,
     ".dockerignore": "docs/\n",
     "pyproject.toml": "[project]\nname = 'x'\n",
-    "PLAN.md": plan(),
     "tinyassets/__init__.py": "",
     "tinyassets/app.py": "VERSION = 1\n",
-    "tinyassets/api/universe.py": UNIVERSE,
     "scripts/codex_cli_smoke.py": "print('smoke')\n",
     "scripts/_canary_common.py": "TOKEN = 1\n",
     "scripts/watchdog.py": "WATCH = 1\n",
