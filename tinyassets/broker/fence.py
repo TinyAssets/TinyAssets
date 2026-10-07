@@ -42,9 +42,12 @@ class Fenced(PermissionError):
 
 
 class Fence:
-    def __init__(self, path: Path, *, verify_lease_proof: Callable[[int, str], bool]) -> None:
+    def __init__(self, path: Path, *, verify_lease_proof: Callable[[int, str], bool],
+                 lease_sha256: str | None = None) -> None:
         self._path = Path(path)
         self._verify = verify_lease_proof
+        self._lease_sha256 = lease_sha256
+        self._persisted_lease: str | None = None
         self._state_lock = threading.Lock()
         self._rw = threading.Condition()
         self._readers = 0
@@ -63,6 +66,7 @@ class Fence:
         generation, token = document["generation"], document["token"]
         if type(generation) is not int or generation < 0 or not isinstance(token, str):
             raise ValueError("the persisted fence is malformed; refusing to serve")
+        self._persisted_lease = document.get("lease_sha256")
         return generation, token
 
     def _persist(self, generation: int, token: str) -> None:
@@ -70,7 +74,10 @@ class Fence:
         fd, temp = tempfile.mkstemp(dir=self._path.parent, prefix=".fence.")
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as handle:
-                json.dump({"generation": generation, "token": token}, handle)
+                document = {"generation": generation, "token": token}
+                if self._lease_sha256 is not None:
+                    document["lease_sha256"] = self._lease_sha256
+                json.dump(document, handle)
                 handle.flush()
                 os.fsync(handle.fileno())
             os.replace(temp, self._path)
@@ -88,7 +95,7 @@ class Fence:
         with self._state_lock:
             return bool(self.token) and (generation, token) == (self.generation, self.token)
 
-    def barrier(self, generation: int, proof: str, *,
+    def barrier(self, generation: int | None, proof: str, *,
                 cancel_older: Callable[[int], None] = lambda generation: None,
                 close_older: Callable[[int], None] = lambda generation: None,
                 ) -> tuple[int, str]:
@@ -107,11 +114,17 @@ class Fence:
         complete (it raised, or is still running) runs steps 2-4 again rather
         than acknowledging early.
         """
-        if type(generation) is not int or generation < 1 or not isinstance(proof, str):
-            raise Fenced("a barrier needs a positive generation and a lease proof")
-        if not self._verify(generation, proof):
-            raise Fenced("the lease does not hold this generation with this proof")
         with self._barrier_lock:
+            if self._lease_sha256 is not None:
+                if generation is not None:
+                    raise Fenced("the broker owns generation allocation")
+                generation = (self.generation if self.token and
+                              self._persisted_lease == self._lease_sha256
+                              else self.generation + 1)
+            if type(generation) is not int or generation < 1 or not isinstance(proof, str):
+                raise Fenced("a barrier needs a positive generation and a lease proof")
+            if not self._verify(generation, proof):
+                raise Fenced("the lease does not hold this generation with this proof")
             with self._state_lock:
                 if generation < self.generation:
                     raise Fenced("a newer generation already holds the fence")
@@ -123,6 +136,7 @@ class Fence:
                     token = secrets.token_urlsafe(32)
                     self._persist(generation, token)
                     self.generation, self.token = generation, token
+                    self._persisted_lease = self._lease_sha256
             cancel_older(generation)
             with self._rw:
                 self._writer = True
