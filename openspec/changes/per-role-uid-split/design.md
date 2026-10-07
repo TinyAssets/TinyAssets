@@ -2701,9 +2701,28 @@ so it is retired with no pass. The broker answers
 `CENTER_ADMISSION_UNADMITTED` for a retire the log never admitted. A tree-less
 home that was never admitted keeps the existing traversal.
 
+Two trees outside the plain rules bind only to the owner their label names.
+A pending deletion's tree that is not in E needs either its owner's canonical
+label, or the intent D218 wrote (same center, principal and reservation) on a
+`1001:<reservation>` root. A stray or reattributed intent refuses before any
+mutation. A tree restored from `missing` needs its owner's canonical label or
+none (`1001:1001`, no ACL; the owner phase then relabels it). A root labelled
+for another owner refuses.
+
 Retained limits: after a reverse, the log is not authoritative (the old image
-writes no rows), so forward-after-reverse seeds and never alarms. A center the
-old image deleted simply drops out. A deleted center's quarantined cross-tree
+writes no rows). Forward-after-reverse seeds, and it keeps `missing` held and
+loud: a center held missing before the reverse is dropped only by a `retire`
+row already in the log. A center the old image deleted simply drops out.
+
+Availability: while the old image runs, a user can create a center whose
+name the log has retired or admitted to another principal. The next forward
+then refuses startup for every owner ("a retired center has a tree" or "center
+owner differs from its log row"). This fails closed. The refusal comes
+before any mutation, so the volume stays reversed. To recover, start the old
+image again. Remove or rename that one center through it, or move its tree
+out of the data root as root. Then forward again.
+
+A deleted center's quarantined cross-tree
 alias stays in root-private escrow; see
 `docs/concerns/2026-10-06-u2-deleted-center-quarantine-escrow-retained.md`.
 Proof: `tests/test_role_admission_startup.py` (root oracle), and

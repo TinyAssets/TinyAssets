@@ -1,3 +1,62 @@
+# U2: admission wiring, review round 2 (ADAPT addressed)
+
+Fix at f985ce48d5; D221 text amended. Startup is still OFF, and nothing was
+deployed.
+
+1. **Required:** a pending deletion's tree that is not in E now binds only
+   under one of two conditions. Either it has its owner's canonical label, or
+   it has the intent D218 wrote (same center, principal and reservation, read
+   by root with `O_NOFOLLOW|O_NOATIME`) on a `1001:<reservation>` root.
+   Anything else refuses before any mutation. This also covers the seed
+   path's retired-but-pending exception.
+2. `missing` is carried through forward-after-reverse. Only a `retire` row
+   already in the log drops a held center. It re-alarms and re-files its
+   concern record.
+3. A tree restored from `missing` must carry its owner's canonical label or
+   none (`1001:1001`, no ACL). A root labelled for another owner refuses,
+   whether by ids or by an ACL on a `1001:1001` root.
+4. The concern record now says exactly what a restore checks. D221 documents
+   the availability note and the operator recovery steps.
+
+Evidence:
+- Root Linux oracle:
+  - `test_role_admission_startup.py` and `test_admission_restart_contract.py`:
+    33 passed, 0 skipped.
+  - Migration, inventory, tree-deletion and retire files: 88 passed,
+    0 skipped.
+  - Every `test_role_*` and `test_admission_*` file (34): 509 passed and 3
+    failed. The three failures are in `test_role_decoder` and
+    `test_role_tool_sockets`, which this diff does not touch. Root bypasses
+    the checks those tests assert, and they pass non-root (26 passed).
+- New root tests:
+  - stray intent: unlabelled tree, intent for another owner, refused with no
+    mutation;
+  - the tree's own principal without a reservation-matching root, refused;
+  - a tree labelled for bob but attributed to alice, with an intent naming
+    either one, refused;
+  - a correctly labelled pending orphan, bound with no new row;
+  - intent-only match on an ACL-less `1001:<reservation>` root, bound and
+    relabelled;
+  - a restored tree labelled for bob (three variants), refused with no
+    mutation;
+  - an unlabelled restore, bound and relabelled;
+  - `missing` across reverse then forward, held, alarmed, then restored.
+- Production image `tinyassets-u2-adm:w2` (sha256:efb8c40b52a2), rebuilt
+  from f985ce48d5:
+  - `role_admission_startup_probe.py --old-image
+    ghcr.io/tinyassets/tinyassets-daemon:7e68ef26cb4e`: PASS. 16 boots plus
+    reverse and legacy; zero foreign bytes and zero mutations on every boot;
+    the largest matrix made 560 attempts.
+  - `role_admission_restart_probe.py`: PASS, all 19 boots, zero foreign
+    bytes.
+  - `role_center_admission_probe.py`: PASS. Every forged, retired, conflict
+    and foreign refusal holds, daemon caps are zero, and the log is read only
+    through the retired broker.
+- Ruff and `git diff --check` are clean.
+
+Still owed: the cross-family round. Codex is out of budget until 2026-10-11,
+and its MCP connection also failed this session.
+
 # U2: admission contract wired (D221); principal-set concern resolved
 
 Merged origin/feat/per-role-uid-split (U1 admission, 3caeaece2f) at 527e4c9d84.
