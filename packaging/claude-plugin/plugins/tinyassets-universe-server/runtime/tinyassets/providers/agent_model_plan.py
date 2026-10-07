@@ -24,6 +24,7 @@ class AgentModelPlan:
     #: Ordered LAST, not removed: a refusal is often temporary, and an order that
     #: still ends in them beats a turn that finds no model at all.
     refused_models: tuple[ModelRef, ...] = ()
+    cooling_sources: tuple[str, ...] = ()
 
     def __post_init__(self):
         if (
@@ -44,10 +45,10 @@ class AgentModelPlan:
 
     def order(self, owner, universe, exhaustion=()):
         order = self._reconnect_order(owner, universe, exhaustion)
-        # The model the owner chose for THIS turn is theirs to retry; only the
-        # standing order (saved default, fallbacks, automatic) steps past a
-        # recent refusal instead of spending a request rediscovering it.
-        refused = set(self.refused_models) - {self.policy.current_selection}
+        # Explicit orders belong to the owner; health only reorders Automatic.
+        refused = (set(self.refused_models) if self.policy.mode == "automatic"
+                   and self.policy.current_selection is None
+                   and self.policy.saved_default is None else set())
         if not refused:
             return order
         candidates = tuple(
@@ -65,17 +66,23 @@ class AgentModelPlan:
             owner_id=owner, universe_id=universe, exhaustion=exhaustion,
             source_policies=self.source_policies,
         )
-        if not self.reconnect_sources:
+        if not self.reconnect_sources and not self.cooling_sources:
             return order
         candidates = tuple(
             replace(item, labels=item.labels + ("recent_sign_in_failure",))
             if item.ref.connection_id in self.reconnect_sources else item
             for item in order.candidates
         )
+        candidates = tuple(
+            replace(item, labels=item.labels + ("source_cooling_down",))
+            if item.ref.connection_id in self.cooling_sources else item
+            for item in candidates
+        )
         if (self.policy.mode == "automatic" and self.policy.current_selection is None
                 and self.policy.saved_default is None):
             candidates = tuple(sorted(
-                candidates, key=lambda item: item.ref.connection_id in self.reconnect_sources,
+                candidates, key=lambda item: item.ref.connection_id in
+                (*self.reconnect_sources, *self.cooling_sources),
             ))
         return replace(order, candidates=candidates)
 
@@ -86,8 +93,7 @@ class AgentModelPlan:
     def capacity_order(self, owner, universe, exhaustion=()):
         """Conversation recovery: a model preference is not an only-model grant.
 
-        Keep requested fallbacks ahead of other models within each source kind,
-        with accepted subscriptions ahead of HTTP sources. This never discovers
+        Keep the owner's requested order ahead of automatic alternatives. This never discovers
         credentials or widens model/cost access.
         Workflow pins continue to use ``order`` through WorkCandidateData.
         """
@@ -100,7 +106,4 @@ class AgentModelPlan:
         candidates = preferred.candidates + tuple(
             item for item in automatic.candidates if item.ref not in seen
         )
-        kinds = {item.connection_id: item.source_kind for item in self.catalog.connections}
-        return replace(preferred, candidates=tuple(sorted(
-            candidates, key=lambda item: kinds[item.ref.connection_id] == "http",
-        )))
+        return replace(preferred, candidates=candidates)
