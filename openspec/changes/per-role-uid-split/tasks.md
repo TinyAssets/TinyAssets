@@ -1,144 +1,170 @@
+## Status (2026-10-06)
+
+Nothing in this change runs in production. The build lives on two branches:
+
+- **U1** `feat/per-role-uid-split` at `c8c5042654` (#4523): image, broker, owner identities,
+  bounded mapper, bootstrap and the per-class owner cells, D1-D87.
+- **U2** `feat/per-role-uid-split-migration` at `58395c4d99` (#4510): contains U1, plus the
+  volume migration D200-D217, two-pass delete D218, and the switched startup overlay (default
+  OFF).
+
+Build evidence: `delivery.md` at `c8c5042654` (U1) and `delivery-u2.md` at `58395c4d99` (U2).
+Neither delivery file lands on main. A box below is checked only when it is built AND proven,
+and the proof is named. "Proven" means a probe on a production-Dockerfile image or the root
+Linux oracle on the branch. Nothing is proven on main until its landing slice (section 3)
+merges. Two OFF switches keep all of it inert: `TINYASSETS_CREDENTIAL_BROKER=process`, set
+nowhere in `deploy/`, and the bounded mapper client, installed only by the D70 bootstrap.
+Startup refuses at `deploy/role_launcher.py:435`.
+
+**D60 supersedes the shared engine uid 1003.** Each owner has a dedicated UID/GID
+(300001..399999, D61/D62). Text below that still says 1003 refers to the vestigial image user.
+
 ## 1. Design (this change)
 
 - [x] 1.1 Proposal, design and spec delta; uid map agreed with agent-loop and openshell-spike.
-- [x] 1.2 Cross-family security refute of the design, two rounds, both ADAPT, both folded in.
-      Round 1 raised four P1s, now answered by D2 (the privileged chain), D6 (owner-reachable
-      IPC), D4 (the migration) and D7 (the owner trust class). Round 2 refuted each of those
-      answers on a specific mechanism and was right every time: a venv's symlinked interpreter
-      versus a refuse-on-symlink check; a socket directory without setgid; `CAP_KILL` and
-      `CAP_FOWNER`/`CAP_DAC_OVERRIDE` missing from the capability set; setgid inheritance putting
-      the vault in the wrong group; four runtime sites that re-mode the migrated paths; four spawn
-      sites missing from the uid-1001 enumeration, one of them an unjailed provider launch;
-      `PR_SET_DUMPABLE` reset by `execve`; and a reversed reading of Yama's ptrace rule. A third
-      round is the last available under AGENTS.md's three-round cap.
+- [x] 1.2 Cross-family security refute, two rounds, folded as D2/D4/D6/D7; D8 then D9 widened
+      isolation to every engine class; founder D60 replaced the shared engine identity.
+- [ ] 1.3 **Founder/spec: dynamic admission and the admission-generation contract.** Centers and
+      users created after startup must be admitted to the mapper and labelled `1001:<owner>` with
+      no capabilities. D216 must accept a grown or shrunk principal set. Until then, the first
+      restart after a signup or a deletion refuses (U2 concern
+      `2026-10-06-u2-principal-set-change-blocks-startup-migration.md`, on U2).
+- [ ] 1.4 New D-record for the startup overlay: PID1 without tini, health retiring to 1001 before
+      `ta-op pulse`, and `CAP_SYS_ADMIN` dropped from `MASK 0x2001c1` (`deploy/native/ta_op.c:82`).
+      This supersedes 2.7's original `MASK` plan.
 
-## 2. Build (Codex implements; deploy-incident reviews and verifies)
+## 2. Build, against the original tasks
 
-Lands after #4299 (the broker) and #4267 (`platform_secrets`), amending both.
-
-- [ ] 2.1 **Image: users, groups, and a root-owned privileged chain** (closes P1-1, part 1)
-      - users 1002 `ta-broker`, 1003 `ta-engine`; groups 1100 `ta-work`, 1101 `ta-brk`,
-        1102 `ta-vault`, with **no** supplementary membership in `/etc/group` — `ta_op.c:240-243`
-        refuses a second gid and the healthcheck runs through it, so the launcher sets groups
-        instead (D1).
-      - `ta-entry.sh`, `ta-launch.py` install root-owned `0555` under `/usr/local/libexec`;
-        `broker_main.py` ships root-owned `0555`.
-      - `Dockerfile:339` chowns `/data` only; `/app` stays root-owned and read-only; `HOME` moves
-        to `/home/tinyassets` (1001:1001 `0700`).
-      - `Dockerfile:178` gains `--copies` so `/opt/venv/bin/python` is a plain root-owned file
-        rather than the venv default symlink.
-      - `CMD` becomes the launcher, so `ta-entry.sh`'s `exec "$@"` (line 130) is unchanged and the
-        daemon's argv lives in the launcher's static table instead of the image CMD
-        (today `Dockerfile:354`).
-      - *Precondition:* enumerate every runtime write under `/app` first (daemon, healthcheck,
-        provider jail, node sandbox). If one is load-bearing, take D2's fallback — a root-owned
-        `/opt/tinyassets` copy plus a byte-parity gate — and record which was used.
-- [ ] 2.2 **`ta-launch.py`: the launcher** (closes P1-1, part 2)
-      - stdlib-only, run `-I -S -B`; static kind/argv table; no shell string in either direction.
-      - `SO_PEERCRED` **uid-and-pid** check against the daemon it started, so no other process at
-        1001 can request a spawn.
-      - per-kind **allowlist** environment with `CHILD_FORBIDDEN_ENV` applied on top —
-        `platform_secrets.child_env` is a denylist (`platform_secrets.py:53-55`) and must not be
-        the basis for a privileged exec.
-      - per-kind `setgroups`/`setresgid`/`setresuid` with `/proc/self/status` readbacks; full
-        capability drop with readbacks; `PR_SET_NO_NEW_PRIVS`; `/proc/self/fd` sweep keeping only
-        each kind's declared descriptors (`provider-cli` needs bubblewrap's seccomp fds,
-        `owned_process.py:651`); listening socket `FD_CLOEXEC` and never in any kind's passed set.
-      - the launcher drops `CHOWN`, `FOWNER` and `DAC_OVERRIDE` from all five of its own sets,
-        with readback, **before** it binds — the migration is over and the serving process must
-        not keep that authority (D2 phase table).
-      - **not** `PR_SET_DUMPABLE(0)` here: `execve` resets it, so the daemon and broker each set
-        it on themselves after exec, before any secret exists.
-      - the `engine-mcp` allowlist covers the six names `engine_mcp_http.py:271-275` sets, since
-        that site passes `dict(os.environ)` whole today (270).
-      - unit tests in the Linux oracle.
-- [ ] 2.3 **Chain verification** (closes P1-1, part 3)
-      - the launcher checks itself, the interpreter, `broker_main.py`, every privileged `sys.path`
-        entry, **every ancestor directory of each**, and **every node of each symlink
-        resolution**, refusing on a non-root owner or a group/other-writable mode — before it
-        binds a socket. Not refuse-on-symlink: that would reject `/opt/venv/bin/python`, which
-        CPython's POSIX venv symlinks by default.
-      - `scripts/check_privileged_chain.py` asserts the same against the built image, wired into
-        the docker-build CI job, so the runtime refusal is a backstop not the only check.
-- [ ] 2.4 **Volume migration and vault permissions** (closes P1-3)
-      - D4's exact inventory, under the exclusive layout lock, idempotent, with
-        `"roles": {"state": "migrating"}` in `/data/.layout.json` for crash recovery.
-      - traversal holds directory fds with `O_NOFOLLOW|O_DIRECTORY`, uses `*at()`/`lchown` only,
-        and **refuses** on any symlink in the set, any regular file with `st_nlink > 1`, and
-        anything that is not a directory or regular file.
-      - assert D4's rollback invariant as a test over the inventory table: no path an older image
-        reads changes owner, so there is no reverse migration and no temporary widening.
-      - runs with `CHOWN` + `FOWNER` + `DAC_OVERRIDE`: it keeps owner 1001 on almost everything,
-        so euid 0 is not the owner of what it re-modes, and `CHOWN` alone is `EPERM` (D4
-        §Authority).
-      - **one declaration for these modes**, read by the migration and by every runtime site that
-        re-modes the same paths — otherwise the next provider launch silently restores single-uid
-        permissions: `credential_vault.py:187-188` (`0o700`), `:1783`, `:1784-1793`,
-        `:1808,1846,2069` (`0o700` dirs, `0o400` files), plus the two write-path
-        `_chmod_best_effort(..., 0o600)` calls around 624 and 632 → `0o640`.
-      - the vault's group is set on the **temp file before** `tmp.replace(path)`
-        (`fchown(fd, -1, GID_VAULT)`), pre-commit so a failure propagates. Setgid inheritance
-        cannot do it: the temp file is a sibling in the command-center root, whose group is
-        `ta-work` — an inherited group would make every replacement vault readable by 1003.
-      - confirm read-only on prod that `/data` is `ext4` with ACL support so `g:1102:x` gives the
-        broker traverse on `/data/<cc>/` without widening `other`; else mode `2711`, recorded.
-- [ ] 2.5 **Spawn sites through the launcher** (closes P1-4, part 1)
-      - `provider-cli` (`owned_process.py:539,650-652`), `engine-mcp`
-        (`engine_mcp_http.py:277-283`), `node-sandbox` (`node_sandbox.py`) move to the launcher
-        client at 1003.
-      - and the four sites the first enumeration missed: `provider-discovery`
-        (`providers/base.py:1418-1420` → `native_jsonrpc_discovery.py:130-134`, which bypasses
-        `owned_process` and the jail and runs with a credential snapshot as its `cwd`),
-        `tool-jail` (`universe_tools.py:777`), `workspace_provision_process.py:127`, and
-        `workspace_registry_process.py:165`.
-      - `workspace-worker` to 1003: its `multiprocessing.Pipe` channel
-        (`workspace_worker.py:677-684`) becomes a pre-connected `socketpair` passed by
-        `SCM_RIGHTS` and `run_workspace_worker` reads it from that descriptor. Differential-test
-        the new channel against the current one through the existing injectable `spawn=`
-        (`workspace_worker.py:667`).
-- [ ] 2.6 **`start_broker`, the in-memory fence, and the legacy path** (closes P1-2 and P1-4, part 2)
-      - launcher-mediated start when the uids are distinct; refuse otherwise.
-      - delete `owner.json`, `OWNER_FILE`, `read_owner` and `stop()`'s terminate-and-unlink
-        (`supervisor.py:125-132,150-159`); the socket and the `(generation, token)` pair live in
-        memory, and `_broker_channel` (`outbound_connections.py:1086-1108`) takes them from the
-        live supervisor instead of re-reading a file at 1097 and 1103. Update
-        `tests/test_broker_process.py:57-59,98-129`.
-      - amend #4299: the broker mints the generation from its persisted fence, so `lease_verifier`
-        (`broker/process.py:40-48`) loses its `owner_generation` parameter and `--generation`
-        leaves the broker's argv.
-      - the legacy per-grant proxy worker refuses to spawn while `broker_selected()`
-        (`outbound_connections.py:5338`), so the two credential paths never coexist at uid 1001.
-        Test both directions.
-- [ ] 2.7 **Entrypoint, compose, and the capability set**
-      - start as root with `cap_add: [CHOWN, DAC_OVERRIDE, FOWNER, SETUID, SETGID, SETPCAP, KILL,
-        SYS_ADMIN]`, and change `ta_op.c`'s `MASK` (81-82) to match **in the same commit** — that
-        file asserts set *equality* on root entry (206-208) and the healthcheck runs through it,
-        so a mismatch is a red healthcheck and a deploy rollback. `tests/test_ta_op_modes.py`
-        holds the parity.
-      - `deploy/docker-entrypoint.sh` keeps its existing logic (the `_platform_credential_env`
-        loop 66-92, the data-file check 117-128, `exec "$@"` 130) and its install path changes;
-        it gains exactly two steps — the D4 migration and the `/run/tinyassets` directories.
-      - `HOME` updated in `deploy/compose.yml` (today `HOME: /app`, compose:147); the deploy
-        validator's capability assertions updated.
-      - decide `CAP_SYS_ADMIN`: prove what needs it or remove it from both `cap_add` and `MASK`
-        in one commit. Never diverge from `ta-op` silently.
-- [ ] 2.8 **Oracle proofs** (non-root, like production)
-      - a 1003 child gets `EACCES` on `/data/.broker/state/fence.json` and on
-        `/data/<cc>/.credential-vault.json`.
-      - the broker reads the vault and **cannot write** it; the provider jail works under 1003
-        with group workspace access.
-      - enumerate which `provider_jail` binds the 1003 child must **write** (the
-        `.runtime/provider-launch-credentials` snapshot in particular) and set `2770/0660` for
-        exactly those, `2750/0440` for the rest — measured, not guessed.
-      - the owner connects to the broker socket: prove the **setgid** socket directory yields a
-        `1002:1101` socket. The broker sets only a umask and changes no group
-        (`process.py:101-106`), so a plain `0750` directory yields `1002:1002` and locks the owner
-        out exactly as the original `0600` did.
-      - the launcher can signal both children at shutdown (`CAP_KILL`), and refuses to serve
-        while it still holds `FOWNER` or `DAC_OVERRIDE`.
-      - `ta-op pulse` stays green on the new root entry, and `PR_SET_DUMPABLE(0)` set by the
-        daemon **on itself after exec** breaks no 1001 reader of its `/proc`. The healthcheck is
-        the deploy's own gate, so both are proven before the deploy.
-- [ ] 2.9 Prod verification: per-role uids in `ps`, the broker serves one owner stream, the
-      measured RSS per stream; `deployed_sha` and canary.
+- [ ] 2.1 **Image: PARTIAL.**
+  - [x] Users 1002/1003, groups 1100-1102, `venv --copies`, entry moved to
+        `/usr/local/libexec`, `/app` read-only, `HOME=/home/tinyassets`, `ta-chain.py`
+        (D14, `02d5542a78`). `check_privileged_chain.py` passes on every local image build.
+  - [ ] `/app` runtime-write audit: `codex_provider._codex_workdir` defaults to the source root
+        (delivery.md L5267 at `c8c5042654`). Blocks L4.
+  - [ ] CMD switch: U2 overlay `deploy/compose.role-split.yml` committed at `58395c4d99`, not
+        landed.
+  - [ ] Remove or document uid 1003, which D60 leaves vestigial.
+- [ ] 2.2 **Launcher, reshaped by D60/D62/D68-D70.**
+  - [x] Owner identity reservations D61 (`4cd932f044`), fenced identity IPC and the bounded
+        namespace map `0 300000 100000` D62 (`39a1ce6887`), descriptor label enforcement D65
+        (`4e112da74c`).
+  - [x] Bounded mapper with decoder cells D68 (`cfc766bf2d`), `SCM_CREDENTIALS` daemon client
+        D69 (`b4b430f727`), bootstrap with PID1 retiring to 1001 D70 (`5b020514d9`), named
+        seccomp profiles D52 (`69ee880edc`), cell lifetimes D76/D77 (`eeeeb0ff49`,
+        `d1f84c63e5`).
+  - [x] Owner delete pass one D85 (`9657e679b7`).
+  - [ ] Two-pass delete D218 (U2 `c540ae5e20`): root oracle only, no production-image probe.
+  - [ ] Engine-MCP environment-consumer audit.
+  - [ ] Pool removal and `scoped_reset` still traverse as the daemon. Needs a subtree
+        owner-delete cell (lane B).
+- [ ] 2.3 **Chain verification: done in code, never run in CI.** Draft PRs skip `build-smoke`, so
+      it first runs when L4 is non-draft.
+- [ ] 2.4 **Volume migration: PARTIAL (U2).**
+  - [x] Egress relocation and rollback D11/D12/D15/D67 (`02d5542a78`, `fedd717970`).
+  - [x] Owner and metadata migration D200-D217: journal and quarantine (`34a85c9e35`),
+        inode-generation provenance D214/D215/D217 (`ab3553a08d`, `d5cd06acf1`,
+        `ae51a73896`), reconcile D216 (`6a1c2a0fdf`, `3fb4b00ab2`). Root oracle 161 tests x3,
+        9 crash boundaries. Production alias scan: 0 cross-owner inodes.
+  - [x] Rollback probe `old_cmd_boot=true` with the unchanged old-image CMD (`6e6b74b8fb`), using
+        the dev auth fixture.
+  - [ ] D216 refuses a changed principal set: blocks activation (1.3).
+  - [ ] First-volume identity-map initialization (D61 says only it may create the map; not wired).
+  - [ ] Production ext4/ACL check.
+  - [ ] Rollback probe under production auth.
+  - [ ] The operator CLI `rollback.md` describes.
+- [ ] 2.5 **Every owner-scoped spawn through an owner cell: PARTIAL.**
+  - [x] Accepted classes, each with zero foreign bytes on a production-Dockerfile image: decoder
+        D68/D69, workspace git D71 (`340318fe4d`), git_bridge D72 (`93c6dd98b2`), preview
+        D73/D75 (`91c244c079`), node D78 (`ff6506c757`), tool jail D79/D80/D83 (`220f612a81`,
+        `f65af2de53`, `2f07b72490`), video D81 (`d3f99e9134`), provider discovery D82
+        (`1a095dfc40`), packages D84/D87 (`35df4b4ecd`, `c8c5042654`), owner delete D85
+        (`9657e679b7`), provider exec text-only D86 (`4aad725f28`).
+  - [ ] No shipped provider adapter reaches provider exec: Codex `universe_view` and Claude `cwd`
+        both refuse (lane C1).
+  - [ ] Session persistence; engine-MCP thin proxy (C2); network metadata egress (C4); workspace
+        provision/registry/worker, remote git, local box (C3); other ingestion formats; the K1
+        package consumer (C4).
+  - [ ] Full reader matrix. Concern `2026-10-05-role-reader-hardlink-alias.md` stays open.
+  - [ ] D87 RSS/CPU under pressure (lane E).
+- [ ] 2.6 **`start_broker`, fence, legacy path: MOSTLY.** D16/D18 lifecycle and acquisition,
+      D19-D53 consumer routing (see `broker-access-inventory.md`). Remaining broker readers need
+      dynamic admission (lane D).
+- [ ] 2.7 **Entrypoint, compose, capability set: NOT landed.** The U2 overlay (`58395c4d99`) uses
+      `user 0:0`, 7 caps and no tini, and leaves the `ta_op.c` `MASK` unchanged. Needs 1.4.
+- [ ] 2.8 **Production-image oracle: PARTIAL.** Per-class probes above pass. Still missing: an
+      integrated startup-ON run, aggregate memory/tmpfs, `ta-op pulse` under the split, and the
+      D8/D9/D60 acceptance matrix in `design.md` (every class, every writable-path/reader pair,
+      migration, two-pass delete, old-image rollback, healthcheck). No skip counts as a pass.
+- [ ] 2.9 Prod verification: per-role and per-owner uids in `ps`, one owner stream served, RSS
+      per stream measured, `deployed_sha.py --assert-contains`, `mcp_public_canary.py
+      --assert-handles`, one real-user app pass.
 - [ ] 2.10 Spec sync and archive.
+
+## 3. Landing slices
+
+Each slice is one PR to main with the switch OFF and the plugin mirror regenerated. Files come
+from the final branch state (`git checkout origin/feat/per-role-uid-split -- <files>`). Neither
+branch is rewritten. WIP `b94259d502` never lands. Both branches are kept until every slice
+lands. Pushes touching `Dockerfile`, `deploy/` or `tinyassets/` deploy production. Release-
+critical slices need `infra-change`, an APPROVE receipt per head, at most 8 sensitive files, and
+must be non-draft so `build-smoke` runs.
+
+| Slice | Contents | Depends on | Release-critical | Proof |
+|---|---|---|---|---|
+| L0 | This spec: proposal (D60), design/rollback from U2, truthful tasks, specs, broker access inventory, 3 concerns | — | 0 | `openspec validate --strict`, flow audit, structural guards |
+| L1 | `role_modes`, `workspace_fs`, `universe_files`, `process_liveness` + reader/liveness tests. Ungated | L0 | 0 | Production `nlink>1` measurement first (R2); turn-runner reclaim tests (R3) |
+| L2 | `tinyassets/broker/*`, `storage/outbound_connections.py`, timer inventory + broker tests | L1 | 0 | — |
+| L3 | Consumer rewiring under `broker_selected()` (api, effectors, onboarding, providers, budgets, intents, automations, account deletion D53, owner stores, accounting) | L2 | 0 | Every new branch gated; full tests on the unselected path |
+| L4 | Image: Dockerfile (no ffmpeg/acl/migration COPYs), compose HOME, docker-build.yml, broker_main, role_launcher, check_privileged_chain. **Changes production** | L2, `/app` audit | 5 | Non-draft build-smoke; legacy-CMD boot with `ta-op pulse`, canary, a real Codex turn; post-deploy `deployed_sha`, canary `--assert-handles`, app pass; revert by retag |
+| L5 | Owner launcher and decoder (all class admission, inert), role_git, client, image bytes, snapshots, vault, seccomp; oracle production-image mode; the class probes | L4 | 4 | The probes on the merged image |
+| L6 | git, bridge, preview, node classes | L5 | 0 | — |
+| L7 | Tool classes, relays, egress, provider jail | L5 | 0 (1 if acl) | — |
+| L8 | Video and provider cells, ingestion. Hold ffmpeg out (R4) | L5 | 0 | — |
+| L9 | Packages and owner delete pass one | L5 | 0 | — |
+| L10 | Egress migration, `backup.sh`, runbook | L4 | 3 | dr-drill restore of the new archive format |
+| L11 | U2 migration, rebased on main | L10, L5 | 6 | Root oracle 161x3; rollback probe |
+| L12 | U2 two-pass delete D218 | L9, L11 | 1 | Production-image delete probe; legacy `.layout.json` path |
+
+- [x] 3.0 L0, this spec.
+- [ ] 3.1 L1
+- [ ] 3.2 L2
+- [ ] 3.3 L3
+- [ ] 3.4 L4
+- [ ] 3.5 L5
+- [ ] 3.6 L6
+- [ ] 3.7 L7
+- [ ] 3.8 L8
+- [ ] 3.9 L9
+- [ ] 3.10 L10
+- [ ] 3.11 L11
+- [ ] 3.12 L12
+
+L6-L10 can merge in any order after L5. Risks while OFF: R1 `/app` read-only and the HOME move
+(L4); R2 `workspace_fs` refuses `st_nlink != 1` ungated, and production holds multi-link files
+(52,167 names against 52,162 sole-owner inodes), so measure or gate it (L1); R3 the read-only
+`owner_state` flock drives `agent_turn_runner` reclaim, where UNKNOWN instead of DEAD means stuck
+turns (L1); R4 ffmpeg runs the legacy `video_extractor` unconfined (L8); R5 backup format (L10);
+R6 the `http_connection` refactor and `_HTTP_ACTION_CAP` removal (L3); R7 deletion layout
+classification (L12).
+
+## 4. Activation lanes (after landing)
+
+- [ ] 4.D Dynamic admissions: mapper binding extension over an authenticated daemon request,
+      capability-free center labelling. Needs 1.3. 5-7 days.
+- [ ] 4.A Startup and health (after L11/L12): PID1 without tini, first-volume identity-map
+      initialization, health retiring before `ta-op pulse`, `SYS_ADMIN` out of `MASK`, a gated
+      workflow that applies the overlay. Needs 1.4. 4-6 days.
+- [ ] 4.B Migration, deletion and rollback: admission-generation fix, subtree owner-delete cell,
+      production ext4/ACL, the rollback CLI, production D218 probe. 5-7 days.
+- [ ] 4.C Providers through provider exec: C1 persistent workspace and session view plus Codex
+      and Claude adapters; C2 engine-MCP thin proxy; C3 workspace provision/registry/worker,
+      remote git, local box; C4 network discovery egress and the K1 package consumer.
+      18-24 days.
+- [ ] 4.E Aggregate memory and tmpfs: global RSS/tmpfs budget, `oom_score_adj`, a 32-cell
+      pressure probe, RSS per stream. 3-5 days.
+- [ ] 4.F Integrated production proof: overlay ON over synthetic and restored-backup clones,
+      every class, the reader matrix, migration, health, reverse and the old image. 4-6 days.
+- [ ] 4.G Deploy and rollback procedure. 2-3 days.
+
+Critical path: L0, L1, L2, L4 (after the `/app` audit), L5, L8, C1, C2, F, G. The 1.3 spec runs
+in parallel with L1-L4.

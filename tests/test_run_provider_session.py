@@ -1459,7 +1459,7 @@ def test_foreground_claude_node_runs_in_its_universe_without_host_tools(
     universe_dir = tmp_path / "universe_alice"
     flags, run_cwd = _sandbox_cli_args(claude_config, universe_dir)
     assert run_cwd == str(universe_dir)
-    assert flags[flags.index("--setting-sources") + 1] == "project"
+    assert flags[flags.index("--setting-sources") + 1] == ""
     denied = flags[flags.index("--disallowedTools") + 1:]
     assert set(HOST_REACH_TOOLS) <= set(denied)
     for tool in ("Bash", "Read", "Glob", "Grep"):

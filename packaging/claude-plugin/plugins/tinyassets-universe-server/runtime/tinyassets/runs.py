@@ -1242,6 +1242,7 @@ def _migrate_runs_table_columns(conn: sqlite3.Connection) -> None:
             ("runtime_instance_id", "TEXT"),
             ("worker_id",     "TEXT"),
             ("owner_token",   "TEXT"),
+            ("outside_origin_json", "TEXT"),
             ("branch_task_id", "TEXT"),
             ("queue_universe_id", "TEXT"),
             ("workspace_budget_root_run_id", "TEXT"),
@@ -1954,6 +1955,10 @@ def _insert_run_in_transaction(
                 owner,
             ),
         )
+        from tinyassets.outside_authority import captured_identity
+
+        conn.execute("UPDATE runs SET outside_origin_json=? WHERE run_id=?",
+                     (captured_identity(owner_user_id), run_id))
         conn.execute(
             "UPDATE runs SET cause_principal = ? WHERE run_id = ?",
             (_cause_principal(actor), run_id),
@@ -4436,7 +4441,10 @@ def _owns_managed_execution(function):
             from tinyassets.workspace_family import FamilyRefused
 
             try:
-                return function(base_path, run_id=run_id, **kwargs)
+                from tinyassets.outside_authority import run_identity
+
+                with run_identity(base_path, run_id):
+                    return function(base_path, run_id=run_id, **kwargs)
             except FamilyRefused as exc:
                 if guard is None:
                     raise

@@ -505,6 +505,15 @@ class AgentTurnCoordinator:
 
     async def _run(self):
         self.owner = self._check_scope()
+        # Lifecycle hooks belong to the initialized execution, not the release
+        # wrapper that must also settle interrupted or recovered turn bodies.
+        result = await self._run_turn()
+        from tinyassets.extension_hooks import turn_event
+
+        await turn_event(self, "turn_end", {"status": "completed"})
+        return result
+
+    async def _run_turn(self):
         uid = self.context.universe_dir.name
         if self._has_candidate_order():
             first = self._next_candidate()
@@ -524,6 +533,11 @@ class AgentTurnCoordinator:
 
         self.request_budget.persist(self.context.universe_dir.parent)
         self.request_budget.link("turn", self.turn.turn_id)
+        from tinyassets.extension_hooks import turn_event
+
+        await turn_event(self, "input", {"input": self.prompt})
+        await turn_event(self, "turn_start", {"turn_id": self.turn.turn_id})
+        await turn_event(self, "context", {"system": self.system})
         timeout = self.config.stream_timeout_profile().absolute_cap_s
         # Every round is told what is LEFT of the turn, not the whole cap again:
         # a provider that cannot be cancelled mid-request (the HTTP broker) is

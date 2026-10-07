@@ -1,3 +1,334 @@
+### D87. Package egress relay opt-in and caller-owned lifetime
+
+A package manifest may set "egress": true. The flag is part of the hashed
+manifest bytes, so it is the owner's exact-revision opt-in; a different flag is
+a different revision. start() must name the same value or refuses. An opted-in
+cell receives the admitted center's checked egress relay, pinned by descriptor
+exactly like tool-jail and provider-exec, behind the in-cell loopback forwarder
+with the fixed proxy environment and image CA certificates. There is still no
+network interface; destination policy stays in the relay; no credential travels
+this route. Credentials remain broker slots only. The relay and slot sockets
+keep fixed descriptor slots; flags travel after the 64-hex revision and the
+decoder reads only that suffix, because a revision may itself contain "e".
+
+Package lifetime no longer has a wall clock (supersedes D84's fixed lifetime):
+a persistent stdio server runs until it exits, the consumer revokes the cell,
+the daemon dies or the RSS/process-count/CPU-time guards end it. The consumer's
+stream has no timeout of its own. Aggregate cell capacity (MAX_OWNER_CELLS 4,
+MAX_CELLS 32) and the per-process 300s CPU bound are unchanged; a long-lived busy
+server can exhaust that CPU bound, which is a resource limit, not a clock.
+
+### D86. Shared provider execution entry, text-only first
+
+Selected broker execution is dispatched at aspawn_owned, before constructing a
+daemon-UID subprocess. The provider-exec class uses the same exact sealed snapshot
+admission as discovery, dedicated owner identity and strict cell-deny. It adds a
+separate daemon-authenticated stderr socketpair, pinned egress socket and an
+in-cell loopback forwarder; there is no direct network interface. Ordinary host
+paths, engine routes, caller mounts, shell mode and nested-sandbox policy are
+refused in this first execution view, including every non-None cwd. Only snapshot
+paths are relocated; persistent cwd/argv paths cannot silently become throwaway
+state. The payload's default directory is explicitly private /tmp/workspace.
+No provider name decides admission.
+
+The external mapper bounds process-tree RSS/count. Lifetime has no wall clock:
+a provider turn runs until it exits, the daemon revokes it (EOF) or the daemon
+dies; idle detection stays with the adapter. Fixed CPU-time, fd, process,
+file/core and private tmpfs bounds remain. Executable admission is the image
+layout, never a provider name: a regular file under /opt/<name>-install/ or a
+direct /usr/local/bin entry, not owned by the payload identity and not
+group/other-writable. Raw stdout/stdin and separate
+stderr retain adapter error classification, cancellation and communicate/wait
+semantics. No unconfined fallback is permitted when selected. Engine-MCP,
+persistent workspace/session views and their consumer proofs remain follow-ups;
+existing broker-owned auth refresh remains authoritative and is not moved into
+an untrusted payload. Startup remains OFF.
+
+### D85. Authenticated owner-delete admission and two-pass fence
+
+The fixed owner-delete class accepts only the admitted principal, center and
+opaque deletion token. It mounts that exact center, exposes no relay, executable
+or caller path, and runs capability-free under its dedicated owner UID/GID with
+cell-deny and fixed resource bounds. It unlinks only exact-owner entries using
+no-follow descriptors; regular file contents are never read. Restrictive owner
+directories are restored through pinned descriptors. Daemon-owned directories
+may be traversed but are never chmodded or removed; their entries remain for
+U2's daemon pass. Other mapped owners are refused with a bounded relative path.
+Unmapped legacy entries remain for migration/daemon verification, never claimed
+deleted by this pass. Partial failures are loud and resumable, not rollback.
+
+Nested user namespaces collapse all non-owner UIDs to overflow. For each such
+inode the trusted cell passes its exact O_PATH descriptor to the daemon, which
+returns only whether the kernel host UID is 1001. No contents, paths or descriptor
+go back to the cell. This distinguishes daemon custody from foreign identity
+before traversal or mutation; overflow itself is never custody evidence.
+
+The mapper refuses deletion while that owner has any running cell. Successful
+admission installs an owner-wide fence, retained across pass-one completion,
+failure and cancellation. Only an exact matching token may retry or explicitly
+finish the fence through the authenticated daemon channel; a stale finish cannot
+release a later deletion. Normal cells remain denied between both passes. U2
+must serialize daemon writes and persist its deletion intent/token across daemon
+restart, perform its verified daemon pass, then release. Explicit abort can also
+release a quiescent failed deletion after U2 cancels pending cleanup and records
+partial loss; it is never rollback or deletion success. This is the recovery for
+inaccessible daemon directories or over-depth trees that cannot make progress by
+retry. No automatic finally release, runtime root authority, startup activation
+or U2 consumer edit. An admin grant alone cannot select a different owner's UID:
+the mapper still requires the principal's admitted binding and exact root identity.
+
+### D84. Provider-neutral immutable package cells
+
+A package is a sealed daemon-owned tree at the admitted center's fixed
+`.runtime/package-cells/<sha256>` location. The digest pins manifest bytes;
+the manifest pins every regular file, the entry point, interpreter, arguments
+and named connection slots. No unmanifested file, symlink, hardlink, writable
+group/other inode, foreign owner or over-bound tree is admitted. Consumers
+provision approved revisions; the launcher never installs packages as root.
+
+The mapper accepts only revision, principal, center and the presence of an
+exact pinned invocation relay. It selects dedicated owner UID/GID, cell-links,
+read-only package mount, private namespaces, bounded tmpfs, and fixed lifetime.
+No owner workspace, credential snapshot, vault or shared store enters. Python,
+Node and shell are mechanical interpreter choices, never provider branches.
+The mapper outside the cell bounds process count and aggregate process-tree
+RSS, including orphaned descendants beneath its private namespace init. This
+cannot be stopped by the package. The in-cell supervisor retires dumpability
+and supplies a second poll plus CPU/fd/file/core rlimits and Python/shell address
+space bounds. Python imports only its pinned package paths plus the immutable
+interpreter installation. It kills descendants before completion.
+
+Package stdio remains a raw duplex stream after an authenticated proof/start
+handshake, usable by K1. A declared connection slot maps only to an existing
+canonical ta connection capability bound to this principal/center. Its exact
+relay is pinned; requests cannot select another capability, owner, route or
+credential. Existing daemon consent/effect handlers and the broker retain
+credential custody, destination policy and DNS pinning. No general network
+proxy or credential environment is supplied. Context exit revokes/reaps before
+closing the capability relay. Startup remains OFF.
+
+### D83. Fixed TOOL file preparation and recovery
+
+Before TOOL accounting admission and after the authenticated payload exit, the
+daemon runs a fixed tool-files cell under the admitted owner's UID/GID. Unlike
+the untrusted tool payload, this trusted, bounded operation receives the pinned
+center solely to create the fixed harness directories, restore owner-file mode
+bits and publish absent brain files. No caller path, executable, environment,
+credential, network socket or numeric identity is admitted. cell-deny and a
+35-second mapper deadline apply. The sole authenticated daemon serializes TOOL
+runs per center; forked client use is refused by the existing client PID check.
+Selected provider workspace creation also calls this cell, never daemon mkdir.
+
+All traversal uses no-follow descriptors, checking exact owner UID/GID before
+chmod. Foreign identities, links, special files and multiply-linked regular
+files are never read or remoded. Restoring the group mask restores inherited
+daemon ACL access after chmod; removal of the ACL itself remains a loud refusal
+at accounting, never an unmeasured successful launch. New directories require
+an owner-writable admitted root with the migration's daemon default ACL.
+
+Recovery walks stop and report at their entry/depth/time bounds; accounting
+still refuses inaccessible trees. Unpromotable brains are reported and remain
+editable rather than preventing TOOL cleanup. Existing mode bits are preserved,
+with only required access bits added; unchanged modes are not rewritten.
+Brain publication copies bounded bytes from a verified source descriptor into
+an exclusive root temporary file, fsyncs, then atomically renames without
+replacement. Existing canonical names win. Workspace source bytes are retained
+for recovery; secondary agents never publish identity.md. Before the supervisor's
+forced final accounting check, its already-reaped payload's files are recovered.
+Settlement remains in the daemon and runs even when recovery fails; preparation
+also marks the stores dirty when admission fails. Startup stays OFF.
+
+Founder 2026-10-06 execution order supersedes older delivery lists: TOOL files,
+package cells, authenticated owner-delete admission, then remaining provider
+classes. All cell admission remains provider-neutral.
+
+### D82. Mechanical metadata-only provider-discovery cell
+
+The first provider class is metadata discovery only, not provider CLI execution
+or auth refresh. With the broker selected, `read_native_catalogue` admits the
+current principal/center (founder home or admin), looks up the dedicated
+identity as role_video/role_tools do, and pins the exact launch snapshot with
+`open_dir_nofollow`; it must be a daemon-owned directory whose kernel path is
+`<center>/.runtime/provider-launch-credentials/<name>`. START sends static
+`provider-discovery`, principal, center and an `egress` boolean, plus stream,
+snapshot, optional egress socket and lifetime descriptors. The mapper's exact
+descriptor count, snapshot path/owner match and D80 egress match all precede
+fork. No path, UID, profile, argv or env enters the privileged request.
+
+The entry mounts the snapshot with `--ro-bind-fd` at `/snapshot` (D73 ACLs give
+the owner read only), `/opt/codex-install` and `/opt/claude-code-install`
+read-only, and nothing else beyond the strict base. prove_cell closes every
+descriptor, checks namespaces and denies nested user namespaces before one
+bounded config line is read byte-wise from the stream. That config's argv must
+resolve inside a shipped install tree; env keys/values are bounded, host data
+paths are rejected, the snapshot is pre-rewritten to `/snapshot`, and
+HOME/TMP/PATH are fixed. The CLI then execs with the stream as raw stdin/stdout
+and stderr null. Limits: CPU 30s, NOFILE 256, NPROC 64, FSIZE 64 MiB, no core,
+no RLIMIT_AS (Node/V8), and the existing fixed 35s mapper class deadline.
+
+The daemon wraps the stream with `asyncio.open_connection(sock=...)` in an
+`OwnerCellProcess` shim, so the existing protocol loop and its byte/page/model
+bounds and timeout run unchanged. `kill_owned_tree` revokes the shim through
+its lifetime channel and never signals a PID. Close requires the
+identity-checked receipt; a missing receipt fails the catalogue. A selected
+broker without client/scope refuses; there is no daemon fallback. The daemon
+currently sends `egress=False`; network-requiring metadata remains a
+gap until the egress relay is admitted for this caller. Provider execution,
+auth/refresh and other provider CLI paths remain pending.
+
+D82 measured integration corrections: installed Codex model discovery requires
+SQLite state beside its auth file. Keep the source snapshot read-only; after
+confinement copy only a bounded regular, single-link, no-symlink tree (128 entries,
+8 MiB, depth 8) into owner-private ephemeral scratch. Rewrite exact snapshot
+paths to that scratch. Nothing there is consumed by daemon filesystem readers
+or promoted back to custody. This offline slice cannot spend a refresh token.
+Only display settings and in-cell auth/scratch paths survive the environment
+allowlist; ambient tokens and loader settings do not. START admission remains a
+short synchronous descriptor-owned exchange, then streams are async. One receipt
+reader owns cleanup even if its awaiting caller is cancelled. Write-side EOF
+revokes the lifetime without the late unread-CANCEL/queued-receipt reset race.
+
+### D81. Mechanical data-only video extraction cell
+
+Route selected video ingestion through a fixed ingestion-video class with the
+admitted principal/center and broker-resolved dedicated UID/GID. The cell has
+no owner filesystem, credentials, relay or shared-store mount. Input is bounded
+verbatim video bytes, written only to a fixed private scratch filename. The
+installed ffprobe/ffmpeg binaries run under cell-deny, private namespaces and
+fixed CPU, address-space, file-size, process, descriptor and wall-clock limits.
+Only bounded duration/frame bytes return; source filenames cannot become paths
+or command options. Selected failures propagate, with no daemon subprocess or
+placeholder fallback. Vision stays in the caller via an explicitly supplied
+owner-scoped callback; no platform model is contacted by this cell.
+
+This slice covers video parser subprocesses, not all ingestion formats or other
+remaining engine classes. Startup stays off. No migration/rollback code changes.
+
+### D80. Mechanical exact-socket admission for tool cells
+
+Admit only the existing daemon-owned egress relay and per-bash capability
+socket beneath the admitted center sidecar. Pin socket inodes with O_PATH and
+O_NOFOLLOW; grant only that owner traverse (no listing/write) on its sidecar
+directory because bubblewrap resolves the pinned source through that parent;
+install an exact named-owner UID read/write ACL through the held
+/proc/self/fd path, with no group or other access. Require ACL readback and
+unchanged device/inode, daemon ownership and single link. No parent directory,
+raw credential, daemon control socket or caller-selected path enters a cell.
+The mapper receives fixed egress/ta presence flags and descriptors, checks the
+exact admitted sidecar/name/daemon inode ownership, and maps only those sockets.
+Close descriptors before application code. Retain the existing public-address
+proxy rules and per-invocation capability dispatch/revocation; this adds no
+new action authority. Package scoped slots remain a separate later boundary.
+
+A disposable installed-image ACL probe passed: daemon UID1001 grants socket
+access through the pinned O_PATH descriptor; UID300001 connects, UID300002
+fails, mode remains 0660, with no shared group membership. Actual Alice/Bob launcher/public-bash/ta/HTTP acceptance now passes with
+foreign/revoked sockets denied; see delivery.md for the exact image and commands.
+D79 offline receipt remains valid; preparation/promotion and other classes remain open.
+
+### D79. Mechanical staged tool-jail admission with daemon accounting
+
+Use the fixed tool-jail class with D9 cell-nested outside the existing strict
+inner tool jail. Pin the admitted center and at most 256 immediate entries;
+mount only exact-owner UID/GID regular files (single-link) and directories.
+Never mount the center itself, owner.json, or hidden entries except the existing
+.agent-workspace. Require prepared harness directories; close every source FD
+before importing application code. Daemon queue slots and storage reservation,
+renewal and settlement remain authoritative through a fixed budget-poll channel.
+Retain existing child resource supervision; fixed mapper deadline is 660 seconds (600 seconds plus startup and teardown).
+No numeric identity, profile or executable enters the privileged request.
+
+This is staged offline tool execution, not completed class acceptance. Socket
+forwarding, owner-directory preparation and persistent brain-file promotion must
+be completed before startup. Socket-bearing calls refuse; new brain names remain
+in the persistent agent workspace rather than being promoted into a virtual root.
+Do not claim public bash acceptance (its relay-socket forwarding is not admitted).
+No U2 migration, rollback or startup code is changed. Package cells remain later.
+
+### D78. Mechanical node-sandbox integration through the bounded owner launcher
+
+The existing code-node executor runs inside a dedicated owner's outer cell,
+using D9's already-assigned cell-nested profile and its existing inner jail.
+The mapper accepts a fixed node-sandbox kind and boolean workspace selector,
+never executable/environment/profile fields. An optional pinned directory must
+have the exact owner UID/GID and remain beneath the admitted center. Mount
+source descriptors close before application imports; only the mounted directory
+is reopened for the inner jail. No owner store or credential is mounted.
+
+The graph compiler supplies its admitted command-center path. Selected-broker
+calls without that scope or bounded client refuse, with no daemon subprocess
+fallback. Data-only nodes require the same admission. Existing source/input,
+output, memory, timeout and workspace checks remain in the inner executor.
+The mapper's fixed node lifetime is 1810 seconds (the existing 1800-second
+workspace maximum plus transport/teardown). The daemon relays bounded RPC frames
+to the existing per-run callback; this adds no action authority or broker token.
+Callback execution does not block cell cancellation. All result dataclass fields,
+including cancellation/workspace-timeout, survive transport. Startup stays OFF.
+This does not admit provider/tool/registry/worker/package cells by implication.
+Adding explicit owner scope subjects the existing node module to the raw-I/O
+guard. Keep the guard unchanged: route fixed kernel-stat reads and private
+temporary-file cleanup through the existing filesystem helpers, and reopen the
+in-cell workspace with open_dir_nofollow. No raw-I/O baseline growth is allowed.
+
+### D77. Mechanical adoption of independent lifetimes by existing engine APIs
+
+Decoder, preview renderer/writer and workspace-git clients now use START and
+their own authenticated lifetime receipts. Their input/output bounds, cell
+proof predicates, directory-descriptor identity checks and fixed class profiles
+remain enforced. Cancellation or a failed data exchange revokes/reaps that
+cell instead of holding or poisoning the shared control exchange. STOP with
+active cells raises a refusal while preserving the client for cancellation.
+Legacy SPAWN is retained only as a protocol compatibility path. This adoption
+does not count as admission of a new engine class or a package launch API.
+
+### D76. Mechanical independent cell streams and mapper-owned lifetimes
+
+Remaining provider, tool-RPC, worker and package integrations require live
+bidirectional I/O. The original synchronous SPAWN exchange holds the sole
+daemon control lock until exit, preventing that integration. START admits the
+same fixed class/owner/center schema and receives one additional unnamed,
+daemon-created seqpacket pair. The mapper acknowledges start on the authenticated
+control channel and returns the final UID/GID/exit receipt on that launch's
+separate lifetime channel. No executable, environment, identity number, PID or
+profile becomes caller-selectable. Existing SPAWN remains for compatibility,
+but refuses while independent cells run so it cannot suspend their supervision.
+
+The mapper polls/reaps all START children, retains the existing fixed per-class
+deadlines and bounded UID mapping, and kills the selected child on lifetime
+channel data or EOF. Possession of that private endpoint is revocation authority
+only; it cannot select a different cell or add authority. STOP refuses while
+jobs remain. A fixed ceiling of 32 concurrent cells and four per dedicated
+identity bounds mapper process/descriptor retention; excess START refuses before
+fork, without replacing the caller's existing admission/accounting checks.
+Lifetime endpoints are prepared before fork, and failed acknowledgements kill
+and reap the newly registered child. Fork descendants close handles alongside the parent
+client. An authenticated final receipt proves reaping; a timeout is not success.
+This is transport groundwork, not acceptance of another actual engine class,
+package revision/slot enforcement, dynamic owner admission or startup activation.
+
+## Founder amendment status
+
+**Founder D61 (legacy provenance, 2026-10-05) supersedes D63's stop.**
+The earlier mechanical allocation decision labelled D61 below remains historical;
+references to "founder D61" mean the newer reachability/quarantine rule.
+
+**D60 (2026-10-05) supersedes all shared engine-identity statements below.**
+Every owner receives a dedicated UID AND GID. D8's shared identity clause and
+D58 are historical. Startup remains inactive. Founder D73 below admits only
+ui-preview's cell-nested exception, subject to actual class acceptance.
+
+**founder decision 2026-10-05: fold + build with probes.** D9 folds all seven
+round-3 required changes and supersedes conflicting historical decisions below.
+No fourth design review; the eventual build gets a normal cross-family code
+review. Nothing deploys under this instruction.
+
+**Lead technical decision: least-privilege two-pass deletion and startup rollback.**
+D10 replaces runtime root maintenance. The launcher still retires all migration
+capabilities before service, with no privileged helper. Deletion uses engine
+1003 inside the owner's cell, then daemon 1001; rollback uses the startup
+migration window. The capability ambiguity in delivery.md is resolved. Build
+and production-image acceptance remain pending.
+
 ## Context
 
 `broker-streaming-contract` design §Roles: "the owner process and boxhostd run as DISTINCT uids …
@@ -39,8 +370,10 @@ constant have to move together.
   The owner cannot become the broker, a child cannot become either, and the broker serves.
 - **Goal:** no new long-lived privileged surface beyond one small, auditable launcher, and **no
   owner-writable path anywhere on a privileged import or exec chain.**
-- **Non-goal:** per-command-center uids for user content. Boxes (S4/S5) bring their own isolation;
-  this change only reserves their uid range.
+- **Goal:** every engine process executing owner-scoped work is inside that owner's
+  isolation boundary before application code runs, including all helpers and descendants.
+- **Non-goal:** allocating per-command-center uids; D8 establishes the boundary now with
+  per-owner namespaces, independently of the reserved S4/S5 box uid range.
 - **Non-goal:** splitting containers. One container, several uids, keeps the shared volume and the
   existing deploy transaction.
 - **Non-goal:** moving credential *deposits* to the broker. The owner stays the vault's only
@@ -62,14 +395,14 @@ This change's build tasks land **after** both of these, and amend them:
 | Role | uid:gid | Supplementary | Owns |
 |---|---|---|---|
 | owner (daemon, frontends, scheduler) | 1001:1001 `tinyassets` | 1100, 1101, 1102 | `/data` (unchanged) |
-| broker | 1002:1002 `ta-broker` | 1102 | `/data/.broker/` (0700) |
-| engine / provider children | 1003:1003 `ta-engine` | 1100 | nothing; writes only through group `ta-work` |
+| broker | 1002:1002 `ta-broker` | 1102 | `/data/.broker/` (0700), plus D11 broker egress ledger/proxy set (gid 1101) |
+| engine / provider children | 1003:1003 `ta-engine` | 1100 | nothing; `ta-work` access only inside D8 owner namespace |
 | boxhostd (S4/S5) | 1004 reserved | — | — |
 | per-box uids | 200000–299999 reserved | — | openshell-spike defines |
 
 | gid | Name | Members | For |
 |---|---|---|---|
-| 1100 | `ta-work` | 1001, 1003 | workspace roots, `2770`, setgid |
+| 1100 | `ta-work` | 1001, 1003 | workspace roots, `2770`, setgid; engine access confined by D8 |
 | 1101 | `ta-brk` | 1001 | connecting to the broker's socket |
 | 1102 | `ta-vault` | 1001, 1002 | reading the vault, `0640` |
 
@@ -101,7 +434,7 @@ different authority, and each capability here is one some step provably cannot d
 | `SETUID`, `SETGID` | launcher | `setresuid`/`setresgid`/`setgroups` per role |
 | `SETPCAP` | launcher | `PR_CAPBSET_DROP` — the retirement itself |
 | `KILL` | launcher | signalling the daemon (1001) and broker (1002) at shutdown. euid 0 does not match either uid, so signal permission is `EPERM` without it |
-| `SYS_ADMIN` | — | inherited from `ta-op`'s existing assertion; necessity unproven |
+| `SYS_ADMIN` | forbidden | remove from compose and ta-op MASK together (D9/F6) |
 
 The **launcher drops `CHOWN`, `FOWNER` and `DAC_OVERRIDE` from all five of its own sets and reads
 that back before it binds its socket.** The long-lived privileged process therefore never holds the
@@ -112,9 +445,8 @@ migration, while the container holds exactly one process.
 healthcheck enters `ta-op` at uid 0 and that file asserts *set equality* (`ta_op.c:206-208`).
 So `MASK` changes in the same commit as `cap_add`, held by the existing
 `tests/test_ta_op_modes.py` parity. **Never diverge from it silently** — a mismatch turns the
-healthcheck red, which is an unhealthy daemon, which is a deploy rollback. `SYS_ADMIN` is the one
-member whose necessity is not yet proven; narrowing it means changing both in one commit
-(task 2.7), not dropping it from one side.
+healthcheck red, which is an unhealthy daemon, which is a deploy rollback. `SYS_ADMIN`
+is forbidden: remove it from both in one commit (task 2.7).
 
 Three privileged artifacts, each root-owned, each outside `/app` and `/data`:
 
@@ -192,7 +524,7 @@ as 1001 (`SO_PEERCRED` translates to the receiver's namespace). Only distinct ke
 ### D3. Who spawns what, and with exactly what
 
 Spawn sites move to the launcher client, one call shape:
-`launcher.spawn(kind, args) -> Popen-like`. Kinds and argv templates are a **static table in the
+`launcher.spawn(kind, owner_scope, args) -> Popen-like`. Kinds and argv templates are a **static table in the
 launcher**, never caller-supplied strings:
 
 | Kind | Site | Mechanism today |
@@ -205,6 +537,10 @@ launcher**, never caller-supplied strings:
 | `workspace-provision` | `workspace_provision_process.py:127` | `subprocess.Popen` with `pass_fds` |
 | `workspace-registry` | `workspace_registry_process.py:165` | `subprocess.Popen` of `sys.executable -I -B -c …` over a `socketpair` |
 | `workspace-worker` | `workspace_worker.py:677-684` | `multiprocessing` spawn — see D7(c) |
+
+**Historical inventory:** the table above records the original review baseline. D8 below
+is the amended, authoritative coverage inventory, including current discovery confinement
+and additional children; no historical "not jailed" entry authorizes an unjailed launch.
 
 The last four and `provider-discovery` were missing from the first draft of this table, and
 `provider-discovery` is the one that matters: it launches the provider binary directly with a
@@ -246,26 +582,32 @@ Per-kind spawn posture, all of it set by the launcher and read back before `exec
   calls `_sanitize_child_environment()` itself (`broker/process.py:88`); the allowlist is the
   outer bound, not a replacement.
 
-  The `engine-mcp` kind is where this matters most today: `engine_mcp_http.py:270` builds the
+  Historical baseline (superseded by the current consumer audit below): the `engine-mcp` kind is where this matters most today: `engine_mcp_http.py:270` builds the
   child's environment as `dict(os.environ)` — the daemon's *whole* environment, not even
   `child_env` — and then adds four `TINYASSETS_ENGINE_*` names plus the port and shared secret
   (271-275). Its allowlist is exactly those six plus the `PATH`/`LANG`/`TZ`/`HOME` basics.
+
+The current `engine-mcp` allowlist must also audit OAuth service and execution-owner tree
+consumers (delivery.md), retaining only owner-scoped configuration and scoped service
+capabilities. It must never carry the owner channel token or platform credentials.
 
 The `multiprocessing` spawn children do not go through the launcher as they stand: that bootstrap
 passes a pipe handle and the resource-tracker descriptor through its own protocol, which an
 `SCM_RIGHTS`-stdio `execve` does not reproduce. D7 decides each of them by name.
 
-### D4. Volume ownership, and the one rule that makes rollback free
+### D4. Volume ownership and rollback requirements
 
-**Invariant: the migration never changes the OWNER of a path an older image reads.** It adds a
-group, sets setgid, and tightens other-bits. Only `/data/.broker/**` — which is new in #4299 and
-which no older image opens, because an older `start_broker` refuses outright
-(`supervisor.py:177-183`) — changes owner to 1002.
+**Ownership rule, amended by D11:** retain existing owners outside the broker
+egress set. The broker owns its ledger and proxy state as uid 1002, group ta-brk;
+the privileged startup migration transfers that set in both directions. Old
+images require completed reverse migration before opening the ledger. This
+replaces the earlier exception limited to `/data/.broker/**`.
 
-That invariant is what answers rollback: an older image running everything as 1001 still owns
-every vault file and every store, so it reads and writes them unchanged. **D4's previous
-"temporary 1001 read ACL on the vault directory" is deleted** — there is no temporary widening,
-and no reverse migration.
+This preserves access to pre-existing stores, but does not prove access to new
+engine-owned files. D9/F5 adds access/default ACLs and umask 007; D10 requires
+explicit startup reverse migration before rollback and capability-free two-pass
+deletion/reset. Neither the old-image nor deletion proofs have passed yet.
+No ACL widening applies to the vault.
 
 Exact inventory, from the code rather than from the shape of the tree:
 
@@ -278,10 +620,22 @@ Exact inventory, from the code rather than from the shape of the tree:
 | `/data/<cc>/.credentials/<service>/**` | 1001:**1102** | dirs 2750, files 0640 | `credential_vault.py:1100,1205,2235,2365`; `providers/base.py:603`; `credential_vault.py:1111` (`.credentials.json`) |
 | `/data/<cc>/.runtime/` | 1001:1100 | 2750 | `credential_vault.py:1783` — created `0o700` today |
 | `/data/<cc>/.runtime/provider-launch-credentials/` and each snapshot under it | 1001:1100 | dirs 2750, files 0440 | `provider_jail.py:199`; `credential_vault.py:1784-1808,1846,2069` — the 1003 child's own snapshot |
-| workspace roots under `/data/<cc>/` | 1001:1100 | 2770 setgid | `workspace_pool.universe_paths` |
-| `/data/.broker/`, `/data/.broker/state/` | **1002:1002** | 0700 | `supervisor.py:52-53`, `process.py:89-90` |
+| workspace trees under `/data/<cc>/`, including `.venv` and `node_modules` | existing uid retained, gid 1100 | dirs 2770; files 0660 plus existing executable bits; uid-1001 ACLs (D9/F5) | `workspace_pool.universe_paths`; skip symlinks without following |
+| `/data/.universe-sidecars/` | 1001:1001 | 0711 | relay parent, never mounted into a cell |
+| `/data/.universe-sidecars/<cc>/` | 1001:1100 | 2710 | `universe_egress.py` egress and engine relay directory creation |
+| exact `egress-*.sock` / `engine-*.sock` relay entries | 1001:1100 | 0660 | runtime-created sockets; only the admitted owner's exact socket is bound |
+| `/data/.broker/`, `/data/.broker/state/` | **1002:1101** | 2700 (D12-D13) | `supervisor.py:52-53`, `process.py:89-90` |
+| outbound ledger and SQLite sidecars | **1002:1101** | 0600; /data/.broker parent (D12) | `outbound_connections.py:5148-5213`; D12 fixes .broker/outbound.db |
+| `/data/.broker/.outbound-proxy/` and private contents (D12) | **1002:1101** | dirs 2700, files 0600 | `outbound_connections.py:4931-4955,6087`; D11 |
 | `/data/.layout.lock` | 1001:1001 | 0666 | `storage_layout.py:63-70` creates it 0o666 for cross-uid `flock` |
-| everything else | 1001:1001 | unchanged | — |
+| shared root stores, sidecars and replacements | 1001:1001 | remove other permissions; retain owner access | D9/F1; never mount in cells |
+| remaining classified platform state | 1001:1001 | preserve declared access without widening shared stores | inventory required |
+
+**The shared work group is not an owner boundary.** Its host-side modes are retained for
+rollback compatibility, but every 1003 application process receives those rights only
+inside D8's namespace. No engine payload may execute with `ta-work` in the host mount
+namespace. `/data` itself, sibling centers, shared runtime directories and their directory
+fds are never exposed; a bind of the whole data root followed by partial masks is forbidden.
 
 Four things this table settles that the previous draft did not:
 
@@ -315,6 +669,12 @@ every time they run:
 | `credential_vault.py:1784-1793` | snapshot root → `0o700` | `2750` |
 | `credential_vault.py:1808,1846,2069` | each snapshot dir `0o700`, files `0o400` | `2750`, files `0o440` |
 
+The same declaration also covers `universe_egress.py`'s two sidecar directory
+creation sites (`mkdir(0o700)`) and both relay socket `chmod(0o600)` sites: use the
+D4 sidecar modes/groups on every creation, before publishing a socket. The daemon
+already holds 1100 and can assign that group. Only exact validated socket entries
+are mounted; directory traverse for jail setup never means exposing the parent.
+
 A literal in each place is how the migration gets quietly undone by the next provider launch. The
 modes become a single module-level map keyed on whether the role split is deployed, read by every
 one of these sites and by the migration, so the two cannot disagree. That map is the unit under
@@ -333,14 +693,15 @@ and `.credentials/` can stay owner+broker-only at 1003. What the child does read
 per-launch snapshot under `.runtime/provider-launch-credentials` (`provider_jail.py:199`), which
 is why those rows are in `ta-work`. Task 2.8 has the oracle enumerate which of the jail's binds
 the child must *write* and sets `2770/0660` for exactly those, `2750/0440` for the rest —
-measured, not guessed. `provider-discovery` (D3) is the exception that proves the rule: it runs
-*outside* the jail with the snapshot as its `cwd`, so its access comes from the uid and the group,
-not from a bind.
+measured, not guessed. `provider-discovery` uses the same boundary with the narrower
+`metadata_view`: only its exact launch snapshot, no ordinary owner content. The original
+unjailed exception is removed. All other engine classes use D8's owner-bound views too.
 
 **Authority.** The migration keeps owner 1001 on almost every path, so euid 0 is *not* the owner of
 what it re-modes. `chmod`, `setfacl` and the setgid bit on a 1001-owned path therefore need
 `CAP_FOWNER`, and traversing an existing `0700` owner directory needs `CAP_DAC_OVERRIDE`;
-`CAP_CHOWN` alone covers only the `/data/.broker/**` owner change. All three are in the migration
+`CAP_CHOWN` covers ownership transfers, including D11's egress set, but not the
+required chmod/traversal. All three are in the migration
 phase of D2's capability table, and the launcher drops them before it serves — so this authority
 exists only while the container holds a single process.
 
@@ -351,13 +712,21 @@ not sufficient on its own: the volume is a bind mount, so a *previous* container
 - walks with directory file descriptors it holds open, using `os.open(..., O_NOFOLLOW|O_DIRECTORY)`
   and `*at()` calls relative to them, so a rename between stat and change cannot redirect it;
 - uses `os.lchown` / `fchownat(AT_SYMLINK_NOFOLLOW)`, never `chown`;
-- **refuses, loudly, on any symlink inside the traversal set** rather than following it — the same
-  rule and the same reason as `provider_jail.py:338-339` ("the command center's `<name>` is a link;
-  it cannot be masked");
-- **refuses on any regular file with `st_nlink > 1`** in the set: a hardlink means a second name
-  exists, possibly outside the set, and changing the inode's group would hand that name the same
-  access;
+- skips symlinks inside ta-work trees without following or chmodding targets;
+  symlink refusal remains for privileged, vault and broker sets;
+- refuses hardlinks in privileged, vault and broker sets. D9/F4 requires proof of
+  all aliases within one owner's work set before mutating a work-tree inode;
+  unresolved aliases remain untouched and block completion;
 - refuses on anything that is not a directory or a regular file.
+
+**Legacy runtime cleanup before traversal/chown.** Under the same exclusive lock,
+the root migration idempotently unlinks the obsolete `/data/.broker/owner.json`
+using its pinned parent dirfd and `unlinkat` without following links. Never log its
+contents. It also removes only known stale relay socket entries (verified socket
+type under pinned sidecar dirfds), which the daemon recreates at the declared mode;
+other non-regular entries remain a loud refusal. No recursive deletion or traversal
+through these entries. This permits the regular-file/directory traversal rule above
+to remain intact and avoids asking uid 1001 to clean a broker-owned 0700 directory.
 
 **Crash recovery.** Idempotent by construction — it computes the target owner/group/mode per path
 and applies only differences, so re-running completes a partial run. Mirroring
@@ -365,6 +734,10 @@ and applies only differences, so re-running completes a partial run. Mirroring
 `/data/.layout.json` durably before its first change and `"stable"` after its last; a start that
 finds `migrating` re-runs from the beginning rather than assuming the volume is consistent. Bounded
 by the volume (about 1.8 GB), and backups skip while the lock is held.
+
+Shared-root-store and remaining-platform-state rows exclude the D11 broker
+egress set. A ta-brk gid does not grant daemon file access: private egress files
+have no group bits. Only the authenticated IPC endpoint has group socket access.
 
 ### D5. The broker's role map and the refusal
 
@@ -417,6 +790,7 @@ ta-entry.sh (root, 0555, outside /app)
   0. its existing work, unchanged: the _platform_credential_env unset loop (66-92) and
      the required-data-file check (117-128).
   1. NEW: ownership migration (D4), exclusive flock on /data/.layout.lock, released after.
+     Root removes legacy owner.json before the broker-directory chown (D4 cleanup).
      This is the one addition to the script's contents — "the entrypoint moves, it is not
      rewritten" (D2) means its install path and its existing logic, not that it gains
      nothing.
@@ -503,7 +877,7 @@ Every process that runs at 1001 today, from the code:
 | 8 | the universe agent's tool jail | `universe_tools.py:777` | → 1003 (D3, `tool-jail`) |
 | 9 | workspace provision child | `workspace_provision_process.py:127` | → 1003 (D3) |
 | 10 | workspace registry child | `workspace_registry_process.py:165` | → 1003 (D3) |
-| 11 | short-lived owner tools: `gh` (`effectors/github_pr.py`), `git`, the `ta-op` canary | direct exec from the daemon | **stay at 1001** |
+| 11 | short-lived owner tools: `gh` (historical site, absent from this checkout), `git`, the `ta-op` canary | direct exec from the daemon | fixed platform operations only at 1001; owner-scoped work moves to D8 cell at 1003 |
 
 Rows 7-10 were missing from the first draft of this table. Row 7 is the one that changes the
 picture: it launches the provider binary through `create_subprocess_exec` directly, bypassing
@@ -511,7 +885,8 @@ picture: it launches the provider binary through `create_subprocess_exec` direct
 directory. An enumeration that misses it would have left a provider process at the owner's uid,
 unjailed, holding credentials — the exact thing this change exists to prevent.
 
-Row 11 is why "move everything off 1001" is not available: those are the owner's own tools, running
+Historical reasoning, narrowed by D8: owner-scoped `gh`/`git` must now be jailed.
+Row 11 originally explained why "move everything off 1001" was not available: those are the owner's own tools, running
 on the owner's own data, and no file permission separates them from the daemon. So the decision is
 the explicit one the review asked for — **trust uid 1001 as the owner, and stop making the owner
 channel reachable from a file.** Four measures:
@@ -535,7 +910,7 @@ anyway (`5342-5348`: channel, factory reference, config, grant id, scopes), and 
 inherits no memory.
 
 **(c) The workspace worker moves to 1003.** It needs no credential — it runs git over workspace
-paths, which `ta-work` covers. Its channel has to change, because `multiprocessing` cannot be
+paths, which `ta-work` covers only inside its D8 owner namespace. Its channel has to change, because `multiprocessing` cannot be
 launcher-mediated: the launcher kind `workspace-worker` execs a root-owned entry at 1003 with a
 pre-connected `socketpair` passed by `SCM_RIGHTS`, and `run_workspace_worker` reads its channel
 from that descriptor instead of `context.Pipe()`. The seam already exists — `workspace_worker.py:667`
@@ -557,27 +932,967 @@ own `/proc` files breaks; none is known, and the oracle proves it (task 2.8). Th
 depth. **The hard boundary remains the uid split: 1002 cannot be reached from 1001 without a
 capability, and 1003 cannot read the vault at all.**
 
-### D8. What this change does not isolate
+### D8. Every owner-scoped engine runs inside an owner isolation boundary
 
-All engine and provider children share uid 1003 across every command center, so a 1003 child for
-command center A is not separated *by uid* from command center B's files. That is not a regression
-— today they share 1001 — and it is not what the uid split is for. The per-box uid range
-200000–299999 (D1) is what closes it by uid, in S4/S5.
+**Lead decision, applying founder principles (2026-10-04): cross-user isolation is the
+platform's ONLY invariant and is non-negotiable.** The reference shape is Meta Muse as
+recorded in [the supplied research](../../../docs/design-notes/2026-10-04-muse-connection-methods.md):
+each user's agent has its own `systemd-nspawn` runtime cell, root mapped to an unprivileged
+host user, no `CAP_SYS_PTRACE` or `CAP_NET_ADMIN`, a separate credential daemon minting
+surrogate tokens, and Sentinel as sole egress authority. This is the design reference,
+not a claim that TinyAssets has implemented every Muse mechanism. The decision here is
+that no engine identity may reach another owner's data or credential authority.
+**"Deny only for jailed providers" is REJECTED.** Waiting for S4/S5 is also rejected.
 
-**Only some of those children are jailed, and the first draft said all of them were.** For
-`provider-cli`, cross-command-center containment is the bubblewrap jail: `provider_jail` binds only
-the owning command center's paths, refuses a bind whose source resolves outside it
-(`provider_jail.py:169,386`), and masks every hidden root entry except `.runtime` (316-346). But
-three of D3's kinds run **outside** any jail:
+**Chosen mechanism:** extend the existing bubblewrap provider jail into the mandatory
+per-owner launch boundary for every engine kind. Keep uid 1003 and D1's role groups;
+namespace reachability, not the shared uid or `ta-work`, separates owners. This is the
+smallest sound extension: it reuses the existing jail's validated views, masks, egress
+relay and fd protocol, with no per-owner identity allocator or ownership migration.
+No class gets an unjailed fallback. If a class cannot run inside this boundary, its launch
+fails and implementation must amend the design before substituting per-owner uids/groups.
 
-| Kind | Containment under this change |
+**Launcher contract and namespace construction:**
+- The authenticated daemon supplies a resolved owner/command-center scope, bound to the
+  admitted execution, for every request. The launcher validates that scope against the
+  trusted owner-to-root mapping and selects a static per-kind view; missing, mismatched or
+  multi-owner scope is refused. An engine's argv, env or cwd cannot select an owner.
+  Engine MCP servers, worker pools and discovery caches must be keyed by scope; no engine
+  process is reused across owners. Multi-owner scheduling remains in the trusted daemon.
+- The root-owned bootstrap drops identity/capabilities as D3 requires, then establishes
+  bubblewrap confinement before executing any provider, engine or owner-controlled code.
+  A fresh mount namespace exposes only the admitted command-center tree and workspace
+  subset (at most that owner's data), immutable runtime dependencies and private scratch.
+  Never bind `/`, the host `/data`, shared HOME, shared `/tmp` or the host `/run` wholesale.
+  Discovery gets only `metadata_view`'s exact snapshot; the decoder needs only input pipes.
+- Preserve hidden-root masks, including the vault and `.credentials`, and expose only the
+  current launch's runtime subset/snapshot. Do not expose the entire `.runtime` tree.
+  Resolve and pin bind sources without following substituted links; reject out-of-scope
+  sources, escaping cwd, symlink/hardlink aliases and bind-source replacement races.
+  Approved immutable installation mounts cannot contain owner data. A namespace must
+  remain closed when owner B creates a new path after A starts.
+- Use private PID, IPC and network namespaces (`--unshare-all` as in the provider jail),
+  namespace-local procfs and private scratch. Every class gets an empty network namespace;
+  no host loopback, host abstract sockets or host network fallback. Together these namespaces ensure a shared uid
+  cannot reach sibling processes' `/proc/<pid>/{root,fd,mem,environ}` or ptrace them. Keep
+  D7's post-exec non-dumpability for daemon/broker and all capability/no-new-privileges
+  readbacks. No host namespace handle, foreign directory/file fd, owner token, or launcher
+  socket may cross the fd sweep. Kind-declared IPC is scoped to the admitted owner and
+  cannot request another owner's paths or effects. Validate payloads at the trusted receiver.
+- Reuse the existing jail's network/egress relay. Bind only the exact owner-scoped relay
+  sockets, never their parent sidecar directory or an owner-channel socket. `engine-mcp`
+  transport must use an owner-scoped relay/Unix endpoint through that boundary, not regain
+  host networking to keep its old listener reachable. Credential authority stays outside
+  the cell. Descendants inherit the cell; a nested tool/node jail may narrow it, never widen it.
+
+**Complete coverage contract (paths are under `tinyassets/`; line numbers in D3/D7 are
+historical):**
+
+| Engine class / helper | Spawn sites covered | Required disposition |
+|---|---|---|
+| `provider-cli` | `providers/owned_process.py`: `_aspawn_anchored` and `aspawn_owned` exec paths | launcher plus owner provider view; sync/async and descendants included |
+| `provider-discovery` | `providers/base.py` -> `providers/native_jsonrpc_discovery.py` -> `aspawn_owned` | launcher plus exact-snapshot `metadata_view`; current code already requests confinement, preserve it |
+| `engine-mcp` | `engine_mcp_http.py`: `_EngineServer.start` | pinned thin proxy in cell; canonical handlers and shared stores stay in daemon (D9/F1) |
+| `node-sandbox` | `node_sandbox.py`: both `Popen` sites (workspace `_spawn` and main sandbox launch) | owner cell; nested workspace commands inherit it |
+| `tool-jail` | `universe_tools.py`: tool `Popen` | existing tool jail inside/equivalent to mandatory owner cell, not an exception |
+| `workspace-provision` | `workspace_provision_process.py`: `Popen`; `workspace_provision_execution.py`: embedded subprocess runner | owner cell; provisioning child inherits it |
+| `workspace-registry` | `workspace_registry_process.py`: `Popen`, including calls from provisioning | owner-specific broker, scoped socketpair; no shared cross-owner worker |
+| `workspace-worker` | `workspace_worker.py`: `context.Process`, subprocess runner; `workspace_git.py`: runner and `Popen` | D7(c) launcher/socketpair replacement inside owner cell; git descendants inherit |
+| `ui-preview` | `ui_preview.py`: `_supervised` | owner view with scoped preview transport; PID supervision alone is insufficient |
+| `image-decoder` | `tool_images.py`: `_decode_in_child` | owner-bound process with input/output pipes and private scratch, no data bind required |
+| provider auth probe | `providers/base.py`: direct `subprocess.run` auth probe | owner-bound launcher kind and snapshot, never inherited host auth/HOME |
+| local box execution | `boxes/local.py`: exec `Popen` | owner cell now for any served owner work; reserved box uids do not defer this requirement |
+| owner-scoped utility descendants | `git_bridge.py`, `ingestion/video_extractor.py`, `workspace_git.py`, `workspace_worker.py` subprocess calls | execute within admitting owner's cell; daemon-direct owner-work calls must route through a static launcher kind |
+
+**Remaining inventory dispositions:** `bid/node_bid.py` is control-plane: its shared
+`bids/` repository never enters a cell; only fixed platform operations with validated
+inputs execute there, never owner payloads or hooks. The daemon and broker are trusted control-plane
+roles, not engine exceptions. `storage/outbound_connections.py`'s legacy proxy `Process`
+is refused while the broker is selected (D7(b)). D7 row 11's `gh`/`git` designation is
+narrowed: any invocation on an owner's behalf goes through the owner cell, including
+any restored equivalent of the historical `effectors/github_pr.py` site (absent from this checkout). Only fixed platform operator/health commands
+(`ta_cli.py`, `scoped_reset.py`, `ta-op` canary), runtime detection (`sandbox/detect.py`) and
+desktop launcher/updater/open-URL helpers may remain control-plane/local tooling, with no
+owner payload or credential snapshot. If used for owner work, they must be classified and
+jailed before execution. Windows taskkill helpers in `providers/owned_process.py` are not
+production Linux payloads. Task 2.5 must reconcile a fresh spawn search (including external
+modules and indirect wrappers) with this inventory; any newly found owner-work child is
+covered by this rule and added to the class-by-class oracle matrix, never silently exempted.
+
+**Acceptance:** in the Linux oracle built from the production Dockerfile, start owner A's
+actual engine-identity process through each production class/site above, not a generic
+substitute that only sets uid 1003. Record outer identity/groups, namespace identities and
+launch path, and attempt reads/writes of owner B's workspace/data, legacy `owner.json`,
+vault/materialized credentials and owner channel token. Every class must deny access;
+`ENOENT`/masked content as well as `EACCES` are valid filesystem denial, but B's sentinel
+bytes must never be returned. Seed legacy `owner.json` as an adversarial fixture while
+also proving startup removes the real obsolete file and never writes a replacement.
+Exercise the token held in daemon/broker memory via procfs/ptrace, inherited fds/env and
+owner-channel IPC; absence of a token file alone is not proof. Include sibling process
+paths, links, bind races, new B files created after A starts, and scope reuse/mismatch.
+For each class also attempt connections to owner B's engine-MCP port and relay socket
+(and host abstract sockets): all must fail. Prove the legitimate owner-A operation and
+relay connection work under uid 1003 with D4's socket/group modes. Preserve the existing
+vault write-denial, socket setgid, capability parity, migration and healthcheck proofs.
+The current `scripts/linux_oracle.py` builds `docker/linux-oracle.Dockerfile`, not the
+production Dockerfile; task 2.8 must add an explicit production-image proof mode/harness
+and record its image digest and launch configuration. Its default test image is insufficient.
+No skipped/unavailable class or Windows-only check counts as a pass. Implementation and
+production-image oracle execution remain pending; this amendment claims neither.
+
+### D9. Round-3 fold and executable acceptance
+
+**founder decision 2026-10-05: fold + build with probes.** F1-F7 are accepted.
+This section replaces conflicting historical mechanisms above, not their security
+requirements. Every row below is a required production-image Linux oracle probe.
+The full refute, including confirmed items, was read. No fourth design review.
+
+**F1 — control-plane stores stay outside cells.** Canonical engine-MCP handlers,
+OAuth service configuration and multi-tenant store access move into the daemon.
+The `engine-mcp` cell contains only a thin proxy with a preconnected, per-launch
+channel pinned to the admitted owner/execution at the trusted receiver. The
+receiver rechecks authority; child-supplied owner fields cannot widen it. No
+platform credentials or owner-channel token cross that channel. Do not solve
+compatibility by mounting shared databases. `node_bid` is control-plane, not an
+owner utility. D4 strips other permissions from shared stores, their directories,
+WAL/SHM files and atomic replacements; runtime creation preserves those modes.
+Probe: A's actual proxy performs a real canonical operation, forged B scope is
+refused, B's shared-store sentinel is unreachable, and node_bid still works from
+the control plane without exposing its repository to cells.
+
+**F2 — named seccomp profiles and daemon-side readers.** The profiles are:
+`cell-deny` (existing default deny_program), `cell-links` (same deny profile
+except symlink/symlinkat for git/venv/npm), and `cell-nested` (existing
+nested_sandbox=True profile). `cell-links` still denies new user namespaces;
+link creation alone must not grant the nested profile. All retain FIFO/device,
+io_uring, ptrace and host namespace restrictions. Install after namespace setup.
+
+| Class | Profile | Reason for exception |
+|---|---|---|
+| provider-cli | cell-deny; cell-nested only for the existing proven nested CLI path | nested CLI sandbox; recorded launch policy, never payload choice |
+| provider-discovery, provider auth probe | cell-deny | exact metadata snapshot only |
+| engine-mcp thin proxy | cell-deny | channel forwarding only |
+| node-sandbox, tool-jail outer cell | cell-nested | nested bubblewrap; inner jail retains its own filter |
+| workspace-provision | cell-links | venv/npm symlinks; namespace setup precedes filter |
+| workspace-registry | cell-deny | registry channel only |
+| workspace-worker, workspace-git, git_bridge | cell-links | git symlink checkout |
+| ui-preview | cell-nested | founder D73: Chromium keeps its own sandbox inside the owner cell |
+| image-decoder | cell-deny | no demonstrated nested requirement |
+| local box execution | cell-deny | no exception without a measured nested operation |
+| ingestion/video and other owner utilities | cell-deny | default for new kinds |
+
+For every actual class and **each** cell-writable path (workspace, snapshot,
+runtime subset, preview output, cache and scratch if a daemon consumes it), the
+matrix must enumerate every daemon reader/server: inspect, preview, file reads,
+git_bridge, staging/publish and any additional reader found in the code. Each
+pair gets symlink-to-B, FIFO and hardlink-to-B probes. Even when cell seccomp
+rejects planting, preplant a fixture before launch and exercise the actual
+reader. Receivers must use confined reads or pinned no-follow traversal with
+regular-file/type and alias validation; never resolve an untrusted path in the
+daemon's unrestricted view. No B bytes, B writes or FIFO hang is allowed. A
+blocked plant alone is not a reader proof. A path without a daemon consumer
+needs inventory evidence, not a silently omitted row. No new nested exception
+is accepted without its positive operation and all negative probes passing.
+
+**F3 — close pinned mount descriptors after mount, for every class.** Keep the
+pre-mount sweep, then execute a root-owned close-after-mount bootstrap equivalent
+to node_sandbox's `_CLOSE_MOUNT_FDS_SCRIPT` before any payload. Close all bind-source,
+seccomp and namespace descriptors; retain only declared stdio/scoped IPC. Apply
+again at nested boundaries. Probe each actual payload's `/proc/self/fd`, exercise
+every retained fd and try directory-relative `openat(fd, "..")`; no descriptor
+may lead to a host ancestor, B's data, privileged state or a writable read-only
+bind source. Closing merely foreign fds is insufficient.
+
+**F4 — migration preserves real workspace structure.** Skip symlinks without
+following them in ta-work trees; do not refuse venv/bin/python or node_modules/.bin.
+Re-mode the entire tree, not just roots, preserving executable bits. Privileged,
+vault and broker link refusals remain. For work-tree hardlinks, prove all aliases
+are in the same owner's classified work set before changing the inode; unresolved
+or cross-owner aliases remain untouched and block completion, never silently
+widened. Dry-run reports this without mutation. Probe valid venv/npm symlinks,
+outside-target sentinels and in-owner/cross-owner hardlinks; repeat migration and
+interrupted resume must preserve contents, targets and existing uid ownership.
+
+**F5 — mandatory ACLs, umask, rollback and deletion; resolved by D10.**
+Every ta-work directory gets access `u:1001:rwx` and default `d:u:1001:rwx` with
+an effective mask; regular files get appropriate read/write and existing execute
+access. Require ACL support for work trees: no ACL-less fallback. Every engine
+child starts with umask `007`. Probe newly created files and directories as well
+as migrated files, including explicit `0600`/`0700` and later chmod; both the
+current daemon and an old-image uid 1001 without supplementary groups must read,
+write and delete as required. Exercise actual deletion APIs and old-image rollback.
+
+**Resolved access-preservation ambiguity:** Linux intersects inherited ACL permissions with creation
+mode and chmod changes the ACL mask. Engine-owned 0700 directories therefore
+exclude uid 1001 despite the required ACL entry. Provisioning explicitly creates
+such a `.venv`; changing that one call does not cover arbitrary engine code.
+`delivery.md` has a reproducible Linux counterexample. The lead explicitly chose
+capability-free two-pass owner deletion and startup reverse migration in D10.
+ACLs and group-preserving creation remain defense in depth, not the guarantee.
+
+**F6 — no CAP_SYS_ADMIN.** Remove it from compose cap_add and ta_op.c MASK in the
+same implementation commit. Keep exactly CHOWN, DAC_OVERRIDE, FOWNER, SETUID,
+SETGID, SETPCAP and KILL at entry, then retire migration caps before serving.
+Probe capability parity/readbacks and real unprivileged bubblewrap plus ta-op
+healthcheck under the production image and compose security options.
+
+**F7 — git trusts only the cell's owner view.** Set safe.directory for exact
+admitted repo paths in protected per-cell Git configuration, never `*` or a shared
+host global config. Child configuration cannot add a host mount. Probe actual
+git status/read/write/checkout in workspace-worker/git_bridge/provisioning and
+every other git-using class; the same process remains denied B's repository.
+
+| Confirmed refute item retained | Required pass/fail production probe |
 |---|---|
-| `engine-mcp` | not jailed (`engine_mcp_http.py:277-283` has no `provider_jail` import). Contained by the uid and by D3's allowlist environment, which is a real tightening: today it inherits `dict(os.environ)` (270) |
-| `provider-discovery` | not jailed (`native_jsonrpc_discovery.py:130-134`). Uid and group only |
-| `tool-jail` | its own jail (`universe_tools.py`), not `provider_jail` |
+| C1 bubblewrap available | production Dockerfile image, compose seccomp/AppArmor/systempaths options, unprivileged namespace creation without SYS_ADMIN |
+| C2 spawn inventory complete at review | repeat repository-wide inventory; every site maps to a real class probe or explicit trusted control-plane disposition |
+| C3 private network/IPC and egress | deny B ports/relay sockets, host loopback/abstract sockets; allow only A relay |
+| C4 private procfs and non-dumpability | deny sibling procfs/ptrace and token extraction; daemon/broker post-exec readbacks |
+| C5 no shared tmp, explicit vault group | tmp isolation; atomic deposit retains ta-vault, broker reads but cannot write, every engine denied |
+| C6 exact launcher peer and no fallback | wrong uid, wrong pid, missing scope, failed jail all refuse before payload; PlainSubprocessLauncher remains tests-only |
 
-So for those three the uid *is* the containment, which is an argument for the split rather than
-against it — but it is not the jail, and claiming the jail covers them would have been wrong.
+The oracle must report F1-F7 and C1-C6 per applicable class/site/path/reader with
+image digest, launch argv, identity and namespace evidence. No skipped or generic
+uid-only substitute counts. Broker launch/stream, healthcheck, migration dry-run,
+crash-resume, repeat no-op, rollback and deletion remain separate mandatory proofs.
+
+### D10. Lead technical decision: two-pass deletion and startup rollback
+
+This least-privilege lead decision replaces the prior launcher-maintenance
+operation. D2/D6 capability retirement stays exactly as designed: no retained
+DAC_OVERRIDE/FOWNER/CHOWN, no separate privileged helper, and no runtime root
+maintenance API. All brief rules, probes and stop conditions remain in force.
+
+1. Owner-tree deletion/reset is two-pass with **no capabilities**. Pass 1 runs
+   **as engine uid 1003 inside that owner's cell**, through the launcher's normal
+   authenticated cell spawn. It removes engine-owned entries using pinned,
+   no-follow openat-based traversal confined to the cell's view of that owner's
+   tree. Pass 2 runs as daemon uid 1001 and removes daemon-owned entries and the
+   now-empty structure. Apply this to account deletion, scoped_reset, workspace
+   pool removal and other owner-tree cleanup sites. Neither pass can silently
+   report success after partial deletion: an entry it cannot remove fails loudly
+   with the path (Hard Rule 8). A failure is not atomic rollback of prior unlinks.
+2. The launcher binds pass 1 to the admitted owner's scope using its normal
+   exact daemon uid-and-pid check and static cell view. No foreign tree, host
+   ancestor fd or symlink traversal enters that view. Audit scope, operation,
+   pass and outcome without contents, credentials or owner tokens. Do not add
+   root delete-tree/reset-tree/chown-back operations.
+3. Reverse migration runs **at container start before capability drop**, in the
+   same privileged window and code path as forward migration, selected by an
+   explicit opt-in env/flag. Hold the exclusive layout lock with no role running;
+   use pinned no-follow traversal and the existing hardlink alias protections.
+   It is idempotent, crash-recoverable and dry-run capable. Restore engine-created
+   content, including 0600/0700 and later chmod, to uid 1001 read/write/delete
+   access before an old image starts. Never delete user data. The startup rollback
+   operation exits before normal service, so forward migration cannot undo it.
+   The runbook is rollback.md; actual CLI spelling and proof remain build work.
+4. Keep access/default ACLs and child umask 007. Known explicit owner-work
+   0700/chmod sites, including venv creation and workspace lease directories,
+   use shared group-preserving 0770/2770 modes. Do not widen vault, materialized
+   credentials, broker state or paths outside classified owner work.
+
+Mandatory production-image Linux oracle rows (compose security options):
+
+| Probe | Required result |
+|---|---|
+| Actual account deletion/scoped_reset on engine-created 0700 trees | pass 1 is 1003 in A's cell with zero capabilities; pass 2 is 1001 with zero capabilities; deletion/reset succeeds |
+| Pass 1 targets B or tries a symlink escape | no B/outside contents or metadata changed; no traversal outside A's view |
+| A pass cannot remove an entry | loud failure includes its path; no false success or silent partial deletion |
+| Startup reverse migration dry-run/apply/repeat/interrupted resume | dry-run changes nothing; repeat no-op; resume completes; no data deleted |
+| Actual old image after startup reverse migration | uid 1001 without work group reads/writes/deletes restrictive engine-created content |
+| Launcher capability retirement | CHOWN/FOWNER/DAC_OVERRIDE absent from all five sets before service; existing drop/refusal probe still passes |
+
+The prior capability-lifetime ambiguity is resolved by moving reverse migration
+to startup and performing deletion with the owning identities. No retirement
+probe is weakened and no capability is reacquired after retirement.
+
+### D11. Lead decision: the broker owns its egress state
+
+The lead explicitly assigns `outbound.db` (ledger, accounting and refresh state)
+and `.outbound-proxy` to broker uid **1002**, group **ta-brk (1101)**. The reference
+shape is the supplied Meta Muse Sentinel + hatch-authd architecture: the sole
+egress/credential authority lives outside the agent cell. This is the selected
+TinyAssets authority boundary, not a claim of a new external security review.
+
+Create/migrate the complete egress set during the privileged startup window,
+including SQLite journals/WAL/SHM and proxy runtime files. Private files use
+0600 and private directories 2700 (0700 access plus setgid ta-brk inheritance).
+The socket exposed for authenticated daemon IPC retains D6's 2750 directory /
+0660 socket policy. Private proxy state never becomes daemon-readable merely
+because the daemon holds ta-brk. D10 reverse migration restores old-image access
+and location before an old uid-1001 process starts; no data is deleted.
+
+The daemon and every engine class never open these private paths directly.
+Daemon ledger queries/mutations, accounting reads and refresh triggers use the
+broker's authenticated daemon IPC (kernel role plus the live in-memory fence).
+Preserve authenticated principal and command-center admission, operation
+identity, revocation, accounting and cancellation checks. No raw SQL, arbitrary
+method dispatch, caller-selected filesystem path or serialized callable crosses
+the channel. Engine callers retain only the exact scoped proxy exposed into
+their admitted cell; no owner-channel token, ledger fd or private directory fd.
+An unsupported route fails loudly; no local-database or legacy-worker fallback.
+
+[broker-access-inventory.md](broker-access-inventory.md) enumerates current
+direct and indirect entry sites with their intended route. These are required
+implementation dispositions, not claims that IPC routing already exists.
+Account deletion's generic database walker and raw accounting SQL must be
+adapted too. Existing accounting is actually in `.tinyassets.db`, not
+`outbound.db`; its table migration and liveness preservation must accompany the
+IPC route. D4's read-only broker access to the vault remains a constraint: the
+current local refresh path cannot be called unchanged by uid 1002. Retain
+admission-before-spend and durable rotation; never grant vault write as a shortcut.
+
+**Historical physical-parent blocker (resolved by D12 below):** D4 keeps `/data` 1001:1001/0755. Chowning
+`/data/outbound.db` alone permits file open but not a SQLite write requiring a
+sibling journal, nor fresh database creation. The production-image diagnostic
+in delivery.md proves both failures and a successful private-parent control.
+Requested clarification: relocate the ledger to `/data/.broker/state/outbound.db`
+with crash-safe forward/reverse relocation, or explicitly define another parent
+authority. No broad write ACL on `/data`, journal disabling, broker capabilities
+or symlink through a broker-set link refusal is inferred. Relocation also needs
+the generic account-deletion and strict backup inventories updated; ledger parent
+must cease to mean data root in broker dispatch/accounting configuration.
+
+Mandatory additional production-image oracle rows, alongside all D8-D10 rows:
+
+| Probe | Required result |
+|---|---|
+| Broker existing/fresh ledger and proxy state | actual uid-1002 create, schema upgrade, transactional write and proxy setup succeed with all capability sets zero |
+| Daemon direct access | uid 1001 with its real supplementary groups cannot open private ledger, sidecars or proxy state |
+| Each actual engine class direct access | no private egress bytes/fds through filesystem, procfs, IPC, aliases or inherited descriptors; legitimate scoped proxy still works |
+| Daemon accounting and ledger IPC | real authenticated request succeeds; wrong peer, fence, principal or scope is refused; no fallback open |
+| Refresh trigger | authenticated broker route preserves admission-before-spend, rotation durability and vault write denial |
+| Forward/reverse migration | dry-run unchanged; interrupted resume; repeat no-op; old-image uid 1001 reads/writes after reverse migration, including ledger journals |
+
+No build checkbox is proven by the diagnostic or this decision record.
+
+### D12. Lead decision: relocate the ledger and proxy runtime
+
+Relocate `/data/outbound.db` and its SQLite sidecars to
+`/data/.broker/outbound.db`, and `/data/.outbound-proxy` to
+`/data/.broker/.outbound-proxy`. Startup creates the broker-owned parent in
+D10's privileged window. Never widen `/data` write access. This resolves D11's
+physical-parent blocker. Every D11 inventory consumer must use the authenticated
+broker interface; the logical data root is explicit, never the ledger parent.
+
+Under the exclusive layout lock with all roles stopped, validate the complete
+source/destination set without following links, checkpoint WAL before movement,
+fsync files and directories, then rename on the same filesystem with durable
+progress. Resume must distinguish source-only, destination-only and conflicting
+copies; refuse conflicts without overwriting or deleting data. Include retained
+sidecars and proxy contents. Dry-run does not checkpoint or change metadata.
+Reverse startup migration checkpoints and restores the original paths, ownership
+and usable journal parent before the old image starts. Backup and account deletion
+must explicitly include relocated state. Broker existing/fresh ledger writes,
+daemon/engine denials and old-image rollback are mandatory acceptance probes.
+
+### D13. Mechanical decision: private broker parent permissions
+
+Use uid 1002, gid 1101, mode 2700 for the private parent and private proxy
+directories; files 0600. The lead's 0750 example would grant directory access to
+the daemon through its IPC group 1101, conflicting with the required denial.
+Setgid retains the specified group without granting it access. `/state` remains
+private. D6's public IPC directory remains separate on `/run`, mode 2750.
+
+### D14. Mechanical decision: immutable image foundation and chain checks
+
+Keep the existing rootless CMD until migration and launcher integration are ready;
+do not activate root with the old daemon CMD. The ordered foundation commit adds
+role accounts without supplementary memberships, copied venv interpreters,
+root-owned source and entrypoint, broker bootstrap, HOME relocation and the chain
+gate. Task 2.1 remains unchecked until the launcher/CMD portion is integrated.
+Runtime-write audit: configured stores and auth DB use TINYASSETS_DATA_DIR;
+provider homes/snapshots and node workspace binds use owner trees; scratch uses
+private temporary paths; the health canary is read-only. The Codex wrapper uses
+CODEX_HOME or HOME, falling back to /tmp. No required /app write was found in
+these paths. Use one immutable source tree, not the duplicate-copy fallback.
+Symlink mode bits are not Linux access controls: check link ownership, all
+ancestors and resolved target permissions (including intermediate targets).
+
+### D15. Mechanical decision: relocation is a fenced startup substep
+
+`deploy/role_egress_migration.py` is a stdlib-only substep of the forthcoming
+startup migration, not an additional privileged service or an activated CLI.
+It requires an initialized layout-2 marker/lock with the consent move complete,
+and refuses overlapping migrations before mutation. Only its own interrupted
+role progress is resumable. It records roles.egress progress and leaves the
+TOP-LEVEL marker migrating in both directions; the complete role migration
+alone may mark the layout stable after every forward/reverse substep. This
+prevents the existing consent recovery path admitting an old daemon onto a
+relocated ledger. No service-start wiring or path-consumer switch is activated
+until the launcher, full migration and D11 IPC routes are ready.
+
+The production oracle mode runs the shipped script from the image digest,
+without live mounts or network and with exactly the planned entry capabilities.
+Foundation/egress substep probes are labeled separately from the still-required
+actual launcher, IPC, engine-class, full deletion and old-image proofs.
+
+### D16. Mechanical decision: stage the broker lifecycle before startup admission
+
+The installed stdlib launcher kernel retires migration capabilities, verifies the
+immutable chain before binding, and accepts START_BROKER only from its exact
+daemon child pid and uid. The socket uses SOCK_SEQPACKET with a 4096-byte bound;
+extra fields, truncation and any descriptor transfer are refused. No generic
+exec, shell, environment, caller-selected path or engine-without-cell operation
+exists. Engine kinds remain unsupported until their owner cells are integrated.
+The launcher uses its already-approved SETGID capability briefly to create the
+root:1001 socket and inspect broker socket readiness after CHOWN retirement;
+it restores egid 0 before handling another request. No privilege is added.
+
+Broker-owned generation allocation persists the non-secret lease-proof hash
+beside the existing fence, so the same acquisition recovers its generation/token
+after crash or lost ACK and a new acquisition increments it. The role-split
+broker accepts FENCE with proof only and rejects caller-selected generations.
+The old explicit-generation mode remains only for the existing inactive legacy
+supervisor/tests until task 2.6 removes that path; start_broker still refuses
+production activation. No owner token file is written on the new path.
+
+Broker-local ConnectionLedger receives an explicit logical data_root distinct
+from its private physical parent. Command-center/authority/accounting references
+use that logical root; proxy persistence follows the ledger into .broker.
+This does not grant the broker access to daemon accounting or implement D11 RPC.
+The private broker umask is 077 (except socket creation at 117); engine umask
+007 remains required. The new broker checks retired identity/capability sets
+and makes itself non-dumpable after exec before loading state.
+
+This is an inactive integration substep under D14/D15. CMD, compose capabilities,
+entrypoint migration, daemon environment/spawn and production broker selection
+remain unchanged. The production-image oracle uses a trusted daemon fixture
+child with the real launcher/broker; it must label that evidence separately
+from real daemon startup, successful streams, every engine class, deletion and
+old-image rollback. No build task is complete solely from this substep.
+
+### D17. Mechanical decision: preserve setgid without CAP_FSETID
+
+The production launcher probe demonstrated that fchmod silently clears a
+requested directory setgid bit when the caller lacks that group and FSETID,
+even with FOWNER. During the existing privileged startup window, temporarily
+set egid to the target gid around directory fchmod, restore it in finally,
+and assert uid/gid/mode from fstat. SETGID is already required; do not add
+FSETID. Apply the same helper to relocation and startup IPC directory setup.
+The oracle asserts actual 2700 private parents and 2750 socket parents.
+
+### D18. Mechanical decision: daemon acquisition holds no disk credential
+
+Replace the old spawning supervisor with a daemon-process registry of acquired
+broker channels. The launcher parent is authenticated by SO_PEERCRED pid/uid/gid
+before sending the lease hash; the broker uid/gid is authenticated before any
+proof or owner token is sent, including each stream connection. Only uid 1001
+with the declared groups, retired capabilities and NNP may acquire a channel;
+it becomes non-dumpable before generating the proof. Registry objects reject
+use after fork and stop invalidates existing clients without signalling a broker
+or unlinking its socket. A repeated start in the same daemon reuses its acquisition.
+Generation is allocated by the broker in both the deployed and test process
+entry paths; remove the legacy generation argument and owner.json reader/writer.
+The per-grant worker refuses before constructing any worker or OAuth channel
+when broker mode is selected. These are D6/D7 consequences, not new authority.
+
+Production startup remains gated by the unactivated launcher CMD. The ordinary
+Linux unit fixture substitutes only process startup and peer identities so it
+can run without capabilities; production-image acceptance uses the real launcher,
+1001 supervisor and 1002 broker. Missing-grant refusal proves the live channel,
+not successful streaming or D11 ledger/accounting/refresh consumer routing.
+
+### D19. Mechanical decision: named consistent broker ledger reads
+
+Route the two raw-SQL consumers `discovery_snapshot._context` and
+`connection_uses.model_use_refusal` through `DISCOVERY_FACTS` and
+`HAS_PRICED_SOURCE` on the existing daemon broker socket. Authenticate the
+kernel owner role and live in-memory fence before constructing a ledger; hold
+the fence across one transaction that checks the principal, command center,
+live grant and live connection. Return an explicit projection, never a database
+handle, caller-selected method, SQL or path. Discovery selects the priced
+catalogue before a declared list in that same snapshot, retaining its existing
+digest and typed refusal contract. Malformed pricing remains a refusal rather
+than an unpriced declaration.
+
+Connect asks precede first deposit. For the pricing-presence query only, a
+transaction proving both proposed connection and grant IDs absent may return
+false. Any existing row requires the full scoped live-grant check; missing,
+foreign, mismatched or revoked authority is not treated as free. This query is
+advisory: mutation-time pricing/admission checks remain required.
+
+Select routing before ledger construction. Broker-selected-but-unavailable
+fails loudly; the local route is only for unsplit runtimes with broker mode off.
+This is an incremental D11 consumer conversion, not a generic RPC facade or
+activation. Remaining discovery HTTP, mutation, accounting, refresh, deletion
+and backup consumers stay unproven; startup remains disabled. The production
+oracle seeds only synthetic ledger rows before capability retirement and then
+exercises both actual daemon consumer functions through the launcher-owned
+broker, before and after restart, while direct ledger access stays denied.
+
+### D20. Mechanical decision: discovery HTTP uses scoped broker facts and streams
+
+Add the named GRANTED_RESOURCE read using D19's authenticated owner channel,
+live fence and single-transaction live grant/resource check. Its explicit
+projection omits model profiles: bootstrap and profile repair must be able to
+read a granted catalogue before a model descriptor exists or parses. This
+does not bypass the endpoint, method or SSRF checks on the actual HTTP stream.
+
+In broker-selected mode, discovery HTTP obtains that projection before URL
+validation, then uses the existing exact grant/connection broker channel. The
+broker rechecks authority at stream admission, including revocation after the
+query. Unavailable or fenced queries never construct a daemon ledger. The
+legacy local resolver is retained only when broker mode is off. Existing JSON
+parsing, response bounds and credential-blind errors are preserved.
+
+The production-image probe exercises scoped reads and actual HTTP consumer
+refusals through the launcher-owned broker; the Linux regression exercises a
+successful IPC stream with a scripted upstream. Neither is claimed as a
+successful production HTTP stream. Activation and all remaining class,
+migration, accounting, refresh, deletion and old-image proofs remain gated.
+
+### D21. Mechanical decision: retain strict ledger backup after relocation
+
+The host backup's existing shared layout lock also covers the explicit
+`.broker/outbound.db` source. Include it in the strict SQLite-backup brain tier
+at its original relative path, preserving its private parent and file uid/gid
+and modes. The SQLite backup API includes committed WAL data; never substitute
+a live file copy for this ledger. Full-volume tar already includes the private
+subtree. Legacy root-level ledgers remain supported for reverse migration.
+
+Verify source file and broker parent identity before and after the SQLite copy;
+reject observed symlinks, aliases, nonregular sources, inaccessible broker
+directories or failed copies before upload. These checks also tighten legacy
+root-level databases, which previously followed aliases. They do not claim
+race-proofness against a malicious writer performing an ABA replacement.
+The existing backup trusts the running daemon/broker and holds the layout lock.
+Omit the staging root header from the brain archive so repair cannot overwrite
+the live volume root with the staging directory's root:root/0700 metadata;
+the staging directory itself remains private throughout. This is host
+maintenance within the existing backup authority, not daemon file access or a
+new privileged service. This step proves ledger backup and archive metadata;
+full role/ACL restore and actual old-image rollback remain separate obligations.
+
+### D22. Mechanical decision: preserve HTTP opt-in and prove real broker streaming
+
+The launcher preserves the existing nonsecret deployment switch
+`TINYASSETS_OUTBOUND_HTTP_CONNECTIONS_ENABLED` as a canonical 0/1 in its static
+broker environment. Absent remains absent/disabled. The initial real HTTPS
+probe exposed that the previous allowlist dropped this switch and therefore
+disabled the trusted HTTP transport even on an opted-in deployment. No caller
+can set it over IPC; no TLS, SSRF, grant, fence or vault check is bypassed.
+
+The optional production-image `--production-stream` oracle creates a disposable
+internal Docker network with public-numbered IPAM so the ordinary SSRF policy
+can run unchanged, a synthetic HTTPS fixture and a volume containing only its
+public certificate. It installs that CA only in the disposable probe container,
+never the image or host. There is no external route, published port, real secret
+or host-directory mount. The fixture has zero capabilities. The launcher and
+broker retain the same entry/serving/child authority as the network-none oracle.
+The actual discovery consumer streams a synthetic GET through the real launcher,
+broker, credential resolver and TLS transport, including after broker restart.
+This proves HTTP streaming, not inference accounting, refresh or engine classes;
+startup activation remains gated on all of those and full migration/rollback.
+
+### D23. Mechanical decision: reuse live scoped facts for three daemon consumers
+
+Compute grant validation, model-access custody-incarnation capture and source
+display naming use the existing GRANTED_RESOURCE query. Its transaction checks
+the live grant, principal, center and connection together. Validate the received
+projection before use; preserve the incarnation from that same snapshot rather
+than opening a second ledger. No new broker operation or authority is added.
+Foreign/missing/revoked compute grants retain uniform not_found; model-access
+capture refuses changed authority. Display decoration retains its existing
+empty-label failure contract. None falls back to a daemon ledger in broker mode.
+The unsplit path uses the same query locally; a revoked source cannot now be
+captured or displayed there either. The launcher oracle exercises all three
+actual consumers before and after restart; this is partial D11 conversion only.
+
+### D24. Mechanical decision: effector authority is one broker snapshot
+
+Route authenticated external-call authority, proxy acquisition and bound-request
+preview through a named AUTHORIZED_CONNECTION ledger query. The existing D11
+principal/center/grant/connection checks apply to one transaction returning the
+live resource, grant action cap and custody incarnation. Validate projection
+scope before use. Effector authority comes from the admitted execution context
+or authenticated ambient identity, never from the packet or inferred grant owner.
+Preserve connection access mode in the credential-blind proxy; the broker still
+rechecks live authority before sending. Bound preview hashes the same snapshot's
+incarnation instead of opening a second ledger. Selected-but-unavailable broker
+and malformed replies fail without a local fallback. This adds no privilege or
+security scope; it implements three existing D11 inventory obligations.
+
+### D25. Mechanical decision: serving custody reads reuse scoped broker facts
+
+In selected mode, serving context and initial connection-id lookup use the
+existing GRANTED_RESOURCE transaction. Thread the independently admitted owner
+from serving validation and provider assignment into both lookups; do not infer
+the actor from definition/grant rows. Require the definition owner to match,
+then let the broker enforce the live principal/center/grant scope. Preserve
+the existing subsequent custody-digest comparison against the current credential
+reference. Refuse missing/foreign/revoked authority and unavailable broker without
+local ledger construction. No new broker operation or privilege is introduced.
+The unsplit path retains its existing API behavior, including test-only baseline
+callers that omit the optional owner parameter. This is partial D11 conversion.
+
+### D26. Mechanical decision: HTTP compute uses the admitted invocation owner
+
+The router overwrites HTTP compute's internal invocation-owner field from the
+validated serving authority or work-carrier receipt at dispatch, clearing caller
+input first. A provider definition or grant cannot supply that principal. In
+broker-selected mode the executor requires the definition, running center and
+admitted owner to agree, obtains GRANTED_RESOURCE, then reacquires exact scoped
+authority with AUTHORIZED_CONNECTION before opening the existing broker stream.
+Preserve resource access mode, usage-reference forwarding, cleanup and response
+decoding. Missing/revoked/foreign scope, unavailable broker and malformed replies
+never construct a daemon ledger. The unsplit development path is unchanged.
+Query/acquisition failures are known-not-sent ProviderUnavailableError outcomes,
+so the router releases unused served reservations; errors after request dispatch
+retain conservative usage semantics. No send error is relabeled as unsent.
+
+No broker operation, privilege or isolation scope is added. Production-image
+probes cover actual compute source reads and proxy acquisition before and after
+broker restart; a separate Linux IPC test uses a scripted upstream to exercise
+the complete executor. That scripted response is not production inference
+acceptance. Actual inference POST remains gated by the D11 accounting migration;
+do not weaken the required usage reference or grant broker access to daemon stores.
+Startup remains unactivated pending the full acceptance matrix.
+
+### D27. Mechanical decision: capability metadata uses scoped broker transactions
+
+Add the named CAPABILITY read/configure operation on the existing fenced owner
+channel, with a closed field set and four existing capability kinds. Resolve
+principal/center/grant/connection scope, then recheck the grant timestamp, owner,
+center and live resource inside the actual read or mutation transaction for every
+kind. Existing discovery, pricing, endpoint and descriptor checks remain. No SQL,
+path, callable or arbitrary method crosses IPC. A lost mutation acknowledgement
+is reported as unavailable and never automatically replayed. Error projections
+contain fixed classes, not persisted descriptors or secrets.
+
+Connection-use configuration, provider capability configuration and voice binding
+read/configuration use this route. Voice proxy acquisition reuses D24's exact
+broker proxy. CONNECTION_GRANTS selects live grant IDs for one admitted principal,
+center and connection in one transaction, replacing the configuration consumer's
+local list. More than one grant still refuses configuration. The local development
+route remains available only when broker selection is off. This is partial D11
+integration; accounting, refresh and the other remaining consumers still gate
+startup, together with all engine/migration/rollback acceptance.
+
+### D28. Mechanical decision: grant catalogs page within one admitted scope
+
+The named CONNECTION_CATALOG operation returns redacted connection views, grant
+metadata and custody incarnation for one admitted principal/center. Each bounded
+page uses a joined SQLite snapshot filtering both row owners and both revocations;
+the cursor is the last grant ID, never a path or SQL. The daemon iterates pages
+for consumers that require the complete catalog, retaining existing caller limits
+where explicitly bounded. Pages are individually consistent, not a promised
+multi-page snapshot; actual effects still reauthorize at use. No credential
+reference or capability descriptor is included. Malformed replies or broker
+outage never trigger a local fallback. This routes daemon catalogs, not engine
+filesystem access or startup activation, and adds no privilege.
+
+### D29. Mechanical decision: offline accounting transfer verifies before dropping
+
+Move only the four agent_request_usage/attempts/usage_links/dispatches tables
+from .tinyassets.db into the relocated broker ledger. The existing stdlib startup
+migration owns this substep under the layout lock with all roles stopped. Copy
+to a committed destination transaction, verify exact typed row fingerprints and
+schemas, durably record progress, and only then drop source tables in one source
+transaction. Unrelated tables remain untouched. An interrupted transfer resumes
+from its manifest; divergent copies refuse before deletion. Reverse runs before
+reverse egress relocation and restores these tables to .tinyassets.db. Both
+directions leave top-level roles/layout migrating until full role admission.
+
+Dry-run uses disposable copies outside the data root, including retained WAL,
+so SQLite cannot modify source journals/SHM. Preflight refuses symlinks, hardlinks,
+nonregular files, unknown accounting schemas and conflicting destination tables.
+The known schema is static in the isolated migration and parity-tested against
+the runtime schema. No service or capability is retained; this is accounting
+table transfer only. Daemon accounting IPC, source/liveness checks, refresh and
+full migration activation remain required after this substep is proven.
+
+### D30. Mechanical decision: source-budget facts use live broker authority
+
+In selected mode, request-budget source classification uses the existing scoped
+GRANTED_RESOURCE transaction instead of opening outbound.db. Require the admitted
+owner to agree with the installed definition. Preserve host-based source policy,
+but refuse unavailable, foreign or malformed broker facts rather than classifying
+an unreadable metered source as unmetered. Advisory budget rendering may still
+report unknown through its existing wrapper. No new IPC operation or privilege
+is added; usage-table IPC and kernel liveness preservation remain separate work.
+
+### D31. Mechanical decision: bootstrap recovery reads remain inert and scoped
+
+Bootstrap candidate capability reads use GRANTED_RESOURCE and CAPABILITY. Pending
+confirmation recovery needs its prior ability to display an owner's revoked
+connection, so add BOOTSTRAP_RECOVERY as a metadata-only query: exact grant,
+principal and center join, projecting only destination and discovery descriptor.
+It never returns credentials, authority, a proxy or permission to activate.
+Foreign or absent records produce no match. Actual setup and consent activation
+continue to require live grants through existing operations. Selected mode never
+opens a local ledger, and broker errors remain explicit. This implements existing
+D11 bootstrap readers without changing their owner scope or adding privilege.
+
+### D32. Mechanical decision: graph connection inventory uses scoped pages and capabilities
+
+The authenticated graph connection-list consumer uses CONNECTION_CATALOG pages
+and CAPABILITY reads for model-use/constant-header metadata in selected mode.
+Scope derives from the authenticated actor and already-authorized center, never
+from returned rows. Each capability read rechecks live authority; revocation
+between the page and detail read refuses, and outage never opens a daemon ledger.
+Preserve the existing redacted projection, uses and per-center workspace consents.
+This closes the injected connection_uses_view reader for this consumer, adds no
+broker operation or privilege, and does not complete remaining mutations.
+
+### D33. Mechanical decision: disconnect is a fenced, incarnation-bound broker operation
+
+HTTP removal uses named inspect/fence/erase steps on the existing owner channel.
+The broker derives the HTTP identity from the admitted center and destination,
+checks the owner and custody slot in the same transaction, and requires the
+observed incarnation for both mutations. Erase requires prior revocation and
+removes only that connection's ledger rows. Missing rows are idempotent; a
+replacement incarnation refuses. Revoked rows and interrupted deposits without
+grants remain recoverable through the deterministic center identity. The daemon
+keeps assignment admission and vault writes: fence egress before releasing
+assignment admission, then delete custody, then erase ledger rows. A lost ACK
+fails loudly without automatic replay or local fallback. This implements D11's
+existing removal authority, adding no privilege or scope. Startup stays inactive.
+
+### D34. Mechanical decision: disconnect capture and status reuse scoped broker reads
+
+Pending removal requests capture their incarnation through D33 inspect using the
+authenticated actor and admitted center. Lifecycle status checks live installed
+sources with GRANTED_RESOURCE and completed removals with D33 inspect, validating
+the recorded deterministic identity. A foreign/replaced connection cannot be
+reported as removed. Broker outage remains unknown/error rather than intentional
+disconnection or a local ledger open. No new operation or authority is introduced.
+
+### D35. Mechanical decision: rotation reads one live broker authority snapshot
+
+Rotation preview and mutation acquire AUTHORIZED_CONNECTION using the admitted
+actor/center and deterministic connection/grant IDs. The returned incarnation
+travels with that same resource/grant snapshot instead of a second ledger read.
+Existing HTTP custody-slot checks, gesture serialization, secret-shape and vault
+ownership checks remain. Only the daemon writes the replacement vault record;
+no secret crosses the ledger IPC. Unavailable broker fails before the vault write.
+This closes rotation's D11 reader without new operations or privilege.
+
+### D36. Mechanical decision: HTTP policy mutations reauthorize in one transaction
+
+Extension previews read a live AUTHORIZED_CONNECTION snapshot, retaining exact
+stored JSON for compare-and-swap. The named HTTP_POLICY operation accepts only
+endpoint/scope extension or full-mode transition for a deterministic center and
+destination. It rechecks the live owner/grant/center/custody identity and complete
+policy/incarnation in one write transaction, reusing ledger endpoint/git/URL-secret
+validation inside that transaction. Endpoint extensions must remain additive.
+No connection ID, SQL, path or method name is supplied on the wire. Lost ACKs
+fail loudly without replay. The daemon retains existing consent preview and
+answer checks; startup remains inactive. This implements existing D11 authority.
+
+### D37. Mechanical decision: broker prepare/commit brackets the daemon vault deposit
+
+HTTP connect/redeposit sends only policy metadata to a named HTTP_CONNECT operation.
+Prepare uses the existing conflict rules on one connection/grant snapshot before
+custody changes. Commit compares a digest of both rows, scope and requested policy,
+then creates/grants/upgrades/extends in one broker transaction. The daemon alone
+writes the vault between those calls. An interrupted/lost commit never reports
+success or automatically replays; a fresh gesture re-prepares. No secrets, SQL,
+paths or arbitrary methods cross this channel. The pure conflict planner is shared
+with the unsplit path. Internal ledger transaction injection is not wire-selectable.
+Legacy scope upgrade plus endpoint extension use the post-upgrade row within the
+same transaction, avoiding the prior stale-scope no-op. Startup remains inactive.
+
+### D38. Mechanical decision: owner metadata preserves its existing owner-only contract
+
+Package connection-name previews and workspace consent host reads use named
+OWNER_CONNECTION_NAMES and OWNER_CONNECTION_VIEW queries. They preserve the
+existing owner-only live-row predicate (no grant was required by these readers),
+return only redacted views/names, and confer no egress authority. Command-center
+scope is still attached to authenticated IPC. Names use bounded 64-row pages,
+removing the previous informational 500-row truncation. Failed package previews
+remain unknown (None); consent reads fail loudly. The answer re-reads current
+owner/revocation/host before writing a daemon-owned consent. No schema or privilege
+changes; no startup activation. Effector authorization is a separate remaining row.
+
+### D39. Mechanical decision: workspace reads carry admitted execution scope
+
+Thread the immutable BranchExecutionContext through compiler effect dispatch to
+workspace admission. Its owner and center override ambient identity; packets
+cannot supply either. Direct daemon calls may use authenticated ambient identity.
+Selected broker mode uses AUTHORIZED_CONNECTION for both initial admission and
+push mount revalidation with the same principal. Missing, foreign, revoked or
+unavailable authority refuses without local ledger construction or cached-resource
+fallback. Existing scope and consent checks remain after the snapshot. This
+routes workspace authority reads only; actual worker/credential transport and
+intent reconciliation remain separate integration requirements. No privilege,
+isolation scope or startup behavior changes.
+
+### D40. Mechanical decision: lost push outcomes recover persisted run authority
+
+Broker-selected reconciliation obtains its principal and center from the daemon's
+persisted root run row, requiring agreement with the intent's center and base
+directory. The existing AUTHORIZED_CONNECTION snapshot rechecks the exact live
+grant/resource. Stored host, git-write scope and current push consent must still
+agree before returning custody. Missing legacy run authority, outage, revocation
+or mismatches defer the intent as sent with retry evidence; no remote probe fires.
+Injected custody/revalidation callbacks cannot bypass these selected-mode checks,
+and the old unscoped helper refuses selected mode. Unsplit behavior is unchanged.
+No schema, privilege or scope changes; actual worker/credential transport remains
+gated separately and startup is inactive.
+
+### D41. Mechanical decision: injected consumers use a closed authority type
+
+Cloud continuation, inactive cloud authority and outbound cap/confirmation
+consumers accept the canonical BrokerConnectionAuthority type. Its immutable
+configuration contains the admitted center and a daemon principal verifier;
+definitions cannot supply either. GRANTED_RESOURCE resolves the connection ID,
+then AUTHORIZED_CONNECTION rechecks authority and returns the grant and redacted
+view from one snapshot. A changed ID between reads refuses; both queries check
+owners, center and revocations. No existing query guard is relaxed. No generic method
+dispatch or duck-typed authority is admitted. Selected mode rejects injected
+local ledgers; unsplit mode retains them. The pure cap evaluator is shared with
+the ledger, evaluated against that snapshot without a second grant read.
+Proxy/effect send-time authorization remains independent. This routes existing
+injected D11 consumers; no new operation, privilege or startup activation.
+
+### D42. Mechanical decision: broker liveness uses read-only POSIX flock
+
+Accounting retains separate daemon and per-parent kernel locks. On POSIX,
+owner_state opens the proof read-only with pinned root/directory descriptors,
+NOFOLLOW and NONBLOCK, refusing non-regular or multiply linked proofs. Only
+EAGAIN/EWOULDBLOCK means alive; other errors and replaced names mean unknown.
+No writable broker access, new process, capability or token authority is added.
+Windows keeps its existing lock adapter. Runtime creation/migration permissions
+and the accounting IPC integration remain separately required; this prerequisite
+alone does not activate startup or complete task 2.6.
+
+### D43. Mechanical decision: accounting source binding uses scoped grant facts
+
+The daemon's accounting reference issuer retains installed-definition/model
+validation, but replaces its raw outbound.db grant SELECT with GRANTED_RESOURCE
+through the existing authenticated broker query. Exact connection identity is
+checked against the admitted reference request. Selected-mode broker failure
+refuses issuance; unsplit mode retains the read-only local query for compatibility.
+This removes the source-check path dependency without moving UsageStore's four
+tables at runtime: create/reserve/receipt/settle and daily evidence IPC remain
+pending, and no inference or startup completion is claimed.
+
+### D44. Mechanical decision: accounting operations retain daemon-held leases
+
+The authenticated owner channel gains a closed set of usage operations, with
+owner/center bound outside each document and no SQL, callable or path field.
+The daemon still creates and holds both kernel liveness proofs. The broker
+checks those proofs before inserting a root and owns all usage transactions in
+its ledger. Reference validation uses broker-local grant facts; claim, retry and
+send checkpoints remain broker-local and one-use. Remote operations never retry
+an ambiguous mutation. Budget refusals preserve the committed receipt; transport
+failure grants no capacity. Legacy unsplit accounting remains in the daemon DB.
+Runtime lock permissions, daily evidence, refresh and inference POST production
+proofs remain separate prerequisites; this decision does not activate startup.
+
+### D45. Mechanical decision: daemon kernel proofs have a broker-read-only group
+
+The liveness directory is daemon-owned 2750 and its regular proof files 0640,
+group 1102 (the broker's existing read group). No new group or privilege is
+retained. Runtime creation pins directories, refuses links/FIFOs/hardlinks and
+non-daemon ownership before re-moding, and creates no PID sidecar. Existing
+process locks are upgraded on the same inode. The literal role_modes declaration
+is shared with offline forward/reverse migration under the layout lock; reverse
+restores 1001:1001 at 0700/0600. Dry-run changes nothing, interrupted metadata
+changes resume idempotently, and no proof bytes are deleted. Full role migration
+and startup remain gated separately. Production acceptance must use the real
+creator, removing D44's fixture permission wrapper.
+
+### D46. Mechanical decision: production accounting proof uses a real HTTPS POST
+
+Extend the isolated HTTPS fixture with a model endpoint and installed descriptor.
+The daemon persists a parent, reserves and issues its source-bound reference over
+IPC; the launcher broker claims it and performs real TLS POST dispatch, followed
+by durable settlement/receipt over IPC. Missing references and duplicate sends
+must refuse. Repeat after broker restart. Fixture metadata uses the planned
+1001:1102 0640 read-only broker view; this does not prove runtime metadata
+replacement or its full migration, nor an actual provider engine class.
+
+### D47. Mechanical decision: daily evidence joins bounded broker pages
+
+Owner-wide historical attempt reads move to named daily_page operations on the
+authenticated usage channel. Pages expose dispatch time, usage/ordinal, free and
+success facts only. Named linked_turns batches test exact owner/center/turn
+membership so daemon-owned legacy rounds are not double-counted after relocation.
+No SQL/path/callable is accepted; failure of any page or link query leaves the
+existing advisory result unknown. These are advisory observations, not a stable
+cross-process snapshot or authoritative quota. No grant or inference capacity is
+issued by this route. Startup remains inactive.
+An absent legacy daemon database means no legacy rounds, so complete broker
+evidence still yields counts; an existing unreadable legacy database is unknown.
+Activation requires all four accounting tables, including links, transferred.
+
+### D48. Mechanical decision: definition replacements retain broker read access
+
+Accounting's installed-source validator needs the existing daemon-owned provider
+definition file read-only in the broker. Selected-mode registration sets group
+1102 and 0640 on the new file before atomic replacement, from role_modes, and
+fails before replacement if that assignment fails. No other file or directory
+is widened; command-center traversal remains D4's full migration obligation.
+The HTTPS acceptance now registers/replaces definitions through the actual
+daemon writer instead of seeding their mode. Existing-file migration remains
+part of the pending full inventory. No new privilege, reader role or startup
+activation is introduced.
+
+### D49. Mechanical decision: vault replacements retain broker read access
+
+In selected broker mode, every vault replacement creates a unique private
+sibling temp, assigns group 1102 and shared VAULT_FILE_MODE 0640 on its open fd,
+then writes, flushes and fsyncs before atomic publication. Group/mode/prepublish
+fsync failures leave the prior vault intact and remove only the unpublished
+temp. Postpublication durability errors retain the existing commit/owner-row
+compensation contract. Legacy unsplit publication remains 0600. This is required
+for refresh: uid 1002 must re-read rotated bytes without acquiring vault write
+permission. Existing-file migration and materialized credential modes remain
+part of full migration; this decision does not activate startup.
+### D50. Mechanical decision: refresh coordination uses the admitted stream
+
+The daemon captures exact grant/connection/owner/center custody through existing
+broker IPC before OPEN. OAuth streams opt into a bounded REFRESH/REFRESH_ACK
+exchange on that same kernel-authenticated, fenced channel. The broker sends
+only the pinned destination and a rejected-access-token digest; no secret, SQL,
+path, endpoint or callable crosses the wire. The daemon callback refuses scope
+mismatch and checks deposit ownership again inside the existing thread/file/
+exclusive-vault locks before spending. It re-reads under those locks and writes
+the rotated credential before ACK; a lost ACK reuses persisted bytes on a fresh
+operation instead of replaying the refresh token. Broker stream cancellation or
+disconnect cannot interrupt a daemon callback already spending/persisting.
+The existing broker send fence brackets refresh as it did local token refresh.
+The role-split broker refuses local refresh if a daemon callback is absent;
+no vault write right, retained privilege or separate privileged service is added.
+Vault replacements use D49. This is coordination of the existing daemon writer
+and existing broker, not startup activation. Production and fault receipts are
+recorded separately; engine/migration/deletion/rollback gates remain pending.
+### D51. Mechanical decision: the image decoder is a data-free engine kind
+
+Implement the first engine kind as image-decoder, with a static command and
+cell-deny profile. The authenticated daemon supplies its admitted principal and
+command-center label; the daemon checks current founder-home or admin authority and the canonical
+root before requesting the launcher. No request field selects an executable,
+filesystem mount, environment value or descriptor number. This kind binds no
+owner data at all, so its view is independent of the supplied labels. The
+launcher authenticates the exact daemon pid/uid and accepts only one anonymous
+AF_UNIX stream socketpair endpoint created by that daemon, for bytes in/out.
+It retires to engine uid 1003 without supplementary groups (this data-free
+kind needs no work-group access) before application imports and starts
+the fixed bootstrap. Bubblewrap supplies private mount/PID/IPC/network/tmp,
+immutable runtime-only mounts, cell-deny seccomp and no capabilities. The
+post-mount bootstrap closes every fd above stdio before decoding and performs
+mandatory identity/fd/namespace confinement checks in that same process.
+Decoder children are polled asynchronously so neither a blocked input nor a
+busy decoder blocks broker restart or daemon-exit detection. The daemon bounds
+input/output and time; the launcher independently bounds
+lifetime. Unsupported kinds remain refused. This adds no privilege or helper
+process that retains privilege: the new bootstrap runs only after retirement.
+No global startup activation or all-class acceptance is implied.
+### D52. Mechanical decision: named cell profiles preserve existing callers
+
+Implement D9's three names in the existing seccomp compiler. cell-deny and
+cell-nested are byte-identical to the prior default and nested_sandbox=True
+policies. cell-links changes only symlink/symlinkat allowance; it retains
+CLONE_NEWUSER denial, clone3 ENOSYS, FIFO/device and kernel-surface denial.
+Keep the legacy keyword compatible; reject unknown or contradictory profile
+selection before allocating a descriptor. Only trusted static launch policy
+selects a profile. Image-decoder explicitly selects cell-deny; no engine
+payload chooses a profile, and no other class is admitted by this slice.
+The named profiles are prerequisites for the remaining D9 class matrix,
+not a substitute for actual class and paired daemon-reader probes.
 
 ## Risks / Trade-offs
 
@@ -587,12 +1902,12 @@ against it — but it is not the jail, and claiming the jail covers them would h
 - **`/app` becomes read-only and `HOME` moves.** The largest behavioural risk in this change, and
   the one with a named fallback (D2). Any runtime write under `/app` fails loudly rather than
   silently, which is the right direction; task 2.1 enumerates them first.
-- **The capability set is wider than one would like, and wider than the first draft said.** Eight,
+- **The capability set is wider than the first draft said.** Seven,
   because the migration needs DAC authority over paths it deliberately does not own and the
   launcher needs to signal two foreign uids. Mitigated structurally rather than by wishing: the
   migration's three are dropped before the launcher serves, and the whole set is held equal to
-  `ta_op.c`'s `MASK` so the two cannot drift. `CAP_SYS_ADMIN`'s necessity is still unproven
-  (task 2.7), and narrowing it must change `ta-op` in the same commit.
+  `ta_op.c`'s `MASK` so the two cannot drift. `CAP_SYS_ADMIN` is forbidden
+  (task 2.7); remove it from compose and `ta-op` in the same commit.
 - **Two correctness traps this design walks into unless implemented exactly as written**, both
   found by review rather than by reasoning, and both now spec'd: a socket directory without the
   setgid bit yields a socket the owner cannot reach (D6), and a vault group left to setgid
@@ -613,6 +1928,8 @@ against it — but it is not the jail, and claiming the jail covers them would h
 - `scripts/check_privileged_chain.py` against the built image: no node of the entrypoint, launcher,
   broker or privileged `sys.path` chain — no ancestor directory of one, and no link or target in
   one's resolution — is non-root-owned or group/other-writable.
+- Every D8 class/site must pass the production-image Linux oracle cross-owner denial matrix
+  and its own positive control; one jailed provider is not representative of other classes.
 - A child kind spawned as 1003 gets `EACCES` on `/data/.broker/state/fence.json` and on
   `/data/<cc>/.credential-vault.json`, proven in the oracle and on prod by a probe child.
 - The broker, as 1002, can read the vault and **cannot write it** (`0640`) — and the vault that a
@@ -627,3 +1944,684 @@ against it — but it is not the jail, and claiming the jail covers them would h
   `"roles": {"state": "migrating"}` and completes on the next start.
 - `TINYASSETS_CREDENTIAL_BROKER=process` starts and serves one owner stream, with per-turn RSS
   measured (the target is about 100 KiB per stream versus 29 MiB per worker).
+
+### D53. Mechanical decision: account erasure names the private ledger explicitly
+
+After its existing tombstone admission, account deletion invokes ERASE_ACCOUNT
+on the authenticated daemon channel before home/root-row phases. The operation
+accepts only the principal and a fixed account-deletion scope, not a home, path,
+SQL or table. One broker transaction removes owned connections, grants, capability
+children, connector artifacts and their edges, and all four owner-keyed accounting
+tables. Foreign grants pointing at owned connections refuse the whole transaction.
+Counts return only after commit. A lost acknowledgement remains an unfinished
+phase, with no automatic replay; an explicit deletion retry can safely find zero
+rows. Broker-selected root enumeration excludes the legacy outbound.db path.
+This closes the ledger-row inventory item; it does not claim D10 filesystem
+passes, private proxy runtime cleanup, complete account-deletion acceptance or
+startup activation. No privilege or isolation scope changes.
+
+### D54. Mechanical decision: seal launch snapshots with the declared work group
+
+Selected-mode snapshot creation and re-preparation use role_modes for gid 1100,
+2750 directories and 0440 files. Set and verify group/mode on an open descriptor
+whose identity matches the validated daemon-owned directory or exclusive regular
+file; do not rely on inherited group or a best-effort post-write chmod. File
+permissions and fsync failures refuse before any snapshot is returned. Unsplit
+runtime retains 0700/0400. This is the D4 runtime prerequisite for actual provider
+classes, not an assertion that a CLI requiring writable snapshot state is proven.
+Any write requirement must still be measured in that class's production cell;
+no broader snapshot write permission or startup activation is inferred here.
+
+### D55. Mechanical decision: publish exact owner relay sockets through pinned directories
+
+Selected-mode egress and engine-relay creators pin each sidecar directory without
+following links, require daemon ownership, set and read back D4's 0711 parent /
+2710 work-group center modes, then bind the exact socket through that directory
+fd. Publish group 1100 and mode 0660 before listen. Refuse non-socket, multiply
+linked or foreign-owned preexisting entries rather than unlinking them. Cached
+proxy liveness compares the originally published inode and refuses substituted
+entries. No process-wide cwd/umask change is used. This supplies the existing
+scoped relay, not a new network authority or an owner-channel mount. Actual
+engine kinds must still pin only their exact socket and close the source fd
+after mount. Startup remains gated.
+
+### D56. Security-scope stop: preview requires Chromium's nested sandbox
+
+The actual shipped `tinyassets.ui_preview._child` was exercised in the D55
+production image under each existing named profile, keeping
+`chromium_sandbox=True`. D9's assigned `cell-deny` and the narrower alternative
+`cell-links` both produce Chromium's `No usable sandbox!` and no PNG.
+`cell-nested` renders the identical synthetic UI with no delivery or page errors.
+All runs retire the seven entry capabilities through the installed launcher
+helpers, enter as uid 1003 with no supplementary groups, and show zero capability
+sets, no-new-privileges and distinct mount/PID/IPC/network namespaces.
+
+This is a reproducible policy diagnostic, **not** actual launcher admission or
+per-owner preview acceptance. The diagnostic mounts immutable image runtime
+paths only, no owner data or host paths, and uses an offline Docker network.
+`scripts/role_preview_profile_probe.py --image tinyassets-uid-relays:d55`
+reproduces it and asserts both failures and the positive control. Image identity
+and commands are in delivery.md. No runtime profile or spec requirement changes.
+
+The pending proposal is to assign **ui-preview only** the existing `cell-nested`
+profile while keeping Chromium's own sandbox enabled. This relaxes D9's explicit
+new-user-namespace denial for an additional class; it is not merely test wiring
+or a path/mode choice. The founder's standing security/isolation-scope stop rule
+therefore applies. Lead authorization is required before implementation. Do not
+disable Chromium's sandbox, retain capabilities, or activate startup to bypass
+this stop. Authorization would still require every D8/D9 per-class negative and
+paired daemon-reader probe, actual launcher lifecycle/resource limits, and the
+remaining migration/deletion/old-image/startup proofs before PR readiness.
+
+### D57. Acceptance stop: preplanted hardlinks cross the daemon reader boundary
+
+The founder's 2026-10-05 continuation explicitly leaves ui-preview unadmitted
+under D9 and permits work on all other classes. That decision is preserved.
+While checking the required D9/F2 reader prerequisite, the immutable D55
+production image returns a synthetic Bob file through Alice's authenticated
+inspect when Alice's activity.log is a preplanted hardlink to it. The common
+reader rejects symlinks/FIFOs but validates no hardlink aliases. The diagnostic
+is `scripts/role_reader_alias_probe.py`; delivery.md records exact results.
+
+This invokes the founder's explicit cross-user-exposure stop, independently
+of the preview exception. Do not admit a class, activate startup or claim the
+matrix complete from this receipt. The probe establishes daemon-reader
+exposure for a preplanted alias, not an engine's ability to plant it after
+migration. No privilege, profile, migration or isolation-scope change is made.
+
+
+### D57 follow-up (historically labelled D58): reject aliased descriptors
+
+The founder authorizes repairing D57. `_open_regular_beneath` now refuses
+regular descriptors whose `st_nlink != 1` before reading or copying bytes.
+There is no documented in-owner hardlink exception in these reader contracts;
+no exception is added. All callers inherit this guard, including file API,
+platform text, authenticated inspect, provision manifests and export copying.
+Descriptor validation, not a subsequent pathname stat, owns the decision.
+
+The separate requested identity check remains unresolved: the founder's D57
+instruction refers to a per-owner group, whereas D8 explicitly says to keep
+D1's shared uid 1003/gid 1100 and use no per-owner identity allocator. D9 does
+not define a per-owner group. Adding an allocator/ownership scheme changes the
+security design and is outside a mechanical path/mode choice. Clarification
+was requested; no new identity scheme or weakened identity claim is introduced.
+The link-count guard is independently useful in the current single-UID image.
+Do not claim full D57 completion or retire its concern from this substep.
+
+
+Prior acceptance: the expanded production-image probe also removes the
+foreign original name after preplanting. The surviving alias has one link;
+19 reader/path cases return FOREIGN_BYTES. Original 57 cases still deny.
+The identity clarification is therefore a demonstrated isolation blocker,
+not only documentation terminology. Stop further integration under the
+founder's cross-user-exposure rule. No per-owner allocator is authorized by
+this mechanical decision and no full D57 completion is claimed.
+
+### D58. Lead decision: dedicated durable owner GIDs
+
+Founder decision 2026-10-05 supersedes **only D8's shared-group clause** and
+resolves the prior D8/D57 identity clarification. Each owner gets a dedicated
+GID allocated by the launcher or broker from a reserved range, recorded
+durably. Owner roots/directories are setgid to that GID. Each cell has only
+its owner's GID as primary or supplementary membership, never another owner's.
+Daemon/inspect readers validate the OPEN descriptor's GID against the
+requesting owner's GID, retaining no-follow and link-count guards. Forward
+migration re-groups existing trees with dry-run, repeat, reverse and crash
+boundaries. Shared engine UID 1003 may remain only if GID-based checks actually
+meet the complete isolation acceptance. No new retained privilege is approved.
+
+The rationale is to preserve the inode's owner label after its original name
+is removed, when link count alone cannot identify the surviving foreign alias.
+The allocator and migration remain unimplemented. The conditional shared-UID
+claim fails the D59 diagnostic below; D58 is authorization, not passing evidence.
+ui-preview remains unadmitted and D9's profile assignments are unchanged.
+
+### D59. Acceptance stop: shared UID can relabel or copy a foreign inode
+
+`scripts/role_owner_gid_probe.py` tests D58 with synthetic GIDs 200000/200001,
+setgid owner directories, the declared daemon ACLs, and shared engine UID 1003.
+After preplanting an alias of a Bob engine-owned file into Alice and retiring
+Bob's original name, Alice's cell can read it by UID ownership despite Bob's
+unmapped GID. The capability-free cell can either chgrp it to its own primary
+GID, or read/unlink/recreate it in the setgid parent. Both leave a regular
+1003:200000 inode with one link and Bob's bytes. Merely blocking chown would
+not prevent the copy variant.
+
+All three existing D9 profiles reproduce this in the pinned production image,
+with private mount/PID/IPC/network namespaces, no retained fds/capabilities,
+NNP and seccomp enabled; Bob's host path is inaccessible. The daemon's actual
+no-follow file descriptor passes the proposed UID/GID/link-count predicate,
+then actual universe-file, platform-text, file-API and authenticated inspect
+readers return foreign bytes: **114 reader failures** over six path categories,
+three profiles and two variants. This is a diagnostic of the required
+preplanted acceptance, not proof of post-admission alias creation or an actual
+engine-class launch through the launcher. No current-production exploit is
+claimed. Synthetic outside data/metadata and positive controls are checked.
+
+The founder's explicit cross-user-exposure stop applies. No runtime policy,
+allocator, startup or migration change is admitted from this diagnostic.
+Hand off the concrete conflict: shared UID is itself authority over the
+preplanted inode. A dedicated owner UID (alongside D58's GID), or another
+approved mechanism preventing access to/relabeling foreign inodes before any
+engine executes, needs a security-design decision and its own proofs. Do not
+infer that migration can safely relabel an already retired alias: it has only
+one name, so name/link-count inventory alone cannot recover provenance.
+
+
+### D60. Founder decision: a dedicated UID AND GID for every owner
+
+The D59 counterexample demonstrates that a shared UID is authority to read a
+foreign inode even when its GID is unmapped. Relabeling and copying then defeat
+daemon descriptor predicates. Every owner therefore receives a distinct machine
+UID and GID; both labels must match the requesting owner on the open descriptor
+in daemon, inspect and broker readers, alongside no-follow and nlink checks.
+Each engine cell runs as that owner, with no foreign supplementary groups.
+
+The broker allocates identities durably and must never reuse an identity while
+any file bearing it exists. The launcher retains exactly the narrow ability to
+map the reserved owner range into cells, preferably through user namespaces or
+newuidmap/newgidmap; all other privileges are retired. The existing serving
+capability implementation is NOT D60 acceptance and must be replaced/proven
+before startup activation. No additional privileged component is authorized.
+
+Forward migration chowns/chgrps owner work trees, preserving protected vault and
+broker exclusions; it needs dry-run, repeat, reverse and interrupted-resume
+proofs. It must refuse unresolved foreign provenance instead of relabeling an
+identified foreign inode into the containing owner's identity. Two-pass deletion
+runs first as the owner identity in that owner's cell, then as the daemon.
+Production-image acceptance requires zero FOREIGN_BYTES for the original alias
+probe and the D59 relabel/copy matrix under all profiles. Every actual engine
+class except deferred ui-preview, full migration/deletion, actual old-image
+rollback, and startup/healthcheck remain required before the build PR. No deploy.
+
+### D61. Mechanical decision: permanent broker identity reservations
+
+Reserve UID/GID pairs 300000..399999, disjoint from D1's per-box reservation
+200000..299999. Allocate the same numeric UID and GID in a broker-private
+owner-identities.db, by a serialized SQLite transaction with synchronous FULL.
+The store is append-only: deletion, account erasure, reverse migration and
+rollback never release reservations. Exhaustion fails loudly instead of wrapping.
+Permanent reservations are stricter than scanning for last surviving files and
+avoid racing deletion, backups, retired names or partially reversed migrations.
+
+Only explicit first-volume initialization may create the map. Normal opens and
+lookups refuse a missing map; lookup alone never allocates. An allocation is
+published only after commit. Concurrent/retried requests for a principal return
+the committed pair. The private parent, database owner/mode, no-follow open and
+single-link descriptor are verified; paths and numeric identities are not client
+request parameters. This foundation alone does not activate broker IPC, owner
+cells, migration, or the launcher, and is not D60 acceptance.
+
+
+### D62. Mechanical decision: bound mapping authority in an owner user namespace
+
+The reserved map is `0 300000 100000` for both UID and GID. Reserve host
+300000 (inner 0) for the launcher itself; **owner allocation starts at 300001**
+and ends at 399999. This narrows D61 before any runtime allocation is activated.
+An owner must never share the mapper's own identity. UID/GID labels exposed to
+daemon readers and stored in the broker are host labels; inner labels are host
+minus 300000, and a nested single-identity bubblewrap maps only that inner pair.
+
+The production-image feasibility probe installs maps in the privileged startup
+window, then retires the parent to daemon identity with zero capabilities. The
+candidate launcher keeps only SETUID/SETGID permitted/effective within that user
+namespace; bounding, ambient and inheritable are zero. Out-of-range setresuid
+and setresgid fail in the kernel. Each child drops all five capability sets.
+No setuid binary, SYS_ADMIN, CHOWN, FOWNER, DAC_OVERRIDE, KILL or extra privileged
+service is retained. Real bubblewrap cells under all three unchanged D9 profiles
+deny read, relabel and copy of a retired-name foreign inode; own writes succeed.
+
+This is a feasibility probe, NOT the integrated launcher. Integration must
+preserve exact daemon authentication while those service UIDs are unmapped,
+bootstrap broker/daemon before retirement, and make role death terminate the
+container rather than regaining host privilege to restart a role. It must not
+silently weaken peer checks. Startup and class admission remain off pending that
+integration and every required acceptance matrix.
+
+Identity IPC is OWNER-channel-only, exact-field, and fenced across the durable
+transaction. Requests carry principal and a boolean allocation intent, never
+UID/GID or a filesystem path. Missing initialization refuses; lookup alone does
+not allocate. Process startup loads an existing private map but does not create
+one. Explicit first-volume initialization remains in migration's startup window.
+
+
+### D63. Acceptance stop: legacy inode provenance cannot come from its last pathname
+
+D60 fixes the steady-state D59 kernel defect when Bob's inode retains Bob's
+machine identity. The dedicated-range/user-namespace probe demonstrates that.
+It does not supply provenance for a legacy shared-UID/GID inode whose Bob name
+was already retired. Such an inode under Alice has the same ownership and link
+count as an ordinary Alice file. Assigning its new identity from that pathname
+turns foreign data into a correctly labelled Alice inode.
+
+`role_owner_migration_provenance_probe.py` models exactly that UNSAFE transition
+on disposable files, not in product migration: legacy 1001:1001/nlink1 becomes
+300001:300001 based on the surviving Alice path. It reuses all D59 profiles,
+positive controls, actual readers and relabel/copy cases with dedicated Alice
+UID/GID. The open descriptor satisfies exact UID, GID and nlink predicates;
+114 FOREIGN_BYTES results remain. This is a design counterexample to pathname
+inference, not an executed full migration or an exploit in the live deployment.
+Two setup attempts exposed a diagnostic indentation error and are not evidence;
+the corrected completed run exited 3 with the full failure summary.
+
+The founder's cross-user-exposure stop applies; do not implement that migration
+or replace it with silent blanket relabeling. A trusted pre-migration provenance
+source or an explicitly justified trust precondition for the legacy snapshot is
+needed. Merely scanning current names/nlink cannot recover a retired origin.
+Rejecting all unproven files is safe but cannot satisfy migration's requirement
+to keep legitimate legacy owner data operational without such a source. No
+security scope exception, quarantine policy, data deletion or trusted-source
+assumption is selected here. Hand off the finding rather than patching around it.
+D60, D10, D11, D12 and deferred ui-preview remain in force; no startup activation.
+
+### Founder D61. Legacy provenance is reachability; cross-owner names quarantine
+
+The founder explicitly resolves D63: at the pre-migration boundary an inode whose
+ONLY names are in one owner tree belongs to that owner. A retired original name
+does not make the remaining sole-reachability file foreign under this legacy
+bookkeeping rule. The 114 D63 reads therefore become correctly assigned legacy
+reads, not successful denials. The historical diagnostic remains reproducible
+with `--historical`; steady-state D60 foreign-identity denial is unchanged.
+
+An inode named in two or more owner trees must be moved, with every name intact,
+to a platform-only quarantine area, assigned to neither owner, and alarmed. Owner
+assignment for it refuses. It must never be chowned to either reachable owner.
+This authorizes quarantine, not data deletion. No privileges or profiles change.
+
+`scripts/role_legacy_alias_scan.py` is the read-only production preflight. It
+reports cross-owner inodes, special entries and unexpected legacy identities,
+without reading payloads or following symlinks. Live evidence is observational;
+the mutating migration must repeat/revalidate it with all writers stopped.
+
+### D64. Mechanical scan completeness and unresolved names
+
+Scan direct `u-*` trees including incomplete trees, plus legacy directories with
+the daemon's `universe.json` discovery marker. Explicit owner-root lists support
+synthetic proofs. Pinned directory descriptors, O_NOFOLLOW and O_NOATIME avoid
+link traversal and atime writes. Root ancestors are pinned the same way. If a
+capability-stripped container cannot use O_NOATIME, use the verified Docker
+volume source read-only on the host; do not add a capability or change production.
+
+Group regular names by device/inode. `st_nlink` must equal the number of observed
+names before sole ownership can be established. Missing names, changed entries,
+changed directories, foreign identities or traversal failures are unresolved,
+not zero findings. Workspace symlinks are reported for D9's skip rule; sockets
+need the existing exact stale-runtime inventory. A live scan never asserts
+assignment readiness. Root-level identity is checked as well as descendants.
+
+The D61 diagnostic includes a separate two-name cross-tree quarantine MODEL,
+which preserves both names/inode/bytes and proves daemon denial. It is not the
+crash-safe migration implementation, engine-class acceptance or rollback proof.
+
+### D65. Mechanical descriptor enforcement from pinned owner labels
+
+Use the privileged migration's reserved owner label on canonical roots:
+dedicated work directories carry UID=GID; protected canonical roots may remain
+daemon-owned UID1001 with that owner's reserved GID, preserving D4's vault
+replacement authority. This is an on-disk copy of broker allocation, not a
+second allocator. Startup/admission must validate the root-to-principal binding
+against the broker's durable map before any cell runs. Unlabelled legacy roots
+retain legacy behavior and are not D60-admitted roots.
+
+The common bounded reader obtains identity from pinned directory descriptors,
+including ancestors when a caller starts at a nested directory. It never
+switches owner identities during descent. An explicitly supplied admitted
+identity must match the directory label. On the OPEN regular-file descriptor,
+require the exact UID AND GID, nlink1, regular type and size bound before read
+or copy. A daemon-owned leaf is not a work-file exception. Broker/vault protected
+metadata continues to need its separately declared control-plane reader policy;
+this substep is not a claim that the entire broker reader inventory is done.
+
+`read_universe_file` must not resolve a symlinked root before its no-follow
+walk. This also protects platform-text and authenticated inspect through their
+common reader. API file reads, workspace manifest reads and bounded copies use
+the same descriptor guard. Label validation supplements existing authorization;
+it never grants an actor access to a different command center.
+
+The D60 alias probe now labels fixtures before retirement and tests actual
+daemon readers at uid1001 with all capabilities zero. Foreign ACL read access
+is deliberately granted to the daemon so a failed descriptor guard cannot be
+hidden by ordinary EACCES. The original shared-ID probe remains `--legacy`.
+No profile, startup or class admission changes here.
+
+### D66. Mechanical snapshot oracle selection
+
+The D54 snapshot oracle must test the exact directory returned by snapshot
+creation, conveyed to its parent through a pipe. Selecting the first sibling
+from `iterdir()` can select another snapshot and fail on a missing `.lock` or
+different permissions. Keep the real installed-CLI, lock and all permission
+assertions. This changes only fixture selection, not product snapshot policy.
+
+D64 scanner refinement: ancestors use pinned O_PATH descriptors (no directory
+listing and no atime updates), then the scanned root uses O_NOATIME. This permits
+an ordinary owner to scan its own tree without requiring ownership of `/` or
+`/tmp`; production-wide scans still use the verified host root venue.
+
+### D67. Mechanical actual-image rollback substep venue
+
+Pin the deployed image's registry digest from read-only Docker inspection. In a
+new disposable local Docker volume, let that actual old image seed its ledger
+and committed uncheckpointed WAL as UID1001, no work groups/capabilities. Run
+the candidate's real D12 forward/reverse relocation, including dry-run and
+repeat checks and a broker-identity write. Reopen with the actual old image and
+exercise old ConnectionLedger reads/writes, WAL/SHM and proxy read/write/delete.
+Remove only this newly created synthetic volume. No production volume is mounted.
+
+This proves ledger/proxy compatibility with the old image, not full owner-tree
+rollback, restrictive engine-created files, or old daemon CMD startup. Keep the
+layout unadmitted and retain those remaining acceptance requirements.
+
+### D68. Mechanical bounded-launcher transport and decoder identity
+
+D62's launcher receives an inherited unnamed SOCK_SEQPACKET pair. Each packet
+requires kernel SCM_CREDENTIALS for the exact daemon PID plus the expected
+unmapped daemon UID/GID; a startup-opened pidfd must still be live. This replaces
+SO_PEERCRED only on this private pre-fork transport, where SO_PEERCRED caches the
+creator rather than each sender. A same-UID descendant inheriting the channel
+is refused. No public listener or new privileged component is introduced.
+
+The startup parent installs only D62's fixed maps, then becomes capability-free
+daemon uid 1001. The launcher child retains only namespace SETUID/SETGID, with
+zero bounding/inheritable/ambient sets. Broker-resolved startup admissions bind
+principal and center to a reserved identity; numeric identities, executable
+paths, environment and profiles are not request fields. Dynamic admissions and
+full service lifetime remain integration work, not reasons to restore host caps.
+
+The first class uses the existing actual image decoder and unchanged cell-deny
+profile. It executes with its owner's inner identity, closes descriptors before
+payload import, and binds no owner data. Timeout cleanup temporarily selects the
+same bounded owner effective UID to signal its child, then restores mapper euid;
+no CAP_KILL is retained. The legacy staged launcher remains a historical oracle
+path, not D60 startup acceptance. Startup activation and ui-preview stay off.
+
+### D69. Mechanical daemon client for the inherited owner channel
+
+The bootstrap installs one process-memory OwnerLauncherClient. There is no
+socket-path/environment discovery and no replacement client after failure.
+The image-read admission path resolves its expected UID/GID through the existing
+fenced broker identity IPC before asking this client to decode. A selected
+bounded client never falls back to the staged legacy launcher on refusal. A
+complete authenticated refusal or identity mismatch fails only that request;
+transport/authentication/framing failures close the client. A reset on the data
+endpoint still drains and authenticates the control reply before classification.
+
+The client serializes request/reply exchanges, bounds image input/output, and
+requires kernel reply credentials for the exact launcher PID and host
+300000:300000. A pinned pidfd checks liveness. Both launcher and daemon retain
+unreaped peer process identities through their final exchange; the terminal
+STOPPED packet may be queued just before child exit. Every received descriptor
+is closed even on a malformed reply. FD_CLOEXEC and an after-fork callback close
+the private channel in descendants; the callback resets the inherited lock.
+
+D68's raw protocol probe remains intact. An additional --client mode uses the
+real client with the broker-allocated fixture identities, two real PNG decodes,
+actual kernel reply authentication, fork-channel closure and terminal shutdown.
+This does not claim the real service bootstrap, dynamic admissions, or full
+application admission/identity-IPC path is exercised by that fixture. Those
+remain required before activation and the full class matrix.
+
+D69 fixture ordering: construct the client on the pristine inherited pair,
+before any send. SO_PASSCRED can auto-bind a sending Unix endpoint to an abstract
+name. The strict unnamed-pair bootstrap guard remains; raw protocol probes run
+in their original separate default mode, not before constructing the client.
+
+### D70. Mechanical bootstrap: fork services before host authority retirement
+
+The same privileged startup window forks the broker and D62 mapper before PID1
+becomes the capability-free daemon. The mapper retains only its reserved-range
+namespace SETUID/SETGID. No host-privileged launcher survives and no role restarts
+in place. A pidfd watcher exits PID1 on either service death so the container
+tears down all descendants; process identities remain unreaped until exit.
+
+Generate the owner lease proof after all service forks and daemon retirement.
+Send only its hash to the already-retired broker on a private inherited pair.
+The mapper never inherits the proof. Adopt the actual broker using its exact PID
+and UID/GID, then fence through existing IPC. The bootstrapped supervisor cannot
+fall back to START_BROKER. Install D69's inherited mapper client in the daemon.
+Validate startup root labels against the pre-resolved binding table. Dynamic
+identity allocation uses the live broker IPC; dynamic center admission remains
+separate and must not accept caller-selected numeric identities or paths.
+
+This function is staged, requires container PID1, and is not wired to CMD or
+entrypoint. Migration, every other actual class, the deferred ui-preview decision,
+full rollback, and healthcheck acceptance still gate activation. The new oracle
+must exercise application admission plus real broker identity IPC for Alice/Bob
+decoding, not merely pass fixture IDs directly into the client.
+
+### D71. Mechanical workspace-git cell and pinned working directory
+
+Route workspace_git.run_git through the installed bounded client. The daemon
+admits its authenticated principal/center, resolves identity through broker IPC,
+and opens the canonical work directory without following any component. The
+launcher requires both exact dedicated UID/GID on the received directory and a
+kernel descriptor path beneath the admitted center; no path or UID is a launch
+packet field. Bind only that directory at /workspace. Close all mount and filter
+handles before invoking the actual run_git implementation in the cell.
+
+Use unchanged cell-links, private namespaces, no host networking, umask 007,
+zero capabilities/groups and protected safe.directory reset plus exact
+/workspace. Request data carries git subcommand/options and a deadline bounded
+to 60 seconds, consumed only after confinement. The entry executable is static.
+Other binaries, custom launchers, pass_fds, inherited lease descriptors and
+preexec functions refuse in selected mode; no daemon fallback. These unsupported
+caller modes still need explicit integration, so this is not completion of the
+entire workspace-worker/git inventory. ui-preview and startup remain unadmitted.
+
+Acceptance adds actual init/add/commit/show/symlink-checkout for Alice and Bob,
+foreign symlink and hardlink reads, and the existing per-cell namespace/fd/IPC/
+network assertions. Full writable-path/daemon-reader matrix remains separately
+required; a local git positive does not substitute for remote checkout or worker
+credential/relay integration.
+
+D71 review correction: **AGREE** that textual /proc/self/fd bind sources can be
+re-resolved by bubblewrap. The installed production binary is bubblewrap 0.12.0;
+its --help declares --bind-fd. Use --bind-fd 3 /workspace and independently compare
+the mounted device/inode before user code, then require the same source identity
+in the authenticated completion consumed by the daemon. No path re-resolution
+is accepted as proof of a pin. The class has a 1 GiB address-space, 60-second CPU
+and zero-core limit in addition to its wall clock and bounded request/response.
+
+
+### D72. Mechanical git_bridge routing through the pinned owner git cell
+
+All git_bridge subprocess sites use D71's authenticated workspace-git entry
+when the bounded startup client is installed. Repository capability probes bypass
+the historical process-global cache in that mode and recheck application owner
+admission on every call. Absolute pathspecs beneath the admitted repository map
+to /workspace; other arguments remain opaque. Missing repository scope and gh
+refuse without a daemon subprocess fallback. D9 cell-links, descriptor pinning,
+per-owner UID/GID and private networking remain unchanged. This closes local
+bridge git operations, not remote transport or the whole workspace-worker class.
+No startup activation; ui-preview remains unadmitted.
+
+D72 review correction: **AGREE** that out-of-data catalog capability probes must
+remain disabled results, not exceptions. Selected bridge refusals return rc126
+with a fixed error, preserving the existing structured-result API without any
+host fallback. Production and unit regressions cover this caller shape.
+
+### D73 (historical mechanical entry). Dedicated-owner access to sealed launch snapshots
+
+D54's shared work-group snapshot permissions cannot admit D60 identities.
+Keep sealed launch credentials as daemon-owned protected metadata (D65), not
+engine-owned work files. On a migrated daemon-owned canonical center, match
+its reserved group label to the custody principal's broker-resolved UID/GID
+before copying credentials. Set a minimal POSIX access ACL through the open
+descriptor: only that dedicated owner receives read/traverse; group and other
+receive no access. Runtime/snapshot parents grant traverse only, not listing;
+the exact snapshot grants read/list but no write. Remove inherited default
+ACLs. Preserve daemon-only modification and cleanup and the read-only lock
+descriptor used by the installed CLI wrapper. No chown capability, owner group
+membership, broader cell view, or new privileged component is introduced.
+
+This is a provider-launch prerequisite, not provider/discovery/auth engine-class
+acceptance. The bounded client selects it; legacy staged D54 remains a separate
+historical proof. Repreparing parents must preserve dedicated access and never
+restore shared-group access. Unlabelled roots or mismatched broker identities
+refuse. ui-preview and startup remain unadmitted.
+
+### D74. Mechanical closure of the raw-I/O inventory gate
+
+Keep the raw-I/O gate, shrink-only inventory and assertions unchanged. Open
+snapshot directories through the existing component-by-component no-follow
+helper. Clean up failed vault temporary files through the shared unlink helper
+from the filesystem anchor, so every parent is checked rather than resolved.
+Read daemon capability status through the bounded descriptor reader at its
+numeric procfs PID (no `/proc/self` symlink). Factor Pillow's bytes-only entry
+into a data-only module whose interface rejects filenames, paths and streams
+before calling the parser. The actual decoder's transforms and resource limits
+stay unchanged. This closes the four pre-existing extra sites without new
+privilege, startup activation, or a new engine admission.
+
+### D73 (founder, 2026-10-06). Admit sandboxed ui-preview only
+
+This founder decision supersedes D58's preview deferral and amends D9's
+ui-preview row only. Keep Chromium's sandbox enabled inside the dedicated
+owner bubblewrap cell. The existing cell-nested policy is selected by the
+static launcher kind, never by request data. All other D9 class profiles,
+including its already-decided nested outer-cell exceptions, remain unchanged.
+Strict classes must deny nested user namespaces. No additional retained
+privilege or privileged component is introduced. The earlier snapshot entry
+also called D73 remains historical; qualified references disambiguate them.
+
+### D75. Mechanical data-only preview transport
+
+After authenticated current-owner/center admission and broker identity lookup,
+the daemon fetches only that owner's UI asset rows and sends bounded immutable
+JSON/asset bytes over the existing socketpair. The preview cell has no owner
+tree, shared SQLite, vault, broker state or credential mount. Its only writable
+filesystem is private ephemeral scratch; the daemon does not read that scratch.
+The screenshot returns as bounded bytes. A separate fixed preview-write
+operation runs the existing no-follow atomic writer under the same owner UID/GID
+with cell-deny. It accepts only bounded bytes and a validated UI name, pins the
+admitted center descriptor, checks exact kernel path/owner group and mounted
+device/inode, then closes the descriptor before writing. This operation mounts
+only that center; it never executes UI code or decodes the PNG. It preserves
+owner identity on newly created screenshots so D60 readers can consume them.
+The renderer itself never receives that mount. The fixed preview entry mounts the shipped browser
+and font configuration read-only, closes all bootstrap descriptors, and preserves
+the existing process-tree RSS/process-count/deadline supervisor inside the cell.
+The outer launcher imposes a second deadline. A selected broker without the
+bounded client refuses rather than using legacy PID-only confinement.
+Chromium's actual command line is checked for absence of --no-sandbox.
+Startup, migration and rollback remain owned by U2 and inactive here.
+
+For a protected daemon-owned canonical root, U2 must supply the owner-writable
+`previews` subtree and actual owner-group read/traverse on its parent. A chmod
+mask alone does not grant `group::r-x` when an extended ACL already exists.
+The writer never adds parent write permission, changes ownership, or bypasses
+a missing subtree/ACL. These are migration/admission prerequisites, not a
+request for retained privilege.
+
+### D214. Migration provenance is bound to one inode generation
+
+Supersedes the unknown-inode fallbacks of D209-D211 in the owner and metadata
+phases. Root cause of D210 #2 / D213: a journal row was keyed by
+`(dev, ino, type)` only, and an inode with no row took its *live* ids as its
+"original" in every state. A replacement inode born after forward therefore
+recorded its migrated ids (vault/liveness `1001:1102`, a daemon file in a
+setgid work dir `1001:<machine>`) as legacy, and reverse restored them; a
+recycled inode number could also inherit another inode's record.
+
+One rule, `_provenance`, now decides uid, gid and mode together for both
+phases. Each row records the inode's birth time (`statx` btime) as its
+generation. A record transfers only to the same key *and* generation. An
+unrecorded inode takes its live state only while the phase's journal is absent
+or a stable reverse (the next forward is what changes it); otherwise it is new
+content of the migrated runtime and reverses to legacy `1001:1001`. Reverse
+restores the recorded ids; D211 keeps the live mode in both directions. A
+filesystem without btime refuses; a journal row without a generation refuses
+recovery rather than guessing. The owner phase's stable signature and the
+metadata resume check include the generation, so a recycled inode re-inventories.
+An interrupted owner journal resumes without re-inventory, so its validation
+and the pre-chown descriptor check compare the live generation as well as key,
+link count and ids; a changed or absent generation refuses (D214 round 2).
+
+### D215. Inode generation is refused on overlayfs
+
+Measured in the Linux oracle (kernel 6.6): overlayfs copy-up of a lower-layer
+file on its first chown or chmod gives it a new birth time but keeps `st_ino`.
+Upper-born files and a Docker local named volume (ext4) keep their birth time
+across chown and container restart. Birth time is therefore a generation on
+the production data path (`tinyassets-data`, a local-driver named volume
+mounted at `/data`, never the container rootfs). It is not one on overlayfs,
+where a recorded file would read as new content after its own forward chown and
+reverse to `1001:1001`. `_generation` checks the filesystem of every scanned
+or resumed inode and refuses overlayfs, so all owner and metadata entry points fail
+closed. An xattr nonce was rejected: `trusted.*` needs `CAP_SYS_ADMIN`, which
+the startup window does not hold, and the engine can copy or strip `user.*`,
+which also cannot be set on symlinks. Root migration tests use `/dev/shm`
+(tmpfs, which has birth time) because the oracle's basetemp is its overlay rootfs.
+
+### D216. Reconcile work names only after a completed phase
+
+The complete coordinator derives work names from its fixed on-disk classifier
+under the exclusive layout lock. It may reconcile a completed phase's changed
+work-name set only while the durable principal and numeric bindings remain
+identical. Standalone phase callers remain strict by default. Interrupted
+journals retain exact configuration matching. Reconciliation inventories all
+entries and retains the existing D214/D215 generation/provenance rules unchanged.
+This permits newly created or removed visible entries on restart without
+silently reallocating owners or discarding the journal. New principals remain
+a loud refusal pending a separate admission generation contract.
+
+### D217. Inode generation is birth time plus the kernel file handle
+
+Supersedes D214's birth-time-only generation. Measured in the Linux oracle
+(kernel 6.6): birth time is stamped from a coarse clock, so a write-then-rename
+replacement got the identical btime in 299/300 tries on tmpfs and 296/300 on a
+Docker local volume (ext4). ext4 also handed the replacement the unlinked inode
+number in 299/300 tries. The replacement then matched the recorded `(key,
+generation)` and inherited another inode's provenance, which is the D214 bug.
+It surfaced as the intermittent `KeyError: 'ids'` in the stale-record
+regression, where the recorded and live generations printed identical.
+
+`_generation` now returns `[btime_s, btime_ns, handle_type, handle_hex]`. The
+handle comes from `name_to_handle_at`, which embeds the random `i_generation`
+the kernel assigns at each inode allocation on ext4 and tmpfs. It needs no
+capability, never follows the final symlink and covers files, directories and
+symlinks. A statx before and after the handle must agree. Only filesystems
+known to encode `i_generation` are accepted (ext4, tmpfs); every other
+filesystem, and a handle failure, refuses. The overlayfs refusal (D215) stands.
+`FS_IOC_GETVERSION` was rejected because tmpfs does not implement it and a
+symlink cannot be opened for the ioctl. A `trusted.*` nonce was rejected for
+D215's reason: the startup window does not hold `CAP_SYS_ADMIN`. Journals
+holding the old two-field generation do not match and take the D214
+unrecorded-inode rule. There is no production journal yet (clean cutover).
+
+### D218. Two-pass deletion consumes D85 only after a verified forward migration
+
+`tinyassets/role_owner_tree_deletion.py` drives D10 for a whole migrated center.
+It takes the two-pass route only when `.layout.json` records a stable forward
+migration (owners and metadata) and the center root is `1001:<owner>` for the
+principal's broker identity. A volume never migrated, or stably reversed, keeps
+the existing single-UID traversal; any other layout state refuses. Before pass
+one the daemon writes a private intent `{center, principal, token, machine}`
+under `/data/.role-owner-delete/`. Every resume reruns pass one with that token
+(an exact retry, which also reinstalls a fence a launcher restart dropped),
+then the daemon pass, then `finish`, then clears the intent. When the center is
+already gone, only `finish` remains; a refusal there means the fence went with
+the launcher and is recorded. `abort_center` is the explicit D85 recovery.
+
+Measured on a forward-migrated volume, pass one as the owner UID cannot unlink
+the names in the center root (`1001:<owner>` 2750, owner `r-x` by design) and
+cannot list a daemon directory it may only search (`.runtime`, named `--x`).
+U1's cell failed loudly on both every time, so no retry could finish. The cell
+now keeps an owner name whose unlink is denied only when the parent is not
+owner-owned, and keeps an unreadable daemon directory untraversed. Owner-owned
+parents still fail loudly. The daemon pass removes UID1001 entries; empty
+directories owned by UID1001 or this center's owner; and an owner
+non-directory only beneath a UID1001 parent. Anything else, including a
+foreign UID, an owner entry inside owner work, or another filesystem, refuses
+with its path. Unlinking a name in a parent the daemon owns needs no capability
+and never reads or changes the owner inode.
+
+Account deletion runs this before broker erasure and root rows, while the
+binding and identity still admit pass one. A failure keeps the binding, skips
+staging that home and reports `owner_tree` and `root_rows` unfinished. The
+startup reverse migration refuses while any intent exists; forward stays
+admitted so the daemon can resume. Pool removal and scoped reset delete
+subtrees, which D85's whole-center cell does not admit; they stay on the
+daemon traversal until a subtree cell exists. A completed deletion shrinks the
+principal set, which D216 still refuses at the next startup migration in
+either direction. That is the open admission-generation contract, not a
+deletion defect, and it blocks activation.

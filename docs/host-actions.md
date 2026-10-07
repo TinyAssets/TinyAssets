@@ -1197,3 +1197,19 @@ token; optional, functionality only) to the Data safety form — see
 `docs/ops/google-play-launch.md` §6. Advertising ID stays **No**.
 
 ---
+
+
+## Verify AuthKit client/family claims before outside-client cutover (K1, 2026-10-06)
+
+Draft PR #4519 contains the #4501 verified-claims probe and scoped authority code.
+Run scripts/outside_client_claims_probe.py against real independently connected
+clients and a fresh interactive reconnect. Establish the verified resource-token
+client claim, credential-family claim and auth_time semantics; no brand, audience,
+header or unverified token is acceptable evidence. Keep the probe receipt free of
+bearers. Configure TINYASSETS_OUTSIDE_CLIENT_CLAIM and
+TINYASSETS_OUTSIDE_FAMILY_CLAIM only from this evidence; explicitly list verified
+first-party issuer|client pairs in TINYASSETS_FIRST_PARTY_CLIENTS. Existing outside
+clients need owner grants through POST /app/outside-clients before cutover. The
+durable OutsideClientAuthority switch defaults denied; TINYASSETS_OUTSIDE_DENY=1
+can only deny. Prove independent client revoke and first-party survival live.
+This account-only evidence does not block the main-compatible K1 code or wait on U1.

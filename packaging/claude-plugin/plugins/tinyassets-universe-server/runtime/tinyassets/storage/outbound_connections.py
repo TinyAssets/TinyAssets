@@ -1295,10 +1295,21 @@ class CredentialBlindBroker:
                  on_connect: Callable[[Any], None] | None = None,
                  checkpoint: Callable[[], None] | None = None,
                  deadline_at: float | None = None, inference_usage=None,
-                 operation_id: str | None = None) -> Any:
+                 operation_id: str | None = None, body=None) -> Any:
         """One request on the grant. ``stream=True`` returns a :class:`BrokerStream`
         whose body is read as it arrives (I14); every check before the response
         is identical, and the body is scanned byte by byte instead of whole."""
+        if verb.startswith(("git_read:", "git_write:")):
+            from tinyassets.broker.git_http import dispatch
+
+            if not stream:
+                raise PermissionError(
+                    f"verb {verb!r} is outside the granted connection scope; "
+                    "git requires binary broker IPC"
+                )
+            return dispatch(self, grant_id, verb, request, body=body, guard=guard,
+                            checkpoint=checkpoint, on_connect=on_connect,
+                            deadline_at=deadline_at)
         resource = self._ledger._active_resource_for_grant(grant_id)
         if resource is None:
             raise GrantResolutionError("absent or revoked outbound connection grant")

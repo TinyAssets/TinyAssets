@@ -387,6 +387,12 @@ def universe_access_allows(universe_id: str, *, write: bool = False) -> bool:
         return not write
 
     from tinyassets.daemon_server import universe_access_permission
+    from tinyassets.outside_authority import check_resource
+
+    try:
+        check_resource(uid)
+    except PermissionError:
+        return False
 
     base = _base_path()
 

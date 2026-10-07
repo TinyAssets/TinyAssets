@@ -52,3 +52,21 @@ settings. The logged failure is the fake codex process itself exiting 1 quickly
 so the #4474 diff is not a plausible cause. Likely contention from the two parallel
 shard containers in the local runner, but no root cause is established. Keep watching
 the merge-group shards.
+
+
+## K1 recurrence 2026-10-06
+
+PR #4519 at b87bf5956c reproduced the same case in the initial full Linux
+shard 2: 4,032 passed / 1 failed / 50 skipped. All other five shards passed.
+The complete shard-2 replay on unchanged code passed 4,033 / 50 skipped, as
+did the file in isolation (35 / 1 live-integration skip). An origin/main
+archive at a97c17c26e also passed the file (35 / 1 skip) and the 100-file
+sequence through it (2,572 / 48 existing skips). The original failure remains
+in the evidence; the replay does not establish a root cause or justify a
+routing/sandbox patch. The existing handoff remains open. No test, quarantine
+or provider implementation was changed for this recurrence.
+
+Raw evidence is under `C:/Users/Jonathan/k1-verification` (initial
+`required-2.xml`, `rerun/required-2.xml`, `main-prefix.xml`), with commands and
+complete K1 counts in
+`openspec/changes/one-extension-unit/review-k1-merge-queue.md`.
