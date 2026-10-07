@@ -3174,9 +3174,12 @@ def converse(
         conversation_history = _with_agent_activity(
             conversation_history, memory_universe_dir, uid, current_actor_id(),
         )
-        conversation_history = _with_answered_requests(
-            conversation_history, uid, current_actor_id(),
-        )
+        # Only where history reaches the model (founder turns), so a notice is
+        # never spent on a turn that drops it.
+        if turn.interlocutor.tier == interlocutor.FOUNDER:
+            conversation_history = _with_answered_requests(
+                conversation_history, uid, current_actor_id(),
+            )
 
     from tinyassets.providers.execution_receipt import WriterExecutionReceipt
 
