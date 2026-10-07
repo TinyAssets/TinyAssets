@@ -43,7 +43,7 @@ def ext_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, authenticate_reques
 
 
 def _call(us, **kwargs):
-    return json.loads(us.extensions(**kwargs))
+    return json.loads(us._extensions_impl(**kwargs))
 
 
 def _two_node_spec_nested_graph() -> dict:

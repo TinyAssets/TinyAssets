@@ -47,7 +47,11 @@ def us_env(tmp_path, monkeypatch, authenticate_request):
 
 
 def _call(us, tool, action, **kwargs):
-    return json.loads(getattr(us, tool)(action=action, **kwargs))
+    if tool == "gates":
+        from tinyassets.api.market import gates as fn
+    else:
+        fn = getattr(us, f"_{tool}_impl")
+    return json.loads(fn(action=action, **kwargs))
 
 
 _PATCH_LOOP_LADDER = [
@@ -76,24 +80,6 @@ _FANTASY_LADDER = [
 ]
 
 
-def _build_branch(us, name: str) -> str:
-    spec = {
-        "name": name,
-        "entry_point": "n",
-        "node_defs": [{
-            "node_id": "n",
-            "display_name": "N",
-            "prompt_template": "Input: {x}",
-        }],
-        "edges": [
-            {"from": "START", "to": "n"},
-            {"from": "n", "to": "END"},
-        ],
-        "state_schema": [{"name": "x", "type": "str"}],
-    }
-    return _call(us, "extensions", "build_branch",
-                 spec_json=json.dumps(spec))["branch_def_id"]
-
 
 # ---------------------------------------------------------------------------
 # `goals action=get` carries gate_ladder
@@ -101,11 +87,12 @@ def _build_branch(us, name: str) -> str:
 
 
 def test_goals_get_returns_gate_ladder_in_structured_form(us_env):
-    us, _ = us_env
+    from tinyassets.daemon_server import set_goal_ladder
+
+    us, base = us_env
     g = _call(us, "goals", "propose", name="Patch loop", description="x")
     gid = g["goal"]["goal_id"]
-    _call(us, "gates", "define_ladder",
-          goal_id=gid, ladder=json.dumps(_PATCH_LOOP_LADDER))
+    set_goal_ladder(base, goal_id=gid, ladder=_PATCH_LOOP_LADDER)
     result = _call(us, "goals", "get", goal_id=gid)
     goal = result["goal"]
     assert "gate_ladder" in goal
@@ -135,109 +122,15 @@ def test_goals_get_returns_empty_ladder_when_undefined(us_env):
 
 
 def test_gates_get_ladder_returns_same_shape(us_env):
-    us, _ = us_env
+    from tinyassets.daemon_server import set_goal_ladder
+
+    us, base = us_env
     g = _call(us, "goals", "propose", name="Fantasy novel")
     gid = g["goal"]["goal_id"]
-    _call(us, "gates", "define_ladder",
-          goal_id=gid, ladder=json.dumps(_FANTASY_LADDER))
+    set_goal_ladder(base, goal_id=gid, ladder=_FANTASY_LADDER)
     via_gates = _call(us, "gates", "get_ladder", goal_id=gid)
     via_goals = _call(us, "goals", "get", goal_id=gid)
     assert via_gates["gate_ladder"] == via_goals["goal"]["gate_ladder"]
-
-
-def test_goal_branch_protocol_round_trips_ordered_handoffs(us_env):
-    us, _ = us_env
-    gid = _call(us, "goals", "propose", name="Meridian opening")[
-        "goal"
-    ]["goal_id"]
-    architect = _build_branch(us, "Opening Architect")
-    compressor = _build_branch(us, "Opening Compressor")
-    _call(us, "goals", "bind", branch_def_id=architect, goal_id=gid)
-    _call(us, "goals", "bind", branch_def_id=compressor, goal_id=gid)
-
-    protocol = [
-        {
-            "order": 2,
-            "step_id": "compress",
-            "branch_def_id": compressor,
-            "source_label": "Opening Compressor",
-            "input_artifact_labels": ["architecture_plan"],
-            "output_artifact_labels": ["compression_blueprint"],
-            "required_rung_key": "review_passed",
-            "rollback_policy": "supersede prior blueprint",
-            "status": "pending",
-        },
-        {
-            "order": 1,
-            "step_id": "architect",
-            "branch_def_id": architect,
-            "source_label": "Opening Architect",
-            "output_artifact_labels": ["architecture_plan"],
-            "status": "completed",
-        },
-    ]
-
-    defined = _call(
-        us, "goals", "define_protocol",
-        goal_id=gid, protocol_json=json.dumps(protocol),
-    )
-
-    assert defined["status"] == "defined"
-    assert [step["step_id"] for step in defined["branch_protocol"]] == [
-        "architect", "compress",
-    ]
-    assert defined["current_protocol_step"]["step_id"] == "compress"
-    assert defined["branch_protocol"][1]["input_artifact_labels"] == [
-        "architecture_plan",
-    ]
-
-    via_get = _call(us, "goals", "get", goal_id=gid)
-    assert via_get["goal"]["branch_protocol"] == defined["branch_protocol"]
-    assert via_get["branch_protocol"] == defined["branch_protocol"]
-    assert via_get["current_protocol_step"]["step_id"] == "compress"
-    assert "Branch protocol" in via_get["text"]
-
-    via_protocol = _call(us, "goals", "get_protocol", goal_id=gid)
-    assert via_protocol["count"] == 2
-    assert via_protocol["current_protocol_step"]["branch_def_id"] == compressor
-
-
-def test_goal_branch_protocol_rejects_unbound_branch(us_env):
-    us, _ = us_env
-    gid = _call(us, "goals", "propose", name="Runbook goal")[
-        "goal"
-    ]["goal_id"]
-    unbound = _build_branch(us, "Unbound branch")
-
-    result = _call(
-        us, "goals", "define_protocol",
-        goal_id=gid,
-        protocol_json=json.dumps([{"branch_def_id": unbound}]),
-    )
-
-    assert result["status"] == "rejected"
-    assert "not bound" in result["error"]
-
-
-def test_goal_branch_protocol_rejects_bad_order(us_env):
-    us, _ = us_env
-    gid = _call(us, "goals", "propose", name="Ordered goal")[
-        "goal"
-    ]["goal_id"]
-    branch_id = _build_branch(us, "Ordered branch")
-    _call(us, "goals", "bind", branch_def_id=branch_id, goal_id=gid)
-
-    result = _call(
-        us, "goals", "define_protocol",
-        goal_id=gid,
-        protocol_json=json.dumps([{
-            "branch_def_id": branch_id,
-            "order": "first",
-        }]),
-    )
-
-    assert result["status"] == "rejected"
-    assert "order must be an integer" in result["error"]
 
 
 # ---------------------------------------------------------------------------
@@ -247,16 +140,17 @@ def test_goal_branch_protocol_rejects_bad_order(us_env):
 
 def test_two_goals_can_have_independent_ladders(us_env):
     """Same primitive, different ladder vocabularies — patch loop's
-    `draft_ready` doesn't collide with fantasy's `first_draft`."""
-    us, _ = us_env
+    `draft_ready` doesn't collide with fantasy's `first_draft`.
+    Ladders are written through storage; ``define_ladder`` is gone."""
+    from tinyassets.daemon_server import set_goal_ladder
+
+    us, base = us_env
     g_patch = _call(us, "goals", "propose", name="Patch loop")
     g_fantasy = _call(us, "goals", "propose", name="Fantasy novel")
     pid = g_patch["goal"]["goal_id"]
     fid = g_fantasy["goal"]["goal_id"]
-    _call(us, "gates", "define_ladder",
-          goal_id=pid, ladder=json.dumps(_PATCH_LOOP_LADDER))
-    _call(us, "gates", "define_ladder",
-          goal_id=fid, ladder=json.dumps(_FANTASY_LADDER))
+    set_goal_ladder(base, goal_id=pid, ladder=_PATCH_LOOP_LADDER)
+    set_goal_ladder(base, goal_id=fid, ladder=_FANTASY_LADDER)
     patch_rungs = [
         r["rung_key"]
         for r in _call(us, "goals", "get", goal_id=pid)["goal"]["gate_ladder"]
@@ -269,25 +163,3 @@ def test_two_goals_can_have_independent_ladders(us_env):
     assert fantasy_rungs == ["first_draft", "beta_reader_pass", "published"]
     # No cross-contamination.
     assert set(patch_rungs) & set(fantasy_rungs) == set()
-
-
-def test_ladder_redefinition_replaces_rungs(us_env):
-    """Calling `define_ladder` a second time replaces the previous
-    rung set. Confirmed against the substrate so we know branch authors
-    can re-emit `recommended_rung_claim` after a ladder evolution."""
-    us, _ = us_env
-    g = _call(us, "goals", "propose", name="Patch loop")
-    gid = g["goal"]["goal_id"]
-    _call(us, "gates", "define_ladder",
-          goal_id=gid, ladder=json.dumps(_PATCH_LOOP_LADDER))
-    refined = _PATCH_LOOP_LADDER + [
-        {"rung_key": "post_merge_validated",
-         "name": "Post-merge validated",
-         "description": "Smoke tests green for 24h."},
-    ]
-    _call(us, "gates", "define_ladder",
-          goal_id=gid, ladder=json.dumps(refined))
-    ladder = _call(us, "goals", "get", goal_id=gid)["goal"]["gate_ladder"]
-    assert [r["rung_key"] for r in ladder] == [
-        "draft_ready", "review_passed", "merged", "post_merge_validated",
-    ]

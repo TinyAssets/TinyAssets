@@ -9,7 +9,6 @@ wrapper layer only.
 
 from __future__ import annotations
 
-import inspect
 import json
 from pathlib import Path
 
@@ -172,23 +171,6 @@ class TestHandlerLayer:
 
 
 class TestDispatchIntegration:
-    def test_public_extensions_signature_exposes_ledger_kwargs(self):
-        from tinyassets import universe_server as us
-
-        params = inspect.signature(us.extensions).parameters
-        for name in (
-            "record_in_ledger",
-            "universe_id",
-            "request_id",
-            "parent_run_id",
-            "child_run_id",
-            "branch_def_id",
-            "release_gate_result",
-            "ship_class",
-            "changed_paths_json",
-            "stable_evidence_handle",
-        ):
-            assert name in params
 
     def test_action_routes_to_handler_via_extensions_dispatch(self):
         packet = {
@@ -276,60 +258,6 @@ class TestDispatchIntegration:
         assert json.loads(row.changed_paths_json) == [
             "docs/autoship-canaries/from-dispatch.md",
         ]
-
-    def test_public_extensions_wrapper_records_ledger_row(
-        self,
-        tmp_path,
-        monkeypatch,
-    ):
-        """The public MCP wrapper forwards ledger fields to the action."""
-        from tinyassets import universe_server as us
-        from tinyassets.auto_ship_ledger import read_attempts
-
-        monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
-        monkeypatch.setenv("UNIVERSE_SERVER_DEFAULT_UNIVERSE", "default-uni")
-        universe = tmp_path / "wrapper-uni"
-        universe.mkdir(parents=True, exist_ok=True)
-        _authenticate_owner(Path(tmp_path), universe_id="wrapper-uni")
-        packet = {
-            "release_gate_result": "APPROVE_AUTO_SHIP",
-            "ship_class": "docs_canary",
-            "child_keep_reject_decision": "KEEP",
-            "coding_packet": {"status": "KEEP_READY"},
-            "child_score": 9.5,
-            "risk_level": "low",
-            "blocked_execution_record": {},
-            "stable_evidence_handle": "packet-evidence",
-            "automation_claim_status": "child_attached_with_handle",
-            "rollback_plan": "Revert commit <sha>",
-            "changed_paths": ["docs/autoship-canaries/from-packet.md"],
-            "diff": "+ x\n",
-        }
-
-        result_str = us.extensions(
-            action="validate_ship_packet",
-            body_json=json.dumps(packet),
-            record_in_ledger="true",
-            universe_id="wrapper-uni",
-            request_id="REQ-WRAPPER",
-            parent_run_id="parent-run",
-            child_run_id="child-run",
-            branch_def_id="branch-def",
-            stable_evidence_handle="wrapper-evidence",
-        )
-        result = json.loads(result_str)
-
-        assert result.get("ledger_error") is None
-        assert result["ship_attempt_id"]
-        rows = read_attempts(universe)
-        assert len(rows) == 1
-        row = rows[0]
-        assert row.ship_attempt_id == result["ship_attempt_id"]
-        assert row.request_id == "REQ-WRAPPER"
-        assert row.parent_run_id == "parent-run"
-        assert row.child_run_id == "child-run"
-        assert row.branch_def_id == "branch-def"
-        assert row.stable_evidence_handle == "wrapper-evidence"
 
 
 # ── Wrapper resilience ─────────────────────────────────────────────────────

@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import asyncio
 import importlib
-import json
 
 import pytest
 
@@ -725,65 +724,9 @@ def us(env):
     importlib.reload(mod)
 
 
-def _call(us, action, **kwargs) -> dict:
-    return json.loads(us.extensions(action=action, **kwargs))
-
-
-def test_router_roundtrip_start_edit_test_publish(us):
-    started = _call(us, "authoring_start", field_type="node", intent="track recipes")
-    assert started["session"]["owner_id"] == "alice"
-    session_id = started["session"]["session_id"]
-
-    edited = _call(
-        us,
-        "authoring_edit",
-        key=session_id,
-        changes_json=json.dumps(_node_ops()),
-    )
-    assert edited["draft_version"] == 2
-
-    tested = _call(us, "authoring_test", key=session_id)
-    assert tested["published"] is False
-
-    inspected = _call(us, "authoring_inspect", key=session_id, select="summary")
-    assert inspected["view"] == "summary"
-
-    published = _call(
-        us,
-        "authoring_publish",
-        key=session_id,
-        expected_version="2",
-        notes="router release",
-    )
-    assert published["version"]["version_no"] == 1
-
-    listed = _call(us, "authoring_list")
-    assert listed["count"] == 1
-
-
-def test_router_reports_errors_as_json_not_exceptions(us):
-    out = _call(us, "authoring_inspect", key="ses_missing")
-    assert out["error"]
-    out = _call(us, "authoring_start")
-    assert out["error"]
-    assert out.get("issues")
-
-
 def test_authoring_actions_add_no_advertised_handle(us):
     advertised = {t.name for t in asyncio.run(us.mcp.list_tools(run_middleware=True))}
     assert advertised == CANONICAL_HANDLES
-
-
-def test_authoring_actions_are_listed_and_scope_derived(us):
-    unknown = _call(us, "definitely_not_an_action")
-    assert "authoring_start" in unknown["available_actions"]
-
-    from tinyassets.auth.provider import action_scope_for
-
-    assert action_scope_for("extensions", "authoring_start").effect == "write"
-    assert action_scope_for("extensions", "authoring_inspect").effect == "read"
-    assert action_scope_for("extensions", "authoring_test").effect == "costly"
-    assert action_scope_for("extensions", "authoring_publish").effect == "write"
 
 
 # ---------------------------------------------------------------------------
@@ -939,18 +882,3 @@ def test_an_expired_draft_is_readable_but_not_writable(service, env):
         with pytest.raises(AuthoringValidationError) as exc:
             call()
         assert any(i.code == "session.retention_expired" for i in exc.value.issues)
-
-
-def test_router_returns_json_for_an_out_of_range_list_index(us):
-    """A malformed path must be a machine-readable rejection, not a stack trace."""
-    started = _call(us, "authoring_start", field_type="node", intent="probe")
-    session_id = started["session"]["session_id"]
-
-    out = _call(
-        us,
-        "authoring_edit",
-        key=session_id,
-        changes_json=json.dumps([{"op": "append", "path": "edges[999]", "value": {}}]),
-    )
-    assert out["error"]
-    assert {i["code"] for i in out["issues"]} == {"op.inapplicable"}

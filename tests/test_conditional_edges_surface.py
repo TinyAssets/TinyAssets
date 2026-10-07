@@ -38,7 +38,7 @@ def branch_env(tmp_path, monkeypatch, authenticate_request):
 
 
 def _call(us, action, **kwargs):
-    return json.loads(us.extensions(action=action, **kwargs))
+    return json.loads(us._extensions_impl(action=action, **kwargs))
 
 
 def _conditional_edges(got: dict) -> list:

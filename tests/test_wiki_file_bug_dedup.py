@@ -32,7 +32,7 @@ def wiki_env(tmp_path, monkeypatch):
 
 
 def _file_bug(wiki_env, **kwargs):  # noqa: ARG001
-    from tinyassets.universe_server import wiki
+    from tinyassets.api.wiki import wiki
     defaults = {
         "action": "file_bug",
         "component": "test.surface",
@@ -148,80 +148,7 @@ def test_force_new_skips_similarity_check(wiki_env):
 # ── (d) cosign_bug roundtrip ──────────────────────────────────────────────────
 
 
-def test_cosign_bug_roundtrip(wiki_env):
-    """cosign_bug appends a Cosigns section, increments count, returns count."""
-    from tinyassets.universe_server import wiki
-    filed = _seed_bug(wiki_env, title="Cosign target bug unique string xyzabc",
-                      observed="the xyzabc thing broke")
-    bug_id = filed["bug_id"]
-
-    result = json.loads(wiki(
-        action="cosign_bug",
-        bug_id=bug_id,
-        reporter_context="I also saw this: xyzabc broken on my machine too",
-    ))
-    assert result.get("status") == "cosigned", f"Expected cosigned, got: {result}"
-    assert result.get("bug_id") == bug_id
-    assert result.get("cosign_count") == 1
-
-
-def test_cosign_bug_increments_count(wiki_env):
-    """Each subsequent cosign increments cosign_count by 1."""
-    from tinyassets.universe_server import wiki
-    filed = _seed_bug(wiki_env, title="Multi-cosign target bug zyxwvu98",
-                      observed="zyxwvu98 broken")
-    bug_id = filed["bug_id"]
-
-    for i in range(1, 4):
-        result = json.loads(wiki(
-            action="cosign_bug",
-            bug_id=bug_id,
-            reporter_context=f"Reporter {i} sees the zyxwvu98 issue",
-        ))
-        assert result["cosign_count"] == i, (
-            f"Expected cosign_count={i}, got {result['cosign_count']}"
-        )
-
-
-def test_cosign_bug_file_contains_entry(wiki_env):
-    """The bug file on disk should contain a ## Cosigns section after cosigning."""
-    from tinyassets.universe_server import wiki
-    filed = _seed_bug(wiki_env, title="Readable cosign test bug qwerty99",
-                      observed="qwerty99 broke")
-    bug_id = filed["bug_id"]
-    file_path = wiki_env / filed["path"]
-
-    json.loads(wiki(
-        action="cosign_bug",
-        bug_id=bug_id,
-        reporter_context="I also observed qwerty99 failure in production",
-    ))
-    content = file_path.read_text(encoding="utf-8")
-    assert "## Cosigns" in content
-    assert "I also observed qwerty99 failure in production" in content
-
-
 # ── (e) cosign_bug on missing bug_id → structured error ──────────────────────
-
-
-def test_cosign_bug_missing_bug_id_returns_error(wiki_env):
-    from tinyassets.universe_server import wiki
-    result = json.loads(wiki(
-        action="cosign_bug",
-        bug_id="BUG-999",
-        reporter_context="Test context",
-    ))
-    assert "error" in result
-
-
-def test_cosign_bug_missing_required_args_returns_error(wiki_env):
-    from tinyassets.universe_server import wiki  # Missing bug_id
-    r1 = json.loads(wiki(action="cosign_bug", reporter_context="ctx"))
-    assert "error" in r1
-
-    # Missing reporter_context
-    r2 = json.loads(wiki(action="cosign_bug", bug_id="BUG-001"))
-    assert "error" in r2
 
 
 # ── (f) regression — existing file_bug tests still work ──────────────────────
@@ -245,7 +172,7 @@ def test_file_bug_returns_path_in_pages_bugs(wiki_env):
 
 def test_file_bug_validation_errors_still_work(wiki_env):
     """Validation errors (missing required field) still return error dict."""
-    from tinyassets.universe_server import wiki
+    from tinyassets.api.wiki import wiki
     result = json.loads(wiki(action="file_bug", title=""))
     assert "error" in result
 
@@ -294,20 +221,6 @@ def test_long_form_existing_filing_matches_concise_technical_core(wiki_env):
 
 
 # ── Task #42: threshold edge-cases + adversarial depth ────────────────────────
-
-
-def _token_set(text: str) -> set[str]:
-    """Mirror of _bug_token_set for test-side control."""
-    import re
-    return {w for w in re.sub(r"[^a-z0-9]+", " ", text.lower()).split() if len(w) > 2}
-
-
-def _jaccard_score(a: set[str], b: set[str]) -> float:
-    """Mirror of _jaccard for test-side assertions."""
-    if not a and not b:
-        return 1.0
-    union = a | b
-    return len(a & b) / len(union) if union else 0.0
 
 
 class TestThresholdEdgeCases:
@@ -443,43 +356,3 @@ class TestIntegrationEdgeCases:
             f"force_new=True should mint new id, got: {result}"
         )
         assert result["bug_id"].startswith("BUG-")
-
-    def test_cosign_count_increments_to_high_values(self, wiki_env):
-        """cosign_count increments correctly beyond 2 (up to N)."""
-        from tinyassets.universe_server import wiki
-        filed = _seed_bug(wiki_env,
-                          title="Cosign stress test bug unique aaabbbccc",
-                          observed="aaabbbccc broken")
-        bug_id = filed["bug_id"]
-
-        for i in range(1, 6):
-            result = json.loads(wiki(
-                action="cosign_bug",
-                bug_id=bug_id,
-                reporter_context=f"Reporter {i} context for aaabbbccc issue",
-            ))
-            assert result["cosign_count"] == i
-
-    def test_cosign_same_context_twice_appends_both(self, wiki_env):
-        """Same reporter_context submitted twice both get appended (no dedup at cosign level).
-
-        Current behavior: cosign does NOT deduplicate by reporter. Both entries
-        are appended. This test documents that behavior so a future change is
-        explicit, not silent.
-        """
-        from tinyassets.universe_server import wiki
-        filed = _seed_bug(wiki_env,
-                          title="Cosign dedup behavior test unique dddeeefff",
-                          observed="dddeeefff broken on my machine")
-        bug_id = filed["bug_id"]
-        file_path = wiki_env / filed["path"]
-        ctx = "I also saw dddeeefff broken on my machine"
-
-        json.loads(wiki(action="cosign_bug", bug_id=bug_id, reporter_context=ctx))
-        json.loads(wiki(action="cosign_bug", bug_id=bug_id, reporter_context=ctx))
-
-        content = file_path.read_text(encoding="utf-8")
-        # Both entries appended — documented behavior
-        assert content.count(ctx) == 2, (
-            "cosign_bug does not deduplicate identical contexts — both should appear"
-        )

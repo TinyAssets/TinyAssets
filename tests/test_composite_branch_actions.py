@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import importlib
 import json
-import os
 from pathlib import Path
 
 import pytest
@@ -36,7 +35,7 @@ def comp_env(tmp_path, monkeypatch, authenticate_request):
 
 
 def _call(us, action, **kwargs):
-    return json.loads(us.extensions(action=action, **kwargs))
+    return json.loads(us._extensions_impl(action=action, **kwargs))
 
 
 RECIPE_SPEC = {
@@ -69,54 +68,6 @@ RECIPE_SPEC = {
 # ─────────────────────────────────────────────────────────────────────────────
 # AC #1 — one-shot recipe-tracker build
 # ─────────────────────────────────────────────────────────────────────────────
-
-
-def _build_approved_source_branch(
-    us,
-    authenticate_request,
-    *,
-    node_id="approved_calc",
-):
-    _call(
-        us,
-        "register",
-        node_id=node_id,
-        display_name="Approved calc",
-        description="Approved source-code node",
-        phase="custom",
-        input_keys="",
-        output_keys="answer",
-        source_code="def run(state): return {'answer': 1}",
-        dependencies="",
-    )
-    prior_actor = os.environ.get("UNIVERSE_SERVER_USER")
-    os.environ["UNIVERSE_SERVER_USER"] = "host-operator"
-    authenticate_request("host-operator")
-    try:
-        approved = _call(us, "approve", node_id=node_id)
-    finally:
-        authenticate_request("tester")
-        if prior_actor is None:
-            os.environ.pop("UNIVERSE_SERVER_USER", None)
-        else:
-            os.environ["UNIVERSE_SERVER_USER"] = prior_actor
-    assert approved["approved"] is True
-    spec = {
-        "name": "Approved source branch",
-        "entry_point": node_id,
-        "node_defs": [{
-            "node_id": node_id,
-            "node_ref": {"source": "standalone", "node_id": node_id},
-        }],
-        "edges": [
-            {"from": "START", "to": node_id},
-            {"from": node_id, "to": "END"},
-        ],
-        "state_schema": [{"name": "answer", "type": "int"}],
-    }
-    built = _call(us, "build_branch", spec_json=json.dumps(spec))
-    assert built["batch_receipt"]["source_code_approval"]["runnable"] is True
-    return built
 
 
 def test_recipe_tracker_builds_in_one_call(comp_env):
@@ -216,13 +167,55 @@ def test_build_branch_receipt_reports_unapproved_source_code(comp_env):
     }]
 
 
+def _seed_approved_source_branch(base, *, node_id="approved_calc") -> str:
+    """Persist the caller's branch with one source-code node that carries a
+    genuine, hash-backed approval by a distinct actor, through branch
+    storage (the ``register``/``approve`` actions that used to set this up
+    are gone), and return its id."""
+    from tinyassets.branches import (
+        BranchDefinition,
+        EdgeDefinition,
+        GraphNodeRef,
+        NodeDefinition,
+    )
+    from tinyassets.daemon_server import (
+        initialize_author_server,
+        save_branch_definition,
+    )
+
+    initialize_author_server(base)
+    node = NodeDefinition(
+        node_id=node_id,
+        display_name="Approved calc",
+        description="Approved source-code node",
+        output_keys=["answer"],
+        source_code="def run(state): return {'answer': 1}",
+    ).mark_approved(approved_by="host-operator")
+    branch = BranchDefinition(
+        branch_def_id="approved-source-branch",
+        name="Approved source branch",
+        author="tester",
+        entry_point=node_id,
+        node_defs=[node],
+        graph_nodes=[GraphNodeRef(id=node_id, node_def_id=node_id)],
+        edges=[
+            EdgeDefinition(from_node="START", to_node=node_id),
+            EdgeDefinition(from_node=node_id, to_node="END"),
+        ],
+        state_schema=[{"name": "answer", "type": "int"}],
+    )
+    save_branch_definition(base, branch_def=branch.to_dict())
+    return branch.branch_def_id
+
+
 def test_patch_branch_source_code_mutation_clears_prior_approval(
     comp_env,
-    authenticate_request,
 ):
-    us, _ = comp_env
-    built = _build_approved_source_branch(us, authenticate_request)
-    bid = built["branch_def_id"]
+    us, base = comp_env
+    bid = _seed_approved_source_branch(base)
+    before = _call(us, "get_branch", branch_def_id=bid)
+    node = next(n for n in before["node_defs"] if n["node_id"] == "approved_calc")
+    assert node["approved"] is True, node
 
     result = _call(
         us,
@@ -715,30 +708,6 @@ def test_rejected_patch_does_not_ledger(comp_env):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# AC #5 — fine-grained actions still work unchanged (regression gate)
-# ─────────────────────────────────────────────────────────────────────────────
-
-
-def test_atomic_actions_still_work(comp_env):
-    """Regression gate — atomic Phase 2 actions remain functional."""
-    us, _ = comp_env
-    bid = _call(us, "create_branch", name="Atomic only")["branch_def_id"]
-    add = _call(us, "add_node", branch_def_id=bid,
-                node_id="n1", display_name="N1",
-                prompt_template="hello {x}")
-    assert add["status"] == "added"
-    _call(us, "connect_nodes", branch_def_id=bid,
-          from_node="START", to_node="n1")
-    _call(us, "connect_nodes", branch_def_id=bid,
-          from_node="n1", to_node="END")
-    _call(us, "set_entry_point", branch_def_id=bid, node_id="n1")
-    _call(us, "add_state_field", branch_def_id=bid,
-          field_name="x", field_type="str")
-    validated = _call(us, "validate_branch", branch_def_id=bid)
-    assert validated["valid"] is True
-
-
-# ─────────────────────────────────────────────────────────────────────────────
 # Return shape compliance — tool_return_shapes.md
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -848,306 +817,3 @@ def test_build_branch_truncates_mermaid_above_12_nodes(comp_env):
     assert result["status"] == "built"
     # Text notes the phone-legibility truncation explicitly.
     assert "12-node" in result["text"] or "structuredContent" in result["text"]
-
-
-def test_unknown_action_without_metadata_is_denied(comp_env):
-    us, _ = comp_env
-    result = _call(us, "notarealaction")
-    assert "error" in result
-    assert result.get("available_actions", []) == []
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# update_node (#45) — stable-id edits, version bump, ledger inherited
-# ─────────────────────────────────────────────────────────────────────────────
-
-
-def test_update_node_changes_prompt_template(comp_env):
-    us, _ = comp_env
-    built = _call(us, "build_branch", spec_json=json.dumps(RECIPE_SPEC))
-    bid = built["branch_def_id"]
-
-    upd = _call(us, "update_node", branch_def_id=bid, node_id="capture",
-                prompt_template="NEW: {raw_recipe}")
-    assert upd["status"] == "updated"
-    assert upd["node_id"] == "capture"
-    assert "prompt_template" in upd["changed_fields"]
-
-    got = _call(us, "get_branch", branch_def_id=bid)
-    capture = next(n for n in got["node_defs"] if n["node_id"] == "capture")
-    assert capture["prompt_template"] == "NEW: {raw_recipe}"
-
-
-def test_update_node_bumps_branch_version(comp_env):
-    """AC: update_node bumps BranchDefinition.version so Phase 4 lineage
-    can distinguish pre/post-edit runs."""
-    us, _ = comp_env
-    built = _call(us, "build_branch", spec_json=json.dumps(RECIPE_SPEC))
-    bid = built["branch_def_id"]
-
-    before = _call(us, "get_branch", branch_def_id=bid)
-    assert before["version"] == 1
-
-    upd = _call(us, "update_node", branch_def_id=bid, node_id="capture",
-                display_name="Renamed capture")
-    assert upd["version_before"] == 1
-    assert upd["version_after"] == 2
-
-    after = _call(us, "get_branch", branch_def_id=bid)
-    assert after["version"] == 2
-
-
-def test_update_node_preserves_node_id(comp_env):
-    """Critical Phase 4 invariant — node_id survives the edit. Judgments
-    keyed on node_id must resolve the same node before and after."""
-    us, _ = comp_env
-    built = _call(us, "build_branch", spec_json=json.dumps(RECIPE_SPEC))
-    bid = built["branch_def_id"]
-    _call(us, "update_node", branch_def_id=bid, node_id="capture",
-          display_name="X", description="Y",
-          prompt_template="Z: {raw_recipe}")
-
-    got = _call(us, "get_branch", branch_def_id=bid)
-    ids = {n["node_id"] for n in got["node_defs"]}
-    assert "capture" in ids
-    assert len([n for n in got["node_defs"]
-                if n["node_id"] == "capture"]) == 1
-
-
-def test_update_node_via_changes_json(comp_env):
-    us, _ = comp_env
-    built = _call(us, "build_branch", spec_json=json.dumps(RECIPE_SPEC))
-    bid = built["branch_def_id"]
-
-    changes = {"description": "Updated via JSON", "display_name": "Label"}
-    upd = _call(us, "update_node", branch_def_id=bid, node_id="capture",
-                changes_json=json.dumps(changes))
-    assert upd["status"] == "updated"
-    assert set(upd["changed_fields"]) == {"description", "display_name"}
-
-    got = _call(us, "get_branch", branch_def_id=bid)
-    capture = next(n for n in got["node_defs"] if n["node_id"] == "capture")
-    assert capture["description"] == "Updated via JSON"
-    assert capture["display_name"] == "Label"
-
-
-def test_update_node_rejects_missing_node(comp_env):
-    us, _ = comp_env
-    built = _call(us, "build_branch", spec_json=json.dumps(RECIPE_SPEC))
-    bid = built["branch_def_id"]
-    result = _call(us, "update_node", branch_def_id=bid,
-                   node_id="nonexistent", display_name="X")
-    assert result["status"] == "rejected"
-    assert "not found" in result["error"].lower()
-
-
-def test_update_node_rejects_missing_branch(comp_env):
-    us, _ = comp_env
-    result = _call(us, "update_node", branch_def_id="deadbeef",
-                   node_id="anything", display_name="X")
-    assert "not found" in result["error"].lower()
-
-
-def test_update_node_requires_ids(comp_env):
-    us, _ = comp_env
-    r1 = _call(us, "update_node", node_id="x", display_name="X")
-    assert r1["status"] == "rejected"
-    r2 = _call(us, "update_node", branch_def_id="foo", display_name="X")
-    assert r2["status"] == "rejected"
-
-
-def test_update_node_rejects_empty_update(comp_env):
-    us, _ = comp_env
-    built = _call(us, "build_branch", spec_json=json.dumps(RECIPE_SPEC))
-    bid = built["branch_def_id"]
-    result = _call(us, "update_node", branch_def_id=bid, node_id="capture")
-    assert result["status"] == "rejected"
-    assert "no fields" in result["error"].lower()
-
-
-def test_update_node_rejects_both_template_and_source_code(comp_env):
-    us, _ = comp_env
-    built = _call(us, "build_branch", spec_json=json.dumps(RECIPE_SPEC))
-    bid = built["branch_def_id"]
-    result = _call(us, "update_node", branch_def_id=bid, node_id="capture",
-                   prompt_template="a {x}",
-                   source_code="def run(s): return {}")
-    assert result["status"] == "rejected"
-    assert "both" in result["error"].lower()
-
-
-def test_update_node_switches_from_template_to_source_code(comp_env):
-    """When source_code is set, prompt_template should be cleared (and
-    vice versa) so the node has a single body."""
-    us, _ = comp_env
-    built = _call(us, "build_branch", spec_json=json.dumps(RECIPE_SPEC))
-    bid = built["branch_def_id"]
-    _call(us, "update_node", branch_def_id=bid, node_id="capture",
-          source_code="def run(state): return {'capture_output': 'x'}")
-
-    got = _call(us, "get_branch", branch_def_id=bid)
-    capture = next(n for n in got["node_defs"] if n["node_id"] == "capture")
-    assert capture["source_code"]
-    assert capture["prompt_template"] == ""
-
-
-def test_update_node_source_code_mutation_clears_prior_approval(
-    comp_env,
-    authenticate_request,
-):
-    us, _ = comp_env
-    built = _build_approved_source_branch(
-        us,
-        authenticate_request,
-        node_id="approved_update",
-    )
-    bid = built["branch_def_id"]
-
-    result = _call(
-        us,
-        "update_node",
-        branch_def_id=bid,
-        node_id="approved_update",
-        source_code="def run(state): return {'answer': 3}",
-    )
-
-    assert result["status"] == "updated", result
-    got = _call(us, "get_branch", branch_def_id=bid)
-    node = next(n for n in got["node_defs"] if n["node_id"] == "approved_update")
-    assert node["approved"] is False
-    assert got["runnable"] is True
-    assert got["unapproved_source_code_nodes"] == [{
-        "node_id": "approved_update",
-        "display_name": "Approved calc",
-    }]
-
-
-def test_update_node_rejects_invalid_phase(comp_env):
-    us, _ = comp_env
-    built = _call(us, "build_branch", spec_json=json.dumps(RECIPE_SPEC))
-    bid = built["branch_def_id"]
-    result = _call(us, "update_node", branch_def_id=bid, node_id="capture",
-                   changes_json=json.dumps({"phase": "notaphase"}))
-    assert result["status"] == "rejected"
-    assert "phase" in result["error"].lower()
-
-
-def test_update_node_updates_input_output_keys(comp_env):
-    us, _ = comp_env
-    built = _call(us, "build_branch", spec_json=json.dumps(RECIPE_SPEC))
-    bid = built["branch_def_id"]
-    upd = _call(us, "update_node", branch_def_id=bid, node_id="capture",
-                input_keys="a,b,c", output_keys="out")
-    assert upd["status"] == "updated"
-
-    got = _call(us, "get_branch", branch_def_id=bid)
-    capture = next(n for n in got["node_defs"] if n["node_id"] == "capture")
-    assert capture["input_keys"] == ["a", "b", "c"]
-    assert capture["output_keys"] == ["out"]
-
-
-def test_update_node_persists_retry_policy_and_timeout(comp_env):
-    us, _ = comp_env
-    built = _call(us, "build_branch", spec_json=json.dumps(RECIPE_SPEC))
-    bid = built["branch_def_id"]
-    policy = {"preferred": {"provider": "codex", "model": "gpt-5"}}
-    retry = {"max_retries": 2, "backoff_seconds": 4.0}
-
-    upd = _call(
-        us,
-        "update_node",
-        branch_def_id=bid,
-        node_id="capture",
-        changes_json=json.dumps({
-            "model_hint": "reviewer",
-            "llm_policy": policy,
-            "retry_policy": retry,
-            "timeout_seconds": 450,
-        }),
-    )
-
-    assert upd["status"] == "updated", upd
-    assert set(upd["changed_fields"]) >= {
-        "model_hint", "llm_policy", "retry_policy", "timeout_seconds",
-    }
-    got = _call(us, "get_branch", branch_def_id=bid)
-    capture = next(n for n in got["node_defs"] if n["node_id"] == "capture")
-    assert capture["model_hint"] == "reviewer"
-    assert capture["llm_policy"] == policy
-    assert capture["retry_policy"] == retry
-    assert capture["timeout_seconds"] == 450.0
-
-
-def test_update_node_rejects_unknown_field(comp_env):
-    us, base = comp_env
-    built = _call(us, "build_branch", spec_json=json.dumps(RECIPE_SPEC))
-    bid = built["branch_def_id"]
-
-    before = _call(us, "get_branch", branch_def_id=bid)
-    result = _call(
-        us,
-        "update_node",
-        branch_def_id=bid,
-        node_id="capture",
-        changes_json=json.dumps({"approved": True}),
-    )
-
-    assert result["status"] == "rejected"
-    assert "unsupported field" in result["error"]
-    after = _call(us, "get_branch", branch_def_id=bid)
-    assert after["version"] == before["version"]
-    ledger = json.loads((Path(base) / "ledger.json").read_text("utf-8"))
-    assert not any(e["action"] == "update_node" for e in ledger)
-
-
-def test_update_node_writes_ledger(comp_env):
-    us, base = comp_env
-    built = _call(us, "build_branch", spec_json=json.dumps(RECIPE_SPEC))
-    bid = built["branch_def_id"]
-    _call(us, "update_node", branch_def_id=bid, node_id="capture",
-          display_name="X")
-    ledger = json.loads((Path(base) / "ledger.json").read_text("utf-8"))
-    actions = [e["action"] for e in ledger]
-    assert "update_node" in actions
-
-
-def test_update_node_rejected_call_does_not_ledger(comp_env):
-    us, base = comp_env
-    built = _call(us, "build_branch", spec_json=json.dumps(RECIPE_SPEC))
-    bid = built["branch_def_id"]
-    _call(us, "update_node", branch_def_id=bid, node_id="nonexistent",
-          display_name="X")
-    ledger = json.loads((Path(base) / "ledger.json").read_text("utf-8"))
-    update_entries = [e for e in ledger if e["action"] == "update_node"]
-    assert update_entries == []
-
-
-def test_update_node_text_channel_reports_changed_fields(comp_env):
-    """tool_return_shapes.md compliance — one-line ack + preview."""
-    us, _ = comp_env
-    built = _call(us, "build_branch", spec_json=json.dumps(RECIPE_SPEC))
-    bid = built["branch_def_id"]
-    upd = _call(us, "update_node", branch_def_id=bid, node_id="capture",
-                prompt_template="New prompt: {raw_recipe}")
-    assert "text" in upd
-    assert "Updated node" in upd["text"]
-    assert "capture" in upd["text"]
-    assert "prompt_template" in upd["text"]
-
-
-def test_update_node_preserves_topology_and_state_schema(comp_env):
-    """Editing one node must not change edges, other nodes, or state."""
-    us, _ = comp_env
-    built = _call(us, "build_branch", spec_json=json.dumps(RECIPE_SPEC))
-    bid = built["branch_def_id"]
-    before = _call(us, "get_branch", branch_def_id=bid)
-
-    _call(us, "update_node", branch_def_id=bid, node_id="capture",
-          display_name="Renamed")
-
-    after = _call(us, "get_branch", branch_def_id=bid)
-    assert after["graph"]["edges"] == before["graph"]["edges"]
-    assert after["entry_point"] == before["entry_point"]
-    assert [n["node_id"] for n in after["node_defs"]] == \
-        [n["node_id"] for n in before["node_defs"]]
-    assert after["state_schema"] == before["state_schema"]

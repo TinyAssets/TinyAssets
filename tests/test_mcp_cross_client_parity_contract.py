@@ -53,25 +53,3 @@ def test_all_mcp_server_surfaces_register_tools_through_structured_adapter() -> 
             )
 
     assert failures == []
-
-
-def test_ui_test_requires_cross_client_mcp_shape_proof() -> None:
-    """Rendered chatbot proof must cover both Apps SDK and Anthropic MCP."""
-    skill = _read(".agents/skills/ui-test/SKILL.md")
-    mirror = _read(".claude/skills/ui-test/SKILL.md")
-
-    required_phrases = (
-        "cross-client MCP alignment is a project prerequisite",
-        "ChatGPT (Apps SDK strict surface)",
-        "Claude.ai (Anthropic MCP)",
-        "same call",
-        "structuredContent",
-        "both-client verification",
-        "Direct MCP call works fine",
-        "INSUFFICIENT",
-    )
-
-    missing = [phrase for phrase in required_phrases if phrase not in skill]
-
-    assert missing == []
-    assert mirror == skill

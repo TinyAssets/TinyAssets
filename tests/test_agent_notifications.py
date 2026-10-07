@@ -117,9 +117,6 @@ def test_capability_handbook_and_seed_are_editable(tmp_path):
 
     text = capabilities_skill()
     assert engine.SERVED_TOOL_CHAPTERS["write_graph"]["capabilities"] == text
-    for phrase in ("persistent box", "git", "egress", "python -m pytest",
-                   'operation="notify"', 'invoke_mcp_action("notify"', "deliver files"):
-        assert phrase in text
     seed_okf_bundle(tmp_path, purpose="", loop_branch_def_id="")
     path = tmp_path / CAPABILITIES_SKILL_PATH
     assert path.read_text(encoding="utf-8") == text

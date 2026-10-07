@@ -1,4 +1,4 @@
-"""Tests for describe_branch / get_branch `related_wiki_pages` surface.
+"""Tests for the get_branch `related_wiki_pages` surface.
 
 STATUS.md Approved-bugs 2026-04-22 (reshape of BUG-018). Wiki pages
 that mention a branch's id or any of its node ids get surfaced in the
@@ -7,7 +7,7 @@ separate wiki search.
 
 Invariants covered:
 
-a. Matches returned in describe + get.
+a. Matches returned in get.
 b. No matches returns empty list (not a missing key).
 c. Summary is clipped to 140 characters.
 d. Top-20 cap with truncated_count.
@@ -49,7 +49,7 @@ def branch_wiki_env(tmp_path, monkeypatch, authenticate_request):
 
 
 def _call(us, action, **kwargs):
-    return json.loads(us.extensions(action=action, **kwargs))
+    return json.loads(us._extensions_impl(action=action, **kwargs))
 
 
 def _write_page(wiki: Path, category: str, slug: str, *, title: str, body: str,
@@ -63,11 +63,19 @@ def _write_page(wiki: Path, category: str, slug: str, *, title: str, body: str,
 
 
 def _mk_branch(us, name="Demo", node_ids=("alpha", "beta")) -> str:
-    bid = _call(us, "create_branch", name=name)["branch_def_id"]
-    for nid in node_ids:
-        _call(us, "add_node", branch_def_id=bid, node_id=nid,
-              display_name=nid, prompt_template=f"do {nid}")
-    return bid
+    """Build a branch whose nodes run in a line, via ``build_branch``."""
+    chain = ["START", *node_ids, "END"]
+    built = _call(us, "build_branch", spec_json=json.dumps({
+        "name": name,
+        "entry_point": node_ids[0],
+        "node_defs": [
+            {"node_id": nid, "display_name": nid, "prompt_template": f"do {nid}"}
+            for nid in node_ids
+        ],
+        "edges": [{"from": a, "to": b} for a, b in zip(chain, chain[1:])],
+    }))
+    assert built["status"] == "built", built
+    return built["branch_def_id"]
 
 
 def test_get_branch_returns_related_wiki_pages(branch_wiki_env):
@@ -89,25 +97,6 @@ def test_get_branch_returns_related_wiki_pages(branch_wiki_env):
     assert any("branch-notes" in p for p in paths)
 
 
-def test_describe_branch_returns_related_wiki_pages(branch_wiki_env):
-    us, _, wiki = branch_wiki_env
-    bid = _mk_branch(us)
-    _write_page(
-        wiki, "notes", "describe-notes",
-        title="About alpha handling",
-        body=f"This page discusses {bid} in passing; the alpha node is key.",
-    )
-
-    result = _call(us, "describe_branch", branch_def_id=bid)
-    assert "related_wiki_pages" in result
-    assert isinstance(result["related_wiki_pages"], list)
-    assert result["related_wiki_pages_truncated"] == 0
-    assert any(
-        "describe-notes" in item["path"]
-        for item in result["related_wiki_pages"]
-    )
-
-
 def test_no_matches_returns_empty_list_not_missing_key(branch_wiki_env):
     us, _, wiki = branch_wiki_env
     bid = _mk_branch(us)
@@ -121,10 +110,6 @@ def test_no_matches_returns_empty_list_not_missing_key(branch_wiki_env):
     got = _call(us, "get_branch", branch_def_id=bid)
     assert got["related_wiki_pages"] == []
     assert got["related_wiki_pages_truncated"] == 0
-
-    described = _call(us, "describe_branch", branch_def_id=bid)
-    assert described["related_wiki_pages"] == []
-    assert described["related_wiki_pages_truncated"] == 0
 
 
 def test_summary_is_clipped_to_140_chars(branch_wiki_env):

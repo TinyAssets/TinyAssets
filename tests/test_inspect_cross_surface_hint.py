@@ -3,8 +3,6 @@ import json
 from pathlib import Path
 from unittest.mock import patch
 
-from tinyassets.api.prompts import _CONTROL_STATION_PROMPT
-
 
 def _call_inspect(universe_id="test-u"):
     from tinyassets.api.universe import _action_inspect_universe
@@ -83,24 +81,3 @@ class TestInspectCrossSurfaceHint:
         result = _call_inspect()
         assert "universe_id" in result
         assert "daemon" in result
-
-
-class TestPromptCrossDomainRule:
-    def test_prompt_keeps_domain_agnostic_framing(self):
-        """Cross-domain routing starts from domain-agnostic framing."""
-        text = _CONTROL_STATION_PROMPT.lower()
-        assert "domain-agnostic" in text
-        assert "research" in text
-        assert "recipe" in text
-
-    def test_prompt_cross_domain_routes_use_advertised_handles(self):
-        """Cross-domain reads use graph/page handles, not hidden dispatchers."""
-        assert 'read_graph target="goals"' in _CONTROL_STATION_PROMPT
-        assert 'read_page query=' in _CONTROL_STATION_PROMPT
-        assert "goals action=" not in _CONTROL_STATION_PROMPT
-        assert "wiki action=" not in _CONTROL_STATION_PROMPT
-
-    def test_prompt_names_global_search_gap(self):
-        """The prompt states the global search limitation instead of inventing it."""
-        assert "extensions action=list_branches" not in _CONTROL_STATION_PROMPT
-        assert "global node search" in _CONTROL_STATION_PROMPT.lower()

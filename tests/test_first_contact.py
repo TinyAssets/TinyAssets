@@ -111,7 +111,6 @@ def _capture_universe_reply(monkeypatch, reply: str) -> dict:
     return captured
 
 
-
 def _own_universes_as(actor_id: str = "user_01TESTOWNER") -> None:
     """Authenticate, because a universe must now belong to someone.
 
@@ -996,16 +995,15 @@ def test_public_tool_wrappers_omit_the_trust_flag():
     """Reachability lock: the trust flag is absent from public MCP wrappers.
 
     universe-creation 5.2: `allow_named_universe_id` must never appear on a
-    public MCP surface, or a caller could self-select an id. Both public birth
-    wrappers omit it (Codex also verified this against the live FastMCP schemas
+    public MCP surface, or a caller could self-select an id. The public birth
+    wrapper omits it (Codex also verified this against the live FastMCP schemas
     with `mcp.call_tool` probes). This locks it at the signature level.
     """
     import inspect
 
-    from tinyassets.universe_server import universe, write_graph
+    from tinyassets.universe_server import write_graph
 
-    for tool in (universe, write_graph):
-        assert "allow_named_universe_id" not in inspect.signature(tool).parameters
+    assert "allow_named_universe_id" not in inspect.signature(write_graph).parameters
 
 
 # ---------------------------------------------------------------------------
