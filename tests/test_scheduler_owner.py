@@ -47,12 +47,6 @@ _FOUNDER_CAPS = [
 #: a founder session with the coarse ``costly`` grant ``schedule_branch`` needs,
 #: and deliberately no fine-grained ``tinyassets.extensions.admin`` scope --
 #: proves pause/unpause/unschedule no longer require the admin tier they used to.
-_COSTLY_ONLY_CAPS = [
-    "tinyassets.universe.costly",
-    "tinyassets.extensions.read",
-    "tinyassets.extensions.write",
-    "tinyassets.extensions.costly",
-]
 
 
 @pytest.fixture
@@ -76,33 +70,6 @@ def env(tmp_path: Path, monkeypatch, authenticate_request):
     shutdown_scheduler()  # no singleton leaked in from another module
     try:
         yield base, authenticate_request
-    finally:
-        shutdown_scheduler()
-
-
-@pytest.fixture
-def live_scheduler(env):
-    """A genuinely running scheduler singleton, so ``is_running()`` is really True.
-
-    Its base path is an ISOLATED directory, not the data dir under test: the tick
-    loop must be alive (that is the thing registration checks) without racing the
-    assertions about which schedules have fired.
-    """
-    base, _authenticate = env
-    from tinyassets.runs import initialize_runs_db
-    from tinyassets.scheduler import get_or_create_scheduler, shutdown_scheduler
-
-    ticker = base.parent / "ticker"
-    ticker.mkdir()
-    initialize_runs_db(ticker)
-
-    def _idle_run_fn(branch_def_id, actor, inputs, run_name, *, principal_id=""):
-        raise AssertionError("the isolated ticker must have nothing to fire")
-
-    shutdown_scheduler()
-    scheduler = get_or_create_scheduler(ticker, _idle_run_fn)
-    try:
-        yield scheduler
     finally:
         shutdown_scheduler()
 
@@ -174,15 +141,6 @@ def set_provider_assignment(
         conn.close()
 
 
-def refusals_for(base: Path, universe_id: str) -> dict[str, str]:
-    """Refusal reasons currently recorded for a universe, keyed by ledger id."""
-    from tinyassets.storage.assigned_queue_refusals import AssignedQueueRefusalStore
-
-    return AssignedQueueRefusalStore(base).fresh_reasons(
-        universe_id=universe_id, max_age_seconds=3600.0
-    )
-
-
 def _seed_branch(base: Path, *, bid: str, author: str) -> None:
     """Persist a REAL, structurally-valid, runnable branch authored by ``author``."""
     from tinyassets.daemon_server import save_branch_definition
@@ -214,38 +172,6 @@ def _seed_branch(base: Path, *, bid: str, author: str) -> None:
         "state_schema": [{"name": "out", "type": "str"}],
         "entry_point": "only",
     })
-
-
-def _schedule_rows(base: Path) -> list[dict]:
-    """Every ``branch_schedules`` row, read straight from the DB."""
-    conn = sqlite3.connect(base / ".runs.db")
-    conn.row_factory = sqlite3.Row
-    try:
-        return [dict(r) for r in conn.execute("SELECT * FROM branch_schedules")]
-    finally:
-        conn.close()
-
-
-def _ext(action: str, **kwargs) -> dict:
-    """Drive the REAL MCP surface (``extensions()``), not the handler underneath."""
-    from tinyassets.universe_server import extensions
-
-    return json.loads(extensions(action=action, **kwargs))
-
-
-def _capturing_scheduler(base: Path, calls: list):
-    from tinyassets.scheduler import Scheduler
-
-    def run_fn(branch_def_id, actor, inputs, run_name, *, principal_id=""):
-        calls.append({
-            "branch_def_id": branch_def_id,
-            "actor": actor,
-            "inputs": inputs,
-            "run_name": run_name,
-            "principal_id": principal_id,
-        })
-
-    return Scheduler(base, run_fn)
 
 
 # ── Registration derives the owner; it never accepts one ─────────────────────
@@ -365,8 +291,6 @@ def _drain_run(base: Path, run_id: str, timeout: float = 5.0) -> None:
 # mutation-check tests drive the real scope resolver (`require_action_scope`
 # via the real `extensions()` dispatch, through `_ext`) and the real handler —
 # no monkeypatched capability set.
-
-_SCHEDULE_CONTROL_ACTIONS = ("pause_schedule", "unpause_schedule", "unschedule_branch")
 
 
 # ── Lifecycle (2.2) ──────────────────────────────────────────────────────────
@@ -613,24 +537,6 @@ def test_the_migration_is_safe_when_two_connections_race(tmp_path):
 #: breaks it. US DST begins Sunday 2026-03-08 at 02:00 local, so on a
 #: DST-observing host 01:59 EST → 03:00 EDT is sixty elapsed seconds while the
 #: minute/hour algebra reads it as 3540.
-_DST_CRON = "0,59 1,3 * mar sun"
-_DST_TZ = "America/New_York"
-
-
-def _spring_forward_instants() -> tuple[float, time.struct_time, time.struct_time]:
-    """(epoch, its UTC struct, its America/New_York struct) on spring-forward day.
-
-    At 2026-03-08 01:00:00Z the cron matches in UTC — minute 0, hour 1, March,
-    Sunday — and does NOT match in New York, where it is still 20:00 on Saturday
-    the 7th (EST, UTC-5). One instant, opposite verdicts: exactly the
-    discriminator a matcher defined in UTC has to survive.
-    """
-    import calendar
-
-    epoch = float(
-        calendar.timegm(time.strptime("2026-03-08 01:00:00", "%Y-%m-%d %H:%M:%S"))
-    )
-    return epoch, time.gmtime(epoch), time.gmtime(epoch - 5 * 3600)
 
 
 # ── Legacy rows stay discoverable and deletable ──────────────────────────────

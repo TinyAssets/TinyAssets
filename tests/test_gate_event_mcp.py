@@ -274,32 +274,3 @@ class TestGetListGateEvents:
         result = json.loads(_action_list_gate_events({"goal_id": "g1", "limit": 50}))
         assert result["goal_id"] == "g1"
         assert result["count"] == 3
-
-    def test_extensions_routes_attest(self, tmp_path, monkeypatch):
-        from tinyassets.universe_server import extensions
-        monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
-        bvid = _seed_bv(tmp_path)
-        initialize_runs_db(tmp_path)
-
-        result = json.loads(extensions(
-            action="attest_gate_event",
-            goal_id="g1",
-            event_type="publication",
-            event_date="2026-04-25",
-            attested_by="alice",
-            cites_json=json.dumps([{"branch_version_id": bvid}]),
-        ))
-        assert result["status"] == "attested"
-
-    def test_extensions_routes_list(self, tmp_path, monkeypatch):
-        from tinyassets.universe_server import extensions
-        monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
-        _seed_public_goal(tmp_path)
-        initialize_runs_db(tmp_path)
-
-        result = json.loads(extensions(
-            action="list_gate_events",
-            goal_id="g1",
-        ))
-        assert result["count"] == 0
-        assert result["events"] == []

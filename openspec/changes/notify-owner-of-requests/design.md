@@ -8,7 +8,7 @@ Grounded on the code as of `161187aa`: `tinyassets/storage/pending_requests.py`,
 
 ## Why this extends requests instead of adding a primitive
 
-PLAN.md Scoping Rule 1 says a new top-level primitive ships only on an
+ADR-013 says a new top-level primitive ships only on an
 irreducibility finding, and that a behaviour with many plausible shapes belongs
 to the commons. "The universe tells its person something and they answer" has
 exactly one shape already in the repo, and it is the request: a durable,

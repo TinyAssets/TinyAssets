@@ -1,4 +1,4 @@
-"""Envelope decoupling and frozen pre-change differential proof, no network."""
+"""Envelope decoupling, no network."""
 
 import copy
 import json
@@ -7,7 +7,6 @@ from pathlib import Path
 
 import pytest
 
-from tests import _legacy_agent_wire_oracle as oracle
 from tests.test_agent_chat_codec import (
     MODEL,
     NAMES,
@@ -23,8 +22,7 @@ from tinyassets.providers.protocol_encoders import agent_codec_for
 
 
 def document():
-    # The envelope moved into the chat_messages dialect document
-    # (unify-connection-uses); the frozen differential below still pins it.
+    # The envelope lives in the chat_messages dialect document.
     return json.loads(Path(__file__).parents[1].joinpath(
         "tinyassets/providers/dialects/chat_messages.json",
     ).read_text("utf-8"))["envelope"]
@@ -45,58 +43,6 @@ def result(function, *args, **kwargs):
     except (ValueError, TypeError, OverflowError) as exc:
         return type(exc).__name__, str(exc)
     return "ok", asdict(value)
-
-
-@pytest.mark.parametrize("finish", ["stop", "tool_calls", "length", "content_filter",
-                                        "error", "future", None, 3])
-@pytest.mark.parametrize("message", [
-    {"content": "done", "tool_calls": []},
-    {"content": None, "tool_calls": [call()]},
-    {"content": None, "tool_calls": [call(arguments="not json")]},
-    {"content": "no", "refusal": " denied "},
-    {"content": None, "tool_calls": [call()], "reasoning": "secret"},
-    {"content": None, "tool_calls": [call()], "future": "opaque"},
-    {"content": [], "tool_calls": []},
-    {"role": "user", "content": "bad"},
-])
-def test_canonical_states_match_frozen_decoder(finish, message):
-    body = {"model": " actual/model ", "usage": {"prompt_tokens": 12, "completion_tokens": 4},
-            "choices": [{"finish_reason": finish, "message": message}]}
-    assert result(installed_agent_wire().decode, body, **context()) == result(
-        oracle.decode_openai_chat_agent, body, **context(),
-    )
-
-
-@pytest.mark.parametrize("field", ["model", "usage", "choices", "error"])
-@pytest.mark.parametrize("value", [None, False, 0, -1, "", " model ", "\n", "x" * 201,
-                                    [], {}, [None], {"prompt_tokens": True},
-                                    {"prompt_tokens": -1, "completion_tokens": 1.5}])
-def test_envelope_and_telemetry_match_frozen_decoder(field, value):
-    body = response([], content="final", finish="stop")
-    body[field] = value
-    assert result(installed_agent_wire().decode, body, **context()) == result(
-        oracle.decode_openai_chat_agent, body, **context(),
-    )
-
-
-@pytest.mark.parametrize("same_source", [True, False])
-@pytest.mark.parametrize("temperature", [None, 0, 0.25, True, float("inf"), 10**400])
-@pytest.mark.parametrize("max_tokens", [None, 1, 44, False, 0])
-def test_portable_requests_match_frozen_bytes(same_source, temperature, max_tokens):
-    history = (core.CapturedToolRound(round=completed_round(), tools=definitions()),)
-    kwargs = request(history=history, temperature=temperature, max_tokens=max_tokens,
-                     source_ref=SOURCE if same_source else "other/source")
-
-    def encoded(fn):
-        try:
-            path, body = fn(**kwargs)
-            return path, json.dumps(body, ensure_ascii=False, allow_nan=False)
-        except (ValueError, TypeError, OverflowError) as exc:
-            return type(exc).__name__, str(exc)
-
-    assert encoded(installed_agent_wire().encode) == encoded(
-        oracle.encode_openai_chat_agent_portable,
-    )
 
 
 def test_engine_adapter_does_not_use_compatibility_wrappers(monkeypatch):

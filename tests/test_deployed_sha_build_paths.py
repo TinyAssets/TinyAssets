@@ -5,8 +5,8 @@ that changes nothing production runs is never built -- build-image.yml cancels
 itself for it (scripts/runtime_paths.py) -- so its sha can never appear in the
 release receipt. Before 2026-09-24 the gate returned 1 for such a commit and
 explained that nothing was waiting; that was true but still read as a failure,
-and once PLAN.md-only merges stopped deploying it would have "failed" every
-PLAN change forever.
+and once docs-only merges stopped deploying it would have "failed" every such
+merge forever.
 
 The contract now: a commit that DESCENDS from the served sha and changes no
 runtime input since is served (exit 0, labelled runtime-equivalent). A commit
@@ -24,7 +24,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.runtime_repo_fixture import make_repo, plan
+from tests.runtime_repo_fixture import make_repo
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -65,21 +65,13 @@ def test_docs_only_commit_on_top_of_the_served_sha_is_served(history, monkeypatc
     assert "runtime-equivalent" in out
 
 
-def test_unserved_plan_edit_is_served(history, monkeypatch):
+def test_root_doc_edit_on_top_of_the_served_sha_is_served(history, monkeypatch):
+    """A repo-root doc is in no COPY source and in no host input."""
     repo, base = history
-    head = repo.commit("plan", {"PLAN.md": plan(unserved="new principle")})
+    head = repo.commit("root doc", {"AGENTS.md": "agents x\n"})
     _serve(monkeypatch, base)
 
     assert deployed_sha.main(["--assert-contains", head]) == 0
-
-
-def test_served_plan_edit_is_not_served_until_deployed(history, monkeypatch, capsys):
-    repo, base = history
-    head = repo.commit("plan", {"PLAN.md": plan(daemon="changed")})
-    _serve(monkeypatch, base)
-
-    assert deployed_sha.main(["--assert-contains", head]) == 1
-    assert "Module: Daemon Platform" in capsys.readouterr().err
 
 
 def test_docs_merge_on_an_undeployed_runtime_merge_is_not_served(history, monkeypatch, capsys):
@@ -142,7 +134,7 @@ def test_json_output_says_which_kind_of_pass(history, monkeypatch, capsys):
 def test_report_counts_only_runtime_commits_as_behind(history, monkeypatch):
     repo, base = history
     repo.commit("code", {"tinyassets/app.py": "VERSION = 2\n"})
-    repo.commit("plan", {"PLAN.md": plan(unserved="x")})
+    repo.commit("root doc", {"AGENTS.md": "agents x\n"})
     repo.commit("docs", {"docs/notes.md": "more\n"})
     repo.git("update-ref", "refs/remotes/origin/main", "HEAD")
     _serve(monkeypatch, base)

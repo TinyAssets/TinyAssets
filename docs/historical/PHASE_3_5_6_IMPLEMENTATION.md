@@ -1,4 +1,4 @@
-> **HISTORICAL — superseded.** This doc captured architecture intent as of 2026-04-06. Current architecture lives in PLAN.md. Kept for git/decision history. Do not edit, do not extend, do not cite as live.
+> **HISTORICAL — superseded.** This doc captured architecture intent as of 2026-04-06. Current architecture lives in docs/architecture.md (PLAN.md was retired 2026-10-06). Kept for git/decision history. Do not edit, do not extend, do not cite as live.
 
 # Phase 3.5 and 3.6 Implementation Summary
 

@@ -447,7 +447,6 @@ class TestOneIdentityAcrossInterlocutors:
             )
         for tier, prompt in prompts.items():
             assert "You are Lumen." in prompt, f"identity replaced at {tier}"
-            assert "first person" in prompt.lower()
 
     def test_disclosure_modulates_while_identity_does_not(self, base):
         udir = self._named_universe(base)

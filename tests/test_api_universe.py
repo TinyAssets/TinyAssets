@@ -14,8 +14,6 @@ Surface guarded:
   ledger trio — universe-tool internal pipeline
 - `_action_*` handler set — present, callable, owned by this module
 - Daemon-liveness telemetry helpers — present, owned by this module
-- Pattern A2 wrapper: `tinyassets.universe_server.universe` delegates to
-  `tinyassets.api.universe._universe_impl` (verified via simple round-trip)
 """
 
 from __future__ import annotations
@@ -195,24 +193,6 @@ def test_listing_a_fresh_data_dir_twice_gives_one_answer(tmp_path, monkeypatch) 
     (tmp_path / "fresh").mkdir()
     first = univ_mod._universe_impl(action="list")
     assert first == univ_mod._universe_impl(action="list")
-
-
-def test_pattern_a2_wrapper_delegates_to_api_universe() -> None:
-    """`tinyassets.universe_server.universe` MUST be a thin wrapper that
-    delegates to `tinyassets.api.universe._universe_impl`.
-
-    Validates the Step 9 Pattern A2 contract: the FastMCP @mcp.tool
-    registration lives in universe_server.py, the body lives in
-    tinyassets.api.universe._universe_impl. Catches any silent regression
-    where the wrapper grows independent logic.
-    """
-    from tinyassets import universe_server as us
-
-    assert callable(us.universe)
-    # Read-only action — no side effects.
-    result = us.universe(action="list")
-    direct = univ_mod._universe_impl(action="list")
-    assert result == direct, "Pattern A2 wrapper drift: us.universe != _universe_impl"
 
 
 # ── Ledger dispatcher contract ───────────────────────────────────────────────

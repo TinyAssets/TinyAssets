@@ -335,7 +335,7 @@ def test_provider_exhaustion_repair_keeps_its_ssh_remote_target():
 
     remote_target = '"${DO_SSH_USER}@${DO_DROPLET_HOST}"'
     # Was `docker stop tinyassets-worker`. That container went away 2026-08-29
-    # with the host-run fleet (PLAN.md); the .pause sweep is now the whole
+    # with the host-run fleet (ADR-009); the .pause sweep is now the whole
     # repair, and it must still run on the REMOTE host, not the runner.
     repair_command = "for udir in /var/lib/docker/volumes/tinyassets-data/_data/*/"
     assert remote_target in run

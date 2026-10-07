@@ -188,8 +188,8 @@ def test_higher_token_overlap_ranks_first(goals_db):
 def test_goals_action_search_multi_token(tmp_path, monkeypatch):
     """End-to-end: goals action=search with a multi-token query must return
     results via the MCP dispatch surface."""
+    from tinyassets.api.market import goals
     from tinyassets.daemon_server import initialize_author_server, save_goal
-    from tinyassets.universe_server import goals
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     initialize_author_server(tmp_path)
     save_goal(tmp_path, goal={"name": "Complete a software project end-to-end",

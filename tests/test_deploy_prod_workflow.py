@@ -222,7 +222,7 @@ def test_recovery_override_fences_writers_and_fixed_name_sidecars():
     """The override must fence every default-profile service, and only those.
 
     The four `worker*` entries were dropped 2026-08-29 with the host-run fleet
-    (nothing runs outside a user's universe -- PLAN.md). Compared AGAINST
+    (nothing runs outside a user's universe -- ADR-009). Compared AGAINST
     compose.yml rather than a hardcoded list: an override naming a service the
     base file does not define would declare an imageless service and fail the
     whole project on `-f compose.yml -f override`.
@@ -1004,7 +1004,7 @@ def test_deploy_deletes_the_retired_github_oauth_pair_and_proves_it_took():
 # `test_deploy_rejects_cloud_worker_workflow_universe_override`. All three
 # asserted a "Verify cloud worker is running" step over the four
 # `tinyassets-worker*` containers. Those containers are gone with the host-run
-# fleet (nothing runs outside a user's universe -- PLAN.md), and the step they
+# fleet (nothing runs outside a user's universe -- ADR-009), and the step they
 # asserted had already been removed from deploy-prod.yml, so all three were
 # already red at b9225243 before this change touched anything.
 
@@ -1804,7 +1804,7 @@ def test_compose_declares_no_host_run_worker_fleet():
     This replaced an accept-direction control asserting "the shared fleet must
     stay shared". Inverted 2026-08-29: nothing runs unless it lives inside a
     user's universe under that user's control, and the platform never runs an
-    actor of its own (PLAN.md). The surviving services keep the no-universe-pin
+    actor of its own (ADR-009). The surviving services keep the no-universe-pin
     assertion the old control carried.
     """
     compose = yaml.safe_load(Path("deploy/compose.yml").read_text(encoding="utf-8"))

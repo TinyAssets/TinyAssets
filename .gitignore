@@ -74,7 +74,7 @@ logs/
 
 # Phase 7.2: the on-disk catalog (branches/, goals/, nodes/) is
 # intentionally NOT ignored. Those YAML files are the canonical
-# shared state per PLAN.md "GitHub as the canonical shared state";
+# shared state per the design of the time (now ADR-017: GitHub is an export sink);
 # each user clones + pulls + PRs contributions through those dirs.
 # The SqliteCached backend mirrors to SQLite alongside the YAML
 # write, but the .db file is excluded via `*.db` above — only the

@@ -1,6 +1,6 @@
 """Tests for the public action ledger contract.
 
-PLAN.md Design Decision: "Private chats, public actions." Every universe-
+Design decision: "Private chats, public actions." Every universe-
 affecting write must land in the per-universe ledger with author + action
 + target + timestamp + summary.
 

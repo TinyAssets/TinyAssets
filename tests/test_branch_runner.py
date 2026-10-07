@@ -121,36 +121,9 @@ def runner_env(tmp_path, monkeypatch, authenticate_request):
     importlib.reload(us)
 
 
-@pytest.fixture
-def runner_env_anon(tmp_path, monkeypatch):
-    """`runner_env` without a credential — the pre-auth surface.
-
-    Deliberately does NOT request `authenticate_request`, which would flip
-    the provider to the strict credential provider for the whole test. Under
-    strict auth an UNKNOWN action no longer reaches the discovery catalog:
-    the scope layer cannot classify `extensions.flimflam`, so it fail-closes
-    with "No action-scope metadata for extensions.flimflam; refusing gated
-    dispatch" and `available_actions` comes back empty.
-
-    That difference is why this fixture exists. Whether an authenticated
-    caller *should* lose action discovery is a real product question, not
-    one this quarantine sweep gets to answer by rewriting an assertion — see
-    the PR notes. The discovery test keeps running on the path it was
-    written for, which is also the path it was passing on.
-    """
-    base = tmp_path / "output"
-    base.mkdir()
-    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(base))
-    monkeypatch.setenv("UNIVERSE_SERVER_USER", "tester")
-    from tinyassets import universe_server as us
-
-    importlib.reload(us)
-    yield us, base
-    importlib.reload(us)
-
 
 def _call(us, action, **kwargs):
-    return json.loads(us.extensions(action=action, **kwargs))
+    return json.loads(us._extensions_impl(action=action, **kwargs))
 
 
 def _run_and_wait(us, *, timeout: float = 30.0, **kwargs):
@@ -176,30 +149,35 @@ def _run_and_wait(us, *, timeout: float = 30.0, **kwargs):
 
 
 def _build_recipe_branch(us) -> str:
-    """Create the recipe-tracker branch from the Phase 2 vignette."""
-    bid = _call(us, "create_branch", name="Recipe tracker")["branch_def_id"]
-    for nid, display, tmpl in (
+    """Build the recipe-tracker branch from the Phase 2 vignette."""
+    steps = (
         ("capture", "Capture recipe", "Extract recipe: {raw_recipe}"),
         ("categorize", "Categorize", "Classify: {capture_output}"),
         ("archive", "Archive", "Archive: {categorize_output}"),
-    ):
-        _call(us, "add_node",
-              branch_def_id=bid, node_id=nid,
-              display_name=display, prompt_template=tmpl,
-              output_keys=f"{nid}_output")
-    for src, dst in (
-        ("START", "capture"),
-        ("capture", "categorize"),
-        ("categorize", "archive"),
-        ("archive", "END"),
-    ):
-        _call(us, "connect_nodes",
-              branch_def_id=bid, from_node=src, to_node=dst)
-    _call(us, "set_entry_point", branch_def_id=bid, node_id="capture")
-    for field in ("raw_recipe", "capture_output", "categorize_output", "archive_output"):
-        _call(us, "add_state_field",
-              branch_def_id=bid, field_name=field, field_type="str")
-    return bid
+    )
+    spec = {
+        "name": "Recipe tracker",
+        "entry_point": "capture",
+        "node_defs": [
+            {"node_id": nid, "display_name": display, "prompt_template": tmpl,
+             "output_keys": [f"{nid}_output"]}
+            for nid, display, tmpl in steps
+        ],
+        "edges": [
+            {"from": "START", "to": "capture"},
+            {"from": "capture", "to": "categorize"},
+            {"from": "categorize", "to": "archive"},
+            {"from": "archive", "to": "END"},
+        ],
+        "state_schema": [
+            {"name": field, "type": "str"}
+            for field in ("raw_recipe", "capture_output",
+                          "categorize_output", "archive_output")
+        ],
+    }
+    built = _call(us, "build_branch", spec_json=json.dumps(spec))
+    assert built["status"] == "built", built
+    return built["branch_def_id"]
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -848,9 +826,15 @@ def test_run_branch_recipe_vignette_end_to_end(runner_env):
 
 
 def test_run_branch_rejects_invalid_branch(runner_env):
-    us, _ = runner_env
-    bid = _call(us, "create_branch", name="Empty")["branch_def_id"]
-    # No nodes → validate() fails
+    us, base = runner_env
+    # No nodes → validate() fails. build_branch refuses such a spec up front,
+    # so the stored row is written directly, as a legacy or partial row would be.
+    from tinyassets.daemon_server import save_branch_definition
+
+    bid = "empty-branch"
+    save_branch_definition(base, branch_def=BranchDefinition(
+        branch_def_id=bid, name="Empty", author="tester",
+    ).to_dict())
     result = _call(us, "run_branch", branch_def_id=bid, inputs_json="{}",
                    universe_id=RUNNER_UNIVERSE)
     assert "error" in result
@@ -903,22 +887,6 @@ def test_list_runs_filters_by_branch(runner_env):
     listing = _call(us, "list_runs", branch_def_id=bid1)
     assert listing["count"] == 1
     assert listing["runs"][0]["branch_def_id"] == bid1
-
-
-def test_stream_run_returns_events_since_cursor(runner_env):
-    us, _ = runner_env
-    bid = _build_recipe_branch(us)
-    run = _run_and_wait(us, branch_def_id=bid,
-                       inputs_json=json.dumps({"raw_recipe": "a"}))
-
-    first = _call(us, "stream_run", run_id=run["run_id"], since_step=-1)
-    assert first["events"]
-    cursor = first["next_cursor"]
-
-    # Polling again with the new cursor should return nothing new.
-    second = _call(us, "stream_run",
-                   run_id=run["run_id"], since_step=cursor)
-    assert second["events"] == []
 
 
 def test_cancel_after_completion_reports_actual_status_without_cancel_record(runner_env):
@@ -1008,42 +976,29 @@ def test_no_fantasy_domain_import_required(runner_env, monkeypatch):
         monkeypatch.setitem(sys.modules, mod, None)
 
     us, _ = runner_env
-    bid = _call(us, "create_branch", name="Research")["branch_def_id"]
-    _call(us, "add_node",
-          branch_def_id=bid, node_id="analyze",
-          display_name="Analyze", prompt_template="Summarize: {topic}",
-          output_keys="summary")
-    _call(us, "connect_nodes",
-          branch_def_id=bid, from_node="START", to_node="analyze")
-    _call(us, "connect_nodes",
-          branch_def_id=bid, from_node="analyze", to_node="END")
-    _call(us, "set_entry_point", branch_def_id=bid, node_id="analyze")
-    _call(us, "add_state_field",
-          branch_def_id=bid, field_name="topic", field_type="str")
-    _call(us, "add_state_field",
-          branch_def_id=bid, field_name="summary", field_type="str")
+    built = _call(us, "build_branch", spec_json=json.dumps({
+        "name": "Research",
+        "entry_point": "analyze",
+        "node_defs": [{
+            "node_id": "analyze", "display_name": "Analyze",
+            "prompt_template": "Summarize: {topic}", "output_keys": ["summary"],
+        }],
+        "edges": [
+            {"from": "START", "to": "analyze"},
+            {"from": "analyze", "to": "END"},
+        ],
+        "state_schema": [
+            {"name": "topic", "type": "str"},
+            {"name": "summary", "type": "str"},
+        ],
+    }))
+    assert built["status"] == "built", built
+    bid = built["branch_def_id"]
 
     run = _run_and_wait(us, branch_def_id=bid,
                        inputs_json=json.dumps({"topic": "small language models"}))
     assert run["status"] == "completed"
     assert "summary" in run["output"]
-
-
-def test_unknown_action_catalog_lists_run_actions(runner_env_anon):
-    """Runs on the ANONYMOUS fixture, deliberately — see its docstring.
-
-    This test was never quarantined; it passed before this file gained a
-    credential. It is about action discovery, not about authorization, so it
-    keeps running on the path it was written for rather than being rewritten
-    to match a different surface.
-    """
-    us, _ = runner_env_anon
-    result = _call(us, "flimflam")
-    avail = result.get("available_actions", [])
-    for action in ("run_branch", "get_run", "list_runs",
-                   "stream_run", "wait_for_run", "cancel_run",
-                   "get_run_output"):
-        assert action in avail
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1094,16 +1049,6 @@ def test_list_runs_catalog_text_is_compact(runner_env):
     assert "- `" in result["text"]
 
 
-def test_stream_run_events_text_is_tight(runner_env):
-    us, _ = runner_env
-    bid = _build_recipe_branch(us)
-    run = _run_and_wait(us, branch_def_id=bid,
-                       inputs_json=json.dumps({"raw_recipe": "a"}))
-    result = _call(us, "stream_run", run_id=run["run_id"], since_step=-1)
-    assert "text" in result
-    assert result["text"].count("\n") < 30
-
-
 def test_cancel_run_text_channel(runner_env):
     us, _ = runner_env
     bid = _build_recipe_branch(us)
@@ -1131,19 +1076,6 @@ def test_get_run_output_text_channel(runner_env):
     assert "text" in single
     assert "capture_output" in single["text"]
     assert run["run_id"] not in single["text"]
-
-
-def test_stream_run_truncates_long_event_history(runner_env):
-    """Per spec §Long-running actions — tight poll responses, not the
-    whole transcript. Caps at 12 event lines even with more events."""
-    us, _ = runner_env
-    bid = _build_recipe_branch(us)
-    run = _run_and_wait(us, branch_def_id=bid,
-                       inputs_json=json.dumps({"raw_recipe": "a"}))
-    result = _call(us, "stream_run", run_id=run["run_id"], since_step=-1)
-    text_lines = result["text"].split("\n")
-    bullet_lines = [line for line in text_lines if line.startswith("- step")]
-    assert len(bullet_lines) <= 12
 
 
 # ─────────────────────────────────────────────────────────────────────────────

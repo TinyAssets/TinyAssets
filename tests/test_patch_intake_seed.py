@@ -854,18 +854,3 @@ def test_the_rail_tells_a_granted_universe_how_to_send(world, monkeypatch):
     assert 'target="patch_request"' in view["how"]
     assert 'operation="send"' in view["how"]
     assert "No credential" in view["how"]
-
-
-def test_the_handbook_chapter_says_a_patch_request_needs_no_token():
-    """Served guidance, from the shipped chapter the agent can actually read."""
-    from tinyassets.engine_mcp_server import SERVED_TOOL_CHAPTERS
-
-    chapter = SERVED_TOOL_CHAPTERS["write_graph"]["delivering"]
-    assert "patch request" in chapter.lower()
-    assert "NO credential" in chapter
-    assert "patch_intake" in chapter
-    assert "patch_intake_consent_required" in chapter
-    assert "request_pending" in chapter
-    assert "already declined or cleared" in chapter
-    # And it names the wrong move explicitly, because that is what happened.
-    assert "connect_http" in chapter

@@ -680,7 +680,7 @@ no user benefit:
 - internal identifiers and storage;
 - the MCP handles (`read_graph` … `converse`) and the connector's tool
   descriptions;
-- PLAN.md's term "universe".
+- the term "universe" in `docs/architecture.md`.
 
 Where the line is unclear, the C0 slice flags it in its PR.
 

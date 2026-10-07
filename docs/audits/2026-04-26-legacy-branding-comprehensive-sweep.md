@@ -111,7 +111,7 @@ For `Universe Server` rewrite (the real bug class per §2.2):
 
 > **Default for these 7 docs = retire-with-stamp**, not rewrite, not delete. Add a one-block header at top:
 > ```
-> > **HISTORICAL — superseded.** This doc captured architecture intent as of <date>. Current architecture lives in PLAN.md. Kept for git/decision history. Do not edit, do not extend, do not cite as live.
+> > **HISTORICAL — superseded.** This doc captured architecture intent as of <date>. Current architecture lives in docs/architecture.md (PLAN.md was retired 2026-10-06). Kept for git/decision history. Do not edit, do not extend, do not cite as live.
 > ```
 > That preserves the history (host's "thorough" rule + project's "no destructive ops") while killing the "competes with PLAN.md" failure mode.
 >
@@ -132,7 +132,7 @@ For `Universe Server` rewrite (the real bug class per §2.2):
 **Exact header text to apply** (verbatim from lead directive):
 
 ```
-> **HISTORICAL — superseded.** This doc captured architecture intent as of <date>. Current architecture lives in PLAN.md. Kept for git/decision history. Do not edit, do not extend, do not cite as live.
+> **HISTORICAL — superseded.** This doc captured architecture intent as of <date>. Current architecture lives in docs/architecture.md (PLAN.md was retired 2026-10-06). Kept for git/decision history. Do not edit, do not extend, do not cite as live.
 ```
 
 `<date>` = the doc's existing date stamp (preserve exactly as it appears at the top).

@@ -7,7 +7,7 @@ populate the registry at import time.
 
 The engine never imports any specific domain — domains are plugins that
 call ``register_domain_callable`` from their own package-level modules.
-Matches PLAN.md's "engine is infrastructure, not topology" principle.
+The engine is infrastructure, not topology (``docs/architecture.md``).
 
 Registration is idempotent: re-registering the same
 ``(domain_id, node_id)`` overwrites silently with a debug log. Tests

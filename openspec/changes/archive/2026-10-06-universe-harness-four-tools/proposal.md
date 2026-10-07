@@ -1,6 +1,6 @@
 ## Why
 
-PLAN.md Scoping Rule 1 now says the universe IS its agent's harness, project
+The founder's direction (README § Direction) says the universe IS its agent's harness, project
 folder and workspace (PR #3970, pi.dev as the reference shape). Today the
 served universe agent cannot touch its own folder at all: every file and shell
 tool is denied, because own-files access was "deferred to an OS sandbox"

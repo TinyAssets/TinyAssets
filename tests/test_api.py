@@ -1455,8 +1455,8 @@ class TestDaemonSwitching:
         # re-export which does not forward writes to module-level names,
         # so ``api_mod._daemon = mock`` patches the shim's own binding
         # rather than the real module the running handlers read. Until
-        # the engine/domain API split completes (PLAN.md "Engine And
-        # Domains"), tests that mutate private state must go to the
+        # the engine/domain API split completes (docs/architecture.md
+        # § Domains), tests that mutate private state must go to the
         # real module.
         from fantasy_daemon import api as api_mod
 

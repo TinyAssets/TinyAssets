@@ -7,7 +7,7 @@ works.
 ## Decide first — this one gates the rest
 
 - [ ] **Founder approval of the four-primitive floor** (`design.md`). It is a
-      `PLAN.md`-level statement: isolated execution, authenticated call,
+      direction-level ADR: isolated execution, authenticated call,
       durable state, identity and arbitration are the platform; workspace,
       graph, pooling, retry and resume become libraries. Everything below
       assumes it.

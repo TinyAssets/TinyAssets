@@ -17,7 +17,7 @@ by Cloudflare Access (HTTP 403).
 **Why.** Extra public URL = extra attack surface. The 2026-04-19 P0 (`api.tinyassets.io`
 appearing then disappearing during a tunnel reshuffle) demonstrated that secondary DNS
 records create ambiguity and silent-fail risks.
-PLAN.md design decision: System Shape § "Single canonical public entry point."
+Design decision: one canonical public entry point (`AGENTS.md` fact 11).
 
 **Architecture constraint.** `deploy/cloudflare-worker/worker.js:31` uses
 `mcp.tinyassets.io` as the tunnel origin for Worker subrequests — deleting the CNAME
@@ -284,7 +284,7 @@ green and internal is now reachable (ungated), proving the rollback worked.
 3. The Worker continues to work either way — the Access headers it sends are ignored
    if no Access application is protecting the subdomain.
 
-**Note:** Rollback is for emergency diagnosis only. The PLAN.md design decision
+**Note:** Rollback is for emergency diagnosis only. The single-entry decision
 argues against a second public surface at steady state. After recovery, re-enable
 the Access application and investigate root cause.
 

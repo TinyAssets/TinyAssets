@@ -1,7 +1,7 @@
 """SQLite-backed multiplayer daemon-server substrate.
 
 R7 split in progress. Shared helpers live in ``tinyassets/storage/``
-per the Module Layout commitment (PLAN.md §Module Layout). This
+per the layout in ``docs/architecture.md``. This
 module still hosts the bounded-context functions + schema migration
 entry point; those move to ``tinyassets/storage/{accounts, daemons,
 universes_branches, requests_votes, notes_work_targets, goals_gates}.py``
