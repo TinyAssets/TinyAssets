@@ -150,3 +150,41 @@ class ExtensionStore:
         if row is None:
             raise ExtensionError("extension activation unavailable")
         return set(json.loads(row["ceiling_json"])) & set(current_capabilities)
+
+
+def remote_mcp_by_connection(base, *, owner, universe):
+    """Active remote MCP servers keyed by the connection their slot is bound to.
+
+    A read for the owner's connection inventory; it grants and checks nothing.
+    Calls still re-verify authority, incarnation and grant at dispatch.
+    """
+    with packages._db(base) as conn:
+        conn.executescript(_SCHEMA)
+        rows = conn.execute(
+            "SELECT a.agent_id, a.name, a.revision, a.generation, b.bindings_json "
+            "FROM extension_activations a JOIN extension_bindings b ON "
+            "a.owner_id=b.owner_id AND a.universe_id=b.universe_id AND "
+            "a.agent_id=b.agent_id AND a.name=b.name AND a.revision=b.revision AND "
+            "a.generation=b.generation WHERE a.owner_id=? AND a.universe_id=? "
+            "AND a.state='active' ORDER BY a.agent_id, a.name", (owner, universe),
+        ).fetchall()
+    found = {}
+    for row in rows:
+        store = ExtensionStore(base, owner=owner, universe=universe, agent=row["agent_id"])
+        try:
+            doc, _ = store.load(row["name"], row["revision"]).content()
+            bindings = json.loads(row["bindings_json"])
+            pins = {slot: pin["connection_id"] for slot, pin in bindings.items()}
+        except (ValueError, LookupError, OSError, TypeError, AttributeError):
+            continue  # Unreadable revisions are reported by the agent's own catalog.
+        for server in doc.get("mcp_servers", []):
+            connection_id = pins.get(server.get("slot"))
+            if server["transport"] != "remote" or not connection_id:
+                continue
+            found.setdefault(connection_id, []).append({
+                "agent": row["agent_id"], "extension": row["name"], "server": server["name"],
+                "description": server["description"], "url": server["url"],
+                "capability": (f"extension:{row['name']}:{row['revision']}:"
+                               f"{row['generation']}:mcp_servers:{server['name']}"),
+            })
+    return found
