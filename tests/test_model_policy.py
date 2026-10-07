@@ -69,9 +69,10 @@ def test_connected_local_and_subscription_defaults_precede_ranked_http():
         default_model_id="native",
     )
     assert refs(order([hosted, local, subscription])) == [
+        ModelRef("gateway", "opaque-A"),
         ModelRef("local", "opaque-A"),
         ModelRef("subscription", "native"),
-        ModelRef("gateway", "opaque-A"),
+        ModelRef("subscription", "not-selected"),
     ]
 
 
@@ -356,9 +357,9 @@ def test_automatic_without_primary_cannot_silently_discard_accepted_fallbacks():
 def test_automatic_missing_native_default_has_a_visible_reason(default, reason):
     c = replace(connection(), source_kind="subscription", default_model_id=default)
     result = order([c])
-    assert not result.candidates
-    assert result.ineligible[0].ref == ModelRef("gateway", default or "")
-    assert result.ineligible[0].reason == reason
+    assert refs(result) == [ModelRef("gateway", "opaque-A")]
+    assert result.candidates[0].basis == "automatic"
+    assert not result.ineligible
 
 
 def test_unverified_model_limit_does_not_cycle_same_model_through_sibling_keys():

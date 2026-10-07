@@ -3506,6 +3506,11 @@
       return this.draft&&this.draft.mode==="explicit" ? this.draft.saved_default : null;
     },
     policyLabel(policy){return !policy||policy.mode==="automatic" ? "Automatic" : this.label(policy.saved_default);},
+    automaticLabel(policy){
+      if(policy&&policy.mode!=="automatic") return this.policyLabel(policy);
+      const chosen=this.fresh()&&this.snapshot.order&&this.snapshot.order[0];
+      return chosen ? "Using "+this.label(chosen)+": strongest of your connected sources" : "Automatic";
+    },
     rows(){return this.snapshot ? [...this.snapshot.options,...this.snapshot.unavailable] : [];},
     row(ref){return this.rows().find(row=>this.key(row.reference)===this.key(ref));},
     usable(row){return !!row&&row.in_candidate_catalog===true&&row.freshness==="fresh"&&!(row.reasons||[]).length;},
@@ -3693,7 +3698,7 @@
     observe(text){this.actual=text;this.paintHeader();},
     paintHeader(){
       const policy=modelChoiceForNextTurn||(this.snapshot&&this.snapshot.preferences.policy);
-      $("btn-models").textContent=(modelChoiceForNextTurn||this.snapshot ? "Model: "+this.policyLabel(policy) : "Change model")+" ▾";
+      $("btn-models").textContent=(modelChoiceForNextTurn||this.snapshot ? "Model: "+this.automaticLabel(policy) : "Change model")+" ▾";
       $("model-actual").textContent=this.actual;
       $("model-next").textContent="Next message: "+(modelChoiceForNextTurn===null ? "saved default" : this.policyLabel(modelChoiceForNextTurn))+" · "+this.actual;
     },

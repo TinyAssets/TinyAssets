@@ -57,6 +57,9 @@ def tray_mod():
     """Load tinyassets_tray.py by path (it's not a package)."""
     # Stub tray deps in whatever state we're in; these stubs don't
     # need real functionality because tests never invoke icon/menu paths.
+    # The stubs are removed afterwards: a later test in this worker that
+    # imports the real PIL (e.g. ImageChops) must not get the empty stand-in.
+    before = dict(sys.modules)
     _stub_tray_deps(None)
     spec = importlib.util.spec_from_file_location(
         "tinyassets_tray_under_test", TRAY_PATH,
@@ -65,7 +68,10 @@ def tray_mod():
     mod = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = mod
     spec.loader.exec_module(mod)
-    return mod
+    yield mod
+    for name in ("PIL", "PIL.Image", "PIL.ImageDraw", "PIL.ImageFont", "pystray"):
+        if name not in before:
+            sys.modules.pop(name, None)
 
 
 @pytest.fixture

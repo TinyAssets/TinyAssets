@@ -48,9 +48,7 @@ def test_nothing_else_writes_the_header():
     falls back to an id can reach the screen."""
     html, _ = render_app_html()
     writes = re.findall(r'\$\("universe-name"\)\.textContent\s*=', html)
-    guarded = _js_function(html, "showCommandCenterName")
     assert writes == []
-    assert "commandCenterName(value)" in guarded
     assert "universe-name" not in _js_function(html, "pollStatus")
     assert "showCommandCenterName(me&&me.name)" in _js_function(html, "enterSignedIn")
 

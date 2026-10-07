@@ -1,3 +1,9 @@
+## Consolidation into K1
+
+MCP attachment authoring and lifecycle (#4496) are superseded by
+[`one-extension-unit`](../one-extension-unit/proposal.md). Generic remote/stdio
+transport and custody remain backend work consumed by that extension contract.
+
 ## Why
 
 Connect arbitrary MCP services without per-platform code, using existing owner connection authority.

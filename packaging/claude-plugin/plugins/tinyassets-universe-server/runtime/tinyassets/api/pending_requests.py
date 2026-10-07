@@ -252,6 +252,7 @@ def _validated_action(raw: Any) -> dict[str, Any]:
     from tinyassets.api.http_connection import (
         _DEPOSITABLE_AUTH_SCHEMES,
         _DESTINATION_RE,
+        KEYLESS_AUTH_SCHEME,
     )
     from tinyassets.storage.outbound_connections import _URL_SECRET_SCHEME
 
@@ -374,9 +375,20 @@ def _validated_action(raw: Any) -> dict[str, Any]:
             "destination must be 2-127 chars of [a-z0-9._:-] starting alphanumeric"
         )
     scheme = str(action.get("auth_scheme") or "bearer").strip().lower()
-    if scheme not in _DEPOSITABLE_AUTH_SCHEMES:
+    if scheme not in _DEPOSITABLE_AUTH_SCHEMES | {KEYLESS_AUTH_SCHEME}:
         raise ValueError(
-            "auth_scheme must be one of " + ", ".join(sorted(_DEPOSITABLE_AUTH_SCHEMES))
+            "auth_scheme must be one of "
+            + ", ".join(sorted(_DEPOSITABLE_AUTH_SCHEMES | {KEYLESS_AUTH_SCHEME}))
+        )
+    if scheme == KEYLESS_AUTH_SCHEME and (
+        _validated_access(action) == "full" or action.get("scopes")
+        or action.get("git_host") or action.get("oauth")
+    ):
+        # A keyless connection is a yes to named public endpoints and nothing
+        # more: no key to scope, sign in with, or send to git.
+        raise ValueError(
+            'auth_scheme "none" names exact endpoints only: no full access, '
+            "scopes, git_host or oauth"
         )
     # One request may cover SEVERAL exact endpoints. A GitHub pull request needs
     # three calls (create a ref, put contents, open the pull), and one path per
@@ -540,6 +552,13 @@ def _has_sign_in(action: dict[str, Any]) -> bool:
     return (action.get("type") == "connect" and isinstance(offer, dict)
             and offer.get("source") in ("discovered", "directory")
             and bool(offer.get("authorize_url")) and bool(offer.get("token_url")))
+
+
+def _keyless(action: dict[str, Any]) -> bool:
+    """A connect ask for public endpoints that take no key (``auth_scheme`` none)."""
+    from tinyassets.api.http_connection import KEYLESS_AUTH_SCHEME
+
+    return str(action.get("auth_scheme") or "").strip().lower() == KEYLESS_AUTH_SCHEME
 
 
 def _with_sign_in_offer(
@@ -862,6 +881,11 @@ def _validated_fields(
         return []
     if not fields and _has_sign_in(action):
         # Signing in IS the answer; key fields, when present, are the fallback.
+        return []
+    if action["type"] in _DEPOSIT_TYPES and _keyless(action):
+        # Nothing to paste: the owner's yes to the named endpoints is the answer.
+        if fields:
+            raise ValueError('an auth_scheme "none" connect ask takes no fields')
         return []
     if not fields:
         # NO unlabelled fallback for a credential ask.
@@ -1207,7 +1231,9 @@ def request_from_user(
 
     try:
         action = _validated_action(document.get("action"))
-        if action.get("type") == "connect":
+        if action.get("type") == "connect" and _keyless(action):
+            action.pop("oauth_request", None)  # Nothing to sign in to.
+        elif action.get("type") == "connect":
             action, sign_in = _with_sign_in_offer(action, tuple(sign_in_hosts))
     except ValueError as exc:
         return _refused(exc)
@@ -1896,6 +1922,12 @@ def _grant_sentence(row: dict[str, Any]) -> str:
     # (observed live, 2026-08-28).
     where = f' as "{action.get("destination")}"' if action.get("destination") else ""
     git_to = _git_host_clause(action.get("git_host"))
+    if _keyless(action):
+        return (
+            f"This connection{where} will be able to reach exactly these, with no "
+            "key, and nothing else: " + "; ".join(lines) + ". Nothing to paste; "
+            "this is the yes, and you can remove it later."
+        )
     if str(action.get("auth_scheme") or "").strip().lower() == _URL_SECRET_SCHEME:
         # The owner is pasting a whole link, so say what happens to it. The
         # `{secret}` in the endpoint line is the platform's placeholder, not a
@@ -3151,6 +3183,14 @@ def _answer_request(*, universe_id: str = "", payload: Any = None,
             secret_names=secret_names, values=values, answer=answer,
             feedback=feedback, dont_ask_again=dont_ask_again,
         )
+    if action.get("type") in _DEPOSIT_TYPES and _keyless(action):
+        if values or secret_names:
+            return _bad("a keyless connection is a yes; there is nothing to paste")
+        return _deposit_answer(
+            universe_id=universe_id, uid=_uid, udir=udir, row=row, secret="",
+            auth_scheme=action["auth_scheme"], answer=answer, feedback=feedback,
+            dont_ask_again=dont_ask_again,
+        )
     if action.get("type") in _DEPOSIT_TYPES:
         secret, refusal = _assembled_secret(
             scheme=str(action.get("auth_scheme") or "bearer").strip().lower(),
@@ -3356,12 +3396,13 @@ def _deposit_answer(
 
     action = row["action"]
     request_id = row["request_id"]
+    keyless = _keyless(action)
     deposited = connect_http(
         universe_id=universe_id,
         payload=json.dumps(
             {
                 "destination": action["destination"],
-                "secret": secret,
+                **({} if keyless else {"secret": secret}),
                 "auth_scheme": auth_scheme,
                 "allowed_endpoints": action["endpoints"],
                 "scopes": action.get("scopes") or [],
@@ -3374,6 +3415,7 @@ def _deposit_answer(
             }
         ),
         allow_oauth2=auth_scheme == "oauth2",
+        allow_keyless=keyless,
     )
     if deposited.get("error"):
         # Leave it PENDING: the answer did not land, and closing the tab

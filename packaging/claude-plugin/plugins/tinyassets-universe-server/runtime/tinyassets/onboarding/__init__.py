@@ -2556,6 +2556,7 @@ def onboarding_routes() -> list[Any]:
         handle_notify_settings,
         handle_service_worker,
     )
+    from tinyassets.onboarding.outside_clients import handle as handle_outside_clients
     from tinyassets.onboarding.owner_sessions import begin as owner_sign_in
     from tinyassets.onboarding.owner_unread import handle_unread
     from tinyassets.onboarding.public_run import handle_public_run
@@ -2570,6 +2571,7 @@ def onboarding_routes() -> list[Any]:
         Route("/app/unread", handle_unread, methods=["GET", "POST"]),
         Route("/app/owner-sign-in", owner_sign_in, methods=["GET"]),
         Route("/app/approvals/{operation}", handle_approval, methods=["POST"]),
+        Route("/app/outside-clients", handle_outside_clients, methods=["POST"]),
         Route("/app/ui-frame", handle_ui_frame, methods=["GET", "HEAD"]),
         Route("/app/model-connect/{operation}", handle_model_connect, methods=["POST"]),
         Route("/app/model-callback/{flow}", handle_model_callback, methods=["GET", "HEAD"]),

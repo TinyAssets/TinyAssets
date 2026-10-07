@@ -83,7 +83,7 @@ MAX_REQUIRED_SKIPPED = 134
 MAX_TEST_SECONDS = 3000
 #: Entries in the quarantine ledger, flaky or not. A quarantine that only grows
 #: is how a red build gets normalised.
-MAX_QUARANTINE = 63
+MAX_QUARANTINE = 47
 #: How far MAX_QUARANTINE may sit above the ledger. Deleting entries means
 #: lowering the cap in the same PR (tests/test_ci_required_tests.py), so the
 #: cap only ratchets down unless a reviewed change raises it.

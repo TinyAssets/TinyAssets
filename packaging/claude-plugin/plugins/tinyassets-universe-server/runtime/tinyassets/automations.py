@@ -264,6 +264,7 @@ CREATE TABLE IF NOT EXISTS automation_attempts (
 #: Columns added after the first shipped schema. Applied by probe on every
 #: connect so a database written by the previous build keeps working.
 _MIGRATIONS: tuple[tuple[str, str, str], ...] = (
+    ("automations", "outside_origin_json", "TEXT"),
     ("automations", "consecutive_failures", "INTEGER NOT NULL DEFAULT 0"),
     ("automations", "not_before", "TEXT NOT NULL DEFAULT ''"),
     ("automations", "event_type", "TEXT NOT NULL DEFAULT ''"),
@@ -752,6 +753,11 @@ class AutomationStore:
                     automation.last_due_local,
                 ),
             )
+            from tinyassets.outside_authority import captured_identity
+
+            conn.execute("UPDATE automations SET outside_origin_json=? WHERE automation_id=?",
+                         (captured_identity(automation.owner_principal_id),
+                          automation.automation_id))
             conn.execute("COMMIT")
         except AutomationUnavailable:
             raise
@@ -1935,8 +1941,14 @@ def _runtime_authority_reason(base_path: Path, automation: Automation) -> str:
     any authority can be revoked, and the RUN has to notice, not the row.
     """
     from tinyassets.daemon_server import get_founder_home, universe_access_permission
+    from tinyassets.outside_authority import automation_identity
     from tinyassets.provider_assignment import load_provider_assignment
 
+    try:
+        with automation_identity(base_path, automation):
+            pass
+    except (PermissionError, ValueError, OSError, sqlite3.Error):
+        return "outside_client_authority_refused"
     owner = automation.owner_principal_id
     uid = automation.universe_id
     if universe_access_permission(base_path, universe_id=uid, actor_id=owner) != "admin":
@@ -2272,7 +2284,15 @@ def run_due_automation(
         )
         return WAITING_FOR_SEAT
     universe_seats.release(outcome.seat_id, db=db)
-    return _run_due_automation(base_path, automation, due_at, **kwargs)
+    from tinyassets.outside_authority import automation_identity
+
+    try:
+        with automation_identity(base_path, automation):
+            return _run_due_automation(base_path, automation, due_at, **kwargs)
+    except (PermissionError, ValueError, OSError, sqlite3.Error):
+        reason = "outside_client_authority_refused"
+        _record_refusal(base, automation, reason, moment, str(kwargs.get("consumer_id") or ""))
+        return reason
 
 
 def _run_due_automation(

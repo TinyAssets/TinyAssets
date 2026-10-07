@@ -33,6 +33,7 @@ the project root for the live orientation artifacts.
 - `PHASE_3_FILES.txt` — Phase 3 file index
 - `VAULT_GUIDE.md` — early vault guide
 - `INDEX.md` — early root index
+- `REFLECTION.md`, `OUTREACH_CONTENT_ENGINE.md`, `WORKFLOW_DESIGN_HANDOFF_FOR_POLSIA.md` — root notes moved here 2026-10-06
 
 ## Reading order if you need historical context
 

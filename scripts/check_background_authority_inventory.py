@@ -55,6 +55,9 @@ SENSITIVE_EXECUTION_CALLS = frozenset(
 # Required reviewed CLASSIFICATION of canonical execution callsites.
 # New boundaries must be reviewed; mirror paths are generated below.
 CLASSIFICATION: tuple[CallSite, ...] = (
+    # K1 remote MCP transport uses the governed connection effector stream, not
+    # a graph executor. Exact launch/connection authority is rechecked per reply.
+    CallSite("tinyassets/mcp_remote.py", "RemoteMcp._exchange", "self.stream"),
     # D2 Activities launches through the existing owner-bound run entrypoint.
     # Keep canonical and shipped copies exact; the activities root below records
     # the owner/provider checks, generation fence, and agent start barrier.

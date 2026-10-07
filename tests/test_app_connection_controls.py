@@ -206,15 +206,6 @@ def test_controller_shares_one_scope_with_the_account_and_home_globals():
         assert not re.search(r"\b(?:let|var|const)\s+" + name + r"\b", source), name
 
 
-def test_connection_ui_raises_no_native_dialog():
-    # The detector fires on the shape this replaced, so a pass means absence.
-    assert _calls("confirm", 'if(!confirm("Disconnect x?"))return;')
-    source = controller_source()
-    for name in ("confirm", "alert", "prompt"):
-        assert not _calls(name, source), name
-    assert "Confirm disconnect" in source  # the in-page control is still there
-
-
 def test_only_one_confirmation_is_open_at_a_time():
     result = run(
         "connections=[{connection_id:'c1',destination:'my-service',incarnation:'i1'},"

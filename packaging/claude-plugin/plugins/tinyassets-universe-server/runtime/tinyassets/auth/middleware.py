@@ -868,6 +868,9 @@ def current_identity() -> Identity:
     identity = _current_identity.get()
     if identity is None:
         raise PermissionError("Authentication required")
+    from tinyassets.outside_authority import check_identity
+
+    check_identity(identity)
     return identity
 
 
@@ -1070,6 +1073,26 @@ class AuthContextMiddleware:
             if not canary_authorized and not is_hook_route:
                 auth_middleware(token)
             identity = _current_identity.get()
+            if identity is not None and identity.metadata.get("outside_origin") is not None:
+                if path not in ("/mcp", "/mcp/"):
+                    await _send_forbidden_403(
+                        send, "outside clients use the MCP capability surface")
+                    return
+                if method == "POST":
+                    body, messages, disconnected, oversized = await _buffer_request_body(receive)
+                    if oversized:
+                        await _send_payload_too_large_413(send)
+                        return
+                    try:
+                        from tinyassets.outside_authority import check_mcp_request
+
+                        if disconnected:
+                            raise PermissionError("request disconnected")
+                        check_mcp_request(identity, json.loads(body))
+                    except (ValueError, PermissionError):
+                        await _send_forbidden_403(send, "outside client capability not granted")
+                        return
+                    receive = _replay_receive(messages, receive)
             if not canary_authorized and not is_hook_route and identity is None:
                 linking_body = None
                 if method == "POST" and path in ("/mcp", "/mcp/"):

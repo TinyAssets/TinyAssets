@@ -51,6 +51,12 @@ def route_with_session(url: str, session_key: str, turn: str = "", *,
         params.append(f"{SESSION_PARAM}={quote(key, safe='')}")
     if live:
         params.append(f"{TURN_PARAM}={quote(live, safe='')}")
+    from tinyassets.auth.middleware import current_identity_or_none
+
+    identity = current_identity_or_none()
+    if (identity is not None and identity.metadata.get("outside_origin") is not None
+            and (tools is None or not grant_key)):
+        raise PermissionError("outside work requires a signed engine launch")
     grant = launch_grant(grant_key, key, live, tools) if tools is not None else ""
     if grant:
         params.append(f"{GRANT_PARAM}={quote(grant, safe='')}")
@@ -107,6 +113,22 @@ def launch_tools() -> tuple[str, ...] | None:
     session_key, turn = _route_params()
     return verified_launch_grant(
         (os.environ.get(LAUNCH_GRANT_KEY_ENV) or "").strip(), session_key, turn, grant)
+
+
+def outside_origin():
+    """Origin rides inside the signed grant; removing it invalidates the grant."""
+    import base64
+    import json
+
+    from fastmcp.server.dependencies import get_http_request
+
+    if launch_tools() is None:
+        return None
+    grant = str(get_http_request().query_params.get(GRANT_PARAM) or "")
+    for name in grant.rpartition(".")[0].split(","):
+        if name.startswith("outside~"):
+            return json.loads(base64.urlsafe_b64decode(name.removeprefix("outside~")))
+    return None
 
 
 def _take(session_key: str, turn: str) -> str | None:

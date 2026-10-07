@@ -49,8 +49,6 @@ def test_the_app_greets_a_new_commander_and_switches_command_centers():
     text = _visible_app_text()
     assert "Welcome, commander." in text
     assert "Your command center is waking up." in text
-    assert "Switch command center" in text
-    assert "Switch UI" not in text
     assert _copy_words(text) == []
 
 

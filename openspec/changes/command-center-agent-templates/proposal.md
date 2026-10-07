@@ -1,3 +1,9 @@
+## Consolidation into K1
+
+Installed-agent directory resolution (#4515) is folded into
+[`one-extension-unit`](../one-extension-unit/proposal.md), using authenticated
+bindings and completed package pins. Unrelated package copy behavior remains here.
+
 ## Why
 Published command centers copy screens and workflows but omit the explicitly configured agents their screens address. File-package `agents` entries are instruction-file inventory, not private runnable bindings.
 

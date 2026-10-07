@@ -52,6 +52,9 @@ def _refuse_before_launch(monkeypatch, dead="codex"):
 @pytest.mark.parametrize("configured", ["mixed"], indirect=True)
 def test_a_spent_signin_answers_from_the_next_allowed_model(agent, monkeypatch):
     """The whole point. The turn ANSWERS; it does not stop."""
+    # Known finite HTTP capacity makes the native sign-in the first automatic
+    # candidate, so its pre-launch failure is actually exercised.
+    monkeypatch.setattr("tinyassets.request_budget.requests_today", lambda *a, **kw: (0, 0))
     seen = _refuse_before_launch(monkeypatch)
 
     reply = _converse(agent, monkeypatch)

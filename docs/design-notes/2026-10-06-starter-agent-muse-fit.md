@@ -24,8 +24,8 @@ Muse research notes of 2026-10-04 in this folder.
 | Chat agent that plans multi-step tasks and picks its skills | Starter AGENTS.md + on-demand skills; `ta search` for breadth | Present; resident prompt too large (K2) |
 | Asks before anything sensitive (once / task / site / always), records what it did | Protected approval sheet + rules (primitive) | Present (#4469, #4483) |
 | Connectors directory; "connect my X" in chat | Directory-as-data + connect sheet (primitive) | Present for Google (#4495); others via MCP |
-| Custom connector from an MCP link (OAuth sign-in link) | One extension unit: MCP contribution (K1) | Works in tests (#4496); needs isolation |
-| Agent writes its own connector for any API | One extension unit authored by the agent (K1) | Missing (K1) |
+| Custom connector from an MCP link (OAuth sign-in link) | One extension unit: MCP contribution (K1) | K1 #4519 ports remote HTTPS/OAuth onto today's broker; only stdio needs U1 |
+| Agent writes its own connector for any API | One extension unit authored by the agent (K1) | K1 #4519 implements pinned tools plus local credential slots; draft, not deployed |
 | Browser fallback in a cloud computer; watch / take over / stop; injected logins | Browser primitive in the owner's cell; starter skill for when to use it | On hold (#4512); needs isolation |
 | Persistent cloud computer ("VM tab": watch the agent's machine) | The owner's box (persistent /u, bash, git) + a starter view of it | Box partial (#4485 merged); no live view |
 | Keeps working after the app closes; monitors; reminders; scheduled checks | Workflows/automations (primitive) + starter skills ("watch X, tell me if Y") | Present (scheduled notes work) |

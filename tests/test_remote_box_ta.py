@@ -6,6 +6,7 @@ a real bwrap boundary to the reference driver's real auth, writes and receipts.
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import os
 import shlex
@@ -227,7 +228,7 @@ def test_remote_box_uses_real_engine_ta_capabilities(world, tmp_path, monkeypatc
 
     from fastmcp import Client
 
-    from tests.test_ta_capabilities_jail import _engine
+    from tests.test_ta_capabilities_jail import _engine, bash
     from tinyassets import engine_mcp_http as routes
     from tinyassets.agent_loop.box_ta import engine_ta
     from tinyassets.engine_tool_client import EngineToolSession
@@ -241,6 +242,15 @@ def test_remote_box_uses_real_engine_ta_capabilities(world, tmp_path, monkeypatc
 
     provider = IsolatedBox(boxes_root=tmp_path / "boxes", state_dir=tmp_path / "state",
                            owner_of={"u-alpha": "actor-a"}.get, allow_unisolated=True)
+    # Parity oracle: the surface local jailed ta advertises, extensions included.
+    local_names = {x["name"] for x in json.loads(bash(server, "ta search"))}
+    package = {"extension.json": json.dumps({
+        "schema_version": 2, "name": "sample", "executable": "run.py",
+        "tools": [{"name": "hello", "description": "Hello", "arguments": {}}]}).encode(),
+        "run.py": b"#!/usr/bin/env python3\nprint('{}')\n"}
+    install = json.dumps({"files": {path: base64.b64encode(data).decode()
+                                    for path, data in package.items()}})
+    remote_lists = []
 
     async def run():
         client = Client(server.mcp)
@@ -255,12 +265,20 @@ def test_remote_box_uses_real_engine_ta_capabilities(world, tmp_path, monkeypatc
         executor.enable_ta(bridge)
         tools = BoxTools(executor)
         try:
-            local = await engine_ta(engine, {"op": "catalog"})
             remote = await tools.bash("catalog", "ta search", timeout=60)
             assert remote.endswith("[exit code 0]"), remote
-            found = json.loads(remote.removesuffix("[exit code 0]").strip())
-            assert {x["name"] for x in found} == {x["name"] for x in local["capabilities"]}
-            assert "read_graph" in {x["name"] for x in found}
+            found = {x["name"] for x in json.loads(remote.removesuffix("[exit code 0]").strip())}
+            assert found == local_names
+            assert {"read_graph", "extension:install", "extension:list"} <= found
+            # K1 lifecycle effects cross the bound bridge into the owner's own store.
+            installed = await tools.bash("ext-install",
+                "ta extension:install --json " + shlex.quote(install), timeout=60)
+            assert installed.endswith("[exit code 0]"), installed
+            revision = json.loads(installed.removesuffix("[exit code 0]").strip())
+            assert not revision.get("error"), revision
+            listed = await tools.bash("ext-list", "ta extension:list --json '{}'", timeout=60)
+            assert listed.endswith("[exit code 0]"), listed
+            remote_lists.append(json.loads(listed.removesuffix("[exit code 0]").strip()))
             answer = await tools.bash("owner-read",
                 'ta read_graph --json \'{"target":"connections"}\'', timeout=60)
             assert answer.endswith("[exit code 0]"), answer
@@ -274,6 +292,9 @@ def test_remote_box_uses_real_engine_ta_capabilities(world, tmp_path, monkeypatc
         asyncio.run(run())
     finally:
         provider.close()
+    [remote_list] = remote_lists
+    assert [x["name"] for x in remote_list["extensions"]] == ["sample"]
+    assert json.loads(bash(server, "ta extension:list --json '{}'")) == remote_list
 
 
 @pytest.mark.parametrize("lost", ["start", "stream", "send_stdin"])
@@ -341,14 +362,17 @@ def test_remote_payload_cannot_select_foreign_authority(world, tmp_path, monkeyp
         try:
             for field, value in (("owner", "actor-b"), ("universe", "u-bravo"),
                                  ("turn", "expired")):
-                # Invoke the shipped CLI transport inside the REAL box. Extra
-                # context must be refused by the actual capability dispatcher.
-                code = ("import runpy; import shutil; "
-                        "m=runpy.run_path(shutil.which('ta')); "
-                        "print(m['remote'](" + repr({"op": "catalog", field: value}) + "))")
-                result = await tools.bash("foreign-" + field, "python3 -c " + shlex.quote(code))
-                assert "invalid ta request" in result
-                assert result.endswith("[exit code 1]")
+                for op in ({"op": "catalog"},
+                           {"op": "call", "name": "extension:list", "arguments": {}}):
+                    # Invoke the shipped CLI transport inside the REAL box. Extra
+                    # context must be refused by the actual capability dispatcher.
+                    code = ("import runpy; import shutil; "
+                            "m=runpy.run_path(shutil.which('ta')); "
+                            "print(m['remote'](" + repr({**op, field: value}) + "))")
+                    result = await tools.bash(f"foreign-{field}-{op['op']}",
+                                              "python3 -c " + shlex.quote(code))
+                    assert "invalid ta request" in result
+                    assert result.endswith("[exit code 1]")
         finally:
             bridge.close()
             provider.close()

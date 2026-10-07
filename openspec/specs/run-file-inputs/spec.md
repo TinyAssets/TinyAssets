@@ -7,7 +7,7 @@ putting whole files, mutable paths or caller-asserted authority in workflow stat
 This first slice covers same-owner app upload and authoring capture, direct definition or
 published-version runs, declared node reads, owned export and custody lifecycle.
 The broader origin/materialization proposal remains in
-`openspec/changes/bind-immutable-run-files/`; it is not implemented by this spec.
+`openspec/changes/archive/2026-10-06-bind-immutable-run-files/`; it is not implemented by this spec.
 
 ## Requirements
 
