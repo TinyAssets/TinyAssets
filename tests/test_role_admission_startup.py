@@ -97,6 +97,26 @@ def retire(volume, principal, center):
     return broker(volume, lambda db: db.admission("retire", principal, center).generation)
 
 
+def intent(volume, center, principal, machine):
+    """A D218 deletion intent document (tinyassets.role_owner_tree_deletion)."""
+    store = volume / ".role-owner-delete"
+    store.mkdir(mode=0o700, exist_ok=True)
+    os.chown(store, 1001, 1001)
+    path = store / f"{center}.json"
+    path.write_text(json.dumps({"center": center, "principal": principal,
+                                "token": "0" * 32, "machine": machine}, sort_keys=True))
+    os.chown(path, 1001, 1001)
+    path.chmod(0o600)
+
+
+def relabel(path, uid, gid, acl=None):
+    os.chown(path, uid, gid)
+    for name in os.listxattr(path):
+        os.removexattr(path, name)
+    if acl is not None:
+        os.setxattr(path, contract.ACCESS, acl)
+
+
 def trees(volume, report):
     """Every path of every bound center, by its owner's machine identity."""
     found = {}
@@ -363,3 +383,119 @@ def test_a_deleted_centers_quarantine_escrow_is_carried(volume, reverse):
     rows = json.loads((volume / STATE / "journal.json").read_text())["rows"]
     assert sorted(r["path"] for r in rows if r["kind"] == "quarantine") == names
     assert (escrow / "alice/work/payload").read_bytes() == b"alice"
+
+
+def test_a_pending_tree_outside_the_journal_binds_only_its_checked_owner(volume):
+    """A stray intent binds nothing: a pending tree that is not in E needs its
+    owner's canonical label or the intent D218 wrote for that owner."""
+    setup(volume)
+    restart(volume)
+    bob = reserve(volume, "bob")
+    # Unlabelled tree, intent for someone else: refused before any mutation.
+    legacy_center(volume, "mallory", "u-stray", home=False)
+    intent(volume, "u-stray", "bob", bob)
+    before = metadata(volume)
+    with pytest.raises(MigrationRefused, match="deletion intent does not match.*u-stray"):
+        run(volume)
+    assert metadata(volume) == before
+    # Mallory's own intent cannot bind it either: mallory has no reservation
+    # behind the tree, and an unlabelled root is not what D218 checked.
+    machine = reserve(volume, "mallory")
+    intent(volume, "u-stray", "mallory", machine)
+    before = metadata(volume)
+    with pytest.raises(MigrationRefused, match="deletion intent does not match.*u-stray"):
+        run(volume)
+    assert metadata(volume) == before
+    shutil.rmtree(volume / "u-stray")
+    (volume / ".role-owner-delete/u-stray.json").unlink()
+    # A tree under bob's label that the daemon now attributes to alice, with an
+    # intent naming alice or bob: neither binds it to alice.
+    publish(volume, "bob", "u-moved")
+    with sqlite3.connect(volume / ".tinyassets.db") as db:
+        db.execute("UPDATE universe_acl SET actor_id='alice' WHERE universe_id='u-moved'")
+    for principal, reservation in (("alice", reserve(volume, "alice")), ("bob", bob)):
+        intent(volume, "u-moved", principal, reservation)
+        before = metadata(volume)
+        with pytest.raises(MigrationRefused, match="deletion intent does not match.*u-moved"):
+            run(volume)
+        assert metadata(volume) == before
+    shutil.rmtree(volume / "u-moved")
+    (volume / ".role-owner-delete/u-moved.json").unlink()
+    with sqlite3.connect(volume / ".tinyassets.db") as db:
+        db.execute("DELETE FROM universe_acl WHERE universe_id='u-moved'")
+    # Correctly labelled pending orphan: still bound to its owner, no row.
+    carol = publish(volume, "carol", "u-carol")
+    intent(volume, "u-carol", "carol", carol)
+    rows = admissions(volume)
+    report = restart(volume)
+    assert report["principals"]["u-carol"] == "carol" and report["bindings"]["u-carol"] == carol
+    assert admissions(volume) == rows  # a pending deletion is never newly admitted
+    assert label(volume / "u-carol") == contract.canonical_label(carol)
+    # Intent-content match alone (1001:<reservation>, ACL dropped) also binds.
+    relabel(volume / "u-carol", 1001, carol)
+    report = restart(volume)
+    assert report["bindings"]["u-carol"] == carol
+    assert label(volume / "u-carol") == contract.canonical_label(carol)
+
+
+def test_a_restored_missing_tree_is_bound_only_under_an_acceptable_label(volume):
+    setup(volume)
+    restart(volume)
+    machine, _ = admit(volume, "alice", "alice-second")
+    restart(volume)
+    shutil.rmtree(volume / "alice-second")
+    assert restart(volume)["missing"] == {"alice-second": "alice"}
+    bob = reserve(volume, "bob")
+    restored = volume / "alice-second"
+    restored.mkdir(mode=0o750)
+    (restored / "notes.md").write_bytes(b"restored")
+    os.chown(restored / "notes.md", 1001, 1001)
+    # Labelled for bob, by ids or by an ACL on a 1001:1001 root: refused, no change.
+    for uid, gid, acl in ((1001, bob, contract.canonical_root_acl(bob)),
+                          (1001, 1001, contract.canonical_root_acl(bob)),
+                          (bob, bob, None)):
+        relabel(restored, uid, gid, acl)
+        before = metadata(volume)
+        with pytest.raises(MigrationRefused,
+                           match="restored center tree is labelled for another owner"):
+            run(volume)
+        assert metadata(volume) == before
+        assert journal(volume)["missing"] == {"alice-second": "alice"}
+    # Unlabelled (a backup, or the old image's): bound to alice and relabelled.
+    relabel(restored, 1001, 1001)
+    report = restart(volume)
+    assert report["missing"] == {} and report["bindings"]["alice-second"] == machine
+    assert label(restored) == contract.canonical_label(machine)
+    assert (restored / "notes.md").stat().st_uid == machine
+    assert (restored / "notes.md").read_bytes() == b"restored"
+
+
+def test_missing_is_carried_across_reverse_then_forward(volume):
+    setup(volume)
+    restart(volume)
+    machine, _ = admit(volume, "alice", "alice-second")
+    restart(volume)
+    shutil.rmtree(volume / "alice-second")
+    assert restart(volume)["missing"] == {"alice-second": "alice"}
+    report = run(volume, reverse=True)
+    assert report["missing"] == {"alice-second": "alice"}
+    assert journal(volume)["missing"] == {"alice-second": "alice"}
+    concerns = volume / STATE / contract.CONCERNS
+    for record in concerns.iterdir():
+        record.unlink()
+    report = restart(volume)  # the old image wrote no rows; still held, still loud
+    assert report["missing"] == {"alice-second": "alice"}
+    assert report["alarms"] == [dict(center="alice-second", principal="alice")]
+    assert [p.name for p in concerns.iterdir()] == [
+        time.strftime("%Y-%m-%d", time.gmtime()) + "-missing-center-alice-second.md"]
+    assert journal(volume)["missing"] == {"alice-second": "alice"}
+    # Restored while the old image ran (1001:1001, no ACL): bound on forward.
+    run(volume, reverse=True)
+    (volume / "alice-second").mkdir(mode=0o755)  # its daemon-db row never left
+    (volume / "alice-second/draft.md").write_bytes(b"restored")
+    for path in (volume / "alice-second", volume / "alice-second/draft.md"):
+        os.chown(path, 1001, 1001)
+    report = restart(volume)
+    assert report["missing"] == {} and report["admits"] == []
+    assert report["bindings"]["alice-second"] == machine
+    assert label(volume / "alice-second") == contract.canonical_label(machine)

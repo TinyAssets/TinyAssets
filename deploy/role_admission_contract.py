@@ -49,6 +49,11 @@ def canonical_label(machine):
     return (1001, machine, 0o750, canonical_root_acl(machine), None)
 
 
+def legacy_label(label):
+    """A root the single-UID image owns (pre-split, or after a reverse): no owner named."""
+    return label[:2] == (1001, 1001) and label[3:] == (None, None)
+
+
 def _xattr(fd, name):
     try:
         return os.getxattr(fd, name)
@@ -122,7 +127,8 @@ def expected(principals, missing, rows):
     return centers
 
 
-def reconcile(*, journal, discovered, rows, pending=(), adoptable=lambda center, owner: False):
+def reconcile(*, journal, discovered, rows, pending=(), adoptable=lambda center, owner: False,
+              resumable=lambda center, owner: False, restorable=lambda center, owner: False):
     """The DA7 plan for one startup; refuses before any mutation.
 
     ``journal``: the volume journal (or None). ``discovered``: inventory
@@ -131,7 +137,11 @@ def reconcile(*, journal, discovered, rows, pending=(), adoptable=lambda center,
     centers with a durable deletion intent. ``adoptable``: the caller's check
     that an unlogged root's label matches its owner's durable reservation and
     the center was never admitted (DA4 orphan); the broker's own append
-    invariants refuse a retired or foreign name regardless.
+    invariants refuse a retired or foreign name regardless. ``resumable``: the
+    center's deletion intent names this owner and its reservation, so a
+    pending tree outside E binds only to the owner D218 checked.
+    ``restorable``: a tree back from ``missing`` carries its owner's canonical
+    label or the single-UID image's, never another owner's.
 
     Returns ``principals`` (the journal's next map, every bindable tree),
     ``missing``, ``generation``, ``adopt`` and ``seed`` (admit rows to append
@@ -147,6 +157,7 @@ def reconcile(*, journal, discovered, rows, pending=(), adoptable=lambda center,
             raise ContractRefused("full migration authority changed")
         return dict(principals=dict(discovered), missing=dict(journal.get("missing", {})),
                     generation=after, adopt=[], seed=[], alarms=[])
+    held = journal.get("missing", {}) if journal else {}
     if not journal or not _forward_stable(journal):
         # First volume, or forward after a stable reverse: seed every inventoried
         # center lacking a row; retired or reassigned names refuse; never retire.
@@ -156,34 +167,57 @@ def reconcile(*, journal, discovered, rows, pending=(), adoptable=lambda center,
         seed = []
         for center, principal in sorted(discovered.items()):
             events = state.get(center, {})
-            if "retire" in events and center not in pending:
-                raise ContractRefused(f"a retired center has a tree: {center}")
+            if "retire" in events:
+                if center not in pending:
+                    raise ContractRefused(f"a retired center has a tree: {center}")
+                _resume(center, principal, resumable)
             if events.get("admit", principal) != principal:
                 raise ContractRefused(f"center owner differs from its log row: {center}")
+            _restore(center, principal, held, restorable)
             if "admit" not in events:
                 seed.append((principal, center))
-        return dict(principals=dict(discovered), missing={}, generation=high, adopt=[],
-                    seed=seed, alarms=[])
-    centers = expected(journal["principals"], journal.get("missing", {}), rows)
+        # A center held missing before a reverse stays held: the old image
+        # writes no rows, so only a retire row already in the log drops it.
+        missing = {center: principal for center, principal in sorted(held.items())
+                   if center not in discovered and center not in pending
+                   and "retire" not in state.get(center, {})}
+        return dict(principals=dict(discovered), missing=missing, generation=high, adopt=[],
+                    seed=seed, alarms=_alarms(missing))
+    centers = expected(journal["principals"], held, rows)
     adopt = []
     for center, principal in sorted(discovered.items()):
         if center in centers:
             if centers[center] != principal:
                 raise ContractRefused(f"center owner changed: {center}")
+            _restore(center, principal, held, restorable)
         elif center in pending:
-            continue  # D218 resume reruns pass one on its bound tree
+            # D218 resume reruns pass one on its bound tree, but only for the
+            # owner whose label or intent D218 checked: a stray intent binds nothing.
+            if not adoptable(center, principal):
+                _resume(center, principal, resumable)
         elif adoptable(center, principal):
             adopt.append((principal, center))
         else:
             raise ContractRefused(f"unexplained center tree: {center}")
-    missing, alarms = {}, []
-    for center, principal in sorted(centers.items()):
-        if center in discovered or center in pending:
-            continue
-        missing[center] = principal  # F1 (b): start everyone else
-        alarms.append(dict(center=center, principal=principal))
+    # F1 (b): a lost tree with no deletion is held; everyone else starts.
+    missing = {center: principal for center, principal in sorted(centers.items())
+               if center not in discovered and center not in pending}
     return dict(principals=dict(discovered), missing=missing, generation=high, adopt=adopt,
-                seed=[], alarms=alarms)
+                seed=[], alarms=_alarms(missing))
+
+
+def _alarms(missing):
+    return [dict(center=center, principal=principal) for center, principal in missing.items()]
+
+
+def _resume(center, principal, resumable):
+    if not resumable(center, principal):
+        raise ContractRefused(f"deletion intent does not match its tree's owner: {center}")
+
+
+def _restore(center, principal, held, restorable):
+    if center in held and not restorable(center, principal):
+        raise ContractRefused(f"restored center tree is labelled for another owner: {center}")
 
 
 def _forward_stable(journal):
@@ -233,8 +267,11 @@ def raise_alarms(state, alarms, *, now=None):
                     f"admission log admits it, no `retire` row or deletion intent explains "
                     f"the loss, so it is held on `volume.json` `missing`, unbound, and its "
                     f"requests refuse. Every other owner started.\n\n"
-                    f"Resolve: restore the tree (the next restart binds it if its label and "
-                    f"row still match), or delete the account/center so D218 writes its "
+                    f"Resolve: restore the tree with its root labelled for `{principal}` "
+                    f"(canonical) or unlabelled (`1001:1001`, no ACL). The next restart "
+                    f"binds it to the owner the daemon database names, which must still be "
+                    f"`{principal}`, and relabels it; a root labelled for any other owner "
+                    f"refuses startup. Or delete the account/center so D218 writes its "
                     f"`retire` row. Re-checked at every restart.\n")
             fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW
                          | os.O_CLOEXEC, 0o600, dir_fd=concerns)

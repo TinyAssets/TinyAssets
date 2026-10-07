@@ -104,6 +104,21 @@ def _deletion_intents(root, owner):
     return {name[:-5] for name in names}
 
 
+def _deletion_intent(root, center, owner):
+    """One center's intent document as D218 wrote it, or None when unreadable."""
+    try:
+        with owner["_directory"](root, DELETION_INTENTS) as intents:
+            fd = os.open(f"{center}.json", os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
+                         | os.O_NOATIME | os.O_CLOEXEC, dir_fd=intents)
+            with os.fdopen(fd, "rb") as handle:
+                if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
+                    return None
+                intent = json.loads(handle.read(4096))
+    except (OSError, ValueError):
+        return None
+    return intent if isinstance(intent, dict) else None
+
+
 def _identity_database(root, owner):
     """Whether the broker's identity map, and so its admission log, exists yet."""
     if owner["_stat"](root, ".broker") is None:
@@ -146,18 +161,41 @@ def _admission_plan(root, journal, facts, rows, pending, contract, owner):
     """
     logged = {row["center"] for row in rows}
 
+    def label(center):
+        with owner["_directory"](root, center) as directory:
+            return contract["read_label"](directory)
+
     def adoptable(center, principal):
         # DA4 orphan: published under its owner's canonical label and never
         # logged; the broker's own append refuses a retired or foreign name.
         machine = facts["bindings"].get(center)
         if machine is None or center in logged:
             return False
-        with owner["_directory"](root, center) as directory:
-            return contract["read_label"](directory) == contract["canonical_label"](machine)
+        return label(center) == contract["canonical_label"](machine)
+
+    def resumable(center, principal):
+        # D218 wrote the intent only after the root was 1001:<this owner's
+        # reservation>; both must still say so. A stray or reattributed intent,
+        # or a root under someone else, names another owner.
+        machine = facts["bindings"].get(center)
+        intent = _deletion_intent(root, center, owner)
+        return (machine is not None and intent is not None and intent.get("center") == center
+                and intent.get("principal") == principal
+                and type(intent.get("machine")) is int and intent["machine"] == machine
+                and label(center)[:2] == (1001, machine))
+
+    def restorable(center, principal):
+        # Back from missing: its owner's label, or none (a backup, or the old
+        # image's); the owner phase then relabels it. Another owner's refuses.
+        machine = facts["bindings"].get(center)
+        found = label(center)
+        return machine is not None and (found == contract["canonical_label"](machine)
+                                         or contract["legacy_label"](found))
 
     try:
         plan = contract["reconcile"](journal=journal, discovered=facts["principals"],
-                                     rows=rows, pending=pending, adoptable=adoptable)
+                                     rows=rows, pending=pending, adoptable=adoptable,
+                                     resumable=resumable, restorable=restorable)
     except contract["ContractRefused"] as exc:
         raise owner["MigrationRefused"](str(exc)) from exc
     if journal and journal["state"] != "stable":
