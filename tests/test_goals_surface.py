@@ -21,6 +21,8 @@ from pathlib import Path
 
 import pytest
 
+from tinyassets.api.helpers import _base_path as _helpers_base_path
+
 
 def _become(user_id: str) -> None:
     """Sign in as ``user_id``.
@@ -79,6 +81,25 @@ def _call(us, tool, action, **kwargs):
     """Dispatch to the named MCP tool function with action + kwargs."""
     fn = getattr(us, f"_{tool}_impl")
     return json.loads(fn(action=action, **kwargs))
+
+
+def _bind(branch_def_id: str, goal_id: str) -> None:
+    """Bind a branch to a Goal through storage; the ``goals bind`` action
+    is gone and the reads under test only look at the stored ``goal_id``."""
+    from tinyassets.daemon_server import update_branch_definition
+
+    update_branch_definition(
+        _helpers_base_path(), branch_def_id=branch_def_id,
+        updates={"goal_id": goal_id},
+    )
+
+
+def _soft_delete_goal(goal_id: str) -> None:
+    """Soft-delete through storage; ``goals update`` is gone."""
+    from tinyassets.daemon_server import update_goal
+
+    update_goal(_helpers_base_path(), goal_id=goal_id,
+                updates={"visibility": "deleted"})
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -182,11 +203,6 @@ def test_get_rejects_missing_goal(p5_env):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# update — owner-only
-# ─────────────────────────────────────────────────────────────────────────────
-
-
-# ─────────────────────────────────────────────────────────────────────────────
 # bind + list_branches filter
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -205,6 +221,36 @@ def _build_branch(us, name: str = "Trivial") -> str:
     }
     return _call(us, "extensions", "build_branch",
                  spec_json=json.dumps(spec))["branch_def_id"]
+
+
+def test_list_branches_goal_id_filter(p5_env):
+    us, _ = p5_env
+    gid1 = _call(us, "goals", "propose", name="G1")["goal"]["goal_id"]
+    gid2 = _call(us, "goals", "propose", name="G2")["goal"]["goal_id"]
+    b1 = _build_branch(us, name="B1")
+    b2 = _build_branch(us, name="B2")
+    b3 = _build_branch(us, name="B3")
+    _bind(b1, gid1)
+    _bind(b2, gid1)
+    _bind(b3, gid2)
+
+    # scope="all" so unpublished drafts built by _build_branch are included
+    # (default scope="published" would filter them out).
+    result = _call(us, "extensions", "list_branches", goal_id=gid1, scope="all")
+    assert result["count"] == 2
+    ids = {b["branch_def_id"] for b in result["branches"]}
+    assert ids == {b1, b2}
+
+
+def test_get_goal_shows_bound_branches(p5_env):
+    us, _ = p5_env
+    gid = _call(us, "goals", "propose", name="G")["goal"]["goal_id"]
+    bid = _build_branch(us, name="Bound")
+    _bind(bid, gid)
+
+    result = _call(us, "goals", "get", goal_id=gid)
+    assert result["branch_count"] == 1
+    assert "Bound" in result["text"]
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -240,9 +286,55 @@ def test_search_requires_query(p5_env):
     assert result["status"] == "rejected"
 
 
+def test_search_hides_deleted_goals(p5_env):
+    us, _ = p5_env
+    gid = _call(us, "goals", "propose", name="Hidden")["goal"]["goal_id"]
+    _soft_delete_goal(gid)
+    result = _call(us, "goals", "search", query="hidden")
+    assert result["count"] == 0
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # leaderboard
 # ─────────────────────────────────────────────────────────────────────────────
+
+
+def test_leaderboard_run_count(p5_env):
+    us, _ = p5_env
+    gid = _call(us, "goals", "propose", name="G")["goal"]["goal_id"]
+    b1 = _build_branch(us, name="B1")
+    b2 = _build_branch(us, name="B2")
+    _bind(b1, gid)
+    _bind(b2, gid)
+
+    # B2 has 2 runs, B1 has 1. Run sync via execute_branch to avoid
+    # background worker waits.
+    from tinyassets.branches import BranchDefinition
+    from tinyassets.daemon_server import get_branch_definition
+    from tinyassets.runs import execute_branch
+
+    for _ in range(1):
+        br = BranchDefinition.from_dict(
+            get_branch_definition(Path(_helpers_base_path()), branch_def_id=b1)
+        )
+        execute_branch(
+            _helpers_base_path(), branch=br, inputs={"x": "a"},
+            actor="universe:u-goals",
+        )
+    for _ in range(2):
+        br = BranchDefinition.from_dict(
+            get_branch_definition(Path(_helpers_base_path()), branch_def_id=b2)
+        )
+        execute_branch(
+            _helpers_base_path(), branch=br, inputs={"x": "a"},
+            actor="universe:u-goals",
+        )
+
+    result = _call(us, "goals", "leaderboard",
+                   goal_id=gid, metric="run_count")
+    assert len(result["entries"]) == 2
+    assert result["entries"][0]["branch_def_id"] == b2
+    assert result["entries"][0]["value"] == 2
 
 
 def test_leaderboard_outcome_gated_off_when_flag_unset(p5_env):
@@ -271,9 +363,89 @@ def test_leaderboard_rejects_unknown_metric(p5_env):
     assert "outcome" in result["available_metrics"]
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# common_nodes
-# ─────────────────────────────────────────────────────────────────────────────
+def test_leaderboard_forks_counts_parent_chain(p5_env):
+    us, _ = p5_env
+    gid = _call(us, "goals", "propose", name="G")["goal"]["goal_id"]
+    parent_bid = _build_branch(us, name="Parent")
+    _bind(parent_bid, gid)
+
+    # Create two "forks" — manually save branches with parent_def_id
+    # pointing at parent.
+    from tinyassets.branches import BranchDefinition
+    from tinyassets.daemon_server import save_branch_definition
+
+    parent = BranchDefinition.from_dict({"branch_def_id": parent_bid})
+    for i in range(2):
+        forked = parent.fork(new_name=f"Fork{i}", author="tester")
+        forked.goal_id = gid  # bind fork too so leaderboard sees both
+        save_branch_definition(_helpers_base_path(), branch_def=forked.to_dict())
+
+    result = _call(us, "goals", "leaderboard",
+                   goal_id=gid, metric="forks")
+    # Parent entry should show 2 forks.
+    ranked = {r["branch_def_id"]: r["value"] for r in result["entries"]}
+    assert ranked.get(parent_bid) == 2
+
+
+def test_archive_consultation_uses_gate_leaderboard_parent_signal(p5_env):
+    us, base = p5_env
+    gid = _call(us, "goals", "propose", name="G")["goal"]["goal_id"]
+
+    from tinyassets.daemon_server import (
+        claim_gate,
+        set_goal_ladder,
+        update_branch_definition,
+    )
+
+    set_goal_ladder(
+        _helpers_base_path(),
+        goal_id=gid,
+        ladder=[
+            {"rung_key": "draft", "label": "Draft"},
+            {"rung_key": "reviewed", "label": "Reviewed"},
+        ],
+    )
+
+    stronger_outcome = _build_branch(us, name="Stronger Outcome")
+    higher_quality = _build_branch(us, name="Higher Quality")
+    for branch_id, quality in (
+        (stronger_outcome, 0.75),
+        (higher_quality, 0.95),
+    ):
+        _bind(branch_id, gid)
+        update_branch_definition(
+            base,
+            branch_def_id=branch_id,
+            updates={"stats": {"avg_quality_score": quality}},
+        )
+
+    claim_gate(
+        base,
+        branch_def_id=stronger_outcome,
+        goal_id=gid,
+        rung_key="reviewed",
+        evidence_url="https://example.com/reviewed",
+        claimed_by="tester",
+    )
+    claim_gate(
+        base,
+        branch_def_id=higher_quality,
+        goal_id=gid,
+        rung_key="draft",
+        evidence_url="https://example.com/draft",
+        claimed_by="tester",
+    )
+
+    result = _call(us, "goals", "archive_consultation", goal_id=gid, limit=2)
+
+    assert result["status"] == "ok"
+    assert [entry["branch_def_id"] for entry in result["candidates"]] == [
+        stronger_outcome,
+        higher_quality,
+    ]
+    assert result["candidates"][0]["outcome_signal"]["highest_rung_key"] == "reviewed"
+    assert result["outcome_leaderboard"][0]["branch_def_id"] == stronger_outcome
+    assert "gate leaderboard" in result["text"].lower()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -348,6 +520,22 @@ def test_patch_branch_set_goal_and_unset_goal(p5_env):
 # ─────────────────────────────────────────────────────────────────────────────
 
 
+def test_soft_delete_is_non_disclosing_on_public_list_and_get(p5_env):
+    us, _ = p5_env
+    gid = _call(us, "goals", "propose", name="Doomed")["goal"]["goal_id"]
+    _soft_delete_goal(gid)
+
+    # list hides it
+    lst = _call(us, "goals", "list")
+    assert all(g["goal_id"] != gid for g in lst["goals"])
+
+    # Public exact read uses the same non-disclosing shape as a missing Goal.
+    got = _call(us, "goals", "get", goal_id=gid)
+    missing = _call(us, "goals", "get", goal_id="missing-goal-id")
+    assert got.keys() == missing.keys()
+    assert got["status"] == missing["status"] == "rejected"
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # ledger write-through
 # ─────────────────────────────────────────────────────────────────────────────
@@ -371,9 +559,20 @@ def test_rejected_propose_does_not_ledger(p5_env):
     assert not any(e["action"] == "goals.propose" for e in ledger)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# unknown action + catalog
-# ─────────────────────────────────────────────────────────────────────────────
+def test_reads_do_not_ledger(p5_env):
+    us, base = p5_env
+    gid = _call(us, "goals", "propose", name="G")["goal"]["goal_id"]
+    _call(us, "goals", "list")
+    _call(us, "goals", "get", goal_id=gid)
+    _call(us, "goals", "search", query="G")
+    _call(us, "goals", "leaderboard", goal_id=gid, metric="run_count")
+    _call(us, "goals", "archive_consultation", goal_id=gid)
+    ledger = json.loads((Path(base) / "ledger.json").read_text("utf-8"))
+    read_actions = {"goals.list", "goals.get", "goals.search",
+                    "goals.leaderboard", "goals.common_nodes",
+                    "goals.archive_consultation"}
+    for e in ledger:
+        assert e["action"] not in read_actions
 
 
 # ─────────────────────────────────────────────────────────────────────────────

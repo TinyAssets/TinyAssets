@@ -430,6 +430,27 @@ class TestWikiLint:
         assert any("Body too short" in issue for issue in issues)
         assert not any("orphan-page" in issue for issue in issues)
 
+    def test_lint_accepts_seed_index_as_wikilink_target(self, tmp_path, monkeypatch):
+        wiki_root = tmp_path / "FreshWiki"
+        monkeypatch.setenv("TINYASSETS_WIKI_PATH", str(wiki_root))
+        content = (
+            "---\ntitle: First Concept\ntype: concept\n"
+            "confidence: medium\nsources: [first-note]\n---\n\n"
+            "This first page links to the canonical seed [[index]] while the "
+            "fresh wiki has no other promoted content to cross-reference.\n"
+        )
+        wiki("write", category="concepts", filename="first-concept", content=content)
+        # Promote by moving the draft into pages/ directly; the ``promote``
+        # action is gone, and lint only reads the promoted page.
+        draft = wiki_root / "drafts" / "concepts" / "first-concept.md"
+        page = wiki_root / "pages" / "concepts" / "first-concept.md"
+        page.parent.mkdir(parents=True, exist_ok=True)
+        draft.replace(page)
+
+        result = json.loads(wiki("lint", page="first-concept"))
+
+        assert "MISSING: [[index]]" not in result.get("issues", [])
+
 
 class TestWikiDispatch:
 

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import importlib
 import json
+from pathlib import Path
 
 import pytest
 
@@ -118,6 +119,65 @@ def runner_env(tmp_path, monkeypatch, authenticate_request):
     monkeypatch.setattr(provider_calls, "call_provider", governed_provider_call)
     yield us, base
     importlib.reload(us)
+
+
+
+def _call(us, action, **kwargs):
+    return json.loads(us._extensions_impl(action=action, **kwargs))
+
+
+def _run_and_wait(us, *, timeout: float = 30.0, **kwargs):
+    """Kick off `run_branch` and block on the worker.
+
+    Returns the initial response dict with ``status`` and ``output``
+    populated from the terminal state after the worker completes. Tests
+    written against the sync-v1 contract use this as a drop-in.
+    """
+    kwargs.setdefault("universe_id", RUNNER_UNIVERSE)
+    result = _call(us, "run_branch", **kwargs)
+    if "run_id" not in result:
+        return result
+    from tinyassets.runs import wait_for
+
+    wait_for(result["run_id"], timeout=timeout)
+    snapshot = _call(us, "get_run", run_id=result["run_id"])
+    final = dict(result)
+    final["status"] = snapshot.get("status", result.get("status"))
+    output_result = _call(us, "get_run_output", run_id=result["run_id"])
+    final["output"] = output_result.get("output", {})
+    return final
+
+
+def _build_recipe_branch(us) -> str:
+    """Build the recipe-tracker branch from the Phase 2 vignette."""
+    steps = (
+        ("capture", "Capture recipe", "Extract recipe: {raw_recipe}"),
+        ("categorize", "Categorize", "Classify: {capture_output}"),
+        ("archive", "Archive", "Archive: {categorize_output}"),
+    )
+    spec = {
+        "name": "Recipe tracker",
+        "entry_point": "capture",
+        "node_defs": [
+            {"node_id": nid, "display_name": display, "prompt_template": tmpl,
+             "output_keys": [f"{nid}_output"]}
+            for nid, display, tmpl in steps
+        ],
+        "edges": [
+            {"from": "START", "to": "capture"},
+            {"from": "capture", "to": "categorize"},
+            {"from": "categorize", "to": "archive"},
+            {"from": "archive", "to": "END"},
+        ],
+        "state_schema": [
+            {"name": field, "type": "str"}
+            for field in ("raw_recipe", "capture_output",
+                          "categorize_output", "archive_output")
+        ],
+    }
+    built = _call(us, "build_branch", spec_json=json.dumps(spec))
+    assert built["status"] == "built", built
+    return built["branch_def_id"]
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -745,9 +805,277 @@ def test_execute_branch_refuses_code_the_run_did_not_author(tmp_path):
 # ─────────────────────────────────────────────────────────────────────────────
 
 
+def test_run_branch_recipe_vignette_end_to_end(runner_env):
+    """Acceptance criterion #1 — recipe-tracker runs via run_branch.
+
+    Phase 3.5: run_branch now returns ``status=queued`` and the worker
+    finishes in the background. Use ``_run_and_wait`` to resolve the
+    terminal state for assertion.
+    """
+    us, _ = runner_env
+    bid = _build_recipe_branch(us)
+
+    result = _run_and_wait(
+        us,
+        branch_def_id=bid,
+        inputs_json=json.dumps({"raw_recipe": "pasta carbonara"}),
+    )
+    assert result["status"] == "completed", result
+    assert "capture_output" in result["output"]
+    assert "archive_output" in result["output"]
+
+
+def test_run_branch_rejects_invalid_branch(runner_env):
+    us, base = runner_env
+    # No nodes → validate() fails. build_branch refuses such a spec up front,
+    # so the stored row is written directly, as a legacy or partial row would be.
+    from tinyassets.daemon_server import save_branch_definition
+
+    bid = "empty-branch"
+    save_branch_definition(base, branch_def=BranchDefinition(
+        branch_def_id=bid, name="Empty", author="tester",
+    ).to_dict())
+    result = _call(us, "run_branch", branch_def_id=bid, inputs_json="{}",
+                   universe_id=RUNNER_UNIVERSE)
+    assert "error" in result
+    assert "validation_errors" in result
+
+
+def test_run_branch_rejects_malformed_inputs_json(runner_env):
+    us, _ = runner_env
+    bid = _build_recipe_branch(us)
+    result = _call(
+        us, "run_branch",
+        branch_def_id=bid, inputs_json="this is not json",
+        universe_id=RUNNER_UNIVERSE,
+    )
+    assert "error" in result
+
+
+def test_get_run_returns_snapshot_with_mermaid(runner_env):
+    us, _ = runner_env
+    bid = _build_recipe_branch(us)
+    run = _run_and_wait(
+        us, branch_def_id=bid,
+        inputs_json=json.dumps({"raw_recipe": "risotto"}),
+    )
+    rid = run["run_id"]
+
+    snapshot = _call(us, "get_run", run_id=rid)
+    assert snapshot["status"] == "completed"
+    assert snapshot["mermaid"].startswith("```mermaid")
+    assert "flowchart" in snapshot["mermaid"]
+    # Status-colored classes are declared in the diagram
+    assert "classDef ran" in snapshot["mermaid"]
+    # Per-node statuses are ordered, each a short record
+    assert len(snapshot["node_statuses"]) >= 3
+    assert all(
+        isinstance(s.get("node_id"), str) and isinstance(s.get("status"), str)
+        for s in snapshot["node_statuses"]
+    )
+
+
+def test_list_runs_filters_by_branch(runner_env):
+    us, _ = runner_env
+    bid1 = _build_recipe_branch(us)
+    bid2 = _build_recipe_branch(us)
+    _run_and_wait(us, branch_def_id=bid1,
+                  inputs_json=json.dumps({"raw_recipe": "a"}))
+    _run_and_wait(us, branch_def_id=bid2,
+                  inputs_json=json.dumps({"raw_recipe": "b"}))
+
+    listing = _call(us, "list_runs", branch_def_id=bid1)
+    assert listing["count"] == 1
+    assert listing["runs"][0]["branch_def_id"] == bid1
+
+
+def test_cancel_after_completion_reports_actual_status_without_cancel_record(runner_env):
+    from tinyassets.runs import is_cancel_requested
+
+    us, base = runner_env
+    bid = _build_recipe_branch(us)
+    run = _run_and_wait(us, branch_def_id=bid,
+                       inputs_json=json.dumps({"raw_recipe": "a"}))
+
+    result = _call(us, "cancel_run", run_id=run["run_id"])
+    assert result["status"] == "completed"
+    assert result["terminal"] is True
+    assert result["cancel_requested"] is False
+    assert not is_cancel_requested(base, run["run_id"])
+
+
+def test_get_run_output_full_and_single_field(runner_env):
+    us, _ = runner_env
+    bid = _build_recipe_branch(us)
+    run = _run_and_wait(us, branch_def_id=bid,
+                       inputs_json=json.dumps({"raw_recipe": "a"}))
+
+    full = _call(us, "get_run_output", run_id=run["run_id"])
+    assert full["status"] == "completed"
+    assert full["output"]
+
+    single = _call(us, "get_run_output",
+                   run_id=run["run_id"], field_name="capture_output")
+    assert single["field_name"] == "capture_output"
+    assert isinstance(single["value"], str)
+
+    missing = _call(us, "get_run_output",
+                    run_id=run["run_id"], field_name="nope")
+    assert "error" in missing
+    assert "available_fields" in missing
+
+
+def test_run_ledger_entries_land(runner_env):
+    us, base = runner_env
+    bid = _build_recipe_branch(us)
+    run = _run_and_wait(us, branch_def_id=bid,
+                       inputs_json=json.dumps({"raw_recipe": "a"}))
+    _call(us, "cancel_run", run_id=run["run_id"])
+
+    ledger = json.loads((Path(base) / "ledger.json").read_text("utf-8"))
+    actions = [e["action"] for e in ledger]
+    assert "run_branch" in actions
+    assert "cancel_run" in actions
+
+
+def test_thread_isolation_between_runs(runner_env):
+    """AC #5 — two runs of different branches don't bleed state."""
+    us, base = runner_env
+    bid1 = _build_recipe_branch(us)
+    bid2 = _build_recipe_branch(us)
+    run1 = _run_and_wait(us, branch_def_id=bid1,
+                         inputs_json=json.dumps({"raw_recipe": "first"}))
+    run2 = _run_and_wait(us, branch_def_id=bid2,
+                         inputs_json=json.dumps({"raw_recipe": "second"}))
+
+    rec1 = _call(us, "get_run", run_id=run1["run_id"])
+    rec2 = _call(us, "get_run", run_id=run2["run_id"])
+    assert rec1["run_id"] != rec2["run_id"]
+    # thread_id == run_id (isolation guarantee)
+    from tinyassets.runs import get_run as raw_get_run
+
+    raw1 = raw_get_run(base, run1["run_id"])
+    raw2 = raw_get_run(base, run2["run_id"])
+    assert raw1["thread_id"] == run1["run_id"]
+    assert raw2["thread_id"] == run2["run_id"]
+    assert raw1["thread_id"] != raw2["thread_id"]
+
+
+def test_no_fantasy_domain_import_required(runner_env, monkeypatch):
+    """AC #6 — a non-fantasy branch runs with no fantasy_author imports."""
+    import sys
+
+    # Drop any previously-imported fantasy_author modules to prove the
+    # runner doesn't require them.
+    fa_mods = [
+        k for k in list(sys.modules)
+        if k.startswith("fantasy_author")
+        or k.startswith("domains.fantasy_daemon")
+    ]
+    for mod in fa_mods:
+        monkeypatch.setitem(sys.modules, mod, None)
+
+    us, _ = runner_env
+    built = _call(us, "build_branch", spec_json=json.dumps({
+        "name": "Research",
+        "entry_point": "analyze",
+        "node_defs": [{
+            "node_id": "analyze", "display_name": "Analyze",
+            "prompt_template": "Summarize: {topic}", "output_keys": ["summary"],
+        }],
+        "edges": [
+            {"from": "START", "to": "analyze"},
+            {"from": "analyze", "to": "END"},
+        ],
+        "state_schema": [
+            {"name": "topic", "type": "str"},
+            {"name": "summary", "type": "str"},
+        ],
+    }))
+    assert built["status"] == "built", built
+    bid = built["branch_def_id"]
+
+    run = _run_and_wait(us, branch_def_id=bid,
+                       inputs_json=json.dumps({"topic": "small language models"}))
+    assert run["status"] == "completed"
+    assert "summary" in run["output"]
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # tool_return_shapes.md compliance (two-channel returns)
 # ─────────────────────────────────────────────────────────────────────────────
+
+
+def test_run_branch_returns_markdown_text_channel(runner_env):
+    """Phase 3.5 — run_branch returns status=queued immediately with a
+    text channel that points callers at the polling surface."""
+    us, _ = runner_env
+    bid = _build_recipe_branch(us)
+    result = _call(us, "run_branch", branch_def_id=bid,
+                   inputs_json=json.dumps({"raw_recipe": "a"}),
+                   universe_id=RUNNER_UNIVERSE)
+    assert "text" in result
+    assert "queued" in result["text"].lower()
+    # Phone-legibility: raw run_id must live in structuredContent, not
+    # the text channel (#58). run_id is still present in the dict.
+    assert result["run_id"] not in result["text"]
+    assert "run_id" in result  # structured content still carries it
+    assert 'read_graph target="run"' in result["text"]
+    assert "wait_for_run" not in result["text"]
+    assert "get_run" not in result["text"]
+    assert "cancel_run" not in result["text"]
+
+
+def test_get_run_text_channel_matches_summary(runner_env):
+    us, _ = runner_env
+    bid = _build_recipe_branch(us)
+    run = _run_and_wait(us, branch_def_id=bid,
+                       inputs_json=json.dumps({"raw_recipe": "a"}))
+    snap = _call(us, "get_run", run_id=run["run_id"])
+    assert "text" in snap
+    assert "```mermaid" in snap["text"]
+
+
+def test_list_runs_catalog_text_is_compact(runner_env):
+    us, _ = runner_env
+    bid = _build_recipe_branch(us)
+    _run_and_wait(us, branch_def_id=bid,
+                  inputs_json=json.dumps({"raw_recipe": "a"}))
+    _run_and_wait(us, branch_def_id=bid,
+                  inputs_json=json.dumps({"raw_recipe": "b"}))
+    result = _call(us, "list_runs")
+    assert "text" in result
+    assert "run(s):" in result["text"]
+    assert "- `" in result["text"]
+
+
+def test_cancel_run_text_channel(runner_env):
+    us, _ = runner_env
+    bid = _build_recipe_branch(us)
+    run = _run_and_wait(us, branch_def_id=bid,
+                       inputs_json=json.dumps({"raw_recipe": "a"}))
+    result = _call(us, "cancel_run", run_id=run["run_id"])
+    assert "text" in result
+    assert "Run finished" in result["text"]
+    assert "Cancel requested" not in result["text"]
+
+
+def test_get_run_output_text_channel(runner_env):
+    us, _ = runner_env
+    bid = _build_recipe_branch(us)
+    run = _run_and_wait(us, branch_def_id=bid,
+                       inputs_json=json.dumps({"raw_recipe": "a"}))
+    full = _call(us, "get_run_output", run_id=run["run_id"])
+    assert "text" in full
+    # #58: raw run_id does not leak into the phone-legible text channel.
+    assert run["run_id"] not in full["text"]
+    # The workflow name should surface instead — it's in the text.
+    assert "recipe tracker" in full["text"].lower()
+    single = _call(us, "get_run_output", run_id=run["run_id"],
+                   field_name="capture_output")
+    assert "text" in single
+    assert "capture_output" in single["text"]
+    assert run["run_id"] not in single["text"]
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -757,6 +1085,33 @@ def test_execute_branch_refuses_code_the_run_did_not_author(tmp_path):
 # `run_branch` returns ``status=queued`` in <1s even when the graph takes
 # minutes. `cancel_run` actually stops an in-flight run at the next node
 # boundary. `recover_in_flight_runs` cleans up interrupted runs on restart.
+
+
+def test_run_branch_returns_quickly_with_queued_status(runner_env):
+    """AC: MCP returns in <1s wall even when the graph would take much
+    longer. Phase 3.5 makes this real."""
+    import time
+
+    us, _ = runner_env
+    bid = _build_recipe_branch(us)
+
+    start = time.monotonic()
+    result = _call(us, "run_branch", branch_def_id=bid,
+                   inputs_json=json.dumps({"raw_recipe": "a"}),
+                   universe_id=RUNNER_UNIVERSE)
+    elapsed = time.monotonic() - start
+
+    assert result["status"] == "queued"
+    assert result["run_id"]
+    # 1s budget — the synchronous prep path writes the run row + a
+    # handful of pending events. Mock provider never runs in the
+    # foreground.
+    assert elapsed < 2.0, f"run_branch took {elapsed:.2f}s, expected <2s"
+    # Wait for the background worker to finish before leaving the test
+    # so we don't leak threads into the next one.
+    from tinyassets.runs import wait_for
+
+    wait_for(result["run_id"], timeout=30.0)
 
 
 def test_cancel_run_interrupts_mid_flight(tmp_path):

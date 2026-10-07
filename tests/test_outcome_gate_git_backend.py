@@ -18,6 +18,13 @@ SqliteOnlyBackend tests skip the dirty-check / git-commit assertions
 
 from __future__ import annotations
 
+import importlib
+import json
+import subprocess
+from pathlib import Path
+
+import pytest
+
 # ───────────────────────────────────────────────────────────────────────
 # Fixtures
 # ───────────────────────────────────────────────────────────────────────
@@ -186,10 +193,161 @@ def test_sqlite_only_save_gate_claim_returns_none_commit(tmp_path):
 
 
 # ───────────────────────────────────────────────────────────────────────
-# SqliteCached backend: commits + YAML + force
+# SqliteCached backend: reads do not commit
 # ───────────────────────────────────────────────────────────────────────
 
 
-# ───────────────────────────────────────────────────────────────────────
-# Integration: define_ladder → claim → retract → re-claim flow
-# ───────────────────────────────────────────────────────────────────────
+def _init_git_repo(repo: Path) -> None:
+    """Initialize a bare git repo at ``repo`` with one empty commit
+    so `git_bridge` treats it as enabled.
+    """
+    subprocess.run(
+        ["git", "init", "-b", "main"], cwd=repo, check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.email", "test@example.com"],
+        cwd=repo, check=True, capture_output=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "Test"],
+        cwd=repo, check=True, capture_output=True,
+    )
+    (repo / "README.md").write_text("seed\n")
+    subprocess.run(
+        ["git", "add", "README.md"], cwd=repo, check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "commit", "-m", "init"], cwd=repo, check=True,
+        capture_output=True,
+    )
+
+
+def _become(user_id: str) -> None:
+    """Sign in as ``user_id``.
+
+    These tests used to set ``UNIVERSE_SERVER_USER``, which named the actor by
+    environment variable -- authority from a string anybody can set. The
+    autouse operator fixture rebinds between tests, so this does not leak.
+    """
+    from tinyassets.auth import middleware as _mw
+    from tinyassets.auth.provider import Identity
+
+    _mw._current_identity.set(
+        Identity(
+            user_id=user_id,
+            username=user_id,
+            display_name=user_id,
+            capabilities=[
+                "tinyassets.universe.read",
+                "tinyassets.universe.write",
+                "tinyassets.universe.admin",
+                "tinyassets.extensions.read",
+                "tinyassets.extensions.write",
+            ],
+        )
+    )
+
+
+@pytest.fixture
+def cached_gates_env(tmp_path, monkeypatch, authenticate_request):
+    """A temp git repo with GATES_ENABLED + sqlite_cached backend."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_git_repo(repo)
+    base = repo / "output"
+    base.mkdir()
+    monkeypatch.chdir(repo)
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(base))
+    _become("alice")
+    monkeypatch.setenv("GATES_ENABLED", "1")
+    monkeypatch.setenv("TINYASSETS_STORAGE_BACKEND", "sqlite_cached")
+    # Branch mutation requires a credential-derived subject. Without one the
+    # extensions surface returns
+    # `{"error": "Authenticated branch subject required."}` and these tests
+    # die before reaching their own concern. The conftest default grants
+    # extensions read/write/admin only, and the scope check is per-family.
+    # This file drives `gates` and `goals`: `claim` is `gates.costly`,
+    # `define_ladder` / `retract` are `gates.admin`. Nothing here asserts a
+    # scope refusal, so granting them costs no assertion strength.
+    authenticate_request("alice", capabilities=[
+        "tinyassets.extensions.read",
+        "tinyassets.extensions.write",
+        "tinyassets.extensions.admin",
+        "tinyassets.gates.read",
+        "tinyassets.gates.write",
+        "tinyassets.gates.costly",
+        "tinyassets.gates.admin",
+        "tinyassets.goals.read",
+        "tinyassets.goals.write",
+    ])
+    from tinyassets.catalog import backend as backend_mod
+    backend_mod.invalidate_backend_cache()
+    from tinyassets import universe_server as us
+    importlib.reload(us)
+    yield us, base, repo, monkeypatch
+    backend_mod.invalidate_backend_cache()
+    importlib.reload(us)
+
+
+def _call(us, tool, action, **kwargs):
+    if tool == "gates":
+        from tinyassets.api.market import gates as fn
+    else:
+        fn = getattr(us, f"_{tool}_impl")
+    return json.loads(fn(action=action, **kwargs))
+
+
+def _seed(us, base):
+    """A Goal with ``_LADDER`` and one bound branch. ``build_branch`` binds
+    via ``goal_id``; the ladder goes through storage (``define_ladder`` is
+    gone)."""
+    from tinyassets.daemon_server import set_goal_ladder
+
+    g = _call(us, "goals", "propose", name="Research paper", description="x")
+    gid = g["goal"]["goal_id"]
+    b = _call(us, "extensions", "build_branch", spec_json=json.dumps({
+        "name": "LoRA v3",
+        "goal_id": gid,
+        "entry_point": "draft",
+        "node_defs": [{"node_id": "draft", "display_name": "Draft",
+                       "prompt_template": "draft: {topic}"}],
+        "edges": [{"from": "START", "to": "draft"},
+                  {"from": "draft", "to": "END"}],
+        "state_schema": [{"name": "topic", "type": "str"}],
+    }))
+    assert b["status"] == "built", b
+    set_goal_ladder(base, goal_id=gid, ladder=_LADDER)
+    return gid, b["branch_def_id"]
+
+
+def _last_commit_message(repo: Path) -> str:
+    out = subprocess.run(
+        ["git", "log", "-1", "--pretty=%s"], cwd=repo, check=True,
+        capture_output=True, text=True,
+    )
+    return out.stdout.strip()
+
+
+
+def test_get_ladder_no_commit(cached_gates_env):
+    """Read-only action MUST NOT emit a commit."""
+    us, base, repo, _ = cached_gates_env
+    gid, _bid = _seed(us, base)
+    msg_before = _last_commit_message(repo)
+    _call(us, "gates", "get_ladder", goal_id=gid)
+    msg_after = _last_commit_message(repo)
+    assert msg_before == msg_after
+
+
+def test_leaderboard_no_commit(cached_gates_env):
+    from tinyassets.daemon_server import claim_gate
+
+    us, base, repo, _ = cached_gates_env
+    gid, bid = _seed(us, base)
+    claim_gate(base, branch_def_id=bid, goal_id=gid, rung_key="draft_complete",
+               evidence_url="https://example.com/x", claimed_by="alice")
+    msg_before = _last_commit_message(repo)
+    _call(us, "gates", "leaderboard", goal_id=gid)
+    assert _last_commit_message(repo) == msg_before

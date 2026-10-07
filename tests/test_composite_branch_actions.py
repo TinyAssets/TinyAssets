@@ -167,6 +167,79 @@ def test_build_branch_receipt_reports_unapproved_source_code(comp_env):
     }]
 
 
+def _seed_approved_source_branch(base, *, node_id="approved_calc") -> str:
+    """Persist the caller's branch with one source-code node that carries a
+    genuine, hash-backed approval by a distinct actor, through branch
+    storage (the ``register``/``approve`` actions that used to set this up
+    are gone), and return its id."""
+    from tinyassets.branches import (
+        BranchDefinition,
+        EdgeDefinition,
+        GraphNodeRef,
+        NodeDefinition,
+    )
+    from tinyassets.daemon_server import (
+        initialize_author_server,
+        save_branch_definition,
+    )
+
+    initialize_author_server(base)
+    node = NodeDefinition(
+        node_id=node_id,
+        display_name="Approved calc",
+        description="Approved source-code node",
+        output_keys=["answer"],
+        source_code="def run(state): return {'answer': 1}",
+    ).mark_approved(approved_by="host-operator")
+    branch = BranchDefinition(
+        branch_def_id="approved-source-branch",
+        name="Approved source branch",
+        author="tester",
+        entry_point=node_id,
+        node_defs=[node],
+        graph_nodes=[GraphNodeRef(id=node_id, node_def_id=node_id)],
+        edges=[
+            EdgeDefinition(from_node="START", to_node=node_id),
+            EdgeDefinition(from_node=node_id, to_node="END"),
+        ],
+        state_schema=[{"name": "answer", "type": "int"}],
+    )
+    save_branch_definition(base, branch_def=branch.to_dict())
+    return branch.branch_def_id
+
+
+def test_patch_branch_source_code_mutation_clears_prior_approval(
+    comp_env,
+):
+    us, base = comp_env
+    bid = _seed_approved_source_branch(base)
+    before = _call(us, "get_branch", branch_def_id=bid)
+    node = next(n for n in before["node_defs"] if n["node_id"] == "approved_calc")
+    assert node["approved"] is True, node
+
+    result = _call(
+        us,
+        "patch_branch",
+        branch_def_id=bid,
+        changes_json=json.dumps([{
+            "op": "update_node",
+            "node_id": "approved_calc",
+            "source_code": "def run(state): return {'answer': 2}",
+        }]),
+    )
+
+    assert result["status"] == "patched", result
+    approval = result["batch_receipt"]["source_code_approval"]
+    assert approval["source_code_node_count"] == 1
+    assert approval["approved_count"] == 0
+    assert approval["unapproved_count"] == 1
+    assert approval["runnable"] is True
+    got = _call(us, "get_branch", branch_def_id=bid)
+    node = next(n for n in got["node_defs"] if n["node_id"] == "approved_calc")
+    assert node["approved"] is False
+    assert got["runnable"] is True
+
+
 def test_build_branch_returns_full_branch_in_structured(comp_env):
     us, _ = comp_env
     result = _call(us, "build_branch", spec_json=json.dumps(RECIPE_SPEC))
@@ -635,11 +708,6 @@ def test_rejected_patch_does_not_ledger(comp_env):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# AC #5 — fine-grained actions still work unchanged (regression gate)
-# ─────────────────────────────────────────────────────────────────────────────
-
-
-# ─────────────────────────────────────────────────────────────────────────────
 # Return shape compliance — tool_return_shapes.md
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -749,8 +817,3 @@ def test_build_branch_truncates_mermaid_above_12_nodes(comp_env):
     assert result["status"] == "built"
     # Text notes the phone-legibility truncation explicitly.
     assert "12-node" in result["text"] or "structuredContent" in result["text"]
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# update_node (#45) — stable-id edits, version bump, ledger inherited
-# ─────────────────────────────────────────────────────────────────────────────

@@ -50,9 +50,103 @@ def _call(us, tool: str, action: str, **kwargs):
     return json.loads(fn(action=action, **kwargs))
 
 
+def _seed_standalone(node_id: str, display_name: str,
+                     source: str = "def run(state): return state\n"):
+    """Put a node in the standalone registry through storage.
+
+    The registry's own writer (``extensions register``) is no longer
+    reachable from the public surface, but the shadow guard still reads
+    the registry, so the tests seed it directly.
+    """
+    from tinyassets.api.extensions import (
+        NodeRegistration,
+        _load_nodes,
+        _save_nodes,
+    )
+
+    nodes = _load_nodes()
+    nodes.append(NodeRegistration(
+        node_id=node_id,
+        display_name=display_name,
+        description=f"Standalone {display_name}",
+        phase="custom",
+        input_keys=["state"],
+        output_keys=["state"],
+        source_code=source,
+        author="tester",
+        enabled=True,
+    ).to_dict())
+    _save_nodes(nodes)
+
+
+def _build_empty_branch(us, name: str = "b") -> str:
+    spec = {
+        "name": name,
+        "entry_point": "seed",
+        "node_defs": [{
+            "node_id": "seed",
+            "display_name": "Seed",
+            "prompt_template": "start: {x}",
+        }],
+        "edges": [
+            {"from": "START", "to": "seed"},
+            {"from": "seed", "to": "END"},
+        ],
+        "state_schema": [{"name": "x", "type": "str"}],
+    }
+    result = _call(us, "extensions", "build_branch",
+                   spec_json=json.dumps(spec))
+    assert result["status"] == "built", result
+    return result["branch_def_id"]
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Silent shadowing is refused
 # ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestHollowNodeShadowRefused:
+    """Bare node_id collision must loudly reject, not silently hollow-clone."""
+
+    def test_build_branch_with_colliding_node_id_errors(self, ext_env):
+        us, _ = ext_env
+        _seed_standalone("rigor_checker", "Rigor Checker")
+        spec = {
+            "name": "shadow-attempt",
+            "entry_point": "rigor_checker",
+            "node_defs": [{
+                "node_id": "rigor_checker",
+                "display_name": "Silent Clone",
+                "prompt_template": "x",
+            }],
+            "edges": [
+                {"from": "START", "to": "rigor_checker"},
+                {"from": "rigor_checker", "to": "END"},
+            ],
+            "state_schema": [{"name": "y", "type": "str"}],
+        }
+        result = _call(us, "extensions", "build_branch",
+                       spec_json=json.dumps(spec))
+        assert result["status"] == "rejected"
+        combined = " ".join(result.get("errors") or []).lower()
+        assert "standalone" in combined
+        assert "node_ref" in combined or "intent" in combined
+
+    def test_patch_branch_add_node_colliding_id_errors(self, ext_env):
+        us, _ = ext_env
+        _seed_standalone("rigor_checker", "Rigor Checker")
+        bid = _build_empty_branch(us)
+        ops = [{
+            "op": "add_node",
+            "node_id": "rigor_checker",
+            "display_name": "Silent Clone",
+        }]
+        result = _call(us, "extensions", "patch_branch",
+                       branch_def_id=bid,
+                       changes_json=json.dumps(ops))
+        assert result.get("status") == "rejected"
+        joined = json.dumps(result).lower()
+        assert "standalone" in joined
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -116,6 +210,44 @@ class TestExplicitNodeRefCopiesCanonicalBody:
         assert nd["prompt_template"] == "audit: {x}"
         assert nd["description"] == "canonical audit node"
 
+    def test_build_branch_node_ref_preserves_source_approval(self, ext_env):
+        us, base = ext_env
+        source = _seed_approved_source_branch(
+            base, "def run(state): return {'manifest': 'ok'}\n",
+        )
+
+        spec = {
+            "name": "approved-node-ref",
+            "entry_point": "approved_recipe",
+            "node_defs": [{
+                "node_id": "approved_recipe",
+                "display_name": "",
+                "node_ref": {
+                    "source": source,
+                    "node_id": "approved_recipe",
+                },
+            }],
+            "edges": [
+                {"from": "START", "to": "approved_recipe"},
+                {"from": "approved_recipe", "to": "END"},
+            ],
+            "state_schema": [
+                {"name": "manifest", "type": "str"},
+                {"name": "state", "type": "dict"},
+            ],
+        }
+        built = _call(us, "extensions", "build_branch",
+                      spec_json=json.dumps(spec))
+        assert built["status"] == "built", built
+
+        from tinyassets.daemon_server import get_branch_definition
+        branch = get_branch_definition(base, branch_def_id=built["branch_def_id"])
+        nd = next(
+            n for n in branch["node_defs"]
+            if n["node_id"] == "approved_recipe"
+        )
+        assert nd["approved"] is True
+
     def test_build_branch_raw_approved_field_cannot_bypass_approval(self, ext_env):
         us, base = ext_env
         spec = {
@@ -147,33 +279,53 @@ class TestExplicitNodeRefCopiesCanonicalBody:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Intent edge cases
-# ─────────────────────────────────────────────────────────────────────────────
-
-
-# ─────────────────────────────────────────────────────────────────────────────
 # SECURITY: approval provenance must follow the executable content
 # (Codex ADAPT review, PR #1349)
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-def _approve_standalone(us, authenticate_request, node_id: str):
-    """Approve a standalone node as a DISTINCT actor (the gate rejects
-    self-approval), then restore the original actor.
-
-    Switches actor by re-authenticating, NOT by setting
-    `UNIVERSE_SERVER_USER`: `_current_actor` prefers the request identity
-    and only falls back to the env var when there is none. Once the fixture
-    authenticates `tester`, the env switch is silently ignored and this
-    becomes a SELF-approval, which the gate correctly refuses — that is why
-    these tests were quarantined, not flakiness.
+def _seed_approved_source_branch(base: Path, source_code: str) -> str:
+    """Persist a branch whose code node carries a genuine, hash-backed
+    approval by a distinct actor, straight through branch storage, and
+    return its id. A ``node_ref`` naming a readable branch is the live copy
+    path (``write_graph target=branch create``); the registry ``approve``
+    action that used to set this up is not.
     """
-    authenticate_request("host-operator")
-    try:
-        result = _call(us, "extensions", "approve", node_id=node_id)
-    finally:
-        authenticate_request("tester")
-    return result
+    from tinyassets.branches import (
+        BranchDefinition,
+        EdgeDefinition,
+        GraphNodeRef,
+        NodeDefinition,
+    )
+    from tinyassets.daemon_server import (
+        initialize_author_server,
+        save_branch_definition,
+    )
+
+    initialize_author_server(base)
+    nd = NodeDefinition(
+        node_id="approved_recipe",
+        display_name="Approved Recipe",
+        description="Approved Recipe",
+        input_keys=["manifest"],
+        output_keys=["manifest"],
+        source_code=source_code,
+    ).mark_approved(approved_by="host-operator")
+    branch = BranchDefinition(
+        branch_def_id="approved-source",
+        name="approved-source",
+        author="tester",
+        entry_point="approved_recipe",
+        node_defs=[nd],
+        graph_nodes=[GraphNodeRef(id="approved_recipe", node_def_id="approved_recipe")],
+        edges=[
+            EdgeDefinition(from_node="START", to_node="approved_recipe"),
+            EdgeDefinition(from_node="approved_recipe", to_node="END"),
+        ],
+        state_schema=[{"name": "manifest", "type": "str"}],
+    )
+    save_branch_definition(base, branch_def=branch.to_dict())
+    return branch.branch_def_id
 
 
 class TestNodeRefSourceOverrideCannotForgeApproval:
@@ -192,24 +344,138 @@ class TestNodeRefSourceOverrideCannotForgeApproval:
     # surface. Marker string lets us assert the override actually landed.
     MALICIOUS_SRC = "def run(state): return {'manifest': 'forged-by-pwned'}\n"
 
-    def _approved_standalone(self, us, authenticate_request):
-        # input/output keys must match the branch state_schema below.
-        _call(
-            us, "extensions", "register",
-            node_id="approved_recipe",
-            display_name="Approved Recipe",
-            description="Approved Recipe",
-            phase="custom",
-            input_keys="manifest",
-            output_keys="manifest",
-            source_code=self.APPROVED_SRC,
+    def test_node_ref_with_source_override_comes_out_unapproved(
+        self, ext_env,
+    ):
+        us, base = ext_env
+        source = _seed_approved_source_branch(base, self.APPROVED_SRC)
+
+        # node_ref the approved node but OVERRIDE its source_code. The
+        # inherited approved=True must NOT survive the content change.
+        spec = {
+            "name": "approval-forge-attempt",
+            "entry_point": "approved_recipe",
+            "node_defs": [{
+                "node_id": "approved_recipe",
+                "display_name": "",
+                "node_ref": {
+                    "source": source,
+                    "node_id": "approved_recipe",
+                },
+                "source_code": self.MALICIOUS_SRC,
+            }],
+            "edges": [
+                {"from": "START", "to": "approved_recipe"},
+                {"from": "approved_recipe", "to": "END"},
+            ],
+            "state_schema": [{"name": "manifest", "type": "str"}],
+        }
+        built = _call(us, "extensions", "build_branch",
+                      spec_json=json.dumps(spec))
+        assert built["status"] == "built", built
+
+        from tinyassets.daemon_server import get_branch_definition
+        branch = get_branch_definition(base, branch_def_id=built["branch_def_id"])
+        nd = next(
+            n for n in branch["node_defs"]
+            if n["node_id"] == "approved_recipe"
         )
-        approved = _approve_standalone(
-            us, authenticate_request, "approved_recipe",
+        # The overridden body landed, but approval did NOT carry over.
+        assert "forged-by-pwned" in nd["source_code"]
+        assert nd["approved"] is False, nd
+        assert not nd.get("approved_source_hash"), nd
+
+    def test_node_ref_with_source_override_fails_execution_gate(
+        self, ext_env,
+    ):
+        us, base = ext_env
+        source = _seed_approved_source_branch(base, self.APPROVED_SRC)
+        spec = {
+            "name": "approval-forge-run-attempt",
+            "entry_point": "approved_recipe",
+            "node_defs": [{
+                "node_id": "approved_recipe",
+                "display_name": "",
+                "node_ref": {
+                    "source": source,
+                    "node_id": "approved_recipe",
+                },
+                "source_code": self.MALICIOUS_SRC,
+            }],
+            "edges": [
+                {"from": "START", "to": "approved_recipe"},
+                {"from": "approved_recipe", "to": "END"},
+            ],
+            "state_schema": [{"name": "manifest", "type": "str"}],
+        }
+        built = _call(us, "extensions", "build_branch",
+                      spec_json=json.dumps(spec))
+        assert built["status"] == "built", built
+
+        from tinyassets.branches import BranchDefinition
+        from tinyassets.daemon_server import get_branch_definition
+        from tinyassets.graph_compiler import (
+            BranchExecutionContext,
+            ForeignCodeError,
+            compile_branch,
         )
-        assert approved["approved"] is True, approved
-        assert approved["approved_source_hash"], approved
-        return approved["approved_source_hash"]
+
+        branch = get_branch_definition(base, branch_def_id=built["branch_def_id"])
+        bdef = BranchDefinition.from_dict(branch)
+        # The override demoted the approval to provenance (D2): the node is
+        # UNAPPROVED, the caller's own compile still runs it, and a run that did
+        # not author it refuses by authorship - the hash never decides.
+        assert all(not nd.approved for nd in bdef.node_defs if nd.source_code), [
+            (nd.node_id, nd.approved) for nd in bdef.node_defs
+        ]
+        compile_branch(bdef)
+        with pytest.raises(ForeignCodeError, match="did not author"):
+            compile_branch(bdef, execution_context=BranchExecutionContext(
+                actor="stranger", universe_id="u", caller_provenance="public-foreign",
+            ))
+
+    def test_clean_node_ref_copy_stays_approved_and_runs(
+        self, ext_env,
+    ):
+        """Guard the legit path: a node_ref copy with NO source override
+        must keep approval (hash still matches) and compile cleanly.
+        """
+        us, base = ext_env
+        source = _seed_approved_source_branch(base, self.APPROVED_SRC)
+        spec = {
+            "name": "approval-clean-copy",
+            "entry_point": "approved_recipe",
+            "node_defs": [{
+                "node_id": "approved_recipe",
+                "display_name": "",
+                "node_ref": {
+                    "source": source,
+                    "node_id": "approved_recipe",
+                },
+            }],
+            "edges": [
+                {"from": "START", "to": "approved_recipe"},
+                {"from": "approved_recipe", "to": "END"},
+            ],
+            "state_schema": [{"name": "manifest", "type": "str"}],
+        }
+        built = _call(us, "extensions", "build_branch",
+                      spec_json=json.dumps(spec))
+        assert built["status"] == "built", built
+
+        from tinyassets.branches import BranchDefinition
+        from tinyassets.daemon_server import get_branch_definition
+        from tinyassets.graph_compiler import compile_branch
+
+        branch = get_branch_definition(base, branch_def_id=built["branch_def_id"])
+        nd = next(
+            n for n in branch["node_defs"]
+            if n["node_id"] == "approved_recipe"
+        )
+        assert nd["approved"] is True, nd
+        assert nd["approved_source_hash"], nd
+        # Clean copy compiles without raising — provenance hash matches.
+        compile_branch(BranchDefinition.from_dict(branch))
 
     def test_runtime_gate_rejects_hash_mismatch_directly(self):
         """Unit-level: an ``approved=True`` node whose hash does not match its

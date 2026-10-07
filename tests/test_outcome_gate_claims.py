@@ -75,10 +75,55 @@ def _call(us, tool, action, **kwargs):
     return json.loads(fn(action=action, **kwargs))
 
 
-# ─── retract ───────────────────────────────────────────────────────────
+_LADDER = [
+    {"rung_key": "draft_complete", "name": "Draft complete",
+     "description": "Full draft emitted."},
+    {"rung_key": "peer_reviewed", "name": "Peer reviewed",
+     "description": "At least 2 reviewers."},
+    {"rung_key": "submitted", "name": "Submitted",
+     "description": "Submission tracked."},
+]
 
 
-# ─── list_claims ───────────────────────────────────────────────────────
+def _bound_branch(us, gid, name):
+    """Build a branch bound to ``gid`` (``build_branch`` takes ``goal_id``)."""
+    b = _call(us, "extensions", "build_branch", spec_json=json.dumps({
+        "name": name,
+        "goal_id": gid,
+        "entry_point": "draft",
+        "node_defs": [{"node_id": "draft", "display_name": "Draft",
+                       "prompt_template": "draft: {topic}"}],
+        "edges": [{"from": "START", "to": "draft"},
+                  {"from": "draft", "to": "END"}],
+        "state_schema": [{"name": "topic", "type": "str"}],
+    }))
+    assert b["status"] == "built", b
+    return b["branch_def_id"]
+
+
+def _seed(us, base, *, goal_name="Research paper", branch_name="LoRA v3"):
+    """A Goal with ``_LADDER`` and one bound branch.
+
+    The ladder and the claims below are written through storage: the
+    leaderboards these tests read are live (in-node ``gates.leaderboard`` /
+    ``goals.leaderboard``), but the ``define_ladder`` / ``claim`` /
+    ``retract`` actions that used to set them up are not.
+    """
+    from tinyassets.daemon_server import set_goal_ladder
+
+    g = _call(us, "goals", "propose", name=goal_name, description="x")
+    gid = g["goal"]["goal_id"]
+    bid = _bound_branch(us, gid, branch_name)
+    set_goal_ladder(base, goal_id=gid, ladder=_LADDER)
+    return gid, bid
+
+
+def _claim(base, bid, rung, url, note=""):
+    from tinyassets.daemon_server import claim_gate, get_branch_definition
+
+    gid = get_branch_definition(base, branch_def_id=bid)["goal_id"]
+    return claim_gate(base, branch_def_id=bid, goal_id=gid, rung_key=rung,
+                      evidence_url=url, evidence_note=note, claimed_by="alice")
 
 
 # ─── leaderboard ───────────────────────────────────────────────────────
@@ -97,10 +142,100 @@ def test_leaderboard_rejects_unknown_goal(gates_env):
     assert "not found" in result["error"]
 
 
+def test_leaderboard_empty_when_no_claims(gates_env):
+    us, base, _ = gates_env
+    gid, _ = _seed(us, base)
+    result = _call(us, "gates", "leaderboard", goal_id=gid)
+    assert result["status"] == "ok"
+    assert result["count"] == 0
+    assert result["entries"] == []
+
+
+def test_leaderboard_orders_by_highest_rung(gates_env):
+    us, base, _ = gates_env
+    gid, bid_a = _seed(us, base, branch_name="A")
+    # Second branch on same goal.
+    bid_b = _bound_branch(us, gid, "B")
+    _claim(base, bid_a, "draft_complete", "https://example.com/a")
+    _claim(base, bid_b, "peer_reviewed", "https://example.com/b")
+    result = _call(us, "gates", "leaderboard", goal_id=gid)
+    assert result["count"] == 2
+    assert result["entries"][0]["branch_def_id"] == bid_b
+    assert result["entries"][0]["highest_rung_key"] == "peer_reviewed"
+    assert result["entries"][1]["branch_def_id"] == bid_a
+
+
+def test_leaderboard_earliest_wins_tiebreak(gates_env):
+    import time
+    us, base, _ = gates_env
+    gid, bid_a = _seed(us, base, branch_name="A")
+    bid_b = _bound_branch(us, gid, "B")
+    _claim(base, bid_a, "draft_complete", "https://example.com/a")
+    time.sleep(1.1)  # _utc_iso_now has second-level resolution.
+    _claim(base, bid_b, "draft_complete", "https://example.com/b")
+    result = _call(us, "gates", "leaderboard", goal_id=gid)
+    assert result["entries"][0]["branch_def_id"] == bid_a
+
+
+def test_leaderboard_ignores_retracted(gates_env):
+    us, base, _ = gates_env
+    gid, bid_a = _seed(us, base, branch_name="A")
+    bid_b = _bound_branch(us, gid, "B")
+    _claim(base, bid_a, "peer_reviewed", "https://example.com/a")
+    _claim(base, bid_b, "draft_complete", "https://example.com/b")
+    from tinyassets.daemon_server import retract_gate_claim
+
+    retract_gate_claim(base, branch_def_id=bid_a, rung_key="peer_reviewed",
+                       reason="evidence bogus")
+    result = _call(us, "gates", "leaderboard", goal_id=gid)
+    # Only bid_b remains.
+    assert result["count"] == 1
+    assert result["entries"][0]["branch_def_id"] == bid_b
+
+
+def test_leaderboard_ignores_orphaned_rungs(gates_env):
+    us, base, _ = gates_env
+    gid, bid = _seed(us, base)
+    _claim(base, bid, "peer_reviewed", "https://example.com/a")
+    shrunk = [r for r in _LADDER if r["rung_key"] != "peer_reviewed"]
+    from tinyassets.daemon_server import set_goal_ladder
+
+    set_goal_ladder(base, goal_id=gid, ladder=shrunk)
+    result = _call(us, "gates", "leaderboard", goal_id=gid)
+    assert result["count"] == 0
+
+
 # ─── goals leaderboard metric=outcome delegation ───────────────────────
 
 
-# ─── define_ladder host override ───────────────────────────────────────
+def test_goals_leaderboard_outcome_delegates(gates_env):
+    us, base, _ = gates_env
+    gid, bid = _seed(us, base)
+    _claim(base, bid, "peer_reviewed", "https://example.com/a")
+    result = _call(us, "goals", "leaderboard",
+                   goal_id=gid, metric="outcome")
+    assert result.get("status") != "not_available_until_phase_6"
+    assert result["metric"] == "outcome"
+    assert len(result["entries"]) == 1
+    assert result["entries"][0]["highest_rung_key"] == "peer_reviewed"
+    assert result["entries"][0]["value"] == 1  # rung index
+
+
+def test_goals_leaderboard_outcome_empty_has_friendly_text(gates_env):
+    us, base, _ = gates_env
+    gid, _ = _seed(us, base)
+    result = _call(us, "goals", "leaderboard",
+                   goal_id=gid, metric="outcome")
+    assert "No gate claims" in result["text"]
+
+
+def test_goals_leaderboard_unknown_metric_lists_outcome(gates_env):
+    us, base, _ = gates_env
+    gid, _ = _seed(us, base)
+    result = _call(us, "goals", "leaderboard",
+                   goal_id=gid, metric="bogus")
+    assert result["status"] == "rejected"
+    assert "outcome" in result["available_metrics"]
 
 
 # ─── goals leaderboard outcome gated-off fallback (Phase 6.2.1) ───────
@@ -131,4 +266,13 @@ def test_goals_leaderboard_outcome_gated_off(tmp_path, monkeypatch):
         importlib.reload(us)
 
 
-# ─── branch_rebound guard (Phase 6.2.1) ────────────────────────────────
+def test_goals_leaderboard_outcome_live_when_enabled(gates_env):
+    """GATES_ENABLED=1: outcome returns the live leaderboard."""
+    us, base, _ = gates_env
+    gid, bid = _seed(us, base)
+    _claim(base, bid, "peer_reviewed", "https://example.com/a")
+    result = _call(us, "goals", "leaderboard",
+                   goal_id=gid, metric="outcome")
+    assert result.get("status") != "gates_disabled"
+    assert len(result["entries"]) == 1
+    assert result["entries"][0]["highest_rung_key"] == "peer_reviewed"

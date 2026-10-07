@@ -54,6 +54,45 @@ def gates_env(tmp_path, monkeypatch, authenticate_request):
     importlib.reload(us)
 
 
+def _call(us, tool, action, **kwargs):
+    if tool == "gates":
+        from tinyassets.api.market import gates as fn
+    else:
+        fn = getattr(us, f"_{tool}_impl")
+    return json.loads(fn(action=action, **kwargs))
+
+
+def _seed_goal_and_branch(us, *, goal_name="Research paper",
+                          branch_name="LoRA v3"):
+    """Propose a Goal and build a branch bound to it (``build_branch``
+    takes ``goal_id`` in the spec, the live binding path)."""
+    g = _call(us, "goals", "propose", name=goal_name,
+              description="produce an academic research paper")
+    gid = g["goal"]["goal_id"]
+    b = _call(us, "extensions", "build_branch", spec_json=json.dumps({
+        "name": branch_name,
+        "goal_id": gid,
+        "entry_point": "draft",
+        "node_defs": [{"node_id": "draft", "display_name": "Draft",
+                       "prompt_template": "draft: {topic}"}],
+        "edges": [{"from": "START", "to": "draft"},
+                  {"from": "draft", "to": "END"}],
+        "state_schema": [{"name": "topic", "type": "str"}],
+    }))
+    assert b["status"] == "built", b
+    return gid, b["branch_def_id"]
+
+
+_LADDER = [
+    {"rung_key": "draft_complete", "name": "Draft complete",
+     "description": "TinyAssets produced a full draft."},
+    {"rung_key": "peer_reviewed", "name": "Peer-reviewed",
+     "description": "At least 2 external reviewers commented."},
+    {"rung_key": "submitted", "name": "Submitted to venue",
+     "description": "Submission ID or tracking URL."},
+]
+
+
 # ─── feature flag ──────────────────────────────────────────────────────
 
 
@@ -75,13 +114,26 @@ def test_gates_tool_gated_by_flag(tmp_path, monkeypatch):
         importlib.reload(us)
 
 
-# ─── define_ladder ─────────────────────────────────────────────────────
-
-
 # ─── get_ladder ────────────────────────────────────────────────────────
 
 
-# ─── claim ─────────────────────────────────────────────────────────────
+def test_get_ladder_empty_by_default(gates_env):
+    us, _ = gates_env
+    gid, _ = _seed_goal_and_branch(us)
+    result = _call(us, "gates", "get_ladder", goal_id=gid)
+    assert result["status"] == "ok"
+    assert result["gate_ladder"] == []
+
+
+def test_get_ladder_after_define(gates_env):
+    from tinyassets.daemon_server import set_goal_ladder
+
+    us, base = gates_env
+    gid, _ = _seed_goal_and_branch(us)
+    set_goal_ladder(base, goal_id=gid, ladder=_LADDER)
+    result = _call(us, "gates", "get_ladder", goal_id=gid)
+    assert result["status"] == "ok"
+    assert len(result["gate_ladder"]) == 3
 
 
 # ─── schema migration ──────────────────────────────────────────────────

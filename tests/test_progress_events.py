@@ -14,6 +14,8 @@ the user sees "node X running..." instead of silence.
 from __future__ import annotations
 
 import importlib
+import json
+import time
 
 import pytest
 
@@ -29,6 +31,7 @@ from tinyassets.runs import (
     NODE_STATUS_RAN,
     NODE_STATUS_RUNNING,
     build_node_status_map,
+    list_events,
 )
 
 #: Runs are universe-owned: `run_branch` returns
@@ -93,6 +96,31 @@ def us_env(tmp_path, monkeypatch, authenticate_request):
     )
     yield us, base
     importlib.reload(us)
+
+
+def _build_two_node_branch(us) -> str:
+    """Build a tiny 2-node branch through ``build_branch``."""
+    built = json.loads(us._extensions_impl(action="build_branch", spec_json=json.dumps({
+        "name": "progress-probe",
+        "entry_point": "capture",
+        "node_defs": [
+            {"node_id": "capture", "display_name": "Capture",
+             "prompt_template": "Echo: {raw}", "output_keys": ["capture_output"]},
+            {"node_id": "tag", "display_name": "Tag",
+             "prompt_template": "Tag: {capture_output}", "output_keys": ["tag_output"]},
+        ],
+        "edges": [
+            {"from": "START", "to": "capture"},
+            {"from": "capture", "to": "tag"},
+            {"from": "tag", "to": "END"},
+        ],
+        "state_schema": [
+            {"name": field, "type": "str"}
+            for field in ("raw", "capture_output", "tag_output")
+        ],
+    })))
+    assert built["status"] == "built", built
+    return built["branch_def_id"]
 
 
 def _make_recipe_branch() -> BranchDefinition:
@@ -202,6 +230,51 @@ def test_compiler_starting_event_includes_prompt_preview():
 # ─── Integration: _on_node writes RUNNING then RAN rows to SQLite ────────
 
 
+def test_on_node_records_running_then_ran_events(us_env):
+    """The runner's ``_on_node`` maps phase=starting → NODE_STATUS_RUNNING
+    and phase=ran → NODE_STATUS_RAN, with distinct step_indexes so the
+    run_events table doesn't collide on primary key."""
+    from tinyassets.runs import wait_for
+
+    us, base = us_env
+    bid = _build_two_node_branch(us)
+    queued = json.loads(us._extensions_impl(
+        action="run_branch", branch_def_id=bid, universe_id=_UNIVERSE,
+        inputs_json=json.dumps({"raw": "x"}),
+    ))
+    rid = queued["run_id"]
+    wait_for(rid, timeout=10.0)
+
+    events = list_events(base, rid, since_step=-1)
+    # Filter to just the in-flight event stream (not the pending priors).
+    in_flight = [
+        e for e in events
+        if e["status"] in {NODE_STATUS_RUNNING, NODE_STATUS_RAN}
+    ]
+
+    running_events = [
+        e for e in in_flight if e["status"] == NODE_STATUS_RUNNING
+    ]
+    ran_events = [e for e in in_flight if e["status"] == NODE_STATUS_RAN]
+
+    # 2 nodes × 2 phases = one running + one ran per node.
+    assert len(running_events) == 2
+    assert len(ran_events) == 2
+    assert {e["node_id"] for e in running_events} == {"capture", "tag"}
+    assert {e["node_id"] for e in ran_events} == {"capture", "tag"}
+
+    # Ordering: capture starts → capture runs → tag starts → tag runs.
+    interleaved = [
+        (e["node_id"], e["status"]) for e in in_flight
+    ]
+    assert interleaved == [
+        ("capture", NODE_STATUS_RUNNING),
+        ("capture", NODE_STATUS_RAN),
+        ("tag", NODE_STATUS_RUNNING),
+        ("tag", NODE_STATUS_RAN),
+    ]
+
+
 def test_build_node_status_map_surfaces_running_during_flight():
     """During a long-running node, only the starting event has fired.
     build_node_status_map should show that node as 'running', not
@@ -218,3 +291,44 @@ def test_build_node_status_map_surfaces_running_during_flight():
     assert by_node["a"] == NODE_STATUS_RAN
     assert by_node["b"] == NODE_STATUS_RUNNING
     assert by_node["c"] == NODE_STATUS_PENDING
+
+
+def test_slow_provider_starting_event_fires_before_completion(us_env):
+    """With a slow provider, the starting event is visible to polling
+    clients BEFORE the ran event lands — the whole point of #60."""
+    from tinyassets.daemon_server import get_branch_definition
+    from tinyassets.runs import execute_branch_async, wait_for
+
+    us, base = us_env
+    bid = _build_two_node_branch(us)
+
+    def _slow(prompt, system, *, role):
+        time.sleep(0.3)
+        return "slow ok"
+
+    branch_dict = get_branch_definition(base, branch_def_id=bid)
+    branch = BranchDefinition.from_dict(branch_dict)
+
+    outcome = execute_branch_async(
+        base, branch=branch, inputs={"raw": "x"},
+        actor="tester", provider_call=_slow,
+    )
+    rid = outcome.run_id
+    seen_running_before_ran = False
+    deadline = time.monotonic() + 3.0
+    while time.monotonic() < deadline:
+        events = list_events(base, rid, since_step=-1)
+        statuses = {e["status"] for e in events}
+        if (NODE_STATUS_RUNNING in statuses
+                and NODE_STATUS_RAN not in statuses):
+            seen_running_before_ran = True
+            break
+        if NODE_STATUS_RAN in statuses:
+            break
+        time.sleep(0.05)
+    wait_for(rid, timeout=5.0)
+
+    assert seen_running_before_ran, (
+        "Expected to observe NODE_STATUS_RUNNING in events while the "
+        "provider was still working — that's the #60 UX guarantee."
+    )

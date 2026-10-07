@@ -423,3 +423,34 @@ def test_exact_public_goal_remains_readable(goal_catalog):
 # --------------------------------------------------------------------------
 # nobody bound: refused before any oracle can exist
 # --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("visibility_key", ["private", "deleted", "unrecognized"])
+def test_a_read_with_nobody_bound_is_refused_before_any_oracle(goal_catalog, visibility_key):
+    """There is no anonymous reader (founder, 2026-09-02). With nobody bound
+    every goal read refuses with the same authentication error whether the
+    goal is hidden or missing, and the hidden name never appears."""
+    auth_middleware(None)
+    hidden_id = goal_catalog[visibility_key]["goal_id"]
+    name = goal_catalog[visibility_key]["name"]
+
+    def _refused(call):
+        try:
+            payload = json.loads(call())
+        except PermissionError as exc:
+            assert "Authentication required" in str(exc)
+            return {"error": "Authentication required"}
+        assert payload.get("error") == "Authentication required", payload
+        assert "goal" not in payload and "goals" not in payload
+        return payload
+
+    for goal_id in (hidden_id, "missing-goal-id"):
+        outs = [
+            _refused(lambda: read_graph(target="goals", limit=100)),
+            _refused(lambda: read_graph(target="goal", goal_id=goal_id)),
+            _refused(lambda: goals(action="get", goal_id=goal_id)),
+            _refused(lambda: _call_goal_derived_read("leaderboard", goal_id)),
+            _refused(lambda: _call_goal_derived_read("get_ladder", goal_id)),
+            _refused(lambda: _call_goal_derived_read("list_branches", goal_id)),
+        ]
+        assert all(name not in json.dumps(o) for o in outs)
