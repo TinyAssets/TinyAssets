@@ -186,7 +186,7 @@ Flagged for future-version work:
 - **Cross-node correlation.** Two public concepts that together reveal a private pattern. Hard problem; flagged for research.
 - **Time-based re-evaluation.** Data that was safe 2 years ago may not be today (e.g. an organization is now bankrupt and its internal details are now newsworthy). Not covered.
 - **Jurisdiction-specific rules.** Regulated-data categories vary by country. v1 assumes US framing. Future: jurisdiction-aware taxonomy per user locale.
-- **Adversarial test cases.** Prompt-injection that tries to get the chatbot to leak private data. Cross-ref to `docs/design-notes/2026-04-18-claude-ai-injection-hallucination.md` for the meta-issue.
+- **Adversarial test cases.** Prompt-injection that tries to get the chatbot to leak private data. Cross-ref to `docs/design-notes/2026-04-18-claude-ai-injection-hallucination.md` (deleted 2026-10-06; in git history) for the meta-issue.
 
 ---
 
@@ -286,7 +286,7 @@ Client-side (chatbot) usage pattern:
 - **Memory:** `project_privacy_per_piece_chatbot_judged.md` — host directive for dual-layer model.
 - **Memory:** `project_q10_q11_q12_resolutions.md` — wiki-orphan deletion + export-yes policy.
 - **Memory:** `project_license_fully_open_commons.md` — CC0 framing.
-- **Design note:** `docs/design-notes/2026-04-18-full-platform-architecture.md` §17 — dual-layer schema + field-level visibility.
+- **Design note:** `docs/design-notes/2026-04-18-full-platform-architecture.md` (deleted 2026-10-06; in git history) §17 — dual-layer schema + field-level visibility.
 - **Spec:** `docs/specs/2026-04-18-full-platform-schema-sketch.md` §1.2 `nodes.concept`/`instance_ref` + §1.3 `artifact_field_visibility` + §2.6 training-excluded role.
 - **Spec:** `docs/specs/2026-04-18-export-sync-cross-repo.md` §6 allowlist-pattern for public export.
 - **Spec:** `docs/specs/2026-04-18-mcp-gateway-skeleton.md` §8 `control_station` prompt (points chatbot at this catalog).

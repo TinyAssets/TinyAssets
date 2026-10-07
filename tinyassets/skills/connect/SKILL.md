@@ -1,6 +1,6 @@
 ---
 name: connect
-description: Connect any service, platform or API; prefer sign-in, use secure key entry, and save a reusable connector.
+description: Connect any service, platform, API or remote MCP server; prefer sign-in, use secure key entry, and save a reusable connector.
 ---
 
 # Connect anything
@@ -52,8 +52,28 @@ the owner finishes; use the returned connection ID, never a guessed one.
    docs, connection lookup and working calls. For repeated logic, write an
    extension in `extensions/<service>/` with `extension.json` and an executable
    that calls `ta`; keep credentials in the vault. Test it so next time is one step.
-4. **Name what is missing.** If no usable route exists, say which capability
-   is needed and the next concrete option. MCP server attachment and browser
-   login are not available yet. For an MCP-only or login-only service, explain
-   that gap and check whether it also has an HTTP API; do not pretend to attach
-   MCP, automate a browser login, or stop at “I can't.”
+4. **Remote MCP server from a link.** Make it a lasting connection with an
+   extension (`ta extension:help` has the full contract):
+   a. Raise a `connect` ask for the link's host and path with method `POST`.
+      If the server takes no key, use `"auth_scheme":"none"` and no fields:
+      the owner's tap in the card is the approval. Otherwise ask as in 1–2.
+   b. After approval, read `connection_id` and `grant_id` from
+      `ta read_graph --json '{"target":"connections"}'`, and approve calls to
+      it with `source_channel` action `approve`, payload
+      `{"channel_type":"authenticated_external_call","destination":"<destination>"}`.
+   c. `ta extension:install --json '{"files":{"extension.json":"<base64>"}}'`
+      with an `extension.json` such as
+      `{"schema_version":2,"name":"deepwiki","connections":[{"name":"server","description":"MCP endpoint","verbs":["POST"]}],"mcp_servers":[{"name":"deepwiki","description":"Ask about GitHub repositories","transport":"remote","url":"https://mcp.deepwiki.com/mcp","slot":"server"}]}`,
+      then `ta extension:activate` with the returned revision, the generation
+      from `ta extension:list` and
+      `"bindings":{"server":{"connection_id":"<id>","grant_id":"<grant>"}}`.
+   d. `ta search <name>` now lists `extension:<name>:…:mcp_servers:<name>` in
+      every later turn. Call it with `{"action":"discover"}`, then
+      `{"action":"call","tool":"…","arguments":{…},"catalog_hash":"…"}`.
+      The connection's row in `read_graph target=connections` lists it under
+      `mcp_servers`.
+5. **Name what is missing.** If no usable route exists, say which capability
+   is needed and the next concrete option. Browser login and local (stdio)
+   MCP packages are not available yet. For a login-only service, check whether
+   it also has an HTTP API; do not pretend to automate a browser login, or stop
+   at “I can't.”

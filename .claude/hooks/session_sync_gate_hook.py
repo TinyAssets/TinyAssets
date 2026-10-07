@@ -5,7 +5,10 @@ Runs scripts/session_sync_gate.py and, if the primary checkout is off-main or
 behind origin/main, injects the warning into session context so the drift is
 seen at the top of the session instead of discovered as a "1,209 behind" mess.
 
-Advisory only — never blocks the session, never mutates the working tree.
+Heals the PRIMARY checkout (session_sync_gate --heal): a non-main branch or
+uncommitted edits are saved to a local backup branch, then main fast-forwards,
+so no session ever loads a stale AGENTS.md. Never touches linked worktrees;
+never blocks the session.
 See docs/design-notes/2026-06-24-branch-lifecycle-automation.md.
 """
 
@@ -40,12 +43,12 @@ def main() -> int:
 
     try:
         proc = subprocess.run(
-            [sys.executable, str(script)],
+            [sys.executable, str(script), "--heal"],
             capture_output=True,
             text=True,
             encoding="utf-8",
             errors="replace",
-            timeout=20,
+            timeout=22,
             cwd=str(project),
         )
     except (subprocess.SubprocessError, OSError):

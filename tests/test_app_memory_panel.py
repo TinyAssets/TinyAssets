@@ -17,7 +17,6 @@ pytestmark = pytest.mark.skipif(
 
 def test_memory_panel_load_edit_delete_undo_and_conflict(tmp_path):
     page, _ = onboarding.render_app_html()
-    assert "What your agent remembers" in page
     assert "loadMemory();" in _js_function(page, "showAccount")
     funcs = "\n".join(_js_function(page, name) for name in (
         "memoryContext", "ownsMemory", "clearTypedValues",

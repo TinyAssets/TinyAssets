@@ -35,3 +35,25 @@ run on main. Check for added fixed costs (fixture setup or teardown waits, serve
 start/stop, browser launches) and for runner image or type changes. #4450 already
 removed one fixed HTTP-fixture shutdown cost. Delete this file once the cause is
 identified and addressed. Lowering the cap alone does not resolve it.
+
+
+## K1 local oracle measurement 2026-10-06
+
+PR #4519 merged main dd82fd3d4a as 442743f2b5. The full CI ALL selection
+ran as six required-runner shards, at most two required shards concurrently,
+with CI=true, GITHUB_ACTIONS=true, TINYASSETS_DATA_DIR=/tmp/ta-data,
+Python 3.11.17, uid 1001 and the successful bubblewrap probe. All shards
+exited 0: **27,290 passed, 0 failed, 96 skipped**. The unchanged aggregate
+fails at **3,936 summed testcase seconds / 3,000 allowed**.
+
+An earlier K1 tree (before this main catch-up), with six required shards
+concurrent, measured 5,421 seconds after its failed shard was replayed. Those
+runs differ in both source and concurrency: they do not establish either a
+K1 regression or contention as the cause. This is a local Docker venue, not
+a like-for-like comparison with the hosted-runner table above.
+
+The threshold was not raised, tests were not removed or weakened, and the
+measurement remains a handoff. Final JUnit and manifests are in
+`C:/Users/Jonathan/k1-final-verification`; exact commands and the earlier
+failure history are in
+`openspec/changes/one-extension-unit/review-k1-merge-queue.md`.

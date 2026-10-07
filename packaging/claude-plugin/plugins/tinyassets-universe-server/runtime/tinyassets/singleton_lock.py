@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import os
 import sys
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -112,6 +113,24 @@ def _lock_fd(fd: int) -> bool:
             return True
         except OSError:
             return False
+
+
+def _lock_fd_within(fd: int, timeout: float) -> bool:
+    """Exclusive lock on *fd*, waiting up to *timeout* seconds for its holder.
+
+    Polls the non-blocking lock: neither platform offers a kernel wait with a
+    caller-chosen bound. Never steals; a holder that keeps it past the bound
+    still wins and this returns False.
+    """
+    deadline = time.monotonic() + max(0.0, timeout)
+    delay = 0.005
+    while not _lock_fd(fd):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False
+        time.sleep(min(delay, remaining))
+        delay = min(delay * 2, 0.1)
+    return True
 
 
 def _unlock_fd(fd: int) -> None:

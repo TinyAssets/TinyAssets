@@ -52,6 +52,9 @@ class Capabilities:
         # An activity's launch: every request is refused once it stops running
         # (tinyassets/activity_fence.py), connection calls included.
         self.stopped = stopped
+        from tinyassets.auth.middleware import current_identity_or_none
+
+        self.outside_identity = current_identity_or_none()
 
     def connections(self):
         # A launch whose grant withholds connections neither lists nor calls one.
@@ -72,6 +75,27 @@ class Capabilities:
         return found
 
     async def dispatch(self, message):
+        from tinyassets.auth.middleware import identity_context
+
+        # Socket/event-loop dispatch may run without the originating HTTP
+        # context. Keep the signed launch identity through awaited effects too.
+        if self.outside_identity is not None:
+            with identity_context(self.outside_identity):
+                return await self._dispatch(message)
+        return await self._dispatch(message)
+
+    async def _dispatch(self, message):
+        from tinyassets.outside_authority import check_identity
+
+        identity = self.outside_identity
+        if identity is not None and identity.metadata.get("outside_origin") is not None:
+            try:
+                check_identity(identity, universe=self.context.universe,
+                               agent=self.context.initiating_agent,
+                               capability=message.get("name") if isinstance(message, dict)
+                               and message.get("op") == "call" else "ta:catalog")
+            except PermissionError:
+                return {"error": "outside client capability not granted"}
         error = self.check_authority()
         if error:
             return {"error": "serving owner authority unavailable"}
@@ -94,7 +118,15 @@ class Capabilities:
                     "endpoints": [ep.as_dict() for ep in view.allowed_endpoints],
                     "access_mode": view.access_mode,
                 })
-            return {"capabilities": items, "extension_roots": {
+            from tinyassets.extension_capabilities import LIFECYCLE, ExtensionCapabilities
+
+            try:
+                extension_items = ExtensionCapabilities(self).catalog()
+                extension_error = None
+            except (ValueError, LookupError, OSError) as exc:
+                extension_items, extension_error = list(LIFECYCLE), str(exc)
+            return {"capabilities": items, "extension_capabilities": extension_items,
+                    "extension_error": extension_error, "extension_roots": {
                 "shared": "/u/extensions",
                 "agent": f"/u/agents/{self.context.initiating_agent}/extensions",
             }}
@@ -104,6 +136,16 @@ class Capabilities:
         name, arguments = message["name"], message["arguments"]
         if not isinstance(name, str):
             return {"error": "invalid capability name"}
+        if name.startswith("extension:"):
+            from tinyassets.extension_capabilities import ExtensionCapabilities
+
+            try:
+                import inspect
+
+                result = ExtensionCapabilities(self).call(name, arguments)
+                return {"result": await result if inspect.isawaitable(result) else result}
+            except (ValueError, LookupError, OSError) as exc:
+                return {"error": str(exc)}
         if name in self.platform:
             return {"result": await self.call_platform(name, arguments)}
         match = self.connections().get(name)
@@ -152,6 +194,18 @@ class JailBridge:
 
     def __enter__(self):
         self._directory = tempfile.TemporaryDirectory(prefix="ta-")
+        self.extension_root = None
+        backend = getattr(self.dispatch, "extension_backend", None)
+        if backend is not None:
+            from tinyassets.extension_capabilities import ExtensionCapabilities
+
+            candidate = Path(self._directory.name) / "extensions"
+            try:
+                if self._context.run(ExtensionCapabilities(backend).materialize, candidate):
+                    self.extension_root = candidate
+            except Exception:
+                self._directory.cleanup()
+                raise
         self.path = Path(self._directory.name) / "cap.sock"
         self._server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         self._server.bind(str(self.path))
@@ -264,6 +318,7 @@ async def engine_dispatch(server, *, completed: list | None = None):
             future.cancel()
             return {"error": "ta call timed out; outcome may be unknown; do not retry blindly"}
 
+    dispatch.extension_backend = backend
     return dispatch
 
 

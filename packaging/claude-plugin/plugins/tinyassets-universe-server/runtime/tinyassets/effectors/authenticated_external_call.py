@@ -990,6 +990,7 @@ def run_authenticated_external_call_effector(
     allowed_state_keys: list[str] | set[str] | None = None,
     prior_effects: dict[str, Any] | None = None,
     execution_context=None,
+    allow_deferred: bool = True,
 ) -> dict[str, Any]:
     """Dispatch one ``authenticated_external_call`` packet. NEVER raises.
 
@@ -1008,6 +1009,7 @@ def run_authenticated_external_call_effector(
             allowed_state_keys=allowed_state_keys,
             prior_effects=prior_effects,
             execution_context=execution_context,
+            allow_deferred=allow_deferred,
         )
     except Exception as exc:  # defensive — never raise from the completion path
         logger.exception(
@@ -1029,6 +1031,7 @@ def _run(
     allowed_state_keys: list[str] | set[str] | None = None,
     prior_effects: dict[str, Any] | None = None,
     execution_context=None,
+    allow_deferred: bool = True,
 ) -> dict[str, Any]:
     matched_key, packet = _find_packet(output_keys=output_keys, run_state=run_state)
     if packet is None:
@@ -1167,6 +1170,10 @@ def _run(
                 universe_dir, connection_id, verb, _request_path(request),
                 evidence=_review_evidence(request), agent=rule_agent, preapproved=True)
     if rule_refusal is not None:
+        if rule_refusal.get("error_kind") == "rule_ask_first" and not allow_deferred:
+            return {**rule_refusal, "dry_run": True,
+                    "hint": "This protocol session cannot defer individual HTTP frames. "
+                            "An owner standing rule is required; nothing was sent."}
         # Pin the actual attempted packet at the point of need. A continuation
         # never has to reconstruct it from the agent's description of a refusal.
         if rule_refusal.get("error_kind") == "rule_ask_first" and not approved_agent:
@@ -1289,8 +1296,9 @@ def _run(
         )
         if scoped:
             from tinyassets.approval_scopes import dispatch
+            from tinyassets.outside_authority import effect_admission
 
-            with dispatch(
+            with effect_admission(), dispatch(
                 universe_dir, {k:v for k,v in packet.items() if k != 'sink'},
                 grant.owner_user_id, rule_agent, run_id=run_id, node_id=node_id,
             ) as receipt:
@@ -1298,7 +1306,10 @@ def _run(
                 if isinstance(response.get('status'), int):
                     receipt['status'] = response['status']
         else:
-            response = proxy.request(verb, wire_request)
+            from tinyassets.outside_authority import effect_admission
+
+            with effect_admission():
+                response = proxy.request(verb, wire_request)
     except Exception as exc:
         # Secret-free by construction: the proxy/broker raise only sanitized,
         # credential-free errors across the governed boundary.

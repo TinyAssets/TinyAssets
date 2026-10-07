@@ -13,7 +13,7 @@ def test_seeded_connect_skill_can_be_read_and_edited_through_agent_tools(world, 
     engine = jail._engine(monkeypatch, world)
     assert "# Connect anything" in jail._run(engine.read_file(path=CONNECT_SKILL_PATH))
     result = jail._run(engine.edit_file(
-        path=CONNECT_SKILL_PATH, old_text="Connect any service, platform or API",
+        path=CONNECT_SKILL_PATH, old_text="Connect any service, platform, API or remote MCP server",
         new_text="My editable connection recipe",
     ))
     assert not result.startswith("error:"), result

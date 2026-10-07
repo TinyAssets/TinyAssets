@@ -183,7 +183,13 @@ class WorkOSAuthProvider(AuthProvider):
 
     # --- Resource Server: the methods that matter -------------------------
 
-    def resolve_token(self, token: str) -> Identity | None:
+    def verified_claims(self, token: str) -> dict[str, Any] | None:
+        """Validate a resource bearer before inspecting any client/session claims.
+
+        For server-side attribution and the outside-client evidence probe only.
+        The returned claims are sensitive: never serialize them into a receipt.
+        This does not establish client grants or a reconnect generation.
+        """
         if not token or not token.strip():
             return None
         try:
@@ -219,6 +225,14 @@ class WorkOSAuthProvider(AuthProvider):
             _log_token_rejection("invalid_subject")
             return None
 
+        return claims
+
+    def resolve_token(self, token: str) -> Identity | None:
+        claims = self.verified_claims(token)
+        if claims is None:
+            return None
+        sub = named_principal(claims.get("sub"))
+
         email = str(claims.get("email", "")).strip()
         username = email or sub
         display_name = str(claims.get("name", "")).strip() or username
@@ -233,6 +247,19 @@ class WorkOSAuthProvider(AuthProvider):
             dict.fromkeys([*_AUTHENTICATED_BASE_CAPABILITIES, *granted])
         )
 
+        import sqlite3
+
+        from tinyassets.outside_authority import OutsideRefused, current_store, origin
+
+        try:
+            outside = origin(claims)
+            if outside is not None:
+                authority = current_store()
+                authority.observe(sub, outside)
+                outside = authority.admit(sub, outside)
+        except (OutsideRefused, OSError, sqlite3.Error):
+            return None
+
         return Identity(
             user_id=sub,
             username=username,
@@ -245,6 +272,7 @@ class WorkOSAuthProvider(AuthProvider):
                 "role": claims.get("role"),
                 "permissions": granted,
                 "iss": claims.get("iss"),
+                **({"outside_origin": outside} if outside is not None else {}),
             },
         )
 

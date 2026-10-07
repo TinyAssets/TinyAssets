@@ -147,6 +147,13 @@ def _bind_founder_identity(capabilities=_READ_CAPABILITIES):
         username=_ACTOR_ID,
         capabilities=list(capabilities),
     )
+    from tinyassets.engine_steering import outside_origin
+    from tinyassets.outside_authority import check_identity
+
+    outside = outside_origin()
+    if outside is not None:
+        identity.metadata["outside_origin"] = outside
+        check_identity(identity)
     return _current_identity.set(identity)
 
 
@@ -467,12 +474,53 @@ class ResearchReadOnly(Middleware):
         return await call_next(context)
 
 
+class OutsideClientScope(Middleware):
+    async def on_call_tool(self, context, call_next):
+        from tinyassets.auth.provider import Identity
+        from tinyassets.engine_steering import outside_origin
+        from tinyassets.outside_authority import check_identity
+
+        origin = outside_origin()
+        if origin is not None:
+            identity = Identity(_ACTOR_ID, _ACTOR_ID, metadata={"outside_origin": origin})
+            check_identity(identity, universe=_GRAPH_ID, agent=_acting_agent(),
+                           capability=context.message.name)
+        return await call_next(context)
+
+
+class ExtensionHookEvents(Middleware):
+    async def on_call_tool(self, context, call_next):
+        import sys
+
+        from tinyassets.extension_hooks import _RUNNING, engine_event
+
+        message = context.message
+        arguments = message.arguments or {}
+        if (_RUNNING.get() or message.name == "bash" and isinstance(arguments, dict)
+                and str(arguments.get("command", "")).startswith("ta extension:event --json ")):
+            return await call_next(context)
+        await engine_event(sys.modules[__name__], "before_tool",
+                           {"tool": message.name, "arguments": arguments})
+        try:
+            result = await call_next(context)
+        except Exception:
+            await engine_event(sys.modules[__name__], "after_tool",
+                               {"tool": message.name, "is_error": True})
+            raise
+        await engine_event(sys.modules[__name__], "after_tool",
+                           {"tool": message.name,
+                            "is_error": bool(getattr(result, "isError", False))})
+        return result
+
+
 # First added is OUTERMOST: new tools default to refused in research.
 mcp.add_middleware(ResearchReadOnly())
 # An activity that yielded, paused or stopped runs no further tool, on any
 # provider: every model-visible tool crosses this route (activity_fence).
 mcp.add_middleware(ActivityFence(lambda: _universe_dir_for_fence()))
 mcp.add_middleware(ModelInventory())
+mcp.add_middleware(OutsideClientScope())
+mcp.add_middleware(ExtensionHookEvents())
 # Attention acknowledges only the final bounded
 # result, then the ceiling wraps the refusal flag.
 mcp.add_middleware(OwnerSteering())
@@ -2160,6 +2208,12 @@ _WRITE_GRAPH_INTERFACES_CHAPTER = """\
     after my reply. ``write_graph target="app_ui" operation="save"`` with
     ``expected_revision`` and a whole ``ui_library`` rewrites everything; I do
     not need it.
+
+    Extension cards project pinned HTML or app_ui JSON into this library on
+    activation; revoke fences the projection. Editing a working file does not
+    update an activated revision. For package activation and pinning, run
+    `ta extension:help --json '{"chapter":"ui"}'`. Direct app_ui authoring uses
+    the component and update calls below.
 
     **The UI component.** These seven fields, plus the optional ``assets``,
     ``libraries`` and ``script_type`` below, and no others, or the app refuses it

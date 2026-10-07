@@ -20,7 +20,7 @@ The CLI pin explains the alias resolving to an older model; it does not explain
 the opt-in text.
 
 This is the continuation already written down in
-`openspec/changes/select-agent-models/native-picker-followup.md`: "Claude
+`openspec/changes/archive/2026-10-06-select-agent-models/native-picker-followup.md`: "Claude
 protocol verification remains separate, metadata-only, isolated and bounded...
 The transport-agnostic `enumerate_models` override is the existing extension
 point."

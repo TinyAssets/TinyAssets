@@ -88,7 +88,7 @@ def _descriptions(mcp, *, with_chapters=False):
 
     ``with_chapters`` is for the SERVED ENGINE surface only. Since 2026-09-26 the
     long-form half of a served handle's guidance is reachable rather than resident
-    (`openspec/specs/served-agent-tool-guidance/spec.md`), so a test asking "is the
+    (`openspec/changes/archive/2026-09-26-engine-tool-manual-on-demand/`), so a test asking "is the
     agent told this?" about that half has to read what the agent can reach. The
     connector surface is unchanged and passes ``with_chapters=False``.
     """

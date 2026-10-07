@@ -118,6 +118,10 @@ def main(argv=None, *, dispatch=None, load_extensions=True):
         return catalog
     local = extensions(catalog["extension_roots"]) if load_extensions else {}
     capabilities = {item["name"]: item for item in catalog["capabilities"]}
+    capabilities.update({item["name"]: item
+                         for item in catalog.get("extension_capabilities", [])})
+    if catalog.get("extension_error"):
+        print(f"ta: extensions unavailable: {catalog['extension_error']}", file=sys.stderr)
     capabilities.update(local)
     if argv[0] == "search":
         words = [word.lower() for word in argv[1:]]
@@ -137,6 +141,20 @@ def main(argv=None, *, dispatch=None, load_extensions=True):
     if not isinstance(arguments, dict):
         raise ValueError("arguments must be a JSON object")
     name = argv[0]
+    if name == "extension:event":
+        if set(arguments) != {"version", "event", "payload"} or arguments["version"] != 1:
+            raise ValueError("invalid extension event envelope")
+        if len(argv[2].encode()) > 65536:
+            raise ValueError("extension event exceeds 64 KiB")
+        results = []
+        for key, item in sorted(capabilities.items()):
+            if item.get("kind") == "hooks" and item.get("event") == arguments["event"]:
+                value = main([key, "--json", json.dumps(arguments)], dispatch=dispatch,
+                             load_extensions=load_extensions)
+                results.append({"hook": key, "result": value})
+                if isinstance(value, dict) and (value.get("error") or value.get("error_kind")):
+                    return {"error": "extension_hook_failed", "results": results}
+        return {"event": arguments["event"], "results": results}
     if name in local:
         item = local[name]
         result = subprocess.run(
@@ -147,7 +165,20 @@ def main(argv=None, *, dispatch=None, load_extensions=True):
     if name not in capabilities:
         raise ValueError(f"unknown capability: {name}")
     response = invoke({"op": "call", "name": name, "arguments": arguments})
-    return response.get("result", response)
+    result = response.get("result", response)
+    if (name.startswith("extension:") and isinstance(result, dict)
+            and "extension_execution" in result):
+        # An extension's executable runs only inside the jail, never in the
+        # in-process host dispatch (which reads no local manifests either).
+        if not load_extensions:
+            return {"error": "extension execution requires the bash tool jail"}
+        launch = result["extension_execution"]
+        completed = subprocess.run(
+            [launch["executable"], launch["entry"], json.dumps(launch["arguments"])],
+            cwd=launch["cwd"], stdout=subprocess.PIPE, check=True,
+        )
+        return json.loads(completed.stdout)
+    return result
 
 
 if __name__ == "__main__":

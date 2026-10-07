@@ -218,9 +218,21 @@ def launch_grant(key: str, session_key: str, turn: str, tools) -> str:
     its verified engine route. The grant is bound to the launch's session and
     turn; the key is one engine server's, so one owner's and one universe's.
     """
+    from tinyassets.auth.middleware import current_identity_or_none
+
+    identity = current_identity_or_none()
+    outside = identity.metadata.get("outside_origin") if identity is not None else None
     if not key:
+        if outside is not None:
+            raise PermissionError("outside work requires a signed engine launch")
         return ""
     names = ",".join(t for t in BACKEND_ENGINE_CAPABILITIES if t in set(tools))
+    if outside is not None:
+        import base64
+        import json
+
+        names += ",outside~" + base64.urlsafe_b64encode(
+            json.dumps(outside, sort_keys=True, separators=(",", ":")).encode()).decode()
     return f"{names}.{_launch_grant_mac(key, session_key, turn, names)}"
 
 

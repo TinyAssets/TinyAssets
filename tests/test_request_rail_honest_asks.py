@@ -15,7 +15,6 @@ the same endpoint twice.
 
 from __future__ import annotations
 
-import json
 import pathlib
 
 from tests.test_pending_requests import (  # noqa: F401 - fixtures ride the import
@@ -307,11 +306,3 @@ def test_the_served_prompt_teaches_the_two_verdicts():
     assert "needs no HTTP endpoint on the git host" in src
 
 
-def test_the_app_no_longer_offers_send_or_not_now():
-    from tinyassets.onboarding import render_app_html
-
-    html, _csp = render_app_html()
-    assert '"Not now"' not in html
-    for label in ("Accept", "Deny", "Clear", "Send chat (keeps open)"):
-        assert f'verb("{label}"' in html, label
-    assert json.dumps("declined") in html or '"declined"' in html

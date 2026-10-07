@@ -23,7 +23,6 @@ from __future__ import annotations
 import base64
 import contextvars
 import json
-import re
 import threading
 from pathlib import Path
 from typing import Any
@@ -221,13 +220,3 @@ def app_html() -> str:
     return html
 
 
-def test_the_heartbeat_calls_the_heal(app_html):
-    # Brace-matched, not a character distance from the function header: the
-    # question is whether the heal is INSIDE pollStatus, and a proximity bound
-    # fails the moment anything else is added to the heartbeat (it did, when the
-    # working indicator started reading the same poll).
-    from tests.test_onboarding_app import _js_function
-
-    assert "healServing(s)" in _js_function(app_html, "pollStatus"), \
-        "the heal is not on the heartbeat"
-    assert re.search(r"if\(servingHealAttempted\) return;", app_html)

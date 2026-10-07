@@ -59,7 +59,7 @@ def test_the_resident_text_says_publishing_is_the_agents_to_do() -> None:
     """Resident on purpose: a chapter cannot answer a question never asked.
 
     Guidance whose absence produces a WRONG call stays resident
-    (openspec/specs/served-agent-tool-guidance/spec.md). Absence here produced a
+    (openspec/changes/archive/2026-09-26-engine-tool-manual-on-demand/). Absence here produced a
     wrong REFUSAL, which is worse -- the person is told their platform cannot do
     something it does.
     """

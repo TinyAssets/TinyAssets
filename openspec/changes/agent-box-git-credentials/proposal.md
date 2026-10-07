@@ -1,3 +1,8 @@
+> Consolidated into [one-extension-unit](../one-extension-unit/proposal.md), draft
+> PR #4519. K1 ports #4513 smart-HTTP git through the current broker and egress as
+> an extension connection contribution. The per-owner git_bridge stays with U1.
+> Close #4513 once the folded code reaches main; do not continue a parallel lane.
+
 ## Why
 
 A command-center agent needs a real checkout to branch, resolve conflicts, test,

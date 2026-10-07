@@ -7,7 +7,7 @@ from contextlib import closing
 import pytest
 
 from tinyassets import agent_activities
-from tinyassets.owner_control import ControlUnavailable, control
+from tinyassets.owner_control import WAIT_ENV, ControlUnavailable, control
 from tinyassets.storage import pending_requests as requests
 from tinyassets.storage import request_migration as migration
 
@@ -70,8 +70,10 @@ def test_failure_before_copy_also_leaves_a_durable_pause(tmp_path):
         assert migration._marker(conn) == "paused"
 
 
-def test_lock_excludes_another_thread_and_owner_stores_are_disjoint(tmp_path):
+def test_lock_excludes_another_thread_and_owner_stores_are_disjoint(tmp_path, monkeypatch):
     from concurrent.futures import ThreadPoolExecutor
+
+    monkeypatch.setenv(WAIT_ENV, "0.2")
 
     homes = [tmp_path / name for name in ("alice", "bob")]
     for home in homes:
@@ -114,9 +116,11 @@ def test_paused_api_ask_is_retryable_and_creates_no_partial_request(tmp_path, mo
         ).fetchone()
 
 
-def test_owner_control_excludes_another_process_and_releases_on_exit(tmp_path):
+def test_owner_control_excludes_another_process_and_releases_on_exit(tmp_path, monkeypatch):
     import subprocess
     import sys
+
+    monkeypatch.setenv(WAIT_ENV, "0.2")
 
     home = tmp_path / "owner"
     home.mkdir()

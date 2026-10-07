@@ -65,7 +65,7 @@ The single mechanism that actually terminates a runaway node today is
 `MAX_WORKSPACE_TIMEOUT_SECONDS = 1800` (`node_sandbox.py:153`) — the timeout
 path is the only one that kills the child.
 
-`openspec/changes/script-authoring-surface` proposed deleting that ceiling once
+`openspec/changes/archive/2026-10-06-script-authoring-surface` proposed deleting that ceiling once
 per-tenant quota replaced the host-wide slot, on the grounds that run length is
 the user's business. **That ordering was wrong.** Quota bounds a tenant's
 *share*; it does not stop one stuck run. Removing the timeout before
@@ -102,5 +102,5 @@ where the jail is real.
 
 Related: `2026-08-31-hard-coded-policy-that-should-be-user-composable.md`
 (the ceiling as policy), and
-`openspec/changes/script-authoring-surface/design.md` (why cancellation became
+`openspec/changes/archive/2026-10-06-script-authoring-surface/design.md` (why cancellation became
 load-bearing once the vault settled secrecy).

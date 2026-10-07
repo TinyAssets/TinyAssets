@@ -195,6 +195,9 @@ CLASSIFICATION: dict[str, tuple[str, str]] = {
     "tinyassets/runs.py::poll_child_run_status": (CALL_SCOPED, "caller waits on a child run"),
     "tinyassets/scoped_reset.py::acquire_maintenance_barrier": (CALL_SCOPED, "barrier wait"),
     "tinyassets/soul_edit.py::_soul_lock": (CALL_SCOPED, "lock acquisition"),
+    "tinyassets/singleton_lock.py::_lock_fd_within": (
+        CALL_SCOPED, "owner-control lock acquisition, bounded by the caller's wait",
+    ),
     "tinyassets/starter_seeds.py::open_seed_boundary": (CALL_SCOPED, "lock acquisition"),
     "tinyassets/storage/conversation_custody.py::_checkpoint_truncate": (
         CALL_SCOPED, "WAL checkpoint retry",
@@ -259,6 +262,10 @@ CLASSIFICATION: dict[str, tuple[str, str]] = {
     ),
     "tinyassets/workspace_staging.py::_lock_tree_exclusive#2": (
         CALL_SCOPED, "lock acquisition",
+    ),
+    "tinyassets/broker/git_upload.py::Upload.read": (
+        CALL_SCOPED,
+        "K1 binary upload credit wait; broker deadline, cancellation and grant rechecked",
     ),
     # -- should not exist in the target shape ----------------------------------
     "tinyassets/host_pool/bid_poller.py::BidPoller.run": (

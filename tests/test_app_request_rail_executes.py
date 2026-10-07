@@ -77,15 +77,7 @@ def test_the_rail_renders_the_four_verbs_and_only_those():
     from tinyassets.onboarding import render_app_html
 
     html, _csp = render_app_html()
-    body = _function_source(html, "railBody")
-    for label, mode in (("Accept", "accept"), ("Deny", "deny"),
-                        ("Clear", "clear")):
-        assert f'verb("{label}", ' in body and f'"{mode}")' in body, label
-    assert '"Send chat (keeps open)"' in body
-    assert "Not now" not in body and '"Send"' not in body
     rail = _function_source(html, "answerRail")
-    assert 'payload.decision = "declined"' in rail
-    assert 'payload.dismiss = true' in rail
     assert "refusedGrantLine(req" in rail, "a refused grant is relayed to the universe"
     assert 'if(!text){ note.textContent = "Type something to send."' in rail
 

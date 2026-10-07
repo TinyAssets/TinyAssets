@@ -148,10 +148,14 @@ NOT publish or widen assignments, grants or permitted spending.
 - **THEN** it preserves legacy binding and working native serving behavior
 
 #### Scenario: Mixed-source automatic mode
-- **WHEN** a native default and HTTP models are eligible
-- **AND** no unresolved scoped authentication-failure hint demotes the native source
-- **THEN** automatic selection uses the native default through its real executor
-- **AND** an HTTP-only catalog cannot silently remove that preference
+- **WHEN** models across multiple accepted sources are eligible and the owner has no explicit choice
+- **THEN** automatic selection compares every admitted model, independent of source kind or vendor
+- **AND** observed authentication failures, cooldowns and recent model refusals demote unhealthy choices
+- **AND** declared daily limits corrected by observed successful usage rank less constrained choices first, followed by fresh comparable catalog quality scores and stable ties
+- **AND** absent capacity evidence means no known constraint, not a claim of unlimited capacity; absent or incomparable quality scores preserve discovery order
+- **AND** the model button names the current advisory choice as strongest of the connected sources and retains the model picker
+- **AND** a current or saved explicit choice and its fallback order are never reordered by these heuristics
+- **AND** private learned model history and reviewed public model lists remain evidence, never grants
 
 #### Scenario: Saved automatic preference on an existing legacy binding
 - **WHEN** an owner saves automatic mode and has a legacy provider-only assignment
@@ -401,7 +405,7 @@ The app SHALL allow switching the interactive agent, saving a default and orderi
 
 #### Scenario: Conversation capacity recovery preserves the saved preference
 - **WHEN** the chosen conversation source is cooling down, rate-limited or exhausted and another source is accepted for the same owner
-- **THEN** a replay-safe capacity failure advances to an eligible accepted source, preferring subscriptions to HTTP models and retaining automatic quality ranking
+- **THEN** a replay-safe capacity failure advances to an eligible accepted source, retaining explicit fallback order followed by the same data-driven automatic ranking
 - **AND** an empty saved fallback sequence is a preference, not an explicit only-model restriction, and the stored selection remains unchanged
 - **AND** every attempt revalidates that owner's source, model and cost authority; a connected credential without accepted access is not a fallback grant
 - **AND** the final reply contains one notice naming the answering source and the original source's retry time, or says that no reset time was reported

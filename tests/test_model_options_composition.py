@@ -15,7 +15,9 @@ configured = integration.configured
 
 
 @pytest.mark.parametrize("configured", ["http", "mixed"], indirect=True)
-def test_actual_owned_catalog_projects_without_enabling_serving(configured):
+def test_actual_owned_catalog_projects_without_enabling_serving(configured, monkeypatch):
+    # The native-first expectation below depends on a known finite HTTP cap.
+    monkeypatch.setattr("tinyassets.request_budget.requests_today", lambda *a, **kw: (0, 0))
     base = configured.rig.base
     before = get_binding(base, universe_id="u-models",
                          binding_id=configured.binding["agent_binding_id"])
