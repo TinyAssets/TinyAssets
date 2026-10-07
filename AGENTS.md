@@ -56,8 +56,8 @@ Write durable state before replying.
 2. Reuse the LanceDB connection; never recreate it.
 3. Vendor-neutral compute only — ADR-007.
 4. Gates (`docs/reference/executable-gates.md`) default autonomously; ask only
-   for new spending, irreversible or outward-facing acts outside the agreed work
-   (host-only: a smallest-scope host-actions row, blocking nothing unrelated).
+   for new spending, irreversible acts, or outward-facing acts outside the
+   agreed work (host-only: a minimal host-actions row, blocking nothing else).
 5. Accumulating state needs `Annotated[list, operator.add]` —
    `domains/fantasy_daemon/state/book_state.py`.
 6. `FactWithContext` carries truth-value typing — `tinyassets/knowledge/models.py`.

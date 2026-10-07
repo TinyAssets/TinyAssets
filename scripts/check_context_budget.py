@@ -79,7 +79,7 @@ class Budget:
 # one fact means a reflow that removes words can still fail — a second authority
 # for the same thing, which is what the 2026-09-26 cut was removing.
 CONFIG: tuple[Budget, ...] = (
-    Budget("AGENTS.md", "hard", 2822, 0,
+    Budget("AGENTS.md", "hard", 2816, 0,
            "The loop and the un-inferable facts. Direction lives in README.md."),
     Budget("CLAUDE.md", "hard", 420, 0,
            "Two harness quirks. Nothing else belongs here."),
@@ -99,7 +99,7 @@ FORBIDDEN: tuple[str, ...] = (
 
 # HARD ceiling for the combined always-loaded payload (AGENTS.md + CLAUDE.md +
 # anything they @import), pinned at the achieved post-recut total.
-COMBINED_HARD_BYTES = 3242
+COMBINED_HARD_BYTES = 3236
 
 
 @dataclass
